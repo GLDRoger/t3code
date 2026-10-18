@@ -334,6 +334,19 @@ describe("thread notifications", () => {
     expect(state.close).toHaveBeenCalledWith("toast-1");
   });
 
+  it("replaces a thread's earlier toast instead of stacking them", async () => {
+    await render();
+    await complete();
+    state.add.mockReturnValueOnce("toast-2");
+    state.input = true;
+    await render();
+    expect(state.add).toHaveBeenCalledTimes(2);
+    expect(state.close).toHaveBeenCalledWith("toast-1");
+    state.active = { environmentId: "env-1", threadId: "thread-1" };
+    await render();
+    expect(state.close).toHaveBeenLastCalledWith("toast-2");
+  });
+
   it("compares the environment as well as the thread", async () => {
     state.active = { environmentId: "env-2", threadId: "thread-1" };
     await render();

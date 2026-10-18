@@ -118,7 +118,7 @@ function EnvironmentNotifications({
     strict: false,
   });
   const previous = useRef(new Map<ThreadId, NotificationState>());
-  const toasts = useRef(new Map<string, string>());
+  const toasts = useRef(new Map<string, ReturnType<typeof toastManager.add>>());
 
   useEffect(() => {
     if (activeEnvironmentId !== environmentId || !activeThreadId) return;
