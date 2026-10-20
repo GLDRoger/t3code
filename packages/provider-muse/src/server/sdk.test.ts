@@ -346,6 +346,8 @@ describe("Muse workspace root", () => {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const created = yield* fs.makeTempDirectoryScoped({ prefix: "MuseRoot-" });
+      // Only a case-insensitive volume resolves the miscased path; skip on a case-sensitive one.
+      if (!(yield* fs.exists(created.toUpperCase()))) return;
       const root = yield* museWorkspaceRoot(created.toUpperCase());
       expect(path.basename(root)).toBe(path.basename(created));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
