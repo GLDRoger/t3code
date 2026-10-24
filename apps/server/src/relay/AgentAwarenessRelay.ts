@@ -133,6 +133,8 @@ function shouldPublishAgentAwarenessEvent(
     case "context-handoff.updated":
     case "context-transfer.created":
     case "context-transfer.updated":
+    case "kin.houseLine.crowned":
+    case "kin.houseLine.will-recorded":
       return false;
   }
 }

@@ -387,5 +387,8 @@ export function applyOrchestrationV2ProjectionEvent(
     case "context-transfer.created":
     case "context-transfer.updated":
       return { ...base, contextTransfers: upsertEntity(base.contextTransfers, event.payload) };
+    case "kin.houseLine.crowned":
+    case "kin.houseLine.will-recorded":
+      return projection;
   }
 }

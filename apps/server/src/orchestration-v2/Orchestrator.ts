@@ -9,6 +9,7 @@ import {
   runRanAfter,
   usageLimitBlockedRun,
 } from "@t3tools/shared/orchestrationV2ThreadError";
+import { planKinHouseLineCommand } from "../kin/houseLine/commandEvents.ts";
 import { threadPullRequestsOf } from "../sourceControl/threadPullRequests.ts";
 import {
   normalizeThreadPullRequestKey,
@@ -502,6 +503,8 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.created.record":
       return command.parentThreadId;
     case "secret_request.record":
+    case "kin.houseLine.crown":
+    case "kin.houseLine.will":
       return command.threadId;
     case "thread.fork":
     case "thread.merge_back":
@@ -11705,6 +11708,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "secret_request.record":
         yield* dispatchSecretRequestRecord(command, events);
         break;
+      case "kin.houseLine.crown":
+      case "kin.houseLine.will": {
+        const now = yield* DateTime.now;
+        const planned = planKinHouseLineCommand(command, now);
+        if ("error" in planned) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: new Error(planned.error),
+          });
+        }
+        yield* emit(events, command)(planned.event);
+        break;
+      }
       default:
         return yield* dispatchUnsupported(command);
     }
