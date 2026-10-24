@@ -1,0 +1,5 @@
+kin-trace 1
+# seed=2 scenario=lane.duplicate commit=kin
+0 0 0 1
+7 0 0 1
+5 0 0 1

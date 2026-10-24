@@ -1,0 +1,6 @@
+kin-trace 1
+# seed=3 scenario=lane.reviewer commit=kin
+0 1 0 1
+1 1 0 2
+4 1 1 4
+5 1 1 4

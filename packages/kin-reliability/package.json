@@ -1,0 +1,24 @@
+{
+  "name": "@t3tools/kin-reliability",
+  "private": true,
+  "bin": {
+    "kin-reliability": "./src/cli.ts"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vp test run --config ../../vite.config.ts --dir .",
+    "verify": "node --experimental-strip-types src/cli.ts verify"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}
