@@ -213,6 +213,18 @@ const RPC_AGGREGATES = {
   [WS_METHODS.subscribeServerLifecycle]: "server",
   [WS_METHODS.subscribeAuthAccess]: "auth",
   [WS_METHODS.subscribeBackgroundPolicy]: "server",
+  [WS_METHODS.kinProfilesList]: "kin",
+  [WS_METHODS.kinProfilesRead]: "kin",
+  [WS_METHODS.kinProfilesWrite]: "kin",
+  [WS_METHODS.kinBasePromptGet]: "kin",
+  [WS_METHODS.kinBasePromptSet]: "kin",
+  [WS_METHODS.kinMdList]: "kin",
+  [WS_METHODS.kinMdRead]: "kin",
+  [WS_METHODS.kinMdWrite]: "kin",
+  [WS_METHODS.kinMdDelete]: "kin",
+  [WS_METHODS.kinPromptPreview]: "kin",
+  [WS_METHODS.kinRoutingGet]: "kin",
+  [WS_METHODS.kinRoutingUpdate]: "kin",
 } as const satisfies Readonly<Record<WsRpcMethod, string>>;
 
 const RPC_SPAN_PREFIX = "ws.rpc";

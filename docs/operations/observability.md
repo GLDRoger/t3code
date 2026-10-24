@@ -1,8 +1,8 @@
 # Observability
 
-> For maintainers. Using T3 Code? See [docs/user](../user/).
+> For maintainers. Using Kin? See [docs/user](../user/).
 
-T3 Code has one server-side observability model:
+Kin has one server-side observability model:
 
 - pretty logs go to stdout for humans
 - completed spans go to a local NDJSON trace file
@@ -232,7 +232,7 @@ macOS app bundle example:
 T3CODE_OTLP_TRACES_URL=http://localhost:4318/v1/traces \
 T3CODE_OTLP_METRICS_URL=http://localhost:4318/v1/metrics \
 T3CODE_OTLP_LOGS_URL=http://localhost:4318/v1/logs \
-"/Applications/T3 Code.app/Contents/MacOS/T3 Code"
+"/Applications/Kin.app/Contents/MacOS/Kin"
 ```
 
 Direct binary example:
@@ -629,7 +629,7 @@ resource attributes, such as `OTEL_RESOURCE_ATTRIBUTES=deployment.environment.na
 The UI reports `deployment.environment.name` from its build: `development` under the Vite dev server
 and `production` otherwise.
 
-Attributes specific to T3 Code use the `t3code.` prefix. The UI runs as `t3code-web` in both a
+Attributes specific to Kin use the `t3code.` prefix. The UI runs as `t3code-web` in both a
 browser and the desktop window, since it is the same code, and `t3code.client.surface` is `desktop`
 or `web`. The server's `t3code.server.managed_by` is `desktop` when the desktop app launched it and
 `standalone` otherwise.
@@ -692,7 +692,7 @@ pid="$(jq .pid "${T3CODE_HOME:-$HOME/.t3}/userdata/server-runtime.json")"
 ps -p "$pid" -o command=
 ```
 
-If `ps` shows the T3 Code server, send the signal:
+If `ps` shows the Kin server, send the signal:
 
 ```bash
 kill -USR2 "$pid"

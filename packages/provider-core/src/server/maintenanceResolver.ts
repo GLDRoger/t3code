@@ -444,7 +444,7 @@ export const resolvePackageManagedProviderMaintenance = Effect.fn(
   const commandPaths = [context.resolvedCommandPath, context.realCommandPath];
   const packageName = definition.npmPackageName;
   // WinGet owns these files: `claude update` only reports "managed by winget"
-  // and exits 0, and T3 Code does not run `winget upgrade` itself.
+  // and exits 0, and Kin does not run `winget upgrade` itself.
   if (
     definition.provider === "claudeAgent" &&
     context.platform === "win32" &&
@@ -784,12 +784,12 @@ export const makeCachedProviderMaintenanceResolution = Effect.fn(
 });
 
 /**
- * An install T3 Code cannot update gets no Update button or command, so its
+ * An install Kin cannot update gets no Update button or command, so its
  * message names the version and the executable instead.
  */
 function manualUpdateMessage(latestVersion: string, installPath: string | undefined): string {
   return installPath
-    ? `Version ${latestVersion} is out. T3 Code runs ${installPath}; update it with the app or tool that installed it.`
+    ? `Version ${latestVersion} is out. Kin runs ${installPath}; update it with the app or tool that installed it.`
     : `Version ${latestVersion} is out. Update it with the app or tool that installed it.`;
 }
 

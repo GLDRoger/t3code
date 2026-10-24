@@ -71,6 +71,9 @@ import {
   normalizeThreadPullRequestKey,
   visibleThreadPullRequests,
 } from "../sourceControl/threadPullRequests.ts";
+import { applyKinRoute, countActiveDelegations } from "../kin/delegateRouting.ts";
+import * as Kin from "../kin/KinService.ts";
+import { limitsFromProviders } from "../kin/RoutingPolicy.ts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -2170,9 +2173,58 @@ const make = Effect.gen(function* () {
         operation: "delegate-task",
       });
       const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
+      let delegationTask = taskPrompt(input);
+      let delegationTarget = input.target;
+      let kinBinding:
+        | {
+            readonly profileName: string;
+            readonly projectRoot: string;
+            readonly planId?: string;
+          }
+        | undefined;
+      if (input.profile !== undefined && !isRetryOfAcceptedDelegation) {
+        const kin = Context.getOption(yield* Effect.context<never>(), Kin.KinService);
+        if (Option.isSome(kin)) {
+          const project = yield* requireProject(parent.thread.projectId);
+          const parentProvider = providers.find(
+            (provider) => provider.instanceId === parent.thread.modelSelection.instanceId,
+          );
+          const counts = countActiveDelegations(parent.subagents);
+          const prepared = yield* kin.value
+            .prepareDelegation({
+              profile: input.profile,
+              projectRoot: project.workspaceRoot,
+              parentDriver:
+                parentProvider === undefined ? undefined : String(parentProvider.driver),
+              parentModel: parent.thread.modelSelection.model,
+              activeTotal: counts.activeTotal,
+              activeByProvider: counts.activeByProvider,
+              limits: limitsFromProviders(providers),
+              explicitTarget:
+                input.target?.providerInstanceId !== undefined ||
+                input.target?.driverKind !== undefined ||
+                input.target?.model !== undefined,
+              at: DateTime.formatIso(yield* DateTime.now),
+            })
+            .pipe(Effect.mapError((error) => failure("invalid_request", error.message)));
+          const applied = applyKinRoute({ target: input.target, decision: prepared.decision });
+          if ("pause" in applied) {
+            return yield* failure("provider_unavailable", applied.pause);
+          }
+          delegationTarget = applied.target;
+          if (applied.taskAddendum !== undefined) {
+            delegationTask = `${delegationTask}\n\n${applied.taskAddendum}`;
+          }
+          kinBinding = {
+            profileName: prepared.profile.name,
+            projectRoot: project.workspaceRoot,
+            ...(prepared.decision.action === "launch" ? { planId: prepared.decision.planId } : {}),
+          };
+        }
+      }
       const target = yield* resolveTargetRechecking({
         parent,
-        target: input.target,
+        target: delegationTarget,
         providers,
         skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
       });
@@ -2227,7 +2279,7 @@ const make = Effect.gen(function* () {
           parentThreadId: scope.thread.threadId,
           parentRunId: parentRun.id,
           parentNodeId: parentRun.rootNodeId,
-          task: taskPrompt(input),
+          task: delegationTask,
           ...(input.title === undefined ? {} : { title: input.title }),
           modelSelection: target.modelSelection,
           runtimeMode,
@@ -2260,6 +2312,24 @@ const make = Effect.gen(function* () {
       }
       const taskId = taskEvent.event.payload.id;
       const childThreadId = taskEvent.event.payload.childThreadId;
+      if (kinBinding !== undefined && childThreadId !== null) {
+        const kin = Context.getOption(yield* Effect.context<never>(), Kin.KinService);
+        if (Option.isSome(kin)) {
+          yield* kin.value
+            .bindThread({
+              threadId: childThreadId,
+              profileName: kinBinding.profileName,
+              projectRoot: kinBinding.projectRoot,
+              parentThreadId: scope.thread.threadId,
+              planId: kinBinding.planId,
+            })
+            .pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("kin.bind-thread-failed", { detail: error.message }),
+              ),
+            );
+        }
+      }
       const childRunEvent = result.storedEvents.find(
         (stored) => stored.event.type === "run.created" && stored.event.threadId === childThreadId,
       );

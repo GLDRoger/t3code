@@ -249,6 +249,24 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
     assert.isUndefined(options.extraArgs?.["dangerously-skip-permissions"]);
   });
 
+  it("appends the Kin prompt after Claude's own system prompt", () => {
+    const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+      modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+      nativeThreadId: "native-kin",
+      resume: false,
+      cwd: "/workspace",
+      permissionMode: "default",
+      kinPrompt: "Kin profile body",
+    });
+    const prompt = options.systemPrompt;
+    assert.ok(prompt !== undefined && typeof prompt !== "string" && !Array.isArray(prompt));
+    if (prompt === undefined || typeof prompt === "string" || Array.isArray(prompt)) return;
+    assert.equal(prompt.type, "preset");
+    if (prompt.type === "preset") {
+      assert.include(prompt.append ?? "", "Kin profile body");
+    }
+  });
+
   it("gives delegated children Claude's subagent prompt cache TTL", () => {
     const lineage = (relationshipToParent: "fork" | "subagent" | null) => ({
       lineage: {

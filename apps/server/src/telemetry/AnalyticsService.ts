@@ -1,5 +1,5 @@
 /**
- * Events go to the T3 Code ingest endpoint, which keeps a copy and forwards
+ * Events go to the Kin ingest endpoint, which keeps a copy and forwards
  * them to PostHog. Each event carries a uuid, so PostHog can tell a retried
  * copy from a new event.
  */

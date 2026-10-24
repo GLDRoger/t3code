@@ -47,10 +47,10 @@ export function npmLauncherPackageManifest(version: string) {
     name: NPM_LAUNCHER_PACKAGE_NAME,
     version,
     description:
-      "T3 Code CLI. Downloads the self-contained executable for this platform from the GitHub Release.",
+      "Kin CLI. Downloads the self-contained executable for this platform from the GitHub Release.",
     license: serverPackageJson.license,
     repository: serverPackageJson.repository,
-    bin: { t3: "./bin/t3.mjs" },
+    bin: { t3: "./bin/t3.mjs", kin: "./bin/kin.mjs" },
     files: ["bin", "dist"],
     engines: { node: ">=20.11" },
   };
@@ -79,6 +79,8 @@ export const buildNpmLauncher = Effect.fn("buildNpmLauncher")(function* (input: 
   );
   yield* fs.copyFile(path.join(sourceDir, "t3.mjs"), path.join(stageDir, "bin/t3.mjs"));
   yield* fs.chmod(path.join(stageDir, "bin/t3.mjs"), 0o755);
+  yield* fs.copyFile(path.join(sourceDir, "kin.mjs"), path.join(stageDir, "bin/kin.mjs"));
+  yield* fs.chmod(path.join(stageDir, "bin/kin.mjs"), 0o755);
   yield* fs.copyFile(path.join(sourceDir, "bin.mjs"), path.join(stageDir, "dist/bin.mjs"));
   const readme = yield* path.fromFileUrl(new URL("../apps/server/README.md", import.meta.url));
   if (yield* fs.exists(readme)) {
