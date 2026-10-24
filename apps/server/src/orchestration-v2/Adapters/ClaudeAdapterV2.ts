@@ -164,6 +164,7 @@ import type { ManagedServerProvider } from "@t3tools/provider-core/server/snapsh
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import { T3_CODE_ORCHESTRATION_INSTRUCTIONS } from "@t3tools/provider-core/server/orchestrationInstructions";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
+import { readKinTurnPrompt } from "../../kin/KinService.ts";
 import {
   mcpToolPresentation,
   normalizeMcpText,
@@ -1314,6 +1315,8 @@ export function makeClaudeQueryOptions(input: {
   readonly supportedDialogKinds?: ClaudeQueryOptions["supportedDialogKinds"];
   readonly allowDangerouslySkipPermissions?: boolean;
   readonly appendSystemPromptFileText?: string;
+  /** Kin suffix, after the runtime text and any launch --append-system-prompt. */
+  readonly kinPrompt?: string;
 }): ClaudeAgentSdkQueryOptions {
   const compiledSelection = compileClaudeModelSelection(input.modelSelection);
   const {
@@ -1409,6 +1412,7 @@ export function makeClaudeQueryOptions(input: {
         buildRuntimeInstructions({ harness: "Claude Code" }) +
           (input.mcpServers === undefined ? "" : T3_CODE_ORCHESTRATION_INSTRUCTIONS),
         ...launchAppendSystemPrompt,
+        ...(input.kinPrompt === undefined || input.kinPrompt.length === 0 ? [] : [input.kinPrompt]),
       ].join("\n\n"),
     },
     ...(Object.keys(extraArgs).length === 0 ? {} : { extraArgs }),
@@ -9297,6 +9301,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             turnInput.nativeThreadHasTurns ?? turnInput.providerTurnOrdinal > 1;
           const shouldResume =
             resumeSessionAt !== undefined || openedWithResume || hasPersistedProviderTurn;
+          const kinPrompt = yield* readKinTurnPrompt({
+            threadId: turnInput.threadId,
+            projectRoot: turnInput.runtimePolicy.cwd ?? undefined,
+            provider: "claudeAgent",
+          });
           const queryOptions = makeClaudeQueryOptions({
             modelSelection: turnInput.modelSelection,
             nativeThreadId,
@@ -9329,6 +9338,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             onUserDialog,
             supportedDialogKinds: ["resume_return"],
             ...(appendSystemPromptFileText === undefined ? {} : { appendSystemPromptFileText }),
+            ...(kinPrompt === undefined ? {} : { kinPrompt }),
           });
           const querySession = yield* queryRunner
             .open({

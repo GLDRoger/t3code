@@ -203,6 +203,22 @@ describe("CodexAdapterV2 runtime policy", () => {
       assert.isDefined(withT3.additionalContext?.["t3_code_runtime"]);
     }),
   );
+
+  it.effect("appends the Kin prompt to Codex developer instructions", () =>
+    Effect.gen(function* () {
+      const params = yield* CodexAdapterV2.buildCodexTurnStartParams({
+        nativeThreadId: "native-kin",
+        codexInput: [{ type: "text", text: "test" }],
+        runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: null },
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+        hasT3Mcp: true,
+        kinPrompt: "Kin profile body",
+      });
+      const instructions = params.collaborationMode?.settings.developer_instructions ?? "";
+      assert.include(instructions, "Kin profile body");
+      assert.notInclude(JSON.stringify(params.additionalContext ?? {}), "Kin profile body");
+    }),
+  );
 });
 
 describe("CodexAdapterV2 native protocol logging", () => {
@@ -532,7 +548,7 @@ function codexReplayPreamble(input: {
         id: 1,
         method: "initialize",
         params: {
-          clientInfo: { name: "T3 Code", title: "T3 Code", version: packageJson.version },
+          clientInfo: { name: "Kin", title: "Kin", version: packageJson.version },
           capabilities: {
             experimentalApi: true,
             optOutNotificationMethods: ["turn/diff/updated"],
@@ -549,7 +565,7 @@ function codexReplayPreamble(input: {
       frame: {
         id: 1,
         result: {
-          userAgent: "T3 Code/0.156.1",
+          userAgent: "Kin/0.156.1",
           codexHome: "/tmp/codex-home",
           platformFamily: "unix",
           platformOs: "macos",

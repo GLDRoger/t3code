@@ -1,4 +1,6 @@
-import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
+import { KinError, OrchestrationDispatchCommandError, UsageDay } from "@t3tools/contracts";
+import * as Kin from "./kin/KinService.ts";
+import { limitsFromProviders } from "./kin/RoutingPolicy.ts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
@@ -1305,6 +1307,7 @@ export const layerWsRpc = (
       const previewManager = yield* PreviewManager.PreviewManager;
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+      const kin = yield* Kin.KinService;
       const modelManifest = yield* ModelManifest.ModelManifest;
       const providerLatestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
       const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
@@ -3175,6 +3178,45 @@ export const layerWsRpc = (
               Stream.concat(Stream.make(latest), changes),
             ),
           ),
+        [WS_METHODS.kinProfilesList]: (input) =>
+          kin.listProfiles(input).pipe(Effect.map((profiles) => ({ profiles }))),
+        [WS_METHODS.kinProfilesRead]: (input) => kin.readProfile(input),
+        [WS_METHODS.kinProfilesWrite]: (input) => kin.writeProfile(input),
+        [WS_METHODS.kinBasePromptGet]: () =>
+          kin.getBasePrompt().pipe(Effect.map((text) => ({ text }))),
+        [WS_METHODS.kinBasePromptSet]: (input) =>
+          kin.setBasePrompt(input.text).pipe(Effect.map((text) => ({ text }))),
+        [WS_METHODS.kinMdList]: (input) =>
+          kin.listMd(input.projectRoot).pipe(Effect.map((files) => ({ files }))),
+        [WS_METHODS.kinMdRead]: (input) => kin.readMd(input).pipe(Effect.map((text) => ({ text }))),
+        [WS_METHODS.kinMdWrite]: (input) => kin.writeMd(input),
+        [WS_METHODS.kinMdDelete]: (input) => kin.deleteMd(input).pipe(Effect.as({})),
+        [WS_METHODS.kinPromptPreview]: (input) => kin.preview(input),
+        [WS_METHODS.kinRoutingGet]: (input) =>
+          Effect.gen(function* () {
+            const providers = yield* providerRegistry.getProviders;
+            const now = yield* DateTime.now;
+            const decodeDay = (value: string) =>
+              Schema.decodeUnknownEffect(UsageDay)(value).pipe(
+                Effect.mapError(() => new KinError({ detail: `Invalid usage day ${value}.` })),
+              );
+            const untilDay = yield* decodeDay(DateTime.formatIso(now).slice(0, 10));
+            const sinceDay = yield* decodeDay(
+              DateTime.formatIso(DateTime.subtract(now, { days: 29 })).slice(0, 10),
+            );
+            const summary = yield* usage
+              .readSummary({
+                sinceDay,
+                untilDay,
+                timeZone: input.timeZone ?? "UTC",
+              })
+              .pipe(Effect.orElseSucceed(() => undefined));
+            return yield* kin.routingSnapshot({
+              limits: limitsFromProviders(providers),
+              buckets: summary?.buckets ?? [],
+            });
+          }),
+        [WS_METHODS.kinRoutingUpdate]: (input) => kin.updateRouting(input),
       });
       const splitHandlers: Pick<typeof handlers, SplitWsRpc["_tag"]> = handlers;
       const otherHandlers: Pick<typeof handlers, Exclude<ServerWsRpc, SplitWsRpc>["_tag"]> =

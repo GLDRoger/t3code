@@ -30,6 +30,7 @@ import { servicePreflightCommand } from "./cli/servicePreflight.ts";
 import { themeCommand } from "./cli/theme.ts";
 import { traceCommand } from "./cli/trace.ts";
 import { triageCommand } from "./cli/triage.ts";
+import { resolveKinCliName } from "./cli/cliName.ts";
 
 const layerCliRuntime = Layer.mergeAll(NodeServices.layer, NetService.layer);
 
@@ -42,30 +43,39 @@ class ConnectPublicConfigMissingError extends CliError.UserError {
   }
 }
 
-const connectUnavailableCommand = Command.make("connect", {
-  command: Argument.String("command").pipe(Argument.variadic),
-}).pipe(
-  Command.withDescription("T3 Connect is unavailable in builds without public configuration."),
-  Command.unlisted,
-  Command.withHandler(() =>
-    Effect.fail(
-      new CliError.ShowHelp({
-        commandPath: ["t3", "connect"],
-        errors: [new ConnectPublicConfigMissingError({ cause: connectPublicConfigMissingMessage })],
-      }),
+const connectUnavailableCommand = (name: string) =>
+  Command.make("connect", {
+    command: Argument.String("command").pipe(Argument.variadic),
+  }).pipe(
+    Command.withDescription("T3 Connect is unavailable in builds without public configuration."),
+    Command.unlisted,
+    Command.withHandler(() =>
+      Effect.fail(
+        new CliError.ShowHelp({
+          commandPath: [name, "connect"],
+          errors: [
+            new ConnectPublicConfigMissingError({ cause: connectPublicConfigMissingMessage }),
+          ],
+        }),
+      ),
     ),
-  ),
-);
+  );
 
-export const makeCli = ({ cloudEnabled = hasCloudPublicConfig } = {}) =>
-  Command.make("t3", { ...sharedServerCommandFlags }).pipe(
-    Command.withDescription("Run the T3 Code server."),
+export const makeCli = ({
+  cloudEnabled = hasCloudPublicConfig,
+  name = "t3",
+}: {
+  readonly cloudEnabled?: boolean;
+  readonly name?: string;
+} = {}) =>
+  Command.make(name, { ...sharedServerCommandFlags }).pipe(
+    Command.withDescription("Run the Kin server."),
     Command.withHandler(runDefaultServerCommand),
     Command.withSubcommands([
       Command.make("help").pipe(
         Command.withDescription("Show command help."),
         Command.withHandler(() =>
-          Effect.fail(new CliError.ShowHelp({ commandPath: ["t3"], errors: [] })),
+          Effect.fail(new CliError.ShowHelp({ commandPath: [name], errors: [] })),
         ),
       ),
       acpMcpBridgeCommand,
@@ -90,7 +100,7 @@ export const makeCli = ({ cloudEnabled = hasCloudPublicConfig } = {}) =>
       traceCommand,
       doctorCommand,
       triageCommand,
-      cloudEnabled ? connectCommand : connectUnavailableCommand,
+      cloudEnabled ? connectCommand : connectUnavailableCommand(name),
     ]),
   );
 
@@ -99,7 +109,8 @@ export const cli = makeCli();
 export function runCli() {
   extendConnectionAttemptTimeout();
   keepOutboundFetchOnHttp1();
-  Command.run(cli, { version: packageJson.version }).pipe(
+  const name = resolveKinCliName({ env: process.env, argv: process.argv });
+  Command.run(makeCli({ name }), { version: packageJson.version }).pipe(
     Effect.scoped,
     Effect.provide(layerCliRuntime),
     NodeRuntime.runMain,

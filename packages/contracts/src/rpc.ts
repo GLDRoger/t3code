@@ -67,6 +67,26 @@ import {
 } from "./acpRegistry.ts";
 import { ExternalLauncherError, LaunchEditorInput } from "./editor.ts";
 import {
+  KinAgentProfile,
+  KinBasePromptWriteInput,
+  KinError,
+  KinMdFile,
+  KinMdListResult,
+  KinMdReadInput,
+  KinMdWriteInput,
+  KinProfileListResult,
+  KinProfileReadInput,
+  KinProfileSourceResult,
+  KinProfileWriteInput,
+  KinProjectInput,
+  KinPromptPreview,
+  KinPromptPreviewInput,
+  KinRoutingGetInput,
+  KinRoutingSettings,
+  KinRoutingSnapshot,
+  KinTextDocument,
+} from "./kin.ts";
+import {
   AuthAccessStreamError,
   AuthAccessStreamEvent,
   EnvironmentAuthorizationError,
@@ -582,6 +602,19 @@ export const WS_METHODS = {
   subscribeAuthAccess: "subscribeAuthAccess",
   subscribeBackgroundPolicy: "subscribeBackgroundPolicy",
   subscribeResourceTelemetry: "subscribeResourceTelemetry",
+
+  kinProfilesList: "kin.profiles.list",
+  kinProfilesRead: "kin.profiles.read",
+  kinProfilesWrite: "kin.profiles.write",
+  kinBasePromptGet: "kin.basePrompt.get",
+  kinBasePromptSet: "kin.basePrompt.set",
+  kinMdList: "kin.md.list",
+  kinMdRead: "kin.md.read",
+  kinMdWrite: "kin.md.write",
+  kinMdDelete: "kin.md.delete",
+  kinPromptPreview: "kin.prompt.preview",
+  kinRoutingGet: "kin.routing.get",
+  kinRoutingUpdate: "kin.routing.update",
 } as const;
 
 const WsServerUpsertKeybindingRpc = Rpc.make(WS_METHODS.serverUpsertKeybinding, {
@@ -1883,6 +1916,69 @@ const WsSubscribeResourceTelemetryRpc = Rpc.make(WS_METHODS.subscribeResourceTel
   stream: true,
 });
 
+const kinRpcError = Schema.Union([KinError, EnvironmentAuthorizationError]);
+
+const WsKinProfilesListRpc = Rpc.make(WS_METHODS.kinProfilesList, {
+  payload: KinProjectInput,
+  success: KinProfileListResult,
+  error: kinRpcError,
+});
+const WsKinProfilesReadRpc = Rpc.make(WS_METHODS.kinProfilesRead, {
+  payload: KinProfileReadInput,
+  success: KinProfileSourceResult,
+  error: kinRpcError,
+});
+const WsKinProfilesWriteRpc = Rpc.make(WS_METHODS.kinProfilesWrite, {
+  payload: KinProfileWriteInput,
+  success: KinAgentProfile,
+  error: kinRpcError,
+});
+const WsKinBasePromptGetRpc = Rpc.make(WS_METHODS.kinBasePromptGet, {
+  payload: Schema.Struct({}),
+  success: KinTextDocument,
+  error: kinRpcError,
+});
+const WsKinBasePromptSetRpc = Rpc.make(WS_METHODS.kinBasePromptSet, {
+  payload: KinBasePromptWriteInput,
+  success: KinTextDocument,
+  error: kinRpcError,
+});
+const WsKinMdListRpc = Rpc.make(WS_METHODS.kinMdList, {
+  payload: KinProjectInput,
+  success: KinMdListResult,
+  error: kinRpcError,
+});
+const WsKinMdReadRpc = Rpc.make(WS_METHODS.kinMdRead, {
+  payload: KinMdReadInput,
+  success: KinTextDocument,
+  error: kinRpcError,
+});
+const WsKinMdWriteRpc = Rpc.make(WS_METHODS.kinMdWrite, {
+  payload: KinMdWriteInput,
+  success: KinMdFile,
+  error: kinRpcError,
+});
+const WsKinMdDeleteRpc = Rpc.make(WS_METHODS.kinMdDelete, {
+  payload: KinMdReadInput,
+  success: Schema.Struct({}),
+  error: kinRpcError,
+});
+const WsKinPromptPreviewRpc = Rpc.make(WS_METHODS.kinPromptPreview, {
+  payload: KinPromptPreviewInput,
+  success: KinPromptPreview,
+  error: kinRpcError,
+});
+const WsKinRoutingGetRpc = Rpc.make(WS_METHODS.kinRoutingGet, {
+  payload: KinRoutingGetInput,
+  success: KinRoutingSnapshot,
+  error: kinRpcError,
+});
+const WsKinRoutingUpdateRpc = Rpc.make(WS_METHODS.kinRoutingUpdate, {
+  payload: KinRoutingSettings,
+  success: KinRoutingSettings,
+  error: kinRpcError,
+});
+
 export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthorization>()(
   "t3/contracts/RpcScopeAuthorization",
   { error: EnvironmentAuthorizationError },
@@ -2072,6 +2168,18 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeAuthAccessRpc,
   WsSubscribeBackgroundPolicyRpc,
   WsSubscribeResourceTelemetryRpc,
+  WsKinProfilesListRpc,
+  WsKinProfilesReadRpc,
+  WsKinProfilesWriteRpc,
+  WsKinBasePromptGetRpc,
+  WsKinBasePromptSetRpc,
+  WsKinMdListRpc,
+  WsKinMdReadRpc,
+  WsKinMdWriteRpc,
+  WsKinMdDeleteRpc,
+  WsKinPromptPreviewRpc,
+  WsKinRoutingGetRpc,
+  WsKinRoutingUpdateRpc,
   WsOrchestrationV2DispatchCommandRpc,
   WsOrchestrationV2GetWorkflowScriptRpc,
   WsOrchestrationV2StopWorkflowRpc,

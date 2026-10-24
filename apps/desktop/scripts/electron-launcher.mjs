@@ -13,7 +13,7 @@ const repoRoot = NodePath.resolve(desktopDir, "..", "..");
 const devBundleIdSuffix = NodePath.basename(repoRoot)
   .toLowerCase()
   .replaceAll(/[^a-z0-9]+/g, "");
-const APP_DISPLAY_NAME = isDevelopment ? "T3 Code (Dev)" : "T3 Code (Beta)";
+const APP_DISPLAY_NAME = isDevelopment ? "Kin (Dev)" : "Kin (Beta)";
 const APP_BUNDLE_ID = isDevelopment
   ? `com.t3tools.t3code.dev.${devBundleIdSuffix || "local"}`
   : "com.t3tools.t3code";
@@ -268,8 +268,8 @@ function resolveMacBundleInfoPlistStrings(executableName) {
     CFBundleExecutable: executableName,
     CFBundleIconFile: "icon.icns",
     NSScreenCaptureUsageDescription:
-      "T3 Code captures the active window when you use the snapshot shortcut.",
-    NSDocumentsFolderUsageDescription: "T3 Code reads project files you open in the desktop app.",
+      "Kin captures the active window when you use the snapshot shortcut.",
+    NSDocumentsFolderUsageDescription: "Kin reads project files you open in the desktop app.",
   };
 }
 
@@ -401,7 +401,7 @@ function buildMacLauncher(electronBinaryPath) {
   patchHelperBundleInfoPlists(targetAppBundlePath);
   if (isDevelopment) {
     // Launching the node_modules copy makes macOS associate the process (and Dock label) with
-    // Electron.app even though this bundle's Info.plist has the T3 Code name. Its conventional
+    // Electron.app even though this bundle's Info.plist has the Kin name. Its conventional
     // executable name also keeps Electron's default-app runtime in development mode instead of
     // making app.isPackaged report true.
     writeDevelopmentEnvironmentScript();
