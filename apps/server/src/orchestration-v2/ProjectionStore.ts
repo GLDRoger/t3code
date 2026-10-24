@@ -1,3 +1,4 @@
+import { applyKinHouseLineEvent } from "../kin/houseLine/applyEvent.ts";
 import { applyThreadPullRequestLinkUpdate } from "../sourceControl/threadPullRequests.ts";
 import { projectTurnItemForWire } from "./WireProjection.ts";
 import * as Stream from "effect/Stream";
@@ -954,6 +955,9 @@ export function applyToProjection(
         ...base,
         contextTransfers: upsertById(base.contextTransfers, event.payload),
       };
+    case "kin.houseLine.crowned":
+    case "kin.houseLine.will-recorded":
+      return projection;
   }
 }
 
@@ -2742,6 +2746,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             `;
               break;
             }
+            case "kin.houseLine.crowned":
+            case "kin.houseLine.will-recorded":
+              yield* applyKinHouseLineEvent(sql, event);
+              return;
             case "context-transfer.created":
             case "context-transfer.updated": {
               const payloadJson = yield* encodeContextTransferPayload(event.payload);

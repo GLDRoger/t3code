@@ -72,6 +72,7 @@ import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { cn } from "~/lib/utils";
 import { textDirection } from "~/textDirection";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
+import { KinLaneStateMark } from "../kin/KinLaneStateMark";
 import {
   animateSidebarLayoutChanges,
   hasUnseenCompletion,
@@ -1114,6 +1115,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             </span>
             {draftIndicator}
             {title}
+            <KinLaneStateMark
+              environmentId={thread.environmentId}
+              projectId={thread.projectId}
+              threadId={thread.id}
+            />
             {pinIndicator}
             {terminalStatusIcon}
             {isRegeneratingTitle ? (
@@ -1425,6 +1431,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             </div>
             <div className="mt-1 flex min-w-0">
               {title}
+              <KinLaneStateMark
+                environmentId={thread.environmentId}
+                projectId={thread.projectId}
+                threadId={thread.id}
+              />
               {isRegeneratingTitle ? (
                 <span role="status" className="sr-only">
                   Regenerating title
@@ -1636,6 +1647,11 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
               >
                 {thread.title}
               </span>
+              <KinLaneStateMark
+                environmentId={thread.environmentId}
+                projectId={thread.projectId}
+                threadId={thread.id}
+              />
               <span id={`${props.resultId}-pr`} className="contents">
                 <ThreadSearchPullRequestNumber
                   thread={thread}

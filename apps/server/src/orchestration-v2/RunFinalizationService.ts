@@ -7,6 +7,7 @@ import * as Schema from "effect/Schema";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as VcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
 import * as WorkspaceEntries from "../workspace/WorkspaceEntries.ts";
+import * as HouseLineWillGate from "../kin/houseLine/HouseLineWillGate.ts";
 import * as CheckpointCapture from "./CheckpointCaptureService.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
@@ -83,6 +84,8 @@ const make = Effect.gen(function* () {
         }),
       );
     }
+    const gate = yield* HouseLineWillGate.HouseLineWillGate;
+    yield* gate.afterRun({ threadId: input.threadId, runId: input.runId });
   });
   return RunFinalizationService.of({ finalize });
 });

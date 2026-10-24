@@ -11,6 +11,7 @@ import type * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
 import type { Tool, Toolkit } from "effect/ai";
 
+import * as HouseLineService from "../kin/houseLine/HouseLineService.ts";
 import {
   DispatchModeLimit,
   type DispatchModeRefusal,
@@ -245,6 +246,58 @@ export class HandlersLayer<Tools extends Record<string, Tool.Any>, EX = never, R
 
 const checkedHandlers = <Handlers>(declarations: Declarations<Handlers>): Handlers =>
   Struct.map(declarations, checkedHandler);
+
+const houseLineDenied = Effect.fn("McpToolAccess.houseLineDenied")(function* (
+  operation: string,
+  message: string,
+) {
+  const scope = yield* McpInvocationContext.McpInvocationContext;
+  const thread = yield* McpInvocationContext.requireThreadScope(scope, operation);
+  const houseLine = yield* HouseLineService.HouseLineService;
+  return { threadId: thread.thread.threadId, houseLine, message };
+});
+
+/** Reviewers, and any lane with seesWills false, cannot read will text. */
+export const assertHouseLineSeesWills = Effect.fn("McpToolAccess.assertHouseLineSeesWills")(
+  function* () {
+    const { threadId, houseLine, message } = yield* houseLineDenied(
+      "lineage_read",
+      "Reviewers do not read wills.",
+    );
+    const allowed = yield* houseLine
+      .seesWills(threadId)
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new OrchestratorMcpFailure({ code: "orchestration_error", message: cause.message }),
+        ),
+      );
+    if (!allowed) {
+      return yield* new OrchestratorMcpFailure({ code: "capability_denied", message });
+    }
+  },
+);
+
+/** Reviewers, and any lane with crownable false, are not crowned and do not leave wills. */
+export const assertHouseLineCrownable = Effect.fn("McpToolAccess.assertHouseLineCrownable")(
+  function* () {
+    const { threadId, houseLine, message } = yield* houseLineDenied(
+      "lineage_crown",
+      "Reviewers are not crowned.",
+    );
+    const allowed = yield* houseLine
+      .crownable(threadId)
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new OrchestratorMcpFailure({ code: "orchestration_error", message: cause.message }),
+        ),
+      );
+    if (!allowed) {
+      return yield* new OrchestratorMcpFailure({ code: "capability_denied", message });
+    }
+  },
+);
 
 export const toLayer = <Tools extends Record<string, Tool.Any>, EX = never, RX = never>(
   toolkit: Toolkit.Toolkit<Tools>,
