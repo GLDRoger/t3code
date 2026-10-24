@@ -1,5 +1,10 @@
 import { SourceControlProviderKind } from "@t3tools/contracts";
 import { removeAgentCredits } from "@t3tools/source-control-core/server/mergeMessage";
+import * as Cache from "effect/Cache";
+import * as Duration from "effect/Duration";
+import * as Equal from "effect/Equal";
+import * as Exit from "effect/Exit";
+import * as Hash from "effect/Hash";
 import * as Effect from "effect/Effect";
 import type {
   PullRequestActor,
@@ -19,20 +24,26 @@ import {
   type PullRequestProviderApi,
   type ProviderRepositoryRef,
 } from "@t3tools/source-control-core/server/PullRequestProvider";
-import type { GitHubViewerAccess, GitHubWorkflowRunApproval } from "./gitHubPullRequestJson.ts";
-import { definition } from "../client/definition.ts";
+import type {
+  GitHubRepositoryAccess,
+  GitHubViewerAccess,
+  GitHubWorkflowRunApproval,
+} from "./gitHubPullRequestJson.ts";
+import { definition } from "../shared/definition.ts";
 
 const CAPABILITIES: PullRequestCapabilities = {
   diff: true,
   comment: true,
   actions: [...definition.changeRequestActions],
   mergeMethods: ["merge", "squash", "rebase"],
+  deleteBranch: true,
   updateMethods: ["merge", "rebase"],
   search: true,
   reactions: true,
   viewedFiles: "host",
   review: {
     inlineComment: true,
+    rangeComment: true,
     reply: true,
     resolve: true,
     verdicts: ["comment", "approve", "request-changes"],
@@ -42,35 +53,37 @@ const CAPABILITIES: PullRequestCapabilities = {
   stacks: true,
   stackActions: true,
   labels: true,
+  // Statuses and check runs land on the head commit itself and are read whole, so an empty list
+  // after a push is CI that never started rather than a read that saw nothing.
+  checksAlwaysReport: true,
+};
+
+const UNAVAILABLE_REQUIREMENT = {
+  missing:
+    "No GitHub credential on the server. Set GH_TOKEN, or install the GitHub CLI (https://cli.github.com/) and run `gh auth login`.",
+  unauthenticated:
+    "GitHub has no working credential for this host. Run `gh auth login`, or check the account and hosts in Settings → Source Control.",
 };
 
 /**
- * What the signed-in account may do here, from the three things GitHub says about it.
- *
- * Merging needs a role that can push, which is the one thing a stranger on an open-source
- * repository never has. The other four actions go by `viewerCanUpdate`, because the author of a
- * pull request may close it, reopen it and move it in and out of draft with no more than read
- * access on the repository it was opened against.
- *
- * Commenting and reviewing are not gated at all: read access is enough to say something and
- * enough to approve or ask for changes, which is what open-source review consists of. Resolving a
- * conversation is the exception — GitHub allows it to whoever can write, and to the author of the
- * pull request the conversation is on.
- *
  * Asking somebody else for a review needs write access, which is the one thing here an author
  * cannot do on their own pull request: GitHub shows an outside contributor the reviewer control
  * and refuses the request behind it.
  */
-export function gitHubViewerPermissions(access: GitHubViewerAccess): PullRequestViewerPermissions {
+export function gitHubViewerPermissions(
+  access: GitHubViewerAccess & Pick<GitHubRepositoryAccess, "autoMergeAllowed">,
+): PullRequestViewerPermissions {
   return {
     ...(access.canWrite ? { stackRebase: true } : {}),
     actions: [
-      // Arming a merge and taking the arming back are the merge, deferred: whoever may not
-      // merge here may not leave an instruction to merge later either.
+      ...(access.canDeleteBranch === true ? (["delete-branch"] as const) : []),
+      // Keep disabling available if the repository has since turned auto-merge off.
       ...(access.canWrite
         ? ([
             "merge",
-            "enable-auto-merge",
+            ...(access.autoMergeAllowed && access.canMergeNow !== true
+              ? (["enable-auto-merge"] as const)
+              : []),
             "disable-auto-merge",
             "revert",
             "approve-workflows",
@@ -89,13 +102,11 @@ export function gitHubViewerPermissions(access: GitHubViewerAccess): PullRequest
     verdicts: access.didAuthor ? (["comment"] as const) : CAPABILITIES.review.verdicts,
     requestReviewers: access.canWrite,
     ...(access.canUpdateBranch === true ? { updateMethods: CAPABILITIES.updateMethods } : {}),
-    // Triage is the one role that labels without writing, which is what triage is for.
     labels: access.canTriage,
   };
 }
 
-/** The tags that mean GitHub is out of reach for this account, rather than one request failing. */
-export function gitHubProviderFailure(
+function gitHubProviderFailure(
   error: GitHubPullRequestApi.GitHubPullRequestApiError,
 ): PullRequestProviderFailure {
   switch (error._tag) {
@@ -121,12 +132,7 @@ export function gitHubProviderFailure(
 
 /**
  * `gh pr view --json` reports no avatar for anyone, so the ones the GraphQL read collected are
- * applied here by login. An actor already carrying one keeps it.
- *
- * A login GitHub did not answer for falls back to the picture every GitHub install serves at
- * `/<login>.png`. The lookup is one more request per repository and can be refused — a rate
- * limit, a slow host — and a face that comes and goes between two loads of the same page reads
- * as a bug in the page rather than as a request that failed quietly.
+ * applied here by login.
  */
 function withAvatar(
   actor: PullRequestActor | null,
@@ -184,12 +190,97 @@ export function loginAvatarUrl(login: string, host: string): string | null {
   return /^[a-z0-9][a-z0-9-]{0,38}$/iu.test(login) ? `https://${host}/${login}.png?size=80` : null;
 }
 
-/** True where markdown would render nothing: whitespace, or only HTML comments. */
+// Whether search covers a repository changes only when the repository is renamed or moved.
+const SEARCH_COVERAGE_TTL = Duration.hours(1);
+const SEARCH_COVERAGE_CAPACITY = 4096;
+const SEARCH_COVERAGE_CONCURRENCY = 4;
+
+/**
+ * Whether GitHub search covers a repository. `cwd` only says where to ask, so equality ignores
+ * it and `lookup`, and every checkout of a repository shares one answer.
+ */
+class SearchCoverage {
+  readonly key: string;
+  readonly lookup: Effect.Effect<boolean, GitHubPullRequestApi.GitHubPullRequestApiError>;
+
+  constructor(
+    host: string,
+    repository: string,
+    lookup: Effect.Effect<boolean, GitHubPullRequestApi.GitHubPullRequestApiError>,
+  ) {
+    this.key = `${host.toLowerCase()}\n${repository.trim().toLowerCase()}`;
+    this.lookup = lookup;
+  }
+
+  [Equal.symbol](that: unknown): boolean {
+    return that instanceof SearchCoverage && that.key === this.key;
+  }
+  [Hash.symbol](): number {
+    return Hash.string(this.key);
+  }
+}
+
 const rendersEmpty = (body: string): boolean =>
   body.replace(/<!--[\s\S]*?-->/g, "").trim().length === 0;
 
 export const make = Effect.gen(function* () {
   const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+
+  // GitHub does not index every repository for search: a renamed one answers for its old name
+  // with silence rather than with an error. Where search has any pull request for a repository it
+  // covers it, so its silence on a page is a real empty answer; any other the caller reads on its
+  // own. A failed check is not kept.
+  const searchCoverage = yield* Cache.makeWith((request: SearchCoverage) => request.lookup, {
+    capacity: SEARCH_COVERAGE_CAPACITY,
+    timeToLive: (exit) => (Exit.isSuccess(exit) ? SEARCH_COVERAGE_TTL : Duration.zero),
+  });
+  const coverageOf = (
+    input: Parameters<NonNullable<PullRequestProviderApi["listChangeRequestsAcross"]>>[0],
+    repository: string,
+  ) =>
+    new SearchCoverage(
+      input.host,
+      repository,
+      Effect.suspend(() =>
+        cli.searchPullRequests({
+          cwd: input.cwd,
+          host: input.host,
+          repositories: [repository],
+          state: "all",
+          involvement: "all",
+          viewer: input.viewer,
+          limit: 1,
+        }),
+      ).pipe(Effect.map((batch) => batch.items.length > 0)),
+    );
+  const unresolvedBySearch = Effect.fn("GitHubPullRequestProvider.unresolvedBySearch")(function* (
+    input: Parameters<NonNullable<PullRequestProviderApi["listChangeRequestsAcross"]>>[0],
+    batch: GitHubPullRequestApi.GitHubPullRequestSearchBatch,
+  ) {
+    // A repository a page has rows for is covered without asking.
+    yield* Effect.forEach(
+      batch.items,
+      (item) => Cache.set(searchCoverage, coverageOf(input, item.repository), true),
+      { discard: true },
+    );
+    const answered = new Set(batch.items.map((item) => item.repository.trim().toLowerCase()));
+    const silent = input.repositories.filter(
+      (repository) => !answered.has(repository.trim().toLowerCase()),
+    );
+    // A truncated first slice can be silent about a covered repository whose rows are just
+    // older than the cut, so it vouches for none. Past the first slice silence from a covered
+    // repository means its rows are older rather than absent.
+    if (input.cursor === undefined && batch.truncated) return silent;
+    return yield* Effect.filter(
+      silent,
+      (repository) =>
+        Cache.get(searchCoverage, coverageOf(input, repository)).pipe(
+          Effect.map((covered) => !covered),
+          Effect.orElseSucceed(() => true),
+        ),
+      { concurrency: SEARCH_COVERAGE_CONCURRENCY },
+    );
+  });
 
   const fail = (operation: string) => (error: GitHubPullRequestApi.GitHubPullRequestApiError) =>
     new PullRequestProviderError({
@@ -254,6 +345,8 @@ export const make = Effect.gen(function* () {
   const provider: PullRequestProviderApi = {
     kind: SourceControlProviderKind.make("github"),
     capabilities: CAPABILITIES,
+    unavailableRequirement: UNAVAILABLE_REQUIREMENT,
+    readsPublicHostWithoutCheckout: true,
     mergeMessageRewrite: removeAgentCredits,
     getRoutingIdentity: (input) =>
       cli.getRoutingIdentity(input).pipe(Effect.mapError(fail("routeIdentity"))),
@@ -291,8 +384,6 @@ export const make = Effect.gen(function* () {
                 host: input.host,
                 ids: [...new Set(page.items.flatMap((item) => item.authorId ?? []))],
               })
-              // A listing without faces is still a listing, so a failed lookup falls back to
-              // the initials rather than taking the rows down with it.
               .pipe(
                 Effect.orElseSucceed(() => new Map<string, string>()),
                 Effect.map((avatarsByLogin) => ({
@@ -306,11 +397,6 @@ export const make = Effect.gen(function* () {
           ),
         ),
 
-    /**
-     * The same listing for a whole host in one search. The avatar lookup the per-repository read
-     * needs is not here: a search reports an author's picture itself, so a face costs no request
-     * of its own — `withAvatar` still stands behind it for the login GitHub answered nothing for.
-     */
     listChangeRequestsAcross: (input) =>
       cli
         .searchPullRequests({
@@ -327,13 +413,16 @@ export const make = Effect.gen(function* () {
         })
         .pipe(
           Effect.mapError(fail("listChangeRequestsAcross")),
-          Effect.map((batch) => ({
-            truncated: batch.truncated,
-            items: batch.items.map((item) => ({
-              ...item,
-              author: withAvatar(item.author, new Map<string, string>(), input.host),
+          Effect.flatMap((batch) =>
+            Effect.map(unresolvedBySearch(input, batch), (unresolved) => ({
+              truncated: batch.truncated,
+              items: batch.items.map((item) => ({
+                ...item,
+                author: withAvatar(item.author, new Map<string, string>(), input.host),
+              })),
+              unresolved,
             })),
-          })),
+          ),
         ),
 
     listChangeRequestStats: (input) =>
@@ -347,8 +436,6 @@ export const make = Effect.gen(function* () {
 
     getChangeRequestSummary: (input) =>
       cli.getPullRequestSummary(input).pipe(
-        // `gh pr view` names the author without an avatar; the login-shaped URL every user
-        // has stands in, without the second request the listing spends on it.
         Effect.map((summary) => ({
           ...summary,
           ...(summary.author === undefined
@@ -380,11 +467,14 @@ export const make = Effect.gen(function* () {
         Effect.map((pullRequest): ProviderChangeRequestDetail => ({
           ...pullRequest,
           author: withAvatar(pullRequest.author, new Map<string, string>(), input.host),
-          reviewers: pullRequest.reviewRequestLogins.map((login) => ({
-            login,
-            name: null,
-            avatarUrl: null,
-          })),
+          reviewers: [
+            ...pullRequest.reviewRequestLogins.map((login) => ({
+              login,
+              name: null,
+              avatarUrl: null,
+            })),
+            ...pullRequest.reviewRequestTeams,
+          ],
           mergeCapabilities: pullRequest.viewerAccess.mergeCapabilities,
           viewerPermissions: gitHubViewerPermissions({
             ...pullRequest.viewerAccess,
@@ -407,8 +497,7 @@ export const make = Effect.gen(function* () {
       Effect.all(
         [
           cli.getPullRequestActivity(input),
-          // Line comments live on review threads, which `gh pr view --json` cannot reach. A
-          // GraphQL hiccup degrades to a truncated conversation rather than blanking activity.
+          // Line comments live on review threads, which `gh pr view --json` cannot reach.
           cli.listReviewThreadComments(input).pipe(
             Effect.orElseSucceed(() => ({
               comments: [],
@@ -515,9 +604,6 @@ export const make = Effect.gen(function* () {
       if (input.includeUpdateBranch === false) {
         return lightAccess.pipe(Effect.mapError(fail("getViewerPermissions")));
       }
-      // The core detail already carries the viewer's access, the merge settings, and the base
-      // comparison, so one read usually answers what used to take three. When that heavier read
-      // fails, the light access read still answers, withholding only update-branch.
       return cli.getPullRequestDetail(input).pipe(
         Effect.provideService(SourceControlRateLimit.Interactive, true),
         Effect.map((pullRequest) =>
@@ -545,6 +631,8 @@ export const make = Effect.gen(function* () {
     getFilesViewed: (input) =>
       cli.getPullRequestFilesViewed(input).pipe(Effect.mapError(fail("getFilesViewed"))),
 
+    getFileStats: (input) =>
+      cli.getPullRequestFileStats(input).pipe(Effect.mapError(fail("getFileStats"))),
     setFilesViewed: (input) =>
       cli.setPullRequestFilesViewed(input).pipe(Effect.mapError(fail("setFilesViewed"))),
 
@@ -565,6 +653,12 @@ export const make = Effect.gen(function* () {
 
     listLabelCandidates: (input) =>
       cli.listLabelCandidates(input).pipe(Effect.mapError(fail("listLabelCandidates"))),
+
+    listRepositoryLabels: (input) =>
+      cli.listRepositoryLabels(input).pipe(Effect.mapError(fail("listRepositoryLabels"))),
+
+    searchRepositoryAuthors: (input) =>
+      cli.searchRepositoryAuthors(input).pipe(Effect.mapError(fail("searchRepositoryAuthors"))),
 
     setLabels: (input) =>
       cli

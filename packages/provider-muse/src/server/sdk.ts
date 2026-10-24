@@ -1,6 +1,6 @@
 // @effect-diagnostics globalTimers:off
 // The SDK owns process shutdown; native deadlines cover initialize before an Effect resource exists.
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- FileSystem.realPath is Node's JS realpath; museWorkspaceRoot needs the native one.
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- FileSystem.realPath is Node's JS realpath; museCanonicalPath needs the native one.
 import * as NodeFSP from "node:fs/promises";
 
 import {
@@ -25,14 +25,13 @@ export interface MuseSdkHost {
     | "onProtocolError"
     | "closed"
   >;
-  readonly initializeResult: Pick<SpawnedMspConnection["initializeResult"], "grantedCapabilities">;
+  readonly initializeResult: Pick<SpawnedMspConnection["initializeResult"], "grantedCapabilities"> &
+    Partial<Pick<SpawnedMspConnection["initializeResult"], "museHome">>;
   readonly exited: Promise<ProcessExit>;
-  /** The last lines Muse wrote to stderr, for explaining an unexpected exit. */
   readonly stderrTail?: () => ReadonlyArray<string>;
   readonly close: () => Promise<void>;
 }
 
-/** The program that runs `binaryPath`, and the arguments that go before the binary's own. */
 export interface MuseLaunch {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
@@ -40,22 +39,19 @@ export interface MuseLaunch {
 
 export interface MuseSdkHostOptions {
   readonly binaryPath: string;
-  /** Arguments before the serve arguments, for a launcher in front of the binary. */
   readonly launchArgs?: ReadonlyArray<string>;
-  /** How to start `binaryPath`, from `museLaunch`; without it the binary path is run as is. */
   readonly launch?: MuseLaunch;
   readonly cwd?: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly runtimeMode?: RuntimeMode;
-  /** Disables shell and filesystem writes and workspace trust. */
   readonly readOnly?: boolean;
   /** Read-only generation needs durable logging for turn/item notifications (verified through 1.1.1). */
   readonly sessionLogging?: boolean;
   readonly signal?: AbortSignal;
   readonly startupTimeoutMs?: number;
+  readonly onProcessExit?: (exit: ProcessExit) => void;
 }
 
-/** Preserve the host's CLI login while excluding the API-key override before copying values. */
 export function makeMuseEnvironment(
   environment: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
@@ -69,22 +65,33 @@ export function makeMuseEnvironment(
   };
 }
 
-/** Windows' verbatim form of a canonical path: `\\?\C:\…`, or `\\?\UNC\server\share\…`. */
 export function museVerbatimPath(path: string): string {
   if (path.startsWith("\\\\?\\")) return path;
   return path.startsWith("\\\\") ? `\\\\?\\UNC\\${path.slice(2)}` : `\\\\?\\${path}`;
 }
 
 /**
- * A workspace root in the form `turn/start` accepts. On Windows Muse rejects
- * anything but the verbatim canonical path, true case and long names
- * included, so resolve with the native realpath, which unlike
- * FileSystem.realPath fixes case and expands 8.3 names. Muse itself still
- * starts in the plain path: the `muse.cmd` launcher runs under cmd.exe, which
- * cannot use a verbatim directory.
+ * A path in the canonical form Muse reports and requires: symlinks resolved
+ * and, on case-insensitive filesystems, the case that is on disk. The
+ * promises realpath is Node's native one, which fixes case (and expands
+ * Windows 8.3 names); FileSystem.realPath is the JS one, which keeps the case
+ * it is given, so `…/EEVEE` survives it when the directory is `eevee` and
+ * Muse then rejects the root. An unresolvable path is returned unchanged.
+ */
+export const museCanonicalPath = Effect.fn("museCanonicalPath")(function* (path: string) {
+  return yield* Effect.tryPromise(() => NodeFSP.realpath(path)).pipe(
+    Effect.orElseSucceed(() => path),
+  );
+});
+
+/**
+ * A workspace root in the form `turn/start` accepts: the canonical path, in
+ * verbatim form on Windows, where Muse rejects anything else. Muse itself
+ * still starts in the plain path: the `muse.cmd` launcher runs under cmd.exe,
+ * which cannot use a verbatim directory.
  */
 export const museWorkspaceRoot = Effect.fn("museWorkspaceRoot")(function* (path: string) {
-  if ((yield* HostProcess.Platform) !== "win32") return path;
+  if ((yield* HostProcess.Platform) !== "win32") return yield* museCanonicalPath(path);
   const canonical = yield* Effect.tryPromise(() => NodeFSP.realpath(path)).pipe(
     // A verbatim path takes `/` literally, so an unresolved root needs Windows separators.
     Effect.orElseSucceed(() => path.replaceAll("/", "\\")),
@@ -92,7 +99,6 @@ export const museWorkspaceRoot = Effect.fn("museWorkspaceRoot")(function* (path:
   return museVerbatimPath(canonical);
 });
 
-/** A Windows environment variable; their names are case-insensitive there. */
 function windowsEnvironmentValue(environment: NodeJS.ProcessEnv, name: string) {
   const key = Object.keys(environment).find(
     (candidate) => candidate.toUpperCase() === name.toUpperCase(),
@@ -101,13 +107,11 @@ function windowsEnvironmentValue(environment: NodeJS.ProcessEnv, name: string) {
 }
 
 /**
- * How to start Muse. The SDK spawns without a shell, which finds the `muse`
- * launcher on PATH everywhere but Windows. There Node neither looks a bare
- * `muse` up with PATHEXT (ENOENT) nor runs a `.cmd` file such as Muse's own
- * launcher (EINVAL) without a shell, so resolve the binary like any other
- * command and run a `.cmd` or `.bat` under cmd.exe. Node quotes a path with
- * spaces, and inside those quotes cmd takes every character literally. A path
- * without spaces is not quoted, so its metacharacters are escaped instead.
+ * The SDK spawns without a shell, which finds the `muse` launcher on PATH
+ * everywhere but Windows. There Node neither looks a bare `muse` up with
+ * PATHEXT (ENOENT) nor runs a `.cmd` file such as Muse's own launcher (EINVAL)
+ * without a shell, so resolve the binary like any other command and run a
+ * `.cmd` or `.bat` under cmd.exe.
  */
 export const museLaunch = Effect.fn("museLaunch")(function* (
   binaryPath: string,
@@ -138,7 +142,15 @@ export function museApprovalMode(runtimeMode: RuntimeMode) {
   return runtimeMode === "full-access" ? "allowAll" : "promptUnmatched";
 }
 
-/** The `muse serve` arguments for a host: read-only hosts get no shell, writes, or workspace trust. */
+/**
+ * The permission profile `session/start` and `session/resume` select. Without
+ * one Muse applies its own default, which can be `:auto-review`, where an AI
+ * reviewer decides eligible approvals instead of the user.
+ */
+export function musePermissionProfile(runtimeMode: RuntimeMode) {
+  return runtimeMode === "full-access" ? ":unrestricted" : ":ask-me";
+}
+
 export function museServeArgs(
   options: Pick<MuseSdkHostOptions, "readOnly" | "sessionLogging" | "runtimeMode">,
 ) {
@@ -153,7 +165,6 @@ export function museServeArgs(
   return args;
 }
 
-/** What T3 sends in MSP `initialize`; only full hosts ask for session MCP servers. */
 export function museInitializeParams(readOnly = false) {
   return {
     clientInfo: { name: "t3_code", title: "T3 Code", version: "1" },
@@ -161,7 +172,9 @@ export function museInitializeParams(readOnly = false) {
   };
 }
 
-/** One SDK-owned process. The pre-handshake handle owns cleanup even when initialize never replies. */
+/**
+ * The pre-handshake handle owns cleanup even when initialize never replies.
+ */
 export async function createMuseSdkHost(
   options: MuseSdkHostOptions,
   spawn: typeof spawnMspConnection = spawnMspConnection,
@@ -172,10 +185,9 @@ export async function createMuseSdkHost(
     command: launch.command,
     args: [...launch.args, ...(options.launchArgs ?? []), ...museServeArgs(options)],
     ...(options.cwd ? { cwd: options.cwd } : {}),
-    // Callers pass an environment already built with makeMuseEnvironment.
     env: options.environment ?? makeMuseEnvironment(),
-    // A healthy host exits at once; this only bounds a hung one on close.
     shutdownTimeoutMs: 10_000,
+    ...(options.onProcessExit ? { onProcessExit: options.onProcessExit } : {}),
   });
   let closePromise: Promise<void> | undefined;
   const close = () => {

@@ -1,8 +1,4 @@
 import {
-  canonicalRepositoryKey,
-  sourceControlRepositorySelector,
-} from "@t3tools/shared/sourceControl";
-import {
   CommandId,
   type OrchestrationProjectShell,
   type OrchestrationV2DomainEvent,
@@ -11,6 +7,7 @@ import {
   type ThreadLinkedPullRequest,
 } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -22,11 +19,13 @@ import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
+import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as GitManager from "../git/GitManager.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import { forkParked } from "../serverActivation.ts";
+import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 
 class ThreadPullRequestServiceV2 extends Context.Service<
@@ -57,12 +56,12 @@ function pullRequestMatchesProject(
   return (
     pullRequest.repositoryKey !== null &&
     project.repositoryIdentity != null &&
-    canonicalRepositoryKey(pullRequest.repositoryKey) ===
-      canonicalRepositoryKey(project.repositoryIdentity.canonicalKey)
+    sourceControlDefinitions.canonicalRepositoryKey(pullRequest.repositoryKey) ===
+      sourceControlDefinitions.canonicalRepositoryKey(project.repositoryIdentity.canonicalKey)
   );
 }
 
-export const resolveProjectForPullRequestDiscovery = Effect.fn(
+const resolveProjectForPullRequestDiscovery = Effect.fn(
   "ThreadPullRequestServiceV2.resolveProject",
 )(function* (
   project: OrchestrationProjectShell,
@@ -76,7 +75,7 @@ export const resolveProjectForPullRequestDiscovery = Effect.fn(
   });
   return {
     project: { ...project, repositoryIdentity },
-    repository: sourceControlRepositorySelector(repositoryIdentity),
+    repository: sourceControlDefinitions.repositorySelector(repositoryIdentity),
   };
 });
 
@@ -105,6 +104,7 @@ export const make = Effect.gen(function* () {
   const repositoryIdentities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
   const crypto = yield* Crypto.Crypto;
   const fileSystem = yield* FileSystem.FileSystem;
+  const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
   const pendingBackfill = new Map<ThreadId, number>();
 
   const finishBackfill = (threads: ReadonlyArray<Pick<OrchestrationV2ThreadShell, "id">>) => {
@@ -119,18 +119,14 @@ export const make = Effect.gen(function* () {
     }
   };
 
-  /**
-   * A sweep for one thread reads only that thread's shell, not every thread's.
-   * Finished runs and checkpoints queue one of these each. A sweep over all
-   * threads reads only active, unsettled ones, since discovery skips the rest;
-   * backfill looks up settled threads, so its passes read every active thread.
-   */
   const readThreadSnapshot = ({ threadId, backfill }: RefreshRequest) =>
     threadId === null
-      ? orchestrator.getShellSnapshot({
-          location: "active",
-          unsettledOnly: !(backfill || pendingBackfill.size > 0),
-        })
+      ? orchestrator
+          .getShellSnapshot({
+            location: "active",
+            unsettledOnly: !(backfill || pendingBackfill.size > 0),
+          })
+          .pipe(NodeSqliteClient.readOnly)
       : Effect.gen(function* () {
           // Read the sequence first. The thread is then at least this new, so a
           // sync guarded by the sequence is rejected rather than missing a change.
@@ -157,9 +153,6 @@ export const make = Effect.gen(function* () {
         }
       }
     }
-    // A single-thread read only shows whether its own thread is gone. A thread
-    // with no branch has nothing to look up, and its entry would keep every
-    // periodic pass on the full read.
     const visibleThreadIds = new Set(
       threadSnapshot.threads.filter((thread) => thread.branch !== null).map((thread) => thread.id),
     );
@@ -229,7 +222,10 @@ export const make = Effect.gen(function* () {
                 const previous = yield* pullRequests.summary(thread.branchPullRequest, {
                   recoverTransientFailure: false,
                 });
-                if (previous.state === "merged" || previous.state === "closed") {
+                if (
+                  previous.headBranch === thread.branch &&
+                  (previous.state === "merged" || previous.state === "closed")
+                ) {
                   branchPullRequest = thread.branchPullRequest;
                 }
               }
@@ -308,7 +304,7 @@ export const make = Effect.gen(function* () {
                 if (!projectWorkspaceMatchesSnapshot(currentProject, project.workspaceRoot)) {
                   return failBackfill([thread]);
                 }
-                const uuid = yield* crypto.randomUUIDv4;
+                const uuid = yield* crypto.randomUUIDv4();
                 yield* orchestrator.dispatch({
                   type: "thread.pull-request.sync",
                   commandId: CommandId.make(`server:thread-pull-request:${thread.id}:${uuid}`),
@@ -398,6 +394,9 @@ export const make = Effect.gen(function* () {
         yield* worker.enqueue({ threadId: null, refresh: false, backfill: true });
         yield* worker.drain;
         yield* Effect.gen(function* () {
+          // The sweep only catches pull requests opened outside a turn, which
+          // nobody sees without a client. Thread events still refresh headless work.
+          if (!(yield* backgroundPolicy.shouldRunOpportunisticWork)) return;
           yield* worker.enqueue({ threadId: null, refresh: false });
           yield* worker.drain;
         }).pipe(Effect.repeat(Schedule.spaced("1 minute")), Effect.delay("1 minute"));
