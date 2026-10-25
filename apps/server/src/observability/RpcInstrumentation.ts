@@ -225,6 +225,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.kinPromptPreview]: "kin",
   [WS_METHODS.kinRoutingGet]: "kin",
   [WS_METHODS.kinRoutingUpdate]: "kin",
+  [WS_METHODS.kinHouseLineSnapshot]: "kin",
 } as const satisfies Readonly<Record<WsRpcMethod, string>>;
 
 const RPC_SPAN_PREFIX = "ws.rpc";

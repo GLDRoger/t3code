@@ -5,6 +5,11 @@ import {
 } from "./orchestrationV2.ts";
 import { OrchestrationDispatchCommandError } from "./orchestrationDispatch.ts";
 import {
+  KinHouseLineRpcError,
+  KinHouseLineSnapshot,
+  KinHouseLineSnapshotInput,
+} from "./kinHouseLine.ts";
+import {
   McpAppCallToolInput,
   McpAppCallToolResult,
   McpAppReadResourceInput,
@@ -615,6 +620,7 @@ export const WS_METHODS = {
   kinPromptPreview: "kin.prompt.preview",
   kinRoutingGet: "kin.routing.get",
   kinRoutingUpdate: "kin.routing.update",
+  kinHouseLineSnapshot: "kin.houseLine.snapshot",
 } as const;
 
 const WsServerUpsertKeybindingRpc = Rpc.make(WS_METHODS.serverUpsertKeybinding, {
@@ -1979,6 +1985,12 @@ const WsKinRoutingUpdateRpc = Rpc.make(WS_METHODS.kinRoutingUpdate, {
   error: kinRpcError,
 });
 
+const WsKinHouseLineSnapshotRpc = Rpc.make(WS_METHODS.kinHouseLineSnapshot, {
+  payload: KinHouseLineSnapshotInput,
+  success: KinHouseLineSnapshot,
+  error: Schema.Union([KinHouseLineRpcError, EnvironmentAuthorizationError]),
+});
+
 export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthorization>()(
   "t3/contracts/RpcScopeAuthorization",
   { error: EnvironmentAuthorizationError },
@@ -2180,6 +2192,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsKinPromptPreviewRpc,
   WsKinRoutingGetRpc,
   WsKinRoutingUpdateRpc,
+  WsKinHouseLineSnapshotRpc,
   WsOrchestrationV2DispatchCommandRpc,
   WsOrchestrationV2GetWorkflowScriptRpc,
   WsOrchestrationV2StopWorkflowRpc,

@@ -36,6 +36,12 @@ import {
   TrimmedNonEmptyString,
   TurnItemId,
 } from "./baseSchemas.ts";
+import {
+  KinHouseLineCrownCommand,
+  KinHouseLineCrownedPayload,
+  KinHouseLineWillCommand,
+  KinHouseLineWillRecordedPayload,
+} from "./kinHouseLine.ts";
 import { ChatAttachment } from "./chatAttachment.ts";
 import {
   OrchestrationGetFullThreadDiffInput,
@@ -1770,6 +1776,16 @@ export const OrchestrationV2DomainEvent = Schema.Union([
     type: Schema.Literal("context-transfer.updated"),
     payload: OrchestrationV2ContextTransfer,
   }),
+  Schema.Struct({
+    ...OrchestrationV2EventBase.fields,
+    type: Schema.Literal("kin.houseLine.crowned"),
+    payload: KinHouseLineCrownedPayload,
+  }),
+  Schema.Struct({
+    ...OrchestrationV2EventBase.fields,
+    type: Schema.Literal("kin.houseLine.will-recorded"),
+    payload: KinHouseLineWillRecordedPayload,
+  }),
 ]);
 export type OrchestrationV2DomainEvent = typeof OrchestrationV2DomainEvent.Type;
 
@@ -2585,6 +2601,16 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
     type: Schema.Literal("context-transfer.updated"),
     payload: OrchestrationV2ContextTransferJson,
   }),
+  Schema.Struct({
+    ...OrchestrationV2JsonEventBaseFields,
+    type: Schema.Literal("kin.houseLine.crowned"),
+    payload: KinHouseLineCrownedPayload,
+  }),
+  Schema.Struct({
+    ...OrchestrationV2JsonEventBaseFields,
+    type: Schema.Literal("kin.houseLine.will-recorded"),
+    payload: KinHouseLineWillRecordedPayload,
+  }),
 ]);
 export type OrchestrationV2DomainEventJson = typeof OrchestrationV2DomainEventJson.Type;
 
@@ -3117,6 +3143,8 @@ const OrchestrationV2InternalCommand = Schema.Union([
     placeholder: Schema.optional(Schema.String),
     secretStatus: OrchestrationV2SecretRequestStatus,
   }),
+  KinHouseLineCrownCommand,
+  KinHouseLineWillCommand,
 ]);
 export type OrchestrationV2InternalCommand = typeof OrchestrationV2InternalCommand.Type;
 

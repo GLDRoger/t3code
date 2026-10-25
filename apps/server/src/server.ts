@@ -183,6 +183,9 @@ import * as ThreadSettlementService from "./orchestration-v2/ThreadSettlementSer
 import * as IdleCompactionService from "./orchestration-v2/IdleCompactionService.ts";
 import * as ThreadPullRequestService from "./orchestration-v2/ThreadPullRequestService.ts";
 import * as RunFinalizationService from "./orchestration-v2/RunFinalizationService.ts";
+import * as HouseLineService from "./kin/houseLine/HouseLineService.ts";
+import * as HouseLineWillGate from "./kin/houseLine/HouseLineWillGate.ts";
+import * as KinPromptBrief from "./kin/prompt/KinPromptBrief.ts";
 import * as EventStoreV2 from "./orchestration-v2/EventStore.ts";
 import * as ProjectionMaintenance from "./orchestration-v2/ProjectionMaintenance.ts";
 import * as ProjectionStoreV2 from "./orchestration-v2/ProjectionStore.ts";
@@ -561,7 +564,20 @@ const layerProviderInstallationRefresh = Layer.effectDiscard(
   }),
 );
 
+// Members of the runtime, not a pre-built orchestration layer. Providing the
+// full orchestration runtime here leaks its own requirements (preview, VCS)
+// into the CLI, which never builds them. The provides below this merge close
+// SqlClient and OrchestratorV2 for the same instances the rest of the server uses.
+const layerKinBrief = KinPromptBrief.briefLayer.pipe(Layer.provide(HouseLineService.layer));
+const layerKinHouseLine = Layer.mergeAll(
+  HouseLineService.layer,
+  HouseLineWillGate.layer.pipe(Layer.provide(HouseLineService.layer)),
+  layerKinBrief,
+  KinPromptBrief.layer.pipe(Layer.provide(layerKinBrief)),
+);
+
 const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
+  layerKinHouseLine,
   AgentAwarenessRelay.layer,
   HeldHooksWaker.layer,
   layerThreadSettlementWorker,

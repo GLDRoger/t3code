@@ -11,6 +11,7 @@ import * as Layer from "effect/Layer";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as VcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
 import * as WorkspaceEntries from "../workspace/WorkspaceEntries.ts";
+import * as HouseLineWillGate from "../kin/houseLine/HouseLineWillGate.ts";
 import * as CheckpointCapture from "./CheckpointCaptureService.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as RunFinalization from "./RunFinalizationService.ts";
@@ -56,6 +57,44 @@ it.effect("completes finalization when the post-checkpoint workspace refresh fai
     yield* service.finalize({ threadId, runId, scopeId });
     assert.deepEqual(captured, ["checkpoint", "refresh"]);
   }).pipe(Effect.provide(layer));
+});
+
+it.effect("asks the will gate after the checkpoint", () => {
+  const threadId = ThreadId.make("thread_will_gate");
+  const runId = RunId.make("run_will_gate");
+  const scopeId = CheckpointScopeId.make("scope_will_gate");
+  const seen: string[] = [];
+  const layer = RunFinalization.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(CheckpointCapture.CheckpointCaptureServiceV2)({
+          execute: () => Effect.sync(() => seen.push("checkpoint")),
+        }),
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getCheckpointContext: () =>
+            Effect.succeed({
+              runs: [],
+              checkpointScopes: [{ id: scopeId, runId, kind: "root_run" as const, cwd: "/repo" }],
+              checkpoints: [],
+            }),
+        }),
+        Layer.succeed(RunFinalization.RunFinalizationObserver, {
+          refresh: () => Effect.sync(() => seen.push("refresh")),
+          refreshAfterTurn: () => Effect.void,
+        }),
+      ),
+    ),
+  );
+  return Effect.gen(function* () {
+    const service = yield* RunFinalization.RunFinalizationService;
+    yield* service.finalize({ threadId, runId, scopeId });
+    assert.deepEqual(seen, ["checkpoint", "refresh", threadId]);
+  }).pipe(
+    Effect.provide(layer),
+    Effect.provideService(HouseLineWillGate.HouseLineWillGate, {
+      afterRun: (input) => Effect.sync(() => seen.push(input.threadId)),
+    }),
+  );
 });
 
 it.effect.each(
