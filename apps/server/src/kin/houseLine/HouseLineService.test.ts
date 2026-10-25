@@ -14,6 +14,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
@@ -59,6 +60,77 @@ const housesTsv = [
   "^server-\tserver\t.kin/server.md",
   "apps/server/\tserver",
 ].join("\n");
+
+it.effect("loads project houses lazily without deleting runtime or retired houses", () =>
+  Effect.gen(function* () {
+    const houseLine = yield* HouseLine.HouseLineService;
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const sql = yield* SqlClient.SqlClient;
+    const workspace = yield* fs.makeTempDirectoryScoped();
+    yield* sql`
+      INSERT INTO projection_projects (
+        project_id, title, workspace_root, scripts_json, created_at, updated_at
+      ) VALUES (${projectId}, 'Kin', ${workspace}, '[]', '2026-10-25T00:00:00Z', '2026-10-25T00:00:00Z')
+    `;
+    assert.deepEqual(yield* houseLine.areas(projectId), []);
+    yield* houseLine.openLane({
+      projectId,
+      threadId: ThreadId.make("runtime-area"),
+      label: "runtime task",
+      house: "runtime",
+    });
+    yield* houseLine.reloadHouses({ projectId, workspaceRoot: workspace });
+    assert.deepEqual(
+      (yield* houseLine.areas(projectId)).map((house) => house.name),
+      ["runtime"],
+    );
+    const catalogPath = path.join(workspace, ".kin", "houses.tsv");
+    yield* fs.makeDirectory(path.dirname(catalogPath));
+    yield* fs.writeFileString(catalogPath, "^sql\\b\tsql\n");
+    const unstartedThreadId = ThreadId.make("thread-unstarted");
+    const lane = yield* houseLine.openLane({
+      projectId,
+      threadId: unstartedThreadId,
+      label: "sql: first",
+    });
+    assert.isNotNull(lane);
+    yield* houseLine.discardUnstartedLane(unstartedThreadId);
+    assert.isFalse(
+      (yield* houseLine.snapshot(projectId)).lanes.some(
+        (lane) => lane.threadId === unstartedThreadId,
+      ),
+    );
+    assert.deepEqual(
+      (yield* houseLine.areas(projectId)).map((house) => house.name),
+      ["runtime", "sql"],
+    );
+    yield* sql`CREATE TABLE catalog_imports (house_id TEXT)`;
+    yield* sql`
+      CREATE TRIGGER count_catalog_imports AFTER INSERT ON kin_house_pattern
+      BEGIN INSERT INTO catalog_imports (house_id) VALUES (NEW.house_id); END
+    `;
+    yield* houseLine.areas(projectId);
+    assert.deepEqual(yield* sql`SELECT house_id FROM catalog_imports`, []);
+    yield* fs.writeFileString(catalogPath, "^web\\b\tweb\n");
+    const refreshed = yield* houseLine.areas(projectId);
+    assert.deepEqual(
+      refreshed.map((house) => house.name),
+      ["runtime", "sql", "web"],
+    );
+    assert.deepEqual(refreshed.find((house) => house.name === "web")?.patterns, ["^web\\b"]);
+    assert.deepEqual(refreshed.find((house) => house.name === "sql")?.patterns, []);
+    yield* fs.remove(catalogPath);
+    assert.deepEqual(yield* houseLine.areas(projectId), refreshed);
+    yield* houseLine.importCatalog({ projectId, source: "houses", text: "" });
+    const emptied = yield* houseLine.areas(projectId);
+    assert.deepEqual(
+      emptied.map((house) => house.name),
+      ["runtime", "sql", "web"],
+    );
+    assert.isTrue(emptied.every((house) => house.patterns.length === 0));
+  }).pipe(Effect.provide(layerTest)),
+);
 
 it.effect("crowns a Codex lane and a Claude lane, then leaves wills", () =>
   Effect.gen(function* () {
@@ -107,6 +179,7 @@ it.effect("crowns a Codex lane and a Claude lane, then leaves wills", () =>
           ...(extra?.role === undefined ? {} : { role: extra.role }),
           ...(extra?.touchedPaths === undefined ? {} : { touchedPaths: extra.touchedPaths }),
         });
+        assert.isNotNull(lane);
         return { threadId, ...lane };
       });
 
@@ -116,7 +189,10 @@ it.effect("crowns a Codex lane and a Claude lane, then leaves wills", () =>
     const heir = yield* open("web-heir", "codex", {
       touchedPaths: ["apps/server/src/kin/houseLine/HouseLineService.ts"],
     });
-    const reviewer = yield* open("web-reviewer", "codex", { role: "reviewer" });
+    const reviewer = yield* open("web-reviewer", "codex", {
+      role: "reviewer",
+      touchedPaths: ["apps/server/src/kin/houseLine/HouseLineService.ts"],
+    });
     const bare = yield* open("web-bare", "codex", { lineId: "kin-line:bare" });
 
     const crowns = yield* Effect.all(
@@ -166,6 +242,12 @@ it.effect("crowns a Codex lane and a Claude lane, then leaves wills", () =>
     assert.ok(
       sighted.houses.some((house) => house.reigns.some((reign) => reign.willBody !== null)),
     );
+    const reviewerBrief = yield* houseLine.briefFor(reviewer.laneId);
+    assert.notInclude(reviewerBrief, "reign 1");
+    assert.notInclude(reviewerBrief, "reign 2");
+    assert.notInclude(reviewerBrief, "server will");
+    yield* houseLine.discardUnstartedLane(codex.threadId);
+    assert.isTrue(yield* houseLine.crownable(codex.threadId));
     const reviewerTools = lineageToolsForProfile({ role: "reviewer" });
     assert.equal(
       reviewerTools.some((tool) => tool.willRead),
@@ -231,6 +313,7 @@ it.effect("crowns a Codex lane and a Claude lane, then leaves wills", () =>
       label: "legacy-lane",
       provider: "codex",
     });
+    assert.isNotNull(legacy);
     assert.equal(legacy.houseName, "legacy");
   }).pipe(Effect.provide(layerTest)),
 );

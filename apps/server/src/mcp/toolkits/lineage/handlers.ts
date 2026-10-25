@@ -52,7 +52,18 @@ export const layer = McpToolAccess.toLayer(LineageToolkit, {
       const projectId = yield* resolveProjectId(caller, undefined);
       const houseLine = yield* HouseLineService.HouseLineService;
       const houses = yield* houseLine.areas(projectId).pipe(Effect.mapError(asRequest));
-      return { houses };
+      const canReadWills = yield* houseLine
+        .seesWills(yield* threadId)
+        .pipe(Effect.mapError(asRequest));
+      return {
+        houses: houses.map((house) => ({
+          ...house,
+          reigns: house.reigns.map((reign) => ({
+            ...reign,
+            willBody: canReadWills ? reign.willBody : null,
+          })),
+        })),
+      };
     }),
   ),
   lineage_crown: McpToolAccess.actsAsCaller(() =>

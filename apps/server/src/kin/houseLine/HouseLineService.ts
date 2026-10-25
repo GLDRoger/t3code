@@ -8,7 +8,6 @@ import {
   ProjectId,
   ThreadId,
   KinHouseLineSnapshot,
-  laneProcessEnv,
   lineagesForReader,
   resolveKinHouseLineAccess,
   type KinLaneState as KinLaneStateValue,
@@ -87,7 +86,11 @@ export class HouseLineService extends Context.Service<
     }) => Effect.Effect<void, HouseLineError>;
     readonly openLane: (
       input: KinOpenLaneInput,
-    ) => Effect.Effect<{ readonly laneId: string; readonly houseName: string }, HouseLineError>;
+    ) => Effect.Effect<
+      { readonly laneId: string; readonly houseName: string } | null,
+      HouseLineError
+    >;
+    readonly discardUnstartedLane: (threadId: ThreadIdValue) => Effect.Effect<void, HouseLineError>;
     readonly addNote: (input: {
       readonly threadId: ThreadIdValue;
       readonly body: string;
@@ -226,6 +229,7 @@ const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const locks = yield* KeyedLock.make<string>();
+  const importedCatalogs = new Map<ProjectIdValue, string>();
 
   const failed = (detail: string, cause?: unknown) =>
     new HouseLineError({ detail, ...(cause === undefined ? {} : { cause }) });
@@ -417,6 +421,7 @@ const make = Effect.gen(function* () {
         failed(cause instanceof Error ? cause.message : "Could not read houses.tsv.", cause),
     });
     yield* storeCatalog(input.projectId, catalog);
+    importedCatalogs.delete(input.projectId);
   });
 
   const storeCatalog = (projectId: ProjectIdValue, catalog: KinHouseCatalog) =>
@@ -456,30 +461,46 @@ const make = Effect.gen(function* () {
     readonly projectId: ProjectIdValue;
     readonly workspaceRoot: string;
   }) {
-    const housesPath = path.join(input.workspaceRoot, ".kin", "houses.tsv");
-    const lineagesPath = path.join(input.workspaceRoot, ".kin", "lineages.tsv");
-    const housesText = yield* fileSystem.readFileString(housesPath).pipe(Effect.option);
-    if (Option.isSome(housesText)) {
-      yield* importCatalog({
-        projectId: input.projectId,
-        text: housesText.value,
-        source: "houses",
-      });
-      return;
+    yield* locks.withLock(
+      `catalog:${input.projectId}`,
+      Effect.gen(function* () {
+        const readOptional = (name: string) =>
+          fileSystem.readFileString(path.join(input.workspaceRoot, ".kin", name)).pipe(
+            Effect.catchTags({
+              PlatformError: (cause) =>
+                cause.reason._tag === "NotFound"
+                  ? Effect.succeed(undefined)
+                  : Effect.fail(failed("Could not read the house catalog.", cause)),
+            }),
+          );
+        const housesText = yield* readOptional("houses.tsv");
+        const source = housesText === undefined ? "lineages" : "houses";
+        const text = housesText ?? (yield* readOptional("lineages.tsv"));
+        if (text === undefined) return;
+        // Compare bytes, not timestamps: editors can replace a same-size file within one tick.
+        const fingerprint = `${input.workspaceRoot}\0${source}\0${text}`;
+        if (importedCatalogs.get(input.projectId) === fingerprint) return;
+        yield* importCatalog({ projectId: input.projectId, text, source });
+        importedCatalogs.set(input.projectId, fingerprint);
+      }),
+    );
+  });
+
+  const refreshProjectHouses = Effect.fn("HouseLineService.refreshProjectHouses")(function* (
+    projectId: ProjectIdValue,
+  ) {
+    const projects = yield* query(
+      Schema.Struct({ workspaceRoot: Schema.String }),
+      sql`SELECT workspace_root AS workspaceRoot FROM projection_projects WHERE project_id = ${projectId}`,
+    );
+    const project = projects[0];
+    if (project !== undefined) {
+      yield* reloadHouses({ projectId, workspaceRoot: project.workspaceRoot });
     }
-    const lineagesText = yield* fileSystem.readFileString(lineagesPath).pipe(Effect.option);
-    if (Option.isSome(lineagesText)) {
-      yield* importCatalog({
-        projectId: input.projectId,
-        text: lineagesText.value,
-        source: "lineages",
-      });
-      return;
-    }
-    return yield* failed(`No .kin/houses.tsv or .kin/lineages.tsv in ${input.workspaceRoot}.`);
   });
 
   const openLane = Effect.fn("HouseLineService.openLane")(function* (input: KinOpenLaneInput) {
+    yield* refreshProjectHouses(input.projectId);
     const fromEnv = yield* Config.String(EEVEE_LANE_LABEL).pipe(
       Config.option,
       Effect.mapError((cause) => failed("Could not read EEVEE_LANE_LABEL.", cause)),
@@ -512,7 +533,7 @@ const make = Effect.gen(function* () {
       houseName = houseForLaneLabel(rules, label)?.houseName;
     }
     if (houseName === undefined) {
-      return yield* failed(`No house pattern matches lane '${label}'.`);
+      return null;
     }
     yield* ensureHouse(input.projectId, houseName);
     const laneId = laneKey(input.threadId);
@@ -563,6 +584,26 @@ const make = Effect.gen(function* () {
         updated_at = excluded.updated_at
     `);
     return { laneId, houseName };
+  });
+
+  const discardUnstartedLane = Effect.fn("HouseLineService.discardUnstartedLane")(function* (
+    threadId: ThreadIdValue,
+  ) {
+    // A failed delegation may have committed despite a lost reply. Never delete that lane.
+    yield* sql
+      .withTransaction(
+        Effect.gen(function* () {
+          yield* sql`
+            DELETE FROM kin_line WHERE root_lane_id = ${laneKey(threadId)}
+              AND NOT EXISTS (SELECT 1 FROM orchestration_v2_projection_threads WHERE thread_id = ${threadId})
+          `;
+          yield* sql`
+            DELETE FROM kin_lane WHERE thread_id = ${threadId}
+              AND NOT EXISTS (SELECT 1 FROM orchestration_v2_projection_threads WHERE thread_id = ${threadId})
+          `;
+        }),
+      )
+      .pipe(writeSql("Could not discard the unstarted lane."));
   });
 
   const addNote = Effect.fn("HouseLineService.addNote")(function* (input: {
@@ -966,7 +1007,9 @@ const make = Effect.gen(function* () {
     const family: KinBriefWill[] = [];
     const houseWills: KinBriefWill[] = [];
     const court: KinBriefWill[] = [];
+    const access = accessFor(lane);
     for (const house of snapshot.houses) {
+      if (!access.seesWills) break;
       const wills = house.reigns.flatMap((reign) => {
         const will = toWill(reign, house.name);
         return will === null ? [] : [will];
@@ -1032,9 +1075,14 @@ const make = Effect.gen(function* () {
     importCatalog,
     reloadHouses,
     openLane,
+    discardUnstartedLane,
     addNote,
     read,
-    areas: (projectId) => Effect.map(loadSnapshot(projectId), (snapshot) => snapshot.houses),
+    areas: Effect.fn("HouseLineService.areas")(function* (projectId) {
+      yield* refreshProjectHouses(projectId);
+      const snapshot = yield* loadSnapshot(projectId);
+      return snapshot.houses;
+    }),
     crown,
     will,
     lineages,

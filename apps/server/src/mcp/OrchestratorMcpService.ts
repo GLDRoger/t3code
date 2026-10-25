@@ -1,6 +1,7 @@
 import {
   CommandId,
   type RunId,
+  type KinAgentProfile,
   isProviderAvailable,
   MessageId,
   type ModelSelection,
@@ -75,6 +76,9 @@ import {
 } from "../sourceControl/threadPullRequests.ts";
 import { applyKinProfileTarget } from "../kin/delegateRouting.ts";
 import * as Kin from "../kin/KinService.ts";
+import * as HouseLineService from "../kin/houseLine/HouseLineService.ts";
+import * as KinPromptBrief from "../kin/prompt/KinPromptBrief.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -2162,8 +2166,9 @@ const make = Effect.gen(function* () {
         operation: "delegate-task",
       });
       const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
-      const delegationTask = taskPrompt(input);
+      let delegationTask = taskPrompt(input);
       let delegationTarget = input.target;
+      let delegationProfile: KinAgentProfile | undefined;
       let kinBinding: { readonly profileName: string; readonly projectRoot: string } | undefined;
       if (input.profile !== undefined && !isRetryOfAcceptedDelegation) {
         const kin = Context.getOption(yield* Effect.context<never>(), Kin.KinService);
@@ -2176,6 +2181,7 @@ const make = Effect.gen(function* () {
             })
             .pipe(Effect.mapError((error) => failure("invalid_request", error.message)));
           delegationTarget = applyKinProfileTarget({ target: input.target, profile });
+          delegationProfile = profile;
           kinBinding = { profileName: profile.name, projectRoot: project.workspaceRoot };
         }
       }
@@ -2224,39 +2230,89 @@ const make = Effect.gen(function* () {
         }
         workspaceStrategy = { type: "worktree", baseRef: base.commitSha, startFromOrigin: false };
       }
-      // ThreadManagementService.dispatch is the chokepoint for this command
-      // type's own enablement check, using the same command id and its
-      // receipt-replay exemption, so no separate assert runs here.
-      const result = yield* threadManagement
-        .dispatch({
-          type: "delegated_task.request",
-          createdBy: "agent",
-          creationSource: "mcp",
-          commandId,
-          parentThreadId: scope.thread.threadId,
-          parentRunId: parentRun.id,
-          parentNodeId: parentRun.rootNodeId,
-          task: delegationTask,
-          ...(input.title === undefined ? {} : { title: input.title }),
-          modelSelection: target.modelSelection,
-          runtimeMode,
-          interactionMode,
-          ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
-          // Async delegations wake the parent on every child terminal; wait
-          // delegations deliver through the blocking tool call, so a wake is
-          // only needed if the parent settled first (timeout, disconnect).
-          completionWake: input.mode === "wait" ? "settled_only" : "always",
-        })
-        .pipe(
-          Effect.mapError((error) =>
-            error._tag === "ThreadManagementProviderInstanceDisabledError"
-              ? threadManagementFailure(error)
-              : failure(
-                  "orchestration_error",
-                  `Unable to create delegated task: ${errorMessage(error)}`,
-                ),
-          ),
-        );
+      const context = yield* Effect.context<never>();
+      const houseLine = Context.getOption(context, HouseLineService.HouseLineService);
+      const preparedChildThreadId = IdAllocator.derive.delegatedTaskThread({ commandId });
+      const parentNodeId = parentRun.rootNodeId;
+      let preparedLane = false;
+      const result = yield* Effect.gen(function* () {
+        if (!isRetryOfAcceptedDelegation && Option.isSome(houseLine)) {
+          const label = input.title ?? delegationProfile?.name ?? input.house;
+          if (label !== undefined) {
+            // The child ID is deterministic. Prepare before dispatch publishes provider-start effects.
+            preparedLane = true;
+            const lane = yield* houseLine.value
+              .openLane({
+                projectId: parent.thread.projectId,
+                threadId: preparedChildThreadId,
+                label,
+                ...(input.house === undefined ? {} : { house: input.house }),
+                ...(delegationProfile === undefined
+                  ? {}
+                  : {
+                      profile: delegationProfile.name,
+                      role: delegationProfile.role,
+                      crownable: delegationProfile.crownable,
+                      seesWills: delegationProfile.seesWills,
+                    }),
+                provider: target.modelSelection.instanceId,
+                model: target.modelSelection.model,
+              })
+              .pipe(Effect.mapError((error) => failure("orchestration_error", error.message)));
+            if (lane !== null) {
+              const briefs = Context.getOption(context, KinPromptBrief.KinPromptBriefProvider);
+              const brief = yield* (
+                Option.isSome(briefs)
+                  ? briefs.value.briefFor(lane.laneId)
+                  : houseLine.value.briefFor(lane.laneId)
+              ).pipe(Effect.mapError((error) => failure("orchestration_error", error.message)));
+              delegationTask = `${brief}\n${delegationTask}`;
+            }
+          }
+        }
+        // ThreadManagementService.dispatch is the chokepoint for this command
+        // type's own enablement check, using the same command id and its
+        // receipt-replay exemption, so no separate assert runs here.
+        return yield* threadManagement
+          .dispatch({
+            type: "delegated_task.request",
+            createdBy: "agent",
+            creationSource: "mcp",
+            commandId,
+            parentThreadId: scope.thread.threadId,
+            parentRunId: parentRun.id,
+            parentNodeId,
+            task: delegationTask,
+            ...(input.title === undefined ? {} : { title: input.title }),
+            modelSelection: target.modelSelection,
+            runtimeMode,
+            interactionMode,
+            ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
+            // Async delegations wake the parent on every child terminal; wait
+            // delegations deliver through the blocking tool call, so a wake is
+            // only needed if the parent settled first (timeout, disconnect).
+            completionWake: input.mode === "wait" ? "settled_only" : "always",
+          })
+          .pipe(
+            Effect.mapError((error) =>
+              error._tag === "ThreadManagementProviderInstanceDisabledError"
+                ? threadManagementFailure(error)
+                : failure(
+                    "orchestration_error",
+                    `Unable to create delegated task: ${errorMessage(error)}`,
+                  ),
+            ),
+          );
+      }).pipe(
+        Effect.onExit((exit) =>
+          Exit.isFailure(exit) && preparedLane && Option.isSome(houseLine)
+            ? houseLine.value.discardUnstartedLane(preparedChildThreadId).pipe(
+                Effect.tapError(() => Effect.logWarning("kin.discard-unstarted-lane-failed")),
+                Effect.ignore,
+              )
+            : Effect.void,
+        ),
+      );
       const taskEvent = result.storedEvents.find(
         (stored) =>
           stored.event.type === "subagent.updated" && stored.event.payload.origin === "app_owned",

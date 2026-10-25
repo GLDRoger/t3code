@@ -19,11 +19,6 @@ export const KIN_WILL_CHAR_LIMIT = 2500;
 
 export const EEVEE_LANE_LABEL = "EEVEE_LANE_LABEL";
 
-/** Exported so a provider spawn can still see the old lane label. */
-export function laneProcessEnv(label: string): Readonly<Record<string, string>> {
-  return { [EEVEE_LANE_LABEL]: label };
-}
-
 export const KinHouseLineRole = Schema.Literals([
   "main",
   "implementer",

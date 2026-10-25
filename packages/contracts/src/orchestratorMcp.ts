@@ -149,6 +149,15 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   task: OrchestratorMcpPrompt,
   target: Schema.optional(OrchestratorMcpTarget),
   title: Schema.optional(OrchestratorMcpTitle),
+  house: Schema.optional(
+    TrimmedNonEmptyString.check(
+      Schema.isMaxLength(64),
+      Schema.isPattern(/^[a-z0-9][a-z0-9-]*$/),
+    ).annotate({
+      description:
+        "Codebase area this child works in, such as `web-ui`. Reuse a name from `lineage_areas`; a new name creates the house. The child joins that house's line: it gets earlier wills in its brief and is crowned and leaves a will when done. Omit for work that is not tied to one area.",
+    }),
+  ),
   role: Schema.optional(OrchestratorMcpTaskRole),
   isolation: Schema.optional(
     Schema.Literals(["shared", "worktree"]).annotate({
