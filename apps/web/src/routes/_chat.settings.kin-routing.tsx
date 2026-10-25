@@ -6,6 +6,6 @@ function SettingsKinRoutingRoute() {
   return <KinRoutingSettings />;
 }
 
-export const Route = createFileRoute("/settings/kin-routing")({
+export const Route = createFileRoute("/_chat/settings/kin-routing")({
   component: SettingsKinRoutingRoute,
 });

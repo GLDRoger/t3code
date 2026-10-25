@@ -6,6 +6,6 @@ function SettingsKinAgentsRoute() {
   return <KinAgentsSettings />;
 }
 
-export const Route = createFileRoute("/settings/kin-agents")({
+export const Route = createFileRoute("/_chat/settings/kin-agents")({
   component: SettingsKinAgentsRoute,
 });
