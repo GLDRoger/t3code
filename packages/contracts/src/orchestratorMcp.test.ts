@@ -10,6 +10,17 @@ const decodeDelegateTaskInput = Schema.decodeUnknownSync(OrchestratorMcpDelegate
 const decodeDelegateTaskResult = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskResult);
 
 describe("orchestrator MCP contracts", () => {
+  it("accepts trimmed kebab-case houses and rejects invalid area names", () => {
+    expect(decodeDelegateTaskInput({ task: "Build UI", house: " web-ui " }).house).toBe("web-ui");
+    expect(decodeDelegateTaskInput({ task: "Build UI", house: "a".repeat(64) }).house).toHaveLength(
+      64,
+    );
+    expect(decodeDelegateTaskInput({ task: "Build UI" }).house).toBeUndefined();
+    for (const house of ["", " ", "Web-UI", "web_ui", "web ui", "-web", "a".repeat(65)]) {
+      expect(() => decodeDelegateTaskInput({ task: "Build UI", house })).toThrow();
+    }
+  });
+
   it("decodes cross-provider delegated task requests and durable results", () => {
     const request = decodeDelegateTaskInput({
       task: "Inspect the workspace and report the result.",

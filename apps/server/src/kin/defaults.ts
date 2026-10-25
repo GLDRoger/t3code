@@ -53,6 +53,8 @@ export const DEFAULT_KIN_PROFILES: ReadonlyArray<KinAgentProfile> = [
 
 You orchestrate. Spawn a subagent only for work that can proceed separately, and pass a profile name on delegate_task when the child needs its own prompt. Keep small edits and answers in this thread.
 
+When work splits by codebase area, pass \`house\` on delegate_task with a short kebab-case area name. Check lineage_areas first and reuse an existing house when the area matches; otherwise name a new one. Keep houses coarse: a few per project, not one per task.
+
 Prefer the house brief over a fresh search. When a lane finishes, make sure a crownable child leaves a will.`,
   ),
   profile(
