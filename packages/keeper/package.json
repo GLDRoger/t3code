@@ -1,0 +1,48 @@
+{
+  "name": "@t3tools/keeper",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./chronicle": {
+      "types": "./src/chronicle.ts",
+      "import": "./src/chronicle.ts"
+    },
+    "./archivist": {
+      "types": "./src/archivist.ts",
+      "import": "./src/archivist.ts"
+    },
+    "./ownerRules": {
+      "types": "./src/ownerRules.ts",
+      "import": "./src/ownerRules.ts"
+    },
+    "./agentMap": {
+      "types": "./src/agentMap.ts",
+      "import": "./src/agentMap.ts"
+    },
+    "./notesBoard": {
+      "types": "./src/notesBoard.ts",
+      "import": "./src/notesBoard.ts"
+    },
+    "./briefSlot": {
+      "types": "./src/briefSlot.ts",
+      "import": "./src/briefSlot.ts"
+    },
+    "./init": {
+      "types": "./src/init.ts",
+      "import": "./src/init.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vp test run --config ../../vite.config.ts --dir ."
+  },
+  "dependencies": {
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/platform-node": "catalog:",
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}
