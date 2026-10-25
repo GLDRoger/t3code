@@ -18,7 +18,7 @@ import { formatRelativeTimeLabel } from "../../timestampFormat";
 import { Button } from "../ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 
-const SPLIT_PROMPT = `Split the work below by codebase area. Hand each part to a subagent with \`house\` set to its area (reuse names from lineage_areas), so the next agent in that area starts from this one's will.
+const SPLIT_PROMPT = `If this is big enough to need several agents, split it by codebase area and hand each part to a subagent with \`house\` set to its area (reuse names from lineage_areas). If it is small, just do it here.
 
 What I want: `;
 
@@ -114,7 +114,8 @@ function NoHousesYet(props: { readonly projects: ReadonlyArray<EnvironmentProjec
           <EmptyTitle>No houses yet</EmptyTitle>
           <EmptyDescription>
             Houses appear when an agent hands work to a subagent and names the area it is in. Start
-            a thread, say what you want built, and the agent will split it into houses.
+            a thread and say what you want built. Big jobs get split into houses; small ones stay in
+            the thread.
           </EmptyDescription>
         </EmptyHeader>
         {project === undefined ? null : (
