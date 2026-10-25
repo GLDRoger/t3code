@@ -45,6 +45,15 @@ describe("orchestrator MCP contracts", () => {
     });
 
     expect(request.target?.providerInstanceId).toBe("claudeAgent");
+    expect(decodeDelegateTaskInput({ task: "Review the diff.", profile: "reviewer" }).profile).toBe(
+      "reviewer",
+    );
+    expect(
+      decodeDelegateTaskInput({
+        task: "Review the diff.",
+        profile: { prompt: "Look only at the failing test." },
+      }).profile,
+    ).toMatchObject({ prompt: "Look only at the failing test." });
     expect(result.status).toBe("completed");
     expect(result.summary).toBe("Workspace inspected.");
     expect(result.pendingApproval).toBeNull();

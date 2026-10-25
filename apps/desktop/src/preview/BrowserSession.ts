@@ -42,7 +42,7 @@ const ALLOWED_PREVIEW_PERMISSIONS: ReadonlySet<string> = new Set([
   // and silently granting it would hand every page the user's installed-font
   // fingerprint (and font file bytes via FontData.blob()).
   // Deliberately NOT notifications: a page could post OS notifications branded
-  // as T3 Code. T3's own come from the app window on the default session.
+  // as Kin. T3's own come from the app window on the default session.
 ]);
 
 const NEVER_EXTERNAL_PROTOCOLS: ReadonlySet<string> = new Set([

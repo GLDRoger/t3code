@@ -116,7 +116,7 @@ it.layer(NodeServices.layer)("build-npm-launcher", (it) => {
         );
         assert.equal(manifest.name, "t3");
         assert.equal(manifest.version, VERSION);
-        assert.deepStrictEqual(manifest.bin, { t3: "./bin/t3.mjs" });
+        assert.deepStrictEqual(manifest.bin, { t3: "./bin/t3.mjs", kin: "./bin/kin.mjs" });
         // Nothing for npm to resolve, so nothing that can lag behind the launcher.
         assert.isUndefined(manifest.dependencies);
         assert.isUndefined(manifest.optionalDependencies);

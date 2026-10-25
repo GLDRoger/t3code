@@ -91,10 +91,10 @@ export const threadTitleEvaluationCases = [
   {
     id: "research",
     source: "Maintainer title generation request",
-    request: "How can we improve title generation in T3 Code?",
+    request: "How can we improve title generation in Kin?",
     previousTitle: "Research title gen improvements",
     messages: [
-      { role: "user", text: "How can we improve title gen further in T3 Code?" },
+      { role: "user", text: "How can we improve title gen further in Kin?" },
       {
         role: "assistant",
         text: "Prioritize user messages, refine vague titles once, and resolve PR subjects.",

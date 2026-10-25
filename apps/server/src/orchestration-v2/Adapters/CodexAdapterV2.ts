@@ -102,6 +102,8 @@ import {
   buildCodexAdditionalContext,
   buildCodexDeveloperInstructions,
 } from "../../provider/CodexDeveloperInstructions.ts";
+import { appendDeliveredPrompt } from "../../kin/PromptComposer.ts";
+import { readKinTurnPrompt } from "../../kin/KinService.ts";
 import {
   describeMcpElicitation,
   toMcpElicitationResponse,
@@ -739,6 +741,8 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
     readonly deviceToolsAvailable?: boolean;
     /** ChatGPT token sharing does not accept service tiers. */
     readonly omitServiceTier?: boolean;
+    /** Kin suffix. Appended to developer instructions; not copied into additional context. */
+    readonly kinPrompt?: string;
     readonly appContext?: ProviderAdapter.ProviderAdapterV2TurnInput["appContext"];
   }) {
     const runtimeModeDefaults = codexRuntimeModeTurnDefaults(input.runtimePolicy.runtimeMode);
@@ -763,6 +767,12 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
       input.hasT3Mcp !== true
         ? undefined
         : buildCodexDeveloperInstructions(input.runtimePolicy.interactionMode);
+    // Catalog-owned collaboration modes can drop developer_instructions. Kin
+    // still delivers here, and does not copy the same text into additionalContext.
+    const deliveredDeveloperInstructions =
+      input.kinPrompt === undefined
+        ? developerInstructions
+        : appendDeliveredPrompt(developerInstructions, input.kinPrompt) || undefined;
     // An app's context is text an MCP server wrote, so it goes in as untrusted
     // context: Codex renders it as quoted user-side input, never as developer
     // instructions.
@@ -787,7 +797,7 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
         ? undefined
         : { ...t3Context, ...appContext };
     const collaborationMode: CodexSchema.ClientRequest__CollaborationMode | undefined =
-      input.runtimePolicy.interactionMode !== "plan" && developerInstructions === undefined
+      input.runtimePolicy.interactionMode !== "plan" && deliveredDeveloperInstructions === undefined
         ? undefined
         : {
             mode: input.runtimePolicy.interactionMode === "plan" ? "plan" : "default",
@@ -795,9 +805,9 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
               model: input.modelSelection.model,
               // Codex falls back to the model's default effort when this is left out.
               ...(effort === undefined ? {} : { reasoning_effort: effort }),
-              ...(developerInstructions === undefined
+              ...(deliveredDeveloperInstructions === undefined
                 ? {}
-                : { developer_instructions: developerInstructions }),
+                : { developer_instructions: deliveredDeveloperInstructions }),
             },
           };
 
@@ -6403,6 +6413,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ) {
             const threadId = yield* getNativeThreadId(turnInput.providerThread);
             const mcpSession = yield* mcpSessions.read(turnInput.threadId);
+            const kinPrompt = yield* readKinTurnPrompt({
+              threadId: turnInput.threadId,
+              projectRoot: turnInput.runtimePolicy.cwd ?? undefined,
+              provider: "codex",
+            });
             const turnStartParams = yield* buildCodexTurnStartParams({
               nativeThreadId: threadId,
               codexInput,
@@ -6413,6 +6428,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               deviceToolsAvailable: mcpSession?.capabilities?.has("device") ?? false,
               omitServiceTier: adapterOptions.resolveRuntime !== undefined,
               ...(turnInput.appContext === undefined ? {} : { appContext: turnInput.appContext }),
+              ...(kinPrompt === undefined ? {} : { kinPrompt }),
             });
             yield* Ref.update(pendingRootTurns, (current) => {
               const updated = new Map(current);

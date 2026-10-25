@@ -15,6 +15,11 @@ import { WS_METHODS } from "./rpc.ts";
 export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.previewClose]: AuthPreviewOperateScope,
   [WS_METHODS.serverRunStorageCleanup]: AuthSettingsWriteScope,
+  [WS_METHODS.kinProfilesWrite]: AuthSettingsWriteScope,
+  [WS_METHODS.kinBasePromptSet]: AuthSettingsWriteScope,
+  [WS_METHODS.kinMdWrite]: AuthSettingsWriteScope,
+  [WS_METHODS.kinMdDelete]: AuthSettingsWriteScope,
+  [WS_METHODS.kinRoutingUpdate]: AuthSettingsWriteScope,
   [WS_METHODS.serverCheckOtlpEndpoint]: AuthSettingsWriteScope,
   [WS_METHODS.pullRequestsRunAction]: AuthSourceControlWriteScope,
   [WS_METHODS.pullRequestsUpdate]: AuthSourceControlWriteScope,

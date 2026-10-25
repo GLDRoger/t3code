@@ -336,7 +336,7 @@ describe("MessagesTimeline agent messages", () => {
     expect(screen.text()).not.toContain("drops the index");
   });
 
-  it("leaves messages sent by T3 Code as full bubbles", async () => {
+  it("leaves messages sent by Kin as full bubbles", async () => {
     setup();
     await using screen = await renderTimeline([
       message(AGENT_MESSAGE, { createdBy: "agent", creationSource: "server" }),

@@ -228,7 +228,7 @@ function SettingsIndexSections() {
       </SettingsSection>
 
       <SettingsSection title="App">
-        <SettingsRow icon="info.circle" label="About T3 Code" target="SettingsAbout" />
+        <SettingsRow icon="info.circle" label="About Kin" target="SettingsAbout" />
       </SettingsSection>
     </>
   );
