@@ -88,9 +88,6 @@ import {
   KinProjectInput,
   KinPromptPreview,
   KinPromptPreviewInput,
-  KinRoutingGetInput,
-  KinRoutingSettings,
-  KinRoutingSnapshot,
   KinTextDocument,
 } from "./kin.ts";
 import {
@@ -622,8 +619,6 @@ export const WS_METHODS = {
   kinMdWrite: "kin.md.write",
   kinMdDelete: "kin.md.delete",
   kinPromptPreview: "kin.prompt.preview",
-  kinRoutingGet: "kin.routing.get",
-  kinRoutingUpdate: "kin.routing.update",
   kinHouseLineSnapshot: "kin.houseLine.snapshot",
 } as const;
 
@@ -1988,17 +1983,6 @@ const WsKinPromptPreviewRpc = Rpc.make(WS_METHODS.kinPromptPreview, {
   success: KinPromptPreview,
   error: kinRpcError,
 });
-const WsKinRoutingGetRpc = Rpc.make(WS_METHODS.kinRoutingGet, {
-  payload: KinRoutingGetInput,
-  success: KinRoutingSnapshot,
-  error: kinRpcError,
-});
-const WsKinRoutingUpdateRpc = Rpc.make(WS_METHODS.kinRoutingUpdate, {
-  payload: KinRoutingSettings,
-  success: KinRoutingSettings,
-  error: kinRpcError,
-});
-
 const WsKinHouseLineSnapshotRpc = Rpc.make(WS_METHODS.kinHouseLineSnapshot, {
   payload: KinHouseLineSnapshotInput,
   success: KinHouseLineSnapshot,
@@ -2205,8 +2189,6 @@ export const WsRpcGroup = RpcGroup.make(
   WsKinMdWriteRpc,
   WsKinMdDeleteRpc,
   WsKinPromptPreviewRpc,
-  WsKinRoutingGetRpc,
-  WsKinRoutingUpdateRpc,
   WsKinHouseLineSnapshotRpc,
   WsOrchestrationV2DispatchCommandRpc,
   WsOrchestrationV2GetWorkflowScriptRpc,

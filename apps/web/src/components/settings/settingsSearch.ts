@@ -25,7 +25,6 @@ export type SettingsPath =
   | "/settings/snap-shot"
   | "/settings/providers"
   | "/settings/kin-agents"
-  | "/settings/kin-routing"
   | "/settings/integrations"
   | "/settings/scheduled-tasks"
   | "/settings/source-control"
@@ -86,7 +85,6 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/snap-shot": "SnapShots",
   "/settings/providers": "Providers",
   "/settings/kin-agents": "Agents & System Prompts",
-  "/settings/kin-routing": "Routing & Budget",
   "/settings/integrations": "Integrations",
   "/settings/scheduled-tasks": "Scheduled Tasks",
   "/settings/source-control": "Source Control",
@@ -746,76 +744,6 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["codex claude grok preview"],
   },
   {
-    id: "kin-routing",
-    title: "Routing & Budget",
-    to: "/settings/kin-routing",
-    searchTerms: ["plans budget subscription limits pause"],
-  },
-  {
-    id: "kin-plans",
-    title: "Subscription plans",
-    to: "/settings/kin-routing",
-    searchTerms: ["claude codex grok openrouter monthly cap"],
-  },
-  {
-    id: "kin-concurrency",
-    title: "Concurrency",
-    to: "/settings/kin-routing",
-    searchTerms: ["agents per thread cap"],
-  },
-  {
-    id: "kin-main-thread-cap",
-    title: "Main thread cap",
-    to: "/settings/kin-routing",
-    targetId: "kin-concurrency",
-    searchTerms: ["20 agents concurrency"],
-  },
-  {
-    id: "kin-near-limit",
-    title: "Near limit",
-    to: "/settings/kin-routing",
-    targetId: "kin-concurrency",
-    searchTerms: ["pause percent window"],
-  },
-  {
-    id: "kin-routing-policy",
-    title: "Routing policy",
-    to: "/settings/kin-routing",
-    searchTerms: ["section 9 cross model fresh author"],
-  },
-  {
-    id: "kin-routing-policy-toggle",
-    title: "Enable routing policy",
-    to: "/settings/kin-routing",
-    targetId: "kin-routing-policy",
-  },
-  {
-    id: "kin-cross-model-review",
-    title: "Cross-model review",
-    to: "/settings/kin-routing",
-    targetId: "kin-routing-policy",
-    searchTerms: ["reviewer other model"],
-  },
-  {
-    id: "kin-fresh-author",
-    title: "Fresh-author escalation",
-    to: "/settings/kin-routing",
-    targetId: "kin-routing-policy",
-    searchTerms: ["stuck class of failure"],
-  },
-  {
-    id: "kin-role-models",
-    title: "Role models",
-    to: "/settings/kin-routing",
-    searchTerms: ["cheap triage sweep summary inherit"],
-  },
-  {
-    id: "kin-usage",
-    title: "Plan usage",
-    to: "/settings/kin-routing",
-    searchTerms: ["tokens cache hit lanes"],
-  },
-  {
     id: "agent-browser-access",
     title: "Agent browser access",
     to: "/settings/integrations",
@@ -1155,7 +1083,6 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/keybindings": null,
   "/settings/providers": null,
   "/settings/kin-agents": null,
-  "/settings/kin-routing": null,
   "/settings/integrations": null,
   "/settings/source-control": "environment-defaults",
   "/settings/storage": "project-defaults",

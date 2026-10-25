@@ -1,15 +1,10 @@
 import {
-  DEFAULT_KIN_ROUTING_SETTINGS,
   KinError,
-  KinRoutingSettings,
   type KinAgentProfile,
   type KinInlineProfile,
-  type KinLaneUsage,
   type KinMdFile,
   type KinPromptPreview,
   type KinPromptProviderKind,
-  type KinRoutingSnapshot,
-  type UsageBucket,
 } from "@t3tools/contracts";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
 import { T3_CODE_ORCHESTRATION_INSTRUCTIONS } from "@t3tools/provider-core/server/orchestrationInstructions";
@@ -28,17 +23,8 @@ import { KinBriefProvider, layerEmptyBrief, type KinBriefInput } from "./brief.t
 import { KIN_BASE_PROMPT } from "./defaults.ts";
 import { isCliLoadedMarkdown } from "./nativeMd.ts";
 import { composePrompt } from "./PromptComposer.ts";
-import { shortHash } from "./profileDocument.ts";
-import {
-  decideKinRoute,
-  planStatuses,
-  type KinLimitSnapshot,
-  type KinRouteDecision,
-} from "./RoutingPolicy.ts";
-import { laneCacheHitRate, rollupProviderUsage } from "./usageRollup.ts";
 
 const fail = (detail: string) => new KinError({ detail });
-const decodeSettings = Schema.decodeUnknownEffect(KinRoutingSettings);
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const MD_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.md$/;
@@ -51,31 +37,11 @@ const BindingsFile = Schema.Struct({
       projectRoot: Schema.optional(Schema.String),
       houseId: Schema.optional(Schema.String),
       parentThreadId: Schema.optional(Schema.String),
-      planId: Schema.optional(Schema.String),
-    }),
-  ),
-});
-
-const LanesFile = Schema.Struct({
-  lanes: Schema.Array(
-    Schema.Struct({
-      id: Schema.String,
-      threadId: Schema.optional(Schema.String),
-      parentThreadId: Schema.optional(Schema.String),
-      profile: Schema.String,
-      planId: Schema.String,
-      provider: Schema.String,
-      model: Schema.NullOr(Schema.String),
-      inputTokens: Schema.Number,
-      cachedInputTokens: Schema.Number,
-      outputTokens: Schema.Number,
-      at: Schema.String,
     }),
   ),
 });
 
 const decodeBindings = Schema.decodeUnknownEffect(BindingsFile);
-const decodeLanes = Schema.decodeUnknownEffect(LanesFile);
 
 const HARNESS: Record<KinPromptProviderKind, string> = {
   codex: "Codex",
@@ -86,10 +52,8 @@ const HARNESS: Record<KinPromptProviderKind, string> = {
   other: "Kin",
 };
 
-export interface KinPreparedDelegation {
-  readonly profile: KinAgentProfile;
-  readonly decision: KinRouteDecision;
-}
+/** Global model and budget preferences, written by the user or by an agent the user asked. */
+const KIN_MODELS_MD = "models.md";
 
 export class KinService extends Context.Service<
   KinService,
@@ -123,33 +87,16 @@ export class KinService extends Context.Service<
       readonly houseId?: string | undefined;
       readonly brief?: string | undefined;
     }) => Effect.Effect<KinPromptPreview, KinError>;
-    readonly routingSnapshot: (input: {
-      readonly limits: ReadonlyArray<KinLimitSnapshot>;
-      readonly buckets: ReadonlyArray<Pick<UsageBucket, "provider" | "totals">>;
-      readonly activeByProvider?: Readonly<Record<string, number>> | undefined;
-    }) => Effect.Effect<KinRoutingSnapshot, KinError>;
-    readonly updateRouting: (
-      settings: KinRoutingSettings,
-    ) => Effect.Effect<KinRoutingSettings, KinError>;
-    readonly prepareDelegation: (input: {
+    readonly resolveDelegationProfile: (input: {
       readonly profile: string | KinInlineProfile;
       readonly projectRoot?: string | undefined;
-      readonly parentDriver?: string | undefined;
-      readonly parentModel?: string | undefined;
-      readonly activeTotal: number;
-      readonly activeByProvider: Readonly<Record<string, number>>;
-      readonly limits: ReadonlyArray<KinLimitSnapshot>;
-      readonly explicitTarget: boolean;
-      readonly stuck?: boolean | undefined;
-      readonly at: string;
-    }) => Effect.Effect<KinPreparedDelegation, KinError>;
+    }) => Effect.Effect<KinAgentProfile, KinError>;
     readonly bindThread: (input: {
       readonly threadId: string;
       readonly profileName: string;
       readonly projectRoot?: string | undefined;
       readonly houseId?: string | undefined;
       readonly parentThreadId?: string | undefined;
-      readonly planId?: string | undefined;
     }) => Effect.Effect<void, KinError>;
     readonly promptForTurn: (input: {
       readonly threadId: string;
@@ -205,19 +152,6 @@ const make = Effect.gen(function* () {
       Effect.mapError((cause) => fail(`Could not encode ${filePath}: ${cause.message}`)),
       Effect.flatMap((text) => writeText(filePath, text)),
     );
-
-  const settingsPath = Effect.fnUntraced(function* () {
-    return path.join(yield* kinHome(), "routing.json");
-  });
-
-  const readSettings = Effect.fn("KinService.readSettings")(function* () {
-    const filePath = yield* settingsPath();
-    return yield* readJson(
-      filePath,
-      (value) => decodeSettings(value).pipe(Effect.mapError((cause) => fail(cause.message))),
-      DEFAULT_KIN_ROUTING_SETTINGS,
-    );
-  });
 
   const getBasePrompt = Effect.fn("KinService.getBasePrompt")(function* () {
     const filePath = path.join(yield* kinHome(), "base-prompt.md");
@@ -322,6 +256,10 @@ const make = Effect.gen(function* () {
         .pipe(Effect.mapError(() => fail(`Profile ${input.profile.name} is missing ${entry}.`)));
       texts.push(text);
     }
+    const models = yield* readOptional(path.join(yield* kinHome(), "md", KIN_MODELS_MD));
+    if (models !== undefined && models.trim().length > 0) {
+      texts.push(`## Model preferences (~/.kin/md/${KIN_MODELS_MD})\n\n${models.trim()}`);
+    }
     return texts;
   });
 
@@ -382,9 +320,6 @@ const make = Effect.gen(function* () {
   const bindingsPath = Effect.fnUntraced(function* () {
     return path.join(yield* kinHome(), "thread-bindings.json");
   });
-  const lanesPath = Effect.fnUntraced(function* () {
-    return path.join(yield* kinHome(), "lanes.json");
-  });
 
   const readBindings = Effect.fn("KinService.readBindings")(function* () {
     return yield* readJson(
@@ -394,21 +329,12 @@ const make = Effect.gen(function* () {
     );
   });
 
-  const readLanes = Effect.fn("KinService.readLanes")(function* () {
-    return yield* readJson(
-      yield* lanesPath(),
-      (value) => decodeLanes(value).pipe(Effect.mapError((cause) => fail(cause.message))),
-      { lanes: [] },
-    );
-  });
-
   const bindThread = Effect.fn("KinService.bindThread")(function* (input: {
     readonly threadId: string;
     readonly profileName: string;
     readonly projectRoot?: string | undefined;
     readonly houseId?: string | undefined;
     readonly parentThreadId?: string | undefined;
-    readonly planId?: string | undefined;
   }) {
     const current = yield* readBindings();
     const next = [
@@ -418,87 +344,16 @@ const make = Effect.gen(function* () {
     yield* writeJson(yield* bindingsPath(), { bindings: next });
   });
 
-  const routingSnapshot = Effect.fn("KinService.routingSnapshot")(function* (input: {
-    readonly limits: ReadonlyArray<KinLimitSnapshot>;
-    readonly buckets: ReadonlyArray<Pick<UsageBucket, "provider" | "totals">>;
-    readonly activeByProvider?: Readonly<Record<string, number>> | undefined;
-  }) {
-    const settings = yield* readSettings();
-    const activeByProvider = input.activeByProvider ?? {};
-    const status = planStatuses({ settings, limits: input.limits, activeByProvider });
-    const stored = yield* readLanes();
-    const lanes: ReadonlyArray<KinLaneUsage> = stored.lanes
-      .slice(-50)
-      .toReversed()
-      .map((lane) => ({
-        ...lane,
-        cacheHitRate: laneCacheHitRate(lane),
-      }));
-    return {
-      settings,
-      plans: status.plans,
-      lanes,
-      planUsage: rollupProviderUsage(input.buckets),
-      launchesPaused: status.launchesPaused,
-    };
-  });
-
-  const updateRouting = Effect.fn("KinService.updateRouting")(function* (
-    settings: KinRoutingSettings,
-  ) {
-    const decoded = yield* decodeSettings(settings).pipe(
-      Effect.mapError((cause) => fail(cause.message)),
-    );
-    yield* writeJson(yield* settingsPath(), decoded);
-    return decoded;
-  });
-
-  const prepareDelegation = Effect.fn("KinService.prepareDelegation")(function* (input: {
-    readonly profile: string | KinInlineProfile;
-    readonly projectRoot?: string | undefined;
-    readonly parentDriver?: string | undefined;
-    readonly parentModel?: string | undefined;
-    readonly activeTotal: number;
-    readonly activeByProvider: Readonly<Record<string, number>>;
-    readonly limits: ReadonlyArray<KinLimitSnapshot>;
-    readonly explicitTarget: boolean;
-    readonly stuck?: boolean | undefined;
-    readonly at: string;
-  }) {
-    const profile =
-      typeof input.profile === "string"
+  const resolveDelegationProfile = Effect.fn("KinService.resolveDelegationProfile")(
+    function* (input: {
+      readonly profile: string | KinInlineProfile;
+      readonly projectRoot?: string | undefined;
+    }) {
+      return typeof input.profile === "string"
         ? yield* profiles.resolve({ name: input.profile, projectRoot: input.projectRoot })
         : yield* profiles.saveAdhoc({ inline: input.profile, projectRoot: input.projectRoot });
-    const settings = yield* readSettings();
-    const decision = decideKinRoute({
-      settings,
-      profile,
-      parentDriver: input.parentDriver,
-      parentModel: input.parentModel,
-      activeTotal: input.activeTotal,
-      activeByProvider: input.activeByProvider,
-      limits: input.limits,
-      explicitTarget: input.explicitTarget,
-      stuck: input.stuck === true,
-    });
-    if (decision.action === "launch") {
-      const stored = yield* readLanes();
-      const lane = {
-        id: shortHash(`${input.at}:${profile.name}:${decision.planId}:${stored.lanes.length}`),
-        profile: profile.name,
-        planId: decision.planId,
-        provider: decision.provider,
-        model: decision.model ?? null,
-        inputTokens: 0,
-        cachedInputTokens: 0,
-        outputTokens: 0,
-        at: input.at,
-      };
-      const lanes = [...stored.lanes, lane].slice(-200);
-      yield* writeJson(yield* lanesPath(), { lanes });
-    }
-    return { profile, decision };
-  });
+    },
+  );
 
   const promptForTurn = Effect.fn("KinService.promptForTurn")(function* (input: {
     readonly threadId: string;
@@ -532,9 +387,7 @@ const make = Effect.gen(function* () {
     writeMd,
     deleteMd,
     preview,
-    routingSnapshot,
-    updateRouting,
-    prepareDelegation,
+    resolveDelegationProfile,
     bindThread,
     promptForTurn,
   });

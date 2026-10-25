@@ -25,7 +25,7 @@ Convention: any file path marked "(to confirm)" is a proposal or an unverified l
 ### Non-goals
 
 - Not a new agent runtime. Kin drives the Codex and Claude Code CLIs through T3 Code's adapters and does not reimplement them.
-- Multi-model routing is not product-defining. Cross-model review and escalation are an optional policy, off by default (section 9).
+- Multi-model routing is not product-defining. The agent picks models and asks the user about cost; cross-model review and escalation are preferences in `models.md` (section 9).
 - No rewrite of Kin itself in Bend (section 10 explains why).
 - The assistant side (day threads, sagas, memory keeper) is not in Phase 1.
 - No cloud service of our own in Phase 1. Everything runs where T3 Code's server runs.
@@ -242,15 +242,15 @@ interface KeeperScope {
 
 ---
 
-## 9. Routing policy (optional, off by default)
+## 9. Model choice (the agent's call, the user's preferences)
 
-This is not product-defining. It depends on a user's budget and willingness to run more than one model at once. It turns on when a second provider is connected and the user enables it.
+Kin has no routing engine. The main agent picks each child's provider and model from `orchestrator_capabilities`, which lists every connected account, its models, and `usedPercent` when the provider reports usage. The Kin base prompt tells it to follow the user's `~/.kin/md/models.md`, to ask the user when cost or plan limits matter and that file does not settle it, and to record answers there when the user wants them remembered. A profile that sets its own provider or model keeps it.
+
+A routing settings page with plan tables, role-to-model maps and toggles was built and removed: it restated accounts the providers already report and choices the profiles already hold. Put preferences like these in `models.md` instead:
 
 - Cross-model review: the reviewer runs on the other model, and the verdict is SHIP or FIX FIRST.
 - Fresh-author escalation: a stuck lane is handed to a fresh author on the other model with a "fix the whole class" rule. In one case this took 131 wrong answers to 0 of 300.
-- Usage-limit-aware scheduling: work is deferred or rerouted when a provider is near its limit, using upstream's usage-limit data.
-
-The policy sits behind a settings toggle and a policy module, so the core never branches on it.
+- Which account takes long work, and when to stop near a limit.
 
 ---
 
@@ -409,7 +409,6 @@ Acceptance:
 - Chaos hooks behind the env flag, 4 tiers, 9 oracles as tests.
 - The hourly error sweep opening fix lanes.
 - Bend verification layer: `kin verify` with V0 gate integrity and V1 proofs; a Bend model of the lane state machine with V2 laws; V3 trace conformance over chaos traces; V4 sweeps; and toolchain support (section 10). Measure check times on our own corpus.
-- The optional routing policy (section 9), behind a toggle.
 
 ### Phase 2: assistant side
 
@@ -444,11 +443,11 @@ Owner's reference setup (24 Oct 2026): two $200 Claude plans, a $100 Codex plan,
 
 Rules:
 
-- Concurrency is a setting. It defaults to the owner's numbers (up to 20 agents per main thread), and a lower cap applies per provider plan. A main agent only spawns a subagent for separable work; small tasks stay inline.
+- Concurrency is the main agent's judgment: a handful of children by default, more when the user asks. A main agent only spawns a subagent for separable work; small tasks stay inline.
 - Cache first. Prompts are composed in a fixed order: runtime rules, Kin base, profile, user MD files, house map, chronicle and wills, and finally the per-task brief. Everything before the brief is byte-stable across agents in a house, so provider prompt caches (Anthropic prompt caching, OpenAI cached input) hit. Volatile data such as timestamps and counters never goes in the stable prefix.
 - Reuse context. House maps, the chronicle and wills are built once and shared by every agent in the house. Repo reads go through a shared, content-hashed read cache per lane run, and heirs start from the will rather than re-exploring.
 - Right-size models. Cheap OpenRouter models handle triage, error-sweep classification, note dedupe and archivist drafts. Big plans are reserved for authoring and review.
-- Plan-aware routing. Kin tracks usage per subscription (upstream `providerUsageLimits`) and sends new lanes to the plan with headroom. It pauses new launches near a limit instead of failing mid-lane.
+- Plan awareness. `orchestrator_capabilities` reports each account's `usedPercent`, so the main agent avoids an account near its limit and asks before starting long work on it (section 9).
 - Escalate, don't fan out. Review and fresh-author escalation trigger on failure or risk, never on every change.
 - Visible spend. Every lane shows tokens in and out, the cache-hit rate and the plan used. Chaos tiers and the error sweep carry daily caps.
 - Acceptance: within one house, the second agent's run shows a nonzero cache-read share on Claude and Codex.

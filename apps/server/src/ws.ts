@@ -1,6 +1,5 @@
-import { KinError, OrchestrationDispatchCommandError, UsageDay } from "@t3tools/contracts";
+import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Kin from "./kin/KinService.ts";
-import { limitsFromProviders } from "./kin/RoutingPolicy.ts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
@@ -3264,30 +3263,6 @@ export const layerWsRpc = (
         [WS_METHODS.kinMdWrite]: (input) => kin.writeMd(input),
         [WS_METHODS.kinMdDelete]: (input) => kin.deleteMd(input).pipe(Effect.as({})),
         [WS_METHODS.kinPromptPreview]: (input) => kin.preview(input),
-        [WS_METHODS.kinRoutingGet]: Effect.fn("ws.kinRoutingGet")(function* (input) {
-          const providers = yield* providerRegistry.getProviders;
-          const now = yield* DateTime.now;
-          const decodeDay = (value: string) =>
-            Schema.decodeUnknownEffect(UsageDay)(value).pipe(
-              Effect.mapError(() => new KinError({ detail: `Invalid usage day ${value}.` })),
-            );
-          const untilDay = yield* decodeDay(DateTime.formatIso(now).slice(0, 10));
-          const sinceDay = yield* decodeDay(
-            DateTime.formatIso(DateTime.subtract(now, { days: 29 })).slice(0, 10),
-          );
-          const summary = yield* usage
-            .readSummary({
-              sinceDay,
-              untilDay,
-              timeZone: input.timeZone ?? "UTC",
-            })
-            .pipe(Effect.orElseSucceed(() => undefined));
-          return yield* kin.routingSnapshot({
-            limits: limitsFromProviders(providers),
-            buckets: summary?.buckets ?? [],
-          });
-        }),
-        [WS_METHODS.kinRoutingUpdate]: (input) => kin.updateRouting(input),
         [WS_METHODS.kinHouseLineSnapshot]: (input) =>
           houseLine.snapshot(input.projectId).pipe(Effect.mapError(houseLineRpcError)),
       });

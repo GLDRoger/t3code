@@ -73,9 +73,8 @@ import {
   normalizeThreadPullRequestKey,
   visibleThreadPullRequests,
 } from "../sourceControl/threadPullRequests.ts";
-import { applyKinRoute, countActiveDelegations } from "../kin/delegateRouting.ts";
+import { applyKinProfileTarget } from "../kin/delegateRouting.ts";
 import * as Kin from "../kin/KinService.ts";
-import { limitsFromProviders } from "../kin/RoutingPolicy.ts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -2100,10 +2099,14 @@ const make = Effect.gen(function* () {
                   favorite.provider === provider.instanceId && favorite.model === model.slug,
               ),
           });
+          const usageWindows = provider.usageLimits?.windows ?? [];
           return {
             providerInstanceId: provider.instanceId,
             driverKind: provider.driver,
             displayName: provider.displayName ?? null,
+            ...(usageWindows.length === 0
+              ? {}
+              : { usedPercent: Math.max(...usageWindows.map((window) => window.usedPercent)) }),
             models: listed.map((model) => {
               const options = model.capabilities?.optionDescriptors ?? [];
               return {
@@ -2159,53 +2162,21 @@ const make = Effect.gen(function* () {
         operation: "delegate-task",
       });
       const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
-      let delegationTask = taskPrompt(input);
+      const delegationTask = taskPrompt(input);
       let delegationTarget = input.target;
-      let kinBinding:
-        | {
-            readonly profileName: string;
-            readonly projectRoot: string;
-            readonly planId?: string;
-          }
-        | undefined;
+      let kinBinding: { readonly profileName: string; readonly projectRoot: string } | undefined;
       if (input.profile !== undefined && !isRetryOfAcceptedDelegation) {
         const kin = Context.getOption(yield* Effect.context<never>(), Kin.KinService);
         if (Option.isSome(kin)) {
           const project = yield* requireProject(parent.thread.projectId);
-          const parentProvider = providers.find(
-            (provider) => provider.instanceId === parent.thread.modelSelection.instanceId,
-          );
-          const counts = countActiveDelegations(parent.subagents);
-          const prepared = yield* kin.value
-            .prepareDelegation({
+          const profile = yield* kin.value
+            .resolveDelegationProfile({
               profile: input.profile,
               projectRoot: project.workspaceRoot,
-              parentDriver:
-                parentProvider === undefined ? undefined : String(parentProvider.driver),
-              parentModel: parent.thread.modelSelection.model,
-              activeTotal: counts.activeTotal,
-              activeByProvider: counts.activeByProvider,
-              limits: limitsFromProviders(providers),
-              explicitTarget:
-                input.target?.providerInstanceId !== undefined ||
-                input.target?.driverKind !== undefined ||
-                input.target?.model !== undefined,
-              at: DateTime.formatIso(yield* DateTime.now),
             })
             .pipe(Effect.mapError((error) => failure("invalid_request", error.message)));
-          const applied = applyKinRoute({ target: input.target, decision: prepared.decision });
-          if ("pause" in applied) {
-            return yield* failure("provider_unavailable", applied.pause);
-          }
-          delegationTarget = applied.target;
-          if (applied.taskAddendum !== undefined) {
-            delegationTask = `${delegationTask}\n\n${applied.taskAddendum}`;
-          }
-          kinBinding = {
-            profileName: prepared.profile.name,
-            projectRoot: project.workspaceRoot,
-            ...(prepared.decision.action === "launch" ? { planId: prepared.decision.planId } : {}),
-          };
+          delegationTarget = applyKinProfileTarget({ target: input.target, profile });
+          kinBinding = { profileName: profile.name, projectRoot: project.workspaceRoot };
         }
       }
       const target = yield* resolveTargetRechecking({
@@ -2307,7 +2278,6 @@ const make = Effect.gen(function* () {
               profileName: kinBinding.profileName,
               projectRoot: kinBinding.projectRoot,
               parentThreadId: scope.thread.threadId,
-              planId: kinBinding.planId,
             })
             .pipe(
               Effect.catch((error) =>

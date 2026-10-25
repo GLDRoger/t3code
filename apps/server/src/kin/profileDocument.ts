@@ -108,7 +108,7 @@ export function serializeProfileDocument(
   return `---\n${frontmatter}\n---\n${profile.body.trim()}\n`;
 }
 
-export function shortHash(value: string): string {
+function shortHash(value: string): string {
   let hash = 2166136261;
   for (let index = 0; index < value.length; index += 1) {
     hash ^= value.charCodeAt(index);

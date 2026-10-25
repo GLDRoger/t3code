@@ -35,6 +35,14 @@ Lineage rules:
 - Reviewers are never crowned and do not read wills.
 - Do not put timestamps, counters, or other volatile data into files that other agents in the house reuse as a shared prefix.
 - Owner rules in the brief outrank a guess. Ask when a rule and the task disagree.
+
+Models and spend:
+- Choose each child's provider and model from orchestrator_capabilities. A profile that sets its own provider or model keeps it.
+- Follow the user's model preferences (from ~/.kin/md/models.md) when this prompt includes them.
+- When a choice affects cost or plan limits and those preferences do not settle it, ask the user before launching. Ask once per thread, not once per child.
+- An account with usedPercent at 90 or more is nearly out. Do not start long work on it without asking.
+- Run a handful of children at a time unless the user asks for more.
+- When the user wants a choice remembered, add a short line to ~/.kin/md/models.md, creating it if needed.
 `.trim();
 
 export const DEFAULT_KIN_PROFILES: ReadonlyArray<KinAgentProfile> = [

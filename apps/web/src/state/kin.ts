@@ -36,11 +36,6 @@ export const kinPromptPreview = createEnvironmentRpcQueryAtomFamily(connectionAt
   tag: WS_METHODS.kinPromptPreview,
 });
 
-export const kinRouting = createEnvironmentRpcQueryAtomFamily(connectionAtomRuntime, {
-  label: "environment-data:kin:routing",
-  tag: WS_METHODS.kinRoutingGet,
-});
-
 export const writeKinProfile = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "environment-data:kin:write-profile",
   tag: WS_METHODS.kinProfilesWrite,
@@ -59,9 +54,4 @@ export const writeKinMd = createEnvironmentRpcCommand(connectionAtomRuntime, {
 export const deleteKinMd = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "environment-data:kin:delete-md",
   tag: WS_METHODS.kinMdDelete,
-});
-
-export const updateKinRouting = createEnvironmentRpcCommand(connectionAtomRuntime, {
-  label: "environment-data:kin:update-routing",
-  tag: WS_METHODS.kinRoutingUpdate,
 });

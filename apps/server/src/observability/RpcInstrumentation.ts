@@ -224,8 +224,6 @@ const RPC_AGGREGATES = {
   [WS_METHODS.kinMdWrite]: "kin",
   [WS_METHODS.kinMdDelete]: "kin",
   [WS_METHODS.kinPromptPreview]: "kin",
-  [WS_METHODS.kinRoutingGet]: "kin",
-  [WS_METHODS.kinRoutingUpdate]: "kin",
   [WS_METHODS.kinHouseLineSnapshot]: "kin",
 } as const satisfies Readonly<Record<WsRpcMethod, string>>;
 

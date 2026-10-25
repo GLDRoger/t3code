@@ -217,7 +217,6 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.kinMdList]: AuthOrchestrationReadScope,
   [WS_METHODS.kinMdRead]: AuthOrchestrationReadScope,
   [WS_METHODS.kinPromptPreview]: AuthOrchestrationReadScope,
-  [WS_METHODS.kinRoutingGet]: AuthOrchestrationReadScope,
   [WS_METHODS.kinHouseLineSnapshot]: AuthOrchestrationReadScope,
 } as const satisfies Readonly<Record<WsRpcMethod, AuthEnvironmentScope>>;
 

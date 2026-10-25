@@ -531,6 +531,8 @@ export const OrchestratorMcpProviderCapability = Schema.Struct({
   providerInstanceId: ProviderInstanceId,
   driverKind: ProviderDriverKind,
   displayName: Schema.NullOr(Schema.String),
+  /** Highest use across this account's usage windows, when the provider reports one. */
+  usedPercent: Schema.optional(Schema.Number),
   models: Schema.Array(
     Schema.Struct({
       id: Schema.String,

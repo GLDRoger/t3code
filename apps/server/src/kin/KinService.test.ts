@@ -54,4 +54,28 @@ describe("KinService prompt prefix", () => {
       assert.isFalse(first.suffix.includes("You are running in Kin."));
     }).pipe(Effect.provide(NodeServices.layer)),
   );
+
+  it.effect("carries the user's models.md into every agent's stable prefix", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped();
+      const kin = yield* KinService.pipe(
+        Effect.provide(
+          layer.pipe(
+            Layer.provide(houseBrief),
+            Layer.provide(Layer.succeed(HostProcess.HomeDirectory, home)),
+          ),
+        ),
+      );
+
+      const without = yield* kin.preview({ profile: "reviewer", provider: "claudeAgent" });
+      assert.isFalse(without.prefix.includes("Model preferences"));
+
+      yield* kin.writeMd({ scope: "user", name: "models.md", text: "Reviewers run on Codex." });
+      for (const profile of ["main", "reviewer"]) {
+        const preview = yield* kin.preview({ profile, provider: "claudeAgent" });
+        assert.include(preview.prefix, "Reviewers run on Codex.");
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
 });

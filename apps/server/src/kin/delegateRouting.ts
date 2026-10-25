@@ -1,42 +1,29 @@
-import { ProviderDriverKind, type OrchestratorMcpTarget } from "@t3tools/contracts";
+import {
+  ProviderDriverKind,
+  type KinAgentProfile,
+  type OrchestratorMcpTarget,
+} from "@t3tools/contracts";
 
-import type { KinRouteDecision } from "./RoutingPolicy.ts";
-
-const ACTIVE_TASK_STATUS = new Set(["idle", "pending", "running", "waiting"]);
-
-export function countActiveDelegations(
-  subagents: ReadonlyArray<{ readonly status: string; readonly driver: string }>,
-): {
-  readonly activeTotal: number;
-  readonly activeByProvider: Readonly<Record<string, number>>;
-} {
-  const activeByProvider: Record<string, number> = {};
-  let activeTotal = 0;
-  for (const task of subagents) {
-    if (!ACTIVE_TASK_STATUS.has(task.status)) continue;
-    activeTotal += 1;
-    activeByProvider[task.driver] = (activeByProvider[task.driver] ?? 0) + 1;
-  }
-  return { activeTotal, activeByProvider };
-}
-
-export function applyKinRoute(input: {
+/**
+ * A profile's own provider and model apply only when the caller did not pick a
+ * target. Model choice beyond that is the agent's call, guided by the Kin base
+ * prompt and the user's models.md.
+ */
+export function applyKinProfileTarget(input: {
   readonly target: OrchestratorMcpTarget | undefined;
-  readonly decision: KinRouteDecision;
-}):
-  | { readonly pause: string }
-  | { readonly target: OrchestratorMcpTarget | undefined; readonly taskAddendum?: string } {
-  if (input.decision.action === "pause") return { pause: input.decision.reason };
-  if (input.decision.action === "inherit") return { target: input.target };
-  const { providerInstanceId: _instanceId, ...rest } = input.target ?? {};
+  readonly profile: Pick<KinAgentProfile, "provider" | "model">;
+}): OrchestratorMcpTarget | undefined {
+  const { target, profile } = input;
+  const pinned =
+    target?.providerInstanceId !== undefined ||
+    target?.driverKind !== undefined ||
+    target?.model !== undefined;
+  if (pinned || (profile.provider === "inherit" && profile.model === "inherit")) return target;
   return {
-    target: {
-      ...rest,
-      driverKind: ProviderDriverKind.make(input.decision.provider),
-      ...(input.decision.model === undefined ? {} : { model: input.decision.model }),
-    },
-    ...(input.decision.promptAddendum === undefined
+    ...target,
+    ...(profile.provider === "inherit"
       ? {}
-      : { taskAddendum: input.decision.promptAddendum }),
+      : { driverKind: ProviderDriverKind.make(profile.provider) }),
+    ...(profile.model === "inherit" ? {} : { model: profile.model }),
   };
 }
