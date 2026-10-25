@@ -77,6 +77,7 @@ import {
 import { applyKinProfileTarget } from "../kin/delegateRouting.ts";
 import * as Kin from "../kin/KinService.ts";
 import * as HouseLineService from "../kin/houseLine/HouseLineService.ts";
+import { houseLaneClosing } from "../kin/houseLine/brief.ts";
 import * as KinPromptBrief from "../kin/prompt/KinPromptBrief.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as Clock from "effect/Clock";
@@ -2274,7 +2275,9 @@ const make = Effect.gen(function* () {
                   ? briefs.value.briefFor(lane.laneId)
                   : houseLine.value.briefFor(lane.laneId)
               ).pipe(Effect.mapError((error) => failure("orchestration_error", error.message)));
-              delegationTask = `${brief}\n${delegationTask}`;
+              delegationTask = lane.crownable
+                ? `${brief}\n${delegationTask}\n\n${houseLaneClosing(lane.houseName)}`
+                : `${brief}\n${delegationTask}`;
             }
           }
         }

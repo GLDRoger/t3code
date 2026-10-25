@@ -303,6 +303,11 @@ it.effect.each([
           prompt.indexOf("House wills and notes"),
           prompt.indexOf("Implement the parser."),
         );
+        // The will is asked for in the working turn, after the task, not in a later turn.
+        assert.isBelow(
+          prompt.indexOf("Implement the parser."),
+          prompt.indexOf("Before your final reply, in this same turn: call lineage_crown"),
+        );
         const secondCrown = yield* call(second.childThreadId, "lineage_crown");
         assert.deepInclude(secondCrown.structuredContent, { houseName, regnalNumber: 2 });
         const secondAreas = yield* call(second.childThreadId, "lineage_areas");
@@ -342,6 +347,10 @@ it.effect.each([
           const areas = yield* call(reader.childThreadId, "lineage_areas");
           assert.notInclude(JSON.stringify(areas), "Keep the r1 parser invariant.");
         }
+        assert.notInclude(
+          (yield* orchestrator.getThreadProjection(reviewer.childThreadId)).messages[0]?.text ?? "",
+          "call lineage_crown",
+        );
         const noCrown = yield* call(reviewer.childThreadId, "lineage_crown");
         assert.isTrue(noCrown.isError);
         const noWill = yield* call(reviewer.childThreadId, "lineage_will", {

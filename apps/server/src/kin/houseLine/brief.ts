@@ -4,6 +4,8 @@
  * here; the per-task text belongs after this brief.
  */
 
+import { KIN_WILL_CHAR_LIMIT } from "@t3tools/contracts";
+
 import { regnalLabel } from "./roman.ts";
 
 const KIN_BRIEF_NOTE_LIMIT = 20;
@@ -113,4 +115,15 @@ function compareByte(left: string, right: string): number {
   if (left < right) return -1;
   if (left > right) return 1;
   return 0;
+}
+
+/**
+ * Closes a crownable lane's task. Asking up front keeps the will in the working
+ * turn, while the prompt cache is warm; the will gate's follow-up turn is the fallback.
+ */
+export function houseLaneClosing(houseName: string): string {
+  return [
+    "Before your final reply, in this same turn: call lineage_crown, then lineage_will.",
+    `The will is for the next agent in house ${houseName}, at most ${KIN_WILL_CHAR_LIMIT} characters: where the relevant code lives, what you changed and verified, what is still open, and any dead end the next agent should not retry.`,
+  ].join("\n");
 }

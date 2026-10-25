@@ -87,7 +87,7 @@ export class HouseLineService extends Context.Service<
     readonly openLane: (
       input: KinOpenLaneInput,
     ) => Effect.Effect<
-      { readonly laneId: string; readonly houseName: string } | null,
+      { readonly laneId: string; readonly houseName: string; readonly crownable: boolean } | null,
       HouseLineError
     >;
     readonly discardUnstartedLane: (threadId: ThreadIdValue) => Effect.Effect<void, HouseLineError>;
@@ -586,7 +586,7 @@ const make = Effect.gen(function* () {
         touched_paths_json = excluded.touched_paths_json,
         updated_at = excluded.updated_at
     `);
-    return { laneId, houseName };
+    return { laneId, houseName, crownable: access.crownable };
   });
 
   const discardUnstartedLane = Effect.fn("HouseLineService.discardUnstartedLane")(function* (
