@@ -1,0 +1,7 @@
+{
+  "intervalMs": 3600000,
+  "perHourCap": 3,
+  "minMsBetweenOpens": 600000,
+  "dedupeWindowMs": 86400000,
+  "triageModel": "openrouter/google/gemini-2.5-flash-lite"
+}

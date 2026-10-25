@@ -1,0 +1,8 @@
+{
+  "smokeBudgetMs": 480000,
+  "nightlyBudgetMs": 10800000,
+  "canaryCostCapUsdPerDay": 3,
+  "weeklyCostCapUsdPerWeek": 10,
+  "canaryEstimatedUsd": 0.2,
+  "weeklyEstimatedUsd": 2.5
+}

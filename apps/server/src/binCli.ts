@@ -31,6 +31,7 @@ import { themeCommand } from "./cli/theme.ts";
 import { traceCommand } from "./cli/trace.ts";
 import { triageCommand } from "./cli/triage.ts";
 import { resolveKinCliName } from "./cli/cliName.ts";
+import { kinCommand } from "./cli/kin.ts";
 
 const layerCliRuntime = Layer.mergeAll(NodeServices.layer, NetService.layer);
 
@@ -100,6 +101,7 @@ export const makeCli = ({
       traceCommand,
       doctorCommand,
       triageCommand,
+      kinCommand,
       cloudEnabled ? connectCommand : connectUnavailableCommand(name),
     ]),
   );
