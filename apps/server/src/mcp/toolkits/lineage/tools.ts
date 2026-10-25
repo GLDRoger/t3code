@@ -73,7 +73,6 @@ const LineageReadTool = Tool.make("lineage_read", {
 const LineageAreasTool = Tool.make("lineage_areas", {
   ...failure,
   description: "List houses and the lane-name patterns that map into them.",
-  parameters: Schema.Struct({}),
   success: Schema.Struct({ houses: Schema.Array(KinHouseLineHouseView) }),
 })
   .annotate(Tool.Readonly, true)
@@ -82,7 +81,6 @@ const LineageAreasTool = Tool.make("lineage_areas", {
 const LineageCrownTool = Tool.make("lineage_crown", {
   ...failure,
   description: "Crown this lane in its house and return the next regnal number.",
-  parameters: Schema.Struct({}),
   success: Schema.Struct({
     houseName: Schema.String,
     regnalNumber: Schema.Number,
@@ -101,7 +99,6 @@ const LineageWillTool = Tool.make("lineage_will", {
 const LineageLineagesTool = Tool.make("lineage_lineages", {
   ...failure,
   description: "Show houses, reigns, and lines. Reviewers receive reigns with will text removed.",
-  parameters: Schema.Struct({}),
   success: KinLineageLineagesResult,
 })
   .annotate(Tool.Readonly, true)
