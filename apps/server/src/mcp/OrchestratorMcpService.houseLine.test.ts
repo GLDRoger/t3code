@@ -258,6 +258,12 @@ it.effect.each([
           houseName,
           state: "running",
         });
+        if (!withCatalog) {
+          assert.equal(
+            (yield* houseLine.snapshot(projectId)).houses[0]?.agentMapPath,
+            `.kin/houses/${houseName}.md`,
+          );
+        }
         const createdAreas = yield* call(parentThreadId, "lineage_areas");
         assert.isNotTrue(createdAreas.isError, JSON.stringify(createdAreas.content));
         assert.include(JSON.stringify(createdAreas.structuredContent), houseName);
@@ -273,6 +279,19 @@ it.effect.each([
           body: "Keep the r1 parser invariant.",
         });
         assert.isNotTrue(will.isError, JSON.stringify(will.content));
+
+        const nested = yield* call(first.childThreadId, "delegate_task", {
+          house: "rogue-area",
+          task: "Help with the parser.",
+          mode: "async",
+          clientRequestId: "nested-house",
+        });
+        assert.isTrue(nested.isError);
+        assert.include(JSON.stringify(nested.content), "Only the main agent assigns houses");
+        assert.notInclude(
+          JSON.stringify((yield* houseLine.snapshot(projectId)).houses),
+          "rogue-area",
+        );
 
         const second = yield* delegate("sql: parser r2", "sql-r2", implementer);
         const child = yield* orchestrator.getThreadProjection(second.childThreadId);

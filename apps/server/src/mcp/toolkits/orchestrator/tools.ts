@@ -68,7 +68,7 @@ const OrchestratorCapabilitiesTool = Tool.make("orchestrator_capabilities", {
 
 const DelegateTaskTool = Tool.make("delegate_task", {
   description:
-    "Start one child agent with only `task`. No parent history. Separate checkout or PR per child: `isolation:'worktree'`. Keep `taskId` for `task_status` and `task_cancel`. Optional `profile`: a Kin agent profile from `.kin/agents` or `~/.kin/agents`, or an inline one saved to `.kin/agents/_adhoc/`. Optional `house`: the codebase area, which gives the child that area's wills and crowns it there.",
+    "Start one child agent with only `task`. No parent history. Separate checkout or PR per child: `isolation:'worktree'`. Keep `taskId` for `task_status` and `task_cancel`. Optional `profile`: a Kin agent profile from `.kin/agents` or `~/.kin/agents`, or an inline one saved to `.kin/agents/_adhoc/`. Optional `house` (main agent only): the codebase area, which gives the child that area's wills and crowns it there.",
   parameters: OrchestratorMcpDelegateTaskInput,
   success: OrchestratorMcpDelegateTaskResult,
   failure: OrchestratorMcpFailure,

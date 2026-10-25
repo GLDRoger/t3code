@@ -450,10 +450,13 @@ const make = Effect.gen(function* () {
       )
       .pipe(writeSql("Could not store houses."));
 
+  /** The main agent writes and maintains this charter; every heir's brief points to it. */
+  const houseCharterPath = (name: string) => `.kin/houses/${name}.md`;
+
   const ensureHouse = (projectId: ProjectIdValue, name: string) =>
     writeSql("Could not store a house.")(sql`
       INSERT INTO kin_house (id, project_id, name, agent_map_path)
-      VALUES (${houseKey(projectId, name)}, ${projectId}, ${name}, NULL)
+      VALUES (${houseKey(projectId, name)}, ${projectId}, ${name}, ${houseCharterPath(name)})
       ON CONFLICT (project_id, name) DO NOTHING
     `);
 

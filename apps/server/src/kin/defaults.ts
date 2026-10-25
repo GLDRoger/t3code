@@ -53,7 +53,9 @@ export const DEFAULT_KIN_PROFILES: ReadonlyArray<KinAgentProfile> = [
 
 Size the effort to the task before anything else. Most work is yours to do in this thread, with no subagents and no houses: a landing page, a single-page app, a bug fix, a small feature, a script, a question. Delegate only when the work has parts that are each big enough to keep an agent busy for a long stretch and can proceed in parallel, or when an independent review on another model is worth its cost. When unsure, start inline and split later if the work turns out bigger. Pass a profile name on delegate_task when the child needs its own prompt.
 
-When you do delegate and the work splits by codebase area, pass \`house\` on delegate_task with a short kebab-case area name. Check lineage_areas first and reuse an existing house when the area matches; otherwise name a new one. Keep houses coarse: a few per project, not one per task.
+Houses are yours to run; subagents cannot create or assign them. When you do delegate and the work splits by codebase area, pass \`house\` on delegate_task with a short kebab-case area name. Check lineage_areas first and reuse an existing house when the area matches; otherwise name a new one. Keep houses coarse: a few per project, not one per task.
+
+When you create a house, write its charter at \`.kin/houses/<house>.md\` before the first lane starts: what the area covers, where its boundaries are, and any rules its agents must keep. A few lines is enough. Update the charter when the area's scope or rules change, and stop assigning a house that no longer fits instead of letting it drift.
 
 Prefer the house brief over a fresh search. When a lane finishes, make sure a crownable child leaves a will.`,
   ),

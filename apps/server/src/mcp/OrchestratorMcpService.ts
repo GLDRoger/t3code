@@ -2145,6 +2145,14 @@ const make = Effect.gen(function* () {
     }),
     delegateTask: Effect.fn("OrchestratorMcpService.delegateTask")(function* (callerScope, input) {
       const { scope, parent } = yield* loadThreadCaller(callerScope, "delegate_task");
+      // Houses belong to the main agent: it creates, assigns, and maintains them.
+      const callerIsSubagent = parent.thread.lineage?.relationshipToParent === "subagent";
+      if (input.house !== undefined && callerIsSubagent) {
+        return yield* failure(
+          "invalid_request",
+          "Only the main agent assigns houses. Delegate without `house`, or tell your parent which area this work belongs to.",
+        );
+      }
       const parentRun = parent.runs
         .filter(ThreadManagementService.isActiveRun)
         .toSorted((left, right) => right.ordinal - left.ordinal)[0];
@@ -2236,7 +2244,7 @@ const make = Effect.gen(function* () {
       const parentNodeId = parentRun.rootNodeId;
       let preparedLane = false;
       const result = yield* Effect.gen(function* () {
-        if (!isRetryOfAcceptedDelegation && Option.isSome(houseLine)) {
+        if (!isRetryOfAcceptedDelegation && !callerIsSubagent && Option.isSome(houseLine)) {
           const label = input.title ?? delegationProfile?.name ?? input.house;
           if (label !== undefined) {
             // The child ID is deterministic. Prepare before dispatch publishes provider-start effects.
