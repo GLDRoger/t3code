@@ -172,7 +172,9 @@ describe("owner rules", () => {
       const loaded = yield* loadOwnerRules({ projectRoot: root, kinHome: home });
       expect(loaded.projectText).toContain(projectLine);
       expect(loaded.globalText).toContain(globalLine);
-      expect(loaded.importedFrom).toEqual([path.join(home, "OWNER-RULES.md")]);
+      // A case-insensitive volume (macOS default) finds the legacy file under the canonical name.
+      const caseSensitive = !(yield* fs.exists(path.join(home, "owner-rules.md")));
+      expect(loaded.importedFrom).toEqual(caseSensitive ? [path.join(home, "OWNER-RULES.md")] : []);
       const block = renderOwnerRules(loaded);
       expect(block).toContain(projectLine);
       expect(block).toContain(globalLine);
