@@ -6,12 +6,9 @@ import * as NodePath from "node:path";
 import { compareSemver, runBend, type BendInvocation } from "./bend.ts";
 
 /**
- * bendlang/bend#776 (Sep 2026, bend 2.0.4): `bend PROOF.bend` exited 0
- * when an `@unsafe` def sat in the import graph, and when PROOF.bend did
- * not import LAWS.bend. The missing-import case was fixed in 2.0.8.
- * This probe re-runs both on the installed binary and records the exit
- * codes. A documented version is not treated as a closed loophole unless
- * the probe says so.
+ * bendlang/bend#776: `bend PROOF.bend` exited 0 with an `@unsafe` def in the
+ * import graph, or without importing LAWS.bend (fixed in 2.0.8). This probe
+ * reruns both on the installed binary; only its result closes a loophole.
  */
 export const MISSING_IMPORT_FIX_VERSION = "2.0.8";
 

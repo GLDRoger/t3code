@@ -11,15 +11,9 @@ import {
 import { type ReplayStep } from "./machine.ts";
 
 /**
- * Compact numeric traces. Bend has no JSON library and its strings are
- * slow, so chaos and V3 speak this line format:
- *
- *   kin-trace 1
- *   # seed=<n> scenario=<id> commit=<sha>
- *   <move> <role> <will> <phase_after>
- *
- * Codes live next to the lane enum in `states.ts`. The phase before the
- * first line is `proposed`. `will` and `role` are inputs to that move.
+ * Compact numeric traces, since Bend has no JSON and slow strings. Format:
+ * `kin-trace 1`, `# seed=<n> scenario=<id> commit=<sha>`, then one
+ * `<move> <role> <will> <phase_after>` per line. Codes live in `states.ts`.
  */
 export interface KinTrace {
   readonly seed: number;

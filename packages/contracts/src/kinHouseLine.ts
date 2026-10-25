@@ -1,11 +1,7 @@
 /**
- * Kin house lines: crowns, wills, and notes for a codebase area.
- *
- * Upstream already uses "lineage" for a parent-to-child thread chain
- * (`OrchestrationV2AppThreadLineage`, and the `grok_subagent_lineage` replay
- * fixture). Kin's feature is namespaced `kin.houseLine` in code so those stay
- * distinct. The agent-facing MCP tools keep the `lineage_*` names from the
- * design.
+ * Kin house lines: crowns, wills, and notes for a codebase area. Namespaced
+ * `kin.houseLine` because upstream already uses "lineage" for thread chains;
+ * the agent-facing MCP tools keep the design's `lineage_*` names.
  */
 
 import * as Schema from "effect/Schema";

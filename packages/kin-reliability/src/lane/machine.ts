@@ -1,17 +1,9 @@
 import { type LaneMove, type LaneRole, type LaneState, type WillFlag } from "./states.ts";
 
 /**
- * TypeScript mirror of `bend/lane.bend`.
- *
- * This is the executable model chaos oracles replay. It is not a proof.
- * `kin verify` V2 proves the Bend laws; V3 checks that recorded traces
- * (including traces this function emits) stay inside the Bend model.
- * A disagreement is a failed level, not a silent preference for this file.
- *
- * Terminal phases (`crowned`, `failed`) stay put. `duplicate` never changes
- * the phase. Crown succeeds only for an author in `gated` with a will.
- * `will_missing` is not crowned by the Crown move; a late will is
- * `record_will`, which enters `gated`.
+ * Executable TypeScript mirror of `bend/lane.bend` that chaos oracles replay.
+ * Not a proof: `kin verify` checks traces stay inside the Bend model, and a
+ * disagreement fails that level. See the Bend laws for the transition rules.
  */
 export function crown(phase: LaneState, role: LaneRole, will: WillFlag): LaneState {
   if (phase === "crowned") return "crowned";

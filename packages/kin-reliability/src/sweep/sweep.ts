@@ -7,13 +7,9 @@ import * as NodePath from "node:path";
 import { configDir } from "../paths.ts";
 
 /**
- * Hourly error sweep. Q6 left the rate limit and the cap open; both live
- * in `config/sweep.json`, not in the grouping code.
- *
- * A fix lane is a `delegate_task` request. Lane 1 owns an optional
- * `profile` field on that tool; this request does not set one.
- * Opening a lane is not healing. Healing requires `kin verify` to pass
- * with the failing trace in the regression corpus.
+ * Hourly error sweep. The rate limit and cap live in `config/sweep.json`.
+ * A fix lane is a `delegate_task` request. Opening a lane is not healing:
+ * that needs `kin verify` to pass with the failing trace in the corpus.
  */
 export interface SweepConfig {
   readonly intervalMs: number;

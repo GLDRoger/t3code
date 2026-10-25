@@ -1,16 +1,7 @@
 /**
- * Lane states the reliability model codes against.
- *
- * Lane 2 (`kin/lineage-core`) owns the authoritative lane state machine.
- * These names are the DESIGN.md §13 set, copied here so this lane can
- * build chaos oracles and the Bend model without waiting on that branch:
- *
- *   proposed, running, awaiting_will, will_missing, gated, crowned, failed
- *
- * If lineage-core publishes a different enum, retarget this module and keep
- * the numeric trace codes stable. Roles are the crownable split this model
- * needs (`author` may be crowned, `reviewer` never is). Agent profiles
- * themselves belong to lane 1.
+ * Lane states from DESIGN.md §13 that the reliability model codes against.
+ * If the lane state machine's enum changes, retarget this module but keep the
+ * numeric trace codes stable. `author` may be crowned; `reviewer` never is.
  */
 
 export const LANE_STATES = [

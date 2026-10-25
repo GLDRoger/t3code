@@ -238,19 +238,29 @@ describe("CodexAdapterV2 runtime policy", () => {
     }),
   );
 
-  it.effect("appends the Kin prompt to Codex developer instructions", () =>
+  it.effect("sends the Kin prompt as thread instructions, never per turn", () =>
     Effect.gen(function* () {
-      const params = yield* CodexAdapterV2.buildCodexTurnStartParams({
-        nativeThreadId: "native-kin",
-        codexInput: [{ type: "text", text: "test" }],
-        runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: null },
-        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
-        hasT3Mcp: true,
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "plan",
+        cwd: null,
+      });
+      const thread = CodexAdapterV2.codexThreadRuntimeParams({
+        mcpSession: undefined,
+        runtimePolicy,
         kinPrompt: "Kin profile body",
       });
-      const instructions = params.collaborationMode?.settings.developer_instructions ?? "";
-      assert.include(instructions, "Kin profile body");
-      assert.notInclude(JSON.stringify(params.additionalContext ?? {}), "Kin profile body");
+      assert.strictEqual(thread.developerInstructions, "Kin profile body");
+      const turn = yield* CodexAdapterV2.buildCodexTurnStartParams({
+        nativeThreadId: "native-kin",
+        codexInput: [{ type: "text", text: "test" }],
+        runtimePolicy,
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+        hasT3Mcp: true,
+      });
+      // Per-turn developer_instructions would replace Codex's own Plan mode text.
+      assert.notInclude(JSON.stringify(turn), "Kin profile body");
+      assert.isUndefined(turn.collaborationMode?.settings.developer_instructions);
     }),
   );
 });

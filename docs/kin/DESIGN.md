@@ -12,6 +12,7 @@ Convention: any file path marked "(to confirm)" is a proposal or an unverified l
 ## 1. Goals and non-goals
 
 ### Goals
+
 - G1. Run Codex and Claude Code as first-class underlying agents. This is mandatory. Pi and the other upstream providers keep working but are optional.
 - G2. Give every main agent and every subagent its own system prompt. Subagents are malleable: each can have its own prompt and its own user MD files.
 - G3. Support global user MD files (`AGENTS.md`, `CLAUDE.md`) and project MD files without double-injecting what the CLIs already load natively.
@@ -22,6 +23,7 @@ Convention: any file path marked "(to confirm)" is a proposal or an unverified l
 - G8. One launchable app, with the assistant side as a separate module that reaches the IDE only through the interface in section 12.
 
 ### Non-goals
+
 - Not a new agent runtime. Kin drives the Codex and Claude Code CLIs through T3 Code's adapters and does not reimplement them.
 - Multi-model routing is not product-defining. Cross-model review and escalation are an optional policy, off by default (section 9).
 - No rewrite of Kin itself in Bend (section 10 explains why).
@@ -34,24 +36,24 @@ Convention: any file path marked "(to confirm)" is a proposal or an unverified l
 
 T3 Code calls itself an "agent harness control surface". It drives Claude Code, Codex, Cursor, Grok Build, OpenCode, Antigravity and Pi through their own CLIs and subscriptions. It has web, Electron desktop and mobile clients.
 
-| Area | Upstream location | What Kin uses it for |
-|---|---|---|
-| Server: WebSocket, orchestration, providers, checkpoints | `apps/server` | Host for the Lineage services |
-| Pure orchestrator (commands to events, no I/O) | `apps/server/src/orchestration-v2/Orchestrator.ts` | Crowning and will commands get serialized ordering for free (this replaces the old `flock`) |
-| Event sink (events, projections, receipt and outbox in one transaction) | `apps/server/src/orchestration-v2/EventSink.ts` | Kin projections commit with the run that produced them |
-| Effect worker (side effects after intent) | `apps/server/src/orchestration-v2/EffectWorker.ts` | Archivist runs, sweeps and follow-up turns |
-| Run finalization | `apps/server/src/orchestration-v2/RunFinalizationService.ts` | The "will before exit" gate hooks here (to confirm exact hook) |
-| Codex adapter | `apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts`, `apps/server/src/provider/CodexDeveloperInstructions.ts` | Per-agent system prompt goes in as `developer_instructions` |
-| Claude adapter | `apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts` | Per-agent system prompt goes in through `append-system-prompt` |
-| Shared instructions | `packages/provider-core/src/server/runtimeInstructions.ts`, `packages/provider-core/src/server/orchestrationInstructions.ts` | Kin prompt layers compose after these |
-| Provider drivers | `apps/server/src/provider/Drivers/{CodexDriver,ClaudeDriver,ClaudeHome,CodexHomeLayout,ClaudeSkills}.ts` | Home/config isolation for each agent profile (to confirm feasibility) |
-| Orchestrator MCP tools | `packages/contracts/src/orchestratorMcp.ts`, `apps/server/src/mcp/OrchestratorMcpService.ts`, `apps/server/src/mcp/toolkits/orchestrator/` | Already has `delegate_task` (roles `implementation`, `research`, `review`, `design`, `test`, `general`; isolation `shared` or `worktree`; mode `async` or `wait`), task status/cancel, `create_threads`, thread list/read/send/wait/interrupt, capabilities and `schedule_task` |
-| MCP toolkit pattern | `apps/server/src/mcp/toolkits/<name>/{tools,handlers}.ts`, `apps/server/src/mcp/McpToolAccess.ts` | New `lineage` toolkit, and per-role tool access (reviewers are blind to wills) |
-| Scheduled tasks | `apps/server/src/scheduledTasks/` | Hourly error sweep, archivist trigger checks |
-| Usage limits | `packages/contracts/src/providerUsageLimits.ts`, `apps/server/src/usage/` | Optional usage-aware scheduling |
-| Review service | `apps/server/src/review/ReviewService.ts` | SHIP / FIX FIRST verdicts (to confirm fit) |
-| Migrations | `apps/server/src/persistence/Migrations/` | Lineage tables |
-| Contracts and RPC | `packages/contracts/src/rpc.ts` | New Kin RPCs for the UI |
+| Area                                                                    | Upstream location                                                                                                                          | What Kin uses it for                                                                                                                                                                                                                                                            |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Server: WebSocket, orchestration, providers, checkpoints                | `apps/server`                                                                                                                              | Host for the Lineage services                                                                                                                                                                                                                                                   |
+| Pure orchestrator (commands to events, no I/O)                          | `apps/server/src/orchestration-v2/Orchestrator.ts`                                                                                         | Crowning and will commands get serialized ordering for free (this replaces the old `flock`)                                                                                                                                                                                     |
+| Event sink (events, projections, receipt and outbox in one transaction) | `apps/server/src/orchestration-v2/EventSink.ts`                                                                                            | Kin projections commit with the run that produced them                                                                                                                                                                                                                          |
+| Effect worker (side effects after intent)                               | `apps/server/src/orchestration-v2/EffectWorker.ts`                                                                                         | Archivist runs, sweeps and follow-up turns                                                                                                                                                                                                                                      |
+| Run finalization                                                        | `apps/server/src/orchestration-v2/RunFinalizationService.ts`                                                                               | The "will before exit" gate hooks here (to confirm exact hook)                                                                                                                                                                                                                  |
+| Codex adapter                                                           | `apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts`, `apps/server/src/provider/CodexDeveloperInstructions.ts`                    | Per-agent system prompt goes in as `developer_instructions`                                                                                                                                                                                                                     |
+| Claude adapter                                                          | `apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts`                                                                             | Per-agent system prompt goes in through `append-system-prompt`                                                                                                                                                                                                                  |
+| Shared instructions                                                     | `packages/provider-core/src/server/runtimeInstructions.ts`, `packages/provider-core/src/server/orchestrationInstructions.ts`               | Kin prompt layers compose after these                                                                                                                                                                                                                                           |
+| Provider drivers                                                        | `apps/server/src/provider/Drivers/{CodexDriver,ClaudeDriver,ClaudeHome,CodexHomeLayout,ClaudeSkills}.ts`                                   | Home/config isolation for each agent profile (to confirm feasibility)                                                                                                                                                                                                           |
+| Orchestrator MCP tools                                                  | `packages/contracts/src/orchestratorMcp.ts`, `apps/server/src/mcp/OrchestratorMcpService.ts`, `apps/server/src/mcp/toolkits/orchestrator/` | Already has `delegate_task` (roles `implementation`, `research`, `review`, `design`, `test`, `general`; isolation `shared` or `worktree`; mode `async` or `wait`), task status/cancel, `create_threads`, thread list/read/send/wait/interrupt, capabilities and `schedule_task` |
+| MCP toolkit pattern                                                     | `apps/server/src/mcp/toolkits/<name>/{tools,handlers}.ts`, `apps/server/src/mcp/McpToolAccess.ts`                                          | New `lineage` toolkit, and per-role tool access (reviewers are blind to wills)                                                                                                                                                                                                  |
+| Scheduled tasks                                                         | `apps/server/src/scheduledTasks/`                                                                                                          | Hourly error sweep, archivist trigger checks                                                                                                                                                                                                                                    |
+| Usage limits                                                            | `packages/contracts/src/providerUsageLimits.ts`, `apps/server/src/usage/`                                                                  | Optional usage-aware scheduling                                                                                                                                                                                                                                                 |
+| Review service                                                          | `apps/server/src/review/ReviewService.ts`                                                                                                  | SHIP / FIX FIRST verdicts (to confirm fit)                                                                                                                                                                                                                                      |
+| Migrations                                                              | `apps/server/src/persistence/Migrations/`                                                                                                  | Lineage tables                                                                                                                                                                                                                                                                  |
+| Contracts and RPC                                                       | `packages/contracts/src/rpc.ts`                                                                                                            | New Kin RPCs for the UI                                                                                                                                                                                                                                                         |
 
 Upstream's `AGENTS.md` rules carry over. Complexity stays at the adapter boundary, orchestration stays pure, and the UI stays dumb. Server features are Effect services, and transports (WS handler, MCP tool) stay thin.
 
@@ -91,19 +93,20 @@ Our fork `GLDRoger/t3code` added `delegate_task`, `schedule_task`, `task_status`
 ## 4. Agents, system prompts and MD files
 
 ### 4.1 Agent profiles
+
 An agent profile is a file. Project profiles live in `.kin/agents/<name>.md` and user profiles in `~/.kin/agents/<name>.md` (to confirm). Each has frontmatter plus a body, and the body is the system prompt.
 
 ```yaml
 ---
 name: house-implementer
-role: implementer          # main | implementer | reviewer | researcher | archivist | custom
-provider: codex            # codex | claudeAgent | pi | inherit
+role: implementer # main | implementer | reviewer | researcher | archivist | custom
+provider: codex # codex | claudeAgent | pi | inherit
 model: inherit
 reasoningEffort: inherit
-userMd:                    # extra MD files this agent alone reads
+userMd: # extra MD files this agent alone reads
   - .kin/md/house-rules.md
   - ~/.kin/md/nishchay-style.md
-tools:                     # lineage toolkit access
+tools: # lineage toolkit access
   lineage: [add, read, areas, crown, will, lineages]
 crownable: true
 seesWills: true
@@ -115,6 +118,7 @@ You are an implementer in house {{house}}. ...
 - Profiles are malleable. A main agent can define an ad-hoc subagent by passing an inline prompt and MD list, which is saved to `.kin/agents/_adhoc/` for audit.
 
 ### 4.2 Prompt composition order
+
 1. T3 runtime and orchestration instructions (upstream, unchanged).
 2. The Kin base prompt: lineage rules, the "Start here" step, the will requirement.
 3. The profile body (role prompt).
@@ -126,6 +130,7 @@ Global MD files are not re-injected when the CLI already loads them. Claude Code
 Delivery: Codex gets the composed prompt through `developer_instructions` (CodexAdapterV2) and Claude through `append-system-prompt` (ClaudeAdapterV2).
 
 ### 4.3 Provider-native subagents
+
 Claude Code and Codex can spawn their own internal subagents. Kin cannot fully control those prompts. Only Kin-spawned subagents (separate T3 threads) are guaranteed their own profile. Whether profiles can also be mirrored into native subagent definitions (for example `.claude/agents/`) is open question Q4.
 
 ---
@@ -133,6 +138,7 @@ Claude Code and Codex can spawn their own internal subagents. Kin cannot fully c
 ## 5. Lineages (core)
 
 ### 5.1 Concepts
+
 - House: an area of the codebase, for example `server-orchestration` or `web-ui`. Lanes map to houses by lane-name regex patterns, held in `.kin/houses.tsv` (pattern → house). This replaces the old `lineages.tsv`, and an importer reads the old file.
 - Lane: one unit of work run by one agent thread. A lane's identity is carried in thread metadata, which replaces the old `EEVEE_LANE_LABEL`. The env var is still exported for compatibility.
 - Crowning: when an agent finishes a lane, it is crowned in its house with the next regnal number (for example "web-ui IV"). Numbers come from a serialized orchestrator command, so they stay monotonic without file locks.
@@ -141,25 +147,29 @@ Claude Code and Codex can spawn their own internal subagents. Kin cannot fully c
 - Notes board: a shared, append-only board of short notes tagged by house.
 
 ### 5.2 Lineage MCP toolkit
+
 New toolkit: `apps/server/src/mcp/toolkits/lineage/{tools,handlers}.ts` (to confirm, following the upstream pattern).
 
-| Tool | Purpose |
-|---|---|
-| `lineage_add` | Add a note to the board, tagged with house(s) |
-| `lineage_read` | Read notes (by house, since, author) |
-| `lineage_areas` | List houses and their patterns |
-| `lineage_crown` | Crown the calling agent in its house and return its regnal number |
-| `lineage_will` | Write the will (max 2,500 chars; rejected if longer) |
-| `lineage_lineages` | Show houses, reigns and lines |
+| Tool               | Purpose                                                           |
+| ------------------ | ----------------------------------------------------------------- |
+| `lineage_add`      | Add a note to the board, tagged with house(s)                     |
+| `lineage_read`     | Read notes (by house, since, author)                              |
+| `lineage_areas`    | List houses and their patterns                                    |
+| `lineage_crown`    | Crown the calling agent in its house and return its regnal number |
+| `lineage_will`     | Write the will (max 2,500 chars; rejected if longer)              |
+| `lineage_lineages` | Show houses, reigns and lines                                     |
 
 ### 5.3 Brief assembly (heir view)
+
 Each brief for a crownable agent opens with this, in order:
+
 1. **Start here**: which files and notes to read first, with a pointer to the house agent map.
 2. **Your family**: wills from the agent's own line (same lane lineage, via `line_of()`), newest first.
 3. **The court**: the latest wills from other houses that touch this lane's files.
 4. **House wills and notes**: the rest of the house's wills and recent notes.
 
 ### 5.4 Rules
+
 - A will is required before exit. If a crownable lane's run ends with no will, run finalization sends one follow-up turn asking for it. If the will is still missing, the lane is marked `will_missing` and shown in the UI. Agents cannot skip the will silently.
 - Reviewers are never crowned and are blind to wills. A reviewer profile has `crownable: false` and `seesWills: false`, and `McpToolAccess` denies `lineage_will` reads for it. Reviews stay independent of what the author's line believes.
 - First reads is required. Our evaluation (25 crownings, 22 wills) found heirs read only 16 of 28 predecessor wills. So every lane report must open with a "First reads" line listing which wills and notes the agent actually read. The server checks it against the `lineage_read` calls it logged, and the UI flags any mismatch.
@@ -183,15 +193,21 @@ The archivist and the memory keeper are the same pattern at different scopes. We
 
 ```ts
 interface KeeperScope {
-  id: string;                         // "repo:<projectId>" | "life:<userId>"
-  sources(): AsyncIterable<Entry>;    // wills+notes | day-thread entries
-  trigger: { minNewWills?: number; minNewNotes?: number; minNewEntries?: number; schedule?: string };
+  id: string; // "repo:<projectId>" | "life:<userId>"
+  sources(): AsyncIterable<Entry>; // wills+notes | day-thread entries
+  trigger: {
+    minNewWills?: number;
+    minNewNotes?: number;
+    minNewEntries?: number;
+    schedule?: string;
+  };
   output: { path: string; maxBytes: number; maxAgeHours: number };
-  rebuildEvery: number;               // full rebuild cadence in passes
+  rebuildEvery: number; // full rebuild cadence in passes
 }
 ```
 
 ### Archivist (repo scope; Phase 1B)
+
 - One long-lived session per project, using the main agent's provider by default.
 - Runs when at least 8 new wills or at least 30 new notes have piled up since the last pass.
 - Writes `chronicle.md` starting with "As of <time>".
@@ -206,6 +222,7 @@ interface KeeperScope {
 ## 8. Reliability: chaos program, self-healing, owner rules
 
 ### 8.1 Chaos program
+
 - Four tiers of fault injection, from simple to severe. The tier contents get re-derived from the old `CHAOS-PROGRAM.md`, which should be imported first.
 - Nine invariant oracles. Two examples are "no lost work" and "every action recorded". The full list is ported from the old program and expressed as checks over the T3 event log and projections.
 - Hooks are compiled in but active only when `KIN_CHAOS=1` (to confirm name). With the flag off, they're no-ops.
@@ -213,11 +230,13 @@ interface KeeperScope {
 - Where an oracle fits a model, it is also checked by the Bend verification layer (section 10.3).
 
 ### 8.2 Self-healing
+
 - An hourly error sweep is a scheduled task. It reads server logs, failed runs and oracle failures, deduplicates them by signature, and opens a fix lane per new signature in the right house.
 - Rate limit and dedupe live in the sweep. The parameters are open question Q6.
 - A fix only counts as healed once `kin verify` passes with the failing trace in the regression corpus (section 10.4).
 
 ### 8.3 Durable owner rules
+
 - Owner rules live in files so they survive context compaction: `.kin/OWNER-RULES.md` in the project and `~/.kin/OWNER-RULES.md` globally (to confirm). They are injected in every brief by the prompt composer, never only in chat.
 - They replace the old `OWNER-AUTHORIZATION.md` and `LEDGER.md` pattern. An importer reads those files.
 
@@ -240,6 +259,7 @@ The policy sits behind a settings toggle and a policy module, so the core never 
 Nishchay's direction: Bend is a verification layer that every agent uses to check its own work. It ties into the chaos program (oracles and invariant checks) and into self-healing (verifying fixes).
 
 ### 10.1 What the sources actually say
+
 - **Verification is real and central to Bend 2.** Bend 2 calls itself "a fast language that blocks AI mistakes via proof". Its type checker is a proof checker. Owners write rules in `LAWS.bend`, agents write proofs in `PROOF.bend`, and `bend PROOF.bend` must pass before committing. Its own pitch is "`LAWS.bend` is `AGENTS.md` backed by proof". Parallel execution (C, CUDA, Metal; divide-and-conquer across cores or the GPU) is a second pillar, not the only one. Bend 1 and HVM do not carry over. The claim Nishchay heard is therefore directionally right.
 - **Fast checking is the project's own claim.** The project says the checker runs in under a second where other proof assistants take minutes. Its benchmarks are its own, and it says it has fewer checker benchmarks than it would like. The bend2.dev notes record 0.08 s for one `--check-only` run on an M3 Max. I found no independent evaluation.
 - **The guarantees are narrow.**
@@ -252,25 +272,29 @@ Nishchay's direction: Bend is a verification layer that every agent uses to chec
 Bottom line: Bend is a credible proof checker for Bend code, and it is young. Kin's own code and most client code are TypeScript, so Bend cannot verify them directly. The honest design uses Bend in three ways: (a) proofs for Bend code and for small Bend models of critical logic, (b) fast, massively parallel checking of those models against real execution traces and generated inputs, and (c) a harness-owned gate, so an agent cannot quietly weaken or skip the check.
 
 ### 10.2 The layer: `kin verify`
+
 Every agent calls `kin verify` (also exposed as the MCP tool `lineage_verify`) before it asks to be crowned. Kin then reruns the same check itself, and the crown depends on Kin's run, not the agent's. The command runs whichever levels the project has:
 
-| Level | What runs | What it proves or checks | Applies to |
-|---|---|---|---|
-| V0 Gate integrity | Kin checks law ownership and the Bend config | `LAWS.bend` unchanged, or its diff approved by the owner or a reviewer; `PROOF.bend` imports `LAWS.bend`; no `@unsafe` or foreign defs reachable from proofs; exit status 0 | any project with `LAWS.bend` |
-| V1 Proofs | `bend PROOF.bend` (optional `--verdict` strict mode) | the written laws hold for the Bend code | Bend code, and Bend models |
-| V2 Model laws | Laws over a small Bend model of critical logic | e.g. for Kin: regnal numbers strictly increase within a house; no lane is crowned without a will; a reviewer is never crowned; a lane in `will_missing` never becomes `crowned` without a will | Kin itself (lane state machine), and client modules with a clear state machine |
-| V3 Trace conformance | A Bend program replays recorded event-log traces through the model, splitting the trace set in halves so the work spreads over cores or the GPU | the real TypeScript system's observed behaviour stays inside the proven model | chaos runs, CI and replay fixtures |
-| V4 Bounded property sweeps | Bend generates many inputs or operation sequences for the model and checks unproven properties in parallel | a property survives exhaustive checking up to a bound; it is evidence, not proof | invariants not yet proven |
+| Level                      | What runs                                                                                                                                       | What it proves or checks                                                                                                                                                                       | Applies to                                                                     |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| V0 Gate integrity          | Kin checks law ownership and the Bend config                                                                                                    | `LAWS.bend` unchanged, or its diff approved by the owner or a reviewer; `PROOF.bend` imports `LAWS.bend`; no `@unsafe` or foreign defs reachable from proofs; exit status 0                    | any project with `LAWS.bend`                                                   |
+| V1 Proofs                  | `bend PROOF.bend` (optional `--verdict` strict mode)                                                                                            | the written laws hold for the Bend code                                                                                                                                                        | Bend code, and Bend models                                                     |
+| V2 Model laws              | Laws over a small Bend model of critical logic                                                                                                  | e.g. for Kin: regnal numbers strictly increase within a house; no lane is crowned without a will; a reviewer is never crowned; a lane in `will_missing` never becomes `crowned` without a will | Kin itself (lane state machine), and client modules with a clear state machine |
+| V3 Trace conformance       | A Bend program replays recorded event-log traces through the model, splitting the trace set in halves so the work spreads over cores or the GPU | the real TypeScript system's observed behaviour stays inside the proven model                                                                                                                  | chaos runs, CI and replay fixtures                                             |
+| V4 Bounded property sweeps | Bend generates many inputs or operation sequences for the model and checks unproven properties in parallel                                      | a property survives exhaustive checking up to a bound; it is evidence, not proof                                                                                                               | invariants not yet proven                                                      |
 
 Levels the TypeScript tests and chaos oracles already cover are not duplicated in Bend. Bend is added where a model plus laws gives a stronger guarantee than a test.
 
 ### 10.3 Ties to the chaos program
+
 - Each of the nine oracles is labelled `proved-in-model` (V2), `trace-checked` (V3), `swept` (V4) or `runtime-only` (needs the TypeScript oracle). For example, "every action recorded" fits V3 as a per-trace check; "no lost work" needs runtime checks over git and worktree state and stays mostly runtime-only.
 - Chaos runs export traces in a compact line or numeric format, because Bend has no JSON library and its strings are slow linked lists. V3 checks every trace from every tier.
 - A trace the model rejects is either a real bug, which opens a fix lane, or a model gap, which opens a model lane where the owner reviews the law change.
 
 ### 10.4 Ties to self-healing
+
 A fix lane opened by the hourly sweep only counts as healed when all of these hold:
+
 1. The failing trace or input is added to the regression corpus.
 2. V3 passes on it, together with the whole corpus.
 3. V1 and V2 still pass.
@@ -279,6 +303,7 @@ A fix lane opened by the hourly sweep only counts as healed when all of these ho
 The fix lane's will records which levels ran.
 
 ### 10.5 What we are not claiming
+
 - Bend does not formally verify TypeScript. V2 and V3 verify a model and check that real traces conform to it.
 - V4 is bounded checking, not proof.
 - Speed figures are the Bend project's own. Phase 1C should measure `kin verify` on our own models and corpus before we rely on it in the hot path.
@@ -286,6 +311,7 @@ The fix lane's will records which levels ran.
 - Bend is opt-in per project. It runs on Linux and macOS only (no Windows; WSL works), and needs clang 14+ for native builds.
 
 ### 10.6 Toolchain support
+
 - Detect the `bend` binary, pin a version per project, and record the version in every gate result.
 - Offer to add Bend's recommended AGENTS.md block: run `bend guide`, keep rules in `LAWS.bend`, run `bend PROOF.bend` before committing, and parallelize. Add Kin's stricter line: never edit `LAWS.bend` without asking.
 - Show `LAWS.bend` in a house's agent map as that house's hard rules.
@@ -305,13 +331,13 @@ The fix lane's will records which levels ran.
 
 The bridge is narrow, explicit and typed, and every call is logged on both sides. The assistant never drives agents, edits code, or reads raw wills or notes.
 
-| Direction | Call | Effect | Consent |
-|---|---|---|---|
-| Assistant → IDE | `ide.status({projectId?})` | Read-only: open lanes, recent crownings, chronicle head ("As of" + first section), failing gates | none |
-| Assistant → IDE | `ide.request_lane({projectId, goal, house?, priority, sagaId?})` | Creates a lane in `proposed` state | the user approves in the IDE before it runs (default) |
-| Assistant → IDE | `ide.subscribe({events: ["lane.crowned","lane.failed","review.verdict","sweep.opened"]})` | Event stream | none |
-| IDE → Assistant | `assistant.post_to_day({summary, links, sagaHint?})` | Appends an entry to today's day thread; the memory keeper files it | none |
-| IDE → Assistant | `assistant.saga_context({sagaId})` | Read-only saga summary the main agent can attach to a brief | the user's per-project toggle |
+| Direction       | Call                                                                                      | Effect                                                                                           | Consent                                               |
+| --------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------- |
+| Assistant → IDE | `ide.status({projectId?})`                                                                | Read-only: open lanes, recent crownings, chronicle head ("As of" + first section), failing gates | none                                                  |
+| Assistant → IDE | `ide.request_lane({projectId, goal, house?, priority, sagaId?})`                          | Creates a lane in `proposed` state                                                               | the user approves in the IDE before it runs (default) |
+| Assistant → IDE | `ide.subscribe({events: ["lane.crowned","lane.failed","review.verdict","sweep.opened"]})` | Event stream                                                                                     | none                                                  |
+| IDE → Assistant | `assistant.post_to_day({summary, links, sagaHint?})`                                      | Appends an entry to today's day thread; the memory keeper files it                               | none                                                  |
+| IDE → Assistant | `assistant.saga_context({sagaId})`                                                        | Read-only saga summary the main agent can attach to a brief                                      | the user's per-project toggle                         |
 
 Contract file: `packages/contracts/src/kinBridge.ts` (to confirm). Transport: an in-process service call when both run in one server, and authenticated RPC if they are split later.
 
@@ -319,22 +345,22 @@ Contract file: `packages/contracts/src/kinBridge.ts` (to confirm). Transport: an
 
 ## 13. Data model
 
-| Entity | Key fields | Notes |
-|---|---|---|
-| House | `id`, `projectId`, `name`, `patterns[]`, `agentMapPath` | patterns from `.kin/houses.tsv` |
-| Lane | `id`, `projectId`, `houseId`, `label`, `threadId`, `lineId`, `profile`, `state` (`proposed`/`running`/`awaiting_will`/`will_missing`/`gated`/`crowned`/`failed`) | one T3 thread per lane |
-| Line | `id`, `houseId`, `rootLaneId` | resolves Your family |
-| Crowning | `laneId`, `houseId`, `regnalNumber`, `agentProfile`, `provider`, `model`, `at` | number assigned by a serialized command |
-| Will | `id`, `crowningId`, `body` (≤ 2,500 chars), `at` | hidden from reviewer profiles |
-| Note | `id`, `houseIds[]`, `authorLaneId`, `body`, `at`, `flaggedMisleadingBy[]` | append-only |
-| LaneReport | `laneId`, `firstReads[]`, `misleadingNotes[]`, `verifiedReads[]` | `verifiedReads` from the server's read log |
-| Chronicle | `projectId`, `asOf`, `path`, `bytes`, `pass`, `rebuilt` | fresh if timestamped, ≤ 12 h old and ≤ 24 KB |
-| AgentProfile | `name`, `role`, `provider`, `model`, `promptPath`, `userMd[]`, `crownable`, `seesWills` | file-backed |
-| OwnerRule | `scope` (global/project), `path`, `hash` | injected in every brief |
-| GateResult | `laneId`, `kind` (`bend`/`tests`/…), `passed`, `output`, `at` | Bend proof gate |
-| DayThread (P2) | `date`, `threadId`, `entries[]` | one per local day |
-| Saga (P2) | `id`, `title`, `status`, `parentSagaIds[]`, `relatedSagaIds[]`, `summary`, `asOf` | maintained by the memory keeper |
-| SagaEntry (P2) | `sagaId`, `dayThreadId`, `entryRef`, `at` | links a day entry to a saga |
+| Entity         | Key fields                                                                                                                                                       | Notes                                        |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| House          | `id`, `projectId`, `name`, `patterns[]`, `agentMapPath`                                                                                                          | patterns from `.kin/houses.tsv`              |
+| Lane           | `id`, `projectId`, `houseId`, `label`, `threadId`, `lineId`, `profile`, `state` (`proposed`/`running`/`awaiting_will`/`will_missing`/`gated`/`crowned`/`failed`) | one T3 thread per lane                       |
+| Line           | `id`, `houseId`, `rootLaneId`                                                                                                                                    | resolves Your family                         |
+| Crowning       | `laneId`, `houseId`, `regnalNumber`, `agentProfile`, `provider`, `model`, `at`                                                                                   | number assigned by a serialized command      |
+| Will           | `id`, `crowningId`, `body` (≤ 2,500 chars), `at`                                                                                                                 | hidden from reviewer profiles                |
+| Note           | `id`, `houseIds[]`, `authorLaneId`, `body`, `at`, `flaggedMisleadingBy[]`                                                                                        | append-only                                  |
+| LaneReport     | `laneId`, `firstReads[]`, `misleadingNotes[]`, `verifiedReads[]`                                                                                                 | `verifiedReads` from the server's read log   |
+| Chronicle      | `projectId`, `asOf`, `path`, `bytes`, `pass`, `rebuilt`                                                                                                          | fresh if timestamped, ≤ 12 h old and ≤ 24 KB |
+| AgentProfile   | `name`, `role`, `provider`, `model`, `promptPath`, `userMd[]`, `crownable`, `seesWills`                                                                          | file-backed                                  |
+| OwnerRule      | `scope` (global/project), `path`, `hash`                                                                                                                         | injected in every brief                      |
+| GateResult     | `laneId`, `kind` (`bend`/`tests`/…), `passed`, `output`, `at`                                                                                                    | Bend proof gate                              |
+| DayThread (P2) | `date`, `threadId`, `entries[]`                                                                                                                                  | one per local day                            |
+| Saga (P2)      | `id`, `title`, `status`, `parentSagaIds[]`, `relatedSagaIds[]`, `summary`, `asOf`                                                                                | maintained by the memory keeper              |
+| SagaEntry (P2) | `sagaId`, `dayThreadId`, `entryRef`, `at`                                                                                                                        | links a day entry to a saga                  |
 
 Storage: Lineage tables go in the T3 server database via `apps/server/src/persistence/Migrations/`, written through orchestration events so replay stays consistent. A human-readable mirror goes in `.kin/` in the repo (houses, profiles, owner rules, chronicle). Whether wills and notes are also mirrored to the repo is open question Q3.
 
@@ -343,12 +369,14 @@ Storage: Lineage tables go in the T3 server database via `apps/server/src/persis
 ## 14. Roadmap
 
 ### Branching model (applies to every phase)
+
 - Step 0: merge upstream `pingdotgg/t3code` `main` into `GLDRoger/t3code` `main`. Resolve conflicts with the old fork's MCP tools in favour of upstream unless Q1 finds a gap.
 - Create a long-lived `kin` branch from the merged `main`. `kin` is Kin's trunk.
 - Feature branches and worktrees (for example `kin/lineage-core`, `kin/archivist`) branch from `kin` and merge back into `kin`. Nothing Kin-specific lands on `main`.
 - Upstream updates flow `pingdotgg/main` → fork `main` → `kin`, on a regular cadence (Q7).
 
 ### Phase 1A: Kin core and lineages (first milestone; a coding agent can start now)
+
 1. On the `kin` branch: add `docs/kin/DESIGN.md` (this file), keep upstream's AGENTS.md rules, rename the app to Kin, and add the `kin` CLI command (to confirm how upstream's `t3` CLI entry is packaged). Change only name and branding strings in this step.
 2. Add Lineage tables and migrations: house, lane, line, crowning, will, note, lane report.
 3. Add `LineageService` (Effect service) and orchestrator commands for crown and will, so regnal numbers are serialized.
@@ -362,6 +390,7 @@ Storage: Lineage tables go in the T3 server database via `apps/server/src/persis
 11. Add a minimal UI: a Houses panel listing reigns and wills, and lane state on each thread.
 
 Acceptance:
+
 - A Codex lane and a Claude Code lane in the same house each get crowned with consecutive numbers and leave wills.
 - The heir's brief shows Your family first.
 - The reviewer's tool list has no will read.
@@ -370,21 +399,25 @@ Acceptance:
 - Tests use the upstream testkit.
 
 ### Phase 1B: archivist and context layers
+
 - `packages/keeper` with the archivist scope and its triggers (8 wills / 30 notes), freshness rules (As of, 12 h, 24 KB), verbatim newer wills, no summaries of summaries, and a rebuild every 4th pass.
 - Agent maps at `docs/agent-maps/<house>.md`, and the `CLAUDE.md` one-line import.
 - Owner rules files injected in every brief.
 
 ### Phase 1C: reliability and Bend
+
 - Chaos hooks behind the env flag, 4 tiers, 9 oracles as tests.
 - The hourly error sweep opening fix lanes.
 - Bend verification layer: `kin verify` with V0 gate integrity and V1 proofs; a Bend model of the lane state machine with V2 laws; V3 trace conformance over chaos traces; V4 sweeps; and toolchain support (section 10). Measure check times on our own corpus.
 - The optional routing policy (section 9), behind a toggle.
 
 ### Phase 2: assistant side
+
 - Assistant module, day threads, sagas, the memory keeper (Keeper at life scope), the bridge (section 12), and assistant views in the same app.
 - Evaluate Cua or a similar open-source agent desktop as a base before building.
 
 ### Phase 3: experiments
+
 - Extend Bend models to more of the event log and to client projects with clear state machines; try `--verdict` as the default strict mode.
 - Warm-start, if later evaluations show more than a marginal gain.
 
@@ -410,6 +443,7 @@ Acceptance:
 Owner's reference setup (24 Oct 2026): two $200 Claude plans, a $100 Codex plan, a $100 Grok plan, and about $100/month on OpenRouter for smaller models. Comfortable throughput is about 8 billion tokens a week, with 10 to 20 agents orchestrated by one main thread.
 
 Rules:
+
 - Concurrency is a setting. It defaults to the owner's numbers (up to 20 agents per main thread), and a lower cap applies per provider plan. A main agent only spawns a subagent for separable work; small tasks stay inline.
 - Cache first. Prompts are composed in a fixed order: runtime rules, Kin base, profile, user MD files, house map, chronicle and wills, and finally the per-task brief. Everything before the brief is byte-stable across agents in a house, so provider prompt caches (Anthropic prompt caching, OpenAI cached input) hit. Volatile data such as timestamps and counters never goes in the stable prefix.
 - Reuse context. House maps, the chronicle and wills are built once and shared by every agent in the house. Repo reads go through a shared, content-hashed read cache per lane run, and heirs start from the will rather than re-exploring.
@@ -422,6 +456,7 @@ Rules:
 ---
 
 ## Sources
+
 - T3 Code: https://github.com/pingdotgg/t3code (README, AGENTS.md, docs/internals/overview.md, docs/internals/providers.md, packages/contracts/src/orchestratorMcp.ts, repo tree), read 24 Oct 2026.
 - Bend: https://bend-lang.com/, https://github.com/HigherOrderCO/Bend (README, Limitations), https://bend2.dev/notes/what-is-bend2/, https://bend2.dev/notes/bend2-vs-lean/, https://bend2.dev/notes/ai-agents-bend/, https://bend2.dev/learn/types-as-specifications/, and https://github.com/bendlang/bend/issues/776, read 24 Oct 2026.
 - Prior lineage/EEVEE work: the T3 thread 981458cb (session ac79ff46), summarized in our earlier research.

@@ -2,12 +2,9 @@ import { assignRegnal, replay, type ReplayStep } from "../lane/machine.ts";
 import type { LaneState } from "../lane/states.ts";
 
 /**
- * Nine invariant oracles, ported from the EEVEE chaos program and
- * restated for Kin: threads, lanes, wills, the event log, worktrees,
- * and provider streams.
- *
- * `coverage` is how DESIGN.md §10.3 asks each oracle to be labelled.
- * The TypeScript check always runs. The label says what Bend adds.
+ * Nine invariant oracles over threads, lanes, wills, the event log, worktrees,
+ * and provider streams. `coverage` labels each one as DESIGN.md §10.3 asks:
+ * the TypeScript check always runs; the label says what Bend adds.
  */
 export const ORACLE_IDS = [
   "I-LOSS",

@@ -1,10 +1,6 @@
 /**
- * Brief slot for the prompt composer.
- *
- * Lane 1 owns the real PromptComposer (profiles, user MD, provider delivery).
- * It should call `KinPromptBriefProvider.briefFor` for the brief slot and keep
- * this prefix byte-identical across tasks. `KinPromptComposer` is the stub
- * until that lands: stable prefix, then the brief, then the task.
+ * Brief slot for the prompt composer. Callers use `KinPromptBriefProvider.briefFor`
+ * and keep the prefix byte-identical across tasks: stable prefix, brief, task.
  */
 
 import * as Context from "effect/Context";

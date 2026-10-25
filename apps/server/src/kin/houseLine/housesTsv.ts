@@ -1,13 +1,7 @@
 /**
- * `.kin/houses.tsv` maps a lane-name regex to a house.
- *
- * Columns, tab-separated: pattern, house, optional agent-map path.
- * Blank lines and `#` comments are ignored. A header row whose first cell is
- * `pattern`, `regex`, or `lane` is skipped.
- *
- * The old `lineages.tsv` file uses the same shape with the house column named
- * `lineage` (or `line`). `importLineagesTsv` rewrites that file into houses.tsv
- * text.
+ * `.kin/houses.tsv`: tab-separated pattern, house, optional agent-map path.
+ * Blank lines, `#` comments, and a `pattern`/`regex`/`lane` header are skipped.
+ * `importLineagesTsv` rewrites the older `lineages.tsv` shape into this one.
  */
 
 export interface KinHousePatternRule {

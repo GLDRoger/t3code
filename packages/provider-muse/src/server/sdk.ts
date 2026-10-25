@@ -71,12 +71,9 @@ export function museVerbatimPath(path: string): string {
 }
 
 /**
- * A path in the canonical form Muse reports and requires: symlinks resolved
- * and, on case-insensitive filesystems, the case that is on disk. The
- * promises realpath is Node's native one, which fixes case (and expands
- * Windows 8.3 names); FileSystem.realPath is the JS one, which keeps the case
- * it is given, so `…/EEVEE` survives it when the directory is `eevee` and
- * Muse then rejects the root. An unresolvable path is returned unchanged.
+ * The canonical path Muse requires: symlinks resolved and the on-disk case.
+ * Node's native realpath fixes case and 8.3 names; FileSystem.realPath keeps
+ * the given case, which Muse rejects. Unresolvable paths are returned as is.
  */
 export const museCanonicalPath = Effect.fn("museCanonicalPath")(function* (path: string) {
   return yield* Effect.tryPromise(() => NodeFSP.realpath(path)).pipe(

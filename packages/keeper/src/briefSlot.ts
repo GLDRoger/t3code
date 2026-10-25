@@ -10,11 +10,9 @@ import {
 import { noteToEntry, renderNotesBoard, type Note } from "./notesBoard.ts";
 
 /**
- * Keeper-owned brief section for lane 1's prompt composer and lane 2's brief
- * builder. Everything before `## Task` is stable for a house between keeper
- * passes: owner rules, the house map, and a fresh chronicle. Wills newer than
- * the chronicle's As-of time and the live notes board follow that prefix.
- * The per-task brief is last. The current time is not written into the text.
+ * Keeper's brief section. Everything before `## Task` (owner rules, house map,
+ * chronicle) stays stable between keeper passes; newer wills and live notes
+ * follow it, then the task. No current time is written, so the prefix caches.
  */
 export interface BriefSlotInput {
   readonly house: string;
