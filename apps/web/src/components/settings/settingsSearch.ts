@@ -31,6 +31,7 @@ export type SettingsPath =
   | "/settings/source-control"
   | "/settings/storage"
   | "/settings/connections"
+  | "/settings/beta"
   | "/settings/archived";
 
 export type SettingsSearchScope =
@@ -91,6 +92,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/source-control": "Source Control",
   "/settings/storage": "Storage",
   "/settings/connections": "Connections",
+  "/settings/beta": "Beta",
   "/settings/archived": "Archive",
 };
 
@@ -351,9 +353,16 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "working-shelf",
-    title: "Working section (beta)",
-    to: "/settings/general",
-    searchTerms: ["hide fold running monitoring threads inbox sidebar shelf"],
+    title: "Working section",
+    to: "/settings/beta",
+    searchTerms: ["beta hide fold running monitoring threads inbox sidebar shelf"],
+  },
+  {
+    id: "guest-links",
+    title: "Guest links",
+    to: "/settings/beta",
+    scope: "environment",
+    searchTerms: ["beta share guest invite link teammate watch t3 connect tunnel"],
   },
   {
     id: "auto-settle-inactive-threads",
@@ -1152,6 +1161,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/storage": "project-defaults",
   "/settings/connections": "connections",
   "/settings/scheduled-tasks": null,
+  "/settings/beta": null,
   "/settings/archived": "project-defaults",
 };
 

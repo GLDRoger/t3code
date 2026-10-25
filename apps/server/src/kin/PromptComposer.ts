@@ -54,11 +54,3 @@ export function composePrompt(parts: KinPromptParts & { readonly brief: string }
   const text = joinSections([prefix, parts.brief]);
   return { prefix, text, suffix };
 }
-
-/** Append Kin text after instructions the provider channel already carries. */
-export function appendDeliveredPrompt(existing: string | undefined, kinText: string): string {
-  const next = normalize(kinText);
-  if (next.length === 0) return existing ?? "";
-  if (existing === undefined || normalize(existing).length === 0) return next;
-  return `${normalize(existing)}\n\n${next}`;
-}
