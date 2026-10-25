@@ -217,7 +217,7 @@ function helpSection(
     case "offline":
       return "this-device-cant-reach-t3-connect";
     case "outdated":
-      return "the-host-runs-an-older-t3-code";
+      return "the-host-runs-an-older-kin";
     case "clock_skew":
       return "the-clock-is-off";
     case "not_linked":
@@ -231,7 +231,7 @@ function helpSection(
       return "the-hosts-tunnel-is-offline";
     case "origin_unreachable":
     case "invalid_response":
-      return "the-tunnel-works-but-t3-code-does-not-answer";
+      return "the-tunnel-works-but-kin-does-not-answer";
     case "dns":
     case "tls":
     case "refused":
@@ -257,7 +257,7 @@ function helpSection(
     case "server":
       return failure?.reason === "authentication" || failure?.reason === "permission"
         ? "sign-in-account-or-link-problems"
-        : "the-tunnel-works-but-t3-code-does-not-answer";
+        : "the-tunnel-works-but-kin-does-not-answer";
   }
 }
 

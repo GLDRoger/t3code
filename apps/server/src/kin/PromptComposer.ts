@@ -30,7 +30,7 @@ export function composeStablePrefix(parts: KinPromptParts): string {
   ]);
 }
 
-export function composeKinSuffix(
+function composeKinSuffix(
   parts: Omit<KinPromptParts, "runtimeInstructions"> & {
     readonly brief: string;
   },

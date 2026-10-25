@@ -217,8 +217,7 @@ export function CaptureShortcutConfig({
       ) : (
         <>
           <p className="text-muted-foreground">
-            Allow Kin to read your desktop settings. You'll review any changes here before
-            saving.
+            Allow Kin to read your desktop settings. You'll review any changes here before saving.
           </p>
           <Button
             disabled={actionBusy || !supported}
@@ -323,8 +322,8 @@ export function CaptureShortcutConfig({
             {isCopied ? "Copied" : "Copy shortcut"}
           </Button>
           <p>
-            Turn capture off in Kin to stop it. Remove the shortcut from {desktop} to free up
-            the keys.
+            Turn capture off in Kin to stop it. Remove the shortcut from {desktop} to free up the
+            keys.
           </p>
           {state.shortcutActionRegistered === false ? (
             <p role="status">{state.shortcutMessage}</p>

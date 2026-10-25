@@ -194,30 +194,32 @@ const make = Effect.gen(function* () {
     return Effect.succeed(resolved);
   };
 
-  const writeString = (filePath: string, contents: string) =>
-    Effect.gen(function* () {
+  const writeString = Effect.fn("ArchivistKeeper.writeString")(
+    function* (filePath: string, contents: string) {
       yield* fs.makeDirectory(path.dirname(filePath), { recursive: true });
       const temp = `${filePath}.tmp`;
       yield* fs.writeFileString(temp, contents);
       yield* fs.rename(temp, filePath);
-    }).pipe(Effect.mapError((cause) => new KeeperWriteError({ path: filePath, cause })));
+    },
+    (effect, filePath) =>
+      effect.pipe(Effect.mapError((cause) => new KeeperWriteError({ path: filePath, cause }))),
+  );
 
-  const readState = (statePath: string) =>
-    Effect.gen(function* () {
-      const exists = yield* fs
-        .exists(statePath)
-        .pipe(Effect.mapError((cause) => new KeeperStateError({ path: statePath, cause })));
-      if (!exists) return Option.none<KeeperState>();
-      const text = yield* fs
-        .readFileString(statePath)
-        .pipe(Effect.mapError((cause) => new KeeperStateError({ path: statePath, cause })));
-      return yield* decodeState(text).pipe(
-        Effect.mapBoth({
-          onFailure: (cause) => new KeeperStateError({ path: statePath, cause }),
-          onSuccess: Option.some,
-        }),
-      );
-    });
+  const readState = Effect.fn("ArchivistKeeper.readState")(function* (statePath: string) {
+    const exists = yield* fs
+      .exists(statePath)
+      .pipe(Effect.mapError((cause) => new KeeperStateError({ path: statePath, cause })));
+    if (!exists) return Option.none<KeeperState>();
+    const text = yield* fs
+      .readFileString(statePath)
+      .pipe(Effect.mapError((cause) => new KeeperStateError({ path: statePath, cause })));
+    return yield* decodeState(text).pipe(
+      Effect.mapBoth({
+        onFailure: (cause) => new KeeperStateError({ path: statePath, cause }),
+        onSuccess: Option.some,
+      }),
+    );
+  });
 
   const tick = Effect.fn("ArchivistKeeper.tick")(function* (
     input: ArchivistTickInput,

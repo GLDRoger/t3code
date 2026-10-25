@@ -39,12 +39,11 @@ export interface KinInitResult {
   readonly claudeMd: "created" | "already-import" | "left-in-place";
 }
 
-const readOptional = (filePath: string) =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    if (!(yield* fs.exists(filePath))) return null;
-    return yield* fs.readFileString(filePath);
-  });
+const readOptional = Effect.fn("KeeperInit.readOptional")(function* (filePath: string) {
+  const fs = yield* FileSystem.FileSystem;
+  if (!(yield* fs.exists(filePath))) return null;
+  return yield* fs.readFileString(filePath);
+});
 
 const claudeImportSatisfied = (text: string): boolean =>
   text.replace(/\r\n/gu, "\n").trim() === "@AGENTS.md";

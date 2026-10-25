@@ -2,7 +2,7 @@
 // @effect-diagnostics nodeBuiltinImport:off globalConsole:off globalDate:off - `kin` is a CLI; stdout and wall-clock `now` are the interface.
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
-import { pathToFileURL } from "node:url";
+import * as NodeURL from "node:url";
 
 import { loadChaosBudgets, repro, runTier } from "./chaos/runner.ts";
 import type { TierId } from "./chaos/catalogue.ts";
@@ -33,7 +33,7 @@ function printVerifyText(report: Awaited<ReturnType<typeof runVerify>>): void {
     `bend ${report.bend.version ?? "not installed"} (pin ${report.bend.pin}, match ${report.bend.matchesPin})`,
   );
   for (const level of report.levels) {
-    const reason = level.reason === null ? "" : ` — ${level.reason.split("\n")[0]}`;
+    const reason = level.reason === null ? "" : `: ${level.reason.split("\n")[0]}`;
     console.log(`${level.level} ${level.status} ${level.elapsedMs.toFixed(1)}ms${reason}`);
   }
   console.log(report.loopholes.summary);
@@ -136,7 +136,7 @@ kin agents-block`);
 }
 
 const entry = process.argv[1];
-const isDirect = entry !== undefined && import.meta.url === pathToFileURL(entry).href;
+const isDirect = entry !== undefined && import.meta.url === NodeURL.pathToFileURL(entry).href;
 if (isDirect) {
   runKinCli(process.argv.slice(2))
     .then((code) => {

@@ -13,7 +13,7 @@ import * as Layer from "effect/Layer";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as HouseLineService from "./HouseLineService.ts";
 
-export const KIN_WILL_FOLLOW_UP =
+const KIN_WILL_FOLLOW_UP =
   "This lane has not left a will. Crown with lineage_crown, then write one with lineage_will. A will is at most 2500 characters.";
 
 export class HouseLineWillGate extends Context.Reference<{

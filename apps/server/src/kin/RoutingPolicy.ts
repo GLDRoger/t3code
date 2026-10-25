@@ -230,5 +230,3 @@ export function limitsFromProviders(
     return [{ provider: provider.driver, instanceId: provider.instanceId, usedPercent }];
   });
 }
-
-export { DEFAULT_KIN_ROUTING_SETTINGS };

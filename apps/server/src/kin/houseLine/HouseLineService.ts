@@ -44,8 +44,6 @@ import {
 import { regnalLabel } from "./roman.ts";
 import { firstReadsMatchLog, parseLaneReport, type KinReadRef } from "./report.ts";
 
-export { laneProcessEnv };
-
 export class HouseLineError extends Schema.TaggedError<HouseLineError>()("HouseLineError", {
   detail: Schema.String,
   cause: Schema.optional(Schema.Defect()),

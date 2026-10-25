@@ -30,7 +30,7 @@ export interface ParsedProfileDocument {
   readonly text: string;
 }
 
-export function profileDocumentError(detail: string): Error {
+function profileDocumentError(detail: string): Error {
   return new Error(detail);
 }
 

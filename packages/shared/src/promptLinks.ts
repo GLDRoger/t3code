@@ -117,8 +117,7 @@ function readPrompt(params: URLSearchParams): PromptLinkResult<LinkedPrompt | nu
   if (prompt.text.length === 0 && prompt.hiddenCharacters > 0) {
     return {
       ok: false,
-      error:
-        "This prompt had only hidden characters, so it may be malicious. Kin did not open it.",
+      error: "This prompt had only hidden characters, so it may be malicious. Kin did not open it.",
     };
   }
   return { ok: true, value: prompt.text.length > 0 ? prompt : null };

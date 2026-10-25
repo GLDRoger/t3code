@@ -1,8 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off - Package paths are resolved once from import.meta.url.
 import * as NodePath from "node:path";
-import { fileURLToPath } from "node:url";
+import * as NodeURL from "node:url";
 
-const srcDir = NodePath.dirname(fileURLToPath(import.meta.url));
+const srcDir = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 
 export const packageRoot = NodePath.resolve(srcDir, "..");
 export const bendDir = NodePath.join(packageRoot, "bend");

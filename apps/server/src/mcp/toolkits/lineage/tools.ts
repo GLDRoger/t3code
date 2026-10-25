@@ -42,7 +42,7 @@ const Will = Schema.Struct({
   at: Schema.String,
 });
 
-export const LineageAddTool = Tool.make("lineage_add", {
+const LineageAddTool = Tool.make("lineage_add", {
   ...failure,
   description: "Add a note to the house board. Omit houses to tag the calling lane's house.",
   parameters: Schema.Struct({
@@ -52,7 +52,7 @@ export const LineageAddTool = Tool.make("lineage_add", {
   success: Schema.Struct({ noteId: Schema.String }),
 }).annotate(Tool.Destructive, true);
 
-export const LineageReadTool = Tool.make("lineage_read", {
+const LineageReadTool = Tool.make("lineage_read", {
   ...failure,
   description:
     "Read the notes board. subject wills or all also returns wills, and reviewers are refused those.",
@@ -70,7 +70,7 @@ export const LineageReadTool = Tool.make("lineage_read", {
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false);
 
-export const LineageAreasTool = Tool.make("lineage_areas", {
+const LineageAreasTool = Tool.make("lineage_areas", {
   ...failure,
   description: "List houses and the lane-name patterns that map into them.",
   parameters: Schema.Struct({}),
@@ -79,7 +79,7 @@ export const LineageAreasTool = Tool.make("lineage_areas", {
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false);
 
-export const LineageCrownTool = Tool.make("lineage_crown", {
+const LineageCrownTool = Tool.make("lineage_crown", {
   ...failure,
   description: "Crown this lane in its house and return the next regnal number.",
   parameters: Schema.Struct({}),
@@ -91,14 +91,14 @@ export const LineageCrownTool = Tool.make("lineage_crown", {
   }),
 }).annotate(Tool.Destructive, true);
 
-export const LineageWillTool = Tool.make("lineage_will", {
+const LineageWillTool = Tool.make("lineage_will", {
   ...failure,
   description: "Leave a will of at most 2500 characters for the next lane in this line.",
   parameters: Schema.Struct({ body: Schema.String }),
   success: Schema.Struct({ willId: Schema.String, crowningId: Schema.String }),
 }).annotate(Tool.Destructive, true);
 
-export const LineageLineagesTool = Tool.make("lineage_lineages", {
+const LineageLineagesTool = Tool.make("lineage_lineages", {
   ...failure,
   description: "Show houses, reigns, and lines. Reviewers receive reigns with will text removed.",
   parameters: Schema.Struct({}),

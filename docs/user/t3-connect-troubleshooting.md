@@ -129,11 +129,11 @@ This app needs a newer Kin on the host. Update Kin on the host. See
 
 | Error                                                     | Fix                                                                                                                                         |
 | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `environment_link_limit_exceeded` or managed tunnel limit | Remove an unused environment, then restart Kin on the host.                                                                             |
+| `environment_link_limit_exceeded` or managed tunnel limit | Remove an unused environment, then restart Kin on the host.                                                                                 |
 | `auth_invalid` or `invalid_bearer`                        | Run `t3 connect login`. If credentials were revoked, run `t3 connect logout`, then `t3 connect` again. Restart the server after signing in. |
-| Expired or invalid link proof                             | Check the host's date and time, update Kin, then restart it.                                                                            |
+| Expired or invalid link proof                             | Check the host's date and time, update Kin, then restart it.                                                                                |
 | HTTP 403 without a recognized error                       | Check relay access, proxies, and firewall rules. Keep any Cloudflare Ray ID for a bug report.                                               |
-| HTTP 408, 429, or 5xx                                     | Wait a few minutes. Kin retries temporary failures on its own.                                                                          |
+| HTTP 408, 429, or 5xx                                     | Wait a few minutes. Kin retries temporary failures on its own.                                                                              |
 
 After you fix a permanent rejection, restart the host's server with
 `t3 service restart`. For a foreground server, stop it and run `t3 serve` again.

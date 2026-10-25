@@ -37,21 +37,19 @@ export interface LoadedOwnerRules {
   readonly importedFrom: readonly string[];
 }
 
-const readIfPresent = (filePath: string) =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    if (!(yield* fs.exists(filePath))) return Option.none<string>();
-    return Option.some(yield* fs.readFileString(filePath));
-  });
+const readIfPresent = Effect.fn("OwnerRules.readIfPresent")(function* (filePath: string) {
+  const fs = yield* FileSystem.FileSystem;
+  if (!(yield* fs.exists(filePath))) return Option.none<string>();
+  return Option.some(yield* fs.readFileString(filePath));
+});
 
-const firstPresent = (paths: readonly string[]) =>
-  Effect.gen(function* () {
-    for (const filePath of paths) {
-      const text = yield* readIfPresent(filePath);
-      if (Option.isSome(text)) return Option.some({ path: filePath, text: text.value });
-    }
-    return Option.none<{ readonly path: string; readonly text: string }>();
-  });
+const firstPresent = Effect.fn("OwnerRules.firstPresent")(function* (paths: readonly string[]) {
+  for (const filePath of paths) {
+    const text = yield* readIfPresent(filePath);
+    if (Option.isSome(text)) return Option.some({ path: filePath, text: text.value });
+  }
+  return Option.none<{ readonly path: string; readonly text: string }>();
+});
 
 /**
  * Project rules win as their own section. Global rules are added after them.

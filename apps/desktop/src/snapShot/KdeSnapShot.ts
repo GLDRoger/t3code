@@ -159,9 +159,7 @@ export class KdeCaptureSetup {
     } else {
       const bundle = await regularFile(this.paths.bundle);
       if (!bundle)
-        throw new Error(
-          "The capture helper is missing from this build. Update or reinstall Kin.",
-        );
+        throw new Error("The capture helper is missing from this build. Update or reinstall Kin.");
       await NodeFSP.mkdir(directory, { recursive: true });
       await NodeFSP.mkdir(NodePath.dirname(desktop), { recursive: true });
       const staging = await NodeFSP.mkdtemp(NodePath.join(directory, ".install-"));

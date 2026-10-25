@@ -70,23 +70,22 @@ const matches = (note: Note, query: NotesQuery): boolean => {
 export const makeInMemoryNotesBoard = Effect.fn("NotesBoard.makeInMemory")(function* () {
   const notes = yield* Ref.make<readonly Note[]>([]);
 
-  const add = (draft: NoteDraft) =>
-    Effect.gen(function* () {
-      const current = yield* Ref.get(notes);
-      if (current.some((note) => note.id === draft.id)) {
-        return yield* new DuplicateNoteError({ id: draft.id });
-      }
-      const note: Note = {
-        id: draft.id,
-        houseIds: draft.houseIds,
-        author: draft.author,
-        body: draft.body,
-        at: draft.at,
-        flaggedMisleading: draft.flaggedMisleading === true,
-      };
-      yield* Ref.set(notes, [...current, note]);
-      return note;
-    });
+  const add = Effect.fn("NotesBoard.add")(function* (draft: NoteDraft) {
+    const current = yield* Ref.get(notes);
+    if (current.some((note) => note.id === draft.id)) {
+      return yield* new DuplicateNoteError({ id: draft.id });
+    }
+    const note: Note = {
+      id: draft.id,
+      houseIds: draft.houseIds,
+      author: draft.author,
+      body: draft.body,
+      at: draft.at,
+      flaggedMisleading: draft.flaggedMisleading === true,
+    };
+    yield* Ref.set(notes, [...current, note]);
+    return note;
+  });
 
   const read = (query: NotesQuery) =>
     Ref.get(notes).pipe(

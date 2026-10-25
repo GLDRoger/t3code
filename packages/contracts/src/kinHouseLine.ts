@@ -49,7 +49,7 @@ export const KinLaneState = Schema.Literals([
 ]);
 export type KinLaneState = typeof KinLaneState.Type;
 
-export const KIN_LINEAGE_TOOL_NAMES = [
+const KIN_LINEAGE_TOOL_NAMES = [
   "lineage_add",
   "lineage_read",
   "lineage_areas",
@@ -105,12 +105,6 @@ export function lineageToolsForProfile(
     tools.push({ name, willRead: name === "lineage_read" && access.seesWills });
   }
   return tools;
-}
-
-export function lineageToolWillReads(
-  input: KinHouseLineAccessInput,
-): ReadonlyArray<KinLineageToolOffer> {
-  return lineageToolsForProfile(input).filter((tool) => tool.willRead);
 }
 
 export const KinHouseLineCrownCommand = Schema.Struct({

@@ -14,7 +14,7 @@ export interface KinLaneReportLines {
   readonly misleading: ReadonlyArray<KinReadRef>;
 }
 
-export class KinLaneReportError extends Error {
+class KinLaneReportError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "KinLaneReportError";
@@ -35,7 +35,7 @@ export function parseLaneReport(body: string): KinLaneReportLines {
   };
 }
 
-export function readRefKey(ref: KinReadRef): string {
+function readRefKey(ref: KinReadRef): string {
   return `${ref.kind}:${ref.id}`;
 }
 

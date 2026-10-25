@@ -138,12 +138,11 @@ export interface HouseMapWriteResult {
   readonly rejected: readonly string[];
 }
 
-const readOptional = (filePath: string) =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    if (!(yield* fs.exists(filePath))) return "";
-    return yield* fs.readFileString(filePath);
-  });
+const readOptional = Effect.fn("AgentMap.readOptional")(function* (filePath: string) {
+  const fs = yield* FileSystem.FileSystem;
+  if (!(yield* fs.exists(filePath))) return "";
+  return yield* fs.readFileString(filePath);
+});
 
 /**
  * Writes `docs/agent-maps/<house>.md`. A hand-written map without the generated

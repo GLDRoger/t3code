@@ -6,7 +6,7 @@
 
 import { regnalLabel } from "./roman.ts";
 
-export const KIN_BRIEF_NOTE_LIMIT = 20;
+const KIN_BRIEF_NOTE_LIMIT = 20;
 
 export interface KinBriefWill {
   readonly willId: string;

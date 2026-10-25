@@ -195,9 +195,7 @@ const serviceUninstallCommand = Command.make("uninstall", projectLocationFlags).
       Effect.gen(function* () {
         const service = yield* BootService.BootService;
         const removed = yield* service.uninstall;
-        yield* Console.log(
-          removed ? "Removed the Kin service." : "Kin service is not installed.",
-        );
+        yield* Console.log(removed ? "Removed the Kin service." : "Kin service is not installed.");
       }),
     ),
   ),

@@ -28,7 +28,7 @@ export interface KinHouseCatalog {
 const HEADER_PATTERN = new Set(["pattern", "regex", "lane", "lane_pattern"]);
 const HEADER_HOUSE = new Set(["house", "lineage", "line", "lineage_name", "name"]);
 
-export class KinHousesTsvError extends Error {
+class KinHousesTsvError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "KinHousesTsvError";
