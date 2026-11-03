@@ -108,10 +108,16 @@ export const makeCli = ({
 
 export const cli = makeCli();
 
+const KIN_PASSTHROUGH = new Set(["init", "verify", "chaos", "sweep", "agents-block"]);
+
 export function runCli() {
   extendConnectionAttemptTimeout();
   keepOutboundFetchOnHttp1();
   const name = resolveKinCliName({ env: process.env, argv: process.argv });
+  // `kin verify` is the same command as `t3 kin verify`.
+  if (name === "kin" && process.argv[2] !== undefined && KIN_PASSTHROUGH.has(process.argv[2])) {
+    process.argv.splice(2, 0, "kin");
+  }
   Command.run(makeCli({ name }), { version: packageJson.version }).pipe(
     Effect.scoped,
     Effect.provide(layerCliRuntime),

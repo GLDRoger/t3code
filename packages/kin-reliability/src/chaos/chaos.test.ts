@@ -9,7 +9,7 @@ import {
   runTier,
 } from "./runner.ts";
 import { faultsForTier, faultById } from "./catalogue.ts";
-import { chaosActive, readProviderChunk, readToolJson } from "./inject.ts";
+import { activeSeam, chaosActive, readProviderChunk, readToolJson } from "./inject.ts";
 import { CHAOS_SECRET, interpretFault } from "./interpret.ts";
 import { failedOracles, runOracles, STUCK_LIMIT_MS, type World } from "./oracles.ts";
 
@@ -112,6 +112,9 @@ describe("chaos program", () => {
     expect(chaosActive({ env: { KIN_CHAOS: "1" }, production: true })).toBe(false);
     expect(chaosActive({ env: { NODE_ENV: "test" } })).toBe(false);
     expect(chaosActive({ env: { KIN_CHAOS: "1", NODE_ENV: "test" } })).toBe(true);
+    expect(activeSeam({ KIN_CHAOS: "1" })).toBeNull();
+    expect(activeSeam({ KIN_CHAOS_SEAM: "provider.stream" })).toBe("provider.stream");
+    expect(activeSeam({ KIN_CHAOS_SEAM: "nope" })).toBeNull();
     const off = { env: { KIN_CHAOS: "1", NODE_ENV: "production" } };
     expect(readProviderChunk(off, "provider.stream", chunk)).toBe(chunk);
     expect(readToolJson(off, "tool.json", chunk)).toBe(chunk);

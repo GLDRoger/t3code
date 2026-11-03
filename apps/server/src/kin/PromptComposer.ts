@@ -54,3 +54,20 @@ export function composePrompt(parts: KinPromptParts & { readonly brief: string }
   const text = joinSections([prefix, parts.brief]);
   return { prefix, text, suffix };
 }
+
+/** House-line brief, then the keeper slot, then the task. The prefix is untouched. */
+export function composeOrderedPrompt(input: {
+  readonly prefix: string;
+  readonly houseLine: string;
+  readonly keeper: string;
+  readonly task: string;
+}): { readonly prefix: string; readonly brief: string; readonly prompt: string } {
+  const brief = [input.houseLine.trim(), input.keeper.trim()]
+    .filter((section) => section.length > 0)
+    .join("\n\n");
+  const prompt =
+    brief.length === 0
+      ? `${input.prefix}\n\n${input.task}`
+      : `${input.prefix}\n\n${brief}\n\n${input.task}`;
+  return { prefix: input.prefix, brief, prompt };
+}

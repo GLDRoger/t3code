@@ -25,6 +25,7 @@ export type SettingsPath =
   | "/settings/snap-shot"
   | "/settings/providers"
   | "/settings/kin-agents"
+  | "/settings/kin-budget"
   | "/settings/integrations"
   | "/settings/scheduled-tasks"
   | "/settings/source-control"
@@ -85,6 +86,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/snap-shot": "SnapShots",
   "/settings/providers": "Providers",
   "/settings/kin-agents": "Agents & System Prompts",
+  "/settings/kin-budget": "Routing & Budget",
   "/settings/integrations": "Integrations",
   "/settings/scheduled-tasks": "Scheduled Tasks",
   "/settings/source-control": "Source Control",
@@ -719,6 +721,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["profiles system prompt agents kin"],
   },
   {
+    id: "kin-budget",
+    title: "Routing & Budget",
+    to: "/settings/kin-budget",
+    searchTerms: ["budget caps plans routing main thread children usage"],
+  },
+  {
     id: "kin-base-prompt",
     title: "Kin base prompt",
     to: "/settings/kin-agents",
@@ -1083,6 +1091,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/keybindings": null,
   "/settings/providers": null,
   "/settings/kin-agents": null,
+  "/settings/kin-budget": null,
   "/settings/integrations": null,
   "/settings/source-control": "environment-defaults",
   "/settings/storage": "project-defaults",

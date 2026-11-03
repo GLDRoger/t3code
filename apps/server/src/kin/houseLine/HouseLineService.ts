@@ -1,6 +1,7 @@
 import {
   CommandId,
   EEVEE_LANE_LABEL,
+  KIN_LANE_LABEL,
   KIN_WILL_CHAR_LIMIT,
   KinHouseLineRole,
   KinHouseLineRpcError,
@@ -88,6 +89,17 @@ export class HouseLineService extends Context.Service<
       input: KinOpenLaneInput,
     ) => Effect.Effect<
       { readonly laneId: string; readonly houseName: string; readonly crownable: boolean } | null,
+      HouseLineError
+    >;
+    readonly laneLabel: (threadId: ThreadIdValue) => Effect.Effect<string | null, HouseLineError>;
+    readonly describeLane: (threadId: ThreadIdValue) => Effect.Effect<
+      {
+        readonly laneId: string;
+        readonly houseName: string;
+        readonly agentMapPath: string | null;
+        readonly projectId: string;
+        readonly label: string;
+      } | null,
       HouseLineError
     >;
     readonly discardUnstartedLane: (threadId: ThreadIdValue) => Effect.Effect<void, HouseLineError>;
@@ -504,11 +516,20 @@ const make = Effect.gen(function* () {
 
   const openLane = Effect.fn("HouseLineService.openLane")(function* (input: KinOpenLaneInput) {
     yield* refreshProjectHouses(input.projectId);
-    const fromEnv = yield* Config.String(EEVEE_LANE_LABEL).pipe(
-      Config.option,
-      Effect.mapError((cause) => failed("Could not read EEVEE_LANE_LABEL.", cause)),
-    );
-    const label = input.label ?? (Option.isSome(fromEnv) ? fromEnv.value : undefined);
+    const readLabel = (name: string) =>
+      Config.String(name).pipe(
+        Config.option,
+        Effect.mapError((cause) => failed(`Could not read ${name}.`, cause)),
+      );
+    const fromKin = yield* readLabel(KIN_LANE_LABEL);
+    const fromLegacy = yield* readLabel(EEVEE_LANE_LABEL);
+    const label =
+      input.label ??
+      (Option.isSome(fromKin)
+        ? fromKin.value
+        : Option.isSome(fromLegacy)
+          ? fromLegacy.value
+          : undefined);
     if (label === undefined || label.length === 0) {
       return yield* failed("A lane needs a label.");
     }
@@ -587,6 +608,37 @@ const make = Effect.gen(function* () {
         updated_at = excluded.updated_at
     `);
     return { laneId, houseName, crownable: access.crownable };
+  });
+
+  const describeLane = Effect.fn("HouseLineService.describeLane")(function* (
+    threadId: ThreadIdValue,
+  ) {
+    const lanes = yield* query(
+      Schema.Struct({
+        laneId: Schema.String,
+        houseName: Schema.String,
+        agentMapPath: Schema.NullOr(Schema.String),
+        projectId: Schema.String,
+        label: Schema.String,
+      }),
+      sql`
+        SELECT
+          l.id AS laneId,
+          h.name AS houseName,
+          h.agent_map_path AS agentMapPath,
+          l.project_id AS projectId,
+          l.label AS label
+        FROM kin_lane l
+        JOIN kin_house h ON h.id = l.house_id
+        WHERE l.thread_id = ${threadId}
+      `,
+    );
+    return lanes[0] ?? null;
+  });
+
+  const laneLabel = Effect.fn("HouseLineService.laneLabel")(function* (threadId: ThreadIdValue) {
+    const described = yield* describeLane(threadId);
+    return described?.label ?? null;
   });
 
   const discardUnstartedLane = Effect.fn("HouseLineService.discardUnstartedLane")(function* (
@@ -1078,6 +1130,8 @@ const make = Effect.gen(function* () {
     importCatalog,
     reloadHouses,
     openLane,
+    laneLabel,
+    describeLane,
     discardUnstartedLane,
     addNote,
     read,

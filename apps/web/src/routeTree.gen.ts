@@ -29,6 +29,7 @@ import { Route as ChatSettingsScheduledTasksRouteImport } from './routes/_chat.s
 import { Route as ChatSettingsProvidersRouteImport } from './routes/_chat.settings.providers'
 import { Route as ChatSettingsProjectsRouteImport } from './routes/_chat.settings.projects'
 import { Route as ChatSettingsOpenSourceLicensesRouteImport } from './routes/_chat.settings.open-source-licenses'
+import { Route as ChatSettingsKinBudgetRouteImport } from './routes/_chat.settings.kin-budget'
 import { Route as ChatSettingsKinAgentsRouteImport } from './routes/_chat.settings.kin-agents'
 import { Route as ChatSettingsKeybindingsRouteImport } from './routes/_chat.settings.keybindings'
 import { Route as ChatSettingsIntegrationsRouteImport } from './routes/_chat.settings.integrations'
@@ -143,6 +144,11 @@ const ChatSettingsOpenSourceLicensesRoute =
     path: '/open-source-licenses',
     getParentRoute: () => ChatSettingsRoute,
   } as any)
+const ChatSettingsKinBudgetRoute = ChatSettingsKinBudgetRouteImport.update({
+  id: '/kin-budget',
+  path: '/kin-budget',
+  getParentRoute: () => ChatSettingsRoute,
+} as any)
 const ChatSettingsKinAgentsRoute = ChatSettingsKinAgentsRouteImport.update({
   id: '/kin-agents',
   path: '/kin-agents',
@@ -225,6 +231,7 @@ export interface FileRoutesByFullPath {
   '/settings/integrations': typeof ChatSettingsIntegrationsRoute
   '/settings/keybindings': typeof ChatSettingsKeybindingsRoute
   '/settings/kin-agents': typeof ChatSettingsKinAgentsRoute
+  '/settings/kin-budget': typeof ChatSettingsKinBudgetRoute
   '/settings/open-source-licenses': typeof ChatSettingsOpenSourceLicensesRoute
   '/settings/projects': typeof ChatSettingsProjectsRoute
   '/settings/providers': typeof ChatSettingsProvidersRoute
@@ -257,6 +264,7 @@ export interface FileRoutesByTo {
   '/settings/integrations': typeof ChatSettingsIntegrationsRoute
   '/settings/keybindings': typeof ChatSettingsKeybindingsRoute
   '/settings/kin-agents': typeof ChatSettingsKinAgentsRoute
+  '/settings/kin-budget': typeof ChatSettingsKinBudgetRoute
   '/settings/open-source-licenses': typeof ChatSettingsOpenSourceLicensesRoute
   '/settings/projects': typeof ChatSettingsProjectsRoute
   '/settings/providers': typeof ChatSettingsProvidersRoute
@@ -291,6 +299,7 @@ export interface FileRoutesById {
   '/_chat/settings/integrations': typeof ChatSettingsIntegrationsRoute
   '/_chat/settings/keybindings': typeof ChatSettingsKeybindingsRoute
   '/_chat/settings/kin-agents': typeof ChatSettingsKinAgentsRoute
+  '/_chat/settings/kin-budget': typeof ChatSettingsKinBudgetRoute
   '/_chat/settings/open-source-licenses': typeof ChatSettingsOpenSourceLicensesRoute
   '/_chat/settings/projects': typeof ChatSettingsProjectsRoute
   '/_chat/settings/providers': typeof ChatSettingsProvidersRoute
@@ -325,6 +334,7 @@ export interface FileRouteTypes {
     | '/settings/integrations'
     | '/settings/keybindings'
     | '/settings/kin-agents'
+    | '/settings/kin-budget'
     | '/settings/open-source-licenses'
     | '/settings/projects'
     | '/settings/providers'
@@ -357,6 +367,7 @@ export interface FileRouteTypes {
     | '/settings/integrations'
     | '/settings/keybindings'
     | '/settings/kin-agents'
+    | '/settings/kin-budget'
     | '/settings/open-source-licenses'
     | '/settings/projects'
     | '/settings/providers'
@@ -390,6 +401,7 @@ export interface FileRouteTypes {
     | '/_chat/settings/integrations'
     | '/_chat/settings/keybindings'
     | '/_chat/settings/kin-agents'
+    | '/_chat/settings/kin-budget'
     | '/_chat/settings/open-source-licenses'
     | '/_chat/settings/projects'
     | '/_chat/settings/providers'
@@ -551,6 +563,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatSettingsOpenSourceLicensesRouteImport
       parentRoute: typeof ChatSettingsRoute
     }
+    '/_chat/settings/kin-budget': {
+      id: '/_chat/settings/kin-budget'
+      path: '/kin-budget'
+      fullPath: '/settings/kin-budget'
+      preLoaderRoute: typeof ChatSettingsKinBudgetRouteImport
+      parentRoute: typeof ChatSettingsRoute
+    }
     '/_chat/settings/kin-agents': {
       id: '/_chat/settings/kin-agents'
       path: '/kin-agents'
@@ -641,6 +660,7 @@ interface ChatSettingsRouteChildren {
   ChatSettingsIntegrationsRoute: typeof ChatSettingsIntegrationsRoute
   ChatSettingsKeybindingsRoute: typeof ChatSettingsKeybindingsRoute
   ChatSettingsKinAgentsRoute: typeof ChatSettingsKinAgentsRoute
+  ChatSettingsKinBudgetRoute: typeof ChatSettingsKinBudgetRoute
   ChatSettingsOpenSourceLicensesRoute: typeof ChatSettingsOpenSourceLicensesRoute
   ChatSettingsProjectsRoute: typeof ChatSettingsProjectsRoute
   ChatSettingsProvidersRoute: typeof ChatSettingsProvidersRoute
@@ -660,6 +680,7 @@ const ChatSettingsRouteChildren: ChatSettingsRouteChildren = {
   ChatSettingsIntegrationsRoute: ChatSettingsIntegrationsRoute,
   ChatSettingsKeybindingsRoute: ChatSettingsKeybindingsRoute,
   ChatSettingsKinAgentsRoute: ChatSettingsKinAgentsRoute,
+  ChatSettingsKinBudgetRoute: ChatSettingsKinBudgetRoute,
   ChatSettingsOpenSourceLicensesRoute: ChatSettingsOpenSourceLicensesRoute,
   ChatSettingsProjectsRoute: ChatSettingsProjectsRoute,
   ChatSettingsProvidersRoute: ChatSettingsProvidersRoute,

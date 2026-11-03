@@ -316,7 +316,7 @@ export async function runVerify(options: VerifyOptions = {}): Promise<VerifyRepo
     oracleCoverage: ORACLE_COVERAGE,
     laneStates: LANE_STATES,
     laneStateNote:
-      "Lane states are defined in packages/kin-reliability/src/lane/states.ts. Lane 2 (lineage-core) owns the authoritative machine; these names are DESIGN.md section 13.",
+      "Lane states are KinLaneState in packages/contracts/src/kinHouseLine.ts. packages/kin-reliability reuses that enum and keeps the numeric trace codes.",
     healed: healReasons.length === 0,
     healReasons,
   };

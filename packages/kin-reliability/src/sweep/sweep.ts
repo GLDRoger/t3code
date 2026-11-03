@@ -110,6 +110,8 @@ export function heuristicTriage(config: SweepConfig): Triage {
   };
 }
 
+export const FIX_LANE_PROFILE = "implementer";
+
 export interface FixLaneRequest {
   readonly clientRequestId: string;
   readonly role: "implementation";
@@ -121,9 +123,10 @@ export interface FixLaneRequest {
   readonly triageMode: "heuristic" | "model";
   readonly house: string;
   readonly signature: string;
+  readonly profile: string;
 }
 
-/** Shape of upstream `delegate_task`, without lane 1's profile field. */
+/** Shape of `delegate_task`, including the Kin profile and house. */
 export function toDelegateTaskInput(request: FixLaneRequest): {
   readonly task: string;
   readonly title: string;
@@ -131,6 +134,8 @@ export function toDelegateTaskInput(request: FixLaneRequest): {
   readonly isolation: "worktree";
   readonly mode: "async";
   readonly clientRequestId: string;
+  readonly profile: string;
+  readonly house: string;
   readonly target?: { readonly model: string };
 } {
   return {
@@ -140,6 +145,8 @@ export function toDelegateTaskInput(request: FixLaneRequest): {
     isolation: request.isolation,
     mode: request.mode,
     clientRequestId: request.clientRequestId,
+    profile: request.profile,
+    house: request.house,
     ...(request.triageMode === "model" ? { target: { model: request.triageModel } } : {}),
   };
 }
@@ -266,6 +273,7 @@ export function runSweep(input: {
       triageMode: triage.mode,
       house: hit.house,
       signature: group.signature,
+      profile: FIX_LANE_PROFILE,
     };
     opened.push(request);
     openedThisHour += 1;
@@ -378,13 +386,13 @@ export interface TickResult {
   readonly ran: boolean;
   readonly opened: number;
   readonly deferred: number;
+  readonly requests: readonly ReturnType<typeof toDelegateTaskInput>[];
 }
 
 /**
  * One scheduler tick. The worker calls this every few seconds; the sweep
  * itself runs only when `intervalMs` has elapsed. Fix lanes are appended
- * to the outbox as `delegate_task` payloads. Live dispatch needs a parent
- * run, which upstream `delegate_task` requires and this tick does not have.
+ * to the outbox and returned so the server can dispatch them.
  */
 export function tickErrorSweep(input: {
   readonly dir: string;
@@ -396,7 +404,7 @@ export function tickErrorSweep(input: {
   NodeFS.mkdirSync(input.dir, { recursive: true });
   const state = readSweepState(input.dir);
   if (state.lastRunMs !== null && input.nowMs - state.lastRunMs < config.intervalMs) {
-    return { ran: false, opened: 0, deferred: 0 };
+    return { ran: false, opened: 0, deferred: 0, requests: [] };
   }
   const outcome = runSweep({
     errors: readErrorLog(input.dir),
@@ -415,5 +423,10 @@ export function tickErrorSweep(input: {
   const deferred = outcome.decisions.filter(
     (decision) => decision.action !== "open" && decision.action !== "deduped",
   ).length;
-  return { ran: true, opened: outcome.opened.length, deferred };
+  return {
+    ran: true,
+    opened: outcome.opened.length,
+    deferred,
+    requests: outcome.opened.map((request) => toDelegateTaskInput(request)),
+  };
 }

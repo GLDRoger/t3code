@@ -6,11 +6,14 @@ import { describe, expect, it } from "@effect/vitest";
 
 import { corpusDir } from "../paths.ts";
 import { assignRegnal, crown, nextRegnal, replay, step } from "./machine.ts";
+import { KinLaneState } from "@t3tools/contracts";
+
 import { LANE_STATES } from "./states.ts";
 import { parseTrace } from "./trace.ts";
 
 describe("lane machine", () => {
   it("keeps the design's lane states", () => {
+    expect([...LANE_STATES]).toEqual([...KinLaneState.literals]);
     expect([...LANE_STATES]).toEqual([
       "proposed",
       "running",

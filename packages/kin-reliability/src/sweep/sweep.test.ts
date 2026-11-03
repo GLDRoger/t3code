@@ -81,6 +81,8 @@ describe("error sweep", () => {
     expect(first.opened[0]?.triageMode).toBe("heuristic");
     const delegate = toDelegateTaskInput(first.opened[0]!);
     expect(delegate.role).toBe("implementation");
+    expect(delegate.profile).toBe("implementer");
+    expect(delegate.house.length).toBeGreaterThan(0);
     expect(delegate.mode).toBe("async");
     expect(delegate.clientRequestId).toContain("kin-sweep:");
     expect(delegate.target).toBeUndefined();

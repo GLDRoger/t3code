@@ -1,20 +1,13 @@
+import { KinLaneState, type KinLaneState as KinLaneStateName } from "@t3tools/contracts";
+
 /**
- * Lane states from DESIGN.md §13 that the reliability model codes against.
- * If the lane state machine's enum changes, retarget this module but keep the
- * numeric trace codes stable. `author` may be crowned; `reviewer` never is.
+ * Lane states from the house-line contract. Numeric trace codes stay stable
+ * if a name is ever reordered: add a code, do not renumber the existing ones.
+ * `author` may be crowned; `reviewer` never is.
  */
+export const LANE_STATES = KinLaneState.literals;
 
-export const LANE_STATES = [
-  "proposed",
-  "running",
-  "awaiting_will",
-  "will_missing",
-  "gated",
-  "crowned",
-  "failed",
-] as const;
-
-export type LaneState = (typeof LANE_STATES)[number];
+export type LaneState = KinLaneStateName;
 
 export const LANE_STATE_CODE: Record<LaneState, number> = {
   proposed: 0,

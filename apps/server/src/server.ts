@@ -187,6 +187,7 @@ import * as RunFinalizationService from "./orchestration-v2/RunFinalizationServi
 import * as HouseLineService from "./kin/houseLine/HouseLineService.ts";
 import * as HouseLineWillGate from "./kin/houseLine/HouseLineWillGate.ts";
 import * as KinPromptBrief from "./kin/prompt/KinPromptBrief.ts";
+import * as KinTurnBrief from "./kin/turnBrief.ts";
 import * as EventStoreV2 from "./orchestration-v2/EventStore.ts";
 import * as ProjectionMaintenance from "./orchestration-v2/ProjectionMaintenance.ts";
 import * as ProjectionStoreV2 from "./orchestration-v2/ProjectionStore.ts";
@@ -577,11 +578,13 @@ const layerProviderInstallationRefresh = Layer.effectDiscard(
 // into the CLI, which never builds them. The provides below this merge close
 // SqlClient and OrchestratorV2 for the same instances the rest of the server uses.
 const layerKinBrief = KinPromptBrief.briefLayer.pipe(Layer.provide(HouseLineService.layer));
+const layerKinTurnBrief = KinTurnBrief.layer.pipe(Layer.provide(HouseLineService.layer));
 const layerKinHouseLine = Layer.mergeAll(
   HouseLineService.layer,
   HouseLineWillGate.layer.pipe(Layer.provide(HouseLineService.layer)),
   layerKinBrief,
   KinPromptBrief.layer.pipe(Layer.provide(layerKinBrief)),
+  layerKinTurnBrief,
 );
 
 const layerRuntimeCoreDependenciesBase = Layer.mergeAll(

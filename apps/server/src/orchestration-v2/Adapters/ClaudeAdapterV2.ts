@@ -167,6 +167,7 @@ import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/
 import { T3_CODE_ORCHESTRATION_INSTRUCTIONS } from "@t3tools/provider-core/server/orchestrationInstructions";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
 import { readKinTurnPrompt } from "../../kin/KinService.ts";
+import { applyLaneLabel, faultProviderText, faultToolJsonValue } from "../../kin/providerSeams.ts";
 import {
   mcpToolPresentation,
   normalizeMcpText,
@@ -1575,7 +1576,10 @@ function providerSession(input: {
 }
 
 function textFromClaudeContent(content: SDKAssistantMessage["message"]["content"]): string {
-  return content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
+  return faultProviderText(
+    "provider.stream",
+    content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join(""),
+  );
 }
 
 // Claude 5.1+ emits at most one pre-tool text block as thinking; treat only a second consecutive thinking block as text.
@@ -2362,7 +2366,7 @@ function claudeNativeToolInputFromRecord(input: Record<string, unknown>): Claude
 }
 
 function claudeNativeToolInputValue(input: ClaudeNativeToolInput): unknown {
-  return input.value;
+  return faultToolJsonValue(input.value);
 }
 
 function inputRecordValue(input: ClaudeNativeToolInput, key: string): unknown {
@@ -9344,6 +9348,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             provider: "claudeAgent",
           });
           const toolSearchOverride = yield* resolveToolSearchOverride(turnInput.runtimePolicy.cwd);
+          const claudeEnvironment = yield* applyLaneLabel(
+            claudeQueryEnvironment(
+              adapterOptions.environment,
+              turnInput.appThread,
+              turnInput.appThread.lineage.relationshipToParent === "subagent"
+                ? yield* resolveSubagentPromptCacheTtl(turnInput.runtimePolicy.cwd)
+                : undefined,
+            ),
+            turnInput.threadId,
+          );
           const queryOptions = makeClaudeQueryOptions({
             modelSelection: turnInput.modelSelection,
             nativeThreadId,
@@ -9352,13 +9366,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             cwd: turnInput.runtimePolicy.cwd,
             attachmentsDir,
             settings: adapterOptions.settings,
-            environment: claudeQueryEnvironment(
-              adapterOptions.environment,
-              turnInput.appThread,
-              turnInput.appThread.lineage.relationshipToParent === "subagent"
-                ? yield* resolveSubagentPromptCacheTtl(turnInput.runtimePolicy.cwd)
-                : undefined,
-            ),
+            environment: claudeEnvironment,
             tools: queryPolicy.tools ?? CLAUDE_CODE_PRESET_TOOLS,
             ...(mcpOverrides.allowedTools === undefined
               ? {}

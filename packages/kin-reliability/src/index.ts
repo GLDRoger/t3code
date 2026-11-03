@@ -24,6 +24,7 @@ export {
   type TierId,
 } from "./chaos/catalogue.ts";
 export {
+  activeSeam,
   chaosActive,
   injectText,
   liveChaosArmed,
@@ -66,6 +67,7 @@ export {
   runSweep,
   signatureOf,
   tickErrorSweep,
+  FIX_LANE_PROFILE,
   toDelegateTaskInput,
   triagePrompt,
   type ErrorEvent,

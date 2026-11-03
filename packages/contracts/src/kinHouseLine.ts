@@ -17,7 +17,16 @@ import {
 
 export const KIN_WILL_CHAR_LIMIT = 2500;
 
+/** Lane identity exported to provider processes. `EEVEE_LANE_LABEL` is the legacy alias. */
+export const KIN_LANE_LABEL = "KIN_LANE_LABEL";
 export const EEVEE_LANE_LABEL = "EEVEE_LANE_LABEL";
+
+export function laneLabelEnvironment(label: string): Record<string, string> {
+  return {
+    [KIN_LANE_LABEL]: label,
+    [EEVEE_LANE_LABEL]: label,
+  };
+}
 
 export const KinHouseLineRole = Schema.Literals([
   "main",

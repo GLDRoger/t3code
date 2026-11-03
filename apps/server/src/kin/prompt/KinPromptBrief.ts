@@ -7,6 +7,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+import { composeOrderedPrompt } from "../PromptComposer.ts";
 import * as HouseLineService from "../houseLine/HouseLineService.ts";
 
 export const KIN_PROMPT_STABLE_PREFIX = [
@@ -55,12 +56,12 @@ export const layer = Layer.effect(
         readonly task: string;
       }) {
         const brief = yield* briefs.briefFor(input.laneId);
-        const prefix = KIN_PROMPT_STABLE_PREFIX;
-        return {
-          prefix,
-          brief,
-          prompt: `${prefix}\n\n${brief}\n\n${input.task}`,
-        };
+        return composeOrderedPrompt({
+          prefix: KIN_PROMPT_STABLE_PREFIX,
+          houseLine: brief,
+          keeper: "",
+          task: input.task,
+        });
       }),
     });
   }),

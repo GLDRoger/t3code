@@ -171,3 +171,26 @@ export class KinError extends Schema.TaggedError<KinError>()("KinError", {
     return this.detail;
   }
 }
+
+/** One main thread orchestrates at most this many active children. */
+export const KIN_MAIN_THREAD_CHILD_CAP = 20;
+
+export interface KinPlanCap {
+  readonly plan: string;
+  readonly driver: string;
+  readonly maxChildren: number;
+  /** Stop new work on this plan once usage reaches this percent. */
+  readonly maxUsedPercent: number;
+}
+
+/**
+ * Per-plan child and usage caps. The main agent still chooses models;
+ * these are the hard stops behind that judgment.
+ */
+export const KIN_PLAN_CAPS: readonly KinPlanCap[] = [
+  { plan: "Claude", driver: "claudeAgent", maxChildren: 8, maxUsedPercent: 90 },
+  { plan: "Codex", driver: "codex", maxChildren: 8, maxUsedPercent: 90 },
+  { plan: "Grok", driver: "grok", maxChildren: 4, maxUsedPercent: 90 },
+  { plan: "Cursor", driver: "cursor", maxChildren: 4, maxUsedPercent: 90 },
+  { plan: "OpenRouter", driver: "openrouter", maxChildren: 12, maxUsedPercent: 100 },
+];

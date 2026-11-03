@@ -25,6 +25,15 @@ describe("resolveT3McpToolPresentation", () => {
     }
   });
 
+  it("recognizes kin as a server alias alongside t3-code", () => {
+    expect(resolveT3McpToolPresentation("mcp__kin__delegate_task")?.displayName).toBe(
+      "Delegate a child task",
+    );
+    expect(resolveT3McpToolPresentation("kin.delegate_task")?.displayName).toBe(
+      "Delegate a child task",
+    );
+  });
+
   it("matches OpenCode 2's per-thread server names, whose thread ids hold underscores", () => {
     expect(
       resolveT3McpToolPresentation("t3-code-thread_opencode2-adapter_delegate_task")?.displayName,

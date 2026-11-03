@@ -100,6 +100,7 @@ import { ServerConfig } from "../../config.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { buildCodexAdditionalContext } from "../../provider/CodexDeveloperInstructions.ts";
 import { readKinTurnPrompt } from "../../kin/KinService.ts";
+import { applyLaneLabel, faultProviderText, faultToolJsonValue } from "../../kin/providerSeams.ts";
 import {
   describeMcpElicitation,
   toMcpElicitationResponse,
@@ -1555,10 +1556,13 @@ export const layerAppServerClientFactory: Layer.Layer<
     return CodexAppServerClientFactory.of({
       open: Effect.fn("CodexAdapterV2.open")(function* (input) {
         const scope = yield* Scope.Scope;
-        const environment = {
-          ...codexAppServerEnvironment(input.environment),
-          ...(input.settings.homePath ? { CODEX_HOME: input.settings.homePath } : {}),
-        };
+        const environment = yield* applyLaneLabel(
+          {
+            ...codexAppServerEnvironment(input.environment),
+            ...(input.settings.homePath ? { CODEX_HOME: input.settings.homePath } : {}),
+          },
+          input.threadId,
+        );
         const command = yield* makeCodexAppServerSpawnCommand({
           command: input.settings.binaryPath || "codex",
           args: codexAppServerArgs(
@@ -4269,7 +4273,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             yield* agentMessageDeltas.append({
               turnId: payload.turnId,
               itemId: payload.itemId,
-              delta: payload.delta,
+              delta: faultProviderText("provider.stream", payload.delta),
             });
           }),
         );
@@ -6533,7 +6537,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     threadId,
                     server: callInput.server,
                     tool: callInput.tool,
-                    arguments: callInput.arguments as Schema.Json,
+                    arguments: faultToolJsonValue(callInput.arguments) as Schema.Json,
                   }),
                 ),
               );

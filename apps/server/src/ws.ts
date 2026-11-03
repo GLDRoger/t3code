@@ -1935,6 +1935,17 @@ export const layerWsRpc = (
                   Effect.tap((result) =>
                     result.replayed ? Effect.void : recordClientCommandAnalytics(command),
                   ),
+                  Effect.tap(() =>
+                    command.type === "thread.create"
+                      ? houseLine
+                          .openLane({
+                            projectId: command.projectId,
+                            threadId: command.threadId,
+                            label: command.title,
+                          })
+                          .pipe(Effect.ignore)
+                      : Effect.void,
+                  ),
                   Effect.map((result) => ({ sequence: result.sequence })),
                   Effect.mapError((cause) => {
                     const detail = userFacingDispatchErrorMessage(cause);

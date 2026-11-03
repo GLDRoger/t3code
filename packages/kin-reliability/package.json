@@ -16,6 +16,12 @@
     "test": "vp test run --config ../../vite.config.ts --dir .",
     "verify": "node --experimental-strip-types src/cli.ts verify"
   },
+  "dependencies": {
+    "@effect/platform-node": "catalog:",
+    "@t3tools/contracts": "workspace:*",
+    "@t3tools/keeper": "workspace:*",
+    "effect": "catalog:"
+  },
   "devDependencies": {
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",

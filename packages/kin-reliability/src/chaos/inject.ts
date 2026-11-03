@@ -29,6 +29,21 @@ export function liveChaosArmed(arm: ChaosArm): boolean {
   return chaosActive(arm) && arm.env.KIN_CHAOS_LIVE === "1";
 }
 
+const CHAOS_SEAMS = [
+  "provider.stream",
+  "tool.json",
+  "db",
+  "worktree",
+  "ws",
+  "crash",
+  "clock",
+] as const;
+
+export function activeSeam(env: ChaosEnv & { readonly KIN_CHAOS_SEAM?: string }): ChaosSeam | null {
+  const value = env.KIN_CHAOS_SEAM;
+  return (CHAOS_SEAMS as readonly string[]).includes(value ?? "") ? (value as ChaosSeam) : null;
+}
+
 export type ChaosSeam =
   | "provider.stream"
   | "tool.json"

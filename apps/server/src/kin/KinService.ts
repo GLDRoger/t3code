@@ -23,6 +23,7 @@ import { KinBriefProvider, layerEmptyBrief, type KinBriefInput } from "./brief.t
 import { KIN_BASE_PROMPT } from "./defaults.ts";
 import { isCliLoadedMarkdown } from "./nativeMd.ts";
 import { composePrompt } from "./PromptComposer.ts";
+import { KinTurnBrief } from "./turnBrief.ts";
 
 const fail = (detail: string) => new KinError({ detail });
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
@@ -279,8 +280,18 @@ const make = Effect.gen(function* () {
       task: input.task,
       threadId: input.threadId,
     };
-    const stableHouseContext = yield* briefs.stableContext(briefInput);
-    const providedBrief = input.brief ?? (yield* briefs.brief(briefInput));
+    const turn = Context.getOption(yield* Effect.context<never>(), KinTurnBrief);
+    const turnStable =
+      Option.isSome(turn) && input.brief === undefined
+        ? yield* turn.value.stableContext(briefInput).pipe(Effect.orElseSucceed(() => ""))
+        : "";
+    const stableHouseContext =
+      turnStable.length > 0 ? turnStable : yield* briefs.stableContext(briefInput);
+    const turnBrief =
+      Option.isSome(turn) && input.brief === undefined
+        ? yield* turn.value.brief(briefInput).pipe(Effect.orElseSucceed(() => ""))
+        : undefined;
+    const providedBrief = input.brief ?? turnBrief ?? (yield* briefs.brief(briefInput));
     const userMdTexts = yield* loadUserMd(input);
     const runtimeInstructions = [
       buildRuntimeInstructions({ harness: HARNESS[input.provider] }),

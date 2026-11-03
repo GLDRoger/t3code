@@ -368,7 +368,7 @@ export const layerProduction = Layer.mergeAll(
   layerThreadLifecycleProvided,
   layerScheduledTaskProvided,
   layerSecretRequestsProvided,
-  KinErrorSweepWorker.layer,
+  KinErrorSweepWorker.layer.pipe(Layer.provide(layerThreadManagementProvided)),
   GuestShareService.layer.pipe(
     Layer.provide(Layer.merge(layerOrchestratorProvided, layerCommandOutputHubProvided)),
   ),

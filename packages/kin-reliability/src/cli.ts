@@ -4,6 +4,10 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Effect from "effect/Effect";
+import { initKinProject } from "@t3tools/keeper/init";
+
 import { loadChaosBudgets, repro, runTier } from "./chaos/runner.ts";
 import type { TierId } from "./chaos/catalogue.ts";
 import { TIER_IDS } from "./chaos/catalogue.ts";
@@ -43,12 +47,18 @@ function printVerifyText(report: Awaited<ReturnType<typeof runVerify>>): void {
 }
 
 /**
- * `kin verify`, `kin chaos`, `kin sweep`.
- * The product CLI is `kin`; until lane 1 mounts it, `t3 kin …` and
- * `node --experimental-strip-types packages/kin-reliability/src/cli.ts …` both work.
+ * `kin init|verify|chaos|sweep`. `t3 kin …` calls the same function.
  */
 export async function runKinCli(args: readonly string[]): Promise<number> {
   const [command, sub, ...rest] = args;
+  if (command === "init") {
+    const root = flag(args, "--root") ?? process.cwd();
+    const result = await Effect.runPromise(
+      initKinProject({ projectRoot: root }).pipe(Effect.provide(NodeServices.layer)),
+    );
+    console.log(JSON.stringify(result, null, 2));
+    return 0;
+  }
   if (command === "agents-block" || (command === "verify" && has(args, "--print-agents-block"))) {
     console.log(BEND_AGENTS_BLOCK);
     return 0;
@@ -127,7 +137,8 @@ export async function runKinCli(args: readonly string[]): Promise<number> {
     console.log(JSON.stringify(result));
     return 0;
   }
-  console.log(`kin verify [--bound N] [--strict] [--verdict] [--install-bend] [--print-agents-block]
+  console.log(`kin init [--root DIR]
+kin verify [--bound N] [--strict] [--verdict] [--install-bend] [--print-agents-block]
 kin chaos run --tier smoke|nightly|canary|weekly --seed N --commit SHA
 kin chaos repro --seed N --scenario ID --tier TIER --commit SHA
 kin sweep --dir DIR [--now MS] [--error MESSAGE]

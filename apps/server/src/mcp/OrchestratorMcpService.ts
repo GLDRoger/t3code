@@ -74,7 +74,9 @@ import {
   normalizeThreadPullRequestKey,
   visibleThreadPullRequests,
 } from "../sourceControl/threadPullRequests.ts";
+import { delegationCapDecision, maxUsedPercent } from "../kin/caps.ts";
 import { applyKinProfileTarget } from "../kin/delegateRouting.ts";
+import { KinTurnBrief } from "../kin/turnBrief.ts";
 import * as Kin from "../kin/KinService.ts";
 import * as HouseLineService from "../kin/houseLine/HouseLineService.ts";
 import { houseLaneClosing } from "../kin/houseLine/brief.ts";
@@ -2200,6 +2202,20 @@ const make = Effect.gen(function* () {
         providers,
         skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
       });
+      if (!callerIsSubagent) {
+        const matched = providers.find(
+          (provider) => provider.instanceId === target.modelSelection.instanceId,
+        );
+        const cap = delegationCapDecision({
+          children: parent.subagents.map((subagent) => ({
+            status: subagent.status,
+            driver: subagent.driver,
+          })),
+          targetDriver: matched?.driver ?? "",
+          usedPercent: maxUsedPercent(matched?.usageLimits?.windows),
+        });
+        if (!cap.admit) return yield* failure("invalid_request", cap.reason);
+      }
       const runtimeMode = yield* resolveRuntimeMode(
         parent.thread.runtimeMode,
         input.runtimeMode,
@@ -2269,15 +2285,19 @@ const make = Effect.gen(function* () {
               })
               .pipe(Effect.mapError((error) => failure("orchestration_error", error.message)));
             if (lane !== null) {
-              const briefs = Context.getOption(context, KinPromptBrief.KinPromptBriefProvider);
-              const brief = yield* (
-                Option.isSome(briefs)
-                  ? briefs.value.briefFor(lane.laneId)
-                  : houseLine.value.briefFor(lane.laneId)
-              ).pipe(Effect.mapError((error) => failure("orchestration_error", error.message)));
-              delegationTask = lane.crownable
-                ? `${brief}\n${delegationTask}\n\n${houseLaneClosing(lane.houseName)}`
-                : `${brief}\n${delegationTask}`;
+              const turnBrief = Context.getOption(context, KinTurnBrief);
+              if (Option.isNone(turnBrief)) {
+                const briefs = Context.getOption(context, KinPromptBrief.KinPromptBriefProvider);
+                const brief = yield* (
+                  Option.isSome(briefs)
+                    ? briefs.value.briefFor(lane.laneId)
+                    : houseLine.value.briefFor(lane.laneId)
+                ).pipe(Effect.mapError((error) => failure("orchestration_error", error.message)));
+                delegationTask = `${brief}\n${delegationTask}`;
+              }
+              if (lane.crownable) {
+                delegationTask = `${delegationTask}\n\n${houseLaneClosing(lane.houseName)}`;
+              }
             }
           }
         }
@@ -2705,6 +2725,19 @@ const make = Effect.gen(function* () {
                     ),
                   ),
                 );
+              const startedHouseLine = Context.getOption(
+                yield* Effect.context<never>(),
+                HouseLineService.HouseLineService,
+              );
+              if (Option.isSome(startedHouseLine)) {
+                yield* startedHouseLine.value
+                  .openLane({
+                    projectId: parent.thread.projectId,
+                    threadId,
+                    label: title,
+                  })
+                  .pipe(Effect.ignore);
+              }
               // A receipt can appear after target resolution; use the committed thread's selection.
               const resolvedModelSelection = (yield* threadManagement
                 .getThreadRecords(threadId, [])

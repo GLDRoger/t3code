@@ -2,27 +2,23 @@ import { runKinCli } from "@t3tools/kin-reliability";
 import * as Effect from "effect/Effect";
 import { Argument, Command } from "effect/cli";
 
-/**
- * `t3 kin verify|chaos|sweep`. Lane 1 owns the top-level `kin` binary;
- * this subcommand is the reliability entry on the current `t3` CLI.
- */
+const runKinArgs = (args: readonly string[]): Effect.Effect<void> =>
+  Effect.promise(() => runKinCli(args)).pipe(
+    Effect.tap((code) =>
+      Effect.sync(() => {
+        if (code !== 0) process.exitCode = code;
+      }),
+    ),
+    Effect.asVoid,
+  );
+
+/** `t3 kin init|verify|chaos|sweep`. Invoking the `kin` binary rewrites those names onto this command. */
 export const kinCommand = Command.make("kin", {
   args: Argument.String("args").pipe(
     Argument.variadic(),
-    Argument.withDescription("verify, chaos, or sweep, plus that command's flags."),
+    Argument.withDescription("init, verify, chaos, or sweep, plus that command's flags."),
   ),
 }).pipe(
-  Command.withDescription("Kin reliability: kin verify (V0–V4), chaos, and the error sweep."),
-  Command.withHandler(({ args }) =>
-    Effect.promise(() => runKinCli(args)).pipe(
-      Effect.tap((code) =>
-        Effect.sync(() => {
-          if (code !== 0) {
-            process.exitCode = code;
-          }
-        }),
-      ),
-      Effect.asVoid,
-    ),
-  ),
+  Command.withDescription("Kin: init, verify (V0–V4), chaos, and the error sweep."),
+  Command.withHandler(({ args }) => runKinArgs(args)),
 );
