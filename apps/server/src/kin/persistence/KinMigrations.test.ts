@@ -18,9 +18,15 @@ const tableNames = [
   "kin_messages",
   "kin_orgs",
   "kin_people",
+  "kin_ping_ledger",
   "kin_read_state",
   "kin_session_bindings",
+  "kin_trigger_fires",
+  "kin_trigger_inbox",
+  "kin_trigger_settings",
+  "kin_triggers",
   "kin_waiting",
+  "kin_webhook_sources",
   "kin_widgets",
 ];
 const timestamp = "2026-11-07T00:00:00.000Z";
@@ -50,7 +56,7 @@ const upstreamHistory = Effect.gen(function* () {
 });
 
 describe("Kin migrations", () => {
-  it.effect("creates K001 in its own track after upstream and reruns without changes", () =>
+  it.effect("creates Kin tables in their own track after upstream and reruns without changes", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const before = yield* kinSchema;
@@ -59,11 +65,27 @@ describe("Kin migrations", () => {
         before.map((row) => row.name),
         tableNames,
       );
-      assert.deepStrictEqual(yield* kinHistory, [{ migration_id: 1, name: "ChatCore" }]);
+      assert.deepStrictEqual(yield* kinHistory, [
+        { migration_id: 1, name: "ChatCore" },
+        { migration_id: 3, name: "Triggers" },
+      ]);
       assert.deepStrictEqual(
         upstreamBefore.map((row) => [row.migration_id, row.name] as const),
         migrationManifest,
       );
+      for (const [table, names] of [
+        ["kin_triggers", ["next_run_at", "created_at", "updated_at"]],
+        ["kin_trigger_fires", ["fired_at"]],
+        ["kin_trigger_inbox", ["received_at", "claimed_at", "consumed_at"]],
+        ["kin_ping_ledger", ["pinged_at", "escalated_at"]],
+      ] as const) {
+        const columns = yield* sql<{ name: string; type: string }>`
+          SELECT name, type FROM pragma_table_info(${table})
+        `;
+        for (const name of names) {
+          assert.strictEqual(columns.find((column) => column.name === name)?.type, "INTEGER");
+        }
+      }
       for (const { name } of before) {
         const columns = yield* sql<{ name: string; notnull: number }>`
           SELECT name, "notnull" FROM pragma_table_info(${name})
@@ -80,7 +102,10 @@ describe("Kin migrations", () => {
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* kinSchema, before);
-      assert.deepStrictEqual(yield* kinHistory, [{ migration_id: 1, name: "ChatCore" }]);
+      assert.deepStrictEqual(yield* kinHistory, [
+        { migration_id: 1, name: "ChatCore" },
+        { migration_id: 3, name: "Triggers" },
+      ]);
       assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
       assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
         { org_id: "org", name: "Kin", created_at: timestamp },
@@ -89,6 +114,9 @@ describe("Kin migrations", () => {
         SELECT name FROM sqlite_master WHERE type = 'index' AND name GLOB 'idx_kin_*' ORDER BY name
       `;
       assert.deepStrictEqual(indexes, [
+        { name: "idx_kin_trigger_fires_retention" },
+        { name: "idx_kin_trigger_inbox_pending" },
+        { name: "idx_kin_triggers_due" },
         { name: "idx_kin_waiting_open_widget_person" },
         { name: "idx_kin_waiting_person_resolved_at" },
         { name: "idx_kin_widgets_type_closed_at" },
@@ -108,7 +136,10 @@ describe("Kin migrations", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`PRAGMA foreign_keys = ON`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [[1, "ChatCore"]]);
+      assert.deepStrictEqual(yield* runKinMigrations(), [
+        [1, "ChatCore"],
+        [3, "Triggers"],
+      ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
         before.map((row) => row.name),
@@ -125,7 +156,10 @@ describe("Kin migrations", () => {
         migrationManifest,
       );
       assert.deepStrictEqual(yield* kinSchema, before);
-      assert.deepStrictEqual(yield* kinHistory, [{ migration_id: 1, name: "ChatCore" }]);
+      assert.deepStrictEqual(yield* kinHistory, [
+        { migration_id: 1, name: "ChatCore" },
+        { migration_id: 3, name: "Triggers" },
+      ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT org_id FROM kin_orgs`, [{ org_id: "org" }]);
