@@ -1,6 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
-import { KinMemoryItemId, KinOrgId } from "@t3tools/contracts";
+import { KinAgentId, KinWakeupId, KinMemoryItemId, KinOrgId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Clock from "effect/Clock";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -14,6 +14,8 @@ import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Memory from "./Memory.ts";
+import * as Chat from "../chat/KinChatRepository.ts";
+import { KinLeadPrompt } from "../lead/LeadPrompt.ts";
 import * as MemoryConfig from "./MemoryConfig.ts";
 import * as ServerConfig from "../../config.ts";
 import { fixtureItem } from "./__fixtures__/items.ts";
@@ -137,12 +139,18 @@ const memoryLayer = (base: string, repo: string) =>
   );
 
 it.live.each([
-  { name: "committed lead edits", binary: false, indexDirectory: false },
-  { name: "binary preceding valid blobs", binary: true, indexDirectory: false },
-  { name: "blocked index path", binary: false, indexDirectory: true },
+  { name: "committed lead edits", binary: false, indexDirectory: false, missingIndex: false },
+  {
+    name: "binary preceding valid blobs",
+    binary: true,
+    indexDirectory: false,
+    missingIndex: false,
+  },
+  { name: "blocked index path", binary: false, indexDirectory: true, missingIndex: false },
+  { name: "no committed index", binary: false, indexDirectory: false, missingIndex: true },
 ])(
   "clones isolated checkouts and preserves committed source reads with $name",
-  ({ binary, indexDirectory }) =>
+  ({ binary, indexDirectory, missingIndex }) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const vcs = yield* VcsProcess.VcsProcess;
@@ -161,6 +169,7 @@ it.live.each([
         yield* fs.makeDirectory(`${source}/INDEX.md`);
         yield* fs.writeFileString(`${source}/INDEX.md/blocked`, "fixture");
       }
+      if (missingIndex) yield* fs.remove(`${source}/INDEX.md`);
       yield* fs.symlink("def-001.md", `${source}/deferrals/link.md`);
       yield* fs.writeFileString(
         `${source}/deferrals/huge.md`,
@@ -173,7 +182,7 @@ it.live.each([
       yield* git([
         "add",
         "rules.md",
-        "INDEX.md",
+        ...(missingIndex ? [] : ["INDEX.md"]),
         "deferrals",
         "commitments",
         "objectives",
@@ -204,8 +213,54 @@ it.live.each([
         const b = yield* memory.ensureCheckouts(orgB);
         expect(a.read).not.toBe(b.read);
         expect(yield* fs.exists(`${a.writer}/incomplete`)).toBe(false);
+        const assertPrompt = (head: string, unavailable: boolean) =>
+          Effect.gen(function* () {
+            const prompt = yield* KinLeadPrompt;
+            const input = {
+              orgId: orgA,
+              agentId: KinAgentId.make("fixture-lead"),
+              wakeupId: KinWakeupId.make("fixture-wake"),
+              memoryHead: head,
+              events: [],
+            };
+            const first = yield* prompt.build(input);
+            const second = yield* prompt.build(input);
+            expect(first.split("--- KIN WAKE-UP ---")[0]).toBe(
+              second.split("--- KIN WAKE-UP ---")[0],
+            );
+            expect(first.includes("index unavailable")).toBe(unavailable);
+            if (unavailable)
+              expect(first).toContain('> BEGIN QUOTE: memory index\n> ""\n> END QUOTE');
+          }).pipe(
+            Effect.provide(KinLeadPrompt.layer.pipe(Layer.provide(Chat.layer))),
+            Effect.provideService(Memory.Memory, memory),
+          );
+        if (!missingIndex && !indexDirectory) {
+          const head = (yield* git(["rev-parse", "HEAD"])).stdout.trim();
+          expect((yield* memory.readPromptSnapshot(orgA, head)).index).toBe(
+            yield* fs.readFileString(`${source}/INDEX.md`),
+          );
+        }
+        if (missingIndex) {
+          const head = (yield* git(["rev-parse", "HEAD"])).stdout.trim();
+          expect((yield* memory.readPromptSnapshot(orgA, head)).index).toBe("");
+          yield* assertPrompt(head, true);
+        }
         const prepared = yield* memory.prepareWakeup(orgA);
         expect(prepared.head).toMatch(/^[0-9a-f]{40}$/);
+        const promptSnapshot = yield* memory.readPromptSnapshot(orgA, prepared.head);
+        expect(promptSnapshot).toEqual({
+          rules: yield* fs.readFileString(`${source}/rules.md`),
+          index: yield* memory.readIndex(orgA),
+        });
+        yield* assertPrompt(prepared.head, false);
+        yield* memory.rebuildIndex(orgA);
+        expect((yield* memory.readPromptSnapshot(orgA, prepared.head)).index).toBe(
+          yield* memory.readIndex(orgA),
+        );
+        expect(
+          yield* memory.readPromptSnapshot(orgA, "wrong-head").pipe(Effect.result),
+        ).toMatchObject({ _tag: "Failure", failure: { _tag: "MemoryError" } });
         expect(yield* memory.readRules(orgA)).toBe("Invented standing rules.\n");
         expect(yield* memory.readIndex(orgA)).toMatch(/^As of /);
         yield* memory.rebuildIndex(orgA);
@@ -325,14 +380,21 @@ it.effect(
         fixtureItem({
           id: "unread",
           title: "Never opened fixture",
+          due: "2026-11-21T19:00:00.000Z",
           recorded_at: "2026-11-14T00:00:00.000Z",
         }),
       );
       repository.files.set("deferrals/unreadable.md", "unreadable fixture");
       repository.files.set("deferrals/broken.md", "---\nid: [\n---\n");
       const program = Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+          INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary, dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+          VALUES (${orgA}, 'Asia/Kolkata', '08:30', '18:30', '02:00', 0, 5, '12:00', '{"from":"22:00","to":"07:00"}')
+        `;
         const memory = yield* Memory.Memory;
         yield* memory.rebuildIndex(orgA);
+        expect(yield* memory.readIndex(orgA)).not.toContain("## Due in 7 days");
         expect(yield* memory.readIndex(orgA)).toContain("As of 2026-11-14T00:00:00.000Z");
         expect(yield* memory.readIndex(orgA)).toContain("⚠ review");
         const counts = repository.counts();
@@ -441,7 +503,29 @@ it.effect(
         );
         expect(messages.some((message) => message.includes("batch framing failed"))).toBe(true);
         const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE kin_trigger_settings SET time_zone = 'UTC' WHERE org_id = ${orgA}`;
+        repository.commit();
+        yield* memory.prepareWakeup(orgA);
+        const utcIndex = yield* memory.readIndex(orgA);
+        yield* sql`UPDATE kin_trigger_settings SET time_zone = 'Invented/Invalid' WHERE org_id = ${orgA}`;
+        repository.commit();
+        yield* memory.prepareWakeup(orgA);
+        expect(yield* memory.readIndex(orgA)).toContain("As of ");
+        expect(yield* memory.readIndex(orgA)).toBe(utcIndex);
+        expect(messages.some((message) => message.includes("Invalid memory owner time zone"))).toBe(
+          true,
+        );
+        yield* sql`DROP TABLE kin_trigger_settings`;
         yield* sql`DROP TABLE kin_memory_reads`;
+        repository.commit();
+        yield* memory.prepareWakeup(orgA);
+        expect(yield* memory.readIndex(orgA)).toContain("As of ");
+        expect(
+          messages.some((message) => message.includes("Could not load memory owner time zone")),
+        ).toBe(true);
+        expect(
+          messages.some((message) => message.includes("Could not load memory read history")),
+        ).toBe(true);
         expect((yield* memory.readItem(orgA, KinMemoryItemId.make("extra-0"))).head.id).toBe(
           "extra-0",
         );
