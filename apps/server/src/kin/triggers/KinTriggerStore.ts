@@ -50,6 +50,7 @@ const TriggerRow = Schema.Struct({
   updatedAt: Schema.DateTimeUtcFromMillis,
 });
 const DueCursor = Schema.Struct({ nextRunAt: NonNegativeInt, orgId: KinOrgId, id: KinTriggerId });
+export type DueCursor = typeof DueCursor.Type;
 const decodeCursor = Schema.decodeUnknownEffect(DueCursor);
 const PutTrigger = KinTrigger.check(
   Schema.makeFilter((value) => !value.id.startsWith("gh:") || "Reserved webhook prefix."),
@@ -73,7 +74,7 @@ export class KinTriggerStore extends Context.Service<
     readonly listDue: (
       now: number,
       limit: number,
-      after?: typeof DueCursor.Type,
+      after?: DueCursor,
     ) => Effect.Effect<ReadonlyArray<KinTrigger>, StoreError>;
     readonly fire: (
       event: KinTriggerFired,
@@ -201,7 +202,7 @@ const make = Effect.gen(function* () {
         let cursor = after === undefined ? undefined : yield* decodeCursor(after);
         while (triggers.length < count) {
           // Spans orgs for the scheduler tick; `fire` rechecks the org.
-          const rows = yield* sql<typeof DueCursor.Type>`
+          const rows = yield* sql<DueCursor>`
             SELECT ${columns} FROM kin_triggers
             WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ${at}
             ${cursor === undefined ? sql`` : sql`AND (next_run_at, org_id, trigger_id) > (${cursor.nextRunAt}, ${cursor.orgId}, ${cursor.id})`}

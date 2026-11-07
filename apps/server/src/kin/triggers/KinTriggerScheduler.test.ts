@@ -106,13 +106,29 @@ describe("KinTriggerScheduler", () => {
           next: "2026-11-09T14:00:00.000Z",
           weekdays: [1, 2, 3, 4, 5],
         },
+        {
+          zone: "America/New_York",
+          timeOfDay: "01:30",
+          due: "2026-11-01T05:30:00.000Z",
+          next: "2026-11-02T06:30:00.000Z",
+        },
+        {
+          zone: "America/New_York",
+          timeOfDay: "02:30",
+          due: "2027-03-14T07:30:00.000Z",
+          next: "2027-03-15T06:30:00.000Z",
+        },
       ];
       for (const [index, row] of cases.entries()) {
         const value = trigger({
           id: `calendar-${index}`,
           timeZone: row.zone,
           nextRunAt: row.due,
-          schedule: { type: "fixed_time", timeOfDay: "09:00", weekdays: row.weekdays },
+          schedule: {
+            type: "fixed_time",
+            timeOfDay: row.timeOfDay ?? "09:00",
+            weekdays: row.weekdays,
+          },
         });
         yield* store.put(value);
         yield* TestClock.setTime(millis(row.due) - 1);
@@ -129,6 +145,14 @@ describe("KinTriggerScheduler", () => {
         assert.lengthOf(events, 1);
         assert.strictEqual(events[0]?.dueAt, row.due);
         assert.strictEqual(events[0]?.lateByMs, 0);
+        yield* TestClock.adjust("1 hour");
+        yield* scheduler.runDue();
+        assert.lengthOf(
+          (yield* inbox.listPending(orgA)).filter((event) =>
+            event.fireId.startsWith(`${value.id}:`),
+          ),
+          1,
+        );
         yield* store.delete(orgA, value.id);
       }
       for (const type of ["interval", "once"]) {
@@ -273,6 +297,49 @@ describe("KinTriggerScheduler", () => {
           "2026-11-08T14:00:00.000Z",
         );
         assert.isNull((yield* store.get(orgA, once.id))?.nextRunAt);
+        const overdue = trigger({
+          id: "overdue",
+          nextRunAt: "2026-11-07T14:00:00.000Z",
+        });
+        const interval = trigger({
+          id: "interval",
+          subject: { type: "watchdog", watchdog: "github_recheck" },
+          schedule: { type: "interval", everyMs: 6 * 60 * 60 * 1000 },
+          nextRunAt: "2026-11-07T20:00:00.000Z",
+        });
+        yield* store.put(overdue);
+        yield* store.put(interval);
+        yield* TestClock.adjust("3 seconds");
+        const changed = { ...settings(orgA, "UTC"), morningBrief: "16:00" };
+        yield* scheduler.recompute(changed);
+        assert.deepStrictEqual(
+          [
+            (yield* store.get(orgA, overdue.id))?.nextRunAt,
+            (yield* store.get(orgA, interval.id))?.nextRunAt,
+          ],
+          [overdue.nextRunAt, interval.nextRunAt],
+        );
+        yield* scheduler.runDue();
+        yield* scheduler.runDue();
+        const events = (yield* inbox.listPending(orgA)).filter((event) =>
+          event.fireId.startsWith(`${overdue.id}:`),
+        );
+        assert.lengthOf(events, 1);
+        assert.strictEqual(events[0]?.dueAt, overdue.nextRunAt);
+        assert.strictEqual(events[0]?.lateByMs, 3000);
+        assert.strictEqual(
+          (yield* store.get(orgA, overdue.id))?.nextRunAt,
+          "2026-11-07T16:00:00.000Z",
+        );
+        const unchanged = yield* store.list(orgA);
+        yield* TestClock.adjust("1 second");
+        yield* scheduler.recompute(changed);
+        assert.deepStrictEqual(yield* store.list(orgA), unchanged);
+        yield* scheduler.recompute({ ...changed, eveningSummary: "19:00" });
+        assert.deepStrictEqual(
+          yield* store.get(orgA, interval.id),
+          unchanged.find((value) => value.id === interval.id),
+        );
       }).pipe(Effect.provide(layer)),
   );
 

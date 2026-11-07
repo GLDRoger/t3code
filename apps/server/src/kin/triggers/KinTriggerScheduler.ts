@@ -13,7 +13,7 @@ import {
   PersistenceSqlError,
   toPersistenceSqlError,
 } from "../../persistence/Errors.ts";
-import { nextScheduledRunAt } from "../../scheduledTasks/Schedule.ts";
+import { isSameSchedule, nextScheduledRunAt } from "../../scheduledTasks/Schedule.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as KinTriggerStore from "./KinTriggerStore.ts";
 
@@ -72,30 +72,28 @@ const make = Effect.gen(function* () {
   const store = yield* KinTriggerStore.KinTriggerStore;
   const scheduler = yield* Scheduler.Scheduler;
   const sql = yield* SqlClient.SqlClient;
+  const fire = Effect.fn("KinTriggerScheduler.fire")(function* (trigger: KinTrigger, now: number) {
+    if (trigger.nextRunAt === null) return;
+    const dueAt = DateTime.toEpochMillis(DateTime.makeUnsafe(trigger.nextRunAt));
+    const event = yield* decodeFire({
+      fireId: `${trigger.id}:${dueAt}`,
+      orgId: trigger.orgId,
+      dueAt: trigger.nextRunAt,
+      firedAt: DateTime.formatIso(DateTime.makeUnsafe(now)),
+      lateByMs: now - dueAt,
+      payload: { kind: "time", triggerId: trigger.id, subject: trigger.subject },
+    });
+    yield* store.fire(event, trigger.schedule.type === "once" ? null : nextRunAt(trigger, now));
+  });
   const runDue = Effect.fn("KinTriggerScheduler.runDue")(
     function* () {
       const now = yield* Clock.currentTimeMillis;
       const limit = 100;
-      let after: Parameters<typeof store.listDue>[2];
+      let after: KinTriggerStore.DueCursor | undefined;
       while (true) {
         const triggers = yield* store.listDue(now, limit, after);
         for (const trigger of triggers) {
-          yield* Effect.gen(function* () {
-            if (trigger.nextRunAt === null) return;
-            const dueAt = DateTime.toEpochMillis(DateTime.makeUnsafe(trigger.nextRunAt));
-            const event = yield* decodeFire({
-              fireId: `${trigger.id}:${dueAt}`,
-              orgId: trigger.orgId,
-              dueAt: trigger.nextRunAt,
-              firedAt: DateTime.formatIso(DateTime.makeUnsafe(now)),
-              lateByMs: now - dueAt,
-              payload: { kind: "time", triggerId: trigger.id, subject: trigger.subject },
-            });
-            yield* store.fire(
-              event,
-              trigger.schedule.type === "once" ? null : nextRunAt(trigger, now),
-            );
-          }).pipe(
+          yield* fire(trigger, now).pipe(
             Effect.catchCause((cause) =>
               Cause.hasInterruptsOnly(cause)
                 ? Effect.interrupt
@@ -140,13 +138,23 @@ const make = Effect.gen(function* () {
               timeZone: settings.timeZone,
               schedule: routineSchedule(trigger, settings),
             };
+            const next = !updated.enabled
+              ? null
+              : updated.schedule.type === "once" ||
+                  updated.schedule.type === "interval" ||
+                  (trigger.nextRunAt !== null &&
+                    DateTime.toEpochMillis(DateTime.makeUnsafe(trigger.nextRunAt)) <= now)
+                ? trigger.nextRunAt
+                : nextRunAt(updated, now);
+            if (
+              updated.timeZone === trigger.timeZone &&
+              isSameSchedule(updated.schedule, trigger.schedule) &&
+              next === trigger.nextRunAt
+            )
+              continue;
             yield* store.put({
               ...updated,
-              nextRunAt: !updated.enabled
-                ? null
-                : updated.schedule.type === "once"
-                  ? trigger.nextRunAt
-                  : nextRunAt(updated, now),
+              nextRunAt: next,
               updatedAt: DateTime.formatIso(
                 DateTime.makeUnsafe(
                   Math.max(now, DateTime.toEpochMillis(DateTime.makeUnsafe(trigger.updatedAt))),
