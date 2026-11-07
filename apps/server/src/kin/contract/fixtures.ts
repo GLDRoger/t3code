@@ -18,6 +18,7 @@ import * as ManagedProjectFolders from "../../project/ManagedProjectFolders.ts";
 import * as ScheduledTasks from "../../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as SecretRequests from "../../secrets/SecretRequests.ts";
+import * as KinTriggerSink from "../triggers/KinTriggerSink.ts";
 
 const decodeEvent = Schema.decodeSync(OrchestrationV2DomainEventJson);
 
@@ -97,14 +98,11 @@ export const withScheduledTasks = Effect.fn("KinContract.withScheduledTasks")(fu
         const taskId = input.initialMessage?.scheduledTaskId;
         const prefix = `scheduled-task:${taskId}:webhook:`;
         const deliveryId = input.commandId.slice(prefix.length);
-        const rows = yield* sql<{ readonly receivedAt: unknown }>`
-            SELECT d.received_at AS "receivedAt" FROM scheduled_task_webhook_deliveries d
-            JOIN scheduled_tasks t ON t.task_id = d.task_id
-            WHERE d.task_id = ${taskId ?? ""} AND d.delivery_id = ${deliveryId}
-              AND t.project_id = ${input.projectId}
-              AND t.thread_id IS NULL AND t.thread_mode = 'new_thread'
-              AND json_extract(t.schedule_json, '$.type') = 'webhook'
-          `.pipe(Effect.orDie);
+        const rows = yield* KinTriggerSink.findLaunchDelivery(sql, {
+          taskId: taskId ?? "",
+          deliveryId,
+          projectId: input.projectId,
+        }).pipe(Effect.orDie);
         yield* Queue.offer(launchDeliveries, rows);
         yield* Queue.offer(launches, input);
         const result = projection();
