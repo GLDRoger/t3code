@@ -159,9 +159,10 @@ function encoded(value: unknown, capText = false): string {
     JSON.stringify(value, (key, field: unknown) => {
       if (!capText || typeof field !== "string") return field;
       const limit = key === "body" ? messageBodyLimit : textFieldLimit;
-      return field.length <= limit
-        ? field
-        : `${field.slice(0, limit)}…[truncated ${field.length - limit} chars]`;
+      if (field.length <= limit) return field;
+      const code = field.charCodeAt(limit - 1);
+      const cut = code >= 0xd800 && code <= 0xdbff ? limit - 1 : limit;
+      return `${field.slice(0, cut)}…[truncated ${field.length - cut} chars]`;
     }) ?? "null";
   return json.replace(
     /\\(?:["\\/bfnrt]|u[\da-fA-F]{4})|[<>&\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu,

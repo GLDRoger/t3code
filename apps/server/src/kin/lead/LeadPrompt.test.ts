@@ -317,9 +317,15 @@ it.effect(
 it.effect.each([
   { status: "suggested", role: "guest", size: 10 },
   { status: "posted", role: "member", size: 200_000 },
-] satisfies ReadonlyArray<{ status: "suggested" | "posted"; role: KinRole; size: number }>)(
+  { status: "posted", role: "member", size: 4_000, astral: true },
+] satisfies ReadonlyArray<{
+  status: "suggested" | "posted";
+  role: KinRole;
+  size: number;
+  astral?: boolean;
+}>)(
   "filters $status messages and bounds a $size character body",
-  ({ status, role, size }) =>
+  ({ status, role, size, astral }) =>
     Effect.gen(function* () {
       const repo = yield* seed;
       yield* repo.addMember({
@@ -338,7 +344,7 @@ it.effect.each([
         messageId: KinMessageId.make("sized"),
         author: { _tag: "human", personId, memberId },
         kind: "text",
-        body: "x".repeat(size),
+        body: astral ? `${"x".repeat(7_999)}${"😀".repeat(size)}` : "x".repeat(size),
         intent: null,
         mentions: [],
         replyTo: null,
@@ -355,6 +361,9 @@ it.effect.each([
       if (status === "suggested") {
         expect(built.split("# Events")[1]).not.toContain("sized");
         expect(built).not.toContain("xxxxxxxxxx");
+      } else if (astral) {
+        expect(built).toContain(`…[truncated ${size * 2} chars]`);
+        expect(built).not.toContain("\\ud83d");
       } else {
         expect(built).toContain("…[truncated 192000 chars]");
         expect(built.length).toBeLessThan(25_000);
