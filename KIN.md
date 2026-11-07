@@ -1,6 +1,6 @@
 # Kin
 
-`kin` is the trunk for Kin: a team of AI leads in messaging-style chats, built on this fork of [T3 Code](https://github.com/pingdotgg/t3code). The design is in [docs/kin/DESIGN.md](docs/kin/DESIGN.md). The earlier lineages design and code are kept at the tag `archive/kin-lineages-2026-11-07`.
+`kin` is the trunk for Kin: a team of AI leads in messaging-style chats, built on this fork of [T3 Code](https://github.com/pingdotgg/t3code). New to Kin? Start with the [handover brief](docs/kin/KT.md). The design is in [docs/kin/DESIGN.md](docs/kin/DESIGN.md), the phase 1 plan in [docs/kin/PLAN.md](docs/kin/PLAN.md) and the specs in [docs/kin/specs/](docs/kin/specs/). The earlier lineages design and code are kept at the tag `archive/kin-lineages-2026-11-07`.
 
 - `main` mirrors upstream `pingdotgg/t3code` and only fast-forwards. Never commit to it.
 - Kin work lands on `kin`.

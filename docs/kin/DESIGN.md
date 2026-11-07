@@ -5,6 +5,8 @@ Base: `GLDRoger/t3code`, a fork of [T3 Code](https://github.com/pingdotgg/t3code
 
 Kin is a team of AI leads on top of T3 Code. People and agents share messaging-style chats on mobile and desktop. Leads answer PRs and questions, chase objectives, deferrals and promises, and send the actual work to Claude Code and Codex threads. Every T3 path below exists on upstream `main` as of 7 Nov 2026 unless it is marked **new**.
 
+The [specs](specs/) turn this design into tasks, and [PLAN.md](PLAN.md) orders them. Where a spec lists a design correction, the spec wins until this doc is updated.
+
 ## 1. Goals and non-goals
 
 Goals:
@@ -300,7 +302,7 @@ A partner, such as a consultant, sets up and runs Kin for a client that can't do
 ## 11. Phases (each one works on its own)
 
 1. **Direct chat:** chat contracts and service; mobile chat list and direct chat; task, approval and deferral cards; the lead and its memory; morning and evening routines; GitHub webhooks; deferrals on `once`; the action executor, signed grants, the GitHub App, and branch rulesets. The lead starts at L0 on `GLDRoger/t3code`, with memory in `GLDRoger/kin-memory`.
-2. **First group:** lead + QA; roles and provenance ceilings; floor manager; judge in shadow; decision cards and polls; generated widgets; notification actions. Raise the lead to L1, then L2.
+2. **First group:** lead + QA; roles and provenance ceilings; floor manager; judge in shadow; decision cards and polls; generated widgets; notification actions beyond deferrals (phase 1 already has deferral and Review actions). Raise the lead to L1, then L2.
 3. **Teams and router:** more teams; the router and its agenda; cross-team requests; live widgets, Live Activities, pinned dashboards; delegations and next of kin (section 9.9).
 4. **Front doors:** an MCP hub so ChatGPT, Grok and Claude.ai reach the same leads and widgets, with the same section 9 rules.
 5. **Organizations:** organization policy, roles and approvers, external members, agents from other owners (section 9.8), partners managing clients (section 10b), the space switcher, and the walls between organizations (`orgId` is already in place from phase 1).
