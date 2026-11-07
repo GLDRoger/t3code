@@ -1,7 +1,12 @@
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 
-import { EnvironmentAuthorizationError, type AuthEnvironmentScope } from "./auth.ts";
+import {
+  AuthOrchestrationOperateScope,
+  AuthOrchestrationReadScope,
+  EnvironmentAuthorizationError,
+  type AuthEnvironmentScope,
+} from "./auth.ts";
 import {
   TrimmedNonEmptyString,
   NonNegativeInt,
@@ -27,6 +32,13 @@ export const KinMessageId = TrimmedNonEmptyString.pipe(Schema.brand("KinMessageI
 export type KinMessageId = typeof KinMessageId.Type;
 export const KinWidgetId = TrimmedNonEmptyString.pipe(Schema.brand("KinWidgetId"));
 export type KinWidgetId = typeof KinWidgetId.Type;
+export const KinWaitingId = TrimmedNonEmptyString.pipe(Schema.brand("KinWaitingId"));
+export type KinWaitingId = typeof KinWaitingId.Type;
+
+// Markdown keeps its whitespace, so this checks non-blank without trimming.
+const isNonBlankBody = Schema.makeFilter((value: string) => value.trim().length > 0, {
+  expected: "a non-blank message body",
+});
 
 export const KinChatKind = Schema.Literals(["direct", "team_group", "project_group", "router"]);
 export type KinChatKind = typeof KinChatKind.Type;
@@ -85,7 +97,7 @@ export const KinPerson = Schema.Struct({
   orgId: KinOrgId,
   handle: TrimmedNonEmptyString,
   displayName: TrimmedNonEmptyString,
-  githubLogin: Schema.optional(TrimmedNonEmptyString),
+  githubLogin: Schema.NullOr(TrimmedNonEmptyString),
 });
 export type KinPerson = typeof KinPerson.Type;
 export const KinAgent = Schema.Struct({
@@ -206,7 +218,7 @@ export const KinWaitingReason = Schema.Literals([
 ]);
 export type KinWaitingReason = typeof KinWaitingReason.Type;
 export const KinWaitingItem = Schema.Struct({
-  waitingId: TrimmedNonEmptyString,
+  waitingId: KinWaitingId,
   orgId: KinOrgId,
   personId: KinPersonId,
   chatId: KinChatId,
@@ -281,7 +293,7 @@ export type KinChatHistoryResult = typeof KinChatHistoryResult.Type;
 export const KinMessagesSendInput = Schema.Struct({
   chatId: KinChatId,
   clientMessageId: TrimmedNonEmptyString,
-  body: Schema.String.check(Schema.isMaxLength(16_000)),
+  body: Schema.String.check(isNonBlankBody, Schema.isMaxLength(16_000)),
   mentions: Schema.optional(Schema.Array(KinMemberId)),
   replyTo: Schema.optional(KinMessageId),
 });
@@ -370,14 +382,14 @@ export const KinChatRpcs = [
 ] as const;
 
 export const KIN_CHAT_RPC_SCOPES = {
-  [KIN_CHAT_WS_METHODS.orgsList]: "orchestration:read",
-  [KIN_CHAT_WS_METHODS.chatsSubscribe]: "orchestration:read",
-  [KIN_CHAT_WS_METHODS.chatsCreateDirect]: "orchestration:operate",
-  [KIN_CHAT_WS_METHODS.chatSubscribe]: "orchestration:read",
-  [KIN_CHAT_WS_METHODS.chatHistory]: "orchestration:read",
-  [KIN_CHAT_WS_METHODS.messagesSend]: "orchestration:operate",
-  [KIN_CHAT_WS_METHODS.messagesMarkRead]: "orchestration:read",
-  [KIN_CHAT_WS_METHODS.widgetsAct]: "orchestration:operate",
+  [KIN_CHAT_WS_METHODS.orgsList]: AuthOrchestrationReadScope,
+  [KIN_CHAT_WS_METHODS.chatsSubscribe]: AuthOrchestrationReadScope,
+  [KIN_CHAT_WS_METHODS.chatsCreateDirect]: AuthOrchestrationOperateScope,
+  [KIN_CHAT_WS_METHODS.chatSubscribe]: AuthOrchestrationReadScope,
+  [KIN_CHAT_WS_METHODS.chatHistory]: AuthOrchestrationReadScope,
+  [KIN_CHAT_WS_METHODS.messagesSend]: AuthOrchestrationOperateScope,
+  [KIN_CHAT_WS_METHODS.messagesMarkRead]: AuthOrchestrationReadScope,
+  [KIN_CHAT_WS_METHODS.widgetsAct]: AuthOrchestrationOperateScope,
 } as const satisfies Record<
   (typeof KIN_CHAT_WS_METHODS)[keyof typeof KIN_CHAT_WS_METHODS],
   AuthEnvironmentScope

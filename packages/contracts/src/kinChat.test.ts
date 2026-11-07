@@ -4,7 +4,13 @@ import * as Schema from "effect/Schema";
 import * as Kin from "./kinChat.ts";
 
 const at = "2026-11-07T00:00:00.000Z";
-const person = { personId: "person-1", orgId: "org-1", handle: "owner", displayName: "Owner" };
+const person = {
+  personId: "person-1",
+  orgId: "org-1",
+  handle: "owner",
+  displayName: "Owner",
+  githubLogin: null,
+};
 const org = { orgId: "org-1", name: "Kin", createdAt: at };
 const agent = {
   agentId: "agent-1",
@@ -123,6 +129,7 @@ const samples = {
   KinMemberId: ["member-1"],
   KinMessageId: ["message-1"],
   KinWidgetId: ["widget-1"],
+  KinWaitingId: ["waiting-1"],
   KinChatKind: Kin.KinChatKind.literals,
   KinRole: Kin.KinRole.literals,
   KinAgentRole: Kin.KinAgentRole.literals,
@@ -214,6 +221,10 @@ describe("Kin chat contracts", () => {
   it("discards a client-supplied author", () => {
     const payload: unknown = { ...send, author: authors[1] };
     expect(decodeSend(payload)).toEqual(send);
+  });
+
+  it.each(["", "  \n ", "x".repeat(16_001)])("rejects send body %j", (body) => {
+    expect(() => decodeSend({ ...send, body })).toThrow();
   });
 
   it.each([0, 101, 1.5])("rejects history limit %s", (limit) => {
