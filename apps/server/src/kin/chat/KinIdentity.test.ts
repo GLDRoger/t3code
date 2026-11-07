@@ -149,7 +149,7 @@ describe("KinIdentity", () => {
       }).pipe(Effect.provide(repositoryLayer)),
   );
 
-  it.effect("does not publish a registration rolled back by an outer transaction", () =>
+  it.effect("publishes registry changes only after the outer transaction commits", () =>
     Effect.gen(function* () {
       const { identity, repository, owner } = yield* seedAgent();
       const sql = yield* SqlClient.SqlClient;
@@ -171,6 +171,32 @@ describe("KinIdentity", () => {
       );
       assert.isTrue(identity.isAgentThread(threadId));
       assert.isTrue(Option.isSome(yield* repository.findAgentThread(threadId)));
+      const input = { orgId: owner.orgId, threadId };
+      yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            yield* identity.endAgentThread(input);
+            return yield* Effect.fail("rollback");
+          }),
+        )
+        .pipe(Effect.flip);
+      assert.isTrue(identity.isAgentThread(threadId));
+      assert.strictEqual(
+        Option.getOrThrow(yield* repository.findAgentThread(threadId)).endedAt,
+        null,
+      );
+      const otherThreadId = decodeThreadId("kin-identity-other-thread");
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* identity.registerAgentThread({
+            orgId: owner.orgId,
+            agentId,
+            threadId: otherThreadId,
+          });
+          yield* identity.endAgentThread({ orgId: owner.orgId, threadId: otherThreadId });
+        }),
+      );
+      assert.isFalse(identity.isAgentThread(otherThreadId));
     }).pipe(Effect.provide(repositoryLayer)),
   );
 

@@ -345,7 +345,7 @@ export const KinChatStreamEvent = Schema.Union([
 - `kin_widget_upsert({ chatId, widgetId?, type, state, awaiting?, replyTo? })`: creates (with a message) or updates in place. Refuses `approval`.
 - `kin_floor_bid({ chatId, runId, reason, intent })` (phase 2).
 
-Every tool is hidden unless the calling thread is a registered agent thread. The `EnabledWhen` check reads `McpInvocationContext` from the fiber, as `hiddenFromSubagents` does, against an in-memory set kept by the environment's single `KinIdentity` layer. All runtime registry mutations go through `KinIdentity`: registration adds only after persistence; ending removes before persistence, and the operations are serialized and interruption-safe. Layer startup rebuilds the set from active database rows. This set controls visibility only; resolution and post persistence still check stored identity. So ordinary T3 threads, the context budget test and `agentContextBudget.json` see no change.
+Every tool is hidden unless the calling thread is a registered agent thread. The `EnabledWhen` check reads `McpInvocationContext` from the fiber, as `hiddenFromSubagents` does, against an in-memory set kept by the environment's single `KinIdentity` layer. All runtime registry mutations go through `KinIdentity`: registration and ending change the set only after the outer transaction commits, and the operations are serialized and interruption-safe. Layer startup rebuilds the set from active database rows. This set controls visibility only; resolution and post persistence still check stored identity. So ordinary T3 threads, the context budget test and `agentContextBudget.json` see no change.
 
 ### Floor manager (plain code)
 

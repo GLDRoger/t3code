@@ -148,19 +148,16 @@ export class KinIdentity extends Context.Service<
                 reason: "not_found",
                 message: "Kin agent thread not found.",
               });
-            const wasActive = active.delete(input.threadId);
-            return yield* repository
-              .endAgentThread({
-                ...input,
-                endedAt: DateTime.formatIso(yield* DateTime.now),
-              })
-              .pipe(
-                Effect.onError(() =>
-                  Effect.sync(() => {
-                    if (wasActive) active.add(input.threadId);
-                  }),
-                ),
-              );
+            const ended = yield* repository.endAgentThread({
+              ...input,
+              endedAt: DateTime.formatIso(yield* DateTime.now),
+            });
+            yield* sql.afterCommit(
+              Effect.sync(() => {
+                active.delete(input.threadId);
+              }),
+            );
+            return ended;
           },
           Effect.uninterruptible,
           lock.withPermits(1),
