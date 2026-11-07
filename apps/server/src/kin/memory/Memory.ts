@@ -2,7 +2,6 @@ import {
   type KinMemoryItemId,
   type KinOrgId,
   MemoryItemHead,
-  VcsProcessExitError,
   type MemoryItemKind,
   type MemoryItemFrontMatter,
 } from "@t3tools/contracts";
@@ -131,7 +130,6 @@ export class Memory extends Context.Service<
 >()("t3/kin/memory/Memory") {}
 
 const decodeHead = Schema.decodeEffect(MemoryItemHead);
-const isVcsProcessExitError = Schema.is(VcsProcessExitError);
 // Mirrors STATUS_UPSTREAM_REFRESH_ENV in vcs/GitVcsDriverCore.ts.
 const memoryGitEnv = Object.freeze({
   GCM_INTERACTIVE: "never",
@@ -315,6 +313,17 @@ const make = Effect.gen(function* () {
           reason: "Writer is not the repository root",
         });
       yield* git(orgId, paths.writer, ["rev-parse", "--verify", "HEAD^{commit}"]);
+      const head = (yield* git(orgId, paths.writer, ["rev-parse", "HEAD"])).trim();
+      const anchor = path.join(paths.writer, "..", "writer-head");
+      const expected = (yield* fs.exists(anchor))
+        ? (yield* fs.readFileString(anchor)).trim()
+        : (yield* git(orgId, paths.writer, ["rev-parse", "refs/remotes/origin/HEAD"])).trim();
+      if (head !== expected)
+        return yield* new MemoryError({
+          orgId,
+          operation: "head",
+          reason: "Unrecorded writer HEAD",
+        });
       const origin = (yield* git(orgId, paths.writer, ["remote", "get-url", "origin"])).trim();
       if (origin !== paths.repo.repoUrl)
         return yield* new MemoryError({
@@ -339,7 +348,6 @@ const make = Effect.gen(function* () {
   const ensureCheckouts = Effect.fn("Memory.ensureCheckouts")(function* (orgId: KinOrgId) {
     const paths = yield* pathsFor(orgId);
     yield* io(orgId, "mkdir", fs.makeDirectory(paths.root, { recursive: true }));
-    const gitDirectory = path.join(paths.writer, ".git");
     if (yield* io(orgId, "exists", fs.exists(paths.writer))) {
       yield* validateWriter(orgId, paths);
     } else {
@@ -368,30 +376,12 @@ const make = Effect.gen(function* () {
     const readExists = yield* io(orgId, "exists", fs.exists(paths.read));
     const validRead =
       readExists &&
-      (yield* git(orgId, paths.read, [
-        "rev-parse",
-        "--path-format=absolute",
-        "--git-common-dir",
-      ]).pipe(
-        Effect.flatMap((common) => sameDirectory(orgId, common.trim(), gitDirectory)),
-        Effect.flatMap((same) =>
-          same
-            ? git(orgId, paths.read, ["rev-parse", "--show-toplevel"]).pipe(
-                Effect.flatMap((root) => sameDirectory(orgId, root.trim(), paths.read)),
-              )
-            : Effect.succeed(false),
-        ),
-        Effect.catchTags({
-          MemoryError: (error) =>
-            isVcsProcessExitError(error.cause) && error.cause.failureKind === "not-found"
-              ? Effect.succeed(false)
-              : Effect.fail(error),
-        }),
-      ));
+      (yield* io(orgId, "exists", fs.exists(path.join(paths.read, ".git")))) &&
+      (yield* io(orgId, "readGit", fs.lstat(path.join(paths.read, ".git")))).type === "Directory";
     if (!validRead) {
-      yield* io(orgId, "recoverWorktree", fs.remove(paths.read, { recursive: true, force: true }));
-      yield* git(orgId, paths.writer, ["worktree", "prune"]);
-      yield* git(orgId, paths.writer, ["worktree", "add", "--detach", paths.read, "HEAD"]);
+      yield* io(orgId, "recoverRead", fs.remove(paths.read, { recursive: true, force: true }));
+      yield* git(orgId, paths.root, ["clone", "--no-hardlinks", "--", paths.writer, paths.read]);
+      yield* git(orgId, paths.read, ["remote", "remove", "origin"]);
     }
     return { writer: paths.writer, read: paths.read };
   });
@@ -769,6 +759,12 @@ const make = Effect.gen(function* () {
       );
     }
     const head = (yield* git(orgId, paths.writer, ["rev-parse", "HEAD"])).trim();
+    yield* io(
+      orgId,
+      "recordHead",
+      fs.writeFileString(path.join(paths.writer, "..", "writer-head"), head),
+    );
+    yield* git(orgId, paths.read, ["fetch", "--", paths.writer, head]);
     yield* git(orgId, paths.read, ["checkout", "--force", "--detach", head]);
     yield* git(orgId, paths.read, ["reset", "--hard", head]);
     yield* git(orgId, paths.read, ["clean", "-fdx"]);

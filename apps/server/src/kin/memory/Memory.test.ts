@@ -114,6 +114,7 @@ const fakeRepository = () => {
     layer,
     commit: () => {
       revision++;
+      return `fixture-head-${revision}`;
     },
     counts: () => ({ treeReads, blobReads }),
     corruptBatch: () => {
@@ -345,7 +346,7 @@ it.effect(
         expect(moved).toBeDefined();
         repository.files.delete("deferrals/def-001.md");
         repository.files.set("deferrals/moved.md", moved ?? "");
-        repository.commit();
+        yield* fs.writeFileString(`${root}/a/writer-head`, repository.commit());
         yield* memory.prepareWakeup(orgA);
         yield* TestClock.adjust("1 week");
         yield* memory.rebuildIndex(orgA);
@@ -384,7 +385,7 @@ it.effect(
             }),
           );
         }
-        repository.commit();
+        yield* fs.writeFileString(`${root}/a/writer-head`, repository.commit());
         yield* memory.prepareWakeup(orgA);
         yield* memory.rebuildIndex(orgA);
         expect((yield* memory.readIndex(orgA)).trimEnd().split("\n")).toHaveLength(200);
@@ -402,7 +403,7 @@ it.effect(
           "# index\nAs of 2027-02-28T00:00:00Z\n",
         ]) {
           repository.files.set("INDEX.md", index);
-          repository.commit();
+          yield* fs.writeFileString(`${root}/a/writer-head`, repository.commit());
           const result = yield* memory.prepareWakeup(orgA);
           expect(DateTime.toEpochMillis(result.indexAsOf)).toBe(yield* Clock.currentTimeMillis);
         }
@@ -410,7 +411,7 @@ it.effect(
           "deferrals/duplicate.md",
           fixtureItem({ recorded_at: "2027-02-27T00:00:00Z" }),
         );
-        repository.commit();
+        yield* fs.writeFileString(`${root}/a/writer-head`, repository.commit());
         yield* memory.prepareWakeup(orgA);
         const duplicates = yield* memory.query(orgA, {});
         expect(
@@ -427,7 +428,7 @@ it.effect(
         for (const id of ["fallback-1", "fallback-2"]) {
           repository.files.set(`deferrals/${id}.md`, fixtureItem({ id }));
         }
-        repository.commit();
+        yield* fs.writeFileString(`${root}/a/writer-head`, repository.commit());
         repository.corruptBatch();
         yield* memory.prepareWakeup(orgA);
         const afterFallback = yield* memory.query(orgA, {});
@@ -663,6 +664,7 @@ it.live("uses filesystem identity for a case-mismatched base without recloning",
     }).pipe(Effect.provide(memoryLayer(base, source)));
     yield* fs.writeFileString(`${writer}/keep`, "unpushed work");
     const head = yield* commit(writer);
+    yield* fs.writeFileString(`${writer}/../writer-head`, head);
     const before = yield* fs.stat(writer);
     yield* Effect.gen(function* () {
       const memory = yield* Memory.Memory;
@@ -699,6 +701,7 @@ it.live.each(["diverged", "conflict", "network down", "dirty writer", "rebase in
         yield* git(writer, ["config", "user.email", "fixture@example.invalid"]);
         yield* fs.writeFileString(`${writer}/rules.md`, "Local invented rules\n");
         const local = yield* commit(writer);
+        yield* fs.writeFileString(`${writer}/../writer-head`, local);
         yield* fs.writeFileString(
           `${source}/${scenario === "diverged" || scenario === "network down" || scenario === "dirty writer" ? "remote-only" : "rules.md"}`,
           "Remote invented edit\n",

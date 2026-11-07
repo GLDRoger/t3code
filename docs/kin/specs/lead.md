@@ -374,7 +374,7 @@ Writer rules, enforced in code on `stage`:
 - Provenance comes from the event, not the model. The writer looks up `sourceEventId` in the current batch and sets `said_by`, `source` and `trust` from the event's `provenance`. Owner → `owner`, member → `member`, webhook or outside text → `external`, worker suggestion → `agent`. The lead may lower trust but never raise it. A member's statement that reads like a rule is stored under `claims/`.
 - `review_by` defaults by kind: person 90 days, commitment and deferral at `due`, decision `null`, objective and claim 30 days unless given.
 - Contradictions: if an open item of the same kind shares a link or id and says something different, and `supersedes` was not passed, `stage` fails with `MemoryConflict { existingId }`. The lead then supersedes (same source, newer) or posts a question to the owner.
-- Secret scan: before commit, the staged diff goes through `MemorySecretScan.check` (triggers spec). A hit refuses the whole commit, keeps the journal line "Commit refused: possible secret in <path>", and tells the owner.
+- Secret scan: before commit, the staged diff goes through `KinSecretScan.scan({ orgId, files })` (triggers spec). A hit refuses the whole commit, discards staged content and emits a typed `MemorySecretBlocked` notification. The runner records the refusal in its next safe journal entry and tells the owner.
 
 Staged changes live in the writer checkout's working tree. `commitWakeup("completed")` writes the journal entry, rebuilds the front matter cache for changed files, runs the scan, commits once with message `kin(<agentId>): wake-up <wakeupId>` plus event ids, and pushes. `commitWakeup("failed")` discards staged item changes (`git checkout -- . && git clean -fd` on item folders) and commits only the journal entry, which records the failure.
 
@@ -386,9 +386,11 @@ Front matter matches the kin-memory README, including snake_case keys. Date-only
 
 LEAD-2: the front matter parser must use YAML’s core or JSON schema; YAML 1.1 turns `review_by: 2026-11-13` into a Date.
 
-The production `MemoryConfig` layer derives its server-owned base from `ServerConfig.stateDir`, using `${stateDir}/kin/<orgId>/memory` and `memory-read` (organization ids are path-encoded). Tests may supply an isolated base and relative paths. Paths must not overlap or escape that base. `ensureCheckouts` clones a missing writer and validates an existing one; `prepareWakeup` refuses a writer with an unfinished rebase, merge or cherry-pick, syncs it with `pull --rebase` and force-refreshes the disposable detached read worktree, including generated files. Project bootstrap belongs to the wake-up runner, not Memory.
+The production `MemoryConfig` layer derives its server-owned base from `ServerConfig.stateDir`, using `${stateDir}/kin/<orgId>/memory` and `memory-read` (organization ids are path-encoded). Tests may supply an isolated base and relative paths. Paths must not overlap or escape that base. `ensureCheckouts` clones a missing writer and validates an existing one; `prepareWakeup` refuses a writer with an unfinished rebase, merge or cherry-pick, syncs it with `pull --rebase` and force-refreshes a disposable detached independent read clone (no shared refs or hardlinks), including generated files. Project bootstrap belongs to the wake-up runner, not Memory.
 
 `ensureCheckouts` uses the server user’s git credentials: on the Kin host, the bot or GitHub App identity.
+
+LEAD-3 uses an independent read clone, not a git worktree: read-side `update-ref` cannot move writer refs. Before trusting HEAD, validation requires exact equality with the last server-recorded `writer-head` file beside the writer (initially origin HEAD). Successful syncs and commits update that anchor. The dedicated OS-user boundary remains required; this does not protect server files from an agent with the same filesystem authority.
 
 The read side pins the server-owned writer repository’s HEAD at wake-up (or first read), never the lead’s read-checkout HEAD or working-tree edits. Snapshots reload only on a new wake-up pin or explicit `rebuildCache`; blob contents and parse failures are cached by SHA. Symlinks are skipped; oversized blobs (over 256 KiB), malformed items and kind/folder mismatches are logged and skipped. Queries return duplicate ids with `duplicate: true` on each copy and mark them in the index; ambiguous `readItem` calls fail with `MemoryDuplicateId`. Queries include invalid items unless `excludeInvalid` is set; `invalid_at` remains on each returned `MemoryItemHead`. Date bounds are inclusive and compare instants; date-only strings mean midnight UTC. Missing or unparsable dates do not match a bounded date query. Overdue review means strictly before the current clock.
 
@@ -623,3 +625,11 @@ LEAD-14. **End-to-end shadow week dry run.** Script that replays a day of record
 - Which privileged kinds besides merge may an L3 lead request (deploy, release)? This spec allows only low-risk merges.
 - Task ids for dependencies in the chat, approvals and triggers specs are named by subject here. Swap in the real ids once those specs are written.
 - The lead's thread shows in T3's thread list under the "Kin · <org>" project. Hide it, or leave it as the lead's readable log?
+
+### LEAD-3 integration boundaries
+
+`MemoryWriterAuthority.resolve` is runner-only: resolve organization, wake-up, active lead, level, timestamps, timezone and event provenance from same-organization rows inside the runner's transaction. Never expose this context as tool input. Owner-confirmed sources must be verified there; absent a source, provenance is the lead's agent id. `MemoryWriterHooks.notify` consumes checkout, conflict and secret-block notices without chat transport coupling.
+
+`KinSecretScan` is deliberately supplied separately. `stubLayer` returns no findings until TRIG-16 replaces it; it is not a production secret detector. Any finding or scanner failure blocks the whole commit. TRIG-16 must preserve this fail-closed interface: `scan({ orgId, files: ReadonlyArray<{ path: string; content: Uint8Array }> })` returns `{ path, ruleId, line }[]`, with typed `KinSecretScanError`.
+
+TRIG-12's sectioned `buildIndex` has not landed on this base. `MemoryWriterHooks.buildIndex` receives the writer tree and returns generated text or null until wired; no read-checkout text is trusted. No migration is needed. The runner serializes prepare/stage/commit and dreaming per organization. Identical commit retries find the existing wake-up commit; failed pushes retain local commits, and failures discard uncommitted files. Journal additions use `appendJournal`, never replacement through `stage`.
