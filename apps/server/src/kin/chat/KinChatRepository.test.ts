@@ -205,6 +205,20 @@ describe("KinChatRepository", () => {
           }),
           { orgId, agentId, threadId, startedAt: timestamp, endedAt: null },
         );
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_webhook_sources (source_id, org_id, repo, scheduled_task_id, inbox_thread_id, bot_login, status) VALUES ('source', ${orgId}, 'owner/repo', 'task', 'webhook-inbox', 'bot', 'active')`;
+        const inboxError = yield* repo
+          .registerAgentThread({
+            orgId,
+            agentId,
+            threadId: decodeThreadId("webhook-inbox"),
+            startedAt: timestamp,
+            endedAt: null,
+          })
+          .pipe(Effect.flip);
+        assert.strictEqual(inboxError._tag, "KinChatError");
+        if (inboxError._tag === "KinChatError")
+          assert.strictEqual(inboxError.reason, "not_allowed");
         const secondPerson = decodePersonId("second-person");
         yield* repo.insertPerson({
           orgId,
@@ -432,7 +446,6 @@ describe("KinChatRepository", () => {
         assert.strictEqual(endedRetry._tag, "KinChatError");
         if (endedRetry._tag === "KinChatError")
           assert.strictEqual(endedRetry.reason, "not_allowed");
-        const sql = yield* SqlClient.SqlClient;
         assert.deepStrictEqual(
           yield* sql`SELECT typeof(seq) AS type FROM kin_messages WHERE org_id = ${orgId}`,
           [{ type: "integer" }, { type: "integer" }],

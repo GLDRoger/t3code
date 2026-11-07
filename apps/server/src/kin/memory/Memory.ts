@@ -173,6 +173,7 @@ const make = Effect.gen(function* () {
   const cache = yield* MemoryCache.MemoryCache;
   const locks = new Map<KinOrgId, Semaphore.Semaphore>();
   const pinnedHeads = new Map<KinOrgId, string>();
+  const initializedCheckouts = new Set<KinOrgId>();
   const duplicateWarnings = new Map<KinOrgId, ReadonlySet<string>>();
   const snapshots = new Map<KinOrgId, Snapshot>();
   const blobCaches = new Map<KinOrgId, BlobCache>();
@@ -336,8 +337,13 @@ const make = Effect.gen(function* () {
     );
   });
 
-  const ensureCheckouts = Effect.fn("Memory.ensureCheckouts")(function* (orgId: KinOrgId) {
+  const ensureCheckouts = Effect.fn("Memory.ensureCheckouts")(function* (
+    orgId: KinOrgId,
+    reusePin = false,
+  ) {
     const paths = yield* pathsFor(orgId);
+    if (reusePin && initializedCheckouts.has(orgId) && pinnedHeads.has(orgId))
+      return { writer: paths.writer, read: paths.read };
     yield* io(orgId, "mkdir", fs.makeDirectory(paths.root, { recursive: true }));
     const gitDirectory = path.join(paths.writer, ".git");
     if (yield* io(orgId, "exists", fs.exists(paths.writer))) {
@@ -393,14 +399,15 @@ const make = Effect.gen(function* () {
       yield* git(orgId, paths.writer, ["worktree", "prune"]);
       yield* git(orgId, paths.writer, ["worktree", "add", "--detach", paths.read, "HEAD"]);
     }
+    initializedCheckouts.add(orgId);
     return { writer: paths.writer, read: paths.read };
   });
 
   const load = Effect.fn("Memory.load")(function* (orgId: KinOrgId, force = false) {
     const paths = yield* pathsFor(orgId);
-    yield* validateWriter(orgId, paths);
     const head =
       pinnedHeads.get(orgId) ?? (yield* git(orgId, paths.writer, ["rev-parse", "HEAD"])).trim();
+    if (pinnedHeads.get(orgId) !== head) yield* validateWriter(orgId, paths);
     pinnedHeads.set(orgId, head);
     const previous = snapshots.get(orgId);
     if (!force && previous?.head === head) return previous;
@@ -793,7 +800,7 @@ const make = Effect.gen(function* () {
 
   return Memory.of({
     ensureCheckouts: Effect.fn("Memory.ensureCheckoutsLocked")((orgId) =>
-      locked(orgId, ensureCheckouts(orgId)),
+      locked(orgId, ensureCheckouts(orgId, true)),
     ),
     prepareWakeup: Effect.fn("Memory.prepareWakeup")((orgId) => locked(orgId, prepare(orgId))),
     readIndex: Effect.fn("Memory.readIndex")((orgId) => locked(orgId, readFile(orgId, "INDEX.md"))),

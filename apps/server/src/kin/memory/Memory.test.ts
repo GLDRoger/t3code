@@ -42,6 +42,7 @@ const fakeRepository = () => {
     }
     return sha;
   };
+  let validations = 0;
   let treeReads = 0;
   let blobReads = 0;
   let revision = 0;
@@ -60,6 +61,7 @@ const fakeRepository = () => {
                 : `fixture-head-${revision}`;
             break;
           case "remote":
+            validations++;
             stdout = "unused";
             break;
           case "ls-tree": {
@@ -115,7 +117,7 @@ const fakeRepository = () => {
     commit: () => {
       revision++;
     },
-    counts: () => ({ treeReads, blobReads }),
+    counts: () => ({ treeReads, blobReads, validations }),
     corruptBatch: () => {
       corruptNextBatch = true;
     },

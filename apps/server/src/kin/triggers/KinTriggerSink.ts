@@ -25,6 +25,11 @@ const decodeDelivery = Schema.decodeUnknownEffect(Delivery);
 const decodeFire = Schema.decodeEffect(KinTriggerFired);
 const decodeDeliveryId = Schema.decodeEffect(ScheduledTaskWebhookDeliveryId);
 
+export class KinTriggerStartupError extends Schema.TaggedError<KinTriggerStartupError>()(
+  "KinTriggerStartupError",
+  { cause: Schema.Defect() },
+) {}
+
 export class KinTriggerSink extends Context.Service<
   KinTriggerSink,
   {
@@ -172,5 +177,51 @@ export function wrapTaskDispatch<E, R, E2, R2>(
   ).pipe(
     Layer.provide(Layer.mergeAll(inner, threads)),
     Layer.provide(Layer.mergeAll(layer, KinTriggerStore.layer).pipe(Layer.provide(threads))),
+    Layer.catch((cause) =>
+      Layer.mergeAll(
+        Layer.effectDiscard(
+          Effect.logError(
+            "Kin trigger startup failed; scheduled dispatch disabled",
+            new KinTriggerStartupError({ cause }),
+          ),
+        ),
+        Layer.effect(
+          ThreadLaunchService.ThreadLaunchService,
+          Effect.gen(function* () {
+            const service = yield* ThreadLaunchService.ThreadLaunchService;
+            return ThreadLaunchService.ThreadLaunchService.of({
+              ...service,
+              launch: Effect.fn("KinTriggerSink.disabledLaunch")(function* (input) {
+                if (input.initialMessage?.scheduledTaskId === undefined)
+                  return yield* service.launch(input);
+                return yield* new ThreadLaunchService.ThreadLaunchError({
+                  operation: "dispatch-message",
+                  commandId: input.commandId,
+                  projectId: input.projectId,
+                  cause,
+                });
+              }),
+            });
+          }),
+        ),
+        Layer.effect(
+          ThreadManagementService.ThreadManagementService,
+          Effect.gen(function* () {
+            const service = yield* ThreadManagementService.ThreadManagementService;
+            return ThreadManagementService.ThreadManagementService.of({
+              ...service,
+              sendToThread: Effect.fn("KinTriggerSink.disabledSend")(function* (input) {
+                if (input.scheduledTaskId === undefined) return yield* service.sendToThread(input);
+                return yield* new OrchestratorCommandRejectedError({
+                  commandId: input.commandId,
+                  commandType: "kin.trigger.disabled",
+                  cause,
+                });
+              }),
+            });
+          }),
+        ),
+      ).pipe(Layer.provide(Layer.mergeAll(inner, threads))),
+    ),
   );
 }

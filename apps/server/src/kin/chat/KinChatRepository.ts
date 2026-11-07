@@ -700,6 +700,13 @@ const make = Effect.gen(function* () {
                 reason: "not_allowed",
                 message: "Retired Kin agents cannot register threads.",
               });
+            const inbox =
+              yield* sql`SELECT 1 FROM kin_webhook_sources WHERE inbox_thread_id = ${input.threadId}`;
+            if (inbox.length > 0)
+              return yield* new KinChatError({
+                reason: "not_allowed",
+                message: "Webhook inbox threads cannot be Kin agents.",
+              });
             const existing = yield* SqlSchema.findOneOption({
               Request: Schema.Unknown,
               Result: AgentThreadRow,

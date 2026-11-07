@@ -108,6 +108,12 @@ describe("KinEventQueue", () => {
       yield* seed();
       const queue = yield* KinEventQueue.KinEventQueue;
       const sql = yield* SqlClient.SqlClient;
+      for (const agentId of ["unknown", "foreign-lead"]) {
+        const error = yield* queue
+          .enqueue({ ...(yield* event("missing")), agentId: KinAgentId.make(agentId) })
+          .pipe(Effect.flip);
+        assert.strictEqual(error._tag, "KinEventQueueUnknownAgent");
+      }
       yield* queue.enqueue({
         ...(yield* event("first")),
         receivedAt: DateTime.makeUnsafe(-600_000),
@@ -123,6 +129,11 @@ describe("KinEventQueue", () => {
         ["first", "second"],
       );
       yield* finish("first-batch");
+      yield* queue.enqueue(yield* event("colliding"));
+      yield* TestClock.adjust("20 seconds");
+      const collision = yield* Effect.scoped(queue.claim(input("first-batch"))).pipe(Effect.flip);
+      assert.strictEqual(collision._tag, "KinEventQueueWakeupConflict");
+      yield* sql`UPDATE kin_events SET state = 'expired' WHERE event_id = 'colliding'`;
       yield* queue.enqueue(yield* event("later"));
       const second = yield* Effect.scoped(queue.claim(input("second-batch"))).pipe(
         Effect.forkChild,
@@ -272,7 +283,10 @@ describe("KinEventQueue", () => {
             },
           ]) {
             const conflict = yield* queue.enqueue(changed).pipe(Effect.flip);
-            assert.instanceOf(conflict, KinEventQueue.KinEventQueueConflict);
+            assert.strictEqual(
+              conflict._tag,
+              changed.agentId === "lead-b" ? "KinEventQueueUnknownAgent" : "KinEventQueueConflict",
+            );
           }
           for (const redelivery of [
             {
@@ -397,20 +411,20 @@ describe("KinEventQueue", () => {
         assert.strictEqual(rejected._tag, "PersistenceDecodeError");
       }
       assert.strictEqual(
-        yield* queue.release({
+        (yield* queue.release({
           ...input("admission", "b"),
           countAttempt: false,
           notBefore: 60_000,
-        }),
+        })).released,
         0,
       );
       assert.strictEqual(
-        yield* queue.release({
+        (yield* queue.release({
           ...input("admission"),
           eventIds: [KinEventId.make("deferred")],
           notBefore: 60_000,
           countAttempt: false,
-        }),
+        })).released,
         1,
       );
       assert.deepStrictEqual(yield* sql`SELECT status FROM kin_wakeups ORDER BY wakeup_id`, [
@@ -468,8 +482,12 @@ describe("KinEventQueue", () => {
             mode === "release"
               ? queue.release({ ...claimInput, countAttempt: true })
               : queue.finish({ ...claimInput, status: mode });
-          yield* failed;
-          yield* failed;
+          const terminal = yield* failed;
+          assert.deepStrictEqual(
+            terminal.failedEventIds,
+            attempt === 3 ? [KinEventId.make(id)] : [],
+          );
+          assert.deepStrictEqual((yield* failed).failedEventIds, []);
           const now = yield* Clock.currentTimeMillis;
           assert.deepStrictEqual(
             yield* sql`SELECT state, attempts, not_before FROM kin_events WHERE event_id = ${id}`,
