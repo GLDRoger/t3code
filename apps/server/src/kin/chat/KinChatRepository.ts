@@ -216,9 +216,12 @@ export class KinChatRepository extends Context.Service<
         readonly directKey: typeof TrimmedNonEmptyString.Type | null;
       },
     ) => Effect.Effect<KinChat, RepositoryError>;
+    readonly findClientMessage: (
+      input: MemberScope & { readonly kind: "send" | "act"; readonly clientId: string },
+    ) => Effect.Effect<Option.Option<KinMessage>, RepositoryError>;
     readonly insertMessage: (input: InsertMessage) => Effect.Effect<KinMessage, RepositoryError>;
     readonly history: (
-      input: Scope & KinChatHistoryInput,
+      input: Scope & KinChatHistoryInput & { readonly viewerMemberId?: KinMemberId },
     ) => Effect.Effect<KinChatHistoryResult, RepositoryError>;
     readonly messagesAfter: (
       input: ChatScope & { readonly afterSeq: typeof NonNegativeInt.Type; readonly limit: number },
@@ -377,10 +380,19 @@ const make = Effect.gen(function* () {
           })(input),
         );
       }
-      if (input.source?.threadId != null)
-        yield* requireRecord(
+      if (input.source !== null) {
+        const thread = yield* requireRecord(
           agentThreadOne({ orgId: input.orgId, threadId: input.source.threadId }),
         );
+        yield* requireRecord(
+          SqlSchema.findOneOption({
+            Request: Schema.Unknown,
+            Result: MemberRow,
+            execute: () => sql`SELECT ${sql.literal(memberColumns)} FROM kin_chat_members
+ WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND agent_id = ${thread.agentId}`,
+          })(input),
+        );
+      }
     },
   );
   return KinChatRepository.of({
@@ -785,6 +797,18 @@ const make = Effect.gen(function* () {
       },
       Effect.mapError(toRepositoryError("KinChatRepository.createChat")),
     ),
+    findClientMessage: Effect.fn("KinChatRepository.findClientMessage")(
+      function (input) {
+        return SqlSchema.findOneOption({
+          Request: Schema.Unknown,
+          Result: MessageRow,
+          execute: () => sql`SELECT ${sql.literal(messageColumns)} FROM kin_messages
+ WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND author_member_id = ${input.memberId}
+ AND client_message_id = ${`${input.kind}:${input.clientId}`}`,
+        })(input).pipe(NodeSqliteClient.readOnly);
+      },
+      Effect.mapError(toRepositoryError("KinChatRepository.findClientMessage")),
+    ),
     insertMessage: Effect.fn("KinChatRepository.insertMessage")(
       function* (input) {
         return yield* sql.withTransaction(
@@ -828,7 +852,8 @@ const make = Effect.gen(function* () {
                 if (
                   author._tag === "agent" &&
                   (existing.value.author._tag !== "agent" ||
-                    existing.value.author.threadId !== author.threadId)
+                    existing.value.author.threadId !== author.threadId ||
+                    existing.value.author.ownerPersonId !== author.ownerPersonId)
                 )
                   return yield* new KinChatError({
                     reason: "not_allowed",
@@ -939,12 +964,25 @@ const make = Effect.gen(function* () {
           .withTransaction(
             Effect.gen(function* () {
               const request = yield* decodeHistory(input);
+              const viewer =
+                input.viewerMemberId === undefined
+                  ? null
+                  : yield* requireRecord(
+                      memberOne({ orgId: input.orgId, memberId: input.viewerMemberId }),
+                    );
+              if (viewer !== null && (viewer.chatId !== input.chatId || viewer.leftAt !== null))
+                return yield* new KinChatError({
+                  reason: "not_found",
+                  message: "Kin member not found.",
+                });
               const rows = yield* SqlSchema.findAll({
                 Request: Schema.Unknown,
                 Result: MessageRow,
                 execute:
                   () => sql`SELECT ${sql.literal(messageColumns)} FROM kin_messages WHERE org_id = ${input.orgId}
- AND chat_id = ${input.chatId} AND seq < ${request.beforeSeq} ORDER BY seq DESC LIMIT ${request.limit + 1}`,
+ AND chat_id = ${input.chatId} AND seq < ${request.beforeSeq}
+ AND (${viewer === null || viewer.role === "owner" ? 1 : 0} = 1 OR status NOT IN ('suggested', 'dismissed') OR author_member_id = ${viewer?.memberId ?? null})
+ ORDER BY seq DESC LIMIT ${request.limit + 1}`,
               })(input);
               const messages = rows.slice(0, request.limit).reverse();
               const widgets =

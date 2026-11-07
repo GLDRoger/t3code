@@ -198,7 +198,7 @@ export const KinWidget = Schema.Struct({
 });
 ```
 
-- **State schemas** are registered per type in `apps/server/src/kin/widgets/registry.ts` (**new**). Owners: `task` (this spec, registered in CHAT-5; updater in CHAT-8), `approval` (approvals spec, drawn from `KinPendingAction`), `deferral` (lead spec), `decision`, `poll`, `checklist`, `form`, `date` (this spec, phase 2, CHAT-13). An unknown type, or state that fails its schema, is refused at upsert.
+- **State schemas** are registered per type in `apps/server/src/kin/widgets/registry.ts` (**new**). Owners: `task` (this spec, registered in CHAT-5; updater in CHAT-8), `approval` (approvals spec, drawn from `KinPendingAction`), `deferral` (lead spec), `decision`, `poll`, `checklist`, `form`, `date` (this spec, phase 2, CHAT-13). An unknown type, or state that fails its schema, is refused at upsert. CHAT-5 registers only `task`; other owners add their schemas with their features.
 - **Acting:** `kin.widgets.act({ widgetId, revision, actionId, value?, clientActionId })` posts a `widget_action` message authored by the session's person, with `{ widgetId, revision, actionId, value }` as its structured body. The lead acts on it under its own permissions. A stale `revision` fails with `widget_changed`.
 - **Approval cards never go through `act`.** `act` refuses `type: "approval"` with `use_approvals`. Approving is the approvals spec's signed-grant RPC (section 9.2). Approval widgets are created only by the approvals spec's server code; the MCP upsert tool refuses that type too, so an agent can't draw one.
 - **Generated widgets** carry `source`, the lead thread's turn item that produced the MCP App resource. The client renders it with the existing `ThreadMcpApp`, which already calls `mcpApps.*` RPCs scoped to `{ threadId, itemId }`. This works for the owner only, since those RPCs need `orchestration:*` scopes. Members seeing generated widgets is an open question.
@@ -247,6 +247,7 @@ Flow:
   - an agent message with `intent: "question"` that mentions a person, or any agent question in a direct chat,
   - a guest suggestion (for the owner),
   - the approvals spec calling `addWaiting` for its approval cards.
+- New waiting rows must be unresolved; a caller-supplied resolution is refused.
 - A row resolves when the widget closes, the person acts on it, the person replies in the chat after the question (for `question`), or the source calls `resolveWaiting`.
 - The list streams with the chat list. Without an `orgId` the stream merges every org the session is bound to, each item labelled with `orgId` (10a, "one switcher"). Only this list is highlighted in the UI (interface rule 1); push and lock-screen buttons are the mobile and approvals specs' work.
 
@@ -279,7 +280,7 @@ K001 uses `TEXT` for ids, ISO timestamps and JSON, and `INTEGER` for sequences a
 
 The next free migration number (phase 2): `kin_floor_runs`, `kin_floor_bids`, `kin_judge_log` (below). New tables only.
 
-**Seq allocation:** in one `sql.withTransaction`: `UPDATE kin_chats SET last_seq = last_seq + 1, last_message_at = ? WHERE chat_id = ? AND org_id = ? RETURNING last_seq`, then insert the message with that seq. Look up an existing `(chat_id, author_member_id, client_message_id)` inside the transaction before allocating a seq. Store sends as `send:<clientMessageId>` and widget actions as `act:<clientActionId>` so the namespaces cannot collide. History returns the newest page before `beforeSeq` in ascending seq order, with `hasMore` from one extra row. Publish to the in-process hub only after commit.
+**Seq allocation:** in one `sql.withTransaction`: `UPDATE kin_chats SET last_seq = last_seq + 1, last_message_at = ? WHERE chat_id = ? AND org_id = ? RETURNING last_seq`, then insert the message with that seq. Look up an existing `(chat_id, author_member_id, client_message_id)` inside the transaction before allocating a seq. Store sends as `send:<clientMessageId>` and widget actions as `act:<clientActionId>` so the namespaces cannot collide. History returns the newest page before `beforeSeq` in ascending seq order, with `hasMore` from one extra row. Message and widget ids are server-generated; widget revisions start at 1 and are server-owned. Publish to the in-process hub only after commit.
 
 ### RPC surface
 
@@ -336,7 +337,7 @@ export const KinChatStreamEvent = Schema.Union([
 ### Authorisation, in two layers
 
 1. **Scope (coarse):** `KIN_CHAT_RPC_SCOPES` in `kinChat.ts` maps each method to a scope; `RpcAuthorization.ts` spreads it into `RPC_REQUIRED_SCOPES`. Phase 1 uses existing scopes (table above). Phase 2 adds `kin:chat` and moves every `kin.*` method to it (CHAT-11).
-2. **Membership (fine):** inside `KinChatService`, every call resolves the person, loads the chat by id, and checks an active member row in the same org. A client-sent `orgId` must match the chat's. Role checks: only `owner` adds or removes members, sets roles, resolves suggestions, pins. `guest` can only `send` (stored as `suggested`), `markRead` and subscribe. Muted agents can't post.
+2. **Membership (fine):** inside `KinChatService`, every call resolves the person, loads the chat by id, and checks an active member row in the same org. A client-sent `orgId` must match the chat's. Role checks: only `owner` adds or removes members, sets roles, resolves suggestions, pins. `guest` can only `send` (stored as `suggested`), `markRead` and subscribe. Until CHAT-12 supplies the suggestion flow, CHAT-5 refuses guest writes rather than posting them as normal messages. Muted agents can't post.
 
 ### Agent tools (MCP)
 

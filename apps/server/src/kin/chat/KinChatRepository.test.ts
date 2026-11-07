@@ -570,6 +570,20 @@ describe("KinChatRepository", () => {
           [...expected],
         );
       }
+      for (const status of ["suggested", "dismissed"] as const)
+        yield* repo.insertMessage(message(status, { status }));
+      yield* repo.insertMessage(message("visible"));
+      for (const [viewerMemberId, seqs] of [
+        [agentMemberId, [5, 8]],
+        [memberId, [7, 8]],
+      ] as const) {
+        const page = yield* repo.history({ orgId, chatId, beforeSeq: 9, limit: 2, viewerMemberId });
+        assert.deepStrictEqual(
+          page.messages.map((row) => row.seq),
+          [...seqs],
+        );
+        assert.strictEqual(page.hasMore, true);
+      }
     }).pipe(Effect.provide(layer)),
   );
 
@@ -754,6 +768,7 @@ describe("KinChatRepository", () => {
         endedAt: null,
       });
       for (const refs of [
+        { source: { threadId: decodeThreadId("other-thread"), itemId: decodeTurnItemId("item") } },
         { awaiting: [otherPerson] },
         { awaiting: [decodePersonId("unknown-person")] },
         {
@@ -772,6 +787,36 @@ describe("KinChatRepository", () => {
           if (failure._tag === "KinChatError") assert.strictEqual(failure.reason, "not_found");
         }
       }
+      const foreignAnchor = yield* repo.insertMessage({
+        ...message("foreign-anchor"),
+        orgId: orgA,
+        chatId: otherChat,
+        author: { _tag: "system" },
+        mentions: [],
+        clientMessageId: null,
+      });
+      for (const collision of [
+        repo
+          .insertMessage({
+            ...message("first"),
+            orgId: orgA,
+            chatId: otherChat,
+            author: { _tag: "system" },
+            mentions: [],
+            clientMessageId: null,
+          })
+          .pipe(Effect.asVoid),
+        repo.insertWidget({
+          ...widget,
+          orgId: orgA,
+          chatId: otherChat,
+          messageId: foreignAnchor.messageId,
+          awaiting: [],
+          source: null,
+          feed: null,
+        }),
+      ])
+        assert.include(yield* Effect.flip(collision), { reason: "not_found" });
       for (const retry of [
         repo
           .addWaiting({
