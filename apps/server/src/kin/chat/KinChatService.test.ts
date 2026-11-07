@@ -209,6 +209,25 @@ describe("KinChatService", () => {
             .messages,
           [posted],
         );
+        const widget = yield* service.upsertWidget(agent, {
+          chatId: chat.chatId,
+          type: "task",
+          state,
+        });
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'service-wakeup'`;
+        assert.include(
+          yield* service
+            .upsertWidget(agent, {
+              chatId: chat.chatId,
+              widgetId: widget.widgetId,
+              revision: widget.revision,
+              type: "task",
+              state,
+            })
+            .pipe(Effect.flip),
+          { reason: "not_allowed" },
+        );
       }).pipe(Effect.provide(layer)),
   );
 

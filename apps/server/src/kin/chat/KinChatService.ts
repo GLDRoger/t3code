@@ -150,7 +150,8 @@ const make = Effect.gen(function* () {
         agent.retiredAt !== null ||
         thread.endedAt !== null ||
         thread.agentId !== agent.agentId ||
-        agent.ownerPersonId !== identity.ownerPersonId
+        agent.ownerPersonId !== identity.ownerPersonId ||
+        !(yield* repo.hasRunningWakeup(identity))
       )
         return yield* notAllowed;
     }
