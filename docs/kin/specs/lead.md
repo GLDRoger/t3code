@@ -137,7 +137,7 @@ export const KinEvent = Schema.Union([
 ]);
 ```
 
-Events carry references, not bodies. The lead reads the message or payload through its tools, so the queue never holds large or secret text. `scheduledTaskId` and `webhookDeliveryId` identify the stored payload for `ScheduledTaskService.getWebhookDelivery`. `deliveryId` is GitHub’s `x-github-delivery` header and is used unchanged as the github event’s `dedupeKey`. The `deferral.due.subject` union directly mirrors the triggers spec’s deferral (including `phase`), reminder and followup subjects; `lateByMs` is a non-negative integer.
+Events carry references, not bodies. The lead reads the message or payload through its tools, so the queue never holds large or secret text. `scheduledTaskId` and `webhookDeliveryId` identify the stored payload for `ScheduledTaskService.getWebhookDelivery`. `deliveryId` is GitHub’s `x-github-delivery` header; the inbox consumer derives the event’s `dedupeKey` from `KinTriggerFired.fireId`. The `deferral.due.subject` union directly mirrors the triggers spec’s deferral (including `phase`), reminder and followup subjects; `lateByMs` is a non-negative integer.
 
 | Source                                           | Event             | Producer                                                 |
 | ------------------------------------------------ | ----------------- | -------------------------------------------------------- |
