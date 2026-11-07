@@ -251,7 +251,7 @@ Flow:
 Kin runs its own migration track in the T3 database file.
 
 - **`apps/server/src/kin/persistence/KinMigrations.ts`** (**new**) builds `Migrator.make({})` and passes `table: "kin_sql_migrations"` when running it, with a `Migrator.fromRecord` loader over `apps/server/src/kin/persistence/migrations/K001_ChatCore.ts` and later files. The loader key `"1_ChatCore"` records `migration_id = 1` and `name = "ChatCore"` (together, `1_ChatCore`). Ids are Kin's own sequence and never touch `effect_sql_migrations`.
-- It runs from `KinPersistence.layer`, a `Layer.effectDiscard` that needs `SqlClient`. `SqlClient` comes from `Sqlite.layerConfig`, whose `layerSetup` has already run upstream migrations, so production migrates Kin second. Both migration orders work independently; CHAT-2 exposes the layer for tests only, without wiring server startup yet.
+- It runs from `KinPersistence.layer`, a `Layer.effectDiscard` that needs `SqlClient`. `SqlClient` comes from `Sqlite.layerConfig`, whose `layerSetup` has already run upstream migrations, so production migrates Kin second. Kin's migration history is independent of upstream's, so either can run first, but production must keep Kin second: `Sqlite.ts` sets `auto_vacuum` only on a database with no tables. CHAT-2 exposes the layer for tests only, without wiring server startup yet.
 - Kin tables never use foreign keys into upstream tables (upstream drops and renames its own: `063_DropUnusedV1Projections.ts`). Thread and task ids are plain text. Foreign keys between Kin tables are fine (`PRAGMA foreign_keys = ON` is set in `Sqlite.ts`).
 - An upstream build opening a Kin database ignores the `kin_*` tables.
 

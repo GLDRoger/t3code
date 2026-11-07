@@ -89,6 +89,7 @@ describe("Kin migrations", () => {
         SELECT name FROM sqlite_master WHERE type = 'index' AND name GLOB 'idx_kin_*' ORDER BY name
       `;
       assert.deepStrictEqual(indexes, [
+        { name: "idx_kin_waiting_open_widget_person" },
         { name: "idx_kin_waiting_person_resolved_at" },
         { name: "idx_kin_widgets_type_closed_at" },
       ]);
@@ -297,6 +298,51 @@ describe("Kin migrations", () => {
         String(duplicateClientId),
         "UNIQUE constraint failed: kin_messages.chat_id, kin_messages.author_member_id, kin_messages.client_message_id",
       );
+      const rejected = [
+        {
+          name: "direct chat without direct_key",
+          query: sql`
+            INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+            VALUES ('direct-no-key', 'org', 'direct', NULL, 0, ${timestamp})
+          `,
+          error: "CHECK constraint failed",
+        },
+        {
+          name: "human message without a person",
+          query: sql`
+            INSERT INTO kin_messages (
+              message_id, org_id, chat_id, seq, author_kind, author_role, kind, body, mentions_json, status, created_at
+            ) VALUES ('human-no-person', 'org', 'team_group', 8, 'human', 'owner', 'text', '', '[]', 'posted', ${timestamp})
+          `,
+          error: "CHECK constraint failed",
+        },
+        {
+          name: "agent message without a thread",
+          query: sql`
+            INSERT INTO kin_messages (
+              message_id, org_id, chat_id, seq, author_kind, author_agent_id, author_owner_person_id,
+              author_member_id, author_role, kind, body, intent, mentions_json, status, created_at
+            ) VALUES (
+              'agent-no-thread', 'org', 'team_group', 9, 'agent', 'lead', 'owner', 'member-lead',
+              'member', 'text', '', 'answer', '[]', 'posted', ${timestamp}
+            )
+          `,
+          error: "CHECK constraint failed",
+        },
+        {
+          name: "second open waiting row for one widget and person",
+          query: sql`
+            INSERT INTO kin_waiting (waiting_id, org_id, person_id, chat_id, widget_id, reason, created_at)
+            VALUES ('waiting-again', 'org', 'owner', 'team_group', 'widget', 'decision', ${timestamp})
+          `,
+          error: "UNIQUE constraint failed: kin_waiting.widget_id, kin_waiting.person_id",
+        },
+      ];
+      for (const { name, query, error } of rejected) {
+        const exit = yield* Effect.exit(query);
+        assert.isTrue(Exit.isFailure(exit), name);
+        assert.include(String(exit), error, name);
+      }
       for (const member of [members[0]!, members[3]!]) {
         const duplicateMember = yield* Effect.exit(sql`
           INSERT INTO kin_chat_members (
@@ -310,7 +356,7 @@ describe("Kin migrations", () => {
         assert.isTrue(Exit.isFailure(duplicateMember));
         assert.include(
           String(duplicateMember),
-          "UNIQUE constraint failed: kin_chat_members.chat_id",
+          `UNIQUE constraint failed: kin_chat_members.chat_id, kin_chat_members.${member.kind}_id`,
         );
       }
       assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_check`, []);

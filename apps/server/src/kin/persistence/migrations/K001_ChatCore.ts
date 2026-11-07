@@ -64,7 +64,8 @@ export default Effect.gen(function* () {
       last_message_at TEXT,
       created_at TEXT NOT NULL,
       archived_at TEXT,
-      UNIQUE (org_id, direct_key)
+      UNIQUE (org_id, direct_key),
+      CHECK ((kind = 'direct') = (direct_key IS NOT NULL))
     )
   `;
   yield* sql`
@@ -113,7 +114,15 @@ export default Effect.gen(function* () {
       created_at TEXT NOT NULL,
       edited_at TEXT,
       UNIQUE (chat_id, seq),
-      UNIQUE (chat_id, author_member_id, client_message_id)
+      UNIQUE (chat_id, author_member_id, client_message_id),
+      CHECK (
+        (author_kind = 'human' AND author_person_id IS NOT NULL AND author_member_id IS NOT NULL
+          AND author_agent_id IS NULL AND author_owner_person_id IS NULL AND author_thread_id IS NULL) OR
+        (author_kind = 'agent' AND author_agent_id IS NOT NULL AND author_member_id IS NOT NULL
+          AND author_owner_person_id IS NOT NULL AND author_thread_id IS NOT NULL AND author_person_id IS NULL) OR
+        (author_kind = 'system' AND author_person_id IS NULL AND author_agent_id IS NULL
+          AND author_member_id IS NULL AND author_owner_person_id IS NULL AND author_thread_id IS NULL)
+      )
     )
   `;
   yield* sql`
@@ -162,4 +171,8 @@ export default Effect.gen(function* () {
     )
   `;
   yield* sql`CREATE INDEX idx_kin_waiting_person_resolved_at ON kin_waiting(person_id, resolved_at)`;
+  yield* sql`
+    CREATE UNIQUE INDEX idx_kin_waiting_open_widget_person ON kin_waiting(widget_id, person_id)
+    WHERE resolved_at IS NULL AND widget_id IS NOT NULL
+  `;
 });
