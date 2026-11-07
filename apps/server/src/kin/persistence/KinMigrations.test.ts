@@ -85,6 +85,19 @@ describe("Kin migrations", () => {
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
           migrationManifest,
         );
+        for (const [table, names] of [
+          ["kin_triggers", ["next_run_at", "created_at", "updated_at"]],
+          ["kin_trigger_fires", ["fired_at"]],
+          ["kin_trigger_inbox", ["received_at", "consumed_at"]],
+          ["kin_ping_ledger", ["pinged_at", "escalated_at"]],
+        ] as const) {
+          const columns = yield* sql<{ name: string; type: string }>`
+            SELECT name, type FROM pragma_table_info(${table})
+          `;
+          for (const name of names) {
+            assert.strictEqual(columns.find((column) => column.name === name)?.type, "INTEGER");
+          }
+        }
         for (const { name } of before) {
           const columns = yield* sql<{ name: string; notnull: number }>`
           SELECT name, "notnull" FROM pragma_table_info(${name})
