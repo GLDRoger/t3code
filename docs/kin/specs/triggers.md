@@ -232,7 +232,7 @@ armed ──heads_up fire──▶ recheck ──changed──▶ asked   (decis
 
 ### Routines (`fixed_time` in the owner's zone)
 
-On `fullRebuildWeekday`, the dream consumer suppresses `dream` because `dream_full` replaces it.
+the dream consumer suppresses a `dream` fire whose `dueAt`, in owner time, falls on `fullRebuildWeekday`.
 
 | Routine           | Does                                                                                                                                                                                                                                                                                                                                  |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -83,7 +83,11 @@ const make = Effect.gen(function* () {
       lateByMs: now - dueAt,
       payload: { kind: "time", triggerId: trigger.id, subject: trigger.subject },
     });
-    yield* store.fire(event, trigger.schedule.type === "once" ? null : nextRunAt(trigger, now));
+    yield* store.fire(
+      event,
+      trigger.schedule.type === "once" ? null : nextRunAt(trigger, now),
+      trigger,
+    );
   });
   const runDue = Effect.fn("KinTriggerScheduler.runDue")(
     function* () {
@@ -140,12 +144,13 @@ const make = Effect.gen(function* () {
             };
             const next = !updated.enabled
               ? null
-              : updated.schedule.type === "once" ||
-                  updated.schedule.type === "interval" ||
-                  (trigger.nextRunAt !== null &&
-                    DateTime.toEpochMillis(DateTime.makeUnsafe(trigger.nextRunAt)) <= now)
-                ? trigger.nextRunAt
-                : nextRunAt(updated, now);
+              : updated.schedule.type === "interval"
+                ? (trigger.nextRunAt ?? nextRunAt(updated, now))
+                : updated.schedule.type === "once" ||
+                    (trigger.nextRunAt !== null &&
+                      DateTime.toEpochMillis(DateTime.makeUnsafe(trigger.nextRunAt)) <= now)
+                  ? trigger.nextRunAt
+                  : nextRunAt(updated, now);
             if (
               updated.timeZone === trigger.timeZone &&
               isSameSchedule(updated.schedule, trigger.schedule) &&

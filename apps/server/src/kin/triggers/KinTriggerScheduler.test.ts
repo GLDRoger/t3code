@@ -309,9 +309,15 @@ describe("KinTriggerScheduler", () => {
         });
         yield* store.put(overdue);
         yield* store.put(interval);
+        const unarmedInterval = trigger({ ...interval, id: "unarmed-interval", nextRunAt: null });
+        yield* store.put(unarmedInterval);
         yield* TestClock.adjust("3 seconds");
         const changed = { ...settings(orgA, "UTC"), morningBrief: "16:00" };
         yield* scheduler.recompute(changed);
+        assert.strictEqual(
+          (yield* store.get(orgA, unarmedInterval.id))?.nextRunAt,
+          "2026-11-07T20:00:03.000Z",
+        );
         assert.deepStrictEqual(
           [
             (yield* store.get(orgA, overdue.id))?.nextRunAt,
@@ -341,6 +347,52 @@ describe("KinTriggerScheduler", () => {
           unchanged.find((value) => value.id === interval.id),
         );
       }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("uses settings saved between the due scan and fire without losing the slot", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const store = yield* KinTriggerStore.KinTriggerStore;
+      const scheduler = yield* KinTriggerScheduler.KinTriggerScheduler;
+      const inbox = yield* KinTriggerInbox.KinTriggerInbox;
+      const due = "2026-11-07T03:00:00.000Z";
+      const value = trigger({
+        timeZone: "UTC",
+        schedule: { type: "fixed_time", timeOfDay: "03:00" },
+        nextRunAt: due,
+      });
+      yield* store.put(value);
+      yield* TestClock.setTime(millis(due) + 3000);
+      const observedStore = KinTriggerStore.KinTriggerStore.of({
+        ...store,
+        fire: (...args) =>
+          scheduler
+            .recompute({ ...settings(orgA, "UTC"), morningBrief: "05:00" })
+            .pipe(Effect.andThen(store.fire(...args))),
+      });
+      yield* Effect.gen(function* () {
+        const hooked = yield* KinTriggerScheduler.KinTriggerScheduler;
+        yield* hooked.runDue();
+        assert.lengthOf(yield* inbox.listPending(orgA), 0);
+        const sql = yield* SqlClient.SqlClient;
+        assert.lengthOf(yield* sql`SELECT fire_id FROM kin_trigger_fires ORDER BY fire_id`, 0);
+        assert.strictEqual((yield* store.get(orgA, value.id))?.nextRunAt, due);
+        yield* hooked.runDue();
+        yield* hooked.runDue();
+      }).pipe(
+        Effect.provide(
+          Layer.fresh(KinTriggerScheduler.layer).pipe(
+            Layer.provide(Layer.succeed(Scheduler.Scheduler, { register: () => Effect.void })),
+            Layer.provide(Layer.succeed(KinTriggerStore.KinTriggerStore, observedStore)),
+          ),
+        ),
+      );
+      const events = yield* inbox.listPending(orgA);
+      assert.lengthOf(events, 1);
+      assert.strictEqual(events[0]?.dueAt, due);
+      assert.strictEqual(events[0]?.lateByMs, 3000);
+      assert.strictEqual((yield* store.get(orgA, value.id))?.nextRunAt, "2026-11-07T05:00:00.000Z");
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect(
@@ -395,8 +447,8 @@ describe("KinTriggerScheduler", () => {
       );
       const observedStore = KinTriggerStore.KinTriggerStore.of({
         ...store,
-        fire: (event, next) =>
-          store.fire(event, next).pipe(Effect.tap(() => Queue.offer(receipts, event.fireId))),
+        fire: (...args) =>
+          store.fire(...args).pipe(Effect.tap(() => Queue.offer(receipts, args[0].fireId))),
       });
       yield* Effect.gen(function* () {
         assert.strictEqual(yield* Queue.take(receipts), `startup:${millis(missed)}`);

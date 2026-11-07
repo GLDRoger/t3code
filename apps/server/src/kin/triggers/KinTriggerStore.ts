@@ -79,6 +79,7 @@ export class KinTriggerStore extends Context.Service<
     readonly fire: (
       event: KinTriggerFired,
       nextRunAt: KinTrigger["nextRunAt"],
+      expected?: Pick<KinTrigger, "schedule" | "timeZone">,
     ) => Effect.Effect<"fired" | "duplicate", StoreError | KinTriggerFireConflict>;
     readonly pruneFires: (now: number) => Effect.Effect<number, StoreError>;
   }
@@ -95,6 +96,7 @@ const decodeTrigger = Schema.decodeEffect(KinTrigger);
 const decodeFire = Schema.decodeEffect(KinTriggerFired);
 const encodeFire = Schema.encodeEffect(Schema.fromJsonString(KinTriggerFired));
 const decodeNextRunAt = Schema.decodeEffect(KinTrigger.fields.nextRunAt);
+const decodeTimeZone = Schema.decodeEffect(KinTrigger.fields.timeZone);
 const encodeSubject = Schema.encodeEffect(Schema.fromJsonString(KinTriggerSubject));
 const encodeSchedule = Schema.encodeEffect(Schema.fromJsonString(KinTriggerSchedule));
 const isFireConflict = Schema.is(KinTriggerFireConflict);
@@ -226,9 +228,12 @@ const make = Effect.gen(function* () {
       },
       Effect.mapError(toPersistenceOrDecodeError("KinTriggerStore.listDue")),
     ),
-    fire: Effect.fn("KinTriggerStore.fire")(function* (event, nextRunAt) {
+    fire: Effect.fn("KinTriggerStore.fire")(function* (event, nextRunAt, expected) {
       const value = yield* decodeFire(event);
       const next = yield* decodeNextRunAt(nextRunAt);
+      const expectedSchedule =
+        expected === undefined ? null : yield* encodeSchedule(expected.schedule);
+      const expectedZone = expected === undefined ? null : yield* decodeTimeZone(expected.timeZone);
       if (value.payload.kind !== "time") {
         return yield* new KinTriggerFireConflict({ orgId: value.orgId, reason: "not_time" });
       }
@@ -294,6 +299,8 @@ const make = Effect.gen(function* () {
             last_fire_id = ${value.fireId}, updated_at = max(updated_at, ${firedAt})
           WHERE org_id = ${value.orgId} AND trigger_id = ${triggerId}
             AND enabled = 1 AND next_run_at = ${dueAt}
+            AND (${expectedSchedule} IS NULL OR schedule_json = ${expectedSchedule})
+            AND (${expectedZone} IS NULL OR time_zone = ${expectedZone})
           RETURNING trigger_id
         `;
           if (!duplicate && updated.length !== 1) {
