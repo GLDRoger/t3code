@@ -94,8 +94,8 @@ const message = (id: string, overrides: Partial<Omit<KinMessage, "seq">> = {}) =
     createdAt: timestamp,
     editedAt: null,
     ...overrides,
-    clientMessageId: id,
-  }) satisfies Omit<KinMessage, "seq"> & { clientMessageId: string };
+    clientMessageId: { kind: "send", id },
+  }) satisfies Omit<KinMessage, "seq"> & { clientMessageId: { kind: "send" | "act"; id: string } };
 const widget: KinWidget = {
   orgId,
   chatId,
@@ -154,7 +154,7 @@ describe("KinChatRepository", () => {
         const repo = yield* seed;
         const org = { orgId, name: "Kin", createdAt: timestamp };
         assert.deepStrictEqual(Option.getOrThrow(yield* repo.getOrg({ orgId })), org);
-        assert.deepStrictEqual(yield* repo.listOrgs({ orgId }), [org]);
+        assert.deepStrictEqual(yield* repo.listAllOrgs(), [org]);
         const person = {
           orgId,
           personId,
@@ -185,10 +185,23 @@ describe("KinChatRepository", () => {
           chat,
         );
         assert.deepStrictEqual(yield* repo.listChats({ orgId }), [chat]);
-        assert.deepStrictEqual(yield* repo.listMembers(scope), [owner, agentMember]);
+        assert.deepStrictEqual(yield* repo.listMembers(scope), [agentMember, owner]);
         assert.deepStrictEqual(yield* repo.listMembersByPerson({ orgId, personId }), [owner]);
         assert.deepStrictEqual(yield* repo.listMembersByAgent({ orgId, agentId }), [agentMember]);
         assert.deepStrictEqual(Option.getOrThrow(yield* repo.getMember(scope)), owner);
+        for (const retry of [owner, { ...owner, memberId: decodeMemberId("retry-member") }]) {
+          assert.deepStrictEqual(yield* repo.addMember(retry), owner);
+        }
+        assert.deepStrictEqual(
+          yield* repo.registerAgentThread({
+            orgId,
+            agentId,
+            threadId,
+            startedAt: later,
+            endedAt: null,
+          }),
+          { orgId, agentId, threadId, startedAt: timestamp, endedAt: null },
+        );
         const first = yield* repo.insertMessage(message("first"));
         assert.deepStrictEqual(first, decodeMessage({ ...message("first"), seq: 1 }));
         const repeated = yield* Effect.all(
@@ -206,15 +219,15 @@ describe("KinChatRepository", () => {
         assert.strictEqual(Option.getOrThrow(yield* repo.getChat(scope)).lastSeq, 1);
         assert.strictEqual(Option.getOrThrow(yield* repo.getChat(scope)).lastMessageAt, timestamp);
         const action = yield* repo.insertMessage({
-          ...message("action", { kind: "widget_action" }),
-          clientMessageId: "first",
+          ...message("action", { kind: "system" }),
+          clientMessageId: { kind: "act", id: "first" },
         });
         assert.strictEqual(action.seq, 2);
         assert.strictEqual(action.messageId, decodeMessageId("action"));
         assert.deepStrictEqual(
           yield* repo.insertMessage({
             ...message("repeated-action", { kind: "widget_action" }),
-            clientMessageId: "first",
+            clientMessageId: { kind: "act", id: "first" },
           }),
           action,
         );
@@ -241,19 +254,34 @@ describe("KinChatRepository", () => {
           resolvedAt: null,
           resolution: null,
         } as const;
-        yield* repo.addWaiting(waiting);
+        assert.strictEqual(yield* repo.addWaiting(waiting), true);
+        assert.strictEqual(
+          yield* repo.addWaiting({ ...waiting, waitingId: decodeWaitingId("duplicate-waiting") }),
+          false,
+        );
         assert.deepStrictEqual(
           Option.getOrThrow(yield* repo.getWaiting({ orgId, waitingId })),
           waiting,
         );
         assert.deepStrictEqual(yield* repo.listOpenWaiting({ orgId, personId }), [waiting]);
-        yield* repo.resolveWaiting({ orgId, waitingId, resolvedAt: later, resolution: "answered" });
-        yield* repo.resolveWaiting({
-          orgId,
-          waitingId,
-          resolvedAt: timestamp,
-          resolution: "again",
-        });
+        assert.strictEqual(
+          yield* repo.resolveWaiting({
+            orgId,
+            waitingId,
+            resolvedAt: later,
+            resolution: "answered",
+          }),
+          true,
+        );
+        assert.strictEqual(
+          yield* repo.resolveWaiting({
+            orgId,
+            waitingId,
+            resolvedAt: timestamp,
+            resolution: "again",
+          }),
+          false,
+        );
         assert.deepStrictEqual(yield* repo.listOpenWaiting({ orgId, personId }), []);
         assert.deepStrictEqual(Option.getOrThrow(yield* repo.getWaiting({ orgId, waitingId })), {
           ...waiting,
@@ -267,8 +295,11 @@ describe("KinChatRepository", () => {
           startedAt: timestamp,
           endedAt: null,
         });
-        yield* repo.endAgentThread({ orgId, threadId, endedAt: later });
-        yield* repo.endAgentThread({ orgId, threadId, endedAt: timestamp });
+        assert.strictEqual(yield* repo.endAgentThread({ orgId, threadId, endedAt: later }), true);
+        assert.strictEqual(
+          yield* repo.endAgentThread({ orgId, threadId, endedAt: timestamp }),
+          false,
+        );
         assert.strictEqual(
           Option.getOrThrow(yield* repo.getAgentThread({ orgId, threadId })).endedAt,
           later,
@@ -286,7 +317,7 @@ describe("KinChatRepository", () => {
       }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("allocates gapless seqs for 20 concurrent sends and rolls back failed inserts", () =>
+  it.effect("allocates gapless seqs under 20 concurrent sends", () =>
     Effect.gen(function* () {
       const repo = yield* seed;
       const sent = yield* Effect.all(
@@ -299,7 +330,10 @@ describe("KinChatRepository", () => {
       );
       assert.strictEqual(Option.getOrThrow(yield* repo.getChat(scope)).lastSeq, 20);
       const failed = yield* Effect.flip(
-        repo.insertMessage({ ...message("message-0"), clientMessageId: "new-id" }),
+        repo.insertMessage({
+          ...message("message-0"),
+          clientMessageId: { kind: "send", id: "new-id" },
+        }),
       );
       assert.strictEqual(failed._tag, "PersistenceSqlError");
       assert.strictEqual(Option.getOrThrow(yield* repo.getChat(scope)).lastSeq, 20);
@@ -311,7 +345,12 @@ describe("KinChatRepository", () => {
     Effect.gen(function* () {
       const repo = yield* seed;
       for (let i = 1; i <= 5; i++)
-        yield* repo.insertMessage(message(i === 3 ? "first" : `message-${i}`));
+        yield* repo.insertMessage(
+          message(
+            i === 3 ? "first" : `message-${i}`,
+            i === 5 ? { kind: "widget_action", widgetId } : {},
+          ),
+        );
       yield* repo.insertWidget(widget);
       for (const [beforeSeq, limit, seqs, hasMore] of [
         [6, 2, [4, 5], true],
@@ -327,7 +366,10 @@ describe("KinChatRepository", () => {
           [...seqs],
         );
         assert.strictEqual(page.hasMore, hasMore);
-        assert.deepStrictEqual(page.widgets, seqs.some((seq) => seq === 3) ? [widget] : []);
+        assert.deepStrictEqual(
+          page.widgets,
+          seqs.some((seq) => seq === 3 || seq === 5) ? [widget] : [],
+        );
       }
       for (const limit of [0, 101, 1.5]) {
         assert.strictEqual(
@@ -369,10 +411,36 @@ describe("KinChatRepository", () => {
       const orgA = decodeOrgId("org-a");
       yield* repo.insertOrg({ orgId: orgA, name: "A", createdAt: timestamp });
       const hidden = { ...scope, orgId: orgA };
+      const sql = yield* SqlClient.SqlClient;
+      for (const [id, author] of [
+        ["wrong-principal", { _tag: "human", personId, memberId: agentMemberId }],
+        ["wrong-person", { _tag: "human", personId: decodePersonId("other"), memberId }],
+        [
+          "wrong-agent",
+          {
+            _tag: "agent",
+            agentId: decodeAgentId("other"),
+            memberId: agentMemberId,
+            ownerPersonId: personId,
+            threadId,
+          },
+        ],
+        [
+          "agent-as-person",
+          { _tag: "agent", agentId, memberId, ownerPersonId: personId, threadId },
+        ],
+        ["left-member", { _tag: "human", personId, memberId }],
+      ] as const) {
+        if (id === "left-member")
+          yield* sql`UPDATE kin_chat_members SET left_at = ${later} WHERE member_id = ${memberId}`;
+        const failure = yield* Effect.flip(repo.insertMessage(message(id, { author })));
+        assert.strictEqual(failure._tag, "KinChatError");
+        if (failure._tag === "KinChatError") assert.strictEqual(failure.reason, "not_found");
+      }
       assert.deepStrictEqual(Option.getOrThrow(yield* repo.getOrg(hidden)).name, "A");
       assert.deepStrictEqual(
-        (yield* repo.listOrgs(hidden)).map((org) => org.orgId),
-        [orgA],
+        (yield* repo.listAllOrgs()).map((org) => org.orgId),
+        [orgA, orgId],
       );
       for (const read of [
         repo.getChat(hidden),
@@ -404,13 +472,39 @@ describe("KinChatRepository", () => {
       });
       assert.strictEqual(yield* repo.unreadCount(hidden), 0);
       for (const write of [
+        repo.insertWidget({ ...widget, orgId: orgA }),
+        repo.addMember({ ...owner, orgId: orgA }),
+        repo.addWaiting({
+          orgId: orgA,
+          waitingId: decodeWaitingId("cross"),
+          personId,
+          chatId,
+          messageId: widget.messageId,
+          widgetId,
+          reason: "question",
+          createdAt: timestamp,
+          resolvedAt: null,
+          resolution: null,
+        }),
+        repo.createChat({ ...chat, orgId: orgA, directKey: "owner:lead" }),
         repo.markRead({ ...hidden, seq: 9, updatedAt: later }),
-        repo.updateWidget({ ...widget, orgId: orgA, revision: 2, expectedRevision: 1 }),
+        repo.updateWidget({ ...widget, orgId: orgA, expectedRevision: 1 }),
         repo.insertMessage({ ...message("cross-org"), orgId: orgA }),
       ])
         assert.strictEqual((yield* Effect.flip(write))._tag, "KinChatError");
-      yield* repo.endAgentThread({ ...hidden, threadId, endedAt: later });
-      yield* repo.resolveWaiting({ ...hidden, waitingId, resolvedAt: later, resolution: "wrong" });
+      assert.strictEqual(
+        yield* repo.endAgentThread({ ...hidden, threadId, endedAt: later }),
+        false,
+      );
+      assert.strictEqual(
+        yield* repo.resolveWaiting({
+          ...hidden,
+          waitingId,
+          resolvedAt: later,
+          resolution: "wrong",
+        }),
+        false,
+      );
       assert.strictEqual(
         Option.getOrThrow(yield* repo.getAgentThread({ orgId, threadId })).endedAt,
         null,
@@ -458,6 +552,11 @@ describe("KinChatRepository", () => {
         updatedAt: later,
       });
       assert.strictEqual(yield* repo.unreadCount(scope), 0);
+      yield* repo.markRead({ ...scope, seq: 999, updatedAt: later });
+      yield* repo.insertMessage(
+        message("after-read", { author: agentAuthor, authorRole: "member" }),
+      );
+      assert.strictEqual(yield* repo.unreadCount(scope), 1);
       assert.deepStrictEqual(
         Option.getOrThrow(yield* repo.getMessage({ orgId, messageId: decodeMessageId("agent") }))
           .author,
@@ -485,15 +584,25 @@ describe("KinChatRepository", () => {
         yield* repo.updateWidget({ ...updated, expectedRevision: 1 }),
         updated,
       );
-      const stale = yield* Effect.flip(
-        repo.updateWidget({ ...widget, revision: 2, expectedRevision: 1 }),
+      const identityChange = {
+        ...updated,
+        type: "approval",
+        widgetClass: "feed",
+        chatId: decodeChatId("other"),
+        messageId: decodeMessageId("other"),
+        revision: 99,
+      };
+      assert.strictEqual(
+        (yield* repo.updateWidget({ ...identityChange, expectedRevision: 2 })).type,
+        "task",
       );
+      const stale = yield* Effect.flip(repo.updateWidget({ ...widget, expectedRevision: 1 }));
       assert.strictEqual(stale._tag, "KinChatError");
       if (stale._tag === "KinChatError") assert.strictEqual(stale.reason, "widget_changed");
-      assert.deepStrictEqual(
-        Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId })),
-        updated,
-      );
+      assert.deepStrictEqual(Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId })), {
+        ...updated,
+        revision: 3,
+      });
       const sql = yield* SqlClient.SqlClient;
       for (const corrupt of [
         sql`UPDATE kin_messages SET mentions_json = 'not-json-secret' WHERE org_id = ${orgId}`,

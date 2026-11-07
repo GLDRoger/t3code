@@ -94,7 +94,7 @@ describe("Kin migrations", () => {
         { name: "idx_kin_chats_org" },
         { name: "idx_kin_waiting_open_widget_person" },
         { name: "idx_kin_waiting_person_resolved_at" },
-        { name: "idx_kin_widgets_chat_pinned" },
+        { name: "idx_kin_widgets_chat_message" },
         { name: "idx_kin_widgets_type_closed_at" },
       ]);
       assert.deepStrictEqual(

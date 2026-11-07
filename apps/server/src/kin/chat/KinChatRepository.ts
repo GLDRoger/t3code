@@ -21,6 +21,7 @@ import {
   ThreadId,
   IsoDateTime,
   NonNegativeInt,
+  TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
@@ -30,7 +31,11 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlSchema from "effect/sql/SqlSchema";
-import { PersistenceDecodeError, PersistenceSqlError } from "../../persistence/Errors.ts";
+import {
+  PersistenceDecodeError,
+  PersistenceSqlError,
+  toPersistenceSqlError,
+} from "../../persistence/Errors.ts";
 
 const KinAgentThread = Schema.Struct({
   orgId: KinOrgId,
@@ -52,7 +57,12 @@ type RepositoryError = PersistenceSqlError | PersistenceDecodeError | KinChatErr
 type Scope = { readonly orgId: KinOrgId };
 type ChatScope = Scope & { readonly chatId: KinChatId };
 type MemberScope = ChatScope & { readonly memberId: KinMemberId };
-type InsertMessage = Omit<KinMessage, "seq"> & { readonly clientMessageId: string | null };
+type InsertMessage = Omit<KinMessage, "seq"> & {
+  readonly clientMessageId: {
+    readonly kind: "send" | "act";
+    readonly id: typeof TrimmedNonEmptyString.Type;
+  } | null;
+};
 
 const isKinChatError = Schema.is(KinChatError);
 const isDecodeError = Schema.is(PersistenceDecodeError);
@@ -72,7 +82,7 @@ function toRepositoryError(operation: string) {
       ? PersistenceDecodeError.fromSchemaError(operation, cause)
       : isKinChatError(cause) || isDecodeError(cause) || isSqlError(cause)
         ? cause
-        : new PersistenceSqlError({ operation, cause });
+        : toPersistenceSqlError(operation)(cause);
 }
 const OrgRow = KinOrg;
 const orgColumns = `org_id AS "orgId", name AS "name", created_at AS "createdAt"`;
@@ -143,7 +153,7 @@ export class KinChatRepository extends Context.Service<
     readonly getAgentThread: (
       input: Scope & { readonly threadId: ThreadId },
     ) => Effect.Effect<Option.Option<KinAgentThread>, RepositoryError>;
-    readonly listOrgs: (input: Scope) => Effect.Effect<ReadonlyArray<KinOrg>, RepositoryError>;
+    readonly listAllOrgs: () => Effect.Effect<ReadonlyArray<KinOrg>, RepositoryError>;
     readonly listPeople: (input: Scope) => Effect.Effect<ReadonlyArray<KinPerson>, RepositoryError>;
     readonly listAgents: (input: Scope) => Effect.Effect<ReadonlyArray<KinAgent>, RepositoryError>;
     readonly listChats: (input: Scope) => Effect.Effect<ReadonlyArray<KinChat>, RepositoryError>;
@@ -161,45 +171,52 @@ export class KinChatRepository extends Context.Service<
     ) => Effect.Effect<ReadonlyArray<KinWaitingItem>, RepositoryError>;
     readonly insertOrg: (input: KinOrg) => Effect.Effect<void, RepositoryError>;
     readonly insertPerson: (
-      input: KinPerson & { readonly createdAt: string },
+      input: KinPerson & { readonly createdAt: IsoDateTime },
     ) => Effect.Effect<void, RepositoryError>;
     readonly insertAgent: (
-      input: KinAgent & { readonly createdAt: string },
+      input: KinAgent & { readonly createdAt: IsoDateTime },
     ) => Effect.Effect<void, RepositoryError>;
-    readonly addMember: (input: KinChatMember) => Effect.Effect<void, RepositoryError>;
-    readonly addWaiting: (input: KinWaitingItem) => Effect.Effect<void, RepositoryError>;
-    readonly registerAgentThread: (input: KinAgentThread) => Effect.Effect<void, RepositoryError>;
+    readonly addMember: (input: KinChatMember) => Effect.Effect<KinChatMember, RepositoryError>;
+    readonly addWaiting: (input: KinWaitingItem) => Effect.Effect<boolean, RepositoryError>;
+    readonly registerAgentThread: (
+      input: KinAgentThread,
+    ) => Effect.Effect<KinAgentThread, RepositoryError>;
     readonly createChat: (
-      input: KinChat & { readonly directKey: string | null },
+      input: KinChat & { readonly directKey: typeof TrimmedNonEmptyString.Type | null },
     ) => Effect.Effect<KinChat, RepositoryError>;
     readonly insertMessage: (input: InsertMessage) => Effect.Effect<KinMessage, RepositoryError>;
     readonly history: (
       input: Scope & KinChatHistoryInput,
     ) => Effect.Effect<KinChatHistoryResult, RepositoryError>;
     readonly messagesAfter: (
-      input: ChatScope & { readonly afterSeq: number; readonly limit: number },
+      input: ChatScope & { readonly afterSeq: typeof NonNegativeInt.Type; readonly limit: number },
     ) => Effect.Effect<ReadonlyArray<KinMessage>, RepositoryError>;
     readonly insertWidget: (input: KinWidget) => Effect.Effect<void, RepositoryError>;
     readonly updateWidget: (
-      input: KinWidget & { readonly expectedRevision: number },
+      input: Omit<KinWidget, "revision" | "type" | "widgetClass" | "chatId" | "messageId"> & {
+        readonly expectedRevision: typeof NonNegativeInt.Type;
+      },
     ) => Effect.Effect<KinWidget, RepositoryError>;
     readonly getReadState: (
       input: MemberScope,
     ) => Effect.Effect<Option.Option<KinReadState>, RepositoryError>;
     readonly markRead: (
-      input: MemberScope & { readonly seq: number; readonly updatedAt: string },
+      input: MemberScope & {
+        readonly seq: typeof NonNegativeInt.Type;
+        readonly updatedAt: IsoDateTime;
+      },
     ) => Effect.Effect<void, RepositoryError>;
     readonly unreadCount: (input: MemberScope) => Effect.Effect<number, RepositoryError>;
     readonly resolveWaiting: (
       input: Scope & {
         readonly waitingId: KinWaitingId;
-        readonly resolvedAt: string;
-        readonly resolution: string;
+        readonly resolvedAt: IsoDateTime;
+        readonly resolution: typeof TrimmedNonEmptyString.Type;
       },
-    ) => Effect.Effect<void, RepositoryError>;
+    ) => Effect.Effect<boolean, RepositoryError>;
     readonly endAgentThread: (
-      input: Scope & { readonly threadId: ThreadId; readonly endedAt: string },
-    ) => Effect.Effect<void, RepositoryError>;
+      input: Scope & { readonly threadId: ThreadId; readonly endedAt: IsoDateTime },
+    ) => Effect.Effect<boolean, RepositoryError>;
   }
 >()("t3/kin/chat/KinChatRepository") {}
 
@@ -213,159 +230,126 @@ const requireRecord = Effect.fn("KinChatRepository.requireRecord")(function* <A,
 });
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  const orgOne = Effect.fn("KinChatRepository.findOrg")(function (input: Scope) {
-    return SqlSchema.findOneOption({
-      Request: Schema.Unknown,
-      Result: OrgRow,
-      execute: () =>
-        sql`SELECT ${sql.literal(orgColumns)} FROM kin_orgs WHERE org_id = ${input.orgId}`,
-    })(input).pipe(NodeSqliteClient.readOnly);
-  });
-  const personOne = Effect.fn("KinChatRepository.findPerson")(function (
-    input: Scope & { readonly personId: KinPersonId },
-  ) {
-    return SqlSchema.findOneOption({
-      Request: Schema.Unknown,
-      Result: PersonRow,
-      execute: () =>
-        sql`SELECT ${sql.literal(personColumns)} FROM kin_people WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`,
-    })(input).pipe(NodeSqliteClient.readOnly);
-  });
-  const agentOne = Effect.fn("KinChatRepository.findAgent")(function (
-    input: Scope & { readonly agentId: KinAgentId },
-  ) {
-    return SqlSchema.findOneOption({
-      Request: Schema.Unknown,
-      Result: AgentRow,
-      execute: () =>
-        sql`SELECT ${sql.literal(agentColumns)} FROM kin_agents WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId}`,
-    })(input).pipe(NodeSqliteClient.readOnly);
-  });
-  const chatOne = Effect.fn("KinChatRepository.findChat")(function (
-    input: Scope & { readonly chatId: KinChatId },
-  ) {
-    return SqlSchema.findOneOption({
-      Request: Schema.Unknown,
-      Result: ChatRow,
-      execute: () =>
-        sql`SELECT ${sql.literal(chatColumns)} FROM kin_chats WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`,
-    })(input).pipe(NodeSqliteClient.readOnly);
-  });
-  const memberOne = Effect.fn("KinChatRepository.findMember")(function (
-    input: Scope & { readonly memberId: KinMemberId },
-  ) {
-    return SqlSchema.findOneOption({
-      Request: Schema.Unknown,
-      Result: MemberRow,
-      execute: () =>
-        sql`SELECT ${sql.literal(memberColumns)} FROM kin_chat_members WHERE org_id = ${input.orgId} AND member_id = ${input.memberId}`,
-    })(input).pipe(NodeSqliteClient.readOnly);
-  });
-  const messageOne = Effect.fn("KinChatRepository.findMessage")(function (
-    input: Scope & { readonly messageId: KinMessageId },
-  ) {
-    return SqlSchema.findOneOption({
-      Request: Schema.Unknown,
-      Result: MessageRow,
-      execute: () =>
-        sql`SELECT ${sql.literal(messageColumns)} FROM kin_messages WHERE org_id = ${input.orgId} AND message_id = ${input.messageId}`,
-    })(input).pipe(NodeSqliteClient.readOnly);
-  });
-  const widgetOne = Effect.fn("KinChatRepository.findWidget")(function (
-    input: Scope & { readonly widgetId: KinWidgetId },
-  ) {
-    return SqlSchema.findOneOption({
-      Request: Schema.Unknown,
-      Result: WidgetRow,
-      execute: () =>
-        sql`SELECT ${sql.literal(widgetColumns)} FROM kin_widgets WHERE org_id = ${input.orgId} AND widget_id = ${input.widgetId}`,
-    })(input).pipe(NodeSqliteClient.readOnly);
-  });
-  const waitingOne = Effect.fn("KinChatRepository.findWaiting")(function (
-    input: Scope & { readonly waitingId: KinWaitingId },
-  ) {
-    return SqlSchema.findOneOption({
-      Request: Schema.Unknown,
-      Result: WaitingRow,
-      execute: () =>
-        sql`SELECT ${sql.literal(waitingColumns)} FROM kin_waiting WHERE org_id = ${input.orgId} AND waiting_id = ${input.waitingId}`,
-    })(input).pipe(NodeSqliteClient.readOnly);
-  });
-  const agentThreadOne = Effect.fn("KinChatRepository.findAgentThread")(function (
-    input: Scope & { readonly threadId: ThreadId },
-  ) {
-    return SqlSchema.findOneOption({
-      Request: Schema.Unknown,
-      Result: AgentThreadRow,
-      execute: () =>
-        sql`SELECT ${sql.literal(agentThreadColumns)} FROM kin_agent_threads WHERE org_id = ${input.orgId} AND thread_id = ${input.threadId}`,
-    })(input).pipe(NodeSqliteClient.readOnly);
-  });
+  const orgOne = Effect.fn("KinChatRepository.getOrg")(
+    function (input: Scope) {
+      return SqlSchema.findOneOption({
+        Request: Schema.Unknown,
+        Result: OrgRow,
+        execute: () =>
+          sql`SELECT ${sql.literal(orgColumns)} FROM kin_orgs WHERE org_id = ${input.orgId}`,
+      })(input).pipe(NodeSqliteClient.readOnly);
+    },
+    Effect.mapError(toRepositoryError("KinChatRepository.getOrg")),
+  );
+  const personOne = Effect.fn("KinChatRepository.getPerson")(
+    function (input: Scope & { readonly personId: KinPersonId }) {
+      return SqlSchema.findOneOption({
+        Request: Schema.Unknown,
+        Result: PersonRow,
+        execute: () =>
+          sql`SELECT ${sql.literal(personColumns)} FROM kin_people WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`,
+      })(input).pipe(NodeSqliteClient.readOnly);
+    },
+    Effect.mapError(toRepositoryError("KinChatRepository.getPerson")),
+  );
+  const agentOne = Effect.fn("KinChatRepository.getAgent")(
+    function (input: Scope & { readonly agentId: KinAgentId }) {
+      return SqlSchema.findOneOption({
+        Request: Schema.Unknown,
+        Result: AgentRow,
+        execute: () =>
+          sql`SELECT ${sql.literal(agentColumns)} FROM kin_agents WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId}`,
+      })(input).pipe(NodeSqliteClient.readOnly);
+    },
+    Effect.mapError(toRepositoryError("KinChatRepository.getAgent")),
+  );
+  const chatOne = Effect.fn("KinChatRepository.getChat")(
+    function (input: Scope & { readonly chatId: KinChatId }) {
+      return SqlSchema.findOneOption({
+        Request: Schema.Unknown,
+        Result: ChatRow,
+        execute: () =>
+          sql`SELECT ${sql.literal(chatColumns)} FROM kin_chats WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`,
+      })(input).pipe(NodeSqliteClient.readOnly);
+    },
+    Effect.mapError(toRepositoryError("KinChatRepository.getChat")),
+  );
+  const memberOne = Effect.fn("KinChatRepository.getMember")(
+    function (input: Scope & { readonly memberId: KinMemberId }) {
+      return SqlSchema.findOneOption({
+        Request: Schema.Unknown,
+        Result: MemberRow,
+        execute: () =>
+          sql`SELECT ${sql.literal(memberColumns)} FROM kin_chat_members WHERE org_id = ${input.orgId} AND member_id = ${input.memberId}`,
+      })(input).pipe(NodeSqliteClient.readOnly);
+    },
+    Effect.mapError(toRepositoryError("KinChatRepository.getMember")),
+  );
+  const messageOne = Effect.fn("KinChatRepository.getMessage")(
+    function (input: Scope & { readonly messageId: KinMessageId }) {
+      return SqlSchema.findOneOption({
+        Request: Schema.Unknown,
+        Result: MessageRow,
+        execute: () =>
+          sql`SELECT ${sql.literal(messageColumns)} FROM kin_messages WHERE org_id = ${input.orgId} AND message_id = ${input.messageId}`,
+      })(input).pipe(NodeSqliteClient.readOnly);
+    },
+    Effect.mapError(toRepositoryError("KinChatRepository.getMessage")),
+  );
+  const widgetOne = Effect.fn("KinChatRepository.getWidget")(
+    function (input: Scope & { readonly widgetId: KinWidgetId }) {
+      return SqlSchema.findOneOption({
+        Request: Schema.Unknown,
+        Result: WidgetRow,
+        execute: () =>
+          sql`SELECT ${sql.literal(widgetColumns)} FROM kin_widgets WHERE org_id = ${input.orgId} AND widget_id = ${input.widgetId}`,
+      })(input).pipe(NodeSqliteClient.readOnly);
+    },
+    Effect.mapError(toRepositoryError("KinChatRepository.getWidget")),
+  );
+  const waitingOne = Effect.fn("KinChatRepository.getWaiting")(
+    function (input: Scope & { readonly waitingId: KinWaitingId }) {
+      return SqlSchema.findOneOption({
+        Request: Schema.Unknown,
+        Result: WaitingRow,
+        execute: () =>
+          sql`SELECT ${sql.literal(waitingColumns)} FROM kin_waiting WHERE org_id = ${input.orgId} AND waiting_id = ${input.waitingId}`,
+      })(input).pipe(NodeSqliteClient.readOnly);
+    },
+    Effect.mapError(toRepositoryError("KinChatRepository.getWaiting")),
+  );
+  const agentThreadOne = Effect.fn("KinChatRepository.getAgentThread")(
+    function (input: Scope & { readonly threadId: ThreadId }) {
+      return SqlSchema.findOneOption({
+        Request: Schema.Unknown,
+        Result: AgentThreadRow,
+        execute: () =>
+          sql`SELECT ${sql.literal(agentThreadColumns)} FROM kin_agent_threads WHERE org_id = ${input.orgId} AND thread_id = ${input.threadId}`,
+      })(input).pipe(NodeSqliteClient.readOnly);
+    },
+    Effect.mapError(toRepositoryError("KinChatRepository.getAgentThread")),
+  );
   return KinChatRepository.of({
-    getOrg: Effect.fn("KinChatRepository.getOrg")(
-      function* (input) {
-        return yield* orgOne(input);
-      },
-      Effect.mapError(toRepositoryError("KinChatRepository.getOrg")),
-    ),
-    getPerson: Effect.fn("KinChatRepository.getPerson")(
-      function* (input) {
-        return yield* personOne(input);
-      },
-      Effect.mapError(toRepositoryError("KinChatRepository.getPerson")),
-    ),
-    getAgent: Effect.fn("KinChatRepository.getAgent")(
-      function* (input) {
-        return yield* agentOne(input);
-      },
-      Effect.mapError(toRepositoryError("KinChatRepository.getAgent")),
-    ),
-    getChat: Effect.fn("KinChatRepository.getChat")(
-      function* (input) {
-        return yield* chatOne(input);
-      },
-      Effect.mapError(toRepositoryError("KinChatRepository.getChat")),
-    ),
-    getMember: Effect.fn("KinChatRepository.getMember")(
-      function* (input) {
-        return yield* memberOne(input);
-      },
-      Effect.mapError(toRepositoryError("KinChatRepository.getMember")),
-    ),
-    getMessage: Effect.fn("KinChatRepository.getMessage")(
-      function* (input) {
-        return yield* messageOne(input);
-      },
-      Effect.mapError(toRepositoryError("KinChatRepository.getMessage")),
-    ),
-    getWidget: Effect.fn("KinChatRepository.getWidget")(
-      function* (input) {
-        return yield* widgetOne(input);
-      },
-      Effect.mapError(toRepositoryError("KinChatRepository.getWidget")),
-    ),
-    getWaiting: Effect.fn("KinChatRepository.getWaiting")(
-      function* (input) {
-        return yield* waitingOne(input);
-      },
-      Effect.mapError(toRepositoryError("KinChatRepository.getWaiting")),
-    ),
-    getAgentThread: Effect.fn("KinChatRepository.getAgentThread")(
-      function* (input) {
-        return yield* agentThreadOne(input);
-      },
-      Effect.mapError(toRepositoryError("KinChatRepository.getAgentThread")),
-    ),
-    listOrgs: Effect.fn("KinChatRepository.listOrgs")(
-      function* (input) {
+    getOrg: orgOne,
+    getPerson: personOne,
+    getAgent: agentOne,
+    getChat: chatOne,
+    getMember: memberOne,
+    getMessage: messageOne,
+    getWidget: widgetOne,
+    getWaiting: waitingOne,
+    getAgentThread: agentThreadOne,
+    // The only unscoped query: first-start bootstrap and kin.orgs.list must discover organizations.
+    listAllOrgs: Effect.fn("KinChatRepository.listAllOrgs")(
+      function* () {
         return yield* SqlSchema.findAll({
           Request: Schema.Unknown,
           Result: OrgRow,
           execute: () =>
-            sql`SELECT ${sql.literal(orgColumns)} FROM kin_orgs WHERE org_id = ${input.orgId} `,
-        })(input).pipe(NodeSqliteClient.readOnly);
+            sql`SELECT ${sql.literal(orgColumns)} FROM kin_orgs ORDER BY created_at, org_id`,
+        })(undefined).pipe(NodeSqliteClient.readOnly);
       },
-      Effect.mapError(toRepositoryError("KinChatRepository.listOrgs")),
+      Effect.mapError(toRepositoryError("KinChatRepository.listAllOrgs")),
     ),
     listPeople: Effect.fn("KinChatRepository.listPeople")(
       function* (input) {
@@ -373,7 +357,7 @@ const make = Effect.gen(function* () {
           Request: Schema.Unknown,
           Result: PersonRow,
           execute: () =>
-            sql`SELECT ${sql.literal(personColumns)} FROM kin_people WHERE org_id = ${input.orgId} `,
+            sql`SELECT ${sql.literal(personColumns)} FROM kin_people WHERE org_id = ${input.orgId} ORDER BY handle, person_id`,
         })(input).pipe(NodeSqliteClient.readOnly);
       },
       Effect.mapError(toRepositoryError("KinChatRepository.listPeople")),
@@ -384,7 +368,7 @@ const make = Effect.gen(function* () {
           Request: Schema.Unknown,
           Result: AgentRow,
           execute: () =>
-            sql`SELECT ${sql.literal(agentColumns)} FROM kin_agents WHERE org_id = ${input.orgId} `,
+            sql`SELECT ${sql.literal(agentColumns)} FROM kin_agents WHERE org_id = ${input.orgId} ORDER BY display_name, agent_id`,
         })(input).pipe(NodeSqliteClient.readOnly);
       },
       Effect.mapError(toRepositoryError("KinChatRepository.listAgents")),
@@ -395,7 +379,7 @@ const make = Effect.gen(function* () {
           Request: Schema.Unknown,
           Result: ChatRow,
           execute: () =>
-            sql`SELECT ${sql.literal(chatColumns)} FROM kin_chats WHERE org_id = ${input.orgId} `,
+            sql`SELECT ${sql.literal(chatColumns)} FROM kin_chats WHERE org_id = ${input.orgId} ORDER BY last_message_at DESC, chat_id`,
         })(input).pipe(NodeSqliteClient.readOnly);
       },
       Effect.mapError(toRepositoryError("KinChatRepository.listChats")),
@@ -406,7 +390,7 @@ const make = Effect.gen(function* () {
           Request: Schema.Unknown,
           Result: MemberRow,
           execute: () =>
-            sql`SELECT ${sql.literal(memberColumns)} FROM kin_chat_members WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`,
+            sql`SELECT ${sql.literal(memberColumns)} FROM kin_chat_members WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} ORDER BY joined_at, member_id`,
         })(input).pipe(NodeSqliteClient.readOnly);
       },
       Effect.mapError(toRepositoryError("KinChatRepository.listMembers")),
@@ -417,7 +401,7 @@ const make = Effect.gen(function* () {
           Request: Schema.Unknown,
           Result: MemberRow,
           execute: () =>
-            sql`SELECT ${sql.literal(memberColumns)} FROM kin_chat_members WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`,
+            sql`SELECT ${sql.literal(memberColumns)} FROM kin_chat_members WHERE org_id = ${input.orgId} AND person_id = ${input.personId} ORDER BY joined_at, member_id`,
         })(input).pipe(NodeSqliteClient.readOnly);
       },
       Effect.mapError(toRepositoryError("KinChatRepository.listMembersByPerson")),
@@ -428,7 +412,7 @@ const make = Effect.gen(function* () {
           Request: Schema.Unknown,
           Result: MemberRow,
           execute: () =>
-            sql`SELECT ${sql.literal(memberColumns)} FROM kin_chat_members WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId}`,
+            sql`SELECT ${sql.literal(memberColumns)} FROM kin_chat_members WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} ORDER BY joined_at, member_id`,
         })(input).pipe(NodeSqliteClient.readOnly);
       },
       Effect.mapError(toRepositoryError("KinChatRepository.listMembersByAgent")),
@@ -439,7 +423,7 @@ const make = Effect.gen(function* () {
           Request: Schema.Unknown,
           Result: WaitingRow,
           execute: () =>
-            sql`SELECT ${sql.literal(waitingColumns)} FROM kin_waiting WHERE org_id = ${input.orgId} AND person_id = ${input.personId} AND resolved_at IS NULL`,
+            sql`SELECT ${sql.literal(waitingColumns)} FROM kin_waiting WHERE org_id = ${input.orgId} AND person_id = ${input.personId} AND resolved_at IS NULL ORDER BY created_at, waiting_id`,
         })(input).pipe(NodeSqliteClient.readOnly);
       },
       Effect.mapError(toRepositoryError("KinChatRepository.listOpenWaiting")),
@@ -473,7 +457,15 @@ const make = Effect.gen(function* () {
         } else {
           yield* requireRecord(agentOne({ orgId: input.orgId, agentId: input.principal.agentId }));
         }
-        yield* sql`INSERT INTO kin_chat_members (org_id, chat_id, member_id, role, joined_at, left_at, muted_until, principal_kind, person_id, agent_id) VALUES (${input.orgId}, ${input.chatId}, ${input.memberId}, ${input.role}, ${input.joinedAt}, ${input.leftAt}, ${input.mutedUntil}, ${input.principal._tag}, ${input.principal._tag === "person" ? input.principal.personId : null}, ${input.principal._tag === "agent" ? input.principal.agentId : null})`;
+        yield* sql`INSERT INTO kin_chat_members (org_id, chat_id, member_id, role, joined_at, left_at, muted_until, principal_kind, person_id, agent_id) VALUES (${input.orgId}, ${input.chatId}, ${input.memberId}, ${input.role}, ${input.joinedAt}, ${input.leftAt}, ${input.mutedUntil}, ${input.principal._tag}, ${input.principal._tag === "person" ? input.principal.personId : null}, ${input.principal._tag === "agent" ? input.principal.agentId : null}) ON CONFLICT DO NOTHING`;
+        return yield* requireRecord(
+          SqlSchema.findOneOption({
+            Request: Schema.Unknown,
+            Result: MemberRow,
+            execute: () =>
+              sql`SELECT ${sql.literal(memberColumns)} FROM kin_chat_members WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND (member_id = ${input.memberId} OR (principal_kind = ${input.principal._tag} AND (person_id = ${input.principal._tag === "person" ? input.principal.personId : null} OR agent_id = ${input.principal._tag === "agent" ? input.principal.agentId : null}))) ORDER BY joined_at, member_id LIMIT 1`,
+          })(input),
+        );
       },
       Effect.mapError(toRepositoryError("KinChatRepository.addMember")),
     ),
@@ -481,14 +473,17 @@ const make = Effect.gen(function* () {
       function* (input) {
         yield* requireRecord(chatOne(input));
         yield* requireRecord(personOne(input));
-        yield* sql`INSERT INTO kin_waiting (waiting_id, org_id, person_id, chat_id, message_id, widget_id, reason, created_at, resolved_at, resolution) VALUES (${input.waitingId}, ${input.orgId}, ${input.personId}, ${input.chatId}, ${input.messageId}, ${input.widgetId}, ${input.reason}, ${input.createdAt}, ${input.resolvedAt}, ${input.resolution})`;
+        const inserted =
+          yield* sql`INSERT INTO kin_waiting (waiting_id, org_id, person_id, chat_id, message_id, widget_id, reason, created_at, resolved_at, resolution) VALUES (${input.waitingId}, ${input.orgId}, ${input.personId}, ${input.chatId}, ${input.messageId}, ${input.widgetId}, ${input.reason}, ${input.createdAt}, ${input.resolvedAt}, ${input.resolution}) ON CONFLICT (widget_id, person_id) WHERE resolved_at IS NULL AND widget_id IS NOT NULL DO NOTHING RETURNING waiting_id`;
+        return inserted.length > 0;
       },
       Effect.mapError(toRepositoryError("KinChatRepository.addWaiting")),
     ),
     registerAgentThread: Effect.fn("KinChatRepository.registerAgentThread")(
       function* (input) {
         yield* requireRecord(agentOne({ orgId: input.orgId, agentId: input.agentId }));
-        yield* sql`INSERT INTO kin_agent_threads (org_id, thread_id, agent_id, started_at, ended_at) VALUES (${input.orgId}, ${input.threadId}, ${input.agentId}, ${input.startedAt}, ${input.endedAt})`;
+        yield* sql`INSERT INTO kin_agent_threads (org_id, thread_id, agent_id, started_at, ended_at) VALUES (${input.orgId}, ${input.threadId}, ${input.agentId}, ${input.startedAt}, ${input.endedAt}) ON CONFLICT DO NOTHING`;
+        return yield* requireRecord(agentThreadOne(input));
       },
       Effect.mapError(toRepositoryError("KinChatRepository.registerAgentThread")),
     ),
@@ -496,9 +491,10 @@ const make = Effect.gen(function* () {
       function* (input) {
         return yield* sql.withTransaction(
           Effect.gen(function* () {
+            yield* requireRecord(orgOne(input));
             yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, team_id, direct_key, last_seq, last_message_at, created_at, archived_at)
  VALUES (${input.chatId}, ${input.orgId}, ${input.kind}, ${input.title}, ${input.teamId}, ${input.directKey}, ${input.lastSeq}, ${input.lastMessageAt}, ${input.createdAt}, ${input.archivedAt})
- ON CONFLICT (org_id, direct_key) DO NOTHING`;
+ ON CONFLICT DO NOTHING`;
             return yield* requireRecord(
               SqlSchema.findOneOption({
                 Request: Schema.Unknown,
@@ -522,7 +518,29 @@ const make = Effect.gen(function* () {
             const clientId =
               input.clientMessageId === null
                 ? null
-                : `${input.kind === "widget_action" ? "act" : "send"}:${input.clientMessageId}`;
+                : `${input.clientMessageId.kind}:${input.clientMessageId.id}`;
+            const member =
+              author._tag === "system"
+                ? null
+                : yield* requireRecord(
+                    memberOne({ orgId: input.orgId, memberId: author.memberId }),
+                  );
+            if (member !== null) {
+              if (
+                member.chatId !== input.chatId ||
+                member.leftAt !== null ||
+                (author._tag === "human" &&
+                  (member.principal._tag !== "person" ||
+                    member.principal.personId !== author.personId)) ||
+                (author._tag === "agent" &&
+                  (member.principal._tag !== "agent" ||
+                    member.principal.agentId !== author.agentId))
+              )
+                return yield* new KinChatError({
+                  reason: "not_found",
+                  message: "Kin member not found.",
+                });
+            }
             if (memberId !== null && clientId !== null) {
               const existing = yield* SqlSchema.findOneOption({
                 Request: Schema.Unknown,
@@ -532,14 +550,6 @@ const make = Effect.gen(function* () {
  AND chat_id = ${input.chatId} AND author_member_id = ${memberId} AND client_message_id = ${clientId}`,
               })(input);
               if (Option.isSome(existing)) return existing.value;
-            }
-            if (memberId !== null) {
-              const member = yield* requireRecord(memberOne({ orgId: input.orgId, memberId }));
-              if (member.chatId !== input.chatId)
-                return yield* new KinChatError({
-                  reason: "not_found",
-                  message: "Kin member not found.",
-                });
             }
             const mentions = yield* encodeMentions(input.mentions);
             const allocated = yield* SqlSchema.findOneOption({
@@ -554,7 +564,7 @@ const make = Effect.gen(function* () {
  author_owner_person_id, author_thread_id, author_member_id, author_role, kind, body, intent, mentions_json, reply_to,
  widget_id, floor_run_id, status, sent_by, client_message_id, created_at, edited_at)
  VALUES (${input.messageId}, ${input.orgId}, ${input.chatId}, ${seq}, ${author._tag},
- ${author._tag === "human" ? author.personId : null}, ${author._tag === "agent" ? author.agentId : null},
+ ${member?.principal._tag === "person" ? member.principal.personId : null}, ${member?.principal._tag === "agent" ? member.principal.agentId : null},
  ${author._tag === "agent" ? author.ownerPersonId : null}, ${author._tag === "agent" ? author.threadId : null},
  ${memberId}, ${input.authorRole}, ${input.kind}, ${input.body}, ${input.intent}, ${mentions}, ${input.replyTo},
  ${input.widgetId}, ${input.floorRunId}, ${input.status}, ${input.sentBy}, ${clientId}, ${input.createdAt}, ${input.editedAt})`;
@@ -586,7 +596,7 @@ const make = Effect.gen(function* () {
                       Result: WidgetRow,
                       execute:
                         () => sql`SELECT ${sql.literal(widgetColumns)} FROM kin_widgets WHERE org_id = ${input.orgId}
- AND chat_id = ${input.chatId} AND message_id IN ${sql.in(messages.map((message) => message.messageId))}`,
+ AND chat_id = ${input.chatId} AND (message_id IN ${sql.in(messages.map((message) => message.messageId))} OR widget_id IN ${sql.in(messages.flatMap((message) => (message.widgetId === null ? [] : [message.widgetId])))}) ORDER BY message_id, widget_id`,
                     })(input);
               return { messages, widgets, hasMore: rows.length > request.limit };
             }),
@@ -628,34 +638,26 @@ const make = Effect.gen(function* () {
       function* (input) {
         return yield* sql.withTransaction(
           Effect.gen(function* () {
-            const existing = yield* requireRecord(widgetOne(input));
-            if (existing.chatId !== input.chatId || existing.messageId !== input.messageId)
-              return yield* new KinChatError({
-                reason: "not_found",
-                message: "Kin record not found.",
-              });
-            if (
-              existing.revision !== input.expectedRevision ||
-              input.revision !== input.expectedRevision + 1
-            )
-              return yield* new KinChatError({
-                reason: "widget_changed",
-                message: "Widget revision changed.",
-              });
+            yield* requireRecord(widgetOne(input));
             const state = yield* encodeWidgetState(input.state);
             const awaiting = yield* encodeAwaiting(input.awaiting);
             const updated = yield* SqlSchema.findOneOption({
               Request: Schema.Unknown,
               Result: WidgetRow,
               execute:
-                () => sql`UPDATE kin_widgets SET revision = ${input.revision}, state_json = ${state}, awaiting_json = ${awaiting},
- widget_class = ${input.widgetClass}, type = ${input.type}, source_thread_id = ${input.source?.threadId ?? null},
+                () => sql`UPDATE kin_widgets SET revision = revision + 1, state_json = ${state}, awaiting_json = ${awaiting},
+ source_thread_id = ${input.source?.threadId ?? null},
  source_item_id = ${input.source?.itemId ?? null}, feed_kind = ${input.feed?.kind ?? null}, feed_key = ${input.feed?.key ?? null},
  pinned_at = ${input.pinnedAt}, closed_at = ${input.closedAt}, updated_at = ${input.updatedAt}
  WHERE org_id = ${input.orgId} AND widget_id = ${input.widgetId} AND revision = ${input.expectedRevision}
  RETURNING ${sql.literal(widgetColumns)}`,
             })(input);
-            return yield* requireRecord(Effect.succeed(updated));
+            if (Option.isNone(updated))
+              return yield* new KinChatError({
+                reason: "widget_changed",
+                message: "Widget revision changed.",
+              });
+            return updated.value;
           }),
         );
       },
@@ -680,7 +682,7 @@ const make = Effect.gen(function* () {
         if (member.chatId !== input.chatId)
           return yield* new KinChatError({ reason: "not_found", message: "Kin record not found." });
         yield* sql`INSERT INTO kin_read_state (org_id, chat_id, member_id, last_read_seq, updated_at)
- VALUES (${input.orgId}, ${input.chatId}, ${input.memberId}, ${seq}, ${input.updatedAt})
+ VALUES (${input.orgId}, ${input.chatId}, ${input.memberId}, MIN(${seq}, (SELECT last_seq FROM kin_chats WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId})), ${input.updatedAt})
  ON CONFLICT (chat_id, member_id) DO UPDATE SET last_read_seq = excluded.last_read_seq, updated_at = excluded.updated_at
  WHERE kin_read_state.org_id = excluded.org_id AND excluded.last_read_seq > kin_read_state.last_read_seq`;
       },
@@ -703,15 +705,18 @@ const make = Effect.gen(function* () {
     ),
     resolveWaiting: Effect.fn("KinChatRepository.resolveWaiting")(
       function* (input) {
-        yield* sql`UPDATE kin_waiting SET resolved_at = ${input.resolvedAt}, resolution = ${input.resolution}
- WHERE org_id = ${input.orgId} AND waiting_id = ${input.waitingId} AND resolved_at IS NULL`;
+        const changed =
+          yield* sql`UPDATE kin_waiting SET resolved_at = ${input.resolvedAt}, resolution = ${input.resolution}
+ WHERE org_id = ${input.orgId} AND waiting_id = ${input.waitingId} AND resolved_at IS NULL RETURNING waiting_id`;
+        return changed.length > 0;
       },
       Effect.mapError(toRepositoryError("KinChatRepository.resolveWaiting")),
     ),
     endAgentThread: Effect.fn("KinChatRepository.endAgentThread")(
       function* (input) {
-        yield* sql`UPDATE kin_agent_threads SET ended_at = ${input.endedAt}
- WHERE org_id = ${input.orgId} AND thread_id = ${input.threadId} AND ended_at IS NULL`;
+        const changed = yield* sql`UPDATE kin_agent_threads SET ended_at = ${input.endedAt}
+ WHERE org_id = ${input.orgId} AND thread_id = ${input.threadId} AND ended_at IS NULL RETURNING thread_id`;
+        return changed.length > 0;
       },
       Effect.mapError(toRepositoryError("KinChatRepository.endAgentThread")),
     ),
