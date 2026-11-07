@@ -46,17 +46,24 @@ Non-goals:
 
 ## 4. Memory
 
-Plain files in git, so the owner can read, fix and roll back anything an agent believes. Kept in `kin/` in the owner's control repo:
+**Files in git are the source of truth. A search index is built from them and can be thrown away and rebuilt.** One private repo per organization; the owner's is [`GLDRoger/kin-memory`](https://github.com/GLDRoger/kin-memory), whose README defines the layout and item format.
 
-- `objectives.md`: goals, deadlines, what done means, and the risks to each.
-- `commitments.md`: who promised what, by when, with a link to where they said it.
-- `deferrals/`: one file per deferral (section 6).
-- `decisions.md`: short decision records, so settled questions stay settled.
-- `people.md`: who owns what, working hours, how each prefers to be pinged.
-- `rules.md`: the owner's standing rules. **Only the owner can change it** (section 9).
-- `journal/YYYY-MM-DD.md`: what the lead saw and did. A weekly pass folds old entries into the files above, working from the journals themselves, never from earlier summaries.
+**Why files, not a memory product.** Mem0, Zep/Graphiti and Letta each lead on some measures and none leads on all of them. Most published benchmark numbers come from the vendors themselves and contradict each other. Letta's own tests found that plain file storage holds up well against specialised retrieval. Kin also needs things those products make hard: an owner who can read and roll back what agents believe, per-organization walls, provenance for the injection rules (section 9), and memory that works the same for Claude and Codex. Claude's memory tool, Claude Code's auto memory and Managed Agents memory stores all use files too.
 
-Tasks and due dates stay in GitHub Issues and Projects. Every status claim links to a PR, issue, commit or CI run. Every memory entry records its source: who said it, and where.
+**Layers:**
+
+1. **Items:** one small Markdown file per objective, commitment, deferral, decision, person or claim. YAML front matter records `status`, `due`, `recorded_at`, `valid_from`, `invalid_at`, `superseded_by`, `source`, `said_by`, `trust` and `links`. When a fact stops being true it gets `invalid_at` and is never deleted, which gives us Graphiti-style "true from when to when" without a graph database.
+2. **`INDEX.md`:** a generated summary of at most 200 lines, loaded at every wake-up, the same pattern as Claude Code's `MEMORY.md`. The lead opens individual items when it needs them.
+3. **Journal:** `journal/YYYY/MM-DD.md`, what the lead saw and did. A weekly pass folds old entries into the items and rebuilds the index from the original items, never from earlier summaries.
+4. **Index (new, in the Kin server):** SQLite with full-text search and vector search over the items, plus queries on their front matter ("deferrals due this week", "commitments past their date"). The schedulers in section 6 read from it. Rebuilt from git on start-up or on demand.
+
+**Writing:**
+
+- Only the lead writes. Workers suggest items in their reports, and the lead decides what to keep.
+- Every item records who said it and how far it can be trusted. A member's statement is stored as `trust: member` or as a claim, never as a rule. Only the owner changes `rules.md`.
+- Tasks and due dates stay in GitHub Issues and Projects. Every status claim links to a PR, issue, commit or CI run.
+
+**Measuring it:** from the pilot, collect questions with known answers ("What did we defer to Friday?", "Who promised the migration?", "Did we settle caching?"), and run them every week. Change the memory design only when those results show a need. Section 4 sits behind a `Memory` interface, so Graphiti or another product could replace the index later without touching the items.
 
 ## 5. Chats
 
@@ -253,7 +260,7 @@ A partner, such as a consultant, sets up and runs Kin for a client that can't do
 
 ## 11. Phases (each one works on its own)
 
-1. **Direct chat:** chat contracts and service; mobile chat list and direct chat; task, approval and deferral cards; the lead and its memory; morning and evening routines; GitHub webhooks; deferrals on `once`; the action executor, signed grants, the GitHub App, and branch rulesets. The lead starts at L0 on the pilot repo.
+1. **Direct chat:** chat contracts and service; mobile chat list and direct chat; task, approval and deferral cards; the lead and its memory; morning and evening routines; GitHub webhooks; deferrals on `once`; the action executor, signed grants, the GitHub App, and branch rulesets. The lead starts at L0 on `GLDRoger/t3code`, with memory in `GLDRoger/kin-memory`.
 2. **First group:** lead + QA; roles and provenance ceilings; floor manager; judge in shadow; decision cards and polls; generated widgets; notification actions. Raise the lead to L1, then L2.
 3. **Teams and router:** more teams; the router and its agenda; cross-team requests; live widgets, Live Activities, pinned dashboards; delegations.
 4. **Front doors:** an MCP hub so ChatGPT, Grok and Claude.ai reach the same leads and widgets, with the same section 9 rules.
@@ -262,6 +269,5 @@ A partner, such as a consultant, sets up and runs Kin for a client that can't do
 
 ## 12. Open questions
 
-- Pilot repo, and where the `kin/` memory repo lives.
 - Who else is on the team, and on which devices.
 - Whether to propose message authors and chat membership to upstream T3 as general features.
