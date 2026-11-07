@@ -87,6 +87,8 @@ function toRepositoryError(operation: string) {
         ? cause
         : toPersistenceSqlError(operation)(cause);
 }
+const defaultOrgId = Schema.decodeSync(KinOrgId)("kin-default");
+const defaultOwnerId = Schema.decodeSync(KinPersonId)("kin-default-owner");
 const OrgRow = KinOrg;
 const orgColumns = `org_id AS "orgId", name AS "name", created_at AS "createdAt"`;
 const PersonRow = KinPerson;
@@ -156,6 +158,19 @@ export class KinChatRepository extends Context.Service<
     readonly getAgentThread: (
       input: Scope & { readonly threadId: ThreadId },
     ) => Effect.Effect<Option.Option<KinAgentThread>, RepositoryError>;
+    readonly bootstrapIdentity: (input: {
+      readonly orgName: string;
+      readonly ownerHandle: string;
+      readonly ownerDisplayName: string;
+      readonly createdAt: IsoDateTime;
+    }) => Effect.Effect<KinPerson, RepositoryError>;
+    readonly findAgentThread: (
+      threadId: ThreadId,
+    ) => Effect.Effect<Option.Option<KinAgentThread>, RepositoryError>;
+    readonly listActiveAgentThreads: () => Effect.Effect<
+      ReadonlyArray<KinAgentThread>,
+      RepositoryError
+    >;
     readonly listAllOrgs: () => Effect.Effect<ReadonlyArray<KinOrg>, RepositoryError>;
     readonly listPeople: (input: Scope) => Effect.Effect<ReadonlyArray<KinPerson>, RepositoryError>;
     readonly listAgents: (input: Scope) => Effect.Effect<ReadonlyArray<KinAgent>, RepositoryError>;
@@ -358,6 +373,48 @@ const make = Effect.gen(function* () {
     getWidget: widgetOne,
     getWaiting: waitingOne,
     getAgentThread: agentThreadOne,
+    bootstrapIdentity: Effect.fn("KinChatRepository.bootstrapIdentity")(
+      function* (input) {
+        const orgId = defaultOrgId;
+        const personId = defaultOwnerId;
+        const inserted = yield* sql`INSERT INTO kin_orgs (org_id, name, created_at)
+ SELECT ${orgId}, ${input.orgName}, ${input.createdAt} WHERE NOT EXISTS (SELECT 1 FROM kin_orgs)
+ ON CONFLICT (org_id) DO NOTHING RETURNING org_id`;
+        if (inserted.length > 0) {
+          yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, github_login, created_at)
+ VALUES (${personId}, ${orgId}, ${input.ownerHandle}, ${input.ownerDisplayName}, NULL, ${input.createdAt})
+ ON CONFLICT (person_id) DO NOTHING RETURNING person_id`;
+        }
+        // Never infer ownership from a handle or whichever person happens to sort first.
+        yield* requireRecord(orgOne({ orgId }));
+        return yield* requireRecord(personOne({ orgId, personId }));
+      },
+      (effect) => sql.withTransaction(effect),
+      Effect.mapError(toRepositoryError("KinChatRepository.bootstrapIdentity")),
+    ),
+    // Only trusted caller-thread discovery crosses orgs; subsequent identity reads use the stored org.
+    findAgentThread: Effect.fn("KinChatRepository.findAgentThread")(
+      function* (threadId) {
+        return yield* SqlSchema.findOneOption({
+          Request: Schema.Unknown,
+          Result: AgentThreadRow,
+          execute: () =>
+            sql`SELECT ${sql.literal(agentThreadColumns)} FROM kin_agent_threads WHERE thread_id = ${threadId}`,
+        })(threadId).pipe(NodeSqliteClient.readOnly);
+      },
+      Effect.mapError(toRepositoryError("KinChatRepository.findAgentThread")),
+    ),
+    listActiveAgentThreads: Effect.fn("KinChatRepository.listActiveAgentThreads")(
+      function* () {
+        return yield* SqlSchema.findAll({
+          Request: Schema.Unknown,
+          Result: AgentThreadRow,
+          execute: () =>
+            sql`SELECT ${sql.literal(agentThreadColumns)} FROM kin_agent_threads WHERE ended_at IS NULL ORDER BY org_id, thread_id`,
+        })(undefined).pipe(NodeSqliteClient.readOnly);
+      },
+      Effect.mapError(toRepositoryError("KinChatRepository.listActiveAgentThreads")),
+    ),
     // Bootstrap discovers orgs; write-side global-id checks also cross orgs to detect hidden collisions.
     listAllOrgs: Effect.fn("KinChatRepository.listAllOrgs")(
       function* () {
