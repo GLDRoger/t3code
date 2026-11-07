@@ -30,7 +30,7 @@ Verified on branch `kin` (upstream `main`, 7 Nov 2026).
 
 - Route `/api/hooks/:hookId/:token` (`packages/contracts/src/environmentHttp.ts`, `scheduledTasks/webhookRoute.ts`). Body cap 1 MiB.
 - Signature: `verifyWebhookSignature` (`scheduledTasks/webhookVerification.ts`) does HMAC-SHA256 over raw bytes. GitHub's settings are `x-hub-signature-256`, hex, prefix `sha256=` (`apps/web/src/components/settings/scheduledTasksSettings.logic.ts`, `docs/user/project-settings.md`).
-- Dedupe (`webhookDedupe.ts`): `replayKey` is ignored for 7 days per task; `coalesceKey` merges a burst into one run with the **latest** payload only.
+- Dedupe (`webhookDedupe.ts`): `replayKey` is ignored for 7 days per task; `coalesceKey` merges a burst into one run with the **latest** payload only. For `github` events, `KinEvent.dedupeKey` is `KinGithubEvent.deliveryId` (GitHub's `x-github-delivery`), so a redelivery after T3's 7-day replay window still collapses in the lead's queue.
 - Filters (`webhookFilter.ts`): `equals`, `notEquals`, `startsWith`, `in`, `exists` on `headers.*`, `body.*`, `query.*`; at most 16; all must match.
 - Limits: 60 accepted per task per minute, 20 queued per task. The delivery log keeps 50 per task, with bodies cut at 64 KB (`WEBHOOK_DELIVERY_LOG_BODY_LIMIT`) and credential headers redacted (`redactHeaders`).
 - Prompt values are framed in `<webhook-data-…>` tags with mentions broken (`webhookTemplate.ts`). Code must not parse the prompt.
@@ -83,117 +83,15 @@ KinTriggerScheduler (Scheduler tick, kin_triggers) ────────▶ k
 
 ### Data shapes (new, `packages/contracts/src/kinTriggers.ts`)
 
-```ts
-export const KinTriggerId = TrimmedNonEmptyString.pipe(Schema.brand("KinTriggerId"));
-export const KinRoutine = Schema.Literals([
-  "morning_brief",
-  "evening_summary",
-  "dream",
-  "dream_full",
-  "owner_check",
-]);
-export const KinWatchdog = Schema.Literals([
-  "github_recheck",
-  "stale_review",
-  "promise_overdue",
-  "objective_at_risk",
-  "index_freshness",
-  "trigger_reconcile",
-]);
-// Same shapes as T3's, minus webhook. fixed_time is read in `timeZone`, not the server's zone.
-export const KinTriggerSchedule = Schema.Union([
-  Schema.Struct({ type: Schema.Literal("once"), runAt: IsoDateTime }),
-  Schema.Struct({
-    type: Schema.Literal("fixed_time"),
-    timeOfDay: TimeOfDay,
-    weekdays: Schema.optional(Schema.Array(Schema.Int)),
-  }),
-  Schema.Struct({ type: Schema.Literal("interval"), everyMs: Schema.Int }), // ≥ 60_000
-]);
-export const KinTriggerSubject = Schema.Union([
-  Schema.Struct({
-    type: Schema.Literal("deferral"),
-    itemId: Schema.String,
-    phase: Schema.Literals(["heads_up", "due"]),
-  }),
-  Schema.Struct({ type: Schema.Literal("reminder"), itemId: Schema.String }),
-  Schema.Struct({ type: Schema.Literal("followup"), itemId: Schema.String, person: Schema.String }),
-  Schema.Struct({ type: Schema.Literal("routine"), routine: KinRoutine }),
-  Schema.Struct({ type: Schema.Literal("watchdog"), watchdog: KinWatchdog }),
-]);
-export const KinTrigger = Schema.Struct({
-  id: KinTriggerId,
-  orgId: KinOrgId,
-  subject: KinTriggerSubject,
-  schedule: KinTriggerSchedule,
-  timeZone: Schema.String, // IANA, e.g. "Asia/Kolkata"
-  enabled: Schema.Boolean,
-  nextRunAt: Schema.NullOr(IsoDateTime),
-  lastFireId: Schema.NullOr(Schema.String),
-  createdAt: IsoDateTime,
-  updatedAt: IsoDateTime,
-});
-// One row per fire. fireId = `${triggerId}:${dueAtMs}` or `gh:${orgId}:${deliveryId}`.
-export const KinTriggerFired = Schema.Struct({
-  fireId: Schema.String,
-  orgId: KinOrgId,
-  dueAt: IsoDateTime,
-  firedAt: IsoDateTime,
-  lateByMs: Schema.Int, // 0 when on time; > 10 min shows "This was due at 9:00"
-  payload: Schema.Union([
-    Schema.Struct({
-      kind: Schema.Literal("time"),
-      triggerId: KinTriggerId,
-      subject: KinTriggerSubject,
-    }),
-    Schema.Struct({
-      kind: Schema.Literal("github"),
-      sourceId: Schema.String,
-      scheduledTaskId: ScheduledTaskId,
-      deliveryId: ScheduledTaskWebhookDeliveryId,
-    }),
-  ]),
-});
-export const KinWebhookSource = Schema.Struct({
-  id: Schema.String,
-  orgId: KinOrgId,
-  repo: Schema.String, // "owner/name"
-  scheduledTaskId: ScheduledTaskId,
-  inboxThreadId: ThreadId,
-  githubHookId: Schema.NullOr(Schema.Int),
-  botLogin: Schema.String,
-  status: Schema.Literals(["active", "paused_in_t3", "blocked_by_policy", "missing"]),
-});
-export const KinGithubEvent = Schema.Struct({
-  // built by the consumer, handed to LEAD
-  orgId: KinOrgId,
-  deliveryId: Schema.String, // x-github-delivery
-  event: Schema.String,
-  action: Schema.NullOr(Schema.String),
-  repo: Schema.String,
-  number: Schema.NullOr(Schema.Int),
-  headSha: Schema.NullOr(Schema.String),
-  sender: Schema.String,
-  receivedAt: IsoDateTime,
-  heldByRelay: Schema.Boolean,
-  bodyTruncated: Schema.Boolean,
-  payload: Schema.Unknown,
-});
-export const KinTriggerSettings = Schema.Struct({
-  // per org; defaults below
-  orgId: KinOrgId,
-  timeZone: Schema.String,
-  morningBrief: TimeOfDay,
-  eveningSummary: TimeOfDay,
-  dream: TimeOfDay,
-  fullRebuildWeekday: Schema.Int,
-  ownerCheckWeekday: Schema.Int,
-  ownerCheck: TimeOfDay,
-  quietHours: Schema.Struct({ from: TimeOfDay, to: TimeOfDay }),
-});
-```
+The schemas reuse `KinOrgId` and `KinPersonId` from `kinChat.ts` and T3's existing task, delivery and thread IDs. Follow-up `person` is a Kin person ID, not a handle. Every top-level record carries `orgId`; nested schedules, subjects and payloads inherit their envelope's org. These contracts are independent of LEAD's `KinEvent`.
 
-Defaults: brief 08:30 daily, summary 18:30 Mon–Fri, dream 03:00 daily, full rebuild on Sunday (it replaces that night's dream), owner check Monday 09:00, quiet hours 21:00–08:00.
+Schedules reuse the same shapes as T3's upsert schedules, minus webhook; `fixed_time` is read in `timeZone`, not the server's zone. Schedule unions keep T3's `type` discriminator, and fire payloads keep `kind`. Intervals are at least 60 000 ms, weekdays are integers 0–6, and lateness is non-negative. `TimeOfDay` follows T3's local-time pattern (H:MM or HH:MM). Record timestamps use the same `IsoDateTime` schema as chat contracts; `once.runAt` uses T3's stricter ISO date-time with an explicit offset. Timezone fields validate IANA zones, including `UTC`.
+
+The exported schemas and types are defined in [`kinTriggers.ts`](../../../packages/contracts/src/kinTriggers.ts).
+
+Each fire has a stable `fireId`: `${triggerId}:${dueAtMs}` for time triggers or `gh:${orgId}:${deliveryId}` for webhooks. `lateByMs` is zero on time; more than 10 minutes late shows "This was due at 9:00". Repository strings are `owner/name`. `KinGithubEvent.deliveryId` is GitHub's `x-github-delivery`, not T3's branded delivery-log ID; the consumer constructs this event for LEAD.
+
+Defaults: brief 08:30 daily, summary 18:30 Mon–Fri, dream 03:00 daily, full rebuild on Sunday (it replaces that night's dream), owner check Monday 09:00, quiet hours 21:00–08:00. Morning brief and dream days are fixed to daily, and evening summary days are fixed to Mon–Fri; their settings change only the time.
 
 **Tables (new, Kin migrations):** `kin_triggers`, `kin_trigger_fires` (fireId primary key, 30-day retention), `kin_trigger_inbox` (fireId primary key, `payload_json`, `consumed_at`), `kin_webhook_sources`, `kin_deferral_runs`, `kin_ping_ledger`, `kin_dream_runs`, `kin_prepared_briefs`. Every row has `org_id`.
 

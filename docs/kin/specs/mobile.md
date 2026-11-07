@@ -97,29 +97,29 @@ Atoms are built on `connectionAtomRuntime` with the helpers above. The tags are 
 export const kinClient = {
   orgs: createEnvironmentRpcQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:orgs",
-    tag: KIN_METHODS.listOrgs,
+    tag: KIN_CHAT_WS_METHODS.orgsList,
     staleTimeMs: 60_000,
   }),
   // Chat list plus Waiting on you, as one snapshot-then-deltas stream.
   inbox: createEnvironmentRpcSubscriptionAtomFamily(connectionAtomRuntime, {
     label: "kin:inbox",
-    tag: KIN_METHODS.subscribeInbox,
+    tag: KIN_CHAT_WS_METHODS.chatsSubscribe,
   }),
   chat: createEnvironmentRpcSubscriptionAtomFamily(connectionAtomRuntime, {
     label: "kin:chat",
-    tag: KIN_METHODS.subscribeChat,
+    tag: KIN_CHAT_WS_METHODS.chatSubscribe,
   }),
   history: createEnvironmentRpcQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:history",
-    tag: KIN_METHODS.listMessages,
+    tag: KIN_CHAT_WS_METHODS.chatHistory,
   }),
   send: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:send",
-    tag: KIN_METHODS.sendMessage,
+    tag: KIN_CHAT_WS_METHODS.messagesSend,
   }),
   widgetAction: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:widget-action",
-    tag: KIN_METHODS.sendWidgetAction,
+    tag: KIN_CHAT_WS_METHODS.widgetsAct,
     concurrency: { mode: "singleFlight", key: ({ input }) => input.clientActionId },
   }),
   pendingAction: createEnvironmentRpcSubscriptionAtomFamily(connectionAtomRuntime, {
