@@ -18,6 +18,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Random from "effect/Random";
 import * as Schedule from "effect/Schedule";
+import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -102,6 +103,14 @@ const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
   const launch = yield* ThreadLaunchService.ThreadLaunchService;
   const threads = yield* ThreadManagementService.ThreadManagementService;
+  const threadActivity = threads.streamDomainEvents.pipe(
+    Stream.filter(
+      (event) =>
+        event.type === "run.updated" ||
+        (event.type === "provider-turn.updated" && event.payload.completedAt !== null),
+    ),
+    Stream.runHead,
+  );
 
   const lead = Effect.fn("WakeupRunner.lead")(function* (orgId: KinOrgId, agentId: KinAgentId) {
     const [row] = yield* sql`SELECT l.org_id AS "orgId", l.agent_id AS "agentId", l.name,
@@ -256,9 +265,9 @@ const make = Effect.gen(function* () {
           WHERE thread_id = ${record.threadId} AND completed_at IS NULL LIMIT 1`;
         const busy = yield* sql`SELECT 1 FROM orchestration_v2_projection_runs
           WHERE thread_id = ${record.threadId}
-            AND status IN ('queued', 'preparing', 'starting', 'running', 'waiting') LIMIT 1`;
+            AND status IN ${sql.in(["queued", ...ThreadManagementService.ACTIVE_RUN_STATUSES])} LIMIT 1`;
         if (unfinished.length > 0 || busy.length > 0) {
-          yield* (yield* queue.changes(orgId)).pipe(
+          yield* Effect.raceFirst(yield* queue.changes(orgId), threadActivity).pipe(
             Effect.timeoutOrElse({ duration: 60_000, orElse: () => Effect.void }),
           );
           return;
@@ -386,7 +395,7 @@ const make = Effect.gen(function* () {
                     createdBy: "system",
                     creationSource: "server",
                   })).projection;
-            const run = sent.runs.find((run) => run.userMessageId === messageId);
+            const run = sent.runs.findLast((run) => run.userMessageId === messageId);
             if (run === undefined)
               return yield* new KinWakeupError({ orgId, agentId, cause: "missing_run" });
             row = { ...row, runId: run.id };
@@ -544,7 +553,7 @@ const make = Effect.gen(function* () {
           const unfinished =
             yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${orgId} AND status = 'running'`;
           if (unfinished.length > 0) {
-            yield* changed.pipe(
+            yield* Effect.raceFirst(changed, threadActivity).pipe(
               Effect.timeoutOrElse({ duration: 60_000, orElse: () => Effect.void }),
             );
             return;
@@ -563,7 +572,7 @@ const make = Effect.gen(function* () {
             yield* runOnce(orgId, next.agentId);
             return;
           }
-          yield* changed.pipe(
+          yield* Effect.raceFirst(changed, threadActivity).pipe(
             Effect.timeoutOrElse({
               duration: Math.min(60_000, Math.max(1, (next?.readyAt ?? Infinity) - now)),
               orElse: () => Effect.void,

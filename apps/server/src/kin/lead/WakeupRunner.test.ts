@@ -7,9 +7,11 @@ import * as McpSessionRegistryTestkit from "../../mcp/McpSessionRegistry.testkit
 import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
+  EventId,
   EnvironmentId,
   MessageId,
   KinWakeupId,
+  KinAgentId,
   ThreadId,
   RunId,
   RunAttemptId,
@@ -39,6 +41,9 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
+import * as DateTime from "effect/DateTime";
+import * as EventSink from "../../orchestration-v2/EventSink.ts";
+import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as EffectWorker from "../../orchestration-v2/EffectWorker.ts";
 import { provideDeterministicTestRuntime } from "../../orchestration-v2/testkit/DeterministicRuntime.ts";
 import { harness, seed, orgId, agentId, event } from "./WakeupRunner.testkit.ts";
@@ -380,6 +385,75 @@ describe("WakeupRunner", () => {
       }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
   );
 
+  it.effect("wakes another lead while the first has a held queued run", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const queue = yield* KinEventQueue.KinEventQueue;
+      const sql = yield* SqlClient.SqlClient;
+      yield* queue.enqueue(event("first"));
+      yield* Fiber.join(yield* run());
+      const [lead] = yield* sql<{ thread_id: string }>`SELECT thread_id FROM kin_leads`;
+      const threadId = ThreadId.make(lead!.thread_id);
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      yield* orchestrator.dispatch({
+        type: "thread.stop",
+        commandId: CommandId.make("hold"),
+        threadId,
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("held-message"),
+        threadId,
+        messageId: MessageId.make("held-message"),
+        text: "Held",
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("held-second"),
+        threadId,
+        messageId: MessageId.make("held-second"),
+        text: "Held",
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.stop",
+        commandId: CommandId.make("hold-queue"),
+        threadId,
+      });
+      assert.strictEqual(
+        (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!.status,
+        "queued",
+      );
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+        SELECT 'lead-z', org_id, display_name, role, owner_person_id, created_at FROM kin_agents WHERE agent_id = 'lead'`;
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+        SELECT 'lead-z', org_id, name, level_since, models_json, worker_projects_json, owner_chat_id FROM kin_leads WHERE agent_id = 'lead'`;
+      yield* queue.enqueue(event("busy"));
+      yield* queue.enqueue({ ...event("other"), agentId: KinAgentId.make("lead-z") });
+      yield* TestClock.adjust("20 seconds");
+      const next = yield* queue.nextReady(orgId);
+      assert.strictEqual(next?.agentId, "lead-z");
+      yield* Fiber.join(
+        yield* (yield* WakeupRunner.WakeupRunner)
+          .runOnce(orgId, next!.agentId)
+          .pipe(Effect.forkChild),
+      );
+      assert.deepStrictEqual(yield* sql`SELECT state FROM kin_events WHERE event_id = 'other'`, [
+        { state: "done" },
+      ]);
+      assert.deepStrictEqual(yield* sql`SELECT state FROM kin_events WHERE event_id = 'busy'`, [
+        { state: "queued" },
+      ]);
+    }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
+  );
+
   it.effect("defers claims while an interrupted run's provider turn is unfinished", () =>
     Effect.gen(function* () {
       yield* seed;
@@ -388,8 +462,30 @@ describe("WakeupRunner", () => {
       const sql = yield* SqlClient.SqlClient;
       yield* queue.enqueue(event("first"));
       yield* Fiber.join(yield* run());
-      yield* sql`UPDATE orchestration_v2_projection_runs SET status = 'interrupted'`;
-      yield* sql`UPDATE orchestration_v2_projection_provider_turns SET completed_at = NULL`;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const [lead] = yield* sql<{ thread_id: string }>`SELECT thread_id FROM kin_leads`;
+      const projection = yield* threads.getThreadProjection(ThreadId.make(lead!.thread_id));
+      const sink = yield* EventSink.EventSinkV2;
+      const turn = projection.providerTurns[0]!;
+      const occurredAt = yield* DateTime.now;
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make("unfinished-run"),
+            type: "run.updated",
+            threadId: projection.thread.id,
+            occurredAt,
+            payload: { ...projection.runs[0]!, status: "interrupted" },
+          },
+          {
+            id: EventId.make("unfinished-turn"),
+            type: "provider-turn.updated",
+            threadId: projection.thread.id,
+            occurredAt,
+            payload: { ...turn, status: "running", completedAt: null },
+          },
+        ],
+      });
       yield* queue.enqueue(event("next"));
       const deferred = yield* runner.runOnce(orgId, agentId).pipe(Effect.forkChild);
       yield* TestClock.adjust("60 seconds");
@@ -399,7 +495,17 @@ describe("WakeupRunner", () => {
         yield* sql`SELECT state, attempts FROM kin_events WHERE event_id = 'next'`,
         [{ state: "queued", attempts: 0 }],
       );
-      yield* sql`UPDATE orchestration_v2_projection_provider_turns SET completed_at = '2026-11-08T00:00:00.000Z'`;
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make("finished-turn"),
+            type: "provider-turn.updated",
+            threadId: projection.thread.id,
+            occurredAt: yield* DateTime.now,
+            payload: turn,
+          },
+        ],
+      });
       yield* Fiber.join(yield* run());
       assert.lengthOf(yield* sql`SELECT 1 FROM kin_wakeups`, 2);
     }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),

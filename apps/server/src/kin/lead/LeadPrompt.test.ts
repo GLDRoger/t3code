@@ -188,10 +188,10 @@ it.effect.each([
       yield* sql`INSERT INTO kin_leads
         (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
         VALUES (${agentId}, ${orgId}, 'Fixture lead', 0, '{}', '[]', ${chatId})`;
-      yield* startWakeupRun(threadId, input.wakeupId);
+      const run = yield* startWakeupRun(threadId, input.wakeupId);
       yield* sql`INSERT INTO kin_wakeups
         (wakeup_id, org_id, agent_id, thread_id, model, started_at, status, event_ids, run_id)
-        VALUES (${input.wakeupId}, ${orgId}, ${agentId}, ${threadId}, 'test', 0, 'running', '[]', 'authority-run')`;
+        VALUES (${input.wakeupId}, ${orgId}, ${agentId}, ${threadId}, 'test', 0, 'running', '[]', ${run.id})`;
     }
     yield* repo.addMember({
       orgId,

@@ -1,3 +1,4 @@
+import { ACTIVE_RUN_STATUSES } from "../../orchestration-v2/ThreadManagementService.ts";
 import {
   KinEvent,
   KinEventId,
@@ -544,6 +545,15 @@ const make = Effect.gen(function* () {
       const rows = yield* sql<{ agent_id: string }>`SELECT e.agent_id
         FROM kin_events e JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
         WHERE e.org_id = ${orgId} AND e.state = 'queued' AND a.retired_at IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM kin_leads l
+            WHERE l.org_id = e.org_id AND l.agent_id = e.agent_id AND (
+              EXISTS (SELECT 1 FROM orchestration_v2_projection_runs r
+                WHERE r.thread_id = l.thread_id AND r.status IN ${sql.in(["queued", ...ACTIVE_RUN_STATUSES])})
+              OR EXISTS (SELECT 1 FROM orchestration_v2_projection_provider_turns t
+                WHERE t.thread_id = l.thread_id AND t.completed_at IS NULL)
+            )
+          )
         GROUP BY e.agent_id ORDER BY e.agent_id`;
       const candidates = yield* Effect.forEach(rows, (row) =>
         Effect.gen(function* () {

@@ -107,8 +107,8 @@ const seed = Effect.gen(function* () {
     VALUES (${agentId}, ${person.orgId}, 'Lead', 0, '{}', '[]', ${chat.chatId})`;
   yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status, event_ids)
     VALUES ('service-wakeup', ${person.orgId}, ${agentId}, ${threadId}, 'test', 0, 'running', '[]')`;
-  yield* startWakeupRun(threadId, "service-wakeup");
-  yield* sql`UPDATE kin_wakeups SET run_id = 'authority-run' WHERE wakeup_id = 'service-wakeup'`;
+  const run = yield* startWakeupRun(threadId, "service-wakeup");
+  yield* sql`UPDATE kin_wakeups SET run_id = ${run.id} WHERE wakeup_id = 'service-wakeup'`;
   const agent = yield* identity.resolveAgent(caller);
   return { repo, service, identity, person, agent, chat };
 });
@@ -239,7 +239,6 @@ describe("KinChatService", () => {
             .pipe(Effect.flip),
           { reason: "not_allowed" },
         );
-        yield* sql`UPDATE orchestration_v2_projection_runs SET status = 'running' WHERE run_id = 'authority-run'`;
         yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'service-wakeup'`;
         assert.include(
           yield* service

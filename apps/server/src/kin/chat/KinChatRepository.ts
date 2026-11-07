@@ -1,3 +1,4 @@
+import { ACTIVE_RUN_STATUSES } from "../../orchestration-v2/ThreadManagementService.ts";
 import type { McpThreadCaller } from "../../mcp/McpInvocationContext.ts";
 import {
   KinOrg,
@@ -421,21 +422,33 @@ const make = Effect.gen(function* () {
       },
     ) {
       if (input.caller.subagent === true || input.caller.threadId !== input.threadId) return false;
-      const rows = yield* sql`WITH RECURSIVE wakeup_runs(run_id, thread_id) AS (
-        SELECT r.run_id, r.thread_id FROM kin_wakeups w
-        JOIN orchestration_v2_projection_runs r ON r.thread_id = w.thread_id
-          AND json_extract(r.payload_json, '$.userMessageId') = 'kin-wakeup-msg:' || w.wakeup_id
-        WHERE w.org_id = ${input.orgId} AND w.agent_id = ${input.agentId}
-          AND w.thread_id = ${input.threadId} AND w.status = 'running'
+      const rows =
+        yield* sql`WITH RECURSIVE ancestors(run_id, thread_id, ordinal, payload_json) AS (
+        SELECT run_id, thread_id, ordinal, payload_json
+        FROM orchestration_v2_projection_runs INDEXED BY orchestration_v2_projection_runs_thread_status_idx
+        WHERE thread_id = ${input.threadId} AND status IN ${sql.in(ACTIVE_RUN_STATUSES)}
         UNION
-        SELECT r.run_id, r.thread_id FROM orchestration_v2_projection_runs r
-        JOIN wakeup_runs parent ON r.thread_id = parent.thread_id
-          AND (json_extract(r.payload_json, '$.restartContinuationOfRunId') = parent.run_id
-            OR json_extract(r.payload_json, '$.usageLimitContinuationOfRunId') = parent.run_id)
+        SELECT p.run_id, p.thread_id, p.ordinal, p.payload_json
+        FROM ancestors child JOIN orchestration_v2_projection_runs p
+          ON p.thread_id = child.thread_id
+          AND (p.run_id = json_extract(child.payload_json, '$.restartContinuationOfRunId')
+            OR p.run_id = json_extract(child.payload_json, '$.usageLimitContinuationOfRunId'))
       )
-      SELECT 1 FROM wakeup_runs w JOIN orchestration_v2_projection_runs r
-        ON r.run_id = w.run_id AND r.thread_id = w.thread_id
-      WHERE r.status IN ('preparing', 'starting', 'running', 'waiting') LIMIT 1`;
+      SELECT 1 FROM kin_wakeups w JOIN ancestors root ON root.thread_id = w.thread_id
+      JOIN orchestration_v2_projection_messages m
+        ON m.message_id = json_extract(root.payload_json, '$.userMessageId')
+        AND m.thread_id = root.thread_id AND m.run_id = root.run_id
+      WHERE w.org_id = ${input.orgId} AND w.agent_id = ${input.agentId}
+        AND w.thread_id = ${input.threadId} AND w.status = 'running'
+        AND json_extract(root.payload_json, '$.userMessageId') = 'kin-wakeup-msg:' || w.wakeup_id
+        AND json_extract(m.payload_json, '$.createdBy') = 'system'
+        AND json_extract(m.payload_json, '$.creationSource') = 'server'
+        AND root.run_id = COALESCE(w.run_id, (
+          SELECT first.run_id FROM orchestration_v2_projection_runs first
+          WHERE first.thread_id = w.thread_id
+            AND json_extract(first.payload_json, '$.userMessageId') = 'kin-wakeup-msg:' || w.wakeup_id
+          ORDER BY first.ordinal LIMIT 1
+        )) LIMIT 1`;
       return rows.length > 0;
     },
     Effect.mapError(toRepositoryError("KinChatRepository.hasRunningWakeup")),

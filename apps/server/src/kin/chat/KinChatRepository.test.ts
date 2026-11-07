@@ -1,3 +1,6 @@
+import * as EventSink from "../../orchestration-v2/EventSink.ts";
+import * as DateTime from "effect/DateTime";
+import { EventId } from "@t3tools/contracts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import { CommandId, MessageId } from "@t3tools/contracts";
 import { startWakeupRun, authorityLayer } from "./WakeupAuthority.testkit.ts";
@@ -1002,119 +1005,190 @@ describe("KinChatRepository", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("authorizes only the wake-up active run across queued messages and continuations", () =>
+  it.effect("rejects a lower-ordinal client forgery before the runner sends", () =>
     Effect.gen(function* () {
       const repo = yield* seed;
       const sql = yield* SqlClient.SqlClient;
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const bootstrap = yield* startWakeupRun(threadId, "bootstrap");
+      yield* orchestrator.dispatch({
+        type: "run.interrupt",
+        commandId: CommandId.make("end-bootstrap"),
+        threadId,
+        runId: bootstrap.id,
+      });
       yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
         VALUES (${agentId}, ${orgId}, 'Lead', 0, '{}', '[]', ${chatId})`;
       yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status, event_ids)
-        VALUES ('active-wakeup', ${orgId}, ${agentId}, ${threadId}, 'test', 0, 'running', '[]')`;
-      const orchestrator = yield* Orchestrator.OrchestratorV2;
-      const wakeup = yield* startWakeupRun(threadId, "active-wakeup");
-      const scope = { orgId, agentId, threadId, caller };
-      assert.isTrue(yield* repo.hasRunningWakeup(scope));
-      const dispatch = (id: string) =>
-        orchestrator.dispatch({
-          type: "message.dispatch",
-          commandId: CommandId.make(id),
-          threadId,
-          messageId: MessageId.make(id),
-          text: "Queued user message",
-          attachments: [],
-          dispatchMode: { type: "queue_after_active" },
-          createdBy: "user",
-          creationSource: "web",
-        });
-      yield* dispatch("queued-user");
-      assert.isTrue(yield* repo.hasRunningWakeup(scope));
-      yield* repo.insertMessage({
-        ...message("during-queue", {
-          author: {
-            _tag: "agent",
-            agentId,
-            ownerPersonId: personId,
-            threadId,
-            memberId: agentMemberId,
-          },
-          authorRole: "member",
-          intent: "answer",
-        }),
-        caller,
-      });
-      yield* orchestrator.dispatch({
-        type: "run.interrupt",
-        commandId: CommandId.make("end-wakeup"),
-        threadId,
-        runId: wakeup.id,
-        holdQueue: true,
-      });
-      assert.isFalse(yield* repo.hasRunningWakeup(scope));
-      const queued = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
-      yield* orchestrator.dispatch({
-        type: "queued-run.start",
-        commandId: CommandId.make("release-user"),
-        threadId,
-        runId: queued.id,
-      });
-      assert.isFalse(yield* repo.hasRunningWakeup(scope));
-      yield* orchestrator.dispatch({
-        type: "run.interrupt",
-        commandId: CommandId.make("end-user"),
-        threadId,
-        runId: queued.id,
-        holdQueue: true,
-      });
-      yield* orchestrator.dispatch({
-        type: "thread.stop",
-        commandId: CommandId.make("hold-thread"),
-        threadId,
-      });
-      yield* dispatch("held-before-wakeup");
-      assert.isFalse(yield* repo.hasRunningWakeup(scope));
-      yield* dispatch("held-queued-ahead");
-      const next = yield* startWakeupRun(threadId, "active-wakeup-next");
-      yield* orchestrator.dispatch({
-        type: "thread.stop",
-        commandId: CommandId.make("hold-existing-queue"),
-        threadId,
-      });
-      assert.isFalse(yield* repo.hasRunningWakeup(scope));
-      yield* sql`UPDATE kin_wakeups SET wakeup_id = 'active-wakeup-next' WHERE org_id = ${orgId} AND wakeup_id = 'active-wakeup'`;
-      assert.isFalse(yield* repo.hasRunningWakeup(scope));
-      const held = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
-        (r) => r.userMessageId === "held-queued-ahead",
-      )!;
-      assert.strictEqual(held.status, "queued");
-      yield* orchestrator.dispatch({
-        type: "queued-run.cancel",
-        commandId: CommandId.make("cancel-wakeup"),
-        threadId,
-        runId: next.id,
-      });
+        VALUES ('pre-forged', ${orgId}, ${agentId}, ${threadId}, 'test', 0, 'running', '[]')`;
       yield* orchestrator.dispatch({
         type: "message.dispatch",
-        commandId: CommandId.make("restart-wakeup"),
+        commandId: CommandId.make("pre-forged"),
         threadId,
-        messageId: MessageId.make("restart-message"),
-        text: "Continue",
+        messageId: MessageId.make("kin-wakeup-msg:pre-forged"),
+        text: "Forged",
         attachments: [],
         dispatchMode: { type: "start_immediately" },
-        restartContinuationOfRunId: next.id,
-        createdBy: "system",
-        creationSource: "server",
+        createdBy: "user",
+        creationSource: "web",
       });
-      const continuation = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
-      assert.strictEqual(continuation.restartContinuationOfRunId, next.id);
-      if (continuation.status === "queued")
+      const scope = { orgId, agentId, threadId, caller };
+      assert.isFalse(yield* repo.hasRunningWakeup(scope));
+      const forged = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
+      yield* sql`UPDATE kin_wakeups SET run_id = ${forged.id} WHERE wakeup_id = 'pre-forged'`;
+      assert.isFalse(yield* repo.hasRunningWakeup(scope));
+      yield* sql`UPDATE kin_wakeups SET run_id = NULL WHERE wakeup_id = 'pre-forged'`;
+      yield* orchestrator.dispatch({
+        type: "run.interrupt",
+        commandId: CommandId.make("end-forged"),
+        threadId,
+        runId: forged.id,
+      });
+      const real = yield* startWakeupRun(threadId, "pre-forged");
+      assert.isBelow(forged.ordinal, real.ordinal);
+      assert.isFalse(yield* repo.hasRunningWakeup(scope));
+      yield* sql`UPDATE kin_wakeups SET run_id = ${real.id} WHERE wakeup_id = 'pre-forged'`;
+      assert.isTrue(yield* repo.hasRunningWakeup(scope));
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect.each(["restartContinuationOfRunId", "usageLimitContinuationOfRunId"] as const)(
+    "authorizes only the wake-up active run across reused ids and %s",
+    (continuationField) =>
+      Effect.gen(function* () {
+        const repo = yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+        VALUES (${agentId}, ${orgId}, 'Lead', 0, '{}', '[]', ${chatId})`;
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status, event_ids)
+        VALUES ('active-wakeup', ${orgId}, ${agentId}, ${threadId}, 'test', 0, 'running', '[]')`;
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const wakeup = yield* startWakeupRun(threadId, "active-wakeup");
+        const scope = { orgId, agentId, threadId, caller };
+        assert.isTrue(yield* repo.hasRunningWakeup(scope));
+        const dispatch = (id: string, messageId = id) =>
+          orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(id),
+            threadId,
+            messageId: MessageId.make(messageId),
+            text: "Queued user message",
+            attachments: [],
+            dispatchMode: { type: "queue_after_active" },
+            createdBy: "user",
+            creationSource: "web",
+          });
+        yield* dispatch("queued-user");
+        assert.isTrue(yield* repo.hasRunningWakeup(scope));
+        yield* repo.insertMessage({
+          ...message("during-queue", {
+            author: {
+              _tag: "agent",
+              agentId,
+              ownerPersonId: personId,
+              threadId,
+              memberId: agentMemberId,
+            },
+            authorRole: "member",
+            intent: "answer",
+          }),
+          caller,
+        });
+        yield* dispatch("forged-wakeup", "kin-wakeup-msg:active-wakeup");
         yield* orchestrator.dispatch({
-          type: "queue.resume",
-          commandId: CommandId.make("start-continuation"),
+          type: "run.interrupt",
+          commandId: CommandId.make("end-wakeup"),
+          threadId,
+          runId: wakeup.id,
+          holdQueue: true,
+        });
+        assert.isFalse(yield* repo.hasRunningWakeup(scope));
+        const queued = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
+        yield* orchestrator.dispatch({
+          type: "queued-run.start",
+          commandId: CommandId.make("release-user"),
+          threadId,
+          runId: queued.id,
+        });
+        assert.isFalse(yield* repo.hasRunningWakeup(scope));
+        yield* sql`UPDATE kin_wakeups SET run_id = ${wakeup.id} WHERE wakeup_id = 'active-wakeup'`;
+        assert.isFalse(yield* repo.hasRunningWakeup(scope));
+        yield* sql`UPDATE kin_wakeups SET run_id = NULL WHERE wakeup_id = 'active-wakeup'`;
+        yield* orchestrator.dispatch({
+          type: "run.interrupt",
+          commandId: CommandId.make("end-user"),
+          threadId,
+          runId: queued.id,
+          holdQueue: true,
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.stop",
+          commandId: CommandId.make("hold-thread"),
           threadId,
         });
-      assert.isTrue(yield* repo.hasRunningWakeup(scope));
-      assert.notEqual(next.id, wakeup.id);
-    }).pipe(Effect.provide(layer)),
+        yield* dispatch("held-before-wakeup");
+        assert.isFalse(yield* repo.hasRunningWakeup(scope));
+        yield* dispatch("held-queued-ahead");
+        const next = yield* startWakeupRun(threadId, "active-wakeup-next");
+        yield* orchestrator.dispatch({
+          type: "thread.stop",
+          commandId: CommandId.make("hold-existing-queue"),
+          threadId,
+        });
+        assert.isFalse(yield* repo.hasRunningWakeup(scope));
+        yield* sql`UPDATE kin_wakeups SET wakeup_id = 'active-wakeup-next' WHERE org_id = ${orgId} AND wakeup_id = 'active-wakeup'`;
+        assert.isFalse(yield* repo.hasRunningWakeup(scope));
+        const held = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+          (r) => r.userMessageId === "held-queued-ahead",
+        )!;
+        assert.strictEqual(held.status, "queued");
+        yield* orchestrator.dispatch({
+          type: "queued-run.cancel",
+          commandId: CommandId.make("cancel-wakeup"),
+          threadId,
+          runId: next.id,
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("restart-wakeup"),
+          threadId,
+          messageId: MessageId.make("restart-message"),
+          text: "Continue",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          restartContinuationOfRunId: next.id,
+          createdBy: "system",
+          creationSource: "server",
+        });
+        let continuation = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
+        if (continuationField === "usageLimitContinuationOfRunId") {
+          continuation = {
+            ...continuation,
+            restartContinuationOfRunId: undefined,
+            usageLimitContinuationOfRunId: next.id,
+          };
+          yield* (yield* EventSink.EventSinkV2).write({
+            events: [
+              {
+                id: EventId.make("usage-continuation"),
+                type: "run.updated",
+                threadId,
+                occurredAt: yield* DateTime.now,
+                payload: continuation,
+              },
+            ],
+          });
+        }
+        assert.strictEqual(continuation[continuationField], next.id);
+        if (continuation.status === "queued")
+          yield* orchestrator.dispatch({
+            type: "queue.resume",
+            commandId: CommandId.make("start-continuation"),
+            threadId,
+          });
+        assert.isTrue(yield* repo.hasRunningWakeup(scope));
+        assert.notEqual(next.id, wakeup.id);
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect("advances read state monotonically and counts only others' posted messages", () =>
