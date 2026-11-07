@@ -115,7 +115,7 @@ it("retains concrete WS handler layer requirements with Kin RPCs", () => {
   >().toEqualTypeOf<never>();
 });
 
-it.effect.each(["disabled", "failed"] as const)(
+it.effect.each(["disabled", "invalid", "failed"] as const)(
   "keeps the runtime contained when Kin is %s",
   (mode) =>
     Effect.gen(function* () {
@@ -163,7 +163,13 @@ it.effect.each(["disabled", "failed"] as const)(
       ).pipe(
         Layer.provide(
           ConfigProvider.layer(
-            ConfigProvider.fromUnknown(mode === "failed" ? { KIN_ENABLED: true } : {}),
+            ConfigProvider.fromUnknown(
+              mode === "failed"
+                ? { KIN_ENABLED: true }
+                : mode === "invalid"
+                  ? { KIN_ENABLED: "maybe" }
+                  : {},
+            ),
           ),
         ),
         Layer.provide(Layer.succeed(SqlClient.SqlClient, mode === "failed" ? broken : sql)),
@@ -183,7 +189,7 @@ it.effect.each(["disabled", "failed"] as const)(
         assert.isTrue(Option.isNone((yield* Kin.KinServer).services));
         const launcher = yield* ThreadLaunch.ThreadLaunchService;
         const management = yield* ThreadManagement.ThreadManagementService;
-        if (mode === "disabled") {
+        if (mode !== "failed") {
           assert.strictEqual(launcher.launch, launch);
           assert.strictEqual(management.sendToThread, sendToThread);
           assert.strictEqual(yield* launcher.launch(input).pipe(Effect.flip), rejected);
@@ -198,11 +204,17 @@ it.effect.each(["disabled", "failed"] as const)(
           };
           assert.strictEqual(yield* launcher.launch(ordinary).pipe(Effect.flip), rejected);
           assert.strictEqual(seen[0], ordinary);
+          const lookalike = {
+            ...ordinary,
+            commandId: CommandId.make("scheduled-task:other:webhook:x"),
+          };
+          assert.strictEqual(yield* launcher.launch(lookalike).pipe(Effect.flip), rejected);
         }
       }).pipe(Effect.provide(runtime));
-      assert.strictEqual(seen.length, 1);
-      if (mode === "disabled") assert.strictEqual(seen[0], input);
+      assert.strictEqual(seen.length, mode === "failed" ? 2 : 1);
+      if (mode !== "failed") assert.strictEqual(seen[0], input);
       assert.strictEqual(logs.length, mode === "disabled" ? 0 : 1);
+      if (mode === "invalid") assert.include(JSON.stringify(logs), "invalid KIN_ENABLED");
       if (mode === "failed") assert.include(JSON.stringify(logs), "Kin migration defect");
       assert.deepStrictEqual(
         yield* sql`SELECT name FROM sqlite_master WHERE name GLOB 'kin_*' ORDER BY name`,

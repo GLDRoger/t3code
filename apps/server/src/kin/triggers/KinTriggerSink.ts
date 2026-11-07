@@ -194,7 +194,9 @@ export function wrapTaskDispatch<E, R, E2, R2>(
           launch: Effect.fn("KinTriggerSink.degradedLaunch")(function* (input) {
             if (
               input.initialMessage?.scheduledTaskId !== undefined &&
-              input.commandId.includes(":webhook:")
+              input.commandId.startsWith(
+                `scheduled-task:${input.initialMessage.scheduledTaskId}:webhook:`,
+              )
             )
               return yield* new ThreadLaunchService.ThreadLaunchError({
                 operation: "dispatch-message",
@@ -214,7 +216,10 @@ export function wrapTaskDispatch<E, R, E2, R2>(
         return ThreadManagementService.ThreadManagementService.of({
           ...service,
           sendToThread: Effect.fn("KinTriggerSink.degradedSend")(function* (input) {
-            if (input.scheduledTaskId !== undefined && input.commandId.includes(":webhook:"))
+            if (
+              input.scheduledTaskId !== undefined &&
+              input.commandId.startsWith(`scheduled-task:${input.scheduledTaskId}:webhook:`)
+            )
               return yield* new OrchestratorCommandRejectedError({
                 commandId: input.commandId,
                 commandType: "kin.trigger.unavailable",

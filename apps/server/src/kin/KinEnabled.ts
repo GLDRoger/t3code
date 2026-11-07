@@ -16,7 +16,12 @@ export class KinEnabled extends Context.Service<
 export const layer = Layer.effect(
   KinEnabled,
   Effect.gen(function* () {
-    const enabled = yield* Config.Boolean("KIN_ENABLED").pipe(Config.withDefault(false));
+    const enabled = yield* Config.Boolean("KIN_ENABLED").pipe(
+      Config.withDefault(false),
+      Effect.catch((error) =>
+        Effect.logError("Kin disabled: invalid KIN_ENABLED.", error.message).pipe(Effect.as(false)),
+      ),
+    );
     const reported = yield* Ref.make(false);
     return {
       enabled,
