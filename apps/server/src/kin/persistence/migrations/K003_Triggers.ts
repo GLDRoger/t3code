@@ -6,7 +6,7 @@ export default Effect.gen(function* () {
 
   yield* sql`
     CREATE TABLE kin_triggers (
-      trigger_id TEXT NOT NULL PRIMARY KEY,
+      trigger_id TEXT NOT NULL,
       org_id TEXT NOT NULL REFERENCES kin_orgs(org_id),
       subject_json TEXT NOT NULL,
       schedule_json TEXT NOT NULL,
@@ -16,7 +16,7 @@ export default Effect.gen(function* () {
       last_fire_id TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
-      UNIQUE (org_id, trigger_id)
+      PRIMARY KEY (org_id, trigger_id)
     )
   `;
   yield* sql`
@@ -25,28 +25,29 @@ export default Effect.gen(function* () {
   `;
   yield* sql`
     CREATE TABLE kin_trigger_fires (
-      fire_id TEXT NOT NULL PRIMARY KEY,
+      fire_id TEXT NOT NULL,
       org_id TEXT NOT NULL REFERENCES kin_orgs(org_id),
-      fired_at INTEGER NOT NULL
+      fired_at INTEGER NOT NULL CHECK (fired_at >= 0),
+      PRIMARY KEY (org_id, fire_id)
     )
   `;
   yield* sql`CREATE INDEX idx_kin_trigger_fires_retention ON kin_trigger_fires(fired_at)`;
   yield* sql`
     CREATE TABLE kin_trigger_inbox (
-      fire_id TEXT NOT NULL PRIMARY KEY,
+      fire_id TEXT NOT NULL,
       org_id TEXT NOT NULL REFERENCES kin_orgs(org_id),
       payload_json TEXT NOT NULL,
-      received_at INTEGER NOT NULL,
-      claimed_at INTEGER,
+      received_at INTEGER NOT NULL CHECK (received_at >= 0),
       consumed_at INTEGER,
-      CHECK (consumed_at IS NULL OR claimed_at IS NOT NULL)
+      PRIMARY KEY (org_id, fire_id)
     )
   `;
   yield* sql`
     CREATE INDEX idx_kin_trigger_inbox_pending
     ON kin_trigger_inbox(org_id, received_at, fire_id)
-    WHERE consumed_at IS NULL AND claimed_at IS NULL
+    WHERE consumed_at IS NULL
   `;
+  yield* sql`CREATE INDEX idx_kin_trigger_inbox_retention ON kin_trigger_inbox(consumed_at)`;
   yield* sql`
     CREATE TABLE kin_webhook_sources (
       source_id TEXT NOT NULL PRIMARY KEY,
@@ -78,7 +79,7 @@ export default Effect.gen(function* () {
       org_id TEXT NOT NULL REFERENCES kin_orgs(org_id),
       person TEXT NOT NULL,
       item_id TEXT NOT NULL,
-      day TEXT NOT NULL,
+      day TEXT NOT NULL CHECK (day GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
       pinged_at INTEGER NOT NULL,
       escalated_at INTEGER,
       PRIMARY KEY (org_id, person, item_id, day)

@@ -45,82 +45,88 @@ const seed = Effect.gen(function* () {
 });
 
 describe("KinTriggerInbox", () => {
-  it.effect(
-    "deduplicates puts, claims in receipt order and isolates orgs across consume and recovery",
-    () =>
-      Effect.gen(function* () {
-        yield* seed;
-        const inbox = yield* KinTriggerInbox.KinTriggerInbox;
-        const sql = yield* SqlClient.SqlClient;
-        const a = event("a");
-        const b = event("b");
-        const c = event("c");
-        const other = event("other", orgB);
-        assert.isTrue(yield* inbox.put(c, 30));
-        assert.isTrue(yield* inbox.put(b, 10));
-        assert.isTrue(yield* inbox.put(a, 10));
-        assert.isTrue(yield* inbox.put(other, 0));
-        assert.isFalse(yield* inbox.put({ ...a, lateByMs: 100 }, 0));
-        assert.deepStrictEqual(yield* inbox.list(orgA), [a, b, c]);
-        assert.deepStrictEqual(yield* inbox.list(orgB), [other]);
-        assert.isFalse(yield* inbox.consume(orgA, a.fireId, 40));
-        assert.deepStrictEqual(yield* inbox.claim(orgA, 40, 2), [a, b]);
-        assert.deepStrictEqual(yield* inbox.claim(orgA, 41), [c]);
-        assert.deepStrictEqual(yield* inbox.claim(orgA, 42), []);
-        assert.isFalse(yield* inbox.consume(orgB, a.fireId, 50));
-        assert.isTrue(yield* inbox.consume(orgA, a.fireId, 50));
-        assert.isFalse(yield* inbox.consume(orgA, a.fireId, 51));
-        assert.deepStrictEqual(yield* inbox.claim(orgB, 60), [other]);
-        yield* inbox.requeue(orgA);
-        assert.deepStrictEqual(yield* inbox.list(orgA), [b, c]);
-        assert.deepStrictEqual(yield* inbox.list(orgB), []);
-        assert.deepStrictEqual(yield* inbox.claim(orgB, 61), []);
-        const claims = yield* Effect.all([inbox.claim(orgA, 70, 1), inbox.claim(orgA, 70, 1)], {
-          concurrency: "unbounded",
-        });
-        assert.deepStrictEqual(
-          claims
-            .flat()
-            .map((row) => String(row.fireId))
-            .sort(),
-          ["b", "c"],
-        );
-        assert.deepStrictEqual(
-          yield* sql`
-      SELECT fire_id, org_id, received_at, claimed_at, consumed_at FROM kin_trigger_inbox ORDER BY fire_id
-    `,
-          [
-            { fire_id: "a", org_id: orgA, received_at: 10, claimed_at: 40, consumed_at: 50 },
-            { fire_id: "b", org_id: orgA, received_at: 10, claimed_at: 70, consumed_at: null },
-            { fire_id: "c", org_id: orgA, received_at: 30, claimed_at: 70, consumed_at: null },
-            { fire_id: "other", org_id: orgB, received_at: 0, claimed_at: 60, consumed_at: null },
-          ],
-        );
-        assert.isFalse(yield* inbox.put(a, 80));
-        assert.isTrue(Exit.isFailure(yield* Effect.exit(inbox.claim(orgA, 90, -1))));
-      }).pipe(Effect.provide(layer)),
-  );
-
-  it.effect("rolls back every claim in the batch when an update fails", () =>
+  it.effect("deduplicates per org and replays pending rows until consumption commits", () =>
     Effect.gen(function* () {
       yield* seed;
       const inbox = yield* KinTriggerInbox.KinTriggerInbox;
       const sql = yield* SqlClient.SqlClient;
       const a = event("a");
       const b = event("b");
-      yield* inbox.put(a, 1);
-      yield* inbox.put(b, 2);
-      yield* sql`
-      CREATE TRIGGER reject_claim BEFORE UPDATE OF claimed_at ON kin_trigger_inbox
-      WHEN NEW.fire_id = 'b'
-      BEGIN SELECT RAISE(ABORT, 'claim unavailable'); END
-    `;
-      assert.isTrue(Exit.isFailure(yield* Effect.exit(inbox.claim(orgA, 10))));
-      assert.deepStrictEqual(yield* inbox.list(orgA), [a, b]);
-      assert.deepStrictEqual(yield* sql`SELECT claimed_at FROM kin_trigger_inbox`, [
-        { claimed_at: null },
-        { claimed_at: null },
-      ]);
+      const other = event("a", orgB);
+      assert.isTrue(yield* inbox.put(b, 20));
+      assert.isTrue(yield* inbox.put(a, 10));
+      assert.isTrue(yield* inbox.put(other, 0));
+      assert.isFalse(yield* inbox.put(a, 0));
+      assert.deepStrictEqual(yield* inbox.listPending(orgA, 1), [a]);
+      assert.deepStrictEqual(yield* inbox.listPending(orgA), [a, b]);
+      assert.deepStrictEqual(yield* inbox.listPending(orgA), [a, b]);
+      assert.deepStrictEqual(yield* inbox.listPending(orgB), [other]);
+      const plan = yield* sql<{ detail: string }>`EXPLAIN QUERY PLAN
+        SELECT payload_json FROM kin_trigger_inbox
+        WHERE org_id = ${orgA} AND consumed_at IS NULL ORDER BY received_at, fire_id LIMIT 100`;
+      assert.isTrue(plan.some((row) => row.detail.includes("idx_kin_trigger_inbox_pending")));
+      assert.isFalse(plan.some((row) => row.detail.includes("TEMP B-TREE")));
+      yield* sql`CREATE TRIGGER reject_consume BEFORE UPDATE OF consumed_at ON kin_trigger_inbox
+        WHEN NEW.fire_id = 'b' BEGIN SELECT RAISE(ABORT, 'unavailable'); END`;
+      assert.isTrue(
+        Exit.isFailure(yield* Effect.exit(inbox.markConsumed(orgA, [a.fireId, b.fireId]))),
+      );
+      assert.deepStrictEqual(yield* inbox.listPending(orgA), [a, b]);
+      yield* sql`DROP TRIGGER reject_consume`;
+      yield* inbox.markConsumed(orgA, [a.fireId, b.fireId]);
+      yield* inbox.markConsumed(orgA, [a.fireId]);
+      assert.deepStrictEqual(yield* inbox.listPending(orgA), []);
+      assert.deepStrictEqual(yield* inbox.listPending(orgB), [other]);
+      assert.isFalse(yield* inbox.put(a, 100));
+      const consumed = yield* sql<{
+        consumed_at: number;
+      }>`SELECT consumed_at FROM kin_trigger_inbox WHERE org_id = ${orgA}`;
+      const at = consumed[0]!.consumed_at;
+      const retention = 7 * 24 * 60 * 60 * 1000;
+      assert.strictEqual(yield* inbox.pruneConsumed(at + retention), 0);
+      assert.strictEqual(yield* inbox.pruneConsumed(at + retention + 1), 2);
+      assert.deepStrictEqual(yield* inbox.listPending(orgB), [other]);
+      const cleanupPlan = yield* sql<{ detail: string }>`EXPLAIN QUERY PLAN
+        DELETE FROM kin_trigger_inbox WHERE consumed_at < ${at}`;
+      assert.isTrue(
+        cleanupPlan.some((row) => row.detail.includes("idx_kin_trigger_inbox_retention")),
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("rejects invalid numbers and SQL constraints rather than reporting duplicates", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const inbox = yield* KinTriggerInbox.KinTriggerInbox;
+      const sql = yield* SqlClient.SqlClient;
+      const a = event("a");
+      for (const invalid of [NaN, 1.5, Infinity, -1, Number.MAX_SAFE_INTEGER + 1]) {
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(inbox.put(a, invalid))));
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(inbox.pruneConsumed(invalid))));
+      }
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(inbox.listPending(orgA, -1))));
+      for (const invalid of [
+        "1",
+        "2026-11-07",
+        "Nov 7 2026",
+        "2026-11-07 00:00",
+        "2026-11-07T00:00:00",
+      ]) {
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(inbox.put({ ...a, dueAt: invalid }, 0))));
+      }
+      for (const query of [
+        sql`CREATE TRIGGER reject_inbox BEFORE INSERT ON kin_trigger_inbox BEGIN
+          INSERT INTO kin_trigger_inbox (org_id, fire_id, payload_json, received_at)
+          VALUES (NEW.org_id, 'invalid', '{}', -1); END`,
+        sql`CREATE TRIGGER reject_inbox BEFORE INSERT ON kin_trigger_inbox BEGIN
+          INSERT INTO kin_trigger_inbox (org_id, fire_id, payload_json, received_at)
+          VALUES (NEW.org_id, 'invalid', NULL, 0); END`,
+      ]) {
+        yield* query;
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(inbox.put(a, 0))));
+        assert.deepStrictEqual(yield* inbox.listPending(orgA), []);
+        yield* sql`DROP TRIGGER reject_inbox`;
+      }
     }).pipe(Effect.provide(layer)),
   );
 });

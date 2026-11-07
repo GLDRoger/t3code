@@ -84,17 +84,30 @@ describe("KinTriggerStore", () => {
       assert.deepStrictEqual(yield* store.list(orgA), [value]);
       assert.deepStrictEqual(yield* store.list(orgB), []);
       assert.isUndefined(yield* store.get(orgB, value.id));
-      for (const field of ["nextRunAt", "createdAt", "updatedAt"] as const) {
-        const error = yield* Effect.flip(store.put({ ...value, [field]: "not-a-date" }));
-        assert.strictEqual(error._tag, "PersistenceDecodeError");
-        assert.deepStrictEqual(yield* store.get(orgA, value.id), value);
+      for (const invalid of [
+        "not-a-date",
+        "1",
+        "2026-11-07",
+        "Nov 7 2026",
+        "2026-11-07 00:00",
+        "2026-11-07T00:00:00",
+      ]) {
+        for (const field of ["nextRunAt", "createdAt", "updatedAt"] as const) {
+          const error = yield* Effect.flip(store.put({ ...value, [field]: invalid }));
+          assert.strictEqual(error._tag, "PersistenceDecodeError");
+          assert.deepStrictEqual(yield* store.get(orgA, value.id), value);
+        }
       }
       yield* store.delete(orgB, value.id);
       const changed = { ...value, enabled: false };
       yield* store.put(changed);
       assert.deepStrictEqual(yield* store.list(orgA), [changed]);
       assert.deepStrictEqual(yield* sql`SELECT org_id FROM kin_triggers`, [{ org_id: orgA }]);
-      assert.isTrue(Exit.isFailure(yield* Effect.exit(store.put({ ...value, orgId: orgB }))));
+      yield* store.put({ ...value, orgId: orgB });
+      assert.deepStrictEqual(yield* store.get(orgB, value.id), { ...value, orgId: orgB });
+      yield* store.put({ ...changed, createdAt: "2026-11-08T00:00:00.000Z" });
+      assert.strictEqual((yield* store.get(orgA, value.id))?.createdAt, timestamp);
+      yield* store.delete(orgB, value.id);
       assert.deepStrictEqual(yield* store.list(orgA), [changed]);
       yield* store.delete(orgA, value.id);
       assert.deepStrictEqual(yield* store.list(orgA), []);
@@ -107,7 +120,7 @@ describe("KinTriggerStore", () => {
       const store = yield* KinTriggerStore.KinTriggerStore;
       for (const [id, nextRunAt, enabled, orgId] of [
         ["past", "2026-11-06T23:59:59.999Z", true, orgA],
-        ["boundary", "2026-11-07T05:30:00.000+05:30", true, orgB],
+        ["boundary", timestamp, true, orgB],
         ["future", "2026-11-07T00:00:00.001Z", true, orgA],
         ["disabled", timestamp, false, orgA],
         ["cleared", null, true, orgA],
@@ -121,9 +134,21 @@ describe("KinTriggerStore", () => {
         [now + 1, ["past", "boundary", "future"]],
       ] as const) {
         assert.deepStrictEqual(
-          (yield* store.listDue(time)).map((row) => String(row.id)),
+          (yield* store.listDue(time, 100)).map((row) => String(row.id)),
           [...ids],
         );
+      }
+      const sql = yield* SqlClient.SqlClient;
+      yield* store.put(trigger("corrupt"));
+      yield* sql`UPDATE kin_triggers SET schedule_json = 'bad' WHERE org_id = ${orgA} AND trigger_id = 'corrupt'`;
+      assert.deepStrictEqual(
+        (yield* store.listDue(now, 100)).map((row) => String(row.id)),
+        ["past", "boundary"],
+      );
+      assert.lengthOf(yield* store.listDue(now, 1), 1);
+      for (const invalid of [NaN, 1.5, Infinity, -1, Number.MAX_SAFE_INTEGER + 1]) {
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(store.listDue(invalid, 100))));
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(store.pruneFires(invalid))));
       }
     }).pipe(Effect.provide(layer)),
   );
@@ -152,15 +177,29 @@ describe("KinTriggerStore", () => {
         assert.strictEqual(after?.lastFireId, event.fireId);
         assert.strictEqual(yield* store.fire(event, "2026-11-08T00:00:00.000Z"), "duplicate");
         assert.deepStrictEqual(yield* store.get(orgA, value.id), after);
+        yield* store.put(scheduled);
+        assert.strictEqual(yield* store.fire(event, next), "duplicate");
+        assert.isFalse((yield* store.listDue(now, 100)).some((row) => row.id === value.id));
+        assert.isTrue(
+          Exit.isFailure(
+            yield* Effect.exit(store.fire({ ...event, fireId: decodeFireId("arbitrary") }, next)),
+          ),
+        );
+        yield* store.put({ ...scheduled, orgId: orgB });
+        assert.strictEqual(yield* store.fire({ ...event, orgId: orgB }, next), "fired");
       }
-      assert.lengthOf(yield* inbox.list(orgA), 2);
+      assert.lengthOf(yield* inbox.listPending(orgA), 2);
       assert.deepStrictEqual(yield* sql`SELECT org_id, fired_at FROM kin_trigger_fires`, [
         { org_id: orgA, fired_at: now },
+        { org_id: orgB, fired_at: now },
         { org_id: orgA, fired_at: now },
+        { org_id: orgB, fired_at: now },
       ]);
       assert.deepStrictEqual(yield* sql`SELECT org_id, received_at FROM kin_trigger_inbox`, [
         { org_id: orgA, received_at: now },
+        { org_id: orgB, received_at: now },
         { org_id: orgA, received_at: now },
+        { org_id: orgB, received_at: now },
       ]);
     }).pipe(Effect.provide(layer)),
   );
@@ -172,6 +211,19 @@ describe("KinTriggerStore", () => {
       const sql = yield* SqlClient.SqlClient;
       const value = trigger();
       yield* store.put(value);
+      for (const reject of [
+        sql`CREATE TRIGGER reject_fire BEFORE INSERT ON kin_trigger_fires BEGIN
+          INSERT INTO kin_trigger_fires (org_id, fire_id, fired_at) VALUES (NEW.org_id, 'invalid', -1); END`,
+        sql`CREATE TRIGGER reject_fire BEFORE INSERT ON kin_trigger_fires BEGIN
+          INSERT INTO kin_trigger_fires (org_id, fire_id, fired_at) VALUES (NEW.org_id, 'invalid', NULL); END`,
+      ]) {
+        yield* reject;
+        const error = yield* Effect.flip(store.fire(fire(value), null));
+        assert.strictEqual(error._tag, "PersistenceSqlError");
+        assert.deepStrictEqual(yield* sql`SELECT * FROM kin_trigger_fires`, []);
+        assert.deepStrictEqual(yield* store.get(orgA, value.id), value);
+        yield* sql`DROP TRIGGER reject_fire`;
+      }
       for (const reject of [
         sql`CREATE TRIGGER reject_inbox BEFORE INSERT ON kin_trigger_inbox
             BEGIN SELECT RAISE(ABORT, 'inbox unavailable'); END`,
@@ -222,28 +274,34 @@ describe("KinTriggerStore", () => {
       }).pipe(Effect.provide(layer)),
   );
 
-  it.effect(
-    "prunes fires strictly older than 30 days without deleting inbox work or allowing a replay",
-    () =>
-      Effect.gen(function* () {
-        yield* seed;
-        const store = yield* KinTriggerStore.KinTriggerStore;
-        const sql = yield* SqlClient.SqlClient;
-        const value = trigger();
-        yield* store.put(value);
-        const event = fire(value);
-        assert.strictEqual(yield* store.fire(event, null), "fired");
-        const retention = 30 * 24 * 60 * 60 * 1000;
-        assert.strictEqual(yield* store.pruneFires(now + retention), 0);
-        yield* sql`INSERT INTO kin_trigger_fires (fire_id, org_id, fired_at) VALUES ('newer', ${orgB}, ${now + 1})`;
-        assert.strictEqual(yield* store.pruneFires(now + retention + 1), 1);
-        assert.deepStrictEqual(yield* sql`SELECT fire_id, org_id FROM kin_trigger_fires`, [
-          { fire_id: "newer", org_id: orgB },
-        ]);
-        assert.lengthOf(yield* sql`SELECT * FROM kin_trigger_inbox`, 1);
-        assert.strictEqual(yield* store.fire(event, timestamp), "duplicate");
-        assert.isNull((yield* store.get(orgA, value.id))?.nextRunAt);
-      }).pipe(Effect.provide(layer)),
+  it.effect("prunes fires after 30 days while pending inbox rows still deduplicate", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const store = yield* KinTriggerStore.KinTriggerStore;
+      const sql = yield* SqlClient.SqlClient;
+      const value = trigger();
+      yield* store.put(value);
+      const event = fire(value);
+      assert.strictEqual(yield* store.fire(event, null), "fired");
+      const retention = 30 * 24 * 60 * 60 * 1000;
+      assert.strictEqual(yield* store.pruneFires(now + retention), 0);
+      yield* sql`INSERT INTO kin_trigger_fires (fire_id, org_id, fired_at) VALUES ('newer', ${orgB}, ${now + 1})`;
+      assert.strictEqual(yield* store.pruneFires(now + retention + 1), 1);
+      assert.deepStrictEqual(yield* sql`SELECT fire_id, org_id FROM kin_trigger_fires`, [
+        { fire_id: "newer", org_id: orgB },
+      ]);
+      assert.lengthOf(yield* sql`SELECT * FROM kin_trigger_inbox`, 1);
+      assert.strictEqual(yield* store.fire(event, timestamp), "duplicate");
+      assert.isNull((yield* store.get(orgA, value.id))?.nextRunAt);
+      const inbox = yield* KinTriggerInbox.KinTriggerInbox;
+      yield* inbox.markConsumed(orgA, [event.fireId]);
+      assert.strictEqual(yield* inbox.pruneConsumed(now + retention + 1), 1);
+      assert.deepStrictEqual(yield* sql`SELECT * FROM kin_trigger_inbox`, []);
+      assert.isTrue(isFireConflict(yield* Effect.flip(store.fire(event, timestamp))));
+      assert.deepStrictEqual(yield* sql`SELECT fire_id FROM kin_trigger_fires`, [
+        { fire_id: "newer" },
+      ]);
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect(

@@ -1,5 +1,7 @@
-import { KinOrgId, KinTriggerFireId, KinTriggerFired } from "@t3tools/contracts";
+import { KinOrgId, KinTriggerFireId, KinTriggerFired, NonNegativeInt } from "@t3tools/contracts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -13,7 +15,9 @@ import {
 } from "../../persistence/Errors.ts";
 
 const encodeFire = Schema.encodeEffect(Schema.fromJsonString(KinTriggerFired));
-
+const decodeMillis = Schema.decodeEffect(NonNegativeInt);
+const decodeIds = Schema.decodeEffect(Schema.Array(KinTriggerFireId));
+const decodeOrg = Schema.decodeEffect(KinOrgId);
 type InboxError = PersistenceSqlError | PersistenceDecodeError;
 const PendingRequest = Schema.Struct({
   orgId: KinOrgId,
@@ -28,28 +32,23 @@ export class KinTriggerInbox extends Context.Service<
       event: KinTriggerFired,
       receivedAt: number,
     ) => Effect.Effect<boolean, InboxError>;
-    readonly list: (
+    readonly listPending: (
       orgId: KinOrgId,
       limit?: number,
     ) => Effect.Effect<ReadonlyArray<KinTriggerFired>, InboxError>;
-    readonly claim: (
+    readonly markConsumed: (
       orgId: KinOrgId,
-      now: number,
-      limit?: number,
-    ) => Effect.Effect<ReadonlyArray<KinTriggerFired>, InboxError>;
-    readonly consume: (
-      orgId: KinOrgId,
-      fireId: KinTriggerFireId,
-      now: number,
-    ) => Effect.Effect<boolean, InboxError>;
-    readonly requeue: (orgId: KinOrgId) => Effect.Effect<void, InboxError>;
+      fireIds: ReadonlyArray<KinTriggerFireId>,
+    ) => Effect.Effect<void, InboxError>;
+    readonly pruneConsumed: (now: number) => Effect.Effect<number, InboxError>;
   }
 >()("t3/kin/triggers/KinTriggerInbox") {}
 
-function toInboxError(cause: unknown): InboxError {
-  return Schema.isSchemaError(cause)
-    ? PersistenceDecodeError.fromSchemaError("KinTriggerInbox.decode", cause)
-    : toPersistenceSqlError("KinTriggerInbox.query")(cause);
+function toInboxError(operation: string) {
+  return (cause: unknown): InboxError =>
+    Schema.isSchemaError(cause)
+      ? PersistenceDecodeError.fromSchemaError(operation, cause)
+      : toPersistenceSqlError(operation)(cause);
 }
 
 const make = Effect.gen(function* () {
@@ -59,53 +58,57 @@ const make = Effect.gen(function* () {
     Result: InboxRow,
     execute: ({ orgId, limit }) => sql`
       SELECT payload_json AS payload FROM kin_trigger_inbox
-      WHERE org_id = ${orgId} AND consumed_at IS NULL AND claimed_at IS NULL
+      WHERE org_id = ${orgId} AND consumed_at IS NULL
       ORDER BY received_at, fire_id LIMIT ${limit}
     `,
   });
 
   return KinTriggerInbox.of({
-    put: Effect.fn("KinTriggerInbox.put")(function* (event, receivedAt) {
-      const payload = yield* encodeFire(event);
-      const inserted = yield* sql`
-        INSERT OR IGNORE INTO kin_trigger_inbox (fire_id, org_id, payload_json, received_at)
-        VALUES (${event.fireId}, ${event.orgId}, ${payload}, ${receivedAt}) RETURNING fire_id
+    put: Effect.fn("KinTriggerInbox.put")(
+      function* (event, receivedAt) {
+        const payload = yield* encodeFire(event);
+        const at = yield* decodeMillis(receivedAt);
+        const inserted = yield* sql`
+        INSERT INTO kin_trigger_inbox (fire_id, org_id, payload_json, received_at)
+        VALUES (${event.fireId}, ${event.orgId}, ${payload}, ${at})
+        ON CONFLICT (org_id, fire_id) DO NOTHING RETURNING fire_id
       `;
-      return inserted.length === 1;
-    }, Effect.mapError(toInboxError)),
-    list: Effect.fn("KinTriggerInbox.list")(function* (orgId, limit = 100) {
-      return (yield* pending({ orgId, limit })).map((row) => row.payload);
-    }, Effect.mapError(toInboxError)),
-    claim: Effect.fn("KinTriggerInbox.claim")(function* (orgId, now, limit = 100) {
-      return yield* sql.withTransaction(
-        Effect.gen(function* () {
-          const rows = yield* pending({ orgId, limit });
-          for (const { payload } of rows) {
-            yield* sql`
-            UPDATE kin_trigger_inbox SET claimed_at = ${now}
-            WHERE org_id = ${orgId} AND fire_id = ${payload.fireId}
-              AND consumed_at IS NULL AND claimed_at IS NULL
-          `;
-          }
-          return rows.map((row) => row.payload);
-        }),
-      );
-    }, Effect.mapError(toInboxError)),
-    consume: Effect.fn("KinTriggerInbox.consume")(function* (orgId, fireId, now) {
-      const rows = yield* sql`
+        return inserted.length === 1;
+      },
+      Effect.mapError(toInboxError("KinTriggerInbox.put")),
+    ),
+    listPending: Effect.fn("KinTriggerInbox.listPending")(
+      function* (orgId, limit = 100) {
+        return (yield* pending({ orgId, limit }).pipe(NodeSqliteClient.readOnly)).map(
+          (row) => row.payload,
+        );
+      },
+      Effect.mapError(toInboxError("KinTriggerInbox.listPending")),
+    ),
+    markConsumed: Effect.fn("KinTriggerInbox.markConsumed")(
+      function* (orgId, fireIds) {
+        yield* decodeOrg(orgId);
+        const ids = yield* decodeIds(fireIds);
+        if (ids.length === 0) return;
+        const now = DateTime.toEpochMillis(yield* DateTime.now);
+        yield* sql.withTransaction(sql`
         UPDATE kin_trigger_inbox SET consumed_at = ${now}
-        WHERE org_id = ${orgId} AND fire_id = ${fireId}
-          AND consumed_at IS NULL AND claimed_at IS NOT NULL
+        WHERE org_id = ${orgId} AND ${sql.in("fire_id", ids)} AND consumed_at IS NULL
+      `);
+      },
+      Effect.mapError(toInboxError("KinTriggerInbox.markConsumed")),
+    ),
+    pruneConsumed: Effect.fn("KinTriggerInbox.pruneConsumed")(
+      function* (now) {
+        const at = yield* decodeMillis(now);
+        const rows = yield* sql`
+        DELETE FROM kin_trigger_inbox WHERE consumed_at < ${at - 7 * 24 * 60 * 60 * 1000}
         RETURNING fire_id
       `;
-      return rows.length === 1;
-    }, Effect.mapError(toInboxError)),
-    requeue: Effect.fn("KinTriggerInbox.requeue")(function* (orgId) {
-      yield* sql`
-        UPDATE kin_trigger_inbox SET claimed_at = NULL
-        WHERE org_id = ${orgId} AND consumed_at IS NULL AND claimed_at IS NOT NULL
-      `;
-    }, Effect.mapError(toInboxError)),
+        return rows.length;
+      },
+      Effect.mapError(toInboxError("KinTriggerInbox.pruneConsumed")),
+    ),
   });
 });
 

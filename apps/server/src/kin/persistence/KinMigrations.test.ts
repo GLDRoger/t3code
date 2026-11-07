@@ -24,6 +24,7 @@ const tableNames = [
   "kin_org_state",
   "kin_orgs",
   "kin_people",
+  "kin_ping_ledger",
   "kin_read_state",
   "kin_session_bindings",
   "kin_shadow_entries",
