@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import { KinAgentId, KinEvent, KinEventId, KinOrgId } from "@t3tools/contracts";
+import { KinAgentId, KinEvent, KinEventId, KinOrgId, KinWakeupId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -32,6 +32,8 @@ const seed = Effect.fn("test.seed")(function* (org = "a", agent = `lead-${org}`)
     VALUES (${`chat-${agent}`}, ${org}, 'team_group', 0, '2026-11-07T00:00:00.000Z')`;
   yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
     VALUES (${`member-${agent}`}, ${org}, ${`chat-${agent}`}, 'person', ${`person-${agent}`}, 'owner', '2026-11-07T00:00:00.000Z')`;
+  yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+    VALUES (${`agent-member-${agent}`}, ${org}, ${`chat-${agent}`}, 'agent', ${agent}, 'member', '2026-11-07T00:00:00.000Z')`;
   yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
     VALUES (${agent}, ${org}, 'Lead', 0, '{}', '[]', ${`chat-${agent}`})`;
 });
@@ -49,7 +51,7 @@ const event = Effect.fn("test.event")(function* (
     orgId: org,
     agentId: agent,
     receivedAt: DateTime.formatIso(DateTime.makeUnsafe(now)),
-    dedupeKey: tag === "github" ? `wrong-${id}` : id,
+    dedupeKey: tag === "github" ? null : id,
     provenance:
       tag === "chat.message" || tag === "widget.action"
         ? { _tag: "human", personId: `person-${agent}`, memberId: `member-${agent}` }
@@ -87,15 +89,17 @@ const event = Effect.fn("test.event")(function* (
 const input = (wakeupId: string, org = "a", agent = `lead-${org}`) => ({
   orgId: KinOrgId.make(org),
   agentId: KinAgentId.make(agent),
-  wakeupId,
+  wakeupId: KinWakeupId.make(wakeupId),
   model: "test-model",
 });
 
-const finish = Effect.fn("test.finish")(function* (wakeupId: string) {
-  const sql = yield* SqlClient.SqlClient;
-  const now = yield* Clock.currentTimeMillis;
-  yield* sql`UPDATE kin_events SET state = 'done' WHERE wakeup_id = ${wakeupId}`;
-  yield* sql`UPDATE kin_wakeups SET status = 'completed', ended_at = ${now} WHERE wakeup_id = ${wakeupId}`;
+const finish = Effect.fn("test.finish")(function* (wakeupId: string, org = "a") {
+  const queue = yield* KinEventQueue.KinEventQueue;
+  yield* queue.finish({
+    orgId: KinOrgId.make(org),
+    wakeupId: KinWakeupId.make(wakeupId),
+    status: "completed",
+  });
 });
 
 describe("KinEventQueue", () => {
@@ -104,7 +108,10 @@ describe("KinEventQueue", () => {
       yield* seed();
       const queue = yield* KinEventQueue.KinEventQueue;
       const sql = yield* SqlClient.SqlClient;
-      yield* queue.enqueue(yield* event("first"));
+      yield* queue.enqueue({
+        ...(yield* event("first")),
+        receivedAt: DateTime.makeUnsafe(-600_000),
+      });
       const first = yield* Effect.scoped(queue.claim(input("first-batch"))).pipe(Effect.forkChild);
       yield* TestClock.adjust("10 seconds");
       yield* queue.enqueue(yield* event("second"));
@@ -181,10 +188,48 @@ describe("KinEventQueue", () => {
           ...forged,
           agentId: KinAgentId.make("lead-a"),
         });
-        assert.deepStrictEqual(yield* sql`SELECT priority FROM kin_events WHERE state = 'queued'`, [
-          { priority: "P2" },
-          { priority: "P2" },
-        ]);
+        assert.deepStrictEqual(
+          yield* sql`SELECT priority FROM kin_events WHERE state = 'queued' ORDER BY event_id`,
+          [{ priority: "P2" }, { priority: "P2" }],
+        );
+        yield* seed("a", "lead-a2");
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+          VALUES ('group-owner', 'a', 'chat-lead-a', 'person', 'person-lead-a2', 'owner', '2026-11-07T00:00:00.000Z')`;
+        const owner = yield* event("owner", "chat.message");
+        for (const [id, role, personLeft, agentLeft] of [
+          ["guest", "guest", false, false],
+          ["member-again", "member", false, false],
+          ["left", "owner", true, false],
+          ["lead-left", "owner", false, true],
+        ] as const) {
+          yield* sql`UPDATE kin_chat_members SET role = ${role}, left_at = ${personLeft ? "2026-11-07T00:00:00.000Z" : null}
+            WHERE member_id = 'member-lead-a'`;
+          yield* sql`UPDATE kin_chat_members SET left_at = ${agentLeft ? "2026-11-07T00:00:00.000Z" : null}
+            WHERE member_id = 'agent-member-lead-a'`;
+          yield* queue.enqueue({ ...owner, eventId: KinEventId.make(id), dedupeKey: id });
+        }
+        yield* sql`UPDATE kin_chat_members SET left_at = NULL WHERE member_id = 'agent-member-lead-a'`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+          VALUES ('owner-other-chat', 'a', 'chat-lead-a2', 'person', 'person-lead-a', 'owner', '2026-11-07T00:00:00.000Z')`;
+        for (const [id, chatId, memberId, personId] of [
+          ["group-owner", "chat-lead-a", "group-owner", "person-lead-a2"],
+          ["other-chat", "chat-lead-a2", "owner-other-chat", "person-lead-a"],
+        ]) {
+          yield* queue.enqueue(
+            yield* decodeEvent({
+              ...owner,
+              receivedAt: DateTime.formatIso(owner.receivedAt),
+              eventId: id,
+              dedupeKey: id,
+              chatId,
+              provenance: { _tag: "human", personId, memberId },
+            }),
+          );
+        }
+        assert.deepStrictEqual(
+          yield* sql`SELECT event_id FROM kin_events WHERE priority != 'P2' AND state = 'queued' ORDER BY event_id`,
+          [],
+        );
       }).pipe(Effect.provide(layer)),
   );
 
@@ -199,12 +244,37 @@ describe("KinEventQueue", () => {
         for (const tag of ["github", "routine"]) {
           const original = yield* event(tag, tag);
           assert.isFalse((yield* queue.enqueue(original)).duplicate);
-          assert.isTrue(
-            (yield* queue.enqueue({
+          const replay = yield* queue.enqueue({
+            ...original,
+            eventId: KinEventId.make(`${tag}-replay`),
+          });
+          assert.isTrue(replay.duplicate);
+          assert.strictEqual(replay.event.eventId, original.eventId);
+          const retried = yield* queue.enqueue(original);
+          assert.strictEqual(retried.event.eventId, original.eventId);
+          for (const changed of [
+            { ...original, dedupeKey: "different" },
+            { ...original, receivedAt: DateTime.makeUnsafe(1) },
+            { ...original, agentId: KinAgentId.make("lead-b") },
+            { ...(yield* event(tag, "watchdog")), dedupeKey: original.dedupeKey },
+            {
               ...original,
-              eventId: KinEventId.make(`${tag}-replay`),
-            })).duplicate,
-          );
+              eventId: KinEventId.make(`${tag}-conflict`),
+              receivedAt: DateTime.makeUnsafe(1),
+            },
+          ]) {
+            const conflict = yield* queue.enqueue(changed).pipe(Effect.flip);
+            assert.instanceOf(conflict, KinEventQueue.KinEventQueueConflict);
+          }
+          if (original._tag === "github") {
+            const differentPayload = yield* queue
+              .enqueue({ ...original, summary: "Changed push" })
+              .pipe(Effect.flip);
+            assert.instanceOf(differentPayload, KinEventQueue.KinEventQueueConflict);
+            assert.isTrue(
+              (yield* queue.enqueue({ ...original, dedupeKey: original.deliveryId })).duplicate,
+            );
+          }
           assert.isFalse(
             (yield* queue.enqueue({
               ...original,
@@ -249,6 +319,19 @@ describe("KinEventQueue", () => {
             (yield* queue.enqueue({ ...(yield* event(id, "routine")), dedupeKey: null })).duplicate,
           );
         }
+        const noKey = { ...(yield* event("without-key-1", "routine")), dedupeKey: null };
+        const retriedNoKey = yield* queue.enqueue(noKey);
+        assert.isTrue(retriedNoKey.duplicate);
+        assert.deepStrictEqual(retriedNoKey.event, noKey);
+        const github = yield* event("invalid-key");
+        const invalidKey = yield* queue
+          .enqueue({ ...github, dedupeKey: "mismatch" })
+          .pipe(Effect.flip);
+        assert.instanceOf(invalidKey, KinEventQueue.KinEventQueueConflict);
+        const foreign = yield* queue
+          .enqueue({ ...noKey, orgId: KinOrgId.make("b"), agentId: KinAgentId.make("lead-b") })
+          .pipe(Effect.flip);
+        assert.instanceOf(foreign, KinEventQueue.KinEventQueueUnknownEvent);
         yield* sql`UPDATE kin_events SET json = 'invalid-json' WHERE event_id = 'routine'`;
         yield* TestClock.adjust("20 seconds");
         const failedClaim = yield* Effect.scoped(queue.claim(input("invalid-batch"))).pipe(
@@ -263,34 +346,111 @@ describe("KinEventQueue", () => {
       }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("holds deferred events until eligible without delaying ready events", () =>
+  it.effect("holds pause and partial budget deferrals without consuming provider attempts", () =>
     Effect.gen(function* () {
       yield* seed();
       const queue = yield* KinEventQueue.KinEventQueue;
       const sql = yield* SqlClient.SqlClient;
       yield* queue.enqueue(yield* event("deferred"));
-      yield* sql`UPDATE kin_events SET not_before = 60000 WHERE event_id = 'deferred'`;
       yield* queue.enqueue(yield* event("ready"));
-      const first = yield* Effect.scoped(queue.claim(input("ready-batch"))).pipe(Effect.forkChild);
       yield* TestClock.adjust("20 seconds");
-      assert.deepStrictEqual(
-        (yield* Fiber.join(first)).map((entry) => entry.eventId),
-        ["ready"],
+      yield* Effect.scoped(queue.claim(input("admission")));
+      assert.strictEqual(
+        yield* queue.release({ ...input("admission", "b"), countAttempt: false }),
+        0,
       );
-      yield* finish("ready-batch");
+      assert.strictEqual(
+        yield* queue.release({
+          ...input("admission"),
+          eventIds: [KinEventId.make("deferred")],
+          notBefore: 60_000,
+          countAttempt: false,
+        }),
+        1,
+      );
+      assert.deepStrictEqual(yield* sql`SELECT status FROM kin_wakeups ORDER BY wakeup_id`, [
+        { status: "running" },
+      ]);
+      yield* finish("admission");
       const later = yield* Effect.scoped(queue.claim(input("deferred-batch"))).pipe(
         Effect.forkChild,
       );
       yield* TestClock.adjust("39 seconds");
       assert.deepStrictEqual(
-        yield* sql`SELECT state, not_before FROM kin_events WHERE event_id = 'deferred'`,
-        [{ state: "queued", not_before: 60000 }],
+        yield* sql`SELECT state, not_before, attempts FROM kin_events WHERE event_id = 'deferred'`,
+        [{ state: "queued", not_before: 60000, attempts: 0 }],
       );
       yield* TestClock.adjust("1 second");
       assert.deepStrictEqual(
         (yield* Fiber.join(later)).map((entry) => entry.eventId),
         ["deferred"],
       );
+      yield* queue.release({ ...input("deferred-batch"), notBefore: 120_000, countAttempt: false });
+      assert.deepStrictEqual(
+        yield* sql`SELECT status FROM kin_wakeups WHERE wakeup_id = 'deferred-batch'`,
+        [{ status: "released" }],
+      );
+      const paused = yield* Effect.scoped(queue.claim(input("unpaused"))).pipe(Effect.forkChild);
+      yield* TestClock.adjust("59 seconds");
+      assert.isUndefined(paused.pollUnsafe());
+      yield* TestClock.adjust("1 second");
+      assert.deepStrictEqual(
+        (yield* Fiber.join(paused)).map((entry) => entry.eventId),
+        ["deferred"],
+      );
+      yield* finish("unpaused");
+      assert.deepStrictEqual(yield* sql`SELECT state, attempts FROM kin_events ORDER BY event_id`, [
+        { state: "done", attempts: 0 },
+        { state: "done", attempts: 0 },
+      ]);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("retries failed provider runs after five minutes and fails the third attempt", () =>
+    Effect.gen(function* () {
+      yield* seed();
+      const queue = yield* KinEventQueue.KinEventQueue;
+      const sql = yield* SqlClient.SqlClient;
+      for (const mode of ["release", "failed", "timed_out"] as const) {
+        const id = `failure-${mode}`;
+        yield* queue.enqueue(yield* event(id));
+        yield* TestClock.adjust("20 seconds");
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          const claimInput = input(`${id}-${attempt}`);
+          yield* Effect.scoped(queue.claim(claimInput));
+          yield* queue.finish({ ...claimInput, orgId: KinOrgId.make("b"), status: "completed" });
+          const failed =
+            mode === "release"
+              ? queue.release({ ...claimInput, countAttempt: true })
+              : queue.finish({ ...claimInput, status: mode });
+          yield* failed;
+          yield* failed;
+          const now = yield* Clock.currentTimeMillis;
+          assert.deepStrictEqual(
+            yield* sql`SELECT state, attempts, not_before FROM kin_events WHERE event_id = ${id}`,
+            [
+              {
+                state: attempt === 3 ? "failed" : "queued",
+                attempts: attempt,
+                not_before: now + 300_000,
+              },
+            ],
+          );
+          if (attempt < 3) {
+            const retry = yield* Effect.scoped(queue.claim(input(`${id}-early-${attempt}`))).pipe(
+              Effect.forkChild,
+            );
+            yield* TestClock.adjust("299 seconds");
+            assert.isUndefined(retry.pollUnsafe());
+            yield* Fiber.interrupt(retry);
+            yield* TestClock.adjust("1 second");
+          }
+        }
+      }
+      const invalid = yield* Effect.scoped(queue.claim({ ...input("invalid"), model: " " })).pipe(
+        Effect.flip,
+      );
+      assert.strictEqual(invalid._tag, "PersistenceSqlError");
     }).pipe(Effect.provide(layer)),
   );
 
@@ -307,7 +467,19 @@ describe("KinEventQueue", () => {
         yield* TestClock.adjust("20 seconds");
         yield* Effect.scoped(queue.claim(input("unfinished")));
         yield* Effect.scoped(queue.claim(input("completed", "b")));
-        yield* finish("completed");
+        yield* finish("completed", "b");
+        const idle = yield* Effect.scoped(queue.claim(input("idle"))).pipe(Effect.forkChild);
+        yield* TestClock.adjust("1 second");
+        const recovery = yield* queue
+          .requeueUnfinished(KinOrgId.make("a"), KinWakeupId.make("unfinished"))
+          .pipe(Effect.forkChild);
+        yield* TestClock.adjust("1 second");
+        assert.isDefined(recovery.pollUnsafe());
+        assert.strictEqual(yield* Fiber.join(recovery), 1);
+        assert.deepStrictEqual(
+          (yield* Fiber.join(idle)).map((entry) => entry.eventId),
+          ["unfinished"],
+        );
         yield* queue.enqueue(yield* event("waiting"));
         yield* TestClock.adjust("20 seconds");
         const recovered = yield* Effect.gen(function* () {
@@ -316,24 +488,25 @@ describe("KinEventQueue", () => {
             Effect.exit,
           );
           assert.isTrue(Exit.isFailure(overlapping));
+          assert.include(String(overlapping), "KinEventQueueBusy");
           assert.deepStrictEqual(
             yield* sql`SELECT state, attempts FROM kin_events WHERE event_id = 'waiting'`,
             [{ state: "queued", attempts: 0 }],
           );
           assert.strictEqual(
-            yield* restarted.requeueUnfinished(KinOrgId.make("b"), "unfinished"),
+            yield* restarted.requeueUnfinished(KinOrgId.make("b"), KinWakeupId.make("unfinished")),
             0,
           );
           assert.strictEqual(
-            yield* restarted.requeueUnfinished(KinOrgId.make("b"), "completed"),
+            yield* restarted.requeueUnfinished(KinOrgId.make("b"), KinWakeupId.make("completed")),
             0,
           );
           assert.strictEqual(
-            yield* restarted.requeueUnfinished(KinOrgId.make("a"), "unfinished"),
+            yield* restarted.requeueUnfinished(KinOrgId.make("a"), KinWakeupId.make("idle")),
             1,
           );
           assert.strictEqual(
-            yield* restarted.requeueUnfinished(KinOrgId.make("a"), "unfinished"),
+            yield* restarted.requeueUnfinished(KinOrgId.make("a"), KinWakeupId.make("idle")),
             0,
           );
           return yield* Effect.scoped(restarted.claim(input("retried")));
@@ -345,9 +518,9 @@ describe("KinEventQueue", () => {
         assert.deepStrictEqual(
           yield* sql`SELECT state, wakeup_id, attempts FROM kin_events ORDER BY event_id`,
           [
-            { state: "done", wakeup_id: "completed", attempts: 1 },
-            { state: "claimed", wakeup_id: "retried", attempts: 2 },
-            { state: "claimed", wakeup_id: "retried", attempts: 1 },
+            { state: "done", wakeup_id: "completed", attempts: 0 },
+            { state: "claimed", wakeup_id: "retried", attempts: 0 },
+            { state: "claimed", wakeup_id: "retried", attempts: 0 },
           ],
         );
       }).pipe(Effect.provide(layer)),
@@ -377,6 +550,7 @@ describe("KinEventQueue", () => {
         yield* Deferred.await(acquired);
         yield* queue.enqueue(yield* event("a-next"));
         const next = yield* Effect.scoped(queue.claim(input("a-next"))).pipe(Effect.forkChild);
+        const stale = yield* Effect.scoped(queue.claim(input("stale"))).pipe(Effect.forkChild);
         const other = yield* Effect.scoped(queue.claim(input("b-first", "b"))).pipe(
           Effect.forkChild,
         );
@@ -394,6 +568,14 @@ describe("KinEventQueue", () => {
           (yield* Fiber.join(next)).map((entry) => entry.eventId),
           ["a-next"],
         );
+        yield* finish("a-next");
+        yield* TestClock.adjust("1 second");
+        assert.isUndefined(stale.pollUnsafe());
+        assert.deepStrictEqual(
+          yield* sql`SELECT wakeup_id FROM kin_wakeups WHERE event_ids = '[]' ORDER BY wakeup_id`,
+          [],
+        );
+        yield* Fiber.interrupt(stale);
         assert.deepStrictEqual(yield* sql`SELECT state FROM kin_events WHERE org_id = 'b'`, [
           { state: "claimed" },
         ]);
@@ -409,7 +591,18 @@ describe("KinEventQueue", () => {
         const cancelled = yield* Effect.scoped(queue.claim(input("cancelled"))).pipe(
           Effect.forkChild,
         );
-        yield* TestClock.adjust("1 second");
+        yield* seed("a", "lead-a2");
+        yield* queue.enqueue(yield* event("other-lead", "github", "a", "lead-a2"));
+        const otherLead = yield* Effect.scoped(
+          queue.claim(input("other-lead", "a", "lead-a2")),
+        ).pipe(Effect.forkChild);
+        yield* TestClock.adjust("20 seconds");
+        assert.isDefined(otherLead.pollUnsafe());
+        assert.deepStrictEqual(
+          (yield* Fiber.join(otherLead)).map((entry) => entry.eventId),
+          ["other-lead"],
+        );
+        yield* finish("other-lead");
         yield* Fiber.interrupt(cancelled);
         const waiting = yield* Effect.scoped(queue.claim(input("notified"))).pipe(Effect.forkChild);
         yield* TestClock.adjust("1 second");
