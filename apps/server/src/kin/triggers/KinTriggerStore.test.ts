@@ -15,6 +15,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as KinTriggerStore from "./KinTriggerStore.ts";
@@ -23,7 +24,10 @@ const database = KinPersistence.layer.pipe(
   Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
 );
 const inboxLayer = KinTriggerInbox.layer.pipe(Layer.provideMerge(database));
-const layer = KinTriggerStore.layer.pipe(Layer.provideMerge(inboxLayer));
+const layer = KinTriggerStore.layer.pipe(
+  Layer.provideMerge(inboxLayer),
+  Layer.provide(Layer.mock(ThreadManagementService.ThreadManagementService)({})),
+);
 const orgA = Schema.decodeSync(KinOrgId)("org-a");
 const orgB = Schema.decodeSync(KinOrgId)("org-b");
 const timestamp = "2026-11-07T00:00:00.000Z";

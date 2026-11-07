@@ -30,7 +30,7 @@ function event(deliveryId: string, orgId = orgA) {
     payload: {
       kind: "github",
       sourceId: "source",
-      scheduledTaskId: "task",
+      scheduledTaskId: `task-${orgId}`,
       deliveryId,
     },
   });
@@ -41,6 +41,9 @@ const seed = Effect.gen(function* () {
   yield* sql`PRAGMA foreign_keys = ON`;
   for (const org of [orgA, orgB]) {
     yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES (${org}, 'Kin', ${timestamp})`;
+    yield* sql`INSERT INTO kin_webhook_sources
+      (source_id, org_id, repo, scheduled_task_id, inbox_thread_id, github_hook_id, bot_login, status)
+      VALUES ('source', ${org}, 'org/repo', ${`task-${org}`}, 'inbox', NULL, 'kin', 'active')`;
   }
 });
 
@@ -144,6 +147,19 @@ describe("KinTriggerInbox", () => {
         assert.strictEqual(error._tag, "KinTriggerInboxConflict");
         assert.isTrue("reason" in error);
         if ("reason" in error) assert.strictEqual(error.reason, reason);
+      }
+      for (const payload of [
+        { sourceId: "unknown", scheduledTaskId: "task-org-a" },
+        { sourceId: "source", scheduledTaskId: "unknown" },
+        { sourceId: "source", scheduledTaskId: "task-org-b" },
+      ]) {
+        const candidate = decodeFire({
+          ...event("new"),
+          payload: { ...event("new").payload, ...payload },
+        });
+        const error = yield* Effect.flip(inbox.put(candidate, 0));
+        assert.strictEqual(error._tag, "KinTriggerInboxConflict");
+        if ("reason" in error) assert.strictEqual(error.reason, "unknown_source");
       }
       yield* sql`DELETE FROM kin_trigger_inbox WHERE org_id = ${orgA}`;
       for (const invalid of [NaN, 1.5, Infinity, -1, Number.MAX_SAFE_INTEGER + 1]) {
