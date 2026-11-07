@@ -79,7 +79,7 @@ KinTriggerScheduler (Scheduler tick, kin_triggers) ────────▶ k
 
 - **Webhooks use T3's scheduled tasks**, because the relay only forwards to `/api/hooks/:hookId/:token`, and signature, replay, filters, the offline hold and the delivery log all live there. Kin owns one unbound T3 webhook task per (org, repo).
 - **Time triggers use Kin's own table** on T3's `Scheduler`, reusing `nextScheduledRunAt`. T3's runs always start an agent, `fixed_time` uses the server's zone, late `fixed_time` runs are dropped, and a crash can lose a `once`. Kin needs the owner's zone per org, a late policy per kind, multi-step deferrals, `orgId`, and priority for the budget. Those trigger rows are derived from memory (deferrals) and org settings (routines), so they can be rebuilt.
-- **Why a durable inbox.** The sink sits inside `ScheduledTaskService`'s dependencies, so it may depend only on `SqlClient`, `ThreadManagementService` and a `PubSub`. Otherwise the Kin layer, which itself needs `ScheduledTaskService`, would form a cycle. The inbox row also survives a crash between receipt and processing.
+- **Why a durable inbox.** The sink sits inside `ScheduledTaskService`'s dependencies, so it depends only on `SqlClient`, `ThreadManagementService`, and Kin's SQL-backed inbox/store. Its layer runs Kin migrations before looking up sources. Otherwise the Kin layer, which itself needs `ScheduledTaskService`, would form a cycle. The inbox row also survives a crash between receipt and processing.
 
 ### Data shapes (new, `packages/contracts/src/kinTriggers.ts`)
 
@@ -126,7 +126,7 @@ Defaults: brief 08:30 daily, summary 18:30 Mon–Fri, dream 03:00 daily, full re
 **Creating a source** (`KinWebhookSources.add(orgId, repo)`):
 
 1. Generate a 32-byte secret with `SecureRandom`.
-2. Create the org's inbox thread once. It is a real thread, launched with `ThreadLaunchService.launch` without a message, then archived, and stored as `inboxThreadId`.
+2. Create the org's inbox thread once. It is a real thread, launched with `ThreadLaunchService.launch` without a message, then archived, registered to the org's agent with `KinChatRepository.registerAgentThread`, and stored as `inboxThreadId`. The sink can read an archived inbox projection without posting a message to it.
 3. Call `ScheduledTaskService.upsert`. Kin holds the secret only for this call:
 
 ```ts
@@ -168,7 +168,11 @@ launch: (input) => {
 }
 ```
 
-A Kin task never falls through to a real launch. If parsing fails, the launch fails, and T3 logs `dispatch_failed` in Deliveries.
+A registered Kin task never falls through to a real launch. The wrapper is local to scheduled tasks and is given the existing thread-management layer explicitly; other callers retain the original launch service. If parsing, source validation or inbox persistence fails, the launch fails, and T3 logs `dispatch_failed` in Deliveries.
+
+`KinTriggerStore.registerSource` requires an existing, unbound `new_thread` webhook task and a live `kin_agent_threads` binding in the same org. The inbox thread's project must match the task's project. Identical registration returns the stored source; conflicting identity fails. TRIG-5 must retain this unbound task shape on edits and disable/delete the upstream task before unregistering its source. Sources have no upstream org column: the same-org inbox binding and matching project establish ownership.
+
+The sink verifies the delivery-log row belongs to the scheduled task. `dueAt` is the log's `received_at`, `firedAt` comes from `Clock`, and `lateByMs` is their nonnegative difference. `KinTriggerFired` carries only T3's delivery-log id, not GitHub's delivery header; TRIG-6 reads `x-github-delivery` through `getWebhookDelivery` as described below. No contract change or payload parsing is needed here.
 
 **Consuming (Kin layer, outside the cycle).**
 
@@ -422,9 +426,9 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
 - `ops/kin/host/kin-server.service`, `ops/kin/host/setup.sh` (user, linger, suspend off, and checks), `ops/kin/host/backup.sh`
 - In `GLDRoger/kin-memory`: `CODEOWNERS`, `.github/workflows/memory-check.yml`
 
-**Upstream files touched (one line each):**
+**Upstream files touched:**
 
-- `apps/server/src/orchestration-v2/runtimeLayer.ts`, inside `layerScheduledTaskProvided`'s `Layer.mergeAll(...)`: replace `layerThreadLaunchProvided,` with `KinTriggerSink.wrapThreadLaunch(layerThreadLaunchProvided),`. Only `ScheduledTaskService` sees the wrapper. Effect memoises `layerThreadLaunchProvided` by reference, so the rest of the server keeps the same instance.
+- `apps/server/src/orchestration-v2/runtimeLayer.ts`, inside `layerScheduledTaskProvided`'s `Layer.mergeAll(...)`: replace `layerThreadLaunchProvided,` with `KinTriggerSink.wrapThreadLaunch(layerThreadLaunchProvided, layerThreadManagementProvided),`. Add the `KinTriggerSink` namespace import in the same file: one import plus one replaced dependency line. Only `ScheduledTaskService` sees the wrapper. Effect memoises `layerThreadLaunchProvided` by reference, so the rest of the server keeps the same instance.
 - Kin's server layer and migration list: added by CHAT-2 and CHAT-6. This spec adds no new upstream hook for them.
 - `KIN.md` sync steps (Kin's own file): add the two `kin-contract` commands after `vp run check:changed`.
 

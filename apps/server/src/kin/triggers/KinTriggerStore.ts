@@ -2,6 +2,9 @@ import {
   CanonicalUtcTimestamp,
   NonNegativeInt,
   KinOrgId,
+  KinWebhookSource,
+  KinWebhookSourceId,
+  ScheduledTaskId,
   KinTrigger,
   KinTriggerFired,
   KinTriggerId,
@@ -38,6 +41,17 @@ export class KinTriggerFireConflict extends Schema.TaggedError<KinTriggerFireCon
   },
 ) {}
 
+export class KinWebhookSourceConflict extends Schema.TaggedError<KinWebhookSourceConflict>()(
+  "KinWebhookSourceConflict",
+  { orgId: KinOrgId, reason: Schema.Literals(["unknown_source", "identity_conflict"]) },
+) {}
+
+const sourceColumns = `source_id AS id, org_id AS "orgId", repo,
+  scheduled_task_id AS "scheduledTaskId", inbox_thread_id AS "inboxThreadId",
+  github_hook_id AS "githubHookId", bot_login AS "botLogin", status`;
+const decodeSource = Schema.decodeUnknownEffect(KinWebhookSource);
+const isSourceConflict = Schema.is(KinWebhookSourceConflict);
+
 type StoreError = PersistenceSqlError | PersistenceDecodeError;
 const TriggerRow = Schema.Struct({
   ...KinTrigger.fields,
@@ -53,6 +67,16 @@ const Scope = Schema.Struct({ orgId: KinOrgId, id: KinTriggerId });
 export class KinTriggerStore extends Context.Service<
   KinTriggerStore,
   {
+    readonly registerSource: (
+      source: KinWebhookSource,
+    ) => Effect.Effect<KinWebhookSource, StoreError | KinWebhookSourceConflict>;
+    readonly unregisterSource: (
+      orgId: KinOrgId,
+      id: KinWebhookSourceId,
+    ) => Effect.Effect<void, StoreError>;
+    readonly sourceByTaskId: (
+      id: ScheduledTaskId,
+    ) => Effect.Effect<KinWebhookSource | undefined, StoreError>;
     readonly put: (trigger: Omit<KinTrigger, "lastFireId">) => Effect.Effect<void, StoreError>;
     readonly get: (
       orgId: KinOrgId,
@@ -137,6 +161,81 @@ const make = Effect.gen(function* () {
     `,
   });
   return KinTriggerStore.of({
+    registerSource: Effect.fn("KinTriggerStore.registerSource")(
+      function* (source) {
+        const value = yield* decodeSource(source);
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const owned = yield* sql`
+            SELECT t.task_id FROM scheduled_tasks t
+            JOIN orchestration_v2_projection_threads p ON p.project_id = t.project_id
+            JOIN kin_agent_threads k ON k.thread_id = p.thread_id
+            WHERE k.org_id = ${value.orgId} AND k.thread_id = ${value.inboxThreadId}
+              AND k.ended_at IS NULL AND p.deleted_at IS NULL AND t.task_id = ${value.scheduledTaskId}
+              AND t.thread_id IS NULL AND t.thread_mode = 'new_thread'
+              AND json_extract(t.schedule_json, '$.type') = 'webhook'
+          `;
+            if (owned.length === 0)
+              return yield* new KinWebhookSourceConflict({
+                orgId: value.orgId,
+                reason: "unknown_source",
+              });
+            const inserted = yield* sql`
+            INSERT INTO kin_webhook_sources
+              (org_id, source_id, repo, scheduled_task_id, inbox_thread_id, github_hook_id, bot_login, status)
+            VALUES (${value.orgId}, ${value.id}, ${value.repo}, ${value.scheduledTaskId},
+              ${value.inboxThreadId}, ${value.githubHookId}, ${value.botLogin}, ${value.status})
+            ON CONFLICT DO NOTHING RETURNING source_id
+          `;
+            if (inserted.length === 1) return value;
+            const [row] = yield* sql`
+            SELECT ${sql.literal(sourceColumns)} FROM kin_webhook_sources
+            WHERE org_id = ${value.orgId} AND source_id = ${value.id}
+          `;
+            if (row === undefined)
+              return yield* new KinWebhookSourceConflict({
+                orgId: value.orgId,
+                reason: "unknown_source",
+              });
+            const stored = yield* decodeSource(row);
+            if (
+              stored.repo !== value.repo ||
+              stored.scheduledTaskId !== value.scheduledTaskId ||
+              stored.inboxThreadId !== value.inboxThreadId ||
+              stored.githubHookId !== value.githubHookId ||
+              stored.botLogin !== value.botLogin ||
+              stored.status !== value.status
+            ) {
+              return yield* new KinWebhookSourceConflict({
+                orgId: value.orgId,
+                reason: "identity_conflict",
+              });
+            }
+            return stored;
+          }),
+        );
+      },
+      Effect.mapError((cause) =>
+        isSourceConflict(cause)
+          ? cause
+          : toPersistenceOrDecodeError("KinTriggerStore.registerSource")(cause),
+      ),
+    ),
+    unregisterSource: Effect.fn("KinTriggerStore.unregisterSource")(
+      function* (orgId, id) {
+        yield* sql`DELETE FROM kin_webhook_sources WHERE org_id = ${orgId} AND source_id = ${id}`;
+      },
+      Effect.mapError(toPersistenceOrDecodeError("KinTriggerStore.unregisterSource")),
+    ),
+    sourceByTaskId: Effect.fn("KinTriggerStore.sourceByTaskId")(
+      function* (id) {
+        // The dispatch boundary has only a task id; its unique source determines the org.
+        const [row] = yield* sql`SELECT ${sql.literal(sourceColumns)} FROM kin_webhook_sources
+          WHERE scheduled_task_id = ${id}`.pipe(NodeSqliteClient.readOnly);
+        return row === undefined ? undefined : yield* decodeSource(row);
+      },
+      Effect.mapError(toPersistenceOrDecodeError("KinTriggerStore.sourceByTaskId")),
+    ),
     put: Effect.fn("KinTriggerStore.put")(
       function* (trigger) {
         const value = yield* decodeTrigger({ ...trigger, lastFireId: null });
