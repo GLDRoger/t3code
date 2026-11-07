@@ -476,7 +476,7 @@ Upstream files touched, hooks only:
 - **Guests are suggest-only** and their text reaches agents only after the owner sends it, still labelled `authorRole: "guest"`.
 - **Approval cards** can't be made or acted on through chat paths.
 - **Members' devices** (phase 2) hold `kin:chat` only. Before CHAT-11 ships, no non-owner may be paired.
-- **Generated widgets** keep T3's sandbox and real-tap checks in `McpAppWebView.tsx`; Kin adds no bridge.
+- **Generated widgets** keep T3's sandbox in `McpAppWebView.tsx` and add Kin's own real-tap gate on actions in the host callbacks (mobile spec, Design correction 9); Kin adds no bridge.
 
 ## Tests and acceptance criteria
 
