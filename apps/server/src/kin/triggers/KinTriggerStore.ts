@@ -21,6 +21,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlSchema from "effect/sql/SqlSchema";
 
+import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import {
   PersistenceDecodeError,
   PersistenceSqlError,
@@ -141,6 +142,7 @@ const decodeRows = Effect.fn("KinTriggerStore.decodeRows")(function* (
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const threads = yield* ThreadManagementService.ThreadManagementService;
   const columns = sql`
     trigger_id AS id, org_id AS "orgId", subject_json AS subject, schedule_json AS schedule,
     time_zone AS "timeZone", enabled, next_run_at AS "nextRunAt", last_fire_id AS "lastFireId",
@@ -166,16 +168,28 @@ const make = Effect.gen(function* () {
         const value = yield* decodeSource(source);
         return yield* sql.withTransaction(
           Effect.gen(function* () {
+            const projection = yield* threads
+              .getThreadProjection(value.inboxThreadId)
+              .pipe(
+                Effect.mapError(
+                  () =>
+                    new KinWebhookSourceConflict({ orgId: value.orgId, reason: "unknown_source" }),
+                ),
+              );
             const owned = yield* sql`
             SELECT t.task_id FROM scheduled_tasks t
-            JOIN orchestration_v2_projection_threads p ON p.project_id = t.project_id
-            JOIN kin_agent_threads k ON k.thread_id = p.thread_id
-            WHERE k.org_id = ${value.orgId} AND k.thread_id = ${value.inboxThreadId}
-              AND k.ended_at IS NULL AND p.deleted_at IS NULL AND t.task_id = ${value.scheduledTaskId}
+            WHERE t.task_id = ${value.scheduledTaskId}
+              AND t.project_id = ${projection.thread.projectId}
               AND t.thread_id IS NULL AND t.thread_mode = 'new_thread'
               AND json_extract(t.schedule_json, '$.type') = 'webhook'
+              AND EXISTS (SELECT 1 FROM kin_orgs WHERE org_id = ${value.orgId})
+              AND NOT EXISTS (
+                SELECT 1 FROM kin_webhook_sources
+                WHERE org_id <> ${value.orgId}
+                  AND (scheduled_task_id = ${value.scheduledTaskId} OR inbox_thread_id = ${value.inboxThreadId})
+              )
           `;
-            if (owned.length === 0)
+            if (owned.length === 0 || projection.thread.deletedAt !== null)
               return yield* new KinWebhookSourceConflict({
                 orgId: value.orgId,
                 reason: "unknown_source",

@@ -285,8 +285,7 @@ const layerSecretRequestsProvided = SecretRequests.layer.pipe(
 const layerScheduledTaskProvided = ScheduledTaskService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
-      KinTriggerSink.wrapThreadLaunch(layerThreadLaunchProvided, layerThreadManagementProvided),
-      layerThreadManagementProvided,
+      KinTriggerSink.wrapTaskDispatch(layerThreadLaunchProvided, layerThreadManagementProvided),
       layerManagedProjectFoldersProvided,
       layerSecretRequestsProvided,
     ),

@@ -12,6 +12,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { OrchestratorCommandRejectedError } from "../../orchestration-v2/Orchestrator.ts";
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import { PersistenceDecodeError, toPersistenceSqlError } from "../../persistence/Errors.ts";
@@ -59,10 +60,8 @@ const make = Effect.gen(function* () {
         const [row] = yield* sql`
           SELECT d.received_at AS "receivedAt" FROM scheduled_task_webhook_deliveries d
           JOIN scheduled_tasks t ON t.task_id = d.task_id
-          JOIN kin_agent_threads k ON k.thread_id = ${source.inboxThreadId} AND k.org_id = ${source.orgId}
-          JOIN orchestration_v2_projection_threads p ON p.thread_id = k.thread_id AND p.project_id = t.project_id
           WHERE d.task_id = ${taskId} AND d.delivery_id = ${deliveryId}
-            AND t.project_id = ${input.projectId} AND k.ended_at IS NULL
+            AND t.project_id = ${input.projectId}
             AND t.thread_id IS NULL AND t.thread_mode = 'new_thread'
             AND json_extract(t.schedule_json, '$.type') = 'webhook'
         `.pipe(Effect.mapError(toPersistenceSqlError("KinTriggerSink.receive")));
@@ -115,21 +114,63 @@ export const layer = Layer.effect(KinTriggerSink, make).pipe(
   Layer.provide(KinPersistence.layer),
 );
 
-export function wrapThreadLaunch<E, R, E2, R2>(
+export function wrapTaskDispatch<E, R, E2, R2>(
   inner: Layer.Layer<ThreadLaunchService.ThreadLaunchService, E, R>,
   threads: Layer.Layer<ThreadManagementService.ThreadManagementService, E2, R2>,
 ) {
-  return Layer.effect(
-    ThreadLaunchService.ThreadLaunchService,
-    Effect.gen(function* () {
-      const service = yield* ThreadLaunchService.ThreadLaunchService;
-      const sink = yield* KinTriggerSink;
-      return ThreadLaunchService.ThreadLaunchService.of({
-        ...service,
-        launch: Effect.fn("KinTriggerSink.launch")(function* (input) {
-          return (yield* sink.receive(input)) ?? (yield* service.launch(input));
-        }),
-      });
-    }),
-  ).pipe(Layer.provide(inner), Layer.provide(layer.pipe(Layer.provide(threads))));
+  return Layer.mergeAll(
+    Layer.effect(
+      ThreadLaunchService.ThreadLaunchService,
+      Effect.gen(function* () {
+        const service = yield* ThreadLaunchService.ThreadLaunchService;
+        const sink = yield* KinTriggerSink;
+        return ThreadLaunchService.ThreadLaunchService.of({
+          ...service,
+          launch: Effect.fn("KinTriggerSink.launch")(function* (input) {
+            return (yield* sink.receive(input)) ?? (yield* service.launch(input));
+          }),
+        });
+      }),
+    ),
+    Layer.effect(
+      ThreadManagementService.ThreadManagementService,
+      Effect.gen(function* () {
+        const service = yield* ThreadManagementService.ThreadManagementService;
+        const store = yield* KinTriggerStore.KinTriggerStore;
+        return ThreadManagementService.ThreadManagementService.of({
+          ...service,
+          sendToThread: Effect.fn("KinTriggerSink.sendToThread")(function* (input) {
+            if (input.scheduledTaskId === undefined) return yield* service.sendToThread(input);
+            const source = yield* store.sourceByTaskId(input.scheduledTaskId).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestratorCommandRejectedError({
+                    commandId: input.commandId,
+                    commandType: "kin.trigger.bound_source",
+                    cause,
+                  }),
+              ),
+              Effect.tapError(() =>
+                Effect.logWarning("Kin trigger source lookup failed").pipe(
+                  Effect.annotateLogs({ scheduledTaskId: input.scheduledTaskId }),
+                ),
+              ),
+            );
+            if (source === undefined) return yield* service.sendToThread(input);
+            yield* Effect.logWarning("Kin trigger sources must stay unbound new_thread tasks").pipe(
+              Effect.annotateLogs({ scheduledTaskId: input.scheduledTaskId, sourceId: source.id }),
+            );
+            return yield* new OrchestratorCommandRejectedError({
+              commandId: input.commandId,
+              commandType: "kin.trigger.bound_source",
+              cause: new Error("Kin trigger sources must stay unbound new_thread tasks"),
+            });
+          }),
+        });
+      }),
+    ),
+  ).pipe(
+    Layer.provide(Layer.mergeAll(inner, threads)),
+    Layer.provide(Layer.mergeAll(layer, KinTriggerStore.layer).pipe(Layer.provide(threads))),
+  );
 }

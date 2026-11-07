@@ -6,6 +6,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
   KinOrgId,
+  MessageId,
   KinTriggerFired,
   KinWebhookSource,
   OrchestrationV2ThreadProjectionJson,
@@ -14,11 +15,13 @@ import {
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 import * as Tracer from "effect/Tracer";
 
+import { OrchestratorCommandRejectedError } from "../../orchestration-v2/Orchestrator.ts";
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
@@ -27,6 +30,7 @@ import * as ManagedProjectFolders from "../../project/ManagedProjectFolders.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as SecretRequests from "../../secrets/SecretRequests.ts";
+import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as KinTriggerSink from "./KinTriggerSink.ts";
@@ -88,7 +92,6 @@ const seed = Effect.gen(function* () {
     yield* sql`INSERT INTO kin_orgs VALUES (${org}, 'Kin', ${timestamp})`;
     yield* sql`INSERT INTO kin_people VALUES (${`person-${org}`}, ${org}, 'owner', 'Owner', NULL, ${timestamp})`;
     yield* sql`INSERT INTO kin_agents VALUES (${`agent-${org}`}, ${org}, 'Lead', 'lead', ${`person-${org}`}, ${timestamp}, NULL)`;
-    yield* sql`INSERT INTO kin_agent_threads VALUES (${`inbox-${org}`}, ${org}, ${`agent-${org}`}, ${timestamp}, NULL)`;
     yield* sql`INSERT INTO orchestration_v2_projection_threads
       (thread_id, project_id, title, default_provider, runtime_mode, interaction_mode, created_at, updated_at, payload_json)
       VALUES (${`inbox-${org}`}, ${`project-${org}`}, 'Inbox', 'codex', 'approval-required', 'plan', ${timestamp}, ${timestamp}, '{}')`;
@@ -134,6 +137,7 @@ const upsert = (id: string, orgId = orgA) =>
     },
   });
 
+// The runWebhookDelivery span ends after both delivery and run completion are persisted.
 const waitForDispatch = <A, E, R>(work: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
     const done = yield* Deferred.make<void>();
@@ -162,10 +166,23 @@ const withService = <A, E, R>(
   body: (
     service: ScheduledTaskService.ScheduledTaskService["Service"],
     launches: ThreadLaunchService.ThreadLaunchInput[],
+    sends: ThreadManagementService.ThreadManagementSendInput[],
   ) => Effect.Effect<A, E, R>,
 ) =>
   Effect.gen(function* () {
     const launches: ThreadLaunchService.ThreadLaunchInput[] = [];
+    const sends: ThreadManagementService.ThreadManagementSendInput[] = [];
+    const boundThreads = Layer.mock(ThreadManagementService.ThreadManagementService)({
+      getThreadProjection: (id) => Effect.succeed(projection(id === `inbox-${orgB}` ? orgB : orgA)),
+      sendToThread: (input) =>
+        Effect.gen(function* () {
+          sends.push(input);
+          return yield* new OrchestratorCommandRejectedError({
+            commandId: input.commandId,
+            commandType: "test.inner_send",
+          });
+        }),
+    });
     const inner = Layer.mock(ThreadLaunchService.ThreadLaunchService)({
       launch: (input) =>
         Effect.sync(() => {
@@ -180,8 +197,7 @@ const withService = <A, E, R>(
     const serviceLayer = ScheduledTaskService.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
-          KinTriggerSink.wrapThreadLaunch(inner, threads),
-          threads,
+          KinTriggerSink.wrapTaskDispatch(inner, boundThreads),
           Crypto.layer,
           Scheduler.layer,
           ManagedPolicy.layerTest(),
@@ -198,7 +214,7 @@ const withService = <A, E, R>(
       ),
     );
     return yield* Effect.gen(function* () {
-      return yield* body(yield* ScheduledTaskService.ScheduledTaskService, launches);
+      return yield* body(yield* ScheduledTaskService.ScheduledTaskService, launches, sends);
     }).pipe(Effect.provide(serviceLayer));
   });
 
@@ -226,10 +242,11 @@ const request = (
 };
 
 const services = Layer.mergeAll(
+  KinChatRepository.layer,
   KinTriggerStore.layer,
   KinTriggerInbox.layer,
-  KinTriggerSink.layer.pipe(Layer.provide(threads)),
-);
+  KinTriggerSink.layer,
+).pipe(Layer.provide(threads));
 
 describe("KinTriggerSink", () => {
   it.effect(
@@ -252,6 +269,15 @@ describe("KinTriggerSink", () => {
               );
               assert.strictEqual(first._tag, "accepted");
               if (first._tag !== "accepted") return;
+              const repository = yield* KinChatRepository.KinChatRepository;
+              assert.isTrue(
+                Option.isNone(
+                  yield* repository.getAgentThread({
+                    orgId: org,
+                    threadId: source(org).inboxThreadId,
+                  }),
+                ),
+              );
               const pending = yield* inbox.listPending(org);
               assert.strictEqual(pending.length, 1);
               assert.strictEqual(pending[0]?.fireId, `gh:${org}:${first.deliveryId}`);
@@ -287,7 +313,10 @@ describe("KinTriggerSink", () => {
                 }),
               );
               assert.strictEqual(foreign._tag, "ThreadLaunchError");
-              assert.isFalse(yield* inbox.put(pending[0]!, 0));
+              const [event] = pending;
+              assert.isDefined(event);
+              if (event === undefined) return;
+              assert.isFalse(yield* inbox.put(event, 0));
               const repeated = yield* service.triggerWebhook(request(task, "github-delivery"));
               assert.strictEqual(repeated._tag === "accepted" && repeated.outcome, "duplicate");
               const second = yield* waitForDispatch(
@@ -308,13 +337,14 @@ describe("KinTriggerSink", () => {
               (task) => task.id === source(orgA).scheduledTaskId,
             );
             assert.isDefined(owned);
+            if (owned === undefined) return;
             const failed = yield* waitForDispatch(
-              service.triggerWebhook(request(owned!, "persistence-failure")),
+              service.triggerWebhook(request(owned, "persistence-failure")),
             );
             assert.strictEqual(failed._tag, "accepted");
             if (failed._tag === "accepted") {
               const { delivery } = yield* service.getWebhookDelivery({
-                id: owned!.id,
+                id: owned.id,
                 deliveryId: failed.deliveryId,
                 acceptAnyOutcome: true,
               });
@@ -332,6 +362,115 @@ describe("KinTriggerSink", () => {
       }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
   );
 
+  it.effect("fails bound Kin deliveries closed until unbound and preserves other bound sends", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const store = yield* KinTriggerStore.KinTriggerStore;
+      const inbox = yield* KinTriggerInbox.KinTriggerInbox;
+      yield* withService((service, launches, sends) =>
+        Effect.gen(function* () {
+          const input = yield* upsert("task-org-a");
+          yield* service.upsert(input);
+          yield* store.registerSource(source(orgA));
+          const { task } = yield* service.upsert({
+            ...input,
+            threadId: projection(orgA).thread.id,
+            threadMode: "continue",
+          });
+          const result = yield* waitForDispatch(service.triggerWebhook(request(task, "bound")));
+          assert.strictEqual(result._tag, "accepted");
+          if (result._tag !== "accepted") return;
+          const { delivery } = yield* service.getWebhookDelivery({
+            id: task.id,
+            deliveryId: result.deliveryId,
+            acceptAnyOutcome: true,
+          });
+          assert.strictEqual(delivery.outcome, "dispatch_failed");
+          const recorded = (yield* service.list()).tasks.find((item) => item.id === task.id);
+          assert.strictEqual(recorded?.lastRunStatus, "failed");
+          assert.include(recorded?.lastRunError ?? "", "kin.trigger.bound_source");
+          assert.deepStrictEqual(yield* inbox.listPending(orgA), []);
+          assert.lengthOf(sends, 0);
+          assert.lengthOf(launches, 0);
+          const { task: unbound } = yield* service.upsert(input);
+          yield* waitForDispatch(service.triggerWebhook(request(unbound, "unbound")));
+          assert.lengthOf(yield* inbox.listPending(orgA), 1);
+          assert.lengthOf(sends, 0);
+          assert.lengthOf(launches, 0);
+          const ordinary = yield* upsert("ordinary-bound");
+          const { task: other } = yield* service.upsert({
+            ...ordinary,
+            threadId: projection(orgA).thread.id,
+            threadMode: "continue",
+          });
+          yield* waitForDispatch(service.triggerWebhook(request(other, "ordinary-bound")));
+          assert.lengthOf(sends, 1);
+          assert.strictEqual(sends[0]?.scheduledTaskId, other.id);
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`DROP TABLE kin_webhook_sources`;
+          const lookupFailure = yield* waitForDispatch(
+            service.triggerWebhook(request(other, "lookup-failure")),
+          );
+          assert.strictEqual(lookupFailure._tag, "accepted");
+          if (lookupFailure._tag !== "accepted") return;
+          const failed = yield* service.getWebhookDelivery({
+            id: other.id,
+            deliveryId: lookupFailure.deliveryId,
+            acceptAnyOutcome: true,
+          });
+          assert.strictEqual(failed.delivery.outcome, "dispatch_failed");
+          assert.lengthOf(yield* inbox.listPending(orgA), 1);
+          assert.lengthOf(sends, 1);
+          assert.lengthOf(launches, 0);
+        }),
+      );
+    }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
+  );
+
+  it.effect("passes unscheduled sends and other thread methods through unchanged", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sent: ThreadManagementService.ThreadManagementSendInput[] = [];
+      const rejection = new OrchestratorCommandRejectedError({
+        commandId: CommandId.make("ordinary-send"),
+        commandType: "test.passthrough",
+      });
+      const getThreadProjection = () => Effect.succeed(projection(orgA));
+      const innerThreads = Layer.mock(ThreadManagementService.ThreadManagementService)({
+        getThreadProjection,
+        sendToThread: (input) =>
+          Effect.gen(function* () {
+            sent.push(input);
+            return yield* rejection;
+          }),
+      });
+      yield* Effect.gen(function* () {
+        const wrapped = yield* ThreadManagementService.ThreadManagementService;
+        assert.strictEqual(wrapped.getThreadProjection, getThreadProjection);
+        const input = {
+          commandId: rejection.commandId,
+          projectId: projection(orgA).thread.projectId,
+          threadId: projection(orgA).thread.id,
+          messageId: MessageId.make("ordinary-message"),
+          text: "unchanged",
+          attachments: [],
+          mode: "queue",
+          createdBy: "system",
+          creationSource: "server",
+        } satisfies ThreadManagementService.ThreadManagementSendInput;
+        assert.strictEqual(yield* Effect.flip(wrapped.sendToThread(input)), rejection);
+        assert.strictEqual(sent[0], input);
+      }).pipe(
+        Effect.provide(
+          KinTriggerSink.wrapTaskDispatch(
+            Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+            innerThreads,
+          ),
+        ),
+      );
+    }).pipe(Effect.provide(database)),
+  );
+
   it.effect(
     "rejects foreign registrations and malformed owned dispatches without writing an inbox row",
     () =>
@@ -344,6 +483,7 @@ describe("KinTriggerSink", () => {
           Effect.gen(function* () {
             yield* service.upsert(yield* upsert("task-org-a"));
             const a = source(orgA);
+            yield* store.registerSource(a);
             for (const candidate of [
               { ...a, orgId: orgB },
               { ...a, inboxThreadId: source(orgB).inboxThreadId },

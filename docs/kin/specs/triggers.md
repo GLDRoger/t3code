@@ -126,7 +126,7 @@ Defaults: brief 08:30 daily, summary 18:30 Mon–Fri, dream 03:00 daily, full re
 **Creating a source** (`KinWebhookSources.add(orgId, repo)`):
 
 1. Generate a 32-byte secret with `SecureRandom`.
-2. Create the org's inbox thread once. It is a real thread, launched with `ThreadLaunchService.launch` without a message, then archived, registered to the org's agent with `KinChatRepository.registerAgentThread`, and stored as `inboxThreadId`. The sink can read an archived inbox projection without posting a message to it.
+2. Create the org's inbox thread once. It is a real thread, launched with `ThreadLaunchService.launch` without a message, then archived and stored as `inboxThreadId`. The inbox thread is never an agent thread and is never registered in `kin_agent_threads`. The sink can read an archived inbox projection without posting a message to it.
 3. Call `ScheduledTaskService.upsert`. Kin holds the secret only for this call:
 
 ```ts
@@ -153,7 +153,7 @@ Defaults: brief 08:30 daily, summary 18:30 Mon–Fri, dream 03:00 daily, full re
 
 **Why no coalescing.** T3 coalescing keeps only the latest payload, so two PRs in one window would lose one. LEAD's per-org merge window does the batching without dropping events. Rotation: `rotateWebhookToken`, then update the GitHub hook URL through the same executor action.
 
-**Receiving: `KinTriggerSink`.** It wraps the `ThreadLaunchService` given to `ScheduledTaskService`:
+**Receiving: `KinTriggerSink`.** It wraps the `ThreadLaunchService` and `ThreadManagementService` given only to `ScheduledTaskService`:
 
 ```ts
 launch: (input) => {
@@ -168,9 +168,9 @@ launch: (input) => {
 }
 ```
 
-A registered Kin task never falls through to a real launch. The wrapper is local to scheduled tasks and is given the existing thread-management layer explicitly; other callers retain the original launch service. If parsing, source validation or inbox persistence fails, the launch fails, and T3 logs `dispatch_failed` in Deliveries.
+A registered Kin task never falls through to a real launch. The wrapper is local to scheduled tasks and is given the existing thread-management layer explicitly; other callers retain the original launch and thread-management services. Bound Kin sends and failed source lookups are rejected before dispatch; ordinary sends pass through. If parsing, source validation or inbox persistence fails, the launch fails, and T3 logs `dispatch_failed` in Deliveries.
 
-`KinTriggerStore.registerSource` requires an existing, unbound `new_thread` webhook task and a live `kin_agent_threads` binding in the same org. The inbox thread's project must match the task's project. Identical registration returns the stored source; conflicting identity fails. TRIG-5 must retain this unbound task shape on edits and disable/delete the upstream task before unregistering its source. Sources have no upstream org column: the same-org inbox binding and matching project establish ownership.
+`KinTriggerStore.registerSource` requires an existing org and an unbound `new_thread` webhook task. `getThreadProjection` checks that the inbox thread is not deleted and its project matches the task's project. Identical registration returns the stored source; conflicting identity fails. TRIG-5 must retain this unbound task shape on edits and disable/delete the upstream task before unregistering its source. Sources have no upstream org column: the `kin_webhook_sources` row establishes ownership; registration rejects task or inbox IDs already owned by another org.
 
 The sink verifies the delivery-log row belongs to the scheduled task. `dueAt` is the log's `received_at`, `firedAt` comes from `Clock`, and `lateByMs` is their nonnegative difference. `KinTriggerFired` carries only T3's delivery-log id, not GitHub's delivery header; TRIG-6 reads `x-github-delivery` through `getWebhookDelivery` as described below. No contract change or payload parsing is needed here.
 
@@ -357,7 +357,7 @@ cd apps/server && vp test run kin-contract
 cd apps/mobile && vp test run kin-contract
 ```
 
-Each test pins only what Kin uses.
+Each test pins only what Kin uses. `scheduledTask.kin-contract.test.ts` must pin the upstream columns Kin reads: `scheduled_tasks.task_id`, `project_id`, `thread_id`, `thread_mode`, `schedule_json`, and `scheduled_task_webhook_deliveries.task_id`, `delivery_id`, `received_at`.
 
 | Piece               | File                                                                         | Asserts                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | ------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -428,7 +428,7 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
 
 **Upstream files touched:**
 
-- `apps/server/src/orchestration-v2/runtimeLayer.ts`, inside `layerScheduledTaskProvided`'s `Layer.mergeAll(...)`: replace `layerThreadLaunchProvided,` with `KinTriggerSink.wrapThreadLaunch(layerThreadLaunchProvided, layerThreadManagementProvided),`. Add the `KinTriggerSink` namespace import in the same file: one import plus one replaced dependency line. Only `ScheduledTaskService` sees the wrapper. Effect memoises `layerThreadLaunchProvided` by reference, so the rest of the server keeps the same instance.
+- `apps/server/src/orchestration-v2/runtimeLayer.ts`, inside `layerScheduledTaskProvided`'s `Layer.mergeAll(...)`: replace the `layerThreadLaunchProvided,` and `layerThreadManagementProvided,` entries with `KinTriggerSink.wrapTaskDispatch(layerThreadLaunchProvided, layerThreadManagementProvided),`. Add the `KinTriggerSink` namespace import in the same file: one import plus one replacement call for the two dependency entries. Only `ScheduledTaskService` sees the wrapper. Effect memoises `layerThreadLaunchProvided` by reference, so the rest of the server keeps the same instance.
 - Kin's server layer and migration list: added by CHAT-2 and CHAT-6. This spec adds no new upstream hook for them.
 - `KIN.md` sync steps (Kin's own file): add the two `kin-contract` commands after `vp run check:changed`.
 
@@ -470,6 +470,8 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
 - **Contract tests:** `vp test run kin-contract` passes on today's upstream. Renaming `scheduledTaskId` in a scratch branch makes it fail.
 
 ## Tasks
+
+**TRIG-4 constraints.** A Kin source task bound to a thread fails each delivery with `OrchestratorCommandRejectedError`; unbind it to resume. TRIG-4 is where Kin persistence first joins boot; CHAT-6/7's boot containment must cover it.
 
 | Id      | What                                                                                                           | Files                                                      | Depends on                                                                                          | Done when                                                                                                                                                          | Owner   |
 | ------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------- |
