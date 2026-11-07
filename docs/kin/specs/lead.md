@@ -137,7 +137,7 @@ export const KinEvent = Schema.Union([
 ]);
 ```
 
-Events carry references, not bodies. The lead reads the message or payload through its tools, so the queue never holds large or secret text. `scheduledTaskId` and `webhookDeliveryId` identify the stored payload for `ScheduledTaskService.getWebhookDelivery`. `deliveryId` is GitHub’s `x-github-delivery` header; the inbox consumer derives the event’s `dedupeKey` from `KinTriggerFired.fireId`. The `deferral.due.subject` union directly mirrors the triggers spec’s deferral (including `phase`), reminder and followup subjects; `lateByMs` is a non-negative integer.
+Events carry references, not bodies. The lead reads the message or payload through its tools, so the queue never holds large or secret text. `scheduledTaskId` and `webhookDeliveryId` identify the stored payload for `ScheduledTaskService.getWebhookDelivery`. `deliveryId` is GitHub’s `x-github-delivery` header; the inbox consumer uses `deliveryId` as the event’s `dedupeKey` for `github` events and `KinTriggerFired.fireId` for other kinds. The `deferral.due.subject` union directly mirrors the triggers spec’s deferral (including `phase`), reminder and followup subjects; `lateByMs` is a non-negative integer.
 
 | Source                                           | Event             | Producer                                                 |
 | ------------------------------------------------ | ----------------- | -------------------------------------------------------- |
@@ -155,7 +155,7 @@ All producers call one entry point: `KinEventQueue.enqueue(event)`. Nothing else
 
 ### The per-organization queue and coalescing (gap 1)
 
-The trigger inbox consumer uses `KinTriggerFired.fireId` as the event `dedupeKey`, inserting the event and marking the inbox row consumed in one transaction.
+The trigger inbox consumer inserts the event and marks the inbox row consumed in one transaction. Its `dedupeKey` is GitHub's `x-github-delivery` (`KinGithubEvent.deliveryId`) for `github` events, so a GitHub redelivery collapses even with a new T3 delivery id, and `KinTriggerFired.fireId` for every other kind.
 
 Table `kin_events` (**new**): `org_id, event_id, agent_id, tag, priority, json, dedupe_key, received_at, state ('queued' | 'claimed' | 'done' | 'expired'), wakeup_id, not_before, attempts`. `attempts` starts at zero and counts wake-up attempts for the three-try failure limit. Unique index on `(org_id, dedupe_key)`.
 
