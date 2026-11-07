@@ -4,12 +4,14 @@ import * as Migrator from "effect/sql/Migrator";
 import ChatCore from "./migrations/K001_ChatCore.ts";
 import Lead from "./migrations/K002_Lead.ts";
 import Triggers from "./migrations/K003_Triggers.ts";
+import MemoryReads from "./migrations/K004_MemoryReads.ts";
 
 const run = Migrator.make({});
 const loader = Migrator.fromRecord({
   "1_ChatCore": ChatCore,
   "2_Lead": Lead,
   "3_Triggers": Triggers,
+  "4_MemoryReads": MemoryReads,
 });
 
 export const runKinMigrations = Effect.fn("KinMigrations.run")(function* () {

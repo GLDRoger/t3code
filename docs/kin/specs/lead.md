@@ -189,7 +189,7 @@ Kin foreign keys include `org_id` so config, wake-up, worker, shadow-entry and p
 
 Table `kin_wakeups` (**new**): `org_id, wakeup_id, agent_id, thread_id, run_id, model, started_at, ended_at, status ('running' | 'completed' | 'failed' | 'interrupted' | 'timed_out' | 'released'), event_ids, tokens_json, tools_json, memory_commit`.
 
-Setup once per organization (in `Memory.ensureCheckouts`):
+Setup once per organization (`Memory.ensureCheckouts` owns the checkouts; the wake-up runner owns project bootstrap):
 
 - Writer checkout: `${stateDir}/kin/<orgId>/memory`, a clone of the organization's memory repo.
 - Read checkout: `${stateDir}/kin/<orgId>/memory-read`, a `git worktree` of the same repo, detached at the latest commit. This is the lead's working directory.
@@ -200,7 +200,7 @@ Each wake-up:
 1. `KinStop.isPaused(orgId)` → leave events queued and return.
 2. `KinBudget.admit(orgId, batchPriority)` → if refused, leave lower-priority events `queued` with `not_before` = next budget reset and run what remains.
 3. Pick the model: `models.strong` if the batch holds a P0 or P1 event, a contradiction question or a `routine`; otherwise `models.cheap`.
-4. `Memory.prepareWakeup(orgId)`: `git pull --ff-only` in the writer checkout, move the read checkout to the new HEAD (`checkout --detach`, `reset --hard`, `clean -fdx`), and rebuild `INDEX.md` first if its "As of" line is older than 36 hours.
+4. `Memory.prepareWakeup(orgId)`: fetch then `git pull --rebase` in the writer checkout (preserving unpushed commits), move the read checkout to the new HEAD (`checkout --force --detach`, `reset --hard`, `clean -fdx`), and rebuild `INDEX.md` first if its "As of" line is older than 36 hours. If fetching fails, log a warning and pin the local writer HEAD for this wake-up. If rebasing conflicts, abort the rebase to restore the writer and fail with `MemorySyncConflict`.
 5. Build the prompt (below).
 6. First wake-up: `ThreadLaunchService.launch({ commandId: "kin-wakeup:<wakeupId>", projectId, title: "<lead name>", modelSelection, runtimeMode: "full-access", interactionMode: "default", workspaceStrategy: { type: "root" }, initialMessage: { text: prompt, attachments: [] }, createdBy: "system", creationSource: "server" })`, then store `threadId` on `KinLead`. Later wake-ups: `ThreadManagementService.sendToThread({ commandId, threadId, messageId: "kin-wakeup-msg:<wakeupId>", text: prompt, mode: "queue", freshContext: true, modelSelection, createdBy: "system", creationSource: "server" })`. One thread holds the lead's history for people to read; every run is a new provider session.
 7. Register `threadId → { orgId, agentId, wakeupId, level }` in `KinLeadRegistry`, an in-memory map the tools use. It is filled before the send and cleared after the run ends.
@@ -347,8 +347,14 @@ export class Memory extends Context.Service<
     prepareWakeup(orgId: KinOrgId): Effect<{ head: string; indexAsOf: DateTime.Utc }, MemoryError>;
     readIndex(orgId: KinOrgId): Effect<string, MemoryError>;
     readRules(orgId: KinOrgId): Effect<string, MemoryError>;
-    readItem(orgId: KinOrgId, id: string): Effect<MemoryItem, MemoryError | MemoryNotFound>;
-    query(orgId: KinOrgId, q: MemoryQuery): Effect<ReadonlyArray<MemoryItemHead>, MemoryError>;
+    readItem(
+      orgId: KinOrgId,
+      id: string,
+    ): Effect<MemoryItem, MemoryError | MemoryNotFound | MemoryDuplicateId>;
+    query(
+      orgId: KinOrgId,
+      q: MemoryQuery,
+    ): Effect<ReadonlyArray<MemoryItemHead & { readonly duplicate: boolean }>, MemoryError>;
     stage(ctx: WakeupContext, change: MemoryChange): Effect<MemoryStaged, MemoryWriteRejected>;
     appendJournal(ctx: WakeupContext, lines: JournalLines): Effect<void>;
     commitWakeup(
@@ -374,13 +380,21 @@ Staged changes live in the writer checkout's working tree. `commitWakeup("comple
 
 Branches: at L1 and above the writer commits to the default branch. At L0 it commits to `kin/shadow/<agentId>` (see Levels). Dreaming (triggers spec) commits to `dream/<date>` branches and takes the same per-organization semaphore while it writes, so it never runs during a wake-up.
 
-Push failures retry with backoff. Unpushed commits stay local and the next `prepareWakeup` rebases them on `pull`. A rebase conflict (the owner edited the same file on GitHub) stops memory writes for that organization and posts a card to the owner.
+Push failures retry with backoff. Unpushed commits stay local and the next `prepareWakeup` rebases them on `pull`. A rebase conflict (the owner edited the same file on GitHub) is aborted, restores the writer, and fails the wake-up with `MemorySyncConflict`; the write-side owner notification is LEAD-3 work. A fetch failure logs a warning and the wake-up proceeds pinned to the local writer HEAD. Existing writers are never replaced on validation failure: `MemoryCheckoutInvalid` leaves recovery to a human.
 
-Front matter matches the kin-memory README, including snake_case keys and permissive date strings. `owner` and `said_by` hold handles; `orgId` and `path` belong only to the server-side `MemoryItemHead`.
+Front matter matches the kin-memory README, including snake_case keys. Date-only values mean UTC midnight; date-times require an explicit UTC offset, and invalid dates make an item malformed. `links` values containing `#` must be quoted. `owner` and `said_by` hold handles; `orgId` and `path` belong only to the server-side `MemoryItemHead`.
 
-LEAD-6: the front matter parser must use YAML’s core or JSON schema; YAML 1.1 turns `review_by: 2026-11-13` into a Date.
+LEAD-2: the front matter parser must use YAML’s core or JSON schema; YAML 1.1 turns `review_by: 2026-11-13` into a Date.
 
-The front matter cache is an in-process map per organization, filled from the read checkout at startup and updated on each commit. `memory_search` and the triggers spec's schedulers read it. It can always be rebuilt from git.
+The production `MemoryConfig` layer derives its server-owned base from `ServerConfig.stateDir`, using `${stateDir}/kin/<orgId>/memory` and `memory-read` (organization ids are path-encoded). Tests may supply an isolated base and relative paths. Paths must not overlap or escape that base. `ensureCheckouts` clones a missing writer and validates an existing one; `prepareWakeup` refuses a writer with an unfinished rebase, merge or cherry-pick, syncs it with `pull --rebase` and force-refreshes the disposable detached read worktree, including generated files. Project bootstrap belongs to the wake-up runner, not Memory.
+
+`ensureCheckouts` uses the server user’s git credentials: on the Kin host, the bot or GitHub App identity.
+
+The read side pins the server-owned writer repository’s HEAD at wake-up (or first read), never the lead’s read-checkout HEAD or working-tree edits. Snapshots reload only on a new wake-up pin or explicit `rebuildCache`; blob contents and parse failures are cached by SHA. Symlinks are skipped; oversized blobs (over 256 KiB), malformed items and kind/folder mismatches are logged and skipped. Queries return duplicate ids with `duplicate: true` on each copy and mark them in the index; ambiguous `readItem` calls fail with `MemoryDuplicateId`. Queries include invalid items unless `excludeInvalid` is set; `invalid_at` remains on each returned `MemoryItemHead`. Date bounds are inclusive and compare instants; date-only strings mean midnight UTC. Missing or unparsable dates do not match a bounded date query. Overdue review means strictly before the current clock.
+
+`readItem` best-effort records integer-millisecond last-read times in Kin’s `kin_memory_reads` table, keyed by organization and item id so moves preserve history. Failed history writes are logged without failing the read. Never-read items use `recorded_at` as the baseline; index generation and queries do not count as reading an item. At eight weeks unread, items leave only the index, not search or git. Rebuilds use original heads, cap the index at 200 physical lines including the `As of <ISO>` first line, and flag invalid and overdue items. TRIG-12 extends this builder with sections, ordering and freshness defaults; no writer methods or automatic defaults are part of LEAD-2.
+
+The generated index is derived from HEAD, not read-checkout files; committing it belongs to LEAD-3 or TRIG-12, not LEAD-2.
 
 ### The journal
 
@@ -494,7 +508,7 @@ Evening summary:
 | Lead loops or runs long                          | 15 min hard timeout, then interrupt.                                                                                                                                                               |
 | Worker never reports                             | Synthesized `blocked` report. A worker running over 4 hours raises a `watchdog` event.                                                                                                             |
 | Memory push fails                                | Retry; local commits stay; the next wake-up rebases.                                                                                                                                               |
-| Owner edited memory on GitHub                    | `pull --ff-only` at wake-up start picks it up. A conflict stops writes and asks the owner.                                                                                                         |
+| Owner edited memory on GitHub                    | `pull --rebase` at wake-up start picks it up. A conflict aborts the rebase and fails the wake-up; an unavailable remote falls back to local HEAD.                                                  |
 | Duplicate event (replayed webhook, double timer) | Dropped by the `(org_id, dedupe_key)` index.                                                                                                                                                       |
 
 ## Files
@@ -565,7 +579,7 @@ Upstream files touched, one line each:
 
 LEAD-1. **Contracts and tables.** `kinLead.ts` schemas; Kin migrations for all lead tables. Files: `packages/contracts/src/kinLead.ts`, `apps/server/src/kin/persistence/*`. Depends on: CHAT-1 (for `KinOrgId`, `KinAuthor`). Done when: `vp run typecheck` passes and a migration test creates and reads each table. Owner: backend.
 
-LEAD-2. **Memory read side.** `ensureCheckouts`, `prepareWakeup`, front matter parser, cache, `query`, `readItem`, `rebuildIndex` (200-line cap, "As of" line, fading after 8 weeks unread). Files: `apps/server/src/kin/memory/{Memory,MemoryCache,frontMatter}.ts`. Depends on: LEAD-1. Done when: tests against a fixture repo shaped like `/tmp/kin-memory-init` pass for query by kind, due date and overdue `review_by`. Owner: backend.
+LEAD-2. **Memory read side.** `ensureCheckouts`, `prepareWakeup`, front matter parser, cache, `query`, `readItem`, `rebuildIndex` (200-line cap, "As of" line, fading after 8 weeks unread). Files: `apps/server/src/kin/memory/{Memory,MemoryCache,frontMatter}.ts`. Depends on: LEAD-1. Done when: tests create a temporary git repo from invented fixtures matching the kin-memory README; kind/date/review queries, malformed-item isolation, organization isolation, cache invalidation, index cap/As-of and TestClock fading all pass. Never use real organization memory as a fixture. Owner: backend.
 
 LEAD-3. **Memory git writer.** `stage` with every writer rule, `commitWakeup`, push and rebase, shadow branch, the secret scan hook (stub until the triggers spec lands). Files: `MemoryWriter.ts`, `journal.ts`. Depends on: LEAD-2, TRIG-16 (stub allowed). Done when: tests show provenance override, `rules.md` refusal, conflict error, one commit per wake-up, discard on failure. Owner: backend.
 
@@ -576,6 +590,8 @@ LEAD-5. **Wake-up runner.** Lead project and thread, launch or fresh send, regis
 LEAD-6. **Instructions and prompt builder.** `instructions.md`, `routines.md`, `LeadPrompt.ts`, quoting of non-owner text. Depends on: LEAD-2. Done when: the prefix-stability test passes and a member message containing "ignore previous instructions" appears only inside a labelled quote. Owner: backend.
 
 LEAD-7. **Lead toolkit: memory and journal.** `memory_search`, `memory_read`, `memory_write`, `kin_defer`, `kin_journal`, `kin_end`, lead-only visibility on `/kin/mcp`. Depends on: LEAD-3, LEAD-5, CHAT-7 (endpoint). Done when: tool visibility and cross-organization tests pass. Owner: backend.
+
+Reads through the lead’s file tools do not count as memory reads; LEAD-7’s `memory_read` must call the history-recording path.
 
 LEAD-8. **Lead toolkit: post and level gating.** `kin_chat_post`, the `request_action` level check, `KinLevels.effectiveLevel`, shadow entries, the owner's summary widget. Depends on: LEAD-7, CHAT-7, APPR-3. Done when: the L0 shadow test passes. Owner: backend.
 
