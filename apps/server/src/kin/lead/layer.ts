@@ -3,7 +3,6 @@ import { KinOrgId } from "@t3tools/contracts";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import * as KinIdentity from "../chat/KinIdentity.ts";
@@ -19,7 +18,7 @@ import * as WakeupRunner from "./WakeupRunner.ts";
 export class KinLeadStartupError extends Schema.TaggedError<KinLeadStartupError>()(
   "KinLeadStartupError",
   {
-    stage: Schema.Literals(["dependencies", "startup"]),
+    stage: Schema.Literal("startup"),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {}
@@ -49,12 +48,9 @@ export const layer = Layer.effectDiscard(
     Layer.mergeAll(
       KinLeadRegistry.layer,
       KinEventQueue.layer,
-      Memory.layer,
-      KinIdentity.KinIdentity.layer.pipe(
-        Layer.provide(KinIdentity.KinIdentityConfig.layer),
-        Layer.provide(KinChatRepository.layer),
-      ),
-    ),
+      KinLeadPrompt.layer,
+      KinIdentity.KinIdentity.layer.pipe(Layer.provide(KinIdentity.KinIdentityConfig.layer)),
+    ).pipe(Layer.provideMerge(Layer.mergeAll(Memory.layer, KinChatRepository.layer))),
   ),
   Layer.provide(KinPersistence.layer),
 );
@@ -69,18 +65,7 @@ export const layerServer = containStartup(
         Config.withDefault([]),
       );
       if (repositories.length === 0) return Layer.empty;
-      const prompt = yield* Effect.serviceOption(KinLeadPrompt);
-      if (Option.isNone(prompt)) {
-        yield* Effect.logWarning(
-          "Kin runner disabled: LeadPrompt implementation is not installed",
-          new KinLeadStartupError({ stage: "dependencies" }),
-        );
-        return Layer.empty;
-      }
-      return layer.pipe(
-        Layer.provide(Layer.succeed(KinLeadPrompt, prompt.value)),
-        Layer.provide(MemoryConfig.layer(repositories)),
-      );
+      return layer.pipe(Layer.provide(MemoryConfig.layer(repositories)));
     }),
   ),
 );
