@@ -111,6 +111,11 @@ export class KinIdentity extends Context.Service<
               message: "Kin agent thread is not active.",
             });
           }
+          if (!(yield* repository.hasRunningWakeup(row.value)))
+            return yield* new KinChatError({
+              reason: "not_allowed",
+              message: "Kin wake-up is not running.",
+            });
           const agent = yield* repository.getAgent(row.value);
           if (Option.isNone(agent) || agent.value.retiredAt !== null)
             return yield* new KinChatError({

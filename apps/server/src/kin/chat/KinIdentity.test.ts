@@ -308,6 +308,12 @@ describe("KinIdentity", () => {
         yield* identity.registerAgentThread(input);
         assert.deepStrictEqual(yield* repository.getAgentThread(input), original);
         assert.isTrue(identity.isAgentThread(threadId));
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at) VALUES ('identity-chat', ${owner.orgId}, 'team_group', 0, '1970-01-01T00:00:00.000Z')`;
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+          VALUES (${agentId}, ${owner.orgId}, 'Lead', 0, '{}', '[]', 'identity-chat')`;
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status, event_ids)
+          VALUES ('identity-wakeup', ${owner.orgId}, ${agentId}, ${threadId}, 'test', 0, 'running', '[]')`;
         assert.deepStrictEqual(yield* identity.resolveAgent(caller()), {
           ...input,
           ownerPersonId: owner.personId,
@@ -384,6 +390,11 @@ describe("KinIdentity", () => {
           ...input,
           ownerPersonId: owner.personId,
         });
+        yield* sql`UPDATE kin_wakeups SET status = 'completed', ended_at = 1000 WHERE wakeup_id = 'identity-wakeup'`;
+        assert.include(yield* restarted.resolveAgent(caller()).pipe(Effect.flip), {
+          reason: "not_allowed",
+        });
+        assert.isTrue(restarted.isAgentThread(threadId));
         assert.deepStrictEqual(yield* restarted.resolve(session), [owner]);
         assert.isTrue(yield* restarted.endAgentThread(input));
         assert.isFalse(restarted.isAgentThread(threadId));
@@ -404,6 +415,7 @@ describe("KinIdentity", () => {
         const afterEnd = yield* start;
         assert.isFalse(afterEnd.isAgentThread(threadId));
         assert.isTrue(afterEnd.isAgentThread(secondThreadId));
+        yield* sql`UPDATE kin_wakeups SET status = 'running', ended_at = NULL, thread_id = ${secondThreadId} WHERE wakeup_id = 'identity-wakeup'`;
         assert.deepStrictEqual(yield* afterEnd.resolveAgent(caller(secondThreadId)), {
           ...input,
           threadId: secondThreadId,

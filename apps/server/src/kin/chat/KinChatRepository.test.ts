@@ -873,6 +873,11 @@ describe("KinChatRepository", () => {
   it.effect("advances read state monotonically and counts only others' posted messages", () =>
     Effect.gen(function* () {
       const repo = yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+        VALUES (${agentId}, ${orgId}, 'Lead', 0, '{}', '[]', ${chatId})`;
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status, event_ids)
+        VALUES ('chat-wakeup', ${orgId}, ${agentId}, ${threadId}, 'test', 0, 'running', '[]')`;
       const agentAuthor = {
         _tag: "agent",
         agentId,
@@ -889,6 +894,19 @@ describe("KinChatRepository", () => {
         ),
       ])
         yield* repo.insertMessage(input);
+      yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'chat-wakeup'`;
+      const rejected = yield* repo
+        .insertMessage(
+          message("outside-wakeup", {
+            author: agentAuthor,
+            authorRole: "member",
+            intent: "answer",
+          }),
+        )
+        .pipe(Effect.flip);
+      assert.include(rejected, { reason: "not_allowed" });
+      assert.strictEqual(Option.getOrThrow(yield* repo.getChat(scope)).lastSeq, 6);
+      yield* sql`UPDATE kin_wakeups SET status = 'running' WHERE wakeup_id = 'chat-wakeup'`;
       const resumedThread = decodeThreadId("resumed-thread");
       yield* repo.registerAgentThread({
         orgId,

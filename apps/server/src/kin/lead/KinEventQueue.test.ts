@@ -220,7 +220,13 @@ describe("KinEventQueue", () => {
             WHERE member_id = 'agent-member-lead-a'`;
           yield* sql`UPDATE kin_agents SET retired_at = ${id === "retired" ? "2026-11-07T00:00:00.000Z" : null}
             WHERE agent_id = 'lead-a'`;
-          yield* queue.enqueue({ ...owner, eventId: KinEventId.make(id), dedupeKey: id });
+          const enqueue = queue.enqueue({ ...owner, eventId: KinEventId.make(id), dedupeKey: id });
+          if (id === "retired")
+            assert.strictEqual(
+              (yield* enqueue.pipe(Effect.flip))._tag,
+              "KinEventQueueRetiredAgent",
+            );
+          else yield* enqueue;
         }
         yield* sql`UPDATE kin_agents SET retired_at = NULL WHERE agent_id = 'lead-a'`;
         yield* sql`UPDATE kin_chat_members SET left_at = NULL WHERE member_id = 'agent-member-lead-a'`;
@@ -246,6 +252,31 @@ describe("KinEventQueue", () => {
           [],
         );
       }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("selects a ready lead ahead of a deferred lead and notifies retirement", () =>
+    Effect.gen(function* () {
+      yield* seed();
+      yield* seed("a", "lead-a2");
+      const queue = yield* KinEventQueue.KinEventQueue;
+      const sql = yield* SqlClient.SqlClient;
+      const orgId = KinOrgId.make("a");
+      yield* queue.enqueue(yield* event("deferred"));
+      yield* queue.enqueue(yield* event("ready", "routine", "a", "lead-a2"));
+      yield* sql`UPDATE kin_events SET not_before = 300000 WHERE event_id = 'deferred'`;
+      yield* TestClock.adjust("20 seconds");
+      assert.strictEqual((yield* queue.nextReady(orgId))?.agentId, "lead-a2");
+      const changed = yield* queue.changes(orgId);
+      const signal = yield* changed.pipe(Effect.forkChild);
+      yield* sql`UPDATE kin_agents SET retired_at = '2026-11-07T00:00:00.000Z' WHERE agent_id = 'lead-a2'`;
+      yield* queue.expireAgent(orgId, KinAgentId.make("lead-a2"));
+      yield* Fiber.join(signal);
+      yield* queue.expireAgent(orgId, KinAgentId.make("lead-a2"));
+      assert.deepStrictEqual(yield* sql`SELECT state FROM kin_events WHERE event_id = 'ready'`, [
+        { state: "expired" },
+      ]);
+      assert.strictEqual((yield* queue.nextReady(orgId))?.agentId, "lead-a");
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect(

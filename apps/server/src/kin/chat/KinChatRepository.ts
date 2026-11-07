@@ -173,6 +173,9 @@ export class KinChatRepository extends Context.Service<
       readonly ownerDisplayName: string;
       readonly createdAt: IsoDateTime;
     }) => Effect.Effect<KinPerson, RepositoryError | KinIdentityBootstrapError>;
+    readonly hasRunningWakeup: (
+      input: Scope & { readonly agentId: KinAgentId; readonly threadId: ThreadId },
+    ) => Effect.Effect<boolean, RepositoryError>;
     readonly findAgentThread: (
       threadId: ThreadId,
     ) => Effect.Effect<Option.Option<KinAgentThread>, RepositoryError>;
@@ -362,6 +365,14 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(toRepositoryError("KinChatRepository.getAgentThread")),
   );
+  const hasRunningWakeup = Effect.fn("KinChatRepository.hasRunningWakeup")(
+    function* (input: Scope & { readonly agentId: KinAgentId; readonly threadId: ThreadId }) {
+      const rows = yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${input.orgId}
+        AND agent_id = ${input.agentId} AND thread_id = ${input.threadId} AND status = 'running'`;
+      return rows.length > 0;
+    },
+    Effect.mapError(toRepositoryError("KinChatRepository.hasRunningWakeup")),
+  );
   const validateWidgetReferences = Effect.fn("KinChatRepository.validateWidgetReferences")(
     function* (input: Pick<KinWidget, "orgId" | "awaiting" | "source">) {
       for (const personId of input.awaiting)
@@ -373,6 +384,7 @@ const make = Effect.gen(function* () {
     },
   );
   return KinChatRepository.of({
+    hasRunningWakeup,
     getOrg: orgOne,
     getPerson: personOne,
     getAgent: agentOne,
@@ -840,6 +852,18 @@ const make = Effect.gen(function* () {
                   message: "Kin agent author not found.",
                 });
             }
+            if (
+              author._tag === "agent" &&
+              !(yield* hasRunningWakeup({
+                ...input,
+                agentId: author.agentId,
+                threadId: author.threadId,
+              }))
+            )
+              return yield* new KinChatError({
+                reason: "not_allowed",
+                message: "Kin wake-up is not running.",
+              });
             if (input.replyTo !== null) {
               const reply = yield* requireRecord(
                 messageOne({ orgId: input.orgId, messageId: input.replyTo }),

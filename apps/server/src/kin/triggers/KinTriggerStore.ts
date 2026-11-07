@@ -195,6 +195,7 @@ const make = Effect.gen(function* () {
               AND t.thread_id IS NULL AND t.thread_mode = 'new_thread'
               AND json_extract(t.schedule_json, '$.type') = 'webhook'
               AND EXISTS (SELECT 1 FROM kin_orgs WHERE org_id = ${value.orgId})
+              AND NOT EXISTS (SELECT 1 FROM kin_agent_threads WHERE thread_id = ${value.inboxThreadId})
               AND NOT EXISTS (
                 SELECT 1 FROM kin_webhook_sources
                 WHERE org_id <> ${value.orgId}

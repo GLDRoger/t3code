@@ -26,7 +26,7 @@ export class KinLeadStartupError extends Schema.TaggedError<KinLeadStartupError>
 export function containStartup<A, E, R>(layer: Layer.Layer<A, E, R>) {
   return Layer.effectDiscard(Effect.void).pipe(
     Layer.provide(layer),
-    Layer.catch((cause) =>
+    Layer.catchCause((cause) =>
       Layer.effectDiscard(
         Effect.logError(
           "Kin startup failed; Kin disabled",
@@ -64,6 +64,10 @@ const Repositories = Schema.fromJsonString(
 export const layerServer = containStartup(
   Layer.unwrap(
     Effect.gen(function* () {
+      const repositories = yield* Config.schema(Repositories, "KIN_MEMORY_REPOSITORIES").pipe(
+        Config.withDefault([]),
+      );
+      if (repositories.length === 0) return Layer.empty;
       const prompt = yield* Effect.serviceOption(KinLeadPrompt);
       if (Option.isNone(prompt)) {
         yield* Effect.logWarning(
@@ -72,10 +76,6 @@ export const layerServer = containStartup(
         );
         return Layer.empty;
       }
-      const repositories = yield* Config.schema(Repositories, "KIN_MEMORY_REPOSITORIES").pipe(
-        Config.withDefault([]),
-      );
-      if (repositories.length === 0) return Layer.empty;
       return layer.pipe(
         Layer.provide(Layer.succeed(KinLeadPrompt, prompt.value)),
         Layer.provide(MemoryConfig.layer(repositories)),

@@ -78,6 +78,11 @@ export class KinEventQueueUnknownAgent extends Schema.TaggedError<KinEventQueueU
   "KinEventQueueUnknownAgent",
   { orgId: KinOrgId, agentId: KinAgentId },
 ) {}
+export class KinEventQueueRetiredAgent extends Schema.TaggedError<KinEventQueueRetiredAgent>()(
+  "KinEventQueueRetiredAgent",
+  { orgId: KinOrgId, agentId: KinAgentId },
+) {}
+const isRetiredAgent = Schema.is(KinEventQueueRetiredAgent);
 export class KinEventQueueWakeupConflict extends Schema.TaggedError<KinEventQueueWakeupConflict>()(
   "KinEventQueueWakeupConflict",
   { orgId: KinOrgId, wakeupId: KinWakeupId },
@@ -112,8 +117,23 @@ export class KinEventQueue extends Context.Service<
       | KinEventQueueConflict
       | KinEventQueueUnknownEvent
       | KinEventQueueUnknownAgent
+      | KinEventQueueRetiredAgent
     >;
-    // Scope closure releases only the permit; LEAD-5 must finish(timed_out | failed) in its own onExit.
+    readonly changes: (orgId: KinOrgId) => Effect.Effect<Effect.Effect<void>>;
+    readonly nextReady: (
+      orgId: KinOrgId,
+    ) => Effect.Effect<
+      { readonly agentId: KinAgentId; readonly readyAt: number } | undefined,
+      PersistenceSqlError | PersistenceDecodeError
+    >;
+    readonly expireAgent: (
+      orgId: KinOrgId,
+      agentId: KinAgentId,
+    ) => Effect.Effect<
+      void,
+      PersistenceSqlError | PersistenceDecodeError | KinEventQueueUnknownAgent
+    >;
+    // Scope closure releases only the permit; the runner owns wake-up finalization.
     readonly claim: (
       input: ClaimInput,
     ) => Effect.Effect<
@@ -148,13 +168,13 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const organizations = new Map<
     KinOrgId,
-    { gate: Semaphore.Semaphore; changed: Deferred.Deferred<void>; users: number }
+    { gate: Semaphore.Semaphore; changed: Deferred.Deferred<void> }
   >();
 
   const organization = (orgId: KinOrgId) => {
     const existing = organizations.get(orgId);
     if (existing !== undefined) return existing;
-    const entry = { gate: Semaphore.makeUnsafe(1), changed: Deferred.makeUnsafe<void>(), users: 0 };
+    const entry = { gate: Semaphore.makeUnsafe(1), changed: Deferred.makeUnsafe<void>() };
     organizations.set(orgId, entry);
     return entry;
   };
@@ -179,10 +199,18 @@ const make = Effect.gen(function* () {
       }
       return yield* sql.withTransaction(
         Effect.gen(function* () {
-          const agents =
-            yield* sql`SELECT 1 FROM kin_leads WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId}`;
+          const agents = yield* sql<{
+            retired_at: string | null;
+          }>`SELECT a.retired_at FROM kin_leads l
+            JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+            WHERE l.org_id = ${input.orgId} AND l.agent_id = ${input.agentId}`;
           if (agents.length === 0)
             return yield* new KinEventQueueUnknownAgent({
+              orgId: input.orgId,
+              agentId: input.agentId,
+            });
+          if (agents[0]?.retired_at !== null)
+            return yield* new KinEventQueueRetiredAgent({
               orgId: input.orgId,
               agentId: input.agentId,
             });
@@ -229,7 +257,7 @@ const make = Effect.gen(function* () {
       RETURNING event_id
     `;
           if (inserted.length > 0) {
-            yield* notify(event.orgId);
+            yield* sql.afterCommit(notify(event.orgId));
             return { event, duplicate: false };
           }
           const rows = yield* sql<{ json: string }>`SELECT json FROM kin_events
@@ -262,7 +290,7 @@ const make = Effect.gen(function* () {
       );
     },
     Effect.mapError((cause) =>
-      isConflict(cause) || isUnknownEvent(cause) || isUnknownAgent(cause)
+      isConflict(cause) || isUnknownEvent(cause) || isUnknownAgent(cause) || isRetiredAgent(cause)
         ? cause
         : toQueuePersistenceError("KinEventQueue.enqueue")(cause),
     ),
@@ -270,7 +298,7 @@ const make = Effect.gen(function* () {
   );
 
   const readiness = Effect.fn("KinEventQueue.readiness")(function* (
-    input: ClaimInput,
+    input: Pick<ClaimInput, "orgId" | "agentId">,
     now: number,
   ) {
     const [window] = yield* sql<{
@@ -302,17 +330,7 @@ const make = Effect.gen(function* () {
   const claim = Effect.fn("KinEventQueue.claim")(
     function* (input: ClaimInput) {
       yield* decodeClaimInput(input);
-      const entry = yield* Effect.acquireRelease(
-        Effect.sync(() => {
-          const entry = organization(input.orgId);
-          entry.users++;
-          return entry;
-        }),
-        (entry) =>
-          Effect.sync(() => {
-            if (--entry.users === 0) organizations.delete(input.orgId);
-          }),
-      );
+      const entry = organization(input.orgId);
       return yield* Effect.acquireRelease(
         Effect.interruptible(
           Effect.uninterruptibleMask((restore) =>
@@ -501,7 +519,61 @@ const make = Effect.gen(function* () {
     Effect.mapError(toQueuePersistenceError("KinEventQueue.requeueUnfinished")),
   );
 
-  return KinEventQueue.of({ enqueue, claim, release, finish, requeueUnfinished });
+  const changes = Effect.fn("KinEventQueue.changes")((orgId: KinOrgId) =>
+    Effect.sync(() => Deferred.await(organization(orgId).changed)),
+  );
+  const expireAgent = Effect.fn("KinEventQueue.expireAgent")(
+    function* (orgId: KinOrgId, agentId: KinAgentId) {
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const leads =
+            yield* sql`SELECT 1 FROM kin_leads WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+          if (leads.length === 0) return yield* new KinEventQueueUnknownAgent({ orgId, agentId });
+          yield* sql`UPDATE kin_events SET state = 'expired' WHERE org_id = ${orgId} AND agent_id = ${agentId} AND state = 'queued'`;
+        }),
+      );
+      yield* notify(orgId);
+    },
+    Effect.mapError((cause) =>
+      isUnknownAgent(cause) ? cause : toQueuePersistenceError("KinEventQueue.expireAgent")(cause),
+    ),
+  );
+  const nextReady = Effect.fn("KinEventQueue.nextReady")(
+    function* (orgId: KinOrgId) {
+      const now = yield* Clock.currentTimeMillis;
+      const rows = yield* sql<{ agent_id: string }>`SELECT e.agent_id
+        FROM kin_events e JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
+        WHERE e.org_id = ${orgId} AND e.state = 'queued' AND a.retired_at IS NULL
+        GROUP BY e.agent_id ORDER BY e.agent_id`;
+      const candidates = yield* Effect.forEach(rows, (row) =>
+        Effect.gen(function* () {
+          const input = {
+            orgId,
+            agentId: KinAgentId.make(row.agent_id),
+          };
+          const window = yield* readiness(input, now);
+          return {
+            agentId: input.agentId,
+            readyAt: Math.min(window.readyAt, window.next > now ? window.next : Infinity),
+          };
+        }),
+      );
+      return candidates.toSorted(
+        (a, b) => a.readyAt - b.readyAt || a.agentId.localeCompare(b.agentId),
+      )[0];
+    },
+    Effect.mapError(toQueuePersistenceError("KinEventQueue.nextReady")),
+  );
+  return KinEventQueue.of({
+    enqueue,
+    claim,
+    release,
+    finish,
+    requeueUnfinished,
+    changes,
+    expireAgent,
+    nextReady,
+  });
 });
 
 export const layer = Layer.effect(KinEventQueue, make);
