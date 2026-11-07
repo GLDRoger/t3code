@@ -17,7 +17,6 @@ const lead = {
   ownerChatId: "chat-1",
 };
 const item = {
-  orgId: "org-1",
   id: "item-1",
   kind: "deferral",
   title: "Rate limiting",
@@ -34,7 +33,6 @@ const item = {
   links: [],
 };
 const report = {
-  orgId: "org-1",
   result: "done",
   summary: "Built contracts",
   evidence: [{ kind: "commit", ref: "abc", note: "Verified" }],
@@ -55,18 +53,55 @@ const limits = { leadUnits: 2_000_000, workerUnits: 6_000_000 };
 const budget = { orgId: "org-1", day: "2026-11-07", leadUnits: 0.1, workerUnits: 4, limits };
 const state = { orgId: "org-1", paused: false, pausedAt: null, pausedBy: null, reason: null };
 
-type SchemaName = {
-  [K in keyof typeof Kin]: (typeof Kin)[K] extends Schema.Top ? K : never;
-}[keyof typeof Kin];
+const eventSamples = {
+  "chat.message": {
+    ...event,
+    _tag: "chat.message",
+    chatId: "chat-1",
+    messageId: "message-1",
+    provenance: { _tag: "human", personId: "person-1", memberId: "member-1" },
+  },
+  "widget.action": {
+    ...event,
+    _tag: "widget.action",
+    chatId: "chat-1",
+    messageId: "message-1",
+    actionId: "approve",
+  },
+  github: {
+    ...event,
+    _tag: "github",
+    deliveryId: "delivery-1",
+    eventName: "push",
+    repo: "example/project",
+    summary: "Push",
+    scheduledTaskId: "task-1",
+    webhookDeliveryId: "webhook-1",
+    dedupeKey: "delivery-1",
+  },
+  "deferral.due": {
+    ...event,
+    _tag: "deferral.due",
+    subject: { type: "deferral", itemId: "item-1", phase: "heads_up" },
+    lateByMs: 0,
+  },
+  routine: { ...event, _tag: "routine", routine: "morning_brief" },
+  watchdog: { ...event, _tag: "watchdog", finding: "Stale", itemIds: ["item-1"] },
+  "worker.report": { ...event, _tag: "worker.report", workerId: "worker-1", report },
+  "action.resolved": {
+    ...event,
+    _tag: "action.resolved",
+    pendingActionId: "action-1",
+    outcome: "executed",
+  },
+  resume: { ...event, _tag: "resume", pausedAt: at },
+} satisfies Record<Kin.KinEvent["_tag"], unknown>;
 
 const samples = {
   KinEventId: { schema: Kin.KinEventId, values: ["event-1"] },
   KinWorkerId: { schema: Kin.KinWorkerId, values: ["worker-1"] },
   KinMemoryItemId: { schema: Kin.KinMemoryItemId, values: ["item-1"] },
-  KinLevel: { schema: Kin.KinLevel, values: Kin.KinLevel.literals },
   KinLead: { schema: Kin.KinLead, values: [lead, { ...lead, threadId: "thread-1" }] },
-  MemoryItemKind: { schema: Kin.MemoryItemKind, values: Kin.MemoryItemKind.literals },
-  MemoryTrust: { schema: Kin.MemoryTrust, values: Kin.MemoryTrust.literals },
   MemoryItemFrontMatter: {
     schema: Kin.MemoryItemFrontMatter,
     values: [
@@ -77,9 +112,16 @@ const samples = {
         owner: "person-1",
         invalid_at: at,
         superseded_by: "item-2",
-        review_by: at,
+        due: "2026-11-13T09:00+05:30",
+        recorded_at: "2026-11-10T16:20+05:30",
+        valid_from: "2026-11-10T16:20+05:30",
+        review_by: "2026-11-13",
       },
     ],
+  },
+  MemoryItemHead: {
+    schema: Kin.MemoryItemHead,
+    values: [{ ...item, orgId: "org-1", path: "deferrals/item-1.md" }],
   },
   WorkerReport: {
     schema: Kin.WorkerReport,
@@ -92,46 +134,12 @@ const samples = {
   KinEvent: {
     schema: Kin.KinEvent,
     values: [
-      {
-        ...event,
-        _tag: "chat.message",
-        chatId: "chat-1",
-        messageId: "message-1",
-        provenance: { _tag: "human", personId: "person-1", memberId: "member-1" },
-      },
-      {
-        ...event,
-        _tag: "widget.action",
-        chatId: "chat-1",
-        messageId: "message-1",
-        actionId: "approve",
-      },
-      {
-        ...event,
-        _tag: "github",
-        deliveryId: "delivery-1",
-        eventName: "push",
-        repo: "GLDRoger/t3code",
-        summary: "Push",
-        payloadRef: "delivery-1",
-        dedupeKey: "github:delivery-1",
-      },
-      { ...event, _tag: "deferral.due", itemId: "item-1", firedLateBy: null },
-      { ...event, _tag: "deferral.due", itemId: "item-1", firedLateBy: 100 },
-      ...["morning", "evening", "weekly_check"].map((routine) => ({
-        ...event,
-        _tag: "routine",
-        routine,
-      })),
-      { ...event, _tag: "watchdog", finding: "Stale", itemIds: ["item-1"] },
-      { ...event, _tag: "worker.report", workerId: "worker-1", report },
-      ...["executed", "rejected", "expired", "failed"].map((outcome) => ({
-        ...event,
-        _tag: "action.resolved",
-        pendingActionId: "action-1",
-        outcome,
-      })),
-      { ...event, _tag: "resume", pausedAt: at },
+      ...Object.values(eventSamples),
+      ...[
+        { type: "deferral", itemId: "item-1", phase: "due" },
+        { type: "reminder", itemId: "item-1" },
+        { type: "followup", itemId: "item-1", person: "person-1" },
+      ].map((subject) => ({ ...eventSamples["deferral.due"], subject, lateByMs: 100 })),
     ],
   },
   KinBudgetLimits: {
@@ -150,7 +158,7 @@ const samples = {
     values: [{ orgId: "org-1" }, { orgId: "org-1", reason: "Stop" }],
   },
   KinOrgResumeInput: { schema: Kin.KinOrgResumeInput, values: [{ orgId: "org-1" }] },
-} satisfies Record<SchemaName, { schema: Schema.Codec<unknown>; values: ReadonlyArray<unknown> }>;
+} satisfies Record<string, { schema: Schema.Codec<unknown>; values: ReadonlyArray<unknown> }>;
 
 describe("Kin lead contracts", () => {
   it.each(Object.entries(samples))("round-trips %s", (_name, { schema, values }) => {
@@ -171,14 +179,23 @@ describe("Kin lead contracts", () => {
 
   it.each([
     { schema: Kin.WorkerReport, value: { ...report, summary: "x".repeat(801) } },
-    { schema: Kin.WorkerReport, value: { ...report, orgId: "" } },
-    { schema: Kin.MemoryItemFrontMatter, value: { ...item, orgId: "" } },
+    { schema: Kin.KinLead, value: { ...lead, levelSince: "yesterday" } },
+    { schema: Kin.KinLead, value: { ...lead, levelSince: "2026-11-07T05:30:00.000+05:30" } },
+    { schema: Kin.KinBudget, value: { ...budget, day: "tomorrow" } },
+    { schema: Kin.KinBudget, value: { ...budget, leadUnits: Infinity } },
+    { schema: Kin.KinBudgetLimits, value: { ...limits, workerUnits: Infinity } },
+    { schema: Kin.KinOrgState, value: { ...state, paused: true } },
+    {
+      schema: Kin.KinOrgState,
+      value: { orgId: "org-1", paused: true, pausedBy: "person-1", reason: null },
+    },
+    { schema: Kin.KinEvent, value: { ...eventSamples.routine, routine: "weekly_check" } },
     { schema: Kin.KinBudgetLimits, value: { leadUnits: -1, workerUnits: 0 } },
     { schema: Kin.KinBudgetLimits, value: { leadUnits: 0, workerUnits: 0.5 } },
     { schema: Kin.KinBudget, value: { ...budget, leadUnits: -0.1 } },
     {
       schema: Kin.KinEvent,
-      value: { ...event, _tag: "deferral.due", itemId: "item-1", firedLateBy: -1 },
+      value: { ...eventSamples["deferral.due"], lateByMs: -1 },
     },
   ])("rejects invalid payload $value", ({ schema, value }) => {
     const codec: Schema.Codec<unknown> = schema;

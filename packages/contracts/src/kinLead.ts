@@ -1,9 +1,11 @@
+import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import {
-  IsoDateTime,
   NonNegativeInt,
   ProjectId,
+  ScheduledTaskId,
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
@@ -16,6 +18,7 @@ import {
   KinPersonId,
 } from "./kinChat.ts";
 import { ModelSelection } from "./modelSelection.ts";
+import { ScheduledTaskWebhookDeliveryId } from "./scheduledTask.ts";
 
 export const KinEventId = TrimmedNonEmptyString.pipe(Schema.brand("KinEventId"));
 export type KinEventId = typeof KinEventId.Type;
@@ -24,6 +27,21 @@ export type KinWorkerId = typeof KinWorkerId.Type;
 export const KinMemoryItemId = TrimmedNonEmptyString.pipe(Schema.brand("KinMemoryItemId"));
 export type KinMemoryItemId = typeof KinMemoryItemId.Type;
 
+const CanonicalUtcTimestamp = Schema.String.check(
+  Schema.makeFilter(
+    (value) => {
+      return Option.exists(
+        DateTime.make(value),
+        (dateTime) => DateTime.formatIso(dateTime) === value,
+      );
+    },
+    { expected: "a canonical UTC timestamp (YYYY-MM-DDTHH:mm:ss.sssZ)" },
+  ),
+).pipe(Schema.decodeTo(Schema.DateTimeUtcFromString));
+
+export const KinLeadRoutine = Schema.Literals(["morning_brief", "evening_summary", "owner_check"]);
+export type KinLeadRoutine = typeof KinLeadRoutine.Type;
+
 export const KinLevel = Schema.Literals(["L0", "L1", "L2", "L3"]);
 export type KinLevel = typeof KinLevel.Type;
 export const KinLead = Schema.Struct({
@@ -31,7 +49,7 @@ export const KinLead = Schema.Struct({
   agentId: KinAgentId,
   name: TrimmedNonEmptyString,
   level: KinLevel,
-  levelSince: IsoDateTime,
+  levelSince: CanonicalUtcTimestamp,
   threadId: Schema.NullOr(ThreadId),
   models: Schema.Struct({ strong: ModelSelection, cheap: ModelSelection }),
   workerProjects: Schema.Array(ProjectId),
@@ -51,19 +69,18 @@ export type MemoryItemKind = typeof MemoryItemKind.Type;
 export const MemoryTrust = Schema.Literals(["owner", "member", "external", "agent"]);
 export type MemoryTrust = typeof MemoryTrust.Type;
 export const MemoryItemFrontMatter = Schema.Struct({
-  orgId: KinOrgId,
   id: KinMemoryItemId,
   kind: MemoryItemKind,
   title: Schema.String,
   status: Schema.Literals(["open", "done", "cancelled", "superseded"]),
-  due: Schema.NullOr(IsoDateTime),
+  due: Schema.NullOr(Schema.String),
   on_due: Schema.optional(Schema.Literals(["remind", "start", "ask", "chase"])),
   owner: Schema.optional(TrimmedNonEmptyString),
-  recorded_at: IsoDateTime,
-  valid_from: IsoDateTime,
-  invalid_at: Schema.NullOr(IsoDateTime),
+  recorded_at: Schema.String,
+  valid_from: Schema.String,
+  invalid_at: Schema.NullOr(Schema.String),
   superseded_by: Schema.NullOr(KinMemoryItemId),
-  review_by: Schema.NullOr(IsoDateTime),
+  review_by: Schema.NullOr(Schema.String),
   source: Schema.String,
   said_by: TrimmedNonEmptyString,
   trust: MemoryTrust,
@@ -71,8 +88,14 @@ export const MemoryItemFrontMatter = Schema.Struct({
 });
 export type MemoryItemFrontMatter = typeof MemoryItemFrontMatter.Type;
 
-export const WorkerReport = Schema.Struct({
+export const MemoryItemHead = Schema.Struct({
+  ...MemoryItemFrontMatter.fields,
   orgId: KinOrgId,
+  path: TrimmedNonEmptyString,
+});
+export type MemoryItemHead = typeof MemoryItemHead.Type;
+
+export const WorkerReport = Schema.Struct({
   result: Schema.Literals(["done", "blocked", "needs_decision"]),
   summary: Schema.String.check(Schema.isMaxLength(800)),
   evidence: Schema.Array(
@@ -108,7 +131,7 @@ const EventBase = {
   orgId: KinOrgId,
   eventId: KinEventId,
   agentId: KinAgentId,
-  receivedAt: IsoDateTime,
+  receivedAt: CanonicalUtcTimestamp,
   dedupeKey: Schema.NullOr(TrimmedNonEmptyString),
   provenance: KinAuthor,
 };
@@ -126,16 +149,29 @@ export const KinEvent = Schema.Union([
     eventName: TrimmedNonEmptyString,
     repo: TrimmedNonEmptyString,
     summary: Schema.String,
-    payloadRef: TrimmedNonEmptyString,
+    scheduledTaskId: ScheduledTaskId,
+    webhookDeliveryId: ScheduledTaskWebhookDeliveryId,
   }),
   Schema.TaggedStruct("deferral.due", {
     ...EventBase,
-    itemId: KinMemoryItemId,
-    firedLateBy: Schema.NullOr(Schema.Number.check(Schema.isGreaterThanOrEqualTo(0))),
+    subject: Schema.Union([
+      Schema.Struct({
+        type: Schema.Literal("deferral"),
+        itemId: KinMemoryItemId,
+        phase: Schema.Literals(["heads_up", "due"]),
+      }),
+      Schema.Struct({ type: Schema.Literal("reminder"), itemId: KinMemoryItemId }),
+      Schema.Struct({
+        type: Schema.Literal("followup"),
+        itemId: KinMemoryItemId,
+        person: KinPersonId,
+      }),
+    ]),
+    lateByMs: NonNegativeInt,
   }),
   Schema.TaggedStruct("routine", {
     ...EventBase,
-    routine: Schema.Literals(["morning", "evening", "weekly_check"]),
+    routine: KinLeadRoutine,
   }),
   Schema.TaggedStruct("watchdog", {
     ...EventBase,
@@ -152,20 +188,20 @@ export const KinEvent = Schema.Union([
     pendingActionId: TrimmedNonEmptyString,
     outcome: Schema.Literals(["executed", "rejected", "expired", "failed"]),
   }),
-  Schema.TaggedStruct("resume", { ...EventBase, pausedAt: IsoDateTime }),
+  Schema.TaggedStruct("resume", { ...EventBase, pausedAt: CanonicalUtcTimestamp }),
 ]);
 export type KinEvent = typeof KinEvent.Type;
 
 export const KinBudgetLimits = Schema.Struct({
-  leadUnits: NonNegativeInt,
-  workerUnits: NonNegativeInt,
+  leadUnits: Schema.Finite.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  workerUnits: Schema.Finite.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
 });
 export type KinBudgetLimits = typeof KinBudgetLimits.Type;
 export const KinBudget = Schema.Struct({
   orgId: KinOrgId,
-  day: TrimmedNonEmptyString,
-  leadUnits: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
-  workerUnits: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  day: Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/)),
+  leadUnits: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+  workerUnits: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
   limits: KinBudgetLimits,
 });
 export type KinBudget = typeof KinBudget.Type;
@@ -174,13 +210,22 @@ export type KinBudgetGetInput = typeof KinBudgetGetInput.Type;
 export const KinBudgetSetInput = Schema.Struct({ orgId: KinOrgId, limits: KinBudgetLimits });
 export type KinBudgetSetInput = typeof KinBudgetSetInput.Type;
 
-export const KinOrgState = Schema.Struct({
-  orgId: KinOrgId,
-  paused: Schema.Boolean,
-  pausedAt: Schema.NullOr(IsoDateTime),
-  pausedBy: Schema.NullOr(KinPersonId),
-  reason: Schema.NullOr(Schema.String),
-});
+export const KinOrgState = Schema.Union([
+  Schema.Struct({
+    orgId: KinOrgId,
+    paused: Schema.Literal(false),
+    pausedAt: Schema.Null,
+    pausedBy: Schema.Null,
+    reason: Schema.Null,
+  }),
+  Schema.Struct({
+    orgId: KinOrgId,
+    paused: Schema.Literal(true),
+    pausedAt: CanonicalUtcTimestamp,
+    pausedBy: KinPersonId,
+    reason: Schema.NullOr(Schema.String),
+  }),
+]);
 export type KinOrgState = typeof KinOrgState.Type;
 export const KinOrgPauseInput = Schema.Struct({
   orgId: KinOrgId,

@@ -14,7 +14,7 @@ export default Effect.gen(function* () {
       org_id TEXT NOT NULL REFERENCES kin_orgs(org_id),
       name TEXT NOT NULL,
       level TEXT NOT NULL DEFAULT 'L0' CHECK (level IN ('L0', 'L1', 'L2', 'L3')),
-      level_since TEXT NOT NULL,
+      level_since INTEGER NOT NULL,
       thread_id TEXT,
       models_json TEXT NOT NULL,
       worker_projects_json TEXT NOT NULL,
@@ -32,8 +32,8 @@ export default Effect.gen(function* () {
       thread_id TEXT,
       run_id TEXT,
       model TEXT NOT NULL,
-      started_at TEXT NOT NULL,
-      ended_at TEXT,
+      started_at INTEGER NOT NULL,
+      ended_at INTEGER,
       status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'interrupted', 'timed_out')),
       event_ids TEXT NOT NULL,
       tokens_json TEXT,
@@ -51,24 +51,22 @@ export default Effect.gen(function* () {
       event_id TEXT NOT NULL PRIMARY KEY,
       org_id TEXT NOT NULL REFERENCES kin_orgs(org_id),
       agent_id TEXT NOT NULL,
-      tag TEXT NOT NULL CHECK (tag IN (
-        'chat.message', 'widget.action', 'github', 'deferral.due', 'routine',
-        'watchdog', 'worker.report', 'action.resolved', 'resume'
-      )),
+      tag TEXT NOT NULL,
       priority TEXT NOT NULL CHECK (priority IN ('P0', 'P1', 'P2', 'P3')),
       json TEXT NOT NULL,
       dedupe_key TEXT,
-      received_at TEXT NOT NULL,
-      state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued', 'claimed', 'done', 'expired', 'deferred')),
+      received_at INTEGER NOT NULL,
+      state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued', 'claimed', 'done', 'expired')),
       wakeup_id TEXT,
-      not_before TEXT,
+      not_before INTEGER,
       attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
       FOREIGN KEY (org_id, agent_id) REFERENCES kin_leads(org_id, agent_id),
       FOREIGN KEY (org_id, wakeup_id) REFERENCES kin_wakeups(org_id, wakeup_id)
     )
   `;
+  yield* sql`CREATE INDEX idx_kin_events_wakeup ON kin_events(wakeup_id)`;
   yield* sql`CREATE UNIQUE INDEX idx_kin_events_dedupe ON kin_events(org_id, dedupe_key)`;
-  yield* sql`CREATE INDEX idx_kin_events_queue ON kin_events(org_id, agent_id, state, not_before, received_at)`;
+  yield* sql`CREATE INDEX idx_kin_events_queue ON kin_events(org_id, agent_id, state, priority, received_at, not_before)`;
   yield* sql`
     CREATE TABLE kin_workers (
       worker_id TEXT NOT NULL PRIMARY KEY,
@@ -80,14 +78,12 @@ export default Effect.gen(function* () {
       review_of TEXT,
       model_json TEXT NOT NULL,
       provenance_json TEXT NOT NULL,
-      status TEXT NOT NULL CHECK (status IN (
-        'preparing', 'queued', 'starting', 'running', 'waiting', 'completed',
-        'interrupted', 'failed', 'cancelled', 'rolled_back'
-      )),
+      status TEXT NOT NULL,
       report_json TEXT,
-      started_at TEXT NOT NULL,
-      ended_at TEXT,
+      started_at INTEGER NOT NULL,
+      ended_at INTEGER,
       UNIQUE (org_id, worker_id),
+      UNIQUE (thread_id),
       FOREIGN KEY (org_id, agent_id) REFERENCES kin_leads(org_id, agent_id),
       FOREIGN KEY (org_id, wakeup_id) REFERENCES kin_wakeups(org_id, wakeup_id),
       FOREIGN KEY (org_id, review_of) REFERENCES kin_workers(org_id, worker_id)
@@ -109,26 +105,33 @@ export default Effect.gen(function* () {
       agent_id TEXT NOT NULL,
       wakeup_id TEXT NOT NULL,
       level TEXT NOT NULL CHECK (level IN ('L0', 'L1', 'L2', 'L3')),
+      unlocks_level TEXT NOT NULL CHECK (unlocks_level IN ('L1', 'L2', 'L3')),
       tool TEXT NOT NULL,
       input_json TEXT NOT NULL,
       would_target TEXT NOT NULL,
-      created_at TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
       verdict TEXT CHECK (verdict IN ('fine', 'change', 'wrong', 'harmful')),
       verdict_note TEXT,
-      reviewed_at TEXT,
+      reviewed_at INTEGER,
       FOREIGN KEY (org_id, agent_id) REFERENCES kin_leads(org_id, agent_id),
       FOREIGN KEY (org_id, wakeup_id) REFERENCES kin_wakeups(org_id, wakeup_id)
     )
   `;
+  yield* sql`CREATE INDEX idx_kin_shadow_entries_promotion ON kin_shadow_entries(org_id, agent_id, unlocks_level, verdict)`;
   yield* sql`CREATE INDEX idx_kin_shadow_entries_review ON kin_shadow_entries(org_id, agent_id, created_at)`;
+  yield* sql`
+    CREATE TABLE kin_budget_limits (
+      org_id TEXT NOT NULL PRIMARY KEY REFERENCES kin_orgs(org_id),
+      limits_json TEXT NOT NULL
+    )
+  `;
   yield* sql`
     CREATE TABLE kin_budget (
       org_id TEXT NOT NULL REFERENCES kin_orgs(org_id),
-      day TEXT NOT NULL,
+      day TEXT NOT NULL CHECK (day GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
       lead_units REAL NOT NULL DEFAULT 0 CHECK (lead_units >= 0),
       worker_units REAL NOT NULL DEFAULT 0 CHECK (worker_units >= 0),
-      limits_json TEXT NOT NULL,
-      exhausted_notified_at TEXT,
+      exhausted_notified_at INTEGER,
       PRIMARY KEY (org_id, day)
     )
   `;
@@ -136,7 +139,7 @@ export default Effect.gen(function* () {
     CREATE TABLE kin_org_state (
       org_id TEXT NOT NULL PRIMARY KEY REFERENCES kin_orgs(org_id),
       paused INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
-      paused_at TEXT,
+      paused_at INTEGER,
       paused_by TEXT,
       reason TEXT,
       CHECK ((paused = 0 AND paused_at IS NULL AND paused_by IS NULL AND reason IS NULL)

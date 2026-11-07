@@ -48,7 +48,7 @@ Only one wake-up runs per organization at a time. Every wake-up counts against a
 
 ### Records
 
-Every record carries `orgId`. Schemas live in **new** `packages/contracts/src/kinLead.ts`. `KinOrgId`, `KinAgentId`, `KinChatId`, `KinMessageId` and `KinAuthor` come from the chat spec (`kinChat.ts`). A lead is a `KinAgent` with role `lead`; `kin_leads` stores its config keyed by that same `agentId`, not a separate lead identity. Timestamps use upstream's `IsoDateTime` wire convention. Event, worker and memory item ids use `TrimmedNonEmptyString` brands (`KinEventId`, `KinWorkerId`, `KinMemoryItemId`).
+Top-level server records carry `orgId`; memory front matter and nested worker reports inherit organization context. Schemas live in **new** `packages/contracts/src/kinLead.ts`. `KinOrgId`, `KinAgentId`, `KinChatId`, `KinMessageId` and `KinAuthor` come from the chat spec (`kinChat.ts`). A lead is a `KinAgent` with role `lead`; `kin_leads` stores its config keyed by that same `agentId`, not a separate lead identity. Server-generated timestamps use `CanonicalUtcTimestamp`, validated as `YYYY-MM-DDTHH:mm:ss.sssZ`; SQLite stores time-comparison columns as INTEGER epoch milliseconds. Front matter dates remain permissive strings. Event, worker and memory item ids use `TrimmedNonEmptyString` brands (`KinEventId`, `KinWorkerId`, `KinMemoryItemId`).
 
 ```ts
 export const KinLevel = Schema.Literals(["L0", "L1", "L2", "L3"]);
@@ -58,7 +58,7 @@ export const KinLead = Schema.Struct({
   agentId: KinAgentId,
   name: TrimmedNonEmptyString, // "tech-lead"
   level: KinLevel,
-  levelSince: IsoDateTime,
+  levelSince: CanonicalUtcTimestamp,
   threadId: Schema.NullOr(ThreadId), // the lead's T3 thread, created on first wake-up
   models: Schema.Struct({ strong: ModelSelection, cheap: ModelSelection }),
   workerProjects: Schema.Array(ProjectId), // code projects it may delegate into
@@ -73,10 +73,12 @@ const EventBase = {
   orgId: KinOrgId,
   eventId: KinEventId, // ulid
   agentId: KinAgentId, // the router (phase 3) picks; phase 1 has one lead
-  receivedAt: IsoDateTime,
+  receivedAt: CanonicalUtcTimestamp,
   dedupeKey: Schema.NullOr(TrimmedNonEmptyString), // unique per org; replays are dropped
   provenance: KinAuthor, // server-verified; webhooks and timers are "system"
 };
+
+export const KinLeadRoutine = Schema.Literals(["morning_brief", "evening_summary", "owner_check"]);
 
 export const KinEvent = Schema.Union([
   Schema.TaggedStruct("chat.message", { ...EventBase, chatId: KinChatId, messageId: KinMessageId }),
@@ -92,16 +94,29 @@ export const KinEvent = Schema.Union([
     eventName: TrimmedNonEmptyString,
     repo: TrimmedNonEmptyString,
     summary: Schema.String,
-    payloadRef: TrimmedNonEmptyString,
+    scheduledTaskId: ScheduledTaskId,
+    webhookDeliveryId: ScheduledTaskWebhookDeliveryId,
   }),
   Schema.TaggedStruct("deferral.due", {
     ...EventBase,
-    itemId: KinMemoryItemId,
-    firedLateBy: Schema.NullOr(Schema.Number.check(Schema.isGreaterThanOrEqualTo(0))),
+    subject: Schema.Union([
+      Schema.Struct({
+        type: Schema.Literal("deferral"),
+        itemId: KinMemoryItemId,
+        phase: Schema.Literals(["heads_up", "due"]),
+      }),
+      Schema.Struct({ type: Schema.Literal("reminder"), itemId: KinMemoryItemId }),
+      Schema.Struct({
+        type: Schema.Literal("followup"),
+        itemId: KinMemoryItemId,
+        person: KinPersonId,
+      }),
+    ]),
+    lateByMs: NonNegativeInt,
   }),
   Schema.TaggedStruct("routine", {
     ...EventBase,
-    routine: Schema.Literals(["morning", "evening", "weekly_check"]),
+    routine: KinLeadRoutine,
   }),
   Schema.TaggedStruct("watchdog", {
     ...EventBase,
@@ -118,11 +133,11 @@ export const KinEvent = Schema.Union([
     pendingActionId: TrimmedNonEmptyString,
     outcome: Schema.Literals(["executed", "rejected", "expired", "failed"]),
   }),
-  Schema.TaggedStruct("resume", { ...EventBase, pausedAt: IsoDateTime }),
+  Schema.TaggedStruct("resume", { ...EventBase, pausedAt: CanonicalUtcTimestamp }),
 ]);
 ```
 
-Events carry references, not bodies. The lead reads the message or payload through its tools, so the queue never holds large or secret text. `payloadRef` points at the webhook delivery stored by `ScheduledTaskService` (`getWebhookDelivery`).
+Events carry references, not bodies. The lead reads the message or payload through its tools, so the queue never holds large or secret text. `scheduledTaskId` and `webhookDeliveryId` identify the stored payload for `ScheduledTaskService.getWebhookDelivery`. `deliveryId` is GitHub’s `x-github-delivery` header and is used unchanged as the github event’s `dedupeKey`. The `deferral.due.subject` union directly mirrors the triggers spec’s deferral (including `phase`), reminder and followup subjects; `lateByMs` is a non-negative integer.
 
 | Source                                           | Event             | Producer                                                 |
 | ------------------------------------------------ | ----------------- | -------------------------------------------------------- |
@@ -140,7 +155,7 @@ All producers call one entry point: `KinEventQueue.enqueue(event)`. Nothing else
 
 ### The per-organization queue and coalescing (gap 1)
 
-Table `kin_events` (**new**): `org_id, event_id, agent_id, tag, priority, json, dedupe_key, received_at, state ('queued' | 'claimed' | 'done' | 'expired' | 'deferred'), wakeup_id, not_before, attempts`. `attempts` starts at zero and counts wake-up attempts for the three-try failure limit. Unique index on `(org_id, dedupe_key)`.
+Table `kin_events` (**new**): `org_id, event_id, agent_id, tag, priority, json, dedupe_key, received_at, state ('queued' | 'claimed' | 'done' | 'expired'), wakeup_id, not_before, attempts`. `attempts` starts at zero and counts wake-up attempts for the three-try failure limit. Unique index on `(org_id, dedupe_key)`.
 
 Priority (gap 2), set by code from the tag and provenance, never by a model:
 
@@ -155,12 +170,12 @@ Priority (gap 2), set by code from the tag and provenance, never by a model:
 Coalescing:
 
 - An organization's runner sleeps until it has queued events, then waits for a quiet window: 20 s with no new event, capped at 120 s after the first event. For a P0 event the window is 2 s.
-- It then claims every queued event for that lead whose `not_before` has passed, in one transaction, and starts one wake-up for the batch. Twenty webhook events from one push become one wake-up.
+- It then claims every queued event for that lead whose `not_before` has passed, ordered by `priority, received_at`, in one transaction, and starts one wake-up for the batch. The claim index is `(org_id, agent_id, state, priority, received_at, not_before)`. Twenty webhook events from one push become one wake-up.
 - A batch holds at most 50 events. Same-repo `github` events beyond that fold into one line ("31 more events on GLDRoger/t3code, see payloads").
 - Events that arrive while a wake-up runs wait for the next one. The runner never starts a second session for the same organization. This is the one-writer rule: memory is written only inside a wake-up, and wake-ups are serial.
 - Implementation: one `Effect.Semaphore(1)` per `orgId` held for the whole wake-up, plus the `claimed` state in SQLite so a restart sees what was in flight.
 
-Restart: on startup, events in `claimed` whose wake-up never finished go back to `queued` (the runner checks the lead thread's last run first; see failure cases).
+Restart: on startup, events in `claimed` whose wake-up never finished go back to `queued` (the runner checks the lead thread's last run first; see failure cases); an index on `kin_events.wakeup_id` supports requeue by wake-up.
 
 ### A wake-up (one fresh lead session)
 
@@ -177,7 +192,7 @@ Setup once per organization (in `Memory.ensureCheckouts`):
 Each wake-up:
 
 1. `KinStop.isPaused(orgId)` → leave events queued and return.
-2. `KinBudget.admit(orgId, batchPriority)` → if refused, mark lower-priority events `deferred` with `not_before` = next budget reset and run what remains.
+2. `KinBudget.admit(orgId, batchPriority)` → if refused, leave lower-priority events `queued` with `not_before` = next budget reset and run what remains.
 3. Pick the model: `models.strong` if the batch holds a P0 or P1 event, a contradiction question or a `routine`; otherwise `models.cheap`.
 4. `Memory.prepareWakeup(orgId)`: `git pull --ff-only` in the writer checkout, move the read checkout to the new HEAD (`checkout --detach`, `reset --hard`, `clean -fdx`), and rebuild `INDEX.md` first if its "As of" line is older than 36 hours.
 5. Build the prompt (below).
@@ -238,13 +253,12 @@ Design correction: workers are not started with `delegate_task`. See "Design cor
 1. Check level (L2+), budget (`KinBudget.admitWorker`), and that `projectId` is in `workerProjects`. For `review`, require `reviewOf` and a model whose `instanceId` and `model` both differ from the author worker's; take only the goal and the author's PR or diff ref, never the lead's brief.
 2. Build the brief: the line "You were called by Kin. Do this task yourself.", the goal, the lead's brief, `quoted` blocks with roles, the named memory items copied read-only, and the report format below.
 3. `ThreadLaunchService.launch({ commandId: "kin-worker:<wakeupId>:<n>", projectId, title, modelSelection, runtimeMode: "full-access", interactionMode: "default", workspaceStrategy: { type: "worktree", baseRef: baseRef ?? "origin/<default>", startFromOrigin: true }, initialMessage: { text: brief, attachments: [] }, createdBy: "agent", creationSource: "server" })`.
-4. Insert `kin_workers` (**new**): `org_id, worker_id, agent_id, wakeup_id, kind, thread_id, review_of, model_json, provenance_json, status, report_json, started_at, ended_at`. `status` uses `OrchestrationV2RunStatus`, including `cancelled`. `provenance_json` holds the author of the event that started the work, for the approvals spec's provenance ceiling.
+4. Insert `kin_workers` (**new**): `org_id, worker_id, agent_id, wakeup_id, kind, thread_id, review_of, model_json, provenance_json, status, report_json, started_at, ended_at`. `thread_id` is unique. `status` uses `OrchestrationV2RunStatus`, including `cancelled`, validated by the schema rather than a closed SQL CHECK. `provenance_json` holds the author of the event that started the work, for the approvals spec's provenance ceiling.
 
 `WorkerTracker` follows `EventSinkV2.stream({ eventType: "run.updated", afterSequence })` (unbounded form), storing the last sequence in `kin_cursor (org_id, consumer, after_sequence)`, keyed by `(org_id, consumer)`; the worker tracker uses consumer `worker-tracker`. When a worker thread's run ends, it calls `waitForThread({ untilDelegatedWorkSettled: true, timeoutMs: 0 })` to make sure the worker's own children are done, reads the last assistant message, parses the report, and enqueues `worker.report` at P1.
 
 ```ts
 export const WorkerReport = Schema.Struct({
-  orgId: KinOrgId,
   result: Schema.Literals(["done", "blocked", "needs_decision"]),
   summary: Schema.String.check(Schema.isMaxLength(800)),
   evidence: Schema.Array(
@@ -276,7 +290,7 @@ export const WorkerReport = Schema.Struct({
 });
 ```
 
-The worker ends its reply with one fenced block tagged `kin-report` holding the JSON (without `orgId` or `parsed`); the tracker stamps both from server context. If the run failed or was cancelled, or the block is missing or invalid, Kin synthesizes `{ orgId, result: "blocked", summary: "Worker ended <status> without a report.", evidence: [{ kind: "link", ref: <thread link> }], parsed: false }`. Memory suggestions are only suggestions; the lead decides what to keep. `misleadingMemory` entries set `misleading: true` in the cache, which drops the item in `memory_search` ranking until fixed.
+The worker ends its reply with one fenced block tagged `kin-report` holding the JSON (without `parsed`); the tracker stamps `parsed` and puts `orgId` on the enclosing event from server context. If the run failed or was cancelled, or the block is missing or invalid, Kin synthesizes `{ result: "blocked", summary: "Worker ended <status> without a report.", evidence: [{ kind: "link", ref: <thread link> }], parsed: false }`. Memory suggestions are only suggestions; the lead decides what to keep. `misleadingMemory` entries set `misleading: true` in the cache, which drops the item in `memory_search` ranking until fixed.
 
 The stray-delegation guard: `WorkerTracker` also watches `subagent.updated` events on lead threads. An `app_owned` child there means the lead called `delegate_task` against its instructions. Kin calls `stopDelegatedTasks` on the lead thread and journals it.
 
@@ -295,23 +309,29 @@ export const MemoryItemKind = Schema.Literals([
 ]);
 export const MemoryTrust = Schema.Literals(["owner", "member", "external", "agent"]);
 export const MemoryItemFrontMatter = Schema.Struct({
-  orgId: KinOrgId,
   id: KinMemoryItemId,
   kind: MemoryItemKind,
   title: Schema.String,
   status: Schema.Literals(["open", "done", "cancelled", "superseded"]),
-  due: Schema.NullOr(IsoDateTime),
+  due: Schema.NullOr(Schema.String),
   on_due: Schema.optional(Schema.Literals(["remind", "start", "ask", "chase"])),
   owner: Schema.optional(TrimmedNonEmptyString),
-  recorded_at: IsoDateTime,
-  valid_from: IsoDateTime,
-  invalid_at: Schema.NullOr(IsoDateTime),
+  recorded_at: Schema.String,
+  valid_from: Schema.String,
+  invalid_at: Schema.NullOr(Schema.String),
   superseded_by: Schema.NullOr(KinMemoryItemId),
-  review_by: Schema.NullOr(IsoDateTime),
+  review_by: Schema.NullOr(Schema.String),
   source: Schema.String,
   said_by: TrimmedNonEmptyString,
   trust: MemoryTrust,
   links: Schema.Array(Schema.String),
+});
+
+// Server-side cache record, not written to YAML.
+export const MemoryItemHead = Schema.Struct({
+  ...MemoryItemFrontMatter.fields,
+  orgId: KinOrgId,
+  path: TrimmedNonEmptyString,
 });
 
 export class Memory extends Context.Service<
@@ -350,7 +370,9 @@ Branches: at L1 and above the writer commits to the default branch. At L0 it com
 
 Push failures retry with backoff. Unpushed commits stay local and the next `prepareWakeup` rebases them on `pull`. A rebase conflict (the owner edited the same file on GitHub) stops memory writes for that organization and posts a card to the owner.
 
-Front matter includes `orgId` even though each checkout belongs to one organization; `owner` and `said_by` hold person handles, as in kin-memory.
+Front matter matches the kin-memory README, including snake_case keys and permissive date strings. `owner` and `said_by` hold handles; `orgId` and `path` belong only to the server-side `MemoryItemHead`.
+
+LEAD-6: the front matter parser must use YAML’s core or JSON schema; YAML 1.1 turns `review_by: 2026-11-13` into a Date.
 
 The front matter cache is an in-process map per organization, filled from the read checkout at startup and updated on each commit. `memory_search` and the triggers spec's schedulers read it. It can always be rebuilt from git.
 
@@ -383,7 +405,7 @@ Effective level for a call is `min(lead.level, chat.level)` for chat targets, an
 | `request_action` merge                        | shadow        | shadow              | shadow                   | yes, low-risk targets only (approvals spec classifies) |
 | `memory_write`                                | shadow branch | default branch      | default branch           | default branch                                         |
 
-"Shadow" means the handler does not act. It writes a `kin_shadow_entries` row (**new**: `org_id, entry_id, agent_id, wakeup_id, level, tool, input_json, would_target, created_at, verdict, verdict_note, reviewed_at`) and returns `{ shadowed: true, entryId }` so the lead carries on as if it had acted. Verdicts persist as `fine`, `change`, `wrong`, or `harmful`; an unreviewed entry has null verdict fields.
+"Shadow" means the handler does not act. It writes a `kin_shadow_entries` row (**new**: `org_id, entry_id, agent_id, wakeup_id, level, unlocks_level, tool, input_json, would_target, created_at, verdict, verdict_note, reviewed_at`) and returns `{ shadowed: true, entryId }` so the lead carries on as if it had acted. `unlocks_level` is set when the entry is written to the level that unlocks the action. Verdicts persist as `fine`, `change`, `wrong`, or `harmful`; an unreviewed entry has null verdict fields.
 
 L0 "writes only to the owner's summary": the owner's summary is one live widget message in the owner's direct chat (`ownerChatId`), titled "What tech-lead would have done today". The runner updates it in place after each wake-up from that day's shadow entries. Section 9 applies at every level: privileged actions still need a signed grant.
 
@@ -392,7 +414,7 @@ Memory at L0 goes to the shadow branch so the lead can keep track of its own def
 ### Level promotion (gap 6)
 
 1. Every evening during a level's trial, the evening routine includes a review card for the day's shadow entries: each shows what would have been posted or done, with buttons Fine as is, I'd change it, Wrong, Harmful. A verdict is a `widget.action` from the owner, recorded on the entry.
-2. A lead is eligible to move from level N to N+1 when all of these hold: at least 7 days at level N; at least 20 entries reviewed for the tools that N+1 unlocks; at least 80% Fine as is; no Harmful.
+2. A lead is eligible to move from level N to N+1 when all of these hold: at least 7 days at level N; at least 20 entries reviewed with `unlocks_level = N+1`, counted per `(org_id, agent_id, unlocks_level, verdict)`; at least 80% Fine as is; no Harmful.
 3. When eligible, the owner's direct chat gets one card: "tech-lead is ready for L1: 34 of 39 would have gone out unchanged, none harmful." [Raise to L1] [Another week].
 4. Raising a level is a permission change, so it is a privileged action. The card button creates a `KinPendingAction { kind: "kin.level.set" }` through the approvals spec, and the change applies only with the owner's signed grant. The lead cannot request it.
 5. Lowering a level needs no signature and applies at once (owner, settings or chat). A Harmful verdict on a live action at L1+ lowers the lead one level automatically and tells the owner why.
@@ -401,11 +423,11 @@ Thresholds live in code (`KinLevels.promotionRule`) and are shown on the card.
 
 ### Budget (gap 2)
 
-T3 runs on the owner's subscriptions, so budget is counted in tokens, not money. Per organization, in `kin_budget` (**new**: `org_id, day, lead_units, worker_units, limits_json, exhausted_notified_at`):
+T3 runs on the owner's subscriptions, so budget is counted in tokens, not money. Per organization, in `kin_budget` (**new**: `org_id, day, lead_units, worker_units, exhausted_notified_at`):
 
 - `units = (inputTokens − cachedInputTokens) + 0.1 × cachedInputTokens + 4 × outputTokens`, summed over the run's provider turns.
-- `day` is the owner-local `YYYY-MM-DD`. Units are non-negative real numbers because cached input has fractional weight; limits are non-negative integers. `limits_json` is `{ leadUnits, workerUnits }`. `exhausted_notified_at` records the once-per-day exhaustion notice.
-- Defaults: 2,000,000 lead units and 6,000,000 worker units per day, reset at 00:00 in the owner's timezone. The owner sets them in settings.
+- `day` is the owner-local `YYYY-MM-DD`. Units are finite non-negative real numbers because cached input has fractional weight; limits are non-negative integers. Lasting limits live in `kin_budget_limits (org_id PRIMARY KEY, limits_json)`, where `limits_json` is `{ leadUnits, workerUnits }`; day rows hold counters only. `exhausted_notified_at` records the once-per-day exhaustion notice.
+- Defaults: 2,000,000 lead units and 6,000,000 worker units per day, reset at 00:00 in the owner's timezone from `KinTriggerSettings.timeZone` (triggers spec). The owner sets them in settings.
 - `admit(orgId, priority)` by share of the lead budget left: above 40% everything runs; 20–40% defers P3 to tomorrow; under 20% only P0–P1; at 0 only P0, on the cheap model, and the owner is told once. Dreaming (P4) runs only above 30%.
 - `admitWorker(orgId)` refuses at 0 worker units left. The lead gets an error and tells the owner.
 - Deferred events stay queued with `not_before` and show in the morning brief ("3 checks postponed for budget").
@@ -478,7 +500,7 @@ New:
 - `apps/server/src/kin/lead/instructions.md`, `apps/server/src/kin/lead/routines.md` (brief and summary templates, included in `instructions.md` at build).
 - `apps/server/src/kin/lead/mcp/tools.ts`, `handlers.ts`.
 - `apps/server/src/kin/memory/Memory.ts`, `MemoryWriter.ts`, `MemoryCache.ts`, `frontMatter.ts`, `journal.ts`.
-- `apps/server/src/kin/persistence/migrations/K002_Lead.ts` creates `kin_events`, `kin_wakeups`, `kin_workers`, `kin_cursor`, `kin_shadow_entries`, `kin_budget`, `kin_org_state`, `kin_leads`, registered as `2_Lead` using the Kin migration list from CHAT-2 (its own `kin_sql_migrations` table), so upstream's numbered list in `apps/server/src/persistence/Migrations.ts` is never touched.
+- `apps/server/src/kin/persistence/migrations/K002_Lead.ts` creates `kin_events`, `kin_wakeups`, `kin_workers`, `kin_cursor`, `kin_shadow_entries`, `kin_budget_limits`, `kin_budget`, `kin_org_state`, `kin_leads`, registered as `2_Lead` using the Kin migration list from CHAT-2 (its own `kin_sql_migrations` table), so upstream's numbered list in `apps/server/src/persistence/Migrations.ts` is never touched.
 - Tests next to each file.
 
 Upstream files touched, one line each:

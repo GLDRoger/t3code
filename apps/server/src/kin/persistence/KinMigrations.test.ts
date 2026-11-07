@@ -14,6 +14,7 @@ const tableNames = [
   "kin_agent_threads",
   "kin_agents",
   "kin_budget",
+  "kin_budget_limits",
   "kin_chat_members",
   "kin_chats",
   "kin_cursor",
@@ -109,7 +110,9 @@ describe("Kin migrations", () => {
           { name: "idx_kin_chats_org_chat" },
           { name: "idx_kin_events_dedupe" },
           { name: "idx_kin_events_queue" },
+          { name: "idx_kin_events_wakeup" },
           { name: "idx_kin_people_org_person" },
+          { name: "idx_kin_shadow_entries_promotion" },
           { name: "idx_kin_shadow_entries_review" },
           { name: "idx_kin_waiting_open_widget_person" },
           { name: "idx_kin_waiting_person_resolved_at" },
@@ -117,6 +120,16 @@ describe("Kin migrations", () => {
           { name: "idx_kin_widgets_type_closed_at" },
           { name: "idx_kin_workers_status" },
         ]);
+        assert.deepStrictEqual(
+          yield* sql`SELECT name FROM pragma_index_info('idx_kin_events_queue') ORDER BY seqno`,
+          ["org_id", "agent_id", "state", "priority", "received_at", "not_before"].map((name) => ({
+            name,
+          })),
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT name FROM pragma_index_info('idx_kin_shadow_entries_promotion') ORDER BY seqno`,
+          ["org_id", "agent_id", "unlocks_level", "verdict"].map((name) => ({ name })),
+        );
         assert.deepStrictEqual(
           yield* sql`SELECT name FROM pragma_index_info('idx_kin_widgets_type_closed_at') ORDER BY seqno`,
           [{ name: "type" }, { name: "closed_at" }],
@@ -179,7 +192,7 @@ describe("Kin migrations", () => {
           agent_id: "lead",
           name: "tech-lead",
           level: "L0",
-          level_since: timestamp,
+          level_since: 1794009600000,
           thread_id: "upstream-thread",
           models_json:
             '{"strong":{"instanceId":"codex","model":"strong"},"cheap":{"instanceId":"codex","model":"cheap"}}',
@@ -193,7 +206,7 @@ describe("Kin migrations", () => {
           thread_id: "upstream-thread",
           run_id: "upstream-run",
           model: "strong",
-          started_at: timestamp,
+          started_at: 1794009600000,
           ended_at: null,
           status: "running",
           event_ids: '["event"]',
@@ -209,7 +222,7 @@ describe("Kin migrations", () => {
           priority: "P0",
           json: '{"_tag":"resume"}',
           dedupe_key: "resume:1",
-          received_at: timestamp,
+          received_at: 1794009600000,
           state: "claimed",
           wakeup_id: "wake",
           not_before: null,
@@ -227,8 +240,8 @@ describe("Kin migrations", () => {
           provenance_json: '{"_tag":"system"}',
           status: "completed",
           report_json: '{"orgId":"org","parsed":false}',
-          started_at: timestamp,
-          ended_at: timestamp,
+          started_at: 1794009600000,
+          ended_at: 1794009600000,
         },
         kin_cursor: { org_id: "org", consumer: "worker-tracker", after_sequence: 42 },
         kin_shadow_entries: {
@@ -237,26 +250,30 @@ describe("Kin migrations", () => {
           agent_id: "lead",
           wakeup_id: "wake",
           level: "L0",
+          unlocks_level: "L1",
           tool: "kin_chat_post",
           input_json: '{"text":"Ready"}',
           would_target: "direct",
-          created_at: timestamp,
+          created_at: 1794009600000,
           verdict: "fine",
           verdict_note: "Keep",
-          reviewed_at: timestamp,
+          reviewed_at: 1794009600000,
+        },
+        kin_budget_limits: {
+          org_id: "org",
+          limits_json: '{"leadUnits":2000000,"workerUnits":6000000}',
         },
         kin_budget: {
           org_id: "org",
           day: "2026-11-07",
           lead_units: 3.5,
           worker_units: 9,
-          limits_json: '{"leadUnits":2000000,"workerUnits":6000000}',
           exhausted_notified_at: null,
         },
         kin_org_state: {
           org_id: "org",
           paused: 1,
-          paused_at: timestamp,
+          paused_at: 1794009600000,
           paused_by: "owner",
           reason: "Stop",
         },
@@ -271,6 +288,21 @@ describe("Kin migrations", () => {
         assert.deepStrictEqual(yield* sql`SELECT * FROM ${sql(table)} WHERE org_id = 'org'`, [row]);
       }
       const rejected = [
+        {
+          table: "kin_org_state",
+          row: { ...rows.kin_org_state, org_id: "other", paused_at: null, paused_by: null },
+          error: "CHECK constraint failed",
+        },
+        {
+          table: "kin_workers",
+          row: { ...rows.kin_workers, worker_id: "worker-duplicate-thread" },
+          error: "UNIQUE constraint failed",
+        },
+        {
+          table: "kin_budget",
+          row: { ...rows.kin_budget, day: "tomorrow" },
+          error: "CHECK constraint failed",
+        },
         {
           table: "kin_org_state",
           row: { ...rows.kin_org_state, org_id: "other" },
@@ -311,6 +343,41 @@ describe("Kin migrations", () => {
         yield* sql`INSERT INTO kin_events ${sql.insert({ ...rows.kin_events, event_id: eventId, dedupe_key: null })}`;
       }
       assert.strictEqual((yield* sql`SELECT * FROM kin_events`).length, 3);
+      for (const { eventId, priority, receivedAt, notBefore } of [
+        { eventId: "later", priority: "P0", receivedAt: 1000, notBefore: 2000 },
+        { eventId: "ready-low", priority: "P2", receivedAt: 9, notBefore: null },
+        { eventId: "ready-high", priority: "P0", receivedAt: 10, notBefore: null },
+      ]) {
+        yield* sql`INSERT INTO kin_events ${sql.insert({
+          ...rows.kin_events,
+          event_id: eventId,
+          tag: "future-event",
+          priority,
+          received_at: receivedAt,
+          not_before: notBefore,
+          state: "queued",
+          dedupe_key: null,
+        })}`;
+      }
+      assert.deepStrictEqual(
+        yield* sql`SELECT event_id FROM kin_events
+          WHERE org_id = 'org' AND agent_id = 'lead' AND state = 'queued'
+            AND (not_before IS NULL OR not_before <= 1000)
+          ORDER BY priority, received_at`,
+        [{ event_id: "ready-high" }, { event_id: "ready-low" }],
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT typeof(received_at) AS received_type, typeof(not_before) AS not_before_type
+          FROM kin_events WHERE event_id = 'later'`,
+        [{ received_type: "integer", not_before_type: "integer" }],
+      );
+      yield* sql`UPDATE kin_workers SET status = 'future-upstream-status' WHERE worker_id = 'worker'`;
+      assert.deepStrictEqual(
+        yield* sql`SELECT status FROM kin_workers WHERE worker_id = 'worker'`,
+        [{ status: "future-upstream-status" }],
+      );
+      yield* sql`UPDATE kin_workers SET status = ${rows.kin_workers.status} WHERE worker_id = 'worker'`;
+
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       for (const [table, row] of Object.entries(rows)) {
         if (table === "kin_events") continue;
