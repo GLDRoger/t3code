@@ -88,7 +88,7 @@ export const KinActionTarget = Schema.Union([
   }),
   Schema.TaggedStruct("content", { path: Schema.String, sha256: Hex64 }), // rules.md, purge plan
   Schema.TaggedStruct("level", {
-    leadId: Schema.String,
+    agentId: KinAgentId,
     chatId: Schema.optional(KinChatId),
     level: KinLevel,
   }),
@@ -123,7 +123,7 @@ export const KinPendingAction = Schema.Struct({
   nonce: Schema.String, // 32 random bytes, base64url; rotated when `resolved` changes
   revision: Schema.Int, // bumps with each nonce rotation
   reason: Schema.String, // agent text, rendered as a quote
-  requestedBy: Schema.Struct({ leadId: Schema.String, threadId: ThreadId }),
+  requestedBy: Schema.Struct({ agentId: KinAgentId, threadId: ThreadId }),
   provenance: KinProvenance, // section 8
   requiredApprovers: Schema.Array(KinApproverRequirement), // phase 1: [{ role: "owner" }]
   state: KinPendingActionState,

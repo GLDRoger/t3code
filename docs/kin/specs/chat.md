@@ -273,7 +273,7 @@ K001 (phase 1, includes everything phase 2 needs for existing rows):
 
 K001 uses `TEXT` for ids, ISO timestamps and JSON, and `INTEGER` for sequences and revisions. Optional or nullable schema fields are nullable; system-author identity fields and `client_message_id` for non-client posts are nullable. `author_owner_person_id` snapshots the agent author's required `ownerPersonId`. Waiting `message_id` and `widget_id` are nullable references; `resolution` is nullable free text because resolution values are not a closed set. Message `widget_id` has no foreign key to avoid a message/widget insert cycle. Org foreign keys and other Kin-only references are enforced; org-consistent relationships and chat ownership cardinality are checked by the service.
 
-K002 (phase 2): `kin_floor_runs`, `kin_floor_bids`, `kin_judge_log` (below). New tables only.
+The next free migration number (phase 2): `kin_floor_runs`, `kin_floor_bids`, `kin_judge_log` (below). New tables only.
 
 **Seq allocation:** in one `sql.withTransaction`: `UPDATE kin_chats SET last_seq = last_seq + 1, last_message_at = ? WHERE chat_id = ? RETURNING last_seq`, then insert the message with that seq. Publish to the in-process hub only after commit.
 
@@ -444,7 +444,7 @@ export const JUDGE_THRESHOLDS = { act: 0.8, ask: 0.5 } as const; // below ask: a
 New (all Kin-owned):
 
 - `packages/contracts/src/kinChat.ts`: ids, schemas, `KIN_CHAT_WS_METHODS`, `KinChatRpcs` (array of `Rpc.make`), `KIN_CHAT_RPC_SCOPES`, `KinChatError`, `kinMessageLink`, plus `KinWaitingId` for waiting rows. Test: `kinChat.test.ts`.
-- `apps/server/src/kin/persistence/KinMigrations.ts`, `migrations/K001_ChatCore.ts`, `migrations/K002_Floor.ts`, `KinPersistence.ts`.
+- `apps/server/src/kin/persistence/KinMigrations.ts`, `migrations/K001_ChatCore.ts`, `migrations/KNNN_Floor.ts` (next free number), `KinPersistence.ts`.
 - `apps/server/src/kin/chat/KinChatRepository.ts`, `KinIdentity.ts`, `KinChatService.ts`, `KinChatHub.ts`, `TaskCardUpdater.ts`, `rpcHandlers.ts` (`makeKinChatHandlers(session)`), `layer.ts` (`KinChat.layer`).
 - `apps/server/src/kin/widgets/registry.ts`, `taskCard.ts`.
 - `apps/server/src/kin/mcp/KinChatToolkit.ts` (`makeKinChatToolkitLayer(register)`), `handlers.ts`.
@@ -516,7 +516,7 @@ Run with `cd apps/server && vp test run src/kin` and `cd packages/contracts && v
 
 **CHAT-8. Task cards.** What: `task` state schema, `TaskCardUpdater` following `streamDomainEvents` and `getThreadShell`, startup recheck. Files: `apps/server/src/kin/chat/TaskCardUpdater.ts`, `widgets/taskCard.ts`, tests. Depends on: CHAT-5, CHAT-7. Done when: the task card test passes, and a manual run of `delegate_task` from a lead thread shows the card change state in `kin.chat.subscribe` output. Owner: backend.
 
-**CHAT-9. Floor manager.** What: pure `FloorManager.ts` (rules 1 to 5, replies vs notices), K002 floor tables, grant tokens in `kin_chat_post`, implicit grants in direct chats, notice rate limit. Files: `apps/server/src/kin/floor/FloorManager.ts`, `migrations/K002_Floor.ts`, tests. Depends on: CHAT-7. Done when: floor table tests pass and a direct-chat test shows a second unprompted reply refused with `floor_not_granted` while a notice passes. Owner: backend.
+**CHAT-9. Floor manager.** What: pure `FloorManager.ts` (rules 1 to 5, replies vs notices), floor tables at the next free migration number, grant tokens in `kin_chat_post`, implicit grants in direct chats, notice rate limit. Files: `apps/server/src/kin/floor/FloorManager.ts`, `migrations/KNNN_Floor.ts` (next free number), tests. Depends on: CHAT-7. Done when: floor table tests pass and a direct-chat test shows a second unprompted reply refused with `floor_not_granted` while a notice passes. Owner: backend.
 
 **CHAT-10. Judge in shadow.** What: `Judge` service, `NoopJudge`, `JudgeShadow`, `kin_judge_log`, thresholds, import-boundary test. Files: `apps/server/src/kin/floor/Judge.ts`, `JudgeShadow.ts`, `NoopJudge.ts`, tests. Depends on: CHAT-9. Done when: the judge tests pass and `kin_judge_log` gets one row per human message in a group test. Owner: backend.
 
