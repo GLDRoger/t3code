@@ -153,55 +153,57 @@ describe("KinTriggerStore", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("fires once atomically, advances recurring schedules and clears once schedules", () =>
-    Effect.gen(function* () {
-      yield* seed;
-      const store = yield* KinTriggerStore.KinTriggerStore;
-      const inbox = yield* KinTriggerInbox.KinTriggerInbox;
-      const sql = yield* SqlClient.SqlClient;
-      for (const type of ["interval", "once"] as const) {
-        const value = trigger(type);
-        const scheduled = {
-          ...value,
-          schedule: type === "once" ? { type, runAt: timestamp } : value.schedule,
-        };
-        yield* store.put(scheduled);
-        const event = fire(value, `${type}:${now}`);
-        const next = "2026-11-07T00:01:00.000Z";
-        const results = yield* Effect.all([store.fire(event, next), store.fire(event, next)], {
-          concurrency: "unbounded",
-        });
-        assert.deepStrictEqual(results.sort(), ["duplicate", "fired"]);
-        const after = yield* store.get(orgA, value.id);
-        assert.strictEqual(after?.nextRunAt, type === "once" ? null : next);
-        assert.strictEqual(after?.lastFireId, event.fireId);
-        assert.strictEqual(yield* store.fire(event, "2026-11-08T00:00:00.000Z"), "duplicate");
-        assert.deepStrictEqual(yield* store.get(orgA, value.id), after);
-        yield* store.put(scheduled);
-        assert.strictEqual(yield* store.fire(event, next), "duplicate");
-        assert.isFalse((yield* store.listDue(now, 100)).some((row) => row.id === value.id));
-        assert.isTrue(
-          Exit.isFailure(
-            yield* Effect.exit(store.fire({ ...event, fireId: decodeFireId("arbitrary") }, next)),
-          ),
-        );
-        yield* store.put({ ...scheduled, orgId: orgB });
-        assert.strictEqual(yield* store.fire({ ...event, orgId: orgB }, next), "fired");
-      }
-      assert.lengthOf(yield* inbox.listPending(orgA), 2);
-      assert.deepStrictEqual(yield* sql`SELECT org_id, fired_at FROM kin_trigger_fires`, [
-        { org_id: orgA, fired_at: now },
-        { org_id: orgB, fired_at: now },
-        { org_id: orgA, fired_at: now },
-        { org_id: orgB, fired_at: now },
-      ]);
-      assert.deepStrictEqual(yield* sql`SELECT org_id, received_at FROM kin_trigger_inbox`, [
-        { org_id: orgA, received_at: now },
-        { org_id: orgB, received_at: now },
-        { org_id: orgA, received_at: now },
-        { org_id: orgB, received_at: now },
-      ]);
-    }).pipe(Effect.provide(layer)),
+  it.effect(
+    "deduplicates serialized fire requests, advances recurring schedules and clears once schedules",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const store = yield* KinTriggerStore.KinTriggerStore;
+        const inbox = yield* KinTriggerInbox.KinTriggerInbox;
+        const sql = yield* SqlClient.SqlClient;
+        for (const type of ["interval", "once"] as const) {
+          const value = trigger(type);
+          const scheduled = {
+            ...value,
+            schedule: type === "once" ? { type, runAt: timestamp } : value.schedule,
+          };
+          yield* store.put(scheduled);
+          const event = fire(value, `${type}:${now}`);
+          const next = "2026-11-07T00:01:00.000Z";
+          const results = yield* Effect.all([store.fire(event, next), store.fire(event, next)], {
+            concurrency: "unbounded",
+          });
+          assert.deepStrictEqual(results.sort(), ["duplicate", "fired"]);
+          const after = yield* store.get(orgA, value.id);
+          assert.strictEqual(after?.nextRunAt, type === "once" ? null : next);
+          assert.strictEqual(after?.lastFireId, event.fireId);
+          assert.strictEqual(yield* store.fire(event, "2026-11-08T00:00:00.000Z"), "duplicate");
+          assert.deepStrictEqual(yield* store.get(orgA, value.id), after);
+          yield* store.put(scheduled);
+          assert.strictEqual(yield* store.fire(event, next), "duplicate");
+          assert.isFalse((yield* store.listDue(now, 100)).some((row) => row.id === value.id));
+          assert.isTrue(
+            Exit.isFailure(
+              yield* Effect.exit(store.fire({ ...event, fireId: decodeFireId("arbitrary") }, next)),
+            ),
+          );
+          yield* store.put({ ...scheduled, orgId: orgB });
+          assert.strictEqual(yield* store.fire({ ...event, orgId: orgB }, next), "fired");
+        }
+        assert.lengthOf(yield* inbox.listPending(orgA), 2);
+        assert.deepStrictEqual(yield* sql`SELECT org_id, fired_at FROM kin_trigger_fires`, [
+          { org_id: orgA, fired_at: now },
+          { org_id: orgB, fired_at: now },
+          { org_id: orgA, fired_at: now },
+          { org_id: orgB, fired_at: now },
+        ]);
+        assert.deepStrictEqual(yield* sql`SELECT org_id, received_at FROM kin_trigger_inbox`, [
+          { org_id: orgA, received_at: now },
+          { org_id: orgB, received_at: now },
+          { org_id: orgA, received_at: now },
+          { org_id: orgB, received_at: now },
+        ]);
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect("rolls back the fire and schedule when inbox insertion fails", () =>
