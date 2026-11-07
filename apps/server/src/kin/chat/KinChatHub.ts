@@ -1,0 +1,127 @@
+import type {
+  KinChat,
+  KinChatId,
+  KinMemberId,
+  KinMessage,
+  KinOrgId,
+  KinWaitingItem,
+  KinWidget,
+} from "@t3tools/contracts";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
+import * as Repository from "./KinChatRepository.ts";
+import type { AgentIdentity, PersonIdentity } from "./KinIdentity.ts";
+import * as PubSub from "effect/PubSub";
+import type * as Scope from "effect/Scope";
+import * as SqlClient from "effect/sql/SqlClient";
+
+type ChatEvent =
+  | { readonly type: "chat.created"; readonly chat: KinChat }
+  | { readonly type: "message.posted"; readonly message: KinMessage }
+  | { readonly type: "widget.updated"; readonly widget: KinWidget }
+  | { readonly type: "waiting.updated"; readonly item: KinWaitingItem }
+  | {
+      readonly type: "read.updated";
+      readonly chatId: KinChatId;
+      readonly memberId: KinMemberId;
+      readonly seq: number;
+    };
+export type KinChatHubEvent = ChatEvent & { readonly orgId: KinOrgId };
+
+export class KinChatHub extends Context.Service<
+  KinChatHub,
+  {
+    readonly publish: (event: KinChatHubEvent) => Effect.Effect<void>;
+    readonly subscribeForViewer: (
+      identity: PersonIdentity | AgentIdentity,
+    ) => Effect.Effect<
+      Stream.Stream<KinChatHubEvent, Repository.RepositoryError>,
+      never,
+      Scope.Scope
+    >;
+    readonly subscribe: (
+      orgId: KinOrgId,
+    ) => Effect.Effect<PubSub.Subscription<KinChatHubEvent>, never, Scope.Scope>;
+  }
+>()("t3/kin/chat/KinChatHub") {}
+
+const make = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const repo = yield* Repository.KinChatRepository;
+  const hubs = new Map<KinOrgId, PubSub.PubSub<KinChatHubEvent>>();
+  yield* Effect.addFinalizer(() =>
+    Effect.forEach(hubs.values(), PubSub.shutdown, { discard: true }),
+  );
+  const subscribe = Effect.fn("KinChatHub.subscribe")(function* (orgId: KinOrgId) {
+    let hub = hubs.get(orgId);
+    if (hub === undefined) {
+      const created = yield* PubSub.unbounded<KinChatHubEvent>();
+      hub = hubs.get(orgId) ?? created;
+      hubs.set(orgId, hub);
+    }
+    return yield* PubSub.subscribe(hub);
+  });
+  return KinChatHub.of({
+    publish: Effect.fn("KinChatHub.publish")(function (event) {
+      return sql.afterCommit(
+        Effect.gen(function* () {
+          const hub = hubs.get(event.orgId);
+          if (hub !== undefined) yield* PubSub.publish(hub, event);
+        }),
+      );
+    }),
+    subscribe,
+    subscribeForViewer: Effect.fn("KinChatHub.subscribeForViewer")(function* (identity) {
+      const subscription = yield* subscribe(identity.orgId);
+      return Stream.fromEffectRepeat(PubSub.take(subscription)).pipe(
+        Stream.filterEffect(
+          Effect.fn("KinChatHub.canDeliver")(function* (event) {
+            const chatId =
+              event.type === "chat.created"
+                ? event.chat.chatId
+                : event.type === "message.posted"
+                  ? event.message.chatId
+                  : event.type === "widget.updated"
+                    ? event.widget.chatId
+                    : event.type === "waiting.updated"
+                      ? event.item.chatId
+                      : event.chatId;
+            const member = (yield* repo.listMembers({ orgId: identity.orgId, chatId })).find(
+              (row) =>
+                row.leftAt === null &&
+                (identity._tag === "person"
+                  ? row.principal._tag === "person" && row.principal.personId === identity.personId
+                  : row.principal._tag === "agent" && row.principal.agentId === identity.agentId),
+            );
+            if (member === undefined) return false;
+            const messageId =
+              event.type === "widget.updated"
+                ? event.widget.messageId
+                : event.type === "waiting.updated"
+                  ? event.item.messageId
+                  : null;
+            const message =
+              event.type === "message.posted"
+                ? Option.some(event.message)
+                : messageId === null
+                  ? Option.none()
+                  : yield* repo.getMessage({ orgId: identity.orgId, messageId });
+            if (messageId !== null && Option.isNone(message)) return false;
+            return (
+              Option.isNone(message) ||
+              !["suggested", "dismissed"].includes(message.value.status) ||
+              member.role === "owner" ||
+              (message.value.author._tag !== "system" &&
+                message.value.author.memberId === member.memberId)
+            );
+          }),
+        ),
+      );
+    }),
+  });
+});
+
+export const layer = Layer.effect(KinChatHub, make);

@@ -309,6 +309,7 @@ describe("KinIdentity", () => {
         assert.deepStrictEqual(yield* repository.getAgentThread(input), original);
         assert.isTrue(identity.isAgentThread(threadId));
         assert.deepStrictEqual(yield* identity.resolveAgent(caller()), {
+          _tag: "agent",
           ...input,
           ownerPersonId: owner.personId,
         });
@@ -381,6 +382,7 @@ describe("KinIdentity", () => {
         const restarted = yield* startInScope(secondScope);
         assert.isTrue(restarted.isAgentThread(threadId));
         assert.deepStrictEqual(yield* restarted.resolveAgent(caller()), {
+          _tag: "agent",
           ...input,
           ownerPersonId: owner.personId,
         });
@@ -405,6 +407,7 @@ describe("KinIdentity", () => {
         assert.isFalse(afterEnd.isAgentThread(threadId));
         assert.isTrue(afterEnd.isAgentThread(secondThreadId));
         assert.deepStrictEqual(yield* afterEnd.resolveAgent(caller(secondThreadId)), {
+          _tag: "agent",
           ...input,
           threadId: secondThreadId,
           ownerPersonId: owner.personId,
