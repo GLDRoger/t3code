@@ -541,6 +541,7 @@ describe("KinChatService", () => {
         for (const operation of [
           service.addWaiting(agent, { ...approval }),
           service.resolveWaiting(agent, { waitingId: approval.waitingId, resolution: "approved" }),
+          service.resolveWaiting(person, { waitingId: approval.waitingId, resolution: "approved" }),
           service.resolveWaiting(agent, {
             waitingId: anotherQuestion.waitingId,
             resolution: "answered",

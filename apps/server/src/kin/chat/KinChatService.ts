@@ -528,19 +528,22 @@ const make = Effect.gen(function* () {
         repo.getWaiting({ orgId: identity.orgId, waitingId: input.waitingId }),
       );
       const member = yield* memberFor(identity, item.chatId);
-      if (member.role === "guest") return yield* notAllowed;
+      if (member.role === "guest" || item.reason === "approval") return yield* notAllowed;
+      const message =
+        item.messageId === null
+          ? null
+          : yield* requireRecord(
+              repo.getMessage({ orgId: identity.orgId, messageId: item.messageId }),
+            );
+      for (const widgetId of new Set([item.widgetId, message?.widgetId ?? null])) {
+        if (widgetId === null) continue;
+        const widget = yield* requireRecord(repo.getWidget({ orgId: identity.orgId, widgetId }));
+        if (widget.type === "approval") return yield* notAllowed;
+      }
       if (identity._tag === "agent") {
-        if (item.reason !== "question" || item.messageId === null) return yield* notAllowed;
-        const message = yield* requireRecord(
-          repo.getMessage({ orgId: identity.orgId, messageId: item.messageId }),
-        );
+        if (item.reason !== "question" || message === null) return yield* notAllowed;
         if (message.author._tag !== "agent" || message.author.agentId !== identity.agentId)
           return yield* notAllowed;
-        for (const widgetId of new Set([item.widgetId, message.widgetId])) {
-          if (widgetId === null) continue;
-          const widget = yield* requireRecord(repo.getWidget({ orgId: identity.orgId, widgetId }));
-          if (widget.type === "approval") return yield* notAllowed;
-        }
       } else if (member.role !== "owner" && identity.personId !== item.personId) {
         return yield* notAllowed;
       }

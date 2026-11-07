@@ -248,7 +248,7 @@ Flow:
   - a guest suggestion (for the owner),
   - the approvals spec calling the server-only repository `addWaiting` inside its transaction for its approval cards, then publishing `waiting.updated` after commit.
 - Public `KinChatService.addWaiting` refuses `reason: "approval"` and any row anchored on an approval widget (including through its message) with `not_allowed`; only the approvals spec creates these rows through the server-only repository entry point, never a transport.
-- Agents may resolve only `question` rows on their own messages, never approval rows or approval-widget anchors, even with an owner role. Persons may resolve their own rows; chat owners may resolve any row. Guests cannot resolve rows. Refusals use `not_allowed`.
+- Agents may resolve only `question` rows on their own messages, never approval rows or approval-widget anchors, even with an owner role. Persons may resolve their own rows; chat owners may resolve any row. Nobody resolves approval rows or approval-widget anchors through the public service; only the approvals spec's signed-grant flow does. Guests cannot resolve rows. Refusals use `not_allowed`.
 - When a person leaves a chat, their open waiting rows in that chat resolve as `cancelled` in the same transaction; rejoining applies the requested role and does not reopen cancelled rows.
 - New waiting rows must be unresolved; a caller-supplied resolution is refused.
 - A row resolves when the widget closes, the person acts on it, the person replies in the chat after the question (for `question`), or the source calls `resolveWaiting`.
