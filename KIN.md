@@ -44,5 +44,6 @@ git merge upstream/main
 sed -i.bak -E 's/runs-on: blacksmith-[0-9]+vcpu-ubuntu-2404/runs-on: ubuntu-24.04/; s/runs-on: blacksmith-[0-9]+vcpu-macos-26/runs-on: macos-26/' .github/workflows/ci.yml .github/workflows/mobile-fingerprint-check.yml && rm .github/workflows/*.bak
 vp i
 vp run check:changed upstream/main
+cd apps/server && vp test run kin-contract
 git push origin main kin
 ```
