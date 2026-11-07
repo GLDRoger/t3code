@@ -240,13 +240,24 @@ Each Kin setup belongs to one **organization**: a company, or one person's own s
 
 Every chat, message, memory entry, grant and audit record carries an `orgId` from phase 1, even while there is only one organization. Adding it later would mean migrating everything.
 
+## 10b. Managed organizations (partners)
+
+A partner, such as a consultant, sets up and runs Kin for a client that can't do it themselves. This works like delegated admin in Microsoft 365: the client grants it, it's scoped and time-limited, and the client can see it and revoke it.
+
+- **Policy comes in layers:** partner baseline → client admin → member. A lock at a higher layer holds below it. (T3's managed policy has one admin layer; Kin adds the partner layer above it.)
+- **The partner manages the setup, not the content.** The partner can configure agents, connectors, policy and routines. **Reading the client's content** (emails, chats, memory) needs a separate grant for each session. The client approves it, it expires, and the client sees it in their audit log.
+- **The client owns its connectors.** The partner sets up the Gmail connector and chooses its scopes, but the client's admin does the sign-in. Tokens stay in the client's organization; the partner never holds them.
+- **Templates:** the partner builds a setup once, for example an _inquiry desk_ (an email lead that sorts inquiries and drafts replies, with sending held for approval), and deploys it to clients. Updates arrive as proposals the client accepts, or apply automatically if the client's policy allows.
+- **A partner console** shows each client's health without content: agents running, errors, plan usage, approvals that have waited too long.
+- **Where it runs:** on the client's own always-on machine (a Mac mini or a VPS), linked to the partner through T3's remote environments, or on per-client infrastructure the partner hosts. Either way, memory, credentials and billing stay separate for each client.
+
 ## 11. Phases (each one works on its own)
 
 1. **Direct chat:** chat contracts and service; mobile chat list and direct chat; task, approval and deferral cards; the lead and its memory; morning and evening routines; GitHub webhooks; deferrals on `once`; the action executor, signed grants, the GitHub App, and branch rulesets. The lead starts at L0 on the pilot repo.
 2. **First group:** lead + QA; roles and provenance ceilings; floor manager; judge in shadow; decision cards and polls; generated widgets; notification actions. Raise the lead to L1, then L2.
 3. **Teams and router:** more teams; the router and its agenda; cross-team requests; live widgets, Live Activities, pinned dashboards; delegations.
 4. **Front doors:** an MCP hub so ChatGPT, Grok and Claude.ai reach the same leads and widgets, with the same section 9 rules.
-5. **Organizations:** organization policy, roles and approvers, external members, agents from other owners (section 9.8), the space switcher, and the walls between organizations (`orgId` is already in place from phase 1).
+5. **Organizations:** organization policy, roles and approvers, external members, agents from other owners (section 9.8), partners managing clients (section 10b), the space switcher, and the walls between organizations (`orgId` is already in place from phase 1).
 6. **Experiments:** one lead with skills vs. team agents vs. team agents plus the router (measure wrong routes, handoff losses, cross-team items settled without the owner, cost); self-improving rules; a chief of staff only if cross-team conflicts appear.
 
 ## 12. Open questions
