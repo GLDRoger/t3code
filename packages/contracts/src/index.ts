@@ -76,3 +76,5 @@ export * from "./clientRpcPermissions.ts";
 export * from "./kinChat.ts";
 export * from "./kinLead.ts";
 export * from "./kinTriggers.ts";
+
+export * from "./kinRpcs.ts";

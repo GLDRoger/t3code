@@ -190,7 +190,7 @@ describe("KinChatRepository", () => {
           ...agent,
           retiredAt: null,
         });
-        assert.deepStrictEqual(yield* repo.listAgents({ orgId }), [agent]);
+        assert.deepStrictEqual(yield* repo.listAgents({ orgId }), [{ ...agent, retiredAt: null }]);
         assert.deepStrictEqual(
           yield* repo.createChat({
             ...chat,
@@ -204,6 +204,18 @@ describe("KinChatRepository", () => {
         assert.deepStrictEqual(yield* repo.listMembersByPerson({ orgId, personId }), [owner]);
         assert.deepStrictEqual(yield* repo.listMembersByAgent({ orgId, agentId }), [agentMember]);
         assert.deepStrictEqual(Option.getOrThrow(yield* repo.getMember(scope)), owner);
+        const indexSql = yield* SqlClient.SqlClient;
+        for (const [principal, column] of [
+          [owner.principal, "person_id"],
+          [agentMember.principal, "agent_id"],
+        ] as const) {
+          assert.isTrue(Option.isSome(yield* repo.activeMember({ ...scope, principal })));
+          const plan = yield* indexSql<{
+            detail: string;
+          }>`EXPLAIN QUERY PLAN ${Repository.activeMemberStatement(indexSql, { ...scope, principal })}`;
+          assert.isTrue(plan.some((row) => row.detail.includes(`(chat_id=? AND ${column}=?)`)));
+        }
+
         for (const retry of [owner, agentMember]) {
           assert.deepStrictEqual(yield* repo.addMember(retry), retry);
         }
@@ -241,6 +253,11 @@ describe("KinChatRepository", () => {
           createdAt: timestamp,
         });
         for (const retry of [
+          {
+            ...owner,
+            memberId: decodeMemberId("second-owner"),
+            principal: { _tag: "person", personId: secondPerson },
+          },
           { ...owner, principal: { _tag: "person", personId: secondPerson } },
           { ...owner, memberId: decodeMemberId("retry-member") },
           { ...agentMember, memberId: decodeMemberId("retry-agent-member") },
@@ -317,8 +334,8 @@ describe("KinChatRepository", () => {
         );
         assert.strictEqual(wrongChat._tag, "KinChatError");
         if (wrongChat._tag === "KinChatError") assert.strictEqual(wrongChat.reason, "not_found");
-        assert.strictEqual(yield* repo.leaveChat({ ...scope, leftAt: later }), true);
-        assert.strictEqual(yield* repo.leaveChat({ ...scope, leftAt: timestamp }), false);
+        assert.deepStrictEqual(yield* repo.leaveChat({ ...scope, leftAt: later }), []);
+        assert.deepStrictEqual(yield* repo.leaveChat({ ...scope, leftAt: timestamp }), []);
         assert.strictEqual(
           (yield* Effect.flip(repo.insertMessage(message("left-post"))))._tag,
           "KinChatError",

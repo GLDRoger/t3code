@@ -272,7 +272,18 @@ export type KinChatStreamEvent = typeof KinChatStreamEvent.Type;
 export const KinOrgsListInput = Schema.Struct({});
 export type KinOrgsListInput = typeof KinOrgsListInput.Type;
 export const KinOrgsListResult = Schema.Struct({
-  orgs: Schema.Array(KinOrg),
+  orgs: Schema.Array(
+    Schema.Struct({
+      ...KinOrg.fields,
+      agents: Schema.Array(
+        Schema.Struct({
+          agentId: KinAgentId,
+          displayName: Schema.String,
+          retired: Schema.Boolean,
+        }),
+      ),
+    }),
+  ),
   me: Schema.Array(Schema.Struct({ orgId: KinOrgId, personId: KinPersonId })),
 });
 export type KinOrgsListResult = typeof KinOrgsListResult.Type;
@@ -322,6 +333,7 @@ export class KinChatError extends Schema.TaggedError<KinChatError>()("KinChatErr
   reason: Schema.Literals([
     "not_found",
     "not_allowed",
+    "unavailable",
     "widget_changed",
     "use_approvals",
     "invalid_state",

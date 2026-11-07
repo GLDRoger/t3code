@@ -1,4 +1,4 @@
-import * as Cause from "effect/Cause";
+import * as KinEnabled from "../KinEnabled.ts";
 import {
   CanonicalUtcTimestamp,
   KinTriggerFireId,
@@ -129,7 +129,7 @@ export function wrapTaskDispatch<E, R, E2, R2>(
   inner: Layer.Layer<ThreadLaunchService.ThreadLaunchService, E, R>,
   threads: Layer.Layer<ThreadManagementService.ThreadManagementService, E2, R2>,
 ) {
-  return Layer.mergeAll(
+  const wrapped = Layer.mergeAll(
     Layer.effect(
       ThreadLaunchService.ThreadLaunchService,
       Effect.gen(function* () {
@@ -242,4 +242,73 @@ export function wrapTaskDispatch<E, R, E2, R2>(
     ),
     Layer.provide(Layer.mergeAll(inner, threads)),
   );
+  const degraded = Layer.mergeAll(
+    Layer.effect(
+      ThreadLaunchService.ThreadLaunchService,
+      Effect.gen(function* () {
+        const service = yield* ThreadLaunchService.ThreadLaunchService;
+        return ThreadLaunchService.ThreadLaunchService.of({
+          ...service,
+          launch: Effect.fn("KinTriggerSink.degradedLaunch")(function* (input) {
+            if (
+              input.initialMessage?.scheduledTaskId !== undefined &&
+              input.commandId.startsWith(
+                `scheduled-task:${input.initialMessage.scheduledTaskId}:webhook:`,
+              )
+            )
+              return yield* new ThreadLaunchService.ThreadLaunchError({
+                operation: "dispatch-message",
+                commandId: input.commandId,
+                projectId: input.projectId,
+                cause: new Error("Kin is unavailable; webhook dispatch refused."),
+              });
+            return yield* service.launch(input);
+          }),
+        });
+      }),
+    ),
+    Layer.effect(
+      ThreadManagementService.ThreadManagementService,
+      Effect.gen(function* () {
+        const service = yield* ThreadManagementService.ThreadManagementService;
+        return ThreadManagementService.ThreadManagementService.of({
+          ...service,
+          sendToThread: Effect.fn("KinTriggerSink.degradedSend")(function* (input) {
+            if (
+              input.scheduledTaskId !== undefined &&
+              input.commandId.startsWith(`scheduled-task:${input.scheduledTaskId}:webhook:`)
+            )
+              return yield* new OrchestratorCommandRejectedError({
+                commandId: input.commandId,
+                commandType: "kin.trigger.unavailable",
+                cause: new Error("Kin is unavailable; webhook dispatch refused."),
+              });
+            return yield* service.sendToThread(input);
+          }),
+        });
+      }),
+    ),
+  ).pipe(Layer.provide(Layer.mergeAll(inner, threads)));
+  return Layer.unwrap(
+    KinEnabled.KinEnabled.pipe(
+      Effect.map(
+        (
+          config,
+        ): Layer.Layer<
+          Layer.Success<typeof wrapped>,
+          Layer.Error<typeof wrapped>,
+          Layer.Services<typeof wrapped> | R | R2
+        > =>
+          config.enabled
+            ? wrapped.pipe(
+                Layer.catchCause((cause) =>
+                  degraded.pipe(
+                    Layer.provideMerge(Layer.effectDiscard(config.reportFailure(cause))),
+                  ),
+                ),
+              )
+            : Layer.mergeAll(inner, threads),
+      ),
+    ),
+  ).pipe(Layer.provide(KinEnabled.layer));
 }
