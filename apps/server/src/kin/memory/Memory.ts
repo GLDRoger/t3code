@@ -20,6 +20,7 @@ import * as Semaphore from "effect/Semaphore";
 import { isNonRepositoryGitStderr } from "../../vcs/gitErrors.ts";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import * as MemoryCache from "./MemoryCache.ts";
+import { buildIndex } from "./buildIndex.ts";
 import { MemoryConfig } from "./MemoryConfig.ts";
 import {
   MemoryItemError,
@@ -142,8 +143,6 @@ const memoryGitEnv = Object.freeze({
 });
 
 const folders = ["objectives", "commitments", "deferrals", "decisions", "people", "claims"];
-const week = 7 * 24 * 60 * 60 * 1000;
-const oneLine = (value: string) => value.replace(/[\r\n\u2028\u2029]/g, " ");
 
 const maxBlobBytes = 256 * 1024;
 
@@ -675,19 +674,20 @@ const make = Effect.gen(function* () {
           ),
       }),
     );
-    const counts = new Map<string, number>();
-    for (const { head } of snapshot.items) counts.set(head.id, (counts.get(head.id) ?? 0) + 1);
-    const entries = snapshot.items
-      .filter(({ head }) => now - (reads[head.id] ?? dateMillis(head.recorded_at)) < 8 * week)
-      .map(
-        ({ head }) =>
-          `- [${head.kind}] ${oneLine(head.title)} (${oneLine(head.path)})${head.invalid_at !== null ? " [invalid]" : ""}${(counts.get(head.id) ?? 0) > 1 ? " [duplicate id]" : ""}${dateMillis(head.review_by) < now ? " ⚠ review" : ""}`,
-      );
-    const lines = [`As of ${DateTime.formatIso(DateTime.makeUnsafe(now))}`, "", "# Memory"];
-    const capacity = 200 - lines.length;
-    lines.push(...entries.slice(0, entries.length > capacity ? capacity - 1 : capacity));
-    if (entries.length > capacity) lines.push(`${entries.length - capacity + 1} more`);
-    snapshot.index = lines.join("\n") + "\n";
+    const ownerTimeZone = yield* cache.ownerTimeZone(orgId).pipe(
+      Effect.catchTags({
+        MemoryHistoryError: () =>
+          Effect.logWarning("Could not load memory owner time zone; using UTC", { orgId }).pipe(
+            Effect.as("UTC"),
+          ),
+      }),
+    );
+    snapshot.index = buildIndex(
+      snapshot.items.map(({ head }) => head),
+      reads,
+      now,
+      ownerTimeZone,
+    );
     const paths = yield* pathsFor(orgId);
     yield* io(
       orgId,

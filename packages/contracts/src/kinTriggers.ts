@@ -2,7 +2,7 @@ import * as Schema from "effect/Schema";
 
 import { NonNegativeInt, ScheduledTaskId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinOrgId, KinPersonId } from "./kinChat.ts";
-import { CanonicalUtcTimestamp } from "./kinLead.ts";
+import { CanonicalUtcTimestamp, KinMemoryItemId } from "./kinLead.ts";
 import { ScheduledTaskUpsertSchedule, ScheduledTaskWebhookDeliveryId } from "./scheduledTask.ts";
 
 const [interval, fixedTime, once] = ScheduledTaskUpsertSchedule.members;
@@ -53,13 +53,13 @@ export type KinTriggerSchedule = typeof KinTriggerSchedule.Type;
 export const KinTriggerSubject = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("deferral"),
-    itemId: TrimmedNonEmptyString,
+    itemId: KinMemoryItemId,
     phase: Schema.Literals(["heads_up", "due"]),
   }),
-  Schema.Struct({ type: Schema.Literal("reminder"), itemId: TrimmedNonEmptyString }),
+  Schema.Struct({ type: Schema.Literal("reminder"), itemId: KinMemoryItemId }),
   Schema.Struct({
     type: Schema.Literal("followup"),
-    itemId: TrimmedNonEmptyString,
+    itemId: KinMemoryItemId,
     person: KinPersonId,
   }),
   Schema.Struct({ type: Schema.Literal("routine"), routine: KinRoutine }),
