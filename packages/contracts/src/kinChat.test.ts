@@ -223,7 +223,7 @@ describe("Kin chat contracts", () => {
     expect(decodeSend(payload)).toEqual(send);
   });
 
-  it.each(["", "  \n ", "x".repeat(16_001)])("rejects send body %j", (body) => {
+  it.each(["", "  \n ", "x".repeat(16_001), "a\u0000b"])("rejects send body %j", (body) => {
     expect(() => decodeSend({ ...send, body })).toThrow();
   });
 

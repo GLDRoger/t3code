@@ -326,6 +326,14 @@ describe("KinChatRepository", () => {
         assert.strictEqual(Option.getOrThrow(yield* repo.getMember(scope)).leftAt, later);
         const rejoined = yield* repo.addMember({ ...owner, joinedAt: later });
         assert.deepStrictEqual(rejoined, { ...owner, joinedAt: later });
+        for (const body of ["a\u0000b", "\u0000ab", "ab\u0000"]) {
+          const failure = yield* Effect.flip(repo.insertMessage(message("nul", { body })));
+          assert.strictEqual(failure._tag, "PersistenceDecodeError");
+          assert.strictEqual(
+            Option.isNone(yield* repo.getMessage({ orgId, messageId: decodeMessageId("nul") })),
+            true,
+          );
+        }
         const first = yield* repo.insertMessage(message("first"));
         assert.deepStrictEqual(first, decodeMessage({ ...message("first"), seq: 1 }));
         const repeated = yield* Effect.all(
