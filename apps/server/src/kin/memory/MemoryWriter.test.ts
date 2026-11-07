@@ -44,6 +44,7 @@ it.live.each([
   "review-default",
   "review-null",
   "credentials",
+  "read-during-record",
 ] as const)("writer real git: %s", (scenario) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -105,6 +106,16 @@ it.live.each([
     yield* git(root, ["clone", "--bare", "--", source, remote]);
     let attack: { objectPath: string; sha: string; expression: string; bytes: Buffer } | undefined;
     let swapped = false;
+    let onRefChange:
+      | (() => Effect.Effect<
+          void,
+          | Memory.MemoryError
+          | Memory.MemoryCheckoutInvalid
+          | Memory.MemoryConfigError
+          | Memory.MemorySyncConflict
+          | Memory.MemoryQueryDecodeError
+        >)
+      | undefined;
     const interceptedGit = Layer.succeed(
       Vcs.VcsProcess,
       Vcs.VcsProcess.of({
@@ -119,7 +130,13 @@ it.live.each([
             attack = undefined;
             swapped = true;
           }
-          return yield* vcs.run(input);
+          const result = yield* vcs.run(input);
+          if (onRefChange && input.args.includes("update-ref")) {
+            const callback = onRefChange;
+            onRefChange = undefined;
+            yield* callback().pipe(Effect.orDie);
+          }
+          return result;
         }),
       }),
     );
@@ -149,7 +166,12 @@ it.live.each([
                 orgId,
                 wakeupId,
                 agentId,
-                level: scenario === "conflict" || scenario === "B5-journal" ? "L1" : "L0",
+                level:
+                  scenario === "conflict" ||
+                  scenario === "B5-journal" ||
+                  scenario === "read-during-record"
+                    ? "L1"
+                    : "L0",
                 timeZone: "Asia/Kolkata",
                 startedAt: "2026-11-08T00:00:00.000Z",
                 eventIds: [],
@@ -189,6 +211,13 @@ it.live.each([
       yield* git(paths.writer, ["config", "user.name", "Fixture Bot"]);
       yield* git(paths.writer, ["config", "user.email", "fixture@example.invalid"]);
       const original = yield* git(paths.writer, ["rev-parse", "HEAD"]);
+      if (scenario === "read-during-record") {
+        onRefChange = () => memory.readRules(orgId).pipe(Effect.asVoid);
+        const { commit } = yield* writer.commitWakeup(orgId, "wake1", "completed");
+        expect(yield* git(paths.writer, ["rev-parse", "refs/heads/main"])).toBe(commit);
+        expect(yield* memory.anchor(orgId, "main")).toBe(commit);
+        return;
+      }
       if (scenario === "credentials") {
         yield* git(paths.writer, ["config", "credential.helper", "fixture-repo-helper"]);
         const helper = yield* memoryGit(paths.writer, [

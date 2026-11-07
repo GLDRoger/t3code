@@ -377,6 +377,7 @@ const make = Effect.gen(function* () {
   const validateWriter = Effect.fn("Memory.validateWriter")(function* (
     orgId: KinOrgId,
     paths: { writer: string; repo: { repoUrl: string } },
+    checkTip = true,
   ) {
     yield* Effect.gen(function* () {
       const entry = yield* fs.lstat(path.join(paths.writer, ".git"));
@@ -397,6 +398,7 @@ const make = Effect.gen(function* () {
           });
       }
       const head = (yield* git(orgId, paths.writer, ["rev-parse", `refs/heads/${branch}`])).trim();
+      if (!checkTip) return;
       if (head !== expected) {
         yield* readCommit(orgId, paths.writer, head).pipe(
           Effect.provideService(FileSystem.FileSystem, fs),
@@ -424,7 +426,7 @@ const make = Effect.gen(function* () {
     const paths = yield* pathsFor(orgId);
     yield* io(orgId, "mkdir", fs.makeDirectory(paths.root, { recursive: true }));
     if (yield* io(orgId, "exists", fs.exists(paths.writer))) {
-      yield* validateWriter(orgId, paths);
+      yield* validateWriter(orgId, paths, false);
     } else {
       for (const entry of yield* io(orgId, "clones", fs.readDirectory(paths.root))) {
         if (/^memory\.clone-[A-Za-z0-9]+$/.test(entry))
@@ -473,7 +475,7 @@ const make = Effect.gen(function* () {
 
   const load = Effect.fn("Memory.load")(function* (orgId: KinOrgId, force = false) {
     const paths = yield* pathsFor(orgId);
-    yield* validateWriter(orgId, paths);
+    yield* validateWriter(orgId, paths, false);
     const head = pinnedHeads.get(orgId) ?? (yield* anchor(orgId, config.defaultBranch ?? "main"));
     pinnedHeads.set(orgId, head);
     const previous = snapshots.get(orgId);
@@ -877,6 +879,7 @@ const make = Effect.gen(function* () {
 
   const prepare = Effect.fn("Memory.prepare")(function* (orgId: KinOrgId, wakeupId?: string) {
     const paths = yield* ensureCheckouts(orgId);
+    yield* validateWriter(orgId, yield* pathsFor(orgId));
     yield* git(orgId, paths.writer, [
       "fsck",
       "--full",
