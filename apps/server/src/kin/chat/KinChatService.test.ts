@@ -11,13 +11,14 @@ import {
   KinPersonId,
   KinTaskCardState,
   KinWaitingId,
+  KinWidgetId,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as PubSub from "effect/PubSub";
+import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -474,7 +475,9 @@ describe("KinChatService", () => {
       Effect.gen(function* () {
         const { repo, service, person, agent, chat } = yield* seed;
         const hub = yield* Hub.KinChatHub;
-        const events = yield* hub.subscribe(person.orgId);
+        const events = yield* Stream.toQueue(yield* hub.subscribeForViewer(person), {
+          capacity: "unbounded",
+        });
         const sql = yield* SqlClient.SqlClient;
         const input = {
           chatId: chat.chatId,
@@ -485,18 +488,18 @@ describe("KinChatService", () => {
         yield* sql
           .withTransaction(service.send(agent, input).pipe(Effect.andThen(Effect.fail("rollback"))))
           .pipe(Effect.flip);
-        assert.deepStrictEqual(yield* PubSub.takeUpTo(events, 20), []);
+        assert.isTrue(Option.isNone(yield* Queue.poll(events)));
         assert.deepStrictEqual(yield* repo.listOpenWaiting(person), []);
         const question = yield* service.send(agent, input);
         assert.strictEqual(question.seq, 1);
-        assert.strictEqual((yield* PubSub.take(events)).type, "message.posted");
-        assert.strictEqual((yield* PubSub.take(events)).type, "waiting.updated");
+        assert.strictEqual((yield* Queue.take(events)).type, "message.posted");
+        assert.strictEqual((yield* Queue.take(events)).type, "waiting.updated");
         assert.strictEqual((yield* repo.listOpenWaiting(person)).length, 1);
         assert.deepStrictEqual(yield* service.send(agent, input), question);
-        assert.deepStrictEqual(yield* PubSub.takeUpTo(events, 20), []);
+        assert.isTrue(Option.isNone(yield* Queue.poll(events)));
         yield* service.send(person, { chatId: chat.chatId, body: "Yes", clientMessageId: "reply" });
-        assert.strictEqual((yield* PubSub.take(events)).type, "message.posted");
-        const resolved = yield* PubSub.take(events);
+        assert.strictEqual((yield* Queue.take(events)).type, "message.posted");
+        const resolved = yield* Queue.take(events);
         assert.strictEqual(resolved.type, "waiting.updated");
         if (resolved.type === "waiting.updated")
           assert.strictEqual(resolved.item.resolution, "answered");
@@ -508,22 +511,29 @@ describe("KinChatService", () => {
         yield* service.markRead(person, { chatId: chat.chatId, seq: 0 });
         assert.strictEqual(Option.getOrThrow(yield* repo.getReadState(member)).lastReadSeq, 2);
         assert.strictEqual(yield* repo.unreadCount(member), 0);
-        const read = yield* PubSub.take(events);
+        const read = yield* Queue.take(events);
         assert.include(read, { type: "read.updated", seq: 2 });
-        assert.deepStrictEqual(yield* PubSub.takeUpTo(events, 20), []);
+        assert.isTrue(Option.isNone(yield* Queue.poll(events)));
+        const approvalWidget = yield* service.upsertWidget(agent, {
+          chatId: chat.chatId,
+          type: "task",
+          state,
+        });
+        yield* sql`UPDATE kin_widgets SET type = 'approval' WHERE org_id = ${person.orgId} AND widget_id = ${approvalWidget.widgetId}`;
         const approval = {
           orgId: person.orgId,
           chatId: chat.chatId,
           waitingId: decodeKinWaitingId("server-approval"),
           personId: person.personId,
-          messageId: question.messageId,
-          widgetId: null,
+          messageId: approvalWidget.messageId,
+          widgetId: approvalWidget.widgetId,
           reason: "approval",
           createdAt: timestamp,
           resolvedAt: null,
           resolution: null,
         } as const;
-        yield* repo.addWaiting(approval);
+        assert.include(yield* Effect.flip(repo.addWaiting(approval)), { reason: "not_allowed" });
+        yield* repo.addApprovalWaiting(approval);
         const humanQuestion = yield* service.send(person, {
           chatId: chat.chatId,
           body: "Another question",
@@ -533,9 +543,12 @@ describe("KinChatService", () => {
           ...approval,
           reason: "question",
           messageId: humanQuestion.messageId,
+          widgetId: null,
         });
         const ownQuestion = yield* service.addWaiting(agent, {
           ...approval,
+          messageId: question.messageId,
+          widgetId: null,
           reason: "question",
         });
         for (const operation of [
@@ -548,12 +561,30 @@ describe("KinChatService", () => {
           }),
         ])
           assert.include(yield* Effect.flip(operation), { reason: "not_allowed" });
-        const approvalWidget = yield* service.upsertWidget(agent, {
+        const secondaryAnchor = yield* service.upsertWidget(agent, {
           chatId: chat.chatId,
           type: "task",
           state,
         });
-        yield* sql`UPDATE kin_widgets SET type = 'approval' WHERE org_id = ${person.orgId} AND widget_id = ${approvalWidget.widgetId}`;
+        yield* repo.insertWidget({
+          ...secondaryAnchor,
+          widgetId: KinWidgetId.make("secondary-approval"),
+          type: "approval",
+        });
+        const secondaryWaiting = {
+          ...approval,
+          waitingId: KinWaitingId.make("secondary-waiting"),
+          reason: "question" as const,
+          messageId: secondaryAnchor.messageId,
+          widgetId: secondaryAnchor.widgetId,
+        };
+        for (const attempt of [
+          repo.addWaiting(secondaryWaiting).pipe(Effect.asVoid),
+          service.addWaiting(person, secondaryWaiting).pipe(Effect.asVoid),
+          repo.addWaiting({ ...secondaryWaiting, messageId: null }).pipe(Effect.asVoid),
+          service.addWaiting(person, { ...secondaryWaiting, messageId: null }).pipe(Effect.asVoid),
+        ])
+          assert.include(yield* Effect.flip(attempt), { reason: "not_allowed" });
         for (const identity of [person, agent])
           for (const widgetId of [null, approvalWidget.widgetId])
             assert.include(
@@ -703,6 +734,93 @@ describe("KinChatService", () => {
       yield* hub.publish(marker);
       assert.deepStrictEqual(Option.getOrThrow(yield* Stream.runHead(agentViewer)), marker);
       assert.deepStrictEqual(Option.getOrThrow(yield* Stream.runHead(viewer)), suggestion);
+      const waitingEvent = events.find((event) => event.type === "waiting.updated");
+      assert.isDefined(waitingEvent);
+      if (waitingEvent.type === "waiting.updated")
+        yield* hub.publish({
+          ...waitingEvent,
+          item: { ...waitingEvent.item, personId: KinPersonId.make("someone-else") },
+        });
+      yield* hub.publish(marker);
+      assert.deepStrictEqual(Option.getOrThrow(yield* Stream.runHead(viewer)), marker);
     }).pipe(Effect.provide(layer)),
+  );
+  it.effect(
+    "requires an owner to remove members and publishes cancelled waiting only after commit",
+    () =>
+      Effect.gen(function* () {
+        const { repo, service, person, chat } = yield* seed;
+        const hub = yield* Hub.KinChatHub;
+        const sql = yield* SqlClient.SqlClient;
+        const other = { ...person, personId: KinPersonId.make("other-person") };
+        yield* repo.insertPerson({
+          ...other,
+          handle: "other",
+          displayName: "Other",
+          githubLogin: null,
+          createdAt: timestamp,
+        });
+        const member = yield* repo.addMember({
+          orgId: person.orgId,
+          chatId: chat.chatId,
+          memberId: KinMemberId.make("other-member"),
+          principal: other,
+          role: "member",
+          joinedAt: timestamp,
+          leftAt: null,
+          mutedUntil: null,
+        });
+        const waiting = yield* service.addWaiting(person, {
+          chatId: chat.chatId,
+          personId: other.personId,
+          messageId: null,
+          widgetId: null,
+          reason: "mention",
+        });
+        const published: Array<Hub.KinChatHubEvent> = [];
+        const monitored = yield* Service.KinChatService.pipe(
+          Effect.provide(
+            Layer.fresh(Service.layer).pipe(
+              Layer.provide(
+                Layer.succeed(Hub.KinChatHub, {
+                  ...hub,
+                  publish: (event) =>
+                    hub.publish(event).pipe(
+                      Effect.andThen(
+                        sql.afterCommit(
+                          Effect.sync(() => {
+                            published.push(event);
+                          }),
+                        ),
+                      ),
+                    ),
+                }),
+              ),
+            ),
+          ),
+        );
+        assert.include(yield* Effect.flip(monitored.leaveChat(other, member)), {
+          reason: "not_allowed",
+        });
+        yield* sql
+          .withTransaction(
+            monitored.leaveChat(person, member).pipe(Effect.andThen(Effect.fail("rollback"))),
+          )
+          .pipe(Effect.flip);
+        assert.deepStrictEqual(published, []);
+        assert.deepStrictEqual(yield* repo.listOpenWaiting(other), [waiting]);
+        yield* monitored.leaveChat(person, member);
+        assert.strictEqual(published.length, 1);
+        const cancelled = Option.getOrThrow(yield* repo.getWaiting(waiting));
+        assert.strictEqual(cancelled.resolution, "cancelled");
+        assert.deepStrictEqual(published[0], {
+          type: "waiting.updated",
+          orgId: person.orgId,
+          item: cancelled,
+        });
+        assert.deepStrictEqual(yield* repo.listOpenWaiting(other), []);
+        yield* repo.addMember(member);
+        assert.deepStrictEqual(yield* repo.listOpenWaiting(other), []);
+      }).pipe(Effect.provide(layer)),
   );
 });

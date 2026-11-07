@@ -84,12 +84,10 @@ export class KinIdentity extends Context.Service<
       const repository = yield* KinChatRepository.KinChatRepository;
       const config = yield* KinIdentityConfig;
       const sql = yield* SqlClient.SqlClient;
-      const owner = yield* repository
-        .bootstrapIdentity({
-          ...config,
-          createdAt: DateTime.formatIso(yield* DateTime.now),
-        })
-        .pipe(Effect.tapError((error) => Effect.logError("Kin identity bootstrap failed", error)));
+      const owner = yield* repository.bootstrapIdentity({
+        ...config,
+        createdAt: DateTime.formatIso(yield* DateTime.now),
+      });
       const active = new Set(
         (yield* repository.listActiveAgentThreads()).map((row) => row.threadId),
       );

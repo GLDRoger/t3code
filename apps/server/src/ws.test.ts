@@ -1,3 +1,5 @@
+import { KinServer } from "./kin/layer.ts";
+import * as Option from "effect/Option";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -40,7 +42,7 @@ import { Headers } from "effect/http";
 import { RpcGroup, RpcMessage, RpcServer } from "effect/rpc";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Statement from "effect/sql/Statement";
-import { vi } from "vite-plus/test";
+import { vi, expectTypeOf } from "vite-plus/test";
 
 import * as AssetSigner from "./assets/AssetSigner.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
@@ -997,7 +999,10 @@ it.effect.each([
             yield* ServerBrowser.ServerBrowser,
             () => Effect.void,
             { secretReferences: true },
-          ).pipe(Layer.provide(configRpcServices)),
+          ).pipe(
+            Layer.provide(Layer.succeed(KinServer, { services: Option.none() })),
+            Layer.provide(configRpcServices),
+          ),
         ),
       );
       const requestId = RpcMessage.RequestId("config");
@@ -1239,7 +1244,10 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
           yield* ServerBrowser.ServerBrowser,
           () => Effect.void,
           { secretReferences: true },
-        ).pipe(Layer.provide(configRpcServices)),
+        ).pipe(
+          Layer.provide(Layer.succeed(KinServer, { services: Option.none() })),
+          Layer.provide(configRpcServices),
+        ),
       ),
     );
     const configRequest = RpcMessage.RequestId("config");
@@ -1402,6 +1410,7 @@ it.effect("a publish whose push fails still refreshes the new remote", () =>
           () => Effect.void,
           { secretReferences: true },
         ).pipe(
+          Layer.provide(Layer.succeed(KinServer, { services: Option.none() })),
           Layer.provide(services),
           Layer.merge(RpcAuthorization.layer([AuthSourceControlWriteScope])),
         ),
@@ -1609,3 +1618,9 @@ it.effect("thread resume at its own high-water below the pruned boundary skips t
     assert.isTrue(Exit.isSuccess(exit));
   }).pipe(Effect.scoped, Effect.provide(ReplayTestLayer)),
 );
+
+it("retains concrete WS handler layer requirements with Kin RPCs", () => {
+  expectTypeOf<
+    0 extends 1 & Layer.Services<ReturnType<typeof layerWsRpc>> ? true : false
+  >().toEqualTypeOf<false>();
+});

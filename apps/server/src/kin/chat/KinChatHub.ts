@@ -42,9 +42,6 @@ export class KinChatHub extends Context.Service<
       never,
       Scope.Scope
     >;
-    readonly subscribe: (
-      orgId: KinOrgId,
-    ) => Effect.Effect<PubSub.Subscription<KinChatHubEvent>, never, Scope.Scope>;
   }
 >()("t3/kin/chat/KinChatHub") {}
 
@@ -73,7 +70,6 @@ const make = Effect.gen(function* () {
         }),
       );
     }),
-    subscribe,
     subscribeForViewer: Effect.fn("KinChatHub.subscribeForViewer")(function* (identity) {
       const subscription = yield* subscribe(identity.orgId);
       return Stream.fromEffectRepeat(PubSub.take(subscription)).pipe(
@@ -89,14 +85,18 @@ const make = Effect.gen(function* () {
                     : event.type === "waiting.updated"
                       ? event.item.chatId
                       : event.chatId;
-            const member = (yield* repo.listMembers({ orgId: identity.orgId, chatId })).find(
-              (row) =>
-                row.leftAt === null &&
-                (identity._tag === "person"
-                  ? row.principal._tag === "person" && row.principal.personId === identity.personId
-                  : row.principal._tag === "agent" && row.principal.agentId === identity.agentId),
-            );
-            if (member === undefined) return false;
+            if (
+              event.type === "waiting.updated" &&
+              (identity._tag !== "person" || event.item.personId !== identity.personId)
+            )
+              return false;
+            const memberOption = yield* repo.activeMember({
+              orgId: identity.orgId,
+              chatId,
+              principal: identity,
+            });
+            if (Option.isNone(memberOption)) return false;
+            const member = memberOption.value;
             const messageId =
               event.type === "widget.updated"
                 ? event.widget.messageId
