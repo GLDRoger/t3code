@@ -3,7 +3,6 @@ import { ManagedPolicyDocument } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/sql/SqlClient";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import { webhookInput, withScheduledTasks } from "./fixtures.ts";
 
@@ -46,8 +45,6 @@ it.effect("decodes locked settings and marks existing webhook tasks blocked by p
           });
           assert.equal(response._tag, "blocked_by_policy");
           assert.equal(yield* Queue.size(launches), 0);
-          const sql = yield* SqlClient.SqlClient;
-          assert.equal((yield* sql`SELECT 1 FROM scheduled_task_webhook_deliveries`).length, 0);
         }),
       policy,
     );

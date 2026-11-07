@@ -1,7 +1,11 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto has no createHmac.
 import * as NodeCrypto from "node:crypto";
 import { assert, it } from "@effect/vitest";
-import { MAX_WEBHOOK_DELIVERY_AGE_MINUTES, ScheduledTaskUpsertSchedule } from "@t3tools/contracts";
+import {
+  CanonicalUtcTimestamp,
+  MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
+  ScheduledTaskUpsertSchedule,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -15,6 +19,7 @@ import { nextScheduledRunAt } from "../../scheduledTasks/Schedule.ts";
 import { webhookInput, withScheduledTasks } from "./fixtures.ts";
 
 const decodeSchedule = Schema.decodeSync(ScheduledTaskUpsertSchedule);
+const decodeReceivedAt = Schema.decodeUnknownEffect(CanonicalUtcTimestamp);
 
 it("decodes Kin's signed GitHub schedule and preserves the offline delivery limit", () => {
   const schedule = {
@@ -31,6 +36,16 @@ it("decodes Kin's signed GitHub schedule and preserves the offline delivery limi
   } satisfies typeof ScheduledTaskUpsertSchedule.Encoded;
   assert.deepEqual(decodeSchedule(schedule), schedule);
   assert.equal(MAX_WEBHOOK_DELIVERY_AGE_MINUTES, 1440);
+});
+
+it("pins the positional schedule members Kin reuses", () => {
+  const [interval, fixedTime, once] = ScheduledTaskUpsertSchedule.members;
+  const intervalShape = { type: "interval", everyMs: 60_000 };
+  const fixedTimeShape = { type: "fixed_time", timeOfDay: "03:00" };
+  const onceShape = { type: "once", runAt: "2026-11-08T00:00:00.000Z" };
+  assert.deepEqual(Schema.decodeUnknownSync(interval)(intervalShape), intervalShape);
+  assert.deepEqual(Schema.decodeUnknownSync(fixedTime)(fixedTimeShape), fixedTimeShape);
+  assert.deepEqual(Schema.decodeUnknownSync(once)(onceShape), onceShape);
 });
 
 it.each([
@@ -65,7 +80,7 @@ it.effect("preserves the upstream database columns Kin reads", () =>
 it.effect(
   "dispatches signed GitHub deliveries with Kin's provenance, span and replay identity",
   () =>
-    withScheduledTasks(({ service, launches, sends }) =>
+    withScheduledTasks(({ service, launches, sends, launchDeliveries }) =>
       Effect.gen(function* () {
         const finished = yield* Deferred.make<void>();
         const tracer = Tracer.make({
@@ -115,6 +130,12 @@ it.effect(
         if (accepted._tag !== "accepted") return assert.fail(`Unexpected ${accepted._tag}`);
         yield* Deferred.await(finished);
         const launch = yield* Queue.take(launches);
+        const rows = yield* Queue.take(launchDeliveries);
+        assert.lengthOf(rows, 1);
+        const [row] = rows;
+        if (row === undefined) return assert.fail("Delivery missing at launch");
+        const receivedAt = yield* decodeReceivedAt(row.receivedAt);
+        assert.equal(DateTime.formatIso(receivedAt), row.receivedAt);
         assert.equal(launch.initialMessage?.scheduledTaskId, task.id);
         assert.equal(launch.commandId, `scheduled-task:${task.id}:webhook:${accepted.deliveryId}`);
         const { delivery } = yield* service.getWebhookDelivery({

@@ -1,6 +1,6 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
-  OrchestrationV2ThreadProjectionJson,
+  OrchestrationV2DomainEventJson,
   ScheduledTaskUpsertInput,
   type ManagedPolicyDocument,
 } from "@t3tools/contracts";
@@ -10,6 +10,7 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { emptyProjection } from "../../orchestration-v2/ProjectionStore.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ManagedPolicy from "../../policy/ManagedPolicy.ts";
@@ -18,13 +19,17 @@ import * as ScheduledTasks from "../../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as SecretRequests from "../../secrets/SecretRequests.ts";
 
-const decodeProjection = Schema.decodeSync(OrchestrationV2ThreadProjectionJson);
+const decodeEvent = Schema.decodeSync(OrchestrationV2DomainEventJson);
 
 const decodeUpsert = Schema.decodeEffect(ScheduledTaskUpsertInput);
 
-const projection = () =>
-  decodeProjection({
-    thread: {
+const projection = () => {
+  const event = decodeEvent({
+    id: "event-contract",
+    threadId: "thread-contract",
+    type: "thread.created",
+    occurredAt: "2026-11-08T00:00:00.000Z",
+    payload: {
       id: "thread-contract",
       projectId: "project-contract",
       title: "Inbox",
@@ -48,24 +53,10 @@ const projection = () =>
       archivedAt: "2026-11-08T00:00:00.000Z",
       deletedAt: null,
     },
-    runs: [],
-    attempts: [],
-    nodes: [],
-    subagents: [],
-    providerSessions: [],
-    providerThreads: [],
-    providerTurns: [],
-    runtimeRequests: [],
-    messages: [],
-    plans: [],
-    turnItems: [],
-    checkpointScopes: [],
-    checkpoints: [],
-    contextHandoffs: [],
-    contextTransfers: [],
-    visibleTurnItems: [],
-    updatedAt: "2026-11-08T00:00:00.000Z",
   });
+  if (event.type !== "thread.created") throw new Error("Expected thread.created");
+  return emptyProjection(event);
+};
 
 export const webhookInput = (overrides: Partial<typeof ScheduledTaskUpsertInput.Encoded> = {}) =>
   decodeUpsert({
@@ -88,9 +79,13 @@ export const withScheduledTasks = Effect.fn("KinContract.withScheduledTasks")(fu
     service: ScheduledTasks.ScheduledTaskService["Service"];
     launches: Queue.Queue<ThreadLaunch.ThreadLaunchInput>;
     sends: Queue.Queue<ThreadManagement.ThreadManagementSendInput>;
+    launchDeliveries: Queue.Queue<ReadonlyArray<{ readonly receivedAt: unknown }>>;
   }) => Effect.Effect<A, E, SqlClient.SqlClient>,
   policy?: ManagedPolicyDocument,
 ) {
+  const sql = yield* SqlClient.SqlClient;
+  const launchDeliveries =
+    yield* Queue.unbounded<ReadonlyArray<{ readonly receivedAt: unknown }>>();
   const launches = yield* Queue.unbounded<ThreadLaunch.ThreadLaunchInput>();
   const sends = yield* Queue.unbounded<ThreadManagement.ThreadManagementSendInput>();
   const dependencies = Layer.mergeAll(
@@ -98,14 +93,23 @@ export const withScheduledTasks = Effect.fn("KinContract.withScheduledTasks")(fu
     Scheduler.layer,
     ManagedPolicy.layerTest(policy),
     Layer.mock(ThreadLaunch.ThreadLaunchService)({
-      launch: (input) =>
-        Queue.offer(launches, input).pipe(
-          Effect.as({
-            threadId: projection().thread.id,
-            projection: projection(),
-            resumed: false,
-          }),
-        ),
+      launch: Effect.fn("KinContract.launch")(function* (input) {
+        const taskId = input.initialMessage?.scheduledTaskId;
+        const prefix = `scheduled-task:${taskId}:webhook:`;
+        const deliveryId = input.commandId.slice(prefix.length);
+        const rows = yield* sql<{ readonly receivedAt: unknown }>`
+            SELECT d.received_at AS "receivedAt" FROM scheduled_task_webhook_deliveries d
+            JOIN scheduled_tasks t ON t.task_id = d.task_id
+            WHERE d.task_id = ${taskId ?? ""} AND d.delivery_id = ${deliveryId}
+              AND t.project_id = ${input.projectId}
+              AND t.thread_id IS NULL AND t.thread_mode = 'new_thread'
+              AND json_extract(t.schedule_json, '$.type') = 'webhook'
+          `.pipe(Effect.orDie);
+        yield* Queue.offer(launchDeliveries, rows);
+        yield* Queue.offer(launches, input);
+        const result = projection();
+        return { threadId: result.thread.id, projection: result, resumed: false };
+      }),
     }),
     Layer.mock(ThreadManagement.ThreadManagementService)({
       // Only the input boundary is under contract; no orchestrator runs in this fixture.
@@ -124,6 +128,6 @@ export const withScheduledTasks = Effect.fn("KinContract.withScheduledTasks")(fu
   );
   return yield* Effect.gen(function* () {
     const service = yield* ScheduledTasks.ScheduledTaskService;
-    return yield* body({ service, launches, sends });
+    return yield* body({ service, launches, sends, launchDeliveries });
   }).pipe(Effect.provide(Layer.fresh(ScheduledTasks.layer.pipe(Layer.provide(dependencies)))));
 });
