@@ -1,4 +1,9 @@
-import type { KinMemoryItemId, KinOrgId, MemoryItemHead } from "@t3tools/contracts";
+import {
+  KinTrigger,
+  type KinMemoryItemId,
+  type KinOrgId,
+  type MemoryItemHead,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -25,11 +30,14 @@ export class MemoryCache extends Context.Service<
       orgId: KinOrgId,
       id: KinMemoryItemId,
     ) => Effect.Effect<void, MemoryHistoryError>;
+    readonly ownerTimeZone: (orgId: KinOrgId) => Effect.Effect<string, MemoryHistoryError>;
     readonly lastReads: (
       orgId: KinOrgId,
     ) => Effect.Effect<Readonly<Record<string, number>>, MemoryHistoryError>;
   }
 >()("t3/kin/memory/MemoryCache") {}
+
+const decodeTimeZone = Schema.decodeUnknownEffect(KinTrigger.fields.timeZone);
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -44,6 +52,22 @@ const make = Effect.gen(function* () {
       `.pipe(
         Effect.mapError(toPersistenceSqlError("MemoryCache.read")),
         Effect.mapError((cause) => new MemoryHistoryError({ orgId, cause })),
+      );
+    }),
+    ownerTimeZone: Effect.fn("MemoryCache.ownerTimeZone")(function* (orgId) {
+      const rows = yield* sql<{ time_zone: unknown }>`
+        SELECT time_zone FROM kin_trigger_settings WHERE org_id = ${orgId} ORDER BY org_id
+      `.pipe(
+        Effect.mapError(toPersistenceSqlError("MemoryCache.ownerTimeZone")),
+        Effect.mapError((cause) => new MemoryHistoryError({ orgId, cause })),
+      );
+      if (rows.length === 0) return "UTC";
+      return yield* decodeTimeZone(rows[0]?.time_zone).pipe(
+        Effect.catch(() =>
+          Effect.logWarning("Invalid memory owner time zone; using UTC", { orgId }).pipe(
+            Effect.as("UTC"),
+          ),
+        ),
       );
     }),
     lastReads: Effect.fn("MemoryCache.lastReads")(function* (orgId) {
