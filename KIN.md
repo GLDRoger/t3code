@@ -5,7 +5,21 @@
 - `main` mirrors upstream `pingdotgg/t3code` and only fast-forwards. Never commit to it.
 - Kin work lands on `kin`.
 - Put Kin code in its own files (`packages/contracts/src/kinChat.ts`, `apps/server/src/kin/`, `apps/mobile/src/features/chats/`, `apps/web/src/kin/`). Touch shared upstream files only with the smallest hook you can, such as one line in a layer list or a route map.
-- Display copy keeps the T3 Code name until launch, so upstream merges stay conflict-free.
+- **Never rename in source.** The code keeps upstream's names, so merges never conflict over branding. Kin's name, icons and app identities are applied at build time (below).
+
+## Branding at build time
+
+`scripts/kin-brand.ts` (planned) turns a checkout into Kin inside the build, on a copy. Its output is never committed.
+
+- **It changes only what's listed** in `branding/rules.yaml`. Upstream has about 800 uses of "T3 Code" across 370 files, and some must not change: the Codex `clientInfo`, MCP server ids, `T3CODE_*` environment variables, `@t3tools/*` package names, storage keys, and agent instructions. So the list says what to change, not what to skip.
+- **Text** is replaced in string literals and JSX text only, found with `ast-grep`, so identifiers are never touched. Tests are skipped.
+- **Assets:** files in `branding/assets/` are copied over upstream's (app icons, splash screens, the web favicon and logo).
+- **App identities** get new values so Kin installs alongside T3 Code without clashing: iOS and Android bundle ids and URL schemes (`apps/mobile/app.config.ts`), the desktop `productName` and app id, and the desktop data folder.
+- **Drift check** after each upstream sync:
+  - It lists new "T3 Code" text that no rule covers, so it can be added or explicitly left alone.
+  - It fails when a rule no longer matches anything.
+  - It runs typecheck on the branded copy.
+- If upstream ever adds a central place for the app's name and assets, use it instead and shrink this script to a config file.
 
 ## Syncing upstream
 
