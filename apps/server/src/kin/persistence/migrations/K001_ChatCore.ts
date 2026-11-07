@@ -177,6 +177,5 @@ export default Effect.gen(function* () {
   `;
   yield* sql`CREATE INDEX idx_kin_chat_members_person ON kin_chat_members(org_id, person_id)`;
   yield* sql`CREATE INDEX idx_kin_chat_members_agent ON kin_chat_members(org_id, agent_id)`;
-  yield* sql`CREATE INDEX idx_kin_chats_org ON kin_chats(org_id)`;
   yield* sql`CREATE INDEX idx_kin_widgets_chat_message ON kin_widgets(org_id, chat_id, message_id)`;
 });
