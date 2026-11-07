@@ -70,6 +70,7 @@ const isSqlError = Schema.is(PersistenceSqlError);
 const encodeMentions = Schema.encodeEffect(Schema.fromJsonString(KinMessage.fields.mentions));
 const encodeWidgetState = Schema.encodeEffect(Schema.fromJsonString(KinWidget.fields.state));
 const encodeAwaiting = Schema.encodeEffect(Schema.fromJsonString(KinWidget.fields.awaiting));
+const decodeBody = Schema.decodeEffect(KinMessage.fields.body);
 const decodeHistory = Schema.decodeEffect(KinChatHistoryInput);
 const decodeSeq = Schema.decodeEffect(NonNegativeInt);
 const decodeResume = Schema.decodeEffect(
@@ -820,6 +821,7 @@ const make = Effect.gen(function* () {
     ),
     insertMessage: Effect.fn("KinChatRepository.insertMessage")(
       function* (input) {
+        yield* decodeBody(input.body);
         return yield* sql.withTransaction(
           Effect.gen(function* () {
             const author = input.author;

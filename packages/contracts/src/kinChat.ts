@@ -40,6 +40,13 @@ const isNonBlankBody = Schema.makeFilter((value: string) => value.trim().length 
   expected: "a non-blank message body",
 });
 
+// node:sqlite truncates TEXT results at NUL, even when the full value was stored.
+const MessageBody = Schema.String.check(
+  Schema.makeFilter((value) => !value.includes("\u0000"), {
+    expected: "a message body without NUL characters",
+  }),
+);
+
 export const KinChatKind = Schema.Literals(["direct", "team_group", "project_group", "router"]);
 export type KinChatKind = typeof KinChatKind.Type;
 export const KinRole = Schema.Literals(["owner", "member", "guest"]);
@@ -142,7 +149,7 @@ export const KinMessage = Schema.Struct({
   author: KinAuthor,
   authorRole: KinRole,
   kind: KinMessageKind,
-  body: Schema.String,
+  body: MessageBody,
   intent: Schema.NullOr(KinAgentIntent),
   mentions: Schema.Array(KinMemberId),
   replyTo: Schema.NullOr(KinMessageId),
@@ -293,7 +300,7 @@ export type KinChatHistoryResult = typeof KinChatHistoryResult.Type;
 export const KinMessagesSendInput = Schema.Struct({
   chatId: KinChatId,
   clientMessageId: TrimmedNonEmptyString,
-  body: Schema.String.check(isNonBlankBody, Schema.isMaxLength(16_000)),
+  body: MessageBody.check(isNonBlankBody, Schema.isMaxLength(16_000)),
   mentions: Schema.optional(Schema.Array(KinMemberId)),
   replyTo: Schema.optional(KinMessageId),
 });

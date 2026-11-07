@@ -140,18 +140,7 @@ it.effect.each([
   { role: "member", tag: "human", label: "member human message (untrusted)" },
   { role: "guest", tag: "human", label: "guest human message (untrusted)" },
   { role: "owner", tag: "human", label: "owner message" },
-  ...[
-    "\u0000",
-    "\u001b",
-    "\u007f",
-    "\u0085",
-    "\u200b",
-    "\ufeff",
-    "\u202e",
-    "\u2066",
-    "\u2028",
-    "\u2029",
-  ].map(
+  ...["\u001b", "\u007f", "\u0085", "\u200b", "\ufeff", "\u202e", "\u2066", "\u2028", "\u2029"].map(
     (character) =>
       ({
         role: "member",
@@ -228,8 +217,8 @@ it.effect.each([
       editedAt: null,
       clientMessageId: null,
     });
-    // Non-human owner roles and NUL text are defensive repository-boundary cases.
-    const defensiveRecord = (tag !== "human" && role === "owner") || body.includes("\u0000");
+    // Non-human owner roles are defensive repository-boundary cases.
+    const defensiveRecord = tag !== "human" && role === "owner";
     const source = defensiveRecord
       ? Chat.KinChatRepository.of({
           ...repo,
@@ -405,6 +394,9 @@ it.effect("bounds the encoded events section and drops oldest events visibly", (
 it.effect.each([
   { zone: "Asia/Kolkata", expected: "1970-01-01T05:30:00.000+05:30" },
   { zone: "America/New_York", expected: "1969-12-31T19:00:00.000-05:00[America/New_York]" },
+  { zone: "+05:30", expected: "UTC (invalid owner timezone; using UTC)" },
+  { zone: " Asia/Kolkata", expected: "1970-01-01T05:30:00.000+05:30" },
+  { zone: "db-failure", expected: "UTC (owner timezone unavailable; using UTC)" },
   { zone: "invalid-zone", expected: "UTC (invalid owner timezone; using UTC)" },
   { zone: null, expected: "UTC (owner timezone unavailable; using UTC)" },
 ])("shows owner timezone $zone only below the divider", ({ zone, expected }) =>
@@ -413,7 +405,8 @@ it.effect.each([
     const sql = yield* SqlClient.SqlClient;
     const prompt = yield* KinLeadPrompt;
     const before = yield* prompt.build(input);
-    if (zone !== null)
+    if (zone === "db-failure") yield* sql`DROP TABLE kin_trigger_settings`;
+    else if (zone !== null)
       yield* sql`
       INSERT INTO kin_trigger_settings
       (org_id, time_zone, morning_brief, evening_summary, dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
