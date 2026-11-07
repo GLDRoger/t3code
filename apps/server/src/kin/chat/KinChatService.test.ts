@@ -230,6 +230,7 @@ describe("KinChatService", () => {
             .pipe(Effect.flip),
           { reason: "not_allowed" },
         );
+        yield* sql`UPDATE orchestration_v2_projection_provider_threads SET provider_session_id = 'provider-session' WHERE provider_thread_id = 'authority-run'`;
         yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'service-wakeup'`;
         assert.include(
           yield* service
