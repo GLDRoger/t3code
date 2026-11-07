@@ -187,13 +187,35 @@ Every privileged action records the grant, the signing device, the SHA, who star
 
 L0 shadow (writes only to the owner's summary) → L1 comment and ping → L2 start workers and open draft PRs → L3 merge low-risk changes after an owner grant or delegation (docs, dependency bumps; never auth, security or migrations). Set per lead and per chat. Section 9 applies at every level.
 
+## 10a. Organizations
+
+Each Kin setup belongs to one **organization**: a company, or one person's own setup. The organization owns its chats, agents, memory, grants and audit log, and its agents run on its own machines and subscriptions.
+
+**Organization policy** follows T3's managed policy (`packages/contracts/src/managedPolicy.ts`, upstream #27197): an admin sets a value for each setting, and `locked: true` stops members and agents from changing it. Kin adds:
+
+- **Roles and approvers:** who can approve each action class, in place of "the owner" in section 9. Example: merges in `chemco/site` need a tech admin.
+- **Delegations for new members by role,** so someone who joins gets the right permissions from day one.
+- **Allowed providers and models,** and where data may go.
+- **External members:** allowed or not; what they see (everything, chats they're added to, or suggest-only); whether they may bring their own agents.
+- **Retention and export:** how long chats and memory are kept, and whether anything may leave the organization.
+
+**One person in many organizations** (for example, a consultant added by several clients):
+
+- **One app, one switcher.** Each organization is a separate space, like a Slack workspace. **Waiting on you** gathers items from all of them, each labelled with its organization.
+- **Walls between organizations.** Memory, files, credentials and agents never cross from one organization to another. A client's emails never reach the consultant's own memory or another client's.
+- **What the person's own lead may see** is set by each client's policy: nothing, titles and due dates only (so the personal agenda knows Friday is busy), or full content. The default is titles and due dates only.
+- **Bringing your own agent** into a client's chat needs the client's permission. It then runs under the client's data rules and the person's own permission ceiling there.
+
+Every chat, message, memory entry, grant and audit record carries an `orgId` from phase 1, even while there is only one organization. Adding it later would mean migrating everything.
+
 ## 11. Phases (each one works on its own)
 
 1. **Direct chat:** chat contracts and service; mobile chat list and direct chat; task, approval and deferral cards; the lead and its memory; morning and evening routines; GitHub webhooks; deferrals on `once`; the action executor, signed grants, the GitHub App, and branch rulesets. The lead starts at L0 on the pilot repo.
 2. **First group:** lead + QA; roles and provenance ceilings; floor manager; judge in shadow; decision cards and polls; generated widgets; notification actions. Raise the lead to L1, then L2.
 3. **Teams and router:** more teams; the router and its agenda; cross-team requests; live widgets, Live Activities, pinned dashboards; delegations.
 4. **Front doors:** an MCP hub so ChatGPT, Grok and Claude.ai reach the same leads and widgets, with the same section 9 rules.
-5. **Experiments:** one lead with skills vs. team agents vs. team agents plus the router (measure wrong routes, handoff losses, cross-team items settled without the owner, cost); self-improving rules; a chief of staff only if cross-team conflicts appear.
+5. **Organizations:** organization policy, roles and approvers, external members, the space switcher, and the walls between organizations (`orgId` is already in place from phase 1).
+6. **Experiments:** one lead with skills vs. team agents vs. team agents plus the router (measure wrong routes, handoff losses, cross-team items settled without the owner, cost); self-improving rules; a chief of staff only if cross-team conflicts appear.
 
 ## 12. Open questions
 
