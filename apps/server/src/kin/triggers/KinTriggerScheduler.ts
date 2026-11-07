@@ -83,10 +83,8 @@ const make = Effect.gen(function* () {
       lateByMs: now - dueAt,
       payload: { kind: "time", triggerId: trigger.id, subject: trigger.subject },
     });
-    yield* store.fire(
-      event,
-      trigger.schedule.type === "once" ? null : nextRunAt(trigger, now),
-      trigger,
+    yield* store.fire(event, (current) =>
+      current.schedule.type === "once" ? null : nextRunAt(current, now),
     );
   });
   const runDue = Effect.fn("KinTriggerScheduler.runDue")(

@@ -103,8 +103,7 @@ export class KinTriggerStore extends Context.Service<
     ) => Effect.Effect<ReadonlyArray<KinTrigger>, StoreError>;
     readonly fire: (
       event: KinTriggerFired,
-      nextRunAt: KinTrigger["nextRunAt"],
-      expected?: Pick<KinTrigger, "schedule" | "timeZone">,
+      nextRunAt: (trigger: KinTrigger) => KinTrigger["nextRunAt"],
     ) => Effect.Effect<"fired" | "duplicate", StoreError | KinTriggerFireConflict>;
     readonly pruneFires: (now: number) => Effect.Effect<number, StoreError>;
   }
@@ -121,7 +120,6 @@ const decodeTrigger = Schema.decodeEffect(KinTrigger);
 const decodeFire = Schema.decodeEffect(KinTriggerFired);
 const encodeFire = Schema.encodeEffect(Schema.fromJsonString(KinTriggerFired));
 const decodeNextRunAt = Schema.decodeEffect(KinTrigger.fields.nextRunAt);
-const decodeTimeZone = Schema.decodeEffect(KinTrigger.fields.timeZone);
 const encodeSubject = Schema.encodeEffect(Schema.fromJsonString(KinTriggerSubject));
 const encodeSchedule = Schema.encodeEffect(Schema.fromJsonString(KinTriggerSchedule));
 const isFireConflict = Schema.is(KinTriggerFireConflict);
@@ -341,12 +339,8 @@ const make = Effect.gen(function* () {
       },
       Effect.mapError(toPersistenceOrDecodeError("KinTriggerStore.listDue")),
     ),
-    fire: Effect.fn("KinTriggerStore.fire")(function* (event, nextRunAt, expected) {
+    fire: Effect.fn("KinTriggerStore.fire")(function* (event, nextRunAt) {
       const value = yield* decodeFire(event);
-      const next = yield* decodeNextRunAt(nextRunAt);
-      const expectedSchedule =
-        expected === undefined ? null : yield* encodeSchedule(expected.schedule);
-      const expectedZone = expected === undefined ? null : yield* decodeTimeZone(expected.timeZone);
       if (value.payload.kind !== "time") {
         return yield* new KinTriggerFireConflict({ orgId: value.orgId, reason: "not_time" });
       }
@@ -356,13 +350,6 @@ const make = Effect.gen(function* () {
         return yield* new KinTriggerFireConflict({ orgId: value.orgId, reason: "invalid_fire_id" });
       }
       const firedAt = yield* epoch(value.firedAt);
-      const nextAt = next === null ? null : yield* epoch(next);
-      if (nextAt !== null && nextAt <= dueAt) {
-        return yield* new KinTriggerFireConflict({
-          orgId: value.orgId,
-          reason: "invalid_next_run",
-        });
-      }
       return yield* sql.withTransaction(
         Effect.gen(function* () {
           // Pending inbox rows deduplicate even after the 30-day fire ledger expires.
@@ -405,6 +392,26 @@ const make = Effect.gen(function* () {
               });
             }
           }
+          const [trigger] = yield* decodeRows(
+            yield* getRows({ orgId: value.orgId, id: triggerId }),
+          );
+          if (
+            trigger === undefined ||
+            !trigger.enabled ||
+            trigger.nextRunAt === null ||
+            (yield* epoch(trigger.nextRunAt)) !== dueAt
+          ) {
+            if (duplicate) return "duplicate";
+            return yield* new KinTriggerFireConflict({ orgId: value.orgId, reason: "not_due" });
+          }
+          const next = yield* decodeNextRunAt(nextRunAt(trigger));
+          const nextAt = next === null ? null : yield* epoch(next);
+          if (nextAt !== null && nextAt <= dueAt) {
+            return yield* new KinTriggerFireConflict({
+              orgId: value.orgId,
+              reason: "invalid_next_run",
+            });
+          }
           const updated = yield* sql`
           UPDATE kin_triggers SET
             next_run_at = CASE WHEN json_extract(schedule_json, '$.type') = 'once' THEN NULL
@@ -412,8 +419,6 @@ const make = Effect.gen(function* () {
             last_fire_id = ${value.fireId}, updated_at = max(updated_at, ${firedAt})
           WHERE org_id = ${value.orgId} AND trigger_id = ${triggerId}
             AND enabled = 1 AND next_run_at = ${dueAt}
-            AND (${expectedSchedule} IS NULL OR schedule_json = ${expectedSchedule})
-            AND (${expectedZone} IS NULL OR time_zone = ${expectedZone})
           RETURNING trigger_id
         `;
           if (!duplicate && updated.length !== 1) {

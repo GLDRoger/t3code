@@ -9,6 +9,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
@@ -20,6 +21,7 @@ const database = KinPersistence.layer.pipe(
 );
 const stores = Layer.merge(KinTriggerStore.layer, KinTriggerInbox.layer).pipe(
   Layer.provideMerge(database),
+  Layer.provide(Layer.mock(ThreadManagementService.ThreadManagementService)({})),
 );
 const layer = KinTriggerScheduler.layer.pipe(
   Layer.provide(Layer.succeed(Scheduler.Scheduler, { register: () => Effect.void })),
@@ -176,6 +178,46 @@ describe("KinTriggerScheduler", () => {
           1,
         );
       }
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("fires non-canonical stored schedules once and advances them", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const store = yield* KinTriggerStore.KinTriggerStore;
+      const scheduler = yield* KinTriggerScheduler.KinTriggerScheduler;
+      const inbox = yield* KinTriggerInbox.KinTriggerInbox;
+      const sql = yield* SqlClient.SqlClient;
+      const due = "2026-11-07T03:00:00.000Z";
+      const cases = [
+        ['{ "timeOfDay": "05:00", "type": "fixed_time" }', "2026-11-07T05:00:00.000Z"],
+        [
+          '{ "extra": true, "type": "fixed_time", "timeOfDay": "05:00" }',
+          "2026-11-07T05:00:00.000Z",
+        ],
+        [
+          '{ "weekdays": [6], "timeOfDay": "05:00", "type": "fixed_time" }',
+          "2026-11-07T05:00:00.000Z",
+        ],
+        ['{ "everyMs": 60000, "type": "interval" }', "2026-11-07T03:01:00.000Z"],
+      ];
+      for (const [index, [schedule, next]] of cases.entries()) {
+        const value = trigger({ id: `non-canonical-${index}`, timeZone: "UTC", nextRunAt: due });
+        yield* store.put(value);
+        yield* sql`UPDATE kin_triggers SET schedule_json = ${schedule}
+          WHERE org_id = ${orgA} AND trigger_id = ${value.id}`;
+        yield* TestClock.setTime(millis(due));
+        yield* scheduler.runDue();
+        assert.strictEqual((yield* store.get(orgA, value.id))?.nextRunAt, next);
+      }
+      for (let tick = 0; tick < 5; tick++) yield* scheduler.runDue();
+      const events = yield* inbox.listPending(orgA);
+      assert.lengthOf(events, cases.length);
+      assert.isTrue(events.every((event) => event.dueAt === due));
+      assert.lengthOf(
+        yield* sql`SELECT fire_id FROM kin_trigger_fires ORDER BY fire_id`,
+        cases.length,
+      );
     }).pipe(Effect.provide(layer)),
   );
 
@@ -373,10 +415,13 @@ describe("KinTriggerScheduler", () => {
       yield* Effect.gen(function* () {
         const hooked = yield* KinTriggerScheduler.KinTriggerScheduler;
         yield* hooked.runDue();
-        assert.lengthOf(yield* inbox.listPending(orgA), 0);
+        assert.lengthOf(yield* inbox.listPending(orgA), 1);
         const sql = yield* SqlClient.SqlClient;
-        assert.lengthOf(yield* sql`SELECT fire_id FROM kin_trigger_fires ORDER BY fire_id`, 0);
-        assert.strictEqual((yield* store.get(orgA, value.id))?.nextRunAt, due);
+        assert.lengthOf(yield* sql`SELECT fire_id FROM kin_trigger_fires ORDER BY fire_id`, 1);
+        assert.strictEqual(
+          (yield* store.get(orgA, value.id))?.nextRunAt,
+          "2026-11-07T05:00:00.000Z",
+        );
         yield* hooked.runDue();
         yield* hooked.runDue();
       }).pipe(
