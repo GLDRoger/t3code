@@ -6,10 +6,9 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/sql/SqlClient";
-import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 
 import * as Memory from "../memory/Memory.ts";
+import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
 
 import { instructions } from "./instructions.ts";
@@ -44,7 +43,7 @@ export class KinLeadPrompt extends Context.Service<
     Effect.gen(function* () {
       const memory = yield* Memory.Memory;
       const chat = yield* Chat.KinChatRepository;
-      const sql = yield* SqlClient.SqlClient;
+      const cache = yield* MemoryCache.MemoryCache;
       const build = Effect.fn("KinLeadPrompt.build")(function* (input: KinLeadPromptInput) {
         const { orgId, agentId, memoryHead } = input;
         if (input.events.some((event) => event.orgId !== orgId || event.agentId !== agentId))
@@ -112,20 +111,11 @@ export class KinLeadPrompt extends Context.Service<
           );
         }
         const now = yield* Clock.currentTimeMillis;
-        const settings = yield* sql<{ time_zone: string }>`
-          SELECT time_zone FROM kin_trigger_settings WHERE org_id = ${orgId}
-        `.pipe(
-          Effect.mapError(toPersistenceSqlError("KinLeadPrompt.ownerTimeZone")),
-          Effect.mapError(
-            (cause) =>
-              new KinLeadPromptError({ orgId, reason: "Could not read owner timezone", cause }),
-          ),
-        );
-        const zone = settings[0]?.time_zone;
-        const local = zone ? DateTime.makeZoned(now, { timeZone: zone }) : Option.none();
-        const ownerTime = Option.isSome(local)
-          ? `${encoded(zone)}; local time: ${DateTime.formatIsoZoned(local.value)}`
-          : `UTC (${zone ? "invalid owner timezone" : "owner timezone unavailable"}; using UTC); local time: ${DateTime.formatIso(DateTime.makeUnsafe(now))}`;
+        const zone = yield* cache.readOwnerTimeZone(orgId);
+        const ownerTime =
+          zone._tag === "zone"
+            ? `${encoded(zone.zone)}; local time: ${DateTime.formatIsoZoned(DateTime.makeZonedUnsafe(now, { timeZone: zone.zone }))}`
+            : `UTC (${zone._tag === "invalid" ? "invalid owner timezone" : "owner timezone unavailable"}; using UTC); local time: ${DateTime.formatIso(DateTime.makeUnsafe(now))}`;
 
         return [
           instructions,
@@ -147,7 +137,7 @@ export class KinLeadPrompt extends Context.Service<
       });
       return KinLeadPrompt.of({ build });
     }),
-  );
+  ).pipe(Layer.provide(MemoryCache.layer));
 }
 
 const messageBodyLimit = 8_000;

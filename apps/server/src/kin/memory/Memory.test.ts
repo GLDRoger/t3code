@@ -16,6 +16,7 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Memory from "./Memory.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
 import { KinLeadPrompt } from "../lead/LeadPrompt.ts";
+import * as MemoryCache from "./MemoryCache.ts";
 import * as MemoryConfig from "./MemoryConfig.ts";
 import * as ServerConfig from "../../config.ts";
 import { fixtureItem } from "./__fixtures__/items.ts";
@@ -507,15 +508,31 @@ it.effect(
         repository.commit();
         yield* memory.prepareWakeup(orgA);
         const utcIndex = yield* memory.readIndex(orgA);
-        yield* sql`UPDATE kin_trigger_settings SET time_zone = 'Invented/Invalid' WHERE org_id = ${orgA}`;
-        repository.commit();
-        yield* memory.prepareWakeup(orgA);
-        expect(yield* memory.readIndex(orgA)).toContain("As of ");
-        expect(yield* memory.readIndex(orgA)).toBe(utcIndex);
-        expect(messages.some((message) => message.includes("Invalid memory owner time zone"))).toBe(
-          true,
-        );
-        yield* sql`DROP TABLE kin_trigger_settings`;
+        yield* Effect.gen(function* () {
+          const cache = yield* MemoryCache.MemoryCache;
+          for (const row of [
+            { zone: "+05:30", expected: { _tag: "invalid" } },
+            { zone: " Asia/Kolkata", expected: { _tag: "zone", zone: "Asia/Kolkata" } },
+            { zone: "Asia/Kolkata", expected: { _tag: "zone", zone: "Asia/Kolkata" } },
+            { zone: "Invented/Invalid", expected: { _tag: "invalid" } },
+            { zone: null, expected: { _tag: "missing" } },
+          ]) {
+            if (row.zone === null)
+              yield* sql`DELETE FROM kin_trigger_settings WHERE org_id = ${orgA}`;
+            else
+              yield* sql`UPDATE kin_trigger_settings SET time_zone = ${row.zone} WHERE org_id = ${orgA}`;
+            expect(yield* cache.readOwnerTimeZone(orgA)).toEqual(row.expected);
+            expect(yield* cache.readOwnerTimeZone(orgB)).toEqual({ _tag: "missing" });
+            repository.commit();
+            yield* memory.prepareWakeup(orgA);
+            if (row.expected._tag !== "zone") expect(yield* memory.readIndex(orgA)).toBe(utcIndex);
+          }
+          expect(
+            messages.some((message) => message.includes("Invalid memory owner time zone")),
+          ).toBe(true);
+          yield* sql`DROP TABLE kin_trigger_settings`;
+          expect(yield* cache.readOwnerTimeZone(orgA)).toEqual({ _tag: "unavailable" });
+        }).pipe(Effect.provide(MemoryCache.layer));
         yield* sql`DROP TABLE kin_memory_reads`;
         repository.commit();
         yield* memory.prepareWakeup(orgA);
