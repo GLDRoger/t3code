@@ -36,15 +36,17 @@ All paths are on `kin` as of 7 Nov 2026 (merged with upstream `main`).
 
 ### Organizations and identity
 
-Every row carries `orgId`. Phase 1 has one org, created on first start.
+Every row carries `orgId`. Phase 1 has one org, created on first start. Bootstrap creates reserved server ids `kin-default` and `kin-default-owner` in one repository transaction, only when no org exists. The org primary key and guarded insert make simultaneous starts idempotent. Restart preserves the stored identity, even if configuration changes. Existing data without that reserved org and owner fails startup rather than guessing ownership from a person's handle or row order.
+
+`KinIdentityConfig.layer` reads `KIN_ORG_NAME`, `KIN_OWNER_HANDLE` and `KIN_OWNER_DISPLAY_NAME`, defaulting to `Kin`, `owner` and `Owner`. CHAT-6 composes that configuration and `KinIdentity.layer` with the repository; CHAT-4 does not change server startup.
 
 - **`KinOrg`**: `orgId`, `name`, `createdAt`.
 - **`KinPerson`**: a human inside one org. `personId`, `orgId`, `handle` (slug used as `said_by` in kin-memory), `displayName`, `githubLogin` (nullable). The same human in two orgs is two persons. That keeps the walls in 10a: nothing joins across orgs except the session binding.
 - **`KinAgent`**: an agent identity inside one org. `agentId`, `orgId`, `displayName`, `role` (`lead | architect | builder | qa | release | router | specialist`), `ownerPersonId` (every agent has a human owner, section 9.8). The lead spec owns the agent's config (model, level, budget) in its own table keyed by `agentId`.
 - **Session to person** (`KinIdentity.resolve(session)`):
-  - Phase 1: any `/ws` session that passes the RPC scope check is the org owner. This is true today: only the owner can pair devices.
+  - Phase 1: after the RPC scope check, a `/ws` session holding every scope in `AuthStandardClientScopes` resolves to the default org owner. A narrower session resolves to an empty list, never to a person inferred from `subject`. The result is a list of `{ orgId, personId }` entries so phase-2 bindings do not change callers. Only the owner may pair devices before CHAT-11.
   - Phase 2: a row in `kin_session_bindings (session_id, org_id, person_id)` decides. A session without a binding is the owner only if it holds `AuthStandardClientScopes`. Members get sessions with the new `kin:chat` scope only (CHAT-11), so their device never gets the owner's terminal or files.
-- **Agent thread to agent** (`KinIdentity.resolveAgent(mcpScope)`): the lead spec registers each lead session's thread with `registerAgentThread({ orgId, agentId, threadId })`. Kin MCP tools look up `McpInvocationScope.thread.threadId`. No row, or `subagent: true`, means refusal. Workers never post; they report to their lead.
+- **Agent thread to agent** (`KinIdentity.resolveAgent(mcpScope)`): the lead spec registers each lead session's thread with `registerAgentThread({ orgId, agentId, threadId })`. Kin MCP tools look up `McpInvocationScope.thread.threadId`. An absent caller thread, no registry row, an ended row, or `subagent: true` means `not_allowed`. Resolution reads the database, not the tool-visibility cache, and derives `{ orgId, agentId, ownerPersonId, threadId }` only from stored rows. Retired agents are refused with `not_allowed` by both resolution and registration. Workers never post; they report to their lead. The lead calls `endAgentThread({ orgId, threadId })` when the session ends; an ended thread cannot be registered again.
 
 ### Chats, members, roles
 
@@ -343,7 +345,7 @@ export const KinChatStreamEvent = Schema.Union([
 - `kin_widget_upsert({ chatId, widgetId?, type, state, awaiting?, replyTo? })`: creates (with a message) or updates in place. Refuses `approval`.
 - `kin_floor_bid({ chatId, runId, reason, intent })` (phase 2).
 
-Every tool is hidden unless the calling thread is a registered agent thread. The `EnabledWhen` check reads `McpInvocationContext` from the fiber, as `hiddenFromSubagents` does, against an in-memory set kept by `KinIdentity`. So ordinary T3 threads, the context budget test and `agentContextBudget.json` see no change.
+Every tool is hidden unless the calling thread is a registered agent thread. The `EnabledWhen` check reads `McpInvocationContext` from the fiber, as `hiddenFromSubagents` does, against an in-memory set kept by the environment's single `KinIdentity` layer. All runtime registry mutations go through `KinIdentity`: registration and ending change the set only after the outer transaction commits, and the operations are serialized and interruption-safe. Layer startup rebuilds the set from active database rows. This set controls visibility only; resolution and post persistence still check stored identity. So ordinary T3 threads, the context budget test and `agentContextBudget.json` see no change.
 
 ### Floor manager (plain code)
 
@@ -434,7 +436,7 @@ export const JUDGE_THRESHOLDS = { act: 0.8, ask: 0.5 } as const; // below ask: a
 - **Sending while offline:** the client keeps `clientMessageId` and retries; the server returns the first insert.
 - **Two sends in one chat at once:** the seq update serialises them; SQLite has one writer, and `busy_timeout = 5000` in `Sqlite.ts` covers contention with the CLI process.
 - **Hub publish lost** (crash after commit): resubscribing reads the backlog from SQLite, so nothing is lost.
-- **Agent thread ends mid-post:** the registry row has `ended_at`; posts from it fail `not_allowed`.
+- **Agent thread ends mid-post:** the registry row has `ended_at`; `resolveAgent` refuses it with `not_allowed`. The repository rechecks that row inside the post transaction, so an identity resolved before the end cannot post afterwards.
 - **Task thread deleted or archived:** the card shows `cancelled` with "Thread no longer available" and keeps its last state.
 - **Widget state fails its schema** after an upgrade: the server sends it with `invalid_state` replaced by a placeholder card, never raw state.
 - **Kin migration fails:** server start fails with the migrator's error, the same as an upstream migration failure. Nothing is half-applied, because each migration runs in a transaction.
@@ -473,7 +475,7 @@ Upstream files touched, hooks only:
 ## Security notes
 
 - **Authors are server-made.** People: from the `/ws` session through `KinIdentity`. Agents: from the MCP caller thread through the registry. No input schema has an author field.
-- **No cross-org reads.** Every repository query filters by `org_id` from the resolved chat, never from the client.
+- **No cross-org reads.** Every chat-content query filters by `org_id` from resolved identity or chat membership, never from the client. Trusted bootstrap and MCP caller-thread discovery may find an org; subsequent identity lookups stay in that stored org.
 - **Not-found over forbidden** for chats outside the caller's membership.
 - **Guests are suggest-only** and their text reaches agents only after the owner sends it, still labelled `authorRole: "guest"`.
 - **Approval cards** can't be made or acted on through chat paths.
@@ -510,9 +512,9 @@ Run with `cd apps/server && vp test run src/kin` and `cd packages/contracts && v
 
 **CHAT-5. Chat service and hub.** What: `KinChatService` (createDirect, send, history, markRead, widget upsert and act, addWaiting and resolveWaiting, membership and role checks) and `KinChatHub`. Files: `KinChatService.ts`, `KinChatHub.ts`, `widgets/registry.ts`, tests. Depends on: CHAT-4. Done when: author, isolation, widget, read state and waiting tests pass. Owner: backend.
 
-**CHAT-6. WS RPCs and streams.** What: `makeKinChatHandlers(session)`, both stream handlers with resume, `KinChat.layer`; `packages/contracts/src/kinRpcs.ts` exporting `KinRpcs` and `KIN_RPC_SCOPES`, which combine every Kin spec's RPCs and scopes (`KinChatRpcs` first; other specs add theirs here, never to upstream files); hooks in `rpc.ts`, `ws.ts`, `RpcAuthorization.ts`, `server.ts`. Files: `kinRpcs.ts`, `apps/server/src/kin/chat/rpcHandlers.ts`, `layer.ts`. Depends on: CHAT-5. Done when: a `ws.test.ts`-style test over a real socket sends, subscribes, resumes with `afterSeq`, and gets `not_found` across orgs; `vp run typecheck` shows no `any` in the handler layer requirements (see Design corrections 6). Owner: backend.
+**CHAT-6. WS RPCs and streams.** What: `makeKinChatHandlers(session)`, both stream handlers with resume, `KinChat.layer`; `packages/contracts/src/kinRpcs.ts` exporting `KinRpcs` and `KIN_RPC_SCOPES`, which combine every Kin spec's RPCs and scopes (`KinChatRpcs` first; other specs add theirs here, never to upstream files); hooks in `rpc.ts`, `ws.ts`, `RpcAuthorization.ts`, `server.ts`. Files: `kinRpcs.ts`, `apps/server/src/kin/chat/rpcHandlers.ts`, `layer.ts`. Depends on: CHAT-5. Done when: a `ws.test.ts`-style test over a real socket sends, subscribes, resumes with `afterSeq`, and gets `not_found` across orgs; `vp run typecheck` shows no `any` in the handler layer requirements (see Design corrections 6). Owner: backend. Provide one shared `KinIdentity` instance for WS handlers and the `/kin/mcp` toolkit and test that it is shared. A Kin identity failure must disable Kin without stopping T3 startup.
 
-**CHAT-7. Agent MCP tools.** What: `KinChatToolkit` with `kin_chat_post`, `kin_chat_read`, `kin_widget_upsert`; `EnabledWhen` from the registry; hook in `McpHttpServer.ts`. Files: `apps/server/src/kin/mcp/*`. Depends on: CHAT-5. Done when: agent-post tests pass and `AgentContextBudget.test.ts` passes unchanged. Owner: backend.
+**CHAT-7. Agent MCP tools.** What: `KinChatToolkit` with `kin_chat_post`, `kin_chat_read`, `kin_widget_upsert`; `EnabledWhen` from the registry; hook in `McpHttpServer.ts`. Files: `apps/server/src/kin/mcp/*`. Depends on: CHAT-5. Done when: agent-post tests pass and `AgentContextBudget.test.ts` passes unchanged. Owner: backend. Use the same shared `KinIdentity` instance as WS handlers and test that it is shared.
 
 **CHAT-8. Task cards.** What: `task` state schema, `TaskCardUpdater` following `streamDomainEvents` and `getThreadShell`, startup recheck. Files: `apps/server/src/kin/chat/TaskCardUpdater.ts`, `widgets/taskCard.ts`, tests. Depends on: CHAT-5, CHAT-7. Done when: the task card test passes, and a manual run of `delegate_task` from a lead thread shows the card change state in `kin.chat.subscribe` output. Owner: backend.
 
