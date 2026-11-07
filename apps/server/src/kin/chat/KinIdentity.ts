@@ -42,8 +42,13 @@ export class KinIdentityConfig extends Context.Service<
 }
 
 type IdentityError = KinChatRepository.RepositoryError;
-export type PersonIdentity = { readonly orgId: KinOrgId; readonly personId: KinPersonId };
+export type PersonIdentity = {
+  readonly _tag: "person";
+  readonly orgId: KinOrgId;
+  readonly personId: KinPersonId;
+};
 export type AgentIdentity = {
+  readonly _tag: "agent";
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;
   readonly ownerPersonId: KinPersonId;
@@ -93,7 +98,7 @@ export class KinIdentity extends Context.Service<
         resolve: Effect.fn("KinIdentity.resolve")(function (session) {
           return Effect.succeed(
             AuthStandardClientScopes.every((scope) => session.scopes.includes(scope))
-              ? [{ orgId: owner.orgId, personId: owner.personId }]
+              ? [{ _tag: "person", orgId: owner.orgId, personId: owner.personId }]
               : [],
           );
         }),
@@ -118,6 +123,7 @@ export class KinIdentity extends Context.Service<
               message: "Kin agent identity required.",
             });
           return {
+            _tag: "agent",
             orgId: row.value.orgId,
             agentId: agent.value.agentId,
             ownerPersonId: agent.value.ownerPersonId,
@@ -146,7 +152,7 @@ export class KinIdentity extends Context.Service<
             if (Option.isNone(row))
               return yield* new KinChatError({
                 reason: "not_found",
-                message: "Kin agent thread not found.",
+                message: "Kin record not found.",
               });
             const ended = yield* repository.endAgentThread({
               ...input,

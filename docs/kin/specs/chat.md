@@ -158,7 +158,7 @@ export const KinMessage = Schema.Struct({
 
 - **The send input has no author field.** `kin.messages.send` takes `{ chatId, clientMessageId, body, mentions?, replyTo? }`. Effect Schema drops unknown keys on decode, so an `author` sent by a client never reaches the service.
 - **Mentions:** each mentioned member must still be active in the same org and chat, checked inside the send transaction; mentions of members who have left are refused.
-- **Idempotency:** unique `(chat_id, author_member_id, client_message_id)`. A retried send returns the first message.
+- **Idempotency:** unique `(chat_id, author_member_id, client_message_id)`. An identical retry returns the first insert; a changed retry (body, mentions, replyTo, or intent) fails `not_allowed`.
 - **Agent posts** come only through the Kin MCP tool `kin_chat_post` (CHAT-7). The author is built from `KinIdentity.resolveAgent`. Agent text is never trusted as a claim about authority (section 9.3); that rule lives in the approvals spec, but the chat never offers a way to make agent text look human.
 - **Citable link:** `kinMessageLink({ orgId, chatId, messageId })` returns `kin-chat://<orgId>/<chatId>/<messageId>`. kin-memory items use it as `source`.
 - **Deletion** sets `status: "deleted"` and clears `body`. Purge and retention are phase 5 (org policy).
@@ -246,7 +246,10 @@ Flow:
   - a widget upsert with `awaiting` (one row per person; removed people resolve as `superseded`),
   - an agent message with `intent: "question"` that mentions a person, or any agent question in a direct chat,
   - a guest suggestion (for the owner),
-  - the approvals spec calling `addWaiting` for its approval cards.
+  - the approvals spec calling the server-only repository `addWaiting` inside its transaction for its approval cards, then publishing `waiting.updated` after commit.
+- Public `KinChatService.addWaiting` refuses `reason: "approval"` and any row anchored on an approval widget (including through its message) with `not_allowed`; only the approvals spec creates these rows through the server-only repository entry point, never a transport.
+- Agents may resolve only `question` rows on their own messages, never approval rows or approval-widget anchors, even with an owner role. Persons may resolve their own rows; chat owners may resolve any row. Guests cannot resolve rows. Refusals use `not_allowed`.
+- When a person leaves a chat, their open waiting rows in that chat resolve as `cancelled` in the same transaction; rejoining applies the requested role and does not reopen cancelled rows.
 - New waiting rows must be unresolved; a caller-supplied resolution is refused.
 - A row resolves when the widget closes, the person acts on it, the person replies in the chat after the question (for `question`), or the source calls `resolveWaiting`.
 - The list streams with the chat list. Without an `orgId` the stream merges every org the session is bound to, each item labelled with `orgId` (10a, "one switcher"). Only this list is highlighted in the UI (interface rule 1); push and lock-screen buttons are the mobile and approvals specs' work.
@@ -436,7 +439,7 @@ export const JUDGE_THRESHOLDS = { act: 0.8, ask: 0.5 } as const; // below ask: a
 
 ### Failure cases
 
-- **Sending while offline:** the client keeps `clientMessageId` and retries; the server returns the first insert.
+- **Sending while offline:** the client keeps `clientMessageId` and retries; an identical retry returns the first insert; a changed retry fails `not_allowed`.
 - **Two sends in one chat at once:** the seq update serialises them; SQLite has one writer, and `busy_timeout = 5000` in `Sqlite.ts` covers contention with the CLI process.
 - **Hub publish lost** (crash after commit): resubscribing reads the backlog from SQLite, so nothing is lost.
 - **Agent thread ends mid-post:** the registry row has `ended_at`; `resolveAgent` refuses it with `not_allowed`. The repository rechecks that row inside the post transaction, so an identity resolved before the end cannot post afterwards.
@@ -471,7 +474,7 @@ Upstream files touched, hooks only:
 ## Interfaces to other specs
 
 - **Lead spec:** calls `KinIdentity.registerAgentThread` / `endAgentThread` around each lead session. Subscribes to `KinChatHub` for `message.posted` and `widget_action` to build `KinEvent`s. Uses the Kin MCP tools to post. Owns `KinAgent` config beyond identity, the `deferral` card state, levels per chat (its own table keyed by `chatId`), and the brief builder that quotes non-owner text. Receives `floor.offer` wake requests from the floor manager.
-- **Approvals spec:** creates `approval` widgets server-side from `KinPendingAction` and calls `addWaiting` / `resolveWaiting`. Reads `KinMessage.author` and `authorRole` as provenance for ceilings. Its signed-grant RPC is the only way to approve; `kin.widgets.act` refuses approvals. Shows "Waiting on Nishchay" to members from `KinWidget.awaiting`.
+- **Approvals spec:** creates `approval` widgets server-side from `KinPendingAction` and creates approval waiting rows through the server-only repository `addWaiting` in its transaction, never the public chat service or a transport. It resolves rows through its signed-grant flow; agents cannot create or resolve them. Reads `KinMessage.author` and `authorRole` as provenance for ceilings. Its signed-grant RPC is the only way to approve; `kin.widgets.act` refuses approvals. Shows "Waiting on Nishchay" to members from `KinWidget.awaiting`.
 - **Triggers spec:** deferral and routine posts arrive as lead notices; nothing here. Its upstream contract tests should cover what this spec depends on: `Migrator` `table` option, `WsRpcGroup` and `RPC_REQUIRED_SCOPES` shapes, `layerWsRpc` session argument, `McpInvocationScope.thread`, `toolkitRegistration`, `getThreadShell` and `streamDomainEvents`, `OrchestratorMcpDelegateTaskResult`.
 - **Mobile spec:** consumes `kin.*` RPCs and both streams through the normal WS client; draws native cards from `KinWidget.type` and `state`; renders generated widgets with `ThreadMcpApp`; opens task threads with `formatThreadLink`; folds runs by `floorRunId`; avatars from `KinAuthor._tag` (rule 7).
 
@@ -515,7 +518,7 @@ Run with `cd apps/server && vp test run src/kin` and `cd packages/contracts && v
 
 **CHAT-5. Chat service and hub.** What: `KinChatService` (createDirect, send, history, markRead, widget upsert and act, addWaiting and resolveWaiting, membership and role checks) and `KinChatHub`. Files: `KinChatService.ts`, `KinChatHub.ts`, `widgets/registry.ts`, tests. Depends on: CHAT-4. Done when: author, isolation, widget, read state and waiting tests pass. Owner: backend.
 
-**CHAT-6. WS RPCs and streams.** What: `makeKinChatHandlers(session)`, both stream handlers with resume, `KinChat.layer`; `packages/contracts/src/kinRpcs.ts` exporting `KinRpcs` and `KIN_RPC_SCOPES`, which combine every Kin spec's RPCs and scopes (`KinChatRpcs` first; other specs add theirs here, never to upstream files); hooks in `rpc.ts`, `ws.ts`, `RpcAuthorization.ts`, `server.ts`. Files: `kinRpcs.ts`, `apps/server/src/kin/chat/rpcHandlers.ts`, `layer.ts`. Depends on: CHAT-5. Done when: a `ws.test.ts`-style test over a real socket sends, subscribes, resumes with `afterSeq`, and gets `not_found` across orgs; `vp run typecheck` shows no `any` in the handler layer requirements (see Design corrections 6). Owner: backend. Provide one shared `KinIdentity` instance for WS handlers and the `/kin/mcp` toolkit and test that it is shared. A Kin identity failure must disable Kin without stopping T3 startup.
+**CHAT-6. WS RPCs and streams.** Both streams must use `KinChatHub.subscribeForViewer(identity)`, which checks current membership at delivery for every event and hides suggestions from everyone except their author and the chat owner; the org-wide subscription is for trusted server consumers only. What: `makeKinChatHandlers(session)`, both stream handlers with resume, `KinChat.layer`; `packages/contracts/src/kinRpcs.ts` exporting `KinRpcs` and `KIN_RPC_SCOPES`, which combine every Kin spec's RPCs and scopes (`KinChatRpcs` first; other specs add theirs here, never to upstream files); hooks in `rpc.ts`, `ws.ts`, `RpcAuthorization.ts`, `server.ts`. Files: `kinRpcs.ts`, `apps/server/src/kin/chat/rpcHandlers.ts`, `layer.ts`. Depends on: CHAT-5. Done when: a `ws.test.ts`-style test over a real socket sends, subscribes, resumes with `afterSeq`, and gets `not_found` across orgs; `vp run typecheck` shows no `any` in the handler layer requirements (see Design corrections 6). Owner: backend. Provide one shared `KinIdentity` instance for WS handlers and the `/kin/mcp` toolkit and test that it is shared. A Kin identity failure must disable Kin without stopping T3 startup.
 
 **CHAT-7. Agent MCP tools.** What: `KinChatToolkit` with `kin_chat_post`, `kin_chat_read`, `kin_widget_upsert`; `EnabledWhen` from the registry; hook in `McpHttpServer.ts`. Files: `apps/server/src/kin/mcp/*`. Depends on: CHAT-5. Done when: agent-post tests pass and `AgentContextBudget.test.ts` passes unchanged. Owner: backend. Use the same shared `KinIdentity` instance as WS handlers and test that it is shared.
 

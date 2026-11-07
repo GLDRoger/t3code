@@ -625,7 +625,7 @@ const make = Effect.gen(function* () {
                   message: "Kin member identity conflict.",
                 });
               if (member.leftAt === null) return member;
-              yield* sql`UPDATE kin_chat_members SET left_at = NULL, joined_at = ${input.joinedAt}
+              yield* sql`UPDATE kin_chat_members SET left_at = NULL, joined_at = ${input.joinedAt}, role = ${input.role}
  WHERE org_id = ${input.orgId} AND member_id = ${input.memberId}`;
               return yield* requireRecord(memberOne(input));
             }
@@ -638,9 +638,18 @@ const make = Effect.gen(function* () {
     ),
     leaveChat: Effect.fn("KinChatRepository.leaveChat")(
       function* (input) {
-        const changed = yield* sql`UPDATE kin_chat_members SET left_at = ${input.leftAt}
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const changed = yield* sql`UPDATE kin_chat_members SET left_at = ${input.leftAt}
  WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND member_id = ${input.memberId} AND left_at IS NULL RETURNING member_id`;
-        return changed.length > 0;
+            if (changed.length === 0) return false;
+            const member = yield* requireRecord(memberOne(input));
+            if (member.principal._tag === "person")
+              yield* sql`UPDATE kin_waiting SET resolved_at = ${input.leftAt}, resolution = 'cancelled'
+ WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND person_id = ${member.principal.personId} AND resolved_at IS NULL`;
+            return true;
+          }),
+        );
       },
       Effect.mapError(toRepositoryError("KinChatRepository.leaveChat")),
     ),
@@ -837,7 +846,7 @@ const make = Effect.gen(function* () {
               )
                 return yield* new KinChatError({
                   reason: "not_found",
-                  message: "Kin member not found.",
+                  message: "Kin record not found.",
                 });
             }
             if (memberId !== null && clientId !== null) {
@@ -859,13 +868,26 @@ const make = Effect.gen(function* () {
                     reason: "not_allowed",
                     message: "Kin message author identity conflict.",
                   });
+                if (
+                  existing.value.body !== input.body ||
+                  existing.value.intent !== input.intent ||
+                  existing.value.replyTo !== input.replyTo ||
+                  existing.value.widgetId !== input.widgetId ||
+                  existing.value.kind !== input.kind ||
+                  existing.value.mentions.length !== input.mentions.length ||
+                  !existing.value.mentions.every((id, index) => id === input.mentions[index])
+                )
+                  return yield* new KinChatError({
+                    reason: "not_allowed",
+                    message: "Kin message retry conflict.",
+                  });
                 return existing.value;
               }
             }
             if (member !== null && member.leftAt !== null)
               return yield* new KinChatError({
                 reason: "not_found",
-                message: "Kin member not found.",
+                message: "Kin record not found.",
               });
             const agent =
               author._tag === "agent"
@@ -883,7 +905,7 @@ const make = Effect.gen(function* () {
               )
                 return yield* new KinChatError({
                   reason: "not_found",
-                  message: "Kin agent author not found.",
+                  message: "Kin record not found.",
                 });
             }
             if (input.replyTo !== null) {
@@ -925,7 +947,7 @@ const make = Effect.gen(function* () {
               if (mentioned.chatId !== input.chatId || mentioned.leftAt !== null)
                 return yield* new KinChatError({
                   reason: "not_found",
-                  message: "Kin member not found.",
+                  message: "Kin record not found.",
                 });
             }
             const mentions = yield* encodeMentions(input.mentions);
@@ -950,7 +972,7 @@ const make = Effect.gen(function* () {
             if (inserted.length === 0)
               return yield* new KinChatError({
                 reason: "not_found",
-                message: "Kin message not found.",
+                message: "Kin record not found.",
               });
             return yield* requireRecord(messageOne(input));
           }),
@@ -973,7 +995,7 @@ const make = Effect.gen(function* () {
               if (viewer !== null && (viewer.chatId !== input.chatId || viewer.leftAt !== null))
                 return yield* new KinChatError({
                   reason: "not_found",
-                  message: "Kin member not found.",
+                  message: "Kin record not found.",
                 });
               const rows = yield* SqlSchema.findAll({
                 Request: Schema.Unknown,
@@ -1032,7 +1054,7 @@ const make = Effect.gen(function* () {
  ${input.feed?.kind ?? null}, ${input.feed?.key ?? null}, ${awaiting}, ${input.pinnedAt}, ${input.closedAt}, ${input.updatedAt})
  ON CONFLICT DO NOTHING RETURNING widget_id`;
         if (inserted.length === 0)
-          return yield* new KinChatError({ reason: "not_found", message: "Kin widget not found." });
+          return yield* new KinChatError({ reason: "not_found", message: "Kin record not found." });
         yield* sql`UPDATE kin_messages SET widget_id = ${input.widgetId}
  WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND message_id = ${input.messageId} AND widget_id IS NULL`;
       },

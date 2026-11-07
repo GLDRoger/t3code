@@ -138,12 +138,12 @@ const make = Effect.gen(function* () {
     const member = members.find(
       (row) =>
         row.leftAt === null &&
-        ("personId" in identity
+        (identity._tag === "person"
           ? row.principal._tag === "person" && row.principal.personId === identity.personId
           : row.principal._tag === "agent" && row.principal.agentId === identity.agentId),
     );
     if (member === undefined) return yield* notFound;
-    if ("agentId" in identity) {
+    if (identity._tag === "agent") {
       const agent = yield* requireRecord(repo.getAgent(identity));
       const thread = yield* requireRecord(repo.getAgentThread(identity));
       if (
@@ -157,7 +157,7 @@ const make = Effect.gen(function* () {
     return member;
   });
   const authorFor = (identity: Identity, member: KinChatMember): KinAuthor =>
-    "personId" in identity
+    identity._tag === "person"
       ? { _tag: "human", personId: identity.personId, memberId: member.memberId }
       : {
           _tag: "agent",
@@ -172,7 +172,7 @@ const make = Effect.gen(function* () {
   ) {
     if (member.role === "guest") return yield* notAllowed;
     if (
-      "agentId" in identity &&
+      identity._tag === "agent" &&
       member.mutedUntil !== null &&
       Date.parse(member.mutedUntil) > (yield* Clock.currentTimeMillis)
     )
@@ -263,7 +263,7 @@ const make = Effect.gen(function* () {
         });
       }
     }
-    if ("personId" in identity) {
+    if (identity._tag === "person") {
       for (const item of yield* repo.listOpenWaiting(identity)) {
         if (item.chatId !== message.chatId || item.reason !== "question" || item.messageId === null)
           continue;
@@ -321,8 +321,8 @@ const make = Effect.gen(function* () {
       const member = yield* memberFor(identity, request.chatId);
       yield* canWrite(identity, member);
       if (
-        ("agentId" in identity && input.intent === undefined) ||
-        ("personId" in identity && input.intent !== undefined)
+        (identity._tag === "agent" && input.intent === undefined) ||
+        (identity._tag === "person" && input.intent !== undefined)
       )
         return yield* invalidState;
       const intent =
@@ -379,7 +379,7 @@ const make = Effect.gen(function* () {
         const message = yield* post(identity, member, {
           chatId: input.chatId,
           body: "",
-          intent: "agentId" in identity ? "answer" : null,
+          intent: identity._tag === "agent" ? "answer" : null,
           kind: "text",
           mentions: [],
           replyTo: null,
@@ -505,6 +505,21 @@ const make = Effect.gen(function* () {
       return message;
     }, transaction),
     addWaiting: Effect.fn("KinChatService.addWaiting")(function* (identity, input) {
+      yield* memberFor(identity, input.chatId);
+      if (input.reason === "approval") return yield* notAllowed;
+      const message =
+        input.messageId === null
+          ? null
+          : yield* requireRecord(
+              repo.getMessage({ orgId: identity.orgId, messageId: input.messageId }),
+            );
+      if (message !== null && message.chatId !== input.chatId) return yield* notFound;
+      for (const widgetId of new Set([input.widgetId, message?.widgetId ?? null])) {
+        if (widgetId === null) continue;
+        const widget = yield* requireRecord(repo.getWidget({ orgId: identity.orgId, widgetId }));
+        if (widget.chatId !== input.chatId) return yield* notFound;
+        if (widget.type === "approval") return yield* notAllowed;
+      }
       return yield* add(identity, input);
     }, transaction),
     resolveWaiting: Effect.fn("KinChatService.resolveWaiting")(function* (identity, input) {
@@ -514,12 +529,21 @@ const make = Effect.gen(function* () {
       );
       const member = yield* memberFor(identity, item.chatId);
       if (member.role === "guest") return yield* notAllowed;
-      if (
-        member.role !== "owner" &&
-        !("personId" in identity && identity.personId === item.personId) &&
-        !("agentId" in identity && member.role === "member")
-      )
+      if (identity._tag === "agent") {
+        if (item.reason !== "question" || item.messageId === null) return yield* notAllowed;
+        const message = yield* requireRecord(
+          repo.getMessage({ orgId: identity.orgId, messageId: item.messageId }),
+        );
+        if (message.author._tag !== "agent" || message.author.agentId !== identity.agentId)
+          return yield* notAllowed;
+        for (const widgetId of new Set([item.widgetId, message.widgetId])) {
+          if (widgetId === null) continue;
+          const widget = yield* requireRecord(repo.getWidget({ orgId: identity.orgId, widgetId }));
+          if (widget.type === "approval") return yield* notAllowed;
+        }
+      } else if (member.role !== "owner" && identity.personId !== item.personId) {
         return yield* notAllowed;
+      }
       return yield* resolve(item, input.resolution);
     }, transaction),
   });

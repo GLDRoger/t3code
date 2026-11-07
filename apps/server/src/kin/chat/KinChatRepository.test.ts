@@ -307,7 +307,7 @@ describe("KinChatRepository", () => {
             repo.insertMessage({
               ...message("first"),
               messageId: decodeMessageId(`retry-${i}`),
-              body: "changed",
+              body: first.body,
               createdAt: later,
             }),
           ),
@@ -327,7 +327,7 @@ describe("KinChatRepository", () => {
         assert.strictEqual(action.messageId, decodeMessageId("action"));
         assert.deepStrictEqual(
           yield* repo.insertMessage({
-            ...message("repeated-action", { kind: "widget_action" }),
+            ...message("repeated-action", { kind: "system", body: "action" }),
             clientMessageId: { kind: "act", id: "first" },
           }),
           action,
@@ -666,7 +666,10 @@ describe("KinChatRepository", () => {
           repo.insertMessage(message("invalid-reference", fields)),
         );
         assert.strictEqual(failure._tag, "KinChatError");
-        if (failure._tag === "KinChatError") assert.strictEqual(failure.reason, "not_found");
+        if (failure._tag === "KinChatError") {
+          assert.strictEqual(failure.reason, "not_found");
+          assert.strictEqual(failure.message, "Kin record not found.");
+        }
       }
       const hidden = { ...scope, orgId: orgA };
       const sql = yield* SqlClient.SqlClient;

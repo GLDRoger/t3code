@@ -4,11 +4,13 @@ import {
   AuthStandardClientScopes,
   EnvironmentId,
   KinAgentId,
+  KinChatId,
   KinMemberId,
   KinMessagesSendInput,
   KinOrgId,
   KinPersonId,
   KinTaskCardState,
+  KinWaitingId,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -16,6 +18,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
+import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
@@ -29,6 +32,8 @@ import * as Service from "./KinChatService.ts";
 
 const decodeKinOrgId = Schema.decodeSync(KinOrgId);
 const decodeKinPersonId = Schema.decodeSync(KinPersonId);
+const decodeKinWaitingId = Schema.decodeSync(KinWaitingId);
+const decodeKinChatId = Schema.decodeSync(KinChatId);
 const decodeKinMemberId = Schema.decodeSync(KinMemberId);
 const decodeThreadId = Schema.decodeSync(ThreadId);
 const decodeSend = Schema.decodeUnknownEffect(KinMessagesSendInput);
@@ -122,18 +127,25 @@ describe("KinChatService", () => {
           authorRole: "owner",
           status: "posted",
         });
-        const first = yield* service.send(person, forged);
+        const mixedPerson = { ...person, agentId };
+        const first = yield* service.send(mixedPerson, forged);
         assert.strictEqual(first.author._tag, "human");
         assert.include(first.author, { personId: person.personId });
         assert.strictEqual(first.authorRole, "owner");
         assert.strictEqual(first.intent, null);
-        assert.deepStrictEqual(
-          yield* service.send(person, { ...forged, body: "Changed retry" }),
-          first,
-        );
+        assert.deepStrictEqual(yield* service.send(person, forged), first);
+        for (const changed of [
+          { body: "Changed retry" },
+          { mentions: members.map((row) => row.memberId) },
+          { replyTo: first.messageId },
+        ])
+          assert.include(yield* Effect.flip(service.send(person, { ...forged, ...changed })), {
+            reason: "not_allowed",
+          });
         const agentMember = members.find((row) => row.principal._tag === "agent");
         assert.isDefined(agentMember);
-        const posted = yield* service.send(agent, {
+        const mixedAgent = { ...agent, personId: person.personId };
+        const posted = yield* service.send(mixedAgent, {
           chatId: chat.chatId,
           clientMessageId: "first",
           body: "Evidence",
@@ -146,6 +158,17 @@ describe("KinChatService", () => {
           threadId,
           memberId: agentMember.memberId,
         });
+        assert.include(
+          yield* Effect.flip(
+            service.send(agent, {
+              chatId: chat.chatId,
+              clientMessageId: "first",
+              body: "Evidence",
+              intent: "answer",
+            }),
+          ),
+          { reason: "not_allowed" },
+        );
         assert.strictEqual(posted.authorRole, "member");
         assert.strictEqual(posted.seq, 2);
         const resumed = decodeThreadId("new-thread");
@@ -196,9 +219,10 @@ describe("KinChatService", () => {
       const [waiting] = yield* repo.listOpenWaiting(person);
       assert.isDefined(waiting);
       const foreign = {
+        _tag: "person",
         orgId: decodeKinOrgId("other-org"),
         personId: decodeKinPersonId("other-person"),
-      };
+      } as const;
       yield* repo.insertOrg({ orgId: foreign.orgId, name: "Other", createdAt: timestamp });
       yield* repo.insertPerson({
         ...foreign,
@@ -297,7 +321,17 @@ describe("KinChatService", () => {
         yield* Effect.flip(service.markRead(outsider, { chatId: chat.chatId, seq: 1 })),
         { reason: "not_found" },
       );
-      yield* repo.addMember(guest);
+      assert.strictEqual(
+        Option.getOrThrow(yield* repo.getWaiting(guestWaiting)).resolution,
+        "cancelled",
+      );
+      const rejoined = yield* repo.addMember({ ...guest, role: "member" });
+      assert.strictEqual(rejoined.role, "member");
+      yield* service.send(outsider, {
+        chatId: chat.chatId,
+        body: "Rejoined",
+        clientMessageId: "rejoined",
+      });
       yield* service.markRead(outsider, { chatId: chat.chatId, seq: 1 });
       const sql = yield* SqlClient.SqlClient;
       yield* sql`UPDATE kin_chat_members SET muted_until = '2099-01-01T00:00:00.000Z' WHERE org_id = ${person.orgId} AND agent_id = ${agentId}`;
@@ -477,6 +511,68 @@ describe("KinChatService", () => {
         const read = yield* PubSub.take(events);
         assert.include(read, { type: "read.updated", seq: 2 });
         assert.deepStrictEqual(yield* PubSub.takeUpTo(events, 20), []);
+        const approval = {
+          orgId: person.orgId,
+          chatId: chat.chatId,
+          waitingId: decodeKinWaitingId("server-approval"),
+          personId: person.personId,
+          messageId: question.messageId,
+          widgetId: null,
+          reason: "approval",
+          createdAt: timestamp,
+          resolvedAt: null,
+          resolution: null,
+        } as const;
+        yield* repo.addWaiting(approval);
+        const humanQuestion = yield* service.send(person, {
+          chatId: chat.chatId,
+          body: "Another question",
+          clientMessageId: "human-question",
+        });
+        const anotherQuestion = yield* service.addWaiting(person, {
+          ...approval,
+          reason: "question",
+          messageId: humanQuestion.messageId,
+        });
+        const ownQuestion = yield* service.addWaiting(agent, {
+          ...approval,
+          reason: "question",
+        });
+        for (const operation of [
+          service.addWaiting(agent, { ...approval }),
+          service.resolveWaiting(agent, { waitingId: approval.waitingId, resolution: "approved" }),
+          service.resolveWaiting(agent, {
+            waitingId: anotherQuestion.waitingId,
+            resolution: "answered",
+          }),
+        ])
+          assert.include(yield* Effect.flip(operation), { reason: "not_allowed" });
+        const approvalWidget = yield* service.upsertWidget(agent, {
+          chatId: chat.chatId,
+          type: "task",
+          state,
+        });
+        yield* sql`UPDATE kin_widgets SET type = 'approval' WHERE org_id = ${person.orgId} AND widget_id = ${approvalWidget.widgetId}`;
+        for (const identity of [person, agent])
+          for (const widgetId of [null, approvalWidget.widgetId])
+            assert.include(
+              yield* Effect.flip(
+                service.addWaiting(identity, {
+                  ...approval,
+                  reason: "question",
+                  widgetId,
+                  messageId: approvalWidget.messageId,
+                }),
+              ),
+              { reason: "not_allowed" },
+            );
+        assert.strictEqual(
+          (yield* service.resolveWaiting(agent, {
+            waitingId: ownQuestion.waitingId,
+            resolution: "answered",
+          })).resolution,
+          "answered",
+        );
         const waiting = yield* service.addWaiting(agent, {
           chatId: chat.chatId,
           personId: person.personId,
@@ -497,5 +593,115 @@ describe("KinChatService", () => {
           done,
         );
       }).pipe(Effect.provide(layer)),
+  );
+  it.effect("filters every hub event against current viewer membership at delivery", () =>
+    Effect.gen(function* () {
+      const { repo, service, person, agent, chat } = yield* seed;
+      const hub = yield* Hub.KinChatHub;
+      const viewer = yield* hub.subscribeForViewer(person);
+      const other = yield* repo.createChat({
+        ...chat,
+        chatId: decodeKinChatId("other-chat"),
+        kind: "project_group",
+        directKey: null,
+      });
+      const agentMember = (yield* repo.listMembers(chat)).find(
+        (row) => row.principal._tag === "agent",
+      );
+      const personMember = (yield* repo.listMembers(chat)).find(
+        (row) => row.principal._tag === "person",
+      );
+      assert.isDefined(agentMember);
+      assert.isDefined(personMember);
+      yield* repo.addMember({
+        ...agentMember,
+        chatId: other.chatId,
+        memberId: decodeKinMemberId("other-agent"),
+      });
+      const message = yield* service.send(agent, {
+        chatId: other.chatId,
+        body: "Private",
+        clientMessageId: "private",
+        intent: "answer",
+      });
+      const widget = yield* service.upsertWidget(agent, {
+        chatId: other.chatId,
+        type: "task",
+        state,
+      });
+      const events: ReadonlyArray<Hub.KinChatHubEvent> = [
+        { type: "chat.created", orgId: person.orgId, chat: other },
+        { type: "message.posted", orgId: person.orgId, message },
+        {
+          type: "message.posted",
+          orgId: person.orgId,
+          message: { ...message, status: "suggested" },
+        },
+        { type: "widget.updated", orgId: person.orgId, widget },
+        {
+          type: "waiting.updated",
+          orgId: person.orgId,
+          item: {
+            orgId: person.orgId,
+            chatId: other.chatId,
+            waitingId: decodeKinWaitingId("private-waiting"),
+            personId: person.personId,
+            messageId: message.messageId,
+            widgetId: null,
+            reason: "suggestion",
+            createdAt: timestamp,
+            resolvedAt: null,
+            resolution: null,
+          },
+        },
+        {
+          type: "read.updated",
+          orgId: person.orgId,
+          chatId: other.chatId,
+          memberId: agentMember.memberId,
+          seq: 1,
+        },
+      ];
+      for (const event of events) yield* hub.publish(event);
+      const marker: Hub.KinChatHubEvent = {
+        type: "read.updated",
+        orgId: person.orgId,
+        chatId: chat.chatId,
+        memberId: personMember.memberId,
+        seq: 0,
+      };
+      yield* hub.publish(marker);
+      assert.deepStrictEqual(Option.getOrThrow(yield* Stream.runHead(viewer)), marker);
+      const joined = yield* repo.addMember({
+        ...personMember,
+        chatId: other.chatId,
+        memberId: decodeKinMemberId("other-person"),
+      });
+      for (const event of events) yield* hub.publish(event);
+      yield* repo.leaveChat({ ...joined, leftAt: timestamp });
+      yield* hub.publish(marker);
+      assert.deepStrictEqual(Option.getOrThrow(yield* Stream.runHead(viewer)), marker);
+      yield* repo.addMember(joined);
+      for (const event of events) yield* hub.publish(event);
+      assert.deepStrictEqual(
+        yield* Stream.runCollect(viewer.pipe(Stream.take(events.length))),
+        events,
+      );
+      const agentViewer = yield* hub.subscribeForViewer(agent);
+      const suggestion: Hub.KinChatHubEvent = {
+        type: "message.posted",
+        orgId: person.orgId,
+        message: {
+          ...message,
+          chatId: chat.chatId,
+          status: "suggested",
+          author: { _tag: "human", personId: person.personId, memberId: personMember.memberId },
+        },
+      };
+      yield* hub.publish(suggestion);
+      yield* hub.publish(marker);
+      assert.deepStrictEqual(Option.getOrThrow(yield* Stream.runHead(agentViewer)), marker);
+      assert.deepStrictEqual(Option.getOrThrow(yield* Stream.runHead(viewer)), suggestion);
+    }).pipe(Effect.provide(layer)),
   );
 });

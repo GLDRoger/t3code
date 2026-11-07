@@ -6,9 +6,17 @@ import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Sqlite from "../../persistence/Sqlite.ts";
+import * as KinPersistence from "../persistence/KinPersistence.ts";
+import * as Repository from "./KinChatRepository.ts";
 import * as Hub from "./KinChatHub.ts";
 
-const layer = Layer.provideMerge(Hub.layer, Sqlite.layerMemory);
+const layer = Layer.provideMerge(
+  Hub.layer,
+  Layer.provideMerge(
+    Repository.layer,
+    Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory),
+  ),
+);
 const orgId = Schema.decodeSync(KinOrgId)("org-a");
 const otherOrg = Schema.decodeSync(KinOrgId)("org-b");
 const event: Hub.KinChatHubEvent = {
