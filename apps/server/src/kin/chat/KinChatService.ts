@@ -23,6 +23,7 @@ import {
   type KinMessage,
   type KinMessagesMarkReadInput,
   type KinPersonId,
+  type KinOrgId,
   type KinWaitingItem,
   type KinWidget,
 } from "@t3tools/contracts";
@@ -154,7 +155,7 @@ const make = Effect.gen(function* () {
   const identityFor = Effect.fn("KinChatService.identityFor")(function* (
     caller: Caller,
     target: {
-      readonly orgId?: import("@t3tools/contracts").KinOrgId;
+      readonly orgId?: KinOrgId;
       readonly chatId?: KinChatId;
       readonly widgetId?: KinWidgetId;
     },
@@ -368,8 +369,20 @@ const make = Effect.gen(function* () {
   );
   return KinChatService.of({
     orgs: Effect.fn("KinChatService.orgs")(function* (identities) {
-      const orgs = yield* Effect.forEach(identities, (identity) =>
-        requireRecord(repo.getOrg(identity)),
+      const orgs = yield* Effect.forEach(
+        identities,
+        Effect.fn("KinChatService.org")(function* (identity) {
+          const org = yield* requireRecord(repo.getOrg(identity));
+          const agents = yield* repo.listAgents(identity);
+          return {
+            ...org,
+            agents: agents.map(({ agentId, displayName, retiredAt }) => ({
+              agentId,
+              displayName,
+              retired: retiredAt !== null,
+            })),
+          };
+        }),
       );
       return { orgs, me: identities.map(({ orgId, personId }) => ({ orgId, personId })) };
     }),
@@ -383,6 +396,8 @@ const make = Effect.gen(function* () {
       if (member.role === "owner") return yield* notAllowed;
       for (const item of yield* repo.leaveChat({ ...member, leftAt: yield* now }))
         yield* hub.publish({ type: "waiting.updated", orgId: identity.orgId, item });
+      const removed = yield* requireRecord(repo.getMember(member));
+      yield* hub.publish({ type: "member.removed", orgId: identity.orgId, member: removed });
     }, transaction),
     subscribe: (caller, input) =>
       Stream.unwrap(
@@ -390,8 +405,15 @@ const make = Effect.gen(function* () {
           const identity = yield* personFor(caller, input);
           const live = yield* hub.subscribeForViewer(identity);
           const member = yield* memberFor(identity, input.chatId);
-          const backlog = yield* repo.resume({ ...member, afterSeq: input.afterSeq ?? 0 });
-          if (backlog._tag !== "backlog" && backlog._tag !== "reset") return yield* invalidState;
+          const resumed = yield* repo.resume({ ...member, afterSeq: input.afterSeq ?? 0 });
+          const backlog: KinChatStreamEvent = resumed.reset
+            ? { _tag: "reset", lastSeq: resumed.lastSeq }
+            : {
+                _tag: "backlog",
+                lastSeq: resumed.lastSeq,
+                messages: resumed.messages,
+                widgets: resumed.widgets,
+              };
           const lastHistorySeq = backlog.lastSeq;
           const revisions = new Map(
             backlog._tag === "backlog" ? backlog.widgets.map((w) => [w.widgetId, w.revision]) : [],
@@ -424,6 +446,10 @@ const make = Effect.gen(function* () {
                       widget: event.widget,
                     });
                   }
+                  case "member.removed":
+                    return event.member.chatId === input.chatId
+                      ? Option.some<KinChatStreamEvent>({ _tag: "member", member: event.member })
+                      : Option.none();
                   case "read.updated":
                     return event.chatId === input.chatId
                       ? Option.some<KinChatStreamEvent>({
@@ -438,6 +464,7 @@ const make = Effect.gen(function* () {
               }),
               Stream.filter(Option.isSome),
               Stream.map((event) => event.value),
+              Stream.takeUntil((event) => event._tag === "member" && event.member.leftAt !== null),
             ),
           );
         }),
@@ -465,23 +492,36 @@ const make = Effect.gen(function* () {
             initial.waiting.map((item) => [item.waitingId, JSON.stringify(item)]),
           );
           const live = Stream.mergeAll(streams, { concurrency: "unbounded" }).pipe(
-            Stream.mapEffect(({ viewer, event }): Effect.Effect<KinChatListEvent, ServiceError> => {
-              if (event.type === "waiting.updated")
-                return requireRecord(repo.getWaiting(event.item)).pipe(
-                  Effect.map((item) => ({ _tag: "waiting" as const, item })),
+            Stream.mapEffect(({ viewer, event }) =>
+              Effect.gen(function* (): Effect.fn.Return<KinChatListEvent, ServiceError> {
+                if (event.type === "waiting.updated")
+                  return yield* requireRecord(repo.getWaiting(event.item)).pipe(
+                    Effect.map((item) => ({ _tag: "waiting" as const, item })),
+                  );
+                const chatId =
+                  event.type === "chat.created"
+                    ? event.chat.chatId
+                    : event.type === "message.posted"
+                      ? event.message.chatId
+                      : event.type === "widget.updated"
+                        ? event.widget.chatId
+                        : event.type === "member.removed"
+                          ? event.member.chatId
+                          : event.chatId;
+                return yield* summary(viewer, chatId).pipe(
+                  Effect.map((chat) => ({ _tag: "chat" as const, chat })),
                 );
-              const chatId =
-                event.type === "chat.created"
-                  ? event.chat.chatId
-                  : event.type === "message.posted"
-                    ? event.message.chatId
-                    : event.type === "widget.updated"
-                      ? event.widget.chatId
-                      : event.chatId;
-              return summary(viewer, chatId).pipe(
-                Effect.map((chat) => ({ _tag: "chat" as const, chat })),
-              );
-            }),
+              }).pipe(
+                Effect.asSome,
+                Effect.catch((error) =>
+                  Effect.logDebug("Kin chat list event dropped", error).pipe(
+                    Effect.as(Option.none()),
+                  ),
+                ),
+              ),
+            ),
+            Stream.filter(Option.isSome),
+            Stream.map((event) => event.value),
           );
           return Stream.concat(
             Stream.succeed(initial),

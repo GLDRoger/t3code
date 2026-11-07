@@ -203,6 +203,7 @@ describe("KinEventQueue", () => {
           ["lead-left", "owner", false, true],
           ["retired", "owner", false, false],
         ] as const) {
+          yield* sql`UPDATE kin_chat_members SET left_at = ${role === "owner" && !personLeft ? "2026-11-07T00:00:00.000Z" : null} WHERE member_id = 'group-owner'`;
           yield* sql`UPDATE kin_chat_members SET role = ${role}, left_at = ${personLeft ? "2026-11-07T00:00:00.000Z" : null}
             WHERE member_id = 'member-lead-a'`;
           yield* sql`UPDATE kin_chat_members SET left_at = ${agentLeft ? "2026-11-07T00:00:00.000Z" : null}
@@ -213,6 +214,8 @@ describe("KinEventQueue", () => {
         }
         yield* sql`UPDATE kin_agents SET retired_at = NULL WHERE agent_id = 'lead-a'`;
         yield* sql`UPDATE kin_chat_members SET left_at = NULL WHERE member_id = 'agent-member-lead-a'`;
+        yield* sql`UPDATE kin_chat_members SET role = 'member' WHERE member_id IN ('member-lead-a', 'member-lead-a2')`;
+        yield* sql`UPDATE kin_chat_members SET left_at = NULL WHERE member_id = 'group-owner'`;
         yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
           VALUES ('owner-other-chat', 'a', 'chat-lead-a2', 'person', 'person-lead-a', 'owner', '2026-11-07T00:00:00.000Z')`;
         for (const [id, chatId, memberId, personId] of [

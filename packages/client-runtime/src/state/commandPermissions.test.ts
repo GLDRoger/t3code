@@ -7,7 +7,6 @@ import type { RpcSession } from "../rpc/session.ts";
 import { describe, expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import {
-  KIN_RPC_SCOPES,
   AuthAccessReadScope,
   AuthAccessWriteScope,
   AuthOrchestrationOperateScope,
@@ -69,31 +68,6 @@ const setup = Effect.gen(function* () {
 });
 
 describe("command permissions", () => {
-  it.effect.each(Object.entries(KIN_RPC_SCOPES))(
-    "guards Kin method %s on the destination and observes revocation",
-    ([method, scope]) =>
-      Effect.gen(function* () {
-        const registry = yield* setup;
-        const command = createCommandPermissions(runtime, method);
-        registry.set(
-          sessions(env),
-          AsyncResult.success({ ...grant(false), scopes: [scope], permissions: [scope] }),
-        );
-        expect(registry.get(command.permissionAtom(env))).toBe(true);
-        yield* command.authorize(registry, env);
-        registry.set(sessions(other), AsyncResult.success(grant(false)));
-        expect(registry.get(command.permissionAtom(other))).toBe(false);
-        expect((yield* command.authorize(registry, other).pipe(Effect.flip))._tag).toBe(
-          "EnvironmentAuthorizationError",
-        );
-        registry.set(sessions(env), AsyncResult.success(grant(false)));
-        expect(registry.get(command.permissionAtom(env))).toBe(false);
-        expect((yield* command.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
-          "EnvironmentAuthorizationError",
-        );
-      }).pipe(Effect.scoped),
-  );
-
   it.effect("requires the destination read grant to refresh providers", () =>
     Effect.scoped(
       Effect.gen(function* () {

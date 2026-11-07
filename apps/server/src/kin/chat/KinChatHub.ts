@@ -2,6 +2,7 @@ import type {
   KinChat,
   KinChatId,
   KinMemberId,
+  KinChatMember,
   KinMessage,
   KinOrgId,
   KinWaitingItem,
@@ -23,6 +24,7 @@ type ChatEvent =
   | { readonly type: "message.posted"; readonly message: KinMessage }
   | { readonly type: "widget.updated"; readonly widget: KinWidget }
   | { readonly type: "waiting.updated"; readonly item: KinWaitingItem }
+  | { readonly type: "member.removed"; readonly member: KinChatMember }
   | {
       readonly type: "read.updated";
       readonly chatId: KinChatId;
@@ -75,6 +77,12 @@ const make = Effect.gen(function* () {
       return Stream.fromEffectRepeat(PubSub.take(subscription)).pipe(
         Stream.filterEffect(
           Effect.fn("KinChatHub.canDeliver")(function* (event) {
+            if (event.type === "member.removed")
+              return identity._tag === "person"
+                ? event.member.principal._tag === "person" &&
+                    event.member.principal.personId === identity.personId
+                : event.member.principal._tag === "agent" &&
+                    event.member.principal.agentId === identity.agentId;
             const chatId =
               event.type === "chat.created"
                 ? event.chat.chatId
@@ -90,6 +98,7 @@ const make = Effect.gen(function* () {
               (identity._tag !== "person" || event.item.personId !== identity.personId)
             )
               return false;
+            if (event.type === "waiting.updated" && event.item.resolvedAt !== null) return true;
             const memberOption = yield* repo.activeMember({
               orgId: identity.orgId,
               chatId,

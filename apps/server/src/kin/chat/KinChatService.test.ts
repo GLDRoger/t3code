@@ -15,6 +15,7 @@ import {
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -809,10 +810,38 @@ describe("KinChatService", () => {
           .pipe(Effect.flip);
         assert.deepStrictEqual(published, []);
         assert.deepStrictEqual(yield* repo.listOpenWaiting(other), [waiting]);
+        const chatEvents = yield* Stream.toQueue(
+          service.subscribe(other, { chatId: chat.chatId }),
+          { capacity: "unbounded" },
+        );
+        assert.strictEqual((yield* Queue.take(chatEvents))._tag, "backlog");
+        const updates = yield* Stream.toQueue(service.subscribeChats([other], {}), {
+          capacity: "unbounded",
+        });
+        assert.strictEqual((yield* Queue.take(updates))._tag, "snapshot");
         yield* monitored.leaveChat(person, member);
-        assert.strictEqual(published.length, 1);
+        assert.strictEqual(published.length, 2);
         const cancelled = Option.getOrThrow(yield* repo.getWaiting(waiting));
         assert.strictEqual(cancelled.resolution, "cancelled");
+        const markerChat = yield* repo.createChat({
+          ...chat,
+          chatId: KinChatId.make("marker-chat"),
+          kind: "project_group",
+          directKey: null,
+        });
+        yield* repo.addMember({
+          ...member,
+          memberId: KinMemberId.make("marker-member"),
+          chatId: markerChat.chatId,
+        });
+        yield* hub.publish({ type: "chat.created", orgId: other.orgId, chat: markerChat });
+        assert.deepStrictEqual(yield* Queue.take(updates), { _tag: "waiting", item: cancelled });
+        assert.strictEqual((yield* Queue.take(updates))._tag, "chat");
+        assert.deepStrictEqual(yield* Queue.take(chatEvents), {
+          _tag: "member",
+          member: Option.getOrThrow(yield* repo.getMember(member)),
+        });
+        assert.isTrue(Cause.isDone(yield* Queue.take(chatEvents).pipe(Effect.flip)));
         assert.deepStrictEqual(published[0], {
           type: "waiting.updated",
           orgId: person.orgId,

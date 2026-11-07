@@ -11,7 +11,7 @@ import { KinIdentity } from "./KinIdentity.ts";
 import { KinChatService } from "./KinChatService.ts";
 
 const group = RpcGroup.make(...KinChatRpcs);
-const unavailable = new KinChatError({ reason: "not_allowed", message: "Kin is unavailable." });
+const unavailable = new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
 const isKinChatError = Schema.is(KinChatError);
 const mapError = (error: { readonly _tag: string }) =>
   isKinChatError(error)
@@ -21,12 +21,12 @@ const mapError = (error: { readonly _tag: string }) =>
 export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
   session: AuthenticatedSession,
 ) {
-  const kin = yield* KinServer;
+  const kin = yield* Effect.serviceOption(KinServer);
   const services = Effect.gen(function* () {
-    if (Option.isNone(kin.services)) return yield* unavailable;
+    if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
     return {
-      identity: Context.get(kin.services.value, KinIdentity),
-      chat: Context.get(kin.services.value, KinChatService),
+      identity: Context.get(kin.value.services.value, KinIdentity),
+      chat: Context.get(kin.value.services.value, KinChatService),
     };
   });
   const viewer = Effect.gen(function* () {
