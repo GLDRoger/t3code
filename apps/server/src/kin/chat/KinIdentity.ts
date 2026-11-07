@@ -16,7 +16,7 @@ import * as Option from "effect/Option";
 import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
-import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
+import type { McpThreadCaller, McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as KinChatRepository from "./KinChatRepository.ts";
 
 export class KinIdentityConfig extends Context.Service<
@@ -48,6 +48,7 @@ export type PersonIdentity = {
   readonly personId: KinPersonId;
 };
 export type AgentIdentity = {
+  readonly caller: McpThreadCaller;
   readonly _tag: "agent";
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;
@@ -116,7 +117,7 @@ export class KinIdentity extends Context.Service<
               message: "Kin agent thread is not active.",
             });
           }
-          if (!(yield* repository.hasRunningWakeup(row.value)))
+          if (!(yield* repository.hasRunningWakeup({ ...row.value, caller })))
             return yield* new KinChatError({
               reason: "not_allowed",
               message: "Kin wake-up is not running.",
@@ -129,6 +130,7 @@ export class KinIdentity extends Context.Service<
             });
           return {
             _tag: "agent",
+            caller,
             orgId: row.value.orgId,
             agentId: agent.value.agentId,
             ownerPersonId: agent.value.ownerPersonId,

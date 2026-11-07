@@ -1,3 +1,4 @@
+import type { McpThreadCaller } from "../../mcp/McpInvocationContext.ts";
 import {
   KinOrg,
   KinOrgId,
@@ -58,6 +59,7 @@ type Scope = { readonly orgId: KinOrgId };
 type ChatScope = Scope & { readonly chatId: KinChatId };
 type MemberScope = ChatScope & { readonly memberId: KinMemberId };
 type InsertMessage = Omit<KinMessage, "seq" | "authorRole"> & {
+  readonly caller?: McpThreadCaller | undefined;
   readonly clientMessageId: {
     readonly kind: "send" | "act";
     readonly id: typeof TrimmedNonEmptyString.Type;
@@ -174,7 +176,11 @@ export class KinChatRepository extends Context.Service<
       readonly createdAt: IsoDateTime;
     }) => Effect.Effect<KinPerson, RepositoryError | KinIdentityBootstrapError>;
     readonly hasRunningWakeup: (
-      input: Scope & { readonly agentId: KinAgentId; readonly threadId: ThreadId },
+      input: Scope & {
+        readonly agentId: KinAgentId;
+        readonly threadId: ThreadId;
+        readonly caller: McpThreadCaller;
+      },
     ) => Effect.Effect<boolean, RepositoryError>;
     readonly findAgentThread: (
       threadId: ThreadId,
@@ -371,9 +377,20 @@ const make = Effect.gen(function* () {
     Effect.mapError(toRepositoryError("KinChatRepository.getAgentThread")),
   );
   const hasRunningWakeup = Effect.fn("KinChatRepository.hasRunningWakeup")(
-    function* (input: Scope & { readonly agentId: KinAgentId; readonly threadId: ThreadId }) {
-      const rows = yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${input.orgId}
-        AND agent_id = ${input.agentId} AND thread_id = ${input.threadId} AND status = 'running'`;
+    function* (
+      input: Scope & {
+        readonly agentId: KinAgentId;
+        readonly threadId: ThreadId;
+        readonly caller: McpThreadCaller;
+      },
+    ) {
+      if (input.caller.subagent === true || input.caller.threadId !== input.threadId) return false;
+      const rows = yield* sql`SELECT 1 FROM kin_wakeups w
+        JOIN orchestration_v2_projection_runs r ON r.run_id = w.run_id AND r.thread_id = w.thread_id
+        JOIN orchestration_v2_projection_provider_threads p ON p.provider_thread_id = r.provider_thread_id
+        WHERE w.org_id = ${input.orgId} AND w.agent_id = ${input.agentId}
+        AND w.thread_id = ${input.threadId} AND w.status = 'running' AND w.run_id IS NOT NULL
+        AND p.provider_session_id = ${input.caller.providerSessionId}`;
       return rows.length > 0;
     },
     Effect.mapError(toRepositoryError("KinChatRepository.hasRunningWakeup")),
@@ -929,11 +946,13 @@ const make = Effect.gen(function* () {
             }
             if (
               author._tag === "agent" &&
-              !(yield* hasRunningWakeup({
-                ...input,
-                agentId: author.agentId,
-                threadId: author.threadId,
-              }))
+              (input.caller === undefined ||
+                !(yield* hasRunningWakeup({
+                  ...input,
+                  agentId: author.agentId,
+                  threadId: author.threadId,
+                  caller: input.caller,
+                })))
             )
               return yield* new KinChatError({
                 reason: "not_allowed",

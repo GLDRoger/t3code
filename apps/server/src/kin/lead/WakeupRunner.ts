@@ -32,7 +32,7 @@ import * as Memory from "../memory/Memory.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
-import * as RunnerOwnership from "./RunnerOwnership.ts";
+import { McpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 
 export class KinWakeupError extends Schema.TaggedError<KinWakeupError>()("KinWakeupError", {
   orgId: KinOrgId,
@@ -95,7 +95,7 @@ const ulid = Effect.gen(function* () {
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
-  const ownership = RunnerOwnership.acquire().pipe(Effect.provideService(SqlClient.SqlClient, sql));
+  const sessions = yield* McpSessionRegistry;
   const memory = yield* Memory.Memory;
   const hooks = yield* Effect.serviceOption(KinWakeupHooks);
   const prompt = yield* KinLeadPrompt;
@@ -169,6 +169,15 @@ const make = Effect.gen(function* () {
         : "failed";
     yield* Effect.gen(function* () {
       if (result.timedOut) {
+        const providers = yield* sql<{
+          providerSessionId: string;
+        }>`SELECT p.provider_session_id AS "providerSessionId"
+          FROM orchestration_v2_projection_runs r
+          JOIN orchestration_v2_projection_provider_threads p ON p.provider_thread_id = r.provider_thread_id
+          WHERE r.run_id IN (${runId}, ${result.run?.id ?? runId}) AND r.thread_id = ${threadId} AND p.provider_session_id IS NOT NULL
+          ORDER BY p.provider_thread_id`;
+        for (const provider of providers)
+          yield* sessions.revokeProviderSession(provider.providerSessionId);
         yield* threads.interruptThread({
           projectId,
           threadId,
@@ -253,6 +262,16 @@ const make = Effect.gen(function* () {
       if (record.retiredAt !== null) return yield* retire(record);
       const paused = yield* sql`SELECT 1 FROM kin_org_state WHERE org_id = ${orgId} AND paused = 1`;
       if (paused.length > 0) return;
+      if (record.threadId !== null) {
+        const unfinished = yield* sql`SELECT 1 FROM orchestration_v2_projection_provider_turns
+          WHERE thread_id = ${record.threadId} AND completed_at IS NULL LIMIT 1`;
+        if (unfinished.length > 0) {
+          yield* (yield* queue.changes(orgId)).pipe(
+            Effect.timeoutOrElse({ duration: 60_000, orElse: () => Effect.void }),
+          );
+          return;
+        }
+      }
       const wakeupId = KinWakeupId.make(yield* ulid);
       const startedAt = yield* Clock.currentTimeMillis;
       let row: typeof RunningRow.Type = {
@@ -413,12 +432,21 @@ const make = Effect.gen(function* () {
   );
   const recoverOrg = Effect.fn("WakeupRunner.recoverOrg")(
     function* (orgId: KinOrgId) {
-      const rows =
-        yield* sql`SELECT org_id AS "orgId", agent_id AS "agentId", wakeup_id AS "wakeupId", thread_id AS "threadId", run_id AS "runId", started_at AS "startedAt" FROM kin_wakeups WHERE org_id = ${orgId} AND status = 'running' ORDER BY started_at, wakeup_id`;
+      const rows = yield* sql<{
+        wakeupId: string;
+      }>`SELECT org_id AS "orgId", agent_id AS "agentId", wakeup_id AS "wakeupId", thread_id AS "threadId", run_id AS "runId", started_at AS "startedAt" FROM kin_wakeups WHERE org_id = ${orgId} AND status = 'running' ORDER BY started_at, wakeup_id`;
       for (const raw of rows) {
         yield* Effect.scoped(
           Effect.gen(function* () {
+            yield* Effect.acquireRelease(Effect.void, () =>
+              queue
+                .finish({ orgId, wakeupId: KinWakeupId.make(raw.wakeupId), status: "failed" })
+                .pipe(Effect.ignore),
+            );
             let row = yield* decodeRunning(raw);
+            yield* Effect.acquireRelease(Effect.void, (_, exit) =>
+              cleanup(row, Exit.hasInterrupts(exit)).pipe(Effect.ignore),
+            );
             const existing =
               row.threadId === null
                 ? []
@@ -438,9 +466,6 @@ const make = Effect.gen(function* () {
               return;
             }
             row = { ...row, runId: run.id };
-            yield* Effect.acquireRelease(Effect.void, (_, exit) =>
-              cleanup(row, Exit.hasInterrupts(exit)).pipe(Effect.ignore),
-            );
             yield* sql`UPDATE kin_wakeups SET run_id = ${run.id} WHERE org_id = ${row.orgId} AND agent_id = ${row.agentId} AND wakeup_id = ${row.wakeupId} AND status = 'running'`;
             const record = yield* lead(row.orgId, row.agentId);
             if (record.retiredAt !== null) {
@@ -491,7 +516,6 @@ const make = Effect.gen(function* () {
   });
   const recover = Effect.scoped(
     Effect.gen(function* () {
-      yield* ownership;
       yield* Effect.forEach(
         yield* orgIds(),
         (orgId) =>
@@ -517,7 +541,6 @@ const make = Effect.gen(function* () {
     ),
   );
   const start = Effect.gen(function* () {
-    yield* ownership;
     const organizations = new Set<KinOrgId>();
     yield* Effect.gen(function* () {
       for (const orgId of yield* orgIds()) {
@@ -572,23 +595,7 @@ const make = Effect.gen(function* () {
       Effect.forkScoped,
     );
   }).pipe(Effect.catchCause((cause) => Effect.logError("Kin runner unavailable", { cause })));
-  const guardedRunOnce = Effect.fn("WakeupRunner.guardedRunOnce")(
-    function* (orgId: KinOrgId, agentId: KinAgentId) {
-      return yield* Effect.scoped(
-        Effect.gen(function* () {
-          yield* ownership;
-          yield* runOnce(orgId, agentId);
-        }),
-      );
-    },
-    (effect, orgId, agentId) =>
-      effect.pipe(
-        Effect.mapError(
-          (cause) => new KinWakeupError({ orgId, agentId, cause: runnerCause(cause) }),
-        ),
-      ),
-  );
-  return WakeupRunner.of({ runOnce: guardedRunOnce, recover, start });
+  return WakeupRunner.of({ runOnce, recover, start });
 });
 
 export const layer = Layer.effect(WakeupRunner, make);

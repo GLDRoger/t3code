@@ -1,3 +1,5 @@
+import { seedWakeupRun } from "./WakeupAuthority.testkit.ts";
+import type { McpThreadCaller } from "../../mcp/McpInvocationContext.ts";
 import { assert, describe, it } from "@effect/vitest";
 import {
   KinOrgId,
@@ -14,6 +16,7 @@ import {
   KinWidget,
   ThreadId,
   TurnItemId,
+  ProviderInstanceId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -75,8 +78,14 @@ const agentMember: KinChatMember = {
   principal: { _tag: "agent", agentId },
   role: "member",
 };
+const caller: McpThreadCaller = {
+  threadId,
+  providerSessionId: "provider-session",
+  providerInstanceId: ProviderInstanceId.make("codex"),
+};
 const message = (id: string, overrides: Partial<Omit<KinMessage, "seq">> = {}) =>
   ({
+    caller,
     orgId,
     chatId,
     messageId: decodeMessageId(id),
@@ -95,7 +104,10 @@ const message = (id: string, overrides: Partial<Omit<KinMessage, "seq">> = {}) =
     editedAt: null,
     ...overrides,
     clientMessageId: { kind: "send", id },
-  }) satisfies Omit<KinMessage, "seq"> & { clientMessageId: { kind: "send" | "act"; id: string } };
+  }) satisfies Omit<KinMessage, "seq"> & {
+    caller: McpThreadCaller;
+    clientMessageId: { kind: "send" | "act"; id: string };
+  };
 const widget: KinWidget = {
   orgId,
   chatId,
@@ -973,6 +985,27 @@ describe("KinChatRepository", () => {
         VALUES (${agentId}, ${orgId}, 'Lead', 0, '{}', '[]', ${chatId})`;
       yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status, event_ids)
         VALUES ('chat-wakeup', ${orgId}, ${agentId}, ${threadId}, 'test', 0, 'running', '[]')`;
+      yield* seedWakeupRun(threadId);
+      yield* sql`UPDATE kin_wakeups SET run_id = 'authority-run' WHERE wakeup_id = 'chat-wakeup'`;
+      for (const providerSessionId of ["leftover-session", "user-session"]) {
+        assert.include(
+          yield* repo
+            .insertMessage({
+              ...message("unauthorized-session", {
+                author: {
+                  _tag: "agent",
+                  agentId,
+                  memberId: agentMemberId,
+                  ownerPersonId: personId,
+                  threadId,
+                },
+              }),
+              caller: { ...caller, providerSessionId },
+            })
+            .pipe(Effect.flip),
+          { reason: "not_allowed" },
+        );
+      }
       const agentAuthor = {
         _tag: "agent",
         agentId,

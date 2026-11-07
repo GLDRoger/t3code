@@ -1,3 +1,4 @@
+import * as McpSessionRegistryTestkit from "../../mcp/McpSessionRegistry.testkit.ts";
 import {
   KinAgentId,
   KinEvent,
@@ -252,8 +253,13 @@ export function harness(
       ensureCheckouts: () => Effect.succeed({ writer: "/private/tmp", read: "/private/tmp" }),
     }),
   );
-  const services = Layer.mergeAll(kin, launch, management, projectLayer, orchestration).pipe(
-    Layer.provideMerge(database),
-  );
+  const services = Layer.mergeAll(
+    kin,
+    launch,
+    management,
+    projectLayer,
+    orchestration,
+    McpSessionRegistryTestkit.layer,
+  ).pipe(Layer.provideMerge(database));
   return WakeupRunner.layer.pipe(Layer.provideMerge(services));
 }

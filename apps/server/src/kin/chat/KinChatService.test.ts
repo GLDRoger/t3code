@@ -1,3 +1,4 @@
+import { seedWakeupRun } from "./WakeupAuthority.testkit.ts";
 import { assert, describe, it } from "@effect/vitest";
 import {
   AuthSessionId,
@@ -104,6 +105,8 @@ const seed = Effect.gen(function* () {
     VALUES (${agentId}, ${person.orgId}, 'Lead', 0, '{}', '[]', ${chat.chatId})`;
   yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status, event_ids)
     VALUES ('service-wakeup', ${person.orgId}, ${agentId}, ${threadId}, 'test', 0, 'running', '[]')`;
+  yield* seedWakeupRun(threadId);
+  yield* sql`UPDATE kin_wakeups SET run_id = 'authority-run' WHERE wakeup_id = 'service-wakeup'`;
   const agent = yield* identity.resolveAgent(caller);
   return { repo, service, identity, person, agent, chat };
 });
@@ -215,6 +218,18 @@ describe("KinChatService", () => {
           state,
         });
         const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE orchestration_v2_projection_provider_threads SET provider_session_id = 'next-wakeup-session' WHERE provider_thread_id = 'authority-run'`;
+        assert.include(
+          yield* service
+            .upsertWidget(agent, {
+              chatId: chat.chatId,
+              widgetId: widget.widgetId,
+              type: "task",
+              state,
+            })
+            .pipe(Effect.flip),
+          { reason: "not_allowed" },
+        );
         yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'service-wakeup'`;
         assert.include(
           yield* service

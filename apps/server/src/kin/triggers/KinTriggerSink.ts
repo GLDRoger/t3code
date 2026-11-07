@@ -1,3 +1,4 @@
+import * as Cause from "effect/Cause";
 import {
   CanonicalUtcTimestamp,
   KinTriggerFireId,
@@ -24,11 +25,6 @@ const Delivery = Schema.Struct({ receivedAt: CanonicalUtcTimestamp });
 const decodeDelivery = Schema.decodeUnknownEffect(Delivery);
 const decodeFire = Schema.decodeEffect(KinTriggerFired);
 const decodeDeliveryId = Schema.decodeEffect(ScheduledTaskWebhookDeliveryId);
-
-export class KinTriggerStartupError extends Schema.TaggedError<KinTriggerStartupError>()(
-  "KinTriggerStartupError",
-  { cause: Schema.Defect() },
-) {}
 
 // Shared with the upstream contract test so the tripwire pins exactly what the sink reads.
 export const findLaunchDelivery = (
@@ -191,7 +187,7 @@ export function wrapTaskDispatch<E, R, E2, R2>(
         Layer.effectDiscard(
           Effect.logError(
             "Kin trigger startup failed; webhook dispatch disabled",
-            new KinTriggerStartupError({ cause }),
+            Cause.pretty(cause),
           ),
         ),
         Layer.effect(

@@ -231,6 +231,7 @@ const make = Effect.gen(function* () {
     const messageId = yield* decodeMessageId(SecureRandom.uuidV4Unsafe()).pipe(Effect.orDie);
     const message = yield* repo.insertMessage({
       orgId: identity.orgId,
+      caller: identity._tag === "agent" ? identity.caller : undefined,
       chatId: input.chatId,
       messageId,
       author: authorFor(identity, member),

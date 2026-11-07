@@ -1,3 +1,4 @@
+import { forkParked } from "../../serverActivation.ts";
 import { KinOrgId } from "@t3tools/contracts";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
@@ -40,7 +41,7 @@ export function containStartup<A, E, R>(layer: Layer.Layer<A, E, R>) {
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const runner = yield* WakeupRunner.WakeupRunner;
-    yield* runner.start.pipe(Effect.forkScoped);
+    yield* runner.start.pipe(forkParked);
   }),
 ).pipe(
   Layer.provide(WakeupRunner.layer),

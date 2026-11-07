@@ -1,3 +1,9 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import { HttpServer } from "effect/http";
+import * as NetAddress from "effect/net/NetAddress";
+import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
+import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
+import * as McpSessionRegistryTestkit from "../../mcp/McpSessionRegistry.testkit.ts";
 import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
@@ -26,7 +32,6 @@ import * as MemoryConfig from "../memory/MemoryConfig.ts";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import * as KinLead from "./layer.ts";
-import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
@@ -51,6 +56,11 @@ const decodeUsage = Schema.decodeEffect(
 );
 const resolveAgent = Effect.fn("test.resolveAgent")(function* (threadId: ThreadId) {
   const identity = yield* KinIdentity.KinIdentity;
+  const sql = yield* SqlClient.SqlClient;
+  const [provider] = yield* sql<{
+    session: string;
+  }>`SELECT provider_session_id AS session FROM orchestration_v2_projection_provider_threads
+    WHERE thread_id = ${threadId} ORDER BY updated_at DESC, provider_thread_id LIMIT 1`;
   return yield* identity.resolveAgent({
     environmentId: EnvironmentId.make("test"),
     capabilities: new Set(),
@@ -59,7 +69,7 @@ const resolveAgent = Effect.fn("test.resolveAgent")(function* (threadId: ThreadI
     client: undefined,
     thread: {
       threadId,
-      providerSessionId: "test",
+      providerSessionId: provider?.session ?? "missing",
       providerInstanceId: ProviderInstanceId.make("codex"),
       subagent: false,
     },
@@ -80,7 +90,6 @@ describe("WakeupRunner", () => {
         yield* seed;
         const queue = yield* KinEventQueue.KinEventQueue;
         const sql = yield* SqlClient.SqlClient;
-        const registry = yield* KinLeadRegistry.KinLeadRegistry;
         for (const id of ["first", "second"]) {
           yield* queue.enqueue(event(id));
           yield* Fiber.join(yield* run());
@@ -104,7 +113,6 @@ describe("WakeupRunner", () => {
             { inputTokens: 20, cachedInputTokens: 5, outputTokens: 10 },
           ]);
         }
-        assert.isFalse(registry.isLeadCaller(projection.thread.id));
         assert.include(yield* resolveAgent(projection.thread.id).pipe(Effect.flip), {
           reason: "not_allowed",
         });
@@ -189,17 +197,44 @@ describe("WakeupRunner", () => {
           yield* seed;
           const queue = yield* KinEventQueue.KinEventQueue;
           const sql = yield* SqlClient.SqlClient;
+          const sessions = yield* McpSessionRegistry.__testing.make().pipe(
+            Effect.provide(
+              Layer.mergeAll(
+                NodeServices.layer,
+                NodeCrypto.layer,
+                Layer.mock(HttpServer.HttpServer)({
+                  address: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 43123),
+                }),
+                Layer.mock(ServerEnvironment.ServerEnvironment)({
+                  getEnvironmentId: Effect.succeed(EnvironmentId.make("test")),
+                }),
+              ),
+            ),
+          );
+          const runner = yield* WakeupRunner.WakeupRunner.pipe(
+            Effect.provide(Layer.fresh(WakeupRunner.layer)),
+            Effect.provideService(McpSessionRegistry.McpSessionRegistry, sessions),
+          );
           yield* queue.enqueue(event("timeout"));
-          const fiber = yield* run();
+          const fiber = yield* runner.runOnce(orgId, agentId).pipe(Effect.forkChild);
+          yield* TestClock.adjust("20 seconds");
           yield* Deferred.await(entered);
           const [lead] = yield* sql<{
             thread_id: string;
           }>`SELECT thread_id FROM kin_leads WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
           const threadId = ThreadId.make(lead!.thread_id);
+          const issued = yield* sessions.issue({
+            threadId,
+            providerInstanceId: ProviderInstanceId.make("codex"),
+          });
+          const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
+          yield* sql`UPDATE orchestration_v2_projection_provider_threads SET provider_session_id = ${issued.config.providerSessionId} WHERE thread_id = ${threadId}`;
+          assert.isDefined(yield* sessions.resolve(token));
           assert.strictEqual((yield* resolveAgent(threadId)).agentId, agentId);
           yield* TestClock.adjust("15 minutes");
           yield* TestClock.adjust("30 seconds");
           yield* Fiber.join(fiber);
+          assert.isUndefined(yield* sessions.resolve(token));
           assert.include(yield* resolveAgent(threadId).pipe(Effect.flip), {
             reason: "not_allowed",
           });
@@ -305,6 +340,60 @@ describe("WakeupRunner", () => {
           { state: "done", attempts: 0 },
         ]);
       }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
+  );
+
+  it.effect.each(["projection", "decode"] as const)(
+    "finalizes recovery after a %s failure instead of retrying forever",
+    (failure) =>
+      Effect.gen(function* () {
+        yield* seed;
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const sql = yield* SqlClient.SqlClient;
+        yield* queue.enqueue(event("recovery-failure"));
+        yield* Fiber.join(yield* run());
+        yield* sql`UPDATE kin_wakeups SET status = 'running', ended_at = NULL`;
+        yield* sql`UPDATE kin_events SET state = 'claimed'`;
+        if (failure === "decode") yield* sql`UPDATE kin_wakeups SET run_id = ''`;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const runner = yield* WakeupRunner.WakeupRunner.pipe(
+          Effect.provide(Layer.fresh(WakeupRunner.layer)),
+          Effect.provideService(ThreadManagement.ThreadManagementService, {
+            ...threads,
+            getThreadProjection: () => Effect.die("projection unavailable"),
+          }),
+        );
+        yield* runner.recover;
+        yield* runner.recover;
+        assert.deepStrictEqual(yield* sql`SELECT status FROM kin_wakeups`, [{ status: "failed" }]);
+        assert.deepStrictEqual(yield* sql`SELECT state, attempts FROM kin_events`, [
+          { state: "queued", attempts: 1 },
+        ]);
+      }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
+  );
+
+  it.effect("defers claims while an interrupted run's provider turn is unfinished", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const queue = yield* KinEventQueue.KinEventQueue;
+      const runner = yield* WakeupRunner.WakeupRunner;
+      const sql = yield* SqlClient.SqlClient;
+      yield* queue.enqueue(event("first"));
+      yield* Fiber.join(yield* run());
+      yield* sql`UPDATE orchestration_v2_projection_runs SET status = 'interrupted'`;
+      yield* sql`UPDATE orchestration_v2_projection_provider_turns SET completed_at = NULL`;
+      yield* queue.enqueue(event("next"));
+      const deferred = yield* runner.runOnce(orgId, agentId).pipe(Effect.forkChild);
+      yield* TestClock.adjust("60 seconds");
+      yield* Fiber.join(deferred);
+      assert.deepStrictEqual(yield* sql`SELECT status FROM kin_wakeups`, [{ status: "completed" }]);
+      assert.deepStrictEqual(
+        yield* sql`SELECT state, attempts FROM kin_events WHERE event_id = 'next'`,
+        [{ state: "queued", attempts: 0 }],
+      );
+      yield* sql`UPDATE orchestration_v2_projection_provider_turns SET completed_at = '2026-11-08T00:00:00.000Z'`;
+      yield* Fiber.join(yield* run());
+      assert.lengthOf(yield* sql`SELECT 1 FROM kin_wakeups`, 2);
+    }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
   );
 
   it.effect.each(["MemorySyncConflict", "MemoryCheckoutInvalid"] as const)(
@@ -546,6 +635,13 @@ describe("WakeupRunner", () => {
         KinLead.containStartup(Layer.effectDiscard(Effect.die("Kin layer defect"))),
       );
       assert.isTrue(Context.get(yield* Layer.build(defect), Core).ready);
-    }).pipe(Effect.provide(KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory))));
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          McpSessionRegistryTestkit.layer,
+          KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
+        ),
+      ),
+    );
   });
 });

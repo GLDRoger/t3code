@@ -2,7 +2,6 @@ import { KinAgentId, KinLevel, KinOrgId, KinWakeupId, ThreadId } from "@t3tools/
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 
@@ -24,8 +23,6 @@ export class KinLeadRegistry extends Context.Service<
       threadId: ThreadId,
       caller: typeof Caller.Type,
     ) => Effect.Effect<void, KinLeadRegistryConflict, Scope.Scope>;
-    readonly resolve: (threadId: ThreadId) => Option.Option<typeof Caller.Type>;
-    readonly isLeadCaller: (threadId: ThreadId) => boolean;
   }
 >()("t3/kin/lead/KinLeadRegistry") {}
 
@@ -45,7 +42,5 @@ export const layer = Layer.sync(KinLeadRegistry, () => {
           }),
       ),
     ),
-    resolve: (threadId) => Option.fromUndefinedOr(callers.get(threadId)),
-    isLeadCaller: (threadId) => callers.has(threadId),
   });
 });
