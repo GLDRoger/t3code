@@ -1,3 +1,5 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Git object identity uses the native byte-oriented hash API.
+import * as NodeCrypto from "node:crypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { KinMemoryItemId, KinOrgId } from "@t3tools/contracts";
@@ -33,14 +35,40 @@ const databaseLayer = Layer.effectDiscard(
 
 const fakeRepository = (fs: FileSystem.FileSystem) => {
   const files = new Map<string, string>();
-  const hashes = new Map<string, string>();
-  const hash = (text: string) => {
-    let sha = hashes.get(text);
-    if (!sha) {
-      sha = (hashes.size + 1).toString(16).padStart(40, "0");
-      hashes.set(text, sha);
-    }
+  const objects = new Map<string, { type: string; bytes: Buffer }>();
+  const object = (type: string, bytes: Buffer) => {
+    const sha = NodeCrypto.createHash("sha1")
+      .update(`${type} ${bytes.length}\0`)
+      .update(bytes)
+      .digest("hex");
+    objects.set(sha, { type, bytes });
     return sha;
+  };
+  const head = () => {
+    const tree = (prefix: string): string => {
+      const names = [
+        ...new Set(
+          [...files.keys()]
+            .filter((name) => name.startsWith(prefix))
+            .map((name) => name.slice(prefix.length).split("/")[0] ?? ""),
+        ),
+      ].sort();
+      return object(
+        "tree",
+        Buffer.concat(
+          names.map((name) => {
+            const text = files.get(prefix + name);
+            const sha =
+              text === undefined ? tree(prefix + name + "/") : object("blob", Buffer.from(text));
+            return Buffer.concat([
+              Buffer.from(`${text === undefined ? "40000" : "100644"} ${name}\0`),
+              Buffer.from(sha, "hex"),
+            ]);
+          }),
+        ),
+      );
+    };
+    return object("commit", Buffer.from(`tree ${tree("")}\n\nfixture ${revision}\n`));
   };
   let treeReads = 0;
   let blobReads = 0;
@@ -73,51 +101,37 @@ const fakeRepository = (fs: FileSystem.FileSystem) => {
               ? cwd
               : args.includes("--git-common-dir")
                 ? cwd.replace(/memory-read$/, "memory/.git")
-                : `fixture-head-${revision}`;
+                : head();
             break;
           case "remote":
             stdout = "unused";
             break;
-          case "ls-tree": {
-            treeReads++;
-            stdout = [...files]
-              .sort(([a], [b]) => a.localeCompare(b))
-              .map(
-                ([file, text]) => `100644 blob ${hash(text)} ${Buffer.byteLength(text)}\t${file}\0`,
-              )
-              .join("");
-            break;
-          }
           case "cat-file": {
-            blobReads++;
-            if (args[1] === "blob") {
-              stdout =
-                [...files.values()].find(
-                  (value) => hash(value) === args[2] && value !== "unreadable fixture",
-                ) ?? "";
-              break;
-            }
-            stdout = (stdin?.trim().split("\n") ?? [])
-              .map((sha) => {
-                const text = [...files.values()].find(
-                  (value) => hash(value) === sha && value !== "unreadable fixture",
-                );
-                return text === undefined
-                  ? `${sha} missing\n`
-                  : `${sha} blob ${Buffer.byteLength(text)}\n${text}\n`;
-              })
-              .join("");
+            const chunks = (stdin?.trim().split("\n") ?? []).map((sha) => {
+              const entry = objects.get(sha);
+              if (!entry) return Buffer.from(`${sha} missing\n`);
+              if (entry.type === "blob") blobReads++;
+              if (entry.type === "tree") treeReads++;
+              return Buffer.concat([
+                Buffer.from(`${sha} ${entry.type} ${entry.bytes.length}\n`),
+                entry.bytes,
+                Buffer.from("\n"),
+              ]);
+            });
             if (corruptNextBatch) {
-              stdout = "invalid header\n" + stdout;
+              chunks.unshift(Buffer.from("invalid header\n"));
               corruptNextBatch = false;
             }
+            onStdoutChunk?.(Buffer.concat(chunks));
             break;
           }
         }
         onStdoutChunk?.(Buffer.from(stdout));
         return Effect.gen(function* () {
           if (args[0] === "clone") {
-            yield* fs.makeDirectory(`${args.at(-1)}/.git`, { recursive: true }).pipe(Effect.orDie);
+            yield* fs
+              .makeDirectory(`${args.at(-1)}/.git/objects`, { recursive: true })
+              .pipe(Effect.orDie);
           }
           return {
             exitCode: ChildProcessSpawner.ExitCode(0),
@@ -132,10 +146,11 @@ const fakeRepository = (fs: FileSystem.FileSystem) => {
   );
   return {
     files,
+    head,
     layer,
     commit: () => {
       revision++;
-      return `fixture-head-${revision}`;
+      return head();
     },
     counts: () => ({ treeReads, blobReads }),
     corruptBatch: () => {
@@ -337,7 +352,8 @@ it.effect(
       );
       const checkout = `${root}/a/memory-read`;
       yield* fs.makeDirectory(`${checkout}/deferrals`, { recursive: true });
-      yield* fs.makeDirectory(`${root}/a/memory/.git`, { recursive: true });
+      yield* fs.makeDirectory(`${root}/a/memory/.git/objects`, { recursive: true });
+      yield* fs.makeDirectory(`${root}/a/memory/.git/refs`, { recursive: true });
       repository.files.set(
         "deferrals/def-001.md",
         fixtureItem({ recorded_at: "2026-11-14T00:00:00.000Z" }),
@@ -360,7 +376,7 @@ it.effect(
           VALUES (${orgA}, 'Asia/Kolkata', '08:30', '18:30', '02:00', 0, 5, '12:00', '{"from":"22:00","to":"07:00"}')
         `;
         const memory = yield* Memory.Memory;
-        yield* memory.anchor(orgA, "main", "fixture-head-0");
+        yield* memory.anchor(orgA, "main", repository.head());
         yield* memory.rebuildIndex(orgA);
         expect(yield* memory.readIndex(orgA)).not.toContain("## Due in 7 days");
         expect(yield* memory.readIndex(orgA)).toContain("As of 2026-11-14T00:00:00.000Z");
@@ -399,8 +415,8 @@ it.effect(
         expect(yield* memory.query(orgA, {})).toHaveLength(2);
         const beforeRebuild = repository.counts();
         yield* memory.rebuildCache(orgA);
-        expect(repository.counts().treeReads).toBe(beforeRebuild.treeReads + 1);
-        expect(repository.counts().blobReads).toBe(beforeRebuild.blobReads + 1);
+        expect(repository.counts().treeReads).toBe(beforeRebuild.treeReads + 2);
+        expect(repository.counts().blobReads).toBe(beforeRebuild.blobReads);
         yield* memory.readItem(orgA, itemId);
         yield* memory.rebuildIndex(orgA);
         expect(yield* memory.readIndex(orgA)).toContain("Invented service maintenance");
@@ -464,6 +480,7 @@ it.effect(
         }
         yield* memory.record(orgA, "main", yield* memory.anchor(orgA, "main"), repository.commit());
         repository.corruptBatch();
+        expect((yield* memory.prepareWakeup(orgA).pipe(Effect.result))._tag).toBe("Failure");
         yield* memory.prepareWakeup(orgA);
         const afterFallback = yield* memory.query(orgA, {});
         expect(afterFallback.filter((item) => !item.id.startsWith("fallback-"))).toEqual(
@@ -474,14 +491,14 @@ it.effect(
         expect(messages.filter((message) => message.includes("Duplicate memory id"))).toHaveLength(
           1,
         );
-        expect(messages.some((message) => message.includes("batch framing failed"))).toBe(true);
+
         const sql = yield* SqlClient.SqlClient;
         yield* sql`UPDATE kin_trigger_settings SET time_zone = 'UTC' WHERE org_id = ${orgA}`;
-        repository.commit();
+        yield* memory.record(orgA, "main", yield* memory.anchor(orgA, "main"), repository.commit());
         yield* memory.prepareWakeup(orgA);
         const utcIndex = yield* memory.readIndex(orgA);
         yield* sql`UPDATE kin_trigger_settings SET time_zone = 'Invented/Invalid' WHERE org_id = ${orgA}`;
-        repository.commit();
+        yield* memory.record(orgA, "main", yield* memory.anchor(orgA, "main"), repository.commit());
         yield* memory.prepareWakeup(orgA);
         expect(yield* memory.readIndex(orgA)).toContain("As of ");
         expect(yield* memory.readIndex(orgA)).toBe(utcIndex);
@@ -490,7 +507,7 @@ it.effect(
         );
         yield* sql`DROP TABLE kin_trigger_settings`;
         yield* sql`DROP TABLE kin_memory_reads`;
-        repository.commit();
+        yield* memory.record(orgA, "main", yield* memory.anchor(orgA, "main"), repository.commit());
         yield* memory.prepareWakeup(orgA);
         expect(yield* memory.readIndex(orgA)).toContain("As of ");
         expect(
@@ -504,7 +521,7 @@ it.effect(
         );
         expect(
           messages.filter((message) => message.includes("Skipping malformed memory item")),
-        ).toHaveLength(2);
+        ).toHaveLength(4);
       }).pipe(Effect.provide(Layer.merge(layer, loggerLayer)));
     }).pipe(Effect.provide(Layer.merge(NodeServices.layer, databaseLayer)), Effect.scoped),
 );
@@ -740,68 +757,112 @@ it.live("uses filesystem identity for a case-mismatched base without recloning",
   ),
 );
 
-it.live.each(["diverged", "conflict", "network down", "dirty writer", "rebase in progress"])(
-  "syncs the writer with $0",
-  (scenario) =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const { root, source, git, commit } = yield* fixtureRepository();
-      const base = `${root}/state`;
-      const messages: string[] = [];
-      const logger = Logger.layer([Logger.make(({ message }) => messages.push(String(message)))], {
-        mergeWithExisting: false,
-      });
-      yield* Effect.gen(function* () {
-        const memory = yield* Memory.Memory;
-        const initial = yield* memory.prepareWakeup(orgA);
-        const { writer } = yield* memory.ensureCheckouts(orgA);
-        yield* git(writer, ["config", "user.name", "Fixture"]);
-        yield* git(writer, ["config", "user.email", "fixture@example.invalid"]);
-        yield* fs.writeFileString(`${writer}/rules.md`, "Local invented rules\n");
-        const local = yield* commit(writer);
-        yield* memory.record(orgA, "main", initial.head, local);
-        yield* fs.writeFileString(
-          `${source}/${scenario === "diverged" || scenario === "network down" || scenario === "dirty writer" ? "remote-only" : "rules.md"}`,
-          "Remote invented edit\n",
-        );
-        yield* commit(source);
-        if (scenario === "network down") yield* fs.rename(source, `${root}/offline`);
-        if (scenario === "dirty writer")
-          yield* fs.writeFileString(`${writer}/rules.md`, "Uncommitted fixture edit\n");
-        if (scenario === "rebase in progress") {
-          yield* git(writer, ["fetch", "origin"]);
-          yield* git(writer, ["rebase", "@{u}"]).pipe(Effect.ignore);
-          yield* fs.writeFileString(`${writer}/rules.md`, "Half-resolved fixture edit\n");
-        }
-        const result = yield* memory.prepareWakeup(orgA).pipe(Effect.result);
-        if (scenario === "network down" || scenario === "diverged" || scenario === "dirty writer") {
-          expect(result._tag).toBe("Success");
-          if (result._tag === "Success") {
-            if (scenario === "network down") expect(result.success.head).toBe(local);
-            else {
-              expect(result.success.head).not.toBe(local);
-              expect(yield* memory.readRules(orgA)).toBe("Local invented rules\n");
-              expect(yield* git(writer, ["show", `${result.success.head}:remote-only`])).toBe(
-                "Remote invented edit",
-              );
-            }
-          }
-        } else {
-          expect(result._tag).toBe("Failure");
-          if (result._tag === "Failure")
-            expect(result.failure._tag).toBe(
-              scenario === "rebase in progress" ? "MemoryCheckoutInvalid" : "MemorySyncConflict",
+it.live.each([
+  "diverged",
+  "conflict",
+  "network down",
+  "dirty writer",
+  "rebase in progress",
+  "journal conflict",
+])("syncs the writer with $0", (scenario) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const { root, source, git, commit } = yield* fixtureRepository();
+    const base = `${root}/state`;
+    const remote = `${root}/sync-remote.git`;
+    yield* git(root, ["clone", "--bare", "--", source, remote]);
+    const messages: string[] = [];
+    const logger = Logger.layer([Logger.make(({ message }) => messages.push(String(message)))], {
+      mergeWithExisting: false,
+    });
+    yield* Effect.gen(function* () {
+      const memory = yield* Memory.Memory;
+      const initial = yield* memory.prepareWakeup(orgA);
+      const { writer } = yield* memory.ensureCheckouts(orgA);
+      yield* git(writer, ["config", "user.name", "Fixture"]);
+      yield* git(writer, ["config", "user.email", "fixture@example.invalid"]);
+      if (scenario === "journal conflict") {
+        yield* fs.makeDirectory(`${writer}/journal`, { recursive: true });
+        yield* fs.makeDirectory(`${source}/journal`, { recursive: true });
+        yield* fs.writeFileString(`${writer}/journal/day.md`, "local entry\n");
+        yield* fs.writeFileString(`${writer}/INDEX.md`, "local generated index\n");
+      } else yield* fs.writeFileString(`${writer}/rules.md`, "Local invented rules\n");
+      const local = yield* commit(writer);
+      yield* memory.record(orgA, "main", initial.head, local);
+      yield* fs.writeFileString(
+        `${source}/${scenario === "diverged" || scenario === "network down" || scenario === "dirty writer" ? "remote-only" : "rules.md"}`,
+        "Remote invented edit\n",
+      );
+      if (scenario === "journal conflict") {
+        yield* fs.writeFileString(`${source}/journal/day.md`, "remote entry\n");
+        yield* fs.writeFileString(`${source}/INDEX.md`, "remote generated index\n");
+      }
+      yield* commit(source);
+      yield* git(source, ["push", "--", remote, "main"]);
+      if (scenario === "network down") yield* fs.rename(remote, `${root}/offline`);
+      if (scenario === "dirty writer")
+        yield* fs.writeFileString(`${writer}/rules.md`, "Uncommitted fixture edit\n");
+      if (scenario === "rebase in progress") {
+        yield* git(writer, ["fetch", "origin"]);
+        yield* git(writer, ["rebase", "@{u}"]).pipe(Effect.ignore);
+        yield* fs.writeFileString(`${writer}/rules.md`, "Half-resolved fixture edit\n");
+      }
+      const result = yield* memory.prepareWakeup(orgA).pipe(Effect.result);
+      if (scenario === "network down" || scenario === "diverged" || scenario === "dirty writer") {
+        expect(result._tag).toBe("Success");
+        if (result._tag === "Success") {
+          if (scenario === "network down") expect(result.success.head).toBe(local);
+          else {
+            expect(result.success.head).not.toBe(local);
+            expect(yield* memory.readRules(orgA)).toBe("Local invented rules\n");
+            expect(yield* git(writer, ["show", `${result.success.head}:remote-only`])).toBe(
+              "Remote invented edit",
             );
+          }
         }
-        if (
-          scenario === "conflict" ||
-          scenario === "rebase in progress" ||
-          scenario === "network down"
-        )
-          expect(yield* git(writer, ["rev-parse", "refs/heads/main"])).toBe(local);
-      }).pipe(Effect.provide(Layer.merge(memoryLayer(base, source), logger)));
+      } else if (scenario === "journal conflict") {
+        expect(result._tag).toBe("Success");
+        if (result._tag === "Success")
+          expect(yield* git(writer, ["show", `${result.success.head}:journal/day.md`])).toBe(
+            "remote entry\nlocal entry",
+          );
+      } else if (scenario === "conflict") {
+        expect(result._tag).toBe("Success");
+        const backup = (yield* git(root, [
+          `--git-dir=${remote}`,
+          "for-each-ref",
+          "--format=%(objectname)",
+          `refs/heads/kin/conflict/${orgA}/`,
+        ])).trim();
+        expect(backup).toBe(local);
+        expect((yield* memory.prepareWakeup(orgA)).head).toBe(
+          yield* git(source, ["rev-parse", "HEAD"]),
+        );
+      } else {
+        expect(result._tag).toBe("Failure");
+        if (result._tag === "Failure") expect(result.failure._tag).toBe("MemoryCheckoutInvalid");
+      }
+      if (scenario === "rebase in progress" || scenario === "network down")
+        expect(yield* git(writer, ["rev-parse", "refs/heads/main"])).toBe(local);
     }).pipe(
-      Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer, databaseLayer)),
-      Effect.scoped,
-    ),
+      Effect.provide(
+        Layer.merge(
+          memoryLayer(base, remote).pipe(
+            Layer.provide(
+              Layer.succeed(Memory.MemoryRecoveryHooks, {
+                notify: (notice) =>
+                  Effect.sync(() => {
+                    messages.push(JSON.stringify(notice));
+                  }),
+              }),
+            ),
+          ),
+          logger,
+        ),
+      ),
+    );
+  }).pipe(
+    Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer, databaseLayer)),
+    Effect.scoped,
+  ),
 );

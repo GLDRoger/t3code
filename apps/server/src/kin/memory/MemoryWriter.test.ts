@@ -1,3 +1,5 @@
+import { memoryGit } from "./git.ts";
+import * as NodeZlib from "node:zlib";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { KinAgentId, KinOrgId } from "@t3tools/contracts";
@@ -32,6 +34,16 @@ it.live.each([
   "B6-owner-closed",
   "B6-agent-own",
   "B7-identity",
+  "P3-object",
+  "P4-journal",
+  "P6-malformed",
+  "P7-crash",
+  "P8-lost-writer",
+  "P9-shadow",
+  "sha256",
+  "review-default",
+  "review-null",
+  "credentials",
 ] as const)("writer real git: %s", (scenario) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -56,31 +68,65 @@ it.live.each([
         "-m",
         "fixture",
       ]);
-    yield* git(source, ["init", "-b", "main"]);
+    yield* git(source, [
+      "init",
+      "-b",
+      "main",
+      ...(scenario === "sha256" ? ["--object-format=sha256"] : []),
+    ]);
     yield* fs.writeFileString(`${source}/rules.md`, "Invented rules\n");
     yield* fs.writeFileString(`${source}/INDEX.md`, "As of 2026-11-08T00:00:00.000Z\n");
-    if (scenario.startsWith("B6")) {
+    if (scenario.startsWith("B6") || scenario === "P3-object" || scenario === "P6-malformed") {
       yield* fs.makeDirectory(`${source}/claims`);
       yield* fs.writeFileString(
         `${source}/claims/existing.md`,
-        fixtureItem({
-          kind: "claim",
-          status: scenario === "B6-owner-open" ? "open" : "done",
-          trust: scenario === "B6-agent-own" ? "agent" : "owner",
-          said_by: scenario === "B6-agent-own" ? agentId : "fixture-owner",
-        }),
+        scenario === "P6-malformed"
+          ? "---\nid: [\n---\n"
+          : fixtureItem({
+              kind: "claim",
+              status: scenario === "B6-owner-open" ? "open" : "done",
+              trust: scenario === "B6-agent-own" ? "agent" : "owner",
+              said_by: scenario === "B6-agent-own" ? agentId : "fixture-owner",
+            }),
       );
     }
-    if (scenario === "B5-journal") {
+    if (scenario === "B5-journal" || scenario === "P4-journal") {
       yield* fs.makeDirectory(`${source}/journal/2026`, { recursive: true });
-      yield* fs.writeFileString(`${source}/journal/2026/11-08.md`, "Owner journal preserved.\n");
+      yield* fs.writeFile(
+        `${source}/journal/2026/11-08.md`,
+        Buffer.concat([
+          scenario === "B5-journal" ? Buffer.from([255, 10]) : Buffer.alloc(0),
+          Buffer.from("Owner journal preserved.\n"),
+        ]),
+      );
     }
     yield* git(source, ["add", "--", "."]);
     yield* commit(source);
     yield* git(root, ["clone", "--bare", "--", source, remote]);
+    let attack: { objectPath: string; sha: string; expression: string; bytes: Buffer } | undefined;
+    let swapped = false;
+    const interceptedGit = Layer.succeed(
+      Vcs.VcsProcess,
+      Vcs.VcsProcess.of({
+        run: Effect.fn("WriterTest.objectSwap")(function* (input) {
+          if (
+            attack &&
+            input.args.includes("cat-file") &&
+            (input.stdin?.includes(attack.sha) || input.args.includes(attack.expression))
+          ) {
+            yield* fs.remove(attack.objectPath).pipe(Effect.orDie);
+            yield* fs.writeFile(attack.objectPath, attack.bytes).pipe(Effect.orDie);
+            attack = undefined;
+            swapped = true;
+          }
+          return yield* vcs.run(input);
+        }),
+      }),
+    );
     const notices: Writer.WriterNotice[] = [];
     const config = Layer.succeed(MemoryConfig, {
       baseDirectory: root,
+      credentialHelper: "fixture-server-helper",
       repositories: [{ orgId, repoUrl: remote, path: "state" }],
     });
     const memoryLayer = Memory.layer.pipe(Layer.provide(config));
@@ -90,7 +136,6 @@ it.live.each([
           notices.push(notice);
         }),
       ),
-      buildIndex: Effect.fn("Test.index")(() => Effect.succeed(null)),
     });
     const auth = Layer.succeed(Writer.MemoryWriterAuthority, {
       resolve: Effect.fn("Test.authority")(
@@ -144,6 +189,98 @@ it.live.each([
       yield* git(paths.writer, ["config", "user.name", "Fixture Bot"]);
       yield* git(paths.writer, ["config", "user.email", "fixture@example.invalid"]);
       const original = yield* git(paths.writer, ["rev-parse", "HEAD"]);
+      if (scenario === "credentials") {
+        yield* git(paths.writer, ["config", "credential.helper", "fixture-repo-helper"]);
+        const helper = yield* memoryGit(paths.writer, [
+          "config",
+          "--get-all",
+          "credential.helper",
+        ]).pipe(
+          Effect.provideService(MemoryConfig, {
+            baseDirectory: root,
+            credentialHelper: "fixture-server-helper",
+            repositories: [],
+          }),
+        );
+        expect(helper.trim()).toBe("fixture-server-helper");
+        return;
+      }
+      if (scenario === "review-default" || scenario === "review-null") {
+        const content = fixtureItem({
+          kind: "claim",
+          review_by: null,
+          recorded_at: "2026-11-01T00:00:00.000Z",
+        });
+        yield* writer.stage(orgId, "wake1", {
+          path: "claims/default.md",
+          content:
+            scenario === "review-default" ? content.replace(/^review_by:.*\n/m, "") : content,
+        });
+        const { commit } = yield* writer.commitWakeup(orgId, "wake1", "completed");
+        const text = yield* git(paths.writer, ["show", `${commit}:claims/default.md`]);
+        expect(text).toContain(
+          scenario === "review-default" ? "2026-12-01T00:00:00.000Z" : "review_by: null",
+        );
+        expect(yield* git(paths.writer, ["show", `${commit}:INDEX.md`])).toContain(
+          "claims/default.md",
+        );
+        expect(yield* git(paths.writer, ["rev-list", "--count", `${original}..${commit}`])).toBe(
+          "1",
+        );
+        return;
+      }
+      if (scenario === "P8-lost-writer" || scenario === "P9-shadow") {
+        if (scenario === "P9-shadow") yield* writer.commitWakeup(orgId, "wake0", "completed");
+        yield* fs.remove(paths.writer, { recursive: true });
+        yield* memory.recover(orgId);
+        yield* memory.prepareWakeup(orgId);
+        const result = yield* writer.commitWakeup(orgId, "wake1", "completed");
+        expect(
+          yield* git(root, [
+            `--git-dir=${remote}`,
+            "rev-parse",
+            `refs/heads/kin/shadow/${agentId}`,
+          ]),
+        ).toBe(result.commit);
+        return;
+      }
+      if (scenario === "P3-object" || scenario === "P4-journal") {
+        const file = scenario === "P3-object" ? "claims/existing.md" : "journal/2026/11-08.md";
+        const sha = yield* git(paths.writer, ["rev-parse", `${original}:${file}`]);
+        const forged = Buffer.from("forged bytes after prepare\n");
+        attack = {
+          objectPath: `${paths.writer}/.git/objects/${sha.slice(0, 2)}/${sha.slice(2)}`,
+          sha,
+          expression: `${original}:${file}`,
+          bytes: NodeZlib.deflateSync(
+            Buffer.concat([Buffer.from(`blob ${forged.length}\0`), forged]),
+          ),
+        };
+        const result =
+          scenario === "P3-object"
+            ? yield* writer
+                .stage(orgId, "wake1", {
+                  path: "claims/existing.md",
+                  content: fixtureItem({ kind: "claim" }),
+                })
+                .pipe(Effect.result)
+            : yield* writer.commitWakeup(orgId, "wake1", "completed").pipe(Effect.result);
+        expect(swapped).toBe(true);
+        expect(result._tag).toBe("Failure");
+        if (result._tag === "Failure") expect(result.failure._tag).toBe("MemoryCheckoutInvalid");
+        return;
+      }
+      if (scenario === "P6-malformed") {
+        const result = yield* writer
+          .stage(orgId, "wake1", {
+            path: "claims/existing.md",
+            content: fixtureItem({ kind: "claim" }),
+          })
+          .pipe(Effect.result);
+        expect(result._tag).toBe("Failure");
+        if (result._tag === "Failure") expect(result.failure._tag).toBe("MemoryWriteRejected");
+        return;
+      }
       for (const path of [
         "rules.md",
         "INDEX.md",
@@ -192,14 +329,14 @@ it.live.each([
         expect(yield* git(paths.writer, ["rev-parse", "HEAD"])).toBe(original);
         yield* git(paths.writer, ["fetch", "--", paths.read, forged]);
         yield* git(paths.writer, ["update-ref", "refs/heads/main", forged]);
-        expect((yield* memory.prepareWakeup(orgId).pipe(Effect.result))._tag).toBe("Failure");
+        expect((yield* memory.prepareWakeup(orgId).pipe(Effect.result))._tag).toBe("Success");
+        expect(yield* memory.readRules(orgId)).toBe("Invented rules\n");
         expect(
           (yield* writer.commitWakeup(orgId, "wake1", "completed").pipe(Effect.result))._tag,
-        ).toBe("Failure");
-        expect(notices.at(-1)?.error._tag).toBe("MemoryCheckoutInvalid");
+        ).toBe("Success");
         return;
       }
-      if (scenario === "B1-shadow" || scenario === "B2-anchor") {
+      if (scenario === "B1-shadow" || scenario === "B2-anchor" || scenario === "P7-crash") {
         yield* fs.writeFileString(`${paths.read}/rules.md`, "Forged rules\n");
         yield* git(paths.read, ["add", "rules.md"]);
         yield* commit(paths.read);
@@ -220,7 +357,7 @@ it.live.each([
           );
         expect(
           (yield* writer.commitWakeup(orgId, "wake1", "completed").pipe(Effect.result))._tag,
-        ).toBe("Failure");
+        ).toBe(scenario === "B2-anchor" || scenario === "P7-crash" ? "Success" : "Failure");
         return;
       }
       if (scenario.startsWith("B6")) {
@@ -355,6 +492,15 @@ it.live.each([
         if (scenario === "B5-journal") {
           const journal = yield* git(paths.writer, ["show", `${branch}:journal/2026/11-08.md`]);
           expect(journal).toContain("Owner journal preserved.");
+          const chunks: Uint8Array[] = [];
+          yield* vcs.run({
+            operation: "WriterTest.journalBytes",
+            command: "git",
+            cwd: paths.writer,
+            args: ["show", `${branch}:journal/2026/11-08.md`],
+            onStdoutChunk: (chunk) => chunks.push(chunk),
+          });
+          expect(Buffer.concat(chunks).subarray(0, 2)).toEqual(Buffer.from([255, 10]));
           expect(journal).not.toContain("Forged journal");
         }
         const again = yield* writer.commitWakeup(
@@ -375,7 +521,7 @@ it.live.each([
           `Outcome: ${scenario === "failed" ? "failed" : "completed"}`,
         );
       }
-    }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(layer.pipe(Layer.provide(interceptedGit))));
   }).pipe(
     Effect.provide(
       Layer.mergeAll(

@@ -1,8 +1,12 @@
+import * as Option from "effect/Option";
+import { MemoryConfig } from "./MemoryConfig.ts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import { VcsProcess } from "../../vcs/VcsProcess.ts";
 
-// A private git directory excludes lead-controlled config, attributes, grafts and hooks.
+const formats = new Map<string, "sha1" | "sha256">();
+
+// A private bare git directory excludes lead-controlled config, grafts and hooks.
 export const memoryGit = Effect.fn("Memory.gitHardened")(function* (
   cwd: string,
   args: ReadonlyArray<string>,
@@ -11,15 +15,26 @@ export const memoryGit = Effect.fn("Memory.gitHardened")(function* (
   onStdoutChunk?: (chunk: Uint8Array) => void,
 ) {
   const fs = yield* FileSystem.FileSystem;
+  const config = Option.getOrUndefined(yield* Effect.serviceOption(MemoryConfig));
   const vcs = yield* VcsProcess;
   return yield* Effect.scoped(
     Effect.gen(function* () {
       const directory = yield* fs.makeTempDirectoryScoped();
       const repo = yield* fs.exists(`${cwd}/.git`);
+      let format = formats.get(cwd);
+      if (!format && repo) {
+        const text = yield* fs
+          .readFileString(`${cwd}/.git/config`)
+          .pipe(Effect.orElseSucceed(() => ""));
+        format = /objectformat\s*=\s*sha256/i.test(text) ? "sha256" : "sha1";
+        formats.set(cwd, format);
+      }
       if (repo) {
         yield* fs.writeFileString(
           `${directory}/config`,
-          "[core]\nrepositoryformatversion = 0\nbare = false\n",
+          format === "sha256"
+            ? "[core]\nrepositoryformatversion = 1\nbare = true\n[extensions]\nobjectformat = sha256\n"
+            : "[core]\nrepositoryformatversion = 0\nbare = true\n",
         );
         yield* fs.symlink(`${cwd}/.git/objects`, `${directory}/objects`);
         if (args[0] === "fsck") {
@@ -33,13 +48,28 @@ export const memoryGit = Effect.fn("Memory.gitHardened")(function* (
           }
         }
       }
+      let attributes: string[] = [];
+      if (repo && args[0] === "merge-tree") {
+        const empty = yield* vcs.run({
+          operation: "Memory.emptyAttributes",
+          command: "git",
+          cwd,
+          args: [`--git-dir=${directory}`, "hash-object", "-w", "-t", "tree", "--stdin"],
+          stdin: "",
+          env: { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
+        });
+        attributes = [`--attr-source=${empty.stdout.trim()}`];
+      }
       const result = yield* vcs.run({
         operation: "Memory.gitHardened",
         command: "git",
         cwd,
         args: [
           "--no-replace-objects",
-          ...(repo ? [`--git-dir=${directory}`, `--work-tree=${cwd}`] : []),
+          ...attributes,
+          ...(repo
+            ? [`--git-dir=${directory}`, ...(args[0] === "checkout" ? [`--work-tree=${cwd}`] : [])]
+            : []),
           "-c",
           "core.hooksPath=/dev/null",
           "-c",
@@ -48,6 +78,9 @@ export const memoryGit = Effect.fn("Memory.gitHardened")(function* (
           "core.attributesFile=/dev/null",
           "-c",
           "protocol.file.allow=user",
+          ...(config?.credentialHelper
+            ? ["-c", "credential.helper=", "-c", `credential.helper=${config.credentialHelper}`]
+            : []),
           ...args,
         ],
         env: {
@@ -59,6 +92,7 @@ export const memoryGit = Effect.fn("Memory.gitHardened")(function* (
           GIT_ASKPASS: "",
           GCM_INTERACTIVE: "never",
           ...env,
+          ...(config?.sshCommand ? { GIT_SSH_COMMAND: config.sshCommand } : {}),
         },
         ...(stdin === undefined ? {} : { stdin }),
         ...(onStdoutChunk === undefined ? {} : { onStdoutChunk }),
