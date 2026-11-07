@@ -27,7 +27,7 @@ export type KinWorkerId = typeof KinWorkerId.Type;
 export const KinMemoryItemId = TrimmedNonEmptyString.pipe(Schema.brand("KinMemoryItemId"));
 export type KinMemoryItemId = typeof KinMemoryItemId.Type;
 
-const CanonicalUtcTimestamp = Schema.String.check(
+export const CanonicalUtcTimestamp = Schema.String.check(
   Schema.makeFilter(
     (value) => {
       return Option.exists(
