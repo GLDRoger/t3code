@@ -83,8 +83,28 @@ KinTriggerScheduler (Scheduler tick, kin_triggers) ────────▶ k
 
 ### Data shapes (new, `packages/contracts/src/kinTriggers.ts`)
 
+The schemas reuse `KinOrgId` and `KinPersonId` from `kinChat.ts` and T3's existing task, delivery and thread IDs. Follow-up `person` is a Kin person ID, not a handle. Only stored envelopes carry `orgId`; nested schedules, subjects and payloads inherit their envelope's org. These contracts are independent of LEAD's `KinEvent`.
+
+Schedule unions keep T3's `type` discriminator, and fire payloads keep `kind`. Intervals are at least 60 000 ms, weekdays are integers 0–6, and lateness is non-negative. `TimeOfDay` follows T3's local-time pattern (H:MM or HH:MM). Times use the same `IsoDateTime` schema as chat contracts; timezone strings identify IANA zones, resolved by the scheduler.
+
 ```ts
+import * as Schema from "effect/Schema";
+
+import {
+  IsoDateTime,
+  NonNegativeInt,
+  ScheduledTaskId,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
+import { KinOrgId, KinPersonId } from "./kinChat.ts";
+import { MIN_SCHEDULED_TASK_INTERVAL_MS, ScheduledTaskWebhookDeliveryId } from "./scheduledTask.ts";
+
+const TimeOfDay = TrimmedNonEmptyString.check(Schema.isPattern(/^([01]?\d|2[0-3]):([0-5]\d)$/));
+const Weekday = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 6 }));
+
 export const KinTriggerId = TrimmedNonEmptyString.pipe(Schema.brand("KinTriggerId"));
+
 export const KinRoutine = Schema.Literals([
   "morning_brief",
   "evening_summary",
@@ -92,6 +112,7 @@ export const KinRoutine = Schema.Literals([
   "dream_full",
   "owner_check",
 ]);
+
 export const KinWatchdog = Schema.Literals([
   "github_recheck",
   "stale_review",
@@ -100,16 +121,20 @@ export const KinWatchdog = Schema.Literals([
   "index_freshness",
   "trigger_reconcile",
 ]);
-// Same shapes as T3's, minus webhook. fixed_time is read in `timeZone`, not the server's zone.
+
 export const KinTriggerSchedule = Schema.Union([
   Schema.Struct({ type: Schema.Literal("once"), runAt: IsoDateTime }),
   Schema.Struct({
     type: Schema.Literal("fixed_time"),
     timeOfDay: TimeOfDay,
-    weekdays: Schema.optional(Schema.Array(Schema.Int)),
+    weekdays: Schema.optional(Schema.Array(Weekday)),
   }),
-  Schema.Struct({ type: Schema.Literal("interval"), everyMs: Schema.Int }), // ≥ 60_000
+  Schema.Struct({
+    type: Schema.Literal("interval"),
+    everyMs: Schema.Int.check(Schema.isGreaterThanOrEqualTo(MIN_SCHEDULED_TASK_INTERVAL_MS)),
+  }),
 ]);
+
 export const KinTriggerSubject = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("deferral"),
@@ -117,29 +142,30 @@ export const KinTriggerSubject = Schema.Union([
     phase: Schema.Literals(["heads_up", "due"]),
   }),
   Schema.Struct({ type: Schema.Literal("reminder"), itemId: Schema.String }),
-  Schema.Struct({ type: Schema.Literal("followup"), itemId: Schema.String, person: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("followup"), itemId: Schema.String, person: KinPersonId }),
   Schema.Struct({ type: Schema.Literal("routine"), routine: KinRoutine }),
   Schema.Struct({ type: Schema.Literal("watchdog"), watchdog: KinWatchdog }),
 ]);
+
 export const KinTrigger = Schema.Struct({
   id: KinTriggerId,
   orgId: KinOrgId,
   subject: KinTriggerSubject,
   schedule: KinTriggerSchedule,
-  timeZone: Schema.String, // IANA, e.g. "Asia/Kolkata"
+  timeZone: Schema.String,
   enabled: Schema.Boolean,
   nextRunAt: Schema.NullOr(IsoDateTime),
   lastFireId: Schema.NullOr(Schema.String),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
-// One row per fire. fireId = `${triggerId}:${dueAtMs}` or `gh:${orgId}:${deliveryId}`.
+
 export const KinTriggerFired = Schema.Struct({
   fireId: Schema.String,
   orgId: KinOrgId,
   dueAt: IsoDateTime,
   firedAt: IsoDateTime,
-  lateByMs: Schema.Int, // 0 when on time; > 10 min shows "This was due at 9:00"
+  lateByMs: NonNegativeInt,
   payload: Schema.Union([
     Schema.Struct({
       kind: Schema.Literal("time"),
@@ -154,20 +180,21 @@ export const KinTriggerFired = Schema.Struct({
     }),
   ]),
 });
+
 export const KinWebhookSource = Schema.Struct({
   id: Schema.String,
   orgId: KinOrgId,
-  repo: Schema.String, // "owner/name"
+  repo: Schema.String,
   scheduledTaskId: ScheduledTaskId,
   inboxThreadId: ThreadId,
   githubHookId: Schema.NullOr(Schema.Int),
   botLogin: Schema.String,
   status: Schema.Literals(["active", "paused_in_t3", "blocked_by_policy", "missing"]),
 });
+
 export const KinGithubEvent = Schema.Struct({
-  // built by the consumer, handed to LEAD
   orgId: KinOrgId,
-  deliveryId: Schema.String, // x-github-delivery
+  deliveryId: Schema.String,
   event: Schema.String,
   action: Schema.NullOr(Schema.String),
   repo: Schema.String,
@@ -179,19 +206,21 @@ export const KinGithubEvent = Schema.Struct({
   bodyTruncated: Schema.Boolean,
   payload: Schema.Unknown,
 });
+
 export const KinTriggerSettings = Schema.Struct({
-  // per org; defaults below
   orgId: KinOrgId,
   timeZone: Schema.String,
   morningBrief: TimeOfDay,
   eveningSummary: TimeOfDay,
   dream: TimeOfDay,
-  fullRebuildWeekday: Schema.Int,
-  ownerCheckWeekday: Schema.Int,
+  fullRebuildWeekday: Weekday,
+  ownerCheckWeekday: Weekday,
   ownerCheck: TimeOfDay,
   quietHours: Schema.Struct({ from: TimeOfDay, to: TimeOfDay }),
 });
 ```
+
+Each fire has a stable `fireId`: `${triggerId}:${dueAtMs}` for time triggers or `gh:${orgId}:${deliveryId}` for webhooks. `lateByMs` is zero on time; more than 10 minutes late shows "This was due at 9:00". Repository strings are `owner/name`. `KinGithubEvent.deliveryId` is GitHub's `x-github-delivery`, not T3's branded delivery-log ID; the consumer constructs this event for LEAD.
 
 Defaults: brief 08:30 daily, summary 18:30 Mon–Fri, dream 03:00 daily, full rebuild on Sunday (it replaces that night's dream), owner check Monday 09:00, quiet hours 21:00–08:00.
 
