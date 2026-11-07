@@ -74,3 +74,4 @@ export * from "./secretReference.ts";
 export * from "./settingsSecretValue.ts";
 export * from "./clientRpcPermissions.ts";
 export * from "./kinChat.ts";
+export * from "./kinTriggers.ts";
