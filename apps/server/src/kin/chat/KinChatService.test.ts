@@ -381,12 +381,35 @@ describe("KinChatService", () => {
           );
         }
         assert.strictEqual(Option.getOrThrow(yield* repo.getChat(chat)).lastSeq, 0);
+        const question = yield* service.send(person, {
+          chatId: chat.chatId,
+          body: "Track this",
+          clientMessageId: "widget-question",
+        });
         const widget = yield* service.upsertWidget(agent, {
           chatId: chat.chatId,
           type: "task",
           state,
           awaiting: [person.personId],
+          replyTo: question.messageId,
         });
+        assert.strictEqual(
+          Option.getOrThrow(yield* repo.getMessage(widget)).replyTo,
+          question.messageId,
+        );
+        for (const update of [{}, { revision: 1, replyTo: question.messageId }])
+          assert.include(
+            yield* service
+              .upsertWidget(agent, {
+                chatId: chat.chatId,
+                widgetId: widget.widgetId,
+                type: "task",
+                state,
+                ...update,
+              })
+              .pipe(Effect.flip),
+            { reason: "invalid_state" },
+          );
         assert.strictEqual(widget.revision, 1);
         assert.strictEqual(
           Option.getOrThrow(yield* repo.getMessage(widget)).widgetId,
