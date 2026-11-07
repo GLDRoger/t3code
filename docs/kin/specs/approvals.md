@@ -423,7 +423,7 @@ Append-only (`kin_audit`, no `UPDATE` or `DELETE` statements in the repository c
 
 ### 12. Credential hygiene check
 
-At startup and hourly, the executor checks which GitHub identity T3 itself uses (`GitHubRequestPolicy.credential("github.com")`, then `GET /user`). If it is the owner's personal login, or `GH_TOKEN`/`GITHUB_TOKEN` is set in the server environment, the executor writes `credential_check_failed`, refuses privileged execution, and posts a card to the owner. Agent CLIs run as children of the server and inherit its `gh` login and environment, so on the Kin machine that identity must be the bot. The triggers spec's Mac mini setup owns making it so.
+At startup and hourly, the executor checks which GitHub identity T3 itself uses (`GitHubRequestPolicy.credential("github.com")`, then `GET /user`). If it is the owner's personal login, or `GH_TOKEN`/`GITHUB_TOKEN` is set in the server environment, the executor writes `credential_check_failed`, refuses privileged execution, and posts a card to the owner. Agent CLIs run as children of the server and inherit its `gh` login and environment, so on the Kin machine that identity must be the bot. The triggers spec's Kin host setup owns making it so.
 
 ## Threat model
 
@@ -470,7 +470,7 @@ RPCs and scopes: `kin.approvals.list` (stream) and `get` → `orchestration:read
 
 - **Chat:** `KinOrgId`, `KinHumanId` (human `KinAuthor`), `KinChatMember` roles (owner lookup), `KinWidget` type `approval {actionId}` with the agent-field rejection, posting result messages, **Waiting on you** items. Chat spec owns the Kin migration runner and the Kin RPC/route hooks.
 - **Lead:** registry of lead threads (for `request_action`), `KinEvent.id` (idempotency) and provenance, the stop switch (executor checks it), levels (`set_level` handler, `ceilingAllows`), `change_rules` handler.
-- **Triggers:** `pull_request` synchronize/closed webhooks → `refreshAction(actionId)`; `pull_request_review` → enables a card waiting on a GitHub review; `memory_purge` handler; Mac mini setup (bot `gh` login, keychain items, hygiene check passing); upstream contract test for `GitHubRequestPolicy.credential` and `verifyDpopProof`.
+- **Triggers:** `pull_request` synchronize/closed webhooks → `refreshAction(actionId)`; `pull_request_review` → enables a card waiting on a GitHub review; `memory_purge` handler; Kin host setup (bot `gh` login, keychain items, hygiene check passing); upstream contract test for `GitHubRequestPolicy.credential` and `verifyDpopProof`.
 - **Mobile:** renders `ApprovalCard` inside the chat screens; this spec ships the card, the native module and the signing hook.
 
 ## Security tests (named, all in `apps/server/src/kin/approvals/*.test.ts` unless noted)
@@ -550,5 +550,5 @@ Later, marked by phase:
 1. The phone needs a GitHub user token for the Kin App (device flow, once). Is that acceptable, or should phase 1 start with "Approve on GitHub" only and add the phone token later?
 2. Owner-written PRs under an empty bypass list: route them through the bot, or add a time-boxed bypass toggled by an owner-signed action?
 3. Merge-queue repos: support `enablePullRequestAutoMerge` with `expectedHeadOid` later, or keep refusing?
-4. Should the executor run as a separate macOS user with its own keychain, so code running as the Kin server's user can't read the merge token at all? Phase 1 relies on the token being unable to review.
+4. Should the executor run as a separate OS user with its own keychain, so code running as the Kin server's user can't read the merge token at all? Phase 1 relies on the token being unable to review.
 5. Desktop approvals: a Touch ID-gated Secure Enclave key on macOS through a native addon, or phone-only for good?

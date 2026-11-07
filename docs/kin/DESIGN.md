@@ -330,7 +330,7 @@ Fix in code:
 Review before release:
 
 - **Who pays for other people's requests.** For now Kin uses whatever providers and sign-ins the owner's T3 Code is set up with. Before anyone else uses it, check the providers' terms (consumer plans are for one person) and decide between an organization API key, a Team plan, and members' own plans through their own agents (section 9.8).
-- **Where Kin runs.** Decided: an always-on Mac mini, reached from the laptop and phone through T3's remote environments. A missed `once` trigger runs on wake-up with "This was due at 9:00".
+- **Where Kin runs.** Decided: one always-on Kin host, reached from the laptop and phone through T3's remote environments. For now it's `nishchay-linux`, a Linux machine; a Mac mini may replace it later (triggers spec, "Running on the Kin host"). A missed `once` trigger runs on wake-up with "This was due at 9:00".
 - **Where each organization's memory repo lives.** A client's memory belongs in the client's GitHub account; the consultant gets access through the partner grant (section 10b).
 - **The code is public, memory is not.** `GLDRoger/t3code` is a public fork of `pingdotgg/t3code`. Organization data, memory and credentials never go in it; memory repos stay private.
 
@@ -338,13 +338,13 @@ Review before release:
 
 None of these are planned. They're written down so they shape today's choices without growing today's scope. Each one starts only after the phase 1 lead has proven useful.
 
-**Secrets gateway (the strongest one, and possibly earlier than the rest).** The Mac mini holds the organization's secrets, and nobody else ever does, agents included. An agent or person asks for access with a purpose: "OpenAI, for the docs search project". Once the request is approved (by the owner, or automatically by organization policy), Kin issues a **gateway token** scoped to that project and purpose, with an expiry and a spending cap. Calls made with the token go through the Mac mini, which adds the real key, forwards the request and logs it. Revoking the token takes one tap and never means rotating the real key.
+**Secrets gateway (the strongest one, and possibly earlier than the rest).** The Kin host holds the organization's secrets, and nobody else ever does, agents included. An agent or person asks for access with a purpose: "OpenAI, for the docs search project". Once the request is approved (by the owner, or automatically by organization policy), Kin issues a **gateway token** scoped to that project and purpose, with an expiry and a spending cap. Calls made with the token go through the Mac mini, which adds the real key, forwards the request and logs it. Revoking the token takes one tap and never means rotating the real key.
 
 - It reuses section 9: the request is a `request_action`, the approval is a grant, and every use goes in the audit log.
 - It also fixes a phase 1 problem: today agents inherit the machine's credentials (see the lead and approvals specs). With the gateway, workers get tokens instead of keys.
 - It works for HTTP APIs whose SDKs accept a different base URL, such as OpenAI, Anthropic and most model APIs. Database passwords and SSH keys need short-lived credentials instead, which is a different problem.
 - Use proven parts instead of building them: an LLM proxy with virtual keys and per-key budgets, and an open-source secrets manager for storage. Check the current options before choosing.
-- The Mac mini becomes the most valuable target in the organization. That means encrypted backups, tokens reachable only over the tailnet or T3 Connect, and a plan for when the machine dies.
+- The Kin host becomes the most valuable target in the organization. That means encrypted backups, tokens reachable only over the tailnet or T3 Connect, and a plan for when the machine dies.
 
 **Tracking work, not just code.** GitHub Issues only fits tech work. Client obligations, marketing deadlines and finance tasks need somewhere too, and Kin already has it: **commitments, objectives and deferrals in memory are a tracker.** Each one has an owner, a due date, a status, a source and links. So the tracker is a view over memory items, not a new store:
 

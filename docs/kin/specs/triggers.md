@@ -13,7 +13,7 @@ Make leads act on their own, on time, without a person asking:
 - Nightly dreaming lands as pull requests on the memory repo. Housekeeping merges by itself; anything that matters waits for the owner.
 - No secret reaches the memory repo, and the owner can purge one item from history with a signed action.
 - A small contract test per T3 piece Kin depends on fails loudly when upstream changes it.
-- All of this runs on an always-on Mac mini. A trigger missed while it was off runs on wake-up and says when it was due.
+- All of this runs on the always-on Kin host. A trigger missed while it was off runs on wake-up and says when it was due.
 
 ## What exists in T3
 
@@ -243,7 +243,7 @@ Defaults: brief 08:30 daily, summary 18:30 Mon–Fri, dream 03:00 daily, full re
 ```
 
 4. Create the hook on GitHub: `POST /repos/{owner}/{repo}/hooks` with the returned `task.webhook.url`, the secret, `content_type: json` and the same events. This needs `admin:repo_hook`, so it is a privileged action: `request_action({ kind: "github.repo_hook.create", target: repo })` (APPR), and the executor runs it. The secret goes from Kin's create step to the executor through the pending action's sealed payload, never through a model or a chat message. **Fallback:** the setup screen shows the URL, and the owner pastes it in GitHub with a secret they paste into a `request_secret` card.
-5. If `task.webhook.url` is null, T3 Connect is off. Kin posts "GitHub events need T3 Connect on the Mac mini" and stops.
+5. If `task.webhook.url` is null, T3 Connect is off. Kin posts "GitHub events need T3 Connect on the Kin host" and stops.
 
 `KIN_SINK_PROMPT` = "Kin trigger. If you are reading this, Kin's trigger sink is not installed. Do nothing and stop." Plan mode plus approval-required keeps an accidental run harmless.
 
@@ -275,7 +275,7 @@ A Kin task never falls through to a real launch. If parsing fails, the launch fa
 
 **Conditions** ("when #212 merges"): no extra T3 task. A condition is a memory item with `on: { event: "pull_request", action: "closed", merged: true, number: 212 }`. The consumer matches it against each `KinGithubEvent`, and `github_recheck` matches it against state.
 
-**Missed while off.** The Mac mini should be on, so outages are short:
+**Missed while off.** The Kin host should be on, so outages are short:
 
 - **Hold on (recommended):** GitHub's request reaches the relay, the relay holds it up to 24 h, and `HeldHooksWaker` delivers it on reconnect. Replay keys stop doubles.
 - **Hold off, or longer than 24 h:** GitHub gets a 530 or 502 and does not retry by itself. `github_recheck` runs at startup and every 10 minutes, compares memory with GitHub state, and finds what changed.
@@ -463,36 +463,39 @@ Each test pins only what Kin uses.
 
 Failure means: stop the sync merge, fix Kin's adapter, then merge.
 
-### Running on the Mac mini
+### Running on the Kin host
 
-Kin runs on one always-on Mac mini (Apple silicon). The laptop and phone are clients.
+Kin runs on one always-on machine, the **Kin host**. The laptop and phone are clients. For now the host is `nishchay-linux` (Linux, 8 cores, 14 GB RAM, reached over SSH). A Kin host may replace it later; the macOS notes are at the end of this section.
 
-**Install:**
+**Install (Linux):**
 
-- `xcode-select --install`, Homebrew, then `brew install git gh git-filter-repo gitleaks`.
-- `vp` (see the README).
-- The providers' CLIs (Claude Code, Codex), each signed in as the owner.
-- Clone `GLDRoger/t3code`, `git switch kin`, `cp .env.example .env` (it holds the production relay URL), then `vp i && vp run build:desktop`.
+- `git`, `gh`, `git-filter-repo` and `gitleaks` from the distribution or their release binaries.
+- Node 26 (the repo's `engines`) through `mise`, which the host already uses, and `vp`.
+- A dedicated `kin` user (`sudo useradd -m kin`). The Kin server runs as this user, never as the owner's account. Its only GitHub credential is the GitHub App's, so agents never see the owner's `gh` login (lead spec, security notes).
+- The providers' CLIs (Claude Code, Codex) installed for the `kin` user and signed in to the owner's plans.
+- As `kin`: clone `GLDRoger/t3code`, `git switch kin`, `cp .env.example .env` (it holds the production relay URL), then `vp i && vp run build:desktop`.
 
 **Run:**
 
-- The upstream background service installs upstream releases and does not apply to source builds (`docs/user/install.md`). Kin ships its own LaunchAgent, `ops/kin/macmini/dev.kin.server.plist`. It sets `RunAtLoad`, `KeepAlive`, and `ProgramArguments: node <checkout>/apps/server/dist/bin.mjs serve`. Load it with `launchctl bootstrap gui/$(id -u)`.
-- Update with `git pull && vp i && vp run build:desktop && launchctl kickstart -k gui/$(id -u)/dev.kin.server`, after the contract tests pass.
+- The upstream background service installs upstream releases and does not apply to source builds (`docs/user/install.md`). Kin ships its own systemd user unit, `ops/kin/host/kin-server.service`: `ExecStart=node <checkout>/apps/server/dist/bin.mjs serve`, `Restart=always`, `WantedBy=default.target`.
+- `sudo loginctl enable-linger kin` makes the unit start at boot without anyone logging in. Then, as `kin`, `systemctl --user enable --now kin-server`.
+- Update with `git pull && vp i && vp run build:desktop && systemctl --user restart kin-server`, after the contract tests pass.
 
 **Link the laptop and phone:**
 
-- On the Mac mini, run `node apps/server/dist/bin.mjs up --connect`; TRIG-20 verifies it doesn't try to install the upstream service. Sign in to T3 Connect; approve the code from any device.
+- On the host, run `node apps/server/dist/bin.mjs up --connect`; TRIG-20 verifies it doesn't try to install the upstream service. Sign in to T3 Connect; approve the code from any device.
 - Turn on **Hold webhooks while offline**.
-- On the laptop (T3 desktop) and phone (Kin mobile), sign in to the same T3 Connect account and pick the Mac mini.
+- On the laptop (T3 desktop) and phone (Kin mobile), sign in to the same T3 Connect account and pick the host.
 - On the home network or tailnet, `up --lan` plus `pair` gives a direct route. Clients learn LAN and tailnet routes and prefer them (`docs/internals/remote.md`). The account allows 3 machines.
-- To let the laptop's agents hand work to the Mac mini, use a peer link (Linked environments beta, `t3_environment_link`).
+- To let the laptop's agents hand work to the host, use a peer link (Linked environments beta, `t3_environment_link`).
 
-**Keep it awake:**
+**Keep it up:**
 
-- `sudo pmset -a sleep 0 disksleep 0 womp 1 autorestart 1 powernap 0`.
-- Turn on automatic login for the Kin user, because the server runs only while that user is logged in.
-- **FileVault conflicts with automatic login.** Keep FileVault on and use `sudo fdesetup authrestart` for planned restarts. After a power cut, someone must unlock the Mac; a UPS makes that rare, and missed triggers run when it's back.
-- Turn off automatic macOS update restarts; update by hand.
+- Turn off suspend: `sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target`.
+- Turn on restart after power loss in the firmware settings if the machine has it. If the disk asks for a passphrase at boot, someone must unlock it after a power cut; a UPS makes that rare, and missed triggers run when it's back.
+- Unattended security updates are fine; reboot by hand.
+
+**If the host becomes the Kin host:** use a LaunchAgent instead of the systemd unit (`launchctl bootstrap gui/$(id -u)`), `sudo pmset -a sleep 0 disksleep 0 womp 1 autorestart 1 powernap 0`, and automatic login for the `kin` user, because a LaunchAgent runs only while its user is logged in. FileVault conflicts with automatic login: keep FileVault on and use `sudo fdesetup authrestart` for planned restarts.
 
 **Backups:**
 
@@ -512,7 +515,7 @@ Kin runs on one always-on Mac mini (Apple silicon). The laptop and phone are cli
 - `apps/server/src/kin/memory/freshness.ts`, `buildIndex.ts`, `secretScan.ts`, `purge.ts`
 - `apps/server/src/kin/dreaming/DreamRunner.ts`, `classifyDream.ts`
 - `apps/server/src/kin/contract/*.kin-contract.test.ts`, `apps/mobile/src/features/chats/contract/mcpAppWebView.kin-contract.test.ts`
-- `ops/kin/macmini/dev.kin.server.plist`, `ops/kin/macmini/setup.sh` (pmset and checks), `ops/kin/macmini/backup.sh`
+- `ops/kin/host/kin-server.service`, `ops/kin/host/setup.sh` (user, linger, suspend off, and checks), `ops/kin/host/backup.sh`
 - In `GLDRoger/kin-memory`: `CODEOWNERS`, `.github/workflows/memory-check.yml`
 
 **Upstream files touched (one line each):**
@@ -560,28 +563,28 @@ Kin runs on one always-on Mac mini (Apple silicon). The laptop and phone are cli
 
 ## Tasks
 
-| Id      | What                                                                                        | Files                                                      | Depends on                                                                                          | Done when                                                                                                                                                          | Owner   |
-| ------- | ------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------- |
-| TRIG-1  | Trigger contracts                                                                           | `kinTriggers.ts`                                           | CHAT-1                                                                                              | `vp run typecheck` passes; schema round-trip test                                                                                                                  | backend |
-| TRIG-2  | Trigger tables and store                                                                    | `KinTriggerStore.ts`, `KinTriggerInbox.ts`, Kin migrations | TRIG-1, CHAT-2 (Kin migration list)                                                                 | store tests: idempotent `put`, `orgId` on every row                                                                                                                | backend |
-| TRIG-3  | `KinTriggerScheduler`: owner zone, firing, lateness                                         | `KinTriggerScheduler.ts`                                   | TRIG-2                                                                                              | scheduler and timezone tests above pass                                                                                                                            | backend |
-| TRIG-4  | `KinTriggerSink` and the runtime-layer hook                                                 | `KinTriggerSink.ts`, `runtimeLayer.ts` (1 line)            | TRIG-2                                                                                              | sink tests pass; non-Kin tasks unchanged (existing `ScheduledTaskService*.test.ts` green)                                                                          | backend |
-| TRIG-5  | GitHub webhook sources: create, rotate, inbox thread, hook via executor                     | `githubWebhooks.ts`                                        | TRIG-4, APPR-9                                                                                      | test against a fake GitHub creates a task with signature, replay key and filters; a null URL posts the T3 Connect message                                          | backend |
-| TRIG-6  | GitHub event consumer and conditions                                                        | `githubEvents.ts`                                          | TRIG-5, LEAD-4                                                                                      | delivery turns into a `KinGithubEvent`; a trimmed delivery falls back to `github_recheck`; a condition on #212 matches a merge                                     | backend |
-| TRIG-7  | Deferral arming from memory, and the confirm card                                           | `KinTriggerService.ts`, `deferrals.ts`                     | TRIG-3, LEAD-2, LEAD-7 (`kin_defer`), CHAT-7                                                        | editing `due` in an item re-arms; `status: done` disarms                                                                                                           | backend |
-| TRIG-8  | Deferral due flow: recheck, heads-up, grace, start/ask/remind/chase, late                   | `deferrals.ts`                                             | TRIG-7, TRIG-11, LEAD-8, LEAD-9, LEAD-11                                                            | the deferral tests above pass                                                                                                                                      | backend |
-| TRIG-9  | Routines: brief, summary, owner check                                                       | `routines.ts`, `ownerCheck.ts`                             | TRIG-3, TRIG-12                                                                                     | at 08:30 owner time a brief is posted; late after 18:30 it folds into the summary; the owner check picks 5 by the stated order                                     | backend |
-| TRIG-10 | Watchdogs                                                                                   | `watchdogs.ts`                                             | TRIG-3, TRIG-6, TRIG-11                                                                             | closing a linked issue on a fake GitHub marks the commitment done with an evidence link; a paused T3 task sets `paused_in_t3` and isn't re-enabled                 | backend |
-| TRIG-11 | Ping ledger, batching, quiet hours, escalation                                              | `pings.ts`                                                 | TRIG-2, CHAT-7                                                                                      | two pings for one item on one day send one; a ping in quiet hours waits; day 2 escalates once                                                                      | backend |
-| TRIG-12 | Freshness defaults and code-built `INDEX.md`                                                | `freshness.ts`, `buildIndex.ts`                            | LEAD-2                                                                                              | golden-file test: ≤ 200 lines, As-of line, overdue flagged, 8-week-unread left out                                                                                 | backend |
-| TRIG-13 | Dream runner: material, branch, dream session, checks                                       | `DreamRunner.ts`                                           | TRIG-12, TRIG-16, LEAD-5, LEAD-6                                                                    | fixture dream produces a branch and `dream.json`; `rules.md` edit fails it                                                                                         | backend |
-| TRIG-14 | Dream split, auto-merge under delegation, review card, rejections; full weekly variant      | `classifyDream.ts`, `DreamRunner.ts`                       | TRIG-13, APPR-4; auto-merge waits for APPR-12 (phase 3), and until then the owner approves both PRs | the two-PR test passes; a rejected item is not proposed again                                                                                                      | backend |
-| TRIG-15 | Memory repo guard rails                                                                     | `kin-memory`: `CODEOWNERS`, `memory-check.yml`, ruleset    | APPR-11                                                                                             | a PR touching `decisions/` can't merge without owner review; a planted token fails the check                                                                       | backend |
-| TRIG-16 | Secret scanner, writer hook, allowlist                                                      | `secretScan.ts`                                            | LEAD-3                                                                                              | rule fixtures (one hit and one near-miss per rule) pass; redaction and owner message tested                                                                        | backend |
-| TRIG-17 | Owner-signed purge                                                                          | `purge.ts`                                                 | TRIG-16, APPR-9, APPR-10                                                                            | purge test passes on a fixture repo; `git-filter-repo` provenance noted in the PR                                                                                  | backend |
-| TRIG-18 | Server contract tests: triggers, relay, `delegate_task`, managed policy                     | `apps/server/src/kin/contract/*`                           | TRIG-4                                                                                              | `cd apps/server && vp test run kin-contract` passes                                                                                                                | backend |
-| TRIG-19 | `McpAppWebView` contract test                                                               | `apps/mobile/src/features/chats/contract/*`                | —                                                                                                   | `cd apps/mobile && vp test run kin-contract` passes                                                                                                                | UI      |
-| TRIG-20 | Mac mini setup: plist, `setup.sh`, `backup.sh`, verify source-build `up --connect` and hold | `ops/kin/macmini/*`                                        | —                                                                                                   | after a reboot, the server is reachable from the phone over T3 Connect; a GitHub redelivery while it's stopped arrives on start; a restore drill from backup works | backend |
+| Id      | What                                                                                                           | Files                                                      | Depends on                                                                                          | Done when                                                                                                                                                          | Owner   |
+| ------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------- |
+| TRIG-1  | Trigger contracts                                                                                              | `kinTriggers.ts`                                           | CHAT-1                                                                                              | `vp run typecheck` passes; schema round-trip test                                                                                                                  | backend |
+| TRIG-2  | Trigger tables and store                                                                                       | `KinTriggerStore.ts`, `KinTriggerInbox.ts`, Kin migrations | TRIG-1, CHAT-2 (Kin migration list)                                                                 | store tests: idempotent `put`, `orgId` on every row                                                                                                                | backend |
+| TRIG-3  | `KinTriggerScheduler`: owner zone, firing, lateness                                                            | `KinTriggerScheduler.ts`                                   | TRIG-2                                                                                              | scheduler and timezone tests above pass                                                                                                                            | backend |
+| TRIG-4  | `KinTriggerSink` and the runtime-layer hook                                                                    | `KinTriggerSink.ts`, `runtimeLayer.ts` (1 line)            | TRIG-2                                                                                              | sink tests pass; non-Kin tasks unchanged (existing `ScheduledTaskService*.test.ts` green)                                                                          | backend |
+| TRIG-5  | GitHub webhook sources: create, rotate, inbox thread, hook via executor                                        | `githubWebhooks.ts`                                        | TRIG-4, APPR-9                                                                                      | test against a fake GitHub creates a task with signature, replay key and filters; a null URL posts the T3 Connect message                                          | backend |
+| TRIG-6  | GitHub event consumer and conditions                                                                           | `githubEvents.ts`                                          | TRIG-5, LEAD-4                                                                                      | delivery turns into a `KinGithubEvent`; a trimmed delivery falls back to `github_recheck`; a condition on #212 matches a merge                                     | backend |
+| TRIG-7  | Deferral arming from memory, and the confirm card                                                              | `KinTriggerService.ts`, `deferrals.ts`                     | TRIG-3, LEAD-2, LEAD-7 (`kin_defer`), CHAT-7                                                        | editing `due` in an item re-arms; `status: done` disarms                                                                                                           | backend |
+| TRIG-8  | Deferral due flow: recheck, heads-up, grace, start/ask/remind/chase, late                                      | `deferrals.ts`                                             | TRIG-7, TRIG-11, LEAD-8, LEAD-9, LEAD-11                                                            | the deferral tests above pass                                                                                                                                      | backend |
+| TRIG-9  | Routines: brief, summary, owner check                                                                          | `routines.ts`, `ownerCheck.ts`                             | TRIG-3, TRIG-12                                                                                     | at 08:30 owner time a brief is posted; late after 18:30 it folds into the summary; the owner check picks 5 by the stated order                                     | backend |
+| TRIG-10 | Watchdogs                                                                                                      | `watchdogs.ts`                                             | TRIG-3, TRIG-6, TRIG-11                                                                             | closing a linked issue on a fake GitHub marks the commitment done with an evidence link; a paused T3 task sets `paused_in_t3` and isn't re-enabled                 | backend |
+| TRIG-11 | Ping ledger, batching, quiet hours, escalation                                                                 | `pings.ts`                                                 | TRIG-2, CHAT-7                                                                                      | two pings for one item on one day send one; a ping in quiet hours waits; day 2 escalates once                                                                      | backend |
+| TRIG-12 | Freshness defaults and code-built `INDEX.md`                                                                   | `freshness.ts`, `buildIndex.ts`                            | LEAD-2                                                                                              | golden-file test: ≤ 200 lines, As-of line, overdue flagged, 8-week-unread left out                                                                                 | backend |
+| TRIG-13 | Dream runner: material, branch, dream session, checks                                                          | `DreamRunner.ts`                                           | TRIG-12, TRIG-16, LEAD-5, LEAD-6                                                                    | fixture dream produces a branch and `dream.json`; `rules.md` edit fails it                                                                                         | backend |
+| TRIG-14 | Dream split, auto-merge under delegation, review card, rejections; full weekly variant                         | `classifyDream.ts`, `DreamRunner.ts`                       | TRIG-13, APPR-4; auto-merge waits for APPR-12 (phase 3), and until then the owner approves both PRs | the two-PR test passes; a rejected item is not proposed again                                                                                                      | backend |
+| TRIG-15 | Memory repo guard rails                                                                                        | `kin-memory`: `CODEOWNERS`, `memory-check.yml`, ruleset    | APPR-11                                                                                             | a PR touching `decisions/` can't merge without owner review; a planted token fails the check                                                                       | backend |
+| TRIG-16 | Secret scanner, writer hook, allowlist                                                                         | `secretScan.ts`                                            | LEAD-3                                                                                              | rule fixtures (one hit and one near-miss per rule) pass; redaction and owner message tested                                                                        | backend |
+| TRIG-17 | Owner-signed purge                                                                                             | `purge.ts`                                                 | TRIG-16, APPR-9, APPR-10                                                                            | purge test passes on a fixture repo; `git-filter-repo` provenance noted in the PR                                                                                  | backend |
+| TRIG-18 | Server contract tests: triggers, relay, `delegate_task`, managed policy                                        | `apps/server/src/kin/contract/*`                           | TRIG-4                                                                                              | `cd apps/server && vp test run kin-contract` passes                                                                                                                | backend |
+| TRIG-19 | `McpAppWebView` contract test                                                                                  | `apps/mobile/src/features/chats/contract/*`                | —                                                                                                   | `cd apps/mobile && vp test run kin-contract` passes                                                                                                                | UI      |
+| TRIG-20 | Kin host setup: systemd unit, `kin` user, `setup.sh`, `backup.sh`, verify source-build `up --connect` and hold | `ops/kin/host/*`                                           | —                                                                                                   | after a reboot, the server is reachable from the phone over T3 Connect; a GitHub redelivery while it's stopped arrives on start; a restore drill from backup works | backend |
 
 ## Design corrections
 
@@ -603,4 +606,4 @@ Kin runs on one always-on Mac mini (Apple silicon). The laptop and phone are cli
 - **Daytime lead writes.** With the memory repo's `main` requiring PRs (needed for the CODEOWNERS guard), LEAD's daytime writes must land as auto-merged PRs too. Otherwise drop the ruleset and rely on Kin's checks only.
 - **Fencing T3's scheduling tools.** Can `McpToolAccess` remove `schedule_task` for specific threads, or does Kin need a check on `creationSource: "mcp"` in Kin projects? Decide with LEAD.
 - **Owner-check day.** Should the weekly owner check move to the owner's quietest weekday, learned from activity?
-- **Dream schedule per org.** Should one Mac mini serving several orgs space their dreams, for example 15 minutes apart, so they don't compete for plan headroom?
+- **Dream schedule per org.** Should one Kin host serving several orgs space their dreams, for example 15 minutes apart, so they don't compete for plan headroom?

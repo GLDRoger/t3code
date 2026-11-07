@@ -81,7 +81,7 @@ Why not a fourth workspace tab: it isn't a one-line hook. A `"kin"` tab needs ed
 
 ### Which environment hosts Kin
 
-Kin runs on the Mac mini, which the phone reaches as an ordinary T3 environment. `useKinHost()` (**new**) picks it this way:
+Kin runs on the Kin host, which the phone reaches as an ordinary T3 environment. `useKinHost()` (**new**) picks it this way:
 
 1. Use the environment id saved under Kin's own preference key (`kin.hostEnvironmentId`, via `persistence/mobile-storage.ts`) if it is still in the catalog.
 2. Otherwise, use the first `connected` environment whose `kin.orgs.list` call (chat spec) succeeds, and save its id.
@@ -258,7 +258,7 @@ Hiding the buttons is a convenience, not the protection (DESIGN 9.3). The server
 
 ### Notifications with action buttons
 
-**Sending (backend, this spec).** T3's relay can't carry Kin's pushes (see Design corrections). `apps/server/src/kin/push/KinPushSender.ts` (**new**) sends APNs pushes directly from the Kin server, over HTTP/2 with token auth. The `.p8` key is in the Mac mini's keychain via `ServerSecretStore` (`apps/server/src/auth/ServerSecretStore.ts`).
+**Sending (backend, this spec).** T3's relay can't carry Kin's pushes (see Design corrections). `apps/server/src/kin/push/KinPushSender.ts` (**new**) sends APNs pushes directly from the Kin server, over HTTP/2 with token auth. The `.p8` key is in the Kin host's keychain via `ServerSecretStore` (`apps/server/src/auth/ServerSecretStore.ts`).
 
 - Device tokens are registered through `kin.push.registerDevice` (**new**, contracts in `packages/contracts/src/kinPush.ts`).
 - The payload carries `aps.category` and `KinPushData`. Its text stays short and contains no PR body or agent free text, for example "Merge #212 is waiting on you".
@@ -338,7 +338,7 @@ Commands, from `apps/mobile`: `vp run typecheck` and `vp test run --project unit
 - `kinPushPayload.test.ts`: valid payloads route; `/threads/...`, `//evil`, query strings and malformed JSON are dropped; an action response produces one `widgetAction` per notification id.
 - `KinPushSender.test.ts`: category per widget kind; approval pushes only reach approver devices; skipped when a foreground subscription exists.
 - Upstream tests still pass: `dependency-graph.test.ts`, `reactCompilerCoverage.test.ts`, `notificationNavigation.test.ts`.
-- Manual, on a device against the Mac mini, captured as screenshots in the PR:
+- Manual, on a device against the Kin host, captured as screenshots in the PR:
   1. The entry row appears on Home only when Kin is reachable.
   2. A message sent offline goes out on reconnect.
   3. Tapping a task card opens the T3 thread, and Back returns to the chat.
@@ -353,7 +353,7 @@ Commands, from `apps/mobile`: `vp run typecheck` and `vp test run --project unit
 - What: `kinClient.ts`, `useKinHost.ts`, `kinInboxModel.ts`, the offline cache with `persistQuery`, and the `EnvironmentSubscriptionRpcTag` hook.
 - Files: `features/chats/state/*`, `packages/client-runtime/src/rpc/client.ts`.
 - Depends on: CHAT-1.
-- Done when: unit tests pass, and a dev screen logs the inbox snapshot from the Mac mini.
+- Done when: unit tests pass, and a dev screen logs the inbox snapshot from the Kin host.
 
 **MOB-2 Routes and entry hooks** (UI)
 

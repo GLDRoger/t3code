@@ -1,13 +1,13 @@
 # Kin: phase 1 plan
 
-Phase 1 delivers a direct chat on the phone with one lead, on `GLDRoger/t3code`, with memory in `GLDRoger/kin-memory`, running on the Mac mini at L0. What phase 1 includes is in [DESIGN.md section 11](DESIGN.md#11-phases-each-one-works-on-its-own). Each task is described in full in its spec:
+Phase 1 delivers a direct chat on the phone with one lead, on `GLDRoger/t3code`, with memory in `GLDRoger/kin-memory`, running on the Kin host at L0. What phase 1 includes is in [DESIGN.md section 11](DESIGN.md#11-phases-each-one-works-on-its-own). Each task is described in full in its spec:
 
 | Spec                            | Covers                                                                                                  | Tasks             |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------- | ----------------- |
 | [chat](specs/chat.md)           | Organizations, people, chats, messages, widgets, chat RPC and streams, `/kin/mcp`, floor manager, judge | CHAT-1 to CHAT-13 |
 | [lead](specs/lead.md)           | Event queue, wake-ups, lead tools, memory reads and writes, workers, budget, stop switch, levels        | LEAD-1 to LEAD-14 |
 | [approvals](specs/approvals.md) | `request_action`, pending actions, signed grants, executor, GitHub App, rulesets, audit                 | APPR-1 to APPR-15 |
-| [triggers](specs/triggers.md)   | Webhooks, deferrals, routines, watchdogs, dreaming, secret scan, purge, contract tests, Mac mini        | TRIG-1 to TRIG-20 |
+| [triggers](specs/triggers.md)   | Webhooks, deferrals, routines, watchdogs, dreaming, secret scan, purge, contract tests, Kin host        | TRIG-1 to TRIG-20 |
 | [mobile](specs/mobile.md)       | Chat list, direct chat, cards, Waiting on you, notifications                                            | MOB-1 to MOB-12   |
 
 Tasks marked phase 2, 3 or 5 in a spec wait: CHAT-11 to CHAT-13, APPR-12 to APPR-15.
@@ -20,7 +20,7 @@ Two lanes, split by area so each lane owns whole folders and rarely waits on the
 | ---------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
 | **A: the lead**              | Nishchay, with agents (GPT-6.1 Sol builds, Opus reviews) | Chat server, the lead, triggers and dreaming                                                                                   | CHAT-1 to CHAT-10, LEAD-1 to LEAD-14, TRIG-1 to TRIG-14, TRIG-16 to TRIG-18                                                 |
 | **B: approvals and the app** | The teammate, with Claude Opus 5.5                       | Approvals end to end (server and phone, since the signer and the verifier must match), the mobile app, notifications, branding | APPR-1 to APPR-11, MOB-1 to MOB-12, BRAND-1, TRIG-19                                                                        |
-| **Ops**                      | Nishchay only                                            | Things that need his accounts or hardware                                                                                      | TRIG-20 Mac mini, running the APPR-8 and APPR-11 scripts that lane B writes, TRIG-15 on `kin-memory`, the APNs and FCM keys |
+| **Ops**                      | Nishchay only                                            | Things that need his accounts or hardware                                                                                      | TRIG-20 Kin host, running the APPR-8 and APPR-11 scripts that lane B writes, TRIG-15 on `kin-memory`, the APNs and FCM keys |
 
 Lane A has more tasks, but it runs several agents at once. Lane B holds the most security-sensitive code, so it gets one careful owner.
 
@@ -48,7 +48,7 @@ APPR-9 → TRIG-5 is on the critical path. If it holds lane A up, settle the tri
 
 1. Lane A ships CHAT-1 (contracts) first, within a day, and lane B reviews it straight away. Every other spec builds on its names.
 2. Meanwhile lane B starts the tasks that depend on nothing: APPR-6 (native key module), BRAND-1 and TRIG-19.
-3. Nishchay starts TRIG-20 (the Mac mini) and creates the APNs and FCM keys.
+3. Nishchay starts TRIG-20 (the Kin host) and creates the APNs and FCM keys.
 4. Then lane A starts CHAT-2, CHAT-3 and LEAD-1, and lane B starts APPR-1 and MOB-1.
 
 ## Working in parallel without conflicts
@@ -58,7 +58,7 @@ APPR-9 → TRIG-5 is on the critical path. If it holds lane A up, settle the tri
 - **Migration numbers are taken when a PR merges.** Kin's track runs in order and skips any number lower than the highest already applied, so two PRs can't both be K003. Name yours with the next free number. If someone merges first, rebase and renumber before merging (dev databases are disposable).
 - **Contracts change by PR to the owning spec's file.** If lane B needs a field in `kinChat.ts`, it asks in a small PR to that file, not inside a feature PR.
 - **Folders by lane.** Lane A: `apps/server/src/kin/` `chat`, `floor`, `widgets`, `mcp`, `lead`, `memory`, `triggers`, `dreaming`, `github`. Lane B: `apps/server/src/kin/approvals` and `push`, `apps/mobile/src/features/chats`, `apps/mobile/modules/kin-approval-key`, `branding/` and the `scripts/kin-*` files. Shared: `apps/server/src/kin/persistence/` (each migration is its own file) and `packages/contracts/src/kin*.ts` (each file has one owning spec).
-- **No real memory in tests.** Use a fixture memory repo in the test folder. Only the Mac mini sees `GLDRoger/kin-memory`.
+- **No real memory in tests.** Use a fixture memory repo in the test folder. Only the Kin host sees `GLDRoger/kin-memory`.
 
 ## Starting the teammate's Claude Code
 
@@ -72,7 +72,7 @@ I own lane B in PLAN.md: approvals (specs/approvals.md), the mobile app (specs/m
 Today's task: <ID>. Do only that task:
 
 1. Read its section in the spec, and every T3 file it cites.
-2. Create the branch kin-<id>-<slug> from kin.
+2. Create the branch kin-<id>-<slug> from kin, and push it to my fork of GLDRoger/t3code.
 3. Open a draft PR right away to claim it:
    gh pr create --repo GLDRoger/t3code --base kin --draft --title "<ID>: <title>"
 4. Build what the task's "What" and "Files" say, and nothing more. Its "Done when" is the acceptance test.
@@ -95,7 +95,7 @@ A task can start once everything it depends on has merged. These waves come from
 
 | Wave  | Backend                                                                                        | UI                                | Ops                                                                                    |
 | ----- | ---------------------------------------------------------------------------------------------- | --------------------------------- | -------------------------------------------------------------------------------------- |
-| 0     | CHAT-1 contracts, CHAT-2 Kin migration track                                                   | APPR-6 native approval key module | TRIG-20 Mac mini setup, BRAND-1 branding script, TRIG-19 `McpAppWebView` contract test |
+| 0     | CHAT-1 contracts, CHAT-2 Kin migration track                                                   | APPR-6 native approval key module | TRIG-20 Kin host setup, BRAND-1 branding script, TRIG-19 `McpAppWebView` contract test |
 | 1     | CHAT-3, LEAD-1, APPR-1, TRIG-1                                                                 | MOB-1                             |                                                                                        |
 | 2     | CHAT-4, LEAD-2, LEAD-4, APPR-2, TRIG-2                                                         | MOB-2                             | APPR-8 GitHub App (needs Nishchay's GitHub sign-in)                                    |
 | 3     | CHAT-5, LEAD-3 (with a TRIG-16 stub), LEAD-5, LEAD-6, APPR-5, APPR-10, TRIG-3, TRIG-4, TRIG-12 | MOB-3, MOB-4                      | APPR-11 rulesets and CODEOWNERS                                                        |
@@ -105,7 +105,7 @@ A task can start once everything it depends on has merged. These waves come from
 | 7     | LEAD-11, LEAD-12, LEAD-13                                                                      | MOB-7, MOB-8                      |                                                                                        |
 | 8     | APPR-9 executor, LEAD-14 dry run, TRIG-8                                                       | MOB-9                             |                                                                                        |
 | 9     | TRIG-5 GitHub webhooks, TRIG-17 purge                                                          | MOB-12                            |                                                                                        |
-| 10–11 | TRIG-6 GitHub events, TRIG-10 watchdogs                                                        |                                   | Shadow week on the Mac mini                                                            |
+| 10–11 | TRIG-6 GitHub events, TRIG-10 watchdogs                                                        |                                   | Shadow week on the Kin host                                                            |
 
 **Critical path:** CHAT-1 → CHAT-3 → CHAT-4 → CHAT-5 → CHAT-7 → LEAD-7 → LEAD-9 → LEAD-11 → APPR-9 → TRIG-5 → TRIG-6 → TRIG-10. Review those PRs first. GitHub webhooks come late only because TRIG-5 creates repo hooks through the executor. If that becomes the bottleneck, TRIG-5 can create the hook directly with the bot's token and move to wave 5.
 
@@ -128,7 +128,7 @@ The specs checked the design against the code and found these. Until DESIGN.md i
 
 - T3 has no notion of a person. A paired device gets environment-wide scopes, including terminal access. Members need Kin's own people records and a narrow `kin:chat` scope before anyone else pairs a phone (chat spec).
 - T3's mobile device key is a software key used only for the relay. Kin needs its own approval key in the Secure Enclave or Keystore behind Face ID (approvals spec).
-- Agent CLIs inherit the server's `gh` login. Kin on the Mac mini must run as a dedicated macOS user whose GitHub identity is the bot, and leads stay at L0 until it does (lead and approvals specs).
+- Agent CLIs inherit the server's `gh` login. Kin on the Kin host must run as a dedicated `kin` user whose GitHub identity is the bot, and leads stay at L0 until it does (lead and approvals specs).
 - T3's merge doesn't pin the head SHA, so the executor calls GitHub's merge API with the SHA itself. The GitHub review comes from the phone, never from the server (approvals spec).
 - `fixed_time` triggers use the machine's timezone and skip runs more than 10 minutes late, so Kin runs its own time triggers on T3's scheduler (triggers spec).
 - Kin needs its own push sender and an APNs key, because T3's relay pushes have no action buttons (mobile spec).
@@ -139,5 +139,5 @@ The specs checked the design against the code and found these. Until DESIGN.md i
 
 - **An APNs key** (and an FCM key for Android) for Kin's push sender. Blocks MOB-10.
 - **The GitHub App:** creating it and installing it on `GLDRoger/t3code` and `GLDRoger/kin-memory` needs your GitHub sign-in. Blocks APPR-8.
-- **The Mac mini:** a dedicated macOS user for Kin, and a choice between automatic login and FileVault (the triggers spec explains why they conflict). Blocks TRIG-20.
+- **The Kin host:** setting up `nishchay-linux` with a dedicated `kin` user and the systemd unit (triggers spec, "Running on the Kin host"). Blocks TRIG-20.
 - **Jev from TypeSafe:** pricing and API access. Until then the judge is the no-op stub (CHAT-10).

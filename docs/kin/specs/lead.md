@@ -501,7 +501,7 @@ Upstream files touched, one line each:
 - The lead's authority is its Kin tools. Tools resolve organization and lead from the calling thread, never from input.
 - Trust and `said_by` are set from server-verified provenance, never by the model.
 - `rules.md` cannot be written by any lead or dream.
-- Leads and workers run in `full-access` mode, so they can run any shell command the server's macOS user can. They must not run under the owner's account: that account holds the owner's `gh` login and keychain, which DESIGN 9.5 says agents never hold. Phase 1 requires the Kin server on the Mac mini to run as a dedicated macOS user whose only GitHub credential is the GitHub App's (triggers spec, "running on the Mac mini"). Until then, keep every lead at L0.
+- Leads and workers run in `full-access` mode, so they can run any shell command the server's OS user can. They must not run under the owner's account: that account holds the owner's `gh` login and keychain, which DESIGN 9.5 says agents never hold. Phase 1 requires the Kin server on the Kin host to run as a dedicated `kin` user whose only GitHub credential is the GitHub App's (triggers spec, "Running on the Kin host"). Until then, keep every lead at L0.
 - Events carry references, so webhook bodies and message text don't sit in the queue.
 - Stopping is open to the owner at any time without a signature. Raising a level needs a signed grant.
 
@@ -552,7 +552,7 @@ LEAD-12. **Promotion.** Review card in the evening summary, verdicts, the eligib
 
 LEAD-13. **Routine content.** Morning and evening templates, data gathering (cache, open PRs, CI state, workers, budget), and an end-to-end test that a `routine` event yields one message of at most 12 lines with its widgets. Depends on: LEAD-6, LEAD-8, LEAD-10. Done when: that test passes against fixture memory. Owner: backend.
 
-LEAD-14. **End-to-end shadow week dry run.** Script that replays a day of recorded events through the full path at L0 and prints the owner's summary. Depends on: LEAD-1 to LEAD-13. Done when: it runs on the Mac mini against `GLDRoger/kin-memory` and makes commits only on `kin/shadow/<leadId>`. Owner: backend.
+LEAD-14. **End-to-end shadow week dry run.** Script that replays a day of recorded events through the full path at L0 and prints the owner's summary. Depends on: LEAD-1 to LEAD-13. Done when: it runs on the Kin host against `GLDRoger/kin-memory` and makes commits only on `kin/shadow/<leadId>`. Owner: backend.
 
 ## Design corrections
 
@@ -560,7 +560,7 @@ LEAD-14. **End-to-end shadow week dry run.** Script that replays a day of record
 2. **Prompt caching is not something Kin can configure.** Claude Code and Codex control their own requests. Kin can only keep the start of its message stable and measure `cachedInputTokens`.
 3. **"Daily budget" can't be measured against plan headroom yet.** T3 reads limits only from cliproxy (`UsageLimitSources`). Kin counts tokens from turn usage.
 4. **L0 "writes only to the owner's summary" leaves memory undefined.** This spec writes L0 memory to a shadow branch, so the lead keeps working memory while the default branch stays clean.
-5. **Leads and workers inherit the server user's credentials.** T3 has no network allowlist or credential stripping for threads (DESIGN 9.4 and 9.5 assume one). Phase 1 needs a dedicated macOS user for Kin on the Mac mini.
+5. **Leads and workers inherit the server user's credentials.** T3 has no network allowlist or credential stripping for threads (DESIGN 9.4 and 9.5 assume one). Phase 1 needs a dedicated `kin` user for Kin on the Kin host.
 6. **Scheduled tasks launch threads themselves.** A routine done as a plain `schedule_task` would start a lead session outside the queue. The triggers spec must route fires into `KinEventQueue.enqueue`.
 
 ## Open questions
