@@ -18,12 +18,22 @@ const encodeFire = Schema.encodeEffect(Schema.fromJsonString(KinTriggerFired));
 const decodeMillis = Schema.decodeEffect(NonNegativeInt);
 const decodeIds = Schema.decodeEffect(Schema.Array(KinTriggerFireId));
 const decodeOrg = Schema.decodeEffect(KinOrgId);
-type InboxError = PersistenceSqlError | PersistenceDecodeError;
+export class KinTriggerInboxConflict extends Schema.TaggedError<KinTriggerInboxConflict>()(
+  "KinTriggerInboxConflict",
+  {
+    orgId: KinOrgId,
+    reason: Schema.Literals(["not_github", "invalid_fire_id", "identity_conflict"]),
+  },
+) {}
+
+type InboxError = PersistenceSqlError | PersistenceDecodeError | KinTriggerInboxConflict;
+const isInboxConflict = Schema.is(KinTriggerInboxConflict);
 const PendingRequest = Schema.Struct({
   orgId: KinOrgId,
   limit: Schema.Int.check(Schema.isGreaterThan(0)),
 });
 const InboxRow = Schema.Struct({ payload: Schema.fromJsonString(KinTriggerFired) });
+const decodeInboxRow = Schema.decodeUnknownEffect(InboxRow);
 
 export class KinTriggerInbox extends Context.Service<
   KinTriggerInbox,
@@ -46,9 +56,11 @@ export class KinTriggerInbox extends Context.Service<
 
 function toInboxError(operation: string) {
   return (cause: unknown): InboxError =>
-    Schema.isSchemaError(cause)
-      ? PersistenceDecodeError.fromSchemaError(operation, cause)
-      : toPersistenceSqlError(operation)(cause);
+    isInboxConflict(cause)
+      ? cause
+      : Schema.isSchemaError(cause)
+        ? PersistenceDecodeError.fromSchemaError(operation, cause)
+        : toPersistenceSqlError(operation)(cause);
 }
 
 const make = Effect.gen(function* () {
@@ -68,12 +80,50 @@ const make = Effect.gen(function* () {
       function* (event, receivedAt) {
         const payload = yield* encodeFire(event);
         const at = yield* decodeMillis(receivedAt);
-        const inserted = yield* sql`
-        INSERT INTO kin_trigger_inbox (fire_id, org_id, payload_json, received_at)
-        VALUES (${event.fireId}, ${event.orgId}, ${payload}, ${at})
-        ON CONFLICT (org_id, fire_id) DO NOTHING RETURNING fire_id
-      `;
-        return inserted.length === 1;
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const rows = yield* sql<{ payload: string }>`
+            SELECT payload_json AS payload FROM kin_trigger_inbox
+            WHERE org_id = ${event.orgId} AND fire_id = ${event.fireId}
+          `;
+            if (rows[0]) {
+              const existing = yield* decodeInboxRow(rows[0]);
+              const previous = existing.payload.payload;
+              const incoming = event.payload;
+              if (
+                previous.kind !== incoming.kind ||
+                (previous.kind === "github" &&
+                  incoming.kind === "github" &&
+                  (previous.deliveryId !== incoming.deliveryId ||
+                    previous.sourceId !== incoming.sourceId ||
+                    previous.scheduledTaskId !== incoming.scheduledTaskId))
+              ) {
+                return yield* new KinTriggerInboxConflict({
+                  orgId: event.orgId,
+                  reason: "identity_conflict",
+                });
+              }
+            }
+            if (event.payload.kind !== "github") {
+              return yield* new KinTriggerInboxConflict({
+                orgId: event.orgId,
+                reason: "not_github",
+              });
+            }
+            if (event.fireId !== `gh:${event.orgId}:${event.payload.deliveryId}`) {
+              return yield* new KinTriggerInboxConflict({
+                orgId: event.orgId,
+                reason: "invalid_fire_id",
+              });
+            }
+            const inserted = yield* sql`
+            INSERT INTO kin_trigger_inbox (fire_id, org_id, payload_json, received_at)
+            VALUES (${event.fireId}, ${event.orgId}, ${payload}, ${at})
+            ON CONFLICT (org_id, fire_id) DO NOTHING RETURNING fire_id
+          `;
+            return inserted.length === 1;
+          }),
+        );
       },
       Effect.mapError(toInboxError("KinTriggerInbox.put")),
     ),

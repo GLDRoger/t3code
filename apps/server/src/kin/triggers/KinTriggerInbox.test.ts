@@ -18,11 +18,11 @@ const orgA = Schema.decodeSync(KinOrgId)("org-a");
 const orgB = Schema.decodeSync(KinOrgId)("org-b");
 const timestamp = "2026-11-07T00:00:00.000Z";
 
-const decodeFire = Schema.decodeSync(KinTriggerFired);
+const decodeFire = Schema.decodeUnknownSync(KinTriggerFired);
 
-function event(fireId: string, orgId = orgA) {
+function event(deliveryId: string, orgId = orgA) {
   return decodeFire({
-    fireId,
+    fireId: `gh:${orgId}:${deliveryId}`,
     orgId,
     dueAt: timestamp,
     firedAt: timestamp,
@@ -31,7 +31,7 @@ function event(fireId: string, orgId = orgA) {
       kind: "github",
       sourceId: "source",
       scheduledTaskId: "task",
-      deliveryId: "delivery",
+      deliveryId,
     },
   });
 }
@@ -67,7 +67,7 @@ describe("KinTriggerInbox", () => {
       assert.isTrue(plan.some((row) => row.detail.includes("idx_kin_trigger_inbox_pending")));
       assert.isFalse(plan.some((row) => row.detail.includes("TEMP B-TREE")));
       yield* sql`CREATE TRIGGER reject_consume BEFORE UPDATE OF consumed_at ON kin_trigger_inbox
-        WHEN NEW.fire_id = 'b' BEGIN SELECT RAISE(ABORT, 'unavailable'); END`;
+        WHEN NEW.fire_id = 'gh:org-a:b' BEGIN SELECT RAISE(ABORT, 'unavailable'); END`;
       assert.isTrue(
         Exit.isFailure(yield* Effect.exit(inbox.markConsumed(orgA, [a.fireId, b.fireId]))),
       );
@@ -100,6 +100,52 @@ describe("KinTriggerInbox", () => {
       const inbox = yield* KinTriggerInbox.KinTriggerInbox;
       const sql = yield* SqlClient.SqlClient;
       const a = event("a");
+      assert.isTrue(yield* inbox.put(a, 0));
+      for (const [candidate, reason] of [
+        [{ ...a, fireId: decodeFire({ ...a, fireId: "bogus" }).fireId }, "invalid_fire_id"],
+        [{ ...a, fireId: event("a", orgB).fireId }, "invalid_fire_id"],
+        [
+          {
+            ...a,
+            payload: {
+              kind: "time",
+              triggerId: "trigger",
+              subject: { type: "reminder", itemId: "item" },
+            },
+          },
+          "identity_conflict",
+        ],
+        [
+          {
+            ...a,
+            payload: {
+              ...a.payload,
+              kind: "github",
+              sourceId: "source",
+              scheduledTaskId: "task",
+              deliveryId: "different",
+            },
+          },
+          "identity_conflict",
+        ],
+        [
+          {
+            ...event("time"),
+            payload: {
+              kind: "time",
+              triggerId: "trigger",
+              subject: { type: "reminder", itemId: "item" },
+            },
+          },
+          "not_github",
+        ],
+      ]) {
+        const error = yield* Effect.flip(inbox.put(decodeFire(candidate), 0));
+        assert.strictEqual(error._tag, "KinTriggerInboxConflict");
+        assert.isTrue("reason" in error);
+        if ("reason" in error) assert.strictEqual(error.reason, reason);
+      }
+      yield* sql`DELETE FROM kin_trigger_inbox WHERE org_id = ${orgA}`;
       for (const invalid of [NaN, 1.5, Infinity, -1, Number.MAX_SAFE_INTEGER + 1]) {
         assert.isTrue(Exit.isFailure(yield* Effect.exit(inbox.put(a, invalid))));
         assert.isTrue(Exit.isFailure(yield* Effect.exit(inbox.pruneConsumed(invalid))));

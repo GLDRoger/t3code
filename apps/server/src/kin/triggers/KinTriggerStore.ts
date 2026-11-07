@@ -23,13 +23,18 @@ import {
   PersistenceSqlError,
   toPersistenceSqlError,
 } from "../../persistence/Errors.ts";
-import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 
 export class KinTriggerFireConflict extends Schema.TaggedError<KinTriggerFireConflict>()(
   "KinTriggerFireConflict",
   {
     orgId: KinOrgId,
-    reason: Schema.Literals(["not_time", "not_due", "inbox_not_inserted", "invalid_fire_id"]),
+    reason: Schema.Literals([
+      "not_time",
+      "not_due",
+      "inbox_not_inserted",
+      "invalid_fire_id",
+      "invalid_next_run",
+    ]),
   },
 ) {}
 
@@ -48,7 +53,7 @@ const Scope = Schema.Struct({ orgId: KinOrgId, id: KinTriggerId });
 export class KinTriggerStore extends Context.Service<
   KinTriggerStore,
   {
-    readonly put: (trigger: KinTrigger) => Effect.Effect<void, StoreError>;
+    readonly put: (trigger: Omit<KinTrigger, "lastFireId">) => Effect.Effect<void, StoreError>;
     readonly get: (
       orgId: KinOrgId,
       id: KinTriggerId,
@@ -76,6 +81,7 @@ const epoch = (value: string) =>
 const decodeRow = Schema.decodeUnknownEffect(TriggerRow);
 const decodeTrigger = Schema.decodeEffect(KinTrigger);
 const decodeFire = Schema.decodeEffect(KinTriggerFired);
+const encodeFire = Schema.encodeEffect(Schema.fromJsonString(KinTriggerFired));
 const decodeNextRunAt = Schema.decodeEffect(KinTrigger.fields.nextRunAt);
 const encodeSubject = Schema.encodeEffect(Schema.fromJsonString(KinTriggerSubject));
 const encodeSchedule = Schema.encodeEffect(Schema.fromJsonString(KinTriggerSchedule));
@@ -111,7 +117,6 @@ const decodeRows = Effect.fn("KinTriggerStore.decodeRows")(function* (
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  const inbox = yield* KinTriggerInbox.KinTriggerInbox;
   const columns = sql`
     trigger_id AS id, org_id AS "orgId", subject_json AS subject, schedule_json AS schedule,
     time_zone AS "timeZone", enabled, next_run_at AS "nextRunAt", last_fire_id AS "lastFireId",
@@ -134,7 +139,7 @@ const make = Effect.gen(function* () {
   return KinTriggerStore.of({
     put: Effect.fn("KinTriggerStore.put")(
       function* (trigger) {
-        const value = yield* decodeTrigger(trigger);
+        const value = yield* decodeTrigger({ ...trigger, lastFireId: null });
         const subject = yield* encodeSubject(value.subject);
         const schedule = yield* encodeSchedule(value.schedule);
         const nextRunAt = value.nextRunAt === null ? null : yield* epoch(value.nextRunAt);
@@ -146,13 +151,13 @@ const make = Effect.gen(function* () {
           next_run_at, last_fire_id, created_at, updated_at
         ) VALUES (
           ${value.id}, ${value.orgId}, ${subject}, ${schedule}, ${value.timeZone}, ${value.enabled ? 1 : 0},
-          ${nextRunAt}, ${value.lastFireId},
+          ${nextRunAt}, NULL,
           ${createdAt}, ${updatedAt}
         )
         ON CONFLICT (org_id, trigger_id) DO UPDATE SET
           subject_json = excluded.subject_json, schedule_json = excluded.schedule_json,
           time_zone = excluded.time_zone, enabled = excluded.enabled, next_run_at = excluded.next_run_at,
-          last_fire_id = excluded.last_fire_id, updated_at = excluded.updated_at
+          updated_at = excluded.updated_at
       `;
       },
       Effect.mapError(toPersistenceOrDecodeError("KinTriggerStore.put")),
@@ -181,22 +186,28 @@ const make = Effect.gen(function* () {
       function* (now, limit) {
         const at = yield* decodeMillis(now);
         const count = yield* decodeLimit(limit);
-        // Spans orgs for the scheduler tick; `fire` rechecks the org.
-        const rows = yield* sql`
-        SELECT ${columns} FROM kin_triggers
-        WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ${at}
-        ORDER BY next_run_at, trigger_id LIMIT ${count}
-      `.pipe(NodeSqliteClient.readOnly);
         const triggers: KinTrigger[] = [];
-        for (const row of rows) {
-          const decoded = yield* Effect.result(
-            decodeRow(row).pipe(Effect.flatMap((value) => decodeRows([value]))),
-          );
-          if (Result.isSuccess(decoded)) triggers.push(...decoded.success);
-          else
-            yield* Effect.logWarning("Skipping undecodable Kin trigger row", {
-              cause: decoded.failure,
-            });
+        let offset = 0;
+        while (triggers.length < count) {
+          // Spans orgs for the scheduler tick; `fire` rechecks the org.
+          const rows = yield* sql`
+            SELECT ${columns} FROM kin_triggers
+            WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ${at}
+            ORDER BY next_run_at, trigger_id, org_id LIMIT ${count} OFFSET ${offset}
+          `.pipe(NodeSqliteClient.readOnly);
+          for (const row of rows) {
+            const decoded = yield* Effect.result(
+              decodeRow(row).pipe(Effect.flatMap((value) => decodeRows([value]))),
+            );
+            if (Result.isSuccess(decoded)) triggers.push(...decoded.success);
+            else
+              yield* Effect.logWarning("Skipping undecodable Kin trigger row", {
+                cause: decoded.failure,
+              });
+            if (triggers.length === count) break;
+          }
+          if (rows.length < count) break;
+          offset += rows.length;
         }
         return triggers;
       },
@@ -215,6 +226,12 @@ const make = Effect.gen(function* () {
       }
       const firedAt = yield* epoch(value.firedAt);
       const nextAt = next === null ? null : yield* epoch(next);
+      if (nextAt !== null && nextAt <= dueAt) {
+        return yield* new KinTriggerFireConflict({
+          orgId: value.orgId,
+          reason: "invalid_next_run",
+        });
+      }
       return yield* sql.withTransaction(
         Effect.gen(function* () {
           // Pending inbox rows deduplicate even after the 30-day fire ledger expires.
@@ -230,7 +247,15 @@ const make = Effect.gen(function* () {
               ON CONFLICT (org_id, fire_id) DO NOTHING RETURNING fire_id
             `;
             duplicate = inserted.length === 0;
-            if (!duplicate && !(yield* inbox.put(value, firedAt))) {
+            const payload = yield* encodeFire(value);
+            const inboxRows = duplicate
+              ? []
+              : yield* sql`
+              INSERT INTO kin_trigger_inbox (fire_id, org_id, payload_json, received_at)
+              VALUES (${value.fireId}, ${value.orgId}, ${payload}, ${firedAt})
+              ON CONFLICT (org_id, fire_id) DO NOTHING RETURNING fire_id
+            `;
+            if (!duplicate && inboxRows.length !== 1) {
               return yield* new KinTriggerFireConflict({
                 orgId: value.orgId,
                 reason: "inbox_not_inserted",

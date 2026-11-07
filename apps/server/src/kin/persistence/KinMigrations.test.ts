@@ -98,6 +98,10 @@ describe("Kin migrations", () => {
             assert.strictEqual(columns.find((column) => column.name === name)?.type, "INTEGER");
           }
         }
+        assert.deepStrictEqual(
+          yield* sql`SELECT name FROM pragma_table_info('kin_webhook_sources') WHERE pk > 0 ORDER BY pk`,
+          [{ name: "org_id" }, { name: "source_id" }],
+        );
         for (const { name } of before) {
           const columns = yield* sql<{ name: string; notnull: number }>`
           SELECT name, "notnull" FROM pragma_table_info(${name})

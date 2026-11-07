@@ -50,7 +50,7 @@ export default Effect.gen(function* () {
   yield* sql`CREATE INDEX idx_kin_trigger_inbox_retention ON kin_trigger_inbox(consumed_at)`;
   yield* sql`
     CREATE TABLE kin_webhook_sources (
-      source_id TEXT NOT NULL PRIMARY KEY,
+      source_id TEXT NOT NULL,
       org_id TEXT NOT NULL REFERENCES kin_orgs(org_id),
       repo TEXT NOT NULL,
       scheduled_task_id TEXT NOT NULL UNIQUE,
@@ -58,6 +58,7 @@ export default Effect.gen(function* () {
       github_hook_id INTEGER,
       bot_login TEXT NOT NULL,
       status TEXT NOT NULL CHECK (status IN ('active', 'paused_in_t3', 'blocked_by_policy', 'missing')),
+      PRIMARY KEY (org_id, source_id),
       UNIQUE (org_id, repo)
     )
   `;
