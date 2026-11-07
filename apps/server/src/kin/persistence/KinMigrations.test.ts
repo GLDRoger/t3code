@@ -24,11 +24,17 @@ const tableNames = [
   "kin_org_state",
   "kin_orgs",
   "kin_people",
+  "kin_ping_ledger",
   "kin_read_state",
   "kin_session_bindings",
   "kin_shadow_entries",
+  "kin_trigger_fires",
+  "kin_trigger_inbox",
+  "kin_trigger_settings",
+  "kin_triggers",
   "kin_waiting",
   "kin_wakeups",
+  "kin_webhook_sources",
   "kin_widgets",
   "kin_workers",
 ];
@@ -60,7 +66,7 @@ const upstreamHistory = Effect.gen(function* () {
 
 describe("Kin migrations", () => {
   it.effect(
-    "creates K001 and K002 in their own track after upstream and reruns without changes",
+    "creates K001, K002 and K003 in their own track after upstream and reruns without changes",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -73,10 +79,28 @@ describe("Kin migrations", () => {
         assert.deepStrictEqual(yield* kinHistory, [
           { migration_id: 1, name: "ChatCore" },
           { migration_id: 2, name: "Lead" },
+          { migration_id: 3, name: "Triggers" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
           migrationManifest,
+        );
+        for (const [table, names] of [
+          ["kin_triggers", ["next_run_at", "created_at", "updated_at"]],
+          ["kin_trigger_fires", ["fired_at"]],
+          ["kin_trigger_inbox", ["received_at", "consumed_at"]],
+          ["kin_ping_ledger", ["pinged_at", "escalated_at"]],
+        ] as const) {
+          const columns = yield* sql<{ name: string; type: string }>`
+            SELECT name, type FROM pragma_table_info(${table})
+          `;
+          for (const name of names) {
+            assert.strictEqual(columns.find((column) => column.name === name)?.type, "INTEGER");
+          }
+        }
+        assert.deepStrictEqual(
+          yield* sql`SELECT name FROM pragma_table_info('kin_webhook_sources') WHERE pk > 0 ORDER BY pk`,
+          [{ name: "org_id" }, { name: "source_id" }],
         );
         for (const { name } of before) {
           const columns = yield* sql<{ name: string; notnull: number }>`
@@ -97,6 +121,7 @@ describe("Kin migrations", () => {
         assert.deepStrictEqual(yield* kinHistory, [
           { migration_id: 1, name: "ChatCore" },
           { migration_id: 2, name: "Lead" },
+          { migration_id: 3, name: "Triggers" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -116,6 +141,10 @@ describe("Kin migrations", () => {
           { name: "idx_kin_people_org_person" },
           { name: "idx_kin_shadow_entries_promotion" },
           { name: "idx_kin_shadow_entries_review" },
+          { name: "idx_kin_trigger_fires_retention" },
+          { name: "idx_kin_trigger_inbox_pending" },
+          { name: "idx_kin_trigger_inbox_retention" },
+          { name: "idx_kin_triggers_due" },
           { name: "idx_kin_waiting_open_widget_person" },
           { name: "idx_kin_waiting_person_resolved_at" },
           { name: "idx_kin_wakeups_running_org" },
@@ -151,6 +180,7 @@ describe("Kin migrations", () => {
       assert.deepStrictEqual(yield* runKinMigrations(), [
         [1, "ChatCore"],
         [2, "Lead"],
+        [3, "Triggers"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -171,6 +201,7 @@ describe("Kin migrations", () => {
       assert.deepStrictEqual(yield* kinHistory, [
         { migration_id: 1, name: "ChatCore" },
         { migration_id: 2, name: "Lead" },
+        { migration_id: 3, name: "Triggers" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);

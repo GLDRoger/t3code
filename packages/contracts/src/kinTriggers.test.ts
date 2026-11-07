@@ -135,6 +135,25 @@ const samples = {
 } satisfies Record<SchemaName, readonly [Schema.Codec<unknown>, ReadonlyArray<unknown>]>;
 
 const rejections = [
+  ...[
+    "1",
+    "2026-11-07",
+    "Nov 7 2026",
+    "2026-11-07 00:00",
+    "2026-11-07T00:00:00",
+    "2026-11-07T01:00:00.000+01:00",
+    "2026-02-30T00:00:00.000Z",
+  ].flatMap((invalid) => [
+    ...["nextRunAt", "createdAt", "updatedAt"].map((field) => ({
+      schema: Kin.KinTrigger,
+      value: { ...trigger, [field]: invalid },
+    })),
+    ...["dueAt", "firedAt"].map((field) => ({
+      schema: Kin.KinTriggerFired,
+      value: { ...fire, [field]: invalid },
+    })),
+    { schema: Kin.KinGithubEvent, value: { ...githubEvent, receivedAt: invalid } },
+  ]),
   ...["", "  \n "].map((value) => ({ schema: Kin.KinTriggerId, value })),
   ...[0, 59_999, 60_000.5].map((everyMs) => ({
     schema: Kin.KinTriggerSchedule,
