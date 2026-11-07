@@ -812,13 +812,12 @@ const make = Effect.gen(function* () {
               reason: "Memory head does not match wake-up",
             });
           const rules = snapshot.files.get("rules.md");
-          // Read-checkout rebuilds depend on the clock; committed bytes keep provider prefixes stable.
-          const index = snapshot.files.get("INDEX.md");
-          if (rules === undefined || index === undefined)
+          const index = snapshot.index ?? snapshot.files.get("INDEX.md") ?? "";
+          if (rules === undefined)
             return yield* new MemoryError({
               orgId,
               operation: "promptSnapshot",
-              reason: "Missing committed prompt memory",
+              reason: "Missing committed prompt rules",
             });
           return { rules, index };
         }),
