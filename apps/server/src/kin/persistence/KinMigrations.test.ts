@@ -262,6 +262,7 @@ describe("Kin migrations", () => {
           json: '{"_tag":"resume"}',
           dedupe_key: "resume:1",
           received_at: 1794009600000,
+          queued_at: 1794009600000,
           state: "claimed",
           wakeup_id: "wake",
           not_before: null,
