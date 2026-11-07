@@ -498,7 +498,7 @@ Run with `cd apps/server && vp test run src/kin` and `cd packages/contracts && v
 
 ## Tasks
 
-**CHAT-1. Chat contracts.** What: `kinChat.ts` with ids, `KinOrg`, `KinPerson`, `KinAgent`, `KinChat`, `KinChatMember`, `KinAuthor`, `KinMessage`, `KinWidget`, `KinTaskCardState`, `KinWaitingItem`, stream events, inputs, `KinChatError`, `KIN_CHAT_WS_METHODS`, `KinChatRpcs`, `KIN_CHAT_RPC_SCOPES`, `kinMessageLink`. Hooks in `index.ts` and `rpc.ts`. Files: `packages/contracts/src/kinChat.ts`, test. Depends on: none. Done when: `vp run typecheck` passes and `kinChat.test.ts` round-trips every schema. Owner: backend.
+**CHAT-1. Chat contracts.** What: `kinChat.ts` with ids, `KinOrg`, `KinPerson`, `KinAgent`, `KinChat`, `KinChatMember`, `KinAuthor`, `KinMessage`, `KinWidget`, `KinTaskCardState`, `KinWaitingItem`, stream events, inputs, `KinChatError`, `KIN_CHAT_WS_METHODS`, `KinChatRpcs`, `KIN_CHAT_RPC_SCOPES`, `kinMessageLink`. Hook in `index.ts`. Files: `packages/contracts/src/kinChat.ts`, test. Depends on: none. Done when: `vp run typecheck` passes and `kinChat.test.ts` round-trips every schema. Owner: backend.
 
 **CHAT-2. Kin migration track and K001.** What: `KinMigrations.ts`, `K001_ChatCore.ts`, `KinPersistence.layer`. Files: `apps/server/src/kin/persistence/*`. Depends on: none. Done when: the migration tests above pass on `layerMemory`. Owner: backend.
 
@@ -508,7 +508,7 @@ Run with `cd apps/server && vp test run src/kin` and `cd packages/contracts && v
 
 **CHAT-5. Chat service and hub.** What: `KinChatService` (createDirect, send, history, markRead, widget upsert and act, addWaiting and resolveWaiting, membership and role checks) and `KinChatHub`. Files: `KinChatService.ts`, `KinChatHub.ts`, `widgets/registry.ts`, tests. Depends on: CHAT-4. Done when: author, isolation, widget, read state and waiting tests pass. Owner: backend.
 
-**CHAT-6. WS RPCs and streams.** What: `makeKinChatHandlers(session)`, both stream handlers with resume, `KinChat.layer`; hooks in `ws.ts`, `RpcAuthorization.ts`, `server.ts`. Files: `apps/server/src/kin/chat/rpcHandlers.ts`, `layer.ts`. Depends on: CHAT-5. Done when: a `ws.test.ts`-style test over a real socket sends, subscribes, resumes with `afterSeq`, and gets `not_found` across orgs; `vp run typecheck` shows no `any` in the handler layer requirements (see Design corrections 6). Owner: backend.
+**CHAT-6. WS RPCs and streams.** What: `makeKinChatHandlers(session)`, both stream handlers with resume, `KinChat.layer`; hooks in `rpc.ts`, `ws.ts`, `RpcAuthorization.ts`, `server.ts`. Files: `apps/server/src/kin/chat/rpcHandlers.ts`, `layer.ts`. Depends on: CHAT-5. Done when: a `ws.test.ts`-style test over a real socket sends, subscribes, resumes with `afterSeq`, and gets `not_found` across orgs; `vp run typecheck` shows no `any` in the handler layer requirements (see Design corrections 6). Owner: backend.
 
 **CHAT-7. Agent MCP tools.** What: `KinChatToolkit` with `kin_chat_post`, `kin_chat_read`, `kin_widget_upsert`; `EnabledWhen` from the registry; hook in `McpHttpServer.ts`. Files: `apps/server/src/kin/mcp/*`. Depends on: CHAT-5. Done when: agent-post tests pass and `AgentContextBudget.test.ts` passes unchanged. Owner: backend.
 
