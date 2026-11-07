@@ -250,6 +250,17 @@ A member can bring their own agent, customised and hosted on their own machines,
 
 **Connecting:** the chat server and an agent hosted elsewhere talk over a signed, authenticated endpoint. Use an open protocol, A2A or MCP, rather than inventing one; choose after checking where each stands. The same mechanism lets a consultant bring their own lead into a client's group (section 10a).
 
+### 9.9 Next of kin
+
+Owner-only approval has a gap: when the owner is on a flight and production is down, nobody can roll back. **Next of kin** is the person Kin turns to when the owner can't be reached, the way a hospital calls your next of kin.
+
+- **The owner names them,** one or two people, with an owner-signed entry like any delegation (section 9.6). It's listed in settings as "Next of kin" and can be revoked in one tap. Nobody can name themselves, and a chat message can't name anyone.
+- **It only starts after a wait.** A privileged request has to go unanswered for a set time (2 hours by default), or the owner has to have marked themselves away. The owner is warned first: "No answer on the rollback. Asking Priya in 30 minutes." Any answer from the owner cancels the handover.
+- **The scope is small.** By default the next of kin can only undo things: revert a merge, roll back a deploy, pause routines and deferrals. They can't change permissions or `rules.md`, spend money, use secrets, or name another next of kin. The owner can widen it per repo, for example to merge PRs labelled `hotfix`.
+- **The next of kin approves on their own device,** with the same signed, single-use grant as the owner (section 9.2). On GitHub they have to be a code owner too, or the branch ruleset still blocks the merge.
+- **The owner sees everything** when they're back: one summary in their direct chat listing each action, who approved it, and an undo button where undo is possible.
+- **Kin never acts alone.** If nobody answers, the request waits. A next of kin is a person, never an agent.
+
 ## 10. Permission levels
 
 L0 shadow (writes only to the owner's summary) → L1 comment and ping → L2 start workers and open draft PRs → L3 merge low-risk changes after an owner grant or delegation (docs, dependency bumps; never auth, security or migrations). Set per lead and per chat. Section 9 applies at every level.
@@ -290,7 +301,7 @@ A partner, such as a consultant, sets up and runs Kin for a client that can't do
 
 1. **Direct chat:** chat contracts and service; mobile chat list and direct chat; task, approval and deferral cards; the lead and its memory; morning and evening routines; GitHub webhooks; deferrals on `once`; the action executor, signed grants, the GitHub App, and branch rulesets. The lead starts at L0 on `GLDRoger/t3code`, with memory in `GLDRoger/kin-memory`.
 2. **First group:** lead + QA; roles and provenance ceilings; floor manager; judge in shadow; decision cards and polls; generated widgets; notification actions. Raise the lead to L1, then L2.
-3. **Teams and router:** more teams; the router and its agenda; cross-team requests; live widgets, Live Activities, pinned dashboards; delegations.
+3. **Teams and router:** more teams; the router and its agenda; cross-team requests; live widgets, Live Activities, pinned dashboards; delegations and next of kin (section 9.9).
 4. **Front doors:** an MCP hub so ChatGPT, Grok and Claude.ai reach the same leads and widgets, with the same section 9 rules.
 5. **Organizations:** organization policy, roles and approvers, external members, agents from other owners (section 9.8), partners managing clients (section 10b), the space switcher, and the walls between organizations (`orgId` is already in place from phase 1).
 6. **Experiments:** one lead with skills vs. team agents vs. team agents plus the router (measure wrong routes, handoff losses, cross-team items settled without the owner, cost); self-improving rules; a chief of staff only if cross-team conflicts appear.
