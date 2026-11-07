@@ -157,33 +157,37 @@ All producers call one entry point: `KinEventQueue.enqueue(event)`. Nothing else
 
 The trigger inbox consumer inserts the event and marks the inbox row consumed in one transaction. Its `dedupeKey` is GitHub's `x-github-delivery` (`KinGithubEvent.deliveryId`) for `github` events, so a GitHub redelivery collapses even with a new T3 delivery id, and `KinTriggerFired.fireId` for every other kind.
 
-Table `kin_events` (**new**): `org_id, event_id, agent_id, tag, priority, json, dedupe_key, received_at, state ('queued' | 'claimed' | 'done' | 'expired'), wakeup_id, not_before, attempts`. `attempts` starts at zero and counts wake-up attempts for the three-try failure limit. Unique index on `(org_id, dedupe_key)`.
+Table `kin_events` (**new**): `org_id, event_id, agent_id, tag, priority, json, dedupe_key, received_at, queued_at, state ('queued' | 'claimed' | 'done' | 'expired' | 'failed'), wakeup_id, not_before, attempts`. `attempts` starts at zero and counts failed provider runs for the three-try failure limit; claims, pause releases and budget deferrals do not consume attempts. `queued_at` is the server receipt time in integer milliseconds; `received_at` retains the producer timestamp. Unique index on `(org_id, dedupe_key)`.
 
 Priority (gap 2), set by code from the tag and provenance, never by a model:
 
 | P   | Events                                                                                     |
 | --- | ------------------------------------------------------------------------------------------ |
-| P0  | `chat.message` or `widget.action` from the owner; `resume`                                 |
+| P0  | `chat.message` or `widget.action` from the owner of a non-retired lead; `resume`           |
 | P1  | `deferral.due`; `action.resolved`; `worker.report`                                         |
-| P2  | `chat.message` from members; `github`; `routine`                                           |
+| P2  | Non-owner `chat.message` and `widget.action` (including agents); `github`; `routine`       |
 | P3  | `watchdog` (chasing, stale reviews)                                                        |
 | P4  | dreaming (the triggers spec asks `KinBudget.admit(orgId, "P4")`; it is not a lead wake-up) |
 
+P0 owner priority requires the human author to be the lead’s `kin_agents.owner_person_id` in the same organization, with an active `kin_chat_members` row matching organization, chat, member and person and role `owner`. The lead must also be an active agent member of that chat. Guests, members, people who left, and owners of other chats receive P2; `KinAuthor` carries identities, not a role. Agent messages do not inherit their owner’s priority. For GitHub events, `enqueue` sets a null `dedupeKey` to `deliveryId` and rejects a non-null key that differs. Other producers retain their supplied key, including the inbox consumer’s `KinTriggerFired.fireId`.
+
 Coalescing:
 
-- An organization's runner sleeps until it has queued events, then waits for a quiet window: 20 s with no new event, capped at 120 s after the first event. For a P0 event the window is 2 s.
+- An organization's runner sleeps until it has queued events, then waits for a quiet window based on server receipt time (`queued_at`): 20 s with no new event, capped at 120 s after the first event. The first eligible P0 event cuts the deadline to at most 2 s after its receipt; later events of any priority cannot extend that deadline. Budget-deferred events neither reset nor shorten the window until eligible, and becoming eligible is not a new receipt.
 - It then claims every queued event for that lead whose `not_before` has passed, ordered by `priority, received_at`, in one transaction, and starts one wake-up for the batch. The claim index is `(org_id, agent_id, state, priority, received_at, not_before)`. Twenty webhook events from one push become one wake-up.
-- A batch holds at most 50 events. Same-repo `github` events beyond that fold into one line ("31 more events on GLDRoger/t3code, see payloads").
+- A batch holds at most 50 events. Overflow stays queued for the next batch; no delivery references are dropped or marked handled. Same-repo summaries belong to the prompt builder, not the durable queue.
 - Events that arrive while a wake-up runs wait for the next one. The runner never starts a second session for the same organization. This is the one-writer rule: memory is written only inside a wake-up, and wake-ups are serial.
-- Implementation: one `Effect.Semaphore(1)` per `orgId` held for the whole wake-up, plus the `claimed` state in SQLite so a restart sees what was in flight.
+- Implementation: an organization permit is held for the whole wake-up, but never while waiting for that lead’s quiet window. `claim({ orgId, agentId, wakeupId, model })` waits interruptibly, takes the permit, rechecks readiness in the transaction and atomically claims up to 50 events, recording their ordered ids without incrementing `attempts`. A stale claim rolls back and waits again; an empty wake-up is never committed. The caller keeps its Effect scope open through the provider run and terminal database write; scope closure releases only the permit. LEAD-5 must call `finish(timed_out | failed)` in its own `onExit`. Idle semaphore entries are evicted. Cross-process exclusion rests on SQLite’s running-wake-up unique index; a loser receives `KinEventQueueBusy`.
 
-Restart: on startup, events in `claimed` whose wake-up never finished go back to `queued` (the runner checks the lead thread's last run first; see failure cases); an index on `kin_events.wakeup_id` supports requeue by wake-up.
+The runner owns stop/budget admission and provider execution; all event transitions go through the queue. `release({ orgId, wakeupId, eventIds?, notBefore?, countAttempt })` returns the selected events (all by default) to the queue. Pause and budget deferrals use `countAttempt: false`, which requires `notBefore`; LEAD-11 pause handling must supply `notBefore = now + pause poll interval`, so a paused organization waits instead of repeatedly claiming and releasing. Once all claimed events are released, the wake-up closes as `released` (or `failed` for a counted failure). A partial release leaves it `running` for the admitted events. `finish({ orgId, wakeupId, status })` closes the wake-up as `completed`, `failed` or `timed_out`. Completion marks the remaining events `done`; failure increments attempts and requeues them for five minutes, marking them `failed` at three attempts. `release` with `countAttempt: true` applies the same failure limit and defaults to the same five-minute delay. Identical enqueue retries return `{ event, duplicate: true }` with the stored event; conflicting retries fail with `KinEventQueueConflict`.
+
+Restart: the runner first reconciles each unfinished wake-up with its provider run (see failure cases). It must not requeue events belonging to a still-active run. For an abandoned run only, `requeueUnfinished(orgId, wakeupId)` atomically marks the running wake-up interrupted and returns its claimed events to `queued`, clearing their `wakeup_id` while preserving `not_before` and `attempts`. It is idempotent and organization-scoped; `idx_kin_events_wakeup` supports the update. Completed runs are finished by the runner instead. Layer construction never blindly requeues active work.
 
 ### A wake-up (one fresh lead session)
 
 Kin foreign keys include `org_id` so config, wake-up, worker, shadow-entry and pause relationships cannot cross organizations. K002 adds composite unique indexes on the referenced K001 identities without rewriting those records. The database enforces at most one `running` wake-up per organization with a partial unique index. Thread and run ids are nullable until launch returns; they never reference upstream tables.
 
-Table `kin_wakeups` (**new**): `org_id, wakeup_id, agent_id, thread_id, run_id, model, started_at, ended_at, status ('running' | 'completed' | 'failed' | 'interrupted' | 'timed_out'), event_ids, tokens_json, tools_json, memory_commit`.
+Table `kin_wakeups` (**new**): `org_id, wakeup_id, agent_id, thread_id, run_id, model, started_at, ended_at, status ('running' | 'completed' | 'failed' | 'interrupted' | 'timed_out' | 'released'), event_ids, tokens_json, tools_json, memory_commit`.
 
 Setup once per organization (in `Memory.ensureCheckouts`):
 
