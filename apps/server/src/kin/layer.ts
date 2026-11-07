@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as Option from "effect/Option";
+import * as KinLead from "./lead/layer.ts";
 import * as KinChat from "./chat/layer.ts";
 import { KinIdentity } from "./chat/KinIdentity.ts";
 import { KinChatService } from "./chat/KinChatService.ts";
@@ -20,8 +21,7 @@ export class KinServer extends Context.Service<
   }
 >()("t3/kin/layer/KinServer") {}
 
-// LEAD-5 supplies its runner here, using this root's identity rather than building another.
-const lead: Layer.Layer<never, never, Services | KinChatHub> = Layer.empty;
+const lead = KinLead.layerServer;
 const enabled = Layer.effect(
   KinServer,
   Effect.gen(function* () {

@@ -185,10 +185,7 @@ export function wrapTaskDispatch<E, R, E2, R2>(
     Layer.catchCause((cause) =>
       Layer.mergeAll(
         Layer.effectDiscard(
-          Effect.logError(
-            "Kin trigger startup failed; webhook dispatch disabled",
-            Cause.pretty(cause),
-          ),
+          KinEnabled.KinEnabled.pipe(Effect.flatMap((config) => config.reportFailure(cause))),
         ),
         Layer.effect(
           ThreadLaunchService.ThreadLaunchService,
@@ -207,7 +204,7 @@ export function wrapTaskDispatch<E, R, E2, R2>(
                   operation: "dispatch-message",
                   commandId: input.commandId,
                   projectId: input.projectId,
-                  cause,
+                  cause: new Error("Kin is unavailable; webhook dispatch refused.", { cause }),
                 });
               }),
             });

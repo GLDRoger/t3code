@@ -19,10 +19,8 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
-import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
-import { seedWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
-import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { startWakeupRun, authorityLayer } from "../chat/WakeupAuthority.testkit.ts";
 import * as Memory from "../memory/Memory.ts";
 import { KinLeadPrompt, type KinLeadPromptInput } from "./LeadPrompt.ts";
 
@@ -56,7 +54,7 @@ const event = (messageId: string) =>
     dedupeKey: null,
     provenance: { _tag: "system" },
   });
-const database = KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory));
+const database = authorityLayer;
 const repository = Chat.layer.pipe(Layer.provide(database));
 const memory = Layer.succeed(
   Memory.Memory,
@@ -190,7 +188,7 @@ it.effect.each([
       yield* sql`INSERT INTO kin_leads
         (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
         VALUES (${agentId}, ${orgId}, 'Fixture lead', 0, '{}', '[]', ${chatId})`;
-      yield* seedWakeupRun(threadId);
+      yield* startWakeupRun(threadId, input.wakeupId);
       yield* sql`INSERT INTO kin_wakeups
         (wakeup_id, org_id, agent_id, thread_id, model, started_at, status, event_ids, run_id)
         VALUES (${input.wakeupId}, ${orgId}, ${agentId}, ${threadId}, 'test', 0, 'running', '[]', 'authority-run')`;

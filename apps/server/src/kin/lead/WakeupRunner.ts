@@ -254,7 +254,10 @@ const make = Effect.gen(function* () {
       if (record.threadId !== null) {
         const unfinished = yield* sql`SELECT 1 FROM orchestration_v2_projection_provider_turns
           WHERE thread_id = ${record.threadId} AND completed_at IS NULL LIMIT 1`;
-        if (unfinished.length > 0) {
+        const busy = yield* sql`SELECT 1 FROM orchestration_v2_projection_runs
+          WHERE thread_id = ${record.threadId}
+            AND status IN ('queued', 'preparing', 'starting', 'running', 'waiting') LIMIT 1`;
+        if (unfinished.length > 0 || busy.length > 0) {
           yield* (yield* queue.changes(orgId)).pipe(
             Effect.timeoutOrElse({ duration: 60_000, orElse: () => Effect.void }),
           );
@@ -355,7 +358,6 @@ const make = Effect.gen(function* () {
             yield* registry.register(threadId, { orgId, agentId, wakeupId, level: current.level });
             const commandId = CommandId.make(`kin-wakeup:${wakeupId}`);
             const messageId = MessageId.make(`kin-wakeup-msg:${wakeupId}`);
-            // Launch/send expose no preassigned run id or pre-execution callback; early tools fail closed until this run is recorded.
             const sent =
               current.threadId === null
                 ? (yield* launch.launch({

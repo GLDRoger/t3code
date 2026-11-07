@@ -65,11 +65,7 @@ it.effect("preserves the upstream database columns Kin reads", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     for (const [table, columns] of [
-      ["orchestration_v2_projection_runs", ["run_id", "thread_id", "provider_thread_id"]],
-      [
-        "orchestration_v2_projection_provider_threads",
-        ["provider_thread_id", "provider_session_id"],
-      ],
+      ["orchestration_v2_projection_runs", ["run_id", "thread_id", "status", "payload_json"]],
       ["orchestration_v2_projection_provider_turns", ["thread_id", "completed_at"]],
     ] as const) {
       const rows = yield* sql`PRAGMA table_info(${sql.literal(table)})`;

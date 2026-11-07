@@ -5,7 +5,6 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
-import * as KinIdentity from "../chat/KinIdentity.ts";
 import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryConfig from "../memory/MemoryConfig.ts";
@@ -45,12 +44,9 @@ export const layer = Layer.effectDiscard(
 ).pipe(
   Layer.provide(WakeupRunner.layer),
   Layer.provide(
-    Layer.mergeAll(
-      KinLeadRegistry.layer,
-      KinEventQueue.layer,
-      KinLeadPrompt.layer,
-      KinIdentity.KinIdentity.layer.pipe(Layer.provide(KinIdentity.KinIdentityConfig.layer)),
-    ).pipe(Layer.provideMerge(Layer.mergeAll(Memory.layer, KinChatRepository.layer))),
+    Layer.mergeAll(KinLeadRegistry.layer, KinEventQueue.layer, KinLeadPrompt.layer).pipe(
+      Layer.provideMerge(Layer.mergeAll(Memory.layer, KinChatRepository.layer)),
+    ),
   ),
   Layer.provide(KinPersistence.layer),
 );

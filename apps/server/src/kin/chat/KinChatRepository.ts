@@ -421,12 +421,21 @@ const make = Effect.gen(function* () {
       },
     ) {
       if (input.caller.subagent === true || input.caller.threadId !== input.threadId) return false;
-      const rows = yield* sql`SELECT 1 FROM kin_wakeups w
-        JOIN orchestration_v2_projection_runs r ON r.run_id = w.run_id AND r.thread_id = w.thread_id
+      const rows = yield* sql`WITH RECURSIVE wakeup_runs(run_id, thread_id) AS (
+        SELECT r.run_id, r.thread_id FROM kin_wakeups w
+        JOIN orchestration_v2_projection_runs r ON r.thread_id = w.thread_id
+          AND json_extract(r.payload_json, '$.userMessageId') = 'kin-wakeup-msg:' || w.wakeup_id
         WHERE w.org_id = ${input.orgId} AND w.agent_id = ${input.agentId}
-        AND w.thread_id = ${input.threadId} AND w.status = 'running' AND w.run_id IS NOT NULL
-        AND r.ordinal = (SELECT MAX(latest.ordinal) FROM orchestration_v2_projection_runs latest WHERE latest.thread_id = w.thread_id)
-        AND r.status NOT IN ('completed', 'failed', 'cancelled', 'interrupted', 'rolled_back')`;
+          AND w.thread_id = ${input.threadId} AND w.status = 'running'
+        UNION
+        SELECT r.run_id, r.thread_id FROM orchestration_v2_projection_runs r
+        JOIN wakeup_runs parent ON r.thread_id = parent.thread_id
+          AND (json_extract(r.payload_json, '$.restartContinuationOfRunId') = parent.run_id
+            OR json_extract(r.payload_json, '$.usageLimitContinuationOfRunId') = parent.run_id)
+      )
+      SELECT 1 FROM wakeup_runs w JOIN orchestration_v2_projection_runs r
+        ON r.run_id = w.run_id AND r.thread_id = w.thread_id
+      WHERE r.status IN ('preparing', 'starting', 'running', 'waiting') LIMIT 1`;
       return rows.length > 0;
     },
     Effect.mapError(toRepositoryError("KinChatRepository.hasRunningWakeup")),

@@ -1,4 +1,6 @@
-import { seedWakeupRun } from "./WakeupAuthority.testkit.ts";
+import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
+import { CommandId } from "@t3tools/contracts";
+import { startWakeupRun, authorityLayer } from "./WakeupAuthority.testkit.ts";
 import { assert, describe, it } from "@effect/vitest";
 import {
   AuthSessionId,
@@ -26,8 +28,6 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
-import * as Sqlite from "../../persistence/Sqlite.ts";
-import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Hub from "./KinChatHub.ts";
 import * as Repository from "./KinChatRepository.ts";
 import * as Identity from "./KinIdentity.ts";
@@ -40,7 +40,7 @@ const decodeKinChatId = Schema.decodeSync(KinChatId);
 const decodeKinMemberId = Schema.decodeSync(KinMemberId);
 const decodeThreadId = Schema.decodeSync(ThreadId);
 const decodeSend = Schema.decodeUnknownEffect(KinMessagesSendInput);
-const database = Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory);
+const database = authorityLayer;
 const repositories = Layer.provideMerge(Repository.layer, database);
 const dependencies = Layer.provideMerge(Hub.layer, repositories);
 const layer = Layer.provideMerge(Service.layer, dependencies);
@@ -107,7 +107,7 @@ const seed = Effect.gen(function* () {
     VALUES (${agentId}, ${person.orgId}, 'Lead', 0, '{}', '[]', ${chat.chatId})`;
   yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status, event_ids)
     VALUES ('service-wakeup', ${person.orgId}, ${agentId}, ${threadId}, 'test', 0, 'running', '[]')`;
-  yield* seedWakeupRun(threadId);
+  yield* startWakeupRun(threadId, "service-wakeup");
   yield* sql`UPDATE kin_wakeups SET run_id = 'authority-run' WHERE wakeup_id = 'service-wakeup'`;
   const agent = yield* identity.resolveAgent(caller);
   return { repo, service, identity, person, agent, chat };
@@ -220,7 +220,14 @@ describe("KinChatService", () => {
           state,
         });
         const sql = yield* SqlClient.SqlClient;
-        yield* sql`UPDATE orchestration_v2_projection_runs SET status = 'completed' WHERE run_id = 'authority-run'`;
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const run = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
+        yield* orchestrator.dispatch({
+          type: "run.interrupt",
+          commandId: CommandId.make("end-service-wakeup"),
+          threadId,
+          runId: run.id,
+        });
         assert.include(
           yield* service
             .upsertWidget(agent, {

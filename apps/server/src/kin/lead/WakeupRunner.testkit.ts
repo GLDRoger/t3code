@@ -1,4 +1,10 @@
-import * as McpSessionRegistryTestkit from "../../mcp/McpSessionRegistry.testkit.ts";
+import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import { HttpServer } from "effect/http";
+import * as NetAddress from "effect/net/NetAddress";
+import { EnvironmentId } from "@t3tools/contracts";
+import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import {
   KinAgentId,
   KinEvent,
@@ -259,7 +265,20 @@ export function harness(
     management,
     projectLayer,
     orchestration,
-    McpSessionRegistryTestkit.layer,
+    McpSessionRegistry.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          NodeCrypto.layer,
+          Layer.mock(HttpServer.HttpServer)({
+            address: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 43123),
+          }),
+          Layer.mock(ServerEnvironment.ServerEnvironment)({
+            getEnvironmentId: Effect.succeed(EnvironmentId.make("test")),
+          }),
+        ),
+      ),
+    ),
   ).pipe(Layer.provideMerge(database));
   return WakeupRunner.layer.pipe(Layer.provideMerge(services));
 }

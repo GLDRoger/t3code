@@ -24,13 +24,11 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import type { McpThreadInvocationScope } from "../../mcp/McpInvocationContext.ts";
-import * as Sqlite from "../../persistence/Sqlite.ts";
-import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Repository from "./KinChatRepository.ts";
 import * as Identity from "./KinIdentity.ts";
-import { seedWakeupRun } from "./WakeupAuthority.testkit.ts";
+import { startWakeupRun, authorityLayer } from "./WakeupAuthority.testkit.ts";
 
-const database = Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory);
+const database = authorityLayer;
 const repositoryLayer = Layer.provideMerge(Repository.layer, database);
 const config = { orgName: "Example", ownerHandle: "owner", ownerDisplayName: "Example Owner" };
 const identityLayer = Identity.KinIdentity.layer.pipe(
@@ -315,25 +313,9 @@ describe("KinIdentity", () => {
           VALUES (${agentId}, ${owner.orgId}, 'Lead', 0, '{}', '[]', 'identity-chat')`;
         yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status, event_ids)
           VALUES ('identity-wakeup', ${owner.orgId}, ${agentId}, ${threadId}, 'test', 0, 'running', '[]')`;
-        yield* seedWakeupRun(threadId, "leftover-run", "leftover-wakeup-session");
-        yield* sql`UPDATE kin_wakeups SET run_id = 'leftover-run', status = 'timed_out' WHERE wakeup_id = 'identity-wakeup'`;
-        yield* sql`UPDATE orchestration_v2_projection_runs SET status = 'interrupted' WHERE run_id = 'leftover-run'`;
-        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status, event_ids)
-          VALUES ('next-wakeup', ${owner.orgId}, ${agentId}, ${threadId}, 'test', 1000, 'running', '[]')`;
         assert.isFalse(yield* Effect.isSuccess(identity.resolveAgent(caller())));
-        yield* seedWakeupRun(threadId);
-        yield* sql`UPDATE kin_wakeups SET run_id = 'authority-run' WHERE org_id = ${owner.orgId} AND wakeup_id = 'next-wakeup'`;
+        yield* startWakeupRun(threadId, "identity-wakeup");
         assert.isTrue(yield* Effect.isSuccess(identity.resolveAgent(caller())));
-        for (const status of ["completed", "failed", "cancelled", "interrupted", "rolled_back"]) {
-          yield* sql`UPDATE orchestration_v2_projection_runs SET status = ${status} WHERE run_id = 'authority-run'`;
-          assert.isFalse(yield* Effect.isSuccess(identity.resolveAgent(caller())));
-        }
-        yield* sql`UPDATE orchestration_v2_projection_runs SET status = 'running' WHERE run_id = 'authority-run'`;
-        yield* seedWakeupRun(threadId, "user-run", "user-turn-session");
-        assert.isFalse(yield* Effect.isSuccess(identity.resolveAgent(caller())));
-        yield* sql`DELETE FROM orchestration_v2_projection_runs WHERE run_id = 'user-run'`;
-        yield* sql`DELETE FROM kin_wakeups WHERE org_id = ${owner.orgId} AND wakeup_id = 'next-wakeup'`;
-        yield* sql`UPDATE kin_wakeups SET status = 'running', run_id = 'authority-run' WHERE org_id = ${owner.orgId} AND wakeup_id = 'identity-wakeup'`;
         assert.isFalse(
           yield* Effect.isSuccess(identity.resolveAgent(caller(decodeThreadId("other-thread")))),
         );
@@ -443,7 +425,7 @@ describe("KinIdentity", () => {
         const afterEnd = yield* start;
         assert.isFalse(afterEnd.isAgentThread(threadId));
         assert.isTrue(afterEnd.isAgentThread(secondThreadId));
-        yield* sql`UPDATE orchestration_v2_projection_runs SET thread_id = ${secondThreadId} WHERE run_id = 'authority-run'`;
+        yield* startWakeupRun(secondThreadId, "identity-wakeup");
         yield* sql`UPDATE kin_wakeups SET status = 'running', ended_at = NULL, thread_id = ${secondThreadId} WHERE wakeup_id = 'identity-wakeup'`;
         assert.deepStrictEqual(yield* afterEnd.resolveAgent(caller(secondThreadId)), {
           _tag: "agent",

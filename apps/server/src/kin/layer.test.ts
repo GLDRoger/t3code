@@ -1,3 +1,4 @@
+import { dormantLeadDependencies } from "./lead/layer.testkit.ts";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as KinTriggerSink from "./triggers/KinTriggerSink.ts";
@@ -66,6 +67,7 @@ it.effect.each(["identity", "defect", "unconfigured"] as const)(
       const kin = yield* Kin.KinServer.pipe(
         Effect.provide(
           Kin.layer.pipe(
+            Layer.provide(dormantLeadDependencies),
             Layer.provide(
               ConfigProvider.layer(
                 ConfigProvider.fromUnknown({ KIN_ENABLED: mode !== "unconfigured" }),
@@ -155,7 +157,7 @@ it.effect.each(["disabled", "invalid", "failed"] as const)(
         },
       });
       const runtime = Layer.mergeAll(
-        Kin.layer,
+        Kin.layer.pipe(Layer.provide(dormantLeadDependencies)),
         KinTriggerSink.wrapTaskDispatch(
           Layer.mock(ThreadLaunch.ThreadLaunchService)({ launch }),
           Layer.mock(ThreadManagement.ThreadManagementService)({ sendToThread }),

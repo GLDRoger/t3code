@@ -671,7 +671,13 @@ it.effect("builds the runtime after a Kin migration failure and refuses only web
         .pipe(Effect.flip);
       assert.strictEqual(bound._tag, "OrchestratorCommandRejectedError");
       assert.strictEqual(launches.length, 2);
-    }).pipe(Effect.provide(KinTriggerSink.wrapTaskDispatch(inner, managementLayer)));
+    }).pipe(
+      Effect.provide(
+        KinTriggerSink.wrapTaskDispatch(inner, managementLayer).pipe(
+          Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+        ),
+      ),
+    );
   }).pipe(Effect.provide(Sqlite.layerMemory)),
 );
 

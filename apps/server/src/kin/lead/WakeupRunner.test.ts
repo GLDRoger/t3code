@@ -54,24 +54,17 @@ const decodeUsage = Schema.decodeEffect(
     ),
   ),
 );
-const resolveAgent = Effect.fn("test.resolveAgent")(function* (
-  threadId: ThreadId,
-  providerSessionId = "mcp-credential-session",
-) {
+const resolveAgent = Effect.fn("test.resolveAgent")(function* (threadId: ThreadId) {
   const identity = yield* KinIdentity.KinIdentity;
-  return yield* identity.resolveAgent({
-    environmentId: EnvironmentId.make("test"),
-    capabilities: new Set(),
-    issuedAt: 0,
-    requestNamespace: "test",
-    client: undefined,
-    thread: {
-      threadId,
-      providerSessionId,
-      providerInstanceId: ProviderInstanceId.make("codex"),
-      subagent: false,
-    },
+  const sessions = yield* McpSessionRegistry.McpSessionRegistry;
+  const issued = yield* sessions.issue({
+    threadId,
+    providerInstanceId: ProviderInstanceId.make("codex"),
   });
+  const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
+  const scope = yield* sessions.resolve(token);
+  assert.isDefined(scope);
+  return yield* identity.resolveAgent(scope!);
 });
 const run = Effect.fn("test.run")(function* () {
   const runner = yield* WakeupRunner.WakeupRunner;
@@ -218,11 +211,9 @@ describe("WakeupRunner", () => {
                 launch.launch(input).pipe(
                   Effect.tap((result) =>
                     Effect.gen(function* () {
-                      assert.include(
-                        yield* resolveAgent(result.projection.thread.id).pipe(Effect.flip),
-                        {
-                          reason: "not_allowed",
-                        },
+                      assert.strictEqual(
+                        (yield* resolveAgent(result.projection.thread.id)).agentId,
+                        agentId,
                       );
                     }),
                   ),
@@ -244,7 +235,9 @@ describe("WakeupRunner", () => {
           const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
           assert.isDefined(yield* sessions.resolve(token));
           assert.strictEqual(
-            (yield* resolveAgent(threadId, issued.config.providerSessionId)).agentId,
+            (yield* (yield* KinIdentity.KinIdentity).resolveAgent(
+              (yield* sessions.resolve(token))!,
+            )).agentId,
             agentId,
           );
           yield* TestClock.adjust("15 minutes");
@@ -624,16 +617,14 @@ describe("WakeupRunner", () => {
     return Effect.gen(function* () {
       yield* seed;
       const failing = KinLead.layer.pipe(
+        Layer.provide(Layer.mock(KinIdentity.KinIdentity)({ isAgentThread: () => false })),
         Layer.provide(
           Layer.mergeAll(
             Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
             Layer.mock(ThreadManagement.ThreadManagementService)({}),
             Layer.mock(ProjectService.ProjectService)({}),
             Layer.succeed(KinLeadPrompt, { build: () => Effect.succeed("unused") }),
-            Layer.succeed(MemoryConfig.MemoryConfig, {
-              baseDirectory: "/private/tmp",
-              repositories: [],
-            }),
+            Layer.effect(MemoryConfig.MemoryConfig, Effect.die("invalid memory config")),
             Layer.mock(VcsProcess.VcsProcess)({}),
             NodeServices.layer,
           ),
