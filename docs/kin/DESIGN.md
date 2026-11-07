@@ -55,7 +55,7 @@ Non-goals:
 1. **Items:** one small Markdown file per objective, commitment, deferral, decision, person or claim. YAML front matter records `status`, `due`, `recorded_at`, `valid_from`, `invalid_at`, `superseded_by`, `review_by`, `source`, `said_by`, `trust` and `links`. When a fact stops being true it gets `invalid_at` and is never deleted, which gives us Graphiti-style "true from when to when" without a graph database.
 2. **`INDEX.md`:** a generated summary of at most 200 lines, loaded at every wake-up, the same pattern as Claude Code's `MEMORY.md`. The lead opens individual items when it needs them.
 3. **Journal:** `journal/YYYY/MM-DD.md`, what the lead saw and did. Nightly dreaming (below) folds it into the items.
-4. **Index:** keyword, vector and link search over the items, plus queries on their front matter ("deferrals due this week", "commitments past their date"). The schedulers in section 6 read from it. It can be rebuilt from git at any time. GBrain first; see below.
+4. **Search:** the agents' own file tools, plus a cache of front matter in the Kin server for structured questions ("deferrals due this week", "commitments past their date"). The schedulers in section 6 read from the cache. It can be rebuilt from git at any time.
 
 **Writing:**
 
@@ -63,12 +63,9 @@ Non-goals:
 - Every item records who said it and how far it can be trusted. A member's statement is stored as `trust: member` or as a claim, never as a rule. Only the owner changes `rules.md`.
 - Tasks and due dates stay in GitHub Issues and Projects. Every status claim links to a PR, issue, commit or CI run.
 
-**The index: try GBrain first.** [GBrain](https://github.com/garrytan/gbrain) (MIT) uses the same architecture: a Markdown repo as the source of truth and a rebuildable index. Its index combines keyword search, vector search, reranking and a link graph, and it serves Claude Code and Codex over MCP. Use it as the index behind the `Memory` interface, one instance per organization, instead of building our own. The terms:
+**No separate index service.** Search is the agents' own file tools (`rg`, glob, read) over the memory repo. Claude Code and Codex already do this well, and each organization holds hundreds to a few thousand small files, which `rg` searches in milliseconds. Structured questions ("deferrals due this week") come from a small in-process cache of front matter in the Kin server, rebuilt from the files when they change. Separating organizations needs only separate repos.
 
-- Markdown stays canonical: no pages that exist only in its database.
-- Keyword-only mode, or local embeddings, for organizations whose policy keeps text off cloud providers.
-- Kin does its own dreaming (below), because dream output must be a reviewable diff.
-- If GBrain churns too much (it's v0.x, with frequent breaking changes and hundreds of open issues), fall back to SQLite with full-text and vector search. Decide with the weekly memory eval.
+We considered GBrain (MIT, the same Markdown-first design, with vector search and a link graph) and turned it down. Each organization would need its own instance, its always-on setup wants a server with 8 GB+ of RAM, its embeddings send text to a provider, and it's v0.x with frequent breaking changes. **If the weekly memory eval shows misses that keyword search can't fix** (the same thing asked in different words), add SQLite with vector search inside the Kin server: one file per organization, no extra process.
 
 **Staying fresh.** Plain files go stale. These rules stop that:
 
@@ -92,9 +89,9 @@ Non-goals:
    - `rules.md` is never changed by a dream.
 6. **Once a week, do a full rebuild** from all items, to catch slow drift.
 
-A cheap model does extraction and merging; a stronger one handles contradictions. A dream that fails leaves memory untouched and posts what went wrong. Anthropic's Dreaming for Managed Agents (research preview) does similar consolidation. Kin's version also keeps the result as a git diff, records who said what, and asks a human before changing anything that matters.
+A cheap model does extraction and merging; a stronger one handles contradictions. A dream that fails leaves memory untouched and posts what went wrong. Anthropic's Dreaming for Managed Agents (research preview) and GBrain's dream cycle do similar consolidation. Kin's version also keeps the result as a git diff, records who said what, and asks a human before changing anything that matters.
 
-**Measuring it:** from the pilot, collect questions with known answers ("What did we defer to Friday?", "Who promised the migration?", "Did we settle caching?"), and run them every week. Change the memory design only when those results show a need. Section 4 sits behind a `Memory` interface, so GBrain, SQLite or another product can be the index without touching the items.
+**Measuring it:** from the pilot, collect questions with known answers ("What did we defer to Friday?", "Who promised the migration?", "Did we settle caching?"), and run them every week. Change the memory design only when those results show a need. Section 4 sits behind a `Memory` interface, so a vector index can be added later without touching the items.
 
 ## 5. Chats
 
