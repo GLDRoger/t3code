@@ -2,6 +2,9 @@ import {
   CanonicalUtcTimestamp,
   NonNegativeInt,
   KinOrgId,
+  KinWebhookSource,
+  KinWebhookSourceId,
+  ScheduledTaskId,
   KinTrigger,
   KinTriggerFired,
   KinTriggerId,
@@ -18,6 +21,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlSchema from "effect/sql/SqlSchema";
 
+import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import {
   PersistenceDecodeError,
   PersistenceSqlError,
@@ -38,6 +42,17 @@ export class KinTriggerFireConflict extends Schema.TaggedError<KinTriggerFireCon
     ]),
   },
 ) {}
+
+export class KinWebhookSourceConflict extends Schema.TaggedError<KinWebhookSourceConflict>()(
+  "KinWebhookSourceConflict",
+  { orgId: KinOrgId, reason: Schema.Literals(["unknown_source", "identity_conflict"]) },
+) {}
+
+const sourceColumns = `source_id AS id, org_id AS "orgId", repo,
+  scheduled_task_id AS "scheduledTaskId", inbox_thread_id AS "inboxThreadId",
+  github_hook_id AS "githubHookId", bot_login AS "botLogin", status`;
+const decodeSource = Schema.decodeUnknownEffect(KinWebhookSource);
+const isSourceConflict = Schema.is(KinWebhookSourceConflict);
 
 type StoreError = PersistenceSqlError | PersistenceDecodeError;
 const TriggerRow = Schema.Struct({
@@ -64,6 +79,16 @@ const Scope = Schema.Struct({ orgId: KinOrgId, id: KinTriggerId });
 export class KinTriggerStore extends Context.Service<
   KinTriggerStore,
   {
+    readonly registerSource: (
+      source: KinWebhookSource,
+    ) => Effect.Effect<KinWebhookSource, StoreError | KinWebhookSourceConflict>;
+    readonly unregisterSource: (
+      orgId: KinOrgId,
+      id: KinWebhookSourceId,
+    ) => Effect.Effect<void, StoreError>;
+    readonly sourceByTaskId: (
+      id: ScheduledTaskId,
+    ) => Effect.Effect<KinWebhookSource | undefined, StoreError>;
     readonly put: (trigger: Omit<KinTrigger, "lastFireId">) => Effect.Effect<void, StoreError>;
     readonly get: (
       orgId: KinOrgId,
@@ -131,6 +156,7 @@ const decodeRows = Effect.fn("KinTriggerStore.decodeRows")(function* (
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const threads = yield* ThreadManagementService.ThreadManagementService;
   const columns = sql`
     trigger_id AS id, org_id AS "orgId", subject_json AS subject, schedule_json AS schedule,
     time_zone AS "timeZone", enabled, next_run_at AS "nextRunAt", last_fire_id AS "lastFireId",
@@ -151,6 +177,93 @@ const make = Effect.gen(function* () {
     `,
   });
   return KinTriggerStore.of({
+    registerSource: Effect.fn("KinTriggerStore.registerSource")(
+      function* (source) {
+        const value = yield* decodeSource(source);
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const projection = yield* threads
+              .getThreadProjection(value.inboxThreadId)
+              .pipe(
+                Effect.mapError(
+                  () =>
+                    new KinWebhookSourceConflict({ orgId: value.orgId, reason: "unknown_source" }),
+                ),
+              );
+            const owned = yield* sql`
+            SELECT t.task_id FROM scheduled_tasks t
+            WHERE t.task_id = ${value.scheduledTaskId}
+              AND t.project_id = ${projection.thread.projectId}
+              AND t.thread_id IS NULL AND t.thread_mode = 'new_thread'
+              AND json_extract(t.schedule_json, '$.type') = 'webhook'
+              AND EXISTS (SELECT 1 FROM kin_orgs WHERE org_id = ${value.orgId})
+              AND NOT EXISTS (
+                SELECT 1 FROM kin_webhook_sources
+                WHERE org_id <> ${value.orgId}
+                  AND (scheduled_task_id = ${value.scheduledTaskId} OR inbox_thread_id = ${value.inboxThreadId})
+              )
+          `;
+            if (owned.length === 0 || projection.thread.deletedAt !== null)
+              return yield* new KinWebhookSourceConflict({
+                orgId: value.orgId,
+                reason: "unknown_source",
+              });
+            const inserted = yield* sql`
+            INSERT INTO kin_webhook_sources
+              (org_id, source_id, repo, scheduled_task_id, inbox_thread_id, github_hook_id, bot_login, status)
+            VALUES (${value.orgId}, ${value.id}, ${value.repo}, ${value.scheduledTaskId},
+              ${value.inboxThreadId}, ${value.githubHookId}, ${value.botLogin}, ${value.status})
+            ON CONFLICT DO NOTHING RETURNING source_id
+          `;
+            if (inserted.length === 1) return value;
+            const [row] = yield* sql`
+            SELECT ${sql.literal(sourceColumns)} FROM kin_webhook_sources
+            WHERE org_id = ${value.orgId} AND source_id = ${value.id}
+          `;
+            if (row === undefined)
+              return yield* new KinWebhookSourceConflict({
+                orgId: value.orgId,
+                reason: "unknown_source",
+              });
+            const stored = yield* decodeSource(row);
+            if (
+              stored.repo !== value.repo ||
+              stored.scheduledTaskId !== value.scheduledTaskId ||
+              stored.inboxThreadId !== value.inboxThreadId ||
+              stored.githubHookId !== value.githubHookId ||
+              stored.botLogin !== value.botLogin ||
+              stored.status !== value.status
+            ) {
+              return yield* new KinWebhookSourceConflict({
+                orgId: value.orgId,
+                reason: "identity_conflict",
+              });
+            }
+            return stored;
+          }),
+        );
+      },
+      Effect.mapError((cause) =>
+        isSourceConflict(cause)
+          ? cause
+          : toPersistenceOrDecodeError("KinTriggerStore.registerSource")(cause),
+      ),
+    ),
+    unregisterSource: Effect.fn("KinTriggerStore.unregisterSource")(
+      function* (orgId, id) {
+        yield* sql`DELETE FROM kin_webhook_sources WHERE org_id = ${orgId} AND source_id = ${id}`;
+      },
+      Effect.mapError(toPersistenceOrDecodeError("KinTriggerStore.unregisterSource")),
+    ),
+    sourceByTaskId: Effect.fn("KinTriggerStore.sourceByTaskId")(
+      function* (id) {
+        // The dispatch boundary has only a task id; its unique source determines the org.
+        const [row] = yield* sql`SELECT ${sql.literal(sourceColumns)} FROM kin_webhook_sources
+          WHERE scheduled_task_id = ${id}`.pipe(NodeSqliteClient.readOnly);
+        return row === undefined ? undefined : yield* decodeSource(row);
+      },
+      Effect.mapError(toPersistenceOrDecodeError("KinTriggerStore.sourceByTaskId")),
+    ),
     put: Effect.fn("KinTriggerStore.put")(
       function* (trigger) {
         const value = yield* decodePutTrigger({ ...trigger, lastFireId: null });

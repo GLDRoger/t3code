@@ -174,7 +174,10 @@ describe("KinChatRepository", () => {
           role: "lead" as const,
           ownerPersonId: personId,
         };
-        assert.deepStrictEqual(Option.getOrThrow(yield* repo.getAgent({ orgId, agentId })), agent);
+        assert.deepStrictEqual(Option.getOrThrow(yield* repo.getAgent({ orgId, agentId })), {
+          ...agent,
+          retiredAt: null,
+        });
         assert.deepStrictEqual(yield* repo.listAgents({ orgId }), [agent]);
         assert.deepStrictEqual(
           yield* repo.createChat({

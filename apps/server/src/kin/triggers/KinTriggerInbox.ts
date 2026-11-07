@@ -22,7 +22,12 @@ export class KinTriggerInboxConflict extends Schema.TaggedError<KinTriggerInboxC
   "KinTriggerInboxConflict",
   {
     orgId: KinOrgId,
-    reason: Schema.Literals(["not_github", "invalid_fire_id", "identity_conflict"]),
+    reason: Schema.Literals([
+      "not_github",
+      "invalid_fire_id",
+      "identity_conflict",
+      "unknown_source",
+    ]),
   },
 ) {}
 
@@ -114,6 +119,17 @@ const make = Effect.gen(function* () {
               return yield* new KinTriggerInboxConflict({
                 orgId: event.orgId,
                 reason: "invalid_fire_id",
+              });
+            }
+            const source = yield* sql`
+              SELECT source_id FROM kin_webhook_sources
+              WHERE org_id = ${event.orgId} AND source_id = ${event.payload.sourceId}
+                AND scheduled_task_id = ${event.payload.scheduledTaskId}
+            `;
+            if (source.length === 0) {
+              return yield* new KinTriggerInboxConflict({
+                orgId: event.orgId,
+                reason: "unknown_source",
               });
             }
             const inserted = yield* sql`
