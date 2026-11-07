@@ -130,6 +130,10 @@ describe("Kin migrations", () => {
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
           { org_id: "org", name: "Kin", created_at: timestamp },
         ]);
+        assert.deepStrictEqual(
+          yield* sql`SELECT name FROM pragma_index_info('idx_kin_triggers_due') ORDER BY seqno`,
+          ["next_run_at", "org_id", "trigger_id"].map((name) => ({ name })),
+        );
         const indexes = yield* sql<{ name: string }>`
         SELECT name FROM sqlite_master WHERE type = 'index' AND name GLOB 'idx_kin_*' ORDER BY name
       `;
