@@ -1907,10 +1907,23 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
     );
 
     // regression: #8645 name the cause of a failed git command
-    it.effect("names a missing repository behind a failed command", () =>
+    it.effect.each([
+      { label: "missing repository", stderr: undefined },
+      {
+        label: "broken gitfile (Git 2.56)",
+        stderr: "fatal: gitfile does not point to a valid repository: /missing/.git",
+      },
+    ])("names a $label behind a failed command", ({ stderr }) =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
-        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const driver = stderr
+          ? yield* makeGitVcsDriverCore().pipe(
+              Effect.provideService(
+                ChildProcessSpawner.ChildProcessSpawner,
+                ChildProcessSpawner.make(() => Effect.succeed(makeFailedHandle(stderr))),
+              ),
+            )
+          : yield* GitVcsDriver.GitVcsDriver;
 
         const error = yield* driver
           .execute({
