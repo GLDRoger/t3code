@@ -159,6 +159,7 @@ const make = Effect.gen(function* () {
       ctx.eventIds.some((id) => !/^[a-zA-Z0-9_-]+$/.test(id))
     )
       return yield* new MemoryWriteRejected({ reason: "Invalid server context" });
+    yield* journalEntry(ctx, "completed", []);
     const previous = sessions.get(orgId);
     if (previous && previous.wakeupId !== wakeupId)
       return yield* new MemoryWriteRejected({ reason: "Another wake-up owns the writer" });

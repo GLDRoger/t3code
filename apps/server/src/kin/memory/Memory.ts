@@ -364,14 +364,7 @@ const make = Effect.gen(function* () {
         });
       const branch = config.defaultBranch ?? "main";
       const expected = yield* anchor(orgId, branch);
-      yield* git(orgId, paths.writer, [
-        "fsck",
-        "--full",
-        "--strict",
-        "--no-reflogs",
-        "--no-references",
-        expected,
-      ]);
+      yield* git(orgId, paths.writer, ["fsck", "--full", "--strict", "--no-reflogs", expected]);
       const head = (yield* git(orgId, paths.writer, ["rev-parse", `refs/heads/${branch}`])).trim();
       if (head !== expected)
         return yield* new MemoryCheckoutInvalid({

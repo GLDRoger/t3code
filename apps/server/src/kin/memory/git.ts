@@ -21,11 +21,16 @@ export const memoryGit = Effect.fn("Memory.gitHardened")(function* (
           `${directory}/config`,
           "[core]\nrepositoryformatversion = 0\nbare = false\n",
         );
-        for (const name of ["objects", "refs"])
-          yield* fs.symlink(`${cwd}/.git/${name}`, `${directory}/${name}`);
-        for (const name of ["HEAD", "packed-refs"]) {
-          if (yield* fs.exists(`${cwd}/.git/${name}`))
-            yield* fs.copyFile(`${cwd}/.git/${name}`, `${directory}/${name}`);
+        yield* fs.symlink(`${cwd}/.git/objects`, `${directory}/objects`);
+        if (args[0] === "fsck") {
+          yield* fs.makeDirectory(`${directory}/refs`);
+          yield* fs.writeFileString(`${directory}/HEAD`, `${args.at(-1)}\n`);
+        } else {
+          yield* fs.symlink(`${cwd}/.git/refs`, `${directory}/refs`);
+          for (const name of ["HEAD", "packed-refs"]) {
+            if (yield* fs.exists(`${cwd}/.git/${name}`))
+              yield* fs.copyFile(`${cwd}/.git/${name}`, `${directory}/${name}`);
+          }
         }
       }
       const result = yield* vcs.run({
