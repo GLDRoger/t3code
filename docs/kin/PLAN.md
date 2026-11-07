@@ -12,10 +12,80 @@ Phase 1 delivers a direct chat on the phone with one lead, on `GLDRoger/t3code`,
 
 Tasks marked phase 2, 3 or 5 in a spec wait: CHAT-11 to CHAT-13, APPR-12 to APPR-15.
 
+## Who does what
+
+Two lanes, split by area so each lane owns whole folders and rarely waits on the other.
+
+| Lane                         | Who                                                      | Owns                                                                                                                           | Tasks                                                                                                                       |
+| ---------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| **A: the lead**              | Nishchay, with agents (GPT-6.1 Sol builds, Opus reviews) | Chat server, the lead, triggers and dreaming                                                                                   | CHAT-1 to CHAT-10, LEAD-1 to LEAD-14, TRIG-1 to TRIG-14, TRIG-16 to TRIG-18                                                 |
+| **B: approvals and the app** | The teammate, with Claude Opus 5.5                       | Approvals end to end (server and phone, since the signer and the verifier must match), the mobile app, notifications, branding | APPR-1 to APPR-11, MOB-1 to MOB-12, BRAND-1, TRIG-19                                                                        |
+| **Ops**                      | Nishchay only                                            | Things that need his accounts or hardware                                                                                      | TRIG-20 Mac mini, running the APPR-8 and APPR-11 scripts that lane B writes, TRIG-15 on `kin-memory`, the APNs and FCM keys |
+
+Lane A has more tasks, but it runs several agents at once. Lane B holds the most security-sensitive code, so it gets one careful owner.
+
+**Reviews cross lanes,** so a reviewer is never the author's model:
+
+- Lane A's code (written by Sol) is reviewed by lane B's Opus.
+- Lane B's server code is reviewed by Sol in lane A. Lane B's UI is reviewed by a fresh Opus session in lane A that didn't write it.
+- Security-sensitive tasks (listed in [KT.md](KT.md#shipping-a-task)) get a high-effort review, and Nishchay approves them.
+
+**Where the lanes meet.** These are the only places one lane waits on the other. Ship them early and tell the other lane when they merge:
+
+| Lane B waits for                        | Lane A waits for                      |
+| --------------------------------------- | ------------------------------------- |
+| CHAT-1 contracts (day 1): APPR-1, MOB-1 | APPR-3 `request_action`: LEAD-8       |
+| CHAT-2 migration track: APPR-2          | APPR-4 grant checks: LEAD-12, TRIG-14 |
+| LEAD-1 and LEAD-5: APPR-3               | APPR-9 executor: TRIG-5, TRIG-17      |
+| LEAD-11 stop switch: APPR-9             | APPR-10 audit: TRIG-17                |
+| CHAT-6 RPCs: MOB-5, MOB-10              | APPR-11 rulesets: TRIG-15             |
+| CHAT-8 task cards: MOB-6                |                                       |
+| TRIG-7 deferrals: MOB-7                 |                                       |
+
+APPR-9 → TRIG-5 is on the critical path. If it holds lane A up, settle the triggers spec's open question in favour of the GitHub App's own webhook. That needs no repo hooks, so TRIG-5 stops depending on the executor.
+
+**Day 1:**
+
+1. Lane A ships CHAT-1 (contracts) first, within a day, and lane B reviews it straight away. Every other spec builds on its names.
+2. Meanwhile lane B starts the tasks that depend on nothing: APPR-6 (native key module), BRAND-1 and TRIG-19.
+3. Nishchay starts TRIG-20 (the Mac mini) and creates the APNs and FCM keys.
+4. Then lane A starts CHAT-2, CHAT-3 and LEAD-1, and lane B starts APPR-1 and MOB-1.
+
+## Working in parallel without conflicts
+
+- **One branch per task:** `kin-<id>-<slug>` (for example `kin-chat-3-repository`; a branch can't be named `kin/...` while `kin` exists), branched from `kin`, with a PR back into `kin`. Rebase on `kin` before asking for review.
+- **Upstream hooks are created once.** CHAT-6 adds a single Kin entry to `packages/contracts/src/rpc.ts`, `RpcAuthorization.ts` and `ws.ts`, and CHAT-7 creates `/kin/mcp`. After that, every lane adds its RPCs, scopes and tools to Kin's own files, never to the upstream files. Until those merge, lane B keeps its RPC definitions in its own contract file and wires them in afterwards.
+- **Migration numbers are taken when a PR merges.** Kin's track runs in order and skips any number lower than the highest already applied, so two PRs can't both be K003. Name yours with the next free number. If someone merges first, rebase and renumber before merging (dev databases are disposable).
+- **Contracts change by PR to the owning spec's file.** If lane B needs a field in `kinChat.ts`, it asks in a small PR to that file, not inside a feature PR.
+- **Folders by lane.** Lane A: `apps/server/src/kin/` `chat`, `floor`, `widgets`, `mcp`, `lead`, `memory`, `triggers`, `dreaming`, `github`. Lane B: `apps/server/src/kin/approvals` and `push`, `apps/mobile/src/features/chats`, `apps/mobile/modules/kin-approval-key`, `branding/` and the `scripts/kin-*` files. Shared: `apps/server/src/kin/persistence/` (each migration is its own file) and `packages/contracts/src/kin*.ts` (each file has one owning spec).
+- **No real memory in tests.** Use a fixture memory repo in the test folder. Only the Mac mini sees `GLDRoger/kin-memory`.
+
+## Starting the teammate's Claude Code
+
+Paste this as the first message in a Claude Code session in a fresh checkout of `kin`:
+
+```markdown
+You're working on Kin, a fork of T3 Code. Read docs/kin/KT.md, then docs/kin/PLAN.md, then the spec for your task.
+
+I own lane B in PLAN.md: approvals (specs/approvals.md), the mobile app (specs/mobile.md), BRAND-1 and TRIG-19.
+
+Today's task: <ID>. Do only that task:
+
+1. Read its section in the spec, and every T3 file it cites.
+2. Create the branch kin-<id>-<slug> from kin.
+3. Open a draft PR right away to claim it:
+   gh pr create --repo GLDRoger/t3code --base kin --draft --title "<ID>: <title>"
+4. Build what the task's "What" and "Files" say, and nothing more. Its "Done when" is the acceptance test.
+5. Run `vp run check:changed upstream/main` and the task's own test. Put the commands and their results in the PR under Why / How / Tests.
+6. If the spec is wrong, fix the spec in the same PR and say so.
+
+Stay in lane B's folders: apps/server/src/kin/approvals and push, apps/mobile/src/features/chats, apps/mobile/modules/kin-approval-key, branding/, and scripts/kin-brand.ts, kin-github-app.ts and kin-rulesets.ts. Shared places are a new migration file of your own in apps/server/src/kin/persistence/migrations, and your own contract file (packages/contracts/src/kinApprovals.ts). Never add a way for an agent to approve, merge or change permissions.
+```
+
 ## How to take a task
 
 1. Pick a task whose dependencies have merged. The waves below show what's ready.
-2. Claim it: open a draft PR against `kin` titled `<ID>: <title>` (for example `CHAT-3: Repository`) before writing much code. An open draft PR with that id means the task is taken.
+2. Claim it: on a branch named `kin-<id>-<slug>`, open a draft PR against `kin` titled `<ID>: <title>` (for example `CHAT-3: Repository`) before writing much code. An open draft PR with that id means the task is taken.
 3. Build exactly what the task's "What" and "Files" say. Its "Done when" is the acceptance test. Put the command you ran and its result in the PR.
 4. If the spec is wrong, fix the spec in the same PR and say so in the description.
 
