@@ -22,3 +22,25 @@ export const fixtureItem = (overrides: Record<string, unknown> = {}) => {
     .map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
     .join("\n")}\n---\nInvented fixture body.\n`;
 };
+
+export const readmeItem = `---
+id: def-demo-142
+kind: deferral            # objective | commitment | deferral | decision | person | claim
+title: Invented queue maintenance
+status: open              # open | done | cancelled | superseded
+due: 2026-12-13T09:00+05:30
+on_due: start             # deferrals: remind | start | ask | chase
+owner: demo-lead
+recorded_at: 2026-12-10T16:20+05:30
+valid_from: 2026-12-10T16:20+05:30
+invalid_at: null          # set when it stops being true; never delete
+superseded_by: null
+review_by: 2026-12-13       # when to check it's still true; decisions: null
+source: https://example.invalid/messages/demo
+said_by: demo-owner         # the person, not the agent that wrote it down
+trust: owner              # owner | member | external | agent
+links: [issue #88, dec-031]
+---
+
+Invented maintenance deferred until the demo queue is drained.
+`;

@@ -1,40 +1,30 @@
-import type { KinOrgId, MemoryItemHead } from "@t3tools/contracts";
+import type { KinMemoryItemId, KinOrgId, MemoryItemHead } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
-import * as Path from "effect/Path";
-import * as Schema from "effect/Schema";
-import { MemoryConfig } from "./MemoryConfig.ts";
-import * as Semaphore from "effect/Semaphore";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
+
+import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 
 export interface MemoryItem {
   readonly head: MemoryItemHead;
   readonly body: string;
 }
 
-export interface CachedMemoryItem extends MemoryItem {
-  readonly fingerprint: string;
-}
-
 export class MemoryHistoryError extends Schema.TaggedError<MemoryHistoryError>()(
   "MemoryHistoryError",
-  {
-    orgId: Schema.String,
-    cause: Schema.Defect(),
-  },
+  { orgId: Schema.String, cause: Schema.Defect() },
 ) {}
 
 export class MemoryCache extends Context.Service<
   MemoryCache,
   {
-    readonly get: (orgId: KinOrgId, path: string) => Effect.Effect<CachedMemoryItem | undefined>;
-    readonly replace: (
+    readonly read: (
       orgId: KinOrgId,
-      items: ReadonlyArray<CachedMemoryItem>,
-    ) => Effect.Effect<void>;
-    readonly read: (orgId: KinOrgId, path: string) => Effect.Effect<void, MemoryHistoryError>;
+      id: KinMemoryItemId,
+    ) => Effect.Effect<void, MemoryHistoryError>;
     readonly lastReads: (
       orgId: KinOrgId,
     ) => Effect.Effect<Readonly<Record<string, number>>, MemoryHistoryError>;
@@ -42,49 +32,29 @@ export class MemoryCache extends Context.Service<
 >()("t3/kin/memory/MemoryCache") {}
 
 const make = Effect.gen(function* () {
-  const orgs = new Map<KinOrgId, Map<string, CachedMemoryItem>>();
-  const fs = yield* FileSystem.FileSystem;
-  const pathModule = yield* Path.Path;
-  const config = yield* MemoryConfig;
-  const lock = Semaphore.makeUnsafe(1);
-  const historySchema = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Number));
-  const historyFile = (orgId: KinOrgId) =>
-    pathModule.join(config.baseDirectory, ".read-history", `${encodeURIComponent(orgId)}.json`);
-  const history = Effect.fn("MemoryCache.history")(
-    function* (orgId: KinOrgId) {
-      const file = historyFile(orgId);
-      if (!(yield* fs.exists(file))) return {};
-      return yield* fs
-        .readFileString(file)
-        .pipe(Effect.flatMap(Schema.decodeEffect(historySchema)));
-    },
-    (effect, orgId) =>
-      effect.pipe(Effect.mapError((cause) => new MemoryHistoryError({ orgId, cause }))),
-  );
-
+  const sql = yield* SqlClient.SqlClient;
   return MemoryCache.of({
-    get: Effect.fn("MemoryCache.get")((orgId, path) =>
-      Effect.sync(() => orgs.get(orgId)?.get(path)),
-    ),
-    replace: Effect.fn("MemoryCache.replace")((orgId, items) =>
-      Effect.sync(() => {
-        orgs.set(orgId, new Map(items.map((item) => [item.head.path, item])));
-      }),
-    ),
-    read: Effect.fn("MemoryCache.read")(function* (orgId, path) {
+    read: Effect.fn("MemoryCache.read")(function* (orgId, id) {
       const now = yield* Clock.currentTimeMillis;
-      const reads = yield* history(orgId);
-      const json = yield* Schema.encodeEffect(historySchema)({ ...reads, [path]: now }).pipe(
+      // Memory.readItem validates the item against this organization's committed snapshot.
+      yield* sql`
+        INSERT INTO kin_memory_reads (org_id, item_id, last_read_at)
+        VALUES (${orgId}, ${id}, ${now})
+        ON CONFLICT (org_id, item_id) DO UPDATE SET last_read_at = excluded.last_read_at
+      `.pipe(
+        Effect.mapError(toPersistenceSqlError("MemoryCache.read")),
         Effect.mapError((cause) => new MemoryHistoryError({ orgId, cause })),
       );
-      const file = historyFile(orgId);
-      yield* fs.makeDirectory(pathModule.dirname(file), { recursive: true }).pipe(
-        Effect.andThen(fs.writeFileString(`${file}.tmp`, json)),
-        Effect.andThen(fs.rename(`${file}.tmp`, file)),
+    }),
+    lastReads: Effect.fn("MemoryCache.lastReads")(function* (orgId) {
+      const rows = yield* sql<{ item_id: string; last_read_at: number }>`
+        SELECT item_id, last_read_at FROM kin_memory_reads WHERE org_id = ${orgId} ORDER BY item_id
+      `.pipe(
+        Effect.mapError(toPersistenceSqlError("MemoryCache.lastReads")),
         Effect.mapError((cause) => new MemoryHistoryError({ orgId, cause })),
       );
-    }, lock.withPermits(1)),
-    lastReads: history,
+      return Object.fromEntries(rows.map((row) => [row.item_id, row.last_read_at]));
+    }),
   });
 });
 

@@ -370,15 +370,19 @@ Branches: at L1 and above the writer commits to the default branch. At L0 it com
 
 Push failures retry with backoff. Unpushed commits stay local and the next `prepareWakeup` rebases them on `pull`. A rebase conflict (the owner edited the same file on GitHub) stops memory writes for that organization and posts a card to the owner.
 
-Front matter matches the kin-memory README, including snake_case keys and permissive date strings. `owner` and `said_by` hold handles; `orgId` and `path` belong only to the server-side `MemoryItemHead`.
+Front matter matches the kin-memory README, including snake_case keys. Date-only values mean UTC midnight; date-times require an explicit UTC offset, and invalid dates make an item malformed. `links` values containing `#` must be quoted. `owner` and `said_by` hold handles; `orgId` and `path` belong only to the server-side `MemoryItemHead`.
 
 LEAD-2: the front matter parser must use YAML’s core or JSON schema; YAML 1.1 turns `review_by: 2026-11-13` into a Date.
 
-The read side takes `MemoryConfig` (a server-owned `baseDirectory` and per-org `repoUrl` and relative `path`). Paths must not overlap or escape that base. `ensureCheckouts` clones or fetches; `prepareWakeup` fast-forwards the writer and force-refreshes the disposable detached read worktree, including generated files. Project bootstrap belongs to the wake-up runner, not Memory.
+The production `MemoryConfig` layer derives its server-owned base from `ServerConfig.stateDir`, using `${stateDir}/kin/<orgId>/memory` and `memory-read` (organization ids are path-encoded). Tests may supply an isolated base and relative paths. Paths must not overlap or escape that base. `ensureCheckouts` clones or fetches; `prepareWakeup` fast-forwards the writer and force-refreshes the disposable detached read worktree, including generated files. Project bootstrap belongs to the wake-up runner, not Memory.
 
-The front matter cache is keyed by organization and relative path. Reads scan the six item directories and invalidate on HEAD, mtime or size changes; malformed YAML/schema items are logged and skipped. Queries include invalid items unless `excludeInvalid` is set; `invalid_at` remains on each returned `MemoryItemHead`. Date bounds are inclusive and compare instants; date-only strings mean midnight UTC. Missing or unparsable dates do not match a bounded date query. Overdue review means strictly before the current clock.
+`ensureCheckouts` uses the server user’s git credentials: on the Kin host, the bot or GitHub App identity.
 
-`readItem` records last-read time in atomic server-local `.read-history/<encoded-orgId>.json` files below the configured base, outside git. LEAD-2 cannot add a Kin DB migration in its file boundary; a later DB-backed history store can replace this cache operation. Never-read items use `recorded_at` as the baseline; index generation and queries do not count as reading an item. At eight weeks unread, items leave only the index, not search or git. Rebuilds use original heads, cap the index at 200 physical lines including the `As of <ISO>` first line, and flag invalid and overdue items. TRIG-12 extends this builder with sections, ordering and freshness defaults; no writer methods or automatic defaults are part of LEAD-2.
+The read side reads committed HEAD objects only, never the lead’s working-tree edits. Snapshots reload only on HEAD change or explicit `rebuildCache`; blob contents and parse failures are cached by SHA. Symlinks are skipped; oversized blobs (over 256 KiB), malformed items and kind/folder mismatches are logged and skipped. Duplicate ids fail queries with `MemoryDuplicateId` and are marked in the index. Queries include invalid items unless `excludeInvalid` is set; `invalid_at` remains on each returned `MemoryItemHead`. Date bounds are inclusive and compare instants; date-only strings mean midnight UTC. Missing or unparsable dates do not match a bounded date query. Overdue review means strictly before the current clock.
+
+`readItem` best-effort records integer-millisecond last-read times in Kin’s `kin_memory_reads` table, keyed by organization and item id so moves preserve history. Failed history writes are logged without failing the read. Never-read items use `recorded_at` as the baseline; index generation and queries do not count as reading an item. At eight weeks unread, items leave only the index, not search or git. Rebuilds use original heads, cap the index at 200 physical lines including the `As of <ISO>` first line, and flag invalid and overdue items. TRIG-12 extends this builder with sections, ordering and freshness defaults; no writer methods or automatic defaults are part of LEAD-2.
+
+The generated index is derived from HEAD, not read-checkout files; committing it belongs to LEAD-3 or TRIG-12, not LEAD-2.
 
 ### The journal
 
@@ -574,6 +578,8 @@ LEAD-5. **Wake-up runner.** Lead project and thread, launch or fresh send, regis
 LEAD-6. **Instructions and prompt builder.** `instructions.md`, `routines.md`, `LeadPrompt.ts`, quoting of non-owner text. Depends on: LEAD-2. Done when: the prefix-stability test passes and a member message containing "ignore previous instructions" appears only inside a labelled quote. Owner: backend.
 
 LEAD-7. **Lead toolkit: memory and journal.** `memory_search`, `memory_read`, `memory_write`, `kin_defer`, `kin_journal`, `kin_end`, lead-only visibility on `/kin/mcp`. Depends on: LEAD-3, LEAD-5, CHAT-7 (endpoint). Done when: tool visibility and cross-organization tests pass. Owner: backend.
+
+Reads through the lead’s file tools do not count as memory reads; LEAD-7’s `memory_read` must call the history-recording path.
 
 LEAD-8. **Lead toolkit: post and level gating.** `kin_chat_post`, the `request_action` level check, `KinLevels.effectiveLevel`, shadow entries, the owner's summary widget. Depends on: LEAD-7, CHAT-7, APPR-3. Done when: the L0 shadow test passes. Owner: backend.
 

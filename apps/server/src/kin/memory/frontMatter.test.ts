@@ -3,13 +3,30 @@ import { KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import { parseFrontMatter } from "./frontMatter.ts";
 
-import { fixtureItem } from "./__fixtures__/items.ts";
+import { fixtureItem, readmeItem } from "./__fixtures__/items.ts";
 
 it.effect.each([
   {
     name: "plain date",
     text: fixtureItem().replace('review_by: "2026-11-13"', "review_by: 2026-11-13"),
     valid: true,
+  },
+  {
+    name: "offsetless datetime",
+    text: fixtureItem({ recorded_at: "2026-11-01T00:00:00" }),
+    valid: false,
+  },
+  { name: "invalid recorded date", text: fixtureItem({ recorded_at: "not-a-date" }), valid: false },
+  { name: "README links comment", text: readmeItem, valid: false },
+  {
+    name: "timestamp tag",
+    text: fixtureItem().replace('"2026-11-13"', "!!timestamp 2026-11-13"),
+    valid: false,
+  },
+  {
+    name: "binary tag",
+    text: fixtureItem().replace('"Invented service maintenance"', "!!binary SGVsbG8="),
+    valid: false,
   },
   { name: "missing delimiter", text: "no front matter", valid: false },
   { name: "malformed YAML", text: "---\nid: [\n---\nbody", valid: false },
@@ -30,6 +47,10 @@ it.effect.each([
     if (result._tag === "Success") {
       expect(result.success.frontMatter.review_by).toBe("2026-11-13");
       expect(result.success.body).toBe("Invented fixture body.\n");
-    } else expect(result.failure._tag).toBe("MemoryItemError");
+    } else {
+      expect(result.failure._tag).toBe("MemoryItemError");
+      if (text === readmeItem)
+        expect(result.failure.reason).toContain("links containing # must be quoted");
+    }
   }),
 );

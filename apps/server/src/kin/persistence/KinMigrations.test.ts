@@ -20,6 +20,7 @@ const tableNames = [
   "kin_cursor",
   "kin_events",
   "kin_leads",
+  "kin_memory_reads",
   "kin_messages",
   "kin_org_state",
   "kin_orgs",
@@ -73,6 +74,7 @@ describe("Kin migrations", () => {
         assert.deepStrictEqual(yield* kinHistory, [
           { migration_id: 1, name: "ChatCore" },
           { migration_id: 2, name: "Lead" },
+          { migration_id: 4, name: "MemoryReads" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
@@ -97,6 +99,7 @@ describe("Kin migrations", () => {
         assert.deepStrictEqual(yield* kinHistory, [
           { migration_id: 1, name: "ChatCore" },
           { migration_id: 2, name: "Lead" },
+          { migration_id: 4, name: "MemoryReads" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -148,6 +151,7 @@ describe("Kin migrations", () => {
       assert.deepStrictEqual(yield* runKinMigrations(), [
         [1, "ChatCore"],
         [2, "Lead"],
+        [4, "MemoryReads"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -168,6 +172,7 @@ describe("Kin migrations", () => {
       assert.deepStrictEqual(yield* kinHistory, [
         { migration_id: 1, name: "ChatCore" },
         { migration_id: 2, name: "Lead" },
+        { migration_id: 4, name: "MemoryReads" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);
@@ -243,6 +248,7 @@ describe("Kin migrations", () => {
           started_at: 1794009600000,
           ended_at: 1794009600000,
         },
+        kin_memory_reads: { org_id: "org", item_id: "fixture-id", last_read_at: 1794009600000 },
         kin_cursor: { org_id: "org", consumer: "worker-tracker", after_sequence: 42 },
         kin_shadow_entries: {
           org_id: "org",
@@ -287,7 +293,22 @@ describe("Kin migrations", () => {
         yield* sql`INSERT INTO ${sql(table)} ${sql.insert(row)}`;
         assert.deepStrictEqual(yield* sql`SELECT * FROM ${sql(table)} WHERE org_id = 'org'`, [row]);
       }
+      yield* sql`INSERT INTO kin_memory_reads (org_id, item_id, last_read_at) VALUES ('other', 'fixture-id', 1)`;
+      assert.deepStrictEqual(
+        yield* sql`SELECT org_id, item_id, last_read_at FROM kin_memory_reads ORDER BY org_id, item_id`,
+        [rows.kin_memory_reads, { org_id: "other", item_id: "fixture-id", last_read_at: 1 }],
+      );
       const rejected = [
+        {
+          table: "kin_memory_reads",
+          row: { org_id: "missing", item_id: "fixture", last_read_at: 1 },
+          error: "FOREIGN KEY constraint failed",
+        },
+        {
+          table: "kin_memory_reads",
+          row: { org_id: "org", item_id: "invalid-time", last_read_at: "invalid" },
+          error: "CHECK constraint failed",
+        },
         {
           table: "kin_org_state",
           row: { ...rows.kin_org_state, org_id: "other", paused_at: null, paused_by: null },
