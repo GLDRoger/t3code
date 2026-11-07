@@ -239,7 +239,7 @@ describe("Kin migrations", () => {
           model_json: '{"instanceId":"codex","model":"strong"}',
           provenance_json: '{"_tag":"system"}',
           status: "completed",
-          report_json: '{"orgId":"org","parsed":false}',
+          report_json: '{"parsed":false}',
           started_at: 1794009600000,
           ended_at: 1794009600000,
         },

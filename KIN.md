@@ -28,6 +28,8 @@ Upstream's CI runs on Blacksmith runners that only `pingdotgg` has, so on this f
 - `ci.yml` and `mobile-fingerprint-check.yml` run on GitHub-hosted runners instead (`ubuntu-24.04`, `macos-26`). They're free for public repos. If a merge from upstream conflicts on a `runs-on:` line, keep the GitHub-hosted one; the `sed` in the sync steps below puts back any that upstream re-adds.
 - Workflows that only make sense for upstream (releases, deploys, preview builds, AUR, the contributor vouch list, issue triage, Windows tests) are turned off in the fork's Actions settings, not deleted, so the files still merge cleanly. Turn one back on with `gh workflow enable <file> --repo GLDRoger/t3code`.
 
+Test Web has a 20-minute timeout for slower GitHub-hosted runners; keep that headroom when syncing upstream.
+
 No upstream secrets exist here. CI's task cache token is optional, so CI runs without it, just slower.
 
 ## Syncing upstream
