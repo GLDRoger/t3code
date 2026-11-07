@@ -63,7 +63,7 @@ Non-goals:
 
 - Only the lead writes. Workers suggest items in their reports, and the lead decides what to keep.
 - Every item records who said it and how far it can be trusted. A member's statement is stored as `trust: member` or as a claim, never as a rule. Only the owner changes `rules.md`.
-- Tasks and due dates stay in GitHub Issues and Projects. Every status claim links to a PR, issue, commit or CI run.
+- Code tasks stay in GitHub Issues and Projects; everything else (client obligations, marketing deadlines) is a commitment or objective in memory (section 13). Every status claim links to evidence: a PR, issue, commit, CI run, or the message or document it came from.
 
 **No separate index service.** Search is the agents' own file tools (`rg`, glob, read) over the memory repo. Claude Code and Codex already do this well, and each organization holds hundreds to a few thousand small files, which `rg` searches in milliseconds. Structured questions ("deferrals due this week") come from a small in-process cache of front matter in the Kin server, rebuilt from the files when they change. Separating organizations needs only separate repos.
 
@@ -346,8 +346,14 @@ None of these are planned. They're written down so they shape today's choices wi
 - Use proven parts instead of building them: an LLM proxy with virtual keys and per-key budgets, and an open-source secrets manager for storage. Check the current options before choosing.
 - The Mac mini becomes the most valuable target in the organization. That means encrypted backups, tokens reachable only over the tailnet or T3 Connect, and a plan for when the machine dies.
 
-**Issue tracking.** Phase 1 keeps tasks in GitHub Issues and Projects. The better step is a chat-native view on top of them: the lead files, triages and chases issues, and they show up as live cards. Kin gets its own issue store only if that view stops being enough. Kin's edge isn't another list of tickets. It's an issue that chases itself.
+**Tracking work, not just code.** GitHub Issues only fits tech work. Client obligations, marketing deadlines and finance tasks need somewhere too, and Kin already has it: **commitments, objectives and deferrals in memory are a tracker.** Each one has an owner, a due date, a status, a source and links. So the tracker is a view over memory items, not a new store:
 
-**Team chat.** Kin's chats already cover a team's conversations with its agents. Replacing Slack outright means competing on everything Slack does, against its network effects. The edge is agents as real members: they keep track of promises, follow up, and fold their own noise away. Grow there first; maybe a Slack bridge later, so a team can try Kin without moving.
+- A board and list view in the app, filtered by team, person, client or due date, with items shown as cards.
+- People change items directly from their cards (assign, reschedule, mark done). The server writes the change with the person as `said_by` and their trust level, so the "only the lead writes" rule becomes "only Kin's writer writes": the lead, or code acting on a person's tap.
+- Code work keeps its GitHub issue. The commitment links to it, and the watchdog keeps the two in step (section 4, rule 2), so engineers stay in GitHub and everyone else stays in Kin.
+- What makes it different from Linear: every item has a lead chasing it. An overdue client deliverable gets a nudge to its owner, then a flag to the owner of the organization, without anyone running a stand-up.
+- If memory files ever get too slow for a big team's board, the front matter cache (section 4) can grow into a proper index. The files stay the source of truth.
+
+**Team chat.** Not a Slack replacement. Kin's chats stay deliberately small: a cleaner interface, fewer features, and agents as real members that track promises, follow up and fold their own noise away. A Slack bridge can come later, so a team can try Kin without moving.
 
 **Image generation.** A worker kind plus a widget, not a separate page: "make three hero images for the launch post" returns a gallery card in the chat, with spend going through the secrets gateway.
