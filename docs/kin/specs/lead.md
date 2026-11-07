@@ -372,7 +372,7 @@ Writer rules, enforced in code on `stage`:
 - Paths: only `objectives/`, `commitments/`, `deferrals/`, `decisions/`, `people/`, `claims/` and `journal/`. `rules.md` is refused. `INDEX.md` is written only by `rebuildIndex`. `README.md` is never touched.
 - No deletes. `invalidate` sets `invalid_at`; `supersede` sets the old item's `superseded_by` and `status: superseded` and creates the new one.
 - Provenance comes from the event, not the model. The writer looks up `sourceEventId` in the current batch and sets `said_by`, `source` and `trust` from the event's `provenance`. Owner → `owner`, member → `member`, webhook or outside text → `external`, worker suggestion → `agent`. The lead may lower trust but never raise it. A member's statement that reads like a rule is stored under `claims/`.
-- `review_by` defaults by kind: person 90 days, commitment and deferral at `due`, decision `null`, claim 30 days; objective at the next milestone date (falling back to `due`, then `null`) unless given.
+- `review_by` defaults by kind: person 90 days, commitment and deferral at `due`, decision `null`, claim 30 days; objective at the next milestone date (falling back to `due`, then +30 days from `recorded_at`). Explicit `review_by: null` is preserved.
 - Contradictions: if an open item of the same kind shares a link or id and says something different, and `supersedes` was not passed, `stage` fails with `MemoryConflict { existingId }`. The lead then supersedes (same source, newer) or posts a question to the owner.
 - Secret scan: before commit, the staged diff goes through `MemorySecretScan.check` (triggers spec). A hit refuses the whole commit, keeps the journal line "Commit refused: possible secret in <path>", and tells the owner.
 

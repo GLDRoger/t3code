@@ -448,7 +448,29 @@ it.effect(
         );
         expect(messages.some((message) => message.includes("batch framing failed"))).toBe(true);
         const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE kin_trigger_settings SET time_zone = 'UTC' WHERE org_id = ${orgA}`;
+        repository.commit();
+        yield* memory.prepareWakeup(orgA);
+        const utcIndex = yield* memory.readIndex(orgA);
+        yield* sql`UPDATE kin_trigger_settings SET time_zone = 'Invented/Invalid' WHERE org_id = ${orgA}`;
+        repository.commit();
+        yield* memory.prepareWakeup(orgA);
+        expect(yield* memory.readIndex(orgA)).toContain("As of ");
+        expect(yield* memory.readIndex(orgA)).toBe(utcIndex);
+        expect(messages.some((message) => message.includes("Invalid memory owner time zone"))).toBe(
+          true,
+        );
+        yield* sql`DROP TABLE kin_trigger_settings`;
         yield* sql`DROP TABLE kin_memory_reads`;
+        repository.commit();
+        yield* memory.prepareWakeup(orgA);
+        expect(yield* memory.readIndex(orgA)).toContain("As of ");
+        expect(
+          messages.some((message) => message.includes("Could not load memory owner time zone")),
+        ).toBe(true);
+        expect(
+          messages.some((message) => message.includes("Could not load memory read history")),
+        ).toBe(true);
         expect((yield* memory.readItem(orgA, KinMemoryItemId.make("extra-0"))).head.id).toBe(
           "extra-0",
         );

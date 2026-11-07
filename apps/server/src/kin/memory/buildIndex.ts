@@ -32,51 +32,57 @@ export function buildIndex(
   ];
   const counts = new Map<string, number>();
   for (const item of items) counts.set(item.id, (counts.get(item.id) ?? 0) + 1);
-  const overdue = (item: IndexItem) =>
-    dateOrder(item.review_by) < now || (item.status === "open" && dateOrder(item.due) < now);
-  const section = (item: IndexItem) => {
+  const section = (item: IndexItem, due: number, overdue: boolean) => {
     if (item.misleading) return 6;
     if (item.status === "open" && item.invalid_at === null) {
-      if (item.on_due === "ask") return 0;
-      const due = dateOrder(item.due);
+      if (item.on_due === "ask" && due <= now) return 0;
       if (due >= now && due < dueThrough) return 1;
       if (item.kind === "objective") return 2;
       if (item.kind === "commitment") return 3;
     }
-    if (overdue(item)) return 4;
+    if (overdue) return 4;
     return 5;
   };
   const entries = items
+    .map((item) => ({
+      item,
+      due: dateOrder(item.due),
+      reviewBy: dateOrder(item.review_by),
+      recordedAt: memoryDateMillis(item.recorded_at),
+    }))
     .filter(
-      (item) =>
+      ({ item, recordedAt }) =>
         now -
           (Object.hasOwn(readHistory, item.id)
-            ? (readHistory[item.id] ?? memoryDateMillis(item.recorded_at))
-            : memoryDateMillis(item.recorded_at)) <
+            ? (readHistory[item.id] ?? recordedAt)
+            : recordedAt) <
         8 * week,
     )
-    .map((item) => ({ item, section: section(item) }))
+    .map(({ item, due, reviewBy }) => {
+      const overdue = reviewBy < now || (item.status === "open" && due < now);
+      return { item, due, reviewBy, overdue, section: section(item, due, overdue) };
+    })
     .sort(
       (a, b) =>
         a.section - b.section ||
-        dateOrder(a.item.due) - dateOrder(b.item.due) ||
-        dateOrder(a.item.review_by) - dateOrder(b.item.review_by) ||
+        a.due - b.due ||
+        a.reviewBy - b.reviewBy ||
         compareText(a.item.id, b.item.id) ||
         compareText(a.item.path, b.item.path) ||
         compareText(a.item.title, b.item.title),
     );
   const lines = [`As of ${DateTime.formatIso(DateTime.makeUnsafe(now))}`];
   let previousSection = -1;
-  for (const [index, { item, section: currentSection }] of entries.entries()) {
+  for (const [index, { item, overdue, section: currentSection }] of entries.entries()) {
     const header = currentSection === previousSection ? [] : ["", `## ${sections[currentSection]}`];
     const reserved = index < entries.length - 1 ? 1 : 0;
     if (lines.length + header.length + 1 + reserved > 200) {
-      lines.push(`${entries.length - index} more`);
+      lines.push(`${entries.length - index} more items not listed; use memory_search`);
       break;
     }
     lines.push(
       ...header,
-      `- [${item.kind}] ${oneLine(item.title)} (${oneLine(item.path)})${item.invalid_at !== null ? " [invalid]" : ""}${(counts.get(item.id) ?? 0) > 1 ? " [duplicate id]" : ""}${overdue(item) ? " ⚠ review" : ""}${item.misleading ? " [misleading]" : ""}`,
+      `- [${item.kind}] ${oneLine(item.title)} (${oneLine(item.path)})${item.invalid_at !== null ? " [invalid]" : ""}${(counts.get(item.id) ?? 0) > 1 ? " [duplicate id]" : ""}${overdue ? " ⚠ review" : ""}${item.misleading ? " [misleading]" : ""}`,
     );
     previousSection = currentSection;
   }

@@ -36,7 +36,9 @@ const item = (
 
 it("matches the bounded index golden, independently of input order, and fades only unread items", async () => {
   const items = [
-    item("waiting", { kind: "deferral", on_due: "ask" }),
+    item("waiting", { kind: "deferral", on_due: "ask", due: "2026-11-08T04:00:00.000Z" }),
+    item("future-ask", { kind: "deferral", on_due: "ask", due: "2026-11-10" }),
+    item("undated-ask", { kind: "deferral", on_due: "ask" }),
     item("soon", { kind: "deferral", due: "2026-11-09" }),
     item("objective", { kind: "objective" }),
     item("commitment", { kind: "commitment", due: "2026-11-07" }),
@@ -50,7 +52,6 @@ it("matches the bounded index golden, independently of input order, and fades on
   ];
   const reads = { read: now - 8 * week + 1 };
   const actual = buildIndex(items, reads, now, "Asia/Kolkata");
-  await expect(actual).toMatchFileSnapshot("./buildIndex.golden.txt");
   expect(buildIndex(items.toReversed(), reads, now, "Asia/Kolkata")).toBe(actual);
   expect(actual).not.toContain("Invented unread");
   const large = buildIndex(
@@ -60,7 +61,9 @@ it("matches the bounded index golden, independently of input order, and fades on
     "Asia/Kolkata",
   );
   expect(large.trimEnd().split("\n")).toHaveLength(200);
-  expect(large).toContain("54 more\n");
+  await expect(actual + "\n" + large.trimEnd().split("\n").at(-1) + "\n").toMatchFileSnapshot(
+    "./buildIndex.golden.txt",
+  );
 });
 
 it.each([
