@@ -71,7 +71,10 @@ export const readCommit = Effect.fn("Memory.readCommit")(function* (
   return {
     tree,
     message: text.slice(text.indexOf("\n\n") + 2),
-    parent: /^parent ([a-f0-9]+)$/m.exec(text)?.[1],
+    parent: /^parent ([a-f0-9]+)$/m.exec(text.split("\n\n")[0] ?? "")?.[1],
+    parents: [...(text.split("\n\n")[0] ?? "").matchAll(/^parent ([a-f0-9]+)$/gm)]
+      .map((match) => match[1])
+      .filter((sha): sha is string => sha !== undefined),
   };
 });
 
@@ -81,7 +84,7 @@ export const readTree = Effect.fn("Memory.readTree")(function* (
   commit: string,
 ) {
   const { tree } = yield* readCommit(orgId, cwd, commit);
-  const entries: Array<{ sha: string; relative: string }> = [];
+  const entries: Array<{ sha: string; relative: string; mode: string }> = [];
   const pending = [{ sha: tree, prefix: "" }];
   while (pending.length) {
     const batch = pending.splice(0, 32);
@@ -109,7 +112,8 @@ export const readTree = Effect.fn("Memory.readTree")(function* (
         const sha = object.subarray(nul + 1, nul + 1 + width).toString("hex");
         const relative = request.prefix + name;
         if (mode === "40000") pending.push({ sha, prefix: `${relative}/` });
-        else if (mode === "100644" || mode === "100755") entries.push({ sha, relative });
+        else if (["100644", "100755", "120000", "160000"].includes(mode))
+          entries.push({ sha, relative, mode });
         offset = nul + 1 + width;
       }
     }
@@ -122,7 +126,8 @@ export const readFiles = Effect.fn("Memory.readFiles")(function* (
   cwd: string,
   commit: string,
 ) {
-  const entries = yield* readTree(orgId, cwd, commit);
+  const all = yield* readTree(orgId, cwd, commit);
+  const entries = all.filter((entry) => entry.mode !== "160000");
   const files = new Map<string, Buffer>();
   for (let index = 0; index < entries.length; index += 32) {
     const batch = entries.slice(index, index + 32);
@@ -136,5 +141,7 @@ export const readFiles = Effect.fn("Memory.readFiles")(function* (
       if (bytes) files.set(entry.relative, bytes);
     }
   }
+  for (const entry of all)
+    if (entry.mode === "160000") files.set(entry.relative, Buffer.from(entry.sha, "ascii"));
   return files;
 });

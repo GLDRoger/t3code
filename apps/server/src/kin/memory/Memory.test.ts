@@ -1,8 +1,9 @@
+import * as NodeZlib from "node:zlib";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Git object identity uses the native byte-oriented hash API.
 import * as NodeCrypto from "node:crypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
-import { KinMemoryItemId, KinOrgId } from "@t3tools/contracts";
+import { KinAgentId, KinWakeupId, KinMemoryItemId, KinOrgId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Clock from "effect/Clock";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -16,6 +17,8 @@ import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Memory from "./Memory.ts";
+import * as Chat from "../chat/KinChatRepository.ts";
+import { KinLeadPrompt } from "../lead/LeadPrompt.ts";
 import * as MemoryConfig from "./MemoryConfig.ts";
 import * as ServerConfig from "../../config.ts";
 import { fixtureItem } from "./__fixtures__/items.ts";
@@ -103,6 +106,9 @@ const fakeRepository = (fs: FileSystem.FileSystem) => {
                 ? cwd.replace(/memory-read$/, "memory/.git")
                 : head();
             break;
+          case "ls-remote":
+            stdout = `${head()}\trefs/heads/main\n`;
+            break;
           case "remote":
             stdout = "unused";
             break;
@@ -110,6 +116,8 @@ const fakeRepository = (fs: FileSystem.FileSystem) => {
             const chunks = (stdin?.trim().split("\n") ?? []).map((sha) => {
               const entry = objects.get(sha);
               if (!entry) return Buffer.from(`${sha} missing\n`);
+              if (args.includes("--batch-check"))
+                return Buffer.from(`${sha} ${entry.type} ${entry.bytes.length}\n`);
               if (entry.type === "blob") blobReads++;
               if (entry.type === "tree") treeReads++;
               return Buffer.concat([
@@ -122,7 +130,8 @@ const fakeRepository = (fs: FileSystem.FileSystem) => {
               chunks.unshift(Buffer.from("invalid header\n"));
               corruptNextBatch = false;
             }
-            onStdoutChunk?.(Buffer.concat(chunks));
+            if (args.includes("--batch-check")) stdout = Buffer.concat(chunks).toString("utf8");
+            else onStdoutChunk?.(Buffer.concat(chunks));
             break;
           }
         }
@@ -174,12 +183,18 @@ const memoryLayer = (base: string, repo: string) =>
   );
 
 it.live.each([
-  { name: "committed lead edits", binary: false, indexDirectory: false },
-  { name: "binary preceding valid blobs", binary: true, indexDirectory: false },
-  { name: "blocked index path", binary: false, indexDirectory: true },
+  { name: "committed lead edits", binary: false, indexDirectory: false, missingIndex: false },
+  {
+    name: "binary preceding valid blobs",
+    binary: true,
+    indexDirectory: false,
+    missingIndex: false,
+  },
+  { name: "blocked index path", binary: false, indexDirectory: true, missingIndex: false },
+  { name: "no committed index", binary: false, indexDirectory: false, missingIndex: true },
 ])(
   "clones isolated checkouts and preserves committed source reads with $name",
-  ({ binary, indexDirectory }) =>
+  ({ binary, indexDirectory, missingIndex }) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const vcs = yield* VcsProcess.VcsProcess;
@@ -198,6 +213,7 @@ it.live.each([
         yield* fs.makeDirectory(`${source}/INDEX.md`);
         yield* fs.writeFileString(`${source}/INDEX.md/blocked`, "fixture");
       }
+      if (missingIndex) yield* fs.remove(`${source}/INDEX.md`);
       yield* fs.symlink("def-001.md", `${source}/deferrals/link.md`);
       yield* fs.writeFileString(
         `${source}/deferrals/huge.md`,
@@ -210,7 +226,7 @@ it.live.each([
       yield* git([
         "add",
         "rules.md",
-        "INDEX.md",
+        ...(missingIndex ? [] : ["INDEX.md"]),
         "deferrals",
         "commitments",
         "objectives",
@@ -241,8 +257,54 @@ it.live.each([
         const b = yield* memory.ensureCheckouts(orgB);
         expect(a.read).not.toBe(b.read);
         expect(yield* fs.exists(`${a.writer}/incomplete`)).toBe(false);
+        const assertPrompt = (head: string, unavailable: boolean) =>
+          Effect.gen(function* () {
+            const prompt = yield* KinLeadPrompt;
+            const input = {
+              orgId: orgA,
+              agentId: KinAgentId.make("fixture-lead"),
+              wakeupId: KinWakeupId.make("fixture-wake"),
+              memoryHead: head,
+              events: [],
+            };
+            const first = yield* prompt.build(input);
+            const second = yield* prompt.build(input);
+            expect(first.split("--- KIN WAKE-UP ---")[0]).toBe(
+              second.split("--- KIN WAKE-UP ---")[0],
+            );
+            expect(first.includes("index unavailable")).toBe(unavailable);
+            if (unavailable)
+              expect(first).toContain('> BEGIN QUOTE: memory index\n> ""\n> END QUOTE');
+          }).pipe(
+            Effect.provide(KinLeadPrompt.layer.pipe(Layer.provide(Chat.layer))),
+            Effect.provideService(Memory.Memory, memory),
+          );
+        if (!missingIndex && !indexDirectory) {
+          const head = (yield* git(["rev-parse", "HEAD"])).stdout.trim();
+          expect((yield* memory.readPromptSnapshot(orgA, head)).index).toBe(
+            yield* fs.readFileString(`${source}/INDEX.md`),
+          );
+        }
+        if (missingIndex) {
+          const head = (yield* git(["rev-parse", "HEAD"])).stdout.trim();
+          expect((yield* memory.readPromptSnapshot(orgA, head)).index).toBe("");
+          yield* assertPrompt(head, true);
+        }
         const prepared = yield* memory.prepareWakeup(orgA);
         expect(prepared.head).toMatch(/^[0-9a-f]{40}$/);
+        const promptSnapshot = yield* memory.readPromptSnapshot(orgA, prepared.head);
+        expect(promptSnapshot).toEqual({
+          rules: yield* fs.readFileString(`${source}/rules.md`),
+          index: yield* memory.readIndex(orgA),
+        });
+        yield* assertPrompt(prepared.head, false);
+        yield* memory.rebuildIndex(orgA);
+        expect((yield* memory.readPromptSnapshot(orgA, prepared.head)).index).toBe(
+          yield* memory.readIndex(orgA),
+        );
+        expect(
+          yield* memory.readPromptSnapshot(orgA, "wrong-head").pipe(Effect.result),
+        ).toMatchObject({ _tag: "Failure", failure: { _tag: "MemoryError" } });
         expect(yield* memory.readRules(orgA)).toBe("Invented standing rules.\n");
         expect(yield* memory.readIndex(orgA)).toMatch(/^As of /);
         yield* memory.rebuildIndex(orgA);
@@ -764,13 +826,54 @@ it.live.each([
   "dirty writer",
   "rebase in progress",
   "journal conflict",
+  "H2-merge-swap",
 ])("syncs the writer with $0", (scenario) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const { root, source, git, commit } = yield* fixtureRepository();
     const base = `${root}/state`;
     const remote = `${root}/sync-remote.git`;
+    const h2Base =
+      "said_by: fixture-lead\ntrust: agent\n" +
+      "unchanged fixture context\n".repeat(12) +
+      "base tail\n";
+    const h2Local = h2Base.replace("fixture-lead", "local-lead");
+    if (scenario === "H2-merge-swap") {
+      yield* fs.writeFileString(`${source}/rules.md`, h2Base);
+      yield* commit(source);
+    }
     yield* git(root, ["clone", "--bare", "--", source, remote]);
+    const vcs = yield* VcsProcess.VcsProcess;
+    let attack: { sha: string; path: string } | undefined;
+    let swapped = false;
+    const intercepted = Layer.succeed(
+      VcsProcess.VcsProcess,
+      VcsProcess.VcsProcess.of({
+        run: Effect.fn("MemoryTest.mergeSwap")(function* (input) {
+          if (
+            attack &&
+            (input.args.includes("merge-tree") ||
+              (input.args.includes("--batch") && input.stdin?.includes(attack.sha)))
+          ) {
+            const forged = Buffer.from(
+              h2Local.replace("local-lead", "real-owner").replace("trust: agent", "trust: owner"),
+            );
+            yield* fs.remove(attack.path).pipe(Effect.orDie);
+            yield* fs
+              .writeFile(
+                attack.path,
+                NodeZlib.deflateSync(
+                  Buffer.concat([Buffer.from(`blob ${forged.length}\0`), forged]),
+                ),
+              )
+              .pipe(Effect.orDie);
+            attack = undefined;
+            swapped = true;
+          }
+          return yield* vcs.run(input);
+        }),
+      }),
+    );
     const messages: string[] = [];
     const logger = Logger.layer([Logger.make(({ message }) => messages.push(String(message)))], {
       mergeWithExisting: false,
@@ -786,17 +889,23 @@ it.live.each([
         yield* fs.makeDirectory(`${source}/journal`, { recursive: true });
         yield* fs.writeFileString(`${writer}/journal/day.md`, "local entry\n");
         yield* fs.writeFileString(`${writer}/INDEX.md`, "local generated index\n");
-      } else yield* fs.writeFileString(`${writer}/rules.md`, "Local invented rules\n");
+      } else
+        yield* fs.writeFileString(
+          `${writer}/rules.md`,
+          scenario === "H2-merge-swap" ? h2Local : "Local invented rules\n",
+        );
       const local = yield* commit(writer);
       yield* memory.record(orgA, "main", initial.head, local);
       yield* fs.writeFileString(
-        `${source}/${scenario === "diverged" || scenario === "network down" || scenario === "dirty writer" ? "remote-only" : "rules.md"}`,
+        `${source}/${scenario === "diverged" || scenario === "network down" || scenario === "dirty writer" || scenario === "H2-merge-swap" ? "remote-only" : "rules.md"}`,
         "Remote invented edit\n",
       );
       if (scenario === "journal conflict") {
         yield* fs.writeFileString(`${source}/journal/day.md`, "remote entry\n");
         yield* fs.writeFileString(`${source}/INDEX.md`, "remote generated index\n");
       }
+      if (scenario === "H2-merge-swap")
+        yield* fs.writeFileString(`${source}/rules.md`, h2Base.replace("base tail", "remote tail"));
       yield* commit(source);
       yield* git(source, ["push", "--", remote, "main"]);
       if (scenario === "network down") yield* fs.rename(remote, `${root}/offline`);
@@ -807,8 +916,22 @@ it.live.each([
         yield* git(writer, ["rebase", "@{u}"]).pipe(Effect.ignore);
         yield* fs.writeFileString(`${writer}/rules.md`, "Half-resolved fixture edit\n");
       }
+      if (scenario === "H2-merge-swap") {
+        const sha = yield* git(writer, ["rev-parse", `${local}:rules.md`]);
+        attack = { sha, path: `${writer}/.git/objects/${sha.slice(0, 2)}/${sha.slice(2)}` };
+      }
       const result = yield* memory.prepareWakeup(orgA).pipe(Effect.result);
-      if (scenario === "network down" || scenario === "diverged" || scenario === "dirty writer") {
+      if (scenario === "H2-merge-swap") {
+        expect(swapped).toBe(true);
+        expect(result._tag).toBe("Failure");
+        expect(yield* git(root, [`--git-dir=${remote}`, "show", "main:rules.md"])).not.toContain(
+          "FORGED",
+        );
+      } else if (
+        scenario === "network down" ||
+        scenario === "diverged" ||
+        scenario === "dirty writer"
+      ) {
         expect(result._tag).toBe("Success");
         if (result._tag === "Success") {
           if (scenario === "network down") expect(result.success.head).toBe(local);
@@ -847,7 +970,9 @@ it.live.each([
     }).pipe(
       Effect.provide(
         Layer.merge(
-          memoryLayer(base, remote).pipe(
+          Memory.layer.pipe(
+            Layer.provide(configLayer(base, remote)),
+            Layer.provide(intercepted),
             Layer.provide(
               Layer.succeed(Memory.MemoryRecoveryHooks, {
                 notify: (notice) =>

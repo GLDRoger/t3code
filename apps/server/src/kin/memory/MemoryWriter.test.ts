@@ -45,6 +45,10 @@ it.live.each([
   "review-null",
   "credentials",
   "read-during-record",
+  "H3-packed-ref",
+  "M1-unanchored",
+  "M2-nondescendant",
+  "M4-modes",
 ] as const)("writer real git: %s", (scenario) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -101,8 +105,25 @@ it.live.each([
         ]),
       );
     }
+    if (scenario === "M4-modes") {
+      yield* fs.symlink("rules.md", `${source}/owner-link`);
+      yield* fs.writeFileString(`${source}/owner-executable`, "fixture executable\n");
+      yield* fs.chmod(`${source}/owner-executable`, 0o755);
+    }
     yield* git(source, ["add", "--", "."]);
+    if (scenario === "M4-modes")
+      yield* git(source, ["update-index", "--chmod=+x", "owner-executable"]);
     yield* commit(source);
+    if (scenario === "M4-modes") {
+      const head = yield* git(source, ["rev-parse", "HEAD"]);
+      yield* git(source, [
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        `160000,${head},owner-submodule`,
+      ]);
+      yield* commit(source);
+    }
     yield* git(root, ["clone", "--bare", "--", source, remote]);
     let attack: { objectPath: string; sha: string; expression: string; bytes: Buffer } | undefined;
     let swapped = false;
@@ -211,6 +232,73 @@ it.live.each([
       yield* git(paths.writer, ["config", "user.name", "Fixture Bot"]);
       yield* git(paths.writer, ["config", "user.email", "fixture@example.invalid"]);
       const original = yield* git(paths.writer, ["rev-parse", "HEAD"]);
+      if (scenario === "M4-modes") {
+        const before = yield* git(paths.writer, [
+          "ls-tree",
+          original,
+          "owner-link",
+          "owner-executable",
+          "owner-submodule",
+        ]);
+        const result = yield* writer.commitWakeup(orgId, "wake1", "completed");
+        expect(
+          yield* git(paths.writer, [
+            "ls-tree",
+            result.commit,
+            "owner-link",
+            "owner-executable",
+            "owner-submodule",
+          ]),
+        ).toBe(before);
+        expect(before).toContain("100755");
+        expect(before).toContain("120000");
+        expect(before).toContain("160000");
+        return;
+      }
+      if (
+        scenario === "H3-packed-ref" ||
+        scenario === "M1-unanchored" ||
+        scenario === "M2-nondescendant"
+      ) {
+        yield* fs.writeFileString(`${paths.read}/rules.md`, "FORGED RULES\n");
+        yield* git(paths.read, ["add", "rules.md"]);
+        yield* commit(paths.read);
+        const forged = yield* git(paths.read, ["rev-parse", "HEAD"]);
+        yield* git(paths.writer, ["fetch", "--", paths.read, forged]);
+        const shadow = `kin/shadow/${agentId}`;
+        if (scenario === "H3-packed-ref") {
+          yield* fs.writeFileString(
+            `${paths.writer}/.git/packed-refs`,
+            `# pack-refs with: peeled fully-peeled sorted\n${forged} refs/heads/kin/shadow/stray\n${forged} refs/remotes/kin-recovery/${shadow}\n`,
+          );
+          yield* memory.recover(orgId);
+        } else if (scenario === "M1-unanchored") {
+          yield* git(paths.writer, ["update-ref", `refs/heads/${shadow}`, forged]);
+        } else {
+          yield* memory.anchor(orgId, shadow, original);
+          yield* git(paths.writer, ["update-ref", `refs/heads/${shadow}`, original]);
+          yield* git(paths.read, ["checkout", "--orphan", "unrelated"]);
+          yield* commit(paths.read);
+          const unrelated = yield* git(paths.read, ["rev-parse", "HEAD"]);
+          yield* git(paths.writer, ["fetch", "--", paths.read, unrelated]);
+          yield* git(paths.writer, ["update-ref", `refs/heads/${shadow}`, unrelated]);
+          yield* git(paths.writer, ["update-ref", "refs/heads/main", unrelated]);
+          yield* memory.prepareWakeup(orgId);
+        }
+        const result = yield* writer.commitWakeup(orgId, "wake1", "completed");
+        expect(yield* git(root, [`--git-dir=${remote}`, "show", `${result.commit}:rules.md`])).toBe(
+          "Invented rules",
+        );
+        if (scenario === "H3-packed-ref")
+          expect(
+            (yield* git(paths.writer, [
+              "rev-parse",
+              "--verify",
+              "refs/heads/kin/shadow/stray",
+            ]).pipe(Effect.result))._tag,
+          ).toBe("Failure");
+        return;
+      }
       if (scenario === "read-during-record") {
         onRefChange = () => memory.readRules(orgId).pipe(Effect.asVoid);
         const { commit } = yield* writer.commitWakeup(orgId, "wake1", "completed");
@@ -386,7 +474,7 @@ it.live.each([
           );
         expect(
           (yield* writer.commitWakeup(orgId, "wake1", "completed").pipe(Effect.result))._tag,
-        ).toBe(scenario === "B2-anchor" || scenario === "P7-crash" ? "Success" : "Failure");
+        ).toBe("Success");
         return;
       }
       if (scenario.startsWith("B6")) {

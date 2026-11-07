@@ -144,6 +144,10 @@ export class Memory extends Context.Service<
       orgId: KinOrgId,
       wakeupId?: string,
     ) => Effect.Effect<{ head: string; indexAsOf: DateTime.Utc }, MemoryFailure>;
+    readonly readPromptSnapshot: (
+      orgId: KinOrgId,
+      expectedHead: string,
+    ) => Effect.Effect<{ readonly rules: string; readonly index: string }, MemoryFailure>;
     readonly readIndex: (orgId: KinOrgId) => Effect.Effect<string, MemoryFailure>;
     readonly readRules: (orgId: KinOrgId) => Effect.Effect<string, MemoryFailure>;
     readonly readItem: (
@@ -313,6 +317,32 @@ const make = Effect.gen(function* () {
       Effect.mapError((cause) => new MemoryError({ orgId, operation: "git", cause })),
     );
   });
+  const advertisedHead = Effect.fn("Memory.advertisedHead")(function* (
+    orgId: KinOrgId,
+    writer: string,
+    url: string,
+    branch: string,
+  ) {
+    const line = (yield* git(orgId, writer, [
+      "ls-remote",
+      "--",
+      url,
+      `refs/heads/${branch}`,
+    ])).trim();
+    const [head, name] = line.split(/\s+/);
+    if (!head || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(head) || name !== `refs/heads/${branch}`)
+      return yield* new MemoryCheckoutInvalid({
+        orgId,
+        operation: "remote",
+        reason: "Missing advertised head",
+      });
+    yield* git(orgId, writer, ["fetch", "--", url, head]);
+    yield* readFiles(orgId, writer, head).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(VcsProcess, vcs),
+    );
+    return head;
+  });
   const io = <A, E, R>(orgId: KinOrgId, operation: string, effect: Effect.Effect<A, E, R>) =>
     effect.pipe(Effect.mapError((cause) => new MemoryError({ orgId, operation, cause })));
 
@@ -374,6 +404,26 @@ const make = Effect.gen(function* () {
     return { repo, root, writer, read };
   });
 
+  const ancestors = Effect.fn("Memory.ancestors")(function* (
+    orgId: KinOrgId,
+    writer: string,
+    tip: string,
+  ) {
+    const seen = new Map<string, ReadonlyArray<string>>();
+    const pending = [tip];
+    while (pending.length) {
+      const sha = pending.pop();
+      if (!sha || seen.has(sha)) continue;
+      const commit = yield* readCommit(orgId, writer, sha).pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(VcsProcess, vcs),
+      );
+      seen.set(sha, commit.parents);
+      pending.push(...commit.parents);
+    }
+    return seen;
+  });
+
   const validateWriter = Effect.fn("Memory.validateWriter")(function* (
     orgId: KinOrgId,
     paths: { writer: string; repo: { repoUrl: string } },
@@ -400,13 +450,12 @@ const make = Effect.gen(function* () {
       const head = (yield* git(orgId, paths.writer, ["rev-parse", `refs/heads/${branch}`])).trim();
       if (!checkTip) return;
       if (head !== expected) {
-        yield* readCommit(orgId, paths.writer, head).pipe(
-          Effect.provideService(FileSystem.FileSystem, fs),
-          Effect.provideService(VcsProcess, vcs),
-        );
-        yield* git(orgId, paths.writer, ["merge-base", "--is-ancestor", expected, head]);
         yield* git(orgId, paths.writer, ["update-ref", `refs/heads/${branch}`, expected, head]);
-        yield* notify({ orgId, branch, reason: "Rolled back unrecorded branch tip" });
+        yield* notify({
+          orgId,
+          branch,
+          reason: "Reset tampered branch to anchor; unpushed work at the replaced tip is lost",
+        });
       }
     }).pipe(
       Effect.mapError(
@@ -453,12 +502,7 @@ const make = Effect.gen(function* () {
             temporary,
           ]);
           const branch = config.defaultBranch ?? "main";
-          const head = (yield* git(orgId, temporary, [
-            "fetch",
-            "--",
-            paths.repo.repoUrl,
-            `refs/heads/${branch}`,
-          ])).trim();
+          const head = yield* advertisedHead(orgId, temporary, paths.repo.repoUrl, branch);
           const expected = yield* anchor(orgId, branch, head);
           if (expected !== head)
             return yield* new MemoryCheckoutInvalid({
@@ -491,14 +535,31 @@ const make = Effect.gen(function* () {
       Effect.provideService(FileSystem.FileSystem, fs),
       Effect.provideService(VcsProcess, vcs),
     );
+    const sizes = new Map<string, number>();
+    const blobsToSize = verifiedEntries.filter((entry) =>
+      ["100644", "100755"].includes(entry.mode),
+    );
+    if (blobsToSize.length) {
+      const headers = yield* git(
+        orgId,
+        paths.writer,
+        ["cat-file", "--batch-check"],
+        blobsToSize.map((entry) => entry.sha).join("\n") + "\n",
+      );
+      for (const line of headers.trim().split("\n")) {
+        const [sha, type, size] = line.split(" ");
+        if (sha && type === "blob" && size) sizes.set(sha, Number(size));
+      }
+    }
     const entries = verifiedEntries
       .filter(
-        ({ relative }) =>
+        ({ relative, mode }) =>
+          ["100644", "100755"].includes(mode) &&
           relative.endsWith(".md") &&
           (folders.some((folder) => relative.startsWith(`${folder}/`)) ||
             ["rules.md", "INDEX.md"].includes(relative)),
       )
-      .map((entry) => ({ ...entry, size: 0 }));
+      .map((entry) => ({ ...entry, size: sizes.get(entry.sha) ?? Infinity }));
     const pending = [
       ...new Map(
         entries
@@ -739,6 +800,7 @@ const make = Effect.gen(function* () {
     return text;
   });
 
+  let conflictSequence = 0;
   const preserve = Effect.fn("Memory.preserve")(function* (
     orgId: KinOrgId,
     writer: string,
@@ -748,19 +810,23 @@ const make = Effect.gen(function* () {
   ) {
     const now = yield* Clock.currentTimeMillis;
     const id = wakeupId ?? `recovery-${now}-${head.slice(0, 12)}`;
-    if (!/^[a-zA-Z0-9_-]+$/.test(id))
+    if (!/^[a-zA-Z0-9_-]+$/.test(id) || !/^[a-zA-Z0-9_-]+$/.test(orgId))
       return yield* new MemoryCheckoutInvalid({
         orgId,
         operation: "preserve",
         reason: "Invalid wake-up id",
       });
-    const branch = `kin/conflict/${orgId}/${id}`;
+    const branch = `kin/conflict/${orgId}/${id}-${now.toString(36)}-${++conflictSequence}`;
     if ((yield* git(orgId, writer, ["ls-remote", "--", url, `refs/heads/${branch}`])).trim())
       return yield* new MemorySyncConflict({
         orgId,
         operation: "preserve",
         reason: "Conflict branch already exists",
       });
+    yield* readFiles(orgId, writer, head).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(VcsProcess, vcs),
+    );
     yield* git(orgId, writer, ["push", "--", url, `${head}:refs/heads/${branch}`]);
     return branch;
   });
@@ -786,30 +852,44 @@ const make = Effect.gen(function* () {
           reason: "Invalid writer directory",
         });
     }
-    yield* git(orgId, paths.writer, [
-      "fetch",
-      "--prune",
+    const refs = (yield* git(orgId, paths.writer, [
+      "ls-remote",
       "--",
       paths.repo.repoUrl,
-      "+refs/heads/*:refs/remotes/kin-recovery/*",
-    ]);
-    const refs = (yield* git(orgId, paths.writer, [
-      "for-each-ref",
-      "--format=%(refname:strip=3) %(objectname)",
-      "refs/remotes/kin-recovery/",
+      "refs/heads/*",
     ]))
       .trim()
       .split("\n")
       .filter(Boolean);
     const targets = new Map<string, string>();
     for (const ref of refs) {
-      const [branch, head] = ref.split(" ");
+      const [head, name] = ref.split(/\s+/);
+      const branch = name?.replace(/^refs\/heads\//, "");
       if (
         branch &&
         head &&
+        /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(head) &&
         (branch === (config.defaultBranch ?? "main") || branch.startsWith("kin/shadow/"))
-      )
+      ) {
+        yield* git(orgId, paths.writer, ["fetch", "--", paths.repo.repoUrl, head]);
         targets.set(branch, head);
+      }
+    }
+    // Local enumeration is deletion-only; it can never introduce a recovery target.
+    const localShadows = (yield* git(orgId, paths.writer, [
+      "for-each-ref",
+      "--format=%(refname) %(objectname)",
+      "refs/heads/kin/shadow/",
+    ]))
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+    for (const ref of localShadows) {
+      const [name, sha] = ref.split(" ");
+      if (name && sha && !targets.has(name.slice("refs/heads/".length))) {
+        yield* git(orgId, paths.writer, ["update-ref", "-d", name, sha]);
+        yield* notify({ orgId, branch: name, reason: "Deleted untrusted local shadow branch" });
+      }
     }
     const main = targets.get(config.defaultBranch ?? "main");
     if (!main)
@@ -841,13 +921,8 @@ const make = Effect.gen(function* () {
           Effect.provideService(VcsProcess, vcs),
           Effect.result,
         );
-        const present = yield* git(orgId, paths.writer, [
-          "merge-base",
-          "--is-ancestor",
-          old,
-          head,
-        ]).pipe(Effect.result);
-        if (local._tag === "Success" && present._tag === "Failure" && !preserved.has(old)) {
+        const present = yield* ancestors(orgId, paths.writer, head);
+        if (local._tag === "Success" && !present.has(old) && !preserved.has(old)) {
           const conflictBranch = yield* preserve(orgId, paths.writer, paths.repo.repoUrl, old);
           preserved.add(old);
           yield* notify({
@@ -898,70 +973,44 @@ const make = Effect.gen(function* () {
     const { repo } = yield* pathsFor(orgId);
     const branch = config.defaultBranch ?? "main";
     let head = yield* anchor(orgId, branch);
-    const fetched = yield* git(orgId, paths.writer, [
-      "fetch",
-      "--",
-      repo.repoUrl,
-      `refs/heads/${branch}`,
-    ]).pipe(Effect.result);
+    const fetched = yield* advertisedHead(orgId, paths.writer, repo.repoUrl, branch).pipe(
+      Effect.result,
+    );
+    if (fetched._tag === "Failure" && fetched.failure._tag === "MemoryCheckoutInvalid")
+      return yield* fetched.failure;
     if (fetched._tag === "Success") {
       const remote = fetched.success.trim();
       if (remote !== head) {
-        const ff = yield* git(orgId, paths.writer, [
-          "merge-base",
-          "--is-ancestor",
-          head,
-          remote,
-        ]).pipe(Effect.result);
+        const remoteAncestors = yield* ancestors(orgId, paths.writer, remote);
+        const localAncestors = yield* ancestors(orgId, paths.writer, head);
         let next = remote;
-        if (ff._tag === "Failure") {
-          const ahead = yield* git(orgId, paths.writer, [
-            "merge-base",
-            "--is-ancestor",
-            remote,
-            head,
-          ]).pipe(Effect.result);
-          if (ahead._tag === "Success") next = head;
+        if (!remoteAncestors.has(head)) {
+          if (localAncestors.has(remote)) next = head;
           else {
-            const base = (yield* git(orgId, paths.writer, ["merge-base", remote, head])).trim();
-            const commits: string[] = [];
-            let cursor: string | undefined = head;
-            while (cursor !== base) {
-              if (!cursor || commits.includes(cursor))
-                return yield* new MemoryCheckoutInvalid({
-                  orgId,
-                  operation: "rebase",
-                  reason: "Invalid commit ancestry",
-                });
-              const sha: string = cursor;
-              const verified = yield* readCommit(orgId, paths.writer, sha).pipe(
-                Effect.provideService(FileSystem.FileSystem, fs),
-                Effect.provideService(VcsProcess, vcs),
-              );
-              commits.unshift(sha);
-              cursor = verified.parent;
-            }
+            const common = new Set(
+              [...localAncestors.keys()].filter((sha) => remoteAncestors.has(sha)),
+            );
+            const candidates = new Set(common);
+            for (const sha of common)
+              for (const parent of localAncestors.get(sha) ?? []) candidates.delete(parent);
+            const base = candidates.size === 1 ? [...candidates][0] : undefined;
+            if (!base)
+              return yield* new MemorySyncConflict({
+                orgId,
+                operation: "merge",
+                reason: "No unique verified merge base",
+              });
+            const commits = [head];
             for (const commit of commits) {
-              const verified = yield* readCommit(orgId, paths.writer, commit).pipe(
-                Effect.provideService(FileSystem.FileSystem, fs),
-                Effect.provideService(VcsProcess, vcs),
-              );
-              const parent = verified.parent;
+              const parent = base;
               if (!parent)
                 return yield* new MemoryCheckoutInvalid({
                   orgId,
                   operation: "rebase",
                   reason: "Missing parent",
                 });
-              const merged = yield* git(orgId, paths.writer, [
-                "merge-tree",
-                "--write-tree",
-                `--merge-base=${parent}`,
-                next,
-                commit,
-              ]).pipe(Effect.result);
               let tree: string | undefined;
-              if (merged._tag === "Failure") {
+              {
                 const read = (sha: string) =>
                   readFiles(orgId, paths.writer, sha).pipe(
                     Effect.provideService(FileSystem.FileSystem, fs),
@@ -970,9 +1019,23 @@ const make = Effect.gen(function* () {
                 const base = yield* read(parent);
                 const local = yield* read(commit);
                 const remoteFiles = yield* read(next);
+                const metadata = new Map<string, Map<string, { mode: string; sha: string }>>();
+                for (const sha of [parent, commit, next]) {
+                  const entries = yield* readTree(orgId, paths.writer, sha).pipe(
+                    Effect.provideService(FileSystem.FileSystem, fs),
+                    Effect.provideService(VcsProcess, vcs),
+                  );
+                  metadata.set(sha, new Map(entries.map((entry) => [entry.relative, entry])));
+                }
                 const changed = [...new Set([...base.keys(), ...local.keys()])].filter(
-                  (file) => !base.get(file)?.equals(local.get(file) ?? Buffer.alloc(0)),
+                  (file) =>
+                    metadata.get(parent)?.get(file)?.sha !== metadata.get(commit)?.get(file)?.sha ||
+                    metadata.get(parent)?.get(file)?.mode !== metadata.get(commit)?.get(file)?.mode,
                 );
+                const modes = new Map(
+                  [...(metadata.get(next) ?? [])].map(([file, entry]) => [file, entry.mode]),
+                );
+
                 const same = (left: Buffer | undefined, right: Buffer | undefined) =>
                   left === undefined
                     ? right === undefined
@@ -980,9 +1043,11 @@ const make = Effect.gen(function* () {
                 const journalOnly = changed.every(
                   (file) =>
                     file === "INDEX.md" ||
-                    same(remoteFiles.get(file), base.get(file)) ||
-                    same(remoteFiles.get(file), local.get(file)) ||
+                    (same(remoteFiles.get(file), base.get(file)) &&
+                      metadata.get(parent)?.get(file)?.mode === modes.get(file)) ||
                     (file.startsWith("journal/") &&
+                      ["100644", "100755"].includes(metadata.get(commit)?.get(file)?.mode ?? "") &&
+                      metadata.get(commit)?.get(file)?.mode === modes.get(file) &&
                       local
                         .get(file)
                         ?.subarray(0, base.get(file)?.length ?? 0)
@@ -1010,11 +1075,13 @@ const make = Effect.gen(function* () {
                   break;
                 }
                 for (const file of changed) {
-                  if (file === "INDEX.md" || same(remoteFiles.get(file), local.get(file))) continue;
+                  if (file === "INDEX.md") continue;
                   const bytes = local.get(file);
                   if (same(remoteFiles.get(file), base.get(file))) {
-                    if (bytes) remoteFiles.set(file, bytes);
-                    else remoteFiles.delete(file);
+                    if (bytes) {
+                      remoteFiles.set(file, bytes);
+                      modes.set(file, metadata.get(commit)?.get(file)?.mode ?? "100644");
+                    } else remoteFiles.delete(file);
                   } else
                     remoteFiles.set(
                       file,
@@ -1035,6 +1102,7 @@ const make = Effect.gen(function* () {
                 }
                 const reads = yield* io(orgId, "mergeIndex", cache.lastReads(orgId));
                 const zone = yield* io(orgId, "mergeIndex", cache.ownerTimeZone(orgId));
+                modes.set("INDEX.md", "100644");
                 remoteFiles.set(
                   "INDEX.md",
                   Buffer.from(buildIndex(heads, reads, yield* Clock.currentTimeMillis, zone)),
@@ -1050,15 +1118,19 @@ const make = Effect.gen(function* () {
                     );
                     for (const [file, bytes] of remoteFiles) {
                       yield* io(orgId, "mergeBlob", fs.writeFile(`${temp}/blob`, bytes));
-                      const blob = (yield* git(orgId, paths.writer, [
-                        "hash-object",
-                        "-w",
-                        "--no-filters",
-                        `${temp}/blob`,
-                      ])).trim();
+                      const mode = modes.get(file) ?? "100644";
+                      const blob =
+                        mode === "160000"
+                          ? bytes.toString("ascii")
+                          : (yield* git(orgId, paths.writer, [
+                              "hash-object",
+                              "-w",
+                              "--no-filters",
+                              `${temp}/blob`,
+                            ])).trim();
                       yield* memoryGit(
                         paths.writer,
-                        ["update-index", "--add", "--cacheinfo", `100644,${blob},${file}`],
+                        ["update-index", "--add", "--cacheinfo", `${mode},${blob},${file}`],
                         undefined,
                         env,
                       ).pipe(
@@ -1074,7 +1146,7 @@ const make = Effect.gen(function* () {
                     )).trim();
                   }),
                 );
-              } else tree = merged.success.trim().split("\n")[0];
+              }
               if (!tree || !/^[0-9a-f]{40,64}$/.test(tree))
                 return yield* new MemorySyncConflict({
                   orgId,
@@ -1163,6 +1235,29 @@ const make = Effect.gen(function* () {
     ),
     prepareWakeup: Effect.fn("Memory.prepareWakeup")((orgId, wakeupId) =>
       withWriterLock(orgId, locked(orgId, prepare(orgId, wakeupId))),
+    ),
+    readPromptSnapshot: Effect.fn("Memory.readPromptSnapshot")((orgId, expectedHead) =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const snapshot = yield* load(orgId);
+          if (snapshot.head !== expectedHead)
+            return yield* new MemoryError({
+              orgId,
+              operation: "promptSnapshot",
+              reason: "Memory head does not match wake-up",
+            });
+          const rules = snapshot.files.get("rules.md");
+          const index = snapshot.index ?? snapshot.files.get("INDEX.md") ?? "";
+          if (rules === undefined)
+            return yield* new MemoryError({
+              orgId,
+              operation: "promptSnapshot",
+              reason: "Missing committed prompt rules",
+            });
+          return { rules, index };
+        }),
+      ),
     ),
     readIndex: Effect.fn("Memory.readIndex")((orgId) => locked(orgId, readFile(orgId, "INDEX.md"))),
     readRules: Effect.fn("Memory.readRules")((orgId) => locked(orgId, readFile(orgId, "rules.md"))),

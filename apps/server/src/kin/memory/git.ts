@@ -1,8 +1,11 @@
+import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
 import { MemoryConfig } from "./MemoryConfig.ts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import { VcsProcess } from "../../vcs/VcsProcess.ts";
+
+class MemoryGitRefRace extends Schema.TaggedError<MemoryGitRefRace>()("MemoryGitRefRace", {}) {}
 
 const formats = new Map<string, "sha1" | "sha256">();
 
@@ -21,12 +24,14 @@ export const memoryGit = Effect.fn("Memory.gitHardened")(function* (
     Effect.gen(function* () {
       const directory = yield* fs.makeTempDirectoryScoped();
       const repo = yield* fs.exists(`${cwd}/.git`);
+      let packedBefore: string | undefined;
       let format = formats.get(cwd);
       if (!format && repo) {
         const text = yield* fs
           .readFileString(`${cwd}/.git/config`)
           .pipe(Effect.orElseSucceed(() => ""));
         format = /objectformat\s*=\s*sha256/i.test(text) ? "sha256" : "sha1";
+        if (formats.size >= 128) formats.clear();
         formats.set(cwd, format);
       }
       if (repo) {
@@ -48,25 +53,16 @@ export const memoryGit = Effect.fn("Memory.gitHardened")(function* (
           }
         }
       }
-      let attributes: string[] = [];
-      if (repo && args[0] === "merge-tree") {
-        const empty = yield* vcs.run({
-          operation: "Memory.emptyAttributes",
-          command: "git",
-          cwd,
-          args: [`--git-dir=${directory}`, "hash-object", "-w", "-t", "tree", "--stdin"],
-          stdin: "",
-          env: { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
-        });
-        attributes = [`--attr-source=${empty.stdout.trim()}`];
-      }
+      if (repo && args[0] === "update-ref")
+        packedBefore = yield* fs
+          .readFileString(`${directory}/packed-refs`)
+          .pipe(Effect.orElseSucceed(() => ""));
       const result = yield* vcs.run({
         operation: "Memory.gitHardened",
         command: "git",
         cwd,
         args: [
           "--no-replace-objects",
-          ...attributes,
           ...(repo
             ? [`--git-dir=${directory}`, ...(args[0] === "checkout" ? [`--work-tree=${cwd}`] : [])]
             : []),
@@ -99,6 +95,18 @@ export const memoryGit = Effect.fn("Memory.gitHardened")(function* (
         maxOutputBytes: 64 * 1024 * 1024,
         timeoutMs: 120_000,
       });
+      if (packedBefore !== undefined) {
+        const packedAfter = yield* fs
+          .readFileString(`${directory}/packed-refs`)
+          .pipe(Effect.orElseSucceed(() => ""));
+        if (packedBefore !== packedAfter) {
+          const current = yield* fs
+            .readFileString(`${cwd}/.git/packed-refs`)
+            .pipe(Effect.orElseSucceed(() => ""));
+          if (current !== packedBefore) return yield* new MemoryGitRefRace({});
+          yield* fs.writeFileString(`${cwd}/.git/packed-refs`, packedAfter);
+        }
+      }
       if (args[0] === "fetch" && !result.stdout)
         return (yield* fs.readFileString(`${directory}/FETCH_HEAD`)).split("\t")[0] ?? "";
       return result.stdout;

@@ -1,5 +1,5 @@
 import * as Clock from "effect/Clock";
-import { readFiles, readCommit } from "./objects.ts";
+import { readFiles, readCommit, readTree } from "./objects.ts";
 import { buildIndex } from "./buildIndex.ts";
 import * as MemoryCache from "./MemoryCache.ts";
 import type { KinAgentId, KinOrgId, MemoryTrust } from "@t3tools/contracts";
@@ -178,25 +178,26 @@ const make = Effect.gen(function* () {
           reason: "Missing recorded branch",
         });
       if (local.success !== anchored.success) {
-        yield* commitAt(orgId, writer, local.success);
-        yield* git(orgId, writer, ["merge-base", "--is-ancestor", anchored.success, local.success]);
         yield* git(orgId, writer, [
           "update-ref",
           `refs/heads/${branch}`,
           anchored.success,
           local.success,
         ]);
-        const notice = { orgId, branch, reason: "Rolled back unrecorded branch tip" };
+        const notice = {
+          orgId,
+          branch,
+          reason: "Reset tampered branch to anchor; unpushed work at the replaced tip is lost",
+        };
         yield* recovery ? recovery.notify(notice) : Effect.logWarning("Memory recovery", notice);
       }
       return anchored.success;
     }
-    if (local._tag === "Success")
-      return yield* new MemoryCheckoutInvalid({
-        orgId,
-        operation: "branch",
-        reason: "Unanchored local branch",
-      });
+    if (local._tag === "Success") {
+      yield* git(orgId, writer, ["update-ref", "-d", `refs/heads/${branch}`, local.success]);
+      const notice = { orgId, branch, reason: "Deleted unanchored local branch" };
+      yield* recovery ? recovery.notify(notice) : Effect.logWarning("Memory recovery", notice);
+    }
     const repo = config.repositories.find((repo) => repo.orgId === orgId);
     if (!repo)
       return yield* new MemoryConfigError({ orgId, operation: "branch", reason: "Unknown org" });
@@ -207,9 +208,18 @@ const make = Effect.gen(function* () {
       repo.repoUrl,
       `refs/heads/${branch}`,
     ]);
-    const remote = advertised
-      ? yield* git(orgId, writer, ["fetch", "--", repo.repoUrl, `refs/heads/${branch}`])
-      : main;
+    let remote = main;
+    if (advertised) {
+      const [sha, name] = advertised.split(/\s+/);
+      if (!sha || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(sha) || name !== `refs/heads/${branch}`)
+        return yield* new MemoryCheckoutInvalid({
+          orgId,
+          operation: "branch",
+          reason: "Invalid remote advertisement",
+        });
+      yield* git(orgId, writer, ["fetch", "--", repo.repoUrl, sha]);
+      remote = sha;
+    }
     yield* filesAt(orgId, writer, remote);
     const recorded = yield* memory.anchor(orgId, branch, remote);
     yield* git(orgId, writer, [
@@ -602,6 +612,11 @@ const make = Effect.gen(function* () {
                     GIT_COMMITTER_EMAIL: config.botEmail ?? "kin-memory@localhost",
                   };
                   yield* git(orgId, writer, ["read-tree", "--empty"], env);
+                  const entries = yield* readTree(orgId, writer, recorded).pipe(
+                    Effect.provideService(FileSystem.FileSystem, fs),
+                    Effect.provideService(VcsProcess, vcs),
+                  );
+                  const metadata = new Map(entries.map((entry) => [entry.relative, entry]));
                   const finalFiles = new Map(recordedFiles);
                   for (const [file, text] of state.files)
                     finalFiles.set(file, file === entry.path ? journal : Buffer.from(text));
@@ -609,16 +624,22 @@ const make = Effect.gen(function* () {
                     if (state.files.has(file)) yield* safePath(orgId, writer, file, true);
                     const input = `${temporary}/blob`;
                     yield* io(orgId, fs.writeFile(input, bytes));
-                    const blob = yield* git(
-                      orgId,
-                      writer,
-                      ["hash-object", "-w", "--no-filters", input],
-                      env,
-                    );
+                    const mode = state.files.has(file)
+                      ? "100644"
+                      : (metadata.get(file)?.mode ?? "100644");
+                    const blob =
+                      mode === "160000"
+                        ? bytes.toString("ascii")
+                        : yield* git(
+                            orgId,
+                            writer,
+                            ["hash-object", "-w", "--no-filters", input],
+                            env,
+                          );
                     yield* git(
                       orgId,
                       writer,
-                      ["update-index", "--add", "--cacheinfo", `100644,${blob},${file}`],
+                      ["update-index", "--add", "--cacheinfo", `${mode},${blob},${file}`],
                       env,
                     );
                   }
