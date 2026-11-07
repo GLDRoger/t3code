@@ -206,6 +206,22 @@ it.live.each([
         expect(yield* fs.exists(`${a.writer}/incomplete`)).toBe(false);
         const prepared = yield* memory.prepareWakeup(orgA);
         expect(prepared.head).toMatch(/^[0-9a-f]{40}$/);
+        if (indexDirectory) {
+          expect(
+            yield* memory.readPromptSnapshot(orgA, prepared.head).pipe(Effect.result),
+          ).toMatchObject({ _tag: "Failure", failure: { _tag: "MemoryError" } });
+        } else {
+          const promptSnapshot = yield* memory.readPromptSnapshot(orgA, prepared.head);
+          expect(promptSnapshot).toEqual({
+            rules: yield* fs.readFileString(`${source}/rules.md`),
+            index: yield* fs.readFileString(`${source}/INDEX.md`),
+          });
+          yield* memory.rebuildIndex(orgA);
+          expect(yield* memory.readPromptSnapshot(orgA, prepared.head)).toEqual(promptSnapshot);
+        }
+        expect(
+          yield* memory.readPromptSnapshot(orgA, "wrong-head").pipe(Effect.result),
+        ).toMatchObject({ _tag: "Failure", failure: { _tag: "MemoryError" } });
         expect(yield* memory.readRules(orgA)).toBe("Invented standing rules.\n");
         expect(yield* memory.readIndex(orgA)).toMatch(/^As of /);
         yield* memory.rebuildIndex(orgA);

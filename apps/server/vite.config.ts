@@ -1,6 +1,8 @@
 import "vite-plus/test/config";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- tsdown needs the asset path when it reads this config.
 import * as NodePath from "node:path";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Bundle immutable prompt assets for packaged and SEA servers.
+import * as NodeFS from "node:fs";
 import { defineConfig, mergeConfig } from "vite-plus";
 
 import baseConfig from "../../vite.config.ts";
@@ -88,6 +90,23 @@ export default mergeConfig(
       },
     },
     pack: {
+      plugins: [
+        {
+          name: "kin-lead-prompt-assets",
+          transform(code, id) {
+            if (!id.endsWith("/kin/lead/LeadPrompt.ts")) return;
+            for (const name of ["instructions", "routines"]) {
+              const expression = `NodeFS.readFileSync(new URL("./${name}.md", import.meta.url), "utf8")`;
+              if (!code.includes(expression))
+                this.error(`Missing Kin prompt asset expression: ${name}`);
+              const asset = NodePath.join(import.meta.dirname, `src/kin/lead/${name}.md`);
+              this.addWatchFile(asset);
+              code = code.replace(expression, JSON.stringify(NodeFS.readFileSync(asset, "utf8")));
+            }
+            return { code, map: null };
+          },
+        },
+      ],
       // SEA embeds one entry; expose the history worker as a hidden subcommand.
       entry: packBootstrap
         ? ["src/bin.ts"]
