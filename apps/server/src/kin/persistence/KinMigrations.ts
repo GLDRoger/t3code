@@ -6,12 +6,15 @@ import Lead from "./migrations/K002_Lead.ts";
 import Triggers from "./migrations/K003_Triggers.ts";
 import MemoryReads from "./migrations/K004_MemoryReads.ts";
 
+import MemoryHeads from "./migrations/K005_MemoryHeads.ts";
+
 const run = Migrator.make({});
 const loader = Migrator.fromRecord({
   "1_ChatCore": ChatCore,
   "2_Lead": Lead,
   "3_Triggers": Triggers,
   "4_MemoryReads": MemoryReads,
+  "5_MemoryHeads": MemoryHeads,
 });
 
 export const runKinMigrations = Effect.fn("KinMigrations.run")(function* () {

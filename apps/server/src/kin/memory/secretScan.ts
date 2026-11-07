@@ -25,9 +25,13 @@ export class KinSecretScan extends Context.Service<
   }
 >()("t3/kin/memory/secretScan/KinSecretScan") {}
 
-export const stubLayer = Layer.succeed(KinSecretScan, {
-  scan: Effect.fn("KinSecretScan.stub")(() => Effect.succeed([])),
-});
+export const noFindingsStubLayer = Layer.effect(
+  KinSecretScan,
+  Effect.gen(function* () {
+    yield* Effect.logWarning("SECURITY: Kin secret scanning is disabled (no-findings stub)");
+    return KinSecretScan.of({ scan: Effect.fn("KinSecretScan.stub")(() => Effect.succeed([])) });
+  }),
+);
 export const testLayer = (findings: ReadonlyArray<SecretFinding>) =>
   Layer.succeed(KinSecretScan, {
     scan: Effect.fn("KinSecretScan.fixture")(() => Effect.succeed(findings)),

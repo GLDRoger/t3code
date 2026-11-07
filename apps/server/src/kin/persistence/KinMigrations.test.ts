@@ -20,6 +20,7 @@ const tableNames = [
   "kin_cursor",
   "kin_events",
   "kin_leads",
+  "kin_memory_heads",
   "kin_memory_reads",
   "kin_messages",
   "kin_org_state",
@@ -82,6 +83,7 @@ describe("Kin migrations", () => {
           { migration_id: 2, name: "Lead" },
           { migration_id: 3, name: "Triggers" },
           { migration_id: 4, name: "MemoryReads" },
+          { migration_id: 5, name: "MemoryHeads" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
@@ -125,6 +127,7 @@ describe("Kin migrations", () => {
           { migration_id: 2, name: "Lead" },
           { migration_id: 3, name: "Triggers" },
           { migration_id: 4, name: "MemoryReads" },
+          { migration_id: 5, name: "MemoryHeads" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -189,6 +192,7 @@ describe("Kin migrations", () => {
         [2, "Lead"],
         [3, "Triggers"],
         [4, "MemoryReads"],
+        [5, "MemoryHeads"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -211,6 +215,7 @@ describe("Kin migrations", () => {
         { migration_id: 2, name: "Lead" },
         { migration_id: 3, name: "Triggers" },
         { migration_id: 4, name: "MemoryReads" },
+        { migration_id: 5, name: "MemoryHeads" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);

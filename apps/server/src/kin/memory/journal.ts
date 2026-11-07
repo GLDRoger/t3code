@@ -1,3 +1,11 @@
+import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+
+export class MemoryJournalError extends Schema.TaggedError<MemoryJournalError>()(
+  "MemoryJournalError",
+  { reason: Schema.String },
+) {}
+
 export interface JournalContext {
   readonly wakeupId: string;
   readonly agentId: string;
@@ -7,7 +15,7 @@ export interface JournalContext {
   readonly eventIds: ReadonlyArray<string>;
 }
 const oneLine = (value: string) => value.replace(/[\r\n\u2028\u2029]/g, " ");
-export const journalEntry = (
+const renderJournalEntry = (
   ctx: JournalContext,
   outcome: "completed" | "failed",
   lines: ReadonlyArray<string>,
@@ -28,3 +36,11 @@ export const journalEntry = (
     text: `\n## ${part("hour")}:${part("minute")} · wake-up ${oneLine(ctx.wakeupId)} · ${oneLine(ctx.agentId)} · ${ctx.level}\n\nOutcome: ${outcome}\nEvents: ${ctx.eventIds.map(oneLine).join(", ")}\n\n${lines.map((line) => `- ${oneLine(line)}\n`).join("")}`,
   };
 };
+
+export const journalEntry = Effect.fn("Memory.journalEntry")(
+  (ctx: JournalContext, outcome: "completed" | "failed", lines: ReadonlyArray<string>) =>
+    Effect.try({
+      try: () => renderJournalEntry(ctx, outcome, lines),
+      catch: () => new MemoryJournalError({ reason: "Invalid journal date or time zone" }),
+    }),
+);
