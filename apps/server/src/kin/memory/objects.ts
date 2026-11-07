@@ -113,6 +113,12 @@ export const readTree = Effect.fn("Memory.readTree")(function* (
         if (mode === "40000") pending.push({ sha, prefix: `${relative}/` });
         else if (["100644", "100755", "120000", "160000"].includes(mode))
           entries.push({ sha, relative, mode });
+        else
+          return yield* new MemoryCheckoutInvalid({
+            orgId,
+            operation: "tree",
+            reason: "Unknown tree entry mode",
+          });
         offset = nul + 1 + width;
       }
     }

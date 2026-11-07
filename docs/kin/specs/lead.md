@@ -384,7 +384,7 @@ Staged bytes live only in server memory. Discard requires no checkout validation
 
 Branches: at L1 and above the writer commits to the default branch. At L0 it commits to `kin/shadow/<agentId>` (see Levels). Dreaming (triggers spec) commits to `dream/<date>` branches and takes the same per-organization semaphore while it writes, so it never runs during a wake-up.
 
-Pushes and fetches use the configured URL explicitly, never a local remote name or pushurl. A retry of an already recorded wake-up pushes again before returning success. Synchronization uses verified ancestry and plumbing-only fast-forwards. Divergent trees merge disjoint edits and append-only journals in process, then use `commit-tree` with both parents. Content conflicts preserve the local head on a conflict branch, reset to the remote anchor and notify the owner. Missing or ambiguous merge bases preserve and notify, then fail closed without resetting. Failed fetches retain the SQLite anchor. Existing writers with mismatched or missing anchors fail closed as `MemoryCheckoutInvalid`.
+Pushes and fetches use the configured URL explicitly, never a local remote name or pushurl. A retry of an already recorded wake-up pushes again before returning success. Synchronization uses verified ancestry and plumbing-only fast-forwards. Divergent trees merge disjoint edits and append-only journals in process, then use `commit-tree` with both parents. Content conflicts preserve the local head on a conflict branch, reset to the remote anchor and notify the owner. Missing or ambiguous merge bases preserve and notify, then fail closed without resetting; the organization stays blocked until an operator runs `Memory.recover`, and repeated attempts reuse the conflict branch already holding that head. Failed fetches retain the SQLite anchor. Existing writers with mismatched or missing anchors fail closed as `MemoryCheckoutInvalid`.
 
 Front matter matches the kin-memory README, including snake_case keys. Date-only values mean UTC midnight; date-times require an explicit UTC offset, and invalid dates make an item malformed. `links` values containing `#` must be quoted. `owner` and `said_by` hold handles; `orgId` and `path` belong only to the server-side `MemoryItemHead`.
 
@@ -671,7 +671,16 @@ const config = Layer.succeed(MemoryConfig, {
 await Effect.runPromise(
   Effect.scoped(
     Effect.flatMap(Memory.Memory, (memory) => memory.recover(orgId)).pipe(
-      Effect.provide(Memory.layer.pipe(Layer.provide(config))),
+      Effect.provide(
+        Memory.layer.pipe(
+          Layer.provide(config),
+          Layer.provide(
+            Layer.succeed(Memory.MemoryRecoveryHooks, {
+              notify: (notice) => Effect.logWarning("Memory recovery", notice),
+            }),
+          ),
+        ),
+      ),
       Effect.provide(database),
       Effect.provide(Vcs.layer),
       Effect.provide(NodeServices.layer),

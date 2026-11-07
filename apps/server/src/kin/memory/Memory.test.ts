@@ -1016,6 +1016,20 @@ it.live.each([
               message.includes("fixture-wakeup"),
           ),
         ).toBe(true);
+        const again = yield* memory.prepareWakeup(orgA, "fixture-wakeup-2").pipe(Effect.result);
+        expect(again._tag).toBe("Failure");
+        expect(
+          yield* git(root, [
+            `--git-dir=${remote}`,
+            "for-each-ref",
+            "--format=%(objectname)",
+            `refs/heads/kin/conflict/${orgA}/`,
+          ]),
+        ).toBe(local);
+        yield* memory.recover(orgA);
+        expect(
+          (yield* memory.prepareWakeup(orgA, "fixture-wakeup-3").pipe(Effect.result))._tag,
+        ).toBe("Success");
       } else if (scenario === "push retry") {
         expect(result._tag).toBe("Success");
         if (result._tag === "Success") {

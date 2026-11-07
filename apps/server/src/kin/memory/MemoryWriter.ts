@@ -577,8 +577,18 @@ const make = Effect.gen(function* () {
                 Buffer.from(entry.text),
               ]);
               state.files.set(entry.path, journal.toString("utf8"));
+              const regular = new Set(
+                (yield* readTree(orgId, writer, recorded).pipe(
+                  Effect.provideService(FileSystem.FileSystem, fs),
+                  Effect.provideService(VcsProcess, vcs),
+                ))
+                  .filter((entry) => ["100644", "100755"].includes(entry.mode))
+                  .map((entry) => entry.relative),
+              );
               const combined = new Map(
-                [...recordedFiles].map(([path, bytes]) => [path, bytes.toString("utf8")]),
+                [...recordedFiles]
+                  .filter(([path]) => regular.has(path))
+                  .map(([path, bytes]) => [path, bytes.toString("utf8")]),
               );
               for (const [path, text] of state.files) combined.set(path, text);
               const heads = [];

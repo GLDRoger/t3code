@@ -140,6 +140,7 @@ export class Memory extends Context.Service<
       branch: string,
       initial?: string,
     ) => Effect.Effect<string, MemoryFailure>;
+    /** Server-only; never register as an agent tool. */
     readonly record: (
       orgId: KinOrgId,
       branch: string,
@@ -796,6 +797,21 @@ const make = Effect.gen(function* () {
         operation: "preserve",
         reason: "Invalid wake-up id",
       });
+    const existing = (yield* git(orgId, writer, [
+      "ls-remote",
+      "--",
+      url,
+      `refs/heads/kin/conflict/${orgId}/*`,
+    ]))
+      .split("\n")
+      .flatMap((line) => {
+        const [sha, ref] = line.split("\t");
+        return sha === head && ref?.startsWith("refs/heads/")
+          ? [ref.slice("refs/heads/".length)]
+          : [];
+      })
+      .toSorted()[0];
+    if (existing) return existing;
     const branch = `kin/conflict/${orgId}/${id}-${now.toString(36)}-${++conflictSequence}`;
     if ((yield* git(orgId, writer, ["ls-remote", "--", url, `refs/heads/${branch}`])).trim())
       return yield* new MemorySyncConflict({
@@ -1037,6 +1053,7 @@ const make = Effect.gen(function* () {
                 for (const [file, bytes] of mergedFiles) remoteFiles.set(file, bytes);
                 const heads = [];
                 for (const [file, bytes] of remoteFiles) {
+                  if (!["100644", "100755"].includes(modes.get(file) ?? "")) continue;
                   if (!folders.some((folder) => file.startsWith(`${folder}/`))) continue;
                   const parsed = yield* parseFrontMatter(orgId, file, bytes.toString("utf8")).pipe(
                     Effect.result,
