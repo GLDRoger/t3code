@@ -23,6 +23,13 @@ import * as MemoryConfig from "./MemoryConfig.ts";
 import * as ServerConfig from "../../config.ts";
 import { fixtureItem } from "./__fixtures__/items.ts";
 
+const memoryTestLayer = Memory.layer.pipe(
+  Layer.provide(
+    Layer.succeed(Memory.MemoryRecoveryHooks, {
+      notify: (notice) => Effect.logWarning("Memory recovery", notice),
+    }),
+  ),
+);
 const orgA = KinOrgId.make("demo-a");
 const orgB = KinOrgId.make("demo-b");
 const itemId = KinMemoryItemId.make("def-001");
@@ -137,7 +144,7 @@ const fakeRepository = (fs: FileSystem.FileSystem) => {
         }
         onStdoutChunk?.(Buffer.from(stdout));
         return Effect.gen(function* () {
-          if (args[0] === "clone") {
+          if (args[0] === "clone" || args[0] === "clone-snapshot") {
             yield* fs
               .makeDirectory(`${args.at(-1)}/.git/objects`, { recursive: true })
               .pipe(Effect.orDie);
@@ -176,7 +183,7 @@ const configLayer = (baseDirectory: string, repoUrl: string) =>
     ],
   });
 const memoryLayer = (base: string, repo: string) =>
-  Memory.layer.pipe(
+  memoryTestLayer.pipe(
     Layer.provide(configLayer(base, repo)),
     Layer.provide(gitLayer),
     Layer.provide(NodeServices.layer),
@@ -460,7 +467,7 @@ it.effect(
         expect(yield* memory.readIndex(orgA)).toContain("Invented service maintenance");
         expect(yield* memory.readIndex(orgA)).not.toContain("Never opened fixture");
       });
-      const layer = Memory.layer.pipe(
+      const layer = memoryTestLayer.pipe(
         Layer.provide(configLayer(root, "unused")),
         Layer.provide(repository.layer),
         Layer.provide(NodeServices.layer),
@@ -607,7 +614,7 @@ it.effect.each([
       expect(yield* fs.readFileString(`${outside}/keep`)).toBe("untouched");
     }).pipe(
       Effect.provide(
-        Memory.layer.pipe(
+        memoryTestLayer.pipe(
           Layer.provide(
             Layer.succeed(MemoryConfig.MemoryConfig, {
               baseDirectory: root,
@@ -746,7 +753,7 @@ it.live.each([
         expect(yield* fs.readDirectory(base)).toEqual([first]);
       }).pipe(
         Effect.provide(
-          Memory.layer.pipe(
+          memoryTestLayer.pipe(
             Layer.provide(
               Layer.succeed(MemoryConfig.MemoryConfig, {
                 baseDirectory: base,
@@ -827,6 +834,9 @@ it.live.each([
   "rebase in progress",
   "journal conflict",
   "H2-merge-swap",
+  "unrelated",
+  "criss-cross",
+  "push retry",
 ])("syncs the writer with $0", (scenario) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -884,7 +894,7 @@ it.live.each([
       const { writer } = yield* memory.ensureCheckouts(orgA);
       yield* git(writer, ["config", "user.name", "Fixture"]);
       yield* git(writer, ["config", "user.email", "fixture@example.invalid"]);
-      if (scenario === "journal conflict") {
+      if (scenario === "journal conflict" || scenario === "push retry") {
         yield* fs.makeDirectory(`${writer}/journal`, { recursive: true });
         yield* fs.makeDirectory(`${source}/journal`, { recursive: true });
         yield* fs.writeFileString(`${writer}/journal/day.md`, "local entry\n");
@@ -894,13 +904,28 @@ it.live.each([
           `${writer}/rules.md`,
           scenario === "H2-merge-swap" ? h2Local : "Local invented rules\n",
         );
-      const local = yield* commit(writer);
+      let local = yield* commit(writer);
+      if (scenario === "push retry") {
+        yield* git(writer, [
+          "commit",
+          "--allow-empty",
+          "-m",
+          "Earlier journal outcome\n\nEvents: fixture-earlier",
+        ]);
+        yield* git(writer, [
+          "commit",
+          "--allow-empty",
+          "-m",
+          "Later journal outcome\n\nEvents: fixture-later",
+        ]);
+        local = yield* git(writer, ["rev-parse", "HEAD"]);
+      }
       yield* memory.record(orgA, "main", initial.head, local);
       yield* fs.writeFileString(
-        `${source}/${scenario === "diverged" || scenario === "network down" || scenario === "dirty writer" || scenario === "H2-merge-swap" ? "remote-only" : "rules.md"}`,
+        `${source}/${scenario === "push retry" || scenario === "diverged" || scenario === "network down" || scenario === "dirty writer" || scenario === "H2-merge-swap" ? "remote-only" : "rules.md"}`,
         "Remote invented edit\n",
       );
-      if (scenario === "journal conflict") {
+      if (scenario === "journal conflict" || scenario === "push retry") {
         yield* fs.writeFileString(`${source}/journal/day.md`, "remote entry\n");
         yield* fs.writeFileString(`${source}/INDEX.md`, "remote generated index\n");
       }
@@ -920,8 +945,72 @@ it.live.each([
         const sha = yield* git(writer, ["rev-parse", `${local}:rules.md`]);
         attack = { sha, path: `${writer}/.git/objects/${sha.slice(0, 2)}/${sha.slice(2)}` };
       }
-      const result = yield* memory.prepareWakeup(orgA).pipe(Effect.result);
-      if (scenario === "H2-merge-swap") {
+      if (scenario === "unrelated" || scenario === "criss-cross") {
+        yield* git(writer, ["fetch", "--", remote, "main"]);
+        const remoteHead = yield* git(source, ["rev-parse", "HEAD"]);
+        const tree = yield* git(writer, ["rev-parse", `${local}^{tree}`]);
+        const parents = scenario === "criss-cross" ? ["-p", local, "-p", remoteHead] : [];
+        const replacement = yield* git(writer, [
+          "commit-tree",
+          tree,
+          ...parents,
+          "-m",
+          "invented local merge",
+        ]);
+        if (scenario === "criss-cross") {
+          const other = yield* git(writer, [
+            "commit-tree",
+            tree,
+            "-p",
+            remoteHead,
+            "-p",
+            local,
+            "-m",
+            "invented remote merge",
+          ]);
+          yield* git(writer, ["push", "--", remote, `${other}:refs/heads/main`]);
+        }
+        yield* git(writer, ["update-ref", "refs/heads/main", replacement, local]);
+        yield* memory.record(orgA, "main", local, replacement);
+        local = replacement;
+      }
+      const result = yield* memory.prepareWakeup(orgA, "fixture-wakeup").pipe(Effect.result);
+      if (scenario === "unrelated" || scenario === "criss-cross") {
+        expect(result._tag).toBe("Failure");
+        if (result._tag === "Failure") expect(result.failure._tag).toBe("MemorySyncConflict");
+        expect(yield* git(writer, ["rev-parse", "refs/heads/main"])).toBe(local);
+        expect(
+          yield* git(root, [
+            `--git-dir=${remote}`,
+            "for-each-ref",
+            "--format=%(objectname)",
+            `refs/heads/kin/conflict/${orgA}/fixture-wakeup-*`,
+          ]),
+        ).toBe(local);
+        expect(
+          messages.some(
+            (message) =>
+              message.includes("No unique verified merge base") &&
+              message.includes("fixture-wakeup"),
+          ),
+        ).toBe(true);
+      } else if (scenario === "push retry") {
+        expect(result._tag).toBe("Success");
+        if (result._tag === "Success") {
+          const merged = result.success.head;
+          expect((yield* git(writer, ["show", "-s", "--format=%P", merged])).split(" ")).toContain(
+            local,
+          );
+          const messages = yield* git(writer, ["log", "--format=%B", merged]);
+          expect(messages).toContain("Events: fixture-earlier");
+          expect(messages).toContain("Events: fixture-later");
+          const journalBefore = yield* git(writer, ["show", `${merged}:journal/day.md`]);
+          yield* git(writer, ["update-ref", "refs/heads/main", local, merged]);
+          yield* memory.record(orgA, "main", merged, local);
+          expect((yield* memory.prepareWakeup(orgA)).head).toBe(merged);
+          expect(yield* git(writer, ["show", `${merged}:journal/day.md`])).toBe(journalBefore);
+        }
+      } else if (scenario === "H2-merge-swap") {
         expect(swapped).toBe(true);
         expect(result._tag).toBe("Failure");
         expect(yield* git(root, [`--git-dir=${remote}`, "show", "main:rules.md"])).not.toContain(
@@ -943,7 +1032,7 @@ it.live.each([
             );
           }
         }
-      } else if (scenario === "journal conflict") {
+      } else if (scenario === "journal conflict" || scenario === "push retry") {
         expect(result._tag).toBe("Success");
         if (result._tag === "Success")
           expect(yield* git(writer, ["show", `${result.success.head}:journal/day.md`])).toBe(

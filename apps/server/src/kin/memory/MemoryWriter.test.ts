@@ -49,6 +49,7 @@ it.live.each([
   "M1-unanchored",
   "M2-nondescendant",
   "M4-modes",
+  "tree-substitution",
 ] as const)("writer real git: %s", (scenario) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -107,6 +108,8 @@ it.live.each([
     }
     if (scenario === "M4-modes") {
       yield* fs.symlink("rules.md", `${source}/owner-link`);
+      yield* fs.makeDirectory(`${source}/claims`, { recursive: true });
+      yield* fs.symlink(fixtureItem({ kind: "claim" }), `${source}/claims/link.md`);
       yield* fs.writeFileString(`${source}/owner-executable`, "fixture executable\n");
       yield* fs.chmod(`${source}/owner-executable`, 0o755);
     }
@@ -127,6 +130,7 @@ it.live.each([
     yield* git(root, ["clone", "--bare", "--", source, remote]);
     let attack: { objectPath: string; sha: string; expression: string; bytes: Buffer } | undefined;
     let swapped = false;
+    let substituteTree: string | undefined;
     let onRefChange:
       | (() => Effect.Effect<
           void,
@@ -152,6 +156,8 @@ it.live.each([
             swapped = true;
           }
           const result = yield* vcs.run(input);
+          if (substituteTree && input.args.includes("write-tree"))
+            return { ...result, stdout: substituteTree };
           if (onRefChange && input.args.includes("update-ref")) {
             const callback = onRefChange;
             onRefChange = undefined;
@@ -167,7 +173,10 @@ it.live.each([
       credentialHelper: "fixture-server-helper",
       repositories: [{ orgId, repoUrl: remote, path: "state" }],
     });
-    const memoryLayer = Memory.layer.pipe(Layer.provide(config));
+    const memoryLayer = Memory.layer.pipe(
+      Layer.provide(config),
+      Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
+    );
     const hooks = Layer.succeed(Writer.MemoryWriterHooks, {
       notify: Effect.fn("Test.notice")((notice) =>
         Effect.sync(() => {
@@ -219,6 +228,7 @@ it.live.each([
         : Scan.noFindingsStubLayer;
     const layer = Writer.layer.pipe(
       Layer.provideMerge(memoryLayer),
+      Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
       Layer.provide(config),
       Layer.provide(hooks),
       Layer.provide(auth),
@@ -572,10 +582,18 @@ it.live.each([
         yield* commit(source);
         yield* git(source, ["push", "--", remote, "main"]);
       }
+      if (scenario === "tree-substitution")
+        substituteTree = yield* git(paths.writer, ["rev-parse", `${original}^{tree}`]);
       const result = yield* writer
         .commitWakeup(orgId, "wake1", scenario === "failed" ? "failed" : "completed")
         .pipe(Effect.result);
       if (result._tag === "Failure") yield* Effect.logError(result.failure);
+      if (scenario === "tree-substitution") {
+        expect(result._tag).toBe("Failure");
+        if (result._tag === "Failure") expect(result.failure._tag).toBe("MemoryCheckoutInvalid");
+        expect(yield* git(paths.writer, ["rev-parse", "main"])).toBe(original);
+        return;
+      }
       if (scenario === "blocked" || scenario === "conflict") {
         expect(result._tag).toBe("Failure");
         if (result._tag === "Failure")

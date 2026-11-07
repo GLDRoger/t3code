@@ -5,7 +5,8 @@ import * as Effect from "effect/Effect";
 import { memoryGit } from "./git.ts";
 import { MemoryCheckoutInvalid } from "./Memory.ts";
 
-export const readObjects = Effect.fn("Memory.readObjects")(function* (
+// Object batches share the enclosing operation span, including per-commit ancestry reads.
+export const readObjects = Effect.fnUntraced(function* (
   orgId: KinOrgId,
   cwd: string,
   requests: ReadonlyArray<{ sha: string; type: "blob" | "tree" | "commit" }>,
@@ -54,11 +55,8 @@ export const readObjects = Effect.fn("Memory.readObjects")(function* (
   return result;
 });
 
-export const readCommit = Effect.fn("Memory.readCommit")(function* (
-  orgId: KinOrgId,
-  cwd: string,
-  sha: string,
-) {
+// Per-commit reads share the enclosing operation span.
+export const readCommit = Effect.fnUntraced(function* (orgId: KinOrgId, cwd: string, sha: string) {
   const objects = yield* readObjects(orgId, cwd, [{ sha, type: "commit" }]);
   const text = objects[0]?.toString("utf8") ?? "";
   const tree = /^tree ([a-f0-9]+)\n/.exec(text)?.[1];
@@ -82,8 +80,9 @@ export const readTree = Effect.fn("Memory.readTree")(function* (
   orgId: KinOrgId,
   cwd: string,
   commit: string,
+  isTree = false,
 ) {
-  const { tree } = yield* readCommit(orgId, cwd, commit);
+  const tree = isTree ? commit : (yield* readCommit(orgId, cwd, commit)).tree;
   const entries: Array<{ sha: string; relative: string; mode: string }> = [];
   const pending = [{ sha: tree, prefix: "" }];
   while (pending.length) {
@@ -144,4 +143,61 @@ export const readFiles = Effect.fn("Memory.readFiles")(function* (
   for (const entry of all)
     if (entry.mode === "160000") files.set(entry.relative, Buffer.from(entry.sha, "ascii"));
   return files;
+});
+
+export const objectHash = (bytes: Buffer, width: number) =>
+  NodeCrypto.createHash(width === 40 ? "sha1" : "sha256")
+    .update(`blob ${bytes.length}\0`)
+    .update(bytes)
+    .digest("hex");
+
+export const verifyTree = Effect.fn("Memory.verifyTree")(function* (
+  orgId: KinOrgId,
+  cwd: string,
+  tree: string,
+  expected: ReadonlyMap<string, { mode: string; sha: string }>,
+) {
+  const entries = yield* readTree(orgId, cwd, tree, true);
+  if (
+    entries.length !== expected.size ||
+    entries.some((entry) => {
+      const wanted = expected.get(entry.relative);
+      return wanted?.mode !== entry.mode || wanted.sha !== entry.sha;
+    })
+  )
+    return yield* new MemoryCheckoutInvalid({
+      orgId,
+      operation: "writeTree",
+      reason: "Written tree differs from validated bytes",
+    });
+});
+
+export const ancestors = Effect.fn("Memory.ancestors")(function* (
+  orgId: KinOrgId,
+  writer: string,
+  tip: string,
+  stop?: string,
+) {
+  const seen = new Map<string, ReadonlyArray<string>>();
+  let pending = [tip];
+  while (pending.length) {
+    const batch = [...new Set(pending)].filter((sha) => !seen.has(sha));
+    if (!batch.length) break;
+    const objects = yield* readObjects(
+      orgId,
+      writer,
+      batch.map((sha) => ({ sha, type: "commit" as const })),
+    );
+    pending = [];
+    for (const [index, bytes] of objects.entries()) {
+      const sha = batch[index]!;
+      const parents = [
+        ...(bytes.toString("utf8").split("\n\n")[0] ?? "").matchAll(/^parent ([a-f0-9]+)$/gm),
+      ].map((m) => m[1]!);
+      seen.set(sha, parents);
+      pending.push(...parents);
+    }
+    if (stop && seen.has(stop)) break;
+  }
+  return seen;
 });

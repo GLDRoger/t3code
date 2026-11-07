@@ -1,5 +1,5 @@
 import * as Clock from "effect/Clock";
-import { readFiles, readCommit, readTree } from "./objects.ts";
+import { readFiles, readCommit, readTree, objectHash, verifyTree } from "./objects.ts";
 import { buildIndex } from "./buildIndex.ts";
 import * as MemoryCache from "./MemoryCache.ts";
 import type { KinAgentId, KinOrgId, MemoryTrust } from "@t3tools/contracts";
@@ -121,7 +121,7 @@ const folders = ["objectives", "commitments", "deferrals", "decisions", "people"
 const render = (fields: object, body: string) => `---\n${stringify(fields)}---\n${body}`;
 const make = Effect.gen(function* () {
   const memory = yield* Memory;
-  const recovery = Option.getOrUndefined(yield* Effect.serviceOption(MemoryRecoveryHooks));
+  const recovery = yield* MemoryRecoveryHooks;
   const authority = yield* MemoryWriterAuthority;
   const hooks = yield* MemoryWriterHooks;
   const scanner = yield* KinSecretScan;
@@ -189,14 +189,14 @@ const make = Effect.gen(function* () {
           branch,
           reason: "Reset tampered branch to anchor; unpushed work at the replaced tip is lost",
         };
-        yield* recovery ? recovery.notify(notice) : Effect.logWarning("Memory recovery", notice);
+        yield* recovery.notify(notice);
       }
       return anchored.success;
     }
     if (local._tag === "Success") {
       yield* git(orgId, writer, ["update-ref", "-d", `refs/heads/${branch}`, local.success]);
       const notice = { orgId, branch, reason: "Deleted unanchored local branch" };
-      yield* recovery ? recovery.notify(notice) : Effect.logWarning("Memory recovery", notice);
+      yield* recovery.notify(notice);
     }
     const repo = config.repositories.find((repo) => repo.orgId === orgId);
     if (!repo)
@@ -342,7 +342,16 @@ const make = Effect.gen(function* () {
             const recordedFiles = yield* filesAt(orgId, writer, recorded);
             const items = [];
             const bodies = new Map<string, string>();
+            const regular = new Set(
+              (yield* readTree(orgId, writer, recorded).pipe(
+                Effect.provideService(FileSystem.FileSystem, fs),
+                Effect.provideService(VcsProcess, vcs),
+              ))
+                .filter((entry) => ["100644", "100755"].includes(entry.mode))
+                .map((entry) => entry.relative),
+            );
             for (const [file, bytes] of recordedFiles) {
+              if (!regular.has(file)) continue;
               if (!folders.some((folder) => file.startsWith(`${folder}/`))) continue;
               const content = bytes.toString("utf8");
               const parsedItem = yield* parseFrontMatter(orgId, file, content).pipe(Effect.result);
@@ -620,6 +629,7 @@ const make = Effect.gen(function* () {
                   const finalFiles = new Map(recordedFiles);
                   for (const [file, text] of state.files)
                     finalFiles.set(file, file === entry.path ? journal : Buffer.from(text));
+                  const expected = new Map<string, { mode: string; sha: string }>();
                   for (const [file, bytes] of finalFiles) {
                     if (state.files.has(file)) yield* safePath(orgId, writer, file, true);
                     const input = `${temporary}/blob`;
@@ -636,6 +646,13 @@ const make = Effect.gen(function* () {
                             ["hash-object", "-w", "--no-filters", input],
                             env,
                           );
+                    expected.set(file, {
+                      mode,
+                      sha:
+                        mode === "160000"
+                          ? bytes.toString("ascii")
+                          : objectHash(bytes, recorded.length),
+                    });
                     yield* git(
                       orgId,
                       writer,
@@ -644,6 +661,10 @@ const make = Effect.gen(function* () {
                     );
                   }
                   const tree = yield* git(orgId, writer, ["write-tree"], env);
+                  yield* verifyTree(orgId, writer, tree, expected).pipe(
+                    Effect.provideService(FileSystem.FileSystem, fs),
+                    Effect.provideService(VcsProcess, vcs),
+                  );
                   const message = `${subject}\n\nEvents: ${ctx.eventIds.join(", ")}\nKin-Outcome: ${outcome}\nKin-Request: ${fingerprint}\n`;
                   const commit = yield* git(
                     orgId,
