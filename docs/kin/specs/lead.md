@@ -200,7 +200,7 @@ Each wake-up:
 1. `KinStop.isPaused(orgId)` → leave events queued and return.
 2. `KinBudget.admit(orgId, batchPriority)` → if refused, leave lower-priority events `queued` with `not_before` = next budget reset and run what remains.
 3. Pick the model: `models.strong` if the batch holds a P0 or P1 event, a contradiction question or a `routine`; otherwise `models.cheap`.
-4. `Memory.prepareWakeup(orgId)`: `git pull --ff-only` in the writer checkout, move the read checkout to the new HEAD (`checkout --force --detach`, `reset --hard`, `clean -fdx`), and rebuild `INDEX.md` first if its "As of" line is older than 36 hours.
+4. `Memory.prepareWakeup(orgId)`: fetch then `git pull --rebase` in the writer checkout (preserving unpushed commits), move the read checkout to the new HEAD (`checkout --force --detach`, `reset --hard`, `clean -fdx`), and rebuild `INDEX.md` first if its "As of" line is older than 36 hours. If fetching fails, log a warning and pin the local writer HEAD for this wake-up. If rebasing conflicts, abort the rebase to restore the writer and fail with `MemorySyncConflict`.
 5. Build the prompt (below).
 6. First wake-up: `ThreadLaunchService.launch({ commandId: "kin-wakeup:<wakeupId>", projectId, title: "<lead name>", modelSelection, runtimeMode: "full-access", interactionMode: "default", workspaceStrategy: { type: "root" }, initialMessage: { text: prompt, attachments: [] }, createdBy: "system", creationSource: "server" })`, then store `threadId` on `KinLead`. Later wake-ups: `ThreadManagementService.sendToThread({ commandId, threadId, messageId: "kin-wakeup-msg:<wakeupId>", text: prompt, mode: "queue", freshContext: true, modelSelection, createdBy: "system", creationSource: "server" })`. One thread holds the lead's history for people to read; every run is a new provider session.
 7. Register `threadId → { orgId, agentId, wakeupId, level }` in `KinLeadRegistry`, an in-memory map the tools use. It is filled before the send and cleared after the run ends.
@@ -347,8 +347,14 @@ export class Memory extends Context.Service<
     prepareWakeup(orgId: KinOrgId): Effect<{ head: string; indexAsOf: DateTime.Utc }, MemoryError>;
     readIndex(orgId: KinOrgId): Effect<string, MemoryError>;
     readRules(orgId: KinOrgId): Effect<string, MemoryError>;
-    readItem(orgId: KinOrgId, id: string): Effect<MemoryItem, MemoryError | MemoryNotFound>;
-    query(orgId: KinOrgId, q: MemoryQuery): Effect<ReadonlyArray<MemoryItemHead>, MemoryError>;
+    readItem(
+      orgId: KinOrgId,
+      id: string,
+    ): Effect<MemoryItem, MemoryError | MemoryNotFound | MemoryDuplicateId>;
+    query(
+      orgId: KinOrgId,
+      q: MemoryQuery,
+    ): Effect<ReadonlyArray<MemoryItemHead & { readonly duplicate: boolean }>, MemoryError>;
     stage(ctx: WakeupContext, change: MemoryChange): Effect<MemoryStaged, MemoryWriteRejected>;
     appendJournal(ctx: WakeupContext, lines: JournalLines): Effect<void>;
     commitWakeup(
@@ -374,7 +380,7 @@ Staged changes live in the writer checkout's working tree. `commitWakeup("comple
 
 Branches: at L1 and above the writer commits to the default branch. At L0 it commits to `kin/shadow/<agentId>` (see Levels). Dreaming (triggers spec) commits to `dream/<date>` branches and takes the same per-organization semaphore while it writes, so it never runs during a wake-up.
 
-Push failures retry with backoff. Unpushed commits stay local and the next `prepareWakeup` rebases them on `pull`. A rebase conflict (the owner edited the same file on GitHub) stops memory writes for that organization and posts a card to the owner.
+Push failures retry with backoff. Unpushed commits stay local and the next `prepareWakeup` rebases them on `pull`. A rebase conflict (the owner edited the same file on GitHub) is aborted, restores the writer, and fails the wake-up with `MemorySyncConflict`; the write-side owner notification is LEAD-3 work. A fetch failure logs a warning and the wake-up proceeds pinned to the local writer HEAD. Existing writers are never replaced on validation failure: `MemoryCheckoutInvalid` leaves recovery to a human.
 
 Front matter matches the kin-memory README, including snake_case keys. Date-only values mean UTC midnight; date-times require an explicit UTC offset, and invalid dates make an item malformed. `links` values containing `#` must be quoted. `owner` and `said_by` hold handles; `orgId` and `path` belong only to the server-side `MemoryItemHead`.
 
@@ -502,7 +508,7 @@ Evening summary:
 | Lead loops or runs long                          | 15 min hard timeout, then interrupt.                                                                                                                                                               |
 | Worker never reports                             | Synthesized `blocked` report. A worker running over 4 hours raises a `watchdog` event.                                                                                                             |
 | Memory push fails                                | Retry; local commits stay; the next wake-up rebases.                                                                                                                                               |
-| Owner edited memory on GitHub                    | `pull --ff-only` at wake-up start picks it up. A conflict stops writes and asks the owner.                                                                                                         |
+| Owner edited memory on GitHub                    | `pull --rebase` at wake-up start picks it up. A conflict aborts the rebase and fails the wake-up; an unavailable remote falls back to local HEAD.                                                  |
 | Duplicate event (replayed webhook, double timer) | Dropped by the `(org_id, dedupe_key)` index.                                                                                                                                                       |
 
 ## Files

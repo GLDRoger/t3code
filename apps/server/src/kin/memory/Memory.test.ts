@@ -1,6 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
-import { KinMemoryItemId, KinOrgId, VcsProcessExitError } from "@t3tools/contracts";
+import { KinMemoryItemId, KinOrgId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Clock from "effect/Clock";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -192,8 +192,8 @@ it.live.each([
         "Invented fixtures",
       ]);
       const base = `${root}/state`;
-      yield* fs.makeDirectory(`${base}/a/memory`, { recursive: true });
-      yield* fs.writeFileString(`${base}/a/memory/incomplete`, "interrupted clone");
+      yield* fs.makeDirectory(`${base}/a/memory.clone-crashed`, { recursive: true });
+      yield* fs.writeFileString(`${base}/a/memory.clone-crashed/incomplete`, "interrupted clone");
       yield* fs.makeDirectory(`${base}/a/memory-read`, { recursive: true });
       yield* Effect.gen(function* () {
         const memory = yield* Memory.Memory;
@@ -210,9 +210,21 @@ it.live.each([
         expect(yield* memory.readIndex(orgA)).toMatch(/^As of /);
         yield* memory.rebuildIndex(orgA);
         expect(yield* memory.readIndex(orgA)).toContain("[invalid]");
+        for (const query of [
+          { dueBefore: "2026-11-14T00:00:00" },
+          { dueAfter: "bad" },
+          { limit: -1 },
+          { limit: NaN },
+          { limit: Infinity },
+        ]) {
+          const result = yield* memory.query(orgA, query).pipe(Effect.result);
+          expect(result._tag).toBe("Failure");
+          if (result._tag === "Failure") expect(result.failure._tag).toBe("MemoryQueryDecodeError");
+        }
+        expect(yield* fs.exists(`${base}/a/memory.clone-crashed`)).toBe(false);
         const cases: ReadonlyArray<{ query: Memory.MemoryQuery; ids: ReadonlyArray<string> }> = [
           { query: { kind: "deferral" }, ids: ["def-001"] },
-          { query: { dueBefore: "2026-11-14T00:00:00" }, ids: [] },
+
           { query: { dueBefore: "2026-11-14", dueAfter: "2026-11-12" }, ids: ["def-001"] },
           { query: { reviewOverdue: true, kind: "commitment" }, ids: ["com-001"] },
           { query: { excludeInvalid: true }, ids: ["def-001"] },
@@ -495,56 +507,241 @@ it.effect("derives production memory paths from the isolated server state direct
   ),
 );
 
-it.effect.each([
-  { name: "parent repository", operation: "query", failureKind: undefined },
-  { name: "permission denied", operation: "ensure", failureKind: "command-failed" },
-  { name: "dubious ownership", operation: "ensure", failureKind: "command-failed" },
-] as const)("preserves the writer on $name", ({ name, operation, failureKind }) =>
+const fixtureRepository = Effect.fn("Test.fixtureRepository")(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const vcs = yield* VcsProcess.VcsProcess;
+  const temporary = yield* fs.makeTempDirectoryScoped();
+  const root = yield* fs.realPath(temporary);
+  const source = `${root}/source`;
+  yield* fs.copy(`${import.meta.dirname}/__fixtures__/memory`, source);
+  const git = Effect.fn("Test.realGit")((cwd: string, args: ReadonlyArray<string>) =>
+    vcs
+      .run({ operation: "test.memory", command: "git", cwd, args })
+      .pipe(Effect.map((r) => r.stdout.trim())),
+  );
+  const commit = Effect.fn("Test.commit")(function* (cwd: string) {
+    yield* git(cwd, ["add", "."]);
+    yield* git(cwd, [
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "commit",
+      "-m",
+      "Invented fixture",
+    ]);
+    return yield* git(cwd, ["rev-parse", "HEAD"]);
+  });
+  yield* git(source, ["init", "--initial-branch=main"]);
+  yield* commit(source);
+  return { root, source, git, commit };
+});
+
+it.live.each([
+  "missing HEAD",
+  "missing objects",
+  "empty git",
+  "permission denied",
+  "parent repository",
+  "non-repository directory",
+])("preserves the existing writer on $0", (damage) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const temporary = yield* fs.makeTempDirectoryScoped();
-    const root = yield* fs.realPath(temporary);
-    const writer = `${root}/a/memory`;
-    yield* fs.makeDirectory(`${writer}/.git`, { recursive: true });
-    yield* fs.writeFileString(`${writer}/keep`, "unpushed work");
-    const vcsLayer = Layer.succeed(
-      VcsProcess.VcsProcess,
-      VcsProcess.VcsProcess.of({
-        run: Effect.fn("Test.invalidWriter")(function* () {
-          if (failureKind !== undefined)
-            return yield* new VcsProcessExitError({
-              operation: "test.memory",
-              command: "git",
-              cwd: writer,
-              exitCode: 128,
-              detail: name,
-              failureKind,
-            });
-          return {
-            exitCode: ChildProcessSpawner.ExitCode(0),
-            stdout: root,
-            stderr: "",
-            stdoutTruncated: false,
-            stderrTruncated: false,
-          };
-        }),
-      }),
-    );
+    const { root, source, git, commit } = yield* fixtureRepository();
+    const base = `${root}/state`;
     yield* Effect.gen(function* () {
       const memory = yield* Memory.Memory;
-      const result = yield* (
-        operation === "query"
-          ? memory.query(orgA, {}).pipe(Effect.asVoid)
-          : memory.ensureCheckouts(orgA).pipe(Effect.asVoid)
-      ).pipe(Effect.result);
+      const { writer } = yield* memory.ensureCheckouts(orgA);
+      yield* fs.writeFileString(`${writer}/keep`, "unpushed work");
+      const head = yield* commit(writer);
+      const savedHead = yield* fs.readFileString(`${writer}/.git/HEAD`);
+      if (damage === "missing HEAD") yield* fs.remove(`${writer}/.git/HEAD`);
+      if (damage === "missing objects")
+        yield* fs.remove(`${writer}/.git/objects`, { recursive: true });
+      if (
+        damage === "empty git" ||
+        damage === "parent repository" ||
+        damage === "non-repository directory"
+      ) {
+        yield* fs.remove(`${writer}/.git`, { recursive: true });
+        if (damage === "empty git") yield* fs.makeDirectory(`${writer}/.git`);
+        if (damage === "parent repository") yield* git(base, ["init"]);
+      }
+      if (damage === "permission denied") {
+        yield* Effect.addFinalizer(() => fs.chmod(`${writer}/.git`, 0o755).pipe(Effect.orDie));
+        yield* fs.chmod(`${writer}/.git`, 0);
+      }
+      const result = yield* memory.ensureCheckouts(orgA).pipe(Effect.result);
       expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") expect(result.failure._tag).toBe("MemoryCheckoutInvalid");
       expect(yield* fs.readFileString(`${writer}/keep`)).toBe("unpushed work");
-      if (result._tag === "Failure")
-        expect(result.failure.operation).toBe(operation === "query" ? "source" : "git");
+      if (damage === "missing HEAD") {
+        yield* fs.writeFileString(`${writer}/.git/HEAD`, savedHead);
+        expect(yield* git(writer, ["rev-parse", "HEAD"])).toBe(head);
+      }
+    }).pipe(Effect.provide(memoryLayer(base, source)), Effect.scoped);
+  }).pipe(
+    Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer, databaseLayer)),
+    Effect.scoped,
+  ),
+);
+
+it.live.each([
+  { first: "Acme", second: "acme" },
+  { first: "Café", second: "Cafe\u0301" },
+])(
+  "rejects colliding organization paths $first and $second before touching checkouts",
+  ({ first, second }) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const { root, source } = yield* fixtureRepository();
+      const base = `${root}/state`;
+      const orgs = [KinOrgId.make("unrelated"), KinOrgId.make(first), KinOrgId.make(second)];
+      yield* fs.makeDirectory(`${base}/${first}/memory`, { recursive: true });
+      yield* fs.writeFileString(`${base}/${first}/memory/keep`, "untouched");
+      yield* Effect.gen(function* () {
+        const memory = yield* Memory.Memory;
+        for (const org of orgs) {
+          const result = yield* memory.ensureCheckouts(org).pipe(Effect.result);
+          expect(result._tag).toBe("Failure");
+          if (result._tag === "Failure") expect(result.failure._tag).toBe("MemoryConfigError");
+        }
+        expect(yield* fs.readFileString(`${base}/${first}/memory/keep`)).toBe("untouched");
+        expect(yield* fs.readDirectory(base)).toEqual([first]);
+      }).pipe(
+        Effect.provide(
+          Memory.layer.pipe(
+            Layer.provide(
+              Layer.succeed(MemoryConfig.MemoryConfig, {
+                baseDirectory: base,
+                repositories: orgs.map((orgId) => ({ orgId, repoUrl: source, path: orgId })),
+              }),
+            ),
+            Layer.provide(gitLayer),
+            Layer.provide(NodeServices.layer),
+          ),
+        ),
+      );
     }).pipe(
-      Effect.provide(
-        Memory.layer.pipe(Layer.provide(configLayer(root, "unused")), Layer.provide(vcsLayer)),
-      ),
-    );
-  }).pipe(Effect.provide(Layer.merge(NodeServices.layer, databaseLayer)), Effect.scoped),
+      Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer, databaseLayer)),
+      Effect.scoped,
+    ),
+);
+
+it.live("refuses reads from a writer with the wrong origin after service restart", () =>
+  Effect.gen(function* () {
+    const { root, source, git } = yield* fixtureRepository();
+    const base = `${root}/state`;
+    yield* Effect.gen(function* () {
+      const memory = yield* Memory.Memory;
+      const { writer } = yield* memory.ensureCheckouts(orgA);
+      yield* git(writer, ["remote", "set-url", "origin", `${root}/other-fixture`]);
+    }).pipe(Effect.provide(memoryLayer(base, source)));
+    yield* Effect.gen(function* () {
+      const memory = yield* Memory.Memory;
+      const result = yield* memory.query(orgA, {}).pipe(Effect.result);
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") expect(result.failure._tag).toBe("MemoryCheckoutInvalid");
+    }).pipe(Effect.provide(memoryLayer(base, source)));
+  }).pipe(
+    Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer, databaseLayer)),
+    Effect.scoped,
+  ),
+);
+
+it.live("uses filesystem identity for a case-mismatched base without recloning", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const { root, source, commit, git } = yield* fixtureRepository();
+    const base = `${root}/State`;
+    yield* fs.makeDirectory(base);
+    // Case-sensitive filesystems cannot exercise an alternate spelling of the same directory.
+    if (!(yield* fs.exists(`${root}/state`))) return;
+    const writer = yield* Effect.gen(function* () {
+      const memory = yield* Memory.Memory;
+      return (yield* memory.ensureCheckouts(orgA)).writer;
+    }).pipe(Effect.provide(memoryLayer(base, source)));
+    yield* fs.writeFileString(`${writer}/keep`, "unpushed work");
+    const head = yield* commit(writer);
+    const before = yield* fs.stat(writer);
+    yield* Effect.gen(function* () {
+      const memory = yield* Memory.Memory;
+      const paths = yield* memory.ensureCheckouts(orgA);
+      const after = yield* fs.stat(paths.writer);
+      expect(after.ino).toEqual(before.ino);
+      expect(yield* git(paths.writer, ["rev-parse", "HEAD"])).toBe(head);
+      expect(yield* memory.query(orgA, {})).toHaveLength(2);
+      yield* memory.ensureCheckouts(orgA);
+      expect(yield* fs.readFileString(`${writer}/keep`)).toBe("unpushed work");
+    }).pipe(Effect.provide(memoryLayer(`${root}/state`, source)));
+  }).pipe(
+    Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer, databaseLayer)),
+    Effect.scoped,
+  ),
+);
+
+it.live.each(["diverged", "conflict", "network down", "dirty writer"])(
+  "syncs the writer with $0",
+  (scenario) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const { root, source, git, commit } = yield* fixtureRepository();
+      const base = `${root}/state`;
+      const messages: string[] = [];
+      const logger = Logger.layer([Logger.make(({ message }) => messages.push(String(message)))], {
+        mergeWithExisting: false,
+      });
+      yield* Effect.gen(function* () {
+        const memory = yield* Memory.Memory;
+        const initial = yield* memory.prepareWakeup(orgA);
+        const { writer } = yield* memory.ensureCheckouts(orgA);
+        yield* git(writer, ["config", "user.name", "Fixture"]);
+        yield* git(writer, ["config", "user.email", "fixture@example.invalid"]);
+        yield* fs.writeFileString(`${writer}/rules.md`, "Local invented rules\n");
+        const local = yield* commit(writer);
+        yield* fs.writeFileString(
+          `${source}/${scenario === "conflict" ? "rules.md" : "remote-only"}`,
+          "Remote invented edit\n",
+        );
+        const remote = yield* commit(source);
+        if (scenario === "network down") yield* fs.rename(source, `${root}/offline`);
+        if (scenario === "dirty writer")
+          yield* fs.writeFileString(`${writer}/rules.md`, "Uncommitted fixture edit\n");
+        const result = yield* memory.prepareWakeup(orgA).pipe(Effect.result);
+        if (scenario === "dirty writer") {
+          expect(result._tag).toBe("Failure");
+          if (result._tag === "Failure") expect(result.failure._tag).toBe("MemoryError");
+          expect(yield* git(writer, ["rev-parse", "HEAD"])).toBe(local);
+          expect(yield* fs.readFileString(`${writer}/rules.md`)).toBe("Uncommitted fixture edit\n");
+        } else if (scenario === "conflict") {
+          expect(result._tag).toBe("Failure");
+          if (result._tag === "Failure") expect(result.failure._tag).toBe("MemorySyncConflict");
+          expect(yield* git(writer, ["rev-parse", "HEAD"])).toBe(local);
+          expect(yield* fs.readFileString(`${writer}/rules.md`)).toBe("Local invented rules\n");
+          expect(yield* git(writer, ["status", "--porcelain"])).toBe("");
+          expect(yield* fs.exists(`${writer}/.git/rebase-merge`)).toBe(false);
+          expect(yield* memory.readRules(orgA)).toBe("Invented standing rules.\n");
+        } else {
+          expect(result._tag).toBe("Success");
+          if (result._tag !== "Success") return;
+          expect(result.success.head).not.toBe(initial.head);
+          expect(yield* memory.readRules(orgA)).toBe("Local invented rules\n");
+          if (scenario === "diverged") {
+            expect(result.success.head).not.toBe(local);
+            expect(yield* git(writer, ["merge-base", "HEAD", remote])).toBe(remote);
+            expect(yield* fs.readFileString(`${writer}/remote-only`)).toBe(
+              "Remote invented edit\n",
+            );
+          } else {
+            expect(result.success.head).toBe(local);
+            expect(messages.some((message) => message.includes("using local writer HEAD"))).toBe(
+              true,
+            );
+          }
+        }
+      }).pipe(Effect.provide(Layer.merge(memoryLayer(base, source), logger)));
+    }).pipe(
+      Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer, databaseLayer)),
+      Effect.scoped,
+    ),
 );

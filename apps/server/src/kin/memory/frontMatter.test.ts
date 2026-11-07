@@ -16,7 +16,19 @@ it.effect.each([
     text: fixtureItem({ recorded_at: "2026-11-01T00:00:00" }),
     valid: false,
   },
-  ...["2026-02-30", "2026-13-01", "2026-02-30T00:00Z", "2026-11-01T24:00Z"].map((recorded_at) => ({
+  ...["2026-11-01T00:00:00.5Z", "2026-11-01T00:00:00.123456Z"].map((recorded_at) => ({
+    name: recorded_at,
+    text: fixtureItem({ recorded_at }),
+    valid: true,
+  })),
+  ...[
+    "2026-11-01T00:00:00.Z",
+    "2026-11-01T00:00:00.5",
+    "2026-02-30",
+    "2026-13-01",
+    "2026-02-30T00:00Z",
+    "2026-11-01T24:00Z",
+  ].map((recorded_at) => ({
     name: recorded_at,
     text: fixtureItem({ recorded_at }),
     valid: false,
@@ -35,6 +47,11 @@ it.effect.each([
   },
   { name: "missing delimiter", text: "no front matter", valid: false },
   { name: "malformed YAML", text: "---\nid: [\n---\nbody", valid: false },
+  {
+    name: "quoted links and unrelated malformed YAML",
+    text: fixtureItem().replace("---\nInvented", "broken: [\n---\nInvented"),
+    valid: false,
+  },
   { name: "invalid schema", text: fixtureItem({ trust: "administrator" }), valid: false },
   {
     name: "duplicate key",
@@ -56,6 +73,7 @@ it.effect.each([
       expect(result.failure._tag).toBe("MemoryItemError");
       if (text === readmeItem)
         expect(result.failure.reason).toContain("links containing # must be quoted");
+      else expect(result.failure.reason).not.toContain("links containing # must be quoted");
     }
   }),
 );

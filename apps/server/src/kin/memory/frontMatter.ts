@@ -2,7 +2,7 @@ import { MemoryItemFrontMatter, type KinOrgId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { parseDocument } from "yaml";
+import { isSeq, parseDocument } from "yaml";
 
 export class MemoryItemError extends Schema.TaggedError<MemoryItemError>()("MemoryItemError", {
   orgId: Schema.String,
@@ -18,7 +18,7 @@ export class MemoryItemError extends Schema.TaggedError<MemoryItemError>()("Memo
 export const memoryDateMillis = (value: string | null) => {
   if (
     value === null ||
-    !/^\d{4}-\d{2}-\d{2}(?:T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{3})?)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d))?$/.test(
+    !/^\d{4}-\d{2}-\d{2}(?:T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d))?$/.test(
       value,
     )
   )
@@ -52,16 +52,36 @@ export const parseFrontMatter = Effect.fnUntraced(function* (
         version: "1.2",
         uniqueKeys: true,
         resolveKnownTags: false,
+        keepSourceTokens: true,
       });
       const problem = doc.errors[0] ?? doc.warnings[0];
-      if (problem) throw problem;
+      if (problem) {
+        const links = doc.get("links", true);
+        const source = isSeq(links) ? links.srcToken : undefined;
+        const commentedClosingBracket =
+          source?.type === "flow-collection" &&
+          !source.end.some((token) => token.type === "flow-seq-end") &&
+          source.items.some(
+            (item) =>
+              item.value?.type === "scalar" &&
+              item.value.end?.some(
+                (token) => token.type === "comment" && token.source.includes("]"),
+              ),
+          );
+        throw new Error(
+          problem.code === "BAD_INDENT" && commentedClosingBracket
+            ? "Malformed YAML; links containing # must be quoted"
+            : `Malformed YAML: ${problem.message}`,
+          { cause: problem },
+        );
+      }
       return doc.toJS();
     },
     catch: (cause) =>
       new MemoryItemError({
         orgId,
         path,
-        reason: "Malformed YAML; links containing # must be quoted",
+        reason: cause instanceof Error ? cause.message : "Malformed YAML",
         cause,
       }),
   });

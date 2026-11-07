@@ -12,11 +12,11 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
-import { STATUS_UPSTREAM_REFRESH_ENV } from "../../vcs/GitVcsDriverCore.ts";
 import { isNonRepositoryGitStderr } from "../../vcs/gitErrors.ts";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import * as MemoryCache from "./MemoryCache.ts";
@@ -33,6 +33,38 @@ export class MemoryError extends Schema.TaggedError<MemoryError>()("MemoryError"
   cause: Schema.optional(Schema.Defect()),
   reason: Schema.optional(Schema.String),
 }) {}
+
+const failureFields = {
+  orgId: Schema.String,
+  operation: Schema.String,
+  reason: Schema.String,
+  path: Schema.optional(Schema.String),
+  cause: Schema.optional(Schema.Defect()),
+};
+
+export class MemoryCheckoutInvalid extends Schema.TaggedError<MemoryCheckoutInvalid>()(
+  "MemoryCheckoutInvalid",
+  failureFields,
+) {}
+export class MemoryConfigError extends Schema.TaggedError<MemoryConfigError>()(
+  "MemoryConfigError",
+  failureFields,
+) {}
+export class MemorySyncConflict extends Schema.TaggedError<MemorySyncConflict>()(
+  "MemorySyncConflict",
+  failureFields,
+) {}
+export class MemoryQueryDecodeError extends Schema.TaggedError<MemoryQueryDecodeError>()(
+  "MemoryQueryDecodeError",
+  failureFields,
+) {}
+
+type MemoryFailure =
+  | MemoryError
+  | MemoryCheckoutInvalid
+  | MemoryConfigError
+  | MemorySyncConflict
+  | MemoryQueryDecodeError;
 
 export class MemoryNotFound extends Schema.TaggedError<MemoryNotFound>()("MemoryNotFound", {
   orgId: Schema.String,
@@ -76,30 +108,38 @@ export interface MemoryQuery {
 export class Memory extends Context.Service<
   Memory,
   {
-    readonly ensureCheckouts: (orgId: KinOrgId) => Effect.Effect<MemoryPaths, MemoryError>;
+    readonly ensureCheckouts: (orgId: KinOrgId) => Effect.Effect<MemoryPaths, MemoryFailure>;
     readonly prepareWakeup: (
       orgId: KinOrgId,
-    ) => Effect.Effect<{ head: string; indexAsOf: DateTime.Utc }, MemoryError>;
-    readonly readIndex: (orgId: KinOrgId) => Effect.Effect<string, MemoryError>;
-    readonly readRules: (orgId: KinOrgId) => Effect.Effect<string, MemoryError>;
+    ) => Effect.Effect<{ head: string; indexAsOf: DateTime.Utc }, MemoryFailure>;
+    readonly readIndex: (orgId: KinOrgId) => Effect.Effect<string, MemoryFailure>;
+    readonly readRules: (orgId: KinOrgId) => Effect.Effect<string, MemoryFailure>;
     readonly readItem: (
       orgId: KinOrgId,
       id: KinMemoryItemId,
-    ) => Effect.Effect<MemoryCache.MemoryItem, MemoryError | MemoryNotFound | MemoryDuplicateId>;
+    ) => Effect.Effect<MemoryCache.MemoryItem, MemoryFailure | MemoryNotFound | MemoryDuplicateId>;
     readonly query: (
       orgId: KinOrgId,
       query: MemoryQuery,
     ) => Effect.Effect<
       ReadonlyArray<MemoryItemHead & { readonly duplicate: boolean }>,
-      MemoryError
+      MemoryFailure
     >;
-    readonly rebuildIndex: (orgId: KinOrgId) => Effect.Effect<void, MemoryError>;
-    readonly rebuildCache: (orgId: KinOrgId) => Effect.Effect<void, MemoryError>;
+    readonly rebuildIndex: (orgId: KinOrgId) => Effect.Effect<void, MemoryFailure>;
+    readonly rebuildCache: (orgId: KinOrgId) => Effect.Effect<void, MemoryFailure>;
   }
 >()("t3/kin/memory/Memory") {}
 
 const decodeHead = Schema.decodeEffect(MemoryItemHead);
 const isVcsProcessExitError = Schema.is(VcsProcessExitError);
+// Mirrors STATUS_UPSTREAM_REFRESH_ENV in vcs/GitVcsDriverCore.ts.
+const memoryGitEnv = Object.freeze({
+  GCM_INTERACTIVE: "never",
+  GIT_ASKPASS: "",
+  GIT_TERMINAL_PROMPT: "0",
+  SSH_ASKPASS: "",
+  SSH_ASKPASS_REQUIRE: "never",
+});
 
 const folders = ["objectives", "commitments", "deferrals", "decisions", "people", "claims"];
 const week = 7 * 24 * 60 * 60 * 1000;
@@ -138,6 +178,10 @@ const make = Effect.gen(function* () {
   const blobCaches = new Map<KinOrgId, BlobCache>();
 
   const locked = <A, E>(orgId: KinOrgId, effect: Effect.Effect<A, E>) => {
+    if (!config.repositories.some((entry) => entry.orgId === orgId))
+      return Effect.fail(
+        new MemoryConfigError({ orgId, operation: "config", reason: "Unknown organization" }),
+      );
     let lock = locks.get(orgId);
     if (!lock) {
       lock = Semaphore.makeUnsafe(1);
@@ -159,7 +203,7 @@ const make = Effect.gen(function* () {
         cwd,
         args,
         ...(stdin === undefined ? {} : { stdin }),
-        env: STATUS_UPSTREAM_REFRESH_ENV,
+        env: memoryGitEnv,
         ...(onStdoutChunk === undefined ? {} : { onStdoutChunk }),
         classifyFailure: (stderr) => (isNonRepositoryGitStderr(stderr) ? "not-found" : null),
         timeoutMs: 120_000,
@@ -185,22 +229,35 @@ const make = Effect.gen(function* () {
     const repo = config.repositories.find((entry) => entry.orgId === orgId);
     const base = path.resolve(config.baseDirectory);
     if (!repo)
-      return yield* new MemoryError({ orgId, operation: "config", reason: "Unknown organization" });
+      return yield* new MemoryConfigError({
+        orgId,
+        operation: "config",
+        reason: "Unknown organization",
+      });
     const root = path.resolve(base, repo.path);
+    const comparable = (value: string) => value.normalize("NFC").toLowerCase();
+    const roots = config.repositories.map((entry) => ({
+      orgId: entry.orgId,
+      root: path.resolve(base, entry.path),
+    }));
     if (
-      !root.startsWith(base + path.sep) ||
-      config.repositories.some((other) => {
-        const otherRoot = path.resolve(base, other.path);
+      roots.some((entry, index) => {
+        const key = comparable(entry.root);
         return (
-          other !== repo &&
-          (other.orgId === orgId ||
-            otherRoot === root ||
-            otherRoot.startsWith(root + path.sep) ||
-            root.startsWith(otherRoot + path.sep))
+          !entry.root.startsWith(base + path.sep) ||
+          roots.slice(index + 1).some((other) => {
+            const otherKey = comparable(other.root);
+            return (
+              entry.orgId === other.orgId ||
+              otherKey === key ||
+              otherKey.startsWith(key + path.sep) ||
+              key.startsWith(otherKey + path.sep)
+            );
+          })
         );
       })
     )
-      return yield* new MemoryError({
+      return yield* new MemoryConfigError({
         orgId,
         operation: "config",
         reason: "Overlapping or escaping memory paths",
@@ -213,7 +270,7 @@ const make = Effect.gen(function* () {
         if (yield* io(orgId, "exists", fs.exists(ancestor))) {
           const stat = yield* io(orgId, "stat", fs.lstat(ancestor));
           if (stat.type !== "Directory")
-            return yield* new MemoryError({
+            return yield* new MemoryConfigError({
               orgId,
               operation: "config",
               reason: "Memory ancestors must be real directories",
@@ -226,51 +283,89 @@ const make = Effect.gen(function* () {
     return { repo, root, writer, read };
   });
 
-  const ensureCheckouts = Effect.fn("Memory.ensureCheckouts")(function* (orgId: KinOrgId) {
-    const paths = yield* pathsFor(orgId);
-    yield* io(orgId, "mkdir", fs.makeDirectory(paths.root, { recursive: true }));
-    const gitDirectory = path.join(paths.writer, ".git");
-    if (yield* io(orgId, "exists", fs.exists(gitDirectory))) {
-      const stat = yield* io(orgId, "stat", fs.lstat(gitDirectory));
-      if (stat.type !== "Directory")
+  const sameDirectory = Effect.fn("Memory.sameDirectory")(function* (
+    orgId: KinOrgId,
+    left: string,
+    right: string,
+  ) {
+    const a = yield* io(orgId, "stat", fs.stat(left));
+    const b = yield* io(orgId, "stat", fs.stat(right));
+    return (
+      a.dev === b.dev && Option.isSome(a.ino) && Option.isSome(b.ino) && a.ino.value === b.ino.value
+    );
+  });
+
+  const validateWriter = Effect.fn("Memory.validateWriter")(function* (
+    orgId: KinOrgId,
+    paths: { writer: string; repo: { repoUrl: string } },
+  ) {
+    yield* Effect.gen(function* () {
+      const entry = yield* fs.lstat(path.join(paths.writer, ".git"));
+      if (entry.type !== "Directory")
         return yield* new MemoryError({
           orgId,
-          operation: "config",
-          reason: "Writer git directory must be server-owned",
+          operation: "source",
+          reason: "Writer .git must be a directory",
         });
-    }
-    const writerExists = yield* io(orgId, "exists", fs.exists(paths.writer));
-    const writerRoot = writerExists
-      ? yield* io(orgId, "realPath", fs.realPath(paths.writer))
-      : paths.writer;
-    const validWriter =
-      writerExists &&
-      (yield* git(orgId, paths.writer, ["rev-parse", "--show-toplevel"]).pipe(
-        Effect.map((value) => path.resolve(value.trim()) === writerRoot),
-        Effect.catchTags({
-          MemoryError: (error) =>
-            isVcsProcessExitError(error.cause) && error.cause.failureKind === "not-found"
-              ? Effect.succeed(false)
-              : Effect.fail(error),
-        }),
-      ));
-    if (!validWriter) {
-      yield* io(orgId, "recoverClone", fs.remove(paths.writer, { recursive: true, force: true }));
-      yield* git(orgId, paths.root, ["clone", "--", paths.repo.repoUrl, paths.writer]);
-    } else {
+      const root = (yield* git(orgId, paths.writer, ["rev-parse", "--show-toplevel"])).trim();
+      if (!(yield* sameDirectory(orgId, root, paths.writer)))
+        return yield* new MemoryError({
+          orgId,
+          operation: "source",
+          reason: "Writer is not the repository root",
+        });
+      yield* git(orgId, paths.writer, ["rev-parse", "--verify", "HEAD^{commit}"]);
       const origin = (yield* git(orgId, paths.writer, ["remote", "get-url", "origin"])).trim();
       if (origin !== paths.repo.repoUrl)
         return yield* new MemoryError({
           orgId,
           operation: "origin",
-          reason: "Repository configuration changed",
+          reason: "Repository origin does not match configuration",
         });
+    }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new MemoryCheckoutInvalid({
+            orgId,
+            operation: "validate",
+            path: paths.writer,
+            reason: "Writer validation failed; manual recovery required",
+            cause,
+          }),
+      ),
+    );
+  });
+
+  const ensureCheckouts = Effect.fn("Memory.ensureCheckouts")(function* (orgId: KinOrgId) {
+    const paths = yield* pathsFor(orgId);
+    yield* io(orgId, "mkdir", fs.makeDirectory(paths.root, { recursive: true }));
+    const gitDirectory = path.join(paths.writer, ".git");
+    if (yield* io(orgId, "exists", fs.exists(paths.writer))) {
+      yield* validateWriter(orgId, paths);
+    } else {
+      for (const entry of yield* io(orgId, "clones", fs.readDirectory(paths.root))) {
+        if (/^memory\.clone-[A-Za-z0-9]+$/.test(entry))
+          yield* io(
+            orgId,
+            "recoverClone",
+            fs.remove(path.join(paths.root, entry), { recursive: true, force: true }),
+          );
+      }
+      yield* io(
+        orgId,
+        "clone",
+        Effect.gen(function* () {
+          const temporary = yield* fs.makeTempDirectoryScoped({
+            directory: paths.root,
+            prefix: "memory.clone-",
+          });
+          yield* git(orgId, paths.root, ["clone", "--", paths.repo.repoUrl, temporary]);
+          yield* validateWriter(orgId, { ...paths, writer: temporary });
+          yield* fs.rename(temporary, paths.writer);
+        }).pipe(Effect.scoped),
+      );
     }
     const readExists = yield* io(orgId, "exists", fs.exists(paths.read));
-    const commonDirectory = yield* io(orgId, "realPath", fs.realPath(gitDirectory));
-    const readRoot = readExists
-      ? yield* io(orgId, "realPath", fs.realPath(paths.read))
-      : paths.read;
     const validRead =
       readExists &&
       (yield* git(orgId, paths.read, [
@@ -278,10 +373,11 @@ const make = Effect.gen(function* () {
         "--path-format=absolute",
         "--git-common-dir",
       ]).pipe(
-        Effect.flatMap((value) =>
-          path.resolve(value.trim()) === commonDirectory
+        Effect.flatMap((common) => sameDirectory(orgId, common.trim(), gitDirectory)),
+        Effect.flatMap((same) =>
+          same
             ? git(orgId, paths.read, ["rev-parse", "--show-toplevel"]).pipe(
-                Effect.map((top) => path.resolve(top.trim()) === readRoot),
+                Effect.flatMap((root) => sameDirectory(orgId, root.trim(), paths.read)),
               )
             : Effect.succeed(false),
         ),
@@ -302,14 +398,7 @@ const make = Effect.gen(function* () {
 
   const load = Effect.fn("Memory.load")(function* (orgId: KinOrgId, force = false) {
     const paths = yield* pathsFor(orgId);
-    const expectedRoot = yield* io(orgId, "realPath", fs.realPath(paths.writer));
-    const actualRoot = (yield* git(orgId, paths.writer, ["rev-parse", "--show-toplevel"])).trim();
-    if (path.resolve(actualRoot) !== expectedRoot)
-      return yield* new MemoryError({
-        orgId,
-        operation: "source",
-        reason: "Memory source is not the server-owned repository",
-      });
+    yield* validateWriter(orgId, paths);
     const head =
       pinnedHeads.get(orgId) ?? (yield* git(orgId, paths.writer, ["rev-parse", "HEAD"])).trim();
     pinnedHeads.set(orgId, head);
@@ -520,6 +609,20 @@ const make = Effect.gen(function* () {
   });
 
   const query = Effect.fn("Memory.query")(function* (orgId: KinOrgId, q: MemoryQuery) {
+    for (const value of [q.dueBefore, q.dueAfter]) {
+      if (value !== undefined && !Number.isFinite(dateMillis(value)))
+        return yield* new MemoryQueryDecodeError({
+          orgId,
+          operation: "query",
+          reason: "Invalid date bound",
+        });
+    }
+    if (q.limit !== undefined && (!Number.isFinite(q.limit) || q.limit < 0))
+      return yield* new MemoryQueryDecodeError({
+        orgId,
+        operation: "query",
+        reason: "Limit must be finite and non-negative",
+      });
     const now = yield* Clock.currentTimeMillis;
     const { items } = yield* load(orgId);
     const counts = new Map<string, number>();
@@ -617,7 +720,45 @@ const make = Effect.gen(function* () {
 
   const prepare = Effect.fn("Memory.prepare")(function* (orgId: KinOrgId) {
     const paths = yield* ensureCheckouts(orgId);
-    yield* git(orgId, paths.writer, ["pull", "--ff-only"]);
+    const fetched = yield* git(orgId, paths.writer, ["fetch", "origin"]).pipe(Effect.result);
+    if (fetched._tag === "Failure") {
+      yield* Effect.logWarning("Memory sync unavailable; using local writer HEAD", { orgId });
+    } else {
+      yield* git(orgId, paths.writer, ["-c", "rebase.autoStash=false", "pull", "--rebase"]).pipe(
+        Effect.catch((cause) =>
+          Effect.gen(function* () {
+            const rebasing = yield* io(
+              orgId,
+              "sync",
+              fs.exists(path.join(paths.writer, ".git", "rebase-merge")),
+            );
+            const applying = yield* io(
+              orgId,
+              "sync",
+              fs.exists(path.join(paths.writer, ".git", "rebase-apply")),
+            );
+            if (!rebasing && !applying) {
+              const reachable = yield* git(orgId, paths.writer, ["fetch", "origin"]).pipe(
+                Effect.result,
+              );
+              if (reachable._tag === "Success") return yield* cause;
+              yield* Effect.logWarning("Memory pull unavailable; using local writer HEAD", {
+                orgId,
+              });
+              return;
+            }
+            yield* git(orgId, paths.writer, ["rebase", "--abort"]);
+            return yield* new MemorySyncConflict({
+              orgId,
+              operation: "sync",
+              path: paths.writer,
+              reason: "Rebase conflicted; writer restored",
+              cause,
+            });
+          }),
+        ),
+      );
+    }
     const head = (yield* git(orgId, paths.writer, ["rev-parse", "HEAD"])).trim();
     yield* git(orgId, paths.read, ["checkout", "--force", "--detach", head]);
     yield* git(orgId, paths.read, ["reset", "--hard", head]);
