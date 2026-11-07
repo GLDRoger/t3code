@@ -337,6 +337,18 @@ describe("KinChatRepository", () => {
           Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId })),
           widget,
         );
+        const suppliedRevision = {
+          ...widget,
+          widgetId: decodeWidgetId("server-revision"),
+          revision: 99,
+        };
+        yield* repo.insertWidget(suppliedRevision);
+        assert.strictEqual(
+          Option.getOrThrow(
+            yield* repo.getWidget({ orgId, widgetId: decodeWidgetId("server-revision") }),
+          ).revision,
+          1,
+        );
         yield* repo.markRead({ ...scope, seq: 1, updatedAt: timestamp });
         assert.deepStrictEqual(Option.getOrThrow(yield* repo.getReadState(scope)), {
           ...scope,
@@ -355,6 +367,9 @@ describe("KinChatRepository", () => {
           resolvedAt: null,
           resolution: null,
         } as const;
+        assert.include(yield* Effect.flip(repo.addWaiting({ ...waiting, resolvedAt: later })), {
+          reason: "invalid_state",
+        });
         assert.strictEqual(yield* repo.addWaiting(waiting), true);
         assert.strictEqual(
           yield* repo.addWaiting({ ...waiting, waitingId: decodeWaitingId("duplicate-waiting") }),
@@ -439,10 +454,42 @@ describe("KinChatRepository", () => {
         );
         assert.deepStrictEqual(
           yield* sql`SELECT typeof(revision) AS type FROM kin_widgets WHERE org_id = ${orgId}`,
-          [{ type: "integer" }],
+          [{ type: "integer" }, { type: "integer" }],
         );
         assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_check`, []);
       }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("rejects left mentions and retired authors inside the post transaction", () =>
+    Effect.gen(function* () {
+      const repo = yield* seed;
+      yield* repo.leaveChat({ ...scope, memberId: agentMemberId, leftAt: later });
+      assert.include(yield* Effect.flip(repo.insertMessage(message("left-mention"))), {
+        reason: "not_found",
+      });
+      yield* repo.addMember(agentMember);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_agents SET retired_at = ${later} WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+      assert.deepStrictEqual(yield* repo.listActiveAgentThreads(), []);
+      assert.include(
+        yield* Effect.flip(
+          repo.insertMessage(
+            message("retired", {
+              author: {
+                _tag: "agent",
+                agentId,
+                memberId: agentMemberId,
+                ownerPersonId: personId,
+                threadId,
+              },
+              intent: "answer",
+            }),
+          ),
+        ),
+        { reason: "not_found" },
+      );
+      assert.strictEqual(Option.getOrThrow(yield* repo.getChat(scope)).lastSeq, 0);
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect("allocates gapless seqs under 20 concurrent sends", () =>
@@ -463,7 +510,7 @@ describe("KinChatRepository", () => {
           clientMessageId: { kind: "send", id: "new-id" },
         }),
       );
-      assert.strictEqual(failed._tag, "PersistenceSqlError");
+      assert.include(failed, { reason: "not_found" });
       assert.strictEqual(Option.getOrThrow(yield* repo.getChat(scope)).lastSeq, 20);
       assert.strictEqual((yield* repo.insertMessage(message("next"))).seq, 21);
     }).pipe(Effect.provide(layer)),
