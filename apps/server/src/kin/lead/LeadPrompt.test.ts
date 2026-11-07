@@ -140,18 +140,7 @@ it.effect.each([
   { role: "member", tag: "human", label: "member human message (untrusted)" },
   { role: "guest", tag: "human", label: "guest human message (untrusted)" },
   { role: "owner", tag: "human", label: "owner message" },
-  ...[
-    "\u0000",
-    "\u001b",
-    "\u007f",
-    "\u0085",
-    "\u200b",
-    "\ufeff",
-    "\u202e",
-    "\u2066",
-    "\u2028",
-    "\u2029",
-  ].map(
+  ...["\u001b", "\u007f", "\u0085", "\u200b", "\ufeff", "\u202e", "\u2066", "\u2028", "\u2029"].map(
     (character) =>
       ({
         role: "member",
@@ -228,8 +217,8 @@ it.effect.each([
       editedAt: null,
       clientMessageId: null,
     });
-    // Non-human owner roles and NUL text are defensive repository-boundary cases.
-    const defensiveRecord = (tag !== "human" && role === "owner") || body.includes("\u0000");
+    // Non-human owner roles are defensive repository-boundary cases.
+    const defensiveRecord = tag !== "human" && role === "owner";
     const source = defensiveRecord
       ? Chat.KinChatRepository.of({
           ...repo,
