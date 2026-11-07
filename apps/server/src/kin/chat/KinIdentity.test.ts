@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
+  KinChatError,
   AuthSessionId,
   AuthStandardClientScopes,
   EnvironmentId,
@@ -10,10 +11,16 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
@@ -29,6 +36,10 @@ const identityLayer = Identity.KinIdentity.layer.pipe(
   Layer.provide(Layer.succeed(Identity.KinIdentityConfig, config)),
 );
 const start = Identity.KinIdentity.pipe(Effect.provide(identityLayer));
+const startInScope = Effect.fn("test.startInScope")(function* (scope: Scope.Scope) {
+  const context = yield* Layer.buildWithScope(identityLayer, scope);
+  return Context.get(context, Identity.KinIdentity);
+});
 const decodeThreadId = Schema.decodeSync(ThreadId);
 const decodeOrgId = Schema.decodeSync(KinOrgId);
 const decodePersonId = Schema.decodeSync(KinPersonId);
@@ -56,8 +67,8 @@ const caller = (thread = threadId, subagent = false): McpInvocationScope => ({
     subagent,
   },
 });
-const seedAgent = Effect.fn("test.seedAgent")(function* () {
-  const identity = yield* start;
+const seedAgent = Effect.fn("test.seedAgent")(function* (scope?: Scope.Scope) {
+  const identity = yield* scope === undefined ? start : startInScope(scope);
   const [owner] = yield* identity.resolve(session);
   assert.isDefined(owner);
   const repository = yield* Repository.KinChatRepository;
@@ -73,8 +84,139 @@ const seedAgent = Effect.fn("test.seedAgent")(function* () {
 });
 
 describe("KinIdentity", () => {
+  it.effect("keeps callers waiting for the registry lock interruptible", () =>
+    Effect.gen(function* () {
+      const repository = yield* Repository.KinChatRepository;
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const waiting = yield* Deferred.make<void>();
+      const { identity, owner } = yield* seedAgent().pipe(
+        Effect.provideService(Repository.KinChatRepository, {
+          ...repository,
+          registerAgentThread: Effect.fn("test.registerAgentThread")(function* (input) {
+            yield* Deferred.succeed(entered, undefined);
+            yield* Deferred.await(release);
+            return yield* repository.registerAgentThread(input);
+          }),
+        }),
+      );
+      const input = { orgId: owner.orgId, agentId, threadId };
+      const registering = yield* identity.registerAgentThread(input).pipe(Effect.forkChild);
+      yield* Deferred.await(entered);
+      const ending = yield* Effect.gen(function* () {
+        yield* Deferred.succeed(waiting, undefined);
+        return yield* identity.endAgentThread(input);
+      }).pipe(Effect.forkChild);
+      yield* Deferred.await(waiting);
+      yield* Fiber.interrupt(ending);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(registering);
+      assert.isTrue(identity.isAgentThread(threadId));
+      assert.strictEqual(
+        Option.getOrThrow(yield* repository.findAgentThread(threadId)).endedAt,
+        null,
+      );
+    }).pipe(Effect.provide(repositoryLayer)),
+  );
+
   it.effect(
-    "bootstraps once under concurrent starts and preserves configured identity on restart",
+    "keeps registration visible when an earlier resolution finishes after registration",
+    () =>
+      Effect.gen(function* () {
+        const repository = yield* Repository.KinChatRepository;
+        const read = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const { identity, owner } = yield* seedAgent().pipe(
+          Effect.provideService(Repository.KinChatRepository, {
+            ...repository,
+            findAgentThread: Effect.fn("test.findAgentThread")(function* (id) {
+              const result = yield* repository.findAgentThread(id);
+              yield* Deferred.succeed(read, undefined);
+              yield* Deferred.await(release);
+              return result;
+            }),
+          }),
+        );
+        const resolving = yield* identity
+          .resolveAgent(caller())
+          .pipe(Effect.flip, Effect.forkChild);
+        yield* Deferred.await(read);
+        yield* identity.registerAgentThread({ orgId: owner.orgId, agentId, threadId });
+        yield* Deferred.succeed(release, undefined);
+        assert.include(yield* Fiber.join(resolving), { reason: "not_allowed" });
+        assert.isTrue(identity.isAgentThread(threadId));
+        assert.isTrue(Option.isSome(yield* repository.findAgentThread(threadId)));
+      }).pipe(Effect.provide(repositoryLayer)),
+  );
+
+  it.effect("does not publish a registration rolled back by an outer transaction", () =>
+    Effect.gen(function* () {
+      const { identity, repository, owner } = yield* seedAgent();
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            yield* identity.registerAgentThread({ orgId: owner.orgId, agentId, threadId });
+            return yield* Effect.fail("rollback");
+          }),
+        )
+        .pipe(Effect.flip);
+      assert.isFalse(identity.isAgentThread(threadId));
+      assert.isTrue(Option.isNone(yield* repository.findAgentThread(threadId)));
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* identity.registerAgentThread({ orgId: owner.orgId, agentId, threadId });
+          assert.isFalse(identity.isAgentThread(threadId));
+        }),
+      );
+      assert.isTrue(identity.isAgentThread(threadId));
+      assert.isTrue(Option.isSome(yield* repository.findAgentThread(threadId)));
+    }).pipe(Effect.provide(repositoryLayer)),
+  );
+
+  it.effect("restores visibility when ending fails and rejects retired agents", () =>
+    Effect.gen(function* () {
+      const repository = yield* Repository.KinChatRepository;
+      const { identity, owner } = yield* seedAgent().pipe(
+        Effect.provideService(Repository.KinChatRepository, {
+          ...repository,
+          endAgentThread: () =>
+            Effect.fail(
+              new KinChatError({
+                reason: "not_allowed",
+                message: "Injected end failure.",
+              }),
+            ),
+        }),
+      );
+      const input = { orgId: owner.orgId, agentId, threadId };
+      yield* identity.registerAgentThread(input);
+      yield* identity.endAgentThread(input).pipe(Effect.flip);
+      assert.isTrue(identity.isAgentThread(threadId));
+      assert.strictEqual(
+        Option.getOrThrow(yield* repository.findAgentThread(threadId)).endedAt,
+        null,
+      );
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_agents SET retired_at = '1970-01-01T00:00:01.000Z'
+        WHERE org_id = ${owner.orgId} AND agent_id = ${agentId}`;
+      assert.include(yield* identity.resolveAgent(caller()).pipe(Effect.flip), {
+        reason: "not_allowed",
+      });
+      for (const id of [threadId, decodeThreadId("retired-thread")]) {
+        assert.include(
+          yield* identity.registerAgentThread({ ...input, threadId: id }).pipe(Effect.flip),
+          { reason: "not_allowed" },
+        );
+      }
+      assert.isTrue(
+        Option.isNone(yield* repository.findAgentThread(decodeThreadId("retired-thread"))),
+      );
+    }).pipe(Effect.provide(repositoryLayer)),
+  );
+
+  it.effect(
+    "serializes bootstrap writers with WHERE NOT EXISTS and ON CONFLICT guards and preserves stored config",
     () =>
       Effect.gen(function* () {
         yield* TestClock.setTime(1_000);
@@ -120,7 +262,8 @@ describe("KinIdentity", () => {
     "registers, restores and ends agent threads without allowing identity changes or foreign orgs",
     () =>
       Effect.gen(function* () {
-        const { identity, repository, owner } = yield* seedAgent();
+        const firstScope = yield* Scope.make();
+        const { identity, repository, owner } = yield* seedAgent(firstScope);
         const input = { orgId: owner.orgId, agentId, threadId };
         assert.isFalse(identity.isAgentThread(threadId));
         for (const scope of [
@@ -207,12 +350,14 @@ describe("KinIdentity", () => {
           { _tag: "KinChatError", reason: "not_found" },
         );
         assert.isTrue(identity.isAgentThread(threadId));
-        const restarted = yield* start;
+        yield* Scope.close(firstScope, Exit.void);
+        const secondScope = yield* Scope.make();
+        const restarted = yield* startInScope(secondScope);
         assert.isTrue(restarted.isAgentThread(threadId));
-        assert.deepStrictEqual(
-          yield* restarted.resolveAgent(caller()),
-          yield* identity.resolveAgent(caller()),
-        );
+        assert.deepStrictEqual(yield* restarted.resolveAgent(caller()), {
+          ...input,
+          ownerPersonId: owner.personId,
+        });
         assert.deepStrictEqual(yield* restarted.resolve(session), [owner]);
         assert.isTrue(yield* restarted.endAgentThread(input));
         assert.isFalse(restarted.isAgentThread(threadId));
@@ -229,6 +374,7 @@ describe("KinIdentity", () => {
         assert.isTrue(Option.isSome(ended));
         if (Option.isSome(ended))
           assert.strictEqual(ended.value.endedAt, "1970-01-01T00:00:01.000Z");
+        yield* Scope.close(secondScope, Exit.void);
         const afterEnd = yield* start;
         assert.isFalse(afterEnd.isAgentThread(threadId));
         assert.isTrue(afterEnd.isAgentThread(secondThreadId));
@@ -257,9 +403,23 @@ describe("KinIdentity", () => {
         name: "Existing",
         createdAt: "1970-01-01T00:00:00.000Z",
       });
-      assert.include(yield* Effect.flip(start), { _tag: "KinChatError", reason: "not_found" });
+      const unknown = yield* Effect.flip(start);
+      assert.strictEqual(unknown._tag, "KinIdentityBootstrapError");
+      assert.include(unknown.message, "unknown org");
+      assert.include(unknown.message, "recreate the Kin tables");
       assert.lengthOf(yield* repository.listAllOrgs(), 1);
       assert.deepStrictEqual(yield* repository.listPeople({ orgId }), []);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DELETE FROM kin_orgs WHERE org_id = ${orgId}`;
+      yield* repository.insertOrg({
+        orgId: decodeOrgId("kin-default"),
+        name: "Kin",
+        createdAt: "1970-01-01T00:00:00.000Z",
+      });
+      const missingOwner = yield* Effect.flip(start);
+      assert.strictEqual(missingOwner._tag, "KinIdentityBootstrapError");
+      assert.include(missingOwner.message, "exists without owner person `kin-default-owner`");
+      assert.include(missingOwner.message, "restore it or recreate the Kin tables");
     }).pipe(Effect.provide(repositoryLayer)),
   );
 

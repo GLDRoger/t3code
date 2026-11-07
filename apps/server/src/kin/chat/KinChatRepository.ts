@@ -53,7 +53,7 @@ const KinReadState = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 type KinReadState = typeof KinReadState.Type;
-type RepositoryError = PersistenceSqlError | PersistenceDecodeError | KinChatError;
+export type RepositoryError = PersistenceSqlError | PersistenceDecodeError | KinChatError;
 type Scope = { readonly orgId: KinOrgId };
 type ChatScope = Scope & { readonly chatId: KinChatId };
 type MemberScope = ChatScope & { readonly memberId: KinMemberId };
@@ -87,6 +87,11 @@ function toRepositoryError(operation: string) {
         ? cause
         : toPersistenceSqlError(operation)(cause);
 }
+export class KinIdentityBootstrapError extends Schema.TaggedError<KinIdentityBootstrapError>()(
+  "KinIdentityBootstrapError",
+  { message: Schema.String },
+) {}
+const isBootstrapError = Schema.is(KinIdentityBootstrapError);
 const defaultOrgId = Schema.decodeSync(KinOrgId)("kin-default");
 const defaultOwnerId = Schema.decodeSync(KinPersonId)("kin-default-owner");
 const OrgRow = KinOrg;
@@ -94,6 +99,10 @@ const orgColumns = `org_id AS "orgId", name AS "name", created_at AS "createdAt"
 const PersonRow = KinPerson;
 const personColumns = `person_id AS "personId", org_id AS "orgId", handle AS "handle", display_name AS "displayName", github_login AS "githubLogin"`;
 const AgentRow = KinAgent;
+const AgentIdentityRow = Schema.Struct({
+  ...KinAgent.fields,
+  retiredAt: Schema.NullOr(IsoDateTime),
+});
 const agentColumns = `agent_id AS "agentId", org_id AS "orgId", display_name AS "displayName", role AS "role", owner_person_id AS "ownerPersonId"`;
 const ChatRow = KinChat;
 const chatColumns = `org_id AS "orgId", chat_id AS "chatId", kind AS "kind", title AS "title", team_id AS "teamId", last_seq AS "lastSeq", last_message_at AS "lastMessageAt", created_at AS "createdAt", archived_at AS "archivedAt"`;
@@ -139,7 +148,7 @@ export class KinChatRepository extends Context.Service<
     ) => Effect.Effect<Option.Option<KinPerson>, RepositoryError>;
     readonly getAgent: (
       input: Scope & { readonly agentId: KinAgentId },
-    ) => Effect.Effect<Option.Option<KinAgent>, RepositoryError>;
+    ) => Effect.Effect<Option.Option<typeof AgentIdentityRow.Type>, RepositoryError>;
     readonly getChat: (
       input: Scope & { readonly chatId: KinChatId },
     ) => Effect.Effect<Option.Option<KinChat>, RepositoryError>;
@@ -163,7 +172,7 @@ export class KinChatRepository extends Context.Service<
       readonly ownerHandle: string;
       readonly ownerDisplayName: string;
       readonly createdAt: IsoDateTime;
-    }) => Effect.Effect<KinPerson, RepositoryError>;
+    }) => Effect.Effect<KinPerson, RepositoryError | KinIdentityBootstrapError>;
     readonly findAgentThread: (
       threadId: ThreadId,
     ) => Effect.Effect<Option.Option<KinAgentThread>, RepositoryError>;
@@ -280,9 +289,9 @@ const make = Effect.gen(function* () {
     function (input: Scope & { readonly agentId: KinAgentId }) {
       return SqlSchema.findOneOption({
         Request: Schema.Unknown,
-        Result: AgentRow,
+        Result: AgentIdentityRow,
         execute: () =>
-          sql`SELECT ${sql.literal(agentColumns)} FROM kin_agents WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId}`,
+          sql`SELECT ${sql.literal(agentColumns)}, retired_at AS "retiredAt" FROM kin_agents WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId}`,
       })(input).pipe(NodeSqliteClient.readOnly);
     },
     Effect.mapError(toRepositoryError("KinChatRepository.getAgent")),
@@ -386,11 +395,30 @@ const make = Effect.gen(function* () {
  ON CONFLICT (person_id) DO NOTHING RETURNING person_id`;
         }
         // Never infer ownership from a handle or whichever person happens to sort first.
-        yield* requireRecord(orgOne({ orgId }));
-        return yield* requireRecord(personOne({ orgId, personId }));
+        const org = yield* orgOne({ orgId });
+        if (Option.isNone(org))
+          return yield* new KinIdentityBootstrapError({
+            message:
+              "Kin tables contain an unknown org instead of reserved org `kin-default`; restore the reserved identity or recreate the Kin tables.",
+          });
+        const owner = yield* personOne({ orgId, personId });
+        if (Option.isNone(owner))
+          return yield* new KinIdentityBootstrapError({
+            message:
+              "Kin org `kin-default` exists without owner person `kin-default-owner`; restore it or recreate the Kin tables.",
+          });
+        if (org.value.name !== input.orgName || owner.value.handle !== input.ownerHandle)
+          yield* Effect.logInfo(
+            "Kin identity configuration differs from stored org name or owner handle; keeping stored identity.",
+          );
+        return owner.value;
       },
       (effect) => sql.withTransaction(effect),
-      Effect.mapError(toRepositoryError("KinChatRepository.bootstrapIdentity")),
+      Effect.mapError((cause) =>
+        isBootstrapError(cause)
+          ? cause
+          : toRepositoryError("KinChatRepository.bootstrapIdentity")(cause),
+      ),
     ),
     // Only trusted caller-thread discovery crosses orgs; subsequent identity reads use the stored org.
     findAgentThread: Effect.fn("KinChatRepository.findAgentThread")(
@@ -664,7 +692,14 @@ const make = Effect.gen(function* () {
           });
         return yield* sql.withTransaction(
           Effect.gen(function* () {
-            yield* requireRecord(agentOne({ orgId: input.orgId, agentId: input.agentId }));
+            const agent = yield* requireRecord(
+              agentOne({ orgId: input.orgId, agentId: input.agentId }),
+            );
+            if (agent.retiredAt !== null)
+              return yield* new KinChatError({
+                reason: "not_allowed",
+                message: "Retired Kin agents cannot register threads.",
+              });
             const existing = yield* SqlSchema.findOneOption({
               Request: Schema.Unknown,
               Result: AgentThreadRow,
@@ -688,7 +723,8 @@ const make = Effect.gen(function* () {
                 });
               return existing.value;
             }
-            yield* sql`INSERT INTO kin_agent_threads (org_id, thread_id, agent_id, started_at, ended_at) VALUES (${input.orgId}, ${input.threadId}, ${input.agentId}, ${input.startedAt}, ${input.endedAt})`;
+            yield* sql`INSERT INTO kin_agent_threads (org_id, thread_id, agent_id, started_at, ended_at) VALUES (${input.orgId}, ${input.threadId}, ${input.agentId}, ${input.startedAt}, ${input.endedAt})
+ ON CONFLICT (thread_id) DO NOTHING RETURNING thread_id`;
             return yield* requireRecord(agentThreadOne(input));
           }),
         );

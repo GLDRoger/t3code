@@ -14,6 +14,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Semaphore from "effect/Semaphore";
+import * as SqlClient from "effect/sql/SqlClient";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as KinChatRepository from "./KinChatRepository.ts";
@@ -21,9 +22,9 @@ import * as KinChatRepository from "./KinChatRepository.ts";
 export class KinIdentityConfig extends Context.Service<
   KinIdentityConfig,
   {
-    readonly orgName: string;
-    readonly ownerHandle: string;
-    readonly ownerDisplayName: string;
+    readonly orgName: typeof TrimmedNonEmptyString.Type;
+    readonly ownerHandle: typeof TrimmedNonEmptyString.Type;
+    readonly ownerDisplayName: typeof TrimmedNonEmptyString.Type;
   }
 >()("t3/kin/chat/KinIdentity/KinIdentityConfig") {
   static readonly layer = Layer.effect(
@@ -40,11 +41,9 @@ export class KinIdentityConfig extends Context.Service<
   );
 }
 
-type IdentityError = Effect.Error<
-  ReturnType<KinChatRepository.KinChatRepository["Service"]["getAgent"]>
->;
-type PersonIdentity = { readonly orgId: KinOrgId; readonly personId: KinPersonId };
-type AgentIdentity = {
+type IdentityError = KinChatRepository.RepositoryError;
+export type PersonIdentity = { readonly orgId: KinOrgId; readonly personId: KinPersonId };
+export type AgentIdentity = {
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;
   readonly ownerPersonId: KinPersonId;
@@ -56,6 +55,7 @@ type AgentThreadInput = {
   readonly threadId: ThreadId;
 };
 
+// Build once and share between WS handlers and the /kin/mcp toolkit; the visibility set is instance-local.
 export class KinIdentity extends Context.Service<
   KinIdentity,
   {
@@ -78,10 +78,13 @@ export class KinIdentity extends Context.Service<
     Effect.gen(function* () {
       const repository = yield* KinChatRepository.KinChatRepository;
       const config = yield* KinIdentityConfig;
-      const owner = yield* repository.bootstrapIdentity({
-        ...config,
-        createdAt: DateTime.formatIso(yield* DateTime.now),
-      });
+      const sql = yield* SqlClient.SqlClient;
+      const owner = yield* repository
+        .bootstrapIdentity({
+          ...config,
+          createdAt: DateTime.formatIso(yield* DateTime.now),
+        })
+        .pipe(Effect.tapError((error) => Effect.logError("Kin identity bootstrap failed", error)));
       const active = new Set(
         (yield* repository.listActiveAgentThreads()).map((row) => row.threadId),
       );
@@ -103,14 +106,13 @@ export class KinIdentity extends Context.Service<
             });
           const row = yield* repository.findAgentThread(caller.threadId);
           if (Option.isNone(row) || row.value.endedAt !== null) {
-            active.delete(caller.threadId);
             return yield* new KinChatError({
               reason: "not_allowed",
               message: "Kin agent thread is not active.",
             });
           }
           const agent = yield* repository.getAgent(row.value);
-          if (Option.isNone(agent))
+          if (Option.isNone(agent) || agent.value.retiredAt !== null)
             return yield* new KinChatError({
               reason: "not_allowed",
               message: "Kin agent identity required.",
@@ -129,10 +131,14 @@ export class KinIdentity extends Context.Service<
               startedAt: DateTime.formatIso(yield* DateTime.now),
               endedAt: null,
             });
-            active.add(row.threadId);
+            yield* sql.afterCommit(
+              Effect.sync(() => {
+                active.add(row.threadId);
+              }),
+            );
           },
-          lock.withPermits(1),
           Effect.uninterruptible,
+          lock.withPermits(1),
         ),
         endAgentThread: Effect.fn("KinIdentity.endAgentThread")(
           function* (input) {
@@ -142,14 +148,22 @@ export class KinIdentity extends Context.Service<
                 reason: "not_found",
                 message: "Kin agent thread not found.",
               });
-            active.delete(input.threadId);
-            return yield* repository.endAgentThread({
-              ...input,
-              endedAt: DateTime.formatIso(yield* DateTime.now),
-            });
+            const wasActive = active.delete(input.threadId);
+            return yield* repository
+              .endAgentThread({
+                ...input,
+                endedAt: DateTime.formatIso(yield* DateTime.now),
+              })
+              .pipe(
+                Effect.onError(() =>
+                  Effect.sync(() => {
+                    if (wasActive) active.add(input.threadId);
+                  }),
+                ),
+              );
           },
-          lock.withPermits(1),
           Effect.uninterruptible,
+          lock.withPermits(1),
         ),
         isAgentThread: (threadId) => active.has(threadId),
       });
