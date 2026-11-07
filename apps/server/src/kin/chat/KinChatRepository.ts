@@ -57,7 +57,7 @@ type RepositoryError = PersistenceSqlError | PersistenceDecodeError | KinChatErr
 type Scope = { readonly orgId: KinOrgId };
 type ChatScope = Scope & { readonly chatId: KinChatId };
 type MemberScope = ChatScope & { readonly memberId: KinMemberId };
-type InsertMessage = Omit<KinMessage, "seq"> & {
+type InsertMessage = Omit<KinMessage, "seq" | "authorRole"> & {
   readonly clientMessageId: {
     readonly kind: "send" | "act";
     readonly id: typeof TrimmedNonEmptyString.Type;
@@ -188,7 +188,9 @@ export class KinChatRepository extends Context.Service<
       input: KinAgentThread,
     ) => Effect.Effect<KinAgentThread, RepositoryError>;
     readonly createChat: (
-      input: KinChat & { readonly directKey: typeof TrimmedNonEmptyString.Type | null },
+      input: Omit<KinChat, "lastSeq"> & {
+        readonly directKey: typeof TrimmedNonEmptyString.Type | null;
+      },
     ) => Effect.Effect<KinChat, RepositoryError>;
     readonly insertMessage: (input: InsertMessage) => Effect.Effect<KinMessage, RepositoryError>;
     readonly history: (
@@ -336,6 +338,16 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(toRepositoryError("KinChatRepository.getAgentThread")),
   );
+  const validateWidgetReferences = Effect.fn("KinChatRepository.validateWidgetReferences")(
+    function* (input: Pick<KinWidget, "orgId" | "awaiting" | "source">) {
+      for (const personId of input.awaiting)
+        yield* requireRecord(personOne({ orgId: input.orgId, personId }));
+      if (input.source?.threadId != null)
+        yield* requireRecord(
+          agentThreadOne({ orgId: input.orgId, threadId: input.source.threadId }),
+        );
+    },
+  );
   return KinChatRepository.of({
     getOrg: orgOne,
     getPerson: personOne,
@@ -346,7 +358,7 @@ const make = Effect.gen(function* () {
     getWidget: widgetOne,
     getWaiting: waitingOne,
     getAgentThread: agentThreadOne,
-    // The only unscoped query: first-start bootstrap and kin.orgs.list must discover organizations.
+    // Bootstrap discovers orgs; write-side global-id checks also cross orgs to detect hidden collisions.
     listAllOrgs: Effect.fn("KinChatRepository.listAllOrgs")(
       function* () {
         return yield* SqlSchema.findAll({
@@ -457,6 +469,11 @@ const make = Effect.gen(function* () {
     ),
     addMember: Effect.fn("KinChatRepository.addMember")(
       function* (input) {
+        if (input.leftAt !== null)
+          return yield* new KinChatError({
+            reason: "invalid_state",
+            message: "New Kin members must be active.",
+          });
         return yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* requireRecord(chatOne(input));
@@ -475,9 +492,13 @@ const make = Effect.gen(function* () {
               execute: () => sql`SELECT ${sql.literal(memberColumns)} FROM kin_chat_members
  WHERE member_id = ${input.memberId} OR (chat_id = ${input.chatId} AND (person_id = ${input.principal._tag === "person" ? input.principal.personId : null} OR agent_id = ${input.principal._tag === "agent" ? input.principal.agentId : null}))`,
             })(input);
+            if (existing.some((member) => member.orgId !== input.orgId))
+              return yield* new KinChatError({
+                reason: "not_found",
+                message: "Kin record not found.",
+              });
             for (const member of existing) {
               if (
-                member.orgId !== input.orgId ||
                 member.chatId !== input.chatId ||
                 member.memberId !== input.memberId ||
                 member.principal._tag !== input.principal._tag ||
@@ -545,6 +566,11 @@ const make = Effect.gen(function* () {
                 sql`SELECT ${sql.literal(waitingColumns)} FROM kin_waiting WHERE waiting_id = ${input.waitingId}`,
             })(input);
             if (Option.isSome(existing)) {
+              if (existing.value.orgId !== input.orgId)
+                return yield* new KinChatError({
+                  reason: "not_found",
+                  message: "Kin record not found.",
+                });
               if (
                 !(
                   [
@@ -555,8 +581,6 @@ const make = Effect.gen(function* () {
                     "widgetId",
                     "reason",
                     "createdAt",
-                    "resolvedAt",
-                    "resolution",
                   ] as const
                 ).every((key) => existing.value[key] === input[key])
               )
@@ -576,6 +600,11 @@ const make = Effect.gen(function* () {
     ),
     registerAgentThread: Effect.fn("KinChatRepository.registerAgentThread")(
       function* (input) {
+        if (input.endedAt !== null)
+          return yield* new KinChatError({
+            reason: "invalid_state",
+            message: "New Kin agent threads must be active.",
+          });
         return yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* requireRecord(agentOne({ orgId: input.orgId, agentId: input.agentId }));
@@ -586,8 +615,12 @@ const make = Effect.gen(function* () {
                 sql`SELECT ${sql.literal(agentThreadColumns)} FROM kin_agent_threads WHERE thread_id = ${input.threadId}`,
             })(input);
             if (Option.isSome(existing)) {
+              if (existing.value.orgId !== input.orgId)
+                return yield* new KinChatError({
+                  reason: "not_found",
+                  message: "Kin record not found.",
+                });
               if (
-                existing.value.orgId !== input.orgId ||
                 existing.value.agentId !== input.agentId ||
                 existing.value.endedAt !== null ||
                 input.endedAt !== existing.value.endedAt
@@ -607,11 +640,16 @@ const make = Effect.gen(function* () {
     ),
     createChat: Effect.fn("KinChatRepository.createChat")(
       function* (input) {
+        if ((input.kind === "direct") !== (input.directKey !== null))
+          return yield* new KinChatError({
+            reason: "invalid_state",
+            message: "Kin chat kind and direct key must agree.",
+          });
         return yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* requireRecord(orgOne(input));
             yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, team_id, direct_key, last_seq, last_message_at, created_at, archived_at)
- VALUES (${input.chatId}, ${input.orgId}, ${input.kind}, ${input.title}, ${input.teamId}, ${input.directKey}, ${input.lastSeq}, ${input.lastMessageAt}, ${input.createdAt}, ${input.archivedAt})
+ VALUES (${input.chatId}, ${input.orgId}, ${input.kind}, ${input.title}, ${input.teamId}, ${input.directKey}, 0, ${input.lastMessageAt}, ${input.createdAt}, ${input.archivedAt})
  ON CONFLICT DO NOTHING`;
             return yield* requireRecord(
               SqlSchema.findOneOption({
@@ -646,7 +684,6 @@ const make = Effect.gen(function* () {
             if (member !== null) {
               if (
                 member.chatId !== input.chatId ||
-                member.leftAt !== null ||
                 (author._tag === "human" &&
                   (member.principal._tag !== "person" ||
                     member.principal.personId !== author.personId)) ||
@@ -659,6 +696,32 @@ const make = Effect.gen(function* () {
                   message: "Kin member not found.",
                 });
             }
+            if (memberId !== null && clientId !== null) {
+              const existing = yield* SqlSchema.findOneOption({
+                Request: Schema.Unknown,
+                Result: MessageRow,
+                execute:
+                  () => sql`SELECT ${sql.literal(messageColumns)} FROM kin_messages WHERE org_id = ${input.orgId}
+ AND chat_id = ${input.chatId} AND author_member_id = ${memberId} AND client_message_id = ${clientId}`,
+              })(input);
+              if (Option.isSome(existing)) {
+                if (
+                  author._tag === "agent" &&
+                  (existing.value.author._tag !== "agent" ||
+                    existing.value.author.threadId !== author.threadId)
+                )
+                  return yield* new KinChatError({
+                    reason: "not_allowed",
+                    message: "Kin message author identity conflict.",
+                  });
+                return existing.value;
+              }
+            }
+            if (member !== null && member.leftAt !== null)
+              return yield* new KinChatError({
+                reason: "not_found",
+                message: "Kin member not found.",
+              });
             const agent =
               author._tag === "agent"
                 ? yield* requireRecord(agentOne({ orgId: input.orgId, agentId: author.agentId }))
@@ -697,26 +760,27 @@ const make = Effect.gen(function* () {
                   message: "Kin record not found.",
                 });
             }
-            if (memberId !== null && clientId !== null) {
-              const existing = yield* SqlSchema.findOneOption({
-                Request: Schema.Unknown,
-                Result: MessageRow,
-                execute:
-                  () => sql`SELECT ${sql.literal(messageColumns)} FROM kin_messages WHERE org_id = ${input.orgId}
- AND chat_id = ${input.chatId} AND author_member_id = ${memberId} AND client_message_id = ${clientId}`,
-              })(input);
-              if (Option.isSome(existing)) {
-                if (
-                  author._tag === "agent" &&
-                  (existing.value.author._tag !== "agent" ||
-                    existing.value.author.threadId !== author.threadId)
-                )
-                  return yield* new KinChatError({
-                    reason: "not_allowed",
-                    message: "Kin message author identity conflict.",
-                  });
-                return existing.value;
-              }
+            if (input.sentBy !== null) {
+              yield* requireRecord(personOne({ orgId: input.orgId, personId: input.sentBy }));
+              yield* requireRecord(
+                SqlSchema.findOneOption({
+                  Request: Schema.Unknown,
+                  Result: MemberRow,
+                  execute: () => sql`SELECT ${sql.literal(memberColumns)} FROM kin_chat_members
+ WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND person_id = ${input.sentBy}
+ AND principal_kind = 'person' AND role = 'owner' AND left_at IS NULL`,
+                })(input),
+              );
+            }
+            for (const mention of input.mentions) {
+              const mentioned = yield* requireRecord(
+                memberOne({ orgId: input.orgId, memberId: mention }),
+              );
+              if (mentioned.chatId !== input.chatId)
+                return yield* new KinChatError({
+                  reason: "not_found",
+                  message: "Kin member not found.",
+                });
             }
             const mentions = yield* encodeMentions(input.mentions);
             const allocated = yield* SqlSchema.findOneOption({
@@ -733,7 +797,7 @@ const make = Effect.gen(function* () {
  VALUES (${input.messageId}, ${input.orgId}, ${input.chatId}, ${seq}, ${author._tag},
  ${member?.principal._tag === "person" ? member.principal.personId : null}, ${member?.principal._tag === "agent" ? member.principal.agentId : null},
  ${agent?.ownerPersonId ?? null}, ${author._tag === "agent" ? author.threadId : null},
- ${memberId}, ${input.authorRole}, ${input.kind}, ${input.body}, ${input.intent}, ${mentions}, ${input.replyTo},
+ ${memberId}, ${member?.role ?? "member"}, ${input.kind}, ${input.body}, ${input.intent}, ${mentions}, ${input.replyTo},
  ${input.widgetId}, ${input.floorRunId}, ${input.status}, ${input.sentBy}, ${clientId}, ${input.createdAt}, ${input.editedAt})`;
             return yield* requireRecord(messageOne(input));
           }),
@@ -791,6 +855,7 @@ const make = Effect.gen(function* () {
         const message = yield* requireRecord(messageOne(input));
         if (message.chatId !== input.chatId)
           return yield* new KinChatError({ reason: "not_found", message: "Kin record not found." });
+        yield* validateWidgetReferences(input);
         const state = yield* encodeWidgetState(input.state);
         const awaiting = yield* encodeAwaiting(input.awaiting);
         yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class, type, revision, state_json,
@@ -807,6 +872,7 @@ const make = Effect.gen(function* () {
         return yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* requireRecord(widgetOne(input));
+            yield* validateWidgetReferences(input);
             const state = yield* encodeWidgetState(input.state);
             const awaiting = yield* encodeAwaiting(input.awaiting);
             const updated = yield* SqlSchema.findOneOption({

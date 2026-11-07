@@ -240,12 +240,45 @@ describe("KinChatRepository", () => {
         );
         assert.strictEqual(conflict._tag, "KinChatError");
         if (conflict._tag === "KinChatError") assert.strictEqual(conflict.reason, "not_allowed");
+        for (const input of [
+          { ...chat, kind: "direct", directKey: null },
+          { ...chat, kind: "team_group", directKey: "invalid" },
+        ] as const) {
+          const failure = yield* Effect.flip(repo.createChat(input));
+          assert.strictEqual(failure._tag, "KinChatError");
+          if (failure._tag === "KinChatError") assert.strictEqual(failure.reason, "invalid_state");
+        }
+        for (const write of [
+          repo
+            .addMember({
+              ...owner,
+              memberId: decodeMemberId("already-left"),
+              principal: { _tag: "person", personId: secondPerson },
+              leftAt: later,
+            })
+            .pipe(Effect.asVoid),
+          repo
+            .registerAgentThread({
+              orgId,
+              agentId,
+              threadId: decodeThreadId("already-ended"),
+              startedAt: timestamp,
+              endedAt: later,
+            })
+            .pipe(Effect.asVoid),
+        ]) {
+          const failure = yield* Effect.flip(write);
+          assert.strictEqual(failure._tag, "KinChatError");
+          if (failure._tag === "KinChatError") assert.strictEqual(failure.reason, "invalid_state");
+        }
+        const initialChat = { ...chat, lastSeq: 99 };
         const team = yield* repo.createChat({
-          ...chat,
+          ...initialChat,
           chatId: decodeChatId("team"),
           kind: "team_group",
           directKey: null,
         });
+        assert.strictEqual(team.lastSeq, 0);
         assert.deepStrictEqual(
           yield* repo.createChat({ ...chat, chatId: team.chatId, directKey: "owner:lead" }),
           chat,
@@ -278,6 +311,9 @@ describe("KinChatRepository", () => {
           { concurrency: "unbounded" },
         );
         for (const retried of repeated) assert.deepStrictEqual(retried, first);
+        yield* repo.leaveChat({ ...scope, leftAt: later });
+        assert.deepStrictEqual(yield* repo.insertMessage(message("first")), first);
+        yield* repo.addMember({ ...owner, joinedAt: later });
         assert.strictEqual(Option.getOrThrow(yield* repo.getChat(scope)).lastSeq, 1);
         assert.strictEqual(Option.getOrThrow(yield* repo.getChat(scope)).lastMessageAt, timestamp);
         const action = yield* repo.insertMessage({
@@ -358,6 +394,7 @@ describe("KinChatRepository", () => {
           }),
           false,
         );
+        assert.strictEqual(yield* repo.addWaiting(waiting), true);
         assert.deepStrictEqual(yield* repo.listOpenWaiting({ orgId, personId }), []);
         assert.deepStrictEqual(Option.getOrThrow(yield* repo.getWaiting({ orgId, waitingId })), {
           ...waiting,
@@ -544,6 +581,29 @@ describe("KinChatRepository", () => {
         threadId: decodeThreadId("ended-thread"),
         endedAt: later,
       });
+      const foreignMember = decodeMemberId("foreign-member");
+      yield* repo.addMember({
+        ...owner,
+        orgId: orgA,
+        chatId: otherChat,
+        memberId: foreignMember,
+        principal: { _tag: "person", personId: otherPerson },
+      });
+      const sameChatMember = decodeMemberId("same-org-other-chat-member");
+      yield* repo.addMember({ ...owner, chatId: sameOrgChat, memberId: sameChatMember });
+      for (const fields of [
+        { sentBy: otherPerson },
+        { sentBy: decodePersonId("unknown-sender") },
+        { mentions: [foreignMember] },
+        { mentions: [decodeMemberId("unknown-member")] },
+        { mentions: [sameChatMember] },
+      ]) {
+        const failure = yield* Effect.flip(
+          repo.insertMessage(message("invalid-reference", fields)),
+        );
+        assert.strictEqual(failure._tag, "KinChatError");
+        if (failure._tag === "KinChatError") assert.strictEqual(failure.reason, "not_found");
+      }
       const hidden = { ...scope, orgId: orgA };
       const sql = yield* SqlClient.SqlClient;
       for (const [id, author] of [
@@ -636,7 +696,47 @@ describe("KinChatRepository", () => {
         role: "lead",
         createdAt: timestamp,
       });
+      yield* repo.registerAgentThread({
+        orgId: orgA,
+        agentId: decodeAgentId("org-a-agent"),
+        threadId: decodeThreadId("foreign-thread"),
+        startedAt: timestamp,
+        endedAt: null,
+      });
+      for (const refs of [
+        { awaiting: [otherPerson] },
+        { awaiting: [decodePersonId("unknown-person")] },
+        {
+          source: { threadId: decodeThreadId("foreign-thread"), itemId: decodeTurnItemId("item") },
+        },
+        {
+          source: { threadId: decodeThreadId("unknown-thread"), itemId: decodeTurnItemId("item") },
+        },
+      ]) {
+        for (const write of [
+          repo.insertWidget({ ...widget, widgetId: decodeWidgetId("invalid-widget"), ...refs }),
+          repo.updateWidget({ ...widget, expectedRevision: 1, ...refs }),
+        ]) {
+          const failure = yield* Effect.flip(write);
+          assert.strictEqual(failure._tag, "KinChatError");
+          if (failure._tag === "KinChatError") assert.strictEqual(failure.reason, "not_found");
+        }
+      }
       for (const retry of [
+        repo
+          .addWaiting({
+            orgId: orgA,
+            chatId: otherChat,
+            personId: otherPerson,
+            waitingId,
+            messageId: null,
+            widgetId: null,
+            reason: "question",
+            createdAt: timestamp,
+            resolvedAt: null,
+            resolution: null,
+          })
+          .pipe(Effect.asVoid),
         repo
           .registerAgentThread({
             orgId: orgA,
@@ -657,7 +757,7 @@ describe("KinChatRepository", () => {
       ]) {
         const failure = yield* Effect.flip(retry);
         assert.strictEqual(failure._tag, "KinChatError");
-        if (failure._tag === "KinChatError") assert.strictEqual(failure.reason, "not_allowed");
+        if (failure._tag === "KinChatError") assert.strictEqual(failure.reason, "not_found");
       }
       for (const write of [
         ...[
@@ -818,6 +918,43 @@ describe("KinChatRepository", () => {
           .author,
         agentAuthor,
       );
+      const guestPerson = decodePersonId("guest");
+      const guestMember = decodeMemberId("guest-member");
+      yield* repo.insertPerson({
+        orgId,
+        personId: guestPerson,
+        handle: "guest",
+        displayName: "Guest",
+        githubLogin: null,
+        createdAt: timestamp,
+      });
+      yield* repo.addMember({
+        ...owner,
+        memberId: guestMember,
+        principal: { _tag: "person", personId: guestPerson },
+        role: "guest",
+      });
+      const guestPost = yield* repo.insertMessage(
+        message("guest-post", {
+          author: { _tag: "human", personId: guestPerson, memberId: guestMember },
+          authorRole: "owner",
+          sentBy: personId,
+        }),
+      );
+      assert.strictEqual(guestPost.authorRole, "guest");
+      for (const sentBy of [guestPerson, personId]) {
+        if (sentBy === personId) yield* repo.leaveChat({ ...scope, leftAt: later });
+        const failure = yield* Effect.flip(
+          repo.insertMessage(
+            message("invalid-sender", {
+              author: { _tag: "human", personId: guestPerson, memberId: guestMember },
+              sentBy,
+            }),
+          ),
+        );
+        assert.strictEqual(failure._tag, "KinChatError");
+        if (failure._tag === "KinChatError") assert.strictEqual(failure.reason, "not_found");
+      }
     }).pipe(Effect.provide(layer)),
   );
 
