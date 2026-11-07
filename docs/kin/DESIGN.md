@@ -52,10 +52,10 @@ Non-goals:
 
 **Layers:**
 
-1. **Items:** one small Markdown file per objective, commitment, deferral, decision, person or claim. YAML front matter records `status`, `due`, `recorded_at`, `valid_from`, `invalid_at`, `superseded_by`, `source`, `said_by`, `trust` and `links`. When a fact stops being true it gets `invalid_at` and is never deleted, which gives us Graphiti-style "true from when to when" without a graph database.
+1. **Items:** one small Markdown file per objective, commitment, deferral, decision, person or claim. YAML front matter records `status`, `due`, `recorded_at`, `valid_from`, `invalid_at`, `superseded_by`, `review_by`, `source`, `said_by`, `trust` and `links`. When a fact stops being true it gets `invalid_at` and is never deleted, which gives us Graphiti-style "true from when to when" without a graph database.
 2. **`INDEX.md`:** a generated summary of at most 200 lines, loaded at every wake-up, the same pattern as Claude Code's `MEMORY.md`. The lead opens individual items when it needs them.
-3. **Journal:** `journal/YYYY/MM-DD.md`, what the lead saw and did. A weekly pass folds old entries into the items and rebuilds the index from the original items, never from earlier summaries.
-4. **Index (new, in the Kin server):** SQLite with full-text search and vector search over the items, plus queries on their front matter ("deferrals due this week", "commitments past their date"). The schedulers in section 6 read from it. Rebuilt from git on start-up or on demand.
+3. **Journal:** `journal/YYYY/MM-DD.md`, what the lead saw and did. Nightly dreaming (below) folds it into the items.
+4. **Index:** keyword, vector and link search over the items, plus queries on their front matter ("deferrals due this week", "commitments past their date"). The schedulers in section 6 read from it. It can be rebuilt from git at any time. GBrain first; see below.
 
 **Writing:**
 
@@ -63,7 +63,38 @@ Non-goals:
 - Every item records who said it and how far it can be trusted. A member's statement is stored as `trust: member` or as a claim, never as a rule. Only the owner changes `rules.md`.
 - Tasks and due dates stay in GitHub Issues and Projects. Every status claim links to a PR, issue, commit or CI run.
 
-**Measuring it:** from the pilot, collect questions with known answers ("What did we defer to Friday?", "Who promised the migration?", "Did we settle caching?"), and run them every week. Change the memory design only when those results show a need. Section 4 sits behind a `Memory` interface, so Graphiti or another product could replace the index later without touching the items.
+**The index: try GBrain first.** [GBrain](https://github.com/garrytan/gbrain) (MIT) uses the same architecture: a Markdown repo as the source of truth and a rebuildable index. Its index combines keyword search, vector search, reranking and a link graph, and it serves Claude Code and Codex over MCP. Use it as the index behind the `Memory` interface, one instance per organization, instead of building our own. The terms:
+
+- Markdown stays canonical: no pages that exist only in its database.
+- Keyword-only mode, or local embeddings, for organizations whose policy keeps text off cloud providers.
+- Kin does its own dreaming (below), because dream output must be a reviewable diff.
+- If GBrain churns too much (it's v0.x, with frequent breaking changes and hundreds of open issues), fall back to SQLite with full-text and vector search. Decide with the weekly memory eval.
+
+**Staying fresh.** Plain files go stale. These rules stop that:
+
+1. **Every item has `review_by`,** set by its kind: people 90 days, objectives at each milestone, commitments and deferrals at their due date, decisions never (only superseded). Overdue items are flagged in search results and in `INDEX.md`.
+2. **Items are checked against reality.** Anything linked to GitHub is rechecked automatically: an issue closing marks its commitment done, and a merged PR closes its deferral. The `interval` watchdog does this, not the model.
+3. **Contradictions are caught when written.** A new item that conflicts with an existing one either supersedes it (same source, newer) or becomes a question for the owner.
+4. **Misleading items are flagged.** Worker reports include a "misleading memory" line. A flagged item drops in ranking until someone fixes it.
+5. **Unused items fade.** Items no lead has read in 8 weeks leave `INDEX.md`, but stay in git and in search.
+6. **`INDEX.md` carries an "As of" time.** A lead that finds it older than 36 hours rebuilds it before acting.
+7. **The owner gets a weekly check:** "5 things I'm not sure are still true", each with Keep, Update and Drop buttons.
+
+**Dreaming (nightly consolidation).** Each organization gets a `fixed_time` routine at night in the owner's timezone (default 03:00). It uses plan headroom that would otherwise go unused overnight.
+
+1. **Read the day's original material:** journal, chats, worker reports and GitHub events. Never earlier summaries.
+2. **Extract new items, merge duplicates, mark superseded items** with `invalid_at`, and list contradictions.
+3. **Recheck evidence and `review_by` dates,** then rebuild `INDEX.md` from the items.
+4. **Prepare the morning brief.**
+5. **Deliver it as a pull request on the memory repo,** one dream per night:
+   - Housekeeping (journal folding, index rebuild, evidence-backed status changes) merges automatically.
+   - Changes to decisions, people or objectives, contradictions, and anything from `trust: member` or lower go to **Waiting on you** as one card, approved like a PR.
+   - `rules.md` is never changed by a dream.
+6. **Once a week, do a full rebuild** from all items, to catch slow drift.
+
+A cheap model does extraction and merging; a stronger one handles contradictions. A dream that fails leaves memory untouched and posts what went wrong. Anthropic's Dreaming for Managed Agents (research preview) does similar consolidation. Kin's version also keeps the result as a git diff, records who said what, and asks a human before changing anything that matters.
+
+**Measuring it:** from the pilot, collect questions with known answers ("What did we defer to Friday?", "Who promised the migration?", "Did we settle caching?"), and run them every week. Change the memory design only when those results show a need. Section 4 sits behind a `Memory` interface, so GBrain, SQLite or another product can be the index without touching the items.
 
 ## 5. Chats
 
