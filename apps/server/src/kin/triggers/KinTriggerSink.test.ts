@@ -12,6 +12,7 @@ import {
   OrchestrationV2ThreadProjectionJson,
   ScheduledTaskUpsertInput,
 } from "@t3tools/contracts";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -84,7 +85,11 @@ const projection = (orgId: KinOrgId) =>
     updatedAt: timestamp,
   });
 
-const database = KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory));
+const configured = ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }));
+const database = KinPersistence.layer.pipe(
+  Layer.provideMerge(Sqlite.layerMemory),
+  Layer.provideMerge(configured),
+);
 const seed = Effect.gen(function* () {
   yield* TestClock.setTime(1794009600000);
   const sql = yield* SqlClient.SqlClient;

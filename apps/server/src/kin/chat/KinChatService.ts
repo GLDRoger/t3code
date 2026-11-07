@@ -10,6 +10,12 @@ import {
   KinAgentIntent,
   type KinAuthor,
   type KinChat,
+  type KinChatListEvent,
+  type KinChatStreamEvent,
+  type KinChatSubscribeInput,
+  type KinChatsSubscribeInput,
+  type KinOrgsListResult,
+  type KinChatSummary,
   type KinChatHistoryInput,
   type KinChatHistoryResult,
   type KinChatMember,
@@ -17,6 +23,7 @@ import {
   type KinMessage,
   type KinMessagesMarkReadInput,
   type KinPersonId,
+  type KinOrgId,
   type KinWaitingItem,
   type KinWidget,
 } from "@t3tools/contracts";
@@ -27,6 +34,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlError from "effect/sql/SqlError";
@@ -38,6 +46,9 @@ import * as Repository from "./KinChatRepository.ts";
 import type { AgentIdentity, PersonIdentity } from "./KinIdentity.ts";
 
 type Identity = PersonIdentity | AgentIdentity;
+type Viewers = ReadonlyArray<PersonIdentity>;
+type Caller = Identity | Viewers;
+type PersonCaller = PersonIdentity | Viewers;
 type ServiceError = Repository.RepositoryError;
 type SendInput = KinMessagesSendInput & { readonly intent?: KinAgentIntent };
 type WidgetUpsertInput = {
@@ -57,20 +68,32 @@ type WaitingInput = Pick<
 export class KinChatService extends Context.Service<
   KinChatService,
   {
-    readonly createDirect: (
+    readonly orgs: (
+      identities: ReadonlyArray<PersonIdentity>,
+    ) => Effect.Effect<KinOrgsListResult, ServiceError>;
+    readonly subscribe: (
+      identity: PersonCaller,
+      input: KinChatSubscribeInput,
+    ) => Stream.Stream<KinChatStreamEvent, ServiceError>;
+    readonly subscribeChats: (
+      identities: ReadonlyArray<PersonIdentity>,
+      input: KinChatsSubscribeInput,
+    ) => Stream.Stream<KinChatListEvent, ServiceError>;
+    readonly leaveChat: (
       identity: PersonIdentity,
+      input: { readonly chatId: KinChatId; readonly memberId: KinMemberId },
+    ) => Effect.Effect<void, ServiceError>;
+    readonly createDirect: (
+      identity: PersonCaller,
       input: KinChatsCreateDirectInput,
     ) => Effect.Effect<KinChat, ServiceError>;
-    readonly send: (
-      identity: Identity,
-      input: SendInput,
-    ) => Effect.Effect<KinMessage, ServiceError>;
+    readonly send: (identity: Caller, input: SendInput) => Effect.Effect<KinMessage, ServiceError>;
     readonly history: (
-      identity: Identity,
+      identity: Caller,
       input: KinChatHistoryInput,
     ) => Effect.Effect<KinChatHistoryResult, ServiceError>;
     readonly markRead: (
-      identity: Identity,
+      identity: Caller,
       input: KinMessagesMarkReadInput,
     ) => Effect.Effect<void, ServiceError>;
     readonly upsertWidget: (
@@ -78,7 +101,7 @@ export class KinChatService extends Context.Service<
       input: WidgetUpsertInput,
     ) => Effect.Effect<KinWidget, ServiceError>;
     readonly act: (
-      identity: PersonIdentity,
+      identity: PersonCaller,
       input: KinWidgetsActInput,
     ) => Effect.Effect<KinMessage, ServiceError>;
     readonly addWaiting: (
@@ -129,6 +152,38 @@ const make = Effect.gen(function* () {
         ),
       );
   const now = DateTime.now.pipe(Effect.map(DateTime.formatIso));
+  const identityFor = Effect.fn("KinChatService.identityFor")(function* (
+    caller: Caller,
+    target: {
+      readonly orgId?: KinOrgId;
+      readonly chatId?: KinChatId;
+      readonly widgetId?: KinWidgetId;
+    },
+  ) {
+    if ("_tag" in caller) return caller;
+    for (const identity of caller) {
+      if (target.orgId !== undefined && target.orgId !== identity.orgId) continue;
+      if (
+        target.chatId !== undefined &&
+        Option.isNone(yield* repo.getChat({ ...identity, chatId: target.chatId }))
+      )
+        continue;
+      if (
+        target.widgetId !== undefined &&
+        Option.isNone(yield* repo.getWidget({ ...identity, widgetId: target.widgetId }))
+      )
+        continue;
+      return identity;
+    }
+    return yield* notFound;
+  });
+  const personFor = Effect.fn("KinChatService.personFor")(function* (
+    caller: PersonCaller,
+    target: Parameters<typeof identityFor>[1],
+  ) {
+    const person = yield* identityFor(caller, target);
+    return person._tag === "person" ? person : yield* notFound;
+  });
   const memberFor = Effect.fn("KinChatService.memberFor")(function* (
     identity: Identity,
     chatId: KinChatId,
@@ -275,8 +330,222 @@ const make = Effect.gen(function* () {
     }
     return message;
   });
+  const summary = Effect.fn("KinChatService.summary")(function* (
+    identity: PersonIdentity,
+    chatId: KinChatId,
+  ): Effect.fn.Return<KinChatSummary, ServiceError> {
+    const member = yield* memberFor(identity, chatId);
+    const chat = yield* requireRecord(repo.getChat({ orgId: identity.orgId, chatId }));
+    const history = yield* repo.history({
+      ...chat,
+      beforeSeq: chat.lastSeq + 1,
+      limit: 1,
+      viewerMemberId: member.memberId,
+    });
+    return {
+      ...chat,
+      members: yield* repo.listMembers(chat),
+      lastMessage: history.messages[0] ?? null,
+      unread: yield* repo.unreadCount(member),
+    };
+  });
+  const snapshot = Effect.fn("KinChatService.snapshot")(
+    function* (identities: ReadonlyArray<PersonIdentity>) {
+      const chats: Array<KinChatSummary> = [];
+      const waiting: Array<KinWaitingItem> = [];
+      for (const identity of identities) {
+        for (const member of yield* repo.listMembersByPerson(identity)) {
+          if (member.leftAt !== null) continue;
+          chats.push(yield* summary(identity, member.chatId));
+        }
+        for (const item of yield* repo.listOpenWaiting(identity)) {
+          if (Option.isSome(yield* repo.activeMember({ ...item, principal: identity })))
+            waiting.push(item);
+        }
+      }
+      return { _tag: "snapshot" as const, chats, waiting };
+    },
+    (effect) => transaction(effect).pipe(NodeSqliteClient.readOnly),
+  );
   return KinChatService.of({
+    orgs: Effect.fn("KinChatService.orgs")(function* (identities) {
+      const orgs = yield* Effect.forEach(
+        identities,
+        Effect.fn("KinChatService.org")(function* (identity) {
+          const org = yield* requireRecord(repo.getOrg(identity));
+          const agents = yield* repo.listAgents(identity);
+          return {
+            ...org,
+            agents: agents.map(({ agentId, displayName, retiredAt }) => ({
+              agentId,
+              displayName,
+              retired: retiredAt !== null,
+            })),
+          };
+        }),
+      );
+      return { orgs, me: identities.map(({ orgId, personId }) => ({ orgId, personId })) };
+    }),
+    leaveChat: Effect.fn("KinChatService.leaveChat")(function* (identity, input) {
+      const caller = yield* memberFor(identity, input.chatId);
+      if (caller.role !== "owner") return yield* notAllowed;
+      const member = yield* requireRecord(
+        repo.getMember({ orgId: identity.orgId, memberId: input.memberId }),
+      );
+      if (member.chatId !== input.chatId) return yield* notFound;
+      if (member.role === "owner") return yield* notAllowed;
+      for (const item of yield* repo.leaveChat({ ...member, leftAt: yield* now }))
+        yield* hub.publish({ type: "waiting.updated", orgId: identity.orgId, item });
+      const removed = yield* requireRecord(repo.getMember(member));
+      yield* hub.publish({ type: "member.removed", orgId: identity.orgId, member: removed });
+    }, transaction),
+    subscribe: (caller, input) =>
+      Stream.unwrap(
+        Effect.gen(function* () {
+          const identity = yield* personFor(caller, input);
+          const live = yield* hub.subscribeForViewer(identity);
+          const member = yield* memberFor(identity, input.chatId);
+          const resumed = yield* repo.resume({ ...member, afterSeq: input.afterSeq ?? 0 });
+          const backlog: KinChatStreamEvent = resumed.reset
+            ? { _tag: "reset", lastSeq: resumed.lastSeq }
+            : {
+                _tag: "backlog",
+                lastSeq: resumed.lastSeq,
+                messages: resumed.messages,
+                widgets: resumed.widgets,
+              };
+          const lastHistorySeq = backlog.lastSeq;
+          const revisions = new Map(
+            backlog._tag === "backlog" ? backlog.widgets.map((w) => [w.widgetId, w.revision]) : [],
+          );
+          return Stream.concat(
+            Stream.succeed(backlog),
+            live.pipe(
+              Stream.map((event) => {
+                switch (event.type) {
+                  case "message.posted": {
+                    if (
+                      event.message.chatId !== input.chatId ||
+                      event.message.seq <= lastHistorySeq
+                    )
+                      return Option.none();
+                    return Option.some<KinChatStreamEvent>({
+                      _tag: "message",
+                      message: event.message,
+                    });
+                  }
+                  case "widget.updated": {
+                    if (
+                      event.widget.chatId !== input.chatId ||
+                      event.widget.revision <= (revisions.get(event.widget.widgetId) ?? 0)
+                    )
+                      return Option.none();
+                    revisions.set(event.widget.widgetId, event.widget.revision);
+                    return Option.some<KinChatStreamEvent>({
+                      _tag: "widget",
+                      widget: event.widget,
+                    });
+                  }
+                  case "member.removed":
+                    return event.member.chatId === input.chatId
+                      ? Option.some<KinChatStreamEvent>({ _tag: "member", member: event.member })
+                      : Option.none();
+                  case "read.updated":
+                    return event.chatId === input.chatId
+                      ? Option.some<KinChatStreamEvent>({
+                          _tag: "read",
+                          memberId: event.memberId,
+                          seq: event.seq,
+                        })
+                      : Option.none();
+                  default:
+                    return Option.none();
+                }
+              }),
+              Stream.filter(Option.isSome),
+              Stream.map((event) => event.value),
+              Stream.takeUntil((event) => event._tag === "member" && event.member.leftAt !== null),
+            ),
+          );
+        }),
+      ),
+    subscribeChats: (identities, input) =>
+      Stream.unwrap(
+        Effect.gen(function* () {
+          const viewers =
+            input.orgId === undefined
+              ? identities
+              : identities.filter((identity) => identity.orgId === input.orgId);
+          if (input.orgId !== undefined && viewers.length === 0) return yield* notFound;
+          const streams = yield* Effect.forEach(viewers, (viewer) =>
+            hub
+              .subscribeForViewer(viewer)
+              .pipe(
+                Effect.map((stream) => stream.pipe(Stream.map((event) => ({ viewer, event })))),
+              ),
+          );
+          const initial = yield* snapshot(viewers);
+          const summaries = new Map(
+            initial.chats.map((chat) => [`${chat.orgId}:${chat.chatId}`, JSON.stringify(chat)]),
+          );
+          const waiting = new Map(
+            initial.waiting.map((item) => [item.waitingId, JSON.stringify(item)]),
+          );
+          const live = Stream.mergeAll(streams, { concurrency: "unbounded" }).pipe(
+            Stream.mapEffect(({ viewer, event }) =>
+              Effect.gen(function* (): Effect.fn.Return<KinChatListEvent, ServiceError> {
+                if (event.type === "waiting.updated")
+                  return yield* requireRecord(repo.getWaiting(event.item)).pipe(
+                    Effect.map((item) => ({ _tag: "waiting" as const, item })),
+                  );
+                const chatId =
+                  event.type === "chat.created"
+                    ? event.chat.chatId
+                    : event.type === "message.posted"
+                      ? event.message.chatId
+                      : event.type === "widget.updated"
+                        ? event.widget.chatId
+                        : event.type === "member.removed"
+                          ? event.member.chatId
+                          : event.chatId;
+                return yield* summary(viewer, chatId).pipe(
+                  Effect.map((chat) => ({ _tag: "chat" as const, chat })),
+                );
+              }).pipe(
+                Effect.asSome,
+                Effect.catch((error) =>
+                  Effect.logDebug("Kin chat list event dropped", error).pipe(
+                    Effect.as(Option.none()),
+                  ),
+                ),
+              ),
+            ),
+            Stream.filter(Option.isSome),
+            Stream.map((event) => event.value),
+          );
+          return Stream.concat(
+            Stream.succeed(initial),
+            live.pipe(
+              Stream.filter((event) => {
+                if (event._tag === "chat") {
+                  const key = `${event.chat.orgId}:${event.chat.chatId}`;
+                  const value = JSON.stringify(event.chat);
+                  if (summaries.get(key) === value) return false;
+                  summaries.set(key, value);
+                } else if (event._tag === "waiting") {
+                  const value = JSON.stringify(event.item);
+                  if (waiting.get(event.item.waitingId) === value) return false;
+                  waiting.set(event.item.waitingId, value);
+                }
+                return true;
+              }),
+            ),
+          );
+        }),
+      ),
+
     createDirect: Effect.fn("KinChatService.createDirect")(function* (identity, input) {
+      identity = yield* personFor(identity, input);
       if (identity.orgId !== input.orgId) return yield* notFound;
       const person = yield* requireRecord(repo.getPerson(identity));
       const agent = yield* requireRecord(repo.getAgent(input));
@@ -317,6 +586,7 @@ const make = Effect.gen(function* () {
       return chat;
     }, transaction),
     send: Effect.fn("KinChatService.send")(function* (identity, input) {
+      identity = yield* identityFor(identity, input);
       const request = yield* decodeSend(input).pipe(Effect.mapError(() => invalidState));
       const member = yield* memberFor(identity, request.chatId);
       yield* canWrite(identity, member);
@@ -341,6 +611,7 @@ const make = Effect.gen(function* () {
     }, transaction),
     history: Effect.fn("KinChatService.history")(
       function* (identity, input) {
+        identity = yield* identityFor(identity, input);
         const member = yield* memberFor(identity, input.chatId);
         return yield* repo.history({
           ...input,
@@ -351,6 +622,7 @@ const make = Effect.gen(function* () {
       (effect) => transaction(effect).pipe(NodeSqliteClient.readOnly),
     ),
     markRead: Effect.fn("KinChatService.markRead")(function* (identity, input) {
+      identity = yield* identityFor(identity, input);
       const member = yield* memberFor(identity, input.chatId);
       const previous = yield* repo.getReadState(member);
       yield* repo.markRead({ ...member, seq: input.seq, updatedAt: yield* now });
@@ -428,16 +700,9 @@ const make = Effect.gen(function* () {
           updatedAt: yield* now,
         });
       }
-      for (const person of yield* repo.listMembers(member)) {
-        if (person.principal._tag !== "person") continue;
-        const personId = person.principal.personId;
-        for (const item of yield* repo.listOpenWaiting({ orgId: identity.orgId, personId })) {
-          if (
-            item.widgetId === widget.widgetId &&
-            (widget.closedAt !== null || !widget.awaiting.includes(personId))
-          )
-            yield* resolve(item, widget.closedAt !== null ? "closed" : "superseded");
-        }
+      for (const item of yield* repo.waitingForWidget(widget)) {
+        if (widget.closedAt !== null || !widget.awaiting.includes(item.personId))
+          yield* resolve(item, widget.closedAt !== null ? "closed" : "superseded");
       }
       if (widget.closedAt === null)
         for (const personId of new Set(widget.awaiting))
@@ -452,6 +717,7 @@ const make = Effect.gen(function* () {
       return widget;
     }, transaction),
     act: Effect.fn("KinChatService.act")(function* (identity, input) {
+      identity = yield* personFor(identity, input);
       const request = yield* decodeAct(input).pipe(Effect.mapError(() => invalidState));
       const widget = yield* requireRecord(
         repo.getWidget({ orgId: identity.orgId, widgetId: request.widgetId }),
@@ -514,11 +780,13 @@ const make = Effect.gen(function* () {
               repo.getMessage({ orgId: identity.orgId, messageId: input.messageId }),
             );
       if (message !== null && message.chatId !== input.chatId) return yield* notFound;
+      if (message !== null && (yield* repo.approvalAtMessage(message))) return yield* notAllowed;
       for (const widgetId of new Set([input.widgetId, message?.widgetId ?? null])) {
         if (widgetId === null) continue;
         const widget = yield* requireRecord(repo.getWidget({ orgId: identity.orgId, widgetId }));
         if (widget.chatId !== input.chatId) return yield* notFound;
-        if (widget.type === "approval") return yield* notAllowed;
+        if (widget.type === "approval" || (yield* repo.approvalAtMessage(widget)))
+          return yield* notAllowed;
       }
       return yield* add(identity, input);
     }, transaction),
@@ -535,10 +803,12 @@ const make = Effect.gen(function* () {
           : yield* requireRecord(
               repo.getMessage({ orgId: identity.orgId, messageId: item.messageId }),
             );
+      if (message !== null && (yield* repo.approvalAtMessage(message))) return yield* notAllowed;
       for (const widgetId of new Set([item.widgetId, message?.widgetId ?? null])) {
         if (widgetId === null) continue;
         const widget = yield* requireRecord(repo.getWidget({ orgId: identity.orgId, widgetId }));
-        if (widget.type === "approval") return yield* notAllowed;
+        if (widget.type === "approval" || (yield* repo.approvalAtMessage(widget)))
+          return yield* notAllowed;
       }
       if (identity._tag === "agent") {
         if (item.reason !== "question" || message === null) return yield* notAllowed;

@@ -2,6 +2,7 @@ import type {
   KinChat,
   KinChatId,
   KinMemberId,
+  KinChatMember,
   KinMessage,
   KinOrgId,
   KinWaitingItem,
@@ -23,6 +24,7 @@ type ChatEvent =
   | { readonly type: "message.posted"; readonly message: KinMessage }
   | { readonly type: "widget.updated"; readonly widget: KinWidget }
   | { readonly type: "waiting.updated"; readonly item: KinWaitingItem }
+  | { readonly type: "member.removed"; readonly member: KinChatMember }
   | {
       readonly type: "read.updated";
       readonly chatId: KinChatId;
@@ -42,9 +44,6 @@ export class KinChatHub extends Context.Service<
       never,
       Scope.Scope
     >;
-    readonly subscribe: (
-      orgId: KinOrgId,
-    ) => Effect.Effect<PubSub.Subscription<KinChatHubEvent>, never, Scope.Scope>;
   }
 >()("t3/kin/chat/KinChatHub") {}
 
@@ -73,12 +72,17 @@ const make = Effect.gen(function* () {
         }),
       );
     }),
-    subscribe,
     subscribeForViewer: Effect.fn("KinChatHub.subscribeForViewer")(function* (identity) {
       const subscription = yield* subscribe(identity.orgId);
       return Stream.fromEffectRepeat(PubSub.take(subscription)).pipe(
         Stream.filterEffect(
           Effect.fn("KinChatHub.canDeliver")(function* (event) {
+            if (event.type === "member.removed")
+              return identity._tag === "person"
+                ? event.member.principal._tag === "person" &&
+                    event.member.principal.personId === identity.personId
+                : event.member.principal._tag === "agent" &&
+                    event.member.principal.agentId === identity.agentId;
             const chatId =
               event.type === "chat.created"
                 ? event.chat.chatId
@@ -89,14 +93,19 @@ const make = Effect.gen(function* () {
                     : event.type === "waiting.updated"
                       ? event.item.chatId
                       : event.chatId;
-            const member = (yield* repo.listMembers({ orgId: identity.orgId, chatId })).find(
-              (row) =>
-                row.leftAt === null &&
-                (identity._tag === "person"
-                  ? row.principal._tag === "person" && row.principal.personId === identity.personId
-                  : row.principal._tag === "agent" && row.principal.agentId === identity.agentId),
-            );
-            if (member === undefined) return false;
+            if (
+              event.type === "waiting.updated" &&
+              (identity._tag !== "person" || event.item.personId !== identity.personId)
+            )
+              return false;
+            if (event.type === "waiting.updated" && event.item.resolvedAt !== null) return true;
+            const memberOption = yield* repo.activeMember({
+              orgId: identity.orgId,
+              chatId,
+              principal: identity,
+            });
+            if (Option.isNone(memberOption)) return false;
+            const member = memberOption.value;
             const messageId =
               event.type === "widget.updated"
                 ? event.widget.messageId
