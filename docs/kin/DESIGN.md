@@ -311,17 +311,23 @@ A partner, such as a consultant, sets up and runs Kin for a client that can't do
 - Who else is on the team, and on which devices.
 - Whether to propose message authors and chat membership to upstream T3 as general features.
 
-**Gaps found on 7 Nov, with proposed answers** (to settle before the phase they block):
+**Gaps found on 7 Nov.** The code gaps get fixed as part of the phase they block. The operational ones are reviewed before Kin is released to anyone else.
 
-1. **Whose subscription pays for other people's requests** (blocks phase 2). Consumer plans such as Claude Max are for one person, and third-party summaries of Anthropic's terms say they can't be made available to others; check the primary terms. Proposal: the owner's subscription runs only the owner's own work. Work started by members runs on the organization's API key or Team plan, or on the member's own plan through their own agent (section 9.8). The provenance ceiling (section 9.4) already records whose work it is, so it can also pick who pays.
-2. **Where Kin runs when the laptop sleeps** (blocks phase 1). Deferrals at 9:00, dreaming at 03:00 and chasing all need an always-on machine; the webhook relay only holds requests for 24 hours. Proposal: an always-on Mac mini or small VPS from phase 1, reached through T3's remote environments, with the laptop as a client. A missed `once` trigger runs on wake-up with "This was due at 9:00".
-3. **How members sign in** (blocks phase 2). T3 has one user. Kin needs invites, an account per person, their devices, and a link from each person to their GitHub handle, so commitments, provenance and chasing point at the right person.
-4. **One lead writing at a time** (blocks phase 1). Two events at once would start two lead sessions writing memory at the same time. Proposal: one queue per organization. Events arriving within a short window are merged into one wake-up, so 20 webhook events from one push cost one session.
-5. **Cost of each wake-up** (blocks phase 1). The lead wakes on every event. Choose its model, cache the fixed part of its prompt (rules, `INDEX.md`), and set a daily budget. Priority when the budget runs low: the owner's messages, then due deferrals, then chasing, with dreaming last.
-6. **A stop button** (blocks phase 1). One switch in settings and on the lock screen that pauses every lead, routine and worker in an organization at once, separate from next of kin.
-7. **Actions that run twice** (blocks phase 1). The executor gives each pending action an id and refuses to run it twice. That covers a server restart in the middle of a merge, a replayed webhook, and a deferral that fires twice.
-8. **"Nothing is deleted" vs. secrets and erasure** (blocks phase 1). Memory keeps everything in git, but a pasted secret, or a client asking for their data to be erased, needs a real delete. Proposal: scan for secrets before each memory commit, and keep a purge path that rewrites history for one item, signed by the owner and recorded in the audit log.
-9. **Where each organization's memory repo lives** (blocks phase 5). A client's memory belongs in the client's GitHub account, not the consultant's. The consultant gets access through the partner grant (section 10b).
-10. **What people can see about themselves** (blocks phase 2). Members should be able to read what Kin remembers about them (`people/<handle>.md`, their commitments), dispute it ("I never promised that"), and switch off being chased. A dispute turns the item into a claim until the owner settles it.
-11. **When a lead moves up a level** (blocks phase 1). Section 10 doesn't say what earns L0 → L1. Proposal: after the shadow week, the owner reviews what the lead would have said; move up when they would have sent most of it unchanged and none of it was harmful.
-12. **Upstream API drift.** Kin depends on `delegate_task`, triggers, `McpAppWebView` and managed policy. Keep a small contract test for each, run after every upstream sync next to the branding drift check.
+Fix in code:
+
+1. **One lead writing at a time** (phase 1). Two events at once would start two lead sessions writing memory together. One queue per organization; events arriving within a short window merge into one wake-up, so 20 webhook events from one push cost one session.
+2. **Cost of each wake-up** (phase 1). Choose the lead's model, cache the fixed part of its prompt (rules, `INDEX.md`), and set a daily budget. When it runs low: the owner's messages first, then due deferrals, then chasing, with dreaming last.
+3. **A stop button** (phase 1). One switch, in settings and on the lock screen, that pauses every lead, routine and worker in an organization at once.
+4. **Actions that run twice** (phase 1). Each pending action has an id and the executor refuses to run it twice: a restart in the middle of a merge, a replayed webhook, a deferral that fires twice.
+5. **"Nothing is deleted" vs. secrets and erasure** (phase 1). Scan for secrets before each memory commit, and keep an owner-signed purge that rewrites history for one item and is recorded in the audit log.
+6. **When a lead moves up a level** (phase 1). After the shadow week, the owner reviews what the lead would have said. It moves up when most of it would have gone out unchanged and none of it was harmful.
+7. **Upstream API drift** (phase 1). A small contract test for each T3 piece Kin depends on (`delegate_task`, triggers, `McpAppWebView`, managed policy), run after every upstream sync next to the branding drift check.
+8. **How members sign in** (phase 2). Invites, an account per person, their devices, and a link from each person to their GitHub handle, so commitments, provenance and chasing point at the right person.
+9. **What people can see about themselves** (phase 2). Members can read what Kin remembers about them, dispute it ("I never promised that"), and switch off being chased. A disputed item becomes a claim until the owner settles it.
+
+Review before release:
+
+- **Who pays for other people's requests.** For now Kin uses whatever providers and sign-ins the owner's T3 Code is set up with. Before anyone else uses it, check the providers' terms (consumer plans are for one person) and decide between an organization API key, a Team plan, and members' own plans through their own agents (section 9.8).
+- **Where Kin runs.** Decided: an always-on Mac mini, reached from the laptop and phone through T3's remote environments. A missed `once` trigger runs on wake-up with "This was due at 9:00".
+- **Where each organization's memory repo lives.** A client's memory belongs in the client's GitHub account; the consultant gets access through the partner grant (section 10b).
+- **The code is public, memory is not.** `GLDRoger/t3code` is a public fork of `pingdotgg/t3code`. Organization data, memory and credentials never go in it; memory repos stay private.
