@@ -1,4 +1,5 @@
 import { MemoryItemFrontMatter, type KinOrgId } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { parseDocument } from "yaml";
@@ -14,10 +15,23 @@ export class MemoryItemError extends Schema.TaggedError<MemoryItemError>()("Memo
   }
 }
 
-export const memoryDateMillis = (value: string | null) =>
-  value !== null && /^\d{4}-\d{2}-\d{2}(?:T.*(?:Z|[+-]\d{2}:\d{2}))?$/.test(value)
-    ? Date.parse(value)
-    : NaN;
+export const memoryDateMillis = (value: string | null) => {
+  if (
+    value === null ||
+    !/^\d{4}-\d{2}-\d{2}(?:T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{3})?)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d))?$/.test(
+      value,
+    )
+  )
+    return NaN;
+  const date = value.slice(0, 10);
+  const midnight = Date.parse(date);
+  if (
+    !Number.isFinite(midnight) ||
+    DateTime.formatIso(DateTime.makeUnsafe(midnight)).slice(0, 10) !== date
+  )
+    return NaN;
+  return Date.parse(value);
+};
 
 const decodeFrontMatter = Schema.decodeUnknownEffect(MemoryItemFrontMatter);
 

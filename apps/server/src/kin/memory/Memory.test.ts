@@ -1,6 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
-import { KinMemoryItemId, KinOrgId } from "@t3tools/contracts";
+import { KinMemoryItemId, KinOrgId, VcsProcessExitError } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Clock from "effect/Clock";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -45,10 +45,11 @@ const fakeRepository = () => {
   let treeReads = 0;
   let blobReads = 0;
   let revision = 0;
+  let corruptNextBatch = false;
   const layer = Layer.succeed(
     VcsProcess.VcsProcess,
     VcsProcess.VcsProcess.of({
-      run: Effect.fn("Test.git")(({ args, stdin, cwd }) => {
+      run: Effect.fn("Test.git")(({ args, stdin, cwd, onStdoutChunk }) => {
         let stdout = "";
         switch (args[0]) {
           case "rev-parse":
@@ -73,6 +74,13 @@ const fakeRepository = () => {
           }
           case "cat-file": {
             blobReads++;
+            if (args[1] === "blob") {
+              stdout =
+                [...files.values()].find(
+                  (value) => hash(value) === args[2] && value !== "unreadable fixture",
+                ) ?? "";
+              break;
+            }
             stdout = (stdin?.trim().split("\n") ?? [])
               .map((sha) => {
                 const text = [...files.values()].find(
@@ -83,9 +91,14 @@ const fakeRepository = () => {
                   : `${sha} blob ${Buffer.byteLength(text)}\n${text}\n`;
               })
               .join("");
+            if (corruptNextBatch) {
+              stdout = "invalid header\n" + stdout;
+              corruptNextBatch = false;
+            }
             break;
           }
         }
+        onStdoutChunk?.(Buffer.from(stdout));
         return Effect.succeed({
           exitCode: ChildProcessSpawner.ExitCode(0),
           stdout,
@@ -103,6 +116,9 @@ const fakeRepository = () => {
       revision++;
     },
     counts: () => ({ treeReads, blobReads }),
+    corruptBatch: () => {
+      corruptNextBatch = true;
+    },
   };
 };
 const configLayer = (baseDirectory: string, repoUrl: string) =>
@@ -120,9 +136,13 @@ const memoryLayer = (base: string, repo: string) =>
     Layer.provide(NodeServices.layer),
   );
 
-it.live(
-  "clones isolated checkouts, skips bad items, queries dates and refreshes only on committed HEAD",
-  () =>
+it.live.each([
+  { name: "committed lead edits", binary: false, indexDirectory: false },
+  { name: "binary preceding valid blobs", binary: true, indexDirectory: false },
+  { name: "blocked index path", binary: false, indexDirectory: true },
+])(
+  "clones isolated checkouts and preserves committed source reads with $name",
+  ({ binary, indexDirectory }) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const vcs = yield* VcsProcess.VcsProcess;
@@ -134,6 +154,13 @@ it.live(
         vcs.run({ operation: "test.memory", command: "git", cwd: source, args }),
       );
       yield* git(["init", "--initial-branch=main"]);
+      if (binary)
+        yield* fs.writeFile(`${source}/commitments/aaa.md`, new Uint8Array([255, 254, 128, 0]));
+      if (indexDirectory) {
+        yield* fs.remove(`${source}/INDEX.md`);
+        yield* fs.makeDirectory(`${source}/INDEX.md`);
+        yield* fs.writeFileString(`${source}/INDEX.md/blocked`, "fixture");
+      }
       yield* fs.symlink("def-001.md", `${source}/deferrals/link.md`);
       yield* fs.writeFileString(
         `${source}/deferrals/huge.md`,
@@ -206,7 +233,29 @@ it.live(
           fixtureItem({ title: "Modified service maintenance" }),
         );
         yield* fs.writeFileString(`${a.read}/rules.md`, "Uncommitted rules");
-        yield* fs.writeFileString(`${a.read}/INDEX.md`, "Uncommitted index");
+        if (!indexDirectory) yield* fs.writeFileString(`${a.read}/INDEX.md`, "Uncommitted index");
+
+        yield* vcs.run({
+          operation: "test.memory",
+          command: "git",
+          cwd: a.read,
+          args: ["add", "rules.md", "deferrals/def-001.md"],
+        });
+        yield* vcs.run({
+          operation: "test.memory",
+          command: "git",
+          cwd: a.read,
+          args: [
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-m",
+            "Untrusted lead edits",
+          ],
+        });
+        yield* memory.rebuildCache(orgA);
         expect(yield* memory.readRules(orgA)).toBe("Invented standing rules.\n");
         expect(yield* memory.readIndex(orgA)).not.toContain("Uncommitted index");
         yield* fs.utimes(`${a.read}/deferrals/def-001.md`, 1_800_000_000, 1_800_000_000);
@@ -216,21 +265,14 @@ it.live(
         expect((yield* memory.readItem(orgB, itemId)).head.title).toBe(
           "Invented service maintenance",
         );
-        yield* fs.writeFileString(
-          `${source}/deferrals/def-001.md`,
-          fixtureItem({ title: "Modified service maintenance" }),
+        yield* git(["fetch", a.read, "HEAD"]);
+        yield* git(["merge", "--ff-only", "FETCH_HEAD"]);
+        expect(yield* memory.readRules(orgA)).toBe("Invented standing rules.\n");
+        expect((yield* memory.query(orgA, { kind: "deferral" }))[0]?.title).toBe(
+          "Invented service maintenance",
         );
-        yield* git(["add", "deferrals/def-001.md"]);
-        yield* git([
-          "-c",
-          "user.name=Fixture",
-          "-c",
-          "user.email=fixture@example.invalid",
-          "commit",
-          "-m",
-          "Update fixture",
-        ]);
         const next = yield* memory.prepareWakeup(orgA);
+        expect(yield* memory.readRules(orgA)).toBe("Uncommitted rules");
         expect(next.head).not.toBe(prepared.head);
         expect((yield* memory.readItem(orgA, itemId)).head.title).toBe(
           "Modified service maintenance",
@@ -292,6 +334,7 @@ it.effect(
         repository.files.delete("deferrals/def-001.md");
         repository.files.set("deferrals/moved.md", moved ?? "");
         repository.commit();
+        yield* memory.prepareWakeup(orgA);
         yield* TestClock.adjust("1 week");
         yield* memory.rebuildIndex(orgA);
         expect(yield* memory.readIndex(orgA)).toContain("Invented service maintenance");
@@ -330,6 +373,7 @@ it.effect(
           );
         }
         repository.commit();
+        yield* memory.prepareWakeup(orgA);
         yield* memory.rebuildIndex(orgA);
         expect((yield* memory.readIndex(orgA)).trimEnd().split("\n")).toHaveLength(200);
         expect(yield* memory.readIndex(orgA)).toContain("more");
@@ -355,12 +399,35 @@ it.effect(
           fixtureItem({ recorded_at: "2027-02-27T00:00:00Z" }),
         );
         repository.commit();
-        const duplicates = yield* memory.query(orgA, {}).pipe(Effect.result);
-        expect(duplicates._tag).toBe("Failure");
-        if (duplicates._tag === "Failure")
-          expect(duplicates.failure._tag).toBe("MemoryDuplicateId");
+        yield* memory.prepareWakeup(orgA);
+        const duplicates = yield* memory.query(orgA, {});
+        expect(
+          duplicates.filter((item) => item.id === itemId).every((item) => item.duplicate),
+        ).toBe(true);
+        expect(yield* memory.query(orgA, { kind: "commitment" })).toEqual([]);
+        const duplicateRead = yield* memory.readItem(orgA, itemId).pipe(Effect.result);
+        expect(duplicateRead._tag).toBe("Failure");
+        if (duplicateRead._tag === "Failure")
+          expect(duplicateRead.failure._tag).toBe("MemoryDuplicateId");
         yield* memory.rebuildIndex(orgA);
         expect(yield* memory.readIndex(orgA)).toContain("[duplicate id]");
+        const beforeFallback = yield* memory.query(orgA, {});
+        for (const id of ["fallback-1", "fallback-2"]) {
+          repository.files.set(`deferrals/${id}.md`, fixtureItem({ id }));
+        }
+        repository.commit();
+        repository.corruptBatch();
+        yield* memory.prepareWakeup(orgA);
+        const afterFallback = yield* memory.query(orgA, {});
+        expect(afterFallback.filter((item) => !item.id.startsWith("fallback-"))).toEqual(
+          beforeFallback,
+        );
+        expect(afterFallback.filter((item) => item.id.startsWith("fallback-"))).toHaveLength(2);
+        yield* memory.rebuildCache(orgA);
+        expect(messages.filter((message) => message.includes("Duplicate memory id"))).toHaveLength(
+          1,
+        );
+        expect(messages.some((message) => message.includes("batch framing failed"))).toBe(true);
         const sql = yield* SqlClient.SqlClient;
         yield* sql`DROP TABLE kin_memory_reads`;
         expect((yield* memory.readItem(orgA, KinMemoryItemId.make("extra-0"))).head.id).toBe(
@@ -426,4 +493,58 @@ it.effect("derives production memory paths from the isolated server state direct
       ),
     ),
   ),
+);
+
+it.effect.each([
+  { name: "parent repository", operation: "query", failureKind: undefined },
+  { name: "permission denied", operation: "ensure", failureKind: "command-failed" },
+  { name: "dubious ownership", operation: "ensure", failureKind: "command-failed" },
+] as const)("preserves the writer on $name", ({ name, operation, failureKind }) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const temporary = yield* fs.makeTempDirectoryScoped();
+    const root = yield* fs.realPath(temporary);
+    const writer = `${root}/a/memory`;
+    yield* fs.makeDirectory(`${writer}/.git`, { recursive: true });
+    yield* fs.writeFileString(`${writer}/keep`, "unpushed work");
+    const vcsLayer = Layer.succeed(
+      VcsProcess.VcsProcess,
+      VcsProcess.VcsProcess.of({
+        run: Effect.fn("Test.invalidWriter")(function* () {
+          if (failureKind !== undefined)
+            return yield* new VcsProcessExitError({
+              operation: "test.memory",
+              command: "git",
+              cwd: writer,
+              exitCode: 128,
+              detail: name,
+              failureKind,
+            });
+          return {
+            exitCode: ChildProcessSpawner.ExitCode(0),
+            stdout: root,
+            stderr: "",
+            stdoutTruncated: false,
+            stderrTruncated: false,
+          };
+        }),
+      }),
+    );
+    yield* Effect.gen(function* () {
+      const memory = yield* Memory.Memory;
+      const result = yield* (
+        operation === "query"
+          ? memory.query(orgA, {}).pipe(Effect.asVoid)
+          : memory.ensureCheckouts(orgA).pipe(Effect.asVoid)
+      ).pipe(Effect.result);
+      expect(result._tag).toBe("Failure");
+      expect(yield* fs.readFileString(`${writer}/keep`)).toBe("unpushed work");
+      if (result._tag === "Failure")
+        expect(result.failure.operation).toBe(operation === "query" ? "source" : "git");
+    }).pipe(
+      Effect.provide(
+        Memory.layer.pipe(Layer.provide(configLayer(root, "unused")), Layer.provide(vcsLayer)),
+      ),
+    );
+  }).pipe(Effect.provide(Layer.merge(NodeServices.layer, databaseLayer)), Effect.scoped),
 );

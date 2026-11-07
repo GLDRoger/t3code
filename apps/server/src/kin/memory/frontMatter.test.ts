@@ -16,6 +16,11 @@ it.effect.each([
     text: fixtureItem({ recorded_at: "2026-11-01T00:00:00" }),
     valid: false,
   },
+  ...["2026-02-30", "2026-13-01", "2026-02-30T00:00Z", "2026-11-01T24:00Z"].map((recorded_at) => ({
+    name: recorded_at,
+    text: fixtureItem({ recorded_at }),
+    valid: false,
+  })),
   { name: "invalid recorded date", text: fixtureItem({ recorded_at: "not-a-date" }), valid: false },
   { name: "README links comment", text: readmeItem, valid: false },
   {

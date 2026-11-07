@@ -16,6 +16,8 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
+import { STATUS_UPSTREAM_REFRESH_ENV } from "../../vcs/GitVcsDriverCore.ts";
+import { isNonRepositoryGitStderr } from "../../vcs/gitErrors.ts";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import * as MemoryCache from "./MemoryCache.ts";
 import { MemoryConfig } from "./MemoryConfig.ts";
@@ -87,7 +89,10 @@ export class Memory extends Context.Service<
     readonly query: (
       orgId: KinOrgId,
       query: MemoryQuery,
-    ) => Effect.Effect<ReadonlyArray<MemoryItemHead>, MemoryError | MemoryDuplicateId>;
+    ) => Effect.Effect<
+      ReadonlyArray<MemoryItemHead & { readonly duplicate: boolean }>,
+      MemoryError
+    >;
     readonly rebuildIndex: (orgId: KinOrgId) => Effect.Effect<void, MemoryError>;
     readonly rebuildCache: (orgId: KinOrgId) => Effect.Effect<void, MemoryError>;
   }
@@ -109,6 +114,17 @@ interface Snapshot {
   index?: string;
 }
 
+interface ParsedBlob {
+  readonly frontMatter: MemoryItemFrontMatter;
+  readonly body: string;
+}
+
+interface BlobCache {
+  readonly blobs: Map<string, string | undefined>;
+  readonly parsedBlobs: Map<string, ParsedBlob | undefined>;
+  readonly mismatchWarnings: Set<string>;
+}
+
 const make = Effect.gen(function* () {
   const config = yield* MemoryConfig;
   const fs = yield* FileSystem.FileSystem;
@@ -116,16 +132,10 @@ const make = Effect.gen(function* () {
   const vcs = yield* VcsProcess.VcsProcess;
   const cache = yield* MemoryCache.MemoryCache;
   const locks = new Map<KinOrgId, Semaphore.Semaphore>();
+  const pinnedHeads = new Map<KinOrgId, string>();
+  const duplicateWarnings = new Map<KinOrgId, ReadonlySet<string>>();
   const snapshots = new Map<KinOrgId, Snapshot>();
-  const blobs = new Map<string, string | undefined>();
-  const parsedBlobs = new Map<
-    string,
-    | {
-        readonly frontMatter: MemoryItemFrontMatter;
-        readonly body: string;
-      }
-    | undefined
-  >();
+  const blobCaches = new Map<KinOrgId, BlobCache>();
 
   const locked = <A, E>(orgId: KinOrgId, effect: Effect.Effect<A, E>) => {
     let lock = locks.get(orgId);
@@ -140,6 +150,7 @@ const make = Effect.gen(function* () {
     cwd: string,
     args: ReadonlyArray<string>,
     stdin?: string,
+    onStdoutChunk?: (chunk: Uint8Array) => void,
   ) {
     const result = yield* vcs
       .run({
@@ -148,18 +159,23 @@ const make = Effect.gen(function* () {
         cwd,
         args,
         ...(stdin === undefined ? {} : { stdin }),
-        env: {
-          GIT_TERMINAL_PROMPT: "0",
-          GIT_ASKPASS: "",
-          SSH_ASKPASS: "",
-          SSH_ASKPASS_REQUIRE: "never",
-          GCM_INTERACTIVE: "never",
-        },
+        env: STATUS_UPSTREAM_REFRESH_ENV,
+        ...(onStdoutChunk === undefined ? {} : { onStdoutChunk }),
+        classifyFailure: (stderr) => (isNonRepositoryGitStderr(stderr) ? "not-found" : null),
         timeoutMs: 120_000,
-        maxOutputBytes: 16 * 1024 * 1024,
+        maxOutputBytes: 64 * 1024 * 1024,
         outputMode: "error",
       })
-      .pipe(Effect.mapError((cause) => new MemoryError({ orgId, operation: "git", cause })));
+      .pipe(
+        Effect.tapError((cause) =>
+          Effect.logWarning("Memory git command failed", {
+            orgId,
+            command: args[0],
+            errorTag: cause._tag,
+          }),
+        ),
+        Effect.mapError((cause) => new MemoryError({ orgId, operation: "git", cause })),
+      );
     return result.stdout;
   });
   const io = <A, E>(orgId: KinOrgId, operation: string, effect: Effect.Effect<A, E>) =>
@@ -233,7 +249,9 @@ const make = Effect.gen(function* () {
         Effect.map((value) => path.resolve(value.trim()) === writerRoot),
         Effect.catchTags({
           MemoryError: (error) =>
-            isVcsProcessExitError(error.cause) ? Effect.succeed(false) : Effect.fail(error),
+            isVcsProcessExitError(error.cause) && error.cause.failureKind === "not-found"
+              ? Effect.succeed(false)
+              : Effect.fail(error),
         }),
       ));
     if (!validWriter) {
@@ -247,7 +265,6 @@ const make = Effect.gen(function* () {
           operation: "origin",
           reason: "Repository configuration changed",
         });
-      yield* git(orgId, paths.writer, ["fetch", "origin"]);
     }
     const readExists = yield* io(orgId, "exists", fs.exists(paths.read));
     const commonDirectory = yield* io(orgId, "realPath", fs.realPath(gitDirectory));
@@ -270,7 +287,9 @@ const make = Effect.gen(function* () {
         ),
         Effect.catchTags({
           MemoryError: (error) =>
-            isVcsProcessExitError(error.cause) ? Effect.succeed(false) : Effect.fail(error),
+            isVcsProcessExitError(error.cause) && error.cause.failureKind === "not-found"
+              ? Effect.succeed(false)
+              : Effect.fail(error),
         }),
       ));
     if (!validRead) {
@@ -283,10 +302,27 @@ const make = Effect.gen(function* () {
 
   const load = Effect.fn("Memory.load")(function* (orgId: KinOrgId, force = false) {
     const paths = yield* pathsFor(orgId);
-    const head = (yield* git(orgId, paths.read, ["rev-parse", "HEAD"])).trim();
+    const expectedRoot = yield* io(orgId, "realPath", fs.realPath(paths.writer));
+    const actualRoot = (yield* git(orgId, paths.writer, ["rev-parse", "--show-toplevel"])).trim();
+    if (path.resolve(actualRoot) !== expectedRoot)
+      return yield* new MemoryError({
+        orgId,
+        operation: "source",
+        reason: "Memory source is not the server-owned repository",
+      });
+    const head =
+      pinnedHeads.get(orgId) ?? (yield* git(orgId, paths.writer, ["rev-parse", "HEAD"])).trim();
+    pinnedHeads.set(orgId, head);
     const previous = snapshots.get(orgId);
     if (!force && previous?.head === head) return previous;
-    const tree = yield* git(orgId, paths.read, [
+    const blobCache = blobCaches.get(orgId) ?? {
+      blobs: new Map<string, string | undefined>(),
+      parsedBlobs: new Map<string, ParsedBlob | undefined>(),
+      mismatchWarnings: new Set<string>(),
+    };
+    blobCaches.set(orgId, blobCache);
+    const { blobs, parsedBlobs, mismatchWarnings } = blobCache;
+    const tree = yield* git(orgId, paths.writer, [
       "ls-tree",
       "-r",
       "-l",
@@ -312,26 +348,95 @@ const make = Effect.gen(function* () {
           .map((entry) => [entry.sha, entry]),
       ).values(),
     ];
+    const decodeBlob = Effect.fn("Memory.decodeBlob")(function* (
+      entry: (typeof entries)[number],
+      bytes: Uint8Array,
+    ) {
+      const text = yield* Effect.try({
+        try: () => new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+        catch: (cause) =>
+          new MemoryItemError({
+            orgId,
+            path: entry.relative,
+            reason: "Blob is not valid UTF-8",
+            cause,
+          }),
+      }).pipe(
+        Effect.catchTags({
+          MemoryItemError: (error) =>
+            Effect.logWarning("Skipping malformed memory item", {
+              orgId,
+              path: entry.relative,
+              errorTag: error._tag,
+              reason: error.reason,
+            }).pipe(Effect.as(undefined)),
+        }),
+      );
+      blobs.set(entry.sha, text);
+    });
     for (let index = 0; index < pending.length; index += 32) {
       const batch = pending.slice(index, index + 32);
-      const output = yield* git(
+      const chunks: Uint8Array[] = [];
+      const result = yield* git(
         orgId,
-        paths.read,
+        paths.writer,
         ["cat-file", "--batch"],
         batch.map((entry) => entry.sha).join("\n") + "\n",
-      ).pipe(Effect.catchTags({ MemoryError: () => Effect.succeed("") }));
-      const buffer = Buffer.from(output);
+        (chunk) => chunks.push(chunk),
+      ).pipe(Effect.result);
+      const buffer = Buffer.concat(chunks);
       let offset = 0;
+      let fallback = result._tag === "Failure";
       for (const entry of batch) {
-        const end = buffer.indexOf(10, offset);
-        if (end < 0) break;
-        const header = buffer.subarray(offset, end).toString("utf8");
-        offset = end + 1;
-        if (header === `${entry.sha} missing`) continue;
-        if (header !== `${entry.sha} blob ${entry.size}` || buffer.length < offset + entry.size + 1)
-          break;
-        blobs.set(entry.sha, buffer.subarray(offset, offset + entry.size).toString("utf8"));
-        offset += entry.size + 1;
+        if (!fallback) {
+          const end = buffer.indexOf(10, offset);
+          const header = end < 0 ? "" : buffer.subarray(offset, end).toString("ascii");
+          offset = end + 1;
+          if (header === `${entry.sha} missing`) continue;
+          if (
+            end < 0 ||
+            header !== `${entry.sha} blob ${entry.size}` ||
+            buffer.length < offset + entry.size + 1 ||
+            buffer[offset + entry.size] !== 10
+          ) {
+            fallback = true;
+            const error = new MemoryError({
+              orgId,
+              operation: "batch",
+              reason: "Invalid git blob batch framing",
+            });
+            yield* Effect.logWarning(
+              "Memory blob batch framing failed; reading remaining blobs individually",
+              {
+                orgId,
+                errorTag: error._tag,
+                path: entry.relative,
+              },
+            );
+          } else {
+            yield* decodeBlob(entry, buffer.subarray(offset, offset + entry.size));
+            offset += entry.size + 1;
+            continue;
+          }
+        }
+        const singleChunks: Uint8Array[] = [];
+        const single = yield* git(
+          orgId,
+          paths.writer,
+          ["cat-file", "blob", entry.sha],
+          undefined,
+          (chunk) => singleChunks.push(chunk),
+        ).pipe(Effect.result);
+        if (single._tag === "Success") {
+          const bytes = Buffer.concat(singleChunks);
+          if (bytes.length === entry.size) yield* decodeBlob(entry, bytes);
+          else
+            yield* Effect.logWarning("Skipping invalid memory blob length", {
+              orgId,
+              path: entry.relative,
+              errorTag: "MemoryError",
+            });
+        }
       }
     }
     const items: Array<MemoryCache.MemoryItem> = [];
@@ -366,12 +471,17 @@ const make = Effect.gen(function* () {
       if (!parsed) return;
       const expectedFolder =
         parsed.frontMatter.kind === "person" ? "people" : `${parsed.frontMatter.kind}s`;
-      if (!relative.startsWith(`${expectedFolder}/`))
-        return yield* new MemoryItemError({
-          orgId,
-          path: relative,
-          reason: "Memory kind does not match folder",
-        });
+      if (!relative.startsWith(`${expectedFolder}/`)) {
+        if (!mismatchWarnings.has(sha)) {
+          mismatchWarnings.add(sha);
+          return yield* new MemoryItemError({
+            orgId,
+            path: relative,
+            reason: "Memory kind does not match folder",
+          });
+        }
+        return;
+      }
       const itemHead = yield* decodeHead({ ...parsed.frontMatter, orgId, path: relative });
       items.push({ head: itemHead, body: parsed.body });
     });
@@ -387,21 +497,35 @@ const make = Effect.gen(function* () {
         ),
       );
     }
-    const snapshot: Snapshot = { head, items, files };
+    const counts = new Map<string, number>();
+    for (const { head } of items) counts.set(head.id, (counts.get(head.id) ?? 0) + 1);
+    const duplicateIds = new Set([...counts].filter(([, count]) => count > 1).map(([id]) => id));
+    for (const id of duplicateIds) {
+      if (!duplicateWarnings.get(orgId)?.has(id))
+        yield* Effect.logWarning("Duplicate memory id", { orgId, id });
+    }
+    duplicateWarnings.set(orgId, duplicateIds);
+    const snapshot: Snapshot = {
+      head,
+      items,
+      files,
+      ...(previous?.head === head && previous.index !== undefined ? { index: previous.index } : {}),
+    };
     snapshots.set(orgId, snapshot);
+    const reachable = new Set(entries.map((entry) => entry.sha));
+    for (const cache of [blobs, parsedBlobs, mismatchWarnings]) {
+      for (const sha of cache.keys()) if (!reachable.has(sha)) cache.delete(sha);
+    }
     return snapshot;
   });
 
   const query = Effect.fn("Memory.query")(function* (orgId: KinOrgId, q: MemoryQuery) {
     const now = yield* Clock.currentTimeMillis;
     const { items } = yield* load(orgId);
-    const ids = new Set<string>();
-    for (const { head } of items) {
-      if (ids.has(head.id)) return yield* new MemoryDuplicateId({ orgId, id: head.id });
-      ids.add(head.id);
-    }
+    const counts = new Map<string, number>();
+    for (const { head } of items) counts.set(head.id, (counts.get(head.id) ?? 0) + 1);
     return items
-      .map((item) => item.head)
+      .map((item) => ({ ...item.head, duplicate: (counts.get(item.head.id) ?? 0) > 1 }))
       .filter(
         (item) =>
           (q.kind === undefined || item.kind === q.kind) &&
@@ -466,6 +590,15 @@ const make = Effect.gen(function* () {
         yield* fs.writeFileString(temporary, snapshot.index ?? "");
         yield* fs.rename(temporary, path.join(paths.read, "INDEX.md"));
       }).pipe(Effect.scoped),
+    ).pipe(
+      Effect.catchTags({
+        MemoryError: (error) =>
+          Effect.logWarning("Could not write memory index", {
+            orgId,
+            operation: error.operation,
+            errorTag: error._tag,
+          }),
+      }),
     );
   });
 
@@ -489,6 +622,7 @@ const make = Effect.gen(function* () {
     yield* git(orgId, paths.read, ["checkout", "--force", "--detach", head]);
     yield* git(orgId, paths.read, ["reset", "--hard", head]);
     yield* git(orgId, paths.read, ["clean", "-fdx"]);
+    pinnedHeads.set(orgId, head);
     const index = yield* readFile(orgId, "INDEX.md").pipe(Effect.orElseSucceed(() => ""));
     const asOf = /^As of ([^\r\n]+)(?:\r?\n|$)/.exec(index)?.[1];
     const now = yield* Clock.currentTimeMillis;
