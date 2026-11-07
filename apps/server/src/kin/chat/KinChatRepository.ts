@@ -388,10 +388,10 @@ const make = Effect.gen(function* () {
       if (input.caller.subagent === true || input.caller.threadId !== input.threadId) return false;
       const rows = yield* sql`SELECT 1 FROM kin_wakeups w
         JOIN orchestration_v2_projection_runs r ON r.run_id = w.run_id AND r.thread_id = w.thread_id
-        JOIN orchestration_v2_projection_provider_threads p ON p.provider_thread_id = r.provider_thread_id
         WHERE w.org_id = ${input.orgId} AND w.agent_id = ${input.agentId}
         AND w.thread_id = ${input.threadId} AND w.status = 'running' AND w.run_id IS NOT NULL
-        AND p.provider_session_id = ${input.caller.providerSessionId}`;
+        AND r.ordinal = (SELECT MAX(latest.ordinal) FROM orchestration_v2_projection_runs latest WHERE latest.thread_id = w.thread_id)
+        AND r.status NOT IN ('completed', 'failed', 'cancelled', 'interrupted', 'rolled_back')`;
       return rows.length > 0;
     },
     Effect.mapError(toRepositoryError("KinChatRepository.hasRunningWakeup")),

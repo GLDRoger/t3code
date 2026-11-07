@@ -32,7 +32,6 @@ import * as Memory from "../memory/Memory.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
-import { McpSessionRegistry } from "../../mcp/McpSessionRegistry.ts";
 
 export class KinWakeupError extends Schema.TaggedError<KinWakeupError>()("KinWakeupError", {
   orgId: KinOrgId,
@@ -95,7 +94,6 @@ const ulid = Effect.gen(function* () {
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
-  const sessions = yield* McpSessionRegistry;
   const memory = yield* Memory.Memory;
   const hooks = yield* Effect.serviceOption(KinWakeupHooks);
   const prompt = yield* KinLeadPrompt;
@@ -169,15 +167,6 @@ const make = Effect.gen(function* () {
         : "failed";
     yield* Effect.gen(function* () {
       if (result.timedOut) {
-        const providers = yield* sql<{
-          providerSessionId: string;
-        }>`SELECT p.provider_session_id AS "providerSessionId"
-          FROM orchestration_v2_projection_runs r
-          JOIN orchestration_v2_projection_provider_threads p ON p.provider_thread_id = r.provider_thread_id
-          WHERE r.run_id IN (${runId}, ${result.run?.id ?? runId}) AND r.thread_id = ${threadId} AND p.provider_session_id IS NOT NULL
-          ORDER BY p.provider_thread_id`;
-        for (const provider of providers)
-          yield* sessions.revokeProviderSession(provider.providerSessionId);
         yield* threads.interruptThread({
           projectId,
           threadId,
@@ -366,6 +355,7 @@ const make = Effect.gen(function* () {
             yield* registry.register(threadId, { orgId, agentId, wakeupId, level: current.level });
             const commandId = CommandId.make(`kin-wakeup:${wakeupId}`);
             const messageId = MessageId.make(`kin-wakeup-msg:${wakeupId}`);
+            // Launch/send expose no preassigned run id or pre-execution callback; early tools fail closed until this run is recorded.
             const sent =
               current.threadId === null
                 ? (yield* launch.launch({

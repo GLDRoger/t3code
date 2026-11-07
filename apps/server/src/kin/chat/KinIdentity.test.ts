@@ -320,27 +320,23 @@ describe("KinIdentity", () => {
         yield* sql`UPDATE orchestration_v2_projection_runs SET status = 'interrupted' WHERE run_id = 'leftover-run'`;
         yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status, event_ids)
           VALUES ('next-wakeup', ${owner.orgId}, ${agentId}, ${threadId}, 'test', 1000, 'running', '[]')`;
-        const allowed = [yield* Effect.isSuccess(identity.resolveAgent(caller()))];
+        assert.isFalse(yield* Effect.isSuccess(identity.resolveAgent(caller())));
         yield* seedWakeupRun(threadId);
-        yield* sql`UPDATE kin_wakeups SET run_id = 'authority-run' WHERE wakeup_id = 'next-wakeup'`;
-        yield* seedWakeupRun(threadId, "user-run", "user-turn-session");
-        for (const providerSessionId of ["leftover-wakeup-session", "user-turn-session"]) {
-          allowed.push(
-            yield* Effect.isSuccess(
-              identity.resolveAgent({
-                ...caller(),
-                thread: { threadId, providerInstanceId, providerSessionId },
-              }),
-            ),
-          );
+        yield* sql`UPDATE kin_wakeups SET run_id = 'authority-run' WHERE org_id = ${owner.orgId} AND wakeup_id = 'next-wakeup'`;
+        assert.isTrue(yield* Effect.isSuccess(identity.resolveAgent(caller())));
+        for (const status of ["completed", "failed", "cancelled", "interrupted", "rolled_back"]) {
+          yield* sql`UPDATE orchestration_v2_projection_runs SET status = ${status} WHERE run_id = 'authority-run'`;
+          assert.isFalse(yield* Effect.isSuccess(identity.resolveAgent(caller())));
         }
-        assert.deepStrictEqual(
-          allowed,
-          [false, false, false],
-          "unbound run, leftover wake-up, user turn",
+        yield* sql`UPDATE orchestration_v2_projection_runs SET status = 'running' WHERE run_id = 'authority-run'`;
+        yield* seedWakeupRun(threadId, "user-run", "user-turn-session");
+        assert.isFalse(yield* Effect.isSuccess(identity.resolveAgent(caller())));
+        yield* sql`DELETE FROM orchestration_v2_projection_runs WHERE run_id = 'user-run'`;
+        yield* sql`DELETE FROM kin_wakeups WHERE org_id = ${owner.orgId} AND wakeup_id = 'next-wakeup'`;
+        yield* sql`UPDATE kin_wakeups SET status = 'running', run_id = 'authority-run' WHERE org_id = ${owner.orgId} AND wakeup_id = 'identity-wakeup'`;
+        assert.isFalse(
+          yield* Effect.isSuccess(identity.resolveAgent(caller(decodeThreadId("other-thread")))),
         );
-        yield* sql`DELETE FROM kin_wakeups WHERE wakeup_id = 'next-wakeup'`;
-        yield* sql`UPDATE kin_wakeups SET status = 'running', run_id = 'authority-run' WHERE wakeup_id = 'identity-wakeup'`;
         assert.deepStrictEqual(yield* identity.resolveAgent(caller()), {
           _tag: "agent",
           caller: caller().thread,
@@ -372,6 +368,7 @@ describe("KinIdentity", () => {
         );
         const secondThreadId = decodeThreadId("second-thread");
         yield* identity.registerAgentThread({ ...input, threadId: secondThreadId });
+        assert.isFalse(yield* Effect.isSuccess(identity.resolveAgent(caller(secondThreadId))));
         const otherOrgId = decodeOrgId("other-org");
         const otherPersonId = decodePersonId("other-owner");
         const otherAgentId = decodeAgentId("other-agent");

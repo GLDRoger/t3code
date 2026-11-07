@@ -995,7 +995,10 @@ describe("KinChatRepository", () => {
         VALUES ('chat-wakeup', ${orgId}, ${agentId}, ${threadId}, 'test', 0, 'running', '[]')`;
       yield* seedWakeupRun(threadId);
       yield* sql`UPDATE kin_wakeups SET run_id = 'authority-run' WHERE wakeup_id = 'chat-wakeup'`;
-      for (const providerSessionId of ["leftover-session", "user-session"]) {
+      for (const rejectedCaller of [
+        { ...caller, threadId: ThreadId.make("other-thread") },
+        { ...caller, subagent: true },
+      ]) {
         assert.include(
           yield* repo
             .insertMessage({
@@ -1008,7 +1011,7 @@ describe("KinChatRepository", () => {
                   threadId,
                 },
               }),
-              caller: { ...caller, providerSessionId },
+              caller: rejectedCaller,
             })
             .pipe(Effect.flip),
           { reason: "not_allowed" },

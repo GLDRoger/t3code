@@ -218,7 +218,7 @@ describe("KinChatService", () => {
           state,
         });
         const sql = yield* SqlClient.SqlClient;
-        yield* sql`UPDATE orchestration_v2_projection_provider_threads SET provider_session_id = 'next-wakeup-session' WHERE provider_thread_id = 'authority-run'`;
+        yield* sql`UPDATE orchestration_v2_projection_runs SET status = 'completed' WHERE run_id = 'authority-run'`;
         assert.include(
           yield* service
             .upsertWidget(agent, {
@@ -230,7 +230,7 @@ describe("KinChatService", () => {
             .pipe(Effect.flip),
           { reason: "not_allowed" },
         );
-        yield* sql`UPDATE orchestration_v2_projection_provider_threads SET provider_session_id = 'provider-session' WHERE provider_thread_id = 'authority-run'`;
+        yield* sql`UPDATE orchestration_v2_projection_runs SET status = 'running' WHERE run_id = 'authority-run'`;
         yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'service-wakeup'`;
         assert.include(
           yield* service

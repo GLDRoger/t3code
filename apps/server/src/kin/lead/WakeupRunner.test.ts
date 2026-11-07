@@ -54,13 +54,11 @@ const decodeUsage = Schema.decodeEffect(
     ),
   ),
 );
-const resolveAgent = Effect.fn("test.resolveAgent")(function* (threadId: ThreadId) {
+const resolveAgent = Effect.fn("test.resolveAgent")(function* (
+  threadId: ThreadId,
+  providerSessionId = "mcp-credential-session",
+) {
   const identity = yield* KinIdentity.KinIdentity;
-  const sql = yield* SqlClient.SqlClient;
-  const [provider] = yield* sql<{
-    session: string;
-  }>`SELECT provider_session_id AS session FROM orchestration_v2_projection_provider_threads
-    WHERE thread_id = ${threadId} ORDER BY updated_at DESC, provider_thread_id LIMIT 1`;
   return yield* identity.resolveAgent({
     environmentId: EnvironmentId.make("test"),
     capabilities: new Set(),
@@ -69,7 +67,7 @@ const resolveAgent = Effect.fn("test.resolveAgent")(function* (threadId: ThreadI
     client: undefined,
     thread: {
       threadId,
-      providerSessionId: provider?.session ?? "missing",
+      providerSessionId,
       providerInstanceId: ProviderInstanceId.make("codex"),
       subagent: false,
     },
@@ -211,9 +209,25 @@ describe("WakeupRunner", () => {
               ),
             ),
           );
+          const launch = yield* ThreadLaunch.ThreadLaunchService;
           const runner = yield* WakeupRunner.WakeupRunner.pipe(
             Effect.provide(Layer.fresh(WakeupRunner.layer)),
-            Effect.provideService(McpSessionRegistry.McpSessionRegistry, sessions),
+            Effect.provideService(ThreadLaunch.ThreadLaunchService, {
+              ...launch,
+              launch: (input) =>
+                launch.launch(input).pipe(
+                  Effect.tap((result) =>
+                    Effect.gen(function* () {
+                      assert.include(
+                        yield* resolveAgent(result.projection.thread.id).pipe(Effect.flip),
+                        {
+                          reason: "not_allowed",
+                        },
+                      );
+                    }),
+                  ),
+                ),
+            }),
           );
           yield* queue.enqueue(event("timeout"));
           const fiber = yield* runner.runOnce(orgId, agentId).pipe(Effect.forkChild);
@@ -228,13 +242,15 @@ describe("WakeupRunner", () => {
             providerInstanceId: ProviderInstanceId.make("codex"),
           });
           const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
-          yield* sql`UPDATE orchestration_v2_projection_provider_threads SET provider_session_id = ${issued.config.providerSessionId} WHERE thread_id = ${threadId}`;
           assert.isDefined(yield* sessions.resolve(token));
-          assert.strictEqual((yield* resolveAgent(threadId)).agentId, agentId);
+          assert.strictEqual(
+            (yield* resolveAgent(threadId, issued.config.providerSessionId)).agentId,
+            agentId,
+          );
           yield* TestClock.adjust("15 minutes");
           yield* TestClock.adjust("30 seconds");
           yield* Fiber.join(fiber);
-          assert.isUndefined(yield* sessions.resolve(token));
+          assert.isDefined(yield* sessions.resolve(token));
           assert.include(yield* resolveAgent(threadId).pipe(Effect.flip), {
             reason: "not_allowed",
           });
