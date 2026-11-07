@@ -275,7 +275,7 @@ K001 uses `TEXT` for ids, ISO timestamps and JSON, and `INTEGER` for sequences a
 
 K002 (phase 2): `kin_floor_runs`, `kin_floor_bids`, `kin_judge_log` (below). New tables only.
 
-**Seq allocation:** in one `sql.withTransaction`: `UPDATE kin_chats SET last_seq = last_seq + 1, last_message_at = ? WHERE chat_id = ? RETURNING last_seq`, then insert the message with that seq. Publish to the in-process hub only after commit.
+**Seq allocation:** in one `sql.withTransaction`: `UPDATE kin_chats SET last_seq = last_seq + 1, last_message_at = ? WHERE chat_id = ? AND org_id = ? RETURNING last_seq`, then insert the message with that seq. Look up an existing `(chat_id, author_member_id, client_message_id)` inside the transaction before allocating a seq. Store sends as `send:<clientMessageId>` and widget actions as `act:<clientActionId>` so the namespaces cannot collide. History returns the newest page before `beforeSeq` in ascending seq order, with `hasMore` from one extra row. Publish to the in-process hub only after commit.
 
 ### RPC surface
 
