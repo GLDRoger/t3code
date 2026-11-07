@@ -163,19 +163,21 @@ Priority (gap 2), set by code from the tag and provenance, never by a model:
 | --- | ------------------------------------------------------------------------------------------ |
 | P0  | `chat.message` or `widget.action` from the owner; `resume`                                 |
 | P1  | `deferral.due`; `action.resolved`; `worker.report`                                         |
-| P2  | `chat.message` from members; `github`; `routine`                                           |
+| P2  | Non-owner `chat.message` and `widget.action` (including agents); `github`; `routine`       |
 | P3  | `watchdog` (chasing, stale reviews)                                                        |
 | P4  | dreaming (the triggers spec asks `KinBudget.admit(orgId, "P4")`; it is not a lead wake-up) |
 
+Owner priority is resolved from the human author’s active `kin_chat_members` row, matching organization, chat, member and person; `KinAuthor` carries identities, not a role. Agent messages do not inherit their owner’s priority. `enqueue` normalizes a GitHub event’s `dedupeKey` to `deliveryId` before persisting both the key and event JSON. Other producers retain their supplied key, including the inbox consumer’s `KinTriggerFired.fireId`.
+
 Coalescing:
 
-- An organization's runner sleeps until it has queued events, then waits for a quiet window: 20 s with no new event, capped at 120 s after the first event. For a P0 event the window is 2 s.
+- An organization's runner sleeps until it has queued events, then waits for a quiet window: 20 s with no new event, capped at 120 s after the first event. The first eligible P0 event cuts the deadline to at most 2 s after its receipt; later events of any priority cannot extend that deadline. Budget-deferred events neither reset nor shorten the window until eligible, and becoming eligible is not a new receipt.
 - It then claims every queued event for that lead whose `not_before` has passed, ordered by `priority, received_at`, in one transaction, and starts one wake-up for the batch. The claim index is `(org_id, agent_id, state, priority, received_at, not_before)`. Twenty webhook events from one push become one wake-up.
-- A batch holds at most 50 events. Same-repo `github` events beyond that fold into one line ("31 more events on GLDRoger/t3code, see payloads").
+- A batch holds at most 50 events. Overflow stays queued for the next batch; no delivery references are dropped or marked handled. Same-repo summaries belong to the prompt builder, not the durable queue.
 - Events that arrive while a wake-up runs wait for the next one. The runner never starts a second session for the same organization. This is the one-writer rule: memory is written only inside a wake-up, and wake-ups are serial.
-- Implementation: one `Effect.Semaphore(1)` per `orgId` held for the whole wake-up, plus the `claimed` state in SQLite so a restart sees what was in flight.
+- Implementation: one `Semaphore.make(1)` per `orgId` held for the whole wake-up, plus the `claimed` state in SQLite so a restart sees what was in flight. `claim({ orgId, agentId, wakeupId, model })` waits interruptibly for the quiet window, creates the running wake-up and atomically claims up to 50 events in one transaction, increments `attempts`, and records the ordered event ids. The caller keeps its Effect scope open through the entire provider run and terminal database write; scope closure releases the organization permit. SQLite’s running-wake-up unique index also rejects concurrent claims from another queue instance. The runner owns stop/budget admission, provider execution and finishing, not this queue.
 
-Restart: on startup, events in `claimed` whose wake-up never finished go back to `queued` (the runner checks the lead thread's last run first; see failure cases); an index on `kin_events.wakeup_id` supports requeue by wake-up.
+Restart: the runner first reconciles each unfinished wake-up with its provider run (see failure cases). It must not requeue events belonging to a still-active run. For an abandoned run only, `requeueUnfinished(orgId, wakeupId)` atomically marks the running wake-up interrupted and returns its claimed events to `queued`, clearing their `wakeup_id` while preserving `not_before` and `attempts`. It is idempotent and organization-scoped; `idx_kin_events_wakeup` supports the update. Completed runs are finished by the runner instead. Layer construction never blindly requeues active work.
 
 ### A wake-up (one fresh lead session)
 
