@@ -183,6 +183,38 @@ The owner can hand authority to someone deliberately, for example "Priya can app
 
 Every privileged action records the grant, the signing device, the SHA, who started the task, and the result. The owner can list and revoke device sessions.
 
+### 9.8 Agents from other owners
+
+A member can bring their own agent, customised and hosted on their own machines, into a group. **Every agent has a human owner, and its authority comes from that owner, not from the group.**
+
+**Joining:**
+
+- The agent applies with a signed **manifest**: owner, host, provider and model, what it wants (read the chat, post, start work), the tools it brings, and its public key.
+- The group owner approves it with a scope, such as "reads and posts in #tech, doesn't see pinned items". Organization policy (section 10a) can forbid outside agents entirely.
+- The approval card states plainly that **what the agent reads leaves this organization**, and that removing the agent stops new messages but can't recall ones already sent.
+- If the key, host or model changes, the agent must be approved again: "Priya's agent switched from model X to model Y."
+
+**Acting:**
+
+- The agent works with **its owner's credentials and subscription**: Priya's agent pushes as Priya's GitHub identity and runs on Priya's plan. Kin never hands it the group's credentials.
+- Its permission ceiling is the lower of its owner's role and the scope the group owner granted.
+
+**Approvals need both keys:**
+
+- An action needs approval from **the owner of the credentials being used** and from **the owner of the resource being changed**.
+  - Priya's agent opening a PR in Priya's fork: Priya approves.
+  - Priya's agent merging into Nishchay's repo: Priya approves (her agent, her account), and Nishchay approves (his repo; GitHub's branch rules still require his review).
+- Approval cards show both: "Waiting on Priya, then Nishchay."
+- Only the owner's signed device can approve. **An agent can't approve, even for its own owner.**
+
+**In the chat:**
+
+- An outside agent follows the same floor manager rules and turn budget as any agent. Its messages are untrusted input, the same as a member's.
+- Its avatar names its owner ("Priya's QA").
+- The group owner can mute or remove it at any time, and its requests are rate-limited.
+
+**Connecting:** the chat server and an agent hosted elsewhere talk over a signed, authenticated endpoint. Use an open protocol, A2A or MCP, rather than inventing one; choose after checking where each stands. The same mechanism lets a consultant bring their own lead into a client's group (section 10a).
+
 ## 10. Permission levels
 
 L0 shadow (writes only to the owner's summary) → L1 comment and ping → L2 start workers and open draft PRs → L3 merge low-risk changes after an owner grant or delegation (docs, dependency bumps; never auth, security or migrations). Set per lead and per chat. Section 9 applies at every level.
@@ -214,7 +246,7 @@ Every chat, message, memory entry, grant and audit record carries an `orgId` fro
 2. **First group:** lead + QA; roles and provenance ceilings; floor manager; judge in shadow; decision cards and polls; generated widgets; notification actions. Raise the lead to L1, then L2.
 3. **Teams and router:** more teams; the router and its agenda; cross-team requests; live widgets, Live Activities, pinned dashboards; delegations.
 4. **Front doors:** an MCP hub so ChatGPT, Grok and Claude.ai reach the same leads and widgets, with the same section 9 rules.
-5. **Organizations:** organization policy, roles and approvers, external members, the space switcher, and the walls between organizations (`orgId` is already in place from phase 1).
+5. **Organizations:** organization policy, roles and approvers, external members, agents from other owners (section 9.8), the space switcher, and the walls between organizations (`orgId` is already in place from phase 1).
 6. **Experiments:** one lead with skills vs. team agents vs. team agents plus the router (measure wrong routes, handoff losses, cross-team items settled without the owner, cost); self-improving rules; a chief of staff only if cross-team conflicts appear.
 
 ## 12. Open questions
