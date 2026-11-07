@@ -172,7 +172,21 @@ const samples = {
     { _tag: "read", memberId: "member-1", seq: 1 },
   ],
   KinOrgsListInput: [{}],
-  KinOrgsListResult: [{ orgs: [org], me: [{ orgId: "org-1", personId: "person-1" }] }],
+  KinOrgsListResult: [
+    {
+      orgs: [
+        {
+          ...org,
+          agents: [
+            { agentId: "agent-1", displayName: "Lead", retired: false },
+            { agentId: "agent-retired", displayName: "Retired", retired: true },
+          ],
+        },
+      ],
+      me: [{ orgId: "org-1", personId: "person-1" }],
+    },
+    { orgs: [{ ...org, agents: [] }], me: [] },
+  ],
   KinChatsSubscribeInput: [{}, { orgId: "org-1" }],
   KinChatsCreateDirectInput: [{ orgId: "org-1", agentId: "agent-1" }],
   KinChatSubscribeInput: [{ chatId: "chat-1" }, { chatId: "chat-1", afterSeq: 0 }],
@@ -194,6 +208,7 @@ const samples = {
   KinChatError: [
     "not_found",
     "not_allowed",
+    "unavailable",
     "widget_changed",
     "use_approvals",
     "invalid_state",
@@ -223,7 +238,7 @@ describe("Kin chat contracts", () => {
     expect(decodeSend(payload)).toEqual(send);
   });
 
-  it.each(["", "  \n ", "x".repeat(16_001)])("rejects send body %j", (body) => {
+  it.each(["", "  \n ", "x".repeat(16_001), "a\u0000b"])("rejects send body %j", (body) => {
     expect(() => decodeSend({ ...send, body })).toThrow();
   });
 

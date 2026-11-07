@@ -736,14 +736,7 @@ const make = Effect.gen(function* () {
           ),
       }),
     );
-    const ownerTimeZone = yield* cache.ownerTimeZone(orgId).pipe(
-      Effect.catchTags({
-        MemoryHistoryError: () =>
-          Effect.logWarning("Could not load memory owner time zone; using UTC", { orgId }).pipe(
-            Effect.as("UTC"),
-          ),
-      }),
-    );
+    const ownerTimeZone = yield* cache.ownerTimeZone(orgId);
     snapshot.index = buildIndex(
       snapshot.items.map(({ head }) => head),
       reads,

@@ -83,7 +83,8 @@ describe("Kin migrations", () => {
           { migration_id: 2, name: "Lead" },
           { migration_id: 3, name: "Triggers" },
           { migration_id: 4, name: "MemoryReads" },
-          { migration_id: 5, name: "MemoryHeads" },
+          { migration_id: 5, name: "OneChatOwner" },
+          { migration_id: 6, name: "MemoryHeads" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
@@ -127,7 +128,8 @@ describe("Kin migrations", () => {
           { migration_id: 2, name: "Lead" },
           { migration_id: 3, name: "Triggers" },
           { migration_id: 4, name: "MemoryReads" },
-          { migration_id: 5, name: "MemoryHeads" },
+          { migration_id: 5, name: "OneChatOwner" },
+          { migration_id: 6, name: "MemoryHeads" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -192,7 +194,8 @@ describe("Kin migrations", () => {
         [2, "Lead"],
         [3, "Triggers"],
         [4, "MemoryReads"],
-        [5, "MemoryHeads"],
+        [5, "OneChatOwner"],
+        [6, "MemoryHeads"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -204,6 +207,19 @@ describe("Kin migrations", () => {
         [],
       );
       yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('owner', 'org', 'owner', 'Owner', ${timestamp})`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+        VALUES ('existing-chat', 'org', 'project_group', 0, ${timestamp})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('existing-owner', 'org', 'existing-chat', 'person', 'owner', 'owner', ${timestamp})`;
+      yield* sql`DROP INDEX kin_chat_members_one_owner`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 5`;
+      assert.deepStrictEqual(yield* runKinMigrations(), [[5, "OneChatOwner"]]);
+      assert.deepStrictEqual(
+        yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,
+        [{ member_id: "existing-owner" }],
+      );
       yield* runMigrations();
       assert.deepStrictEqual(
         (yield* upstreamHistory).map((row) => [row.migration_id, row.name] as const),
@@ -215,7 +231,8 @@ describe("Kin migrations", () => {
         { migration_id: 2, name: "Lead" },
         { migration_id: 3, name: "Triggers" },
         { migration_id: 4, name: "MemoryReads" },
-        { migration_id: 5, name: "MemoryHeads" },
+        { migration_id: 5, name: "OneChatOwner" },
+        { migration_id: 6, name: "MemoryHeads" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);
@@ -620,6 +637,11 @@ describe("Kin migrations", () => {
       );
       const rejected = [
         {
+          name: "second owner",
+          query: sql`UPDATE kin_chat_members SET role = 'owner' WHERE member_id = 'member-person'`,
+          error: "UNIQUE constraint failed: kin_chat_members.org_id, kin_chat_members.chat_id",
+        },
+        {
           name: "direct chat without direct_key",
           query: sql`
             INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
@@ -670,7 +692,7 @@ describe("Kin migrations", () => {
           ) VALUES (
             ${`duplicate-${member.id}`}, 'org', 'team_group', ${member.kind},
             ${member.kind === "person" ? member.id : null}, ${member.kind === "agent" ? member.id : null},
-            ${member.role}, ${timestamp}
+            ${member.role === "owner" ? "member" : member.role}, ${timestamp}
           )
         `);
         assert.isTrue(Exit.isFailure(duplicateMember));
