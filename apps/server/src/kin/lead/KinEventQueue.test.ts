@@ -201,13 +201,17 @@ describe("KinEventQueue", () => {
           ["member-again", "member", false, false],
           ["left", "owner", true, false],
           ["lead-left", "owner", false, true],
+          ["retired", "owner", false, false],
         ] as const) {
           yield* sql`UPDATE kin_chat_members SET role = ${role}, left_at = ${personLeft ? "2026-11-07T00:00:00.000Z" : null}
             WHERE member_id = 'member-lead-a'`;
           yield* sql`UPDATE kin_chat_members SET left_at = ${agentLeft ? "2026-11-07T00:00:00.000Z" : null}
             WHERE member_id = 'agent-member-lead-a'`;
+          yield* sql`UPDATE kin_agents SET retired_at = ${id === "retired" ? "2026-11-07T00:00:00.000Z" : null}
+            WHERE agent_id = 'lead-a'`;
           yield* queue.enqueue({ ...owner, eventId: KinEventId.make(id), dedupeKey: id });
         }
+        yield* sql`UPDATE kin_agents SET retired_at = NULL WHERE agent_id = 'lead-a'`;
         yield* sql`UPDATE kin_chat_members SET left_at = NULL WHERE member_id = 'agent-member-lead-a'`;
         yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
           VALUES ('owner-other-chat', 'a', 'chat-lead-a2', 'person', 'person-lead-a', 'owner', '2026-11-07T00:00:00.000Z')`;
@@ -259,12 +263,34 @@ describe("KinEventQueue", () => {
             { ...(yield* event(tag, "watchdog")), dedupeKey: original.dedupeKey },
             {
               ...original,
-              eventId: KinEventId.make(`${tag}-conflict`),
-              receivedAt: DateTime.makeUnsafe(1),
+              eventId: KinEventId.make(`${tag}-agent-conflict`),
+              agentId: KinAgentId.make("lead-b"),
+            },
+            {
+              ...(yield* event(`${tag}-tag-conflict`, "watchdog")),
+              dedupeKey: tag === "github" ? `delivery-${tag}` : original.dedupeKey,
             },
           ]) {
             const conflict = yield* queue.enqueue(changed).pipe(Effect.flip);
             assert.instanceOf(conflict, KinEventQueue.KinEventQueueConflict);
+          }
+          for (const redelivery of [
+            {
+              ...original,
+              eventId: KinEventId.make(`${tag}-redelivery`),
+              receivedAt: DateTime.makeUnsafe(1),
+            },
+            yield* decodeEvent({
+              ...original,
+              eventId: `${tag}-new-delivery`,
+              receivedAt: "2026-11-07T01:00:00.000Z",
+              webhookDeliveryId: "new-t3-delivery",
+              scheduledTaskId: "new-task",
+            }),
+          ]) {
+            const duplicate = yield* queue.enqueue(redelivery);
+            assert.isTrue(duplicate.duplicate);
+            assert.deepStrictEqual(duplicate.event, retried.event);
           }
           if (original._tag === "github") {
             const differentPayload = yield* queue
@@ -323,6 +349,13 @@ describe("KinEventQueue", () => {
         const retriedNoKey = yield* queue.enqueue(noKey);
         assert.isTrue(retriedNoKey.duplicate);
         assert.deepStrictEqual(retriedNoKey.event, noKey);
+        const invalidEvent = yield* queue
+          .enqueue({
+            ...(yield* event("invalid-payload")),
+            dedupeKey: " ",
+          })
+          .pipe(Effect.flip);
+        assert.strictEqual(invalidEvent._tag, "PersistenceDecodeError");
         const github = yield* event("invalid-key");
         const invalidKey = yield* queue
           .enqueue({ ...github, dedupeKey: "mismatch" })
@@ -355,8 +388,20 @@ describe("KinEventQueue", () => {
       yield* queue.enqueue(yield* event("ready"));
       yield* TestClock.adjust("20 seconds");
       yield* Effect.scoped(queue.claim(input("admission")));
+      for (const invalidRelease of [
+        { ...input("admission"), countAttempt: false },
+        { ...input("admission"), countAttempt: false, notBefore: -1 },
+      ] as const) {
+        // @ts-expect-error Missing notBefore also exercises validation at the runtime boundary.
+        const rejected = yield* queue.release(invalidRelease).pipe(Effect.flip);
+        assert.strictEqual(rejected._tag, "PersistenceDecodeError");
+      }
       assert.strictEqual(
-        yield* queue.release({ ...input("admission", "b"), countAttempt: false }),
+        yield* queue.release({
+          ...input("admission", "b"),
+          countAttempt: false,
+          notBefore: 60_000,
+        }),
         0,
       );
       assert.strictEqual(
@@ -447,10 +492,26 @@ describe("KinEventQueue", () => {
           }
         }
       }
+      const invalidFinish = yield* queue
+        .finish({
+          ...input("invalid"),
+          // @ts-expect-error Invalid status exercises decoding of untrusted runtime input.
+          status: "unknown",
+        })
+        .pipe(Effect.flip);
+      assert.strictEqual(invalidFinish._tag, "PersistenceDecodeError");
+      for (const [orgId, wakeupId] of [
+        [" ", "invalid"],
+        ["a", " "],
+      ] as const) {
+        // @ts-expect-error Unbranded ids exercise decoding of untrusted runtime input.
+        const invalidRecovery = yield* queue.requeueUnfinished(orgId, wakeupId).pipe(Effect.flip);
+        assert.strictEqual(invalidRecovery._tag, "PersistenceDecodeError");
+      }
       const invalid = yield* Effect.scoped(queue.claim({ ...input("invalid"), model: " " })).pipe(
         Effect.flip,
       );
-      assert.strictEqual(invalid._tag, "PersistenceSqlError");
+      assert.strictEqual(invalid._tag, "PersistenceDecodeError");
     }).pipe(Effect.provide(layer)),
   );
 
@@ -639,8 +700,8 @@ describe("KinEventQueue", () => {
           ],
         );
         const plan = yield* sql<{ detail: string }>`EXPLAIN QUERY PLAN
-        UPDATE kin_events SET state = 'claimed', wakeup_id = 'next', attempts = attempts + 1
-        WHERE event_id IN (SELECT event_id FROM kin_events
+        UPDATE kin_events SET state = 'claimed', wakeup_id = 'next'
+        WHERE org_id = 'a' AND event_id IN (SELECT event_id FROM kin_events
           WHERE org_id = 'a' AND agent_id = 'lead-a' AND state = 'queued' AND (not_before IS NULL OR not_before <= 120000)
           ORDER BY priority, received_at, event_id LIMIT 50) RETURNING json, priority, received_at, event_id`;
         assert.isTrue(plan.some((row) => row.detail.includes("idx_kin_events_queue")));

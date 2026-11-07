@@ -18,7 +18,11 @@ import type * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { PersistenceSqlError, toPersistenceSqlError } from "../../persistence/Errors.ts";
+import {
+  PersistenceDecodeError,
+  PersistenceSqlError,
+  toPersistenceSqlError,
+} from "../../persistence/Errors.ts";
 
 const EventJson = Schema.fromJsonString(KinEvent);
 const encodeEvent = Schema.encodeEffect(EventJson);
@@ -35,13 +39,23 @@ const ClaimInput = Schema.Struct({
   model: TrimmedNonEmptyString,
 });
 type ClaimInput = typeof ClaimInput.Type;
-const ReleaseInput = Schema.Struct({
+const ReleaseFields = {
   orgId: KinOrgId,
   wakeupId: KinWakeupId,
   eventIds: Schema.optional(Schema.Array(KinEventId)),
-  notBefore: Schema.optional(NonNegativeInt),
-  countAttempt: Schema.Boolean,
-});
+};
+const ReleaseInput = Schema.Union([
+  Schema.Struct({
+    ...ReleaseFields,
+    countAttempt: Schema.Literal(false),
+    notBefore: NonNegativeInt,
+  }),
+  Schema.Struct({
+    ...ReleaseFields,
+    countAttempt: Schema.Literal(true),
+    notBefore: Schema.optional(NonNegativeInt),
+  }),
+]);
 const FinishInput = Schema.Struct({
   orgId: KinOrgId,
   wakeupId: KinWakeupId,
@@ -67,6 +81,13 @@ export class KinEventQueueBusy extends Schema.TaggedError<KinEventQueueBusy>()(
 const isConflict = Schema.is(KinEventQueueConflict);
 const isUnknownEvent = Schema.is(KinEventQueueUnknownEvent);
 const isBusy = Schema.is(KinEventQueueBusy);
+
+function toQueuePersistenceError(operation: string) {
+  return (cause: unknown) =>
+    Schema.isSchemaError(cause)
+      ? PersistenceDecodeError.fromSchemaError(operation, cause)
+      : toPersistenceSqlError(operation)(cause);
+}
 class NoClaimableEvents extends Schema.TaggedError<NoClaimableEvents>()("NoClaimableEvents", {}) {}
 
 export class KinEventQueue extends Context.Service<
@@ -76,25 +97,30 @@ export class KinEventQueue extends Context.Service<
       event: KinEvent,
     ) => Effect.Effect<
       { readonly event: KinEvent; readonly duplicate: boolean },
-      PersistenceSqlError | KinEventQueueConflict | KinEventQueueUnknownEvent
+      | PersistenceSqlError
+      | PersistenceDecodeError
+      | KinEventQueueConflict
+      | KinEventQueueUnknownEvent
     >;
-    // Keep the scope open for the whole wake-up, including its terminal database write.
+    // Scope closure releases only the permit; LEAD-5 must finish(timed_out | failed) in its own onExit.
     readonly claim: (
       input: ClaimInput,
     ) => Effect.Effect<
       ReadonlyArray<KinEvent>,
-      PersistenceSqlError | KinEventQueueBusy,
+      PersistenceSqlError | PersistenceDecodeError | KinEventQueueBusy,
       Scope.Scope
     >;
     readonly release: (
       input: typeof ReleaseInput.Type,
-    ) => Effect.Effect<number, PersistenceSqlError>;
-    readonly finish: (input: typeof FinishInput.Type) => Effect.Effect<void, PersistenceSqlError>;
+    ) => Effect.Effect<number, PersistenceSqlError | PersistenceDecodeError>;
+    readonly finish: (
+      input: typeof FinishInput.Type,
+    ) => Effect.Effect<void, PersistenceSqlError | PersistenceDecodeError>;
     // LEAD-5 startup recovery calls this only after confirming the provider run stopped.
     readonly requeueUnfinished: (
       orgId: KinOrgId,
       wakeupId: KinWakeupId,
-    ) => Effect.Effect<number, PersistenceSqlError>;
+    ) => Effect.Effect<number, PersistenceSqlError | PersistenceDecodeError>;
   }
 >()("t3/kin/lead/KinEventQueue") {}
 
@@ -155,7 +181,7 @@ const make = Effect.gen(function* () {
               AND principal_kind = 'person' AND role = 'owner' AND left_at IS NULL
               AND EXISTS (SELECT 1 FROM kin_agents
                 WHERE org_id = ${event.orgId} AND agent_id = ${event.agentId}
-                  AND owner_person_id = ${event.provenance.personId})
+                  AND owner_person_id = ${event.provenance.personId} AND retired_at IS NULL)
               AND EXISTS (SELECT 1 FROM kin_chat_members
                 WHERE org_id = ${event.orgId} AND chat_id = ${event.chatId}
                   AND principal_kind = 'agent' AND agent_id = ${event.agentId} AND left_at IS NULL)
@@ -184,7 +210,11 @@ const make = Effect.gen(function* () {
       let stored: KinEvent | undefined;
       for (const row of rows) {
         const candidate = yield* decodeEvent(row.json);
-        if ((yield* encodeEvent({ ...candidate, eventId: event.eventId })) !== json) {
+        if (
+          candidate.eventId === event.eventId
+            ? (yield* encodeEvent(candidate)) !== json
+            : candidate.agentId !== event.agentId || candidate._tag !== event._tag
+        ) {
           return yield* new KinEventQueueConflict({ orgId: event.orgId, eventId: event.eventId });
         }
         stored = candidate;
@@ -197,7 +227,7 @@ const make = Effect.gen(function* () {
     Effect.mapError((cause) =>
       isConflict(cause) || isUnknownEvent(cause)
         ? cause
-        : toPersistenceSqlError("KinEventQueue.enqueue")(cause),
+        : toQueuePersistenceError("KinEventQueue.enqueue")(cause),
     ),
     Effect.uninterruptible,
   );
@@ -319,7 +349,7 @@ const make = Effect.gen(function* () {
       );
     },
     Effect.mapError((cause) =>
-      isBusy(cause) ? cause : toPersistenceSqlError("KinEventQueue.claim")(cause),
+      isBusy(cause) ? cause : toQueuePersistenceError("KinEventQueue.claim")(cause),
     ),
   );
 
@@ -329,7 +359,7 @@ const make = Effect.gen(function* () {
       const count = yield* sql.withTransaction(
         Effect.gen(function* () {
           const now = yield* Clock.currentTimeMillis;
-          const notBefore = input.notBefore ?? (input.countAttempt ? now + 300_000 : null);
+          const notBefore = input.notBefore ?? now + 300_000;
           const ids =
             input.eventIds === undefined ? undefined : yield* encodeEventIds(input.eventIds);
           const rows = yield* sql`
@@ -351,7 +381,7 @@ const make = Effect.gen(function* () {
       if (count > 0) yield* notify(input.orgId);
       return count;
     },
-    Effect.mapError(toPersistenceSqlError("KinEventQueue.release")),
+    Effect.mapError(toQueuePersistenceError("KinEventQueue.release")),
     Effect.uninterruptible,
   );
 
@@ -379,7 +409,7 @@ const make = Effect.gen(function* () {
       );
       yield* notify(input.orgId);
     },
-    Effect.mapError(toPersistenceSqlError("KinEventQueue.finish")),
+    Effect.mapError(toQueuePersistenceError("KinEventQueue.finish")),
     Effect.uninterruptible,
   );
 
@@ -407,7 +437,7 @@ const make = Effect.gen(function* () {
       if (count > 0) yield* notify(orgId);
       return count;
     },
-    Effect.mapError(toPersistenceSqlError("KinEventQueue.requeueUnfinished")),
+    Effect.mapError(toQueuePersistenceError("KinEventQueue.requeueUnfinished")),
   );
 
   return KinEventQueue.of({ enqueue, claim, release, finish, requeueUnfinished });
