@@ -243,6 +243,10 @@ it.effect("serves real WS sends, subscriptions and afterSeq resume with org isol
         "kin.chats.createDirect",
         client["kin.chats.createDirect"]({ orgId: foreignOrg, agentId: KinAgentId.make("lead") }),
       ],
+      [
+        "kin.chats.createDirect/agent",
+        client["kin.chats.createDirect"]({ orgId: person.orgId, agentId: foreignAgentId }),
+      ],
       ["kin.chat.subscribe", Stream.runHead(client["kin.chat.subscribe"]({ chatId: foreignChat }))],
       [
         "kin.chat.history",

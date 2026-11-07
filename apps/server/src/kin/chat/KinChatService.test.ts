@@ -820,7 +820,6 @@ describe("KinChatService", () => {
         });
         assert.strictEqual((yield* Queue.take(updates))._tag, "snapshot");
         yield* monitored.leaveChat(person, member);
-        assert.strictEqual(published.length, 2);
         const cancelled = Option.getOrThrow(yield* repo.getWaiting(waiting));
         assert.strictEqual(cancelled.resolution, "cancelled");
         const markerChat = yield* repo.createChat({
@@ -836,6 +835,7 @@ describe("KinChatService", () => {
         });
         yield* hub.publish({ type: "chat.created", orgId: other.orgId, chat: markerChat });
         assert.deepStrictEqual(yield* Queue.take(updates), { _tag: "waiting", item: cancelled });
+        assert.strictEqual(published.length, 2);
         assert.strictEqual((yield* Queue.take(updates))._tag, "chat");
         assert.deepStrictEqual(yield* Queue.take(chatEvents), {
           _tag: "member",
