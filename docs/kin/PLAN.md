@@ -62,25 +62,7 @@ APPR-9 → TRIG-5 is on the critical path. If it holds lane A up, settle the tri
 
 ## Starting the teammate's Claude Code
 
-Paste this as the first message in a Claude Code session in a fresh checkout of `kin`:
-
-```markdown
-You're working on Kin, a fork of T3 Code. Read docs/kin/KT.md, then docs/kin/PLAN.md, then the spec for your task.
-
-I own lane B in PLAN.md: approvals (specs/approvals.md), the mobile app (specs/mobile.md), BRAND-1 and TRIG-19.
-
-Today's task: <ID>. Do only that task:
-
-1. Read its section in the spec, and every T3 file it cites.
-2. Create the branch kin-<id>-<slug> from kin, and push it to my fork of GLDRoger/t3code.
-3. Open a draft PR right away to claim it:
-   gh pr create --repo GLDRoger/t3code --base kin --draft --title "<ID>: <title>"
-4. Build what the task's "What" and "Files" say, and nothing more. Its "Done when" is the acceptance test.
-5. Run `vp run check:changed upstream/main` and the task's own test. Put the commands and their results in the PR under Why / How / Tests.
-6. If the spec is wrong, fix the spec in the same PR and say so.
-
-Stay in lane B's folders: apps/server/src/kin/approvals and push, apps/mobile/src/features/chats, apps/mobile/modules/kin-approval-key, branding/, and scripts/kin-brand.ts, kin-github-app.ts and kin-rulesets.ts. Shared places are a new migration file of your own in apps/server/src/kin/persistence/migrations, and your own contract file (packages/contracts/src/kinApprovals.ts). Never add a way for an agent to approve, merge or change permissions.
-```
+Lane B runs from one orchestrator session that hands each task to its own subagent. The setup steps and the startup prompt are in [prompts/lane-b-orchestrator.md](prompts/lane-b-orchestrator.md).
 
 ## How to take a task
 
