@@ -20,7 +20,7 @@ export default Effect.gen(function* () {
     )
   `;
   yield* sql`
-    CREATE INDEX idx_kin_triggers_due ON kin_triggers(next_run_at, trigger_id)
+    CREATE INDEX idx_kin_triggers_due ON kin_triggers(next_run_at, org_id, trigger_id)
     WHERE enabled = 1 AND next_run_at IS NOT NULL
   `;
   yield* sql`
