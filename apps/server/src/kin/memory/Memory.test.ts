@@ -325,14 +325,21 @@ it.effect(
         fixtureItem({
           id: "unread",
           title: "Never opened fixture",
+          due: "2026-11-21T19:00:00.000Z",
           recorded_at: "2026-11-14T00:00:00.000Z",
         }),
       );
       repository.files.set("deferrals/unreadable.md", "unreadable fixture");
       repository.files.set("deferrals/broken.md", "---\nid: [\n---\n");
       const program = Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+          INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary, dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+          VALUES (${orgA}, 'Asia/Kolkata', '08:30', '18:30', '02:00', 0, 5, '12:00', '{"from":"22:00","to":"07:00"}')
+        `;
         const memory = yield* Memory.Memory;
         yield* memory.rebuildIndex(orgA);
+        expect(yield* memory.readIndex(orgA)).not.toContain("## Due in 7 days");
         expect(yield* memory.readIndex(orgA)).toContain("As of 2026-11-14T00:00:00.000Z");
         expect(yield* memory.readIndex(orgA)).toContain("⚠ review");
         const counts = repository.counts();

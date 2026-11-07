@@ -264,12 +264,14 @@ All are plain code. They write memory only through the LEAD queue as code-only e
 **`review_by` defaults** are filled at write time by `freshness.ts`:
 
 - person: +90 days;
-- objective: next milestone date;
+- objective: next milestone date supplied by the writer, falling back to `due`, then null;
 - commitment and deferral: `due`;
 - decision: null;
 - claim: +30 days.
 
 **`INDEX.md` is built by code**, not by the model (`buildIndex.ts`), from the front-matter cache. It has at most 200 lines and an `As of <ISO>` first line. Sections: Waiting on owner, due in 7 days, open objectives, open commitments, overdue (flagged `⚠ review`). Items flagged misleading drop to the end with a mark. Items unread for 8 weeks are left out, using last-read timestamps that LEAD's Memory read path records in Kin's DB (`kin_memory_reads`), not in git. Never-read items use `recorded_at` as the baseline.
+
+The builder takes item heads (optionally marked `misleading` by the caller), last-read integer milliseconds, caller-supplied `now` and the owner's IANA zone. Each item appears once, in the first matching section; open, valid `on_due: ask` items mean Waiting on owner. Due in 7 days includes today through the seventh following owner-calendar date (exclusive midnight of day 8); front-matter date-only values still mean UTC midnight. Other items remain in Other memory; misleading items go last. Within each section, order is due, review date (missing dates last), id, path, then title, using ordinal string order. Overdue due dates on open items and overdue review dates are flagged. The cap includes headings and the omitted-item count. Memory reads the owner's zone from `kin_trigger_settings`, using UTC only before settings exist. Freshness defaults are a pure helper for LEAD-3 to apply only when `review_by` was omitted; explicit null is preserved.
 
 **Contradiction checks** at write time are LEAD's (Memory writer). Dreams list the ones they find.
 

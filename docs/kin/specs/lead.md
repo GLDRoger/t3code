@@ -372,7 +372,7 @@ Writer rules, enforced in code on `stage`:
 - Paths: only `objectives/`, `commitments/`, `deferrals/`, `decisions/`, `people/`, `claims/` and `journal/`. `rules.md` is refused. `INDEX.md` is written only by `rebuildIndex`. `README.md` is never touched.
 - No deletes. `invalidate` sets `invalid_at`; `supersede` sets the old item's `superseded_by` and `status: superseded` and creates the new one.
 - Provenance comes from the event, not the model. The writer looks up `sourceEventId` in the current batch and sets `said_by`, `source` and `trust` from the event's `provenance`. Owner → `owner`, member → `member`, webhook or outside text → `external`, worker suggestion → `agent`. The lead may lower trust but never raise it. A member's statement that reads like a rule is stored under `claims/`.
-- `review_by` defaults by kind: person 90 days, commitment and deferral at `due`, decision `null`, objective and claim 30 days unless given.
+- `review_by` defaults by kind: person 90 days, commitment and deferral at `due`, decision `null`, claim 30 days; objective at the next milestone date (falling back to `due`, then `null`) unless given.
 - Contradictions: if an open item of the same kind shares a link or id and says something different, and `supersedes` was not passed, `stage` fails with `MemoryConflict { existingId }`. The lead then supersedes (same source, newer) or posts a question to the owner.
 - Secret scan: before commit, the staged diff goes through `MemorySecretScan.check` (triggers spec). A hit refuses the whole commit, keeps the journal line "Commit refused: possible secret in <path>", and tells the owner.
 
@@ -394,7 +394,7 @@ The read side pins the server-owned writer repository’s HEAD at wake-up (or fi
 
 `readItem` best-effort records integer-millisecond last-read times in Kin’s `kin_memory_reads` table, keyed by organization and item id so moves preserve history. Failed history writes are logged without failing the read. Never-read items use `recorded_at` as the baseline; index generation and queries do not count as reading an item. At eight weeks unread, items leave only the index, not search or git. Rebuilds use original heads, cap the index at 200 physical lines including the `As of <ISO>` first line, and flag invalid and overdue items. TRIG-12 extends this builder with sections, ordering and freshness defaults; no writer methods or automatic defaults are part of LEAD-2.
 
-The generated index is derived from HEAD, not read-checkout files; committing it belongs to LEAD-3 or TRIG-12, not LEAD-2.
+The generated index is derived from HEAD, not read-checkout files; LEAD-3 commits it; TRIG-12 only builds it, without a git write.
 
 ### The journal
 

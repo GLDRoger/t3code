@@ -25,6 +25,7 @@ export class MemoryCache extends Context.Service<
       orgId: KinOrgId,
       id: KinMemoryItemId,
     ) => Effect.Effect<void, MemoryHistoryError>;
+    readonly ownerTimeZone: (orgId: KinOrgId) => Effect.Effect<string, MemoryHistoryError>;
     readonly lastReads: (
       orgId: KinOrgId,
     ) => Effect.Effect<Readonly<Record<string, number>>, MemoryHistoryError>;
@@ -45,6 +46,15 @@ const make = Effect.gen(function* () {
         Effect.mapError(toPersistenceSqlError("MemoryCache.read")),
         Effect.mapError((cause) => new MemoryHistoryError({ orgId, cause })),
       );
+    }),
+    ownerTimeZone: Effect.fn("MemoryCache.ownerTimeZone")(function* (orgId) {
+      const rows = yield* sql<{ time_zone: string }>`
+        SELECT time_zone FROM kin_trigger_settings WHERE org_id = ${orgId} ORDER BY org_id
+      `.pipe(
+        Effect.mapError(toPersistenceSqlError("MemoryCache.ownerTimeZone")),
+        Effect.mapError((cause) => new MemoryHistoryError({ orgId, cause })),
+      );
+      return rows[0]?.time_zone ?? "UTC";
     }),
     lastReads: Effect.fn("MemoryCache.lastReads")(function* (orgId) {
       const rows = yield* sql<{ item_id: string; last_read_at: number }>`
