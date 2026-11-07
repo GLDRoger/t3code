@@ -528,6 +528,7 @@ it.live.each([
         yield* git(paths.writer, ["config", "filter.attack.clean", script]);
         yield* fs.writeFileString(`${paths.writer}/.git/info/attributes`, "*.md filter=attack\n");
         yield* git(paths.writer, ["config", "remote.origin.receivepack", script]);
+        yield* git(paths.writer, ["config", "uploadpack.packObjectsHook", script]);
         yield* memory.prepareWakeup(orgId);
         expect(yield* fs.exists(marker)).toBe(false);
       }

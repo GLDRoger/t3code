@@ -582,7 +582,12 @@ it.effect(
               yield* sql`UPDATE kin_trigger_settings SET time_zone = ${row.zone} WHERE org_id = ${orgA}`;
             expect(yield* cache.readOwnerTimeZone(orgA)).toEqual(row.expected);
             expect(yield* cache.readOwnerTimeZone(orgB)).toEqual({ _tag: "missing" });
-            repository.commit();
+            yield* memory.record(
+              orgA,
+              "main",
+              yield* memory.anchor(orgA, "main"),
+              repository.commit(),
+            );
             yield* memory.prepareWakeup(orgA);
             if (row.expected._tag !== "zone") expect(yield* memory.readIndex(orgA)).toBe(utcIndex);
           }
