@@ -34,6 +34,7 @@ export class KinTriggerFireConflict extends Schema.TaggedError<KinTriggerFireCon
       "inbox_not_inserted",
       "invalid_fire_id",
       "invalid_next_run",
+      "identity_conflict",
     ]),
   },
 ) {}
@@ -48,6 +49,15 @@ const TriggerRow = Schema.Struct({
   createdAt: Schema.DateTimeUtcFromMillis,
   updatedAt: Schema.DateTimeUtcFromMillis,
 });
+const DueCursor = Schema.Struct({ nextRunAt: NonNegativeInt, orgId: KinOrgId, id: KinTriggerId });
+const decodeCursor = Schema.decodeUnknownEffect(DueCursor);
+const PutTrigger = KinTrigger.check(
+  Schema.makeFilter((value) => !value.id.startsWith("gh:") || "Reserved webhook prefix."),
+);
+const decodePutTrigger = Schema.decodeEffect(PutTrigger);
+const decodeInboxRow = Schema.decodeUnknownEffect(
+  Schema.Struct({ payload: Schema.fromJsonString(KinTriggerFired) }),
+);
 const Scope = Schema.Struct({ orgId: KinOrgId, id: KinTriggerId });
 
 export class KinTriggerStore extends Context.Service<
@@ -63,6 +73,7 @@ export class KinTriggerStore extends Context.Service<
     readonly listDue: (
       now: number,
       limit: number,
+      after?: typeof DueCursor.Type,
     ) => Effect.Effect<ReadonlyArray<KinTrigger>, StoreError>;
     readonly fire: (
       event: KinTriggerFired,
@@ -139,7 +150,7 @@ const make = Effect.gen(function* () {
   return KinTriggerStore.of({
     put: Effect.fn("KinTriggerStore.put")(
       function* (trigger) {
-        const value = yield* decodeTrigger({ ...trigger, lastFireId: null });
+        const value = yield* decodePutTrigger({ ...trigger, lastFireId: null });
         const subject = yield* encodeSubject(value.subject);
         const schedule = yield* encodeSchedule(value.schedule);
         const nextRunAt = value.nextRunAt === null ? null : yield* epoch(value.nextRunAt);
@@ -183,17 +194,18 @@ const make = Effect.gen(function* () {
       Effect.mapError(toPersistenceOrDecodeError("KinTriggerStore.delete")),
     ),
     listDue: Effect.fn("KinTriggerStore.listDue")(
-      function* (now, limit) {
+      function* (now, limit, after) {
         const at = yield* decodeMillis(now);
         const count = yield* decodeLimit(limit);
         const triggers: KinTrigger[] = [];
-        let offset = 0;
+        let cursor = after === undefined ? undefined : yield* decodeCursor(after);
         while (triggers.length < count) {
           // Spans orgs for the scheduler tick; `fire` rechecks the org.
-          const rows = yield* sql`
+          const rows = yield* sql<typeof DueCursor.Type>`
             SELECT ${columns} FROM kin_triggers
             WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ${at}
-            ORDER BY next_run_at, trigger_id, org_id LIMIT ${count} OFFSET ${offset}
+            ${cursor === undefined ? sql`` : sql`AND (next_run_at, org_id, trigger_id) > (${cursor.nextRunAt}, ${cursor.orgId}, ${cursor.id})`}
+            ORDER BY next_run_at, org_id, trigger_id LIMIT ${count}
           `.pipe(NodeSqliteClient.readOnly);
           for (const row of rows) {
             const decoded = yield* Effect.result(
@@ -207,7 +219,7 @@ const make = Effect.gen(function* () {
             if (triggers.length === count) break;
           }
           if (rows.length < count) break;
-          offset += rows.length;
+          cursor = yield* decodeCursor(rows[rows.length - 1]);
         }
         return triggers;
       },
@@ -236,9 +248,21 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           // Pending inbox rows deduplicate even after the 30-day fire ledger expires.
           const existing = yield* sql`
-            SELECT fire_id FROM kin_trigger_inbox
+            SELECT payload_json AS payload FROM kin_trigger_inbox
             WHERE org_id = ${value.orgId} AND fire_id = ${value.fireId}
           `;
+          if (existing[0]) {
+            const previous = yield* decodeInboxRow(existing[0]);
+            if (
+              previous.payload.payload.kind !== "time" ||
+              previous.payload.payload.triggerId !== triggerId
+            ) {
+              return yield* new KinTriggerFireConflict({
+                orgId: value.orgId,
+                reason: "identity_conflict",
+              });
+            }
+          }
           let duplicate = existing.length !== 0;
           if (!duplicate) {
             const inserted = yield* sql`
@@ -266,7 +290,7 @@ const make = Effect.gen(function* () {
           UPDATE kin_triggers SET
             next_run_at = CASE WHEN json_extract(schedule_json, '$.type') = 'once' THEN NULL
               ELSE ${nextAt} END,
-            last_fire_id = ${value.fireId}, updated_at = ${firedAt}
+            last_fire_id = ${value.fireId}, updated_at = max(updated_at, ${firedAt})
           WHERE org_id = ${value.orgId} AND trigger_id = ${triggerId}
             AND enabled = 1 AND next_run_at = ${dueAt}
           RETURNING trigger_id

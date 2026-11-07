@@ -100,6 +100,9 @@ describe("KinTriggerStore", () => {
           assert.deepStrictEqual(yield* store.get(orgA, value.id), value);
         }
       }
+      for (const id of ["gh:", "gh:trigger", "gh:org-a:delivery"]) {
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(store.put(trigger(id)))));
+      }
       yield* store.delete(orgB, value.id);
       const changed = { ...value, enabled: false };
       yield* store.put(changed);
@@ -156,6 +159,31 @@ describe("KinTriggerStore", () => {
         (yield* store.listDue(now, 2)).map((row) => String(row.id)),
         ["past", "boundary"],
       );
+      const firstPage = yield* store.listDue(now + 1, 2);
+      assert.deepStrictEqual(
+        firstPage.map((row) => String(row.id)),
+        ["past", "boundary"],
+      );
+      const past = trigger("past");
+      yield* store.fire(
+        { ...fire(past, `past:${now - 1}`), dueAt: "2026-11-06T23:59:59.999Z", lateByMs: 1 },
+        null,
+      );
+      assert.deepStrictEqual(
+        (yield* store.listDue(now + 1, 2, {
+          nextRunAt: now,
+          orgId: orgB,
+          id: decodeTriggerId("boundary"),
+        })).map((row) => String(row.id)),
+        ["future"],
+      );
+      const plan = yield* sql<{ detail: string }>`EXPLAIN QUERY PLAN
+        SELECT trigger_id FROM kin_triggers
+        WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ${now}
+          AND (next_run_at, org_id, trigger_id) > (${now - 1}, ${orgA}, 'past')
+        ORDER BY next_run_at, org_id, trigger_id LIMIT 2`;
+      assert.isTrue(plan.some((row) => row.detail.includes("idx_kin_triggers_due")));
+      assert.isFalse(plan.some((row) => row.detail.includes("TEMP B-TREE")));
       for (const invalid of [NaN, 1.5, Infinity, -1, Number.MAX_SAFE_INTEGER + 1]) {
         assert.isTrue(Exit.isFailure(yield* Effect.exit(store.listDue(invalid, 100))));
         assert.isTrue(Exit.isFailure(yield* Effect.exit(store.pruneFires(invalid))));
@@ -177,7 +205,7 @@ describe("KinTriggerStore", () => {
             ...value,
             schedule: type === "once" ? { type, runAt: timestamp } : value.schedule,
           };
-          yield* store.put(scheduled);
+          yield* store.put({ ...scheduled, updatedAt: "2026-11-08T00:00:00.000Z" });
           const event = fire(value, `${type}:${now}`);
           const next = "2026-11-07T00:01:00.000Z";
           const results = yield* Effect.all([store.fire(event, next), store.fire(event, next)], {
@@ -187,6 +215,7 @@ describe("KinTriggerStore", () => {
           const after = yield* store.get(orgA, value.id);
           assert.strictEqual(after?.nextRunAt, type === "once" ? null : next);
           assert.strictEqual(after?.lastFireId, event.fireId);
+          assert.strictEqual(after?.updatedAt, "2026-11-08T00:00:00.000Z");
           assert.isDefined(after);
           const untrusted = { ...after!, lastFireId: decodeFireId("unknown") };
           yield* store.put(untrusted);
@@ -273,6 +302,42 @@ describe("KinTriggerStore", () => {
         const sql = yield* SqlClient.SqlClient;
         const value = trigger();
         yield* store.put(value);
+        for (const payload of [
+          { kind: "github", sourceId: "source", scheduledTaskId: "task", deliveryId: "delivery" },
+          { kind: "time", triggerId: "different", subject: value.subject },
+        ]) {
+          yield* sql`INSERT INTO kin_trigger_inbox (org_id, fire_id, payload_json, received_at)
+            VALUES (${orgA}, ${fire(value).fireId}, ${JSON.stringify({ ...fire(value), payload })}, ${now})`;
+          const result = yield* Effect.flip(store.fire(fire(value), null));
+          assert.strictEqual(result._tag, "KinTriggerFireConflict");
+          if (result._tag === "KinTriggerFireConflict")
+            assert.strictEqual(result.reason, "identity_conflict");
+          assert.deepStrictEqual(yield* store.get(orgA, value.id), value);
+          yield* sql`DELETE FROM kin_trigger_inbox`;
+        }
+        const legacy = trigger("gh:org-a:delivery");
+        yield* sql`UPDATE kin_triggers SET trigger_id = ${legacy.id} WHERE org_id = ${orgA}`;
+        const collision = fire(legacy, `${legacy.id}:${now}`);
+        const inbox = yield* KinTriggerInbox.KinTriggerInbox;
+        yield* inbox.put(
+          decodeFire({
+            ...collision,
+            payload: {
+              kind: "github",
+              sourceId: "source",
+              scheduledTaskId: "task",
+              deliveryId: `delivery:${now}`,
+            },
+          }),
+          now,
+        );
+        const conflict = yield* Effect.flip(store.fire(collision, null));
+        assert.strictEqual(conflict._tag, "KinTriggerFireConflict");
+        if (conflict._tag === "KinTriggerFireConflict")
+          assert.strictEqual(conflict.reason, "identity_conflict");
+        assert.deepStrictEqual(yield* store.get(orgA, legacy.id), legacy);
+        yield* sql`DELETE FROM kin_trigger_inbox`;
+        yield* sql`UPDATE kin_triggers SET trigger_id = ${value.id} WHERE org_id = ${orgA}`;
         for (const candidate of [
           { ...fire(value), dueAt: "2026-11-06T00:00:00.000Z" },
           fire(trigger("missing")),
