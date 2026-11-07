@@ -255,7 +255,7 @@ All are plain code. They write memory only through the LEAD queue as code-only e
 - decision: null;
 - claim: +30 days.
 
-**`INDEX.md` is built by code**, not by the model (`buildIndex.ts`), from the front-matter cache. It has at most 200 lines and an `As of <ISO>` first line. Sections: Waiting on owner, due in 7 days, open objectives, open commitments, overdue (flagged `⚠ review`). Items flagged misleading drop to the end with a mark. Items unread for 8 weeks are left out, using `lastReadAt` that LEAD's Memory read path records in Kin's DB, not in git.
+**`INDEX.md` is built by code**, not by the model (`buildIndex.ts`), from the front-matter cache. It has at most 200 lines and an `As of <ISO>` first line. Sections: Waiting on owner, due in 7 days, open objectives, open commitments, overdue (flagged `⚠ review`). Items flagged misleading drop to the end with a mark. Items unread for 8 weeks are left out, using last-read timestamps that LEAD's Memory read path records in server-local history, not in git (LEAD-2 uses atomic sidecar files; a DB-backed store can replace that cache operation). Never-read items use `recorded_at` as the baseline.
 
 **Contradiction checks** at write time are LEAD's (Memory writer). Dreams list the ones they find.
 
