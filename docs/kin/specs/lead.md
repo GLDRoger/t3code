@@ -102,7 +102,7 @@ export const KinEvent = Schema.Union([
   }),
   Schema.TaggedStruct("routine", {
     ...EventBase,
-    routine: Schema.Literals(["morning", "evening", "weekly_check"]),
+    routine: Schema.Literals(["morning_brief", "evening_summary", "owner_check"]),
   }),
   Schema.TaggedStruct("watchdog", {
     ...EventBase,

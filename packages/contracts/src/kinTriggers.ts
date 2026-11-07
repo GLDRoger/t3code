@@ -8,10 +8,27 @@ import {
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { KinOrgId, KinPersonId } from "./kinChat.ts";
-import { MIN_SCHEDULED_TASK_INTERVAL_MS, ScheduledTaskWebhookDeliveryId } from "./scheduledTask.ts";
+import { ScheduledTaskUpsertSchedule, ScheduledTaskWebhookDeliveryId } from "./scheduledTask.ts";
 
-const TimeOfDay = TrimmedNonEmptyString.check(Schema.isPattern(/^([01]?\d|2[0-3]):([0-5]\d)$/));
+const [interval, fixedTime, once] = ScheduledTaskUpsertSchedule.members;
+const TimeOfDay = fixedTime.fields.timeOfDay;
 const Weekday = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 6 }));
+
+const TimeZone = TrimmedNonEmptyString.check(
+  Schema.makeFilter((timeZone) => {
+    try {
+      const resolved = new Intl.DateTimeFormat("en", { timeZone }).resolvedOptions().timeZone;
+      return !/^[+-]/.test(resolved) || "Expected an IANA time zone.";
+    } catch {
+      return "Expected an IANA time zone.";
+    }
+  }),
+);
+
+export const KinTriggerFireId = TrimmedNonEmptyString.pipe(Schema.brand("KinTriggerFireId"));
+export type KinTriggerFireId = typeof KinTriggerFireId.Type;
+export const KinWebhookSourceId = TrimmedNonEmptyString.pipe(Schema.brand("KinWebhookSourceId"));
+export type KinWebhookSourceId = typeof KinWebhookSourceId.Type;
 
 export const KinTriggerId = TrimmedNonEmptyString.pipe(Schema.brand("KinTriggerId"));
 export type KinTriggerId = typeof KinTriggerId.Type;
@@ -35,28 +52,21 @@ export const KinWatchdog = Schema.Literals([
 ]);
 export type KinWatchdog = typeof KinWatchdog.Type;
 
-export const KinTriggerSchedule = Schema.Union([
-  Schema.Struct({ type: Schema.Literal("once"), runAt: IsoDateTime }),
-  Schema.Struct({
-    type: Schema.Literal("fixed_time"),
-    timeOfDay: TimeOfDay,
-    weekdays: Schema.optional(Schema.Array(Weekday)),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("interval"),
-    everyMs: Schema.Int.check(Schema.isGreaterThanOrEqualTo(MIN_SCHEDULED_TASK_INTERVAL_MS)),
-  }),
-]);
+export const KinTriggerSchedule = Schema.Union([interval, fixedTime, once]);
 export type KinTriggerSchedule = typeof KinTriggerSchedule.Type;
 
 export const KinTriggerSubject = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("deferral"),
-    itemId: Schema.String,
+    itemId: TrimmedNonEmptyString,
     phase: Schema.Literals(["heads_up", "due"]),
   }),
-  Schema.Struct({ type: Schema.Literal("reminder"), itemId: Schema.String }),
-  Schema.Struct({ type: Schema.Literal("followup"), itemId: Schema.String, person: KinPersonId }),
+  Schema.Struct({ type: Schema.Literal("reminder"), itemId: TrimmedNonEmptyString }),
+  Schema.Struct({
+    type: Schema.Literal("followup"),
+    itemId: TrimmedNonEmptyString,
+    person: KinPersonId,
+  }),
   Schema.Struct({ type: Schema.Literal("routine"), routine: KinRoutine }),
   Schema.Struct({ type: Schema.Literal("watchdog"), watchdog: KinWatchdog }),
 ]);
@@ -67,17 +77,17 @@ export const KinTrigger = Schema.Struct({
   orgId: KinOrgId,
   subject: KinTriggerSubject,
   schedule: KinTriggerSchedule,
-  timeZone: Schema.String,
+  timeZone: TimeZone,
   enabled: Schema.Boolean,
   nextRunAt: Schema.NullOr(IsoDateTime),
-  lastFireId: Schema.NullOr(Schema.String),
+  lastFireId: Schema.NullOr(KinTriggerFireId),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
 export type KinTrigger = typeof KinTrigger.Type;
 
 export const KinTriggerFired = Schema.Struct({
-  fireId: Schema.String,
+  fireId: KinTriggerFireId,
   orgId: KinOrgId,
   dueAt: IsoDateTime,
   firedAt: IsoDateTime,
@@ -90,7 +100,7 @@ export const KinTriggerFired = Schema.Struct({
     }),
     Schema.Struct({
       kind: Schema.Literal("github"),
-      sourceId: Schema.String,
+      sourceId: KinWebhookSourceId,
       scheduledTaskId: ScheduledTaskId,
       deliveryId: ScheduledTaskWebhookDeliveryId,
     }),
@@ -99,7 +109,7 @@ export const KinTriggerFired = Schema.Struct({
 export type KinTriggerFired = typeof KinTriggerFired.Type;
 
 export const KinWebhookSource = Schema.Struct({
-  id: Schema.String,
+  id: KinWebhookSourceId,
   orgId: KinOrgId,
   repo: Schema.String,
   scheduledTaskId: ScheduledTaskId,
@@ -112,7 +122,7 @@ export type KinWebhookSource = typeof KinWebhookSource.Type;
 
 export const KinGithubEvent = Schema.Struct({
   orgId: KinOrgId,
-  deliveryId: Schema.String,
+  deliveryId: TrimmedNonEmptyString,
   event: Schema.String,
   action: Schema.NullOr(Schema.String),
   repo: Schema.String,
@@ -128,7 +138,7 @@ export type KinGithubEvent = typeof KinGithubEvent.Type;
 
 export const KinTriggerSettings = Schema.Struct({
   orgId: KinOrgId,
-  timeZone: Schema.String,
+  timeZone: TimeZone,
   morningBrief: TimeOfDay,
   eveningSummary: TimeOfDay,
   dream: TimeOfDay,

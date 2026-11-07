@@ -80,6 +80,8 @@ type SchemaName = {
 
 const samples = {
   KinTriggerId: [Kin.KinTriggerId, ["trigger-1"]],
+  KinTriggerFireId: [Kin.KinTriggerFireId, [fire.fireId]],
+  KinWebhookSourceId: [Kin.KinWebhookSourceId, [source.id]],
   KinRoutine: [Kin.KinRoutine, Kin.KinRoutine.literals],
   KinWatchdog: [Kin.KinWatchdog, Kin.KinWatchdog.literals],
   KinTriggerSchedule: [Kin.KinTriggerSchedule, schedules],
@@ -129,7 +131,7 @@ const samples = {
       },
     ],
   ],
-  KinTriggerSettings: [Kin.KinTriggerSettings, [settings]],
+  KinTriggerSettings: [Kin.KinTriggerSettings, [settings, { ...settings, timeZone: "UTC" }]],
 } satisfies Record<SchemaName, readonly [Schema.Codec<unknown>, ReadonlyArray<unknown>]>;
 
 const rejections = [
@@ -146,6 +148,39 @@ const rejections = [
     schema: Kin.KinTriggerSchedule,
     value: { type: "fixed_time", timeOfDay },
   })),
+  ...["", "next friday", "2026-11-13T09:00", "2026-02-30T09:00:00Z"].map((runAt) => ({
+    schema: Kin.KinTriggerSchedule,
+    value: { type: "once", runAt },
+  })),
+  ...["", "Not/AZone", "+05:30"].flatMap((timeZone) => [
+    { schema: Kin.KinTrigger, value: { ...trigger, timeZone } },
+    { schema: Kin.KinTriggerSettings, value: { ...settings, timeZone } },
+  ]),
+  { schema: Kin.KinTriggerFired, value: { ...fire, fireId: "" } },
+  { schema: Kin.KinTrigger, value: { ...trigger, lastFireId: "" } },
+  { schema: Kin.KinWebhookSource, value: { ...source, id: "" } },
+  {
+    schema: Kin.KinTriggerFired,
+    value: {
+      ...fire,
+      payload: {
+        kind: "github",
+        sourceId: "",
+        scheduledTaskId: "scheduled-task-1",
+        deliveryId: "delivery-1",
+      },
+    },
+  },
+  ...subjects
+    .filter((subject) => "itemId" in subject)
+    .map((subject) => ({
+      schema: Kin.KinTriggerSubject,
+      value: { ...subject, itemId: "" },
+    })),
+  { schema: Kin.KinRoutine, value: "weekly_check" },
+  { schema: Kin.KinWatchdog, value: "unknown" },
+  { schema: Kin.KinWebhookSource, value: { ...source, status: "unknown" } },
+  { schema: Kin.KinGithubEvent, value: { ...githubEvent, deliveryId: "" } },
   { schema: Kin.KinTriggerSchedule, value: { type: "once" } },
   { schema: Kin.KinTriggerSchedule, value: { type: "webhook" } },
   ...[-1, 0.5].map((lateByMs) => ({ schema: Kin.KinTriggerFired, value: { ...fire, lateByMs } })),
