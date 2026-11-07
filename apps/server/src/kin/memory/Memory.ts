@@ -720,6 +720,15 @@ const make = Effect.gen(function* () {
 
   const prepare = Effect.fn("Memory.prepare")(function* (orgId: KinOrgId) {
     const paths = yield* ensureCheckouts(orgId);
+    for (const marker of ["rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD"]) {
+      if (yield* io(orgId, "sync", fs.exists(path.join(paths.writer, ".git", marker))))
+        return yield* new MemoryCheckoutInvalid({
+          orgId,
+          operation: "sync",
+          path: paths.writer,
+          reason: `Writer has an unfinished git operation (${marker}); manual recovery required`,
+        });
+    }
     const fetched = yield* git(orgId, paths.writer, ["fetch", "origin"]).pipe(Effect.result);
     if (fetched._tag === "Failure") {
       yield* Effect.logWarning("Memory sync unavailable; using local writer HEAD", { orgId });

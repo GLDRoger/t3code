@@ -386,7 +386,7 @@ Front matter matches the kin-memory README, including snake_case keys. Date-only
 
 LEAD-2: the front matter parser must use YAML’s core or JSON schema; YAML 1.1 turns `review_by: 2026-11-13` into a Date.
 
-The production `MemoryConfig` layer derives its server-owned base from `ServerConfig.stateDir`, using `${stateDir}/kin/<orgId>/memory` and `memory-read` (organization ids are path-encoded). Tests may supply an isolated base and relative paths. Paths must not overlap or escape that base. `ensureCheckouts` clones or fetches; `prepareWakeup` fast-forwards the writer and force-refreshes the disposable detached read worktree, including generated files. Project bootstrap belongs to the wake-up runner, not Memory.
+The production `MemoryConfig` layer derives its server-owned base from `ServerConfig.stateDir`, using `${stateDir}/kin/<orgId>/memory` and `memory-read` (organization ids are path-encoded). Tests may supply an isolated base and relative paths. Paths must not overlap or escape that base. `ensureCheckouts` clones a missing writer and validates an existing one; `prepareWakeup` refuses a writer with an unfinished rebase, merge or cherry-pick, syncs it with `pull --rebase` and force-refreshes the disposable detached read worktree, including generated files. Project bootstrap belongs to the wake-up runner, not Memory.
 
 `ensureCheckouts` uses the server user’s git credentials: on the Kin host, the bot or GitHub App identity.
 

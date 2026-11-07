@@ -680,7 +680,7 @@ it.live("uses filesystem identity for a case-mismatched base without recloning",
   ),
 );
 
-it.live.each(["diverged", "conflict", "network down", "dirty writer"])(
+it.live.each(["diverged", "conflict", "network down", "dirty writer", "rebase in progress"])(
   "syncs the writer with $0",
   (scenario) =>
     Effect.gen(function* () {
@@ -700,15 +700,27 @@ it.live.each(["diverged", "conflict", "network down", "dirty writer"])(
         yield* fs.writeFileString(`${writer}/rules.md`, "Local invented rules\n");
         const local = yield* commit(writer);
         yield* fs.writeFileString(
-          `${source}/${scenario === "conflict" ? "rules.md" : "remote-only"}`,
+          `${source}/${scenario === "diverged" || scenario === "network down" || scenario === "dirty writer" ? "remote-only" : "rules.md"}`,
           "Remote invented edit\n",
         );
         const remote = yield* commit(source);
         if (scenario === "network down") yield* fs.rename(source, `${root}/offline`);
         if (scenario === "dirty writer")
           yield* fs.writeFileString(`${writer}/rules.md`, "Uncommitted fixture edit\n");
+        if (scenario === "rebase in progress") {
+          yield* git(writer, ["fetch", "origin"]);
+          yield* git(writer, ["rebase", "@{u}"]).pipe(Effect.ignore);
+          yield* fs.writeFileString(`${writer}/rules.md`, "Half-resolved fixture edit\n");
+        }
         const result = yield* memory.prepareWakeup(orgA).pipe(Effect.result);
-        if (scenario === "dirty writer") {
+        if (scenario === "rebase in progress") {
+          expect(result._tag).toBe("Failure");
+          if (result._tag === "Failure") expect(result.failure._tag).toBe("MemoryCheckoutInvalid");
+          expect(yield* fs.exists(`${writer}/.git/rebase-merge`)).toBe(true);
+          expect(yield* fs.readFileString(`${writer}/rules.md`)).toBe(
+            "Half-resolved fixture edit\n",
+          );
+        } else if (scenario === "dirty writer") {
           expect(result._tag).toBe("Failure");
           if (result._tag === "Failure") expect(result.failure._tag).toBe("MemoryError");
           expect(yield* git(writer, ["rev-parse", "HEAD"])).toBe(local);
