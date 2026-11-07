@@ -107,6 +107,8 @@ describe("Kin migrations", () => {
       `;
         assert.deepStrictEqual(indexes, [
           { name: "idx_kin_agents_org_agent" },
+          { name: "idx_kin_chat_members_agent" },
+          { name: "idx_kin_chat_members_person" },
           { name: "idx_kin_chats_org_chat" },
           { name: "idx_kin_events_dedupe" },
           { name: "idx_kin_events_queue" },
@@ -117,6 +119,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_waiting_open_widget_person" },
           { name: "idx_kin_waiting_person_resolved_at" },
           { name: "idx_kin_wakeups_running_org" },
+          { name: "idx_kin_widgets_chat_message" },
           { name: "idx_kin_widgets_type_closed_at" },
           { name: "idx_kin_workers_status" },
         ]);
