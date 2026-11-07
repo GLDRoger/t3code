@@ -113,6 +113,10 @@ export class Memory extends Context.Service<
     readonly prepareWakeup: (
       orgId: KinOrgId,
     ) => Effect.Effect<{ head: string; indexAsOf: DateTime.Utc }, MemoryFailure>;
+    readonly readPromptSnapshot: (
+      orgId: KinOrgId,
+      expectedHead: string,
+    ) => Effect.Effect<{ readonly rules: string; readonly index: string }, MemoryFailure>;
     readonly readIndex: (orgId: KinOrgId) => Effect.Effect<string, MemoryFailure>;
     readonly readRules: (orgId: KinOrgId) => Effect.Effect<string, MemoryFailure>;
     readonly readItem: (
@@ -796,6 +800,29 @@ const make = Effect.gen(function* () {
       locked(orgId, ensureCheckouts(orgId)),
     ),
     prepareWakeup: Effect.fn("Memory.prepareWakeup")((orgId) => locked(orgId, prepare(orgId))),
+    readPromptSnapshot: Effect.fn("Memory.readPromptSnapshot")((orgId, expectedHead) =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const snapshot = yield* load(orgId);
+          if (snapshot.head !== expectedHead)
+            return yield* new MemoryError({
+              orgId,
+              operation: "promptSnapshot",
+              reason: "Memory head does not match wake-up",
+            });
+          const rules = snapshot.files.get("rules.md");
+          const index = snapshot.index ?? snapshot.files.get("INDEX.md") ?? "";
+          if (rules === undefined)
+            return yield* new MemoryError({
+              orgId,
+              operation: "promptSnapshot",
+              reason: "Missing committed prompt rules",
+            });
+          return { rules, index };
+        }),
+      ),
+    ),
     readIndex: Effect.fn("Memory.readIndex")((orgId) => locked(orgId, readFile(orgId, "INDEX.md"))),
     readRules: Effect.fn("Memory.readRules")((orgId) => locked(orgId, readFile(orgId, "rules.md"))),
     query: Effect.fn("Memory.queryLocked")((orgId, q) => locked(orgId, query(orgId, q))),
