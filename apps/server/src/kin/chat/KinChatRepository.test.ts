@@ -189,8 +189,8 @@ describe("KinChatRepository", () => {
         assert.deepStrictEqual(yield* repo.listMembersByPerson({ orgId, personId }), [owner]);
         assert.deepStrictEqual(yield* repo.listMembersByAgent({ orgId, agentId }), [agentMember]);
         assert.deepStrictEqual(Option.getOrThrow(yield* repo.getMember(scope)), owner);
-        for (const retry of [owner, { ...owner, memberId: decodeMemberId("retry-member") }]) {
-          assert.deepStrictEqual(yield* repo.addMember(retry), owner);
+        for (const retry of [owner, agentMember]) {
+          assert.deepStrictEqual(yield* repo.addMember(retry), retry);
         }
         assert.deepStrictEqual(
           yield* repo.registerAgentThread({
@@ -202,6 +202,68 @@ describe("KinChatRepository", () => {
           }),
           { orgId, agentId, threadId, startedAt: timestamp, endedAt: null },
         );
+        const secondPerson = decodePersonId("second-person");
+        yield* repo.insertPerson({
+          orgId,
+          personId: secondPerson,
+          handle: "second",
+          displayName: "Second",
+          githubLogin: null,
+          createdAt: timestamp,
+        });
+        for (const retry of [
+          { ...owner, principal: { _tag: "person", personId: secondPerson } },
+          { ...owner, memberId: decodeMemberId("retry-member") },
+          { ...agentMember, memberId: decodeMemberId("retry-agent-member") },
+          { ...agentMember, memberId },
+        ] as const) {
+          const failure = yield* Effect.flip(repo.addMember(retry));
+          assert.strictEqual(failure._tag, "KinChatError");
+          if (failure._tag === "KinChatError") assert.strictEqual(failure.reason, "not_allowed");
+        }
+        yield* repo.insertAgent({
+          orgId,
+          agentId: decodeAgentId("second"),
+          ownerPersonId: personId,
+          displayName: "Second",
+          role: "lead",
+          createdAt: timestamp,
+        });
+        const conflict = yield* Effect.flip(
+          repo.registerAgentThread({
+            orgId,
+            threadId,
+            agentId: decodeAgentId("second"),
+            startedAt: timestamp,
+            endedAt: null,
+          }),
+        );
+        assert.strictEqual(conflict._tag, "KinChatError");
+        if (conflict._tag === "KinChatError") assert.strictEqual(conflict.reason, "not_allowed");
+        const team = yield* repo.createChat({
+          ...chat,
+          chatId: decodeChatId("team"),
+          kind: "team_group",
+          directKey: null,
+        });
+        assert.deepStrictEqual(
+          yield* repo.createChat({ ...chat, chatId: team.chatId, directKey: "owner:lead" }),
+          chat,
+        );
+        const wrongChat = yield* Effect.flip(
+          repo.createChat({ ...chat, chatId: team.chatId, directKey: "new-direct-key" }),
+        );
+        assert.strictEqual(wrongChat._tag, "KinChatError");
+        if (wrongChat._tag === "KinChatError") assert.strictEqual(wrongChat.reason, "not_found");
+        assert.strictEqual(yield* repo.leaveChat({ ...scope, leftAt: later }), true);
+        assert.strictEqual(yield* repo.leaveChat({ ...scope, leftAt: timestamp }), false);
+        assert.strictEqual(
+          (yield* Effect.flip(repo.insertMessage(message("left-post"))))._tag,
+          "KinChatError",
+        );
+        assert.strictEqual(Option.getOrThrow(yield* repo.getMember(scope)).leftAt, later);
+        const rejoined = yield* repo.addMember({ ...owner, joinedAt: later });
+        assert.deepStrictEqual(rejoined, { ...owner, joinedAt: later });
         const first = yield* repo.insertMessage(message("first"));
         assert.deepStrictEqual(first, decodeMessage({ ...message("first"), seq: 1 }));
         const repeated = yield* Effect.all(
@@ -263,6 +325,20 @@ describe("KinChatRepository", () => {
           Option.getOrThrow(yield* repo.getWaiting({ orgId, waitingId })),
           waiting,
         );
+        for (const retried of yield* Effect.all(
+          Array.from({ length: 5 }, () => repo.addWaiting(waiting)),
+          { concurrency: "unbounded" },
+        ))
+          assert.strictEqual(retried, true);
+        for (const retry of [
+          { ...waiting, reason: "question" },
+          { ...waiting, messageId: null },
+          { ...waiting, createdAt: later },
+        ] as const) {
+          const failure = yield* Effect.flip(repo.addWaiting(retry));
+          assert.strictEqual(failure._tag, "KinChatError");
+          if (failure._tag === "KinChatError") assert.strictEqual(failure.reason, "not_allowed");
+        }
         assert.deepStrictEqual(yield* repo.listOpenWaiting({ orgId, personId }), [waiting]);
         assert.strictEqual(
           yield* repo.resolveWaiting({
@@ -304,6 +380,18 @@ describe("KinChatRepository", () => {
           Option.getOrThrow(yield* repo.getAgentThread({ orgId, threadId })).endedAt,
           later,
         );
+        const endedRetry = yield* Effect.flip(
+          repo.registerAgentThread({
+            orgId,
+            threadId,
+            agentId,
+            startedAt: timestamp,
+            endedAt: null,
+          }),
+        );
+        assert.strictEqual(endedRetry._tag, "KinChatError");
+        if (endedRetry._tag === "KinChatError")
+          assert.strictEqual(endedRetry.reason, "not_allowed");
         const sql = yield* SqlClient.SqlClient;
         assert.deepStrictEqual(
           yield* sql`SELECT typeof(seq) AS type FROM kin_messages WHERE org_id = ${orgId}`,
@@ -344,14 +432,15 @@ describe("KinChatRepository", () => {
   it.effect("pages history exclusively in ascending order and resumes after a seq", () =>
     Effect.gen(function* () {
       const repo = yield* seed;
-      for (let i = 1; i <= 5; i++)
+      for (let i = 1; i <= 5; i++) {
+        if (i === 4) yield* repo.insertWidget(widget);
         yield* repo.insertMessage(
           message(
             i === 3 ? "first" : `message-${i}`,
             i === 5 ? { kind: "widget_action", widgetId } : {},
           ),
         );
-      yield* repo.insertWidget(widget);
+      }
       for (const [beforeSeq, limit, seqs, hasMore] of [
         [6, 2, [4, 5], true],
         [4, 2, [2, 3], true],
@@ -377,7 +466,14 @@ describe("KinChatRepository", () => {
           "PersistenceDecodeError",
         );
       }
+      for (const limit of [0, 201, 1.5]) {
+        assert.strictEqual(
+          (yield* Effect.flip(repo.messagesAfter({ orgId, chatId, afterSeq: 0, limit })))._tag,
+          "PersistenceDecodeError",
+        );
+      }
       for (const [afterSeq, limit, expected] of [
+        [0, 200, [1, 2, 3, 4, 5]],
         [0, 2, [1, 2]],
         [2, 100, [3, 4, 5]],
         [5, 2, []],
@@ -410,6 +506,44 @@ describe("KinChatRepository", () => {
       });
       const orgA = decodeOrgId("org-a");
       yield* repo.insertOrg({ orgId: orgA, name: "A", createdAt: timestamp });
+      const otherPerson = decodePersonId("other-owner");
+      const otherChat = decodeChatId("other-chat");
+      const sameOrgChat = decodeChatId("same-org-chat");
+      yield* repo.createChat({ ...chat, chatId: sameOrgChat, directKey: "second-chat" });
+      yield* repo.insertPerson({
+        orgId: orgA,
+        personId: otherPerson,
+        handle: "other",
+        displayName: "Other",
+        githubLogin: null,
+        createdAt: timestamp,
+      });
+      yield* repo.createChat({ ...chat, orgId: orgA, chatId: otherChat, directKey: "other" });
+      yield* repo.insertAgent({
+        orgId,
+        agentId: decodeAgentId("other-agent"),
+        ownerPersonId: personId,
+        displayName: "Other",
+        role: "lead",
+        createdAt: timestamp,
+      });
+      for (const [id, agent] of [
+        ["ended-thread", agentId],
+        ["other-thread", decodeAgentId("other-agent")],
+      ] as const) {
+        yield* repo.registerAgentThread({
+          orgId,
+          agentId: agent,
+          threadId: decodeThreadId(id),
+          startedAt: timestamp,
+          endedAt: null,
+        });
+      }
+      yield* repo.endAgentThread({
+        orgId,
+        threadId: decodeThreadId("ended-thread"),
+        endedAt: later,
+      });
       const hidden = { ...scope, orgId: orgA };
       const sql = yield* SqlClient.SqlClient;
       for (const [id, author] of [
@@ -429,6 +563,23 @@ describe("KinChatRepository", () => {
           "agent-as-person",
           { _tag: "agent", agentId, memberId, ownerPersonId: personId, threadId },
         ],
+        ...[
+          { ownerPersonId: otherPerson, threadId },
+          { ownerPersonId: personId, threadId: decodeThreadId("unknown") },
+          { ownerPersonId: personId, threadId: decodeThreadId("ended-thread") },
+          { ownerPersonId: personId, threadId: decodeThreadId("other-thread") },
+        ].map(
+          (fields) =>
+            [
+              fields.threadId + fields.ownerPersonId,
+              {
+                _tag: "agent",
+                agentId,
+                memberId: agentMemberId,
+                ...fields,
+              },
+            ] as const,
+        ),
         ["left-member", { _tag: "human", personId, memberId }],
       ] as const) {
         if (id === "left-member")
@@ -455,8 +606,6 @@ describe("KinChatRepository", () => {
       ])
         assert.strictEqual((yield* read)._tag, "None");
       for (const read of [
-        repo.listChats(hidden),
-        repo.listPeople(hidden),
         repo.listAgents(hidden),
         repo.listMembers(hidden),
         repo.listMembersByPerson({ ...hidden, personId }),
@@ -471,7 +620,95 @@ describe("KinChatRepository", () => {
         hasMore: false,
       });
       assert.strictEqual(yield* repo.unreadCount(hidden), 0);
+      assert.deepStrictEqual(
+        (yield* repo.listChats(hidden)).map((row) => row.chatId),
+        [otherChat],
+      );
+      assert.deepStrictEqual(
+        (yield* repo.listPeople(hidden)).map((row) => row.personId),
+        [otherPerson],
+      );
+      yield* repo.insertAgent({
+        orgId: orgA,
+        agentId: decodeAgentId("org-a-agent"),
+        ownerPersonId: otherPerson,
+        displayName: "A",
+        role: "lead",
+        createdAt: timestamp,
+      });
+      for (const retry of [
+        repo
+          .registerAgentThread({
+            orgId: orgA,
+            agentId: decodeAgentId("org-a-agent"),
+            threadId,
+            startedAt: timestamp,
+            endedAt: null,
+          })
+          .pipe(Effect.asVoid),
+        repo
+          .addMember({
+            ...owner,
+            orgId: orgA,
+            chatId: otherChat,
+            principal: { _tag: "person", personId: otherPerson },
+          })
+          .pipe(Effect.asVoid),
+      ]) {
+        const failure = yield* Effect.flip(retry);
+        assert.strictEqual(failure._tag, "KinChatError");
+        if (failure._tag === "KinChatError") assert.strictEqual(failure.reason, "not_allowed");
+      }
       for (const write of [
+        ...[
+          { messageId: widget.messageId, widgetId: null },
+          { messageId: null, widgetId },
+        ].map((refs) =>
+          repo.addWaiting({
+            orgId: orgA,
+            chatId: otherChat,
+            personId: otherPerson,
+            waitingId: decodeWaitingId("cross-wait"),
+            reason: "question",
+            createdAt: timestamp,
+            resolvedAt: null,
+            resolution: null,
+            ...refs,
+          }),
+        ),
+        ...[{ replyTo: widget.messageId }, { widgetId }].map((refs) =>
+          repo.insertMessage({
+            ...message("cross-ref"),
+            orgId: orgA,
+            chatId: otherChat,
+            author: { _tag: "system" },
+            ...refs,
+          }),
+        ),
+        ...[
+          { messageId: widget.messageId, widgetId: null },
+          { messageId: null, widgetId },
+        ].map((refs) =>
+          repo.addWaiting({
+            orgId,
+            chatId: sameOrgChat,
+            personId,
+            waitingId: decodeWaitingId("cross-chat-wait"),
+            reason: "question",
+            createdAt: timestamp,
+            resolvedAt: null,
+            resolution: null,
+            ...refs,
+          }),
+        ),
+        ...[{ replyTo: widget.messageId }, { widgetId }].map((refs) =>
+          repo.insertMessage({
+            ...message("cross-chat-ref"),
+            chatId: sameOrgChat,
+            author: { _tag: "system" },
+            ...refs,
+          }),
+        ),
         repo.insertWidget({ ...widget, orgId: orgA }),
         repo.addMember({ ...owner, orgId: orgA }),
         repo.addWaiting({
@@ -536,6 +773,25 @@ describe("KinChatRepository", () => {
         ),
       ])
         yield* repo.insertMessage(input);
+      const resumedThread = decodeThreadId("resumed-thread");
+      yield* repo.registerAgentThread({
+        orgId,
+        agentId,
+        threadId: resumedThread,
+        startedAt: later,
+        endedAt: null,
+      });
+      const retry = yield* Effect.flip(
+        repo.insertMessage(
+          message("agent", {
+            author: { ...agentAuthor, threadId: resumedThread },
+            authorRole: "member",
+            intent: "answer",
+          }),
+        ),
+      );
+      assert.strictEqual(retry._tag, "KinChatError");
+      if (retry._tag === "KinChatError") assert.strictEqual(retry.reason, "not_allowed");
       assert.strictEqual(yield* repo.unreadCount(scope), 2);
       yield* Effect.all(
         [
