@@ -722,6 +722,13 @@ const make = Effect.gen(function* () {
           repo.getWidget({ orgId: identity.orgId, widgetId: input.widgetId }),
         );
         if (existing.chatId !== input.chatId) return yield* notFound;
+        if (identity._tag === "agent") {
+          const anchor = yield* requireRecord(
+            repo.getMessage({ orgId: identity.orgId, messageId: existing.messageId }),
+          );
+          if (anchor.author._tag !== "agent" || anchor.author.memberId !== member.memberId)
+            return yield* notAllowed;
+        }
         if (
           existing.type !== input.type ||
           input.revision === undefined ||

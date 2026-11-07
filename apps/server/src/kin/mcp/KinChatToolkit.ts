@@ -9,6 +9,7 @@ import {
   KinWidget,
   KinWidgetId,
   KinMessageId,
+  KinTaskCardState,
   OrchestratorMcpFailure,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -19,6 +20,7 @@ import * as Schema from "effect/Schema";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import { McpSchema, Tool, Toolkit } from "effect/ai";
 import { McpInvocationContext } from "../../mcp/McpInvocationContext.ts";
+import { ThreadManagementService } from "../../orchestration-v2/ThreadManagementService.ts";
 import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
 import { KinServer } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
@@ -40,7 +42,7 @@ const enabled = () => {
 const shared = {
   failure: Schema.Union([KinChatError, OrchestratorMcpFailure]),
   failureMode: "return" as const,
-  dependencies: [KinServer, McpInvocationContext],
+  dependencies: [KinServer, McpInvocationContext, ThreadManagementService],
 };
 const post = Tool.make("kin_chat_post", {
   ...shared,
@@ -83,13 +85,13 @@ const read = Tool.make("kin_chat_read", {
 const widget = Tool.make("kin_widget_upsert", {
   ...shared,
   description:
-    "Create a Kin widget, or update widgetId with its expected revision. replyTo applies only to creation. Approval widgets are refused; use signed approvals. State must match the registered widget type.",
+    "Create a Kin widget, or update widgetId with its expected revision. replyTo applies only to creation. Approval widgets are refused; use signed approvals. Only task widgets are supported; state must match the task schema.",
   parameters: Schema.Struct({
     chatId: KinChatId,
     widgetId: Schema.optional(KinWidgetId),
     revision: Schema.optional(KinWidget.fields.revision),
-    type: KinWidget.fields.type,
-    state: Schema.Unknown,
+    type: Schema.Literal("task"),
+    state: KinTaskCardState,
     awaiting: Schema.optional(Schema.Array(KinPersonId).check(Schema.isMaxLength(100))),
     replyTo: Schema.optional(KinMessageId),
   }),
@@ -122,7 +124,7 @@ const failure = (error: unknown) =>
 
 // KinIdentity and KinChatService authorize these calls, not T3's thread-control grants.
 export const handlers = McpToolAccess.toLayer(KinChatToolkit, {
-  kin_chat_post: McpToolAccess.reads(
+  kin_chat_post: McpToolAccess.actsAsCaller(
     Effect.fn("KinChatToolkit.post")(function* (input) {
       const { agent, send } = yield* agentServices;
       return yield* send(agent, {
@@ -137,7 +139,7 @@ export const handlers = McpToolAccess.toLayer(KinChatToolkit, {
       return yield* read(agent, input).pipe(Effect.mapError(failure));
     }),
   ),
-  kin_widget_upsert: McpToolAccess.reads(
+  kin_widget_upsert: McpToolAccess.actsAsCaller(
     Effect.fn("KinChatToolkit.upsertWidget")(function* (input) {
       const { agent, upsertWidget } = yield* agentServices;
       return yield* upsertWidget(agent, input).pipe(Effect.mapError(failure));

@@ -357,9 +357,9 @@ export const KinChatStreamEvent = Schema.Union([
 - `kin_widget_upsert({ chatId, widgetId?, revision?, type, state, awaiting?, replyTo? })`: creates (with a message) or updates in place. Refuses `approval`.
 - `kin_floor_bid({ chatId, runId, reason, intent })` (phase 2).
 
-Kin serves these tools at **`/kin/mcp`**, alongside the existing T3 tools, never in upstream `layerTools`. Two one-line hooks in `server.ts` wrap transport construction and credential issuance. The credential wrapper uses the environment's shared `KinIdentity` instance to give only registered agent threads this endpoint; ordinary threads and subagents retain `/mcp`. The Kin transport has an isolated MCP registry, authenticates only server-issued provider credentials, and calls `resolveAgent` on every HTTP request. It does not accept OAuth client identities.
+Kin serves these tools at **`/kin/mcp`**, alongside the existing T3 tools, never in upstream `layerTools`. Two one-line hooks in `server.ts` wrap transport construction and credential issuance; the registry wrapper is the sole Kin construction root for both WS and MCP. The credential wrapper uses the environment's shared `KinIdentity` instance to give only registered agent threads this endpoint; ordinary threads and subagents retain `/mcp`. The Kin transport is mounted only when Kin is enabled and has an isolated MCP registry, authenticates only server-issued provider credentials, and calls `resolveAgent` on every HTTP request. It does not accept OAuth client identities. Credentials become unresolvable when registration changes their required endpoint, so the next provider prepare reissues them.
 
-`EnabledWhen` is a second visibility guard inside the Kin toolkit, reading the server-resolved `McpInvocationContext` and that same identity's in-memory set. Registration and ending change the set only after the outer transaction commits, serialized and interruption-safe; startup rebuilds it from active rows. Visibility is not authority: each tool calls `resolveAgent` again, and `KinChatService` checks membership, retirement, ended threads, and write muting. Ordinary MCP, the unchanged context budget test and `agentContextBudget.json` do not gain tools.
+`EnabledWhen` is a second visibility guard inside the Kin toolkit, reading the server-resolved `McpInvocationContext` and that same identity's in-memory set. Registration and ending change the set only after the outer transaction commits, serialized and interruption-safe; startup rebuilds it from active rows. Visibility is not authority: each tool calls `resolveAgent` again, and `KinChatService` checks membership, retirement, ended threads, and write muting. Ordinary MCP, the unchanged context budget test and `agentContextBudget.json` do not gain tools. A separate Kin context-budget test measures the combined agent-thread list (T3 plus three Kin tools) without changing the ordinary-thread budget.
 
 `kin_chat_post` accepts an optional `clientMessageId` retry key. Reusing it with identical content returns the stored row; changed content fails `not_allowed`. Omission creates a fresh post on each call. Bodies are nonblank, at most 16,000 characters, and contain no NUL; mentions are capped at 100. Reads are per-call, ascending after a non-negative safe-integer `afterSeq`, with a default limit of 50 and a maximum of 100, and preserve the viewer's suggestion visibility. No agent stream is exposed.
 
@@ -473,14 +473,13 @@ New (all Kin-owned):
 
 Upstream files touched, hooks only:
 
-| File                                                | Hook                                                                                                                                                         |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `packages/contracts/src/index.ts`                   | `export * from "./kinChat.ts";`                                                                                                                              |
-| `packages/contracts/src/rpc.ts`                     | import `KinRpcs` from `kinRpcs.ts`; `...KinRpcs,` as the last argument of `RpcGroup.make(` in `WsRpcGroup`                                                   |
-| `apps/server/src/ws.ts`                             | import; `const kinChatHandlers = yield* makeKinChatHandlers(currentSession);` in `layerWsRpc`; `...kinChatHandlers,` in `ServerWsRpcGroup.of({`              |
-| `apps/server/src/server.ts`                         | import; provide the shared `Kin.layer` (including request middleware) after the routes `Layer.mergeAll`, so construction and request handlers share one root |
-| `apps/server/src/server.ts`                         | `Kin.mcpLayer(McpHttpServer.layer)` and `Kin.mcpRegistryLayer(McpSessionRegistry.layer)`                                                                     |
-| `packages/contracts/src/auth.ts` (phase 2, CHAT-11) | `export const AuthKinChatScope = "kin:chat" as const;` and add it to `AuthEnvironmentScope` and `AuthStandardClientScopes`                                   |
+| File                                                | Hook                                                                                                                                               |
+| --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/contracts/src/index.ts`                   | `export * from "./kinChat.ts";`                                                                                                                    |
+| `packages/contracts/src/rpc.ts`                     | import `KinRpcs` from `kinRpcs.ts`; `...KinRpcs,` as the last argument of `RpcGroup.make(` in `WsRpcGroup`                                         |
+| `apps/server/src/ws.ts`                             | import; `const kinChatHandlers = yield* makeKinChatHandlers(currentSession);` in `layerWsRpc`; `...kinChatHandlers,` in `ServerWsRpcGroup.of({`    |
+| `apps/server/src/server.ts`                         | import; `Kin.mcpLayer(McpHttpServer.layer)` and `Kin.mcpRegistryLayer(McpSessionRegistry.layer)` share one Kin root (including request middleware) |
+| `packages/contracts/src/auth.ts` (phase 2, CHAT-11) | `export const AuthKinChatScope = "kin:chat" as const;` and add it to `AuthEnvironmentScope` and `AuthStandardClientScopes`                         |
 
 ## Interfaces to other specs
 

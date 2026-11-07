@@ -16,6 +16,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 import { McpSchema, McpServer } from "effect/ai";
+import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
+import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import * as McpSessions from "../../mcp/McpSessionRegistry.ts";
 import * as KinMcp from "./layer.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
@@ -60,28 +62,43 @@ const runtime = (config: Record<string, unknown>) =>
 const registration = McpHttpServer.toolkitRegistration(KinChatToolkit, handlers).pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
 );
-const fakeRegistry = Layer.succeed(McpSessions.McpSessionRegistry, {
-  issue: (request) =>
-    Effect.succeed({
-      config: {
-        environmentId: scope.environmentId,
-        threadId: request.threadId,
-        providerSessionId: "session",
-        providerInstanceId: request.providerInstanceId,
-        endpoint: "http://127.0.0.1:43123/mcp",
-        authorizationHeader: "Bearer test",
-        browserToolsAvailable: false,
-      },
-    }),
-  resolve: () => Effect.undefined,
-  touch: () => Effect.void,
-  revokeProviderSession: () => Effect.void,
-  revokeThread: () => Effect.void,
-  revokeAll: Effect.void,
+const fakeRegistry = Layer.sync(McpSessions.McpSessionRegistry, () => {
+  const credentials = new Map<string, typeof scope & { thread: typeof thread }>();
+  return McpSessions.McpSessionRegistry.of({
+    issue: (request) =>
+      Effect.sync(() => {
+        const token = `test-${credentials.size}`;
+        credentials.set(token, {
+          ...scope,
+          thread: { ...thread, ...request, providerSessionId: token },
+        });
+        return {
+          config: {
+            environmentId: scope.environmentId,
+            threadId: request.threadId,
+            providerSessionId: token,
+            providerInstanceId: request.providerInstanceId,
+            endpoint: "http://127.0.0.1:43123/mcp",
+            authorizationHeader: `Bearer ${token}`,
+            browserToolsAvailable: false,
+          },
+        };
+      }),
+    resolve: (token) => Effect.sync(() => credentials.get(token)),
+    touch: () => Effect.void,
+    revokeProviderSession: () => Effect.void,
+    revokeThread: () => Effect.void,
+    revokeAll: Effect.void,
+  });
+});
+const liveThreads = Layer.mock(ThreadManagement.ThreadManagementService)({
+  getThreadShell: (id) =>
+    Effect.succeed({ ...liveThreadShell(id), providerInstanceId: thread.providerInstanceId }),
 });
 const layer = Layer.merge(registration, KinMcp.registry(fakeRegistry)).pipe(
   Layer.provideMerge(runtime({ KIN_ENABLED: true })),
   Layer.provideMerge(Sqlite.layerMemory),
+  Layer.provideMerge(liveThreads),
 );
 const visible = Effect.gen(function* () {
   const server = yield* McpServer.McpServer;
@@ -105,6 +122,13 @@ const call = (name: string, args: Record<string, unknown>, caller = scope) =>
         Effect.provideService(McpSchema.McpServerClient, client),
       );
   });
+const errorOf = (result: McpSchema.CallToolResult) => {
+  assert.isTrue(result.isError);
+  const text = result.content.find((item) => item.type === "text")?.text;
+  assert.isDefined(text);
+  const error: unknown = JSON.parse(text);
+  return error;
+};
 const seed = Effect.gen(function* () {
   const kin = yield* Kin.KinServer;
   const services = Option.getOrThrow(kin.services);
@@ -156,7 +180,9 @@ it.effect(
       const first = yield* call("kin_chat_post", input);
       assert.isFalse(first.isError);
       assert.deepStrictEqual(yield* call("kin_chat_post", input), first);
-      assert.isTrue((yield* call("kin_chat_post", { ...input, body: "Changed" })).isError);
+      assert.include(errorOf(yield* call("kin_chat_post", { ...input, body: "Changed" })), {
+        reason: "not_allowed",
+      });
       const { agent, read } = yield* agentServices.pipe(
         Effect.provideService(McpInvocationContext, scope),
       );
@@ -182,10 +208,12 @@ it.effect(
       const result = yield* call("kin_chat_read", { chatId: chat.chatId });
       assert.isFalse(result.isError);
       assert.include(JSON.stringify(result), "authorRole");
-      assert.isTrue(
-        (yield* call("kin_widget_upsert", { chatId: chat.chatId, type: "approval", state: {} }))
-          .isError,
-      );
+      const refused = yield* call("kin_widget_upsert", {
+        chatId: chat.chatId,
+        type: "approval",
+        state: {},
+      }).pipe(Effect.result);
+      assert.strictEqual(refused._tag, "Failure");
       for (const changed of [
         { afterSeq: -1 },
         { afterSeq: 0.5 },
@@ -230,12 +258,40 @@ it.effect.each(["ordinary", "subagent", "ended", "retired", "muted"] as const)(
         { chatId: chat.chatId, body: "No", intent: "answer" },
         caller,
       ).pipe(Effect.result);
-      assert.isTrue(result._tag === "Failure" || result.success.isError);
+      assert.include(
+        yield* agentServices.pipe(
+          Effect.provideService(McpInvocationContext, caller),
+          Effect.result,
+        ),
+        mode === "muted" ? { _tag: "Success" } : { _tag: "Failure" },
+      );
+      if (mode === "ordinary" || mode === "subagent" || mode === "ended") {
+        assert.include(
+          yield* agentServices.pipe(
+            Effect.provideService(McpInvocationContext, caller),
+            Effect.flip,
+          ),
+          { reason: "not_allowed" },
+        );
+        assert.strictEqual(result._tag, "Failure");
+        if (result._tag === "Failure") assert.include(result.failure, { _tag: "InvalidParams" });
+      } else {
+        assert.strictEqual(result._tag, "Success");
+        if (result._tag === "Success")
+          assert.include(errorOf(result.success), { reason: "not_allowed" });
+      }
       if (mode !== "muted") {
         const read = yield* call("kin_chat_read", { chatId: chat.chatId }, caller).pipe(
           Effect.result,
         );
-        assert.isTrue(read._tag === "Failure" || read.success.isError);
+        if (mode === "retired") {
+          assert.strictEqual(read._tag, "Success");
+          if (read._tag === "Success")
+            assert.include(errorOf(read.success), { reason: "not_allowed" });
+        } else {
+          assert.strictEqual(read._tag, "Failure");
+          if (read._tag === "Failure") assert.include(read.failure, { _tag: "InvalidParams" });
+        }
       }
     }).pipe(Effect.provide(layer)),
 );
@@ -247,10 +303,10 @@ it.effect("hides foreign chats with the same not_found error", () =>
     yield* sql`INSERT INTO kin_chats VALUES ('foreign-chat', 'foreign', 'team_group', NULL, NULL, NULL, 0, NULL, '1970-01-01T00:00:00.000Z', NULL)`;
     for (const chatId of ["missing", "foreign-chat"]) {
       const result = yield* call("kin_chat_read", { chatId });
-      assert.isTrue(result.isError);
-      assert.include(JSON.stringify(result), "Kin record not found.");
-      assert.isTrue(
-        (yield* call("kin_chat_post", { chatId, body: "No", intent: "answer" })).isError,
+      assert.include(errorOf(result), { reason: "not_found" });
+      assert.include(
+        errorOf(yield* call("kin_chat_post", { chatId, body: "No", intent: "answer" })),
+        { reason: "not_found" },
       );
     }
   }).pipe(Effect.provide(layer)),
@@ -270,20 +326,13 @@ it.effect.each([{}, { KIN_ENABLED: false }, { KIN_ENABLED: "maybe" }])(
       );
     }).pipe(
       Effect.provide(
-        registration.pipe(Layer.provideMerge(runtime(config)), Layer.provide(Sqlite.layerMemory)),
+        registration.pipe(
+          Layer.provideMerge(runtime(config)),
+          Layer.provide(Sqlite.layerMemory),
+          Layer.provide(liveThreads),
+        ),
       ),
     ),
-);
-
-it.effect("keeps trusted persistence, waiting and hub APIs outside the toolkit", () =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const source = yield* fs.readFileString(
-      new URL("./KinChatToolkit.ts", import.meta.url).pathname,
-    );
-    assert.notMatch(source, /import[^;]*(?:KinChatRepository|KinChatHub)/);
-    assert.notMatch(source, /\.addWaiting\(|\.subscribeForViewer\(/);
-  }).pipe(Effect.provide(NodeServices.layer)),
 );
 
 it.effect("admits only active provider agents at /kin/mcp", () =>
@@ -338,4 +387,77 @@ it.effect("admits only active provider agents at /kin/mcp", () =>
       assert.strictEqual((yield* request("agent")).status, 403);
     }),
   ).pipe(Effect.provide(layer)),
+);
+
+it.effect("invalidates credentials when registration changes their endpoint", () =>
+  Effect.gen(function* () {
+    const registry = yield* McpSessions.McpSessionRegistry;
+    const ordinary = yield* registry.issue(thread);
+    const resolve = (issued: typeof ordinary) =>
+      registry.resolve(issued.config.authorizationHeader.slice(7));
+    assert.isDefined(yield* resolve(ordinary));
+    const { identity, person } = yield* seed;
+    assert.isUndefined(yield* resolve(ordinary));
+    const agent = yield* registry.issue(thread);
+    assert.strictEqual(agent.config.endpoint, "http://127.0.0.1:43123/kin/mcp");
+    assert.isDefined(yield* resolve(agent));
+    yield* identity.endAgentThread({ orgId: person.orgId, threadId });
+    assert.isUndefined(yield* resolve(agent));
+    const ended = yield* registry.issue(thread);
+    assert.strictEqual(ended.config.endpoint, ordinary.config.endpoint);
+    assert.isDefined(yield* resolve(ended));
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each(["deleted", "archived"] as const)("refuses writes from %s threads", (mode) =>
+  Effect.gen(function* () {
+    const { chat } = yield* seed;
+    for (const [name, input] of [
+      ["kin_chat_post", { chatId: chat.chatId, body: "No", intent: "answer" }],
+      ["kin_widget_upsert", { chatId: chat.chatId, type: "task", state: taskState }],
+    ] as const) {
+      const result = yield* call(name, input).pipe(
+        Effect.provide(
+          Layer.mock(ThreadManagement.ThreadManagementService)({
+            getThreadShell: (id) =>
+              Effect.succeed({
+                ...liveThreadShell(id),
+                providerInstanceId: thread.providerInstanceId,
+                ...(mode === "deleted"
+                  ? { deletedAt: liveThreadShell(id).updatedAt }
+                  : { archivedAt: liveThreadShell(id).updatedAt }),
+              }),
+          }),
+        ),
+      );
+      assert.isTrue(result.isError);
+      assert.include(errorOf(result), {
+        code: mode === "deleted" ? "thread_not_found" : "parent_not_active",
+      });
+    }
+  }).pipe(Effect.provide(layer)),
+);
+
+const taskState = {
+  taskId: "task",
+  environmentId: "environment",
+  threadId,
+  remoteEnvironmentId: null,
+  title: "Work",
+  model: null,
+  status: "working",
+  pullRequests: [],
+  lastError: null,
+  updatedAt: "1970-01-01T00:00:00.000Z",
+};
+
+it.effect("keeps trusted persistence, waiting and hub APIs outside the toolkit", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const source = yield* fs.readFileString(
+      new URL("./KinChatToolkit.ts", import.meta.url).pathname,
+    );
+    assert.notMatch(source, /import[^;]*(?:KinChatRepository|KinChatHub)/);
+    assert.notMatch(source, /\.addWaiting\(|\.subscribeForViewer\(/);
+  }).pipe(Effect.provide(NodeServices.layer)),
 );

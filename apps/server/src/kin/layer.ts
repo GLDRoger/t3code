@@ -68,8 +68,7 @@ const middleware = HttpRouter.middleware<{ provides: KinServer }>()(
 
 export const layer = middleware.pipe(Layer.provideMerge(runtime));
 
-export const mcpLayer = (base: Parameters<typeof KinMcp.transport>[0]) =>
-  KinMcp.transport(base).pipe(Layer.provide(layer));
+export const mcpLayer = (base: Parameters<typeof KinMcp.transport>[0]) => KinMcp.transport(base);
 export const mcpRegistryLayer = <E, R>(
   base: Layer.Layer<McpSessionRegistry.McpSessionRegistry, E, R>,
 ) =>
