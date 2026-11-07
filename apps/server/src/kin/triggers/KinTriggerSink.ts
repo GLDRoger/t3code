@@ -30,6 +30,19 @@ export class KinTriggerStartupError extends Schema.TaggedError<KinTriggerStartup
   { cause: Schema.Defect() },
 ) {}
 
+// Shared with the upstream contract test so the tripwire pins exactly what the sink reads.
+export const findLaunchDelivery = (
+  sql: SqlClient.SqlClient,
+  input: { readonly taskId: string; readonly deliveryId: string; readonly projectId: string },
+) => sql<{ readonly receivedAt: unknown }>`
+  SELECT d.received_at AS "receivedAt" FROM scheduled_task_webhook_deliveries d
+  JOIN scheduled_tasks t ON t.task_id = d.task_id
+  WHERE d.task_id = ${input.taskId} AND d.delivery_id = ${input.deliveryId}
+    AND t.project_id = ${input.projectId}
+    AND t.thread_id IS NULL AND t.thread_mode = 'new_thread'
+    AND json_extract(t.schedule_json, '$.type') = 'webhook'
+`;
+
 export class KinTriggerSink extends Context.Service<
   KinTriggerSink,
   {
@@ -62,14 +75,11 @@ const make = Effect.gen(function* () {
             reason: "unknown_source",
           });
         const deliveryId = yield* decodeDeliveryId(input.commandId.slice(prefix.length));
-        const [row] = yield* sql`
-          SELECT d.received_at AS "receivedAt" FROM scheduled_task_webhook_deliveries d
-          JOIN scheduled_tasks t ON t.task_id = d.task_id
-          WHERE d.task_id = ${taskId} AND d.delivery_id = ${deliveryId}
-            AND t.project_id = ${input.projectId}
-            AND t.thread_id IS NULL AND t.thread_mode = 'new_thread'
-            AND json_extract(t.schedule_json, '$.type') = 'webhook'
-        `.pipe(Effect.mapError(toPersistenceSqlError("KinTriggerSink.receive")));
+        const [row] = yield* findLaunchDelivery(sql, {
+          taskId,
+          deliveryId,
+          projectId: input.projectId,
+        }).pipe(Effect.mapError(toPersistenceSqlError("KinTriggerSink.receive")));
         if (row === undefined)
           return yield* new KinTriggerInbox.KinTriggerInboxConflict({
             orgId: source.orgId,

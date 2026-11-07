@@ -315,6 +315,7 @@ describe("KinIdentity", () => {
         yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status, event_ids)
           VALUES ('identity-wakeup', ${owner.orgId}, ${agentId}, ${threadId}, 'test', 0, 'running', '[]')`;
         assert.deepStrictEqual(yield* identity.resolveAgent(caller()), {
+          _tag: "agent",
           ...input,
           ownerPersonId: owner.personId,
         });
@@ -387,6 +388,7 @@ describe("KinIdentity", () => {
         const restarted = yield* startInScope(secondScope);
         assert.isTrue(restarted.isAgentThread(threadId));
         assert.deepStrictEqual(yield* restarted.resolveAgent(caller()), {
+          _tag: "agent",
           ...input,
           ownerPersonId: owner.personId,
         });
@@ -417,6 +419,7 @@ describe("KinIdentity", () => {
         assert.isTrue(afterEnd.isAgentThread(secondThreadId));
         yield* sql`UPDATE kin_wakeups SET status = 'running', ended_at = NULL, thread_id = ${secondThreadId} WHERE wakeup_id = 'identity-wakeup'`;
         assert.deepStrictEqual(yield* afterEnd.resolveAgent(caller(secondThreadId)), {
+          _tag: "agent",
           ...input,
           threadId: secondThreadId,
           ownerPersonId: owner.personId,

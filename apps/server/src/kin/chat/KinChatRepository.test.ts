@@ -321,7 +321,7 @@ describe("KinChatRepository", () => {
             repo.insertMessage({
               ...message("first"),
               messageId: decodeMessageId(`retry-${i}`),
-              body: "changed",
+              body: first.body,
               createdAt: later,
             }),
           ),
@@ -341,7 +341,7 @@ describe("KinChatRepository", () => {
         assert.strictEqual(action.messageId, decodeMessageId("action"));
         assert.deepStrictEqual(
           yield* repo.insertMessage({
-            ...message("repeated-action", { kind: "widget_action" }),
+            ...message("repeated-action", { kind: "system", body: "action" }),
             clientMessageId: { kind: "act", id: "first" },
           }),
           action,
@@ -350,6 +350,18 @@ describe("KinChatRepository", () => {
         assert.deepStrictEqual(
           Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId })),
           widget,
+        );
+        const suppliedRevision = {
+          ...widget,
+          widgetId: decodeWidgetId("server-revision"),
+          revision: 99,
+        };
+        yield* repo.insertWidget(suppliedRevision);
+        assert.strictEqual(
+          Option.getOrThrow(
+            yield* repo.getWidget({ orgId, widgetId: decodeWidgetId("server-revision") }),
+          ).revision,
+          1,
         );
         yield* repo.markRead({ ...scope, seq: 1, updatedAt: timestamp });
         assert.deepStrictEqual(Option.getOrThrow(yield* repo.getReadState(scope)), {
@@ -369,6 +381,9 @@ describe("KinChatRepository", () => {
           resolvedAt: null,
           resolution: null,
         } as const;
+        assert.include(yield* Effect.flip(repo.addWaiting({ ...waiting, resolvedAt: later })), {
+          reason: "invalid_state",
+        });
         assert.strictEqual(yield* repo.addWaiting(waiting), true);
         assert.strictEqual(
           yield* repo.addWaiting({ ...waiting, waitingId: decodeWaitingId("duplicate-waiting") }),
@@ -452,10 +467,42 @@ describe("KinChatRepository", () => {
         );
         assert.deepStrictEqual(
           yield* sql`SELECT typeof(revision) AS type FROM kin_widgets WHERE org_id = ${orgId}`,
-          [{ type: "integer" }],
+          [{ type: "integer" }, { type: "integer" }],
         );
         assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_check`, []);
       }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("rejects left mentions and retired authors inside the post transaction", () =>
+    Effect.gen(function* () {
+      const repo = yield* seed;
+      yield* repo.leaveChat({ ...scope, memberId: agentMemberId, leftAt: later });
+      assert.include(yield* Effect.flip(repo.insertMessage(message("left-mention"))), {
+        reason: "not_found",
+      });
+      yield* repo.addMember(agentMember);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_agents SET retired_at = ${later} WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+      assert.deepStrictEqual(yield* repo.listActiveAgentThreads(), []);
+      assert.include(
+        yield* Effect.flip(
+          repo.insertMessage(
+            message("retired", {
+              author: {
+                _tag: "agent",
+                agentId,
+                memberId: agentMemberId,
+                ownerPersonId: personId,
+                threadId,
+              },
+              intent: "answer",
+            }),
+          ),
+        ),
+        { reason: "not_found" },
+      );
+      assert.strictEqual(Option.getOrThrow(yield* repo.getChat(scope)).lastSeq, 0);
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect("allocates gapless seqs under 20 concurrent sends", () =>
@@ -476,7 +523,7 @@ describe("KinChatRepository", () => {
           clientMessageId: { kind: "send", id: "new-id" },
         }),
       );
-      assert.strictEqual(failed._tag, "PersistenceSqlError");
+      assert.include(failed, { reason: "not_found" });
       assert.strictEqual(Option.getOrThrow(yield* repo.getChat(scope)).lastSeq, 20);
       assert.strictEqual((yield* repo.insertMessage(message("next"))).seq, 21);
     }).pipe(Effect.provide(layer)),
@@ -535,6 +582,20 @@ describe("KinChatRepository", () => {
           (yield* repo.messagesAfter({ orgId, chatId, afterSeq, limit })).map((m) => m.seq),
           [...expected],
         );
+      }
+      for (const status of ["suggested", "dismissed"] as const)
+        yield* repo.insertMessage(message(status, { status }));
+      yield* repo.insertMessage(message("visible"));
+      for (const [viewerMemberId, seqs] of [
+        [agentMemberId, [5, 8]],
+        [memberId, [7, 8]],
+      ] as const) {
+        const page = yield* repo.history({ orgId, chatId, beforeSeq: 9, limit: 2, viewerMemberId });
+        assert.deepStrictEqual(
+          page.messages.map((row) => row.seq),
+          [...seqs],
+        );
+        assert.strictEqual(page.hasMore, true);
       }
     }).pipe(Effect.provide(layer)),
   );
@@ -618,7 +679,10 @@ describe("KinChatRepository", () => {
           repo.insertMessage(message("invalid-reference", fields)),
         );
         assert.strictEqual(failure._tag, "KinChatError");
-        if (failure._tag === "KinChatError") assert.strictEqual(failure.reason, "not_found");
+        if (failure._tag === "KinChatError") {
+          assert.strictEqual(failure.reason, "not_found");
+          assert.strictEqual(failure.message, "Kin record not found.");
+        }
       }
       const hidden = { ...scope, orgId: orgA };
       const sql = yield* SqlClient.SqlClient;
@@ -720,6 +784,7 @@ describe("KinChatRepository", () => {
         endedAt: null,
       });
       for (const refs of [
+        { source: { threadId: decodeThreadId("other-thread"), itemId: decodeTurnItemId("item") } },
         { awaiting: [otherPerson] },
         { awaiting: [decodePersonId("unknown-person")] },
         {
@@ -738,6 +803,36 @@ describe("KinChatRepository", () => {
           if (failure._tag === "KinChatError") assert.strictEqual(failure.reason, "not_found");
         }
       }
+      const foreignAnchor = yield* repo.insertMessage({
+        ...message("foreign-anchor"),
+        orgId: orgA,
+        chatId: otherChat,
+        author: { _tag: "system" },
+        mentions: [],
+        clientMessageId: null,
+      });
+      for (const collision of [
+        repo
+          .insertMessage({
+            ...message("first"),
+            orgId: orgA,
+            chatId: otherChat,
+            author: { _tag: "system" },
+            mentions: [],
+            clientMessageId: null,
+          })
+          .pipe(Effect.asVoid),
+        repo.insertWidget({
+          ...widget,
+          orgId: orgA,
+          chatId: otherChat,
+          messageId: foreignAnchor.messageId,
+          awaiting: [],
+          source: null,
+          feed: null,
+        }),
+      ])
+        assert.include(yield* Effect.flip(collision), { reason: "not_found" });
       for (const retry of [
         repo
           .addWaiting({
