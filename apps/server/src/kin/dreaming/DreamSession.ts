@@ -10,6 +10,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
@@ -29,7 +30,10 @@ export interface DreamTurn {
   readonly text: string;
 }
 
-/** One provider turn in the dream checkout. The Kin MCP registry refuses its thread on every endpoint. */
+/**
+ * One provider turn in the dream checkout. The Kin MCP registry refuses its thread on every endpoint.
+ * The material is untrusted, so the turn may only edit its checkout; it declines every other request.
+ */
 export class DreamSession extends Context.Service<
   DreamSession,
   {
@@ -68,7 +72,7 @@ export const layer = Layer.effect(
           projectId: project.id,
           title: `Dream ${turn.turn}`,
           modelSelection: turn.model,
-          runtimeMode: "full-access",
+          runtimeMode: "auto-accept-edits",
           interactionMode: "default",
           workspaceStrategy: { type: "root" },
           initialMessage: { messageId, text: turn.text, attachments: [] },
@@ -78,20 +82,61 @@ export const layer = Layer.effect(
         const started = sent.projection.runs.findLast((entry) => entry.userMessageId === messageId);
         if (started === undefined) return yield* Effect.die("Dream turn started no run");
         const runId = started.id;
-        const result = yield* threads
-          .waitForThread({ projectId: project.id, threadId, runId, timeoutMs })
+        const declineRequests = threads
+          .streamStoredEventsFrom({ threadId, eventType: "runtime-request.updated" })
           .pipe(
-            Effect.onInterrupt(() =>
-              threads
-                .interruptThread({
-                  projectId: project.id,
-                  threadId,
-                  runId,
-                  commandId: CommandId.make(`kin-dream-cancel:${key}`),
-                })
-                .pipe(Effect.ignore),
+            Stream.runForEach((stored) =>
+              stored.event.type === "runtime-request.updated" &&
+              stored.event.payload.status === "pending"
+                ? threads
+                    .dispatch({
+                      type: "runtime-request.respond",
+                      commandId: CommandId.make(`kin-dream-decline:${stored.event.payload.id}`),
+                      threadId,
+                      requestId: stored.event.payload.id,
+                      decision: "decline",
+                    })
+                    .pipe(
+                      Effect.catchCause((cause) =>
+                        Effect.logWarning("Kin dream could not decline a request", {
+                          threadId,
+                          cause,
+                        }),
+                      ),
+                    )
+                : Effect.void,
             ),
+            // Without the watch a request would hold the turn until its timeout.
+            Effect.catchCause((cause) =>
+              Effect.logError("Kin dream request watch failed", { threadId, cause }).pipe(
+                Effect.andThen(
+                  threads.interruptThread({
+                    projectId: project.id,
+                    threadId,
+                    runId,
+                    commandId: CommandId.make(`kin-dream-unwatched:${key}`),
+                  }),
+                ),
+                Effect.ignore,
+              ),
+            ),
+            Effect.andThen(Effect.never),
           );
+        const result = yield* Effect.raceFirst(
+          threads.waitForThread({ projectId: project.id, threadId, runId, timeoutMs }),
+          declineRequests,
+        ).pipe(
+          Effect.onInterrupt(() =>
+            threads
+              .interruptThread({
+                projectId: project.id,
+                threadId,
+                runId,
+                commandId: CommandId.make(`kin-dream-cancel:${key}`),
+              })
+              .pipe(Effect.ignore),
+          ),
+        );
         if (result.timedOut) {
           yield* threads
             .interruptThread({

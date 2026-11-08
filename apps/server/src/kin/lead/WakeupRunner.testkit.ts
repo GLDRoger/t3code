@@ -16,6 +16,9 @@ import {
   ProviderDriverKind,
   ProviderThreadId,
   ProviderTurnId,
+  RuntimeRequestId,
+  type ProviderApprovalDecision,
+  type RuntimeMode,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -115,6 +118,9 @@ type HarnessOptions = {
   readonly writer?: Layer.Layer<Writer.MemoryWriter, never, SqlClient.SqlClient>;
   readonly piUsage?: boolean;
   readonly prepare?: Memory.Memory["Service"]["prepareWakeup"];
+  /** Each turn opens a command approval and ends only once it is answered. */
+  readonly approval?: Deferred.Deferred<ProviderApprovalDecision | undefined>;
+  readonly runtimeModes?: Array<RuntimeMode>;
 };
 
 export function harness(options: HarnessOptions = {}) {
@@ -172,6 +178,7 @@ export function orchestrationHarness(options: HarnessOptions = {}) {
             })),
           resumeThread: ({ providerThread }) => Effect.succeed(providerThread),
           startTurn: Effect.fn("test.startTurn")(function* (input) {
+            options.runtimeModes?.push(input.runtimePolicy.runtimeMode);
             if (options.entered !== undefined) yield* Deferred.succeed(options.entered, undefined);
             if (options.hold !== undefined) yield* Deferred.await(options.hold);
             const time = yield* DateTime.now;
@@ -207,65 +214,92 @@ export function orchestrationHarness(options: HarnessOptions = {}) {
                   },
                 },
               });
-            yield* PubSub.publish(events, {
-              type: "provider_turn.updated",
-              driver,
-              providerTurn: {
-                id,
-                providerThreadId: input.providerThread.id,
-                nodeId: input.rootNodeId,
-                runAttemptId: input.attemptId,
-                nativeTurnRef: null,
-                ordinal: input.runOrdinal,
-                status: options.failed ? "failed" : "completed",
-                startedAt: time,
-                completedAt: time,
-                ...(options.piUsage
-                  ? {}
-                  : {
-                      turnTokenUsage: {
-                        usageScope: "main_agent",
-                        usageStatus: "complete",
-                        hasSubagents: false,
-                        inputTokens: 20,
-                        cachedInputTokens: 5,
-                        outputTokens: 10,
-                      },
-                    }),
-                tokenUsage: {
-                  usedTokens: 30,
-                  inputTokens: 2,
-                  cachedInputTokens: options.piUsage ? 100 : 1,
-                  outputTokens: 6,
-                  updatedAt: DateTime.formatIso(time),
+            if (options.approval !== undefined)
+              yield* PubSub.publish(events, {
+                type: "runtime_request.updated",
+                driver,
+                threadId: input.threadId,
+                runtimeRequest: {
+                  id: RuntimeRequestId.make(`request-${input.runOrdinal}`),
+                  nodeId: input.rootNodeId,
+                  providerTurnId: null,
+                  nativeRequestRef: null,
+                  kind: "command",
+                  status: "pending",
+                  responseCapability: {
+                    type: "live",
+                    providerSessionId: session.providerSessionId,
+                  },
+                  createdAt: time,
+                  resolvedAt: null,
                 },
-              },
+              });
+            const finish = Effect.gen(function* () {
+              yield* PubSub.publish(events, {
+                type: "provider_turn.updated",
+                driver,
+                providerTurn: {
+                  id,
+                  providerThreadId: input.providerThread.id,
+                  nodeId: input.rootNodeId,
+                  runAttemptId: input.attemptId,
+                  nativeTurnRef: null,
+                  ordinal: input.runOrdinal,
+                  status: options.failed ? "failed" : "completed",
+                  startedAt: time,
+                  completedAt: time,
+                  ...(options.piUsage
+                    ? {}
+                    : {
+                        turnTokenUsage: {
+                          usageScope: "main_agent",
+                          usageStatus: "complete",
+                          hasSubagents: false,
+                          inputTokens: 20,
+                          cachedInputTokens: 5,
+                          outputTokens: 10,
+                        },
+                      }),
+                  tokenUsage: {
+                    usedTokens: 30,
+                    inputTokens: 2,
+                    cachedInputTokens: options.piUsage ? 100 : 1,
+                    outputTokens: 6,
+                    updatedAt: DateTime.formatIso(time),
+                  },
+                },
+              });
+              yield* PubSub.publish(events, {
+                type: "turn.terminal",
+                driver,
+                providerThreadId: input.providerThread.id,
+                providerTurnId: id,
+                runOrdinal: input.runOrdinal,
+                ...(options.failed
+                  ? {
+                      status: "failed" as const,
+                      failureItemOrdinal: 1,
+                      failure: {
+                        class: "provider_error" as const,
+                        message: "Fixture provider failure",
+                        code: null,
+                        retryable: false,
+                      },
+                    }
+                  : { status: "completed" as const, failure: null }),
+                threadDisposition: "reusable",
+              });
             });
-            yield* PubSub.publish(events, {
-              type: "turn.terminal",
-              driver,
-              providerThreadId: input.providerThread.id,
-              providerTurnId: id,
-              runOrdinal: input.runOrdinal,
-              ...(options.failed
-                ? {
-                    status: "failed" as const,
-                    failureItemOrdinal: 1,
-                    failure: {
-                      class: "provider_error" as const,
-                      message: "Fixture provider failure",
-                      code: null,
-                      retryable: false,
-                    },
-                  }
-                : { status: "completed" as const, failure: null }),
-              threadDisposition: "reusable",
-            });
+            if (options.approval === undefined) return yield* finish;
+            yield* Deferred.await(options.approval).pipe(Effect.andThen(finish), Effect.forkDetach);
           }),
           compactThread: (input) => runtime.startTurn(input),
           steerTurn: () => Effect.void,
           interruptTurn: () => Effect.void,
-          respondToRuntimeRequest: () => Effect.void,
+          respondToRuntimeRequest: (response) =>
+            options.approval === undefined
+              ? Effect.void
+              : Deferred.succeed(options.approval, response.decision).pipe(Effect.asVoid),
           readThreadSnapshot: () => Effect.die("unused snapshot"),
           rollbackThread: () => Effect.die("unused rollback"),
           forkThread: () => Effect.die("unused fork"),

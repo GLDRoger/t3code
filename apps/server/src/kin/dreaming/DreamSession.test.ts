@@ -1,5 +1,10 @@
 import { assert, it } from "@effect/vitest";
-import { ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  ProviderInstanceId,
+  ThreadId,
+  type ProviderApprovalDecision,
+  type RuntimeMode,
+} from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -58,6 +63,26 @@ it.effect("interrupting a dream turn interrupts its provider run", () =>
     }).pipe(
       Effect.provide(
         DreamSession.layer.pipe(Layer.provideMerge(orchestrationHarness({ entered, hold }))),
+      ),
+    );
+  }).pipe(provideDeterministicTestRuntime),
+);
+
+it.effect("a dream turn may only edit its checkout and declines every other request", () =>
+  Effect.gen(function* () {
+    const approval = yield* Deferred.make<ProviderApprovalDecision | undefined>();
+    const runtimeModes: Array<RuntimeMode> = [];
+    return yield* Effect.gen(function* () {
+      const session = yield* DreamSession.DreamSession;
+      const result = yield* session.run(turn);
+      assert.strictEqual(result.status, "completed");
+      assert.deepStrictEqual(runtimeModes, ["auto-accept-edits"]);
+      assert.strictEqual(yield* Deferred.await(approval), "decline");
+    }).pipe(
+      Effect.provide(
+        DreamSession.layer.pipe(
+          Layer.provideMerge(orchestrationHarness({ approval, runtimeModes })),
+        ),
       ),
     );
   }).pipe(provideDeterministicTestRuntime),
