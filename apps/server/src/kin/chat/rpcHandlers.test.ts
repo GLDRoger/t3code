@@ -19,7 +19,7 @@ import {
   KinAgentId,
   KinChatId,
   KinMessageId,
-  KinRpcs,
+  KinChatAndBudgetRpcs,
   KinOrgId,
   ThreadId,
   RpcScopeAuthorization,
@@ -75,7 +75,7 @@ const probe = WsRpcGroup.omit(
       tag !== WS_METHODS.serverProbe,
   ),
 );
-const group = RpcGroup.make(...KinRpcs, ...probe.requests.values()).middleware(
+const group = RpcGroup.make(...KinChatAndBudgetRpcs, ...probe.requests.values()).middleware(
   RpcScopeAuthorization,
 );
 const seed = Effect.gen(function* () {

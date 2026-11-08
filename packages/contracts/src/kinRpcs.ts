@@ -21,7 +21,8 @@ const KinBudgetRpcs = [
     error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
   }),
 ] as const;
-export const KinRpcs = [...KinChatRpcs, ...KinBudgetRpcs, ...KinApprovalRpcs] as const;
+export const KinChatAndBudgetRpcs = [...KinChatRpcs, ...KinBudgetRpcs] as const;
+export const KinRpcs = [...KinChatAndBudgetRpcs, ...KinApprovalRpcs] as const;
 export const KIN_RPC_SCOPES = {
   ...KIN_CHAT_RPC_SCOPES,
   ...KIN_APPROVAL_RPC_SCOPES,
