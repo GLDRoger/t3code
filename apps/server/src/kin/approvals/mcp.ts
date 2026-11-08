@@ -47,6 +47,10 @@ const unavailable = new KinApprovalError({
   reason: "unavailable",
   message: "Kin approvals are unavailable.",
 });
+const disabled = new KinApprovalError({
+  reason: "disabled",
+  message: "Kin is not running on this host.",
+});
 const isKinChatError = Schema.is(KinChatError);
 
 // The caller comes only from the MCP scope; the input never names an org, agent or thread.
@@ -58,7 +62,7 @@ const handlers = McpToolAccess.toLayer(
       request_action: McpToolAccess.actsAsCaller(
         Effect.fn("KinApprovalsToolkit.requestAction")(function* (input) {
           const identity = yield* Effect.serviceOption(KinIdentity);
-          if (Option.isNone(identity)) return yield* unavailable;
+          if (Option.isNone(identity)) return yield* disabled;
           const agent = yield* identity.value
             .resolveAgent(yield* McpInvocationContext)
             .pipe(

@@ -483,6 +483,14 @@ it.effect("a merge request is resolved by the server, ignores agent SHAs, and de
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect("a storage failure refuses request_action as unavailable", () =>
+  Effect.gen(function* () {
+    const { eventIds, sql } = yield* seed(["owner"]);
+    yield* sql`ALTER TABLE kin_pending_actions RENAME TO kin_pending_actions_gone`;
+    assert.include(refusal(yield* call(merge(eventIds.owner))), { reason: "unavailable" });
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect("a member-started merge is proposed with the member named for the card", () =>
   Effect.gen(function* () {
     const { eventIds, rows } = yield* seed(["member", "routine"]);
