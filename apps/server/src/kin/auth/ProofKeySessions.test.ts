@@ -341,8 +341,6 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
       Effect.gen(function* () {
         const sessions = yield* SessionStore.SessionStore;
         const sql = yield* SqlClient.SqlClient;
-        yield* sql`CREATE TABLE kin_approver_keys (org_id TEXT, thumbprint TEXT, proof_key_thumbprint TEXT, state TEXT)`;
-        yield* sql`INSERT INTO kin_approver_keys VALUES ('org', 'signing-key', 'device', 'active'), ('org', 'other-signing-key', 'other', 'active')`;
         const original = yield* sessions.issue({
           proofKeyThumbprint: "device",
           ttl: Duration.hours(1),
@@ -356,12 +354,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
         const renewed = yield* sessions.issue({ proofKeyThumbprint: "device" });
         yield* TestClock.adjust(Duration.minutes(2));
         yield* sessions.revoke(renewed.sessionId);
-        expect(
-          yield* sql`SELECT DISTINCT k.org_id, k.thumbprint FROM kin_approver_keys k
-        JOIN kin_auth_session_keys m ON m.proof_key_thumbprint = k.proof_key_thumbprint
-        JOIN auth_sessions s ON s.session_id = m.session_id
-        WHERE k.state != 'revoked' AND s.revoked_at IS NOT NULL`,
-        ).toEqual([{ org_id: "org", thumbprint: "signing-key" }]);
+        const revoked = (proofKey: string) =>
+          sql`SELECT ${ProofKeySessions.proofKeyRevoked(sql, proofKey, { honorRepairs: false })} AS revoked`;
+        expect(yield* revoked("device")).toEqual([{ revoked: 1 }]);
+        expect(yield* revoked("other")).toEqual([{ revoked: 0 }]);
         expect(
           yield* sql`SELECT * FROM kin_auth_session_keys WHERE session_id = ${unbound.sessionId}`,
         ).toEqual([]);
