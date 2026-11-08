@@ -148,21 +148,36 @@ export type KinChatClosedReason = NonNullable<KinChatState["closed"]>;
 function mergeMessages(
   current: ReadonlyArray<KinMessage>,
   incoming: ReadonlyArray<KinMessage>,
+  /** Unheld messages below this seq are dropped; history pages pass none to prepend. */
+  floorSeq = Number.NEGATIVE_INFINITY,
 ): ReadonlyArray<KinMessage> {
   if (incoming.length === 0) return current;
   // Live messages arrive in order past the last held one. Anything else, such as a backlog's
   // changed older messages, replaces the held copy of that message.
   if (
-    (current.length === 0 || incoming[0]!.seq > current[current.length - 1]!.seq) &&
+    (current.length === 0
+      ? incoming[0]!.seq >= floorSeq
+      : incoming[0]!.seq > current[current.length - 1]!.seq) &&
     incoming.every((message, index) => index === 0 || message.seq > incoming[index - 1]!.seq)
   ) {
     return [...current, ...incoming];
   }
   const byId = new Map(current.map((message) => [message.messageId, message]));
-  // A later copy of the same message carries its newest status or edit.
-  for (const message of incoming) byId.set(message.messageId, message);
-  return [...byId.values()].sort((a, b) => a.seq - b.seq);
+  let changed = false;
+  for (const message of incoming) {
+    // Inserting a changed message below the window would strand the seqs between it and the
+    // window: "Load earlier" pages from the oldest held seq.
+    if (message.seq < floorSeq && !byId.has(message.messageId)) continue;
+    // A later copy of the same message carries its newest status or edit.
+    byId.set(message.messageId, message);
+    changed = true;
+  }
+  return changed ? [...byId.values()].sort((a, b) => a.seq - b.seq) : current;
 }
+
+/** The lowest seq a stream event may insert: the oldest held, or past a reset's cursor. */
+const streamFloor = (state: KinChatState) =>
+  state.messages[0]?.seq ?? (state.needsHistoryReload ? state.contiguousSeq + 1 : 0);
 
 function mergeWidgets(
   current: ReadonlyArray<KinWidget>,
@@ -193,7 +208,7 @@ function advanceContiguous(messages: ReadonlyArray<KinMessage>, from: number): n
 export function applyKinChatEvent(state: KinChatState, event: KinChatStreamEvent): KinChatState {
   switch (event._tag) {
     case "backlog": {
-      const messages = mergeMessages(state.messages, event.messages);
+      const messages = mergeMessages(state.messages, event.messages, streamFloor(state));
       // The server sent everything visible to this viewer through `lastSeq`, so seqs it skipped
       // (suggestions shown to others) are not gaps.
       const filled = Math.max(state.contiguousSeq, event.lastSeq);
@@ -216,7 +231,8 @@ export function applyKinChatEvent(state: KinChatState, event: KinChatStreamEvent
         needsHistoryReload: true,
       };
     case "message": {
-      const messages = mergeMessages(state.messages, [event.message]);
+      const messages = mergeMessages(state.messages, [event.message], streamFloor(state));
+      if (messages === state.messages) return state;
       return {
         ...state,
         messages,
