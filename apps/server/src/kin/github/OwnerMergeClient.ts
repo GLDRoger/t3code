@@ -12,8 +12,10 @@ import { HttpClient } from "effect/http";
 // inside effects, after both modules have loaded.
 import { CredentialHygienePass } from "../approvals/CredentialHygiene.ts";
 import {
+  GITHUB_PAT_NOT_ACCESSIBLE,
   gitHubJson,
   gitHubStatus,
+  isGitHubRateLimit,
   type GitHubStatusResponse,
   type KinGitHubRequestError,
 } from "./githubRest.ts";
@@ -33,8 +35,6 @@ const PASS_MAX_AGE_MS = 60 * 1000;
  * when the token could review, so the probe can never create a review.
  */
 const DEFAULT_REVIEW_PROBE_PR = 1;
-/** What GitHub says when a fine-grained token lacks the permission an endpoint needs. */
-const NOT_ACCESSIBLE_MESSAGE = "Resource not accessible by personal access token";
 const REVIEW_PROBE_BODY = {
   event: "KIN_PERMISSION_PROBE",
   commit_id: "0000000000000000000000000000000000000000",
@@ -62,18 +62,10 @@ const RepoInfo = Schema.Struct({
 function classifyProbe(
   answer: GitHubStatusResponse,
 ): "denied" | "rate_limited" | "inconclusive" | "allowed" {
-  if (answer.status === 429) return "rate_limited";
+  if (isGitHubRateLimit(answer)) return "rate_limited";
   if (answer.status === 404) return "inconclusive";
   if (answer.status !== 403) return "allowed";
-  if (
-    answer.headers["x-ratelimit-remaining"] === "0" ||
-    answer.headers["retry-after"] !== undefined
-  ) {
-    return "rate_limited";
-  }
-  // GitHub's secondary limit can come with neither header.
-  if (answer.message?.toLowerCase().includes("secondary rate limit")) return "rate_limited";
-  return answer.message?.trim() === NOT_ACCESSIBLE_MESSAGE ? "denied" : "allowed";
+  return answer.message?.trim() === GITHUB_PAT_NOT_ACCESSIBLE ? "denied" : "allowed";
 }
 
 export class OwnerMergeTokenRefusedError extends Schema.TaggedError<OwnerMergeTokenRefusedError>()(

@@ -37,7 +37,7 @@ export interface GitHubJsonResponse<A> {
 
 /** Standard headers for a Kin GitHub REST call. */
 export const gitHubRequest = (
-  method: "GET" | "POST" | "PUT" | "DELETE",
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
   path: string,
   token: Redacted.Redacted<string> | undefined,
 ) => {
@@ -55,7 +55,7 @@ export const gitHubRequest = (
 export const gitHubJson = Effect.fn("KinGitHub.request")(function* <S extends Schema.Top>(input: {
   readonly client: HttpClient.HttpClient;
   readonly operation: string;
-  readonly method: "GET" | "POST" | "PUT" | "DELETE";
+  readonly method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   readonly path: string;
   readonly token?: Redacted.Redacted<string> | undefined;
   readonly body?: unknown;
@@ -125,4 +125,72 @@ export const gitHubStatus = Effect.fn("KinGitHub.status")(function* (input: {
       Option.getOrUndefined,
     ),
   } satisfies GitHubStatusResponse;
+});
+
+/**
+ * GitHub's rate limits: 429, or a 403 that says so in its headers. A rate-limited refusal says
+ * nothing about the token's permissions.
+ */
+export const isGitHubRateLimit = (
+  answer: Pick<GitHubStatusResponse, "status" | "headers"> & {
+    readonly message?: string | null | undefined;
+  },
+) =>
+  answer.status === 429 ||
+  (answer.status === 403 &&
+    (answer.headers["x-ratelimit-remaining"] === "0" ||
+      answer.headers["retry-after"] !== undefined ||
+      // GitHub's secondary limit can come with neither header.
+      (answer.message?.toLowerCase().includes("secondary rate limit") ?? false)));
+
+/**
+ * GitHub's 403 message when a fine-grained token lacks the permission an endpoint needs. An App
+ * installation token gets "Resource not accessible by integration" instead.
+ */
+export const GITHUB_PAT_NOT_ACCESSIBLE = "Resource not accessible by personal access token";
+
+/** `/repos/{owner}/{name}` for an `owner/name` slug. */
+export const repoPath = (repo: string) => {
+  const [owner = "", name = ""] = repo.split("/");
+  return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+};
+
+export interface GitHubAnswer {
+  readonly status: number;
+  readonly headers: Readonly<Record<string, string | undefined>>;
+  /** GitHub's `message`, or "" when the body has none. Error messages carry no credential. */
+  readonly message: string;
+  readonly body: unknown;
+}
+
+/** One GitHub REST call whose answer is judged by the caller; any status is returned. */
+export const gitHubAnswer = Effect.fn("KinGitHub.answer")(function* (input: {
+  readonly client: HttpClient.HttpClient;
+  readonly operation: string;
+  readonly method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  readonly path: string;
+  readonly token: Redacted.Redacted<string>;
+  readonly body?: unknown;
+}) {
+  yield* Effect.annotateCurrentSpan({ "kin.github.operation": input.operation });
+  const fail = () => new KinGitHubRequestError({ operation: input.operation, stage: "transport" });
+  let request = gitHubRequest(input.method, input.path, input.token);
+  if (input.body !== undefined) {
+    request = yield* HttpClientRequest.bodyJson(request, input.body).pipe(Effect.mapError(fail));
+  }
+  const response = yield* input.client.execute(request).pipe(Effect.mapError(fail));
+  const body: unknown = yield* response.json.pipe(Effect.orElseSucceed(() => null));
+  const message =
+    typeof body === "object" &&
+    body !== null &&
+    "message" in body &&
+    typeof body.message === "string"
+      ? body.message
+      : "";
+  return {
+    status: response.status,
+    headers: response.headers,
+    message,
+    body,
+  } satisfies GitHubAnswer;
 });
