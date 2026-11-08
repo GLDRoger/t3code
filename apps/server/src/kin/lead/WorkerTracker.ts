@@ -147,14 +147,16 @@ const make = Effect.gen(function* () {
     });
     // The worker's own children will wake it again; that later run reports.
     if (settled.timedOut) return;
+    const answer = settled.resultRun ?? run;
     const reply = projection.messages.findLast(
-      (message) => message.role === "assistant" && message.runId === run.id && !message.streaming,
+      (message) =>
+        message.role === "assistant" && message.runId === answer.id && !message.streaming,
     );
     const link = formatThreadLink({
       environmentId: yield* environment.getEnvironmentId,
       threadId: worker.threadId,
     });
-    const report: WorkerReport = (run.status === "completed" && reply !== undefined
+    const report: WorkerReport = (answer.status === "completed" && reply !== undefined
       ? parseReport(reply.text)
       : undefined) ?? {
       result: "blocked",

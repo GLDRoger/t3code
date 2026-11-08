@@ -6,6 +6,7 @@ import {
   CommandId,
   EnvironmentId,
   EventId,
+  KinChatError,
   KinAgentId,
   KinMemoryItemId,
   KinOrgId,
@@ -76,9 +77,9 @@ const delegateInput = {
   sourceEventId: "lead-event",
 };
 const report = {
-  result: "done",
+  result: "done" as const,
   summary: "Fixed it.",
-  evidence: [{ kind: "pr", ref: "https://example.invalid/pr/1" }],
+  evidence: [{ kind: "pr" as const, ref: "https://example.invalid/pr/1" }],
   openQuestions: [],
   memorySuggestions: [],
   misleadingMemory: [],
@@ -209,6 +210,7 @@ const harness = () => {
                 message: sent.messages.find((message) => message.id === input.messageId)!,
                 run: sent.runs.findLast((run) => run.userMessageId === input.messageId)!,
                 turnItem: null,
+                delivery: "started" as const,
               };
             }).pipe(Effect.orDie),
           waitForThread: (input) =>
@@ -436,7 +438,7 @@ it.effect(
         assert.lengthOf(fakes.launches, 0);
         yield* ctx.sql`UPDATE kin_budget_limits SET limits_json = '{"leadUnits":10,"workerUnits":10}' WHERE org_id = ${ctx.orgId}`;
 
-        const foreign = [
+        const foreign: ReadonlyArray<Effect.Effect<object, KinChatError>> = [
           workers.delegate(scope, {
             ...delegateInput,
             kind: "review",
