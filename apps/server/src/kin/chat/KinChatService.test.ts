@@ -221,10 +221,11 @@ describe("KinChatService", () => {
           service.send(person, { chatId: chat.chatId, clientMessageId: "blank", body: " " }),
         ])
           assert.include(yield* Effect.flip(operation), { reason: "invalid_state" });
+        const { clientMessageId: _postedId, ...postedForPerson } = posted;
         assert.deepStrictEqual(
           (yield* service.history(person, { chatId: chat.chatId, beforeSeq: 4, limit: 1 }))
             .messages,
-          [posted],
+          [postedForPerson],
         );
         const widget = yield* service.createTaskCard({
           orgId: person.orgId,
@@ -877,7 +878,11 @@ describe("KinChatService", () => {
       for (const event of events) yield* hub.publish(event);
       assert.deepStrictEqual(
         yield* Stream.runCollect(viewer.pipe(Stream.take(events.length))),
-        events,
+        events.map((event) => {
+          if (event.type !== "message.posted") return event;
+          const { clientMessageId: _id, ...visible } = event.message;
+          return { ...event, message: visible };
+        }),
       );
       const agentViewer = yield* hub.subscribeForViewer(agent);
       const suggestion: Hub.KinChatHubEvent = {
