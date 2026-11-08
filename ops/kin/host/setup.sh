@@ -193,6 +193,7 @@ check "git-filter-repo" as_kin git filter-repo --version
 check "gitleaks" as_kin gitleaks version
 check "sqlite3 (backups)" as_kin sqlite3 --version
 check "libsecret-1-dev (desktop build)" as_kin pkg-config --exists libsecret-1
+check "C compiler (desktop build)" as_kin sh -c 'command -v "${CC:-cc}"'
 check "mise" as_kin mise --version
 check "Node $NODE_VERSION via mise" as_kin sh -c "mise exec node@$NODE_VERSION -- node --version | grep -q '^v$node_major\\.'"
 check "vp" as_kin vp --version
