@@ -2,10 +2,14 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import { KinMemoryItemId, KinOrgId } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import { ChildProcessSpawner } from "effect/process";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Persistence from "../persistence/KinPersistence.ts";
 import * as Vcs from "../../vcs/VcsProcess.ts";
@@ -14,6 +18,7 @@ import { parseFrontMatter } from "./frontMatter.ts";
 import * as Memory from "./Memory.ts";
 import { MemoryConfig } from "./MemoryConfig.ts";
 import * as Purge from "./purge.ts";
+import * as PurgePush from "./purgePush.ts";
 import * as Scan from "./secretScan.ts";
 
 const orgId = KinOrgId.make("fixture-org");
@@ -21,180 +26,210 @@ const token = ["gh", "p_"].join("") + "A1b2C3d4E5".repeat(3) + "abcdef";
 // TRIG-20 installs git-filter-repo on the Kin host; machines without it skip the real rewrite.
 const filterRepoMissing = NodeChildProcess.spawnSync("git-filter-repo", ["--version"]).status !== 0;
 
-const authorityFor = (plan: Purge.PurgePlan): Purge.PurgeAuthority => ({
-  action: {
-    id: "act-1",
-    orgId,
-    kind: "memory_purge",
-    revision: 1,
-    target: { _tag: "content", path: "purge/act-1.json", sha256: Purge.purgePlanDigest(plan) },
-  },
-  grant: {
-    id: "grant-1",
-    orgId,
-    actionId: "act-1",
-    revision: 1,
-    jti: "jti-1",
-    approverHumanId: "fixture-owner",
-    keyThumbprint: "thumb-1",
-  },
-  auditId: "audit-1",
+const grant: Purge.PurgeGrant = {
+  id: "grant-1",
+  orgId,
+  actionId: "act-1",
+  revision: 1,
+  jti: "jti-1",
+  approverHumanId: "fixture-owner",
+  keyThumbprint: "thumb-1",
+};
+const actionFor = (plan: Purge.PurgePlan): Purge.PurgeAction => ({
+  id: "act-1",
+  orgId,
+  kind: "memory_purge",
+  revision: 1,
+  target: Purge.purgePlanJson(plan).target,
+});
+const gateOpen = Effect.provideService(Purge.PurgeExecutorGate, true);
+
+const services = Layer.mergeAll(
+  Vcs.layer.pipe(Layer.provide(NodeServices.layer)),
+  NodeServices.layer,
+  Persistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
+);
+
+interface PurgeOptions {
+  readonly push?: (
+    real: PurgePush.KinPurgePush["Service"],
+  ) => Partial<PurgePush.KinPurgePush["Service"]> | undefined;
+  readonly scan?: Layer.Layer<Scan.KinSecretScan>;
+  readonly filterRepo?: string;
+  readonly queue?: "default";
+}
+
+const fixture = Effect.fn(function* (tokenInMessage = false) {
+  const fs = yield* FileSystem.FileSystem;
+  const vcs = yield* Vcs.VcsProcess;
+  const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+  const source = `${root}/seed`;
+  const remote = `${root}/remote.git`;
+  // A file:// URL transfers reachable objects only, like a real remote; a bare path copies them all.
+  const remoteUrl = `file://${remote}`;
+  const git = (cwd: string, args: ReadonlyArray<string>) =>
+    vcs
+      .run({
+        operation: "test.purge",
+        command: "git",
+        cwd,
+        args: cwd === remote ? [`--git-dir=${remote}`, ...args] : args,
+        maxOutputBytes: 64 * 1024 * 1024,
+      })
+      .pipe(Effect.map((result) => result.stdout.trim()));
+  const commit = (message: string) =>
+    git(source, [
+      "-c",
+      "user.name=Fixture Bot",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "commit",
+      "-q",
+      "-m",
+      message,
+    ]);
+  yield* fs.makeDirectory(`${source}/claims`, { recursive: true });
+  yield* git(source, ["init", "-q", "-b", "main"]);
+  yield* fs.writeFileString(`${source}/rules.md`, "Invented rules\n");
+  yield* fs.writeFileString(`${source}/INDEX.md`, "As of 2026-11-08T00:00:00.000Z\n");
+  yield* fs.writeFileString(
+    `${source}/claims/leak.md`,
+    fixtureItem({ id: "claim-leak", kind: "claim", title: "Invented vendor note" }) +
+      `vendor key: ${token}\n`,
+  );
+  yield* fs.writeFileString(
+    `${source}/claims/keep.md`,
+    fixtureItem({ id: "claim-keep", kind: "claim", title: "Invented keeper" }),
+  );
+  yield* git(source, ["add", "--", "."]);
+  yield* commit(tokenInMessage ? `fixture ${token}` : "fixture");
+  yield* git(source, ["switch", "-q", "-c", "side"]);
+  yield* fs.writeFileString(`${source}/claims/leak.md`, `side copy ${token}\n`);
+  yield* git(source, ["add", "--", "."]);
+  yield* commit("side");
+  yield* git(source, ["switch", "-q", "main"]);
+  yield* fs.writeFileString(`${source}/rules.md`, "Invented rules, revised\n");
+  yield* git(source, ["add", "--", "."]);
+  yield* commit("revise rules");
+  yield* git(root, ["clone", "-q", "--bare", "--", source, remote]);
+
+  const events: string[] = [];
+  const config = Layer.succeed(MemoryConfig, {
+    baseDirectory: root,
+    repositories: [{ orgId, repoUrl: remoteUrl, path: "state" }],
+  });
+  const purgeLayer = (options: PurgeOptions = {}) => {
+    const realPush = PurgePush.gitPushLayer({ credentialHelper: "fixture-helper" });
+    const push = options.push
+      ? Layer.effect(
+          PurgePush.KinPurgePush,
+          Effect.gen(function* () {
+            const real = yield* PurgePush.KinPurgePush;
+            return PurgePush.KinPurgePush.of({ ...real, ...options.push?.(real) });
+          }),
+        ).pipe(Layer.provide(realPush))
+      : realPush;
+    return Purge.layer.pipe(
+      Layer.provideMerge(
+        Memory.layer.pipe(
+          Layer.provide(config),
+          Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
+        ),
+      ),
+      Layer.provide(config),
+      Layer.provide(options.scan ?? Scan.layer),
+      Layer.provide(push),
+      Layer.provide(
+        Layer.succeed(Purge.GitFilterRepoCommand, options.filterRepo ?? "git-filter-repo"),
+      ),
+      Layer.provide(
+        options.queue === "default"
+          ? Layer.empty
+          : Layer.succeed(Purge.KinPurgeQueue, {
+              pause: () => Effect.sync(() => events.push("pause")),
+              resume: () => Effect.sync(() => events.push("resume")),
+            }),
+      ),
+    );
+  };
+  const writerHistory = (writer: string) =>
+    Effect.gen(function* () {
+      if (!(yield* fs.exists(`${writer}/.git`))) return "";
+      return [
+        yield* git(writer, ["log", "--all", "-p"]),
+        yield* git(writer, ["cat-file", "--batch-all-objects", "--batch"]),
+      ].join("\n");
+    });
+  /** Seeds anchors and checkouts the way a lead's first wake-up does. */
+  const prepare = Effect.gen(function* () {
+    const memory = yield* Memory.Memory;
+    const paths = yield* memory.ensureCheckouts(orgId);
+    yield* memory.prepareWakeup(orgId);
+    return paths;
+  });
+  return {
+    fs,
+    git,
+    root,
+    source,
+    remote,
+    remoteUrl,
+    events,
+    commit,
+    purgeLayer,
+    writerHistory,
+    prepare,
+  };
 });
 
+const dropPlan = (remoteUrl: string, paths = ["claims/leak.md"]): Purge.PurgePlan => ({
+  orgId,
+  repo: remoteUrl,
+  mode: "drop_file",
+  paths,
+});
+const runPurge = (plan: Purge.PurgePlan) =>
+  Effect.gen(function* () {
+    const target = yield* (yield* Purge.KinPurge).storePlan(plan);
+    expect(target).toEqual(actionFor(plan).target);
+    return yield* Purge.memoryPurgeHandler.run(actionFor(plan), grant).pipe(gateOpen, Effect.exit);
+  });
+const reconcile = (plan: Purge.PurgePlan) =>
+  Purge.memoryPurgeHandler.reconcile(actionFor(plan)).pipe(gateOpen);
+const failureOf = <A, E>(exit: Exit.Exit<A, E>) =>
+  Exit.isFailure(exit) ? Cause.findErrorOption(exit.cause) : undefined;
+
 describe.skipIf(filterRepoMissing)("purge with git-filter-repo", () => {
-  it.live.each([
-    "drop_file",
-    "redact_text",
-    "wrong pattern",
-    "push fails",
-    "missing tool",
-  ] as const)("purge on a fixture repo: %s", (scenario) =>
+  it.live.each(["drop_file", "redact_text"] as const)("purges a fixture repo: %s", (mode) =>
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const vcs = yield* Vcs.VcsProcess;
-      const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
-      const source = `${root}/seed`;
-      const remote = `${root}/remote.git`;
-      // A file:// URL transfers reachable objects only, like a real remote; a bare path copies them all.
-      const remoteUrl = `file://${remote}`;
-      const git = (cwd: string, args: ReadonlyArray<string>) =>
-        vcs
-          .run({
-            operation: "test.purge",
-            command: "git",
-            cwd,
-            args: cwd === remote ? [`--git-dir=${remote}`, ...args] : args,
-            maxOutputBytes: 64 * 1024 * 1024,
-          })
-          .pipe(Effect.map((result) => result.stdout.trim()));
-      const commit = (message: string) =>
-        git(source, [
-          "-c",
-          "user.name=Fixture Bot",
-          "-c",
-          "user.email=fixture@example.invalid",
-          "commit",
-          "-q",
-          "-m",
-          message,
-        ]);
-      yield* fs.makeDirectory(`${source}/claims`, { recursive: true });
-      yield* git(source, ["init", "-q", "-b", "main"]);
-      yield* fs.writeFileString(`${source}/rules.md`, "Invented rules\n");
-      yield* fs.writeFileString(`${source}/INDEX.md`, "As of 2026-11-08T00:00:00.000Z\n");
-      yield* fs.writeFileString(
-        `${source}/claims/leak.md`,
-        fixtureItem({ id: "claim-leak", kind: "claim", title: "Invented vendor note" }) +
-          `vendor key: ${token}\n`,
-      );
-      yield* fs.writeFileString(
-        `${source}/claims/keep.md`,
-        fixtureItem({ id: "claim-keep", kind: "claim", title: "Invented keeper" }),
-      );
-      yield* git(source, ["add", "--", "."]);
-      yield* commit(scenario === "redact_text" ? `fixture ${token}` : "fixture");
-      yield* git(source, ["switch", "-q", "-c", "side"]);
-      yield* fs.writeFileString(`${source}/claims/leak.md`, `side copy ${token}\n`);
-      yield* git(source, ["add", "--", "."]);
-      yield* commit("side");
-      yield* git(source, ["switch", "-q", "main"]);
-      yield* fs.writeFileString(`${source}/rules.md`, "Invented rules, revised\n");
-      yield* git(source, ["add", "--", "."]);
-      yield* commit("revise rules");
-      yield* git(root, ["clone", "-q", "--bare", "--", source, remote]);
-
-      const events: string[] = [];
-      const config = Layer.succeed(MemoryConfig, {
-        baseDirectory: root,
-        repositories: [{ orgId, repoUrl: remoteUrl, path: "state" }],
-      });
-      const memoryLayer = Memory.layer.pipe(
-        Layer.provide(config),
-        Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
-      );
-      const push =
-        scenario === "push fails"
-          ? Layer.succeed(Purge.KinPurgePush, {
-              push: () => Effect.fail(new Purge.KinPurgePushError({ reason: "fixture refusal" })),
-            })
-          : Purge.gitPushLayer({}).pipe(Layer.provide(config));
-      const layer = Purge.layer.pipe(
-        Layer.provideMerge(memoryLayer),
-        Layer.provide(config),
-        Layer.provide(Scan.layer),
-        Layer.provide(push),
-        Layer.provide(
-          Layer.succeed(
-            Purge.GitFilterRepoCommand,
-            scenario === "missing tool" ? `${root}/missing/git-filter-repo` : "git-filter-repo",
-          ),
-        ),
-        Layer.provide(
-          Layer.succeed(Purge.KinPurgeQueue, {
-            pause: () => Effect.sync(() => events.push("pause")),
-            resume: () => Effect.sync(() => events.push("resume")),
-          }),
-        ),
-      );
-
+      const { fs, git, root, remote, remoteUrl, events, purgeLayer, writerHistory, prepare } =
+        yield* fixture(mode === "redact_text");
       yield* Effect.gen(function* () {
         const memory = yield* Memory.Memory;
-        const paths = yield* memory.ensureCheckouts(orgId);
-        yield* memory.prepareWakeup(orgId);
+        const paths = yield* prepare;
         const oldMain = yield* git(remote, ["rev-parse", "refs/heads/main"]);
         const oldSide = yield* git(remote, ["rev-parse", "refs/heads/side"]);
         const plan: Purge.PurgePlan =
-          scenario === "redact_text"
-            ? {
-                orgId,
-                repo: remoteUrl,
-                mode: "redact_text",
-                paths: ["claims/leak.md"],
-                patterns: [token],
-              }
-            : scenario === "wrong pattern"
-              ? {
-                  orgId,
-                  repo: remoteUrl,
-                  mode: "redact_text",
-                  paths: ["claims/leak.md"],
-                  patterns: ["Invented vendor note"],
-                }
-              : { orgId, repo: remoteUrl, mode: "drop_file", paths: ["claims/leak.md"] };
-        const result = yield* Purge.memoryPurgeHandler
-          .run(plan, authorityFor(plan))
-          .pipe(Effect.provideService(Purge.PurgeExecutorGate, true), Effect.result);
+          mode === "redact_text"
+            ? { orgId, repo: remoteUrl, mode, patterns: [token] }
+            : dropPlan(remoteUrl);
+        yield* fs.makeDirectory(`${root}/state/purge-scratch/mirror-stale`, { recursive: true });
+        const exit = yield* runPurge(plan);
 
-        if (scenario !== "drop_file" && scenario !== "redact_text") {
-          expect(result._tag).toBe("Failure");
-          if (result._tag === "Failure") {
-            expect(result.failure).toMatchObject({
-              _tag: "KinPurgeFailed",
-              ...{
-                "wrong pattern": { stage: "verify", queueHeld: false },
-                "push fails": { stage: "push", queueHeld: true },
-                "missing tool": { stage: "rewrite", queueHeld: false },
-              }[scenario],
-            });
-            expect(JSON.stringify(result.failure)).not.toContain(token);
-          }
-          expect(events).toEqual(scenario === "push fails" ? ["pause"] : ["pause", "resume"]);
-          expect(yield* git(remote, ["rev-parse", "refs/heads/main"])).toBe(oldMain);
-          expect(yield* memory.anchor(orgId, "main")).toBe(oldMain);
-          return;
-        }
-
-        expect(result._tag).toBe("Success");
-        if (result._tag !== "Success") return;
+        expect(Exit.isSuccess(exit)).toBe(true);
+        expect(yield* fs.readDirectory(`${root}/state/purge-scratch`)).toEqual([]);
+        if (!Exit.isSuccess(exit)) return;
+        const result = exit.value;
         const newMain = yield* git(remote, ["rev-parse", "refs/heads/main"]);
         const newSide = yield* git(remote, ["rev-parse", "refs/heads/side"]);
         expect(events).toEqual(["pause", "resume"]);
-        expect(result.success).toMatchObject({ oldHead: oldMain, newHead: newMain });
-        expect(result.success.rewrittenRefs).toEqual([
+        expect(yield* memory.purgeInFlight(orgId)).toBeUndefined();
+        expect(result).toMatchObject({ oldHead: oldMain, newHead: newMain });
+        expect(result.rewrittenRefs).toEqual([
           { ref: "refs/heads/main", old: oldMain, new: newMain },
           { ref: "refs/heads/side", old: oldSide, new: newSide },
         ]);
-        expect(result.success.audit).toMatchObject({
+        expect(result.audit).toMatchObject({
           orgId,
           event: "execution_finished",
           actionId: "act-1",
@@ -203,53 +238,227 @@ describe.skipIf(filterRepoMissing)("purge with git-filter-repo", () => {
           keyThumbprint: "thumb-1",
           headSha: newMain,
         });
-        expect(JSON.parse(result.success.audit.result)).toMatchObject({
+        expect(JSON.parse(result.audit.result)).toMatchObject({
           oldHead: oldMain,
           newHead: newMain,
         });
+        expect(result.audit.result).not.toContain(token);
 
-        for (const history of [
-          yield* git(remote, ["log", "--all", "-p"]),
-          yield* git(paths.writer, ["log", "--all", "-p"]),
-          yield* git(paths.writer, ["cat-file", "--batch-all-objects", "--batch"]),
-        ])
-          expect(history).not.toContain(token);
+        expect(yield* git(remote, ["log", "--all", "-p"])).not.toContain(token);
+        expect(yield* writerHistory(paths.writer)).not.toContain(token);
         expect(yield* memory.anchor(orgId, "main")).toBe(newMain);
         expect(yield* git(remote, ["show", `${newMain}:claims/keep.md`])).toContain("claim-keep");
 
         const leak = yield* git(remote, ["show", `${newMain}:claims/leak.md`]);
-        if (scenario === "redact_text") {
-          expect(result.success.tombstones).toEqual([]);
+        if (mode === "redact_text") {
+          expect(result.tombstones).toEqual([]);
           expect(leak).toContain("vendor key: ***REMOVED***");
           return;
         }
-        expect(result.success.tombstones).toEqual(["claims/leak.md"]);
+        expect(result.tombstones).toEqual(["claims/leak.md"]);
         const tombstone = yield* parseFrontMatter(orgId, "claims/leak.md", leak + "\n");
         expect(tombstone.frontMatter).toMatchObject({
           id: "claim-leak",
           kind: "claim",
           status: "cancelled",
           said_by: "fixture-owner",
+          source: "kin-action:act-1",
         });
         expect(tombstone.frontMatter.invalid_at).not.toBeNull();
         expect(tombstone.body).toMatch(
-          /^Purged on \d{4}-\d{2}-\d{2} by the owner \(audit audit-1\)/,
+          /^Purged on \d{4}-\d{2}-\d{2} by the owner \(action act-1\)/,
         );
         expect(
           (yield* memory.readItemQuietly(orgId, KinMemoryItemId.make("claim-leak"))).head.status,
         ).toBe("cancelled");
         expect(yield* fs.readFileString(`${paths.read}/INDEX.md`)).toContain("Purged item");
-      }).pipe(Effect.provide(layer));
-    }).pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          Vcs.layer.pipe(Layer.provide(NodeServices.layer)),
-          NodeServices.layer,
-          Persistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
-        ),
-      ),
-      Effect.scoped,
-    ),
+      }).pipe(Effect.provide(purgeLayer()));
+    }).pipe(Effect.provide(services), Effect.scoped),
+  );
+
+  it.live.each([
+    ["wrong pattern", { _tag: "KinPurgeFailed", stage: "verify", queueHeld: false }],
+    ["missing tool", { _tag: "KinPurgeFailed", stage: "rewrite", queueHeld: false }],
+    ["path typo", { _tag: "KinPurgeRejected" }],
+    ["interrupted", undefined],
+    ["no pause", { _tag: "KinPurgePauseUnavailable" }],
+  ] as const)(
+    "a purge that stops before the push resumes the queue and changes nothing: %s",
+    ([scenario, expected]) =>
+      Effect.gen(function* () {
+        const { fs, git, root, remote, remoteUrl, events, purgeLayer, writerHistory, prepare } =
+          yield* fixture();
+        const layer = purgeLayer({
+          ...(scenario === "missing tool" ? { filterRepo: `${root}/missing/git-filter-repo` } : {}),
+          ...(scenario === "interrupted"
+            ? { scan: Layer.succeed(Scan.KinSecretScan, { scan: () => Effect.interrupt }) }
+            : {}),
+          ...(scenario === "no pause" ? { queue: "default" as const } : {}),
+        });
+        yield* Effect.gen(function* () {
+          const memory = yield* Memory.Memory;
+          const paths = yield* prepare;
+          const oldMain = yield* git(remote, ["rev-parse", "refs/heads/main"]);
+          const plan: Purge.PurgePlan =
+            scenario === "wrong pattern"
+              ? { orgId, repo: remoteUrl, mode: "redact_text", patterns: ["Invented vendor note"] }
+              : dropPlan(remoteUrl, scenario === "path typo" ? ["claims/leek.md"] : undefined);
+          const exit = yield* runPurge(plan);
+
+          expect(Exit.isFailure(exit)).toBe(true);
+          if (!Exit.isFailure(exit)) return;
+          if (expected === undefined) expect(Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+          else expect(failureOf(exit)).toMatchObject({ value: expected });
+          if (scenario === "wrong pattern")
+            expect(failureOf(exit)).toMatchObject({
+              value: { reason: expect.stringMatching(/Secret scan/) },
+            });
+          if (scenario === "path typo")
+            expect(failureOf(exit)).toMatchObject({
+              value: { reason: expect.stringMatching(/not in history/) },
+            });
+          expect(JSON.stringify(exit)).not.toContain(token);
+          expect(events).toEqual(scenario === "no pause" ? [] : ["pause", "resume"]);
+          expect(yield* git(remote, ["rev-parse", "refs/heads/main"])).toBe(oldMain);
+          expect(yield* memory.anchor(orgId, "main")).toBe(oldMain);
+          expect(yield* memory.purgeInFlight(orgId)).toBeUndefined();
+          expect(yield* writerHistory(paths.writer)).toContain(token);
+          expect(
+            yield* fs
+              .readDirectory(`${root}/state/purge-scratch`)
+              .pipe(Effect.orElseSucceed(() => [])),
+          ).toEqual([]);
+        }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(services), Effect.scoped),
+  );
+
+  it.live.each(["error", "crash", "interrupt"] as const)(
+    "a push that lands and then fails never republishes the purged history: %s",
+    (scenario) =>
+      Effect.gen(function* () {
+        const { fs, git, remote, remoteUrl, events, purgeLayer, writerHistory, prepare } =
+          yield* fixture();
+        const plan = dropPlan(remoteUrl);
+        const landing = purgeLayer({
+          push: (real) => ({
+            push: (input) =>
+              real
+                .push(input)
+                .pipe(
+                  Effect.andThen(
+                    scenario === "error"
+                      ? Effect.fail(new PurgePush.KinPurgePushError({ reason: "timeout" }))
+                      : scenario === "crash"
+                        ? Effect.die("fixture crash after the push")
+                        : Effect.interrupt,
+                  ),
+                ),
+          }),
+        });
+        const paths = yield* Effect.gen(function* () {
+          const paths = yield* prepare;
+          const exit = yield* runPurge(plan);
+          expect(Exit.isFailure(exit)).toBe(true);
+          if (scenario === "interrupt")
+            expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+          else
+            expect(failureOf(exit)).toMatchObject({
+              value: { _tag: "KinPurgeFailed", stage: "push", queueHeld: true },
+            });
+          expect(events).toEqual(["pause"]);
+          expect(yield* (yield* Memory.Memory).purgeInFlight(orgId)).toBeDefined();
+          expect(yield* fs.exists(paths.writer)).toBe(false);
+          expect(yield* fs.exists(paths.read)).toBe(false);
+          return paths;
+        }).pipe(Effect.provide(landing));
+
+        // A crash restarts the server: fresh Memory and purge services over the same database and files.
+        const after = scenario === "crash" ? purgeLayer() : landing;
+        yield* Effect.gen(function* () {
+          const memory = yield* Memory.Memory;
+          yield* memory.prepareWakeup(orgId).pipe(Effect.result);
+          yield* memory.recover(orgId).pipe(Effect.result);
+          expect(yield* git(remote, ["log", "--all", "-p"])).not.toContain(token);
+          expect(yield* git(remote, ["for-each-ref", "--format=%(refname)"])).not.toContain(
+            "kin/conflict",
+          );
+
+          expect(yield* reconcile(plan)).toBe("done");
+          expect(events).toEqual(["pause", "resume"]);
+          expect(yield* memory.purgeInFlight(orgId)).toBeUndefined();
+          const newMain = yield* git(remote, ["rev-parse", "refs/heads/main"]);
+          expect((yield* memory.prepareWakeup(orgId)).head).toBe(newMain);
+          expect(yield* writerHistory(paths.writer)).not.toContain(token);
+          expect(yield* git(remote, ["log", "--all", "-p"])).not.toContain(token);
+        }).pipe(Effect.provide(after));
+      }).pipe(Effect.provide(services), Effect.scoped),
+  );
+
+  it.live.each([
+    ["refused", "remote_rejected", "not_done"],
+    ["lease rejected", "lease_rejected", "unknown"],
+  ] as const)(
+    "a push that does not land holds the queue until reconcile: %s",
+    ([scenario, reason, verdict]) =>
+      Effect.gen(function* () {
+        const {
+          fs,
+          git,
+          source,
+          remote,
+          remoteUrl,
+          events,
+          commit,
+          purgeLayer,
+          writerHistory,
+          prepare,
+        } = yield* fixture();
+        const plan = dropPlan(remoteUrl);
+        const layer = purgeLayer({
+          push: (real) => ({
+            push: (input) =>
+              scenario === "refused"
+                ? Effect.fail(new PurgePush.KinPurgePushError({ reason: "remote_rejected" }))
+                : Effect.gen(function* () {
+                    // The remote moves after the purge's mirror clone.
+                    yield* fs.writeFileString(`${source}/claims/other.md`, "Invented later note\n");
+                    yield* git(source, ["add", "--", "."]);
+                    yield* commit("later");
+                    yield* git(source, ["push", "-q", remote, "main"]);
+                  }).pipe(Effect.orDie, Effect.andThen(real.push(input))),
+          }),
+        });
+        yield* Effect.gen(function* () {
+          const memory = yield* Memory.Memory;
+          const paths = yield* prepare;
+          const oldMain = yield* git(remote, ["rev-parse", "refs/heads/main"]);
+          const exit = yield* runPurge(plan);
+          expect(failureOf(exit)).toMatchObject({
+            value: {
+              _tag: "KinPurgeFailed",
+              stage: "push",
+              queueHeld: true,
+              reason: `Force-push failed: ${reason}`,
+            },
+          });
+          expect(events).toEqual(["pause"]);
+          const remoteMain = yield* git(remote, ["rev-parse", "refs/heads/main"]);
+          if (scenario === "refused") expect(remoteMain).toBe(oldMain);
+          else expect(remoteMain).not.toBe(oldMain);
+          expect(yield* git(remote, ["log", "--all", "-p"])).toContain(token);
+
+          expect(yield* reconcile(plan)).toBe(verdict);
+          if (verdict === "unknown") {
+            expect(events).toEqual(["pause"]);
+            expect(yield* memory.purgeInFlight(orgId)).toBeDefined();
+            return;
+          }
+          expect(events).toEqual(["pause", "resume"]);
+          expect(yield* memory.purgeInFlight(orgId)).toBeUndefined();
+          expect(yield* memory.anchor(orgId, "main")).toBe(oldMain);
+          expect(yield* writerHistory(paths.writer)).toContain(token);
+        }).pipe(Effect.provide(layer));
+      }).pipe(Effect.provide(services), Effect.scoped),
   );
 });
 
@@ -260,13 +469,186 @@ const drop: Purge.PurgePlan = {
   paths: ["claims/leak.md"],
 };
 
-it.effect("the executor gate refuses a purge until APPR-9 and APPR-10 land", () =>
+const unitLayer = (baseDirectory: string) =>
+  Purge.layer.pipe(
+    Layer.provide(Layer.mock(Memory.Memory)({ purgeInFlight: () => Effect.undefined })),
+    Layer.provide(
+      Layer.succeed(MemoryConfig, {
+        baseDirectory,
+        repositories: [{ orgId, repoUrl: "fixture-remote", path: "state" }],
+      }),
+    ),
+    Layer.provide(Layer.mock(Scan.KinSecretScan)({})),
+    Layer.provide(Layer.mock(PurgePush.KinPurgePush)({})),
+    Layer.provide(Layer.mock(Vcs.VcsProcess)({})),
+    Layer.provide(NodeServices.layer),
+  );
+
+it.effect("the executor gate refuses a purge until APPR-9, APPR-10 and LEAD-11 land", () =>
   Effect.gen(function* () {
-    const result = yield* Purge.memoryPurgeHandler
-      .run(drop, authorityFor(drop))
-      .pipe(Effect.provide(Layer.mock(Purge.KinPurge)({})), Effect.result);
-    expect(result._tag).toBe("Failure");
-    if (result._tag === "Failure") expect(result.failure._tag).toBe("KinPurgeExecutorNotReady");
+    const action = actionFor(drop);
+    for (const attempt of [
+      Purge.memoryPurgeHandler.precheck(action),
+      Purge.memoryPurgeHandler.run(action, grant),
+      Purge.memoryPurgeHandler.reconcile(action),
+      Effect.gen(function* () {
+        return yield* (yield* Purge.KinPurge).purge(action, grant);
+      }),
+    ]) {
+      const result = yield* Effect.result(attempt);
+      expect(result).toMatchObject({ failure: { _tag: "KinPurgeExecutorNotReady" } });
+    }
+  }).pipe(Effect.provide(unitLayer("/nonexistent"))),
+);
+
+it.effect("a stored plan binds its file to the action digest until it is discarded", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.makeTempDirectoryScoped();
+    yield* Effect.gen(function* () {
+      const purge = yield* Purge.KinPurge;
+      const action = actionFor(drop);
+      const target = yield* purge.storePlan(drop);
+      expect(target).toEqual(action.target);
+      expect(yield* fs.readFileString(`${root}/${target.path}`)).toBe(
+        Purge.purgePlanJson(drop).json,
+      );
+      yield* purge.precheck(action).pipe(gateOpen);
+
+      yield* fs.writeFileString(
+        `${root}/${target.path}`,
+        Purge.purgePlanJson({ ...drop, paths: ["claims/keep.md"] }).json,
+      );
+      expect(yield* purge.precheck(action).pipe(gateOpen, Effect.result)).toMatchObject({
+        failure: { _tag: "KinPurgeRejected", reason: "Plan does not match the approved digest" },
+      });
+      expect(
+        yield* purge
+          .precheck({ ...action, target: { ...action.target, path: "../escape.json" } })
+          .pipe(gateOpen, Effect.result),
+      ).toMatchObject({ failure: { _tag: "KinPurgeRejected", reason: "Invalid plan path" } });
+
+      yield* purge.discardPlan(target);
+      expect(yield* fs.exists(`${root}/${target.path}`)).toBe(false);
+      expect(yield* purge.precheck(action).pipe(gateOpen, Effect.result)).toMatchObject({
+        failure: { _tag: "KinPurgeRejected", reason: "Plan file is missing" },
+      });
+      expect(
+        yield* purge.storePlan({ ...drop, repo: "other-remote" }).pipe(Effect.result),
+      ).toMatchObject({ failure: { _tag: "KinPurgeRejected" } });
+    }).pipe(Effect.provide(unitLayer(root)));
+  }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+);
+
+const pushInput = {
+  orgId,
+  repoUrl: "https://example.invalid/memory.git",
+  gitDir: "/nonexistent",
+  updates: [{ ref: "refs/heads/main", old: "a".repeat(40), new: "b".repeat(40) }],
+};
+const pushWith = (
+  owner: Parameters<typeof PurgePush.gitPushLayer>[0],
+  output: { readonly code: number; readonly stdout?: string; readonly stderr?: string },
+) => {
+  const calls: Array<Vcs.VcsProcessInput> = [];
+  return Effect.gen(function* () {
+    const result = yield* (yield* PurgePush.KinPurgePush).push(pushInput).pipe(Effect.result);
+    return { result, calls };
+  }).pipe(
+    Effect.provide(
+      PurgePush.gitPushLayer(owner).pipe(
+        Layer.provide(
+          Layer.mock(Vcs.VcsProcess)({
+            run: (input) =>
+              Effect.sync(() => {
+                calls.push(input);
+                return {
+                  exitCode: ChildProcessSpawner.ExitCode(output.code),
+                  stdout: output.stdout ?? "",
+                  stderr: output.stderr ?? "",
+                  stdoutTruncated: false,
+                  stderrTruncated: false,
+                };
+              }),
+          }),
+        ),
+      ),
+    ),
+  );
+};
+
+it.effect.each([
+  ["no credential", {}],
+  ["inline helper script", { credentialHelper: "!f() { echo password=hunter2; }; f" }],
+  ["shell in ssh command", { sshCommand: "ssh -i key; cat /etc/passwd" }],
+] as const)("the owner push fails closed without a credential reference: %s", ([, owner]) =>
+  Effect.gen(function* () {
+    const { result, calls } = yield* pushWith(owner, { code: 0 });
+    expect(result).toMatchObject({ failure: { reason: "credential_unavailable" } });
+    expect(calls).toEqual([]);
+  }),
+);
+
+it.effect("the owner push passes only credential references and never prompts", () =>
+  Effect.gen(function* () {
+    const { result, calls } = yield* Effect.acquireUseRelease(
+      Effect.sync(() => vi.stubEnv("GIT_CONFIG_PARAMETERS", "'core.hookspath'='/invented'")),
+      () =>
+        pushWith(
+          { credentialHelper: "osxkeychain", sshCommand: "ssh -i /keys/owner" },
+          { code: 0 },
+        ),
+      () => Effect.sync(() => vi.unstubAllEnvs()),
+    );
+    expect(result._tag).toBe("Success");
+    const [call] = calls;
+    expect(call?.args).toContain("credential.helper=osxkeychain");
+    expect(call?.env).toMatchObject({
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_ASKPASS: "false",
+      SSH_ASKPASS: "false",
+      SSH_ASKPASS_REQUIRE: "never",
+      GIT_SSH_COMMAND:
+        "ssh -i /keys/owner -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none",
+    });
+    expect(call?.env).toHaveProperty("GIT_CONFIG_PARAMETERS", undefined);
+    expect(call?.env).toHaveProperty("SSH_AUTH_SOCK", undefined);
+
+    const helperOnly = yield* pushWith({ credentialHelper: "osxkeychain" }, { code: 0 });
+    expect(helperOnly.calls[0]?.env?.GIT_SSH_COMMAND).toBe("false");
+  }),
+);
+
+it.effect.each([
+  [
+    "stale lease",
+    { stdout: "To x\n!\trefs/heads/main:refs/heads/main\t[rejected] (stale info)\nDone\n" },
+    "lease_rejected",
+  ],
+  [
+    "ruleset",
+    {
+      stdout:
+        "To x\n!\trefs/heads/main:refs/heads/main\t[remote rejected] (protected branch hook declined)\n",
+    },
+    "remote_rejected",
+  ],
+  [
+    "auth",
+    { stderr: `fatal: Authentication failed for 'https://x:${token}@example.invalid/'\n` },
+    "auth",
+  ],
+  [
+    "network",
+    { stderr: "fatal: unable to access 'https://example.invalid/': Could not resolve host\n" },
+    "network",
+  ],
+  ["other", { stderr: "fatal: something else\n" }, "unknown"],
+] as const)("classifies a failed owner push: %s", ([, output, reason]) =>
+  Effect.gen(function* () {
+    const { result } = yield* pushWith({ credentialHelper: "osxkeychain" }, { code: 1, ...output });
+    expect(result).toMatchObject({ failure: { _tag: "KinPurgePushError", reason } });
+    expect(JSON.stringify(result)).not.toContain(token);
   }),
 );
 
@@ -282,39 +664,57 @@ it.each([
   ["dot segment", { paths: ["claims/./leak.md"] }],
   ["backslash", { paths: ["claims\\leak.md"] }],
   ["newline", { paths: ["claims/leak.md\nrules.md"] }],
+  ["decomposed", { paths: ["claims/café.md"] }],
   ["not markdown", { paths: ["claims"] }],
   ["rules", { paths: ["rules.md"] }],
   ["no paths", { paths: [] }],
   ["duplicate", { paths: ["claims/leak.md", "claims/leak.md"] }],
-  ["drop with patterns", { patterns: ["Invented text"] }],
-  ["no patterns", { mode: "redact_text" }],
-  ["short pattern", { mode: "redact_text", patterns: ["short"] }],
-  ["rule injection", { mode: "redact_text", patterns: ["Invented==>regex:.*"] }],
-  ["extra rule", { mode: "redact_text", patterns: ["Invented text\nregex:.*"] }],
-] as const)("rejects an unsafe plan: %s", (_name, overrides) => {
+] as const)("rejects an unsafe drop plan: %s", (_name, overrides) => {
   const plan = { ...drop, ...overrides };
-  expect(Purge.purgeRejection(plan, authorityFor(plan))).toBeDefined();
+  expect(Purge.purgeRejection(plan, actionFor(plan), grant)).toBeDefined();
+});
+
+it.each([
+  ["no patterns", []],
+  ["short pattern", ["short"]],
+  ["duplicate", ["Invented text", "Invented text"]],
+  ["rule injection", ["Invented==>regex:.*"]],
+  ["extra rule", ["Invented text\nregex:.*"]],
+] as const)("rejects an unsafe redact plan: %s", (_name, patterns) => {
+  const plan: Purge.PurgePlan = { orgId, repo: "fixture-remote", mode: "redact_text", patterns };
+  expect(Purge.purgeRejection(plan, actionFor(plan), grant)).toBeDefined();
 });
 
 it.each([
   [
     "digest",
-    (a: Purge.PurgeAuthority) => ({
-      ...a,
-      action: { ...a.action, target: { ...a.action.target, sha256: "0".repeat(64) } },
-    }),
+    (a: Purge.PurgeAction, g: Purge.PurgeGrant) =>
+      [{ ...a, target: { ...a.target, sha256: "0".repeat(64) } }, g] as const,
   ],
-  ["action", (a: Purge.PurgeAuthority) => ({ ...a, grant: { ...a.grant, actionId: "act-2" } })],
-  ["revision", (a: Purge.PurgeAuthority) => ({ ...a, grant: { ...a.grant, revision: 2 } })],
+  [
+    "plan path",
+    (a: Purge.PurgeAction, g: Purge.PurgeGrant) =>
+      [{ ...a, target: { ...a.target, path: "purge-plans/other.json" } }, g] as const,
+  ],
+  [
+    "action",
+    (a: Purge.PurgeAction, g: Purge.PurgeGrant) => [a, { ...g, actionId: "act-2" }] as const,
+  ],
+  ["revision", (a: Purge.PurgeAction, g: Purge.PurgeGrant) => [a, { ...g, revision: 2 }] as const],
   [
     "org",
-    (a: Purge.PurgeAuthority) => ({
-      ...a,
-      grant: { ...a.grant, orgId: KinOrgId.make("other-org") },
-    }),
+    (a: Purge.PurgeAction, g: Purge.PurgeGrant) =>
+      [a, { ...g, orgId: KinOrgId.make("other-org") }] as const,
   ],
-  ["audit id", (a: Purge.PurgeAuthority) => ({ ...a, auditId: "audit 1\nforged" })],
+  [
+    "action id",
+    (a: Purge.PurgeAction, g: Purge.PurgeGrant) =>
+      [
+        { ...a, id: "act 1\nforged" },
+        { ...g, actionId: "act 1\nforged" },
+      ] as const,
+  ],
 ] as const)("rejects authority that does not bind the plan: %s", (_name, tamper) => {
-  expect(Purge.purgeRejection(drop, authorityFor(drop))).toBeUndefined();
-  expect(Purge.purgeRejection(drop, tamper(authorityFor(drop)))).toBeDefined();
+  expect(Purge.purgeRejection(drop, actionFor(drop), grant)).toBeUndefined();
+  expect(Purge.purgeRejection(drop, ...tamper(actionFor(drop), grant))).toBeDefined();
 });

@@ -142,6 +142,13 @@ export class MemorySyncHooks extends Context.Reference<{
   defaultValue: () => ({ syncItems: () => Effect.void }),
 }) {}
 
+export interface MemoryHistoryRewrite {
+  /** Writes the durable marker, then deletes the writer and read checkouts that hold the old history. */
+  readonly quarantine: (marker: string) => Effect.Effect<void, MemoryFailure>;
+  /** Clones fresh, records the remote heads without preserving old anchors, rebuilds, then clears the marker. */
+  readonly reclone: () => Effect.Effect<void, MemoryFailure>;
+}
+
 export class Memory extends Context.Service<
   Memory,
   {
@@ -162,8 +169,13 @@ export class Memory extends Context.Service<
       head: string,
     ) => Effect.Effect<void, MemoryFailure>;
     readonly recover: (orgId: KinOrgId) => Effect.Effect<void, MemoryFailure>;
-    /** Server-only, for history rewrites: the caller holds the writer lock. Never preserves old anchors. */
-    readonly reclone: (orgId: KinOrgId) => Effect.Effect<void, MemoryFailure>;
+    /** Server-only, for `KinPurge`: runs `body` under the writer lock with the checkout operations a history rewrite needs. */
+    readonly withHistoryRewrite: <A, E>(
+      orgId: KinOrgId,
+      body: (rewrite: MemoryHistoryRewrite) => Effect.Effect<A, E>,
+    ) => Effect.Effect<A, E>;
+    /** The durable marker of an unfinished history rewrite; while present, nothing pushes old anchors. */
+    readonly purgeInFlight: (orgId: KinOrgId) => Effect.Effect<string | undefined, MemoryFailure>;
     readonly ensureCheckouts: (orgId: KinOrgId) => Effect.Effect<MemoryPaths, MemoryFailure>;
     readonly prepareWakeup: (
       orgId: KinOrgId,
@@ -438,6 +450,24 @@ const make = Effect.gen(function* () {
       }
     }
     return { repo, root, writer, read };
+  });
+
+  const markerPath = (root: string) => path.join(root, "purge-in-flight");
+  const purgeInFlight = Effect.fn("Memory.purgeInFlight")(function* (orgId: KinOrgId) {
+    const { root } = yield* pathsFor(orgId);
+    if (!(yield* io(orgId, "purgeMarker", fs.exists(markerPath(root))))) return undefined;
+    return yield* io(orgId, "purgeMarker", fs.readFileString(markerPath(root)));
+  });
+  const refuseDuringPurge = Effect.fn("Memory.refuseDuringPurge")(function* (
+    orgId: KinOrgId,
+    operation: string,
+  ) {
+    if ((yield* purgeInFlight(orgId)) !== undefined)
+      return yield* new MemorySyncConflict({
+        orgId,
+        operation,
+        reason: "A memory purge is in flight; old history must not be pushed",
+      });
   });
 
   const walkAncestors = (...args: Parameters<typeof ancestors>) =>
@@ -847,6 +877,7 @@ const make = Effect.gen(function* () {
     head: string,
     wakeupId?: string,
   ) {
+    yield* refuseDuringPurge(orgId, "preserve");
     const now = yield* Clock.currentTimeMillis;
     const id = wakeupId ?? `recovery-${now}-${head.slice(0, 12)}`;
     if (!/^[a-zA-Z0-9_-]+$/.test(id) || !/^[a-zA-Z0-9_-]+$/.test(orgId))
@@ -1244,13 +1275,15 @@ const make = Effect.gen(function* () {
           }
         }
         if (next !== head) {
-          if (next !== remote)
+          if (next !== remote) {
+            yield* refuseDuringPurge(orgId, "merge");
             yield* git(orgId, paths.writer, [
               "push",
               "--",
               repo.repoUrl,
               `${next}:refs/heads/${branch}`,
             ]);
+          }
           yield* git(orgId, paths.writer, ["update-ref", `refs/heads/${branch}`, next, head]);
           yield* record(orgId, branch, head, next);
           head = next;
@@ -1291,20 +1324,55 @@ const make = Effect.gen(function* () {
     return { head, indexAsOf: DateTime.toUtc(indexAsOf) };
   });
 
-  const reclone = Effect.fn("Memory.reclone")(function* (orgId: KinOrgId) {
+  const dropCheckouts = Effect.fn("Memory.dropCheckouts")(function* (orgId: KinOrgId) {
     const paths = yield* pathsFor(orgId);
     for (const directory of [paths.writer, paths.read])
-      yield* io(orgId, "reclone", fs.remove(directory, { recursive: true, force: true }));
+      yield* io(orgId, "quarantine", fs.remove(directory, { recursive: true, force: true }));
     initializedCheckouts.delete(orgId);
-    // With no writer checkout, recover clones fresh and records the rewritten heads.
-    yield* recover(orgId);
-    yield* prepare(orgId);
-    yield* rebuildIndex(orgId);
+    pinnedHeads.delete(orgId);
+    snapshots.delete(orgId);
+    blobCaches.delete(orgId);
+    return paths;
   });
+  const historyRewrite = (orgId: KinOrgId): MemoryHistoryRewrite => ({
+    quarantine: Effect.fn("Memory.quarantine")((marker: string) =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const { root } = yield* pathsFor(orgId);
+          yield* io(orgId, "mkdir", fs.makeDirectory(root, { recursive: true }));
+          yield* io(orgId, "purgeMarker", fs.writeFileString(`${markerPath(root)}.tmp`, marker));
+          yield* io(orgId, "purgeMarker", fs.rename(`${markerPath(root)}.tmp`, markerPath(root)));
+          yield* dropCheckouts(orgId);
+        }),
+      ),
+    ),
+    reclone: Effect.fn("Memory.reclone")(() =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const { root } = yield* dropCheckouts(orgId);
+          // With no writer checkout, recover clones fresh and records the rewritten heads.
+          yield* recover(orgId);
+          yield* prepare(orgId);
+          yield* rebuildIndex(orgId);
+          yield* io(orgId, "purgeMarker", fs.remove(markerPath(root), { force: true }));
+        }),
+      ),
+    ),
+  });
+
+  const withHistoryRewrite = <A, E>(
+    orgId: KinOrgId,
+    body: (rewrite: MemoryHistoryRewrite) => Effect.Effect<A, E>,
+  ) => withWriterLock(orgId, body(historyRewrite(orgId)));
 
   return Memory.of({
     withWriterLock,
-    reclone: Effect.fn("Memory.recloneLocked")((orgId) => locked(orgId, reclone(orgId))),
+    withHistoryRewrite,
+    purgeInFlight: Effect.fn("Memory.purgeInFlightLocked")((orgId) =>
+      locked(orgId, purgeInFlight(orgId)),
+    ),
     recover: Effect.fn("Memory.recoverLocked")((orgId) =>
       withWriterLock(orgId, locked(orgId, recover(orgId))),
     ),
