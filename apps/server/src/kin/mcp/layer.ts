@@ -12,6 +12,7 @@ import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import { KinServer } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatToolkit, handlers } from "./KinChatToolkit.ts";
+import * as KinApprovalsMcp from "../approvals/mcp.ts";
 
 const registration = McpHttpServer.toolkitRegistration(KinChatToolkit, handlers);
 type Auth = (
@@ -67,7 +68,9 @@ export const transport = (base: typeof McpHttpServer.layer) =>
         const kin = yield* KinServer;
         // The isolated registry also doubles HtmlRender's per-registry headless Chrome cap.
         return Option.isSome(kin.services)
-          ? endpoint(Layer.merge(McpHttpServer.layerTools, registration))
+          ? endpoint(
+              Layer.mergeAll(McpHttpServer.layerTools, registration, KinApprovalsMcp.registration),
+            )
           : Layer.empty;
       }),
     ),
