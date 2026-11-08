@@ -323,7 +323,17 @@ const make = Effect.gen(function* () {
     onStdoutChunk?: (chunk: Uint8Array) => void,
   ) {
     return yield* memoryGit(cwd, args, stdin, {}, onStdoutChunk).pipe(
-      Effect.mapError((cause) => new MemoryError({ orgId, operation: "git", cause })),
+      Effect.mapError((cause) =>
+        cause._tag === "MemoryGitMissingRepository"
+          ? new MemoryCheckoutInvalid({
+              orgId,
+              operation: "git",
+              reason: "Writer .git is missing or not a directory",
+              path: cwd,
+              cause,
+            })
+          : new MemoryError({ orgId, operation: "git", cause }),
+      ),
     );
   });
   const advertisedHead = Effect.fn("Memory.advertisedHead")(function* (

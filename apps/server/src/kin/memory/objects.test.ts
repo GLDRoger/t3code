@@ -78,11 +78,22 @@ it.effect(
           new Map([["rules.md", { mode: "100644", sha: "0".repeat(40) }]]),
         ).pipe(Effect.result);
         expect(rejected._tag).toBe("Failure");
-        yield* fs.remove(`${cwd}/.git`, { recursive: true });
-        calls = 0;
-        const missing = yield* ancestors(org, cwd, tip).pipe(Effect.result);
-        expect(missing._tag).toBe("Failure");
-        expect(calls).toBe(0);
+        const elsewhere = yield* fs.makeTempDirectoryScoped();
+        yield* fs.rename(`${cwd}/.git`, `${elsewhere}/.git`);
+        for (const shape of ["missing", "file", "symlink"] as const) {
+          if (shape === "file")
+            yield* fs.writeFileString(`${cwd}/.git`, `gitdir: ${elsewhere}/.git\n`);
+          if (shape === "symlink") {
+            yield* fs.remove(`${cwd}/.git`);
+            yield* fs.symlink(`${elsewhere}/.git`, `${cwd}/.git`);
+          }
+          calls = 0;
+          const refused = yield* ancestors(org, cwd, tip).pipe(Effect.result);
+          expect(refused._tag).toBe("Failure");
+          if (refused._tag === "Failure")
+            expect(refused.failure._tag).toBe("MemoryCheckoutInvalid");
+          expect(calls).toBe(0);
+        }
       }).pipe(Effect.provideService(VcsProcess, vcs));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
