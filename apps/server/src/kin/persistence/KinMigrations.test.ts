@@ -30,6 +30,9 @@ const tableNames = [
   "kin_orgs",
   "kin_pending_actions",
   "kin_people",
+  "kin_ping_deliveries",
+  "kin_ping_escalations",
+  "kin_ping_items",
   "kin_ping_ledger",
   "kin_read_state",
   "kin_session_bindings",
@@ -88,6 +91,7 @@ describe("Kin migrations", () => {
           { migration_id: 3, name: "Triggers" },
           { migration_id: 4, name: "MemoryReads" },
           { migration_id: 5, name: "OneChatOwner" },
+          { migration_id: 6, name: "Pings" },
           { migration_id: 8, name: "Approvals" },
         ]);
         assert.deepStrictEqual(
@@ -136,6 +140,7 @@ describe("Kin migrations", () => {
           { migration_id: 3, name: "Triggers" },
           { migration_id: 4, name: "MemoryReads" },
           { migration_id: 5, name: "OneChatOwner" },
+          { migration_id: 6, name: "Pings" },
           { migration_id: 8, name: "Approvals" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
@@ -157,9 +162,12 @@ describe("Kin migrations", () => {
           { name: "idx_kin_events_dedupe" },
           { name: "idx_kin_events_queue" },
           { name: "idx_kin_events_wakeup" },
+          { name: "idx_kin_pending_actions_approved" },
           { name: "idx_kin_pending_actions_expiry" },
           { name: "idx_kin_pending_actions_org_state" },
           { name: "idx_kin_people_org_person" },
+          { name: "idx_kin_ping_items_item" },
+          { name: "idx_kin_ping_items_pending" },
           { name: "idx_kin_shadow_entries_promotion" },
           { name: "idx_kin_shadow_entries_review" },
           { name: "idx_kin_trigger_fires_retention" },
@@ -204,6 +212,7 @@ describe("Kin migrations", () => {
         [3, "Triggers"],
         [4, "MemoryReads"],
         [5, "OneChatOwner"],
+        [6, "Pings"],
         [8, "Approvals"],
       ]);
       const before = yield* kinSchema;
@@ -222,6 +231,10 @@ describe("Kin migrations", () => {
         VALUES ('existing-chat', 'org', 'project_group', 0, ${timestamp})`;
       yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
         VALUES ('existing-owner', 'org', 'existing-chat', 'person', 'owner', 'owner', ${timestamp})`;
+      yield* sql`DROP TABLE kin_ping_deliveries`;
+      yield* sql`DROP TABLE kin_ping_escalations`;
+      yield* sql`DROP TABLE kin_ping_items`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 6`;
       yield* sql`DROP INDEX kin_chat_members_one_owner`;
       for (const table of [
         "kin_executions",
@@ -235,6 +248,7 @@ describe("Kin migrations", () => {
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 5`;
       assert.deepStrictEqual(yield* runKinMigrations(), [
         [5, "OneChatOwner"],
+        [6, "Pings"],
         [8, "Approvals"],
       ]);
       assert.deepStrictEqual(
@@ -253,11 +267,27 @@ describe("Kin migrations", () => {
         { migration_id: 3, name: "Triggers" },
         { migration_id: 4, name: "MemoryReads" },
         { migration_id: 5, name: "OneChatOwner" },
+        { migration_id: 6, name: "Pings" },
         { migration_id: 8, name: "Approvals" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT org_id FROM kin_orgs`, [{ org_id: "org" }]);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("refuses to start when a registered migration sits below the latest applied one", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      // What a database looks like when K008 merged before a lower-numbered migration.
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 5`;
+      const history = yield* kinHistory;
+      const exit = yield* Effect.exit(runKinMigrations());
+      assert.isTrue(Exit.isFailure(exit));
+      assert.include(String(exit), "5_OneChatOwner");
+      assert.include(String(exit), "below the latest applied migration 8");
+      assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 

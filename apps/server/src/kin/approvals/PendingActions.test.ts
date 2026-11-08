@@ -6,6 +6,7 @@ import {
   type KinPendingAction,
   type KinResolvedTarget,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -98,6 +99,14 @@ describe("KinPendingActions", () => {
       assert.isTrue(first.created);
       assert.isFalse(replayed.created);
       assert.deepStrictEqual(replayed.action, first.action);
+      // The key comes from the decoded input, so an undeclared field can't fork the action.
+      const padded = request("webhook-delivery-1");
+      const withExtra = yield* actions.create({
+        ...padded,
+        target: { ...padded.target, extra: "ignored" },
+      } as unknown as KinPendingActionCreateInput);
+      assert.isFalse(withExtra.created);
+      assert.strictEqual(withExtra.action.id, first.action.id);
 
       const twice = yield* Effect.all(
         [
@@ -210,6 +219,15 @@ describe("KinPendingActions", () => {
       );
       assert.deepStrictEqual(outcomes.toSorted(), [false, true]);
       assert.deepStrictEqual(yield* actions.approve(grant(other, "jti-3")), { _tag: "stale" });
+
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at)
+        VALUES ('org_02', 'Other', '2026-11-07T00:00:00.000Z')`;
+      const foreign = (yield* actions.create({
+        ...request("delivery-1"),
+        orgId: "org_02",
+      } as unknown as KinPendingActionCreateInput)).action;
+      assert.deepStrictEqual(yield* actions.approve(grant(foreign, "jti-1")), { _tag: "stale" });
     }).pipe(Effect.provide(layer)),
   );
 
@@ -260,6 +278,85 @@ describe("KinPendingActions", () => {
         yield* sql`SELECT outcome, merge_commit_sha FROM kin_executions WHERE action_id = ${action.id}`,
         [{ outcome: "succeeded", merge_commit_sha: "f".repeat(40) }],
       );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("deadlines hold at the boundary even before the sweep runs", () =>
+    Effect.gen(function* () {
+      const actions = yield* seed;
+      const week = 7 * 24 * 60 * 60 * 1000;
+      const state = (action: KinPendingAction) =>
+        actions
+          .get({ orgId: action.orgId, actionId: action.id })
+          .pipe(Effect.map((found) => Option.getOrThrow(found).state));
+      const approveAt = Effect.fn(function* (source: string, exp: number) {
+        const { action } = yield* actions.create(request(source));
+        const approved = yield* actions.approve(grant(action, `jti-${source}`, 0, exp));
+        assert.strictEqual(approved._tag, "approved");
+        if (approved._tag !== "approved") return yield* Effect.die("not approved");
+        return {
+          action,
+          claim: actions.claim({
+            orgId: action.orgId,
+            actionId: action.id,
+            revision: 0,
+            grantId: approved.grant.id,
+          }),
+        };
+      });
+
+      // A grant lapses at exp (seconds) when that binds first...
+      const expBoundOk = yield* approveAt("exp-ok", 600);
+      const expBoundLate = yield* approveAt("exp-late", 600);
+      // ...and at acceptedAt + 15 min otherwise.
+      const acceptedOk = yield* approveAt("accepted-ok", 3600);
+      const acceptedLate = yield* approveAt("accepted-late", 3600);
+      yield* TestClock.adjust("599999 millis");
+      assert.isTrue(yield* expBoundOk.claim);
+      yield* TestClock.adjust("1 millis");
+      assert.isFalse(yield* expBoundLate.claim);
+      assert.strictEqual(yield* state(expBoundLate.action), "approved");
+      yield* TestClock.adjust("299999 millis");
+      assert.isTrue(yield* acceptedOk.claim);
+      yield* TestClock.adjust("1 millis");
+      assert.isFalse(yield* acceptedLate.claim);
+      assert.strictEqual(yield* state(acceptedLate.action), "approved");
+
+      const created = yield* Clock.currentTimeMillis;
+      const approvable = (yield* actions.create(request("approve-ok"))).action;
+      const unapprovable = (yield* actions.create(request("approve-late"))).action;
+      const refreshable = (yield* actions.create(request("refresh"))).action;
+      const refresh = (revision: number) =>
+        actions.refresh({
+          orgId: refreshable.orgId,
+          actionId: refreshable.id,
+          revision,
+          resolved: resolved("b".repeat(40)),
+          targetDigest: digest("2"),
+        });
+      const expire = (action: KinPendingAction) =>
+        actions.transition({
+          orgId: action.orgId,
+          actionId: action.id,
+          revision: action.revision,
+          to: "expired",
+        });
+
+      yield* TestClock.adjust(`${created + week - 1 - (yield* Clock.currentTimeMillis)} millis`);
+      assert.isFalse(yield* expire(unapprovable));
+      assert.strictEqual(
+        (yield* actions.approve(grant(approvable, "jti-approve-ok")))._tag,
+        "approved",
+      );
+      assert.isTrue(Option.isSome(yield* refresh(0)));
+      yield* TestClock.adjust("1 millis");
+      assert.deepStrictEqual(yield* actions.approve(grant(unapprovable, "jti-approve-late")), {
+        _tag: "stale",
+      });
+      assert.isTrue(Option.isNone(yield* refresh(1)));
+      assert.strictEqual(yield* state(unapprovable), "awaiting_approval");
+      assert.isTrue(yield* expire(unapprovable));
+      assert.strictEqual(yield* state(unapprovable), "expired");
     }).pipe(Effect.provide(layer)),
   );
 

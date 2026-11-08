@@ -23,13 +23,12 @@ import * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
-import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
-import * as Sqlite from "../../persistence/Sqlite.ts";
-import * as KinPersistence from "../persistence/KinPersistence.ts";
+import type { McpThreadInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as Repository from "./KinChatRepository.ts";
 import * as Identity from "./KinIdentity.ts";
+import { startWakeupRun, authorityLayer } from "./WakeupAuthority.testkit.ts";
 
-const database = Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory);
+const database = authorityLayer;
 const repositoryLayer = Layer.provideMerge(Repository.layer, database);
 const config = { orgName: "Example", ownerHandle: "owner", ownerDisplayName: "Example Owner" };
 const identityLayer = Identity.KinIdentity.layer.pipe(
@@ -54,7 +53,7 @@ const session: AuthenticatedSession = {
 };
 const environmentId = Schema.decodeSync(EnvironmentId)("test-environment");
 const providerInstanceId = Schema.decodeSync(ProviderInstanceId)("provider");
-const caller = (thread = threadId, subagent = false): McpInvocationScope => ({
+const caller = (thread = threadId, subagent = false): McpThreadInvocationScope => ({
   environmentId,
   capabilities: new Set(),
   issuedAt: 0,
@@ -308,8 +307,21 @@ describe("KinIdentity", () => {
         yield* identity.registerAgentThread(input);
         assert.deepStrictEqual(yield* repository.getAgentThread(input), original);
         assert.isTrue(identity.isAgentThread(threadId));
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at) VALUES ('identity-chat', ${owner.orgId}, 'team_group', 0, '1970-01-01T00:00:00.000Z')`;
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+          VALUES (${agentId}, ${owner.orgId}, 'Lead', 0, '{}', '[]', 'identity-chat')`;
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status, event_ids)
+          VALUES ('identity-wakeup', ${owner.orgId}, ${agentId}, ${threadId}, 'test', 0, 'running', '[]')`;
+        assert.isFalse(yield* Effect.isSuccess(identity.resolveAgent(caller())));
+        yield* startWakeupRun(threadId, "identity-wakeup");
+        assert.isTrue(yield* Effect.isSuccess(identity.resolveAgent(caller())));
+        assert.isFalse(
+          yield* Effect.isSuccess(identity.resolveAgent(caller(decodeThreadId("other-thread")))),
+        );
         assert.deepStrictEqual(yield* identity.resolveAgent(caller()), {
           _tag: "agent",
+          caller: caller().thread,
           ...input,
           ownerPersonId: owner.personId,
         });
@@ -338,6 +350,7 @@ describe("KinIdentity", () => {
         );
         const secondThreadId = decodeThreadId("second-thread");
         yield* identity.registerAgentThread({ ...input, threadId: secondThreadId });
+        assert.isFalse(yield* Effect.isSuccess(identity.resolveAgent(caller(secondThreadId))));
         const otherOrgId = decodeOrgId("other-org");
         const otherPersonId = decodePersonId("other-owner");
         const otherAgentId = decodeAgentId("other-agent");
@@ -383,9 +396,15 @@ describe("KinIdentity", () => {
         assert.isTrue(restarted.isAgentThread(threadId));
         assert.deepStrictEqual(yield* restarted.resolveAgent(caller()), {
           _tag: "agent",
+          caller: caller().thread,
           ...input,
           ownerPersonId: owner.personId,
         });
+        yield* sql`UPDATE kin_wakeups SET status = 'completed', ended_at = 1000 WHERE wakeup_id = 'identity-wakeup'`;
+        assert.include(yield* restarted.resolveAgent(caller()).pipe(Effect.flip), {
+          reason: "not_allowed",
+        });
+        assert.isTrue(restarted.isAgentThread(threadId));
         assert.deepStrictEqual(yield* restarted.resolve(session), [owner]);
         assert.isTrue(yield* restarted.endAgentThread(input));
         assert.isFalse(restarted.isAgentThread(threadId));
@@ -406,8 +425,11 @@ describe("KinIdentity", () => {
         const afterEnd = yield* start;
         assert.isFalse(afterEnd.isAgentThread(threadId));
         assert.isTrue(afterEnd.isAgentThread(secondThreadId));
+        yield* startWakeupRun(secondThreadId, "identity-wakeup");
+        yield* sql`UPDATE kin_wakeups SET status = 'running', ended_at = NULL, thread_id = ${secondThreadId} WHERE wakeup_id = 'identity-wakeup'`;
         assert.deepStrictEqual(yield* afterEnd.resolveAgent(caller(secondThreadId)), {
           _tag: "agent",
+          caller: caller(secondThreadId).thread,
           ...input,
           threadId: secondThreadId,
           ownerPersonId: owner.personId,

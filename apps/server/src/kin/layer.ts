@@ -13,9 +13,8 @@ export { KinServer } from "./KinServer.ts";
 import type * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as KinMcp from "./mcp/layer.ts";
+import * as KinLead from "./lead/layer.ts";
 
-// LEAD-5 supplies its runner here, using this root's identity rather than building another.
-const lead: Layer.Layer<never, never, Services | KinChatHub> = Layer.empty;
 const enabled = Layer.effect(
   KinServer,
   Effect.gen(function* () {
@@ -26,11 +25,7 @@ const enabled = Layer.effect(
       subscribeForViewer: Option.some(hub.subscribeForViewer),
     };
   }),
-).pipe(
-  Layer.provide(
-    lead.pipe(Layer.provideMerge(KinChat.layer), Layer.provideMerge(KinApprovals.layer)),
-  ),
-);
+).pipe(Layer.provide(Layer.merge(KinChat.layer, KinApprovals.layer)));
 const disabled = Layer.succeed(KinServer, {
   services: Option.none(),
   subscribeForViewer: Option.none(),
@@ -73,7 +68,20 @@ const middleware = HttpRouter.middleware<{ provides: KinServer }>()(
 
 export const layer = middleware.pipe(Layer.provideMerge(runtime));
 
-export const mcpLayer = (base: Parameters<typeof KinMcp.transport>[0]) => KinMcp.transport(base);
+const leadRuntime = Layer.unwrap(
+  Effect.gen(function* () {
+    const kin = yield* KinServer;
+    return Option.isSome(kin.services)
+      ? KinLead.layerServer.pipe(
+          Layer.provide(Layer.succeedContext(kin.services.value)),
+          Layer.provide(SqlitePersistence.layerConfig),
+        )
+      : Layer.empty;
+  }),
+);
+
+export const mcpLayer = (base: Parameters<typeof KinMcp.transport>[0]) =>
+  Layer.merge(KinMcp.transport(base), leadRuntime);
 export const mcpRegistryLayer = <E, R>(
   base: Layer.Layer<McpSessionRegistry.McpSessionRegistry, E, R>,
 ) =>
