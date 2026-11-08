@@ -253,7 +253,7 @@ export const KinGrantPayload = Schema.Struct({
 3. Signature verifies with `p256.verify(sig, sha256(signingInput), key, {prehash: false, format: "compact", lowS: true})` → `bad_signature`. Unlike `verifyDpopProof`, `lowS: true` is required: the device always sends low-S, and ECDSA's `(r, n − s)` twin of a signature would otherwise also verify. Never identify or deduplicate a grant by its compact string; `jti` is its identity, and `compact` is kept for audit only.
 4. `approver.humanId` equals the key's `humanId`, and that person currently meets a `requiredApprovers` entry (phase 1: holds the owner role in the org) → `not_owner`.
 5. The RPC caller's session is the session the key was registered from, or another session of the same person → `session_mismatch`. (Defence in depth; the signature is the real check.)
-6. Pending action exists in the org, is `awaiting_approval`, and `revision` and `nonce` match → `stale` (the card refreshes).
+6. Pending action exists in the org, is `awaiting_approval`, and `revision` and `nonce` match → `stale` (the card refreshes), or `replayed` when the org already holds this `jti` or this approver's grant for the action. An accepted grant sent again fails here, before check 10, because its action is no longer `awaiting_approval`.
 7. `kind`, `target`, `targetDigest`, `headSha`, `base`, `mergeMethod` equal the server's record → `target_mismatch`.
 8. `now` is a finite number, `|now − iat| ≤ 300`, `iat < exp`, `exp − iat ≤ 900` and `now < exp` → `time_window`.
 9. Re-read the PR from GitHub with the bot token; head and base still match → `head_moved` (rotate nonce, refresh card).
