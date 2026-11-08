@@ -265,6 +265,20 @@ describe("ApproverKeys", () => {
       assert.strictEqual(ios.key.hardware, "software");
       const failed = yield* registerAndroid(keys, phone, { deviceLocked: false });
       assert.strictEqual(failed.key.attested, false);
+      // Re-registering an attested key's public key without attestation can't downgrade it.
+      const attested = yield* registerAndroid(keys);
+      const replay = yield* keys.keyChallenge(phone);
+      const downgrade = yield* Effect.exit(
+        keys.registerKey(phone, {
+          orgId,
+          publicJwk: attested.input.publicJwk,
+          platform: "ios",
+          challenge: replay.challenge,
+          deviceLabel: "iPhone",
+        }),
+      );
+      assert.strictEqual(reasonOf(downgrade), "invalid_state");
+      assert.isTrue(Option.getOrThrow(yield* keys.get(attested.key)).attested);
       for (const { key, code } of [ios, failed]) {
         const exit = yield* Effect.exit(
           keys.confirmKey(desktop, { orgId, thumbprint: key.thumbprint, code }),

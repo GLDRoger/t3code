@@ -322,12 +322,6 @@ const make = Effect.gen(function* () {
           reason: result.reason,
         });
       }
-      const existing = yield* select(ref);
-      if (
-        existing !== undefined &&
-        (existing.state !== "pending" || existing.human_id !== person.personId)
-      )
-        return yield* fail("invalid_state", "This key is already registered.");
       const row = {
         thumbprint,
         org_id: input.orgId,
@@ -344,12 +338,12 @@ const make = Effect.gen(function* () {
         revoked_at: null,
       };
       const key = yield* toKey(row);
-      yield* sql`INSERT INTO kin_approver_keys ${sql.insert(row)}
-        ON CONFLICT (org_id, thumbprint) DO UPDATE SET
-          public_jwk_json = excluded.public_jwk_json, device_label = excluded.device_label,
-          platform = excluded.platform, hardware = excluded.hardware, attested = excluded.attested,
-          session_id = excluded.session_id, created_at = excluded.created_at
-        WHERE kin_approver_keys.state = 'pending'`;
+      // An attestation is bound to the challenge given when the key was made, so a key never
+      // registers twice; refusing keeps anyone from rewriting a pending key's record.
+      const inserted = yield* sql`INSERT INTO kin_approver_keys ${sql.insert(row)}
+        ON CONFLICT (org_id, thumbprint) DO NOTHING RETURNING thumbprint`;
+      if (inserted.length === 0)
+        return yield* fail("invalid_state", "This key is already registered; make a new one.");
       const code = kinKeyConfirmationCode(thumbprint, challenge);
       if (!result.attested) return { key, code };
 
