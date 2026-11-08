@@ -328,6 +328,8 @@ export const KinAuditEvent = Schema.Literals([
   "grant_accepted",
   "grant_rejected",
   "action_rejected",
+  "action_cancelled",
+  "action_expired",
   "action_voided",
   "execution_started",
   "execution_finished",
