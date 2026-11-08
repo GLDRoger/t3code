@@ -298,7 +298,11 @@ const make = Effect.gen(function* () {
       const result = yield* fs.lstat(current).pipe(Effect.result);
       if (result._tag === "Failure") {
         if (result.failure.reason._tag !== "NotFound")
-          return yield* new MemoryError({ orgId, operation: "path", cause: result.failure });
+          return yield* new MemoryError({
+            orgId,
+            operation: "path",
+            cause: "Unable to inspect memory path",
+          });
       } else if (
         result.success.type === "SymbolicLink" ||
         (result.success.type === "File" &&

@@ -16,6 +16,21 @@ const layer = Scan.layer.pipe(Layer.provideMerge(database));
 const body = "aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0iL3oR6";
 const github = ["gh", "p_"].join("") + body;
 const fixtures = [
+  ...[
+    ["stripe-key", ["sk_", "live_"].join("") + body + "_old"],
+    ["slack-token", ["xo", "xb-"].join("") + body + "_old"],
+    ["google-key", ["AI", "za"].join("") + "X".repeat(35) + "_old"],
+    ["google-key", "key_" + ["AI", "za"].join("") + "X".repeat(35)],
+    ["anthropic-key", "prod-" + ["sk-", "ant-"].join("") + body.repeat(2)],
+    ...[
+      Buffer.from(JSON.stringify({ alg: "RS256", x5c: ["a".repeat(499)] })).toString("base64url"),
+      ["ey", "J"].join("") + "a".repeat(2048),
+    ].map((header) => [
+      "jwt",
+      header + "." + ["ey", "J"].join("") + "b".repeat(2600) + ".signature",
+    ]),
+  ].map(([rule, hit]) => [rule, hit, "task-follow-up-with-design-team"]),
+
   ...["X-Api-Key: ", "client-secret: ", '{"password": "', '"api_key":"'].map((prefix) => [
     "secret-assignment",
     prefix + body + '"',
@@ -29,7 +44,7 @@ const fixtures = [
   ["aws-access-key", ["AK", "IA"].join("") + "Q".repeat(16) + "_old", "ASIAPACIFICREGION2026"],
   [
     "jwt",
-    ["ey", "J"].join("") + "a".repeat(100) + "." + "b".repeat(1800) + "." + "c".repeat(100),
+    ["ey", "J"].join("") + "a".repeat(100) + ".eyJ" + "b".repeat(1800) + "." + "c".repeat(100),
     "eyJshort.two.parts",
   ],
 
@@ -61,7 +76,7 @@ const fixtures = [
   ["pem-private-key", "-----BEGIN RSA PRIVATE KEY-----", "-----BEGIN PUBLIC KEY-----"],
   [
     "jwt",
-    ["ey", "J"].join("") + "a".repeat(10) + "." + "b".repeat(12) + "." + "c".repeat(20),
+    ["ey", "J"].join("") + "a".repeat(10) + ".eyJ" + "b".repeat(12) + "." + "c".repeat(20),
     "eyJshort.two.parts",
   ],
   [
@@ -90,6 +105,14 @@ it.effect("blocks encoded, wrapped and confusable tokens with safe findings", ()
     const scanner = yield* Scan.KinSecretScan;
     const values = [
       github,
+      "The deploy key is " + github.slice(0, 12) + "\n" + github.slice(12),
+      github.slice(0, 12) + "\n" + github.slice(12) + " and more",
+      github.slice(0, 12) + "\n" + github.slice(12) + "\nThanks",
+      "The deploy key is " +
+        Buffer.from(github).toString("base64").slice(0, 16) +
+        "\n" +
+        Buffer.from(github).toString("base64").slice(16) +
+        " and more",
       "%67" + github.slice(1),
       ...["/", "-", "_", "+", "word"].map(
         (prefix) => prefix + Buffer.from(github).toString("base64"),
@@ -190,6 +213,18 @@ it.effect("fails closed when decoded findings or the allowlist exceed their boun
         .scan({ orgId, files: [{ path: "claims/many.md", content }] })
         .pipe(Effect.result))._tag,
     ).toBe("Failure");
+    const exhausted = yield* scanner
+      .scan({
+        orgId,
+        files: Array.from({ length: 8 }, (_, i) => ({
+          path: `claims/${i}.md`,
+          content: Buffer.from("a".repeat(1024 * 1024 - 100)),
+        })),
+      })
+      .pipe(Effect.result);
+    expect(exhausted._tag).toBe("Failure");
+    if (exhausted._tag === "Failure")
+      expect(exhausted.failure.reason).toBe("Scan work limit exceeded");
     const sql = yield* SqlClient.SqlClient;
     yield* sql`WITH RECURSIVE entries(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM entries WHERE n < 4097)
     INSERT INTO kin_secret_allow SELECT ${orgId}, 'claims/' || n, 'github-token', ${"0".repeat(64)}, 'signed-fixture', 0 FROM entries`;
@@ -264,7 +299,10 @@ it.effect("scans paths without exposing them", () =>
       orgId,
       files: [
         { path: "claims/item.md", content: Buffer.from("clean") },
-        { path: "INDEX.md", content: Buffer.from("- [claim] " + github + " (claims/item.md)") },
+        {
+          path: "INDEX.md",
+          content: Buffer.from("- [claim (claims/wrong.md)] " + github + " (claims/item.md)"),
+        },
       ],
     });
     expect(indexFindings.some((f) => f.itemPath === "claims/item.md")).toBe(true);
@@ -293,23 +331,24 @@ it.effect("bounds adversarial rule inputs structurally", () =>
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect("scans ordinary journals and multi-file batches without exhausting work", () =>
+it.effect.each([
+  { name: "256 KiB journal", count: 1, bytes: 256 * 1024 },
+  { name: "30 x 60 KiB batch", count: 30, bytes: 60 * 1024 },
+])("scans realistic $name without exhausting work", ({ count, bytes }) =>
   Effect.gen(function* () {
     const scanner = yield* Scan.KinSecretScan;
-    const journal = "Discussed the next steps with the team. Follow up tomorrow.\n";
-    for (const files of [
+    const journal =
       [
-        {
-          path: "journal/test.md",
-          content: Buffer.from(journal.repeat(Math.ceil((256 * 1024) / journal.length))),
-        },
-      ],
-      Array.from({ length: 30 }, (_, i) => ({
-        path: `journal/${i}.md`,
-        content: Buffer.from(journal.repeat(Math.ceil((60 * 1024) / journal.length))),
-      })),
-    ])
-      expect((yield* scanner.scan({ orgId, files })).length).toBe(0);
+        "Discussed the next steps with the team. Follow up tomorrow.",
+        "Commit " + "0123456789abcdef".repeat(2) + "01234567 reviewed.",
+        "Updated apps/server/src/kin/memory/secretScan.test.ts and docs/operations/development.md",
+        "Trace 12345678-1234-5678-9abc-123456789abc completed successfully.",
+      ].join("\n") + "\n";
+    const files = Array.from({ length: count }, (_, i) => ({
+      path: `journal/${i}.md`,
+      content: Buffer.from(journal.repeat(Math.ceil(bytes / journal.length)).slice(0, bytes)),
+    }));
+    expect((yield* scanner.scan({ orgId, files })).length).toBe(0);
   }).pipe(Effect.provide(layer)),
 );
 

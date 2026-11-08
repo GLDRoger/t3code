@@ -44,7 +44,7 @@ const rules = [
   ["stripe-key", /[rs]k_live_[A-Za-z0-9]{24,200}/],
   ["google-key", /AIza[A-Za-z0-9_-]{35}/],
   ["pem-private-key", /-----BEGIN (?:[A-Z0-9]+ ){0,8}PRIVATE KEY(?: BLOCK)?-----/],
-  ["jwt", /eyJ[A-Za-z0-9_-]{5,509}\.[A-Za-z0-9_-]{8,2500}\.[A-Za-z0-9_-]{16,1024}/],
+  ["jwt", /eyJ[A-Za-z0-9_-]{5,2048}\.eyJ[A-Za-z0-9_-]{8,1024}/],
   ["url-password", /\b[a-z][a-z0-9+.-]{0,31}:\/\/[^\s/:@]{1,512}:([^\s/@]{1,512})@/i],
   [
     "secret-assignment",
@@ -53,18 +53,21 @@ const rules = [
 ] as const;
 const compiledRules = rules.map(([id, pattern]) => {
   const alphabet =
-    id === "github-token" || id === "aws-access-key"
+    id === "github-token" || id === "aws-access-key" || id === "stripe-key" || id === "google-key"
       ? "A-Za-z0-9"
-      : id === "secret-assignment"
-        ? "A-Za-z0-9_"
+      : id === "slack-token"
+        ? "A-Za-z0-9-"
         : "A-Za-z0-9_-";
-  const right = id === "url-password" || id === "secret-assignment" ? "" : `(?![${alphabet}])`;
+  const right = ["url-password", "secret-assignment", "jwt"].includes(id)
+    ? ""
+    : `(?![${alphabet}])`;
   return [
     id,
-    new RegExp(`(?<![${alphabet}])(?:${pattern.source})${right}`, `${pattern.flags}g`),
+    new RegExp(`(?<![A-Za-z0-9])(?:${pattern.source})${right}`, `${pattern.flags}g`),
   ] as const;
 });
-// Every rule sees bounded windows; overlap exceeds the longest possible match (a JWT).
+const anchors = /gh[pousr]_|github_pat_|sk-|AKIA|ASIA|xox|_live_|AIza|-----BEGIN|eyJ|:\/\/|[:=]/i;
+// The 4096-character overlap exceeds the longest match (the 3080-character JWT prefix).
 export const ruleWindows = function* (value: string) {
   for (let offset = 0; offset < value.length; offset += 4096)
     yield {
@@ -164,13 +167,13 @@ const make = Effect.gen(function* () {
       let pathHit = true;
       let redactPath = false;
       const inspect = function* (value: string, baseLine: number, depth: number): Generator<void> {
-        // Charge fixed work as well as bytes to bound decoder fan-out on short values.
-        budget -= value.length + 4096;
+        budget -= value.length;
         if (budget < 0 || findings.length > 1024) return;
         for (const window of ruleWindows(value)) {
           budget -= window.text.length;
           if (budget < 0) return;
           yield;
+          if (!anchors.test(window.text)) continue;
           for (const [ruleId, bounded] of compiledRules) {
             bounded.lastIndex = 0;
             let match: RegExpExecArray | null;
@@ -201,7 +204,9 @@ const make = Effect.gen(function* () {
               const key = JSON.stringify([file.path, ruleId, line, pathHit]);
               if (!seen.has(key)) {
                 const indexLine = file.path === "INDEX.md" ? lines[line - 1] : undefined;
-                const itemPath = indexLine?.match(/\(([^()]+\.md)\)/)?.[1];
+                const itemPath = Array.from(indexLine?.matchAll(/\(([^()]+\.md)\)/g) ?? []).at(
+                  -1,
+                )?.[1];
                 seen.add(key);
                 findings.push({
                   path: pathHit || redactPath ? "[redacted]" : file.path,
@@ -225,7 +230,7 @@ const make = Effect.gen(function* () {
           decodedLine += value.slice(cursor, match.index).match(/\n/g)?.length ?? 0;
           cursor = match.index;
           yield;
-          budget -= 4096;
+          budget -= encoded.length;
           if (budget < 0) return;
           const candidates = encoded.includes("%")
             ? [
@@ -250,27 +255,27 @@ const make = Effect.gen(function* () {
       redactPath = findings.length > pathFindingStart;
       pathHit = false;
       for (const _ of inspect(text, 1, 0)) yield* Effect.yieldNow;
-      let run = "";
-      let runLine = 1;
-      let line = 1;
-      let fragments = 0;
-      for (const raw of lines) {
-        const fragment = raw
+      let run: { text: string; line: number }[] = [];
+      const append = function* (text: string, line: number): Generator<void> {
+        run.push({ text, line });
+        while (run.length > 8 || run.reduce((sum, part) => sum + part.text.length, 0) > 4096)
+          run.shift();
+        if (run.length > 1) yield* inspect(run.map((part) => part.text).join(""), run[0]!.line, 0);
+      };
+      for (const [index, raw] of lines.entries()) {
+        const words = raw
           .replace(/\\?\r$/, "")
           .replace(/\\$/, "")
-          .trim();
-        if (fragment && !/\s/.test(fragment)) {
-          if (!fragments) runLine = line;
-          run += fragment;
-          fragments++;
-        } else {
-          if (fragments > 1) for (const _ of inspect(run, runLine, 0)) yield* Effect.yieldNow;
-          run = "";
-          fragments = 0;
+          .trim()
+          .split(/\s+/);
+        const first = words[0]!;
+        if (!first) {
+          run = [];
+          continue;
         }
-        line++;
+        for (const _ of append(first, index + 1)) yield* Effect.yieldNow;
+        if (words.length > 1) run = [{ text: words.at(-1)!, line: index + 1 }];
       }
-      if (fragments > 1) for (const _ of inspect(run, runLine, 0)) yield* Effect.yieldNow;
     }
     if (budget < 0 || findings.length > 1024)
       return yield* new KinSecretScanError({ reason: "Scan work limit exceeded" });

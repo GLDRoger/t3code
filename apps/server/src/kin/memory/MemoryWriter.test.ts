@@ -605,15 +605,25 @@ it.live.each([
         const malformed = yield* writer
           .stage(orgId, "wake1", {
             path: tokenPath,
-            content: "missing front matter",
+            content: "---\nid: [\n" + tokenPath + ": [\n---\nbody",
           })
           .pipe(Effect.result);
         expect(malformed._tag).toBe("Failure");
         if (malformed._tag === "Failure") {
           expect(malformed.failure._tag).toBe("MemoryItemError");
+          expect(JSON.stringify(malformed.failure).includes(tokenPath.slice(7, -3))).toBe(false);
           if (malformed.failure._tag === "MemoryItemError")
             expect(malformed.failure.path).toBe("[redacted]");
         }
+        const inaccessible = yield* writer
+          .stage(orgId, "wake1", {
+            path: tokenPath.slice(0, -3) + "_".repeat(260) + ".md",
+            content: "missing front matter",
+          })
+          .pipe(Effect.result);
+        expect(inaccessible._tag).toBe("Failure");
+        if (inaccessible._tag === "Failure")
+          expect(JSON.stringify(inaccessible.failure).includes(tokenPath.slice(7, -3))).toBe(false);
       }
       if (scenario === "blocked")
         yield* writer.appendJournal(orgId, "wake1", [

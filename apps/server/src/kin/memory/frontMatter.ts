@@ -89,8 +89,12 @@ export const parseFrontMatter = Effect.fnUntraced(function* (
       new MemoryItemError({
         orgId,
         path,
-        reason: cause instanceof Error ? cause.message : "Malformed YAML",
-        cause,
+        reason: staged
+          ? "Malformed YAML front matter"
+          : cause instanceof Error
+            ? cause.message
+            : "Malformed YAML",
+        ...(staged ? {} : { cause }),
       }),
   });
   const decoded = yield* (staged ? decodeStaged(value) : decodeFrontMatter(value)).pipe(
