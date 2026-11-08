@@ -26,17 +26,17 @@ Non-goals:
 
 ## 2. What T3 already gives us
 
-| Need                                            | T3 piece                                                                                                                                  |
-| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| Hand work to Claude Code or Codex in a worktree | `delegate_task`                                                                                                                           |
-| Reacting to GitHub                              | `schedule_task` with a `webhook` trigger: signature check, dedupe, body filters, a relay that holds requests for up to 24 h while offline |
-| Routines and watchdogs                          | `fixed_time` and `interval` triggers                                                                                                      |
-| Deferrals                                       | `once` trigger (`runAt`), thread snooze (`snoozedUntil`)                                                                                  |
-| PR follow-up                                    | `watch_pull_request`, linked PRs on threads                                                                                               |
-| Interactive widgets                             | `McpAppWebView` (bridge with `callTool`, `sendMessage`, and a check that a real person tapped); `HtmlRenderWebView`                       |
-| Push, home screen widgets                       | `expo-notifications` (`features/agent-awareness`), `apps/mobile/src/widgets`                                                              |
-| Device-bound sessions, scoped RPC permissions   | `apps/server/src/auth/dpop.ts`, `RpcAuthorization.ts`                                                                                     |
-| Suggest-only guests                             | `packages/contracts/src/guestShare.ts`                                                                                                    |
+| Need                                            | T3 piece                                                                                                                                                               |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Hand work to Claude Code or Codex in a worktree | `delegate_task`                                                                                                                                                        |
+| Reacting to GitHub                              | `schedule_task` with a `webhook` trigger: signature check, dedupe, body filters, a relay that holds requests for up to 24 h while offline                              |
+| Routines and watchdogs                          | `fixed_time` and `interval` triggers                                                                                                                                   |
+| Deferrals                                       | `once` trigger (`runAt`), thread snooze (`snoozedUntil`)                                                                                                               |
+| PR follow-up                                    | `watch_pull_request`, linked PRs on threads                                                                                                                            |
+| Interactive widgets                             | `McpAppWebView` (bridge with `callTool`, `sendMessage`, and a flag for a real tap that Kin must enforce itself; mobile spec, Design correction 9); `HtmlRenderWebView` |
+| Push, home screen widgets                       | `expo-notifications` (`features/agent-awareness`), `apps/mobile/src/widgets`                                                                                           |
+| Device-bound sessions, scoped RPC permissions   | `apps/server/src/auth/dpop.ts`, `RpcAuthorization.ts`                                                                                                                  |
+| Suggest-only guests                             | `packages/contracts/src/guestShare.ts`                                                                                                                                 |
 
 ## 3. Agents
 
