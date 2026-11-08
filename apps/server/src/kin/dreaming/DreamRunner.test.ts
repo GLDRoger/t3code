@@ -82,10 +82,15 @@ const fixture = <A, E>(
     readonly behave: (behavior: Behavior) => void;
     readonly turns: Array<DreamSession.DreamTurn>;
     readonly notices: Array<string>;
+    readonly refuseBudget: () => void;
   }) => Effect.Effect<
     A,
     E,
-    DreamRunner.DreamRunner | SqlClient.SqlClient | FileSystem.FileSystem | Scope.Scope
+    | DreamRunner.DreamRunner
+    | Writer.MemoryWriter
+    | SqlClient.SqlClient
+    | FileSystem.FileSystem
+    | Scope.Scope
   >,
 ) =>
   Effect.gen(function* () {
@@ -128,6 +133,7 @@ const fixture = <A, E>(
     const main = yield* git(root, ["--git-dir", remote, "rev-parse", "main"]);
 
     let behavior: Behavior = "good";
+    let budgetAllowed = true;
     const turns: Array<DreamSession.DreamTurn> = [];
     const notices: Array<string> = [];
     const session = Layer.succeed(DreamSession.DreamSession, {
@@ -141,6 +147,10 @@ const fixture = <A, E>(
             return yield* Effect.never;
           }
           if (current === "failed-turn") return { threadId, status: "failed" as const };
+          expect(turn.workspaceRoot.endsWith(`/dreams/${turn.dreamId}`)).toBe(true);
+          expect(yield* git(turn.workspaceRoot, ["rev-parse", "--show-toplevel"])).toBe(
+            turn.workspaceRoot,
+          );
           const at = (file: string) => `${turn.workspaceRoot}/${file}`;
           if (turn.turn === "resolve") {
             yield* fs.writeFileString(
@@ -204,7 +214,7 @@ const fixture = <A, E>(
       Layer.provide(Layer.succeed(Writer.MemoryWriterHooks, { notify: () => Effect.void })),
     );
     const runner = DreamRunner.layer.pipe(
-      Layer.provide(
+      Layer.provideMerge(
         Layer.mergeAll(
           writer,
           session,
@@ -213,7 +223,12 @@ const fixture = <A, E>(
           TriggerStore.layer,
           Layer.mock(KinBudget.KinBudget)({
             admit: () =>
-              Effect.succeed({ allowed: true, cheapOnly: false, nextReset: 0, remaining: 1 }),
+              Effect.sync(() => ({
+                allowed: budgetAllowed,
+                cheapOnly: false,
+                nextReset: 0,
+                remaining: 1,
+              })),
           }),
           Layer.succeed(Scheduler.Scheduler, { register: () => Effect.void }),
         ),
@@ -248,6 +263,9 @@ const fixture = <A, E>(
         },
         turns,
         notices,
+        refuseBudget: () => {
+          budgetAllowed = false;
+        },
       });
     }).pipe(Effect.provide(runner));
   }).pipe(
@@ -273,6 +291,41 @@ const runRow = Effect.fn("test.runRow")(function* () {
     endedAt: number | null;
   }>`SELECT status, head, failure, dream_json AS "dreamJson", material_until AS "materialUntil",
       full, ended_at AS "endedAt" FROM kin_dream_runs WHERE org_id = ${orgId} ORDER BY owner_date`;
+});
+
+const pending = Effect.fn("test.pending")(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  return (yield* sql<{
+    fireId: string;
+  }>`SELECT fire_id AS "fireId" FROM kin_trigger_inbox WHERE org_id = ${orgId} AND consumed_at IS NULL ORDER BY fire_id`).map(
+    (row) => row.fireId,
+  );
+});
+
+/** Makes today the full-rebuild weekday, so `dream` fires due now are suppressed. */
+const seedFires = Effect.fn("test.seedFires")(function* (
+  fires: ReadonlyArray<readonly [string, "dream" | "dream_full", number]>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const now = yield* Clock.currentTimeMillis;
+  const weekday = DateTime.toPartsUtc(DateTime.makeUnsafe(now)).weekDay;
+  yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary, dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+    VALUES (${orgId}, 'UTC', '08:30', '18:30', '03:00', ${weekday}, 1, '09:00', '{"from":"21:00","to":"08:00"}')`;
+  for (const [fireId, routine, dueAt] of fires) {
+    const payload = yield* encodeFire({
+      fireId: KinTriggerFireId.make(fireId),
+      orgId,
+      dueAt: DateTime.formatIso(DateTime.makeUnsafe(dueAt)),
+      firedAt: DateTime.formatIso(DateTime.makeUnsafe(dueAt)),
+      lateByMs: 0,
+      payload: {
+        kind: "time",
+        triggerId: KinTriggerId.make(`routine:${routine}`),
+        subject: { type: "routine", routine },
+      },
+    });
+    yield* sql`INSERT INTO kin_trigger_inbox (fire_id, org_id, payload_json, received_at) VALUES (${fireId}, ${orgId}, ${payload}, ${dueAt})`;
+  }
 });
 
 it.live("a fixture dream pushes dream/<date> with its changes and records dream.json", () =>
@@ -317,7 +370,7 @@ it.live("a fixture dream pushes dream/<date> with its changes and records dream.
       expect(row?.endedAt).toBeTypeOf("number");
       expect(notices).toEqual([]);
       const fs = yield* FileSystem.FileSystem;
-      expect(yield* fs.exists(`${root}/state/dream`)).toBe(false);
+      expect(yield* fs.exists(`${root}/state/dreams/${outcome.dreamId}`)).toBe(false);
     }),
   ),
 );
@@ -396,40 +449,119 @@ it.live("cancelling a rerun deletes that night's branch and ends the run cancell
   ),
 );
 
-it.live("drain runs a due dream fire and consumes suppressed and late ones", () =>
-  fixture(({ turns }) =>
+it.live(
+  "drain fails stale running dreams, runs a due fire and consumes suppressed and late ones",
+  () =>
+    fixture(({ git, remote, root, turns, notices }) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const runner = yield* DreamRunner.DreamRunner;
+        const now = yield* Clock.currentTimeMillis;
+        yield* git(`${root}/seed`, ["push", "--", remote, "main:refs/heads/dream/2026-01-01"]);
+        yield* sql`INSERT INTO kin_dream_runs (org_id, owner_date, dream_id, full, status, branch, material_from, material_until, started_at)
+        VALUES (${orgId}, '2026-01-01', 'dream_20260101_stale', 0, 'running', 'dream/2026-01-01', 0, 0, 0)`;
+        yield* seedFires([
+          ["suppressed", "dream", now - 1],
+          ["full", "dream_full", now - 1],
+          ["late", "dream", now - 30 * 60 * 60 * 1000],
+        ]);
+        yield* runner.drain(orgId);
+        expect(turns).toHaveLength(1);
+        const rows = yield* runRow();
+        expect(rows.map((row) => [row.status, row.full])).toEqual([
+          ["failed", 0],
+          ["succeeded", 1],
+        ]);
+        expect(rows[0]?.failure).toBe("The server restarted during the dream");
+        expect(yield* git(root, ["ls-remote", "--heads", remote])).not.toContain(
+          "dream/2026-01-01",
+        );
+        expect(notices).toHaveLength(1);
+        expect(yield* pending()).toEqual([]);
+      }),
+    ),
+);
+
+it.live.each(["paused", "over budget"] as const)(
+  "drain leaves a due dream fire pending while the org is %s",
+  (reason) =>
+    fixture(({ turns, refuseBudget }) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const runner = yield* DreamRunner.DreamRunner;
+        yield* seedFires([["full", "dream_full", (yield* Clock.currentTimeMillis) - 1]]);
+        if (reason === "paused")
+          yield* sql`INSERT INTO kin_org_state (org_id, paused, paused_at, paused_by) VALUES (${orgId}, 1, 0, 'owner')`;
+        else refuseBudget();
+        yield* runner.drain(orgId);
+        expect(turns).toEqual([]);
+        expect(yield* runRow()).toEqual([]);
+        expect(yield* pending()).toEqual(["full"]);
+      }),
+    ),
+);
+
+it.live.each([
+  {
+    name: "a branch outside dream/<date>",
+    branch: "dream/main",
+    files: [["claims/new.md", newClaim()]],
+    reason: "Invalid dream branch",
+  },
+  {
+    name: "a kind outside its folder",
+    branch: "dream/2026-11-08",
+    files: [["decisions/new.md", newClaim()]],
+    reason: "Kind does not match path",
+  },
+  {
+    name: "INDEX.md",
+    branch: "dream/2026-11-08",
+    files: [["INDEX.md", "As of now\n"]],
+    reason: "INDEX.md is built by code",
+  },
+] as const)("commitDream rejects $name and pushes nothing", (row) =>
+  fixture(({ git, remote, root }) =>
+    Effect.gen(function* () {
+      const writer = yield* Writer.MemoryWriter;
+      const { head } = yield* writer.dreamBase(orgId);
+      const result = yield* writer
+        .commitDream(orgId, {
+          branch: row.branch,
+          base: head,
+          files: new Map(row.files),
+          message: "kin(dream): fixture",
+        })
+        .pipe(Effect.result);
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure")
+        expect(result.failure).toMatchObject({ _tag: "MemoryWriteRejected", reason: row.reason });
+      expect(yield* git(root, ["ls-remote", "--heads", remote])).not.toContain("dream/");
+    }),
+  ),
+);
+
+it.live("while a dream runs, a second run is busy and drain fails only stale rows", () =>
+  fixture(({ behave, turns }) =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const runner = yield* DreamRunner.DreamRunner;
-      const now = yield* Clock.currentTimeMillis;
-      const weekday = DateTime.toPartsUtc(DateTime.makeUnsafe(now)).weekDay;
-      yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary, dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
-        VALUES (${orgId}, 'UTC', '08:30', '18:30', '03:00', ${weekday}, 1, '09:00', '{"from":"21:00","to":"08:00"}')`;
-      const fire = (fireId: string, routine: "dream" | "dream_full", dueAt: number) =>
-        Effect.gen(function* () {
-          const payload = yield* encodeFire({
-            fireId: KinTriggerFireId.make(fireId),
-            orgId,
-            dueAt: DateTime.formatIso(DateTime.makeUnsafe(dueAt)),
-            firedAt: DateTime.formatIso(DateTime.makeUnsafe(dueAt)),
-            lateByMs: 0,
-            payload: {
-              kind: "time",
-              triggerId: KinTriggerId.make(`routine:${routine}`),
-              subject: { type: "routine", routine },
-            },
-          });
-          yield* sql`INSERT INTO kin_trigger_inbox (fire_id, org_id, payload_json, received_at) VALUES (${fireId}, ${orgId}, ${payload}, ${dueAt})`;
-        });
-      yield* fire("suppressed", "dream", now - 1);
-      yield* fire("full", "dream_full", now - 1);
-      yield* fire("late", "dream", now - 30 * 60 * 60 * 1000);
+      yield* sql`INSERT INTO kin_dream_runs (org_id, owner_date, dream_id, full, status, branch, material_from, material_until, started_at)
+        VALUES (${orgId}, '2026-01-01', 'dream_20260101_stale', 0, 'running', 'dream/2026-01-01', 0, 0, 0)`;
+      const hold = yield* Deferred.make<void>();
+      behave({ hold });
+      const first = yield* runner
+        .run(orgId, { full: false, ownerDate: "2026-11-08" })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(hold);
+      expect((yield* runner.run(orgId, { full: false, ownerDate: "2026-11-09" }))._tag).toBe(
+        "busy",
+      );
       yield* runner.drain(orgId);
-      expect(turns).toHaveLength(1);
-      expect((yield* runRow()).map((row) => [row.status, row.full])).toEqual([["succeeded", 1]]);
-      expect(
-        yield* sql`SELECT fire_id FROM kin_trigger_inbox WHERE org_id = ${orgId} AND consumed_at IS NULL ORDER BY fire_id`,
-      ).toEqual([]);
+      expect((yield* runRow()).map((row) => row.status)).toEqual(["failed", "running"]);
+      expect(turns.map((turn) => turn.dreamId.slice(0, 14))).toEqual(["dream_20261108"]);
+      expect(yield* runner.cancel(orgId)).toBe(true);
+      expect((yield* Fiber.join(first))._tag).toBe("cancelled");
     }),
   ),
 );

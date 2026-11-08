@@ -23,6 +23,7 @@ import { isSqlError } from "effect/sql/SqlError";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { nextScheduledRunAt } from "../../scheduledTasks/Schedule.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
+import { VcsProcess } from "../../vcs/VcsProcess.ts";
 import * as KinBudget from "../lead/KinBudget.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
@@ -110,7 +111,12 @@ const make = Effect.gen(function* () {
   const inbox = yield* KinTriggerInbox.KinTriggerInbox;
   const store = yield* KinTriggerStore.KinTriggerStore;
   const ticks = yield* Scheduler.Scheduler;
-  const live = new Map<KinOrgId, Deferred.Deferred<void>>();
+  const vcs = yield* VcsProcess;
+  /** One dream per org, reserved before its claim. `decided` marks whether the dream or `cancel` won. */
+  const live = new Map<
+    KinOrgId,
+    { dreamId: string; signal: Deferred.Deferred<void>; decided: boolean }
+  >();
   const fail = (orgId: KinOrgId) =>
     Effect.mapError(
       (cause: unknown) =>
@@ -132,16 +138,20 @@ const make = Effect.gen(function* () {
     };
   });
 
+  const newDreamId = Effect.fn("DreamRunner.newDreamId")(function* (ownerDate: string) {
+    let suffix = "";
+    for (let i = 0; i < 12; i++)
+      suffix += "0123456789abcdefghjkmnpqrstvwxyz".charAt(yield* Random.nextIntBetween(0, 31));
+    return `dream_${ownerDate.replaceAll("-", "")}_${suffix}`;
+  });
+
   const claim = Effect.fn("DreamRunner.claim")(function* (
     orgId: KinOrgId,
+    dreamId: string,
     ownerDate: string,
     full: boolean,
   ) {
     const now = yield* Clock.currentTimeMillis;
-    let suffix = "";
-    for (let i = 0; i < 12; i++)
-      suffix += "0123456789abcdefghjkmnpqrstvwxyz".charAt(yield* Random.nextIntBetween(0, 31));
-    const dreamId = `dream_${ownerDate.replaceAll("-", "")}_${suffix}`;
     const branch = `dream/${ownerDate}`;
     return yield* sql.withTransaction(
       Effect.gen(function* () {
@@ -222,18 +232,31 @@ const make = Effect.gen(function* () {
 
   const prepareCheckout = Effect.fn("DreamRunner.prepareCheckout")(function* (
     orgId: KinOrgId,
+    dreamId: string,
     files: ReadonlyMap<string, Buffer>,
     material: DreamMaterial,
   ) {
     const paths = yield* memory.ensureCheckouts(orgId);
-    const root = path.join(path.dirname(paths.writer), "dream");
-    yield* fs.remove(root, { recursive: true, force: true });
+    const dreams = path.join(path.dirname(paths.writer), "dreams");
+    const root = path.join(dreams, dreamId);
+    // Only this org's live dream uses `dreams/`; anything else was left by a crash.
+    if (yield* fs.exists(dreams))
+      for (const entry of yield* fs.readDirectory(dreams))
+        yield* fs.remove(path.join(dreams, entry), { recursive: true, force: true });
     yield* fs.makeDirectory(path.join(root, scratch), { recursive: true });
     for (const [relative, bytes] of files) {
       const target = path.join(root, relative);
       yield* fs.makeDirectory(path.dirname(target), { recursive: true });
       yield* fs.writeFile(target, bytes);
     }
+    // Scratch sits inside other repos (in dev, the t3code worktree); stray `git` hits this one.
+    yield* vcs.run({
+      operation: "DreamRunner.scratchRepo",
+      command: "git",
+      cwd: root,
+      args: ["init", "--quiet", "--", root],
+      env: { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TEMPLATE_DIR: "" },
+    });
     yield* fs.writeFileString(
       path.join(root, scratch, "material.json"),
       yield* encodeJson(material),
@@ -246,7 +269,8 @@ const make = Effect.gen(function* () {
     const special: Array<string> = [];
     for (const relative of (yield* fs.readDirectory(root, { recursive: true })).toSorted()) {
       const normalized = relative.split(path.sep).join("/");
-      if (normalized === scratch || normalized.startsWith(`${scratch}/`)) continue;
+      if ([scratch, ".git"].some((dir) => normalized === dir || normalized.startsWith(`${dir}/`)))
+        continue;
       const info = yield* fs.lstat(path.join(root, relative));
       if (info.type === "Directory") continue;
       if (info.type !== "File" || (Option.isSome(info.nlink) && info.nlink.value > 1)) {
@@ -293,7 +317,7 @@ const make = Effect.gen(function* () {
       timeZone,
       files: baseText,
     }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
-    const root = yield* prepareCheckout(orgId, base.files, material);
+    const root = yield* prepareCheckout(orgId, dreamId, base.files, material);
     return yield* Effect.gen(function* () {
       const turn = Effect.fn("DreamRunner.turn")(function* (
         name: "extract" | "resolve",
@@ -378,65 +402,90 @@ const make = Effect.gen(function* () {
     }).pipe(Effect.ensuring(fs.remove(root, { recursive: true, force: true }).pipe(Effect.ignore)));
   });
 
+  const attempt = Effect.fn("DreamRunner.attempt")(function* (
+    orgId: KinOrgId,
+    claimed: NonNullable<Effect.Success<ReturnType<typeof claim>>>,
+    slot: { readonly signal: Deferred.Deferred<void>; decided: boolean },
+    ownerDate: string,
+    full: boolean,
+    timeZone: string,
+  ) {
+    const { dreamId, branch } = claimed;
+    const cancelled: DreamOutcome = { _tag: "cancelled", dreamId, branch };
+    const outcome = yield* Effect.raceFirst(
+      dream(orgId, claimed, ownerDate, full, timeZone).pipe(
+        Effect.catchCauseIf(
+          (cause) => !Cause.hasInterruptsOnly(cause),
+          (cause) => {
+            const error = Cause.squash(cause);
+            return Effect.logWarning("Kin dream failed", { orgId, dreamId, cause }).pipe(
+              Effect.as<DreamOutcome>({
+                _tag: "failed",
+                dreamId,
+                branch,
+                failures: [
+                  error instanceof Error ? `${error.name}: ${error.message}` : "The dream failed",
+                ],
+              }),
+            );
+          },
+        ),
+        Effect.flatMap((outcome) => {
+          if (slot.decided) return Effect.never;
+          slot.decided = true;
+          return Effect.succeed(outcome);
+        }),
+      ),
+      Deferred.await(slot.signal).pipe(Effect.as(cancelled)),
+    ).pipe(
+      Effect.onInterrupt(() =>
+        settle(orgId, dreamId, branch, cancelled).pipe(Effect.ignore, Effect.uninterruptible),
+      ),
+    );
+    yield* settle(orgId, dreamId, branch, outcome).pipe(Effect.uninterruptible);
+    return outcome;
+  });
+
   const run = Effect.fn("DreamRunner.run")(
     function* (orgId: KinOrgId, options: { readonly full: boolean; readonly ownerDate?: string }) {
       const { timeZone } = yield* settings(orgId);
       const ownerDate =
         options.ownerDate ??
         DateTime.formatIsoDate(zoned(yield* Clock.currentTimeMillis, timeZone));
+      const dreamId = yield* newDreamId(ownerDate);
       if (live.has(orgId)) return { _tag: "busy" } satisfies DreamOutcome;
-      const claimed = yield* claim(orgId, ownerDate, options.full);
-      if (claimed === undefined) return { _tag: "busy" } satisfies DreamOutcome;
-      const { dreamId, branch } = claimed;
-      const cancelled: DreamOutcome = { _tag: "cancelled", dreamId, branch };
-      const signal = yield* Deferred.make<void>();
-      live.set(orgId, signal);
-      const outcome = yield* Effect.raceFirst(
-        dream(orgId, claimed, ownerDate, options.full, timeZone).pipe(
-          Effect.catchCauseIf(
-            (cause) => !Cause.hasInterruptsOnly(cause),
-            (cause) => {
-              const error = Cause.squash(cause);
-              return Effect.logWarning("Kin dream failed", { orgId, dreamId, cause }).pipe(
-                Effect.as<DreamOutcome>({
-                  _tag: "failed",
-                  dreamId,
-                  branch,
-                  failures: [
-                    error instanceof Error ? `${error.name}: ${error.message}` : "The dream failed",
-                  ],
-                }),
-              );
-            },
-          ),
+      const slot = { dreamId, signal: Deferred.makeUnsafe<void>(), decided: false };
+      live.set(orgId, slot);
+      return yield* Effect.gen(function* () {
+        const claimed = yield* claim(orgId, dreamId, ownerDate, options.full);
+        if (claimed === undefined) return { _tag: "busy" } satisfies DreamOutcome;
+        return yield* attempt(orgId, claimed, slot, ownerDate, options.full, timeZone);
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (live.get(orgId) === slot) live.delete(orgId);
+          }),
         ),
-        Deferred.await(signal).pipe(Effect.as(cancelled)),
-      ).pipe(
-        Effect.onInterrupt(() =>
-          settle(orgId, dreamId, branch, cancelled).pipe(Effect.ignore, Effect.uninterruptible),
-        ),
-        Effect.ensuring(Effect.sync(() => live.delete(orgId))),
       );
-      yield* settle(orgId, dreamId, branch, outcome).pipe(Effect.uninterruptible);
-      return outcome;
     },
     (effect, orgId) => effect.pipe(fail(orgId)),
   );
 
   const recoverStale = Effect.fn("DreamRunner.recoverStale")(function* (orgId: KinOrgId) {
-    if (live.has(orgId)) return;
     const rows = yield* sql<{
       dreamId: string;
       branch: string;
     }>`SELECT dream_id AS "dreamId", branch FROM kin_dream_runs
       WHERE org_id = ${orgId} AND status = 'running' ORDER BY started_at, dream_id`;
-    for (const row of rows)
+    for (const row of rows) {
+      if (live.get(orgId)?.dreamId === row.dreamId) continue;
       yield* settle(orgId, row.dreamId, row.branch, {
         _tag: "failed",
         dreamId: row.dreamId,
         branch: row.branch,
         failures: ["The server restarted during the dream"],
       });
+    }
   });
 
   const ensureTriggers = Effect.fn("DreamRunner.ensureTriggers")(function* (orgId: KinOrgId) {
@@ -540,9 +589,10 @@ const make = Effect.gen(function* () {
   return DreamRunner.of({
     run,
     cancel: Effect.fn("DreamRunner.cancel")(function* (orgId) {
-      const signal = live.get(orgId);
-      if (signal === undefined) return false;
-      return yield* Deferred.succeed(signal, undefined);
+      const slot = live.get(orgId);
+      if (slot === undefined || slot.decided) return false;
+      slot.decided = true;
+      return yield* Deferred.succeed(slot.signal, undefined);
     }),
     drain,
   });
