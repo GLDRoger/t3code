@@ -198,6 +198,7 @@ function KinChatPage(props: {
           <KinChatFeed
             chatId={props.chatId}
             chat={state.chat}
+            environmentId={state.environmentId}
             connected={state.connected}
             viewer={props.viewer}
             readHistory={props.readHistory}
@@ -304,6 +305,7 @@ const offlineTime = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute
 function KinChatFeed(props: {
   readonly chatId: KinChatId;
   readonly chat: KinSynced<KinChatState>;
+  readonly environmentId: EnvironmentId;
   readonly connected: boolean;
   readonly viewer: KinFeedViewer;
   readonly readHistory: ReadHistory | null;
@@ -384,6 +386,7 @@ function KinChatFeed(props: {
             markdownStyle={markdownStyle}
             onLinkPress={onLinkPress}
             widget={item.message.widgetId === null ? undefined : widgets.get(item.message.widgetId)}
+            environmentId={props.environmentId}
           />
         );
       case "system":

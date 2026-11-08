@@ -20,7 +20,12 @@ import {
   type KinFeedViewer,
 } from "./kinChatFeed";
 import type { KinHost } from "./kinHost";
-import { applyKinChatHistory, emptyKinChat, type KinChatState } from "./kinInboxModel";
+import {
+  applyKinChatEvent,
+  applyKinChatHistory,
+  emptyKinChat,
+  type KinChatState,
+} from "./kinInboxModel";
 
 const all = makeKinFixtureMessages(500);
 const viewer: KinFeedViewer = {
@@ -65,6 +70,48 @@ describe("paging", () => {
     const merged = mergeKinFeed(feed([edited, ...all.slice(450)]), feed(all.slice(400, 450)));
     expect(merged.messages.find((m) => m.seq === 450)?.body).toBe("edited live");
     expect(merged.messages).toHaveLength(100);
+  });
+});
+
+// The stream merge keeps the highest revision too: `kinInboxModel.test.ts`.
+describe("in-place widget updates", () => {
+  const atRevision = (revision: number, status: string) =>
+    ({
+      widgetId: "w1",
+      messageId: "m1",
+      type: "task",
+      revision,
+      state: { status },
+    }) as unknown as KinWidget;
+  const withWidget = (state: KinChatState, widget: KinWidget): KinChatState => ({
+    ...state,
+    widgets: [widget],
+  });
+  const status = (state: KinChatState) => {
+    expect(state.widgets).toHaveLength(1);
+    return (state.widgets[0]!.state as { status: string }).status;
+  };
+
+  it("an earlier page's older copy never overwrites the stream's, and a newer one wins", () => {
+    const live = withWidget(emptyKinChat, atRevision(3, "done"));
+    expect(status(mergeKinFeed(live, withWidget(emptyKinChat, atRevision(2, "working"))))).toBe(
+      "done",
+    );
+    expect(status(mergeKinFeed(live, withWidget(emptyKinChat, atRevision(4, "failed"))))).toBe(
+      "failed",
+    );
+  });
+
+  it("after a reset, a page read before it can't bring back a stale revision", () => {
+    const earlier = withWidget(emptyKinChat, atRevision(2, "working"));
+    let live = withWidget(emptyKinChat, atRevision(3, "done"));
+    live = applyKinChatEvent(live, { _tag: "reset", lastSeq: 400 });
+    live = applyKinChatHistory(live, {
+      messages: [],
+      widgets: [atRevision(3, "done")],
+      hasMore: true,
+    });
+    expect(status(mergeKinFeed(live, earlier))).toBe("done");
   });
 });
 

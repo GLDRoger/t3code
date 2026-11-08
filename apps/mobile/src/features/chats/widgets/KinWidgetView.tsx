@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import type { KinWidget } from "@t3tools/contracts";
+import type { EnvironmentId, KinWidget } from "@t3tools/contracts";
 import { memo } from "react";
 import { View } from "react-native";
 
@@ -11,12 +11,15 @@ import { KinTaskCard } from "./KinTaskCard";
 /** The native card for a message's widget. Never falls back to HTML. */
 export const KinWidgetView = memo(function KinWidgetView(props: {
   readonly widget: KinWidget | undefined;
+  /** The environment hosting the chat. */
+  readonly environmentId: EnvironmentId;
   readonly onOpenLink: (url: string) => void;
 }) {
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
   // Before the catalog loads, assume the environment is known; the thread screen handles the rest.
   const view = kinCardView(
     props.widget,
+    props.environmentId,
     (environmentId) => !catalog.isReady || catalog.entries.has(environmentId),
   );
   switch (view.kind) {

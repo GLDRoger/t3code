@@ -1,8 +1,6 @@
 import type { EnvironmentId, KinWidget } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { emptyKinChat } from "../state/kinInboxModel";
-import { mergeKinFeed } from "../state/kinChatFeed";
 import { kinCardView } from "./kinCardPresentation";
 
 const taskState = (overrides: Record<string, unknown> = {}) => ({
@@ -42,21 +40,22 @@ const known =
   (...ids: string[]) =>
   (id: EnvironmentId) =>
     ids.includes(id);
-const task = (w: KinWidget, isKnown = known("env-home", "env-vps")) => {
-  const view = kinCardView(w, isKnown);
+const HOST = "env-home" as EnvironmentId;
+const task = (w: KinWidget, isKnown = known("env-home", "env-vps", "env-other")) => {
+  const view = kinCardView(w, HOST, isKnown);
   if (view.kind !== "task") throw new Error(`expected a task card, got ${view.kind}`);
   return view.task;
 };
 
 describe("kinCardView", () => {
   it("falls back on a missing widget, an unknown type, a non-native class or bad state", () => {
-    expect(kinCardView(undefined, known()).kind).toBe("missing");
-    expect(kinCardView(widget({ type: "poll" }), known()).kind).toBe("unknown");
-    expect(kinCardView(widget({ widgetClass: "generated" }), known()).kind).toBe("unknown");
-    expect(kinCardView(widget({ state: taskState({ status: "paused" }) }), known()).kind).toBe(
-      "unknown",
-    );
-    expect(kinCardView(widget({ state: { title: "no ids" } }), known()).kind).toBe("unknown");
+    expect(kinCardView(undefined, HOST, known()).kind).toBe("missing");
+    expect(kinCardView(widget({ type: "poll" }), HOST, known()).kind).toBe("unknown");
+    expect(kinCardView(widget({ widgetClass: "generated" }), HOST, known()).kind).toBe("unknown");
+    expect(
+      kinCardView(widget({ state: taskState({ status: "paused" }) }), HOST, known()).kind,
+    ).toBe("unknown");
+    expect(kinCardView(widget({ state: { title: "no ids" } }), HOST, known()).kind).toBe("unknown");
   });
 
   it("ignores fields this build doesn't know", () => {
@@ -90,12 +89,23 @@ describe("kinCardView", () => {
     expect(task(widget({ state: taskState({ status: "done" }) })).working).toBe(false);
   });
 
-  it("shows the last error only when the task failed or is blocked", () => {
+  it("shows the last error whenever there is one, whatever the status", () => {
     const error = { lastError: "Tests failed\n\n  3 of 120" };
     expect(task(widget({ state: taskState({ ...error, status: "failed" }) })).detail).toBe(
       "Tests failed 3 of 120",
     );
-    expect(task(widget({ state: taskState({ ...error, status: "working" }) })).detail).toBeNull();
+    expect(task(widget({ state: taskState({ ...error, status: "cancelled" }) })).detail).toBe(
+      "Tests failed 3 of 120",
+    );
+    expect(task(widget({ state: taskState({ status: "failed" }) })).detail).toBeNull();
+  });
+
+  it("clamps without splitting an emoji", () => {
+    const title = `${"a".repeat(198)}😀😀`;
+    expect(task(widget({ state: taskState({ title }) })).title).toBe(`${"a".repeat(198)}😀😀`);
+    expect(task(widget({ state: taskState({ title: `${title}x` }) })).title).toBe(
+      `${"a".repeat(198)}😀…`,
+    );
   });
 
   it("opens the thread on its environment, or the remote one, only when this phone knows it", () => {
@@ -106,6 +116,11 @@ describe("kinCardView", () => {
     const elsewhere = task(widget(), known("env-vps"));
     expect(elsewhere.open).toBeNull();
     expect(elsewhere.unknownEnvironment).toBe(true);
+
+    // A card in this chat can only name a thread on the chat's own host, unless it says remote.
+    const foreign = task(widget({ state: taskState({ environmentId: "env-other" }) }));
+    expect(foreign.open).toBeNull();
+    expect(foreign.unknownEnvironment).toBe(true);
 
     const noThread = task(widget({ state: taskState({ threadId: null }) }));
     expect(noThread.open).toBeNull();
@@ -118,6 +133,7 @@ describe("kinCardView", () => {
         state: taskState({
           pullRequests: [
             { url: "https://github.com/acme/app/pull/212", number: 212 },
+            { url: "https://github.com.evil.example/acme/app/pull/9", number: 9 },
             { url: "javascript:alert(1)", number: 213 },
             { url: "t3code://settings", number: 214 },
             { url: "not a url", number: 215 },
@@ -127,29 +143,13 @@ describe("kinCardView", () => {
     );
     expect(view.pullRequests).toEqual([
       { url: "https://github.com/acme/app/pull/212", label: "PR 212" },
+      {
+        url: "https://github.com.evil.example/acme/app/pull/9",
+        label: "PR 9 · github.com.evil.example",
+      },
     ]);
     expect(view.accessibilityLabel).toBe(
-      "Task: Fix the payments test. Working. GPT-6.1 Sol. PR 212. Opens the thread.",
+      "Task: Fix the payments test. Working. GPT-6.1 Sol. PR 212. PR 9 · github.com.evil.example. Opens the thread.",
     );
-  });
-});
-
-// The stream merge keeps the highest revision too: `kinInboxModel.test.ts`.
-describe("in-place updates", () => {
-  const atRevision = (revision: number, status: string) =>
-    widget({ revision, state: taskState({ status }) });
-  const status = (widgets: ReadonlyArray<KinWidget>) => {
-    expect(widgets).toHaveLength(1);
-    return task(widgets[0]!).statusLabel;
-  };
-
-  it("an earlier page's older copy never overwrites the stream's, and a newer one wins", () => {
-    const live = { ...emptyKinChat, widgets: [atRevision(3, "done")] };
-    expect(
-      status(mergeKinFeed(live, { ...emptyKinChat, widgets: [atRevision(2, "working")] }).widgets),
-    ).toBe("Done");
-    expect(
-      status(mergeKinFeed(live, { ...emptyKinChat, widgets: [atRevision(4, "failed")] }).widgets),
-    ).toBe("Failed");
   });
 });

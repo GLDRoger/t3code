@@ -44,15 +44,15 @@ const decodeTaskState = Schema.decodeUnknownOption(KinTaskCardState);
 
 // Agents write widget state, so every string is clamped and shown as plain text.
 const clamp = (text: string, max: number) => {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+  const chars = Array.from(text.replace(/\s+/g, " ").trim());
+  return chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : chars.join("");
 };
 
 /** Only web links open from a card; anything else an agent wrote is dropped. */
-function safeWebUrl(url: string): string | null {
+function safeWebUrl(url: string): URL | null {
   try {
     const parsed = new URL(url);
-    return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed.toString() : null;
+    return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed : null;
   } catch {
     return null;
   }
@@ -60,22 +60,27 @@ function safeWebUrl(url: string): string | null {
 
 export function kinTaskCardView(
   state: KinTaskCardState,
+  /** The environment hosting this chat. A local card must name it; only remote cards go elsewhere. */
+  hostEnvironmentId: EnvironmentId,
   isKnownEnvironment: (environmentId: EnvironmentId) => boolean,
 ): KinTaskCardView {
   const { label, tone } = STATUS[state.status];
   const title = clamp(state.title, 200);
   const model = state.model === null ? null : clamp(state.model, 60) || null;
-  const detail =
-    state.lastError !== null && (state.status === "failed" || state.status === "blocked")
-      ? clamp(state.lastError, 280) || null
-      : null;
+  const detail = state.lastError === null ? null : clamp(state.lastError, 280) || null;
   const environmentId = state.remoteEnvironmentId ?? state.environmentId;
-  const known = isKnownEnvironment(environmentId);
+  const known =
+    (state.remoteEnvironmentId !== null || state.environmentId === hostEnvironmentId) &&
+    isKnownEnvironment(environmentId);
   const open =
     state.threadId !== null && known ? { environmentId, threadId: state.threadId } : null;
   const pullRequests = state.pullRequests.flatMap((pr) => {
     const url = safeWebUrl(pr.url);
-    return url === null ? [] : [{ url, label: `PR ${pr.number}` }];
+    if (url === null) return [];
+    // Name any host other than GitHub so a look-alike link can't pass as a GitHub PR.
+    const label =
+      url.hostname === "github.com" ? `PR ${pr.number}` : `PR ${pr.number} · ${url.hostname}`;
+    return [{ url: url.toString(), label }];
   });
   const parts = [
     `Task: ${title}`,
@@ -103,6 +108,7 @@ export function kinTaskCardView(
 /** What a message's card draws. Anything this build can't read falls back to plain text. */
 export function kinCardView(
   widget: KinWidget | undefined,
+  hostEnvironmentId: EnvironmentId,
   isKnownEnvironment: (environmentId: EnvironmentId) => boolean,
 ): KinCardView {
   if (widget === undefined) return { kind: "missing" };
@@ -111,7 +117,10 @@ export function kinCardView(
     case "task": {
       const state = decodeTaskState(widget.state);
       return Option.isSome(state)
-        ? { kind: "task", task: kinTaskCardView(state.value, isKnownEnvironment) }
+        ? {
+            kind: "task",
+            task: kinTaskCardView(state.value, hostEnvironmentId, isKnownEnvironment),
+          }
         : { kind: "unknown" };
     }
     default:

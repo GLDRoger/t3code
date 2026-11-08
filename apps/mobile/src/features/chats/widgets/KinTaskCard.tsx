@@ -37,9 +37,11 @@ export const KinTaskCard = memo(function KinTaskCard(props: {
         const pr = task.pullRequests.find((item) => item.url === event.nativeEvent.actionName);
         if (pr) props.onOpenLink(pr.url);
       }}
-      disabled={open === null}
       onPress={openThread}
-      className="gap-2.5 rounded-[20px] border border-border bg-card-alt p-4 active:opacity-80"
+      className={cn(
+        "gap-2.5 rounded-[20px] border border-border bg-card-alt p-4",
+        open !== null && "active:opacity-80",
+      )}
     >
       <Text className="font-t3-bold text-2xs uppercase tracking-[1.1px] text-foreground-secondary">
         Task
