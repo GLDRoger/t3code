@@ -64,6 +64,16 @@ it.each([
 it.effect("preserves the upstream database columns Kin reads", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    for (const [table, columns] of [
+      ["orchestration_v2_projection_runs", ["run_id", "thread_id", "status", "payload_json"]],
+      ["orchestration_v2_projection_provider_turns", ["thread_id", "completed_at"]],
+    ] as const) {
+      const rows = yield* sql`PRAGMA table_info(${sql.literal(table)})`;
+      assert.includeMembers(
+        rows.map((row) => row.name),
+        [...columns],
+      );
+    }
     const tasks = yield* sql`PRAGMA table_info(scheduled_tasks)`;
     const deliveries = yield* sql`PRAGMA table_info(scheduled_task_webhook_deliveries)`;
     assert.includeMembers(

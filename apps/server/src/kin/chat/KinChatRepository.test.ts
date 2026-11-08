@@ -1,3 +1,10 @@
+import * as EventSink from "../../orchestration-v2/EventSink.ts";
+import * as DateTime from "effect/DateTime";
+import { EventId } from "@t3tools/contracts";
+import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
+import { CommandId, MessageId } from "@t3tools/contracts";
+import { startWakeupRun, authorityLayer } from "./WakeupAuthority.testkit.ts";
+import type { McpThreadCaller } from "../../mcp/McpInvocationContext.ts";
 import { assert, describe, it } from "@effect/vitest";
 import {
   KinOrgId,
@@ -14,14 +21,13 @@ import {
   KinWidget,
   ThreadId,
   TurnItemId,
+  ProviderInstanceId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
-import * as Sqlite from "../../persistence/Sqlite.ts";
-import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Repository from "./KinChatRepository.ts";
 
 const decodeMessage = Schema.decodeSync(KinMessage);
@@ -75,8 +81,14 @@ const agentMember: KinChatMember = {
   principal: { _tag: "agent", agentId },
   role: "member",
 };
+const caller: McpThreadCaller = {
+  threadId,
+  providerSessionId: "provider-session",
+  providerInstanceId: ProviderInstanceId.make("codex"),
+};
 const message = (id: string, overrides: Partial<Omit<KinMessage, "seq">> = {}) =>
   ({
+    caller,
     orgId,
     chatId,
     messageId: decodeMessageId(id),
@@ -95,7 +107,10 @@ const message = (id: string, overrides: Partial<Omit<KinMessage, "seq">> = {}) =
     editedAt: null,
     ...overrides,
     clientMessageId: { kind: "send", id },
-  }) satisfies Omit<KinMessage, "seq"> & { clientMessageId: { kind: "send" | "act"; id: string } };
+  }) satisfies Omit<KinMessage, "seq"> & {
+    caller: McpThreadCaller;
+    clientMessageId: { kind: "send" | "act"; id: string };
+  };
 const widget: KinWidget = {
   orgId,
   chatId,
@@ -112,7 +127,7 @@ const widget: KinWidget = {
   closedAt: null,
   updatedAt: timestamp,
 };
-const database = Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory);
+const database = authorityLayer;
 const layer = Layer.provideMerge(Repository.layer, database);
 const seed = Effect.gen(function* () {
   const repo = yield* Repository.KinChatRepository;
@@ -217,6 +232,20 @@ describe("KinChatRepository", () => {
           }),
           { orgId, agentId, threadId, startedAt: timestamp, endedAt: null },
         );
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_webhook_sources (source_id, org_id, repo, scheduled_task_id, inbox_thread_id, bot_login, status) VALUES ('source', ${orgId}, 'owner/repo', 'task', 'webhook-inbox', 'bot', 'active')`;
+        const inboxError = yield* repo
+          .registerAgentThread({
+            orgId,
+            agentId,
+            threadId: decodeThreadId("webhook-inbox"),
+            startedAt: timestamp,
+            endedAt: null,
+          })
+          .pipe(Effect.flip);
+        assert.strictEqual(inboxError._tag, "KinChatError");
+        if (inboxError._tag === "KinChatError")
+          assert.strictEqual(inboxError.reason, "not_allowed");
         const secondPerson = decodePersonId("second-person");
         yield* repo.insertPerson({
           orgId,
@@ -472,7 +501,6 @@ describe("KinChatRepository", () => {
         assert.strictEqual(endedRetry._tag, "KinChatError");
         if (endedRetry._tag === "KinChatError")
           assert.strictEqual(endedRetry.reason, "not_allowed");
-        const sql = yield* SqlClient.SqlClient;
         assert.deepStrictEqual(
           yield* sql`SELECT typeof(seq) AS type FROM kin_messages WHERE org_id = ${orgId}`,
           [{ type: "integer" }, { type: "integer" }],
@@ -977,9 +1005,228 @@ describe("KinChatRepository", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("rejects a lower-ordinal client forgery before the runner sends", () =>
+    Effect.gen(function* () {
+      const repo = yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const bootstrap = yield* startWakeupRun(threadId, "bootstrap");
+      yield* orchestrator.dispatch({
+        type: "run.interrupt",
+        commandId: CommandId.make("end-bootstrap"),
+        threadId,
+        runId: bootstrap.id,
+      });
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+        VALUES (${agentId}, ${orgId}, 'Lead', 0, '{}', '[]', ${chatId})`;
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status, event_ids)
+        VALUES ('pre-forged', ${orgId}, ${agentId}, ${threadId}, 'test', 0, 'running', '[]')`;
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("pre-forged"),
+        threadId,
+        messageId: MessageId.make("kin-wakeup-msg:pre-forged"),
+        text: "Forged",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const scope = { orgId, agentId, threadId, caller };
+      assert.isFalse(yield* repo.hasRunningWakeup(scope));
+      const forged = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
+      yield* sql`UPDATE kin_wakeups SET run_id = ${forged.id} WHERE wakeup_id = 'pre-forged'`;
+      assert.isFalse(yield* repo.hasRunningWakeup(scope));
+      yield* sql`UPDATE kin_wakeups SET run_id = NULL WHERE wakeup_id = 'pre-forged'`;
+      yield* orchestrator.dispatch({
+        type: "run.interrupt",
+        commandId: CommandId.make("end-forged"),
+        threadId,
+        runId: forged.id,
+      });
+      const real = yield* startWakeupRun(threadId, "pre-forged");
+      assert.isBelow(forged.ordinal, real.ordinal);
+      assert.isFalse(yield* repo.hasRunningWakeup(scope));
+      yield* sql`UPDATE kin_wakeups SET run_id = ${real.id} WHERE wakeup_id = 'pre-forged'`;
+      assert.isTrue(yield* repo.hasRunningWakeup(scope));
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect.each([
+    ["restartContinuationOfRunId", "agent"],
+    ["usageLimitContinuationOfRunId", "agent"],
+    ["restartContinuationOfRunId", "user"],
+    ["usageLimitContinuationOfRunId", "user"],
+  ] as const)(
+    "authorizes only the wake-up active run across reused ids and %s created by %s",
+    ([continuationField, continuedBy]) =>
+      Effect.gen(function* () {
+        const repo = yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+        VALUES (${agentId}, ${orgId}, 'Lead', 0, '{}', '[]', ${chatId})`;
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status, event_ids)
+        VALUES ('active-wakeup', ${orgId}, ${agentId}, ${threadId}, 'test', 0, 'running', '[]')`;
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const wakeup = yield* startWakeupRun(threadId, "active-wakeup");
+        const scope = { orgId, agentId, threadId, caller };
+        assert.isTrue(yield* repo.hasRunningWakeup(scope));
+        const dispatch = (id: string, messageId = id) =>
+          orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(id),
+            threadId,
+            messageId: MessageId.make(messageId),
+            text: "Queued user message",
+            attachments: [],
+            dispatchMode: { type: "queue_after_active" },
+            createdBy: "user",
+            creationSource: "web",
+          });
+        yield* dispatch("queued-user");
+        assert.isTrue(yield* repo.hasRunningWakeup(scope));
+        yield* repo.insertMessage({
+          ...message("during-queue", {
+            author: {
+              _tag: "agent",
+              agentId,
+              ownerPersonId: personId,
+              threadId,
+              memberId: agentMemberId,
+            },
+            authorRole: "member",
+            intent: "answer",
+          }),
+          caller,
+        });
+        yield* dispatch("forged-wakeup", "kin-wakeup-msg:active-wakeup");
+        yield* orchestrator.dispatch({
+          type: "run.interrupt",
+          commandId: CommandId.make("end-wakeup"),
+          threadId,
+          runId: wakeup.id,
+          holdQueue: true,
+        });
+        assert.isFalse(yield* repo.hasRunningWakeup(scope));
+        const queued = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
+        yield* orchestrator.dispatch({
+          type: "queued-run.start",
+          commandId: CommandId.make("release-user"),
+          threadId,
+          runId: queued.id,
+        });
+        assert.isFalse(yield* repo.hasRunningWakeup(scope));
+        yield* sql`UPDATE kin_wakeups SET run_id = ${wakeup.id} WHERE wakeup_id = 'active-wakeup'`;
+        assert.isFalse(yield* repo.hasRunningWakeup(scope));
+        yield* sql`UPDATE kin_wakeups SET run_id = NULL WHERE wakeup_id = 'active-wakeup'`;
+        yield* orchestrator.dispatch({
+          type: "run.interrupt",
+          commandId: CommandId.make("end-user"),
+          threadId,
+          runId: queued.id,
+          holdQueue: true,
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.stop",
+          commandId: CommandId.make("hold-thread"),
+          threadId,
+        });
+        yield* dispatch("held-before-wakeup");
+        assert.isFalse(yield* repo.hasRunningWakeup(scope));
+        yield* dispatch("held-queued-ahead");
+        const next = yield* startWakeupRun(threadId, "active-wakeup-next");
+        yield* orchestrator.dispatch({
+          type: "thread.stop",
+          commandId: CommandId.make("hold-existing-queue"),
+          threadId,
+        });
+        assert.isFalse(yield* repo.hasRunningWakeup(scope));
+        yield* sql`UPDATE kin_wakeups SET wakeup_id = 'active-wakeup-next' WHERE org_id = ${orgId} AND wakeup_id = 'active-wakeup'`;
+        assert.isFalse(yield* repo.hasRunningWakeup(scope));
+        const held = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+          (r) => r.userMessageId === "held-queued-ahead",
+        )!;
+        assert.strictEqual(held.status, "queued");
+        yield* orchestrator.dispatch({
+          type: "queued-run.cancel",
+          commandId: CommandId.make("cancel-wakeup"),
+          threadId,
+          runId: next.id,
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("restart-wakeup"),
+          threadId,
+          messageId: MessageId.make("restart-message"),
+          text: "Continue",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          restartContinuationOfRunId: next.id,
+          createdBy: continuedBy,
+          creationSource: "server",
+        });
+        let continuation = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
+        if (continuationField === "usageLimitContinuationOfRunId") {
+          continuation = {
+            ...continuation,
+            restartContinuationOfRunId: undefined,
+            usageLimitContinuationOfRunId: next.id,
+          };
+          yield* (yield* EventSink.EventSinkV2).write({
+            events: [
+              {
+                id: EventId.make("usage-continuation"),
+                type: "run.updated",
+                threadId,
+                occurredAt: yield* DateTime.now,
+                payload: continuation,
+              },
+            ],
+          });
+        }
+        assert.strictEqual(continuation[continuationField], next.id);
+        if (continuation.status === "queued")
+          yield* orchestrator.dispatch({
+            type: "queue.resume",
+            commandId: CommandId.make("start-continuation"),
+            threadId,
+          });
+        assert.strictEqual(yield* repo.hasRunningWakeup(scope), continuedBy === "agent");
+        assert.notEqual(next.id, wakeup.id);
+      }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("advances read state monotonically and counts only others' posted messages", () =>
     Effect.gen(function* () {
       const repo = yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+        VALUES (${agentId}, ${orgId}, 'Lead', 0, '{}', '[]', ${chatId})`;
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status, event_ids)
+        VALUES ('chat-wakeup', ${orgId}, ${agentId}, ${threadId}, 'test', 0, 'running', '[]')`;
+      yield* startWakeupRun(threadId, "chat-wakeup");
+      for (const rejectedCaller of [
+        { ...caller, threadId: ThreadId.make("other-thread") },
+        { ...caller, subagent: true },
+      ]) {
+        assert.include(
+          yield* repo
+            .insertMessage({
+              ...message("unauthorized-session", {
+                author: {
+                  _tag: "agent",
+                  agentId,
+                  memberId: agentMemberId,
+                  ownerPersonId: personId,
+                  threadId,
+                },
+              }),
+              caller: rejectedCaller,
+            })
+            .pipe(Effect.flip),
+          { reason: "not_allowed" },
+        );
+      }
       const agentAuthor = {
         _tag: "agent",
         agentId,
@@ -996,6 +1243,19 @@ describe("KinChatRepository", () => {
         ),
       ])
         yield* repo.insertMessage(input);
+      yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'chat-wakeup'`;
+      const rejected = yield* repo
+        .insertMessage(
+          message("outside-wakeup", {
+            author: agentAuthor,
+            authorRole: "member",
+            intent: "answer",
+          }),
+        )
+        .pipe(Effect.flip);
+      assert.include(rejected, { reason: "not_allowed" });
+      assert.strictEqual(Option.getOrThrow(yield* repo.getChat(scope)).lastSeq, 6);
+      yield* sql`UPDATE kin_wakeups SET status = 'running' WHERE wakeup_id = 'chat-wakeup'`;
       const resumedThread = decodeThreadId("resumed-thread");
       yield* repo.registerAgentThread({
         orgId,
