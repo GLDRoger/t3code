@@ -402,7 +402,16 @@ it.effect(
         expect(yield* memory.readIndex(orgA)).toContain("⚠ review");
         const counts = repository.counts();
         yield* memory.query(orgA, {});
+        const reads =
+          yield* sql`SELECT * FROM kin_memory_reads WHERE org_id = ${orgA} ORDER BY item_id`;
+        yield* memory.readItemQuietly(orgA, itemId);
+        expect(
+          yield* sql`SELECT * FROM kin_memory_reads WHERE org_id = ${orgA} ORDER BY item_id`,
+        ).toEqual(reads);
         yield* memory.readItem(orgA, itemId);
+        expect(
+          yield* sql`SELECT * FROM kin_memory_reads WHERE org_id = ${orgA} ORDER BY item_id`,
+        ).toHaveLength(1);
         expect(repository.counts()).toEqual(counts);
         yield* TestClock.adjust("7 weeks");
         yield* memory.readItem(orgA, itemId);

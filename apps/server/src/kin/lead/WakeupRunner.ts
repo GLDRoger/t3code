@@ -31,6 +31,7 @@ import * as ProjectService from "../../project/ProjectService.ts";
 import * as KinIdentity from "../chat/KinIdentity.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
+import * as KinBudget from "./KinBudget.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 
@@ -77,7 +78,6 @@ const RunningRow = Schema.Struct({
   runId: Schema.NullOr(RunId),
   startedAt: Schema.Number,
 });
-const encodeUsage = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeLead = Schema.decodeUnknownEffect(LeadRow);
 const decodeRunning = Schema.decodeUnknownEffect(RunningRow);
 const ulid = Effect.gen(function* () {
@@ -95,6 +95,7 @@ const ulid = Effect.gen(function* () {
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
+  const budget = yield* KinBudget.KinBudget;
   const memory = yield* Memory.Memory;
   const hooks = yield* Effect.serviceOption(KinWakeupHooks);
   const prompt = yield* KinLeadPrompt;
@@ -158,12 +159,13 @@ const make = Effect.gen(function* () {
     const turns = projection.providerTurns.filter(
       (turn) => turn.runAttemptId !== null && attempts.has(turn.runAttemptId),
     );
-    const usage = turns.flatMap((turn) =>
-      turn.tokenUsage === undefined ? [] : [{ providerTurnId: turn.id, ...turn.tokenUsage }],
-    );
-    const tokens = yield* encodeUsage(usage);
-    yield* sql`UPDATE kin_wakeups SET tokens_json = ${tokens}
-      WHERE org_id = ${row.orgId} AND agent_id = ${row.agentId} AND wakeup_id = ${row.wakeupId} AND status = 'running'`;
+    const usage = turns.map((turn) => ({
+      providerTurnId: turn.id,
+      ...(turn.turnTokenUsage === undefined ? {} : { turnTokenUsage: turn.turnTokenUsage }),
+      ...(turn.tokenUsage === undefined ? {} : { tokenUsage: turn.tokenUsage }),
+      usedTokens: turn.tokenUsage?.usedTokens,
+    }));
+    yield* budget.charge({ orgId: row.orgId, wakeupId: row.wakeupId, usage });
   });
   const wait = Effect.fn("WakeupRunner.wait")(function* (
     row: typeof RunningRow.Type,
@@ -295,7 +297,7 @@ const make = Effect.gen(function* () {
       };
       yield* Effect.scoped(
         Effect.gen(function* () {
-          const events = yield* Effect.acquireRelease(
+          let events = yield* Effect.acquireRelease(
             queue.claim({ orgId, agentId, wakeupId, model: record.models.strong.model }),
             (_, exit) =>
               cleanup(row, Exit.hasInterrupts(exit)).pipe(
@@ -326,6 +328,29 @@ const make = Effect.gen(function* () {
               yield* queue.finish({ orgId, wakeupId, status: "failed" });
               return yield* retire(current);
             }
+            let cheapOnly = false;
+            for (const priority of new Set(events.map((item) => item.priority))) {
+              const admission = yield* budget.admit(orgId, priority);
+              cheapOnly ||= admission.cheapOnly;
+              if (!admission.allowed) {
+                const deferred = new Set(
+                  events.filter((item) => item.priority === priority).map((item) => item.eventId),
+                );
+                yield* queue.release({
+                  orgId,
+                  wakeupId,
+                  eventIds: events
+                    .filter((event) => deferred.has(event.eventId))
+                    .map((event) => event.eventId),
+                  notBefore: admission.nextReset,
+                  countAttempt: false,
+                  budgetDeferred: true,
+                });
+                events = events.filter((event) => !deferred.has(event.eventId));
+              }
+            }
+            if (events.length === 0) return;
+            const budgetContext = yield* budget.promptContext(orgId);
             const pinned = yield* memory.prepareWakeup(orgId).pipe(
               Effect.tapError((error) =>
                 Effect.logError("Kin memory preparation failed", {
@@ -353,11 +378,12 @@ const make = Effect.gen(function* () {
               wakeupId,
               events,
               memoryHead: pinned.head,
+              budgetContext,
             });
             const urgent =
               yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND priority IN ('P0', 'P1') LIMIT 1`;
             const modelSelection =
-              urgent.length > 0 || events.some((event) => event._tag === "routine")
+              !cheapOnly && (urgent.length > 0 || events.some((event) => event._tag === "routine"))
                 ? current.models.strong
                 : current.models.cheap;
             const threadId = current.threadId ?? ThreadId.make(`kin:${yield* ulid}`);
