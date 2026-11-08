@@ -54,7 +54,7 @@ const chatCache = persistQuery(Schema.Struct({ chat: KinChatState, savedAt: Sche
 
 const isKinChatError = Schema.is(KinChatError);
 
-/** `unavailable` is the host's only retryable Kin error; every other reason is a final refusal. */
+/** `unavailable` is the host's only retryable Kin error; every other reason, `disabled` included, is final. */
 export const isKinRetryable = (error: unknown): boolean =>
   isKinChatError(error) && error.reason === "unavailable";
 const isKinRefusal = (
@@ -115,7 +115,7 @@ export function retryWhileKinUnavailable<A, E, R>(stream: Stream.Stream<A, E, R>
 
 /**
  * Re-reads `kin.orgs.list` after `unavailable` with the streams' backoff, for a host known to be
- * Kin: the server maps every infra failure to `unavailable`. Any other host fails at once.
+ * Kin. Any other host, or a `disabled` answer, fails at once.
  */
 export function retryKinProbe<A, E, R>(
   probe: Effect.Effect<A, E, R>,

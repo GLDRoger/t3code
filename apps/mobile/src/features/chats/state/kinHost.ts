@@ -17,7 +17,7 @@ export type KinProbe =
   | { readonly _tag: "unauthorized"; readonly message: string }
   /** `transient` for transport failures and timeouts: the host may still be Kin. */
   | { readonly _tag: "error"; readonly message: string; readonly transient: boolean }
-  /** A plain T3 server, or Kin with `KIN_ENABLED` off. */
+  /** A plain T3 server, or Kin turned off, misconfigured or failed at startup (`disabled`). */
   | { readonly _tag: "notKin" };
 
 const isKinChatError = Schema.is(KinChatError);
@@ -36,10 +36,9 @@ export function classifyKinProbe(
   for (const error of failures) {
     if (isAuthorizationError(error)) return { _tag: "unauthorized", message: error.message };
     if (isKinChatError(error)) {
-      // Only a host never seen as Kin gets here with `unavailable`; known hosts retry it.
-      return error.reason === "unavailable"
-        ? { _tag: "notKin" }
-        : { _tag: "error", message: error.message, transient: false };
+      if (error.reason === "disabled") return { _tag: "notKin" };
+      // Known hosts retry `unavailable`; a host never seen as Kin gets here with it.
+      return { _tag: "error", message: error.message, transient: error.reason === "unavailable" };
     }
   }
   // A server without the Kin RPCs answers `Exit.die("Unknown request tag: ...")`.
