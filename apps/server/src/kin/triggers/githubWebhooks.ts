@@ -341,17 +341,26 @@ export const make = Effect.gen(function* () {
       yield* tasks.delete({ id: task.id });
       return yield* needsConnect(input.orgId);
     }
-    yield* store.registerSource({
-      id: sourceId,
-      orgId: input.orgId,
-      repo: KIN_GITHUB_APP_SOURCE,
-      scheduledTaskId: task.id,
-      inboxThreadId: yield* inboxThread(input.orgId, input.projectId, modelSelection),
-      githubHookId: null,
-      botLogin,
-      status: "active",
-    });
-    yield* store.bindSecret(input.orgId, sourceId, secret);
+    yield* Effect.gen(function* () {
+      yield* store.registerSource({
+        id: sourceId,
+        orgId: input.orgId,
+        repo: KIN_GITHUB_APP_SOURCE,
+        scheduledTaskId: task.id,
+        inboxThreadId: yield* inboxThread(input.orgId, input.projectId, modelSelection),
+        githubHookId: null,
+        botLogin,
+        status: "active",
+      });
+      yield* store.bindSecret(input.orgId, sourceId, secret);
+    }).pipe(
+      Effect.tapError(() =>
+        Effect.andThen(
+          Effect.ignore(store.unregisterSource(input.orgId, sourceId)),
+          Effect.ignore(tasks.delete({ id: task.id })),
+        ),
+      ),
+    );
     // Enabled only once registered, so no delivery can reach a real launch.
     yield* tasks.setEnabled({ id: task.id, enabled: true });
     return {

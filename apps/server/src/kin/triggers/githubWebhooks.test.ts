@@ -535,17 +535,8 @@ describe("KinGithubWebhooks", () => {
               webhooks.setup(owner, { orgId, projectId: project.id }),
             );
             assert.strictEqual(refused.reason, "invalid_state");
-            const [stranded] = (yield* tasks.list()).tasks;
-            if (stranded === undefined) return assert.fail("task");
-            assert.isFalse(stranded.enabled);
-            const early = signed(stranded, {
-              delivery: "early",
-              secret: Redacted.value(ownerSecret),
-            });
-            assert.strictEqual((yield* tasks.triggerWebhook(early))._tag, "disabled");
-            assert.strictEqual(stranded.id, KinTriggerStore.githubAppTaskId(orgId));
-            yield* webhooks.remove(owner, { orgId });
             assert.deepStrictEqual((yield* tasks.list()).tasks, []);
+            assert.isUndefined(yield* store.getSource(orgId, sourceId));
 
             yield* sql`DELETE FROM kin_agent_threads WHERE thread_id = ${inboxId}`;
             const setup = yield* webhooks.setup(owner, { orgId, projectId: project.id });
@@ -553,7 +544,7 @@ describe("KinGithubWebhooks", () => {
             yield* webhooks.setSecret(owner, { orgId, secret: ownerSecret });
             const [task] = (yield* tasks.list()).tasks;
             if (task === undefined) return assert.fail("task");
-            assert.strictEqual(task.id, stranded.id);
+            assert.strictEqual(task.id, KinTriggerStore.githubAppTaskId(orgId));
             assert.isTrue(task.enabled);
 
             assert.strictEqual(
