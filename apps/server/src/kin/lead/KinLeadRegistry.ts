@@ -19,6 +19,7 @@ export class KinLeadRegistryConflict extends Schema.TaggedError<KinLeadRegistryC
 export class KinLeadRegistry extends Context.Service<
   KinLeadRegistry,
   {
+    readonly lookup: (threadId: ThreadId) => typeof Caller.Type | undefined;
     readonly register: (
       threadId: ThreadId,
       caller: typeof Caller.Type,
@@ -29,6 +30,7 @@ export class KinLeadRegistry extends Context.Service<
 export const layer = Layer.sync(KinLeadRegistry, () => {
   const callers = new Map<ThreadId, typeof Caller.Type>();
   return KinLeadRegistry.of({
+    lookup: (threadId) => callers.get(threadId),
     register: Effect.fn("KinLeadRegistry.register")((threadId, caller) =>
       Effect.acquireRelease(
         Effect.suspend(() => {
