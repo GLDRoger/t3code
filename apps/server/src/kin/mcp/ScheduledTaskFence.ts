@@ -5,10 +5,11 @@ import * as Layer from "effect/Layer";
 import * as ScheduledTasks from "../../scheduledTasks/ScheduledTaskService.ts";
 import * as KinEnabled from "../KinEnabled.ts";
 
+export const KIN_COMMAND_PREFIX = "kin:";
 // Upstream names a task created with a commandId `scheduled-task:${commandId}`.
-const kinTaskPrefix = "scheduled-task:kin:";
+export const KIN_TASK_PREFIX = `scheduled-task:${KIN_COMMAND_PREFIX}`;
 
-const isKinTask = (id: string) => id.startsWith(kinTaskPrefix);
+const isKinTask = (id: string) => id.startsWith(KIN_TASK_PREFIX);
 
 const refuse = (taskId: ScheduledTaskId) =>
   Effect.fail(
