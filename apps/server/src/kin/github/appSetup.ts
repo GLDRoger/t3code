@@ -63,11 +63,15 @@ export const checkApp = Effect.gen(function* () {
   const appDiff = diffAppPermissions(app.permissions);
   let ok = appDiff.every((line) => line.status === "ok");
   const missingEvents = KIN_GITHUB_APP_EVENTS.filter((event) => !app.events.includes(event));
+  const expectedEvents: ReadonlyArray<string> = KIN_GITHUB_APP_EVENTS;
+  const extraEvents = app.events.filter((event) => !expectedEvents.includes(event));
+  // No events is fine for an App made without --webhook-url; a partial or wider set isn't.
+  if (app.events.length > 0 && (missingEvents.length > 0 || extraEvents.length > 0)) ok = false;
   const lines = [
     `App ${app.slug} (${app.id}), owned by ${app.owner?.login ?? "unknown"}`,
     "Permissions:",
     ...formatDiff(appDiff),
-    `Webhook events: ${app.events.length === 0 ? "none" : app.events.toSorted().join(", ")}${missingEvents.length === 0 ? "" : ` (not subscribed: ${missingEvents.join(", ")})`}`,
+    `Webhook events: ${app.events.length === 0 ? "none" : app.events.toSorted().join(", ")}${missingEvents.length === 0 ? "" : ` (not subscribed: ${missingEvents.join(", ")})`}${extraEvents.length === 0 ? "" : ` (FAIL extra: ${extraEvents.join(", ")})`}`,
   ];
   if (installations.length === 0) {
     ok = false;

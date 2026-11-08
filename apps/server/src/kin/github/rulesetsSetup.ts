@@ -570,7 +570,7 @@ export const kinRulesetsCommand = Command.make(
         const bot = yield* (yield* KinGitHubApp.KinGitHubApp).installationToken({
           repo,
           permissions: { contents: "write", pull_requests: "write" },
-          holder: "worker",
+          holder: "server",
         });
         return { botToken: bot.token, mergeToken };
       }).pipe(

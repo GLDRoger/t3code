@@ -150,7 +150,13 @@ describe("KinGitHubApp.installationToken", () => {
       "contents: write for a lead",
       { contents: "write" },
       { holder: "lead" },
-      "a lead can't have contents: write",
+      "an agent's token can't have contents: write",
+    ],
+    [
+      "contents: write for a worker",
+      { contents: "write" },
+      { holder: "worker" },
+      "an agent's token can't have contents: write",
     ],
   ] as const)("refuses %s before calling GitHub", ([, permissions, options, reason]) => {
     const { requests, layer } = setup(() => undefined);
@@ -172,7 +178,11 @@ describe("KinGitHubApp.installationToken", () => {
 
   it.effect.each([
     ["more permission than asked", { contents: "read" }, granted({ contents: "write" })],
-    ["admin where write was asked", { contents: "write" }, granted({ contents: "admin" })],
+    [
+      "admin where write was asked",
+      { pull_requests: "write" },
+      granted({ pull_requests: "admin" }),
+    ],
     ["an extra permission", { contents: "read" }, granted({ contents: "read", issues: "write" })],
     [
       "a prototype-named permission",

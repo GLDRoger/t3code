@@ -10,6 +10,7 @@ import { describe } from "vite-plus/test";
 import recorded from "./__fixtures__/github-app.json" with { type: "json" };
 import * as AppSetup from "./appSetup.ts";
 import * as KinGitHubApp from "./KinGitHubApp.ts";
+import { KIN_GITHUB_APP_EVENTS } from "./KinGitHubPermissions.ts";
 import { fakeGitHub, memoryKeychain, scopeLayer, type FakeAnswer } from "./testFakes.ts";
 
 const privateKeyPem = NodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 })
@@ -46,7 +47,9 @@ const installation = recorded.installations[0]!;
 describe("kin-github-app --check", () => {
   it.effect("passes the recorded App, whose permissions match the table", () =>
     Effect.gen(function* () {
-      const result = yield* checkWith(recorded);
+      // The recording predates lane C's event list; its own events are a failing case below.
+      const app = { ...recorded.app, events: [...KIN_GITHUB_APP_EVENTS] };
+      const result = yield* checkWith({ app, installations: recorded.installations });
       assert.isTrue(result.ok);
       assert.include(result.lines, "  ok   contents                     write (table: write)");
       assert.include(result.lines, "Installation 77 on GLDRoger: selected repositories");
@@ -95,6 +98,19 @@ describe("kin-github-app --check", () => {
   ] as const)("fails an App %s", ([, installations]) =>
     Effect.gen(function* () {
       const result = yield* checkWith({ app: recorded.app, installations });
+      assert.isFalse(result.ok);
+      assert.isTrue(result.lines.some((line) => line.includes("FAIL")));
+    }),
+  );
+
+  it.effect.each([
+    ["still on the recorded event set", () => recorded.app.events],
+    ["subscribed to only some events", () => KIN_GITHUB_APP_EVENTS.slice(1)],
+    ["subscribed to an extra event", () => [...KIN_GITHUB_APP_EVENTS, "member"]],
+  ] as const)("fails an App %s", ([, events]) =>
+    Effect.gen(function* () {
+      const app = { ...recorded.app, events: [...events()] };
+      const result = yield* checkWith({ app, installations: recorded.installations });
       assert.isFalse(result.ok);
       assert.isTrue(result.lines.some((line) => line.includes("FAIL")));
     }),

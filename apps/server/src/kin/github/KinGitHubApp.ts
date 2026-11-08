@@ -145,7 +145,8 @@ export class KinGitHubApp extends Context.Service<
 >()("t3/kin/github/KinGitHubApp") {}
 
 /** Who will hold the token: a lead session, or a worker it started. */
-export type KinGitHubTokenHolder = "lead" | "worker";
+// `server` tokens stay in Kin's own process for its own pushes; they never reach an agent.
+export type KinGitHubTokenHolder = "lead" | "worker" | "server";
 
 const base64Url = (value: string | Buffer) => Buffer.from(value).toString("base64url");
 
@@ -240,8 +241,8 @@ const make = Effect.gen(function* () {
       ? "not an owner/name repository"
       : !isScopedRepo(scope.repos, input.repo)
         ? "not a repository in KIN_GITHUB_REPOS"
-        : input.holder === "lead" && input.permissions.contents === "write"
-          ? "a lead can't have contents: write"
+        : input.holder !== "server" && input.permissions.contents === "write"
+          ? "an agent's token can't have contents: write"
           : narrowingViolation(input.permissions);
     if (violation !== null) {
       return yield* new KinGitHubTokenNarrowingError({
