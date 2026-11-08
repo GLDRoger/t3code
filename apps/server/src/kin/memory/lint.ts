@@ -34,7 +34,7 @@ const describe = (error: MemoryItemError, text: string): { line: number; reason:
     return { line: keyLine(text, "on"), reason: error.reason };
   if (error.reason === "Invalid front matter schema" && Schema.isSchemaError(error.cause)) {
     const issue = formatIssue(error.cause.issue).issues[0];
-    const key = issue?.path.map(String).join(".") ?? "";
+    const key = issue?.path?.map(String).join(".") ?? "";
     const top = key.split(".")[0] ?? "";
     if (!top) return { line: 1, reason: error.reason };
     return issue?.message === "Missing key"
