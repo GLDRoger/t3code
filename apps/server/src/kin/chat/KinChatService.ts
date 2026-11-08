@@ -69,6 +69,21 @@ type WaitingInput = Pick<
 export class KinChatService extends Context.Service<
   KinChatService,
   {
+    readonly notice: (input: {
+      readonly messageId: KinMessageId;
+      readonly orgId: KinOrgId;
+      readonly chatId: KinChatId;
+      readonly body: string;
+      readonly waitingFor?: KinPersonId;
+    }) => Effect.Effect<
+      { readonly message: KinMessage; readonly waiting: KinWaitingItem | null },
+      ServiceError
+    >;
+    readonly resolveNotice: (input: {
+      readonly orgId: KinOrgId;
+      readonly waitingId: KinWaitingId;
+      readonly resolution: "answered" | "closed";
+    }) => Effect.Effect<void, ServiceError>;
     readonly orgs: (
       identities: ReadonlyArray<PersonIdentity>,
     ) => Effect.Effect<KinOrgsListResult, ServiceError>;
@@ -392,6 +407,93 @@ const make = Effect.gen(function* () {
     (effect) => transaction(effect).pipe(NodeSqliteClient.readOnly),
   );
   return KinChatService.of({
+    // Trusted server callers only; deliberately absent from RPC and MCP.
+    notice: Effect.fn("KinChatService.notice")(function* (input) {
+      yield* requireRecord(repo.getChat(input));
+      if (input.waitingFor !== undefined)
+        yield* requireRecord(
+          repo.activeMember({
+            ...input,
+            principal: { _tag: "person", personId: input.waitingFor },
+          }),
+        );
+      const messageId = yield* decodeMessageId(input.messageId).pipe(
+        Effect.mapError(() => invalidState),
+      );
+      const previous = yield* repo.getMessage({ orgId: input.orgId, messageId });
+      if (Option.isSome(previous)) {
+        const message = previous.value;
+        const rows = yield* sql<{ waiting_id: string }>`SELECT waiting_id FROM kin_waiting
+          WHERE org_id = ${input.orgId} AND message_id = ${messageId} ORDER BY waiting_id`.pipe(
+          Effect.mapError(toPersistenceSqlError("KinChatService.notice")),
+        );
+        const waiting =
+          rows[0] === undefined
+            ? null
+            : yield* requireRecord(
+                repo.getWaiting({
+                  orgId: input.orgId,
+                  waitingId: yield* decodeWaitingId(rows[0].waiting_id).pipe(
+                    Effect.mapError(() => invalidState),
+                  ),
+                }),
+              );
+        if (
+          message.author._tag !== "system" ||
+          message.chatId !== input.chatId ||
+          message.body !== input.body ||
+          (waiting?.personId ?? undefined) !== input.waitingFor
+        )
+          return yield* notAllowed;
+        return { message, waiting };
+      }
+      const message = yield* repo.insertMessage({
+        orgId: input.orgId,
+        chatId: input.chatId,
+        messageId,
+        author: { _tag: "system" },
+        kind: "system",
+        body: input.body,
+        intent: null,
+        mentions: [],
+        replyTo: null,
+        widgetId: null,
+        floorRunId: null,
+        status: "posted",
+        sentBy: null,
+        clientMessageId: null,
+        createdAt: yield* now,
+        editedAt: null,
+      });
+      yield* hub.publish({ type: "message.posted", orgId: input.orgId, message });
+      let waiting: KinWaitingItem | null = null;
+      if (input.waitingFor !== undefined) {
+        waiting = {
+          orgId: input.orgId,
+          chatId: input.chatId,
+          waitingId: yield* decodeWaitingId(SecureRandom.uuidV4Unsafe()).pipe(Effect.orDie),
+          personId: input.waitingFor,
+          messageId: message.messageId,
+          widgetId: null,
+          reason: "question",
+          createdAt: yield* now,
+          resolvedAt: null,
+          resolution: null,
+        };
+        yield* repo.addWaiting(waiting);
+        yield* hub.publish({ type: "waiting.updated", orgId: input.orgId, item: waiting });
+      }
+      return { message, waiting };
+    }, transaction),
+    resolveNotice: Effect.fn("KinChatService.resolveNotice")(function* (input) {
+      const item = yield* requireRecord(repo.getWaiting(input));
+      if (item.reason !== "question" || item.messageId === null) return yield* notAllowed;
+      const message = yield* requireRecord(
+        repo.getMessage({ orgId: input.orgId, messageId: item.messageId }),
+      );
+      if (message.author._tag !== "system") return yield* notAllowed;
+      yield* resolve(item, input.resolution);
+    }, transaction),
     orgs: Effect.fn("KinChatService.orgs")(function* (identities) {
       const orgs = yield* Effect.forEach(
         identities,

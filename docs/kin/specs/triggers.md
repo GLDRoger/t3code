@@ -234,6 +234,10 @@ armed ──heads_up fire──▶ recheck ──changed──▶ asked   (decis
 
 `kin_ping_ledger(org_id, person, item_id, day)` carries a unique key, so a person is pinged at most once per item per owner day. Pings to one person within one sweep are batched into one message. Quiet hours come from `people/<handle>.md` (`tz`, `quiet_hours`) or the org default; a ping due in quiet hours waits for its end. Every ping names a next step. A second day without an answer escalates once to the owner's **Waiting on you**. Delivery goes through the chat service (CHAT).
 
+TRIG-11 persists requests in `kin_ping_items` before delivery; quiet sweeps leave them pending, with no sent ledger row. Each later sweep rechecks the current owner day, item state and person settings. Delivery and the sent ledger commit in one SQLite transaction, so restart retries cannot duplicate a committed batch. Equal quiet-hour bounds disable quiet hours; windows include the start and exclude the end. Missing or invalid person zones use the org zone; missing or invalid windows use the org quiet hours (21:00–08:00 before settings exist).
+
+An answer means a posted human message by a ping recipient in the ping's chat with a sequence greater than that recipient's first ping, matching CHAT's question-reply rule; reads, system notices and agent messages are not answers. Any such answer, or a non-open/invalid memory item, stops all pings for that item and resolves its escalation on the next sweep. `kin_ping_escalations` retains one waiting-row anchor per org/item, even after resolution. Day two means a later owner-calendar date, not 24 elapsed hours. Notices are server-only `KinChatService.notice` system messages, never model-authored or human-impersonated posts. Watchdog and deferral callers will compose the ping service with Memory; TRIG-11 starts no background sweeper.
+
 ### Routines (`fixed_time` in the owner's zone)
 
 The dream consumer suppresses a `dream` fire whose `dueAt`, in owner time, falls on `fullRebuildWeekday`.

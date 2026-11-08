@@ -78,6 +78,8 @@ export const MemoryItemFrontMatter = Schema.Struct({
   due: Schema.NullOr(Schema.String),
   on_due: Schema.optional(Schema.Literals(["remind", "start", "ask", "chase"])),
   owner: Schema.optional(TrimmedNonEmptyString),
+  tz: Schema.optional(Schema.String),
+  quiet_hours: Schema.optional(Schema.Struct({ from: Schema.String, to: Schema.String })),
   recorded_at: Schema.String,
   valid_from: Schema.String,
   invalid_at: Schema.NullOr(Schema.String),
