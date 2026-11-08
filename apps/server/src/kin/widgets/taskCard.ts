@@ -11,6 +11,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
+import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 
 export const taskCardEquivalent = Schema.toEquivalence(KinTaskCardState);
 export const decodeTaskCard = Schema.decodeUnknownSync(KinTaskCardState);
@@ -40,6 +41,14 @@ const statusFor = (shell: OrchestrationV2ThreadShell): KinTaskCardState["status"
   }
 };
 
+// Match the thread's own PR chip: visible links, else the PR detected from its branch.
+const pullRequestsFor = (shell: OrchestrationV2ThreadShell) => {
+  const links = visibleThreadPullRequests(shell.pullRequests ?? []);
+  const shown =
+    links.length > 0 || shell.branchPullRequest == null ? links : [shell.branchPullRequest];
+  return shown.map(({ url, number }) => ({ url, number }));
+};
+
 export const taskCardState = (
   state: KinTaskCardState,
   shell: OrchestrationV2ThreadShell,
@@ -47,7 +56,7 @@ export const taskCardState = (
 ): KinTaskCardState => ({
   ...state,
   status: statusFor(shell),
-  pullRequests: (shell.pullRequests ?? []).map(({ url, number }) => ({ url, number })),
+  pullRequests: pullRequestsFor(shell),
   lastError:
     shell.archivedAt !== null || shell.deletedAt !== null
       ? "Thread no longer available"

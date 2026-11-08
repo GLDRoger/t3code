@@ -101,7 +101,10 @@ export const KinChatToolkit = Toolkit.make(post, read, widget);
 export const agentServices = Effect.gen(function* () {
   const kin = yield* KinServer;
   if (Option.isNone(kin.services))
-    return yield* new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
+    return yield* new KinChatError({
+      reason: "disabled",
+      message: "Kin is not running on this host.",
+    });
   const identity = Context.get(kin.services.value, KinIdentity);
   const agent = yield* identity.resolveAgent(yield* McpInvocationContext);
   // Only chat operations cross this boundary; trusted waiting and streaming paths stay private.
