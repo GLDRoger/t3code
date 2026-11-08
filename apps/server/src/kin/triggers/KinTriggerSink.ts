@@ -52,7 +52,7 @@ export const findLaunchDelivery = (
     AND t.thread_id IS NULL AND t.thread_mode = 'new_thread'
     AND json_extract(t.schedule_json, '$.type') = 'webhook'
     AND json_extract(t.schedule_json, '$.signature') IS NOT NULL AND t.webhook_secret IS NOT NULL
-    AND json_extract(t.schedule_json, '$.dedupe.replayKey') = ${KinTriggerStore.GITHUB_REPLAY_KEY}
+    AND json_extract(t.schedule_json, '$.dedupe') = ${JSON.stringify(KinTriggerStore.GITHUB_DEDUPE)}
     AND EXISTS (SELECT 1 FROM json_each(t.schedule_json, '$.filters') f
       WHERE json_extract(f.value, '$.path') = 'headers.x-github-event'
         AND json_extract(f.value, '$.op') = 'in'
@@ -109,10 +109,7 @@ const make = Effect.gen(function* () {
           projectId: input.projectId,
           botLogin: source.botLogin,
         }).pipe(Effect.mapError(toPersistenceSqlError("KinTriggerSink.receive")));
-        if (
-          row === undefined ||
-          !(yield* store.secretMatches(source.orgId, source.id, Redacted.make(row.secret)))
-        )
+        if (row === undefined)
           return yield* new KinTriggerInbox.KinTriggerInboxConflict({
             orgId: source.orgId,
             reason: "unknown_source",
@@ -122,6 +119,16 @@ const make = Effect.gen(function* () {
             PersistenceDecodeError.fromSchemaError("KinTriggerSink.receive", cause),
           ),
         );
+        if (
+          !(yield* store.acceptsDelivery(source.orgId, source.id, {
+            secret: Redacted.make(row.secret),
+            receivedAt: DateTime.toEpochMillis(delivery.receivedAt),
+          }))
+        )
+          return yield* new KinTriggerInbox.KinTriggerInboxConflict({
+            orgId: source.orgId,
+            reason: "unknown_source",
+          });
         const projection = yield* threads.getThreadProjection(source.inboxThreadId);
         if (projection.thread.projectId !== input.projectId || projection.thread.deletedAt !== null)
           return yield* new KinTriggerInbox.KinTriggerInboxConflict({

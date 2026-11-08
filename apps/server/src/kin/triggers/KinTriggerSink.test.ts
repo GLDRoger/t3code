@@ -13,8 +13,10 @@ import {
   ProjectId,
   ProviderInstanceId,
   ScheduledTaskId,
+  ScheduledTaskWebhookDeliveryId,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -124,6 +126,7 @@ const withService = <A, E, R>(
     launches: ThreadLaunchService.ThreadLaunchInput[],
     sends: ThreadManagementService.ThreadManagementSendInput[],
   ) => Effect.Effect<A, E, R>,
+  workers?: Map<string, Effect.Effect<void>>,
 ) =>
   Effect.gen(function* () {
     const launches: ThreadLaunchService.ThreadLaunchInput[] = [];
@@ -155,7 +158,17 @@ const withService = <A, E, R>(
         Layer.mergeAll(
           KinTriggerSink.wrapTaskDispatch(inner, boundThreads),
           Crypto.layer,
-          Scheduler.layer,
+          workers === undefined
+            ? Scheduler.layer
+            : Layer.succeed(Scheduler.Scheduler, {
+                register: Effect.fn("KinTriggerSinkTest.register")(function* <E2, R2>(
+                  name: string,
+                  work: Effect.Effect<void, E2, R2>,
+                ) {
+                  const context = yield* Effect.context<R2>();
+                  workers.set(name, work.pipe(Effect.provideContext(context), Effect.orDie));
+                }),
+              }),
           ManagedPolicy.layerTest(),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
@@ -222,6 +235,7 @@ describe("KinTriggerSink", () => {
               assert.deepStrictEqual(yield* store.registerSource(source(org)), source(org));
               assert.deepStrictEqual(yield* store.registerSource(source(org)), source(org));
               yield* store.bindSecret(org, source(org).id, testSecret);
+              yield* TestClock.adjust("1 second");
               const first = yield* waitForDispatch(
                 service.triggerWebhook(request(task, "github-delivery")),
               );
@@ -325,124 +339,191 @@ describe("KinTriggerSink", () => {
       yield* seed;
       const store = yield* KinTriggerStore.KinTriggerStore;
       const inbox = yield* KinTriggerInbox.KinTriggerInbox;
-      yield* withService((service, launches, sends) =>
-        Effect.gen(function* () {
-          const input = yield* upsert("task-org-a");
-          yield* service.upsert(input);
-          yield* store.registerSource(source(orgA));
-          const { task } = yield* service.upsert({
-            ...input,
-            threadId: projection(orgA).thread.id,
-            threadMode: "continue",
-          });
-          const dispatchFailed = (
-            task: { readonly id: ScheduledTaskId },
-            key: string,
-            secret?: string,
-          ) =>
-            Effect.gen(function* () {
-              const result = yield* waitForDispatch(
-                service.triggerWebhook(request(task, key, "owner", secret)),
-              );
-              if (result._tag !== "accepted") return assert.fail(`Unexpected ${result._tag}`);
-              const { delivery } = yield* service.getWebhookDelivery({
-                id: task.id,
-                deliveryId: result.deliveryId,
-                acceptAnyOutcome: true,
-              });
-              assert.strictEqual(delivery.outcome, "dispatch_failed", key);
+      const workers = new Map<string, Effect.Effect<void>>();
+      yield* withService(
+        (service, launches, sends) =>
+          Effect.gen(function* () {
+            const input = yield* upsert("task-org-a");
+            yield* service.upsert(input);
+            yield* store.registerSource(source(orgA));
+            const { task } = yield* service.upsert({
+              ...input,
+              threadId: projection(orgA).thread.id,
+              threadMode: "continue",
             });
-          yield* dispatchFailed(task, "bound");
-          const recorded = (yield* service.list()).tasks.find((item) => item.id === task.id);
-          assert.strictEqual(recorded?.lastRunStatus, "failed");
-          assert.include(recorded?.lastRunError ?? "", "kin.trigger.bound_source");
-          assert.deepStrictEqual(yield* inbox.listPending(orgA), []);
-          assert.lengthOf(sends, 0);
-          assert.lengthOf(launches, 0);
-          const { task: unbound } = yield* service.upsert(input);
-          // A source with no bound secret hash, such as one from before K019, refuses.
-          yield* dispatchFailed(unbound, "no-hash");
-          yield* store.bindSecret(orgA, source(orgA).id, testSecret);
-          yield* waitForDispatch(service.triggerWebhook(request(unbound, "unbound")));
-          assert.lengthOf(yield* inbox.listPending(orgA), 1);
-          assert.lengthOf(sends, 0);
-          assert.lengthOf(launches, 0);
-          const sender = { path: "body.sender.login", op: "notEquals", value: "kin[bot]" } as const;
-          const events = {
-            path: "headers.x-github-event",
-            op: "in",
-            value: KinTriggerStore.GITHUB_EVENTS,
-          } as const;
-          // Any agent can re-save the task through schedule_task; a weakened one never routes.
-          for (const [key, schedule, secret] of [
-            ["unsigned", { signature: null }],
-            ["unfiltered", { filters: [] }],
-            [
-              "other-bot",
-              {
-                filters: [events, { ...sender, value: "other[bot]" }],
-              },
-            ],
-            ["no-dedupe", { dedupe: {} }],
-            ["no-event-filter", { filters: [sender] }],
-            ["fewer-events", { filters: [{ ...events, value: ["pull_request"] }, sender] }],
-            [
-              "swapped-secret",
-              {
-                signature: {
-                  header: "x-hub-signature-256",
-                  encoding: "hex",
-                  prefix: "sha256=",
-                  secret: "agent-secret",
+            const outcome = (
+              task: { readonly id: ScheduledTaskId },
+              deliveryId: ScheduledTaskWebhookDeliveryId,
+            ) =>
+              service
+                .getWebhookDelivery({ id: task.id, deliveryId, acceptAnyOutcome: true })
+                .pipe(Effect.map(({ delivery }) => delivery.outcome));
+            const dispatchFailed = (
+              task: { readonly id: ScheduledTaskId },
+              key: string,
+              secret?: string,
+              receivedAt?: string,
+            ) =>
+              Effect.gen(function* () {
+                const result = yield* waitForDispatch(
+                  service.triggerWebhook({
+                    ...request(task, key, "owner", secret),
+                    ...(receivedAt === undefined ? {} : { receivedAt }),
+                  }),
+                );
+                if (result._tag !== "accepted") return assert.fail(`Unexpected ${result._tag}`);
+                assert.strictEqual(yield* outcome(task, result.deliveryId), "dispatch_failed", key);
+              });
+            yield* dispatchFailed(task, "bound");
+            const recorded = (yield* service.list()).tasks.find((item) => item.id === task.id);
+            assert.strictEqual(recorded?.lastRunStatus, "failed");
+            assert.include(recorded?.lastRunError ?? "", "kin.trigger.bound_source");
+            assert.deepStrictEqual(yield* inbox.listPending(orgA), []);
+            assert.lengthOf(sends, 0);
+            assert.lengthOf(launches, 0);
+            const { task: unbound } = yield* service.upsert(input);
+            // A source with no bound secret hash, such as one from before K019, refuses.
+            yield* dispatchFailed(unbound, "no-hash");
+            yield* store.bindSecret(orgA, source(orgA).id, testSecret);
+            const boundAt = 1794009600000;
+            yield* TestClock.adjust("1 second");
+            yield* waitForDispatch(service.triggerWebhook(request(unbound, "unbound")));
+            assert.lengthOf(yield* inbox.listPending(orgA), 1);
+            assert.lengthOf(sends, 0);
+            assert.lengthOf(launches, 0);
+            const sender = {
+              path: "body.sender.login",
+              op: "notEquals",
+              value: "kin[bot]",
+            } as const;
+            const events = {
+              path: "headers.x-github-event",
+              op: "in",
+              value: KinTriggerStore.GITHUB_EVENTS,
+            } as const;
+            // Any agent can re-save the task through schedule_task; a weakened one never routes.
+            for (const [key, schedule, secret, receivedAt] of [
+              ["unsigned", { signature: null }],
+              ["unfiltered", { filters: [] }],
+              [
+                "other-bot",
+                {
+                  filters: [events, { ...sender, value: "other[bot]" }],
                 },
-              },
-              "agent-secret",
-            ],
-          ] as const) {
-            const { task: weak } = yield* service.upsert(yield* weakened("task-org-a", schedule));
-            yield* dispatchFailed(weak, key, secret);
-          }
-          // Kin's deterministic task id refuses to launch even before its source exists.
-          const { task: orphan } = yield* service.upsert(
-            yield* upsert(KinTriggerStore.githubAppTaskId(orgA)),
-          );
-          yield* dispatchFailed(orphan, "orphan");
-          const orphanInput = yield* upsert(KinTriggerStore.githubAppTaskId(orgA));
-          const { task: boundOrphan } = yield* service.upsert({
-            ...orphanInput,
-            threadId: projection(orgA).thread.id,
-            threadMode: "continue",
-          });
-          yield* dispatchFailed(boundOrphan, "bound-orphan");
-          assert.lengthOf(yield* inbox.listPending(orgA), 1);
-          assert.lengthOf(launches, 0);
-          yield* service.delete({ id: orphan.id });
-          const ordinary = yield* upsert("ordinary-bound");
-          const { task: other } = yield* service.upsert({
-            ...ordinary,
-            threadId: projection(orgA).thread.id,
-            threadMode: "continue",
-          });
-          yield* waitForDispatch(service.triggerWebhook(request(other, "ordinary-bound")));
-          assert.lengthOf(sends, 1);
-          assert.strictEqual(sends[0]?.scheduledTaskId, other.id);
-          const sql = yield* SqlClient.SqlClient;
-          yield* sql`DROP TABLE kin_webhook_sources`;
-          const lookupFailure = yield* waitForDispatch(
-            service.triggerWebhook(request(other, "lookup-failure")),
-          );
-          assert.strictEqual(lookupFailure._tag, "accepted");
-          if (lookupFailure._tag !== "accepted") return;
-          const failed = yield* service.getWebhookDelivery({
-            id: other.id,
-            deliveryId: lookupFailure.deliveryId,
-            acceptAnyOutcome: true,
-          });
-          assert.strictEqual(failed.delivery.outcome, "dispatch_failed");
-          assert.lengthOf(yield* inbox.listPending(orgA), 1);
-          assert.lengthOf(sends, 1);
-          assert.lengthOf(launches, 0);
-        }),
+              ],
+              ["no-dedupe", { dedupe: {} }],
+              ["no-event-filter", { filters: [sender] }],
+              ["fewer-events", { filters: [{ ...events, value: ["pull_request"] }, sender] }],
+              [
+                "swapped-secret",
+                {
+                  signature: {
+                    header: "x-hub-signature-256",
+                    encoding: "hex",
+                    prefix: "sha256=",
+                    secret: "agent-secret",
+                  },
+                },
+                "agent-secret",
+              ],
+              // A held relay delivery verified before the bind, so possibly against another secret.
+              [
+                "received-before-bind",
+                {},
+                undefined,
+                DateTime.formatIso(DateTime.makeUnsafe(boundAt - 60_000)),
+              ],
+            ] as const) {
+              const { task: weak } = yield* service.upsert(yield* weakened("task-org-a", schedule));
+              yield* dispatchFailed(weak, key, secret, receivedAt);
+            }
+            // A coalesce window holds a delivery past the owner's re-key, so the sink pins the
+            // whole dedupe object and refuses deliveries received before the bind.
+            const coalesce = {
+              ...KinTriggerStore.GITHUB_DEDUPE,
+              coalesceKey: "{{headers.x-github-event}}",
+              coalesceWindowSeconds: 3600,
+            };
+            const agentSigned = {
+              header: "x-hub-signature-256",
+              encoding: "hex",
+              prefix: "sha256=",
+              secret: "agent-secret",
+            };
+            for (const [key, schedule, secret, rekey] of [
+              ["coalesced", { dedupe: coalesce }, undefined, false],
+              [
+                "coalesced-rekey",
+                { dedupe: coalesce, signature: agentSigned },
+                "agent-secret",
+                true,
+              ],
+            ] as const) {
+              const { task: held } = yield* service.upsert(yield* weakened("task-org-a", schedule));
+              const queued = yield* service.triggerWebhook(request(held, key, "owner", secret));
+              if (queued._tag !== "accepted") return assert.fail(`Unexpected ${queued._tag}`);
+              assert.strictEqual(queued.outcome, "accepted", key);
+              if (rekey) {
+                yield* TestClock.adjust("1 second");
+                yield* service.upsert(
+                  yield* weakened("task-org-a", {
+                    signature: { ...agentSigned, secret: "owner-rekeyed-secret" },
+                  }),
+                );
+                yield* store.bindSecret(
+                  orgA,
+                  source(orgA).id,
+                  Redacted.make("owner-rekeyed-secret"),
+                );
+              }
+              yield* TestClock.adjust("1 hour");
+              const worker = workers.get("webhook-coalescing");
+              if (worker === undefined) return assert.fail("No coalescing worker");
+              yield* waitForDispatch(worker);
+              assert.strictEqual(yield* outcome(held, queued.deliveryId), "dispatch_failed", key);
+            }
+            // Kin's deterministic task id refuses to launch even before its source exists.
+            const { task: orphan } = yield* service.upsert(
+              yield* upsert(KinTriggerStore.githubAppTaskId(orgA)),
+            );
+            yield* dispatchFailed(orphan, "orphan");
+            const orphanInput = yield* upsert(KinTriggerStore.githubAppTaskId(orgA));
+            const { task: boundOrphan } = yield* service.upsert({
+              ...orphanInput,
+              threadId: projection(orgA).thread.id,
+              threadMode: "continue",
+            });
+            yield* dispatchFailed(boundOrphan, "bound-orphan");
+            assert.lengthOf(yield* inbox.listPending(orgA), 1);
+            assert.lengthOf(launches, 0);
+            yield* service.delete({ id: orphan.id });
+            const ordinary = yield* upsert("ordinary-bound");
+            const { task: other } = yield* service.upsert({
+              ...ordinary,
+              threadId: projection(orgA).thread.id,
+              threadMode: "continue",
+            });
+            yield* waitForDispatch(service.triggerWebhook(request(other, "ordinary-bound")));
+            assert.lengthOf(sends, 1);
+            assert.strictEqual(sends[0]?.scheduledTaskId, other.id);
+            const sql = yield* SqlClient.SqlClient;
+            yield* sql`DROP TABLE kin_webhook_sources`;
+            const lookupFailure = yield* waitForDispatch(
+              service.triggerWebhook(request(other, "lookup-failure")),
+            );
+            assert.strictEqual(lookupFailure._tag, "accepted");
+            if (lookupFailure._tag !== "accepted") return;
+            const failed = yield* service.getWebhookDelivery({
+              id: other.id,
+              deliveryId: lookupFailure.deliveryId,
+              acceptAnyOutcome: true,
+            });
+            assert.strictEqual(failed.delivery.outcome, "dispatch_failed");
+            assert.lengthOf(yield* inbox.listPending(orgA), 1);
+            assert.lengthOf(sends, 1);
+            assert.lengthOf(launches, 0);
+          }),
+        workers,
       );
     }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
   );

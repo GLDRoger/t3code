@@ -385,6 +385,7 @@ describe("KinGithubWebhooks", () => {
                 (yield* webhooks.setSecret(owner, { orgId, secret: ownerSecret })).status,
                 "configured",
               );
+              yield* TestClock.adjust("1 second");
               const delivery = { delivery: "gh-1", secret: Redacted.value(ownerSecret) };
               const accepted = yield* waitForDispatch(tasks.triggerWebhook(signed(task, delivery)));
               assert.strictEqual(accepted._tag === "accepted" && accepted.outcome, "accepted");
@@ -402,6 +403,7 @@ describe("KinGithubWebhooks", () => {
 
               const rekey = Redacted.make("owner-rekeyed-secret-from-github-app");
               yield* webhooks.setSecret(owner, { orgId, secret: rekey });
+              yield* TestClock.adjust("1 second");
               const stale = yield* tasks.triggerWebhook(
                 signed(task, { delivery: "gh-stale", secret: Redacted.value(ownerSecret) }),
               );
@@ -424,6 +426,54 @@ describe("KinGithubWebhooks", () => {
               );
               assert.strictEqual(still._tag === "accepted" && still.outcome, "accepted");
               assert.lengthOf(yield* inbox.listPending(orgId), 3);
+
+              // A stored shape from an older event list fails closed; a gated setup restores it
+              // and keeps the stored secret, so the bound hash still matches.
+              const kinSchedule = (yield* tasks.list()).tasks[0]?.schedule;
+              const dispatchOutcome = (delivery: string, secret: string) =>
+                waitForDispatch(tasks.triggerWebhook(signed(task, { delivery, secret }))).pipe(
+                  Effect.flatMap((result) =>
+                    result._tag === "accepted"
+                      ? tasks
+                          .getWebhookDelivery({
+                            id: task.id,
+                            deliveryId: result.deliveryId,
+                            acceptAnyOutcome: true,
+                          })
+                          .pipe(Effect.map(({ delivery }) => delivery.outcome))
+                      : Effect.succeed(result._tag),
+                  ),
+                );
+              yield* sql`UPDATE scheduled_tasks SET schedule_json =
+                json_set(schedule_json, '$.filters[0].value', json('["pull_request"]'))
+                WHERE task_id = ${task.id}`;
+              assert.strictEqual(
+                yield* dispatchOutcome("gh-old-shape", Redacted.value(rekey)),
+                "dispatch_failed",
+              );
+              assert.deepStrictEqual(
+                yield* webhooks.setup(owner, { orgId, projectId: project.id }),
+                setup,
+              );
+              assert.deepStrictEqual((yield* tasks.list()).tasks[0]?.schedule, kinSchedule);
+              assert.strictEqual(
+                yield* dispatchOutcome("gh-repaired", Redacted.value(rekey)),
+                "accepted",
+              );
+              assert.lengthOf(yield* inbox.listPending(orgId), 4);
+              // The repair keeps whatever secret is stored, so an agent's swapped one still refuses.
+              yield* sql`UPDATE scheduled_tasks SET webhook_secret = 'agent-secret'
+                WHERE task_id = ${task.id}`;
+              yield* webhooks.setup(owner, { orgId, projectId: project.id });
+              assert.strictEqual(
+                yield* dispatchOutcome("gh-agent", "agent-secret"),
+                "dispatch_failed",
+              );
+              const owners = yield* tasks.triggerWebhook(
+                signed(task, { delivery: "gh-owner", secret: Redacted.value(rekey) }),
+              );
+              assert.strictEqual(owners._tag, "rejected_signature");
+              assert.lengthOf(yield* inbox.listPending(orgId), 4);
               assert.strictEqual(
                 (yield* Effect.flip(
                   webhooks.setup(owner, {
@@ -447,6 +497,7 @@ describe("KinGithubWebhooks", () => {
         yield* harness({ gate: true }, ({ webhooks, tasks, dispatched, hookConfigs }) =>
           Effect.gen(function* () {
             const setup = yield* webhooks.setup(owner, { orgId, projectId: project.id });
+            yield* TestClock.adjust("1 second");
             const [task] = (yield* tasks.list()).tasks;
             assert.isDefined(task);
             if (task === undefined || setup.status === "needs_connect") return assert.fail("setup");
@@ -472,6 +523,7 @@ describe("KinGithubWebhooks", () => {
             assert.strictEqual((yield* send("gh-2", first.secret))._tag, "not_found");
 
             const rekeyed = yield* webhooks.setup(owner, { orgId, projectId: project.id });
+            yield* TestClock.adjust("1 second");
             assert.deepStrictEqual(rekeyed, {
               status: "configured",
               sourceId: setup.sourceId,

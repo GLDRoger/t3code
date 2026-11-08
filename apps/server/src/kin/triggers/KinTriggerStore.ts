@@ -18,6 +18,7 @@ import {
   KinTriggerSubject,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -98,6 +99,8 @@ export const githubAppTaskId = (orgId: KinOrgId) =>
   ScheduledTaskId.make(`scheduled-task:${githubAppCommandId(orgId)}`);
 export const KIN_WEBHOOK_TASK_PREFIX = "scheduled-task:kin:webhook:";
 export const GITHUB_REPLAY_KEY = "{{headers.x-github-delivery}}";
+// Exactly this, no coalesce window: a held delivery would outlive a re-key.
+export const GITHUB_DEDUPE = { replayKey: GITHUB_REPLAY_KEY };
 export const GITHUB_EVENTS = [
   "pull_request",
   "pull_request_review",
@@ -135,17 +138,20 @@ export class KinTriggerStore extends Context.Service<
       orgId: KinOrgId,
       id: KinWebhookSourceId,
     ) => Effect.Effect<void, StoreError | KinWebhookSourceConflict>;
-    /** Binds the source to the secret Kin saved upstream; deliveries signed with any other refuse. */
+    /** Binds the source to the secret Kin just saved upstream and to the time of this bind. */
     readonly bindSecret: (
       orgId: KinOrgId,
       id: KinWebhookSourceId,
       secret: Redacted.Redacted<string>,
     ) => Effect.Effect<void, StoreError>;
-    /** False when no secret is bound, so a source from before K019 refuses until re-keyed. */
-    readonly secretMatches: (
+    /**
+     * True only for the bound secret and a delivery received after the bind, so one verified
+     * against an earlier secret refuses. False when nothing is bound, as before K019.
+     */
+    readonly acceptsDelivery: (
       orgId: KinOrgId,
       id: KinWebhookSourceId,
-      secret: Redacted.Redacted<string>,
+      delivery: { readonly secret: Redacted.Redacted<string>; readonly receivedAt: number },
     ) => Effect.Effect<boolean, StoreError>;
     readonly getSource: (
       orgId: KinOrgId,
@@ -347,22 +353,29 @@ const make = Effect.gen(function* () {
     ),
     bindSecret: Effect.fn("KinTriggerStore.bindSecret")(
       function* (orgId, id, secret) {
-        yield* sql`UPDATE kin_webhook_sources SET secret_sha256 = ${secretDigest(secret).toString("hex")}
+        const now = yield* Clock.currentTimeMillis;
+        yield* sql`UPDATE kin_webhook_sources
+          SET secret_sha256 = ${secretDigest(secret).toString("hex")}, secret_bound_at = ${now}
           WHERE org_id = ${orgId} AND source_id = ${id}`;
       },
       Effect.mapError(toPersistenceSqlError("KinTriggerStore.bindSecret")),
     ),
-    secretMatches: Effect.fn("KinTriggerStore.secretMatches")(
-      function* (orgId, id, secret) {
-        const [row] = yield* sql<{ readonly hash: string | null }>`
-          SELECT secret_sha256 AS hash FROM kin_webhook_sources
+    acceptsDelivery: Effect.fn("KinTriggerStore.acceptsDelivery")(
+      function* (orgId, id, delivery) {
+        const [row] = yield* sql<{
+          readonly hash: string | null;
+          readonly boundAt: number | null;
+        }>`
+          SELECT secret_sha256 AS hash, secret_bound_at AS "boundAt" FROM kin_webhook_sources
           WHERE org_id = ${orgId} AND source_id = ${id}`.pipe(NodeSqliteClient.readOnly);
-        if (row?.hash == null) return false;
+        // Same millisecond refuses too: it may have been verified just before the save.
+        if (row?.hash == null || row.boundAt == null || delivery.receivedAt <= row.boundAt)
+          return false;
         const bound = Buffer.from(row.hash, "hex");
-        const given = secretDigest(secret);
+        const given = secretDigest(delivery.secret);
         return bound.length === given.length && NodeCrypto.timingSafeEqual(bound, given);
       },
-      Effect.mapError(toPersistenceSqlError("KinTriggerStore.secretMatches")),
+      Effect.mapError(toPersistenceSqlError("KinTriggerStore.acceptsDelivery")),
     ),
     getSource: Effect.fn("KinTriggerStore.getSource")(
       function* (orgId, id) {

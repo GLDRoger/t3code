@@ -301,6 +301,7 @@ describe("Kin migrations", () => {
       yield* sql`ALTER TABLE kin_messages DROP COLUMN change_seq`;
       yield* sql`ALTER TABLE kin_chats DROP COLUMN change_seq`;
       yield* sql`ALTER TABLE kin_webhook_sources DROP COLUMN secret_sha256`;
+      yield* sql`ALTER TABLE kin_webhook_sources DROP COLUMN secret_bound_at`;
       yield* sql`DROP TABLE kin_dream_runs`;
       yield* sql`DROP TABLE kin_deferral_runs`;
       yield* sql`DROP TABLE kin_auth_key_repairs`;

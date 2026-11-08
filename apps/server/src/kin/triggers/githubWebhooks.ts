@@ -213,7 +213,8 @@ export const make = Effect.gen(function* () {
     readonly projectId: ProjectId;
     readonly modelSelection: ModelSelection;
     readonly botLogin: string;
-    readonly secret: Redacted.Redacted<string>;
+    /** Undefined keeps the stored secret, so the bound hash stays valid. */
+    readonly secret: Redacted.Redacted<string> | undefined;
     readonly enabled: boolean;
   }) =>
     decodeUpsert({
@@ -238,10 +239,10 @@ export const make = Effect.gen(function* () {
           header: "x-hub-signature-256",
           encoding: "hex",
           prefix: "sha256=",
-          secret: Redacted.value(input.secret),
+          ...(input.secret === undefined ? {} : { secret: Redacted.value(input.secret) }),
         },
         maxDeliveryAgeMinutes: null,
-        dedupe: { replayKey: KinTriggerStore.GITHUB_REPLAY_KEY },
+        dedupe: KinTriggerStore.GITHUB_DEDUPE,
         filters: [
           { path: "headers.x-github-event", op: "in", value: KinTriggerStore.GITHUB_EVENTS },
           { path: "body.sender.login", op: "notEquals", value: input.botLogin },
@@ -404,6 +405,18 @@ export const make = Effect.gen(function* () {
         const url = task.webhook?.url ?? null;
         if (url === null) return yield* needsConnect(input.orgId);
         if (!task.enabled) yield* tasks.setEnabled({ id: task.id, enabled: true });
+        // Restores Kin's shape (say, a newer event list) while gated; an unsigned task has no
+        // secret to keep, so only a re-key or setSecret can repair it.
+        if (task.schedule.type === "webhook" && task.schedule.signature !== null)
+          yield* upsert({
+            orgId: input.orgId,
+            target: { id: task.id },
+            projectId: task.projectId,
+            modelSelection: task.modelSelection,
+            botLogin: source.botLogin,
+            secret: undefined,
+            enabled: true,
+          });
         // Re-keys only when GitHub took the new secret; otherwise the owner's secret stays.
         const secret = yield* newSecret;
         if (!(yield* offer(input.orgId, url, secret)))

@@ -189,6 +189,7 @@ it.effect(
           assert.equal(yield* Queue.size(launches), 0);
 
           // A coalesced delivery launches from the pending queue, so both in-flight arms match.
+          // The sink's lookup refuses it: a coalesce window could hold a delivery past a re-key.
           const { task: queued } = yield* service.upsert(
             yield* webhookInput({
               id: "kin-github-queued",
@@ -216,7 +217,7 @@ it.effect(
           if (worker === undefined) return assert.fail("No coalescing worker");
           yield* worker;
           assert.equal((yield* Queue.take(launches)).initialMessage?.scheduledTaskId, queued.id);
-          assert.lengthOf(yield* Queue.take(launchDeliveries), 1);
+          assert.lengthOf(yield* Queue.take(launchDeliveries), 0);
           assert.equal(yield* Queue.take(launchInFlight), 2);
           assert.equal(yield* Queue.size(sends), 0);
         }),
