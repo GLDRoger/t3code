@@ -405,7 +405,7 @@ const make = Effect.gen(function* () {
     );
   });
 
-  /** Every blob ever introduced, merge sides included, plus every commit object unless `paths` narrows it. */
+  /** Every blob ever introduced, merge sides included, plus every commit and tag object unless `paths` narrows it. */
   const historyFiles = Effect.fn("KinPurge.historyFiles")(function* (
     orgId: KinOrgId,
     work: string,
@@ -440,9 +440,23 @@ const make = Effect.gen(function* () {
     const commits = paths
       ? []
       : (yield* git(work, ["rev-list", "--all"])).split("\n").filter(Boolean);
+    // Tagger idents survive filter-repo's text and message rewrites; nested tags included.
+    const tags = paths
+      ? []
+      : (yield* git(work, [
+          "cat-file",
+          "--batch-all-objects",
+          "--batch-check=%(objectname) %(objecttype)",
+        ]))
+          .split("\n")
+          .flatMap((line) => {
+            const [sha, type] = line.split(" ");
+            return sha && type === "tag" ? [sha] : [];
+          });
     const requests = [
       ...[...blobs.values()].map(({ sha, path }) => ({ sha, type: "blob" as const, path })),
       ...commits.map((sha) => ({ sha, type: "commit" as const, path: `commit ${sha}` })),
+      ...tags.map((sha) => ({ sha, type: "tag" as const, path: `tag ${sha}` })),
     ];
     const files: Array<{ sha: string; path: string; content: Uint8Array }> = [];
     for (let index = 0; index < requests.length; index += 32) {

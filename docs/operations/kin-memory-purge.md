@@ -4,7 +4,7 @@
 
 ## Refs a purge can't rewrite
 
-A purge rewrites only `refs/heads/*` and `refs/tags/*`. GitHub's read-only `refs/pull/*` are left alone. If the remote advertises any other ref, such as `refs/notes/commits` or a custom `refs/custom/*`, the purge fails at the clone stage, changes nothing and resumes the queue, and `reconcile` answers `unknown`. Those refs can still hold the purged content, so list them with `git ls-remote <memory repo>`, delete them on the remote (`git push <memory repo> --delete <ref>`), and run the purge again. A tag that points at a blob or tree fails the same way. A ref created on the remote while a purge runs fails it at the push stage with the queue held, and `reconcile` answers `unknown` until you delete that ref.
+A purge rewrites only `refs/heads/*` and `refs/tags/*`. GitHub's read-only `refs/pull/*` are left alone. If the remote advertises any other ref, such as `refs/notes/commits` or a custom `refs/custom/*`, the purge fails at the clone stage, changes nothing and resumes the queue, and `reconcile` answers `unknown`. Those refs can still hold the purged content, so list them with `git ls-remote <memory repo>`, delete them on the remote (`git push <memory repo> --delete <ref>`), and run the purge again. A tag that points at a blob or tree fails the same way. A ref created on the remote before the purge's post-push check fails it at the push stage with the queue held, and `reconcile` answers `unknown` until you delete that ref. Anyone holding an old clone can still push the content back after that check.
 
 ## A stuck purge marker
 

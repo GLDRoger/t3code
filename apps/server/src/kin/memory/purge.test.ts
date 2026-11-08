@@ -405,6 +405,8 @@ describe.skipIf(filterRepoMissing)("purge with git-filter-repo", () => {
     ["notes ref", { _tag: "KinPurgeFailed", stage: "clone", queueHeld: false }],
     // filter-repo leaves a tag on a blob or tree alone, and history checks walk commits only.
     ["blob tag", { _tag: "KinPurgeFailed", stage: "clone", queueHeld: false }],
+    // filter-repo rewrites tag messages but not tagger idents.
+    ["tagger ident", { _tag: "KinPurgeFailed", stage: "verify", queueHeld: false }],
   ] as const)(
     "a purge that stops before the push resumes the queue and changes nothing: %s",
     ([scenario, expected]) =>
@@ -425,9 +427,29 @@ describe.skipIf(filterRepoMissing)("purge with git-filter-repo", () => {
           const plan: Purge.PurgePlan =
             scenario === "wrong pattern"
               ? { orgId, repo: remoteUrl, mode: "redact_text", patterns: ["Invented vendor note"] }
-              : dropPlan(remoteUrl, scenario === "path typo" ? ["claims/leek.md"] : undefined);
+              : scenario === "tagger ident"
+                ? {
+                    orgId,
+                    repo: remoteUrl,
+                    mode: "redact_text",
+                    patterns: [token],
+                  }
+                : dropPlan(remoteUrl, scenario === "path typo" ? ["claims/leek.md"] : undefined);
           if (scenario === "notes ref")
             yield* git(remote, ["update-ref", "refs/notes/commits", "refs/heads/side"]);
+          if (scenario === "tagger ident")
+            yield* git(remote, [
+              "-c",
+              "user.name=Tagger",
+              "-c",
+              `user.email=${token}`,
+              "tag",
+              "-a",
+              "v1",
+              "-m",
+              `release ${token}`,
+              "refs/heads/side",
+            ]);
           if (scenario === "blob tag")
             yield* git(remote, [
               "update-ref",
