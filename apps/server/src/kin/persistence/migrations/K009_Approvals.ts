@@ -79,6 +79,7 @@ export default Effect.gen(function* () {
       hardware TEXT NOT NULL CHECK (hardware IN ('secure_enclave', 'strongbox', 'tee', 'software')),
       attested INTEGER NOT NULL CHECK (attested IN (0, 1)),
       session_id TEXT,
+      proof_key_thumbprint TEXT,
       state TEXT NOT NULL CHECK (state IN ('pending', 'active', 'revoked')),
       created_at INTEGER NOT NULL,
       confirmed_at INTEGER,

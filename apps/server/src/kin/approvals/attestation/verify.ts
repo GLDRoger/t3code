@@ -151,13 +151,12 @@ export function verifyAndroidKeyAttestation(input: {
     const ders = input.certificateChain.map(decodeBase64);
     check(ders.length >= 2, "attestation chain is too short");
     const chain = ders.map(parseCertificate);
-    verifyLinks(chain, input.now);
-    const root = chain[chain.length - 1]!;
-    const rootKey = spki(root);
-    check(
-      input.trust.googleRoots.some((pinned) => equalBytes(spki(pinned), rootKey)),
-      "chain doesn't end at a Google hardware attestation root",
-    );
+    // The sent root only names a pinned key: Google reissued roots with the same key, so the
+    // pinned certificate, with its own validity, takes its place before the links are checked.
+    const rootKey = spki(chain[chain.length - 1]!);
+    const pinned = input.trust.googleRoots.find((root) => equalBytes(spki(root), rootKey));
+    check(pinned !== undefined, "chain doesn't end at a Google hardware attestation root");
+    verifyLinks([...chain.slice(0, -1), pinned!], input.now);
     for (const certificate of chain) {
       check(
         !input.trust.androidRevokedSerials.has(normalizeSerial(certificate.serialNumber)),
@@ -229,6 +228,7 @@ export function verifyAndroidKeyAttestation(input: {
     const allowed = new Set(app!.signingCertSha256);
     check(
       allowed.size > 0 &&
+        new Set(signers).size === signers.length &&
         signers.length === allowed.size &&
         signers.every((digest) => allowed.has(digest)),
       "signing certificates don't match the allowlist",

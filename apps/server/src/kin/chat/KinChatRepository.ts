@@ -61,8 +61,10 @@ type ChatScope = Scope & { readonly chatId: KinChatId };
 type MemberScope = ChatScope & { readonly memberId: KinMemberId };
 type InsertMessage = Omit<KinMessage, "seq" | "authorRole"> & {
   readonly caller?: McpThreadCaller | undefined;
+  // Only the server-only task card creator may attribute a message outside an agent wake-up.
+  readonly serverTaskCard?: true;
   readonly clientMessageId: {
-    readonly kind: "send" | "act";
+    readonly kind: "send" | "act" | "task-card";
     readonly id: typeof TrimmedNonEmptyString.Type;
   } | null;
 };
@@ -169,6 +171,9 @@ export class KinChatRepository extends Context.Service<
     readonly getMessage: (
       input: Scope & { readonly messageId: KinMessageId },
     ) => Effect.Effect<Option.Option<KinMessage>, RepositoryError>;
+    readonly openTaskCards: (
+      input: Scope,
+    ) => Effect.Effect<ReadonlyArray<KinWidget>, RepositoryError>;
     readonly getWidget: (
       input: Scope & { readonly widgetId: KinWidgetId },
     ) => Effect.Effect<Option.Option<KinWidget>, RepositoryError>;
@@ -263,7 +268,10 @@ export class KinChatRepository extends Context.Service<
       },
     ) => Effect.Effect<KinChat, RepositoryError>;
     readonly findClientMessage: (
-      input: MemberScope & { readonly kind: "send" | "act"; readonly clientId: string },
+      input: MemberScope & {
+        readonly kind: "send" | "act" | "task-card";
+        readonly clientId: string;
+      },
     ) => Effect.Effect<Option.Option<KinMessage>, RepositoryError>;
     readonly insertMessage: (input: InsertMessage) => Effect.Effect<KinMessage, RepositoryError>;
     readonly history: (
@@ -591,6 +599,16 @@ const make = Effect.gen(function* () {
     getChat: chatOne,
     getMember: memberOne,
     getMessage: messageOne,
+    openTaskCards: Effect.fn("KinChatRepository.openTaskCards")(
+      (input) =>
+        SqlSchema.findAll({
+          Request: Schema.Unknown,
+          Result: WidgetRow,
+          execute: () =>
+            sql`SELECT ${sql.literal(widgetColumns)} FROM kin_widgets WHERE org_id = ${input.orgId} AND type = 'task' AND closed_at IS NULL ORDER BY widget_id`,
+        })(input),
+      Effect.mapError(toRepositoryError("KinChatRepository.openTaskCards")),
+    ),
     getWidget: widgetOne,
     getWaiting: waitingOne,
     getAgentThread: agentThreadOne,
@@ -1127,6 +1145,7 @@ const make = Effect.gen(function* () {
             }
             if (
               author._tag === "agent" &&
+              input.serverTaskCard !== true &&
               (input.caller === undefined ||
                 !(yield* hasRunningWakeup({
                   ...input,

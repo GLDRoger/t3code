@@ -19,7 +19,7 @@ const unavailable = Effect.fail(
 );
 
 // The WS upgrade request, so `confirmKey` can tell a loopback socket from a proxied one.
-const connectionOf = Effect.serviceOption(HttpServerRequest.HttpServerRequest).pipe(
+export const connectionOf = Effect.serviceOption(HttpServerRequest.HttpServerRequest).pipe(
   Effect.map(
     Option.flatMap((request) => {
       const peer = Option.getOrUndefined(request.peerAddress);

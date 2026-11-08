@@ -1,3 +1,4 @@
+import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
 import * as FileSystem from "effect/FileSystem";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -59,7 +60,10 @@ const client = McpSchema.McpServerClient.of({
   getClient: Effect.die("unused"),
 });
 const runtime = (config: Record<string, unknown>) =>
-  Kin.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(config))));
+  Kin.layer.pipe(
+    Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(config))),
+    Layer.provideMerge(environment),
+  );
 const registration = McpHttpServer.toolkitRegistration(KinChatToolkit, handlers).pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
 );
@@ -220,6 +224,12 @@ it.effect(
         state: {},
       }).pipe(Effect.result);
       assert.strictEqual(refused._tag, "Failure");
+      const create = yield* call("kin_widget_upsert", {
+        chatId: chat.chatId,
+        type: "task",
+        state: taskState,
+      }).pipe(Effect.result);
+      assert.strictEqual(create._tag, "Failure");
       for (const changed of [
         { afterSeq: -1 },
         { afterSeq: 0.5 },
@@ -423,7 +433,10 @@ it.effect.each(["deleted", "archived"] as const)("refuses writes from %s threads
     const { chat } = yield* seed;
     for (const [name, input] of [
       ["kin_chat_post", { chatId: chat.chatId, body: "No", intent: "answer" }],
-      ["kin_widget_upsert", { chatId: chat.chatId, type: "task", state: taskState }],
+      [
+        "kin_widget_upsert",
+        { chatId: chat.chatId, widgetId: "widget-1", revision: 1, type: "task", state: taskState },
+      ],
     ] as const) {
       const result = yield* call(name, input).pipe(
         Effect.provide(
@@ -450,7 +463,7 @@ it.effect.each(["deleted", "archived"] as const)("refuses writes from %s threads
 const taskState = {
   taskId: "task",
   environmentId: "environment",
-  threadId,
+  threadId: ThreadId.make("worker"),
   remoteEnvironmentId: null,
   title: "Work",
   model: null,
