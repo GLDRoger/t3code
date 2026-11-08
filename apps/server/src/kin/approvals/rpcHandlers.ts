@@ -1,30 +1,55 @@
-import { KinApprovalError, KinApprovalRpcs } from "@t3tools/contracts";
+import { KinApprovalError, KinApprovalRpcs, type KinOrgId } from "@t3tools/contracts";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
+import { KinIdentity } from "../chat/KinIdentity.ts";
+import { KinServer } from "../KinServer.ts";
+import * as Audit from "./Audit.ts";
 
 const group = RpcGroup.make(...KinApprovalRpcs);
-// Every method refuses until its task lands (APPR-3, -4, -5, -10); nothing here can approve.
+// Every method refuses until its task lands (APPR-3, -4, -5); nothing here can approve.
 const unavailable = Effect.fail(
   new KinApprovalError({ reason: "unavailable", message: "Kin approvals are unavailable." }),
 );
+const failed = () =>
+  new KinApprovalError({ reason: "unavailable", message: "Kin audit is unavailable." });
 
-export const makeKinApprovalHandlers = (_session: AuthenticatedSession) =>
-  Effect.sync(() =>
-    group.of({
-      "kin.approvals.list": () => Stream.fromEffect(unavailable),
-      "kin.approvals.get": () => unavailable,
-      "kin.approvals.challenge": () => unavailable,
-      "kin.approvals.submitGrant": () => unavailable,
-      "kin.approvals.reject": () => unavailable,
-      "kin.approvals.keyChallenge": () => unavailable,
-      "kin.approvals.registerKey": () => unavailable,
-      "kin.approvals.confirmKey": () => unavailable,
-      "kin.approvals.listKeys": () => unavailable,
-      "kin.approvals.revokeKey": () => unavailable,
-      "kin.audit.list": () => unavailable,
-      "kin.audit.verify": () => unavailable,
-    }),
-  );
+export const makeKinApprovalHandlers = Effect.fn("makeKinApprovalHandlers")(function* (
+  session: AuthenticatedSession,
+) {
+  const kin = yield* Effect.serviceOption(KinServer);
+  const audit = yield* Audit.make;
+  // Owner-only (spec section 11). Phase 1 identity resolves a session to the org owner or to no one.
+  const asOwner = Effect.fn("KinApprovals.asOwner")(function* (orgId: KinOrgId) {
+    if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
+    const people = yield* Context.get(kin.value.services.value, KinIdentity).resolve(session);
+    if (!people.some((person) => person.orgId === orgId)) {
+      return yield* new KinApprovalError({ reason: "not_owner", message: "Owner only." });
+    }
+    return audit;
+  });
+  return group.of({
+    "kin.approvals.list": () => Stream.fromEffect(unavailable),
+    "kin.approvals.get": () => unavailable,
+    "kin.approvals.challenge": () => unavailable,
+    "kin.approvals.submitGrant": () => unavailable,
+    "kin.approvals.reject": () => unavailable,
+    "kin.approvals.keyChallenge": () => unavailable,
+    "kin.approvals.registerKey": () => unavailable,
+    "kin.approvals.confirmKey": () => unavailable,
+    "kin.approvals.listKeys": () => unavailable,
+    "kin.approvals.revokeKey": () => unavailable,
+    "kin.audit.list": (input) =>
+      asOwner(input.orgId).pipe(
+        Effect.flatMap((owner) => owner.list(input).pipe(Effect.mapError(failed))),
+      ),
+    "kin.audit.verify": (input) =>
+      asOwner(input.orgId).pipe(
+        Effect.flatMap((owner) => owner.verify(input).pipe(Effect.mapError(failed))),
+      ),
+  });
+});

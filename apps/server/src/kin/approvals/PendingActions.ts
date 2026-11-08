@@ -14,6 +14,7 @@ import {
   KinProvenance,
   KinResolvedTarget,
   ThreadId,
+  type AuthSessionId,
   type Hex64,
   type KinKeyThumbprint,
 } from "@t3tools/contracts";
@@ -34,6 +35,7 @@ import {
   type PersistenceSqlError,
   toPersistenceSqlError,
 } from "../../persistence/Errors.ts";
+import { KinAudit } from "./Audit.ts";
 
 const AWAITING_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 // A grant lapses at min(exp, acceptedAt + 15 min) (approvals spec section 5).
@@ -142,6 +144,24 @@ const toAction = (row: ActionRow) =>
     expiresAt: iso(row.expires_at),
   });
 
+type FactsRow = { action_id: string; kind: string; resolved_json: string };
+const decodeFacts = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    actionId: KinActionId,
+    kind: KinActionKind,
+    resolved: StoredAction.fields.resolved,
+  }),
+);
+// What every audit entry about an action carries, read from the row the statement touched.
+const auditFacts = (row: FactsRow) =>
+  decodeFacts({ actionId: row.action_id, kind: row.kind, resolved: row.resolved_json }).pipe(
+    Effect.map(({ actionId, kind, resolved }) => ({
+      actionId,
+      kind,
+      ...(resolved._tag === "none" ? {} : { headSha: resolved.headSha }),
+    })),
+  );
+
 class Rollback extends Schema.TaggedError<Rollback>()("Rollback", {}) {}
 
 export class KinPendingActions extends Context.Service<
@@ -164,6 +184,7 @@ export class KinPendingActions extends Context.Service<
       input: RevisionRef & {
         readonly to: "rejected" | "cancelled" | "expired" | "voided";
         readonly reason?: string;
+        readonly sessionId?: AuthSessionId;
       },
     ) => Effect.Effect<boolean, Errors>;
     /** Check 10: the grant row and `awaiting_approval → approved` in one transaction. */
@@ -176,6 +197,8 @@ export class KinPendingActions extends Context.Service<
         readonly compact: string;
         readonly iat: number;
         readonly exp: number;
+        readonly sessionId?: AuthSessionId;
+        readonly deviceLabel?: string;
       },
     ) => Effect.Effect<KinApproveResult, Errors>;
     /** The executor's single claim: the `kin_executions` insert plus `approved → executing`. */
@@ -188,6 +211,8 @@ export class KinPendingActions extends Context.Service<
         readonly githubRequestId?: string;
         readonly mergeCommitSha?: string;
         readonly error?: string;
+        /** Startup reconciliation decided the outcome, not a live run. */
+        readonly reconciled?: boolean;
       },
     ) => Effect.Effect<boolean, Errors>;
     /** Expires unapproved actions past `expiresAt` and voids approvals whose grant lapsed. */
@@ -200,6 +225,7 @@ export class KinPendingActions extends Context.Service<
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const audit = yield* KinAudit;
 
   const select = (ref: ActionRef) =>
     sql<ActionRow>`SELECT * FROM kin_pending_actions
@@ -242,11 +268,24 @@ const make = Effect.gen(function* () {
       };
       // Decoding the full record validates it before it reaches the table.
       const action = yield* toAction(row);
-      const inserted = yield* sql`
-        INSERT INTO kin_pending_actions ${sql.insert(row)}
-        ON CONFLICT (org_id, idempotency_key) DO NOTHING
-        RETURNING action_id`;
-      if (inserted.length > 0) return { action, created: true };
+      const created = yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const inserted = yield* sql`
+            INSERT INTO kin_pending_actions ${sql.insert(row)}
+            ON CONFLICT (org_id, idempotency_key) DO NOTHING
+            RETURNING action_id`;
+          if (inserted.length === 0) return false;
+          yield* audit.append({
+            orgId: action.orgId,
+            event: "action_requested",
+            ...(yield* auditFacts(row)),
+            target: action.target,
+            provenance: action.provenance,
+          });
+          return true;
+        }),
+      );
+      if (created) return { action, created: true };
       const [existing] = yield* sql<ActionRow>`SELECT * FROM kin_pending_actions
         WHERE org_id = ${input.orgId} AND idempotency_key = ${idempotencyKey}`;
       if (existing === undefined) {
@@ -265,13 +304,24 @@ const make = Effect.gen(function* () {
       input: RevisionRef & { readonly resolved: KinResolvedTarget; readonly targetDigest: Hex64 },
     ) {
       const now = yield* Clock.currentTimeMillis;
-      const [row] = yield* sql<ActionRow>`UPDATE kin_pending_actions
-        SET resolved_json = ${yield* encodeResolved(input.resolved)}, target_digest = ${input.targetDigest},
-          nonce = ${newNonce()}, revision = revision + 1, updated_at = ${now}
-        WHERE org_id = ${input.orgId} AND action_id = ${input.actionId}
-          AND state = 'awaiting_approval' AND revision = ${input.revision}
-        RETURNING *`;
-      return row === undefined ? Option.none() : Option.some(yield* toAction(row));
+      const resolvedJson = yield* encodeResolved(input.resolved);
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const [row] = yield* sql<ActionRow>`UPDATE kin_pending_actions
+            SET resolved_json = ${resolvedJson}, target_digest = ${input.targetDigest},
+              nonce = ${newNonce()}, revision = revision + 1, updated_at = ${now}
+            WHERE org_id = ${input.orgId} AND action_id = ${input.actionId}
+              AND state = 'awaiting_approval' AND revision = ${input.revision}
+            RETURNING *`;
+          if (row === undefined) return Option.none();
+          yield* audit.append({
+            orgId: input.orgId,
+            event: "action_refreshed",
+            ...(yield* auditFacts(row)),
+          });
+          return Option.some(yield* toAction(row));
+        }),
+      );
     },
     Effect.mapError(toError("KinPendingActions.refresh")),
   );
@@ -281,16 +331,29 @@ const make = Effect.gen(function* () {
       input: RevisionRef & {
         readonly to: "rejected" | "cancelled" | "expired" | "voided";
         readonly reason?: string;
+        readonly sessionId?: AuthSessionId;
       },
     ) {
       const from = input.to === "voided" ? "approved" : "awaiting_approval";
       const now = yield* Clock.currentTimeMillis;
-      const rows = yield* sql`UPDATE kin_pending_actions
-        SET state = ${input.to}, state_reason = ${input.reason ?? null}, updated_at = ${now}
-        WHERE org_id = ${input.orgId} AND action_id = ${input.actionId}
-          AND state = ${from} AND revision = ${input.revision}
-        RETURNING action_id`;
-      return rows.length > 0;
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const [row] = yield* sql<FactsRow>`UPDATE kin_pending_actions
+            SET state = ${input.to}, state_reason = ${input.reason ?? null}, updated_at = ${now}
+            WHERE org_id = ${input.orgId} AND action_id = ${input.actionId}
+              AND state = ${from} AND revision = ${input.revision}
+            RETURNING action_id, kind, resolved_json`;
+          if (row === undefined) return false;
+          yield* audit.append({
+            orgId: input.orgId,
+            event: `action_${input.to}`,
+            ...(yield* auditFacts(row)),
+            ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+            ...(input.reason === undefined ? {} : { result: input.reason }),
+          });
+          return true;
+        }),
+      );
     },
     Effect.mapError(toError("KinPendingActions.transition")),
   );
@@ -305,11 +368,19 @@ const make = Effect.gen(function* () {
         readonly compact: string;
         readonly iat: number;
         readonly exp: number;
+        readonly sessionId?: AuthSessionId;
+        readonly deviceLabel?: string;
       },
     ) {
       const now = yield* Clock.currentTimeMillis;
       const grantId = `grt_${SecureRandom.ulidUnsafe()}`;
-      return yield* sql
+      const who = {
+        grantJti: input.jti,
+        keyThumbprint: input.keyThumbprint,
+        ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+        ...(input.deviceLabel === undefined ? {} : { deviceLabel: input.deviceLabel }),
+      };
+      const result = yield* sql
         .withTransaction(
           Effect.gen(function* () {
             const [inserted] = yield* sql`
@@ -329,13 +400,19 @@ const make = Effect.gen(function* () {
                 ? { _tag: "stale" as const }
                 : { _tag: "replayed" as const };
             }
-            const won = yield* sql`UPDATE kin_pending_actions
+            const [won] = yield* sql<FactsRow>`UPDATE kin_pending_actions
               SET state = 'approved', updated_at = ${now}
               WHERE org_id = ${input.orgId} AND action_id = ${input.actionId}
                 AND state = 'awaiting_approval' AND revision = ${input.revision}
                 AND nonce = ${input.nonce}
-              RETURNING action_id`;
-            if (won.length === 0) return yield* new Rollback();
+              RETURNING action_id, kind, resolved_json`;
+            if (won === undefined) return yield* new Rollback();
+            yield* audit.append({
+              orgId: input.orgId,
+              event: "grant_accepted",
+              ...(yield* auditFacts(won)),
+              ...who,
+            });
             const grant = yield* decodeGrant({
               id: grantId,
               orgId: input.orgId,
@@ -354,6 +431,17 @@ const make = Effect.gen(function* () {
           }),
         )
         .pipe(Effect.catchTags({ Rollback: () => Effect.succeed({ _tag: "stale" as const }) }));
+      // A refused grant still leaves a trace (spec section 11); the rolled-back attempt can't.
+      if (result._tag !== "approved") {
+        yield* audit.append({
+          orgId: input.orgId,
+          event: "grant_rejected",
+          actionId: input.actionId,
+          ...who,
+          result: result._tag,
+        });
+      }
+      return result;
     },
     Effect.mapError(toError("KinPendingActions.approve")),
   );
@@ -373,13 +461,23 @@ const make = Effect.gen(function* () {
               ON CONFLICT DO NOTHING
               RETURNING action_id`;
             if (claimed.length === 0) return false;
-            const won = yield* sql`UPDATE kin_pending_actions
+            const [won] = yield* sql<FactsRow>`UPDATE kin_pending_actions
               SET state = 'executing', updated_at = ${now}
               WHERE org_id = ${input.orgId} AND action_id = ${input.actionId}
                 AND state = 'approved' AND revision = ${input.revision}
-              RETURNING action_id`;
-            if (won.length === 0) return yield* new Rollback();
-            yield* sql`UPDATE kin_grants SET consumed_at = ${now} WHERE grant_id = ${input.grantId}`;
+              RETURNING action_id, kind, resolved_json`;
+            if (won === undefined) return yield* new Rollback();
+            const [grant] = yield* sql<{ jti: string; key_thumbprint: KinKeyThumbprint }>`
+              UPDATE kin_grants SET consumed_at = ${now} WHERE grant_id = ${input.grantId}
+              RETURNING jti, key_thumbprint`;
+            yield* audit.append({
+              orgId: input.orgId,
+              event: "execution_started",
+              ...(yield* auditFacts(won)),
+              ...(grant === undefined
+                ? {}
+                : { grantJti: grant.jti, keyThumbprint: grant.key_thumbprint }),
+            });
             return true;
           }),
         )
@@ -395,17 +493,18 @@ const make = Effect.gen(function* () {
         readonly githubRequestId?: string;
         readonly mergeCommitSha?: string;
         readonly error?: string;
+        readonly reconciled?: boolean;
       },
     ) {
       const now = yield* Clock.currentTimeMillis;
       return yield* sql
         .withTransaction(
           Effect.gen(function* () {
-            const won = yield* sql`UPDATE kin_pending_actions
+            const [won] = yield* sql<FactsRow>`UPDATE kin_pending_actions
               SET state = ${input.outcome}, state_reason = ${input.error ?? null}, updated_at = ${now}
               WHERE org_id = ${input.orgId} AND action_id = ${input.actionId} AND state = 'executing'
-              RETURNING action_id`;
-            if (won.length === 0) return false;
+              RETURNING action_id, kind, resolved_json`;
+            if (won === undefined) return false;
             const recorded = yield* sql`UPDATE kin_executions
               SET finished_at = ${now}, outcome = ${input.outcome},
                 github_request_id = ${input.githubRequestId ?? null},
@@ -413,6 +512,15 @@ const make = Effect.gen(function* () {
               WHERE org_id = ${input.orgId} AND action_id = ${input.actionId} AND finished_at IS NULL
               RETURNING action_id`;
             if (recorded.length === 0) return yield* new Rollback();
+            yield* audit.append({
+              orgId: input.orgId,
+              event: input.reconciled === true ? "execution_reconciled" : "execution_finished",
+              ...(yield* auditFacts(won)),
+              result:
+                input.outcome === "succeeded"
+                  ? (input.mergeCommitSha ?? "succeeded")
+                  : `${input.outcome}: ${input.error ?? "no reason given"}`,
+            });
             return true;
           }),
         )
@@ -426,12 +534,13 @@ const make = Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
       return yield* sql.withTransaction(
         Effect.gen(function* () {
-          const expired = yield* sql<{ org_id: KinOrgId; action_id: KinActionId }>`
+          type SweptRow = FactsRow & { org_id: KinOrgId; action_id: KinActionId };
+          const expired = yield* sql<SweptRow>`
             UPDATE kin_pending_actions SET state = 'expired', state_reason = 'expired',
               updated_at = ${now}
             WHERE state = 'awaiting_approval' AND expires_at <= ${now}
-            RETURNING org_id, action_id`;
-          const voided = yield* sql<{ org_id: KinOrgId; action_id: KinActionId }>`
+            RETURNING org_id, action_id, kind, resolved_json`;
+          const voided = yield* sql<SweptRow>`
             UPDATE kin_pending_actions SET state = 'voided', state_reason = 'grant_expired',
               updated_at = ${now}
             WHERE state = 'approved' AND EXISTS (
@@ -439,8 +548,21 @@ const make = Effect.gen(function* () {
               WHERE g.action_id = kin_pending_actions.action_id
                 AND g.revision = kin_pending_actions.revision AND g.consumed_at IS NULL
                 AND MIN(g.exp * 1000, g.accepted_at + ${GRANT_ACCEPTED_TTL_MS}) <= ${now})
-            RETURNING org_id, action_id`;
-          const refs = (rows: ReadonlyArray<{ org_id: KinOrgId; action_id: KinActionId }>) =>
+            RETURNING org_id, action_id, kind, resolved_json`;
+          const record = (event: "action_expired" | "action_voided", result: string) =>
+            Effect.forEach(
+              event === "action_expired" ? expired : voided,
+              (row) =>
+                auditFacts(row).pipe(
+                  Effect.flatMap((facts) =>
+                    audit.append({ orgId: row.org_id, event, ...facts, result }),
+                  ),
+                ),
+              { discard: true },
+            );
+          yield* record("action_expired", "expired");
+          yield* record("action_voided", "grant_expired");
+          const refs = (rows: ReadonlyArray<SweptRow>) =>
             rows.map((row) => ({ orgId: row.org_id, actionId: row.action_id }));
           return { expired: refs(expired), voided: refs(voided) };
         }),
