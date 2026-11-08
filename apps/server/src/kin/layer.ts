@@ -1,24 +1,17 @@
 import * as Cause from "effect/Cause";
 import * as KinEnabled from "./KinEnabled.ts";
-import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as Option from "effect/Option";
 import * as KinChat from "./chat/layer.ts";
-import { KinIdentity } from "./chat/KinIdentity.ts";
-import { KinChatService } from "./chat/KinChatService.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
 
-type Services = KinIdentity | KinChatService;
-
-export class KinServer extends Context.Service<
-  KinServer,
-  {
-    readonly services: Option.Option<Context.Context<Services>>;
-    readonly subscribeForViewer: Option.Option<KinChatHub["Service"]["subscribeForViewer"]>;
-  }
->()("t3/kin/layer/KinServer") {}
+import { KinServer, type Services } from "./KinServer.ts";
+export { KinServer } from "./KinServer.ts";
+import type * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as KinMcp from "./mcp/layer.ts";
 
 // LEAD-5 supplies its runner here, using this root's identity rather than building another.
 const lead: Layer.Layer<never, never, Services | KinChatHub> = Layer.empty;
@@ -74,3 +67,12 @@ const middleware = HttpRouter.middleware<{ provides: KinServer }>()(
 ).layer;
 
 export const layer = middleware.pipe(Layer.provideMerge(runtime));
+
+export const mcpLayer = (base: Parameters<typeof KinMcp.transport>[0]) => KinMcp.transport(base);
+export const mcpRegistryLayer = <E, R>(
+  base: Layer.Layer<McpSessionRegistry.McpSessionRegistry, E, R>,
+) =>
+  KinMcp.registry(base).pipe(
+    Layer.provideMerge(layer),
+    Layer.provide(SqlitePersistence.layerConfig),
+  );
