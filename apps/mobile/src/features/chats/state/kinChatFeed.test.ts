@@ -22,6 +22,7 @@ import {
   kinEarlierPage,
   kinMessageLabel,
   kinMessageLinks,
+  kinMarkReadRearms,
   kinSeqToMarkRead,
   kinUnseenCount,
   mergeKinFeed,
@@ -227,6 +228,18 @@ describe("rows", () => {
     ).toEqual(["day:2026-11-07", true, false, "day:2026-11-08", true, false]);
   });
 
+  it("relabels day separators when the local day changes", () => {
+    const messages = [agentMessage(1, { createdAt: localIso(8, 9) })];
+    const dayOf = (now: Date) => buildKinFeedRows(messages, viewer, new Set(), now)[0];
+    const today = dayOf(new Date(2026, 10, 8, 12));
+    expect(dayOf(new Date(2026, 10, 8, 23))).toBe(today);
+    expect(today).toMatchObject({ key: "day:2026-11-08", label: "Today" });
+    expect(dayOf(new Date(2026, 10, 9, 0))).toMatchObject({
+      key: "day:2026-11-08",
+      label: "Yesterday",
+    });
+  });
+
   it("puts a fold under the day its run starts on", () => {
     const run = { floorRunId: "r" };
     const rows = buildKinFeedRows(
@@ -346,15 +359,34 @@ describe("message labels", () => {
 });
 
 describe("kinSeqToMarkRead", () => {
-  const base = { seesEnd: true, latestSeq: 9, markedSeq: 4, unread: 2 };
+  const base = { seesEnd: true, latestSeq: 9, markedSeq: 4, attemptedSeq: 4, unread: 2 };
   it.each([
     ["marks the latest seq when the reader sees the end", base, 9],
     ["waits while the reader is away from the end", { ...base, seesEnd: false }, null],
     ["sends a seq once", { ...base, markedSeq: 9 }, null],
     ["skips a chat with nothing unread", { ...base, unread: 0 }, null],
     ["marks before the inbox has counted unread", { ...base, unread: null }, 9],
+    ["doesn't resend a seq the host refused", { ...base, attemptedSeq: 9 }, null],
+    ["sends a seq that arrived after a refusal", { ...base, attemptedSeq: 7 }, 9],
   ] as const)("%s", (_name, input, seq) => {
     expect(kinSeqToMarkRead(input)).toBe(seq);
+  });
+});
+
+describe("kinMarkReadRearms", () => {
+  const away = { connected: false, focused: false };
+  it.each([
+    ["on reconnect", { connected: false, focused: true }, { connected: true, focused: true }, true],
+    ["on refocus", { connected: true, focused: false }, { connected: true, focused: true }, true],
+    [
+      "not on a disconnect",
+      { connected: true, focused: true },
+      { connected: false, focused: true },
+      false,
+    ],
+    ["not while nothing changed", away, away, false],
+  ] as const)("rearms %s", (_name, was, now, rearms) => {
+    expect(kinMarkReadRearms(was, now)).toBe(rearms);
   });
 });
 

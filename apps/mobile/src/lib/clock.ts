@@ -30,6 +30,16 @@ export function minuteTickToEpochMs(minute: string): number {
   return Date.parse(`${minute}:00Z`);
 }
 
+const readLocalDayStartMs = () => {
+  const now = new Date(minuteTickToEpochMs(minuteTick.getSnapshot()));
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+};
+
+/** Epoch ms of the local day's start; re-renders only when the day changes. */
+export function useLocalDayStartMs(): number {
+  return useSyncExternalStore(minuteTick.subscribe, readLocalDayStartMs, readLocalDayStartMs);
+}
+
 /** Epoch ms floored to the minute, advancing each wall-clock minute. */
 export function useNowMinuteMs(): number {
   return minuteTickToEpochMs(
