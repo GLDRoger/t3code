@@ -134,7 +134,7 @@ const toolkit = LeadMemory.layer.pipe(
   Layer.provideMerge(Writer.layer),
   Layer.provide(LeadMemory.authority),
   Layer.provide(Cache.layer),
-  Layer.provide(Scan.noFindingsStubLayer),
+  Layer.provide(Scan.layer),
   Layer.provide(
     Layer.succeed(Writer.MemoryWriterHooks, {
       notify: Effect.fn("KinMemoryWriter.notify")((notice) =>

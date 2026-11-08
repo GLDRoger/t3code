@@ -224,7 +224,7 @@ it.live(
       const writer = Writer.layer.pipe(
         Layer.provideMerge(Lead.authority),
         Layer.provide(Cache.layer),
-        Layer.provide(Scan.testLayer([])),
+        Layer.provide(Scan.layer),
         Layer.provide(Layer.succeed(Writer.MemoryWriterHooks, { notify: () => Effect.void })),
         Layer.provide(recovery),
       );
