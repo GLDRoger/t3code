@@ -53,7 +53,7 @@ Connection state per environment is an `EnvironmentConnectionPhase`: `available 
 
 **Widgets for later.**
 
-- `features/threads/McpAppWebView.tsx` exports `ThreadMcpApp`, bound to a thread turn item (`threadId`, `itemId`, `enqueueThreadOutboxMessage`). Its private `outerDocument` checks that a real person tapped. The reusable host is `makeMcpAppHost` in `packages/client-runtime/src/mcpApps/host.ts` (`@t3tools/client-runtime/mcp-apps`).
+- `features/threads/McpAppWebView.tsx` exports `ThreadMcpApp`, bound to a thread turn item (`threadId`, `itemId`, `enqueueThreadOutboxMessage`). Its `outerDocument` (exported for the contract test) and its WebView `onMessage` secret check mark whether a real person tapped, which upstream uses only to allow full screen (Design correction 9). The reusable host is `makeMcpAppHost` in `packages/client-runtime/src/mcpApps/host.ts` (`@t3tools/client-runtime/mcp-apps`).
 - `features/threads/HtmlRenderWebView.tsx` exports `HtmlRenderWebView({ uri, title, nested })`, which is reusable as is.
 - `widgets/` holds `expo-widgets` Live Activities (`AgentActivity.tsx`) and the usage widget. Phase 3 adds the agenda widget and Live Activities there.
 
@@ -313,13 +313,14 @@ New, all under `apps/mobile/src/features/chats/` unless noted:
 
 Upstream files touched, one hook each:
 
-| File                                           | Hook                                                                                                            |
-| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `apps/mobile/src/Stack.tsx`                    | `import { KIN_SCREENS } from "./features/chats/routes";` and `...KIN_SCREENS,` in `screens`                     |
-| `apps/mobile/src/features/home/HomeScreen.tsx` | `import { KinHomeEntry } ...` and `<KinHomeEntry />` first in `v2ListHeader`                                    |
-| `apps/mobile/src/App.tsx`                      | `import { installKinNotifications } ...` and `installKinNotifications(linkToAppPath),` in `appServiceDisposers` |
-| `packages/client-runtime/src/rpc/client.ts`    | add Kin stream tags to `EnvironmentSubscriptionRpcTag` (one line per tag; may be done by the chat spec)         |
-| `apps/mobile/vite.config.ts`                   | `"src/features/chats/**/*.test.tsx",` in `reactTests` (only if Kin adds component tests)                        |
+| File                                                 | Hook                                                                                                            |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `apps/mobile/src/Stack.tsx`                          | `import { KIN_SCREENS } from "./features/chats/routes";` and `...KIN_SCREENS,` in `screens`                     |
+| `apps/mobile/src/features/home/HomeScreen.tsx`       | `import { KinHomeEntry } ...` and `<KinHomeEntry />` first in `v2ListHeader`                                    |
+| `apps/mobile/src/App.tsx`                            | `import { installKinNotifications } ...` and `installKinNotifications(linkToAppPath),` in `appServiceDisposers` |
+| `packages/client-runtime/src/rpc/client.ts`          | add Kin stream tags to `EnvironmentSubscriptionRpcTag` (one line per tag; may be done by the chat spec)         |
+| `apps/mobile/vite.config.ts`                         | `"src/features/chats/**/*.test.tsx",` in `reactTests` (only if Kin adds component tests)                        |
+| `apps/mobile/src/features/threads/McpAppWebView.tsx` | `export` on `function outerDocument` (TRIG-19)                                                                  |
 
 ## Interfaces to other specs
 
@@ -331,7 +332,7 @@ Upstream files touched, one hook each:
 ## Security notes
 
 - The approval card never renders agent HTML or agent-chosen titles. Facts come from the pending action, which the server builds from GitHub, not from the agent.
-- No widget kind falls back to a WebView in phase 1. Generated widgets (phase 2) go through `makeMcpAppHost` with the existing outer-document check that a real person tapped.
+- No widget kind falls back to a WebView in phase 1. Generated widgets (phase 2) go through `makeMcpAppHost`, and Kin adds its own real-tap gate on actions (Design correction 9).
 - Push payloads hold ids and short fixed text only. Apple sees them.
 - Deep links from notifications are checked (`/kin/` prefix, schema decode) before navigation. Route params are treated as untrusted: a `KinApproval` link for an action the viewer can't approve shows the read-only card.
 - The `.p8` APNs key stays in a file on the Kin host, never in the repo or logs. Device tokens are never logged; logs use a 12-character hash.
@@ -451,8 +452,12 @@ Commands, from `apps/mobile`: `vp run typecheck` and `vp test run --project unit
    - So Kin needs its own APNs sender (MOB-10) and an Apple Developer key from the owner.
 5. **Phase mismatch.** DESIGN section 11 puts notification actions in phase 2. This spec puts them in phase 1 as asked. Decide which phase.
 6. **No approve button on the lock screen.** Approval needs the in-app biometric prompt and signature, so the lock screen offers **Review**, not Approve. "Every request carries its buttons" (DESIGN 8.4) holds for deferrals and decisions only.
-7. **Widgets aren't drop-in reusable.** `ThreadMcpApp` and `ThreadFeed` are bound to T3 threads. Generated widgets (phase 2) must build on `makeMcpAppHost`, and need `outerDocument` exported or copied.
+7. **Widgets aren't drop-in reusable.** `ThreadMcpApp` and `ThreadFeed` are bound to T3 threads. Generated widgets (phase 2) must build on `makeMcpAppHost` and reuse `outerDocument`, which TRIG-19 exports.
 8. **The foreground handler is single-owner.** Upstream owns `setNotificationHandler`, so Kin suppresses pushes for the chat on screen from the server.
+9. **The real-tap check doesn't gate actions.** DESIGN 7 says generated widgets act "only on a real tap". Upstream's outer document sets `active` only for a real tap with focus on the app frame, but React Native reads it only to allow full screen. `callTool` is gated by tool type (read-only runs, changing tools ask to confirm) and `sendMessage` always asks to confirm. Phase 2's generated widgets add their own gate in Kin's host callbacks:
+   - Read `active` synchronously when the callback is entered, before any `await`. It reaches the host through a ref set around a synchronous `host.receive`, so it is only valid then. TRIG-19 pins both the flag and the synchronous dispatch.
+   - `active` means a real tap on this frame within the browser's transient-activation window, which lasts seconds and isn't consumed. So one tap can cover several posts. Kin allows one action per activation, and keeps upstream's confirm dialogs.
+   - The gate covers `callTool`, `sendMessage`, `openLink`, `downloadFile` and `updateModelContext`. `updateModelContext` changes what the agent sees and has no upstream gate.
 
 ## Open questions
 

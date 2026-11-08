@@ -7,6 +7,7 @@
     "test": "vp test run --config ../vite.config.ts --dir ."
   },
   "dependencies": {
+    "@ast-grep/napi": "0.51.0",
     "@effect/platform-node": "catalog:",
     "@electron/asar": "^4.3.0",
     "@electron/osx-sign": "2.7.0",

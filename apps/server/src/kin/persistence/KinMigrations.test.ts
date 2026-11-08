@@ -24,6 +24,7 @@ const tableNames = [
   "kin_chats",
   "kin_cursor",
   "kin_deferral_runs",
+  "kin_dream_runs",
   "kin_events",
   "kin_executions",
   "kin_floor_grants",
@@ -118,8 +119,9 @@ describe("Kin migrations", () => {
           { migration_id: 15, name: "AuthSessionKeys" },
           { migration_id: 16, name: "DeferralRuns" },
           { migration_id: 17, name: "Workers" },
-          { migration_id: 18, name: "Approvals" },
-          { migration_id: 19, name: "PushDevices" },
+          { migration_id: 18, name: "Dreams" },
+          { migration_id: 19, name: "Approvals" },
+          { migration_id: 20, name: "PushDevices" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
@@ -130,6 +132,7 @@ describe("Kin migrations", () => {
           ["kin_auth_session_keys", ["created_at", "repaired_at"]],
           ["kin_auth_key_repairs", ["created_at", "consumed_at"]],
           ["kin_trigger_fires", ["fired_at"]],
+          ["kin_dream_runs", ["material_from", "material_until", "started_at", "ended_at"]],
           ["kin_trigger_inbox", ["received_at", "consumed_at"]],
           ["kin_ping_ledger", ["pinged_at", "escalated_at"]],
           ["kin_floor_runs", ["opened_at"]],
@@ -187,8 +190,9 @@ describe("Kin migrations", () => {
           { migration_id: 15, name: "AuthSessionKeys" },
           { migration_id: 16, name: "DeferralRuns" },
           { migration_id: 17, name: "Workers" },
-          { migration_id: 18, name: "Approvals" },
-          { migration_id: 19, name: "PushDevices" },
+          { migration_id: 18, name: "Dreams" },
+          { migration_id: 19, name: "Approvals" },
+          { migration_id: 20, name: "PushDevices" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -211,6 +215,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_chat_members_agent" },
           { name: "idx_kin_chat_members_person" },
           { name: "idx_kin_chats_org_chat" },
+          { name: "idx_kin_dream_runs_material" },
           { name: "idx_kin_events_dedupe" },
           { name: "idx_kin_events_queue" },
           { name: "idx_kin_events_wakeup" },
@@ -282,8 +287,9 @@ describe("Kin migrations", () => {
         [15, "AuthSessionKeys"],
         [16, "DeferralRuns"],
         [17, "Workers"],
-        [18, "Approvals"],
-        [19, "PushDevices"],
+        [18, "Dreams"],
+        [19, "Approvals"],
+        [20, "PushDevices"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -312,6 +318,7 @@ describe("Kin migrations", () => {
       yield* sql`DROP INDEX idx_kin_messages_changes`;
       yield* sql`ALTER TABLE kin_messages DROP COLUMN change_seq`;
       yield* sql`ALTER TABLE kin_chats DROP COLUMN change_seq`;
+      yield* sql`DROP TABLE kin_dream_runs`;
       yield* sql`DROP TABLE kin_deferral_runs`;
       yield* sql`DROP TABLE kin_auth_key_repairs`;
       yield* sql`DROP TABLE kin_auth_session_keys`;
@@ -362,8 +369,9 @@ describe("Kin migrations", () => {
         [15, "AuthSessionKeys"],
         [16, "DeferralRuns"],
         [17, "Workers"],
-        [18, "Approvals"],
-        [19, "PushDevices"],
+        [18, "Dreams"],
+        [19, "Approvals"],
+        [20, "PushDevices"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,
@@ -406,8 +414,9 @@ describe("Kin migrations", () => {
         { migration_id: 15, name: "AuthSessionKeys" },
         { migration_id: 16, name: "DeferralRuns" },
         { migration_id: 17, name: "Workers" },
-        { migration_id: 18, name: "Approvals" },
-        { migration_id: 19, name: "PushDevices" },
+        { migration_id: 18, name: "Dreams" },
+        { migration_id: 19, name: "Approvals" },
+        { migration_id: 20, name: "PushDevices" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);
@@ -419,13 +428,13 @@ describe("Kin migrations", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runKinMigrations();
-      // What a database looks like when K019 merged before a lower-numbered migration.
+      // What a database looks like when K020 merged before a lower-numbered migration.
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 5`;
       const history = yield* kinHistory;
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 19");
+      assert.include(String(exit), "below the latest applied migration 20");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -434,11 +443,11 @@ describe("Kin migrations", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runKinMigrations();
-      // What a database looks like after running another branch's K019.
-      yield* sql`UPDATE kin_sql_migrations SET name = 'Budget' WHERE migration_id = 19`;
+      // What a database looks like after running another branch's K020.
+      yield* sql`UPDATE kin_sql_migrations SET name = 'Budget' WHERE migration_id = 20`;
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
-      assert.include(String(exit), "19_PushDevices");
+      assert.include(String(exit), "20_PushDevices");
       assert.include(String(exit), "share a number");
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
