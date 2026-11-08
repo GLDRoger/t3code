@@ -482,6 +482,10 @@ describe("ApproverKeys", () => {
       if (approved._tag !== "approved") return;
       const handler = yield* makeRegisterApproverKeyHandler;
       assert.strictEqual(yield* handler.reconcile(action), "not_done");
+      // The stored key must still be what the card described.
+      yield* sql`UPDATE kin_approver_keys SET hardware = 'strongbox' WHERE thumbprint = ${second.key.thumbprint}`;
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(handler.run(action, approved.grant))));
+      yield* sql`UPDATE kin_approver_keys SET hardware = 'tee' WHERE thumbprint = ${second.key.thumbprint}`;
       assert.strictEqual(yield* handler.run(action, approved.grant), "succeeded");
       assert.strictEqual(yield* handler.reconcile(action), "done");
       assert.strictEqual((yield* keys.requireActive(second.key)).state, "active");
