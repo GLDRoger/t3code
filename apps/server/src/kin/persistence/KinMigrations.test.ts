@@ -26,7 +26,9 @@ const tableNames = [
   "kin_floor_notices",
   "kin_floor_runs",
   "kin_judge_log",
+  "kin_lead_tool_calls",
   "kin_leads",
+  "kin_memory_heads",
   "kin_memory_reads",
   "kin_messages",
   "kin_org_state",
@@ -37,6 +39,9 @@ const tableNames = [
   "kin_ping_items",
   "kin_ping_ledger",
   "kin_read_state",
+  "kin_routine_folds",
+  "kin_routine_preferences",
+  "kin_secret_allow",
   "kin_session_bindings",
   "kin_shadow_entries",
   "kin_trigger_fires",
@@ -98,6 +103,10 @@ describe("Kin migrations", () => {
           { migration_id: 8, name: "Floor" },
           { migration_id: 9, name: "JudgeLog" },
           { migration_id: 10, name: "ChatChanges" },
+          { migration_id: 11, name: "MemoryHeads" },
+          { migration_id: 12, name: "SecretAllow" },
+          { migration_id: 13, name: "Routines" },
+          { migration_id: 14, name: "LeadToolCalls" },
           { migration_id: 15, name: "AuthSessionKeys" },
         ]);
         assert.deepStrictEqual(
@@ -155,6 +164,10 @@ describe("Kin migrations", () => {
           { migration_id: 8, name: "Floor" },
           { migration_id: 9, name: "JudgeLog" },
           { migration_id: 10, name: "ChatChanges" },
+          { migration_id: 11, name: "MemoryHeads" },
+          { migration_id: 12, name: "SecretAllow" },
+          { migration_id: 13, name: "Routines" },
+          { migration_id: 14, name: "LeadToolCalls" },
           { migration_id: 15, name: "AuthSessionKeys" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
@@ -164,6 +177,10 @@ describe("Kin migrations", () => {
         assert.deepStrictEqual(
           yield* sql`SELECT name FROM pragma_index_info('idx_kin_triggers_due') ORDER BY seqno`,
           ["next_run_at", "org_id", "trigger_id"].map((name) => ({ name })),
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT name FROM pragma_index_info('kin_workers_owner_review') ORDER BY seqno`,
+          ["org_id", "ended_at", "worker_id"].map((name) => ({ name })),
         );
         const indexes = yield* sql<{ name: string }>`
         SELECT name FROM sqlite_master WHERE type = 'index' AND name GLOB 'idx_kin_*' ORDER BY name
@@ -233,6 +250,10 @@ describe("Kin migrations", () => {
         [8, "Floor"],
         [9, "JudgeLog"],
         [10, "ChatChanges"],
+        [11, "MemoryHeads"],
+        [12, "SecretAllow"],
+        [13, "Routines"],
+        [14, "LeadToolCalls"],
         [15, "AuthSessionKeys"],
       ]);
       const before = yield* kinSchema;
@@ -272,6 +293,12 @@ describe("Kin migrations", () => {
       yield* sql`DROP TABLE kin_ping_escalations`;
       yield* sql`DROP TABLE kin_ping_items`;
       yield* sql`DROP INDEX kin_chat_members_one_owner`;
+      yield* sql`DROP TABLE kin_lead_tool_calls`;
+      yield* sql`DROP TABLE kin_memory_heads`;
+      yield* sql`DROP TABLE kin_secret_allow`;
+      yield* sql`DROP INDEX kin_workers_owner_review`;
+      yield* sql`DROP TABLE kin_routine_folds`;
+      yield* sql`DROP TABLE kin_routine_preferences`;
       yield* sql`DROP TABLE kin_budget_charges`;
       yield* sql`ALTER TABLE kin_events DROP COLUMN budget_deferred`;
       yield* sql`UPDATE kin_chats SET last_seq = 1 WHERE org_id = 'org' AND chat_id = 'existing-chat'`;
@@ -285,6 +312,10 @@ describe("Kin migrations", () => {
         [8, "Floor"],
         [9, "JudgeLog"],
         [10, "ChatChanges"],
+        [11, "MemoryHeads"],
+        [12, "SecretAllow"],
+        [13, "Routines"],
+        [14, "LeadToolCalls"],
         [15, "AuthSessionKeys"],
       ]);
       assert.deepStrictEqual(
@@ -321,6 +352,10 @@ describe("Kin migrations", () => {
         { migration_id: 8, name: "Floor" },
         { migration_id: 9, name: "JudgeLog" },
         { migration_id: 10, name: "ChatChanges" },
+        { migration_id: 11, name: "MemoryHeads" },
+        { migration_id: 12, name: "SecretAllow" },
+        { migration_id: 13, name: "Routines" },
+        { migration_id: 14, name: "LeadToolCalls" },
         { migration_id: 15, name: "AuthSessionKeys" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);

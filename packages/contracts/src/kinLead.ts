@@ -78,6 +78,9 @@ export const MemoryItemFrontMatter = Schema.Struct({
   title: Schema.String,
   status: Schema.Literals(["open", "done", "cancelled", "superseded"]),
   due: Schema.NullOr(Schema.String),
+  what: Schema.optional(Schema.String),
+  chat: Schema.optional(KinChatId),
+  source_event: Schema.optional(KinEventId),
   on_due: Schema.optional(Schema.Literals(["remind", "start", "ask", "chase"])),
   owner: Schema.optional(TrimmedNonEmptyString),
   tz: Schema.optional(
@@ -147,6 +150,18 @@ const EventBase = {
   dedupeKey: Schema.NullOr(TrimmedNonEmptyString),
   provenance: KinAuthor,
 };
+export const KinOwnerCheckCard = Schema.Struct({
+  items: Schema.Array(
+    Schema.Struct({
+      itemId: KinMemoryItemId,
+      reason: Schema.Literals(["past_review", "misleading", "old_low_trust", "no_evidence"]),
+      handled: Schema.optional(Schema.Literals(["keep", "update", "drop"])),
+      title: Schema.String,
+      path: Schema.String,
+    }),
+  ),
+});
+
 export const KinEvent = Schema.Union([
   Schema.TaggedStruct("chat.message", { ...EventBase, chatId: KinChatId, messageId: KinMessageId }),
   Schema.TaggedStruct("widget.action", {
@@ -184,6 +199,24 @@ export const KinEvent = Schema.Union([
   Schema.TaggedStruct("routine", {
     ...EventBase,
     routine: KinLeadRoutine,
+    dueAt: Schema.optional(CanonicalUtcTimestamp),
+    lateByMs: Schema.optional(NonNegativeInt),
+    foldedRoutines: Schema.optional(
+      Schema.Array(
+        Schema.Struct({
+          routine: KinLeadRoutine,
+          dueAt: CanonicalUtcTimestamp,
+        }),
+      ),
+    ),
+    ownerCheckItems: Schema.optional(
+      Schema.Array(
+        Schema.Struct({
+          itemId: KinMemoryItemId,
+          reason: Schema.Literals(["past_review", "misleading", "old_low_trust", "no_evidence"]),
+        }),
+      ),
+    ),
   }),
   Schema.TaggedStruct("watchdog", {
     ...EventBase,
