@@ -1,6 +1,9 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
+import * as Queue from "effect/Queue";
+import * as Stream from "effect/Stream";
+import * as Option from "effect/Option";
 import * as Exit from "effect/Exit";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Duration from "effect/Duration";
@@ -22,7 +25,7 @@ import * as ProofKeySessions from "./ProofKeySessions.ts";
 
 const makeLayer = (enabled: boolean) =>
   EnvironmentAuth.layer.pipe(
-    Layer.provideMerge(ProofKeySessions.layer),
+    Layer.provide(ProofKeySessions.layer),
     Layer.provide(ManagedPolicy.layerTest()),
     Layer.provide(
       Layer.succeed(
@@ -37,6 +40,12 @@ const makeLayer = (enabled: boolean) =>
   );
 const layer = makeLayer(true);
 const metadata = { deviceType: "mobile" } as const;
+
+const recordRepair = (thumbprint: string, linkId: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_auth_key_repairs (thumbprint, pairing_link_id, created_at) VALUES (${thumbprint}, ${linkId}, 0)`;
+  });
 
 it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key sessions", (it) => {
   it.effect("rejects invalid repair thumbprints before issuing a pairing link", () =>
@@ -102,6 +111,14 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
             }),
           ),
         );
+      expect(
+        Exit.isFailure(
+          yield* RepairPairing.create(auth, { repairProofKey: Option.some("device") }, {}).pipe(
+            Effect.exit,
+          ),
+        ),
+      ).toBe(true);
+      expect(yield* auth.listPairingLinks()).toEqual([]);
       const first = yield* exchange();
       yield* sessions.revoke((yield* sessions.verify(first.access_token)).sessionId);
       yield* exchange();
@@ -112,6 +129,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
   it.effect.each([
     "other-devices",
     "other-devices-live",
+    "other-key",
     "expired-revocation",
     "individual",
     "insert-race",
@@ -129,7 +147,20 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
         );
       const first = yield* exchange();
       const original = yield* sessions.verify(first.access_token);
-      if (action === "other-devices" || action === "other-devices-live") {
+      if (action === "other-key") {
+        const other = yield* sessions.issue({ proofKeyThumbprint: "other" });
+        yield* auth.revokeOtherClientSessions(original.sessionId);
+        const link = yield* auth.createPairingLink({ proofKeyThumbprint: "other" });
+        expect(
+          (yield* auth
+            .exchangeBootstrapCredentialForAccessToken(link.credential, undefined, metadata, {
+              proofKeyThumbprint: "other",
+            })
+            .pipe(Effect.flip))._tag,
+        ).toBe("ServerAuthInvalidCredentialError");
+        expect(Exit.isFailure(yield* sessions.verify(other.token).pipe(Effect.exit))).toBe(true);
+        yield* exchange();
+      } else if (action === "other-devices" || action === "other-devices-live") {
         if (action === "other-devices") yield* TestClock.adjust(Duration.minutes(61));
         const current = yield* sessions.verify((yield* exchange()).access_token);
         yield* auth.revokeOtherClientSessions(current.sessionId);
@@ -149,10 +180,98 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
       } else {
         yield* (yield* SessionHooks).checkExchange("device", { method: "one-time-token" });
         yield* sessions.revoke(original.sessionId);
+        const control = yield* sessions.issue();
+        const changes = yield* Queue.unbounded<SessionStore.SessionCredentialChange>();
+        yield* sessions.streamChanges.pipe(
+          Stream.runForEach((change) => Queue.offer(changes, change)),
+          Effect.forkScoped({ startImmediately: true }),
+        );
         const late = yield* sessions.issue({ proofKeyThumbprint: "device" });
+        yield* sessions.markConnected(control.sessionId);
+        expect((yield* Queue.take(changes)).type).toBe("clientUpserted");
+        expect(yield* Queue.take(changes)).toEqual({
+          type: "clientRemoved",
+          sessionId: late.sessionId,
+        });
         expect(Exit.isFailure(yield* sessions.verify(late.token).pipe(Effect.exit))).toBe(true);
       }
+    }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
+  it.effect.each(["wrong-link", "spent"] as const)("repair guard: %s", (guard) =>
+    Effect.gen(function* () {
+      const sessions = yield* SessionStore.SessionStore;
+      const sql = yield* SqlClient.SqlClient;
+      const hooks = yield* SessionHooks.pipe(
+        Effect.provide(
+          ProofKeySessions.layer.pipe(
+            Layer.provide(
+              Layer.succeed(
+                ConfigProvider.ConfigProvider,
+                ConfigProvider.fromEnv({ env: { KIN_ENABLED: "true" } }),
+              ),
+            ),
+          ),
+        ),
+      );
+      const first = yield* sessions.issue({ proofKeyThumbprint: "device" });
+      yield* sessions.revoke(first.sessionId);
+      yield* hooks.recordRepair("device", "A");
+      const grant = { method: "one-time-token", proofKeyThumbprint: "device", pairingLinkId: "A" };
+      if (guard === "spent") {
+        expect(yield* hooks.checkExchange("device", grant)).toBe(true);
+        const next = yield* sessions.issue({ proofKeyThumbprint: "device" });
+        yield* sessions.revoke(next.sessionId);
+      }
+      expect(
+        yield* hooks.checkExchange("device", {
+          ...grant,
+          pairingLinkId: guard === "wrong-link" ? "B" : "A",
+        }),
+      ).toBe(false);
+      if (guard === "wrong-link")
+        expect(
+          yield* sql`SELECT consumed_at FROM kin_auth_key_repairs WHERE pairing_link_id = 'A'`,
+        ).toEqual([{ consumed_at: null }]);
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "failed revocation rolls back without publishing removals or disconnecting clients",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionStore.SessionStore;
+        const sql = yield* SqlClient.SqlClient;
+        const first = yield* sessions.issue({ proofKeyThumbprint: "device" });
+        const sibling = yield* sessions.issue({ proofKeyThumbprint: "device" });
+        yield* sessions.markConnected(first.sessionId);
+        const changes = yield* Queue.unbounded<SessionStore.SessionCredentialChange>();
+        yield* sessions.streamChanges.pipe(
+          Stream.runForEach((change) => Queue.offer(changes, change)),
+          Effect.forkScoped({ startImmediately: true }),
+        );
+        yield* sql`CREATE TABLE reject_revoke_ids (session_id TEXT)`;
+        yield* sql`INSERT INTO reject_revoke_ids VALUES (${sibling.sessionId})`;
+        yield* sql`CREATE TRIGGER reject_revoke BEFORE UPDATE ON auth_sessions WHEN NEW.session_id IN (SELECT session_id FROM reject_revoke_ids) BEGIN SELECT RAISE(ABORT, 'cannot revoke'); END`;
+        expect(Exit.isFailure(yield* sessions.revoke(first.sessionId).pipe(Effect.exit))).toBe(
+          true,
+        );
+        expect(yield* Queue.size(changes)).toBe(0);
+        expect(
+          (yield* sessions.listActive()).find((session) => session.sessionId === first.sessionId)
+            ?.connected,
+        ).toBe(true);
+        expect((yield* sessions.verify(first.token)).sessionId).toBe(first.sessionId);
+        yield* sql`DROP TRIGGER reject_revoke`;
+        yield* sessions.revoke(first.sessionId);
+        const removed = [yield* Queue.take(changes), yield* Queue.take(changes)];
+        expect(removed).toEqual(
+          expect.arrayContaining([
+            { type: "clientRemoved", sessionId: first.sessionId },
+            { type: "clientRemoved", sessionId: sibling.sessionId },
+          ]),
+        );
+      }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 
   it.effect(
@@ -222,7 +341,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
               subject: subject === "repair" ? "one-time-token" : subject,
               proofKeyThumbprint: bound,
             });
-            if (subject === "repair") yield* (yield* SessionHooks).recordRepair(bound, link.id);
+            if (subject === "repair") yield* recordRepair(bound, link.id);
             return link;
           });
         const exchange = (credential: string, thumbprint = "device") =>
@@ -235,7 +354,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
         const denied = yield* exchange((yield* mint()).credential).pipe(Effect.exit);
         expect(Exit.isFailure(denied)).toBe(true);
         const unboundRepair = yield* auth.createPairingLink({ subject: "one-time-token" });
-        yield* (yield* SessionHooks).recordRepair("device", unboundRepair.id);
+        yield* recordRepair("device", unboundRepair.id);
         expect((yield* exchange(unboundRepair.credential).pipe(Effect.flip))._tag).toBe(
           "ServerAuthInvalidCredentialError",
         );
@@ -245,10 +364,17 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
         expect(Exit.isFailure(yield* exchange(repair.credential, "other").pipe(Effect.exit))).toBe(
           true,
         );
+        const sql = yield* SqlClient.SqlClient;
+        const wrongLink = yield* mint("one-time-token");
+        expect((yield* exchange(wrongLink.credential).pipe(Effect.flip))._tag).toBe(
+          "ServerAuthInvalidCredentialError",
+        );
+        expect(
+          yield* sql`SELECT consumed_at FROM kin_auth_key_repairs WHERE pairing_link_id = ${repair.id}`,
+        ).toEqual([{ consumed_at: null }]);
         const repaired = yield* exchange(repair.credential);
         expect((yield* sessions.verify(repaired.access_token)).subject).toBe("one-time-token");
         expect(Exit.isFailure(yield* exchange(repair.credential).pipe(Effect.exit))).toBe(true);
-        const sql = yield* SqlClient.SqlClient;
         expect(
           yield* sql`SELECT thumbprint, pairing_link_id, typeof(created_at) AS created_type, typeof(consumed_at) AS consumed_type FROM kin_auth_key_repairs WHERE pairing_link_id = ${repair.id}`,
         ).toEqual([
@@ -262,6 +388,26 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
         expect((yield* sessions.verify(repaired.access_token)).proofKeyThumbprint).toBe("device");
         yield* exchange((yield* mint()).credential);
         yield* sessions.revoke((yield* sessions.verify(repaired.access_token)).sessionId);
+        // A spent repair cannot acknowledge a subsequent revocation, even without grant replay protection.
+        const retryHooks = yield* SessionHooks.pipe(
+          Effect.provide(
+            ProofKeySessions.layer.pipe(
+              Layer.provide(
+                Layer.succeed(
+                  ConfigProvider.ConfigProvider,
+                  ConfigProvider.fromEnv({ env: { KIN_ENABLED: "true" } }),
+                ),
+              ),
+            ),
+          ),
+        );
+        expect(
+          yield* retryHooks.checkExchange("device", {
+            method: "one-time-token",
+            proofKeyThumbprint: "device",
+            pairingLinkId: repair.id,
+          }),
+        ).toBe(false);
         expect((yield* exchange((yield* mint()).credential).pipe(Effect.flip))._tag).toBe(
           "ServerAuthInvalidCredentialError",
         );

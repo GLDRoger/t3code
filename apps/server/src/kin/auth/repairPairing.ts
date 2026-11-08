@@ -17,10 +17,10 @@ export const flags = {
   ),
 };
 
-export const grant = (input: { readonly repairProofKey: Option.Option<string> }) =>
+const grant = (input: { readonly repairProofKey: Option.Option<string> }) =>
   Option.isSome(input.repairProofKey) ? { proofKeyThumbprint: input.repairProofKey.value } : {};
 
-export const record = Effect.fn("RepairPairing.record")(function* (
+const record = Effect.fn("RepairPairing.record")(function* (
   input: { readonly repairProofKey: Option.Option<string> },
   link: EnvironmentAuth.IssuedPairingLink,
 ) {
@@ -28,4 +28,14 @@ export const record = Effect.fn("RepairPairing.record")(function* (
     const hooks = yield* SessionHooks;
     yield* hooks.recordRepair(input.repairProofKey.value, link.id);
   }
+});
+
+export const create = Effect.fn("RepairPairing.create")(function* (
+  auth: EnvironmentAuth.EnvironmentAuth["Service"],
+  input: { readonly repairProofKey: Option.Option<string> },
+  options: Parameters<EnvironmentAuth.EnvironmentAuth["Service"]["createPairingLink"]>[0],
+) {
+  const link = yield* auth.createPairingLink({ ...options, ...grant(input) });
+  yield* record(input, link).pipe(Effect.tapError(() => auth.revokePairingLink(link.id)));
+  return link;
 });

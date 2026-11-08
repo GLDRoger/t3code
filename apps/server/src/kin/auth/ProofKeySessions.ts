@@ -5,7 +5,7 @@ import type * as Context from "effect/Context";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { AuthSessionId } from "@t3tools/contracts";
 import * as SessionStore from "../../auth/SessionStore.ts";
-import * as EnvironmentAuth from "../../auth/EnvironmentAuth.ts";
+import * as Ref from "effect/Ref";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as KinEnabled from "../KinEnabled.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
@@ -51,13 +51,15 @@ const enabled = Layer.effect(
       afterIssue: Effect.fn("ProofKeySessions.afterIssue")(
         function* (sessionId: AuthSessionId, thumbprint: string) {
           // Serializing the check with revocation covers either ordering of the session insert.
-          yield* sql.withTransaction(
+          return yield* sql.withTransaction(
             Effect.gen(function* () {
               if (yield* blocked(thumbprint)) {
                 const now = yield* DateTime.now;
                 yield* sql`UPDATE auth_sessions SET revoked_at = ${DateTime.formatIso(now)}
             WHERE session_id = ${sessionId} AND revoked_at IS NULL`;
+                return true;
               }
+              return false;
             }),
           );
         },
@@ -69,51 +71,12 @@ const enabled = Layer.effect(
             ),
           ),
       ),
-      revoke: (original: SessionStore.SessionStore["Service"]["revoke"]) =>
-        Effect.fn("ProofKeySessions.revoke")(function* (sessionId: AuthSessionId) {
-          return yield* sql
-            .withTransaction(
-              Effect.gen(function* () {
-                const mapped = yield* sql<{
-                  proof_key_thumbprint: string;
-                }>`SELECT proof_key_thumbprint FROM kin_auth_session_keys WHERE session_id = ${sessionId}`;
-                if (!mapped[0]) return yield* original(sessionId);
-                yield* sql`UPDATE kin_auth_session_keys SET individually_revoked = 1
-          WHERE session_id = ${sessionId} AND EXISTS (SELECT 1 FROM auth_sessions
-            WHERE session_id = ${sessionId} AND revoked_at IS NULL)`;
-                const now = yield* DateTime.now;
-                const ids = yield* sql<{
-                  session_id: AuthSessionId;
-                }>`SELECT s.session_id FROM auth_sessions s
-          JOIN kin_auth_session_keys m ON s.session_id = m.session_id
-          WHERE m.proof_key_thumbprint = ${mapped[0].proof_key_thumbprint} AND s.revoked_at IS NULL
-            AND s.expires_at > ${DateTime.formatIso(now)}`;
-                const revoked = yield* original(sessionId);
-                yield* Effect.forEach(
-                  ids.filter((row) => row.session_id !== sessionId),
-                  (row) => original(row.session_id),
-                  { discard: true },
-                );
-                return revoked;
-              }),
-            )
-            .pipe(
-              Effect.mapError((cause) =>
-                cause._tag === "SessionRevocationError"
-                  ? cause
-                  : new SessionStore.SessionRevocationError({
-                      sessionId,
-                      cause: toPersistenceSqlError("ProofKeySessions.revoke")(cause),
-                    }),
-              ),
-            );
-        }),
       checkExchange: Effect.fn("ProofKeySessions.checkExchange")(function* (
         thumbprint: string | undefined,
         grant: Parameters<Context.Service.Shape<typeof SessionHooks>["checkExchange"]>[1],
       ) {
-        if (!thumbprint) return;
-        const allowed = yield* sql
+        if (!thumbprint) return true;
+        return yield* sql
           .withTransaction(
             Effect.gen(function* () {
               if (
@@ -134,45 +97,105 @@ const enabled = Layer.effect(
               return !(yield* blocked(thumbprint));
             }),
           )
-          .pipe(
-            Effect.mapError(toPersistenceSqlError("ProofKeySessions.checkExchange")),
-            Effect.mapError(
-              (cause) =>
-                new EnvironmentAuth.ServerAuthAuthenticatedAccessTokenIssueError({ cause }),
-            ),
-          );
-        if (!allowed) return yield* new EnvironmentAuth.ServerAuthInvalidCredentialError({});
+          .pipe(Effect.mapError(toPersistenceSqlError("ProofKeySessions.checkExchange")));
       }),
     };
     return SessionHooks.of({
       recordRepair: hooks.recordRepair,
       checkExchange: hooks.checkExchange,
-      wrap: (store) => ({
-        ...store,
-        issue: Effect.fn("ProofKeySessions.issue")(function* (input) {
-          return yield* sql
+      wrap: (notifications) => (store) => {
+        const removed = (sessionId: AuthSessionId) =>
+          Ref.update(notifications.connectedSessionsRef, (current) => {
+            const next = new Map(current);
+            next.delete(sessionId);
+            return next;
+          }).pipe(Effect.andThen(notifications.emitRemoved(sessionId)));
+        const revoke = (sessionId: AuthSessionId, bulk: boolean) =>
+          sql
             .withTransaction(
               Effect.gen(function* () {
-                const issued = yield* store.issue(input);
-                if (input?.proofKeyThumbprint) {
-                  yield* hooks.onIssue(issued.sessionId, input.proofKeyThumbprint);
-                  yield* hooks.afterIssue(issued.sessionId, input.proofKeyThumbprint);
+                const now = yield* DateTime.now;
+                const ids = bulk
+                  ? yield* sql<{
+                      session_id: AuthSessionId;
+                    }>`SELECT session_id FROM auth_sessions WHERE session_id != ${sessionId} AND revoked_at IS NULL`
+                  : yield* sql<{
+                      session_id: AuthSessionId;
+                    }>`SELECT s.session_id FROM auth_sessions s LEFT JOIN kin_auth_session_keys m ON m.session_id = s.session_id
+              WHERE s.revoked_at IS NULL AND (s.session_id = ${sessionId} OR (s.expires_at > ${DateTime.formatIso(now)} AND m.proof_key_thumbprint = (SELECT proof_key_thumbprint FROM kin_auth_session_keys WHERE session_id = ${sessionId})))`;
+                if (bulk) {
+                  yield* sql`UPDATE kin_auth_session_keys SET individually_revoked = 1 WHERE session_id IN (SELECT session_id FROM auth_sessions WHERE session_id != ${sessionId} AND revoked_at IS NULL AND expires_at > ${DateTime.formatIso(now)})
+              AND proof_key_thumbprint != COALESCE((SELECT proof_key_thumbprint FROM kin_auth_session_keys WHERE session_id = ${sessionId}), '')`;
+                } else {
+                  yield* sql`UPDATE kin_auth_session_keys SET individually_revoked = 1 WHERE session_id = ${sessionId} AND EXISTS (SELECT 1 FROM auth_sessions WHERE session_id = ${sessionId} AND revoked_at IS NULL)`;
                 }
-                return issued;
+                for (const row of ids)
+                  yield* sql`UPDATE auth_sessions SET revoked_at = ${DateTime.formatIso(now)} WHERE session_id = ${row.session_id} AND revoked_at IS NULL`;
+                return ids;
               }),
             )
             .pipe(
-              Effect.mapError((cause) =>
-                cause._tag === "SessionCredentialIssueError"
-                  ? cause
-                  : new SessionStore.SessionCredentialIssueError({
-                      cause: toPersistenceSqlError("ProofKeySessions.issue")(cause),
-                    }),
+              Effect.tap((ids) =>
+                Effect.forEach(ids, (row) => removed(row.session_id), { discard: true }),
               ),
+              Effect.uninterruptible,
             );
-        }),
-        revoke: hooks.revoke(store.revoke),
-      }),
+        return {
+          ...store,
+          issue: Effect.fn("ProofKeySessions.issue")(function* (input) {
+            return yield* sql
+              .withTransaction(
+                Effect.gen(function* () {
+                  const issued = yield* store.issue(input);
+                  let revoked = false;
+                  if (input?.proofKeyThumbprint) {
+                    yield* hooks.onIssue(issued.sessionId, input.proofKeyThumbprint);
+                    revoked = yield* hooks.afterIssue(issued.sessionId, input.proofKeyThumbprint);
+                  }
+                  return { issued, revoked };
+                }),
+              )
+              .pipe(
+                Effect.tap(({ issued, revoked }) =>
+                  revoked ? removed(issued.sessionId) : Effect.void,
+                ),
+                Effect.map(({ issued }) => issued),
+                Effect.uninterruptible,
+                Effect.mapError((cause) =>
+                  cause._tag === "SessionCredentialIssueError"
+                    ? cause
+                    : new SessionStore.SessionCredentialIssueError({
+                        cause: toPersistenceSqlError("ProofKeySessions.issue")(cause),
+                      }),
+                ),
+              );
+          }),
+          revoke: Effect.fn("ProofKeySessions.revoke")((sessionId) =>
+            revoke(sessionId, false).pipe(
+              Effect.map((ids) => ids.some((row) => row.session_id === sessionId)),
+              Effect.mapError(
+                (cause) =>
+                  new SessionStore.SessionRevocationError({
+                    sessionId,
+                    cause: toPersistenceSqlError("ProofKeySessions.revoke")(cause),
+                  }),
+              ),
+            ),
+          ),
+          revokeAllExcept: Effect.fn("ProofKeySessions.revokeAllExcept")((sessionId) =>
+            revoke(sessionId, true).pipe(
+              Effect.map((ids) => ids.length),
+              Effect.mapError(
+                (cause) =>
+                  new SessionStore.OtherSessionsRevocationError({
+                    currentSessionId: sessionId,
+                    cause: toPersistenceSqlError("ProofKeySessions.revokeAllExcept")(cause),
+                  }),
+              ),
+            ),
+          ),
+        };
+      },
     });
   }),
 ).pipe(Layer.provide(KinPersistence.layer));

@@ -1,4 +1,3 @@
-import * as RepairPairing from "../kin/auth/repairPairing.ts";
 import { AuthSessionId, AuthStandardClientScopes } from "@t3tools/contracts";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
@@ -8,7 +7,7 @@ import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import { Argument, Command, Flag, GlobalFlag } from "effect/cli";
 
-import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import * as EnvironmentAuth from "../kin/auth/EnvironmentAuthRuntime.ts";
 
 import {
   formatIssuedPairingCredential,
@@ -89,7 +88,7 @@ const tokenOnlyFlag = Flag.Boolean("token-only").pipe(
 );
 
 const pairingCreateCommand = Command.make("create", {
-  ...RepairPairing.flags,
+  ...EnvironmentAuth.repairFlags,
   ...authLocationFlags,
   scopes: authScopesFlag(AuthStandardClientScopes),
   ttl: ttlFlag,
@@ -103,14 +102,12 @@ const pairingCreateCommand = Command.make("create", {
       flags,
       (environmentAuth) =>
         Effect.gen(function* () {
-          const issued = yield* environmentAuth.createPairingLink({
+          const issued = yield* EnvironmentAuth.createRepairPairing(environmentAuth, flags, {
             scopes: flags.scopes,
             subject: "one-time-token",
-            ...RepairPairing.grant(flags),
             ...(Option.isSome(flags.ttl) ? { ttl: flags.ttl.value } : {}),
             ...(Option.isSome(flags.label) ? { label: flags.label.value } : {}),
           });
-          yield* RepairPairing.record(flags, issued);
           const output = formatIssuedPairingCredential(issued, {
             json: flags.json,
             ...(Option.isSome(flags.baseUrl) ? { baseUrl: flags.baseUrl.value.href } : {}),

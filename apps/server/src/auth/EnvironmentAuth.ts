@@ -1,5 +1,4 @@
-import * as ProofKeySessions from "../kin/auth/ProofKeySessions.ts";
-import { SessionHooks } from "../kin/auth/sessionHooks.ts";
+import { authHooks } from "../kin/auth/authHooks.ts";
 import {
   AuthAccessTokenType,
   AuthAccessWriteScope,
@@ -712,6 +711,7 @@ function isBrowserOriginAllowed(
 
 /** @public */
 export const make = Effect.gen(function* () {
+  const kinHooks = yield* authHooks;
   const policy = yield* EnvironmentAuthPolicy.EnvironmentAuthPolicy;
   const bootstrapCredentials = yield* PairingGrantStore.PairingGrantStore;
   const sessions = yield* SessionStore.SessionStore;
@@ -963,7 +963,7 @@ export const make = Effect.gen(function* () {
       }).pipe(
         Effect.flatMap((grant) =>
           Effect.gen(function* () {
-            yield* (yield* SessionHooks).checkExchange(input?.proofKeyThumbprint, grant);
+            yield* kinHooks.checkExchange(input?.proofKeyThumbprint, grant);
             const grantedScopes =
               requestedScopes === undefined
                 ? grant.scopes
@@ -1467,7 +1467,6 @@ export const layer = Layer.effect(EnvironmentAuth, make).pipe(
 const layerStorage = Layer.mergeAll(ServerSecretStore.layer, SqlitePersistence.layerConfig);
 
 export const layerRuntime = layer.pipe(
-  Layer.provideMerge(ProofKeySessions.layer),
   Layer.provideMerge(ManagedPolicy.layer),
   Layer.provideMerge(layerStorage),
   Layer.provideMerge(ServerEnvironment.layerIdentity),

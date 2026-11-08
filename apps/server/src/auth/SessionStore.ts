@@ -1099,7 +1099,7 @@ const make = Effect.gen(function* () {
     );
   });
 
-  return (yield* SessionHooks).wrap({
+  return (yield* SessionHooks).wrap({ connectedSessionsRef, emitRemoved })({
     cookieName,
     legacyCookieName,
     issue,
