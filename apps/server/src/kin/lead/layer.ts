@@ -30,6 +30,8 @@ import { handlers } from "./mcp/handlers.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
+import * as Workers from "./Workers.ts";
+import * as WorkerTracker from "./WorkerTracker.ts";
 
 export class KinLeadStartupError extends Schema.TaggedError<KinLeadStartupError>()(
   "KinLeadStartupError",
@@ -149,8 +151,17 @@ const toolkit = LeadMemory.layer.pipe(
 );
 
 export const layer = withServices(runner);
+const tracker = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const tracker = yield* WorkerTracker.WorkerTracker;
+    yield* tracker.start.pipe(forkParked);
+  }),
+).pipe(Layer.provide(WorkerTracker.layer));
 const production = withServices(
-  Layer.merge(runner, registration).pipe(Layer.provideMerge(toolkit)),
+  Layer.mergeAll(runner, registration, tracker).pipe(
+    Layer.provideMerge(Workers.layer),
+    Layer.provideMerge(toolkit),
+  ),
 );
 
 const Repositories = Schema.fromJsonString(

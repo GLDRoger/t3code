@@ -206,6 +206,27 @@ export const authority = Layer.effect(
   }),
 );
 
+/** Kin-tool caller: a registered lead thread in its running wake-up, never another agent. */
+export const resolveLead = Effect.fn("LeadMemory.resolveLead")(function* (
+  scope: McpInvocationScope,
+  allowEnded = false,
+) {
+  const identity = yield* KinIdentity;
+  const sql = yield* SqlClient.SqlClient;
+  const agent = yield* identity.resolveAgent(scope);
+  const [row] = yield* sql<{
+    wakeupId: string;
+    startedAt: number;
+  }>`SELECT w.wakeup_id AS "wakeupId", w.started_at AS "startedAt" FROM kin_wakeups w JOIN kin_leads l ON l.org_id = w.org_id AND l.agent_id = w.agent_id JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id WHERE w.org_id = ${agent.orgId} AND w.agent_id = ${agent.agentId} AND w.thread_id = ${agent.threadId} AND l.thread_id = w.thread_id AND a.role = 'lead' AND w.status = 'running'`;
+  if (!row) return yield* denied();
+  if (!allowEnded) {
+    const ended =
+      yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${agent.orgId} AND wakeup_id = ${row.wakeupId} AND call_key = 'end'`;
+    if (ended.length > 0) return yield* denied();
+  }
+  return { ...agent, ...row };
+});
+
 const make = Effect.gen(function* () {
   const digest = yield* Digest.Digest;
   const hash = Effect.fn("LeadMemory.hash")((value: unknown) =>
@@ -232,23 +253,11 @@ const make = Effect.gen(function* () {
     return yield* lock.withPermits(1)(operation);
   });
   const ended = new Map<KinOrgId, string>();
-  const resolve = Effect.fn("LeadMemory.resolve")(function* (
-    scope: McpInvocationScope,
-    allowEnded = false,
-  ) {
-    const agent = yield* identity.resolveAgent(scope);
-    const [row] = yield* sql<{
-      wakeupId: string;
-      startedAt: number;
-    }>`SELECT w.wakeup_id AS "wakeupId", w.started_at AS "startedAt" FROM kin_wakeups w JOIN kin_leads l ON l.org_id = w.org_id AND l.agent_id = w.agent_id JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id WHERE w.org_id = ${agent.orgId} AND w.agent_id = ${agent.agentId} AND w.thread_id = ${agent.threadId} AND l.thread_id = w.thread_id AND a.role = 'lead' AND w.status = 'running'`;
-    if (!row) return yield* denied();
-    if (!allowEnded) {
-      const ended =
-        yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${agent.orgId} AND wakeup_id = ${row.wakeupId} AND call_key = 'end'`;
-      if (ended.length > 0) return yield* denied();
-    }
-    return { ...agent, ...row };
-  });
+  const resolve = (scope: McpInvocationScope, allowEnded = false) =>
+    resolveLead(scope, allowEnded).pipe(
+      Effect.provideService(KinIdentity, identity),
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
   const checkSource = Effect.fn("LeadMemory.checkSource")(function* (
     ctx: Effect.Success<ReturnType<typeof resolve>>,
     eventId: string,
