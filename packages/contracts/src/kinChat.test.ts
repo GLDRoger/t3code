@@ -122,6 +122,8 @@ type SchemaName = {
 }[keyof typeof Kin];
 
 const samples = {
+  KinText: ["", "Hello\nworld", "  Markdown  "],
+  KinTrimmedText: ["Kin", "Owner name"],
   KinOrgId: ["org-1"],
   KinPersonId: ["person-1"],
   KinAgentId: ["agent-1"],
@@ -249,6 +251,24 @@ describe("Kin chat contracts", () => {
 
   it.each(["", "  \n ", "x".repeat(16_001), "a\u0000b"])("rejects send body %j", (body) => {
     expect(() => decodeSend({ ...send, body })).toThrow();
+  });
+
+  it.each([
+    { schema: Kin.KinChat, value: { ...chat, title: "a\u0000b" } },
+    { schema: Kin.KinOrg, value: { ...org, name: "a\u0000b" } },
+    { schema: Kin.KinPerson, value: { ...person, displayName: "a\u0000b" } },
+    { schema: Kin.KinPerson, value: { ...person, githubLogin: "a\u0000b" } },
+    { schema: Kin.KinAgent, value: { ...agent, displayName: "a\u0000b" } },
+    { schema: Kin.KinWidget, value: { ...widget, type: "a\u0000b" } },
+    { schema: Kin.KinWidget, value: { ...widget, feed: { kind: "a\u0000b", key: "key" } } },
+    { schema: Kin.KinWidget, value: { ...widget, feed: { kind: "kind", key: "a\u0000b" } } },
+    ...["title", "model", "lastError"].map((field) => ({
+      schema: Kin.KinTaskCardState,
+      value: { ...task, [field]: "a\u0000b" },
+    })),
+  ])("rejects NUL text %#", ({ schema, value }) => {
+    const codec: Schema.Codec<unknown> = schema;
+    expect(() => Schema.decodeSync(codec)(value)).toThrow();
   });
 
   it.each([0, 101, 1.5])("rejects history limit %s", (limit) => {
