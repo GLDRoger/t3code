@@ -235,7 +235,10 @@ describe("KinBudget", () => {
             assert.deepStrictEqual(yield* budget.charge({ orgId, wakeupId, usage: [] }), full);
           }
         }
-        assert.strictEqual((yield* budget.get(orgId)).leadUnits, 411);
+        const spent = yield* budget.get(orgId);
+        assert.strictEqual(spent.leadUnits, 411);
+        // Lead turns' otherUsage (Claude subagents) is lead spend, never worker units.
+        assert.strictEqual(spent.workerUnits, 0);
       }).pipe(Effect.provide(layer)),
   );
   it.effect("requires the same-org owner and validates limits before writing", () =>
