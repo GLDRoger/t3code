@@ -16,6 +16,7 @@ import {
   TrimmedNonEmptyString,
   WorkerReport,
   type KinLevel,
+  type OrchestrationV2Run,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
@@ -107,6 +108,7 @@ const LeadRow = Schema.Struct({
 });
 const WorkerRow = Schema.Struct({
   workerId: KinWorkerId,
+  kind: Schema.Literals(["build", "review", "research"]),
   agentId: KinAgentId,
   wakeupId: TrimmedNonEmptyString,
   threadId: ThreadId,
@@ -178,7 +180,7 @@ const make = Effect.gen(function* () {
     return yield* decodeEvent(row.json);
   });
   const worker = Effect.fn("KinWorkers.worker")(function* (orgId: KinOrgId, workerId: KinWorkerId) {
-    const [row] = yield* sql`SELECT worker_id AS "workerId", agent_id AS "agentId",
+    const [row] = yield* sql`SELECT worker_id AS "workerId", kind, agent_id AS "agentId",
       wakeup_id AS "wakeupId", thread_id AS "threadId", title, chat_id AS "chatId",
       model_json AS model, report_json AS report
       FROM kin_workers WHERE org_id = ${orgId} AND worker_id = ${workerId} ORDER BY worker_id`;
@@ -231,6 +233,8 @@ const make = Effect.gen(function* () {
       return yield* denied("Kin workers run on an enabled Claude Code or Codex provider only.");
     return chosen;
   });
+  const isLive = (run: OrchestrationV2Run) =>
+    run.status === "queued" || ThreadManagement.isActiveRun(run);
   const threadLink = Effect.fn("KinWorkers.threadLink")(function* (threadId: ThreadId) {
     return formatThreadLink({ environmentId: yield* environment.getEnvironmentId, threadId });
   });
@@ -243,6 +247,8 @@ const make = Effect.gen(function* () {
       readonly threadId: ThreadId;
       readonly title: string;
       readonly model: string;
+      /** A closed card reopens only for a worker that is running again. */
+      readonly reopen: boolean;
     }) {
       const card = yield* chat
         .createTaskCard({
@@ -257,7 +263,7 @@ const make = Effect.gen(function* () {
           Effect.provideService(OrchestratorV2, orchestrator),
           Effect.provideService(ServerEnvironment, environment),
         );
-      if (card.closedAt !== null)
+      if (card.closedAt !== null && input.reopen)
         yield* chat.setTaskCardClosed({
           orgId: input.orgId,
           chatId: input.chatId,
@@ -355,7 +361,7 @@ const make = Effect.gen(function* () {
         return row?.n ?? 1;
       }),
     );
-    yield* launch
+    const launched = yield* launch
       .launch({
         commandId: CommandId.make(`kin-worker:${ctx.wakeupId}:${ordinal}`),
         threadId,
@@ -400,6 +406,7 @@ const make = Effect.gen(function* () {
       threadId,
       title: input.title,
       model: modelSelection.model,
+      reopen: launched.projection.runs.some(isLive),
     });
     return { workerId, threadLink: yield* threadLink(threadId) };
   }, guarded("KinWorkers.delegate"));
@@ -413,7 +420,13 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const config = yield* leadConfig(ctx);
         yield* sourceEvent(ctx, input.sourceEventId);
-        return { config, worker: yield* worker(ctx.orgId, input.workerId) };
+        const stored = yield* worker(ctx.orgId, input.workerId);
+        // A reviewer sees only the author's refs; more lead text would end that isolation.
+        if (stored.kind === "review")
+          return yield* denied(
+            "Review workers take no follow-ups. Start a new review with kin_delegate.",
+          );
+        return { config, worker: stored };
       }),
     );
     if (plan.config.level === "L0" || plan.config.level === "L1")
@@ -459,6 +472,7 @@ const make = Effect.gen(function* () {
         threadId: plan.worker.threadId,
         title: plan.worker.title ?? projection.thread.title,
         model: plan.worker.model.model,
+        reopen: true,
       });
     return { workerId: input.workerId, threadLink: yield* threadLink(plan.worker.threadId) };
   }, guarded("KinWorkers.followUp"));
@@ -472,13 +486,10 @@ const make = Effect.gen(function* () {
     const projection = yield* threads
       .getThreadProjection(record.threadId)
       .pipe(Effect.mapError(() => missing()));
-    const active = projection.runs.findLast(
-      (run) =>
-        run.status === "queued" ||
-        (ThreadManagement.ACTIVE_RUN_STATUSES as ReadonlyArray<string>).includes(run.status),
-    );
+    const active = projection.runs.findLast(isLive);
     const reason = input.reason ?? "Stopped by the Kin lead.";
-    const tag = `${input.workerId}:${ctx.wakeupId}`;
+    // A follow-up in the same wake-up starts a new run, which a second stop must still reach.
+    const tag = `${input.workerId}:${ctx.wakeupId}:${(active ?? projection.runs.at(-1))?.id ?? "idle"}`;
     if (active !== undefined)
       yield* threads.interruptThread({
         projectId: projection.thread.projectId,

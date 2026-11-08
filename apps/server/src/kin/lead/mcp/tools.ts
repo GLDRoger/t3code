@@ -36,7 +36,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_follow_up", {
     ...workers,
     description:
-      "Send more instructions to an existing worker in this organization instead of starting a new one. It keeps its thread and model, and its task card reopens. Needs L2. Identical retries are not resent. Its next report arrives as a new worker.report event.",
+      "Send more instructions to an existing worker in this organization instead of starting a new one. It keeps its thread and model, and its task card reopens. Needs L2. Review workers refuse follow-ups with not_allowed; start a new review with kin_delegate. Identical retries are not resent. Its next report arrives as a new worker.report event.",
     parameters: Workers.FollowUpInput,
     success: Workers.DelegateResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

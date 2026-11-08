@@ -50,6 +50,7 @@ import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { PreviewAutomationBroker } from "../../mcp/PreviewAutomationBroker.ts";
 import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
+import { OrchestrationEventStore } from "../../persistence/OrchestrationEventStore.ts";
 import { ProviderAdapterRegistryV2 } from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import { ThreadLaunchService } from "../../orchestration-v2/ThreadLaunchService.ts";
 import { ThreadManagementService } from "../../orchestration-v2/ThreadManagementService.ts";
@@ -83,6 +84,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(GitWorkflowService)({}),
   Layer.mock(ManagedProjectFolders)({ namedProjectsRoot: "" }),
   Layer.mock(McpProviderSessions)({}),
+  Layer.mock(OrchestrationEventStore)({}),
   Layer.mock(PeerForwarding)({}),
   Layer.mock(PeerLinkRequests)({}),
   Layer.mock(PeerLinks)({}),

@@ -23,19 +23,26 @@ import {
   ThreadId,
   type KinEvent,
   type OrchestrationV2Run,
+  type OrchestrationV2StoredEvent,
   type OrchestrationV2ThreadProjection,
+  type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
+import { PersistenceSqlError } from "../../persistence/Errors.ts";
+import * as EventStore from "../../persistence/OrchestrationEventStore.ts";
 import { ProviderInstanceRegistry } from "../../provider/ProviderInstanceRegistry.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
@@ -44,6 +51,7 @@ import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.
 import * as Kin from "../layer.ts";
 import * as Memory from "../memory/Memory.ts";
 import { KinBudget } from "./KinBudget.ts";
+import { KinEventQueue } from "./KinEventQueue.ts";
 import * as Registry from "./KinLeadRegistry.ts";
 import * as Workers from "./Workers.ts";
 import * as Tracker from "./WorkerTracker.ts";
@@ -136,12 +144,53 @@ const setup = Effect.fn("WorkersTest.setup")(function* (level = "L2") {
   return { services, orgId, chat, sql, other };
 });
 
+const startThread = Effect.fn("WorkersTest.startThread")(function* (
+  input: ThreadLaunch.ThreadLaunchInput,
+) {
+  const orchestrator = yield* OrchestratorV2;
+  const threadId = input.threadId!;
+  if (Option.isNone(yield* orchestrator.getThreadProjection(threadId).pipe(Effect.option)))
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make(`create:${threadId}`),
+      threadId,
+      projectId: input.projectId,
+      title: input.title,
+      // The authority orchestrator registers only a Codex adapter.
+      modelSelection: codex,
+      runtimeMode: input.runtimeMode,
+      interactionMode: input.interactionMode,
+      branch: null,
+      worktreePath: null,
+      createdBy: input.createdBy,
+      creationSource: input.creationSource,
+    });
+  yield* orchestrator.dispatch({
+    type: "message.dispatch",
+    commandId: CommandId.make(`dispatch:${input.commandId}`),
+    threadId,
+    messageId: input.initialMessage!.messageId!,
+    text: input.initialMessage!.text,
+    attachments: [],
+    dispatchMode: { type: "start_immediately" },
+    createdBy: input.createdBy,
+    creationSource: input.creationSource,
+  });
+  return threadId;
+});
+
 const harness = () => {
   const launches: Array<ThreadLaunch.ThreadLaunchInput> = [];
   const sends: Array<ThreadManagement.ThreadManagementSendInput> = [];
   const interrupts: Array<ThreadManagement.ThreadManagementInterruptInput> = [];
   const stopped: Array<ThreadId> = [];
   const projections = new Map<ThreadId, Partial<OrchestrationV2ThreadProjection>>();
+  const shells = new Map<ThreadId, OrchestrationV2ThreadShell | null>();
+  // The tracker follows these instead of the real stored-event stream.
+  const stored: Array<OrchestrationV2StoredEvent> = [];
+  const faults = { enqueue: 0 };
+  const failed = Deferred.makeUnsafe<void>();
+  const drained = Deferred.makeUnsafe<void>();
   const orchestration = Layer.unwrap(
     Effect.gen(function* () {
       const orchestrator = yield* OrchestratorV2;
@@ -154,41 +203,16 @@ const harness = () => {
           launch: (input) =>
             Effect.gen(function* () {
               launches.push(input);
-              const threadId = input.threadId!;
-              if (
-                Option.isNone(yield* orchestrator.getThreadProjection(threadId).pipe(Effect.option))
-              )
-                yield* orchestrator.dispatch({
-                  type: "thread.create",
-                  commandId: CommandId.make(`create:${threadId}`),
-                  threadId,
-                  projectId: input.projectId,
-                  title: input.title,
-                  // The authority orchestrator registers only a Codex adapter.
-                  modelSelection: codex,
-                  runtimeMode: input.runtimeMode,
-                  interactionMode: input.interactionMode,
-                  branch: null,
-                  worktreePath: null,
-                  createdBy: input.createdBy,
-                  creationSource: input.creationSource,
-                });
-              yield* orchestrator.dispatch({
-                type: "message.dispatch",
-                commandId: CommandId.make(`dispatch:${input.commandId}`),
-                threadId,
-                messageId: input.initialMessage!.messageId!,
-                text: input.initialMessage!.text,
-                attachments: [],
-                dispatchMode: { type: "start_immediately" },
-                createdBy: input.createdBy,
-                creationSource: input.creationSource,
-              });
+              const threadId = yield* startThread(input);
               return { threadId, projection: yield* projection(threadId), resumed: false };
-            }).pipe(Effect.orDie),
+            }).pipe(Effect.provideService(OrchestratorV2, orchestrator), Effect.orDie),
         }),
         Layer.mock(ThreadManagement.ThreadManagementService)({
           getThreadProjection: projection,
+          getThreadShell: (threadId) =>
+            shells.has(threadId)
+              ? Effect.succeed(shells.get(threadId)!)
+              : orchestrator.getThreadShell(threadId),
           sendToThread: (input) =>
             Effect.gen(function* () {
               sends.push(input);
@@ -228,7 +252,63 @@ const harness = () => {
       );
     }),
   );
-  return { launches, sends, interrupts, stopped, projections, orchestration };
+  const tracking = Layer.mergeAll(
+    Layer.effect(
+      OrchestratorV2,
+      Effect.map(OrchestratorV2, (real) =>
+        OrchestratorV2.of({
+          ...real,
+          streamStoredEventsFrom: (input) =>
+            Stream.fromIterable(
+              stored.filter(
+                (event) =>
+                  event.event.type === input?.eventType &&
+                  event.sequence > (input?.afterSequence ?? 0),
+              ),
+            ).pipe(
+              Stream.concat(
+                input?.eventType === "run.updated"
+                  ? Stream.fromEffect(Deferred.succeed(drained, undefined)).pipe(Stream.drain)
+                  : Stream.empty,
+              ),
+            ),
+        }),
+      ),
+    ),
+    Layer.effect(
+      KinEventQueue,
+      Effect.map(KinEventQueue, (real) =>
+        KinEventQueue.of({
+          ...real,
+          enqueue: (event) =>
+            faults.enqueue > 0
+              ? Effect.suspend(() => {
+                  faults.enqueue -= 1;
+                  return Deferred.succeed(failed, undefined).pipe(
+                    Effect.andThen(
+                      Effect.fail(new PersistenceSqlError({ operation: "test.enqueue" })),
+                    ),
+                  );
+                })
+              : real.enqueue(event),
+        }),
+      ),
+    ),
+  );
+  return {
+    launches,
+    sends,
+    interrupts,
+    stopped,
+    projections,
+    shells,
+    stored,
+    faults,
+    failed,
+    drained,
+    orchestration,
+    tracking,
+  };
 };
 
 const memory = Layer.mock(Memory.Memory)({
@@ -277,6 +357,7 @@ const run = <A, E>(
         Layer.mergeAll(Workers.layer, Tracker.layer).pipe(
           Layer.provideMerge(Registry.layer),
           Layer.provide(fakes.orchestration),
+          Layer.provide(Layer.mergeAll(fakes.tracking, EventStore.layer)),
           Layer.provide(Layer.mergeAll(memory, providers, NodeCrypto.layer)),
           Layer.provide(Layer.succeedContext(ctx.services)),
         ),
@@ -292,8 +373,8 @@ const run = <A, E>(
     ),
   );
 
-const runEvent = (threadId: ThreadId, run: OrchestrationV2Run) => ({
-  sequence: 10,
+const runEvent = (threadId: ThreadId, run: OrchestrationV2Run, sequence = 10) => ({
+  sequence,
   commandId: null,
   event: {
     type: "run.updated" as const,
@@ -530,6 +611,13 @@ it.effect("a reviewer needs a different instance and model and sees only the aut
       );
       const reviewer = yield* workers.delegate(scope, { ...review, model: claude });
       assert.ok("workerId" in reviewer);
+      const followUp = workers.followUp(scope, {
+        workerId: reviewer.workerId,
+        brief: "Also look at the retry path.",
+        sourceEventId: "lead-event",
+      });
+      assert.strictEqual((yield* Effect.flip(followUp)).reason, "not_allowed");
+      assert.lengthOf(fakes.sends, 0);
       const brief = fakes.launches.at(-1)!.initialMessage!.text;
       assert.include(brief, "https://example.invalid/pr/1");
       assert.notInclude(brief, delegateInput.brief);
@@ -562,6 +650,35 @@ it.effect(
         yield* tracker.process(completedEvent);
         yield* tracker.process(completedEvent);
         yield* tracker.process(yield* ended(fakes, cancelledThread, "cancelled"));
+        // The worker's delegate_task child bills to the worker, once, and does not report.
+        const child = yield* startThread({
+          ...fakes.launches[0]!,
+          threadId: ThreadId.make("worker-child"),
+          commandId: CommandId.make("child-launch"),
+          initialMessage: {
+            messageId: MessageId.make("child-msg"),
+            text: "Sub-task",
+            attachments: [],
+          },
+        });
+        const orchestrator = yield* OrchestratorV2;
+        const shell = (yield* orchestrator.getThreadShell(child))!;
+        fakes.shells.set(child, {
+          ...shell,
+          creationSource: "server",
+          lineage: {
+            parentThreadId: doneThread,
+            relationshipToParent: "subagent",
+            rootThreadId: doneThread,
+          },
+        });
+        const childEvent = yield* ended(fakes, child, "completed");
+        yield* tracker.process(childEvent);
+        yield* tracker.process(childEvent);
+        const childCharges = yield* ctx.sql<{
+          workerId: string;
+        }>`SELECT worker_id AS "workerId" FROM kin_worker_charges WHERE org_id = ${ctx.orgId} AND run_id = ${childEvent.event.payload.id} ORDER BY run_id`;
+        assert.deepStrictEqual(childCharges, [{ workerId: done.workerId }]);
         const events = (yield* queued(ctx.sql, ctx.orgId)).map((row) => ({
           priority: row.priority,
           event: JSON.parse(row.json) as Extract<KinEvent, { _tag: "worker.report" }>,
@@ -580,7 +697,7 @@ it.effect(
         assert.strictEqual(synthesized.evidence[0]!.kind, "link");
         // Each run is charged once at worker weights (100 input + 4 × 10 output); lead units stay untouched.
         const spent = yield* budget.get(ctx.orgId);
-        assert.strictEqual(spent.workerUnits, 280);
+        assert.strictEqual(spent.workerUnits, 420);
         assert.strictEqual(spent.leadUnits, 0);
         const state = new Map(
           (yield* cards(ctx.sql, ctx.orgId)).map((card) => [card.widgetId, card.closedAt]),
@@ -608,6 +725,13 @@ it.effect("stopping a worker closes its card and a follow-up reopens the same ca
       assert.deepStrictEqual(fakes.stopped, [threadId]);
       const [closed] = yield* cards(ctx.sql, ctx.orgId);
       assert.isNotNull(closed!.closedAt);
+      // An identical retry after the stop returns the worker without reopening its card.
+      const orchestrator = yield* OrchestratorV2;
+      const last = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
+      fakes.projections.set(threadId, { runs: [{ ...last, status: "interrupted" }] });
+      assert.deepStrictEqual(yield* workers.delegate(scope, delegateInput), worker);
+      assert.deepStrictEqual(yield* cards(ctx.sql, ctx.orgId), [closed!]);
+      fakes.projections.delete(threadId);
       yield* workers.followUp(scope, {
         workerId: worker.workerId,
         brief: "Also cover the retry path.",
@@ -622,8 +746,61 @@ it.effect("stopping a worker closes its card and a follow-up reopens the same ca
         status: string;
       }>`SELECT status FROM kin_workers WHERE org_id = ${ctx.orgId} AND worker_id = ${worker.workerId}`;
       assert.strictEqual(row!.status, "queued");
+      // A second stop in the same wake-up reaches the follow-up's run instead of being deduplicated.
+      yield* workers.stop(scope, { workerId: worker.workerId });
+      assert.lengthOf(fakes.interrupts, 2);
+      assert.notStrictEqual(fakes.interrupts[0]!.commandId, fakes.interrupts[1]!.commandId);
+      assert.notStrictEqual(fakes.interrupts[0]!.runId, fakes.interrupts[1]!.runId);
     }),
   ),
+);
+
+it.effect(
+  "tracker start fails crashed launches and replays a failed event from its cursor exactly once",
+  () =>
+    run(({ ctx, fakes, workers, tracker }) =>
+      Effect.gen(function* () {
+        const budget = Context.get(ctx.services, KinBudget);
+        const worker = yield* workers.delegate(scope, delegateInput);
+        const crashed = yield* workers.delegate(scope, { ...delegateInput, title: "Second task" });
+        assert.ok("workerId" in worker && "workerId" in crashed);
+        const threadId = ThreadId.make(`kin-worker-${worker.workerId}`);
+        // The second row predates this process and its thread was never created.
+        fakes.shells.set(ThreadId.make(`kin-worker-${crashed.workerId}`), null);
+        yield* ctx.sql`UPDATE kin_workers SET started_at = -1 WHERE org_id = ${ctx.orgId} AND worker_id = ${crashed.workerId}`;
+        yield* ctx.sql`INSERT INTO kin_cursor (org_id, consumer, after_sequence) VALUES (${ctx.orgId}, 'worker-tracker', 0)`;
+        const orchestrator = yield* OrchestratorV2;
+        const lead = (yield* orchestrator.getThreadProjection(leadThread)).runs.at(-1)!;
+        fakes.stored.push(
+          yield* ended(fakes, threadId, "cancelled"),
+          runEvent(leadThread, { ...lead, status: "completed" }, 12),
+        );
+        fakes.faults.enqueue = 1;
+        yield* tracker.start;
+        yield* Deferred.await(fakes.failed);
+        const status = (id: KinWorkerId) =>
+          ctx.sql<{
+            status: string;
+          }>`SELECT status FROM kin_workers WHERE org_id = ${ctx.orgId} AND worker_id = ${id} ORDER BY worker_id`;
+        assert.deepStrictEqual(yield* status(crashed.workerId), [{ status: "failed" }]);
+        const open = (yield* cards(ctx.sql, ctx.orgId)).filter((card) => card.closedAt === null);
+        assert.lengthOf(open, 1);
+        yield* TestClock.adjust("30 seconds");
+        yield* Deferred.await(fakes.drained);
+        assert.lengthOf(yield* queued(ctx.sql, ctx.orgId), 1);
+        assert.strictEqual((yield* budget.get(ctx.orgId)).workerUnits, 140);
+        assert.lengthOf(
+          (yield* cards(ctx.sql, ctx.orgId)).filter((card) => card.closedAt === null),
+          0,
+        );
+        assert.deepStrictEqual(yield* status(worker.workerId), [{ status: "cancelled" }]);
+        // Only the worker's event moves the cursor; the lead's run is not persisted.
+        const [cursor] = yield* ctx.sql<{
+          after: number;
+        }>`SELECT after_sequence AS after FROM kin_cursor WHERE org_id = ${ctx.orgId} AND consumer = 'worker-tracker' ORDER BY org_id`;
+        assert.strictEqual(cursor!.after, 10);
+      }).pipe(Effect.scoped),
+    ),
 );
 
 it.effect("an app-owned delegate_task child on a lead thread is stopped", () =>
