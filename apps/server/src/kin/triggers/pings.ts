@@ -149,7 +149,12 @@ const make = Effect.gen(function* () {
     )
       return yield* ownerMismatch;
   });
-  const stop = Effect.fn("KinPings.stop")(function* (r: Request, now: number, closed: boolean) {
+  const stop = Effect.fn("KinPings.stop")(function* (
+    r: Request,
+    now: number,
+    closed: boolean,
+    resolution: "closed" | "answered" = closed ? "closed" : "answered",
+  ) {
     yield* sql`UPDATE kin_ping_items SET stopped_at = ${now} WHERE org_id = ${r.orgId} AND item_id = ${r.itemId}
       AND (${closed ? 1 : 0} OR person = ${r.person})`;
     const pending =
@@ -164,7 +169,7 @@ const make = Effect.gen(function* () {
         waitingId: yield* decodeWaitingId(escalations[0].waiting_id).pipe(
           Effect.mapError(() => invalid),
         ),
-        resolution: closed ? "closed" : "answered",
+        resolution,
       });
   });
   return KinPings.of({
@@ -293,7 +298,7 @@ const make = Effect.gen(function* () {
               }
               const valid = yield* checkOwner(r).pipe(Effect.andThen(validate(r)), Effect.result);
               if (valid._tag === "Failure") {
-                if (valid.failure._tag === "KinChatError") yield* stop(r, now, false);
+                if (valid.failure._tag === "KinChatError") yield* stop(r, now, false, "closed");
                 yield* Effect.logWarning("Kin ping destination skipped", {
                   orgId,
                   person: r.person,
@@ -304,7 +309,7 @@ const make = Effect.gen(function* () {
               }
               const batch = batches.get(r.person) ?? [];
               if (batch[0] && batch[0].request.chatId !== r.chatId) {
-                yield* stop(r, now, false);
+                yield* stop(r, now, false, "closed");
                 yield* Effect.logWarning("Kin ping chat mismatch", {
                   orgId,
                   person: r.person,

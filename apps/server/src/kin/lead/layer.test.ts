@@ -47,6 +47,7 @@ vi.mock("../memory/Memory.ts", async (importOriginal) => {
         readRules: () => Effect.die("unused"),
         query: () => Effect.die("unused"),
         readItem: () => Effect.die("unused"),
+        readItemQuietly: () => Effect.die("unused"),
         rebuildIndex: () => Effect.die("unused"),
         rebuildCache: () => Effect.die("unused"),
       });
