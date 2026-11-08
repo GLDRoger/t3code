@@ -36,6 +36,7 @@ import {
   KIN_CHAT_LABEL,
   kinInboxStream,
   makeKinChatStream,
+  retryKinProbe,
   type KinSynced,
 } from "./kinStreams";
 
@@ -169,48 +170,163 @@ describe("Kin streams", () => {
     expect(isKinRetryable(kinError(reason))).toBe(retryable);
   });
 
-  it.effect("backs off and resubscribes after unavailable, and ends on a refusal", () =>
+  it.effect(
+    "backs off 1 s doubling to 30 s, starts over once events flow, and ends on a refusal",
+    () =>
+      Effect.gen(function* () {
+        const subscribed = yield* Queue.unbounded<KinChatSubscribeInput>();
+        const backlogThrough = (seq: number, lastChangeSeq: number) =>
+          Stream.make({
+            _tag: "backlog",
+            messages: [message(seq)],
+            widgets: [],
+            lastSeq: seq,
+            lastChangeSeq,
+          } as unknown as KinChatStreamEvent);
+        const replies = [
+          ...Array.from({ length: 6 }, () => Stream.fail(kinError("unavailable"))),
+          backlogThrough(1, 4).pipe(Stream.concat(Stream.fail(kinError("unavailable")))),
+          backlogThrough(2, 5).pipe(Stream.concat(Stream.fail(kinError("limit")))),
+        ];
+        const activeSession = yield* SubscriptionRef.make<Option.Option<RpcSession>>(
+          Option.some(
+            fakeSession({
+              chat: (input) =>
+                Stream.fromEffect(Queue.offer(subscribed, input)).pipe(
+                  Stream.drain,
+                  Stream.concat(replies.shift() ?? Stream.never),
+                ),
+              inbox: Stream.never,
+            }),
+          ),
+        );
+        const provide = yield* provider(activeSession, new Map());
+        const views = yield* Queue.unbounded<KinSynced<KinChatState>>();
+        const fiber = yield* makeKinChatStream(() => Effect.never)({ chatId }).pipe(
+          Stream.runForEach((view) => Queue.offer(views, view)),
+          provide,
+          Effect.forkChild,
+        );
+        const resubscribesAfter = (seconds: number) =>
+          Effect.gen(function* () {
+            yield* TestClock.adjust(seconds * 1000 - 1);
+            expect(yield* Queue.size(subscribed)).toBe(0);
+            yield* TestClock.adjust(1);
+            return yield* Queue.take(subscribed);
+          });
+
+        expect(yield* Queue.take(subscribed)).toEqual({ chatId });
+        for (const seconds of [1, 2, 4, 8, 16, 30]) {
+          expect(yield* resubscribesAfter(seconds)).toEqual({ chatId });
+        }
+        expect((yield* Queue.take(views)).value).toMatchObject({ contiguousSeq: 1, changeSeq: 4 });
+        // Events flowed, so the next outage waits 1 s again.
+        expect(yield* resubscribesAfter(1)).toEqual({ chatId, afterSeq: 1, afterChangeSeq: 4 });
+        expect((yield* Queue.take(views)).value).toMatchObject({ contiguousSeq: 2, changeSeq: 5 });
+        expect((yield* Queue.take(views)).value.closed).toBe("limit");
+        yield* Fiber.join(fiber);
+        expect(yield* Queue.size(subscribed)).toBe(0);
+      }),
+  );
+
+  it.effect("resubscribes as soon as a new session comes up during a backoff", () =>
     Effect.gen(function* () {
       const subscribed = yield* Queue.unbounded<KinChatSubscribeInput>();
-      const replies = [
-        Stream.fail(kinError("unavailable")),
-        Stream.make({
-          _tag: "backlog",
-          messages: [message(1)],
-          widgets: [],
-          lastSeq: 1,
-          lastChangeSeq: 4,
-        } as unknown as KinChatStreamEvent).pipe(Stream.concat(Stream.fail(kinError("limit")))),
-      ];
+      const session = (reply: Stream.Stream<KinChatStreamEvent, KinChatError>) =>
+        fakeSession({
+          chat: (input) =>
+            Stream.fromEffect(Queue.offer(subscribed, input)).pipe(
+              Stream.drain,
+              Stream.concat(reply),
+            ),
+          inbox: Stream.never,
+        });
       const activeSession = yield* SubscriptionRef.make<Option.Option<RpcSession>>(
-        Option.some(
-          fakeSession({
-            chat: (input) =>
-              Stream.fromEffect(Queue.offer(subscribed, input)).pipe(
-                Stream.drain,
-                Stream.concat(replies.shift() ?? Stream.never),
-              ),
-            inbox: Stream.never,
-          }),
-        ),
+        Option.some(session(Stream.fail(kinError("unavailable")))),
       );
       const provide = yield* provider(activeSession, new Map());
-      const views = yield* Queue.unbounded<KinSynced<KinChatState>>();
       const fiber = yield* makeKinChatStream(() => Effect.never)({ chatId }).pipe(
-        Stream.runForEach((view) => Queue.offer(views, view)),
+        Stream.runDrain,
         provide,
         Effect.forkChild,
       );
+      expect(yield* Queue.take(subscribed)).toEqual({ chatId });
+      yield* TestClock.adjust(1000);
+      expect(yield* Queue.take(subscribed)).toEqual({ chatId });
+      // Now in the 2 s wait; the host comes back on a new session without the clock moving.
+      yield* SubscriptionRef.set(activeSession, Option.some(session(Stream.never)));
+      expect(yield* Queue.take(subscribed)).toEqual({ chatId });
+      yield* TestClock.adjust(30_000);
+      expect(yield* Queue.size(subscribed)).toBe(0);
+      yield* Fiber.interrupt(fiber);
+    }),
+  );
 
-      expect(yield* Queue.take(subscribed)).toEqual({ chatId });
-      yield* TestClock.adjust("999 millis");
-      expect(yield* Queue.size(subscribed)).toBe(0);
-      yield* TestClock.adjust("1 millis");
-      expect(yield* Queue.take(subscribed)).toEqual({ chatId });
-      expect((yield* Queue.take(views)).value).toMatchObject({ contiguousSeq: 1, changeSeq: 4 });
-      expect((yield* Queue.take(views)).value.closed).toBe("limit");
-      yield* Fiber.join(fiber);
-      expect(yield* Queue.size(subscribed)).toBe(0);
+  it.effect.each([
+    ["not_found", false],
+    ["not_allowed", false],
+    ["limit", true],
+    ["invalid_state", true],
+  ] as const)("on a %s refusal keeps the cached chat: %s", ([reason, kept]) =>
+    Effect.gen(function* () {
+      const rows = new Map<string, string>();
+      rows.set(
+        `kin|${chatRowKey}`,
+        encodeCachedChat({
+          chat: {
+            messages: [message(1)],
+            widgets: [],
+            contiguousSeq: 1,
+            changeSeq: 0,
+            reads: {},
+            needsHistoryReload: false,
+            left: false,
+            closed: null,
+          },
+          savedAt: "cached-at",
+        }),
+      );
+      const activeSession = yield* SubscriptionRef.make<Option.Option<RpcSession>>(
+        Option.some(
+          fakeSession({ chat: () => Stream.fail(kinError(reason)), inbox: Stream.never }),
+        ),
+      );
+      const provide = yield* provider(activeSession, rows);
+      const views = yield* makeKinChatStream(() => Effect.never)({ chatId }).pipe(
+        Stream.runCollect,
+        provide,
+      );
+      expect(views.at(-1)?.value.closed).toBe(reason);
+      expect(rows.has(`kin|${chatRowKey}`)).toBe(kept);
+    }),
+  );
+
+  it.effect("re-probes a known Kin host through unavailable, and fails at once for others", () =>
+    Effect.gen(function* () {
+      const attempts = yield* Queue.unbounded<number>();
+      let calls = 0;
+      const probe = Effect.suspend(() => {
+        calls += 1;
+        return Queue.offer(attempts, calls).pipe(
+          Effect.andThen(
+            calls <= 2 ? Effect.fail(kinError("unavailable")) : Effect.succeed("orgs" as const),
+          ),
+        );
+      });
+      const known = yield* retryKinProbe(probe, () => true).pipe(Effect.forkChild);
+      expect(yield* Queue.take(attempts)).toBe(1);
+      yield* TestClock.adjust(1000);
+      expect(yield* Queue.take(attempts)).toBe(2);
+      yield* TestClock.adjust(1999);
+      expect(yield* Queue.size(attempts)).toBe(0);
+      yield* TestClock.adjust(1);
+      expect(yield* Queue.take(attempts)).toBe(3);
+      expect(yield* Fiber.join(known)).toBe("orgs");
+
+      calls = 0;
+      const unknown = yield* retryKinProbe(probe, () => false).pipe(Effect.flip);
+      expect(unknown.reason).toBe("unavailable");
+      expect(calls).toBe(1);
     }),
   );
 

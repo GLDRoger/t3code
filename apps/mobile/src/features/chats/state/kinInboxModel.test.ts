@@ -212,34 +212,44 @@ describe("kin chat feed", () => {
   });
 
   it("replaces messages and widgets a resumed backlog changed, and keeps its change cursor", () => {
+    // The window holds 2-4; 1 is older than anything held.
     let state = applyKinChatEvent(
       emptyKinChat,
-      backlog([message(1), message(2), message(3)], 3, [widget("w", 1, "m1")], 5),
+      backlog([message(2), message(3), message(4)], 4, [widget("w", 1, "m2")], 5),
     );
     expect(state.changeSeq).toBe(5);
-    state = applyKinChatEvent(state, { _tag: "message", message: message(4) });
-    // Offline: 1 was edited, 2 deleted and the card on 1 moved on. They come back by id, below 4.
+    state = applyKinChatEvent(state, { _tag: "message", message: message(5) });
+    // Offline: 2 was edited, 3 deleted and the card on 2 moved on. They come back by id, below 5.
+    // 1 changed too but isn't held; inserting it would make "Load earlier" skip what lies between.
     state = applyKinChatEvent(
       state,
       backlog(
-        [message(1, { body: "edited" }), message(2, { status: "deleted" })],
-        4,
-        [widget("w", 2, "m1")],
+        [
+          message(1, { body: "edited" }),
+          message(2, { body: "edited" }),
+          message(3, { status: "deleted" }),
+        ],
+        5,
+        [widget("w", 2, "m2")],
         9,
       ),
     );
-    expect(seqs(state)).toEqual([1, 2, 3, 4]);
+    expect(seqs(state)).toEqual([2, 3, 4, 5]);
     expect(state.messages.map((m) => [m.body, m.status])).toEqual([
       ["edited", "posted"],
-      ["message 2", "deleted"],
-      ["message 3", "posted"],
+      ["message 3", "deleted"],
       ["message 4", "posted"],
+      ["message 5", "posted"],
     ]);
     expect(state.widgets.map((w) => w.revision)).toEqual([2]);
-    expect(state).toMatchObject({ contiguousSeq: 4, changeSeq: 9 });
+    expect(state).toMatchObject({ contiguousSeq: 5, changeSeq: 9 });
+    // A live edit to an unheld older message is dropped the same way.
+    expect(
+      applyKinChatEvent(state, { _tag: "message", message: message(1, { body: "live edit" }) }),
+    ).toBe(state);
     // Live events never move the snapshot cursor.
-    state = applyKinChatEvent(state, { _tag: "message", message: message(5, { body: "live" }) });
-    state = applyKinChatEvent(state, { _tag: "widget", widget: widget("w", 3, "m1") });
+    state = applyKinChatEvent(state, { _tag: "message", message: message(6, { body: "live" }) });
+    state = applyKinChatEvent(state, { _tag: "widget", widget: widget("w", 3, "m2") });
     expect(state.changeSeq).toBe(9);
   });
 
