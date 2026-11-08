@@ -307,7 +307,7 @@ Method names live in `KIN_CHAT_WS_METHODS` in `kinChat.ts`. `kinChat.ts` must no
 | `kin.orgs.list`                                      | `{}`                                                       | `{ orgs: KinOrg[], me: { orgId, personId }[] }` | 1     | `orchestration:read`    |
 | `kin.chats.subscribe` (stream)                       | `{ orgId?: KinOrgId }`                                     | `KinChatListEvent`                              | 1     | `orchestration:read`    |
 | `kin.chats.createDirect`                             | `{ orgId, agentId }`                                       | `KinChat`                                       | 1     | `orchestration:operate` |
-| `kin.chat.subscribe` (stream)                        | `{ chatId, afterSeq?: number }`                            | `KinChatStreamEvent`                            | 1     | `orchestration:read`    |
+| `kin.chat.subscribe` (stream)                        | `{ chatId, afterSeq?: number, afterChangeSeq?: number }`   | `KinChatStreamEvent`                            | 1     | `orchestration:read`    |
 | `kin.chat.history`                                   | `{ chatId, beforeSeq, limit ≤ 100 }`                       | `{ messages, widgets, hasMore }`                | 1     | `orchestration:read`    |
 | `kin.messages.send`                                  | `{ chatId, clientMessageId, body, mentions?, replyTo? }`   | `KinMessage`                                    | 1     | `orchestration:operate` |
 | `kin.messages.markRead`                              | `{ chatId, seq }`                                          | `{}`                                            | 1     | `orchestration:read`    |
@@ -337,8 +337,12 @@ export const KinChatStreamEvent = Schema.Union([
     messages: Schema.Array(KinMessage),
     widgets: Schema.Array(KinWidget),
     lastSeq: NonNegativeInt,
+    lastChangeSeq: Schema.optional(NonNegativeInt),
   }),
-  Schema.TaggedStruct("reset", { lastSeq: NonNegativeInt }), // gap too big: refetch with history
+  Schema.TaggedStruct("reset", {
+    lastSeq: NonNegativeInt,
+    lastChangeSeq: Schema.optional(NonNegativeInt),
+  }), // gap too big: refetch with history
   Schema.TaggedStruct("message", { message: KinMessage }), // new or changed (edit, delete, send of a suggestion)
   Schema.TaggedStruct("widget", { widget: KinWidget }),
   Schema.TaggedStruct("member", { member: KinChatMember }),
@@ -346,7 +350,8 @@ export const KinChatStreamEvent = Schema.Union([
 ]);
 ```
 
-- **Resume:** `kin.chat.subscribe` subscribes to the hub first, then reads messages after `afterSeq` (up to 200; more sends `reset`), sends `backlog`, then live events with `seq > backlog.lastSeq`. Clients drop duplicates by `seq`. Reconnecting means subscribing again with the last seq held.
+- **Resume:** `kin.chat.subscribe` subscribes to the hub first, then reads one SQLite snapshot. `seq` remains the message's immutable ordering key. K010 adds a per-chat integer `change_seq`: message inserts/updates and widget writes advance it transactionally; widget writes mark their parent message changed. The indexed backlog selects the union of new messages (`seq > afterSeq`) and changed messages (`change_seq > afterChangeSeq`), once per message, with current associated widgets and normal viewer filtering. More than 200 affected visible messages sends `reset` instead. Both `backlog` and `reset` include `lastSeq` and `lastChangeSeq` from that snapshot. The migration marks all existing messages changed beyond `lastSeq`, so a client offline across the upgrade cannot miss an earlier edit.
+- **Client resume contract:** upsert messages by `messageId` (do not discard an older `seq`) and widgets by `widgetId`/`revision`. Persist `backlog.lastChangeSeq` only after applying the whole backlog; send it as optional `afterChangeSeq` with the last message `afterSeq` on reconnect. Keep this snapshot cursor unchanged while receiving live events: their delivery order need not match commit order, so taking the maximum live `changeSeq` could skip another committed event. Replaying already-held rows across reconnects is intentional and idempotent. `reset` invalidates the entire cached chat, not just the latest page; refetch with history and resume from the reset cursors. Clients omitting `afterChangeSeq` get only new messages (`seq > afterSeq`), the pre-K010 behaviour, and can miss offline edits. Clients must treat a backlog as upserts, not append-only. Live message events carry optional `changeSeq`; the server drops buffered changes already represented by the snapshot and repeated versions. These optional fields preserve older payload decoding. `clientMessageId` is an optional unprefixed send id, present only for the message's author in send replies, history, backlogs, live events and chat summaries; owning the chat does not reveal another author's id.
 - **List resume:** `kin.chats.subscribe` has no `afterSeq`: message sequences are per chat, not an org-wide event cursor. It subscribes first, buffers while reading one fresh chat/waiting snapshot, then emits changed summaries and personal waiting rows, dropping state already in that snapshot. Reconnection replaces the list with a new snapshot. A durable list-event cursor needs a separate journal and is not CHAT-6.
 - **Removal:** a removed member receives their own resolved waiting rows even after membership ends. Their chat stream emits a final typed `member` event with non-null `leftAt`, then ends. The chat-list stream stays open; an event whose summary or waiting read fails is dropped and logged at debug level, not allowed to terminate the subscription.
 - **Agent discovery:** `kin.orgs.list` includes each org's `agents: [{ agentId, displayName, retired }]`, filtered by org and ordered by display name then agent id. Use a non-retired agent id with `createDirect`.
@@ -521,7 +526,7 @@ Run with `cd apps/server && vp test run src/kin` and `cd packages/contracts && v
 - Isolation: a person in org A gets `not_found` for a chat in org B, on every method.
 - Widgets: `act` with a stale revision fails `widget_changed`; on an approval widget fails `use_approvals`; `kin_widget_upsert` with `type: "approval"` fails.
 - Task card: a fake orchestrator emitting thread status changes moves the card through `working → needs_decision → done` with rising revisions and no new messages.
-- Stream: subscribe with `afterSeq` gets exactly the missed messages, then live ones, with no duplicates across a concurrent send; more than 200 missed gives `reset`.
+- Stream: subscribe with `afterSeq` and `afterChangeSeq` gets the missed messages plus messages and widgets changed while away, then live ones, with no duplicates across a concurrent send; more than 200 missed gives `reset`.
 - Read state: `markRead` never moves back; unread counts exclude the reader's own messages.
 - Waiting: an agent question in a direct chat adds a row; the owner's reply resolves it; the list stream shows both changes.
 - Floor manager: table tests for rules 1 to 5, including a mention of the last speaker, the 6-turn cap, `answer` refused on a second turn, and notices outside runs.
