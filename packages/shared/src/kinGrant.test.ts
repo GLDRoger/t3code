@@ -166,6 +166,32 @@ describe("verifyKinGrant", () => {
         "time_window",
       ],
       ["exp not after iat", signedGrant(key, { exp: NOW - 10 }).compact, "time_window"],
+      [
+        "exp already past, with iat and lifetime in range",
+        signedGrant(key, { iat: NOW - 100, exp: NOW + 50 }).compact,
+        "time_window",
+        NOW + 100,
+      ],
+      [
+        "exp before iat, with now before both",
+        signedGrant(key, { iat: NOW + 100, exp: NOW + 50 }).compact,
+        "time_window",
+      ],
+      ["a clock that isn't a number", compact, "time_window", Number.NaN],
+      [
+        "an id that decodes differently from its signed bytes",
+        signedGrant(key, { orgId: " org_01" as KinGrantPayload["orgId"] }).compact,
+        "malformed",
+      ],
+      [
+        "an extra field nested in approver",
+        signText(
+          key.privateKey,
+          headerText,
+          stableStringify({ ...payload, approver: { ...payload.approver, extra: "x" } }),
+        ),
+        "malformed",
+      ],
     ];
     for (const [name, tampered, reason, now] of cases) {
       assert.deepStrictEqual(verify(tampered, now), { ok: false, reason }, name);
@@ -218,8 +244,6 @@ describe("APPR-6 grant vectors", () => {
     "exp not after iat",
     "iat 301 s ahead of the device clock",
   ]);
-  // These predate LEAD-1: the level target is keyed by agentId, not leadId (approvals.md §2).
-  const STALE_LEVEL_TARGET = new Set(["set a level in one chat", "set a level everywhere"]);
 
   it("encodes every accepted grant to the exact bytes the device signs", () => {
     for (const vector of vectors.cases.filter((c) => !c.error)) {
@@ -235,9 +259,7 @@ describe("APPR-6 grant vectors", () => {
     for (const vector of vectors.cases) {
       const input = vector.signingInput ?? `${b64(vector.header!)}.${b64(vector.payload!)}`;
       const decoded = decodeKinGrant(`${input}.${zeroSignature}`) !== null;
-      const expected = STALE_LEVEL_TARGET.has(vector.name)
-        ? false
-        : DEVICE_ONLY.has(vector.name) || !vector.error;
+      const expected = DEVICE_ONLY.has(vector.name) || !vector.error;
       assert.strictEqual(decoded, expected, vector.name);
     }
   });
