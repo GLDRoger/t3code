@@ -36,6 +36,7 @@ export function classifyKinProbe(
   for (const error of failures) {
     if (isAuthorizationError(error)) return { _tag: "unauthorized", message: error.message };
     if (isKinChatError(error)) {
+      // Only a host never seen as Kin gets here with `unavailable`; known hosts retry it.
       return error.reason === "unavailable"
         ? { _tag: "notKin" }
         : { _tag: "error", message: error.message, transient: false };

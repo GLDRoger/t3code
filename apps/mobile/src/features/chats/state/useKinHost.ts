@@ -8,7 +8,7 @@ import { environmentCatalog } from "../../../connection/catalog";
 import { connectionAtomRuntime } from "../../../connection/runtime";
 import * as MobileSecureStorage from "../../../persistence/mobile-secure-storage";
 import { environmentPresentations } from "../../../state/presentation";
-import { kinClient } from "./kinClient";
+import { kinClient, markKinHostKnown } from "./kinClient";
 import { classifyKinProbe, kinHostIdToSave, resolveKinHost, type KinHost } from "./kinHost";
 
 const KIN_HOST_STORAGE_KEY = "kin.hostEnvironmentId";
@@ -39,9 +39,13 @@ export const kinHostAtom: Atom.Atom<KinHost> = Atom.make((get): KinHost => {
       connected: presentation.connection.phase === "connected",
     }),
   );
+  const savedHostId =
+    saved._tag === "Initial" ? undefined : AsyncResult.getOrElse(saved, () => null);
+  // Before its first probe runs, so an outage there keeps it rather than hiding Kin.
+  if (savedHostId) markKinHostKnown(savedHostId);
   return resolveKinHost({
     candidates,
-    savedHostId: saved._tag === "Initial" ? undefined : AsyncResult.getOrElse(saved, () => null),
+    savedHostId,
     probe: (environmentId) => classifyKinProbe(get(kinClient.orgs({ environmentId, input: {} }))),
   });
 }).pipe(Atom.withLabel("kin:host"));
