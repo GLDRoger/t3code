@@ -323,9 +323,13 @@ describe("KinGithubWebhooks", () => {
                 type: "webhook",
                 signature: { header: "x-hub-signature-256", encoding: "hex", prefix: "sha256=" },
                 maxDeliveryAgeMinutes: null,
-                dedupe: { replayKey: "{{headers.x-github-delivery}}" },
+                dedupe: { replayKey: KinTriggerStore.GITHUB_REPLAY_KEY },
                 filters: [
-                  { path: "headers.x-github-event", op: "in", value: GithubWebhooks.GITHUB_EVENTS },
+                  {
+                    path: "headers.x-github-event",
+                    op: "in",
+                    value: KinTriggerStore.GITHUB_EVENTS,
+                  },
                   { path: "body.sender.login", op: "notEquals", value: "kin-app[bot]" },
                 ],
               });
@@ -380,13 +384,30 @@ describe("KinGithubWebhooks", () => {
               assert.lengthOf(yield* inbox.listPending(orgId), 1);
               assert.lengthOf(dispatched, 0);
 
+              const rekey = Redacted.make("owner-rekeyed-secret-from-github-app");
+              yield* webhooks.setSecret(owner, { orgId, secret: rekey });
+              const stale = yield* tasks.triggerWebhook(
+                signed(task, { delivery: "gh-stale", secret: Redacted.value(ownerSecret) }),
+              );
+              assert.strictEqual(stale._tag, "rejected_signature");
+              const rekeyed = yield* waitForDispatch(
+                tasks.triggerWebhook(
+                  signed(task, { delivery: "gh-rekeyed", secret: Redacted.value(rekey) }),
+                ),
+              );
+              assert.strictEqual(rekeyed._tag === "accepted" && rekeyed.outcome, "accepted");
+              assert.lengthOf(yield* inbox.listPending(orgId), 2);
+
               const again = yield* webhooks.setup(owner, { orgId, projectId: project.id });
               assert.deepStrictEqual(again, setup);
               assert.lengthOf((yield* tasks.list()).tasks, 1);
               const still = yield* waitForDispatch(
-                tasks.triggerWebhook(signed(task, { ...delivery, delivery: "gh-3" })),
+                tasks.triggerWebhook(
+                  signed(task, { delivery: "gh-3", secret: Redacted.value(rekey) }),
+                ),
               );
               assert.strictEqual(still._tag === "accepted" && still.outcome, "accepted");
+              assert.lengthOf(yield* inbox.listPending(orgId), 3);
               assert.strictEqual(
                 (yield* Effect.flip(
                   webhooks.setup(owner, {

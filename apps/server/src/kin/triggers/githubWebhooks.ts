@@ -39,16 +39,6 @@ import * as KinTriggerStore from "./KinTriggerStore.ts";
 export const KIN_SINK_PROMPT =
   "Kin trigger. If you are reading this, Kin's trigger sink is not installed. Do nothing and stop.";
 export const CONNECT_NOTICE = "GitHub events need T3 Connect on the Kin host";
-export const GITHUB_EVENTS = [
-  "pull_request",
-  "pull_request_review",
-  "pull_request_review_comment",
-  "issue_comment",
-  "issues",
-  "check_suite",
-  "workflow_run",
-  "push",
-];
 const sourceId = KinWebhookSourceId.make(KIN_GITHUB_APP_SOURCE);
 
 // The sender filter must match the App's own events, which GitHub always signs as `<slug>[bot]`.
@@ -242,9 +232,9 @@ export const make = Effect.gen(function* () {
           secret: Redacted.value(input.secret),
         },
         maxDeliveryAgeMinutes: null,
-        dedupe: { replayKey: "{{headers.x-github-delivery}}" },
+        dedupe: { replayKey: KinTriggerStore.GITHUB_REPLAY_KEY },
         filters: [
-          { path: "headers.x-github-event", op: "in", value: GITHUB_EVENTS },
+          { path: "headers.x-github-event", op: "in", value: KinTriggerStore.GITHUB_EVENTS },
           { path: "body.sender.login", op: "notEquals", value: input.botLogin },
         ],
       },
@@ -352,6 +342,7 @@ export const make = Effect.gen(function* () {
       botLogin,
       status: "active",
     });
+    yield* store.bindSecret(input.orgId, sourceId, secret);
     // Enabled only once registered, so no delivery can reach a real launch.
     yield* tasks.setEnabled({ id: task.id, enabled: true });
     return {
@@ -399,6 +390,7 @@ export const make = Effect.gen(function* () {
         const secret = yield* newSecret;
         if (!(yield* offer(input.orgId, url, secret)))
           return { status: "needs_secret", sourceId, url } as const;
+        // Between the upsert and the bind, the old hash refuses deliveries: it fails closed.
         yield* upsert({
           orgId: input.orgId,
           target: { id: task.id },
@@ -408,6 +400,7 @@ export const make = Effect.gen(function* () {
           secret,
           enabled: true,
         });
+        yield* store.bindSecret(input.orgId, sourceId, secret);
         return { status: "configured", sourceId, url } as const;
       },
       exclusive,
@@ -426,6 +419,7 @@ export const make = Effect.gen(function* () {
           secret: input.secret,
           enabled: task.enabled,
         });
+        yield* store.bindSecret(input.orgId, sourceId, input.secret);
         const url = saved.webhook?.url ?? null;
         if (url === null) return yield* needsConnect(input.orgId);
         return { status: "configured", sourceId, url } as const;

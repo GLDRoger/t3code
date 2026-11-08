@@ -1,3 +1,6 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Digest is effectful; the sink compares in one synchronous step.
+import * as NodeCrypto from "node:crypto";
+
 import {
   CanonicalUtcTimestamp,
   CommandId,
@@ -19,6 +22,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -93,6 +97,20 @@ export const githubAppCommandId = (orgId: KinOrgId) =>
 export const githubAppTaskId = (orgId: KinOrgId) =>
   ScheduledTaskId.make(`scheduled-task:${githubAppCommandId(orgId)}`);
 export const KIN_WEBHOOK_TASK_PREFIX = "scheduled-task:kin:webhook:";
+export const GITHUB_REPLAY_KEY = "{{headers.x-github-delivery}}";
+export const GITHUB_EVENTS = [
+  "pull_request",
+  "pull_request_review",
+  "pull_request_review_comment",
+  "issue_comment",
+  "issues",
+  "check_suite",
+  "workflow_run",
+  "push",
+];
+
+const secretDigest = (secret: Redacted.Redacted<string>) =>
+  NodeCrypto.createHash("sha256").update(Redacted.value(secret)).digest();
 
 // Cross-org on purpose: one GitHub App has one hook config, so its source is host-wide.
 export const appSourceHeldElsewhere = (sql: SqlClient.SqlClient, orgId: KinOrgId) =>
@@ -117,6 +135,18 @@ export class KinTriggerStore extends Context.Service<
       orgId: KinOrgId,
       id: KinWebhookSourceId,
     ) => Effect.Effect<void, StoreError | KinWebhookSourceConflict>;
+    /** Binds the source to the secret Kin saved upstream; deliveries signed with any other refuse. */
+    readonly bindSecret: (
+      orgId: KinOrgId,
+      id: KinWebhookSourceId,
+      secret: Redacted.Redacted<string>,
+    ) => Effect.Effect<void, StoreError>;
+    /** False when no secret is bound, so a source from before K019 refuses until re-keyed. */
+    readonly secretMatches: (
+      orgId: KinOrgId,
+      id: KinWebhookSourceId,
+      secret: Redacted.Redacted<string>,
+    ) => Effect.Effect<boolean, StoreError>;
     readonly getSource: (
       orgId: KinOrgId,
       id: KinWebhookSourceId,
@@ -314,6 +344,25 @@ const make = Effect.gen(function* () {
           ? cause
           : toPersistenceOrDecodeError("KinTriggerStore.unregisterSource")(cause),
       ),
+    ),
+    bindSecret: Effect.fn("KinTriggerStore.bindSecret")(
+      function* (orgId, id, secret) {
+        yield* sql`UPDATE kin_webhook_sources SET secret_sha256 = ${secretDigest(secret).toString("hex")}
+          WHERE org_id = ${orgId} AND source_id = ${id}`;
+      },
+      Effect.mapError(toPersistenceSqlError("KinTriggerStore.bindSecret")),
+    ),
+    secretMatches: Effect.fn("KinTriggerStore.secretMatches")(
+      function* (orgId, id, secret) {
+        const [row] = yield* sql<{ readonly hash: string | null }>`
+          SELECT secret_sha256 AS hash FROM kin_webhook_sources
+          WHERE org_id = ${orgId} AND source_id = ${id}`.pipe(NodeSqliteClient.readOnly);
+        if (row?.hash == null) return false;
+        const bound = Buffer.from(row.hash, "hex");
+        const given = secretDigest(secret);
+        return bound.length === given.length && NodeCrypto.timingSafeEqual(bound, given);
+      },
+      Effect.mapError(toPersistenceSqlError("KinTriggerStore.secretMatches")),
     ),
     getSource: Effect.fn("KinTriggerStore.getSource")(
       function* (orgId, id) {

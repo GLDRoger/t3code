@@ -83,7 +83,9 @@ export const withScheduledTasks = Effect.fn("KinContract.withScheduledTasks")(fu
     service: ScheduledTasks.ScheduledTaskService["Service"];
     launches: Queue.Queue<ThreadLaunch.ThreadLaunchInput>;
     sends: Queue.Queue<ThreadManagement.ThreadManagementSendInput>;
-    launchDeliveries: Queue.Queue<ReadonlyArray<{ readonly receivedAt: unknown }>>;
+    launchDeliveries: Queue.Queue<
+      ReadonlyArray<{ readonly receivedAt: unknown; readonly secret: string }>
+    >;
     launchInFlight: Queue.Queue<number>;
   }) => Effect.Effect<A, E, SqlClient.SqlClient>,
   policy?: ManagedPolicyDocument,
@@ -91,7 +93,9 @@ export const withScheduledTasks = Effect.fn("KinContract.withScheduledTasks")(fu
 ) {
   const sql = yield* SqlClient.SqlClient;
   const launchDeliveries =
-    yield* Queue.unbounded<ReadonlyArray<{ readonly receivedAt: unknown }>>();
+    yield* Queue.unbounded<
+      ReadonlyArray<{ readonly receivedAt: unknown; readonly secret: string }>
+    >();
   const launches = yield* Queue.unbounded<ThreadLaunch.ThreadLaunchInput>();
   const launchInFlight = yield* Queue.unbounded<number>();
   const sends = yield* Queue.unbounded<ThreadManagement.ThreadManagementSendInput>();

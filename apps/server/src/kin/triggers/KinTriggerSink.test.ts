@@ -18,6 +18,7 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
@@ -96,10 +97,15 @@ const upsert = (id: string, orgId = orgA) =>
         prefix: "sha256=",
         secret: "test-secret",
       },
-      dedupe: { replayKey: "{{headers.x-github-delivery}}" },
-      filters: [{ path: "body.sender.login", op: "notEquals", value: "kin[bot]" }],
+      dedupe: { replayKey: KinTriggerStore.GITHUB_REPLAY_KEY },
+      filters: [
+        { path: "headers.x-github-event", op: "in", value: KinTriggerStore.GITHUB_EVENTS },
+        { path: "body.sender.login", op: "notEquals", value: "kin[bot]" },
+      ],
     },
   });
+
+const testSecret = Redacted.make("test-secret");
 
 const weakened = (id: string, schedule: Record<string, unknown>) =>
   upsert(id).pipe(
@@ -172,6 +178,7 @@ const request = (
   task: { id: string; webhook?: { path: string } | undefined },
   githubDelivery: string,
   sender = "owner",
+  secret = Redacted.value(testSecret),
 ) => {
   const bodyText = JSON.stringify({ sender: { login: sender }, orgId: orgB, sourceId: "foreign" });
   return {
@@ -186,7 +193,7 @@ const request = (
       "content-type": "application/json",
       "x-github-event": "pull_request",
       "x-github-delivery": githubDelivery,
-      "x-hub-signature-256": `sha256=${NodeCrypto.createHmac("sha256", "test-secret").update(bodyText).digest("hex")}`,
+      "x-hub-signature-256": `sha256=${NodeCrypto.createHmac("sha256", secret).update(bodyText).digest("hex")}`,
     },
   };
 };
@@ -214,6 +221,7 @@ describe("KinTriggerSink", () => {
               const { task } = yield* service.upsert(yield* upsert(`task-${org}`, org));
               assert.deepStrictEqual(yield* store.registerSource(source(org)), source(org));
               assert.deepStrictEqual(yield* store.registerSource(source(org)), source(org));
+              yield* store.bindSecret(org, source(org).id, testSecret);
               const first = yield* waitForDispatch(
                 service.triggerWebhook(request(task, "github-delivery")),
               );
@@ -327,29 +335,15 @@ describe("KinTriggerSink", () => {
             threadId: projection(orgA).thread.id,
             threadMode: "continue",
           });
-          const result = yield* waitForDispatch(service.triggerWebhook(request(task, "bound")));
-          assert.strictEqual(result._tag, "accepted");
-          if (result._tag !== "accepted") return;
-          const { delivery } = yield* service.getWebhookDelivery({
-            id: task.id,
-            deliveryId: result.deliveryId,
-            acceptAnyOutcome: true,
-          });
-          assert.strictEqual(delivery.outcome, "dispatch_failed");
-          const recorded = (yield* service.list()).tasks.find((item) => item.id === task.id);
-          assert.strictEqual(recorded?.lastRunStatus, "failed");
-          assert.include(recorded?.lastRunError ?? "", "kin.trigger.bound_source");
-          assert.deepStrictEqual(yield* inbox.listPending(orgA), []);
-          assert.lengthOf(sends, 0);
-          assert.lengthOf(launches, 0);
-          const { task: unbound } = yield* service.upsert(input);
-          yield* waitForDispatch(service.triggerWebhook(request(unbound, "unbound")));
-          assert.lengthOf(yield* inbox.listPending(orgA), 1);
-          assert.lengthOf(sends, 0);
-          assert.lengthOf(launches, 0);
-          const dispatchFailed = (task: { readonly id: ScheduledTaskId }, key: string) =>
+          const dispatchFailed = (
+            task: { readonly id: ScheduledTaskId },
+            key: string,
+            secret?: string,
+          ) =>
             Effect.gen(function* () {
-              const result = yield* waitForDispatch(service.triggerWebhook(request(task, key)));
+              const result = yield* waitForDispatch(
+                service.triggerWebhook(request(task, key, "owner", secret)),
+              );
               if (result._tag !== "accepted") return assert.fail(`Unexpected ${result._tag}`);
               const { delivery } = yield* service.getWebhookDelivery({
                 id: task.id,
@@ -358,17 +352,55 @@ describe("KinTriggerSink", () => {
               });
               assert.strictEqual(delivery.outcome, "dispatch_failed", key);
             });
+          yield* dispatchFailed(task, "bound");
+          const recorded = (yield* service.list()).tasks.find((item) => item.id === task.id);
+          assert.strictEqual(recorded?.lastRunStatus, "failed");
+          assert.include(recorded?.lastRunError ?? "", "kin.trigger.bound_source");
+          assert.deepStrictEqual(yield* inbox.listPending(orgA), []);
+          assert.lengthOf(sends, 0);
+          assert.lengthOf(launches, 0);
+          const { task: unbound } = yield* service.upsert(input);
+          // A source with no bound secret hash, such as one from before K019, refuses.
+          yield* dispatchFailed(unbound, "no-hash");
+          yield* store.bindSecret(orgA, source(orgA).id, testSecret);
+          yield* waitForDispatch(service.triggerWebhook(request(unbound, "unbound")));
+          assert.lengthOf(yield* inbox.listPending(orgA), 1);
+          assert.lengthOf(sends, 0);
+          assert.lengthOf(launches, 0);
+          const sender = { path: "body.sender.login", op: "notEquals", value: "kin[bot]" } as const;
+          const events = {
+            path: "headers.x-github-event",
+            op: "in",
+            value: KinTriggerStore.GITHUB_EVENTS,
+          } as const;
           // Any agent can re-save the task through schedule_task; a weakened one never routes.
-          for (const [key, schedule] of [
+          for (const [key, schedule, secret] of [
             ["unsigned", { signature: null }],
             ["unfiltered", { filters: [] }],
             [
               "other-bot",
-              { filters: [{ path: "body.sender.login", op: "notEquals", value: "other[bot]" }] },
+              {
+                filters: [events, { ...sender, value: "other[bot]" }],
+              },
+            ],
+            ["no-dedupe", { dedupe: {} }],
+            ["no-event-filter", { filters: [sender] }],
+            ["fewer-events", { filters: [{ ...events, value: ["pull_request"] }, sender] }],
+            [
+              "swapped-secret",
+              {
+                signature: {
+                  header: "x-hub-signature-256",
+                  encoding: "hex",
+                  prefix: "sha256=",
+                  secret: "agent-secret",
+                },
+              },
+              "agent-secret",
             ],
           ] as const) {
             const { task: weak } = yield* service.upsert(yield* weakened("task-org-a", schedule));
-            yield* dispatchFailed(weak, key);
+            yield* dispatchFailed(weak, key, secret);
           }
           // Kin's deterministic task id refuses to launch even before its source exists.
           const { task: orphan } = yield* service.upsert(

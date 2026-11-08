@@ -17,6 +17,7 @@ import * as Tracer from "effect/Tracer";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import { nextScheduledRunAt } from "../../scheduledTasks/Schedule.ts";
+import * as KinTriggerStore from "../triggers/KinTriggerStore.ts";
 import { CONTRACT_BOT_LOGIN, webhookInput, withScheduledTasks } from "./fixtures.ts";
 
 const decodeSchedule = Schema.decodeSync(ScheduledTaskUpsertSchedule);
@@ -125,6 +126,7 @@ it.effect(
             secret: "contract-secret",
           } as const;
           const filters = [
+            { path: "headers.x-github-event", op: "in", value: KinTriggerStore.GITHUB_EVENTS },
             { path: "body.sender.login", op: "notEquals", value: CONTRACT_BOT_LOGIN },
           ] as const;
           const { task } = yield* service.upsert(
@@ -132,7 +134,7 @@ it.effect(
               schedule: {
                 type: "webhook",
                 signature,
-                dedupe: { replayKey: "{{headers.x-github-delivery}}" },
+                dedupe: { replayKey: KinTriggerStore.GITHUB_REPLAY_KEY },
                 filters,
               },
             }),
@@ -169,6 +171,7 @@ it.effect(
           if (row === undefined) return assert.fail("Delivery missing at launch");
           const receivedAt = yield* decodeReceivedAt(row.receivedAt);
           assert.equal(DateTime.formatIso(receivedAt), row.receivedAt);
+          assert.equal(row.secret, signature.secret);
           assert.equal(launch.initialMessage?.scheduledTaskId, task.id);
           assert.equal(
             launch.commandId,
@@ -193,7 +196,7 @@ it.effect(
                 type: "webhook",
                 signature,
                 dedupe: {
-                  replayKey: "{{headers.x-github-delivery}}",
+                  replayKey: KinTriggerStore.GITHUB_REPLAY_KEY,
                   coalesceKey: "{{headers.x-github-event}}",
                   coalesceWindowSeconds: 10,
                 },
