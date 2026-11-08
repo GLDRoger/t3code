@@ -332,7 +332,12 @@ describe("brandMobileConfig", () => {
     assert.include(output, "owner: process.env.KIN_EXPO_OWNER");
     assert.include(output, "appleTeamId: process.env.KIN_APPLE_TEAM_ID");
     assert.include(output, "projectId: process.env.KIN_EAS_PROJECT_ID");
-    assert.include(output, 'enabled: Boolean(process.env.KIN_EAS_PROJECT_ID) && on !== "0"');
+    assert.include(
+      output,
+      'enabled: Boolean(process.env.KIN_EAS_PROJECT_ID) && Boolean(process.env.KIN_UPDATES_CODE_SIGNING_CERT) && on !== "0"',
+    );
+    assert.include(output, "codeSigningCertificate: process.env.KIN_UPDATES_CODE_SIGNING_CERT,");
+    assert.include(output, '{ keyid: "main", alg: "rsa-v1_5-sha256" }');
   });
 
   it("reports a key upstream moved instead of guessing", () => {

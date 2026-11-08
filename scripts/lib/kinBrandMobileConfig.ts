@@ -10,6 +10,8 @@ export const MOBILE_OPS_ENV = {
   KIN_APPLE_TEAM_ID: "iOS signing team (appleTeamId)",
   KIN_EAS_PROJECT_ID: "EAS project for builds and OTA updates (extra.eas.projectId, updates.url)",
   KIN_EXPO_OWNER: "Expo account that owns the EAS project (owner)",
+  KIN_UPDATES_CODE_SIGNING_CERT:
+    "OTA updates: they need a signing certificate, a path from apps/mobile (updates.codeSigningCertificate)",
 } as const;
 
 const env = (name: keyof typeof MOBILE_OPS_ENV) => `process.env.${name}`;
@@ -72,13 +74,25 @@ export function brandMobileConfig(source: string): {
   const updates = within(root, problems, "updates");
   if (updates) {
     const projectId = env("KIN_EAS_PROJECT_ID");
+    const cert = env("KIN_UPDATES_CODE_SIGNING_CERT");
+    set(updates, "codeSigningCertificate", 0, () => "");
+    // The url value also carries the code-signing pairs, which upstream doesn't have.
     set(
       updates,
       "url",
       1,
-      () => `${projectId} ? \`https://u.expo.dev/\${${projectId}}\` : undefined`,
+      () =>
+        `${projectId} ? \`https://u.expo.dev/\${${projectId}}\` : undefined,\n` +
+        `    codeSigningCertificate: ${cert},\n` +
+        `    codeSigningMetadata: ${cert} ? { keyid: "main", alg: "rsa-v1_5-sha256" } : undefined`,
     );
-    set(updates, "enabled", 1, (current) => `Boolean(${projectId}) && ${current.text()}`);
+    // Unsigned updates would let anyone with the EAS project replace the app's JS.
+    set(
+      updates,
+      "enabled",
+      1,
+      (current) => `Boolean(${projectId}) && Boolean(${cert}) && ${current.text()}`,
+    );
   }
   const eas = within(root, problems, "eas");
   if (eas) set(eas, "projectId", 1, () => env("KIN_EAS_PROJECT_ID"));
