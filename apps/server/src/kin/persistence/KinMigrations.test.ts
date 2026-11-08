@@ -58,6 +58,7 @@ const tableNames = [
   "kin_wakeups",
   "kin_webhook_sources",
   "kin_widgets",
+  "kin_worker_charges",
   "kin_workers",
 ];
 const timestamp = "2026-11-07T00:00:00.000Z";
@@ -115,7 +116,8 @@ describe("Kin migrations", () => {
           { migration_id: 14, name: "LeadToolCalls" },
           { migration_id: 15, name: "AuthSessionKeys" },
           { migration_id: 16, name: "DeferralRuns" },
-          { migration_id: 17, name: "Approvals" },
+          { migration_id: 17, name: "Workers" },
+          { migration_id: 18, name: "Approvals" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
@@ -181,7 +183,8 @@ describe("Kin migrations", () => {
           { migration_id: 14, name: "LeadToolCalls" },
           { migration_id: 15, name: "AuthSessionKeys" },
           { migration_id: 16, name: "DeferralRuns" },
-          { migration_id: 17, name: "Approvals" },
+          { migration_id: 17, name: "Workers" },
+          { migration_id: 18, name: "Approvals" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -273,7 +276,8 @@ describe("Kin migrations", () => {
         [14, "LeadToolCalls"],
         [15, "AuthSessionKeys"],
         [16, "DeferralRuns"],
-        [17, "Approvals"],
+        [17, "Workers"],
+        [18, "Approvals"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -305,6 +309,9 @@ describe("Kin migrations", () => {
       yield* sql`DROP TABLE kin_deferral_runs`;
       yield* sql`DROP TABLE kin_auth_key_repairs`;
       yield* sql`DROP TABLE kin_auth_session_keys`;
+      yield* sql`DROP TABLE kin_worker_charges`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN title`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN chat_id`;
       yield* sql`DROP TABLE kin_judge_log`;
       yield* sql`DROP TABLE kin_floor_notices`;
       yield* sql`DROP TABLE kin_floor_grants`;
@@ -347,7 +354,8 @@ describe("Kin migrations", () => {
         [14, "LeadToolCalls"],
         [15, "AuthSessionKeys"],
         [16, "DeferralRuns"],
-        [17, "Approvals"],
+        [17, "Workers"],
+        [18, "Approvals"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,
@@ -389,7 +397,8 @@ describe("Kin migrations", () => {
         { migration_id: 14, name: "LeadToolCalls" },
         { migration_id: 15, name: "AuthSessionKeys" },
         { migration_id: 16, name: "DeferralRuns" },
-        { migration_id: 17, name: "Approvals" },
+        { migration_id: 17, name: "Workers" },
+        { migration_id: 18, name: "Approvals" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);
@@ -401,13 +410,13 @@ describe("Kin migrations", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runKinMigrations();
-      // What a database looks like when K017 merged before a lower-numbered migration.
+      // What a database looks like when K018 merged before a lower-numbered migration.
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 5`;
       const history = yield* kinHistory;
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 17");
+      assert.include(String(exit), "below the latest applied migration 18");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -416,11 +425,11 @@ describe("Kin migrations", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runKinMigrations();
-      // What a database looks like after running another branch's K017.
-      yield* sql`UPDATE kin_sql_migrations SET name = 'Budget' WHERE migration_id = 17`;
+      // What a database looks like after running another branch's K018.
+      yield* sql`UPDATE kin_sql_migrations SET name = 'Budget' WHERE migration_id = 18`;
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
-      assert.include(String(exit), "17_Approvals");
+      assert.include(String(exit), "18_Approvals");
       assert.include(String(exit), "share a number");
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -494,6 +503,8 @@ describe("Kin migrations", () => {
           report_json: '{"parsed":false}',
           started_at: 1794009600000,
           ended_at: 1794009600000,
+          title: "Fix",
+          chat_id: "chat",
         },
         kin_memory_reads: { org_id: "org", item_id: "fixture-id", last_read_at: 1794009600000 },
         kin_cursor: { org_id: "org", consumer: "worker-tracker", after_sequence: 42 },
@@ -522,6 +533,14 @@ describe("Kin migrations", () => {
           lead_units: 3.5,
           worker_units: 9,
           exhausted_notified_at: null,
+        },
+        kin_worker_charges: {
+          org_id: "org",
+          worker_id: "worker",
+          run_id: "worker-run",
+          day: "2026-11-07",
+          units: 1.5,
+          tokens_json: "[]",
         },
         kin_org_state: {
           org_id: "org",
