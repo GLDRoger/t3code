@@ -501,7 +501,7 @@ Upstream files touched, hooks only:
 
 ## Security notes
 
-- **Task cards:** the environment id must match this server. Only the reserved org owner or an agent linking its own delegated child may create a local card. Local children prove linkage through `lineage.parentThreadId` with `relationshipToParent: "subagent"`, or a same-environment `delegatedFrom`. Foreign and unlinked threads return the same `not_found` as missing threads.
+- **Task cards:** the environment id must match this server. Only trusted server code (`KinChatService.createTaskCard`, called by LEAD-9's worker launcher) creates task cards; agents and clients get `not_allowed`. Missing or foreign threads return `not_found`.
 - **Authors are server-made.** People: from the `/ws` session through `KinIdentity`. Agents: from the MCP caller thread through the registry. No input schema has an author field.
 - **No cross-org reads.** Every chat-content query filters by `org_id` from resolved identity or chat membership, never from the client. Trusted bootstrap and MCP caller-thread discovery may find an org; subsequent identity lookups stay in that stored org.
 - **Not-found over forbidden** for chats outside the caller's membership.

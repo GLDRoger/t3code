@@ -1,4 +1,3 @@
-import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import {
   KinAgentIntent,
   KinChatError,
@@ -42,7 +41,7 @@ const enabled = () => {
 const shared = {
   failure: Schema.Union([KinChatError, OrchestratorMcpFailure]),
   failureMode: "return" as const,
-  dependencies: [KinServer, McpInvocationContext, ThreadManagementService, ServerEnvironment],
+  dependencies: [KinServer, McpInvocationContext, ThreadManagementService],
 };
 const post = Tool.make("kin_chat_post", {
   ...shared,
@@ -88,8 +87,8 @@ const widget = Tool.make("kin_widget_upsert", {
     "Update your existing Kin task card by widgetId and expected revision. Task cards are created only by Kin's worker launcher, never by agents or clients. Server-owned fields are preserved. Approval widgets are refused; use signed approvals.",
   parameters: Schema.Struct({
     chatId: KinChatId,
-    widgetId: Schema.optional(KinWidgetId),
-    revision: Schema.optional(KinWidget.fields.revision),
+    widgetId: KinWidgetId,
+    revision: KinWidget.fields.revision,
     type: Schema.Literal("task"),
     state: KinTaskCardState,
     awaiting: Schema.optional(Schema.Array(KinPersonId).check(Schema.isMaxLength(100))),

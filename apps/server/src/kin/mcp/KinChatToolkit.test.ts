@@ -224,12 +224,12 @@ it.effect(
         state: {},
       }).pipe(Effect.result);
       assert.strictEqual(refused._tag, "Failure");
-      assert.include(
-        errorOf(
-          yield* call("kin_widget_upsert", { chatId: chat.chatId, type: "task", state: taskState }),
-        ),
-        { reason: "not_allowed" },
-      );
+      const create = yield* call("kin_widget_upsert", {
+        chatId: chat.chatId,
+        type: "task",
+        state: taskState,
+      }).pipe(Effect.result);
+      assert.strictEqual(create._tag, "Failure");
       for (const changed of [
         { afterSeq: -1 },
         { afterSeq: 0.5 },
@@ -433,7 +433,10 @@ it.effect.each(["deleted", "archived"] as const)("refuses writes from %s threads
     const { chat } = yield* seed;
     for (const [name, input] of [
       ["kin_chat_post", { chatId: chat.chatId, body: "No", intent: "answer" }],
-      ["kin_widget_upsert", { chatId: chat.chatId, type: "task", state: taskState }],
+      [
+        "kin_widget_upsert",
+        { chatId: chat.chatId, widgetId: "widget-1", revision: 1, type: "task", state: taskState },
+      ],
     ] as const) {
       const result = yield* call(name, input).pipe(
         Effect.provide(
