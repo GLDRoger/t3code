@@ -1,3 +1,4 @@
+import { ProviderInstanceRegistry } from "../../provider/ProviderInstanceRegistry.ts";
 import { authorityLayerWithDatabase, startAgentWakeup } from "../chat/WakeupAuthority.testkit.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { McpProviderSessions } from "@t3tools/provider-core/server/McpProviderSessions";
@@ -50,6 +51,7 @@ import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { PreviewAutomationBroker } from "../../mcp/PreviewAutomationBroker.ts";
 import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
+import { OrchestrationEventStore } from "../../persistence/OrchestrationEventStore.ts";
 import { ProviderAdapterRegistryV2 } from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import { ThreadLaunchService } from "../../orchestration-v2/ThreadLaunchService.ts";
 import { ThreadManagementService } from "../../orchestration-v2/ThreadManagementService.ts";
@@ -84,6 +86,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(GitWorkflowService)({}),
   Layer.mock(ManagedProjectFolders)({ namedProjectsRoot: "" }),
   Layer.mock(McpProviderSessions)({}),
+  Layer.mock(OrchestrationEventStore)({}),
   Layer.mock(PeerForwarding)({}),
   Layer.mock(PeerLinkRequests)({}),
   Layer.mock(PeerLinks)({}),
@@ -94,6 +97,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(ProjectService)({}),
   Layer.mock(ProjectSetupScriptRunner)({}),
   Layer.mock(ProviderAdapterRegistryV2)({}),
+  Layer.mock(ProviderInstanceRegistry)({}),
   Layer.mock(ProviderRegistry)({}),
   Layer.mock(PullRequestReviewGuideService)({}),
   Layer.mock(PullRequestService)({}),
@@ -179,7 +183,8 @@ it.effect.each([true, false])(
           ),
         );
         const http = yield* HttpRouter.toHttpEffect(routes);
-        assert.strictEqual(runnerStarts, enabled ? 1 : 0);
+        // The wake-up runner and the worker tracker.
+        assert.strictEqual(runnerStarts, enabled ? 2 : 0);
         const services = yield* Deferred.await(ready);
         const kin = Context.get(services, Kin.KinServer);
         const registry = Context.get(services, McpSessions.McpSessionRegistry);
