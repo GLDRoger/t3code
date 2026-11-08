@@ -15,6 +15,7 @@ import {
   resolveKinHost,
   resolveKinHostAt,
   type KinHost,
+  type KinRouteHost,
   type KinHostCandidate,
 } from "./kinHost";
 
@@ -62,7 +63,7 @@ export const kinHostAtom: Atom.Atom<KinHost> = Atom.make((get): KinHost => {
 }).pipe(Atom.withLabel("kin:host"));
 
 const kinHostAtAtom = Atom.family((environmentId: EnvironmentId) =>
-  Atom.make((get): KinHost => {
+  Atom.make((get): KinRouteHost => {
     if (!get(environmentCatalog.catalogValueAtom).isReady) return { _tag: "searching" };
     return resolveKinHostAt({
       candidates: kinHostCandidates(get),
@@ -72,8 +73,8 @@ const kinHostAtAtom = Atom.family((environmentId: EnvironmentId) =>
   }).pipe(Atom.withLabel(`kin:host:${environmentId}`)),
 );
 
-/** The Kin host a route names, connected or not; `none` when it left the catalog or isn't Kin. */
-export function useKinHostAt(environmentId: EnvironmentId): KinHost {
+/** The Kin host a route names, connected or not; `unpaired` when it left the catalog. */
+export function useKinHostAt(environmentId: EnvironmentId): KinRouteHost {
   return useAtomValue(kinHostAtAtom(environmentId));
 }
 

@@ -30,6 +30,7 @@ import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { useContentTopInset } from "../../components/ui/useBarInset";
 import { useReduceMotionEnabled } from "../../lib/appState";
+import { useLocalDayStartMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { appAtomRegistry } from "../../state/atom-registry";
@@ -44,6 +45,7 @@ import {
   kinChatStatusLine,
   kinEarlierPage,
   kinFeedViewer,
+  kinMarkReadRearms,
   kinSeqToMarkRead,
   kinUnseenCount,
   latestKinSeq,
@@ -296,6 +298,16 @@ function KinChatStateView(props: {
             onAction={() => navigation.navigate("SettingsEnvironments")}
           />
         );
+      case "unpaired":
+        return (
+          <EmptyState
+            variant="plain"
+            title="This Mac isn't paired with this phone"
+            detail="Pair it again to open this chat."
+            actionLabel="Open environments"
+            onAction={() => navigation.navigate("SettingsEnvironments")}
+          />
+        );
       case "unauthorized":
         return (
           <EmptyState
@@ -362,8 +374,10 @@ function KinChatFeed(props: {
 }) {
   const listRef = useRef<LegendListRef>(null);
   const markedSeq = useRef(0);
+  const attemptedSeq = useRef(0);
   const marking = useRef(false);
   const focused = useIsFocused();
+  const dayStartMs = useLocalDayStartMs();
   const lastRequest = useRef(0);
   const reduceMotion = useReduceMotionEnabled();
   const markdownStyle = useMarkdownPreviewStyles().nativeTextStyle;
@@ -376,26 +390,41 @@ function KinChatFeed(props: {
   const paging = kinActivePaging(heldPaging, live);
   const feed = mergeKinFeed(live, paging.earlier);
   const { messages } = feed;
-  const rows = buildKinFeedRows(messages, props.viewer, expandedRuns);
+  const rows = buildKinFeedRows(messages, props.viewer, expandedRuns, new Date(dayStartMs));
   const followsEnd = kinFollowsEnd(follow);
   const unseen = followsEnd ? 0 : kinUnseenCount(messages, follow.seenSeq, props.viewer.personId);
   const loading = paging.request !== null;
   const earlierPage = kinEarlierPage(props.chatId, messages, paging.exhausted);
   const canLoadEarlier = props.readHistory !== null && earlierPage !== null;
   const latestSeq = latestKinSeq(messages);
-  const seesEnd = followsEnd && focused && props.connected && props.chat.live;
-  const { markRead, unread } = props;
+  const { connected, markRead, unread } = props;
+  const seesEnd = followsEnd && focused && connected && props.chat.live;
+  const reading = useRef({ markRead, seesEnd, latestSeq, unread, connected, focused });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tells the host what the reader has seen, one call in flight at a time
   useEffect(() => {
-    if (markRead === null || marking.current) return;
-    const seq = kinSeqToMarkRead({ seesEnd, latestSeq, markedSeq: markedSeq.current, unread });
-    if (seq === null) return;
-    marking.current = true;
-    void markRead(seq).then((marked) => {
-      marking.current = false;
-      if (marked) markedSeq.current = Math.max(markedSeq.current, seq);
-    });
-  }, [markRead, seesEnd, latestSeq, unread]);
+    const next = { markRead, seesEnd, latestSeq, unread, connected, focused };
+    if (kinMarkReadRearms(reading.current, next)) attemptedSeq.current = markedSeq.current;
+    reading.current = next;
+    // Re-reads the latest inputs when a call settles, so a message that arrived meanwhile is marked.
+    const send = () => {
+      const current = reading.current;
+      if (current.markRead === null || marking.current) return;
+      const seq = kinSeqToMarkRead({
+        ...current,
+        markedSeq: markedSeq.current,
+        attemptedSeq: attemptedSeq.current,
+      });
+      if (seq === null) return;
+      marking.current = true;
+      attemptedSeq.current = seq;
+      void current.markRead(seq).then((marked) => {
+        marking.current = false;
+        if (marked) markedSeq.current = Math.max(markedSeq.current, seq);
+        send();
+      });
+    };
+    send();
+  }, [markRead, seesEnd, latestSeq, unread, connected, focused]);
 
   const transition = (event: KinFeedFollowEvent) =>
     setFollow((current) => resolveKinFeedFollow(current, event));
