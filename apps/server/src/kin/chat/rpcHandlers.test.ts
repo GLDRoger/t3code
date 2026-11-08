@@ -12,6 +12,7 @@ import {
   KinMemberId,
   KinPersonId,
   KinTaskCardState,
+  KinWidgetId,
   KinWaitingId,
   AuthStandardClientScopes,
   KinAgentId,
@@ -218,9 +219,20 @@ it.effect("serves real WS sends, subscriptions and afterSeq resume with org isol
       clientMessageId: "foreign-message",
       body: "Private",
     });
-    const foreignWidget = yield* chat.upsertWidget(foreignPerson, {
+    const foreignWidget = {
+      ...foreignPerson,
+      widgetId: KinWidgetId.make("foreign-widget"),
+      messageId: foreignMessage.messageId,
+      widgetClass: "native" as const,
+      revision: 1,
+      source: null,
+      feed: null,
+      awaiting: [],
+      pinnedAt: null,
+      closedAt: null,
+      updatedAt: direct.createdAt,
       chatId: foreignChat,
-      type: "task",
+      type: "task" as const,
       state: yield* decodeTaskState({
         taskId: "task",
         environmentId: "environment",
@@ -233,7 +245,8 @@ it.effect("serves real WS sends, subscriptions and afterSeq resume with org isol
         lastError: null,
         updatedAt: direct.createdAt,
       }),
-    });
+    };
+    yield* repo.insertWidget(foreignWidget);
     const orgs = yield* client["kin.orgs.list"]({});
     assert.deepStrictEqual(
       orgs.orgs.map(({ orgId }) => orgId),

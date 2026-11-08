@@ -611,7 +611,7 @@ Reads through the lead’s file tools do not count as memory reads; LEAD-7’s `
 
 LEAD-8. **Lead toolkit: post and level gating.** `kin_chat_post`, the `request_action` level check, `KinLevels.effectiveLevel`, shadow entries, the owner's summary widget. Depends on: LEAD-7, CHAT-7, APPR-3. Done when: the L0 shadow test passes. Owner: backend.
 
-LEAD-9. **Workers.** `kin_delegate`, brief builder, `WorkerTracker` (event cursor, report parsing, synthesis), reviewer model rule, stray `delegate_task` guard. Files: `WorkerTracker.ts`, handlers. Depends on: LEAD-5, LEAD-7. Done when: worker report tests and the reviewer-model test pass. Owner: backend.
+LEAD-9. **Workers.** After `ThreadLaunchService.launch`, call server-only `KinChatService.createTaskCard` with the worker thread and lead; the lead never creates cards through MCP. A follow-up on an existing worker reopens its card (`closed: false`) instead of creating another; check `closedAt` on the card returned. `kin_delegate`, brief builder, `WorkerTracker` (event cursor, report parsing, synthesis), reviewer model rule, stray `delegate_task` guard. Files: `WorkerTracker.ts`, handlers. Depends on: LEAD-5, LEAD-7. Done when: worker report tests and the reviewer-model test pass. Owner: backend.
 
 LEAD-10. **Budget.** Units from turn usage, daily reset in the owner's timezone, `admit`, `admitWorker`, model choice by priority, settings fields. Depends on: LEAD-5. Done when: the budget test passes and `kin_wakeups.tokens_json` matches the run's turn usage. Owner: backend.
 
