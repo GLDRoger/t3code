@@ -10,13 +10,17 @@ import {
   type KinOrgPauseInput,
   type KinOrgResumeInput,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Random from "effect/Random";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
@@ -28,7 +32,7 @@ import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
 import type * as Routines from "../triggers/routines.ts";
 import * as Queue from "./KinEventQueue.ts";
-import { isOrgOwner, isOrgPaused } from "./orgState.ts";
+import { isOrgOwner, isOrgPaused, STOP_REASON } from "./orgState.ts";
 import { stopThreadTree } from "./Workers.ts";
 
 /** A claim that races a pause returns its events for this long, so a paused org does not spin. */
@@ -36,7 +40,10 @@ export const PAUSE_POLL_INTERVAL_MS = 5_000;
 /** Resume expires events queued longer ago than this instead of replaying them. */
 const PAUSE_EXPIRY_MS = 24 * 60 * 60 * 1_000;
 export const PAUSED_NOTICE = "Kin is paused. Nothing runs until you resume.";
-const STOP_REASON = "Stopped by the Kin stop switch.";
+const resumedNotice = (expired: number) =>
+  expired === 0
+    ? "Kin resumed."
+    : `Kin resumed. ${expired} queued ${expired === 1 ? "event" : "events"} expired.`;
 const EXPIRED_LISTED = 50;
 
 export class KinStopFanOutError extends Schema.TaggedError<KinStopFanOutError>()(
@@ -100,6 +107,17 @@ const make = Effect.gen(function* () {
   const chat = yield* Chat.KinChatRepository;
   const hub = yield* Hub.KinChatHub;
   let attached: KinStopFanOut | undefined;
+  // Pause plus its fan-out and resume plus resumeAll run one at a time per org, so the last
+  // routine write always matches the stop switch.
+  const locks = new Map<KinOrgId, Semaphore.Semaphore>();
+  const withOrgLock = <A, E, R>(orgId: KinOrgId, effect: Effect.Effect<A, E, R>) => {
+    let lock = locks.get(orgId);
+    if (lock === undefined) {
+      lock = Semaphore.makeUnsafe(1);
+      locks.set(orgId, lock);
+    }
+    return lock.withPermits(1)(effect);
+  };
 
   const state = Effect.fn("KinStop.state")(function* (orgId: KinOrgId) {
     const [row] = yield* sql<{
@@ -143,7 +161,12 @@ const make = Effect.gen(function* () {
     if (!allowed) return yield* notAllowed;
     return person;
   });
-  const notice = Effect.fn("KinStop.notice")(function* (orgId: KinOrgId, now: number) {
+  const notice = Effect.fn("KinStop.notice")(function* (
+    orgId: KinOrgId,
+    now: number,
+    kind: "pause" | "resume",
+    body: string,
+  ) {
     const chats = yield* sql<{
       chatId: string;
     }>`SELECT DISTINCT owner_chat_id AS "chatId" FROM kin_leads WHERE org_id = ${orgId} ORDER BY owner_chat_id`;
@@ -151,10 +174,10 @@ const make = Effect.gen(function* () {
       chat.insertMessage({
         orgId,
         chatId: KinChatId.make(row.chatId),
-        messageId: KinMessageId.make(`kin-pause:${now}:${row.chatId}`),
+        messageId: KinMessageId.make(`kin-${kind}:${now}:${row.chatId}`),
         author: { _tag: "system" },
         kind: "text",
-        body: PAUSED_NOTICE,
+        body,
         intent: null,
         mentions: [],
         replyTo: null,
@@ -176,7 +199,20 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const publish = Effect.fn("KinStop.publish")(function* (
+    orgId: KinOrgId,
+    messages: ReadonlyArray<KinMessage>,
+  ) {
+    for (const message of messages) yield* hub.publish({ type: "message.posted", orgId, message });
+  });
+
   const pause = Effect.fn("KinStop.pause")(function* (
+    people: ReadonlyArray<PersonIdentity>,
+    input: KinOrgPauseInput,
+  ) {
+    return yield* withOrgLock(input.orgId, pauseLocked(people, input));
+  }, Effect.mapError(mapError));
+  const pauseLocked = Effect.fn("KinStop.pauseLocked")(function* (
     people: ReadonlyArray<PersonIdentity>,
     input: KinOrgPauseInput,
   ) {
@@ -196,21 +232,26 @@ const make = Effect.gen(function* () {
                 paused_by = ${person.personId}, reason = ${reason}
               WHERE org_id = ${input.orgId} AND paused = 0 RETURNING org_id`;
         const messages: ReadonlyArray<KinMessage> =
-          changed.length === 0 ? [] : yield* notice(input.orgId, now);
+          changed.length === 0 ? [] : yield* notice(input.orgId, now, "pause", PAUSED_NOTICE);
         return { state: yield* state(input.orgId), messages };
       }),
     );
-    for (const message of result.messages)
-      yield* hub.publish({ type: "message.posted", orgId: input.orgId, message });
+    yield* publish(input.orgId, result.messages);
     if (result.state.paused)
       yield* fanOut(
         input.orgId,
         DateTime.toEpochMillis(DateTime.makeUnsafe(result.state.pausedAt)),
       );
     return result.state;
-  }, Effect.mapError(mapError));
+  });
 
   const resume = Effect.fn("KinStop.resume")(function* (
+    people: ReadonlyArray<PersonIdentity>,
+    input: KinOrgResumeInput,
+  ) {
+    return yield* withOrgLock(input.orgId, resumeLocked(people, input));
+  }, Effect.mapError(mapError));
+  const resumeLocked = Effect.fn("KinStop.resumeLocked")(function* (
     people: ReadonlyArray<PersonIdentity>,
     input: KinOrgResumeInput,
   ) {
@@ -219,7 +260,7 @@ const make = Effect.gen(function* () {
         yield* owner(people, input.orgId);
         const [cleared] = yield* sql<{ pausedAt: number }>`SELECT paused_at AS "pausedAt"
           FROM kin_org_state WHERE org_id = ${input.orgId} AND paused = 1 ORDER BY org_id`;
-        if (cleared === undefined) return false;
+        if (cleared === undefined) return undefined;
         yield* sql`UPDATE kin_org_state SET paused = 0, paused_at = NULL, paused_by = NULL, reason = NULL
           WHERE org_id = ${input.orgId} AND paused = 1`;
         const now = yield* Clock.currentTimeMillis;
@@ -266,12 +307,15 @@ const make = Effect.gen(function* () {
             }),
           );
         }
-        return true;
+        return yield* notice(input.orgId, now, "resume", resumedNotice(expired.length));
       }),
     );
-    if (resumed && attached !== undefined) yield* attached.resume(input.orgId);
+    if (resumed !== undefined) {
+      yield* publish(input.orgId, resumed);
+      if (attached !== undefined) yield* attached.resume(input.orgId);
+    }
     return yield* state(input.orgId);
-  }, Effect.mapError(mapError));
+  });
 
   return KinStop.of({
     isPaused: Effect.fn("KinStop.isPaused")((orgId) =>
@@ -293,64 +337,78 @@ const make = Effect.gen(function* () {
             if (attached === next) attached = undefined;
           }),
       );
-      // A pause from before a restart still owes its fan-out to work recovered since.
-      const paused = yield* sql<{
+      // A pause from before a restart still owes its fan-out to work recovered since, and a
+      // resume that ran detached or failed its resumeAll still owes the routines theirs.
+      const orgs = yield* sql<{
         orgId: KinOrgId;
-        pausedAt: number;
-      }>`SELECT org_id AS "orgId", paused_at AS "pausedAt" FROM kin_org_state WHERE paused = 1 ORDER BY org_id`.pipe(
+      }>`SELECT org_id AS "orgId" FROM kin_org_state ORDER BY org_id`.pipe(
         Effect.catchCause((cause) =>
           Effect.logError("Kin stop catch-up unavailable", { cause }).pipe(Effect.as([])),
         ),
       );
-      for (const row of paused) yield* fanOut(row.orgId, row.pausedAt).pipe(Effect.ignore);
+      for (const { orgId } of orgs)
+        yield* withOrgLock(
+          orgId,
+          Effect.gen(function* () {
+            const current = yield* state(orgId);
+            if (current.pausedAt !== null)
+              yield* fanOut(orgId, DateTime.toEpochMillis(current.pausedAt)).pipe(Effect.ignore);
+            else yield* next.resume(orgId);
+          }),
+        ).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logError("Kin stop catch-up failed", { orgId, cause }),
+          ),
+        );
     }),
   });
 });
 
 export const layer = Layer.effect(KinStop, make);
 
-/** The lead runtime's fan-out: lead runs, worker runs and their delegated tasks, then routines. */
+/** The lead runtime's fan-out: lead, worker and dream runs and their delegated tasks, then routines. */
 export const makeFanOut = Effect.fn("KinStop.makeFanOut")(function* (
   routines: Option.Option<Routines.KinRoutines["Service"]>,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const threads = yield* ThreadManagement.ThreadManagementService;
+  // Recovery keeps run ids across a restart, so a replay must not dedupe on a pre-crash receipt.
+  const boot = (yield* Random.nextInt).toString(36);
   return {
-    pause: Effect.fn("KinStop.fanOut.pause")(
-      function* (orgId: KinOrgId, pausedAt: number) {
-        const rows = yield* sql<{ threadId: string }>`
+    pause: Effect.fn("KinStop.fanOut.pause")(function* (orgId: KinOrgId, pausedAt: number) {
+      const failed = (cause: unknown) => new KinStopFanOutError({ orgId, cause });
+      const rows = yield* sql<{ threadId: string }>`
         SELECT thread_id AS "threadId" FROM kin_leads WHERE org_id = ${orgId} AND thread_id IS NOT NULL
         UNION SELECT thread_id FROM kin_workers WHERE org_id = ${orgId} AND ended_at IS NULL
-        ORDER BY 1`;
-        yield* Effect.forEach(
-          rows,
-          (row) =>
-            Effect.gen(function* () {
-              const threadId = ThreadId.make(row.threadId);
-              const projection = yield* threads.getThreadProjection(threadId).pipe(Effect.option);
-              if (Option.isNone(projection)) return;
-              const run = projection.value.runs.at(-1)?.id ?? "idle";
-              yield* stopThreadTree(threads, {
-                projection: projection.value,
-                prefix: "kin-stop",
-                tag: `${threadId}:${pausedAt}:${run}`,
-                reason: STOP_REASON,
-              });
-            }),
-          { concurrency: "unbounded", discard: true },
-        );
-        if (Option.isSome(routines))
-          yield* routines.value
-            .pauseAll(orgId)
-            .pipe(
-              Effect.catchCause((cause) =>
-                Effect.logWarning("Kin routines could not pause", { orgId, cause }),
-              ),
-            );
-      },
-      (effect, orgId) =>
-        effect.pipe(Effect.mapError((cause) => new KinStopFanOutError({ orgId, cause }))),
-    ),
+        UNION SELECT thread_id FROM kin_dream_runs
+          WHERE org_id = ${orgId} AND status = 'running' AND thread_id IS NOT NULL
+        ORDER BY 1`.pipe(Effect.mapError(failed));
+      const exits = yield* Effect.forEach(
+        rows,
+        (row) =>
+          Effect.gen(function* () {
+            const threadId = ThreadId.make(row.threadId);
+            const projection = yield* threads.getThreadProjection(threadId).pipe(Effect.option);
+            if (Option.isNone(projection)) return;
+            const run = projection.value.runs.at(-1)?.id ?? "idle";
+            yield* stopThreadTree(threads, {
+              projection: projection.value,
+              prefix: "kin-stop",
+              tag: `${threadId}:${pausedAt}:${run}:${boot}`,
+              reason: STOP_REASON,
+            });
+          }).pipe(Effect.exit),
+        { concurrency: "unbounded" },
+      );
+      const routineExit = Option.isSome(routines)
+        ? yield* Effect.exit(routines.value.pauseAll(orgId))
+        : Exit.void;
+      const failures: Array<Cause.Cause<unknown>> = [];
+      for (const exit of exits) if (Exit.isFailure(exit)) failures.push(exit.cause);
+      if (Exit.isFailure(routineExit)) failures.push(routineExit.cause);
+      if (failures.length > 0)
+        return yield* failed(failures.reduce((all, cause) => Cause.combine(all, cause)));
+    }),
     resume: Effect.fn("KinStop.fanOut.resume")(function* (orgId: KinOrgId) {
       if (Option.isSome(routines))
         yield* routines.value

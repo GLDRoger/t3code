@@ -42,7 +42,7 @@ import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as Memory from "../memory/Memory.ts";
 import { KinBudget } from "./KinBudget.ts";
-import { isOrgPaused } from "./orgState.ts";
+import { isOrgPaused, STOP_REASON } from "./orgState.ts";
 import { resolveLead } from "./LeadMemory.ts";
 import { quote } from "./LeadPrompt.ts";
 import { buildBrief, Quoted, reportFormat } from "./workerBrief.ts";
@@ -91,12 +91,13 @@ export const WorkerLaunchGate = Context.Reference<boolean>("t3/kin/lead/Workers/
 
 const isLive = (run: OrchestrationV2Run) =>
   run.status === "queued" || ThreadManagement.isActiveRun(run);
-const liveRun = (projection: OrchestrationV2ThreadProjection) => projection.runs.findLast(isLive);
+type ThreadRuns = Pick<OrchestrationV2ThreadProjection, "thread" | "runs">;
+const liveRun = (projection: ThreadRuns) => projection.runs.findLast(isLive);
 /** Interrupts the thread's live run and stops its delegated tasks; true when a run was live. */
 export const stopThreadTree = Effect.fn("KinWorkers.stopThreadTree")(function* (
   threads: ThreadManagement.ThreadManagementService["Service"],
   input: {
-    readonly projection: OrchestrationV2ThreadProjection;
+    readonly projection: ThreadRuns;
     readonly prefix: string;
     readonly tag: string;
     readonly reason: string;
@@ -278,6 +279,19 @@ const make = Effect.gen(function* () {
       return yield* denied("Kin workers run on an enabled Claude Code or Codex provider only.");
     return chosen;
   });
+  /** The stop fan-out misses a run that starts during its pass; a pause seen after the launch or send stops it. */
+  const stopIfPaused = Effect.fn("KinWorkers.stopIfPaused")(function* (
+    orgId: KinOrgId,
+    projection: ThreadRuns,
+  ) {
+    if (!(yield* isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)))) return;
+    yield* stopThreadTree(threads, {
+      projection,
+      prefix: "kin-stop-launch",
+      tag: `${projection.thread.id}:${liveRun(projection)?.id ?? "idle"}`,
+      reason: STOP_REASON,
+    });
+  });
   const threadLink = Effect.fn("KinWorkers.threadLink")(function* (threadId: ThreadId) {
     return formatThreadLink({ environmentId: yield* environment.getEnvironmentId, threadId });
   });
@@ -442,6 +456,7 @@ const make = Effect.gen(function* () {
             }),
         ),
       );
+    yield* stopIfPaused(ctx.orgId, launched.projection);
     const live = launched.projection.runs.some(isLive);
     // A resumed launch can start nothing; the row then takes the thread's real outcome.
     if (!live) {
@@ -490,7 +505,7 @@ const make = Effect.gen(function* () {
     const projection = yield* threads
       .getThreadProjection(plan.worker.threadId)
       .pipe(Effect.mapError(() => missing()));
-    yield* threads
+    const sent = yield* threads
       .sendToThread({
         projectId: projection.thread.projectId,
         commandId: CommandId.make(`kin-follow-up:${ctx.wakeupId}:${key}`),
@@ -518,6 +533,7 @@ const make = Effect.gen(function* () {
       );
     yield* sql`UPDATE kin_workers SET status = 'queued', ended_at = NULL
       WHERE org_id = ${ctx.orgId} AND worker_id = ${input.workerId}`;
+    yield* stopIfPaused(ctx.orgId, sent.projection);
     if (plan.worker.chatId !== null)
       yield* showCard({
         orgId: ctx.orgId,

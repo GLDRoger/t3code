@@ -145,7 +145,7 @@ export const KinEvent = Schema.Union([
           tag: TrimmedNonEmptyString,
           receivedAt: CanonicalUtcTimestamp,
         }),
-      ),
+      ).check(Schema.isMaxLength(50)),
     }),
   }),
 ]);
@@ -505,13 +505,15 @@ Budget RPC payloads (wiring in LEAD-10 through `kinRpcs.ts`): `kin.budget.get` u
 `KinStop.pause(orgId, by)`:
 
 1. Sets `paused` first, so nothing new starts: the runner claims nothing, `kin_delegate` and `kin_follow_up` refuse with `not_allowed`, and dreams wait.
-2. Interrupts the active run on every lead thread and on every `kin_workers` thread whose `ended_at` is null, plus `stopDelegatedTasks` on each. A wake-up whose run ends this way returns its events with `release({ countAttempt: false, notBefore: now + pause poll interval })`, so no attempt is spent; a pause that lands while the runner is launching is caught by a recheck right after launch.
+2. Interrupts the active run on every lead thread, on every `kin_workers` thread whose `ended_at` is null and on the current thread of every running dream, plus `stopDelegatedTasks` on each. Each thread is stopped independently; one failure does not skip the others or step 3, and the fan-out fails once all have run. A wake-up whose run ends this way returns its events with `release({ countAttempt: false, notBefore: now + pause poll interval })`, so no attempt is spent. A pause that lands while the runner, `kin_delegate` or `kin_follow_up` is launching is caught by a recheck right after the launch or send. A dream that sees the pause after any turn or after its push fails and deletes its branch, so nothing it wrote is merged.
 3. Tells the triggers spec (`KinRoutines.pauseAll(orgId)`) and the approvals spec (the executor checks `KinStop.isPaused` before every run and refuses).
 4. Posts "Kin is paused. Nothing runs until you resume." to the owner's direct chat.
 
-`KinStop` lives with the chat and budget services the WebSocket handlers use; those are built outside the orchestration runtime, so the lead runtime attaches steps 2 and 3 to it (`KinStop.attach`) and replays them for orgs already paused at startup. Pausing a paused org keeps the original `paused_at`, `paused_by` and reason and posts nothing, but runs steps 2 and 3 again, so a retry reaches work a failed fan-out missed. A fan-out failure returns `unavailable` with the org still paused.
+Pause with steps 2 and 3, and resume with `resumeAll`, hold a per-org lock, so a resume during a slow fan-out runs after it and routines end unpaused.
 
-While paused, `enqueue` still records events, so nothing is lost. `KinStop.resume(orgId)` clears the flag, calls `KinRoutines.resumeAll(orgId)` and enqueues one `resume` event per active lead (dedupe key `resume:<pausedAtMs>:<agentId>`). That wake-up sees what arrived during the pause. Events queued (`queued_at`, server receipt) more than 24 hours before the resume are marked `expired` in the same transaction and listed in the resume event, not acted on. Resuming an org that is not paused changes nothing. A deferral that came due during the pause is treated as `on_due: ask`, never `start`.
+`KinStop` lives with the chat and budget services the WebSocket handlers use; those are built outside the orchestration runtime, so the lead runtime attaches steps 2 and 3 to it (`KinStop.attach`). At startup it replays them for orgs still paused and calls `resumeAll` for orgs resumed since, which heals a resume that ran before the attach or whose `resumeAll` failed. Replayed interrupts carry a per-boot nonce in their command ids: recovery keeps run ids, and a pre-crash receipt must not swallow the replay. Pausing a paused org keeps the original `paused_at`, `paused_by` and reason and posts nothing, but runs steps 2 and 3 again, so a retry reaches work a failed fan-out missed. A fan-out failure returns `unavailable` with the org still paused.
+
+While paused, `enqueue` still records events, so nothing is lost. `KinStop.resume(orgId)` clears the flag, calls `KinRoutines.resumeAll(orgId)` and enqueues one `resume` event per active lead (dedupe key `resume:<pausedAtMs>:<agentId>`). It posts "Kin resumed." to the owner's direct chat, adding how many queued events expired. That wake-up sees what arrived during the pause. Events queued (`queued_at`, server receipt) more than 24 hours before the resume are marked `expired` in the same transaction and listed in the resume event, not acted on. Resuming an org that is not paused changes nothing. A deferral that came due during the pause is treated as `on_due: ask`, never `start`.
 
 Payloads: `KinOrgGetInput { orgId }`, `KinOrgPauseInput { orgId, reason? }`, `KinOrgResumeInput { orgId }`; all return `KinOrgState { orgId, paused, pausedAt, pausedBy, reason }`.
 

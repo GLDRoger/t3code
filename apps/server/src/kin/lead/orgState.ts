@@ -19,6 +19,8 @@ export const isOrgOwner = Effect.fn("KinOrgState.isOrgOwner")(function* (
   return rows.length > 0;
 });
 
+export const STOP_REASON = "Stopped by the Kin stop switch.";
+
 /** The stop switch. Paused orgs start no wake-up, worker, dream or routine. */
 export const isOrgPaused = Effect.fn("KinOrgState.isOrgPaused")(
   function* (orgId: KinOrgId) {
