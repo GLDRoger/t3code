@@ -132,6 +132,26 @@ const samples = {
     ],
   ],
   KinTriggerSettings: [Kin.KinTriggerSettings, [settings, { ...settings, timeZone: "UTC" }]],
+  KinGithubWebhookSetupInput: [
+    Kin.KinGithubWebhookSetupInput,
+    [{ orgId: "org-1", projectId: "project-1" }],
+  ],
+  KinGithubWebhookOrgInput: [Kin.KinGithubWebhookOrgInput, [{ orgId: "org-1" }]],
+  KinGithubWebhookSecretInput: [
+    Kin.KinGithubWebhookSecretInput,
+    [{ orgId: "org-1", secret: "0123456789abcdef" }],
+  ],
+  KinGithubWebhookSetup: [
+    Kin.KinGithubWebhookSetup,
+    [
+      { status: "needs_connect" },
+      ...["configured", "needs_secret", "needs_url"].map((status) => ({
+        status,
+        sourceId: Kin.KIN_GITHUB_APP_SOURCE,
+        url: "https://relay.example/v1/hooks/env/task/token",
+      })),
+    ],
+  ],
 } satisfies Record<SchemaName, readonly [Schema.Codec<unknown>, ReadonlyArray<unknown>]>;
 
 const rejections = [
@@ -155,6 +175,7 @@ const rejections = [
     { schema: Kin.KinGithubEvent, value: { ...githubEvent, receivedAt: invalid } },
   ]),
   ...["", "  \n "].map((value) => ({ schema: Kin.KinTriggerId, value })),
+  { schema: Kin.KinGithubWebhookSecretInput, value: { orgId: "org-1", secret: "too-short" } },
   ...[0, 59_999, 60_000.5].map((everyMs) => ({
     schema: Kin.KinTriggerSchedule,
     value: { type: "interval", everyMs },

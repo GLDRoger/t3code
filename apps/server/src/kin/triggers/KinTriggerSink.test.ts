@@ -9,21 +9,18 @@ import {
   MessageId,
   KinTriggerFired,
   KinWebhookSource,
-  OrchestrationV2ThreadProjectionJson,
   ScheduledTaskUpsertInput,
   ProjectId,
   ProviderInstanceId,
   ScheduledTaskId,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
-import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
-import * as Tracer from "effect/Tracer";
 
 import { OrchestratorCommandRejectedError } from "../../orchestration-v2/Orchestrator.ts";
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
@@ -39,55 +36,13 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as KinTriggerSink from "./KinTriggerSink.ts";
 import * as KinTriggerStore from "./KinTriggerStore.ts";
+import { projection, timestamp, waitForDispatch } from "./webhooks.testkit.ts";
 
-const timestamp = "2026-11-07T00:00:00.000Z";
 const orgA = KinOrgId.make("org-a");
 const orgB = KinOrgId.make("org-b");
 const decodeSource = Schema.decodeUnknownSync(KinWebhookSource);
-const decodeProjection = Schema.decodeSync(OrchestrationV2ThreadProjectionJson);
 const decodeUpsert = Schema.decodeEffect(ScheduledTaskUpsertInput);
 const decodeFire = Schema.decodeEffect(KinTriggerFired);
-const projection = (orgId: KinOrgId) =>
-  decodeProjection({
-    thread: {
-      id: `inbox-${orgId}`,
-      projectId: `project-${orgId}`,
-      title: "Inbox",
-      providerInstanceId: "codex",
-      modelSelection: { instanceId: "codex", model: "gpt-5.4" },
-      runtimeMode: "approval-required",
-      interactionMode: "plan",
-      branch: null,
-      worktreePath: null,
-      activeProviderThreadId: null,
-      lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: `inbox-${orgId}` },
-      forkedFrom: null,
-      createdBy: "system",
-      creationSource: "server",
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      archivedAt: timestamp,
-      deletedAt: null,
-    },
-    runs: [],
-    attempts: [],
-    nodes: [],
-    subagents: [],
-    providerSessions: [],
-    providerThreads: [],
-    providerTurns: [],
-    runtimeRequests: [],
-    messages: [],
-    plans: [],
-    turnItems: [],
-    checkpointScopes: [],
-    checkpoints: [],
-    contextHandoffs: [],
-    contextTransfers: [],
-    visibleTurnItems: [],
-    updatedAt: timestamp,
-  });
-
 const configured = ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }));
 const database = KinPersistence.layer.pipe(
   Layer.provideMerge(Sqlite.layerMemory),
@@ -143,27 +98,6 @@ const upsert = (id: string, orgId = orgA) =>
       dedupe: { replayKey: "{{headers.x-github-delivery}}" },
       filters: [{ path: "body.sender.login", op: "notEquals", value: "kin[bot]" }],
     },
-  });
-
-// The runWebhookDelivery span ends after both delivery and run completion are persisted.
-const waitForDispatch = <A, E, R>(work: Effect.Effect<A, E, R>) =>
-  Effect.gen(function* () {
-    const done = yield* Deferred.make<void>();
-    const tracer = Tracer.make({
-      span: (options) => {
-        const span = new Tracer.NativeSpan(options);
-        const end = span.end.bind(span);
-        span.end = (...args) => {
-          end(...args);
-          if (span.name === "ScheduledTaskService.runWebhookDelivery")
-            Deferred.doneUnsafe(done, Effect.void);
-        };
-        return span;
-      },
-    });
-    const result = yield* work.pipe(Effect.withTracer(tracer));
-    yield* Deferred.await(done);
-    return result;
   });
 
 const threads = Layer.mock(ThreadManagementService.ThreadManagementService)({
@@ -558,6 +492,21 @@ describe("KinTriggerSink", () => {
             assert.deepStrictEqual(yield* inbox.listPending(orgA), []);
             yield* store.unregisterSource(orgB, a.id);
             assert.deepStrictEqual(yield* store.sourceByTaskId(a.scheduledTaskId), a);
+            const active = yield* Effect.flip(store.unregisterSource(orgA, a.id));
+            assert.strictEqual(
+              active._tag === "KinWebhookSourceConflict" && active.reason,
+              "task_active",
+            );
+            yield* service.setEnabled({ id: a.scheduledTaskId, enabled: false });
+            yield* sql`INSERT INTO scheduled_task_webhook_pending
+              (delivery_id, task_id, coalesce_key, due_at, state, task_json, request_json, delivery_ids_json)
+              VALUES ('in-flight', ${a.scheduledTaskId}, '', 0, 'running', '{}', '{}', '[]')`;
+            const running = yield* Effect.flip(store.unregisterSource(orgA, a.id));
+            assert.strictEqual(
+              running._tag === "KinWebhookSourceConflict" && running.reason,
+              "task_active",
+            );
+            yield* sql`DELETE FROM scheduled_task_webhook_pending WHERE delivery_id = 'in-flight'`;
             yield* store.unregisterSource(orgA, a.id);
             assert.isUndefined(yield* store.sourceByTaskId(a.scheduledTaskId));
           }),

@@ -19,6 +19,7 @@ import * as ScheduledTasks from "../../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as SecretRequests from "../../secrets/SecretRequests.ts";
 import * as KinTriggerSink from "../triggers/KinTriggerSink.ts";
+import * as KinTriggerStore from "../triggers/KinTriggerStore.ts";
 
 const decodeEvent = Schema.decodeSync(OrchestrationV2DomainEventJson);
 
@@ -81,6 +82,7 @@ export const withScheduledTasks = Effect.fn("KinContract.withScheduledTasks")(fu
     launches: Queue.Queue<ThreadLaunch.ThreadLaunchInput>;
     sends: Queue.Queue<ThreadManagement.ThreadManagementSendInput>;
     launchDeliveries: Queue.Queue<ReadonlyArray<{ readonly receivedAt: unknown }>>;
+    launchInFlight: Queue.Queue<number>;
   }) => Effect.Effect<A, E, SqlClient.SqlClient>,
   policy?: ManagedPolicyDocument,
 ) {
@@ -88,6 +90,7 @@ export const withScheduledTasks = Effect.fn("KinContract.withScheduledTasks")(fu
   const launchDeliveries =
     yield* Queue.unbounded<ReadonlyArray<{ readonly receivedAt: unknown }>>();
   const launches = yield* Queue.unbounded<ThreadLaunch.ThreadLaunchInput>();
+  const launchInFlight = yield* Queue.unbounded<number>();
   const sends = yield* Queue.unbounded<ThreadManagement.ThreadManagementSendInput>();
   const dependencies = Layer.mergeAll(
     NodeCrypto.layer,
@@ -104,6 +107,10 @@ export const withScheduledTasks = Effect.fn("KinContract.withScheduledTasks")(fu
           projectId: input.projectId,
         }).pipe(Effect.orDie);
         yield* Queue.offer(launchDeliveries, rows);
+        const inFlight = yield* KinTriggerStore.inFlightDeliveries(sql, taskId ?? "").pipe(
+          Effect.orDie,
+        );
+        yield* Queue.offer(launchInFlight, inFlight.length);
         yield* Queue.offer(launches, input);
         const result = projection();
         return { threadId: result.thread.id, projection: result, resumed: false };
@@ -126,6 +133,6 @@ export const withScheduledTasks = Effect.fn("KinContract.withScheduledTasks")(fu
   );
   return yield* Effect.gen(function* () {
     const service = yield* ScheduledTasks.ScheduledTaskService;
-    return yield* body({ service, launches, sends, launchDeliveries });
+    return yield* body({ service, launches, sends, launchDeliveries, launchInFlight });
   }).pipe(Effect.provide(Layer.fresh(ScheduledTasks.layer.pipe(Layer.provide(dependencies)))));
 });

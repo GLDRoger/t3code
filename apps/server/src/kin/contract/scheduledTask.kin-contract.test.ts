@@ -67,6 +67,7 @@ it.effect("preserves the upstream database columns Kin reads", () =>
     for (const [table, columns] of [
       ["orchestration_v2_projection_runs", ["run_id", "thread_id", "status", "payload_json"]],
       ["orchestration_v2_projection_provider_turns", ["thread_id", "completed_at"]],
+      ["scheduled_task_webhook_pending", ["task_id", "state"]],
     ] as const) {
       const rows = yield* sql`PRAGMA table_info(${sql.literal(table)})`;
       assert.includeMembers(
@@ -78,7 +79,15 @@ it.effect("preserves the upstream database columns Kin reads", () =>
     const deliveries = yield* sql`PRAGMA table_info(scheduled_task_webhook_deliveries)`;
     assert.includeMembers(
       tasks.map((row) => row.name),
-      ["task_id", "project_id", "thread_id", "thread_mode", "schedule_json"],
+      [
+        "task_id",
+        "project_id",
+        "thread_id",
+        "thread_mode",
+        "schedule_json",
+        "enabled",
+        "last_run_status",
+      ],
     );
     assert.includeMembers(
       deliveries.map((row) => row.name),
@@ -90,7 +99,7 @@ it.effect("preserves the upstream database columns Kin reads", () =>
 it.effect(
   "dispatches signed GitHub deliveries with Kin's provenance, span and replay identity",
   () =>
-    withScheduledTasks(({ service, launches, sends, launchDeliveries }) =>
+    withScheduledTasks(({ service, launches, sends, launchDeliveries, launchInFlight }) =>
       Effect.gen(function* () {
         const finished = yield* Deferred.make<void>();
         const tracer = Tracer.make({
@@ -142,6 +151,7 @@ it.effect(
         const launch = yield* Queue.take(launches);
         const rows = yield* Queue.take(launchDeliveries);
         assert.lengthOf(rows, 1);
+        assert.isAbove(yield* Queue.take(launchInFlight), 0);
         const [row] = rows;
         if (row === undefined) return assert.fail("Delivery missing at launch");
         const receivedAt = yield* decodeReceivedAt(row.receivedAt);
