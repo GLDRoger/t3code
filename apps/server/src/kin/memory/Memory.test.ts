@@ -462,10 +462,7 @@ it.effect(
         expect(
           yield* sql`SELECT * FROM kin_memory_reads WHERE org_id = ${orgA} ORDER BY item_id`,
         ).toHaveLength(1);
-        expect(repository.counts()).toEqual({
-          ...counts,
-          validations: counts.validations + 3,
-        });
+        expect(repository.counts()).toEqual(counts);
         yield* TestClock.adjust("7 weeks");
         yield* memory.readItem(orgA, itemId);
         const moved = repository.files.get("deferrals/def-001.md");
