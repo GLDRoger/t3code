@@ -1,12 +1,14 @@
-import { View } from "react-native";
+import { Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../../components/ui/AppText";
+import * as Dialog from "../../../components/ui/Dialog";
 import { cn } from "../../../lib/cn";
 import {
   SelectableMarkdownText,
   type NativeMarkdownTextStyle,
 } from "../../../native/SelectableMarkdownText";
 import type { KinFeedRow } from "../state/kinChatFeed";
+import type { KinOutboxEntry } from "../state/kinOutbox";
 
 type MessageRow = Extract<KinFeedRow, { readonly type: "message" }>;
 type SystemRow = Extract<KinFeedRow, { readonly type: "system" }>;
@@ -92,6 +94,61 @@ export function KinSystemLine(props: { readonly row: SystemRow }) {
     <View className="items-center px-8 py-2">
       <Text textRole="caption" className="text-center text-foreground-muted">
         {props.row.message.body}
+      </Text>
+    </View>
+  );
+}
+
+/** The owner's message before the host has it: sending, waiting for a connection, or refused. */
+export function KinPendingBubble(props: {
+  readonly entry: KinOutboxEntry;
+  readonly connected: boolean;
+  readonly onRetry: () => void;
+  readonly onDiscard: () => void;
+}) {
+  const { entry } = props;
+  const failed = entry.state === "failed";
+  const status = failed
+    ? "Not sent. Tap to retry"
+    : props.connected || entry.state === "sending"
+      ? "Sending…"
+      : "Waiting for connection";
+  return (
+    <View className="items-end gap-1 px-4 pb-1.5">
+      <Pressable
+        disabled={!failed}
+        onPress={props.onRetry}
+        onLongPress={
+          failed
+            ? () =>
+                Dialog.confirm({
+                  title: "Delete this message?",
+                  message: "It was never sent.",
+                  confirmText: "Delete",
+                  destructive: true,
+                  onConfirm: props.onDiscard,
+                })
+            : undefined
+        }
+        accessibilityRole={failed ? "button" : undefined}
+        accessibilityLabel={`You: ${entry.body}. ${status}.`}
+        accessibilityHint={failed ? (entry.error ?? undefined) : undefined}
+        className={cn(
+          "max-w-[85%] rounded-[20px] bg-user-bubble px-3.5 py-2.5",
+          !failed && "opacity-70",
+        )}
+      >
+        <Text textRole="body" className="text-user-bubble-foreground">
+          {entry.body}
+        </Text>
+      </Pressable>
+      <Text
+        textRole="caption"
+        importantForAccessibility="no"
+        accessibilityElementsHidden
+        className={cn("px-1", failed ? "text-danger-foreground" : "text-foreground-muted")}
+      >
+        {status}
       </Text>
     </View>
   );

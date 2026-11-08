@@ -16,6 +16,7 @@ import * as Schema from "effect/Schema";
 import { Atom, AtomRegistry, type AsyncResult } from "effect/reactivity";
 import { useRef, useState } from "react";
 import { View } from "react-native";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 
 import { AppBar } from "../../components/ui/AppBar";
 import { Button } from "../../components/ui/Button";
@@ -31,8 +32,9 @@ import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useMarkdownPreviewStyles } from "../files/FileMarkdownPreview";
+import { KinComposer } from "./components/KinComposer";
 import { KinFoldLine } from "./components/KinFoldLine";
-import { KinMessageBubble, KinSystemLine } from "./components/KinMessageBubble";
+import { KinMessageBubble, KinPendingBubble, KinSystemLine } from "./components/KinMessageBubble";
 import {
   KIN_FIXTURE_AGENT,
   KIN_FIXTURE_CHAT_ID,
@@ -54,6 +56,8 @@ import {
   type KinFeedViewer,
 } from "./state/kinChatFeed";
 import { kinClient, type KinSynced } from "./state/kinClient";
+import { splitKinOutbox, type KinOutboxEntry } from "./state/kinOutbox";
+import { kinOutbox } from "./state/kinOutboxDelivery";
 import {
   applyKinChatHistory,
   emptyKinChat,
@@ -127,6 +131,7 @@ function KinLiveChat(props: { readonly orgId: string; readonly chatId: string })
 
   return (
     <KinChatPage
+      orgId={props.orgId}
       chatId={chatId ?? KIN_FIXTURE_CHAT_ID}
       title={chatTitle(summary, viewer)}
       state={state}
@@ -153,6 +158,7 @@ function KinFixtureChat() {
   };
   return (
     <KinChatPage
+      orgId="dev"
       chatId={KIN_FIXTURE_CHAT_ID}
       title="Tech lead"
       state={{
@@ -178,6 +184,7 @@ type ReadHistory = (
 ) => Promise<Exit.Exit<KinChatHistoryResult, unknown>>;
 
 function KinChatPage(props: {
+  readonly orgId: string;
   readonly chatId: KinChatId;
   readonly title: string;
   readonly state: KinChatScreenState;
@@ -196,6 +203,9 @@ function KinChatPage(props: {
       <ScreenContent surface="screen">
         {state._tag === "ready" ? (
           <KinChatFeed
+            orgId={props.orgId}
+            title={props.title}
+            environmentId={state.environmentId}
             chatId={props.chatId}
             chat={state.chat}
             connected={state.connected}
@@ -301,7 +311,14 @@ const initialPaging: Paging = {
 
 const offlineTime = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 
+type KinChatRow =
+  | KinFeedRow
+  | { readonly type: "pending"; readonly key: string; readonly entry: KinOutboxEntry };
+
 function KinChatFeed(props: {
+  readonly orgId: string;
+  readonly title: string;
+  readonly environmentId: EnvironmentId;
   readonly chatId: KinChatId;
   readonly chat: KinSynced<KinChatState>;
   readonly connected: boolean;
@@ -320,9 +337,22 @@ function KinChatFeed(props: {
   // Set by "Load earlier" so the prepended page keeps the reader's place, even at the end.
   const [holdPosition, setHoldPosition] = useState(false);
 
-  const feed = mergeKinFeed(props.chat.value, paging.earlier);
-  const { messages } = feed;
-  const rows = buildKinFeedRows(messages, props.viewer, expandedRuns);
+  const outbox = useAtomValue(kinOutbox.chatAtom(props.environmentId, props.chatId));
+  const streamed = mergeKinFeed(props.chat.value, paging.earlier);
+  const { acked, pending } = splitKinOutbox(outbox, streamed.messages);
+  const { messages } = mergeKinFeed(streamed, { ...emptyKinChat, messages: acked });
+  const feedRows = buildKinFeedRows(messages, props.viewer, expandedRuns);
+  const rows: ReadonlyArray<KinChatRow> =
+    pending.length === 0
+      ? feedRows
+      : [
+          ...feedRows,
+          ...pending.map((entry) => ({
+            type: "pending" as const,
+            key: `pending:${entry.clientMessageId}`,
+            entry,
+          })),
+        ];
   const unseen = atEnd ? 0 : kinUnseenCount(messages, seenSeq, props.viewer.personId);
   const followsEnd = atEnd && !holdPosition;
   const earlierPage = kinEarlierPage(props.chatId, messages, paging.exhausted);
@@ -372,7 +402,7 @@ function KinChatFeed(props: {
     });
   };
 
-  const renderItem = ({ item }: { readonly item: KinFeedRow }) => {
+  const renderItem = ({ item }: { readonly item: KinChatRow }) => {
     switch (item.type) {
       case "message":
         return (
@@ -386,8 +416,27 @@ function KinChatFeed(props: {
         return <KinSystemLine row={item} />;
       case "fold":
         return <KinFoldLine row={item} onToggle={() => toggleRun(item.runId)} />;
+      case "pending":
+        return (
+          <KinPendingBubble
+            entry={item.entry}
+            connected={props.connected}
+            onRetry={() => void kinOutbox.retry(item.entry.clientMessageId)}
+            onDiscard={() => void kinOutbox.discard(item.entry.clientMessageId)}
+          />
+        );
     }
   };
+
+  const composer = (
+    <KinComposer
+      orgId={props.orgId}
+      chatId={props.chatId}
+      environmentId={props.environmentId}
+      recipient={props.title}
+      onSend={jumpToEnd}
+    />
+  );
 
   const header = (
     <View className="gap-3 px-4 pb-3">
@@ -414,60 +463,66 @@ function KinChatFeed(props: {
 
   if (rows.length === 0 && earlierPage === null) {
     return (
-      <View className="flex-1 justify-center p-4">
-        {header}
-        <EmptyState
-          variant="plain"
-          title="Say hello to your lead."
-          detail="It reads every message here."
-        />
-      </View>
+      <KeyboardAvoidingView automaticOffset behavior="padding" className="flex-1">
+        <View className="flex-1 justify-center p-4">
+          {header}
+          <EmptyState
+            variant="plain"
+            title="Say hello to your lead."
+            detail="It reads every message here."
+          />
+        </View>
+        {composer}
+      </KeyboardAvoidingView>
     );
   }
 
   return (
-    <View className="flex-1">
-      <LegendList
-        ref={listRef}
-        renderScrollComponent={NativeScrollView}
-        style={{ flex: 1 }}
-        contentInsetAdjustmentBehavior="automatic"
-        contentContainerStyle={{ paddingTop: 8, paddingBottom: 16 }}
-        data={rows}
-        keyExtractor={(row) => row.key}
-        getItemType={(row) => (row.type === "message" ? (row.own ? "own" : "other") : row.type)}
-        renderItem={renderItem}
-        estimatedItemSize={72}
-        drawDistance={500}
-        alignItemsAtEnd
-        initialScrollAtEnd
-        maintainScrollAtEnd={
-          followsEnd
-            ? { animated: false, on: { dataChange: true, itemLayout: true, layout: true } }
-            : false
-        }
-        maintainVisibleContentPosition={followsEnd ? false : { data: true, size: true }}
-        onScroll={handleScroll}
-        onScrollBeginDrag={() => {
-          if (holdPosition) setHoldPosition(false);
-        }}
-        scrollEventThrottle={32}
-        keyboardDismissMode="interactive"
-        keyboardShouldPersistTaps="handled"
-        ListHeaderComponent={header}
-      />
-      {unseen > 0 ? (
-        <View pointerEvents="box-none" className="absolute inset-x-0 bottom-4 items-center">
-          <ControlPill
-            variant="pill"
-            icon="chevron.down"
-            label="New messages"
-            accessibilityLabel={`${unseen} new ${unseen === 1 ? "message" : "messages"}. Scroll to the latest.`}
-            className="border border-border shadow-md shadow-black/10"
-            onPress={jumpToEnd}
-          />
-        </View>
-      ) : null}
-    </View>
+    <KeyboardAvoidingView automaticOffset behavior="padding" className="flex-1">
+      <View className="flex-1">
+        <LegendList
+          ref={listRef}
+          renderScrollComponent={NativeScrollView}
+          style={{ flex: 1 }}
+          contentInsetAdjustmentBehavior="automatic"
+          contentContainerStyle={{ paddingTop: 8, paddingBottom: 16 }}
+          data={rows}
+          keyExtractor={(row) => row.key}
+          getItemType={(row) => (row.type === "message" ? (row.own ? "own" : "other") : row.type)}
+          renderItem={renderItem}
+          estimatedItemSize={72}
+          drawDistance={500}
+          alignItemsAtEnd
+          initialScrollAtEnd
+          maintainScrollAtEnd={
+            followsEnd
+              ? { animated: false, on: { dataChange: true, itemLayout: true, layout: true } }
+              : false
+          }
+          maintainVisibleContentPosition={followsEnd ? false : { data: true, size: true }}
+          onScroll={handleScroll}
+          onScrollBeginDrag={() => {
+            if (holdPosition) setHoldPosition(false);
+          }}
+          scrollEventThrottle={32}
+          keyboardDismissMode="interactive"
+          keyboardShouldPersistTaps="handled"
+          ListHeaderComponent={header}
+        />
+        {unseen > 0 ? (
+          <View pointerEvents="box-none" className="absolute inset-x-0 bottom-4 items-center">
+            <ControlPill
+              variant="pill"
+              icon="chevron.down"
+              label="New messages"
+              accessibilityLabel={`${unseen} new ${unseen === 1 ? "message" : "messages"}. Scroll to the latest.`}
+              className="border border-border shadow-md shadow-black/10"
+              onPress={jumpToEnd}
+            />
+          </View>
+        ) : null}
+      </View>
+      {composer}
+    </KeyboardAvoidingView>
   );
 }
