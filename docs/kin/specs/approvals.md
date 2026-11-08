@@ -386,9 +386,9 @@ These probes assume GitHub checks a fine-grained token's permission before it lo
         "required_approving_review_count": 1,
         "require_code_owner_review": true,
         "dismiss_stale_reviews_on_push": true,
-        "require_last_push_approval": true,
+        "require_last_push_approval": false,
         "required_review_thread_resolution": true,
-        "allowed_merge_methods": ["squash"]
+        "allowed_merge_methods": ["squash", "merge"]
       }
     },
     {
@@ -396,18 +396,31 @@ These probes assume GitHub checks a fine-grained token's permission before it lo
       "parameters": {
         "strict_required_status_checks_policy": true,
         "do_not_enforce_on_create": false,
-        "required_status_checks": [{ "context": "<per repo>" }]
+        "required_status_checks": [{ "context": "<per repo>", "integration_id": 15368 }]
       }
     }
   ]
 }
 ```
 
-- `bypass_actors` is empty, including repository admins. Otherwise the owner's merge token could skip review.
+- `bypass_actors` is empty, including repository admins. Otherwise the owner's merge token could skip review. `--check` also requires `current_user_can_bypass: "never"`, and counts a ruleset whose bypass actors it can't see as drift.
+- `integration_id` 15368 is the GitHub Actions App (`GET /apps/github-actions`), so a commit status posted with any token that has commit-status access can't stand in for CI.
+- `require_last_push_approval` is off. Against the bot it adds nothing, since `dismiss_stale_reviews_on_push` already voids the owner's approval when the bot pushes. And it would deadlock an upstream sync branch the owner pushed, because the owner's approval can't count for their own last push. `merge` is allowed for those syncs (below); the executor squashes bot PRs.
 - `.github/CODEOWNERS` contains `* @GLDRoger`, so the bot's approval never counts, and a PR that changes CODEOWNERS needs the owner's review too. The check reads the copy on the default branch (the one GitHub uses for reviews into it) and GitHub's `codeowners/errors`, and requires a `*` rule with every rule naming exactly `@GLDRoger`, so no later rule hands a path to someone else or to no one. Without it, `require_code_owner_review` is met by anyone's approval, so apply refuses to change any ruleset until CODEOWNERS passes.
-- A tag ruleset `kin-release` (`refs/tags/v*`) blocks tag creation, update and deletion, with no bypass, for when releases arrive. Update is included so a release tag can't be moved to another commit.
+- A tag ruleset `kin-release` (`refs/tags/v*` and `refs/tags/v*/**`, since `*` stops at `/`) blocks tag creation, update (`update_allows_fetch_and_merge: false`) and deletion, with no bypass, for when releases arrive. Update is included so a release tag can't be moved to another commit. GitHub requires the `update` parameter; the test fake rejects rules missing any parameter the REST reference marks required.
 - The required check for `GLDRoger/t3code` is `Check`, the `ci.yml` job that fails unless every other job passed or was skipped as not needed. Other repos pass `--status-check`.
-- The script takes the owner's own sign-in (`GH_TOKEN` or a hidden prompt) and refuses anything else before writing: an installation token (`ghs_`, refused before any request), a credential `GET /user` rejects or reports as a bot, a login other than the owner's, and a credential without admin on the repo (GitHub hides `bypass_actors` from those, so drift could go unseen). `--check` reports every drifted field, including any bypass actor, a rule someone added or removed, and changed parameters; parameters GitHub adds that the spec doesn't set are not compared. Apply creates or replaces each ruleset by name, writes nothing when it already matches, and re-reads to confirm no drift.
+- The script reads `KinGitHubScope`. The owner is `KIN_GITHUB_OWNER_LOGIN`; `--owner` may name someone else only for a repository outside Kin, and is refused for `KIN_GITHUB_REPOS`, `GLDRoger/t3code` and `--test-23`. It takes the owner's own sign-in (`GH_TOKEN` or a hidden prompt) and refuses anything else before writing: an installation token (`ghs_`, refused before any request), a credential `GET /user` rejects or reports as a bot, a login other than the owner's, and a credential without admin on the repo (GitHub hides `bypass_actors` from those, so drift could go unseen). `--check` reports every drifted field, including any bypass actor, a rule someone added or removed, and changed parameters; parameters GitHub adds that the spec doesn't set are not compared. Apply creates or replaces each ruleset by name, writes nothing when it already matches, and re-reads to confirm no drift.
+
+**Upstream syncs (proposed resolution of open question 2, owner to confirm).** The bot can't carry a sync: an upstream merge changes `.github/workflows`, which its missing Workflows permission rejects, and squashing would flatten the merge so the next sync conflicts. So the owner carries it, and Kin only opens the PR:
+
+1. The owner merges upstream locally and pushes `sync/<date>` with the merge commit, using their own credential, never the Kin host's.
+2. The bot opens the PR from that branch (Pull requests: write only; it pushes nothing).
+3. The owner approves as code owner. The approval counts because `require_last_push_approval` is off; the bot authored the PR, so it isn't the owner's own PR.
+4. The owner merges in the GitHub UI with a merge commit, which `allowed_merge_methods` permits.
+5. The executor keeps squashing bot PRs (`merge_method: "squash"`).
+6. The merge token can't take this path: it has no Workflows permission, so GitHub refuses it a merge that changes workflows.
+
+Cost: `merge` is allowed for every PR into the default branch, so a code-owner-approved bot PR could be merge-committed by hand. That changes history shape, not who may merge.
 
 ### 11. Audit
 
@@ -538,7 +551,7 @@ RPCs and scopes: `kin.approvals.list` (stream) and `get` → `orchestration:read
 20. `the audit chain detects an edited row` (`kin.audit.verify`).
 21. `the first approver key can't be confirmed from a remote session`.
 22. Mobile (`apps/mobile/modules/kin-approval-key`, device test): `signing without biometrics fails`, `re-enrolling biometrics invalidates the key`, `DER signatures convert to compact and verify on the server`.
-23. GitHub (`scripts/kin-rulesets.ts --test-23`, run against a scratch repo after `--check` passes there): the bot opens a PR, the owner posts success statuses for the required checks, then `the owner merge token can't submit a review` (expect 403), `the bot can't merge to main` (and can't push to it), and `a merge without a code-owner review is blocked`. A last step has the owner approve and the merge token merge, which shows the blocks came from the review rule rather than something else. After the owner's review at the current head, the bot's `contents: write` token could merge too: the ruleset doesn't limit who merges (threat model, open question 7). The logic is tested against a fake GitHub in `apps/server/src/kin/github/rulesetsSetup.test.ts`.
+23. GitHub (`scripts/kin-rulesets.ts --test-23 --repo <owner>/<name-with-scratch>`, after `--check` passes there): it refuses a Kin repository (`KIN_GITHUB_REPOS` or `GLDRoger/t3code`, in any case), a name without `scratch`, and a repository whose `GET /repos` `full_name` differs from `--repo` (a rename or transfer redirect). It needs a `v*` tag on the scratch repo and an Actions workflow that runs the required checks on pull requests. It takes a scratch-only fine-grained token of the owner's, checked by `OwnerMergeClient.save`'s probes and not stored, and mints a `worker` App token, which it revokes at the end. The bot opens a PR; once the Actions checks pass and GitHub reports `mergeable_state: "blocked"`: `the merge token can't submit a review` (403); for both the bot and the merge token, `can't merge without a code-owner review` (405 naming the review), `can't push to the default branch` (422 "Repository rule violations", and the ref hasn't moved), `can't create or move a v* tag` (same), `can't bypass either ruleset` (reading one needs only Metadata, so the read may succeed, but must report `current_user_can_bypass: "never"` and no bypass actors), and `can't read a ruleset's history or change a ruleset` (403, or 404, which GitHub uses to hide endpoints a token can't use; the change sends the desired body, and drift is checked again afterwards). The owner approves and GitHub reports `clean`. Then bait and switch: the bot pushes, the owner's review shows `DISMISSED`, and the merge token's merge of the new head is blocked. The owner approves again and the merge token merges, which shows the blocks came from the rules. After the owner's review at the current head, the bot's `contents: write` token could merge too: the ruleset doesn't limit who merges (threat model, open question 7); test 23 doesn't merge with it. The logic is tested against a fake GitHub in `apps/server/src/kin/github/rulesetsSetup.test.ts`; GitHub's exact refusal messages are assumed there and confirmed by the first real run.
 
 Acceptance for phase 1: on `GLDRoger/t3code`, the lead requests a merge of a bot PR; the owner approves on the phone with Face ID; the GitHub review lands from the phone; the executor merges with the pinned SHA; the audit lists grant, device, SHA, provenance and merge commit. Tests 1–21 pass in CI; 22–23 pass on the release checklist.
 
@@ -589,7 +602,7 @@ Later, marked by phase:
 ## Open questions
 
 1. The phone needs a GitHub user token for the Kin App (device flow, once). Is that acceptable, or should phase 1 start with "Approve on GitHub" only and add the phone token later?
-2. Owner-written PRs under an empty bypass list: route them through the bot, or add a time-boxed bypass toggled by an owner-signed action? Upstream syncs make this urgent: once `kin-main` is on `GLDRoger/t3code`, `KIN.md`'s `git push origin main kin` is rejected, a sync PR the owner opens has no code owner left to approve it, the bot can't open one because upstream merges change `.github/workflows` (no Workflows permission), and squash-only would flatten the upstream merge so the next sync conflicts. Decide before applying the ruleset there; one option is `allowed_merge_methods: ["squash", "merge"]` plus a second code owner for sync PRs.
+2. Owner-written PRs under an empty bypass list: route them through the bot, or add a time-boxed bypass toggled by an owner-signed action? Upstream syncs make this urgent: once `kin-main` is on `GLDRoger/t3code`, `KIN.md`'s `git push origin main kin` is rejected, a sync PR the owner opens has no code owner left to approve it, the bot can't open one because upstream merges change `.github/workflows` (no Workflows permission), and squash-only would flatten the upstream merge so the next sync conflicts. Decide before applying the ruleset there; one option is `allowed_merge_methods: ["squash", "merge"]` plus a second code owner for sync PRs. **Proposed resolution, owner to confirm:** the sync flow in section 10, where the owner pushes `sync/<date>`, the bot opens the PR, and the owner approves and merge-commits it. This needs `require_last_push_approval` off and `merge` allowed, as `kinRulesets` now has.
 3. Merge-queue repos: support `enablePullRequestAutoMerge` with `expectedHeadOid` later, or keep refusing?
 4. Should the executor run as a separate OS user with its own keychain, so code running as the Kin server's user can't read the merge token at all? Phase 1 relies on the token being unable to review.
 5. Desktop approvals: a Touch ID-gated Secure Enclave key on macOS through a native addon, or phone-only for good?

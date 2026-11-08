@@ -2,7 +2,6 @@
 // them for drift, check CODEOWNERS, and run security test 23 on a scratch repository. It runs on
 // the owner's own GitHub sign-in and refuses the bot's.
 import { KinOrgId, RepoSlug } from "@t3tools/contracts";
-import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
@@ -11,14 +10,13 @@ import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import { Command, Flag, Prompt } from "effect/cli";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
+import { FetchHttpClient, HttpClient } from "effect/http";
 
-import { gitHubJson, gitHubRequest, KinGitHubRequestError } from "./githubRest.ts";
+import { gitHubAnswer, gitHubJson, repoPath } from "./githubRest.ts";
 import * as Keychain from "./Keychain.ts";
 import * as KinGitHubApp from "./KinGitHubApp.ts";
 import {
   KIN_CODEOWNERS_PATH,
-  KIN_OWNER_LOGIN,
   KIN_REPO_REQUIRED_CHECKS,
   codeownersProblems,
   diffRuleset,
@@ -27,6 +25,7 @@ import {
 } from "./KinRulesets.ts";
 import { KinGitHubScope } from "./KinGitHubScope.ts";
 import * as OwnerMergeClient from "./OwnerMergeClient.ts";
+import { runTest23Probes } from "./rulesetsTest23.ts";
 
 export interface RulesetsResult {
   readonly ok: boolean;
@@ -51,6 +50,7 @@ export interface RepoTarget {
 
 const UserResponse = Schema.Struct({ login: Schema.String, type: Schema.String });
 const RepoResponse = Schema.Struct({
+  full_name: Schema.String,
   default_branch: Schema.String,
   permissions: Schema.optional(Schema.Struct({ admin: Schema.Boolean })),
 });
@@ -65,6 +65,7 @@ const RulesetDetail = Schema.Struct({
   name: Schema.String,
   target: Schema.String,
   enforcement: Schema.String,
+  current_user_can_bypass: Schema.optional(Schema.String),
   bypass_actors: Schema.optional(
     Schema.Array(
       Schema.Struct({
@@ -89,39 +90,7 @@ const ContentResponse = Schema.Struct({ content: Schema.String, encoding: Schema
 const CodeownersErrors = Schema.Struct({
   errors: Schema.Array(Schema.Struct({ line: Schema.Int, kind: Schema.String })),
 });
-const RefResponse = Schema.Struct({ object: Schema.Struct({ sha: Schema.String }) });
-const PullResponse = Schema.Struct({
-  number: Schema.Int,
-  head: Schema.Struct({ sha: Schema.String }),
-});
-
 const refuse = (reason: string) => Effect.fail(new KinRulesetsRefusedError({ reason }));
-
-const repoPath = (repo: RepoSlug) => {
-  const [owner, name] = repo.split("/") as [string, string];
-  return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
-};
-
-/** One call where only the status matters; the body is never read. */
-const statusOf = Effect.fn("kinRulesets.statusOf")(function* (input: {
-  readonly operation: string;
-  readonly method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
-  readonly path: string;
-  readonly token: Redacted.Redacted<string>;
-  readonly body?: unknown;
-}) {
-  const client = yield* HttpClient.HttpClient;
-  const transport = () =>
-    new KinGitHubRequestError({ operation: input.operation, stage: "transport" });
-  let request = gitHubRequest(input.method, input.path, input.token);
-  if (input.body !== undefined) {
-    request = yield* HttpClientRequest.bodyJson(request, input.body).pipe(
-      Effect.mapError(transport),
-    );
-  }
-  const response = yield* client.execute(request).pipe(Effect.mapError(transport));
-  return response.status;
-});
 
 /**
  * The owner's own admin sign-in, or a refusal. The bot App's installation tokens (`ghs_`) never
@@ -173,8 +142,9 @@ export const verifyOwnerCredential = Effect.fn("kinRulesets.verifyOwnerCredentia
       `${login} can't administer ${target.repo} with this credential, so it can't see or set bypass actors.`,
     );
   }
-  return { login, defaultBranch: repo.body.default_branch };
+  return { login, defaultBranch: repo.body.default_branch, fullName: repo.body.full_name };
 });
+type VerifiedOwner = Effect.Success<ReturnType<typeof verifyOwnerCredential>>;
 
 /** CODEOWNERS on the default branch, which is the copy GitHub reads for reviews into it. */
 export const checkCodeowners = Effect.fn("kinRulesets.checkCodeowners")(function* (
@@ -269,26 +239,36 @@ const codeownersLines = (problems: ReadonlyArray<string>, owner: string) =>
     ? [`CODEOWNERS: ok (@${owner} owns every path)`]
     : ["CODEOWNERS: FAIL", ...problems.map((problem) => `  FAIL ${problem}`)];
 
-/** `--check` and `--codeowners`: nothing is written. */
-export const checkRepo = Effect.fn("kinRulesets.check")(function* (
+const checkVerified = Effect.fn("kinRulesets.checkVerified")(function* (
   target: RepoTarget,
+  { login, defaultBranch }: VerifiedOwner,
   input: { readonly requiredChecks: ReadonlyArray<string>; readonly rulesets: boolean },
 ) {
-  const { login, defaultBranch } = yield* verifyOwnerCredential(target);
   const problems = yield* checkCodeowners(target, defaultBranch);
   const lines = [
     `${target.repo} (default branch ${defaultBranch}), checked as ${login}`,
     ...codeownersLines(problems, target.owner),
   ];
   let ok = problems.length === 0;
+  const live = input.rulesets
+    ? yield* readRulesets(target, kinRulesets(input.requiredChecks))
+    : new Map<string, RulesetDetail>();
   if (input.rulesets) {
-    const desired = kinRulesets(input.requiredChecks);
-    for (const result of driftLines(desired, yield* readRulesets(target, desired))) {
+    for (const result of driftLines(kinRulesets(input.requiredChecks), live)) {
       ok &&= result.ok;
       lines.push(...result.lines);
     }
   }
   lines.push(ok ? "PASS: no drift." : "FAIL: see above.");
+  return { ok, lines, live };
+});
+
+/** `--check` and `--codeowners`: nothing is written. */
+export const checkRepo = Effect.fn("kinRulesets.check")(function* (
+  target: RepoTarget,
+  input: { readonly requiredChecks: ReadonlyArray<string>; readonly rulesets: boolean },
+) {
+  const { ok, lines } = yield* checkVerified(target, yield* verifyOwnerCredential(target), input);
   return { ok, lines } satisfies RulesetsResult;
 });
 
@@ -344,197 +324,117 @@ export const applyRepo = Effect.fn("kinRulesets.apply")(function* (
   return { ok, lines } satisfies RulesetsResult;
 });
 
-// Success codes would mean the action went through; 401 and 404 mean the probe never reached
-// the rule, so they don't count as blocked either.
-const isBlocked = (status: number) => status >= 400 && status !== 401 && status !== 404;
+const isKinRepo = (kinRepos: ReadonlyArray<string>, repo: string) =>
+  kinRepos.some((kin) => kin.toLowerCase() === repo.toLowerCase());
 
 /**
- * Security test 23 on a scratch repository: the bot opens a PR, then the owner merge token tries
- * to review, the bot tries to merge and to push, and the merge token tries to merge without a
- * code-owner review. A final review by the owner followed by a successful merge shows the
- * earlier blocks came from the review rule. Required checks get success statuses from the owner.
+ * Why `repo` can't host test 23, or null. Test 23 opens and merges a PR and tries to move tags, so
+ * it runs only on a repository named as a scratch one and never on a Kin repository.
  */
-export const runTest23 = Effect.fn("kinRulesets.test23")(function* (input: {
+export function scratchRepoProblem(repo: string, kinRepos: ReadonlyArray<string>): string | null {
+  if (isKinRepo(kinRepos, repo)) {
+    return `${repo} is a Kin repository; run --test-23 on a scratch repository.`;
+  }
+  if (!/scratch/i.test(repo.split("/")[1] ?? "")) {
+    return `${repo} has no "scratch" in its name; test 23 runs only on a scratch repository.`;
+  }
+  return null;
+}
+
+/** The repositories test 23 must never touch: `KIN_GITHUB_REPOS` and the known Kin ones. */
+export const kinRepos = (scoped: ReadonlyArray<string>) => [
+  ...scoped,
+  ...Object.keys(KIN_REPO_REQUIRED_CHECKS),
+];
+
+/**
+ * Security test 23 on a scratch repository. The owner is checked once, and the repository GitHub
+ * answers for (`full_name`, which follows renames and transfers) must be the one asked for and a
+ * scratch one. `tokens` runs only after that and after `--check` passes; the bot token it returns
+ * is revoked at the end.
+ */
+export const runTest23 = Effect.fn("kinRulesets.test23Run")(function* <E, R>(input: {
   readonly target: RepoTarget;
   readonly requiredChecks: ReadonlyArray<string>;
-  readonly botToken: Redacted.Redacted<string>;
-  readonly mergeToken: Redacted.Redacted<string>;
+  readonly kinRepos: ReadonlyArray<string>;
+  readonly tokens: Effect.Effect<
+    {
+      readonly botToken: Redacted.Redacted<string>;
+      readonly mergeToken: Redacted.Redacted<string>;
+    },
+    E,
+    R
+  >;
 }) {
-  const client = yield* HttpClient.HttpClient;
   const { target } = input;
-  const path = repoPath(target.repo);
-  const check = yield* checkRepo(target, { requiredChecks: input.requiredChecks, rulesets: true });
+  const before = scratchRepoProblem(target.repo, input.kinRepos);
+  if (before !== null) return yield* refuse(before);
+  const owner = yield* verifyOwnerCredential(target);
+  const answered =
+    owner.fullName.toLowerCase() === target.repo.toLowerCase()
+      ? scratchRepoProblem(owner.fullName, input.kinRepos)
+      : `GitHub answered for ${owner.fullName}, not ${target.repo}; it was renamed or moved.`;
+  if (answered !== null) return yield* refuse(answered);
+  const desired = kinRulesets(input.requiredChecks);
+  const check = yield* checkVerified(target, owner, {
+    requiredChecks: input.requiredChecks,
+    rulesets: true,
+  });
   if (!check.ok) {
     return {
       ok: false,
       lines: [...check.lines, "Test 23 not run: apply the rulesets to the scratch repo first."],
     } satisfies RulesetsResult;
   }
-  const { defaultBranch } = yield* verifyOwnerCredential(target);
-  const stamp = yield* Clock.currentTimeMillis;
-  const branch = `kin-test-23-${stamp}`;
-  const base = yield* gitHubJson({
+  const { botToken, mergeToken } = yield* input.tokens;
+  const client = yield* HttpClient.HttpClient;
+  const revokeLines: Array<string> = [];
+  const revoke = gitHubAnswer({
     client,
-    operation: "git.getRef",
-    method: "GET",
-    path: `${path}/git/ref/heads/${encodeURIComponent(defaultBranch)}`,
-    token: input.botToken,
-    schema: RefResponse,
+    operation: "installation.revokeToken",
+    method: "DELETE",
+    path: "/installation/token",
+    token: botToken,
+  }).pipe(
+    Effect.map((answer) => (answer.status === 204 ? null : `HTTP ${answer.status}`)),
+    Effect.orElseSucceed(() => "GitHub unreachable"),
+    Effect.map((problem) => {
+      if (problem !== null) {
+        revokeLines.push(
+          `  WARN cleanup: couldn't revoke the bot token (${problem}); it expires within the hour`,
+        );
+      }
+    }),
+  );
+  const probes = yield* runTest23Probes({
+    repo: target.repo,
+    owner: target.owner,
+    defaultBranch: owner.defaultBranch,
+    requiredChecks: input.requiredChecks,
+    rulesets: desired.flatMap((ruleset) => {
+      const id = check.live.get(ruleset.name)?.id;
+      return id === undefined ? [] : [{ id, desired: ruleset }];
+    }),
+    ownerToken: target.token,
+    botToken,
+    mergeToken,
+  }).pipe(Effect.ensuring(revoke));
+  // The change probes sent the desired bodies, so drift here means something else wrote to them.
+  const after = yield* checkVerified(target, owner, {
+    requiredChecks: input.requiredChecks,
+    rulesets: true,
   });
-  yield* gitHubJson({
-    client,
-    operation: "git.createRef",
-    method: "POST",
-    path: `${path}/git/refs`,
-    token: input.botToken,
-    body: { ref: `refs/heads/${branch}`, sha: base.body.object.sha },
-    schema: Schema.Struct({ ref: Schema.String }),
-    okStatuses: [201],
-  });
-  let merged = false;
-  let pullNumber: number | undefined;
-  const run = Effect.gen(function* () {
-    yield* gitHubJson({
-      client,
-      operation: "repos.createFile",
-      method: "PUT",
-      path: `${path}/contents/kin-test-23/${stamp}.md`,
-      token: input.botToken,
-      body: {
-        message: "test: kin security test 23",
-        content: Buffer.from("Kin security test 23. Safe to delete.\n").toString("base64"),
-        branch,
-      },
-      schema: Schema.Struct({ commit: Schema.Struct({ sha: Schema.String }) }),
-      okStatuses: [201],
-    });
-    const pull = yield* gitHubJson({
-      client,
-      operation: "pulls.create",
-      method: "POST",
-      path: `${path}/pulls`,
-      token: input.botToken,
-      body: { title: "Kin security test 23", head: branch, base: defaultBranch },
-      schema: PullResponse,
-      okStatuses: [201],
-    });
-    pullNumber = pull.body.number;
-    const headSha = pull.body.head.sha;
-    const pullPath = `${path}/pulls/${pull.body.number}`;
-    for (const context of input.requiredChecks) {
-      yield* gitHubJson({
-        client,
-        operation: "repos.createStatus",
-        method: "POST",
-        path: `${path}/statuses/${headSha}`,
-        token: target.token,
-        body: { state: "success", context, description: "Kin security test 23" },
-        schema: Schema.Struct({ id: Schema.Int }),
-        okStatuses: [201],
-      });
-    }
-    const mergeBody = { sha: headSha, merge_method: "squash" };
-    const probes: ReadonlyArray<{
-      readonly name: string;
-      readonly pass: (status: number) => boolean;
-      readonly request: Parameters<typeof statusOf>[0];
-    }> = [
-      {
-        name: "the owner merge token can't submit a review",
-        pass: (status) => status === 403,
-        request: {
-          operation: "pulls.createReview",
-          method: "POST",
-          path: `${pullPath}/reviews`,
-          token: input.mergeToken,
-          body: { event: "APPROVE", commit_id: headSha },
-        },
-      },
-      {
-        name: "the bot can't merge to the default branch",
-        pass: isBlocked,
-        request: {
-          operation: "pulls.merge",
-          method: "PUT",
-          path: `${pullPath}/merge`,
-          token: input.botToken,
-          body: mergeBody,
-        },
-      },
-      {
-        name: "the bot can't push to the default branch",
-        pass: isBlocked,
-        request: {
-          operation: "git.updateRef",
-          method: "PATCH",
-          path: `${path}/git/refs/heads/${encodeURIComponent(defaultBranch)}`,
-          token: input.botToken,
-          body: { sha: headSha, force: false },
-        },
-      },
-      {
-        name: "a merge without a code-owner review is blocked",
-        pass: isBlocked,
-        request: {
-          operation: "pulls.merge",
-          method: "PUT",
-          path: `${pullPath}/merge`,
-          token: input.mergeToken,
-          body: mergeBody,
-        },
-      },
-    ];
-    const lines = [
-      `Test 23 on ${target.repo}, PR #${pull.body.number} by the bot at ${headSha.slice(0, 7)}:`,
-    ];
-    let ok = true;
-    for (const probe of probes) {
-      const status = yield* statusOf(probe.request);
-      const pass = probe.pass(status);
-      ok &&= pass;
-      lines.push(`  ${pass ? "PASS" : "FAIL"} ${probe.name} (HTTP ${status})`);
-      if (!pass) return { ok: false, lines: [...lines, "FAIL: stopped at the first failure."] };
-    }
-    const review = yield* statusOf({
-      operation: "pulls.createReview",
-      method: "POST",
-      path: `${pullPath}/reviews`,
-      token: target.token,
-      body: { event: "APPROVE", commit_id: headSha },
-    });
-    let merge: number | undefined;
-    // GitHub recomputes mergeability after a review, so the first merge can still see it blocked.
-    for (let attempt = 0; review === 200 && attempt < 5; attempt++) {
-      merge = yield* statusOf(probes[3]!.request);
-      if (merge !== 405) break;
-      yield* Effect.sleep("2 seconds");
-    }
-    merged = merge === 200;
-    ok &&= merged;
-    lines.push(
-      `  ${merged ? "PASS" : "FAIL"} after ${target.owner}'s review the merge token merges (review HTTP ${review}, merge HTTP ${merge ?? "not tried"}), so the blocks came from the rules`,
+  const ok = probes.ok && after.ok;
+  return {
+    ok,
+    lines: [
+      ...probes.lines,
+      ...revokeLines,
+      after.ok ? "  PASS the rulesets show no drift afterwards" : "  FAIL the rulesets drifted:",
+      ...(after.ok ? [] : after.lines),
       ok ? "PASS: security test 23." : "FAIL: see above.",
-    );
-    return { ok, lines } satisfies RulesetsResult;
-  });
-  const cleanup = Effect.gen(function* () {
-    if (!merged && pullNumber !== undefined) {
-      yield* statusOf({
-        operation: "pulls.close",
-        method: "PATCH",
-        path: `${path}/pulls/${pullNumber}`,
-        token: input.botToken,
-        body: { state: "closed" },
-      });
-    }
-    yield* statusOf({
-      operation: "git.deleteRef",
-      method: "DELETE",
-      path: `${path}/git/refs/heads/${encodeURIComponent(branch)}`,
-      token: input.botToken,
-    });
-  }).pipe(Effect.ignore);
-  return yield* run.pipe(Effect.ensuring(cleanup));
+    ],
+  } satisfies RulesetsResult;
 });
 
 const decodeRepo = Schema.decodeUnknownEffect(RepoSlug);
@@ -592,8 +492,10 @@ export const kinRulesetsCommand = Command.make(
       Flag.withDefault(false),
     ),
     owner: Flag.String("owner").pipe(
-      Flag.withDescription("The owner's GitHub login: sole code owner and the required sign-in."),
-      Flag.withDefault(KIN_OWNER_LOGIN),
+      Flag.withDescription(
+        "The code owner and required sign-in, for a repository outside Kin; Kin repos and --test-23 use KIN_GITHUB_OWNER_LOGIN.",
+      ),
+      Flag.optional,
     ),
     statusCheck: Flag.String("status-check").pipe(
       Flag.withDescription(
@@ -613,21 +515,33 @@ export const kinRulesetsCommand = Command.make(
           () => new KinRulesetsRefusedError({ reason: "--repo must be owner/name." }),
         ),
       );
-      const requiredChecks =
-        input.statusCheck.length > 0 ? input.statusCheck : (KIN_REPO_REQUIRED_CHECKS[repo] ?? []);
+      const scope = yield* KinGitHubScope;
+      const protectedRepos = kinRepos(scope.repos);
+      if (input.test23) {
+        const problem = scratchRepoProblem(repo, protectedRepos);
+        if (problem !== null) return yield* refuse(problem);
+      }
+      // Kin repos and test 23's merge token belong to the configured owner, and no one else.
+      const pinned = input.test23 || isKinRepo(protectedRepos, repo);
+      const owner = Option.getOrElse(input.owner, () => scope.ownerLogin);
+      if (pinned && owner.toLowerCase() !== scope.ownerLogin.toLowerCase()) {
+        return yield* refuse(
+          `--owner ${owner} differs from KIN_GITHUB_OWNER_LOGIN (${scope.ownerLogin}), which ${input.test23 ? "test 23" : repo} must use.`,
+        );
+      }
+      const known = Object.entries(KIN_REPO_REQUIRED_CHECKS).find(
+        ([slug]) => slug.toLowerCase() === repo.toLowerCase(),
+      )?.[1];
+      const requiredChecks = input.statusCheck.length > 0 ? input.statusCheck : (known ?? []);
       if (requiredChecks.length === 0 && !input.codeowners) {
         return yield* refuse(
           `${repo} has no default required checks; pass --status-check <context>.`,
         );
       }
-      if (input.test23 && repo in KIN_REPO_REQUIRED_CHECKS) {
-        return yield* refuse(`${repo} is a Kin repository; run --test-23 on a scratch repository.`);
-      }
-      const target = { repo, owner: input.owner, token: yield* ownerToken } satisfies RepoTarget;
+      const target = { repo, owner, token: yield* ownerToken } satisfies RepoTarget;
       if (input.codeowners) return yield* checkRepo(target, { requiredChecks, rulesets: false });
       if (input.check) return yield* checkRepo(target, { requiredChecks, rulesets: true });
       if (!input.test23) return yield* applyRepo(target, { requiredChecks });
-      const scope = yield* KinGitHubScope;
       const appConfig = Option.match(input.appId, {
         onNone: () => KinGitHubApp.KinGitHubAppConfig.layer,
         onSome: (appId) => Layer.succeed(KinGitHubApp.KinGitHubAppConfig, { appId }),
@@ -636,7 +550,7 @@ export const kinRulesetsCommand = Command.make(
       // token is scoped to the Kin repos, so test 23 takes a scratch token with the same shape and
       // runs `save`'s probes on it without keeping it.
       const scratchScope = Layer.succeed(KinGitHubScope, { ...scope, repos: [repo] });
-      return yield* Effect.gen(function* () {
+      const tokens = Effect.gen(function* () {
         const mergeToken = yield* scratchMergeToken;
         yield* (yield* OwnerMergeClient.OwnerMergeClient).save({
           orgId: TEST_23_ORG,
@@ -647,7 +561,7 @@ export const kinRulesetsCommand = Command.make(
           permissions: { contents: "write", pull_requests: "write" },
           holder: "worker",
         });
-        return yield* runTest23({ target, requiredChecks, botToken: bot.token, mergeToken });
+        return { botToken: bot.token, mergeToken };
       }).pipe(
         Effect.provide(
           Layer.mergeAll(
@@ -658,6 +572,7 @@ export const kinRulesetsCommand = Command.make(
           ),
         ),
       );
+      return yield* runTest23({ target, requiredChecks, kinRepos: protectedRepos, tokens });
     }).pipe(Effect.provide(KinGitHubScope.layer));
     return program.pipe(
       Effect.catch(failed),

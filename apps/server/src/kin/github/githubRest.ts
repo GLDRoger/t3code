@@ -107,3 +107,43 @@ export const gitHubStatus = Effect.fn("KinGitHub.status")(function* (input: {
   const response = yield* input.client.execute(request).pipe(Effect.mapError(fail));
   return response.status;
 });
+
+/** `/repos/{owner}/{name}` for an `owner/name` slug. */
+export const repoPath = (repo: string) => {
+  const [owner = "", name = ""] = repo.split("/");
+  return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+};
+
+export interface GitHubAnswer {
+  readonly status: number;
+  /** GitHub's `message`, or "" when the body has none. Error messages carry no credential. */
+  readonly message: string;
+  readonly body: unknown;
+}
+
+/** One GitHub REST call whose answer is judged by the caller; any status is returned. */
+export const gitHubAnswer = Effect.fn("KinGitHub.answer")(function* (input: {
+  readonly client: HttpClient.HttpClient;
+  readonly operation: string;
+  readonly method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  readonly path: string;
+  readonly token: Redacted.Redacted<string>;
+  readonly body?: unknown;
+}) {
+  yield* Effect.annotateCurrentSpan({ "kin.github.operation": input.operation });
+  const fail = () => new KinGitHubRequestError({ operation: input.operation, stage: "transport" });
+  let request = gitHubRequest(input.method, input.path, input.token);
+  if (input.body !== undefined) {
+    request = yield* HttpClientRequest.bodyJson(request, input.body).pipe(Effect.mapError(fail));
+  }
+  const response = yield* input.client.execute(request).pipe(Effect.mapError(fail));
+  const body: unknown = yield* response.json.pipe(Effect.orElseSucceed(() => null));
+  const message =
+    typeof body === "object" &&
+    body !== null &&
+    "message" in body &&
+    typeof body.message === "string"
+      ? body.message
+      : "";
+  return { status: response.status, message, body } satisfies GitHubAnswer;
+});

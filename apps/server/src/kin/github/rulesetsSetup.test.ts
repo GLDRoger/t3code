@@ -7,13 +7,15 @@ import { describe } from "vite-plus/test";
 
 import { codeownersProblems, kinRulesets } from "./KinRulesets.ts";
 import * as Rulesets from "./rulesetsSetup.ts";
+import { isKinBlock, type KinBlock } from "./rulesetsTest23.ts";
 import { fakeGitHub, type FakeAnswer, type RecordedRequest } from "./testFakes.ts";
 
 const OWNER_TOKEN = "gho_owner-test";
 const BOT_TOKEN = "ghs_bot-test";
 const MERGE_TOKEN = "github_pat_merge-test";
-const repo = Schema.decodeSync(RepoSlug)("GLDRoger/t3code");
-const scratch = Schema.decodeSync(RepoSlug)("GLDRoger/kin-scratch");
+const decodeRepo = Schema.decodeSync(RepoSlug);
+const repo = decodeRepo("GLDRoger/t3code");
+const scratch = decodeRepo("GLDRoger/kin-scratch");
 const target = (token = OWNER_TOKEN, slug = repo): Rulesets.RepoTarget => ({
   repo: slug,
   owner: "GLDRoger",
@@ -27,56 +29,129 @@ type StoredRuleset = Record<string, unknown> & {
   rules: Array<{ type: string; parameters?: Record<string, unknown> }>;
 };
 
+// GitHub's REST reference (repos/rules) marks these parameters required; it answers 422 without them.
+const REQUIRED_PARAMETERS: Record<string, Record<string, "boolean" | "number" | "array">> = {
+  creation: {},
+  deletion: {},
+  non_fast_forward: {},
+  update: { update_allows_fetch_and_merge: "boolean" },
+  pull_request: {
+    dismiss_stale_reviews_on_push: "boolean",
+    require_code_owner_review: "boolean",
+    require_last_push_approval: "boolean",
+    required_approving_review_count: "number",
+    required_review_thread_resolution: "boolean",
+  },
+  required_status_checks: {
+    required_status_checks: "array",
+    strict_required_status_checks_policy: "boolean",
+  },
+};
+const invalidRule = (rule: { type: string; parameters?: Record<string, unknown> }) => {
+  const required = REQUIRED_PARAMETERS[rule.type];
+  if (required === undefined) return `unknown rule ${rule.type}`;
+  if (Object.keys(required).length === 0) {
+    return rule.parameters === undefined ? null : `${rule.type} takes no parameters`;
+  }
+  for (const [key, type] of Object.entries(required)) {
+    const value = rule.parameters?.[key];
+    const ok = type === "array" ? Array.isArray(value) : typeof value === type;
+    if (!ok) return `${rule.type}.${key} is required`;
+  }
+  const methods = rule.parameters?.allowed_merge_methods;
+  if (
+    Array.isArray(methods) &&
+    (methods.length === 0 || methods.some((m) => !["merge", "squash", "rebase"].includes(m)))
+  ) {
+    return "allowed_merge_methods";
+  }
+  const checks = rule.parameters?.required_status_checks;
+  if (
+    Array.isArray(checks) &&
+    checks.some(
+      (check: { context?: unknown; integration_id?: unknown }) =>
+        typeof check.context !== "string" ||
+        (check.integration_id !== undefined && typeof check.integration_id !== "number"),
+    )
+  ) {
+    return "required_status_checks items";
+  }
+  return null;
+};
+
 /** Repository settings GitHub would hold, answered the way its REST API does. */
 const githubRepo = (
   options: {
     readonly slug?: string;
+    /** What `GET /repos/{slug}` names, which differs after a rename or transfer. */
+    readonly fullName?: string;
     readonly codeowners?: string | null;
     readonly codeownersErrors?: ReadonlyArray<{ line: number; kind: string }>;
     readonly user?: { login: string; type: string } | null;
     readonly admin?: boolean;
+    /** A token whose user is an admin but which lacks the Administration permission. */
+    readonly hideBypass?: boolean;
+    /** Lets tokens other than the owner's write rulesets. */
+    readonly anyoneCanAdminister?: boolean;
     readonly onPull?: (request: RecordedRequest) => FakeAnswer | undefined;
   } = {},
 ) => {
-  const base = `/repos/${options.slug ?? "GLDRoger/t3code"}`;
+  const slug = options.slug ?? "GLDRoger/t3code";
+  const base = `/repos/${slug}`;
   const rulesets: Array<StoredRuleset> = [];
   let nextId = 1;
-  // GitHub adds parameters the spec doesn't set and omits false booleans on the way back.
-  const asReturned = (ruleset: StoredRuleset) => ({
-    ...ruleset,
-    source_type: "Repository",
-    source: options.slug ?? "GLDRoger/t3code",
-    rules: ruleset.rules.map((rule) =>
-      rule.type === "pull_request"
-        ? {
-            ...rule,
-            parameters: { ...rule.parameters, automatic_copilot_code_review_enabled: false },
-          }
-        : rule.type === "required_status_checks"
+  // GitHub adds parameters the spec doesn't set and omits false booleans on the way back. Only an
+  // admin with the Administration permission sees bypass actors.
+  const asReturned = (ruleset: StoredRuleset, admin: boolean) => {
+    const { bypass_actors, ...rest } = ruleset;
+    return {
+      ...rest,
+      ...(admin ? { bypass_actors } : {}),
+      current_user_can_bypass: ruleset.current_user_can_bypass ?? "never",
+      source_type: "Repository",
+      source: slug,
+      rules: ruleset.rules.map((rule) =>
+        rule.type === "pull_request"
           ? {
               ...rule,
-              parameters: Object.fromEntries(
-                Object.entries(rule.parameters ?? {}).filter(([, value]) => value !== false),
-              ),
+              parameters: { ...rule.parameters, automatic_copilot_code_review_enabled: false },
             }
-          : rule,
-    ),
-  });
+          : rule.type === "required_status_checks"
+            ? {
+                ...rule,
+                parameters: Object.fromEntries(
+                  Object.entries(rule.parameters ?? {}).filter(([, value]) => value !== false),
+                ),
+              }
+            : rule,
+      ),
+    };
+  };
+  const validate = (body: StoredRuleset): FakeAnswer | null => {
+    const problem = body.rules.map(invalidRule).find((value) => value !== null);
+    return problem === undefined
+      ? null
+      : { status: 422, body: { message: `Invalid request.\n\n${problem}` } };
+  };
   const github = fakeGitHub((request): FakeAnswer => {
     const token = request.authorization?.replace(/^Bearer /, "");
+    const owner = token === OWNER_TOKEN;
     if (request.path === "/user") {
-      const user =
-        token !== OWNER_TOKEN
-          ? null
-          : "user" in options
-            ? options.user
-            : { login: "GLDRoger", type: "User" };
+      const user = !owner
+        ? null
+        : "user" in options
+          ? options.user
+          : { login: "GLDRoger", type: "User" };
       return user === null ? { status: 403 } : { status: 200, body: user };
     }
     if (request.method === "GET" && request.path === base) {
       return {
         status: 200,
-        body: { default_branch: "kin", permissions: { admin: options.admin ?? true } },
+        body: {
+          full_name: options.fullName ?? slug,
+          default_branch: "kin",
+          permissions: { admin: options.admin ?? true },
+        },
       };
     }
     if (request.path === `${base}/contents/.github/CODEOWNERS?ref=kin`) {
@@ -102,20 +177,30 @@ const githubRepo = (
         })),
       };
     }
+    const canAdminister = owner || options.anyoneCanAdminister === true;
     if (request.method === "POST" && request.path === `${base}/rulesets`) {
+      if (!canAdminister) return { status: 403 };
+      const invalid = validate(request.body as StoredRuleset);
+      if (invalid !== null) return invalid;
       const created = { ...(request.body as StoredRuleset), id: nextId++ };
       rulesets.push(created);
       return { status: 201, body: { id: created.id } };
+    }
+    if (/\/rulesets\/\d+\/history$/.test(request.path)) {
+      return canAdminister ? { status: 200, body: [] } : { status: 403 };
     }
     const one = request.path.match(new RegExp(`^${base}/rulesets/(\\d+)$`));
     if (one) {
       const index = rulesets.findIndex((ruleset) => ruleset.id === Number(one[1]));
       if (index === -1) return { status: 404 };
       if (request.method === "PUT") {
+        if (!canAdminister) return { status: 403 };
+        const invalid = validate(request.body as StoredRuleset);
+        if (invalid !== null) return invalid;
         rulesets[index] = { ...(request.body as StoredRuleset), id: rulesets[index]!.id };
         return { status: 200, body: { id: rulesets[index]!.id } };
       }
-      return { status: 200, body: asReturned(rulesets[index]!) };
+      return { status: 200, body: asReturned(rulesets[index]!, owner && !options.hideBypass) };
     }
     return options.onPull?.(request) ?? { status: 404 };
   });
@@ -134,7 +219,7 @@ describe("kin-rulesets apply", () => {
     const github = githubRepo();
     return Effect.gen(function* () {
       const first = yield* apply();
-      assert.isTrue(first.ok);
+      assert.isTrue(first.ok, first.lines.join("\n"));
       assert.include(first.lines, "Ruleset kin-main (branch): created");
       assert.include(first.lines, "Ruleset kin-release (tag): created");
       assert.deepStrictEqual(
@@ -168,8 +253,8 @@ describe("kin-rulesets apply", () => {
 
 const branchRule = (rulesets: Array<StoredRuleset>) =>
   rulesets.find((ruleset) => ruleset.name === "kin-main")!;
-const pullRequestParameters = (rulesets: Array<StoredRuleset>) =>
-  branchRule(rulesets).rules.find((rule) => rule.type === "pull_request")!.parameters!;
+const ruleParameters = (rulesets: Array<StoredRuleset>, type: string) =>
+  branchRule(rulesets).rules.find((rule) => rule.type === type)!.parameters!;
 
 describe("kin-rulesets --check", () => {
   it.effect.each([
@@ -183,18 +268,38 @@ describe("kin-rulesets --check", () => {
       "  FAIL bypass_actors: expected none, got RepositoryRole 5 (always)",
     ],
     [
+      "a reader that could bypass",
+      (rulesets: Array<StoredRuleset>) => {
+        branchRule(rulesets).current_user_can_bypass = "always";
+      },
+      '  FAIL current_user_can_bypass: expected "never", got "always"',
+    ],
+    [
       "the code-owner review switched off",
       (rulesets: Array<StoredRuleset>) => {
-        pullRequestParameters(rulesets).require_code_owner_review = false;
+        ruleParameters(rulesets, "pull_request").require_code_owner_review = false;
       },
       "  FAIL rules.pull_request.require_code_owner_review: expected true, got false",
     ],
     [
-      "merge commits allowed",
+      "rebase merges allowed",
       (rulesets: Array<StoredRuleset>) => {
-        pullRequestParameters(rulesets).allowed_merge_methods = ["squash", "merge"];
+        ruleParameters(rulesets, "pull_request").allowed_merge_methods = [
+          "squash",
+          "merge",
+          "rebase",
+        ];
       },
-      '  FAIL rules.pull_request.allowed_merge_methods: expected ["squash"], got ["merge","squash"]',
+      '  FAIL rules.pull_request.allowed_merge_methods: expected ["merge","squash"], got ["merge","rebase","squash"]',
+    ],
+    [
+      "a required check any integration can satisfy",
+      (rulesets: Array<StoredRuleset>) => {
+        ruleParameters(rulesets, "required_status_checks").required_status_checks = [
+          { context: "Check" },
+        ];
+      },
+      '  FAIL rules.required_status_checks.required_status_checks: expected [{context:"Check",integration_id:15368}], got [{context:"Check"}]',
     ],
     [
       "the deletion rule removed",
@@ -236,11 +341,25 @@ describe("kin-rulesets --check", () => {
       assert.isTrue((yield* check()).ok);
     }).pipe(Effect.provide(github.layer));
   });
+
+  it.effect("counts bypass actors it can't see as drift", () => {
+    const github = githubRepo({ hideBypass: true });
+    return Effect.gen(function* () {
+      yield* apply();
+      const result = yield* check();
+      assert.isFalse(result.ok);
+      assert.include(
+        result.lines,
+        "  FAIL bypass_actors: expected none, got not visible to this credential",
+      );
+    }).pipe(Effect.provide(github.layer));
+  });
 });
 
 describe("kin-rulesets CODEOWNERS", () => {
   it.each([
     ["# Kin\n* @gldroger # owner\n", []],
+    ["*\t@GLDRoger\r\n", []],
     ["", ['no "* @GLDRoger" rule, so some paths have no code owner']],
     ["* @priya\n", ['line 1: "*" is owned by @priya, not only @GLDRoger']],
     ["* @GLDRoger @priya\n", ['line 1: "*" is owned by @GLDRoger @priya, not only @GLDRoger']],
@@ -249,6 +368,15 @@ describe("kin-rulesets CODEOWNERS", () => {
       [
         'line 2: "/docs/" is owned by @priya, not only @GLDRoger',
         'line 3: "/apps/" is owned by no one, not only @GLDRoger',
+      ],
+    ],
+    [
+      "﻿* @GLDRoger\n* @GLDRoger @priya\n* @GLDRoger\u000B@priya\n",
+      [
+        'no "* @GLDRoger" rule, so some paths have no code owner',
+        "line 1: has a non-ASCII or control character (or a BOM)",
+        "line 2: has a non-ASCII or control character (or a BOM)",
+        "line 3: has a non-ASCII or control character (or a BOM)",
       ],
     ],
   ] as const)("judges %j", (content, problems) => {
@@ -298,61 +426,209 @@ describe("kin-rulesets credential", () => {
   });
 });
 
-/** Answers the test 23 calls as a repository with the rulesets applied would. */
-const scratchRepo = (broken: { mergeTokenCanReview?: boolean; botCanMerge?: boolean } = {}) => {
+const ruleViolation = (rule: string) => ({
+  message: `Repository rule violations found\n\n${rule}\n\n`,
+  documentation_url: "https://docs.github.com/rest",
+  status: "422",
+});
+
+describe("test 23 refusal matching", () => {
+  it.each([
+    [422, ruleViolation("Changes must be made through a pull request."), "rule_violation", true],
+    [
+      422,
+      ruleViolation("Cannot create ref due to creations being restricted."),
+      "rule_violation",
+      true,
+    ],
+    [422, { message: "Reference does not exist" }, "rule_violation", false],
+    [403, ruleViolation("Changes must be made through a pull request."), "rule_violation", false],
+    [
+      405,
+      ruleViolation("At least 1 approving review is required by reviewers with write access."),
+      "review_required",
+      true,
+    ],
+    [405, { message: "Waiting on code owner review from GLDRoger." }, "review_required", true],
+    [405, ruleViolation('Required status check "ci" is expected.'), "review_required", false],
+    [
+      409,
+      { message: "Head branch was modified. Review and try the merge again." },
+      "review_required",
+      false,
+    ],
+    [403, { message: "Resource not accessible by personal access token" }, "forbidden", true],
+    [404, { message: "Not Found" }, "forbidden", false],
+    [404, { message: "Not Found" }, "refused", true],
+    [200, { message: "" }, "refused", false],
+  ] as const)("HTTP %i %j as %s is %s", (status, body, block, expected) => {
+    assert.strictEqual(isKinBlock({ status, message: body.message }, block as KinBlock), expected);
+  });
+});
+
+const sha = (char: string) => char.repeat(40);
+
+/**
+ * A scratch repository with the rulesets applied, simulated: refs, the PR's head, reviews with
+ * stale dismissal, Actions check runs and merges. `broken` switches off one protection.
+ */
+const scratchRepo = (
+  broken: {
+    readonly mergeTokenCanReview?: boolean;
+    readonly botCanMerge?: boolean;
+    readonly pushAllowed?: boolean;
+    readonly tagMovable?: boolean;
+    readonly noStaleDismissal?: boolean;
+    readonly anyoneCanAdminister?: boolean;
+    readonly noReleaseTag?: boolean;
+    readonly fullName?: string;
+  } = {},
+) => {
   const base = "/repos/GLDRoger/kin-scratch";
-  let ownerReviewed = false;
-  const state = { branchDeleted: false, closed: false };
+  const refs = new Map<string, string>([["heads/kin", sha("a")]]);
+  if (!broken.noReleaseTag) refs.set("tags/v1.0.0", sha("7"));
+  const reviews: Array<{ state: string; commit_id: string; user: { login: string } }> = [];
+  const commits = new Map([
+    ["0.md", sha("b")],
+    ["0-after-review.md", sha("c")],
+  ]);
+  const state = { head: "", merged: false, closed: false, revoked: false };
+  const approved = () =>
+    reviews.some((review) => review.state === "APPROVED" && review.commit_id === state.head);
+  const violation = (rule: string): FakeAnswer => ({ status: 422, body: ruleViolation(rule) });
   const github = githubRepo({
     slug: "GLDRoger/kin-scratch",
+    ...(broken.fullName === undefined ? {} : { fullName: broken.fullName }),
+    ...(broken.anyoneCanAdminister ? { anyoneCanAdminister: true } : {}),
     onPull: (request) => {
       const token = request.authorization?.replace(/^Bearer /, "");
+      const body = request.body as Record<string, string> | undefined;
       const route = `${request.method} ${request.path}`;
+      if (route === "DELETE /installation/token") {
+        state.revoked = token === BOT_TOKEN;
+        return { status: 204 };
+      }
+      const ref = request.path.match(new RegExp(`^${base}/git/refs?/(.+)$`))?.[1];
+      if (request.method === "GET" && ref !== undefined && request.path.includes("/git/ref/")) {
+        const at = refs.get(ref);
+        return at === undefined
+          ? { status: 404, body: { message: "Not Found" } }
+          : { status: 200, body: { ref: `refs/${ref}`, object: { sha: at } } };
+      }
+      if (route === `GET ${base}/git/matching-refs/tags/v`) {
+        return {
+          status: 200,
+          body: [...refs]
+            .filter(([name]) => name.startsWith("tags/v"))
+            .map(([name, at]) => ({ ref: `refs/${name}`, object: { sha: at } })),
+        };
+      }
+      if (route === `POST ${base}/git/refs`) {
+        const name = body!.ref!.slice("refs/".length);
+        if (name.startsWith("tags/v")) {
+          return violation("Cannot create ref due to creations being restricted.");
+        }
+        refs.set(name, body!.sha!);
+        return { status: 201, body: { ref: body!.ref } };
+      }
+      if (request.method === "PATCH" && ref !== undefined) {
+        const allowed = ref === "heads/kin" ? broken.pushAllowed : broken.tagMovable;
+        if (!allowed) {
+          return violation(
+            ref === "heads/kin"
+              ? "Changes must be made through a pull request."
+              : "Cannot update this protected ref.",
+          );
+        }
+        refs.set(ref, body!.sha!);
+        return { status: 200, body: { ref: `refs/${ref}`, object: { sha: body!.sha } } };
+      }
+      if (request.method === "DELETE" && ref !== undefined) {
+        refs.delete(ref);
+        return { status: 204 };
+      }
+      const file = request.path.match(new RegExp(`^${base}/contents/kin-test-23/(.+)$`))?.[1];
+      if (request.method === "PUT" && file !== undefined) {
+        const commit = commits.get(file)!;
+        refs.set(`heads/${body!.branch}`, commit);
+        if (state.head !== "" && !broken.noStaleDismissal) {
+          for (const review of reviews) review.state = "DISMISSED";
+        }
+        state.head = commit;
+        return { status: 201, body: { commit: { sha: commit } } };
+      }
       switch (route) {
-        case `GET ${base}/git/ref/heads/kin`:
-          return { status: 200, body: { object: { sha: "a".repeat(40) } } };
-        case `POST ${base}/git/refs`:
-          return { status: 201, body: { ref: "refs/heads/kin-test-23-0" } };
-        case `PUT ${base}/contents/kin-test-23/0.md`:
-          return { status: 201, body: { commit: { sha: "b".repeat(40) } } };
         case `POST ${base}/pulls`:
-          return { status: 201, body: { number: 7, head: { sha: "b".repeat(40) } } };
-        case `POST ${base}/statuses/${"b".repeat(40)}`:
-          return { status: 201, body: { id: 1 } };
+          return { status: 201, body: { number: 7, head: { sha: state.head } } };
+        case `GET ${base}/pulls/7`:
+          return {
+            status: 200,
+            body: {
+              number: 7,
+              head: { sha: state.head },
+              mergeable: true,
+              mergeable_state: approved() ? "clean" : "blocked",
+            },
+          };
+        case `GET ${base}/commits/${state.head}/check-runs?per_page=100`:
+          return {
+            status: 200,
+            body: {
+              check_runs: [
+                { name: "ci", status: "completed", conclusion: "success", app: { id: 15368 } },
+              ],
+            },
+          };
         case `POST ${base}/pulls/7/reviews`:
-          if (token === OWNER_TOKEN) ownerReviewed = true;
-          return token === OWNER_TOKEN || broken.mergeTokenCanReview
-            ? { status: 200, body: {} }
-            : { status: 403 };
+          if (token === OWNER_TOKEN || broken.mergeTokenCanReview) {
+            reviews.push({
+              state: "APPROVED",
+              commit_id: body!.commit_id!,
+              user: { login: "GLDRoger" },
+            });
+            return { status: 200, body: {} };
+          }
+          return {
+            status: 403,
+            body: { message: "Resource not accessible by personal access token" },
+          };
+        case `GET ${base}/pulls/7/reviews?per_page=100`:
+          return { status: 200, body: reviews };
         case `PUT ${base}/pulls/7/merge`:
-          return (token === BOT_TOKEN && broken.botCanMerge) ||
-            (token === MERGE_TOKEN && ownerReviewed)
-            ? { status: 200, body: { merged: true } }
-            : { status: 405 };
-        case `PATCH ${base}/git/refs/heads/kin`:
-          return { status: 422 };
+          if (approved() || (token === BOT_TOKEN && broken.botCanMerge)) {
+            state.merged = true;
+            return { status: 200, body: { merged: true } };
+          }
+          return {
+            status: 405,
+            body: ruleViolation("Waiting on code owner review from GLDRoger."),
+          };
         case `PATCH ${base}/pulls/7`:
           state.closed = true;
           return { status: 200, body: {} };
-        case `DELETE ${base}/git/refs/heads/kin-test-23-0`:
-          state.branchDeleted = true;
-          return { status: 204 };
       }
       return undefined;
     },
   });
-  return { ...github, state };
+  return { ...github, refs, state };
 };
 
+const tokens = Effect.succeed({
+  botToken: Redacted.make(BOT_TOKEN),
+  mergeToken: Redacted.make(MERGE_TOKEN),
+});
+const kinRepos = Rulesets.kinRepos([]);
+const runTest23 = (slug = scratch) =>
+  Rulesets.runTest23({
+    target: target(OWNER_TOKEN, slug),
+    requiredChecks: ["ci"],
+    kinRepos,
+    tokens,
+  });
 const test23 = () =>
   Effect.gen(function* () {
     yield* Rulesets.applyRepo(target(OWNER_TOKEN, scratch), { requiredChecks: ["ci"] });
-    return yield* Rulesets.runTest23({
-      target: target(OWNER_TOKEN, scratch),
-      requiredChecks: ["ci"],
-      botToken: Redacted.make(BOT_TOKEN),
-      mergeToken: Redacted.make(MERGE_TOKEN),
-    });
+    return yield* runTest23();
   });
 
 describe("security test 23 (kin-rulesets --test-23)", () => {
@@ -361,43 +637,118 @@ describe("security test 23 (kin-rulesets --test-23)", () => {
     return Effect.gen(function* () {
       const result = yield* test23();
       assert.isTrue(result.ok, result.lines.join("\n"));
-      assert.include(result.lines, "  PASS the owner merge token can't submit a review (HTTP 403)");
-      assert.include(result.lines, "  PASS the bot can't merge to the default branch (HTTP 405)");
-      assert.include(result.lines, "  PASS the bot can't push to the default branch (HTTP 422)");
-      assert.include(
-        result.lines,
-        "  PASS a merge without a code-owner review is blocked (HTTP 405)",
-      );
-      assert.isTrue(github.state.branchDeleted);
+      for (const line of [
+        "  PASS GitHub reports the PR blocked at bbbbbbb (mergeable_state blocked)",
+        "  PASS the merge token can't submit a review (HTTP 403: Resource not accessible by personal access token)",
+        "  PASS the bot can't merge without a code-owner review (HTTP 405: Repository rule violations found Waiting on code owner review from GLDRoger.)",
+        "  PASS the merge token can't push to kin (HTTP 422: Repository rule violations found Changes must be made through a pull request.)",
+        "  PASS the bot can't create a v* tag (HTTP 422: Repository rule violations found Cannot create ref due to creations being restricted.)",
+        "  PASS the merge token can't move v1.0.0 (HTTP 422: Repository rule violations found Cannot update this protected ref.)",
+        "  PASS the bot can't bypass kin-main (HTTP 200, current_user_can_bypass never)",
+        "  PASS the merge token can't read kin-release's history (HTTP 403)",
+        "  PASS the merge token can't change kin-main (HTTP 403)",
+        "  PASS GitHub reports the PR clean at bbbbbbb (mergeable_state clean)",
+        "  PASS the push dismissed GLDRoger's review (DISMISSED)",
+        "  PASS the merge token can't merge the switched head (HTTP 405: Repository rule violations found Waiting on code owner review from GLDRoger.)",
+        "  PASS the rulesets show no drift afterwards",
+        "PASS: security test 23.",
+      ]) {
+        assert.include(result.lines, line);
+      }
+      assert.isTrue(github.state.merged);
       assert.isFalse(github.state.closed);
+      assert.isTrue(github.state.revoked);
+      assert.isFalse(github.refs.has("heads/kin-test-23-0"));
+      assert.isFalse(result.lines.some((line) => line.includes("WARN")));
     }).pipe(Effect.provide(github.layer));
   });
 
   it.effect.each([
-    ["a merge token that can review", { mergeTokenCanReview: true }],
-    ["a bot that can merge alone", { botCanMerge: true }],
-  ] as const)("fails with %s and cleans up its PR", ([, broken]) => {
+    ["a merge token that can review", { mergeTokenCanReview: true }, "can't submit a review"],
+    ["a bot that can merge alone", { botCanMerge: true }, "the bot can't merge"],
+    ["a push to the default branch", { pushAllowed: true }, "but heads/kin is now"],
+    ["a movable release tag", { tagMovable: true }, "but tags/v1.0.0 is now"],
+    ["no stale-review dismissal", { noStaleDismissal: true }, "dismissed GLDRoger's review"],
+    [
+      "tokens that can administer rulesets",
+      { anyoneCanAdminister: true },
+      "the bot can't read kin-main's history",
+    ],
+  ] as const)("fails with %s and cleans up", ([, broken, failing]) => {
     const github = scratchRepo(broken);
     return Effect.gen(function* () {
       const result = yield* test23();
       assert.isFalse(result.ok);
-      assert.isTrue(result.lines.some((line) => line.startsWith("  FAIL")));
-      assert.isTrue(github.state.closed);
-      assert.isTrue(github.state.branchDeleted);
+      const failed = result.lines.find((line) => line.startsWith("  FAIL"));
+      assert.include(failed, failing);
+      assert.isTrue(github.state.revoked);
+      assert.isFalse(github.refs.has("heads/kin-test-23-0"));
+      assert.isFalse(github.refs.has("tags/v0.0.0-kin-test-23-0"));
+      assert.strictEqual(github.refs.get("tags/v1.0.0"), sha("7"));
+      if (!github.state.merged) assert.isTrue(github.state.closed);
     }).pipe(Effect.provide(github.layer));
   });
 
-  it.effect("doesn't run until the scratch repo has no drift", () => {
+  it.effect("doesn't run, or take tokens, until the scratch repo has no drift", () => {
     const github = scratchRepo();
     return Effect.gen(function* () {
       const result = yield* Rulesets.runTest23({
         target: target(OWNER_TOKEN, scratch),
         requiredChecks: ["ci"],
-        botToken: Redacted.make(BOT_TOKEN),
-        mergeToken: Redacted.make(MERGE_TOKEN),
+        kinRepos,
+        tokens: Effect.die("tokens taken"),
       });
       assert.isFalse(result.ok);
       assert.lengthOf(writes(github.requests), 0);
+    }).pipe(Effect.provide(github.layer));
+  });
+
+  it.effect("needs a v* tag to try moving, and opens nothing without one", () => {
+    const github = scratchRepo({ noReleaseTag: true });
+    return Effect.gen(function* () {
+      const result = yield* test23();
+      const before = github.requests.findIndex((request) => request.path.includes("matching-refs"));
+      assert.isFalse(result.ok);
+      assert.include(result.lines[0], "has no v* tag");
+      assert.deepStrictEqual(
+        writes(github.requests.slice(before)).map((request) => request.path),
+        ["/installation/token"],
+      );
+    }).pipe(Effect.provide(github.layer));
+  });
+
+  it.effect.each([
+    ["a Kin repository in another case", "gldroger/t3code", "is a Kin repository"],
+    ["a repository not named scratch", "GLDRoger/sandbox", 'has no "scratch" in its name'],
+  ] as const)("refuses %s before any request", ([, slug, reason]) => {
+    const github = scratchRepo();
+    const requested = decodeRepo(slug);
+    return Effect.gen(function* () {
+      const error = yield* Effect.flip(runTest23(requested));
+      assert.include(error.message, reason);
+      assert.lengthOf(github.requests, 0);
+    }).pipe(Effect.provide(github.layer));
+  });
+
+  it.effect.each([
+    ["redirects to a Kin repository", "GLDRoger/t3code", "not GLDRoger/kin-scratch"],
+    ["answers for another scratch repository", "GLDRoger/other-scratch", "renamed or moved"],
+  ] as const)("refuses, writing nothing, when GitHub %s", ([, fullName, reason]) => {
+    const github = scratchRepo({ fullName });
+    return Effect.gen(function* () {
+      yield* Rulesets.applyRepo(target(OWNER_TOKEN, scratch), { requiredChecks: ["ci"] });
+      const before = github.requests.length;
+      const error = yield* Effect.flip(runTest23());
+      assert.include(error.message, reason);
+      assert.lengthOf(writes(github.requests.slice(before)), 0);
+    }).pipe(Effect.provide(github.layer));
+  });
+
+  it.effect("accepts a name GitHub reports in another case", () => {
+    const github = scratchRepo({ fullName: "gldroger/KIN-SCRATCH" });
+    return Effect.gen(function* () {
+      const result = yield* test23();
+      assert.isTrue(result.ok, result.lines.join("\n"));
     }).pipe(Effect.provide(github.layer));
   });
 });

@@ -1,14 +1,20 @@
 // Pure: the approvals spec section 10 rulesets and CODEOWNERS rule. Apply, `--check` and the
 // tests all read `kinRulesets`, so there is one definition of what GitHub should hold.
 
-/** The owner: sole code owner, and the only sign-in the script accepts. */
-export const KIN_OWNER_LOGIN = "GLDRoger";
-
-/** Required status check contexts per Kin repository; other repos pass `--status-check`. */
+/**
+ * Required status check contexts per Kin repository; other repos pass `--status-check`. Its keys
+ * count as Kin repositories even when `KIN_GITHUB_REPOS` leaves them out.
+ */
 export const KIN_REPO_REQUIRED_CHECKS: Readonly<Record<string, ReadonlyArray<string>>> = {
   // ci.yml's `Check` job fails unless every other CI job passed or was skipped as not needed.
   "GLDRoger/t3code": ["Check"],
 };
+
+/**
+ * The GitHub Actions App (`GET /apps/github-actions`). Pinning required checks to it stops a
+ * status anyone with commit-status access posts from satisfying them.
+ */
+export const GITHUB_ACTIONS_INTEGRATION_ID = 15368;
 
 export const KIN_CODEOWNERS_PATH = ".github/CODEOWNERS";
 
@@ -46,9 +52,12 @@ export const kinRulesets = (requiredChecks: ReadonlyArray<string>): ReadonlyArra
           required_approving_review_count: 1,
           require_code_owner_review: true,
           dismiss_stale_reviews_on_push: true,
-          require_last_push_approval: true,
+          // Off: it adds nothing against the bot, whose pushes the owner must approve anyway, and
+          // it deadlocks an upstream sync branch the owner pushed (spec section 10).
+          require_last_push_approval: false,
           required_review_thread_resolution: true,
-          allowed_merge_methods: ["squash"],
+          // `merge` is for the owner's upstream syncs; the executor squashes bot PRs.
+          allowed_merge_methods: ["squash", "merge"],
         },
       },
       {
@@ -56,7 +65,10 @@ export const kinRulesets = (requiredChecks: ReadonlyArray<string>): ReadonlyArra
         parameters: {
           strict_required_status_checks_policy: true,
           do_not_enforce_on_create: false,
-          required_status_checks: requiredChecks.map((context) => ({ context })),
+          required_status_checks: requiredChecks.map((context) => ({
+            context,
+            integration_id: GITHUB_ACTIONS_INTEGRATION_ID,
+          })),
         },
       },
     ],
@@ -66,8 +78,13 @@ export const kinRulesets = (requiredChecks: ReadonlyArray<string>): ReadonlyArra
     target: "tag",
     enforcement: "active",
     bypass_actors: [],
-    conditions: { ref_name: { include: ["refs/tags/v*"], exclude: [] } },
-    rules: [{ type: "creation" }, { type: "update" }, { type: "deletion" }],
+    // `*` stops at `/`, so `v*/**` covers tags like `v1/rc`.
+    conditions: { ref_name: { include: ["refs/tags/v*", "refs/tags/v*/**"], exclude: [] } },
+    rules: [
+      { type: "creation" },
+      { type: "update", parameters: { update_allows_fetch_and_merge: false } },
+      { type: "deletion" },
+    ],
   },
 ];
 
@@ -83,6 +100,8 @@ export interface LiveRuleset {
         readonly bypass_mode?: string | undefined;
       }>
     | undefined;
+  /** How the credential reading the ruleset could bypass it: `never` for every Kin credential. */
+  readonly current_user_can_bypass?: string | undefined;
   readonly conditions?: unknown;
   readonly rules?:
     | ReadonlyArray<{
@@ -129,12 +148,15 @@ export function diffRuleset(
   };
   compare("target", desired.target, live.target);
   compare("enforcement", desired.enforcement, live.enforcement);
+  // GitHub omits `bypass_actors` for a token without Administration even when its user is an admin.
   if (live.bypass_actors === undefined) {
     drift.push({
       field: "bypass_actors",
       expected: "none",
       actual: "not visible to this credential",
     });
+  } else {
+    compare("current_user_can_bypass", "never", live.current_user_can_bypass);
   }
   for (const actor of live.bypass_actors ?? []) {
     drift.push({
@@ -176,7 +198,13 @@ export function codeownersProblems(content: string, owner: string): ReadonlyArra
   const expected = `@${owner}`.toLowerCase();
   let coversAll = false;
   content.split(/\r?\n/).forEach((raw, index) => {
-    const tokens = raw.trim().split(/\s+/).filter(Boolean);
+    // A BOM, non-breaking space or other non-ASCII character can make GitHub read a line
+    // differently from this check, so only printable ASCII and tabs are accepted.
+    if (/[^\t\x20-\x7e]/.test(raw)) {
+      problems.push(`line ${index + 1}: has a non-ASCII or control character (or a BOM)`);
+      return;
+    }
+    const tokens = raw.split(/[ \t]+/).filter(Boolean);
     const commentAt = tokens.findIndex((token) => token.startsWith("#"));
     const [pattern, ...owners] = commentAt === -1 ? tokens : tokens.slice(0, commentAt);
     if (pattern === undefined) return;
