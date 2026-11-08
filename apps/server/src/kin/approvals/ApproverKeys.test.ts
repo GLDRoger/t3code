@@ -494,6 +494,12 @@ describe("ApproverKeys", () => {
         WHERE kind = 'register_approver_key'
           AND json_extract(target_json, '$.thumbprint') = ${third.key.thumbprint}`;
       assert.strictEqual(cancelled?.state, "cancelled");
+
+      yield* sql`ALTER TABLE kin_approver_keys RENAME TO kin_approver_keys_gone`;
+      assert.strictEqual(
+        reasonOf(yield* Effect.exit(keys.listKeys(phone, { orgId }))),
+        "unavailable",
+      );
     }).pipe(Effect.provide(layer)),
   );
 });

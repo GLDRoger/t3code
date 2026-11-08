@@ -17,6 +17,11 @@ const unavailable = Effect.fail(
   new KinApprovalError({ reason: "unavailable", message: "Kin approvals are unavailable." }),
 );
 
+const disabled = new KinApprovalError({
+  reason: "disabled",
+  message: "Kin is not running on this host.",
+});
+
 // The WS upgrade request, so `confirmKey` can tell a loopback socket from a proxied one.
 export const connectionOf = Effect.serviceOption(HttpServerRequest.HttpServerRequest).pipe(
   Effect.map(
@@ -36,7 +41,7 @@ export const makeKinApprovalHandlers = Effect.fn("makeKinApprovalHandlers")(func
 ) {
   const connection = yield* connectionOf;
   const keys = Effect.gen(function* () {
-    if (Option.isNone(kin)) return yield* unavailable;
+    if (Option.isNone(kin)) return yield* disabled;
     const services = kin.value;
     const people = yield* Context.get(services, KinIdentity).resolve(session);
     const caller: KinKeyCaller = { session, people, connection };
