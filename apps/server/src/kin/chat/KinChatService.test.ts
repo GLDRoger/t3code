@@ -427,12 +427,86 @@ describe("KinChatService", () => {
           );
         }
         assert.strictEqual(Option.getOrThrow(yield* repo.getChat(chat)).lastSeq, 0);
+        const question = yield* service.send(person, {
+          chatId: chat.chatId,
+          body: "Track this",
+          clientMessageId: "widget-question",
+        });
         const widget = yield* service.upsertWidget(agent, {
           chatId: chat.chatId,
           type: "task",
           state,
           awaiting: [person.personId],
+          replyTo: question.messageId,
         });
+        assert.strictEqual(
+          Option.getOrThrow(yield* repo.getMessage(widget)).replyTo,
+          question.messageId,
+        );
+        const humanWidget = yield* service.upsertWidget(person, {
+          chatId: chat.chatId,
+          type: "task",
+          state,
+        });
+        assert.include(
+          yield* service
+            .upsertWidget(agent, {
+              chatId: chat.chatId,
+              widgetId: humanWidget.widgetId,
+              revision: 1,
+              type: "task",
+              state,
+            })
+            .pipe(Effect.flip),
+          { reason: "not_allowed" },
+        );
+        const sql = yield* SqlClient.SqlClient;
+        const otherId = KinAgentId.make("other");
+        const otherThread = ThreadId.make("other-thread");
+        yield* repo.insertAgent({
+          orgId: person.orgId,
+          agentId: otherId,
+          ownerPersonId: person.personId,
+          displayName: "Other",
+          role: "builder",
+          createdAt: timestamp,
+        });
+        const identity = yield* Identity.KinIdentity.pipe(Effect.provide(identityLayer));
+        yield* identity.registerAgentThread({
+          orgId: person.orgId,
+          agentId: otherId,
+          threadId: otherThread,
+        });
+        const other = yield* identity.resolveAgent({
+          ...caller,
+          thread: { ...caller.thread!, threadId: otherThread },
+        });
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at) VALUES ('other-member', ${person.orgId}, ${chat.chatId}, 'agent', ${otherId}, 'member', ${timestamp})`;
+        assert.include(
+          yield* service
+            .upsertWidget(other, {
+              chatId: chat.chatId,
+              widgetId: widget.widgetId,
+              revision: 1,
+              type: "task",
+              state,
+            })
+            .pipe(Effect.flip),
+          { reason: "not_allowed" },
+        );
+        for (const update of [{}, { revision: 1, replyTo: question.messageId }])
+          assert.include(
+            yield* service
+              .upsertWidget(agent, {
+                chatId: chat.chatId,
+                widgetId: widget.widgetId,
+                type: "task",
+                state,
+                ...update,
+              })
+              .pipe(Effect.flip),
+            { reason: "invalid_state" },
+          );
         assert.strictEqual(widget.revision, 1);
         assert.strictEqual(
           Option.getOrThrow(yield* repo.getMessage(widget)).widgetId,
@@ -500,7 +574,6 @@ describe("KinChatService", () => {
           closed: true,
         });
         assert.deepStrictEqual(yield* repo.listOpenWaiting(person), []);
-        const sql = yield* SqlClient.SqlClient;
         yield* sql`UPDATE kin_widgets SET type = 'approval' WHERE org_id = ${person.orgId} AND widget_id = ${another.widgetId}`;
         assert.include(
           yield* Effect.flip(

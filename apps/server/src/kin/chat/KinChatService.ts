@@ -53,11 +53,12 @@ type ServiceError = Repository.RepositoryError;
 type SendInput = KinMessagesSendInput & { readonly intent?: KinAgentIntent };
 type WidgetUpsertInput = {
   readonly chatId: KinChatId;
-  readonly widgetId?: KinWidgetId;
-  readonly revision?: number;
+  readonly widgetId?: KinWidgetId | undefined;
+  readonly revision?: number | undefined;
+  readonly replyTo?: KinMessageId | undefined;
   readonly type: string;
   readonly state: unknown;
-  readonly awaiting?: ReadonlyArray<KinPersonId>;
+  readonly awaiting?: ReadonlyArray<KinPersonId> | undefined;
   readonly closed?: boolean;
 };
 type WaitingInput = Pick<
@@ -88,6 +89,14 @@ export class KinChatService extends Context.Service<
       input: KinChatsCreateDirectInput,
     ) => Effect.Effect<KinChat, ServiceError>;
     readonly send: (identity: Caller, input: SendInput) => Effect.Effect<KinMessage, ServiceError>;
+    readonly read: (
+      identity: AgentIdentity,
+      input: {
+        readonly chatId: KinChatId;
+        readonly afterSeq?: number | undefined;
+        readonly limit?: number | undefined;
+      },
+    ) => Effect.Effect<ReadonlyArray<KinMessage>, ServiceError>;
     readonly history: (
       identity: Caller,
       input: KinChatHistoryInput,
@@ -115,6 +124,21 @@ export class KinChatService extends Context.Service<
   }
 >()("t3/kin/chat/KinChatService") {}
 
+const decodeRead = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    chatId: KinChatId,
+    afterSeq: Schema.optional(
+      Schema.Number.check(
+        Schema.isInt(),
+        Schema.isGreaterThanOrEqualTo(0),
+        Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
+      ),
+    ),
+    limit: Schema.optional(
+      Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(100)),
+    ),
+  }),
+);
 const decodeChatId = Schema.decodeEffect(KinChatId);
 const decodeMemberId = Schema.decodeEffect(KinMemberId);
 const decodeMessageId = Schema.decodeEffect(KinMessageId);
@@ -157,7 +181,7 @@ const make = Effect.gen(function* () {
     target: {
       readonly orgId?: KinOrgId;
       readonly chatId?: KinChatId;
-      readonly widgetId?: KinWidgetId;
+      readonly widgetId?: KinWidgetId | undefined;
     },
   ) {
     if ("_tag" in caller) return caller;
@@ -592,6 +616,8 @@ const make = Effect.gen(function* () {
       const request = yield* decodeSend(input).pipe(Effect.mapError(() => invalidState));
       const member = yield* memberFor(identity, request.chatId);
       yield* canWrite(identity, member);
+      if (request.mentions !== undefined && request.mentions.length > 100)
+        return yield* invalidState;
       if (
         (identity._tag === "agent" && input.intent === undefined) ||
         (identity._tag === "person" && input.intent !== undefined)
@@ -609,6 +635,17 @@ const make = Effect.gen(function* () {
         replyTo: request.replyTo ?? null,
         widgetId: null,
         clientId: { kind: "send", id: request.clientMessageId },
+      });
+    }, transaction),
+    read: Effect.fn("KinChatService.read")(function* (identity, input) {
+      const request = yield* decodeRead(input).pipe(Effect.mapError(() => invalidState));
+      const member = yield* memberFor(identity, request.chatId);
+      return yield* repo.messagesAfter({
+        orgId: identity.orgId,
+        chatId: request.chatId,
+        afterSeq: request.afterSeq ?? 0,
+        limit: request.limit ?? 50,
+        viewerMemberId: member.memberId,
       });
     }, transaction),
     history: Effect.fn("KinChatService.history")(
@@ -656,7 +693,7 @@ const make = Effect.gen(function* () {
           intent: identity._tag === "agent" ? "answer" : null,
           kind: "text",
           mentions: [],
-          replyTo: null,
+          replyTo: input.replyTo ?? null,
           widgetId: null,
           clientId: null,
           publish: false,
@@ -687,7 +724,18 @@ const make = Effect.gen(function* () {
           repo.getWidget({ orgId: identity.orgId, widgetId: input.widgetId }),
         );
         if (existing.chatId !== input.chatId) return yield* notFound;
-        if (existing.type !== input.type || input.revision === undefined)
+        if (identity._tag === "agent") {
+          const anchor = yield* requireRecord(
+            repo.getMessage({ orgId: identity.orgId, messageId: existing.messageId }),
+          );
+          if (anchor.author._tag !== "agent" || anchor.author.memberId !== member.memberId)
+            return yield* notAllowed;
+        }
+        if (
+          existing.type !== input.type ||
+          input.revision === undefined ||
+          input.replyTo !== undefined
+        )
           return yield* invalidState;
         widget = yield* repo.updateWidget({
           ...existing,

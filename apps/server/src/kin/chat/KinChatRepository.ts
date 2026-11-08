@@ -270,7 +270,11 @@ export class KinChatRepository extends Context.Service<
       input: Scope & KinChatHistoryInput & { readonly viewerMemberId?: KinMemberId },
     ) => Effect.Effect<KinChatHistoryResult, RepositoryError>;
     readonly messagesAfter: (
-      input: ChatScope & { readonly afterSeq: typeof NonNegativeInt.Type; readonly limit: number },
+      input: ChatScope & {
+        readonly afterSeq: typeof NonNegativeInt.Type;
+        readonly limit: number;
+        readonly viewerMemberId?: KinMemberId;
+      },
     ) => Effect.Effect<ReadonlyArray<KinMessage>, RepositoryError>;
     readonly insertWidget: (
       input: Omit<KinWidget, "revision">,
@@ -1259,7 +1263,8 @@ const make = Effect.gen(function* () {
           Result: MessageRow,
           execute:
             () => sql`SELECT ${sql.literal(messageColumns)} FROM kin_messages WHERE org_id = ${input.orgId}
- AND chat_id = ${input.chatId} AND seq > ${request.afterSeq} ORDER BY seq LIMIT ${request.limit}`,
+ AND chat_id = ${input.chatId} AND seq > ${request.afterSeq}
+ AND (${input.viewerMemberId ?? null} IS NULL OR status NOT IN ('suggested', 'dismissed') OR author_member_id = ${input.viewerMemberId ?? null} OR EXISTS (SELECT 1 FROM kin_chat_members WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND member_id = ${input.viewerMemberId ?? null} AND role = 'owner')) ORDER BY seq LIMIT ${request.limit}`,
         })(input).pipe(NodeSqliteClient.readOnly);
       },
       Effect.mapError(toRepositoryError("KinChatRepository.messagesAfter")),
