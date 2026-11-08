@@ -302,7 +302,8 @@ const make = Effect.gen(function* () {
           if (existing.length === 0) return yield* notFound;
           const [stored] =
             yield* sql<Charge>`SELECT org_id AS "orgId", wakeup_id AS "wakeupId", day, units, tokens_json AS "tokensJson" FROM kin_budget_charges WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId}`;
-          if (stored?.tokensJson === tokensJson) return stored;
+          if (stored !== undefined && (stored.tokensJson === tokensJson || units <= stored.units))
+            return stored;
           const delta = Math.max(0, units - (stored?.units ?? 0));
           const chargedUnits = Math.max(units, stored?.units ?? 0);
           yield* ensure(input.orgId, day);

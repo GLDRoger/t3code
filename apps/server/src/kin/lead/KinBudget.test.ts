@@ -232,8 +232,7 @@ describe("KinBudget", () => {
             const full = yield* budget.charge({ orgId, wakeupId, usage });
             assert.strictEqual(full.units, 55.5);
             assert.deepStrictEqual(yield* budget.charge({ orgId, wakeupId, usage }), full);
-            const lower = yield* budget.charge({ orgId, wakeupId, usage: [] });
-            assert.strictEqual(lower.units, 55.5);
+            assert.deepStrictEqual(yield* budget.charge({ orgId, wakeupId, usage: [] }), full);
           }
         }
         assert.strictEqual((yield* budget.get(orgId)).leadUnits, 411);

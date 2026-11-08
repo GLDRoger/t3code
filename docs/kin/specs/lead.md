@@ -467,7 +467,8 @@ T3 runs on the owner's subscriptions, so budget is counted in tokens, not money.
 - `admit(orgId, priority)` by share of the lead budget left: above 40% everything runs; 20–40% defers P3 to tomorrow; under 20% only P0–P1; at 0 only P0, on the cheap model, and the owner is told once. Dreaming (P4) runs only above 30%.
 - Deferred P2/P3 events wait until the next owner-local reset unless limits change.
 - A wake-up spanning midnight bills the owner-local day on which the charge is made.
-- `admitWorker(orgId)` refuses at 0 worker units left. The lead gets an error and tells the owner.
+- `admitWorker(orgId)` refuses at 0 worker units left. The lead gets an error and tells the owner. LEAD-9 owns charging `worker_units` from worker runs; it must not also count the lead turn's Claude `otherUsage`, which is already lead units.
+- Providers without a per-turn `turnTokenUsage` ledger (currently Pi, Cursor and Grok) fall back to `usedTokens` at weight 1, which is their context size, so cache-heavy turns are over-billed until their adapters emit a turn ledger.
 - Deferred events stay queued with `not_before` and show in the morning brief ("3 checks postponed for budget").
 
 `UsageLimitSources` (`apps/server/src/usage/UsageLimitSources.ts`) only reads cliproxy accounts, so plan headroom is not generally known. Kin uses its own counters. See open questions.
