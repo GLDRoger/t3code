@@ -536,6 +536,8 @@ const make = Effect.gen(function* () {
     if (yield* io(orgId, "exists", fs.exists(paths.writer))) {
       yield* validateWriter(orgId, paths, false);
     } else {
+      // The remote can still hold the old history until the purge's push lands.
+      yield* refuseDuringPurge(orgId, "clone");
       for (const entry of yield* io(orgId, "clones", fs.readDirectory(paths.root))) {
         if (/^memory\.clone-[A-Za-z0-9]+$/.test(entry))
           yield* io(
@@ -916,10 +918,11 @@ const make = Effect.gen(function* () {
     return branch;
   });
 
-  const recover = Effect.fn("Memory.recover")(function* (orgId: KinOrgId) {
+  const recover = Effect.fn("Memory.recover")(function* (orgId: KinOrgId, reclone = false) {
     const paths = yield* pathsFor(orgId);
     yield* io(orgId, "mkdir", fs.makeDirectory(paths.root, { recursive: true }));
     const exists = yield* io(orgId, "exists", fs.exists(paths.writer));
+    if (!exists && !reclone) yield* refuseDuringPurge(orgId, "clone");
     if (!exists)
       yield* git(orgId, paths.root, [
         "clone",
@@ -1326,7 +1329,8 @@ const make = Effect.gen(function* () {
 
   const dropCheckouts = Effect.fn("Memory.dropCheckouts")(function* (orgId: KinOrgId) {
     const paths = yield* pathsFor(orgId);
-    for (const directory of [paths.writer, paths.read])
+    // `dreams/` holds plain copies of memory files for a running dream.
+    for (const directory of [paths.writer, paths.read, path.join(paths.root, "dreams")])
       yield* io(orgId, "quarantine", fs.remove(directory, { recursive: true, force: true }));
     initializedCheckouts.delete(orgId);
     pinnedHeads.delete(orgId);
@@ -1353,7 +1357,7 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const { root } = yield* dropCheckouts(orgId);
           // With no writer checkout, recover clones fresh and records the rewritten heads.
-          yield* recover(orgId);
+          yield* recover(orgId, true);
           yield* prepare(orgId);
           yield* rebuildIndex(orgId);
           yield* io(orgId, "purgeMarker", fs.remove(markerPath(root), { force: true }));

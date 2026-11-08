@@ -3,7 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
-import { KinMemoryItemId, KinOrgId } from "@t3tools/contracts";
+import { KinAgentId, KinMemoryItemId, KinOrgId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -17,6 +17,7 @@ import { fixtureItem } from "./__fixtures__/items.ts";
 import { parseFrontMatter } from "./frontMatter.ts";
 import * as Memory from "./Memory.ts";
 import { MemoryConfig } from "./MemoryConfig.ts";
+import * as Writer from "./MemoryWriter.ts";
 import * as Purge from "./purge.ts";
 import * as PurgePush from "./purgePush.ts";
 import * as Scan from "./secretScan.ts";
@@ -112,6 +113,10 @@ const fixture = Effect.fn(function* (tokenInMessage = false) {
   yield* git(source, ["add", "--", "."]);
   yield* commit("revise rules");
   yield* git(root, ["clone", "-q", "--bare", "--", source, remote]);
+  // GitHub's read-only pull refs: a purge can't rewrite them and must not wait on them.
+  yield* git(remote, ["update-ref", "refs/pull/1/head", "refs/heads/side"]);
+  const pullHead = yield* git(remote, ["rev-parse", "refs/pull/1/head"]);
+  const remoteHistory = git(remote, ["log", "--exclude=refs/pull/*", "--all", "-p"]);
 
   const events: string[] = [];
   const config = Layer.succeed(MemoryConfig, {
@@ -152,6 +157,30 @@ const fixture = Effect.fn(function* (tokenInMessage = false) {
       ),
     );
   };
+  /** The purge plus the dream and wake-up writer, which push to the same remote. */
+  const writerLayer = (options: PurgeOptions = {}) =>
+    Writer.layer.pipe(
+      Layer.provideMerge(purgeLayer(options)),
+      Layer.provide(config),
+      Layer.provide(Scan.layer),
+      Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
+      Layer.provide(Layer.succeed(Writer.MemoryWriterHooks, { notify: () => Effect.void })),
+      Layer.provide(
+        Layer.succeed(Writer.MemoryWriterAuthority, {
+          resolve: (_org, wakeupId) =>
+            Effect.succeed({
+              orgId,
+              wakeupId,
+              agentId: KinAgentId.make("fixture-lead"),
+              level: "L1",
+              timeZone: "UTC",
+              startedAt: "2026-11-08T00:00:00.000Z",
+              eventIds: [],
+              sources: new Map(),
+            }),
+        }),
+      ),
+    );
   const writerHistory = (writer: string) =>
     Effect.gen(function* () {
       if (!(yield* fs.exists(`${writer}/.git`))) return "";
@@ -177,8 +206,11 @@ const fixture = Effect.fn(function* (tokenInMessage = false) {
     events,
     commit,
     purgeLayer,
+    writerLayer,
     writerHistory,
     prepare,
+    pullHead,
+    remoteHistory,
   };
 });
 
@@ -202,8 +234,19 @@ const failureOf = <A, E>(exit: Exit.Exit<A, E>) =>
 describe.skipIf(filterRepoMissing)("purge with git-filter-repo", () => {
   it.live.each(["drop_file", "redact_text"] as const)("purges a fixture repo: %s", (mode) =>
     Effect.gen(function* () {
-      const { fs, git, root, remote, remoteUrl, events, purgeLayer, writerHistory, prepare } =
-        yield* fixture(mode === "redact_text");
+      const {
+        fs,
+        git,
+        root,
+        remote,
+        remoteUrl,
+        events,
+        purgeLayer,
+        writerHistory,
+        prepare,
+        pullHead,
+        remoteHistory,
+      } = yield* fixture(mode === "redact_text");
       yield* Effect.gen(function* () {
         const memory = yield* Memory.Memory;
         const paths = yield* prepare;
@@ -224,6 +267,8 @@ describe.skipIf(filterRepoMissing)("purge with git-filter-repo", () => {
         const newSide = yield* git(remote, ["rev-parse", "refs/heads/side"]);
         expect(events).toEqual(["pause", "resume"]);
         expect(yield* memory.purgeInFlight(orgId)).toBeUndefined();
+        expect(yield* reconcile(plan)).toBe("done");
+        expect(yield* git(remote, ["rev-parse", "refs/pull/1/head"])).toBe(pullHead);
         expect(result).toMatchObject({ oldHead: oldMain, newHead: newMain });
         expect(result.rewrittenRefs).toEqual([
           { ref: "refs/heads/main", old: oldMain, new: newMain },
@@ -244,7 +289,7 @@ describe.skipIf(filterRepoMissing)("purge with git-filter-repo", () => {
         });
         expect(result.audit.result).not.toContain(token);
 
-        expect(yield* git(remote, ["log", "--all", "-p"])).not.toContain(token);
+        expect(yield* remoteHistory).not.toContain(token);
         expect(yield* writerHistory(paths.writer)).not.toContain(token);
         expect(yield* memory.anchor(orgId, "main")).toBe(newMain);
         expect(yield* git(remote, ["show", `${newMain}:claims/keep.md`])).toContain("claim-keep");
@@ -332,32 +377,48 @@ describe.skipIf(filterRepoMissing)("purge with git-filter-repo", () => {
       }).pipe(Effect.provide(services), Effect.scoped),
   );
 
-  it.live.each(["error", "crash", "interrupt"] as const)(
+  it.live.each(["error", "checkout during push", "crash", "interrupt"] as const)(
     "a push that lands and then fails never republishes the purged history: %s",
     (scenario) =>
       Effect.gen(function* () {
-        const { fs, git, remote, remoteUrl, events, purgeLayer, writerHistory, prepare } =
+        const { fs, git, root, remote, remoteUrl, events, writerLayer, writerHistory, prepare } =
           yield* fixture();
         const plan = dropPlan(remoteUrl);
-        const landing = purgeLayer({
+        // A dream or wake-up asking for checkouts while the remote still holds the old history.
+        let beforePush: Effect.Effect<void> = Effect.void;
+        const landing = writerLayer({
           push: (real) => ({
             push: (input) =>
-              real
-                .push(input)
-                .pipe(
-                  Effect.andThen(
-                    scenario === "error"
-                      ? Effect.fail(new PurgePush.KinPurgePushError({ reason: "timeout" }))
-                      : scenario === "crash"
-                        ? Effect.die("fixture crash after the push")
-                        : Effect.interrupt,
-                  ),
+              Effect.suspend(() => beforePush).pipe(
+                Effect.andThen(real.push(input)),
+                Effect.andThen(
+                  scenario === "crash"
+                    ? Effect.die("fixture crash after the push")
+                    : scenario === "interrupt"
+                      ? Effect.interrupt
+                      : Effect.fail(new PurgePush.KinPurgePushError({ reason: "timeout" })),
                 ),
+              ),
           }),
         });
+        const target = Purge.purgePlanJson(plan).target;
         const paths = yield* Effect.gen(function* () {
+          const memory = yield* Memory.Memory;
           const paths = yield* prepare;
+          const oldMain = yield* git(remote, ["rev-parse", "refs/heads/main"]);
+          let checkout: Exit.Exit<unknown, unknown> | undefined;
+          if (scenario === "checkout during push")
+            beforePush = memory.ensureCheckouts(orgId).pipe(
+              Effect.exit,
+              Effect.map((exit) => {
+                checkout = exit;
+              }),
+            );
           const exit = yield* runPurge(plan);
+          if (scenario === "checkout during push")
+            expect(checkout && failureOf(checkout)).toMatchObject({
+              value: { _tag: "MemorySyncConflict" },
+            });
           expect(Exit.isFailure(exit)).toBe(true);
           if (scenario === "interrupt")
             expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
@@ -366,30 +427,61 @@ describe.skipIf(filterRepoMissing)("purge with git-filter-repo", () => {
               value: { _tag: "KinPurgeFailed", stage: "push", queueHeld: true },
             });
           expect(events).toEqual(["pause"]);
-          expect(yield* (yield* Memory.Memory).purgeInFlight(orgId)).toBeDefined();
+          expect(yield* memory.purgeInFlight(orgId)).toBeDefined();
           expect(yield* fs.exists(paths.writer)).toBe(false);
           expect(yield* fs.exists(paths.read)).toBe(false);
+
+          const writer = yield* Writer.MemoryWriter;
+          const dream = yield* writer
+            .commitDream(orgId, {
+              branch: "dream/2026-11-08",
+              base: oldMain,
+              files: new Map([
+                [
+                  "claims/dream.md",
+                  fixtureItem({ id: "claim-dream", kind: "claim", title: "Invented dream" }),
+                ],
+              ]),
+              message: "dream",
+            })
+            .pipe(Effect.result);
+          expect(dream._tag).toBe("Failure");
+          expect(
+            (yield* writer.commitWakeup(orgId, "wake1", "completed").pipe(Effect.result))._tag,
+          ).toBe("Failure");
           return paths;
         }).pipe(Effect.provide(landing));
 
         // A crash restarts the server: fresh Memory and purge services over the same database and files.
-        const after = scenario === "crash" ? purgeLayer() : landing;
+        const after = scenario === "crash" ? writerLayer() : landing;
         yield* Effect.gen(function* () {
           const memory = yield* Memory.Memory;
+          const purge = yield* Purge.KinPurge;
           yield* memory.prepareWakeup(orgId).pipe(Effect.result);
           yield* memory.recover(orgId).pipe(Effect.result);
-          expect(yield* git(remote, ["log", "--all", "-p"])).not.toContain(token);
-          expect(yield* git(remote, ["for-each-ref", "--format=%(refname)"])).not.toContain(
-            "kin/conflict",
+          expect(yield* fs.exists(paths.writer)).toBe(false);
+          expect(yield* git(remote, ["log", "--exclude=refs/pull/*", "--all", "-p"])).not.toContain(
+            token,
           );
+          expect(
+            yield* git(remote, ["for-each-ref", "--format=%(refname)", "refs/heads/"]),
+          ).not.toMatch(/kin\/conflict|dream\//);
 
+          // The marker keeps the plan, so a lost plan file can't strand the held queue.
+          expect(yield* purge.discardPlan(target).pipe(Effect.result)).toMatchObject({
+            failure: { _tag: "KinPurgeRejected" },
+          });
+          yield* fs.remove(`${root}/${target.path}`);
           expect(yield* reconcile(plan)).toBe("done");
           expect(events).toEqual(["pause", "resume"]);
           expect(yield* memory.purgeInFlight(orgId)).toBeUndefined();
           const newMain = yield* git(remote, ["rev-parse", "refs/heads/main"]);
           expect((yield* memory.prepareWakeup(orgId)).head).toBe(newMain);
           expect(yield* writerHistory(paths.writer)).not.toContain(token);
-          expect(yield* git(remote, ["log", "--all", "-p"])).not.toContain(token);
+          expect(yield* git(remote, ["log", "--exclude=refs/pull/*", "--all", "-p"])).not.toContain(
+            token,
+          );
+          yield* purge.discardPlan(target);
         }).pipe(Effect.provide(after));
       }).pipe(Effect.provide(services), Effect.scoped),
   );
@@ -549,14 +641,18 @@ const pushInput = {
 const pushWith = (
   owner: Parameters<typeof PurgePush.gitPushLayer>[0],
   output: { readonly code: number; readonly stdout?: string; readonly stderr?: string },
+  repoUrl = pushInput.repoUrl,
 ) => {
   const calls: Array<Vcs.VcsProcessInput> = [];
   return Effect.gen(function* () {
-    const result = yield* (yield* PurgePush.KinPurgePush).push(pushInput).pipe(Effect.result);
+    const result = yield* (yield* PurgePush.KinPurgePush)
+      .push({ ...pushInput, repoUrl })
+      .pipe(Effect.result);
     return { result, calls };
   }).pipe(
     Effect.provide(
       PurgePush.gitPushLayer(owner).pipe(
+        Layer.provide(NodeServices.layer),
         Layer.provide(
           Layer.mock(Vcs.VcsProcess)({
             run: (input) =>
@@ -578,15 +674,51 @@ const pushWith = (
 };
 
 it.effect.each([
-  ["no credential", {}],
-  ["inline helper script", { credentialHelper: "!f() { echo password=hunter2; }; f" }],
-  ["shell in ssh command", { sshCommand: "ssh -i key; cat /etc/passwd" }],
-] as const)("the owner push fails closed without a credential reference: %s", ([, owner]) =>
-  Effect.gen(function* () {
-    const { result, calls } = yield* pushWith(owner, { code: 0 });
-    expect(result).toMatchObject({ failure: { reason: "credential_unavailable" } });
-    expect(calls).toEqual([]);
-  }),
+  ["no credential", {}, pushInput.repoUrl, "credential_unavailable"],
+  [
+    "inline helper script",
+    { credentialHelper: "!f() { echo password=hunter2; }; f" },
+    pushInput.repoUrl,
+    "credential_unavailable",
+  ],
+  [
+    "shell in ssh command",
+    { sshCommand: "ssh -i key; cat /etc/passwd" },
+    pushInput.repoUrl,
+    "credential_unavailable",
+  ],
+  [
+    "https without a helper",
+    { sshCommand: "ssh -i /keys/owner" },
+    pushInput.repoUrl,
+    "credential_unavailable",
+  ],
+  [
+    "ssh without a command",
+    { credentialHelper: "osxkeychain" },
+    "git@example.invalid:memory.git",
+    "credential_unavailable",
+  ],
+  [
+    "plain http",
+    { credentialHelper: "osxkeychain" },
+    "http://example.invalid/memory.git",
+    "unsupported_remote",
+  ],
+  [
+    "remote helper",
+    { credentialHelper: "osxkeychain", sshCommand: "ssh -i /keys/owner" },
+    "ext::ssh -i /keys/owner example.invalid %S memory.git",
+    "unsupported_remote",
+  ],
+] as const)(
+  "the owner push fails closed without a matching credential reference: %s",
+  ([, owner, repoUrl, reason]) =>
+    Effect.gen(function* () {
+      const { result, calls } = yield* pushWith(owner, { code: 0 }, repoUrl);
+      expect(result).toMatchObject({ failure: { reason } });
+      expect(calls).toEqual([]);
+    }),
 );
 
 it.effect("the owner push passes only credential references and never prompts", () =>
@@ -609,8 +741,9 @@ it.effect("the owner push passes only credential references and never prompts", 
       SSH_ASKPASS: "false",
       SSH_ASKPASS_REQUIRE: "never",
       GIT_SSH_COMMAND:
-        "ssh -i /keys/owner -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none",
+        "ssh -i /keys/owner -F none -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none",
     });
+    expect(call?.env?.HOME).toMatch(/kin-push-home-/);
     expect(call?.env).toHaveProperty("GIT_CONFIG_PARAMETERS", undefined);
     expect(call?.env).toHaveProperty("SSH_AUTH_SOCK", undefined);
 

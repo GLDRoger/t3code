@@ -41,10 +41,12 @@ const PurgePlanSchema = Schema.Union([
 export type PurgePlan = typeof PurgePlanSchema.Type;
 const decodePlan = Schema.decodeUnknownEffect(Schema.fromJsonString(PurgePlanSchema));
 
+/** Carries the plan so `reconcile` and re-runs still work if the plan file is lost. */
 const PurgeMarker = Schema.Struct({
   sha256: Schema.String,
   actionId: Schema.String,
   oldHead: Schema.String,
+  plan: Schema.String,
 });
 const decodeMarker = Schema.decodeUnknownOption(Schema.fromJsonString(PurgeMarker));
 
@@ -321,13 +323,30 @@ const make = Effect.gen(function* () {
       ? Effect.succeed(path.resolve(config.baseDirectory, target.path))
       : reject("Invalid plan path");
 
+  const markerFor = (orgId: KinOrgId) =>
+    memory.purgeInFlight(orgId).pipe(
+      Effect.map((inFlight) => ({
+        inFlight,
+        marker: inFlight === undefined ? undefined : Option.getOrUndefined(decodeMarker(inFlight)),
+      })),
+    );
+
   const loadPlan = Effect.fn("KinPurge.loadPlan")(function* (action: PurgeAction) {
     if (action.kind !== "memory_purge" || action.target._tag !== "content")
       return yield* reject("Action is not a memory purge");
     const file = yield* planFile(action.target);
-    const json = yield* fs
-      .readFileString(file)
-      .pipe(Effect.mapError(() => new KinPurgeRejected({ reason: "Plan file is missing" })));
+    const stored = yield* fs.readFileString(file).pipe(Effect.option);
+    const json = Option.isSome(stored)
+      ? stored.value
+      : config.repositories.some((entry) => entry.orgId === action.orgId)
+        ? yield* markerFor(action.orgId).pipe(
+            Effect.map(({ marker }) =>
+              marker?.sha256 === action.target.sha256 ? marker.plan : undefined,
+            ),
+            Effect.orElseSucceed(() => undefined),
+          )
+        : undefined;
+    if (json === undefined) return yield* reject("Plan file is missing");
     const plan = yield* decodePlan(json).pipe(
       Effect.mapError(() => new KinPurgeRejected({ reason: "Plan file is malformed" })),
     );
@@ -347,11 +366,10 @@ const make = Effect.gen(function* () {
     if (rejection !== undefined) return yield* reject(rejection);
     const repo = repoFor(plan);
     if (!repo) return yield* reject("Plan repo is not this organization's memory");
-    const inFlight = yield* memory
-      .purgeInFlight(plan.orgId)
-      .pipe(failed(plan.orgId, "clone", "Could not read the purge marker"));
-    const marker = inFlight === undefined ? Option.none() : decodeMarker(inFlight);
-    return { plan, repo, inFlight, marker: Option.getOrUndefined(marker) };
+    const { inFlight, marker } = yield* markerFor(plan.orgId).pipe(
+      failed(plan.orgId, "clone", "Could not read the purge marker"),
+    );
+    return { plan, repo, inFlight, marker };
   });
 
   const branchRefs = Effect.fn("KinPurge.branchRefs")(function* (work: string) {
@@ -438,10 +456,11 @@ const make = Effect.gen(function* () {
   /** Whether any reachable commit still holds what the plan removes. */
   const planInHistory = Effect.fn("KinPurge.planInHistory")(function* (
     plan: PurgePlan,
+    actionId: string,
     work: string,
   ) {
     if (plan.mode === "drop_file") {
-      // The purge's own tombstones live at the purged paths; anything else there is old content.
+      // This action's own tombstones live at the purged paths; anything else there is old content.
       for (const file of yield* historyFiles(plan.orgId, work, plan.paths)) {
         const parsed = yield* parseFrontMatter(
           plan.orgId,
@@ -451,7 +470,7 @@ const make = Effect.gen(function* () {
         if (
           Option.isNone(parsed) ||
           parsed.value.frontMatter.title !== "Purged item" ||
-          !parsed.value.frontMatter.source.startsWith("kin-action:")
+          parsed.value.frontMatter.source !== `kin-action:${actionId}`
         )
           return true;
       }
@@ -569,7 +588,10 @@ const make = Effect.gen(function* () {
     return commit;
   });
 
-  /** A fresh mirror under the org's purge directory; stale ones from a crashed purge are swept first. */
+  /**
+   * A fresh bare clone of `refs/heads/*` and `refs/tags/*` under the org's purge directory; stale ones
+   * from a crashed purge are swept first. GitHub's read-only `refs/pull/*` stay out of reach.
+   */
   const mirror = Effect.fn("KinPurge.mirror")(function* (
     orgId: KinOrgId,
     repo: { readonly repoUrl: string; readonly path: string },
@@ -582,13 +604,13 @@ const make = Effect.gen(function* () {
     }).pipe(failed(orgId, "clone", "Could not create a scratch directory"));
     yield* git(work, [
       "clone",
-      "--mirror",
+      "--bare",
       "--no-local",
       "--template=",
       "--",
       repo.repoUrl,
       `${work}/.git`,
-    ]).pipe(failed(orgId, "clone", "Mirror clone failed"));
+    ]).pipe(failed(orgId, "clone", "Bare clone failed"));
     const before = yield* branchRefs(work).pipe(failed(orgId, "clone", "Could not list refs"));
     const head = before.get(`refs/heads/${config.defaultBranch ?? "main"}`);
     if (!head) return yield* fail(orgId, "clone", "Remote default branch is missing");
@@ -621,7 +643,7 @@ const make = Effect.gen(function* () {
 
     // A re-run after a push that landed: nothing to rewrite, but the checkouts still need a reclone.
     if (input.inFlight !== undefined) {
-      const remaining = yield* planInHistory(plan, work).pipe(
+      const remaining = yield* planInHistory(plan, action.id, work).pipe(
         failed(orgId, "verify", "Could not check history"),
       );
       if (!remaining) {
@@ -696,7 +718,7 @@ const make = Effect.gen(function* () {
       return yield* fail(orgId, "rewrite", "Nothing in history matched the plan");
 
     if (plan.mode === "drop_file") {
-      const remaining = yield* planInHistory(plan, work).pipe(
+      const remaining = yield* planInHistory(plan, action.id, work).pipe(
         failed(orgId, "verify", "Could not check rewritten history"),
       );
       if (remaining) return yield* fail(orgId, "verify", "Purged paths remain in history");
@@ -736,7 +758,12 @@ const make = Effect.gen(function* () {
     yield* history
       .quarantine(
         input.inFlight ??
-          markerJson({ sha256: action.target.sha256, actionId: action.id, oldHead }),
+          markerJson({
+            sha256: action.target.sha256,
+            actionId: action.id,
+            oldHead,
+            plan: purgePlanJson(plan).json,
+          }),
       )
       .pipe(failed(orgId, "quarantine", "Could not quarantine local memory checkouts"));
     yield* pusher.push({ orgId, repoUrl: repo.repoUrl, gitDir: work, updates }).pipe(
@@ -777,6 +804,15 @@ const make = Effect.gen(function* () {
 
     discardPlan: Effect.fn("KinPurge.discardPlan")(function* (target) {
       const file = yield* planFile(target);
+      for (const { orgId } of config.repositories) {
+        const { inFlight, marker } = yield* markerFor(orgId).pipe(
+          Effect.mapError(
+            () => new KinPurgeRejected({ reason: "Could not read the purge marker" }),
+          ),
+        );
+        if (inFlight !== undefined && (marker === undefined || marker.sha256 === target.sha256))
+          return yield* reject("This plan's purge is in flight; reconcile it first");
+      }
       yield* fs
         .remove(file, { force: true })
         .pipe(Effect.mapError(() => new KinPurgeRejected({ reason: "Could not delete the plan" })));
@@ -866,7 +902,9 @@ const make = Effect.gen(function* () {
           Effect.gen(function* () {
             const observed = yield* mirror(orgId, repo).pipe(
               Effect.flatMap(({ work, head }) =>
-                planInHistory(plan, work).pipe(Effect.map((remaining) => ({ head, remaining }))),
+                planInHistory(plan, action.id, work).pipe(
+                  Effect.map((remaining) => ({ head, remaining })),
+                ),
               ),
               Effect.option,
             );

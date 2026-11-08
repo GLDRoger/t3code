@@ -1,6 +1,7 @@
 import type { KinOrgId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
@@ -17,6 +18,7 @@ export class KinPurgePushError extends Schema.TaggedError<KinPurgePushError>()(
   {
     reason: Schema.Literals([
       "credential_unavailable",
+      "unsupported_remote",
       "lease_rejected",
       "remote_rejected",
       "rejected",
@@ -78,6 +80,15 @@ const pushFailure = (stdout: string, stderr: string): KinPurgePushError["reason"
 const isCredentialHelperReference = (helper: string) =>
   /^(?:[A-Za-z0-9][A-Za-z0-9._-]*|\/[A-Za-z0-9._/-]+)$/.test(helper);
 const isSshCommandReference = (command: string) => /^[A-Za-z0-9 ._/=,:@+-]+$/.test(command);
+/** `file://` carries no credential; https needs the helper and SSH the owner's command. */
+const remoteKind = (url: string) =>
+  /^https:\/\//i.test(url)
+    ? "https"
+    : /^ssh:\/\//i.test(url) || /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:(?!\/\/)/.test(url)
+      ? "ssh"
+      : /^file:\/\//i.test(url)
+        ? "file"
+        : undefined;
 
 /**
  * Pushes with a reference to the owner's credential: a git credential helper or an SSH command naming
@@ -91,6 +102,7 @@ export const gitPushLayer = (owner: {
     KinPurgePush,
     Effect.gen(function* () {
       const vcs = yield* VcsProcess;
+      const fs = yield* FileSystem.FileSystem;
       return KinPurgePush.of({
         push: Effect.fn("KinPurgePush.git")(function* ({ repoUrl, gitDir, updates }) {
           const { credentialHelper, sshCommand } = owner;
@@ -100,6 +112,18 @@ export const gitPushLayer = (owner: {
             (sshCommand !== undefined && !isSshCommandReference(sshCommand))
           )
             return yield* new KinPurgePushError({ reason: "credential_unavailable" });
+          const kind = remoteKind(repoUrl);
+          if (kind === undefined)
+            return yield* new KinPurgePushError({ reason: "unsupported_remote" });
+          if (
+            (kind === "https" && credentialHelper === undefined) ||
+            (kind === "ssh" && sshCommand === undefined)
+          )
+            return yield* new KinPurgePushError({ reason: "credential_unavailable" });
+          // An empty HOME keeps curl's `.netrc` out; `-F none` keeps `~/.ssh/config` out.
+          const home = yield* fs
+            .makeTempDirectoryScoped({ prefix: "kin-push-home-" })
+            .pipe(Effect.mapError(() => new KinPurgePushError({ reason: "unknown" })));
           const result = yield* vcs
             .run({
               operation: "KinPurgePush.git",
@@ -130,6 +154,8 @@ export const gitPushLayer = (owner: {
               env: {
                 ...scrubbedGitEnv(),
                 ...hardenedGitEnv,
+                HOME: home,
+                XDG_CONFIG_HOME: home,
                 GIT_ASKPASS: "false",
                 SSH_ASKPASS: "false",
                 SSH_ASKPASS_REQUIRE: "never",
@@ -137,7 +163,7 @@ export const gitPushLayer = (owner: {
                 GCM_INTERACTIVE: "never",
                 // Without an owner SSH command, refuse SSH instead of using the host's keys or agent.
                 GIT_SSH_COMMAND: sshCommand
-                  ? `${sshCommand} -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none`
+                  ? `${sshCommand} -F none -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none`
                   : "false",
               },
               allowNonZeroExit: true,
@@ -156,7 +182,7 @@ export const gitPushLayer = (owner: {
             return yield* new KinPurgePushError({
               reason: pushFailure(result.stdout, result.stderr),
             });
-        }),
+        }, Effect.scoped),
       });
     }),
   );

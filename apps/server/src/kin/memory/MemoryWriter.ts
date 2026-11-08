@@ -377,6 +377,17 @@ const make = Effect.gen(function* () {
     const paths = yield* memory.ensureCheckouts(orgId);
     return paths;
   });
+  // Every caller holds the writer lock, and the marker only changes under it.
+  const refuseDuringPurge = Effect.fn("MemoryWriter.refuseDuringPurge")(function* (
+    orgId: KinOrgId,
+  ) {
+    if ((yield* memory.purgeInFlight(orgId)) !== undefined)
+      return yield* new MemorySyncConflict({
+        orgId,
+        operation: "push",
+        reason: "A memory purge is in flight; old history must not be pushed",
+      });
+  });
   const report = <A>(orgId: KinOrgId, wakeupId: string, effect: Effect.Effect<A, Failure>) =>
     effect.pipe(
       Effect.catchTags({
@@ -770,6 +781,7 @@ const make = Effect.gen(function* () {
           Effect.gen(function* () {
             const { ctx, state } = yield* session(orgId, wakeupId);
             const { writer } = yield* validate(orgId);
+            yield* refuseDuringPurge(orgId);
             const repo = config.repositories.find((entry) => entry.orgId === orgId);
             if (!repo)
               return yield* new MemoryConfigError({
@@ -899,6 +911,7 @@ const make = Effect.gen(function* () {
             if (!dreamBranch.test(input.branch))
               return yield* new MemoryWriteRejected({ reason: "Invalid dream branch" });
             const { writer } = yield* validate(orgId);
+            yield* refuseDuringPurge(orgId);
             const repo = yield* repoFor(orgId);
             const baseFiles = yield* filesAt(orgId, writer, input.base);
             const regular = yield* regularPaths(orgId, writer, input.base);
@@ -964,6 +977,7 @@ const make = Effect.gen(function* () {
           if (!dreamBranch.test(branch))
             return yield* new MemoryWriteRejected({ reason: "Invalid dream branch" });
           const { writer } = yield* validate(orgId);
+          yield* refuseDuringPurge(orgId);
           const repo = yield* repoFor(orgId);
           const advertised = yield* git(orgId, writer, [
             "ls-remote",
