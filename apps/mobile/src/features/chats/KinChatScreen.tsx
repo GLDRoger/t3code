@@ -1,6 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react-native";
-import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KinChatId,
   type EnvironmentId,
@@ -269,14 +269,20 @@ function KinChatStateView(props: {
         return (
           <EmptyState
             variant="plain"
-            title={state.reason === "left" ? "You left this chat" : "This chat isn't available"}
-            detail={
-              state.reason === "left" ||
-              state.reason === "not_found" ||
-              state.reason === "not_allowed"
-                ? "It may have been removed, or you're no longer a member."
-                : "The server refused to open it."
+            title={
+              state.reason === "left"
+                ? "You were removed from this chat"
+                : "This chat isn't available"
             }
+            detail={
+              state.reason === "left"
+                ? "Ask the chat's owner to add you back."
+                : state.reason === "not_found" || state.reason === "not_allowed"
+                  ? "It may have been removed, or you're no longer a member."
+                  : "Kin couldn't open this chat. Go back to your chats and try again."
+            }
+            actionLabel="Back to chats"
+            onAction={() => navigation.dispatch(StackActions.popTo("KinChats"))}
           />
         );
       case "error":

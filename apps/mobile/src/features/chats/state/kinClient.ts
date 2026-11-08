@@ -18,7 +18,13 @@ import { AsyncResult, AtomRegistry } from "effect/reactivity";
 import { connectionAtomRuntime } from "../../../connection/runtime";
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { syncKinCacheIdentity } from "./kinCache";
-import { KIN_CHAT_LABEL, KIN_INBOX_LABEL, kinInboxStream, makeKinChatStream } from "./kinStreams";
+import {
+  KIN_CHAT_LABEL,
+  KIN_INBOX_LABEL,
+  kinInboxStream,
+  makeKinChatStream,
+  retryKinProbe,
+} from "./kinStreams";
 
 export type { KinSynced } from "./kinStreams";
 
@@ -58,6 +64,13 @@ function guardedRead<Input, A, E>(command: {
 }
 
 const readOrgs = guardedRead(orgsRead);
+
+// Hosts that answered `kin.orgs.list` this run, plus the saved host. Their `unavailable` is an
+// outage to wait out, not a sign Kin is absent.
+const knownKinHosts = new Set<EnvironmentId>();
+export const markKinHostKnown = (environmentId: EnvironmentId) => {
+  knownKinHosts.add(environmentId);
+};
 const readHistory = guardedRead(historyRead);
 
 /** A dropped connection can leave a read pending; "Load earlier" fails after this and offers Retry. */
@@ -67,16 +80,13 @@ export const kinClient = {
   /** Orgs, their agents, and the viewer's person per org. An empty `me` means no identity. */
   orgs: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:orgs",
-    execute: (input: KinOrgsListInput) =>
-      readOrgs(input).pipe(
-        Effect.tap((result) =>
-          currentEnvironmentId.pipe(
-            Effect.flatMap((environmentId) =>
-              syncKinCacheIdentity(environmentId, result.me[0]?.personId ?? null),
-            ),
-          ),
-        ),
-      ),
+    execute: Effect.fn("KinClient.orgs")(function* (input: KinOrgsListInput) {
+      const environmentId = yield* currentEnvironmentId;
+      const result = yield* retryKinProbe(readOrgs(input), () => knownKinHosts.has(environmentId));
+      markKinHostKnown(environmentId);
+      yield* syncKinCacheIdentity(environmentId, result.me[0]?.personId ?? null);
+      return result;
+    }),
     staleTimeMs: 60_000,
     // A failed probe reruns when the next session comes up, not only after the stale time.
     refreshTrigger: sessionGeneration,

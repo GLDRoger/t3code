@@ -18,6 +18,7 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 
 import { removeKinCacheEntry, withKinCache } from "./kinCache";
 import {
@@ -64,10 +65,33 @@ const isKinRefusal = (
 export const KIN_RETRY_BASE_DELAY = Duration.seconds(1);
 export const KIN_RETRY_MAX_DELAY = Duration.seconds(30);
 
-/** Resubscribes after `unavailable`: 1 s, doubling to 30 s, starting over once events flow again. */
+/** The wait before retry `attempt`, counting from 0: 1 s, doubling to 30 s. */
+const kinRetryDelay = (attempt: number) =>
+  Duration.min(Duration.times(KIN_RETRY_BASE_DELAY, 2 ** attempt), KIN_RETRY_MAX_DELAY);
+
+/** Sleeps `delay`, cut short by the next connected session. True when a session ended it. */
+const sleepUntilNextSession = (delay: Duration.Duration) =>
+  EnvironmentSupervisor.EnvironmentSupervisor.pipe(
+    Effect.flatMap((supervisor) =>
+      Effect.race(
+        Effect.sleep(delay).pipe(Effect.as(false)),
+        SubscriptionRef.changes(supervisor.session).pipe(
+          Stream.drop(1),
+          Stream.filter(Option.isSome),
+          Stream.runHead,
+          Effect.as(true),
+        ),
+      ),
+    ),
+  );
+
+/**
+ * Resubscribes after `unavailable`: 1 s, doubling to 30 s, starting over once events flow again
+ * or a new session comes up.
+ */
 export function retryWhileKinUnavailable<A, E, R>(stream: Stream.Stream<A, E, R>) {
   let attempt = 0;
-  const run = (): Stream.Stream<A, E, R> =>
+  const run = (): Stream.Stream<A, E, R | EnvironmentSupervisor.EnvironmentSupervisor> =>
     stream.pipe(
       Stream.onFirst(() =>
         Effect.sync(() => {
@@ -75,18 +99,36 @@ export function retryWhileKinUnavailable<A, E, R>(stream: Stream.Stream<A, E, R>
         }),
       ),
       Stream.catchIf(isKinRetryable, () => {
-        const delay = Duration.min(
-          Duration.times(KIN_RETRY_BASE_DELAY, 2 ** attempt),
-          KIN_RETRY_MAX_DELAY,
-        );
+        const delay = kinRetryDelay(attempt);
         attempt += 1;
-        return Stream.fromEffect(Effect.sleep(delay)).pipe(
-          Stream.drain,
-          Stream.concat(Stream.suspend(run)),
-        );
+        return Stream.fromEffect(
+          sleepUntilNextSession(delay).pipe(
+            Effect.map((newSession) => {
+              if (newSession) attempt = 0;
+            }),
+          ),
+        ).pipe(Stream.drain, Stream.concat(Stream.suspend(run)));
       }),
     );
   return Stream.suspend(run);
+}
+
+/**
+ * Re-reads `kin.orgs.list` after `unavailable` with the streams' backoff, for a host known to be
+ * Kin: the server maps every infra failure to `unavailable`. Any other host fails at once.
+ */
+export function retryKinProbe<A, E, R>(
+  probe: Effect.Effect<A, E, R>,
+  isKnownKin: () => boolean,
+): Effect.Effect<A, E, R> {
+  const run = (attempt: number): Effect.Effect<A, E, R> =>
+    probe.pipe(
+      Effect.catchIf(
+        (error: E) => isKinRetryable(error) && isKnownKin(),
+        () => Effect.sleep(kinRetryDelay(attempt)).pipe(Effect.andThen(run(attempt + 1))),
+      ),
+    );
+  return run(0);
 }
 
 // The viewer's chat stream learns it left a chat; the list stream never says so.
