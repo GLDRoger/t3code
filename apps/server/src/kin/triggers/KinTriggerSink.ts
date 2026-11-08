@@ -203,9 +203,13 @@ export function wrapTaskDispatch<E, R, E2, R2>(
                 ),
               ),
             );
-            if (source === undefined) return yield* service.sendToThread(input);
+            if (
+              source === undefined &&
+              !input.scheduledTaskId.startsWith(KinTriggerStore.KIN_WEBHOOK_TASK_PREFIX)
+            )
+              return yield* service.sendToThread(input);
             yield* Effect.logWarning("Kin trigger sources must stay unbound new_thread tasks").pipe(
-              Effect.annotateLogs({ scheduledTaskId: input.scheduledTaskId, sourceId: source.id }),
+              Effect.annotateLogs({ scheduledTaskId: input.scheduledTaskId }),
             );
             return yield* new OrchestratorCommandRejectedError({
               commandId: input.commandId,

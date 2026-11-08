@@ -407,6 +407,13 @@ describe("KinTriggerSink", () => {
             yield* upsert(KinTriggerStore.githubAppTaskId(orgA)),
           );
           yield* dispatchFailed(orphan, "orphan");
+          const orphanInput = yield* upsert(KinTriggerStore.githubAppTaskId(orgA));
+          const { task: boundOrphan } = yield* service.upsert({
+            ...orphanInput,
+            threadId: projection(orgA).thread.id,
+            threadMode: "continue",
+          });
+          yield* dispatchFailed(boundOrphan, "bound-orphan");
           assert.lengthOf(yield* inbox.listPending(orgA), 1);
           assert.lengthOf(launches, 0);
           yield* service.delete({ id: orphan.id });
