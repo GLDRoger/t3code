@@ -1,3 +1,5 @@
+import { authorityLayerWithDatabase, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
+import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { McpProviderSessions } from "@t3tools/provider-core/server/McpProviderSessions";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -7,6 +9,7 @@ import {
   AuthStandardClientScopes,
   EnvironmentId,
   KinAgentId,
+  KinOrgId,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -31,7 +34,9 @@ import * as NetAddress from "effect/net/NetAddress";
 import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import * as McpSessions from "../../mcp/McpSessionRegistry.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
+import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import * as Kin from "../layer.ts";
+import { ServerActivation } from "../../serverActivation.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { AssetSigner } from "../../assets/AssetSigner.ts";
@@ -66,7 +71,9 @@ import { GitVcsDriver } from "../../vcs/GitVcsDriver.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { DocumentText } from "../../provider/DocumentText.ts";
 import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
+const serverConfig = ServerConfig.layerTest(process.cwd(), { prefix: "t3-agent-context-budget-" });
 const toolHandlerServices = Layer.mergeAll(
+  VcsProcess.layer,
   Layer.mock(AssetSigner)({}),
   Layer.mock(DeviceService)({}),
   Layer.mock(DocumentText)({}),
@@ -74,7 +81,6 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(GitWorkflowService)({}),
   Layer.mock(ManagedProjectFolders)({ namedProjectsRoot: "" }),
   Layer.mock(McpProviderSessions)({}),
-  Layer.mock(OrchestratorV2)({}),
   Layer.mock(PeerForwarding)({}),
   Layer.mock(PeerLinkRequests)({}),
   Layer.mock(PeerLinks)({}),
@@ -90,7 +96,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(RemoteDelegation)({}),
   Layer.mock(ScheduledTaskService)({}),
   Layer.mock(SecretRequests)({}),
-  ServerConfig.layerTest(process.cwd(), { prefix: "t3-agent-context-budget-" }),
+  serverConfig,
   Layer.mock(ServerEnvironment)({
     getEnvironmentId: Effect.succeed(EnvironmentId.make("environment")),
   }),
@@ -110,29 +116,58 @@ it.effect.each([true, false])(
   (enabled) =>
     Effect.scoped(
       Effect.gen(function* () {
+        let runnerStarts = 0;
         const ready =
           yield* Deferred.make<
-            Context.Context<Kin.KinServer | McpSessions.McpSessionRegistry | SqlClient.SqlClient>
+            Context.Context<
+              Kin.KinServer | McpSessions.McpSessionRegistry | SqlClient.SqlClient | OrchestratorV2
+            >
           >();
         const routes = Layer.merge(
           Kin.mcpLayer(McpHttpServer.layer),
           Layer.effectDiscard(
             Effect.context<
-              Kin.KinServer | McpSessions.McpSessionRegistry | SqlClient.SqlClient
+              Kin.KinServer | McpSessions.McpSessionRegistry | SqlClient.SqlClient | OrchestratorV2
             >().pipe(Effect.flatMap((context) => Deferred.succeed(ready, context))),
           ),
         ).pipe(
           Layer.provideMerge(Kin.mcpRegistryLayer(McpSessions.layer)),
-          Layer.provideMerge(Sqlite.layerConfig),
+          Layer.provideMerge(
+            authorityLayerWithDatabase(
+              KinPersistence.layer.pipe(
+                Layer.provideMerge(Sqlite.layerConfig.pipe(Layer.orDie)),
+                Layer.provide(serverConfig),
+                Layer.provide(NodeServices.layer),
+              ),
+            ),
+          ),
           Layer.provide(toolHandlerServices),
           Layer.provide(
             Layer.mock(HttpServer.HttpServer)({
               address: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 43123),
             }),
           ),
-          Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: enabled }))),
+          Layer.provide(
+            Layer.succeed(
+              ServerActivation,
+              Effect.sync(() => {
+                runnerStarts++;
+              }).pipe(Effect.andThen(Effect.never)),
+            ),
+          ),
+          Layer.provide(
+            ConfigProvider.layer(
+              ConfigProvider.fromUnknown({
+                KIN_ENABLED: enabled,
+                KIN_MEMORY_REPOSITORIES: JSON.stringify([
+                  { orgId: KinOrgId.make("fixture"), repoUrl: "fixture" },
+                ]),
+              }),
+            ),
+          ),
         );
         const http = yield* HttpRouter.toHttpEffect(routes);
+        assert.strictEqual(runnerStarts, enabled ? 1 : 0);
         const services = yield* Deferred.await(ready);
         const kin = Context.get(services, Kin.KinServer);
         const registry = Context.get(services, McpSessions.McpSessionRegistry);
@@ -216,6 +251,18 @@ it.effect.each([true, false])(
           providerInstanceId: ProviderInstanceId.make("codex"),
         });
         assert.strictEqual(issued.config.endpoint, "http://127.0.0.1:43123/kin/mcp");
+        assert.strictEqual(
+          (yield* request("/kin/mcp", issued.config.authorizationHeader, "initialize", initialize))
+            .status,
+          403,
+        );
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+          VALUES (${agentId}, ${person.orgId}, 'Lead', 0, '{}', '[]', ${chat.chatId})`;
+        const run = yield* startWakeupRun(threadId, "composition-wakeup").pipe(
+          Effect.provide(services),
+        );
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids)
+          VALUES ('composition-wakeup', ${person.orgId}, ${agentId}, ${threadId}, ${run.id}, 'test', 0, 'running', '[]')`;
         const initialized = yield* request(
           "/kin/mcp",
           issued.config.authorizationHeader,
@@ -282,6 +329,7 @@ it.effect("measures the combined agent tool list separately from ordinary thread
         Layer.provide(Sqlite.layerConfig),
         Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: false }))),
         Layer.provide(toolHandlerServices),
+        Layer.provide(Layer.mock(OrchestratorV2)({})),
       ),
     ),
   ),
