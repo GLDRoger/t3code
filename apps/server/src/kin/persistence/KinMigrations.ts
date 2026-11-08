@@ -10,7 +10,8 @@ import OneChatOwner from "./migrations/K005_OneChatOwner.ts";
 import Pings from "./migrations/K006_Pings.ts";
 import Budget from "./migrations/K007_Budget.ts";
 import Floor from "./migrations/K008_Floor.ts";
-import Approvals from "./migrations/K009_Approvals.ts";
+import JudgeLog from "./migrations/K009_JudgeLog.ts";
+import Approvals from "./migrations/K010_Approvals.ts";
 
 const table = "kin_sql_migrations";
 const run = Migrator.make({});
@@ -23,7 +24,8 @@ const loader = Migrator.fromRecord({
   "6_Pings": Pings,
   "7_Budget": Budget,
   "8_Floor": Floor,
-  "9_Approvals": Approvals,
+  "9_JudgeLog": JudgeLog,
+  "10_Approvals": Approvals,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

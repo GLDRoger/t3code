@@ -27,6 +27,7 @@ const tableNames = [
   "kin_floor_notices",
   "kin_floor_runs",
   "kin_grants",
+  "kin_judge_log",
   "kin_leads",
   "kin_memory_reads",
   "kin_messages",
@@ -98,7 +99,8 @@ describe("Kin migrations", () => {
           { migration_id: 6, name: "Pings" },
           { migration_id: 7, name: "Budget" },
           { migration_id: 8, name: "Floor" },
-          { migration_id: 9, name: "Approvals" },
+          { migration_id: 9, name: "JudgeLog" },
+          { migration_id: 10, name: "Approvals" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
@@ -152,7 +154,8 @@ describe("Kin migrations", () => {
           { migration_id: 6, name: "Pings" },
           { migration_id: 7, name: "Budget" },
           { migration_id: 8, name: "Floor" },
-          { migration_id: 9, name: "Approvals" },
+          { migration_id: 9, name: "JudgeLog" },
+          { migration_id: 10, name: "Approvals" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -230,7 +233,8 @@ describe("Kin migrations", () => {
         [6, "Pings"],
         [7, "Budget"],
         [8, "Floor"],
-        [9, "Approvals"],
+        [9, "JudgeLog"],
+        [10, "Approvals"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -248,6 +252,7 @@ describe("Kin migrations", () => {
         VALUES ('existing-chat', 'org', 'project_group', 0, ${timestamp})`;
       yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
         VALUES ('existing-owner', 'org', 'existing-chat', 'person', 'owner', 'owner', ${timestamp})`;
+      yield* sql`DROP TABLE kin_judge_log`;
       yield* sql`DROP TABLE kin_floor_notices`;
       yield* sql`DROP TABLE kin_floor_grants`;
       yield* sql`DROP TABLE kin_floor_runs`;
@@ -272,7 +277,8 @@ describe("Kin migrations", () => {
         [6, "Pings"],
         [7, "Budget"],
         [8, "Floor"],
-        [9, "Approvals"],
+        [9, "JudgeLog"],
+        [10, "Approvals"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,
@@ -293,7 +299,8 @@ describe("Kin migrations", () => {
         { migration_id: 6, name: "Pings" },
         { migration_id: 7, name: "Budget" },
         { migration_id: 8, name: "Floor" },
-        { migration_id: 9, name: "Approvals" },
+        { migration_id: 9, name: "JudgeLog" },
+        { migration_id: 10, name: "Approvals" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);
@@ -305,13 +312,13 @@ describe("Kin migrations", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runKinMigrations();
-      // What a database looks like when K009 merged before a lower-numbered migration.
+      // What a database looks like when K010 merged before a lower-numbered migration.
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 5`;
       const history = yield* kinHistory;
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 9");
+      assert.include(String(exit), "below the latest applied migration 10");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -320,11 +327,11 @@ describe("Kin migrations", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runKinMigrations();
-      // What a database looks like after running another branch's K009.
-      yield* sql`UPDATE kin_sql_migrations SET name = 'Budget' WHERE migration_id = 9`;
+      // What a database looks like after running another branch's K010.
+      yield* sql`UPDATE kin_sql_migrations SET name = 'Budget' WHERE migration_id = 10`;
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
-      assert.include(String(exit), "9_Approvals");
+      assert.include(String(exit), "10_Approvals");
       assert.include(String(exit), "share a number");
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
