@@ -85,7 +85,53 @@ const makeDiskSessionStoreLayer = Effect.fn("makeDiskSessionStoreLayer")(functio
 });
 
 it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("SessionStore.layer", (it) => {
-  it.effect.each(["revoke", "revokeAllExcept", "replace"] as const)(
+  it.effect("revokes every session for a renewed device, including expired sessions", () =>
+    Effect.gen(function* () {
+      const sessions = yield* SessionStore.SessionStore;
+      const sql = yield* SqlClient.SqlClient;
+      const device = {
+        ...relaySessionInput,
+        proofKeyThumbprint: Buffer.alloc(32).toString("base64url"),
+      };
+      const original = yield* sessions.issue(device);
+      const untouched = yield* sessions.issue({
+        ...device,
+        proofKeyThumbprint: Buffer.alloc(32, 1).toString("base64url"),
+        ttl: Duration.hours(2),
+      });
+      const other = yield* sessions.issue({
+        ...relaySessionInput,
+        proofKeyThumbprint: "other-key",
+      });
+      const unbound = yield* sessions.issue();
+      const anotherUnbound = yield* sessions.issue();
+      yield* TestClock.adjust(Duration.minutes(59));
+      const renewed = yield* sessions.issue(device);
+      yield* TestClock.adjust(Duration.minutes(2));
+      expect(yield* sessions.revoke(other.sessionId)).toBe(true);
+      expect((yield* sessions.verify(renewed.token)).sessionId).toBe(renewed.sessionId);
+      expect(yield* sessions.revoke(renewed.sessionId)).toBe(true);
+      const rows = yield* sql<{ session_id: string; revoked_at: string | null }>`
+        SELECT session_id, revoked_at FROM auth_sessions
+        WHERE session_id IN (${original.sessionId}, ${renewed.sessionId})`;
+      expect(rows).toHaveLength(2);
+      expect(rows.every((row) => row.revoked_at !== null)).toBe(true);
+      expect((yield* sessions.verify(renewed.token).pipe(Effect.flip))._tag).toBe(
+        "SessionTokenRevokedError",
+      );
+      expect(yield* sessions.revoke(renewed.sessionId)).toBe(false);
+      expect((yield* sessions.verify(untouched.token)).sessionId).toBe(untouched.sessionId);
+      expect(
+        yield* sql`SELECT proof_key_thumbprint FROM auth_sessions WHERE session_id = ${unbound.sessionId}`,
+      ).toEqual([{ proof_key_thumbprint: null }]);
+      expect(yield* sessions.revoke(unbound.sessionId)).toBe(true);
+      expect((yield* sessions.verify(anotherUnbound.token)).sessionId).toBe(
+        anotherUnbound.sessionId,
+      );
+    }).pipe(Effect.provide(Layer.mergeAll(layerSessionStore(), SqlitePersistence.layerMemory))),
+  );
+
+  it.effect.each(["revoke", "revokeRenewal", "revokeAllExcept", "replace"] as const)(
     "invalidates every connection for a session on %s and leaves other sessions active",
     (operation) =>
       Effect.gen(function* () {
@@ -106,7 +152,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("SessionStore.lay
           .awaitInvalidation(client.sessionId, relaySessionInput.proofKeyThumbprint)
           .pipe(Effect.forkScoped({ startImmediately: true }));
         if (operation === "revoke") yield* sessions.revoke(client.sessionId);
-        else if (operation === "revokeAllExcept") yield* sessions.revokeAllExcept(owner.sessionId);
+        else if (operation === "revokeRenewal") {
+          const renewal = yield* sessions.issue(relaySessionInput);
+          yield* sessions.revoke(renewal.sessionId);
+        } else if (operation === "revokeAllExcept")
+          yield* sessions.revokeAllExcept(owner.sessionId);
         else yield* sessions.issue({ ...relaySessionInput, replaceSessionId: client.sessionId });
         yield* Fiber.join(first);
         yield* Fiber.join(second);

@@ -684,6 +684,7 @@ const make = Effect.gen(function* () {
       const client = input?.client ?? createDefaultClientMetadata();
       const sessionRecord = {
         sessionId,
+        proofKeyThumbprint: claims.jkt ?? null,
         subject: claims.sub,
         scopes: claims.scopes,
         method: claims.method,
@@ -987,21 +988,21 @@ const make = Effect.gen(function* () {
   const revoke: SessionStore["Service"]["revoke"] = Effect.fn("SessionStore.revoke")(
     function* (sessionId) {
       const revokedAt = yield* DateTime.now;
-      const revoked = yield* authSessions
+      const revokedSessionIds = yield* authSessions
         .revoke({
           sessionId,
           revokedAt,
         })
         .pipe(Effect.mapError((cause) => new SessionRevocationError({ sessionId, cause })));
-      if (revoked) {
+      if (revokedSessionIds.length > 0) {
         yield* Ref.update(connectedSessionsRef, (current) => {
           const next = new Map(current);
-          next.delete(sessionId);
+          for (const id of revokedSessionIds) next.delete(id);
           return next;
         });
-        yield* emitRemoved(sessionId);
+        yield* Effect.forEach(revokedSessionIds, emitRemoved, { discard: true });
       }
-      return revoked;
+      return revokedSessionIds.length > 0;
     },
   );
 

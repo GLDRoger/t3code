@@ -270,6 +270,17 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer))(
           .pipe(Effect.flip);
         expect(empty._tag).toBe("ServerAuthScopeNotGrantedError");
         expect(yield* serverAuth.listClientSessions(firstSession.sessionId)).toEqual(before);
+        const dpopSession = yield* sessions.verify(dpop.access_token);
+        yield* sessions.revoke(dpopSession.sessionId);
+        const renewal = yield* serverAuth
+          .exchangeBootstrapCredentialForAccessToken(
+            dpop.access_token,
+            ["orchestration:read"],
+            requestMetadata,
+            { proofKeyThumbprint: "test-proof-key" },
+          )
+          .pipe(Effect.flip);
+        expect(renewal._tag).toBe("ServerAuthInvalidCredentialError");
       }).pipe(
         Effect.provide(
           layerEnvironmentAuth({
