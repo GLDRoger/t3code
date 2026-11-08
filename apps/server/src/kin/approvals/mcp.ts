@@ -1,6 +1,7 @@
 import { KinApprovalError, KinChatError, OrchestratorMcpFailure } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -10,10 +11,22 @@ import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { McpInvocationContext } from "../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
 import { ThreadManagementService } from "../../orchestration-v2/ThreadManagementService.ts";
-import { KinServer } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
-import { enabled } from "../mcp/KinChatToolkit.ts";
 import * as RequestAction from "./RequestAction.ts";
+
+// Reads `KinIdentity`, which the Kin MCP endpoint provides per call: `KinServer` reaches the judge.
+const enabled = () => {
+  const fiber = Fiber.getCurrent();
+  if (!fiber) return false;
+  const identity = Context.getOrUndefined(fiber.context, KinIdentity);
+  const scope = Context.getOrUndefined(fiber.context, McpInvocationContext);
+  return (
+    identity !== undefined &&
+    scope?.thread !== undefined &&
+    scope.thread.subagent !== true &&
+    identity.isAgentThread(scope.thread.threadId)
+  );
+};
 
 const requestAction = Tool.make("request_action", {
   description:
@@ -22,7 +35,7 @@ const requestAction = Tool.make("request_action", {
   success: RequestAction.RequestActionResult,
   failure: Schema.Union([KinApprovalError, OrchestratorMcpFailure]),
   failureMode: "return",
-  dependencies: [KinServer, McpInvocationContext, ThreadManagementService],
+  dependencies: [McpInvocationContext, ThreadManagementService],
 }).annotate(McpSchema.EnabledWhen, enabled);
 export const KinApprovalsToolkit = Toolkit.make(requestAction);
 
@@ -44,9 +57,9 @@ const handlers = McpToolAccess.toLayer(
     return {
       request_action: McpToolAccess.actsAsCaller(
         Effect.fn("KinApprovalsToolkit.requestAction")(function* (input) {
-          const kin = yield* KinServer;
-          if (Option.isNone(kin.services)) return yield* unavailable;
-          const agent = yield* Context.get(kin.services.value, KinIdentity)
+          const identity = yield* Effect.serviceOption(KinIdentity);
+          if (Option.isNone(identity)) return yield* unavailable;
+          const agent = yield* identity.value
             .resolveAgent(yield* McpInvocationContext)
             .pipe(
               Effect.mapError((error) =>

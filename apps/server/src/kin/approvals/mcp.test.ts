@@ -159,6 +159,16 @@ const layer = Layer.mergeAll(
   ),
 );
 
+// What the Kin MCP endpoint's auth middleware provides to each call.
+const asKinCall = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const kin = yield* Kin.KinServer;
+    return yield* Option.match(kin.services, {
+      onNone: () => effect,
+      onSome: (services) =>
+        effect.pipe(Effect.provideService(KinIdentity, Context.get(services, KinIdentity))),
+    });
+  });
 const visible = (caller: McpInvocationScope) =>
   Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
@@ -169,7 +179,7 @@ const visible = (caller: McpInvocationScope) =>
           true,
       )
       .map(({ tool }) => tool.name);
-  }).pipe(Effect.provideService(McpInvocationContext, caller));
+  }).pipe(Effect.provideService(McpInvocationContext, caller), asKinCall);
 const call = (args: Record<string, unknown>, caller = scope) =>
   Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
@@ -178,6 +188,7 @@ const call = (args: Record<string, unknown>, caller = scope) =>
       .pipe(
         Effect.provideService(McpInvocationContext, caller),
         Effect.provideService(McpSchema.McpServerClient, client),
+        asKinCall,
       );
   });
 const textOf = (result: McpSchema.CallToolResult): unknown => {

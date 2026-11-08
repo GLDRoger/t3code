@@ -26,14 +26,14 @@ type Auth = (
   effect: Effect.Effect<
     HttpServerResponse.HttpServerResponse,
     Types.unhandled,
-    McpInvocationContext | KinServer
+    McpInvocationContext | KinServer | KinIdentity
   >,
 ) => Effect.Effect<
   HttpServerResponse.HttpServerResponse,
   Types.unhandled,
   HttpServerRequest.HttpServerRequest
 >;
-const auth = HttpRouter.middleware<{ provides: McpInvocationContext | KinServer }>()(
+const auth = HttpRouter.middleware<{ provides: McpInvocationContext | KinServer | KinIdentity }>()(
   Effect.gen(function* () {
     const registry = yield* KinAgentSessions;
     const kin = yield* KinServer;
@@ -42,7 +42,7 @@ const auth = HttpRouter.middleware<{ provides: McpInvocationContext | KinServer 
       effect: Effect.Effect<
         HttpServerResponse.HttpServerResponse,
         Types.unhandled,
-        McpInvocationContext | KinServer
+        McpInvocationContext | KinServer | KinIdentity
       >,
     ) {
       const request = yield* HttpServerRequest.HttpServerRequest;
@@ -55,6 +55,7 @@ const auth = HttpRouter.middleware<{ provides: McpInvocationContext | KinServer 
       return yield* effect.pipe(
         Effect.provideService(McpInvocationContext, scope),
         Effect.provideService(KinServer, kin),
+        Effect.provideService(KinIdentity, identity),
       );
     }) satisfies Auth;
   }),
