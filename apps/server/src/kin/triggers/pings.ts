@@ -1,4 +1,5 @@
 import {
+  KIN_MESSAGE_BODY_MAX_LENGTH,
   KinChatError,
   KinChatId,
   KinMemoryItemId,
@@ -48,6 +49,10 @@ const decodeMessageId = Schema.decodeUnknownEffect(KinMessageId);
 const decodeWaitingId = Schema.decodeUnknownEffect(KinWaitingId);
 const missing = new KinChatError({ reason: "not_found", message: "Kin record not found." });
 const conflict = new KinChatError({ reason: "not_allowed", message: "Ping retry conflict." });
+const ownerMismatch = new KinChatError({
+  reason: "not_allowed",
+  message: "Ping owner does not match the active lead.",
+});
 const invalid = new KinChatError({ reason: "invalid_state", message: "Invalid ping input." });
 type Error =
   | PersistenceSqlError
@@ -97,10 +102,15 @@ function isQuiet(now: number, zone: string, hours: { readonly from: string; read
 }
 
 function quoted(value: string) {
-  return `> ${value
-    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ")
+  const content = Array.from(value.replace(/[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/gu, " "))
     .slice(0, 500)
-    .replace(/[\\`*_{}[\]()<>#+.!|~-]/g, "\\$&")}`;
+    .join("");
+  const longestRun = Math.max(
+    0,
+    ...Array.from(content.matchAll(/`+/g), (match) => match[0].length),
+  );
+  const fence = "`".repeat(longestRun + 1);
+  return `> ${fence} ${content} ${fence}`;
 }
 
 const make = Effect.gen(function* () {
@@ -137,7 +147,7 @@ const make = Effect.gen(function* () {
       owners[0]?.owner_person_id !== r.owner ||
       owners[0]?.owner_chat_id !== r.ownerChatId
     )
-      return yield* conflict;
+      return yield* ownerMismatch;
   });
   const stop = Effect.fn("KinPings.stop")(function* (r: Request, now: number, closed: boolean) {
     yield* sql`UPDATE kin_ping_items SET stopped_at = ${now} WHERE org_id = ${r.orgId} AND item_id = ${r.itemId}
@@ -161,7 +171,7 @@ const make = Effect.gen(function* () {
     put: Effect.fn("KinPings.put")(function* (input) {
       const r = yield* decodeRequest(input).pipe(Effect.mapError(() => invalid));
       const item = yield* memory
-        .readItem(r.orgId, r.itemId, { recordRead: false })
+        .readItemQuietly(r.orgId, r.itemId)
         .pipe(Effect.catchTags({ MemoryNotFound: () => missing }));
       const json = yield* encodeRequest(r).pipe(Effect.mapError(() => invalid));
       return yield* transaction(
@@ -176,7 +186,6 @@ const make = Effect.gen(function* () {
             item.head.status === "open" &&
             item.head.invalid_at === null
           ) {
-            yield* sql`DELETE FROM kin_ping_ledger WHERE org_id = ${r.orgId} AND person = ${r.person} AND item_id = ${r.itemId}`;
             yield* sql`DELETE FROM kin_ping_deliveries WHERE org_id = ${r.orgId} AND person = ${r.person} AND item_id = ${r.itemId}`;
             yield* sql`DELETE FROM kin_ping_escalations WHERE org_id = ${r.orgId} AND item_id = ${r.itemId} AND waiting_id IN
             (SELECT waiting_id FROM kin_waiting WHERE org_id = ${r.orgId} AND resolved_at IS NOT NULL ORDER BY waiting_id)`;
@@ -209,7 +218,6 @@ const make = Effect.gen(function* () {
           row: Row;
           request: Request;
           closed: boolean;
-          answered: boolean;
           handle: string;
           quiet: boolean;
         }> = [];
@@ -219,14 +227,8 @@ const make = Effect.gen(function* () {
             if (r.orgId !== orgId || r.person !== row.person || r.itemId !== row.item_id)
               return yield* invalid;
             const item = yield* memory
-              .readItem(orgId, r.itemId, { recordRead: false })
+              .readItemQuietly(orgId, r.itemId)
               .pipe(Effect.catchTags({ MemoryNotFound: () => Effect.succeed(null) }));
-            const replies =
-              yield* sql`SELECT m.message_id FROM kin_messages m JOIN kin_ping_deliveries d
-            ON d.org_id = m.org_id AND d.person = ${r.person} AND d.item_id = ${r.itemId}
-            WHERE m.org_id = ${orgId} AND m.chat_id = ${r.chatId} AND m.author_person_id = ${r.person}
-            AND m.author_kind = 'human' AND m.status = 'posted' AND m.seq > d.seq
-            AND (m.reply_to = d.message_id OR d.item_count = 1) ORDER BY m.seq LIMIT 1`;
             const person = yield* sql<{
               handle: string;
             }>`SELECT handle FROM kin_people WHERE org_id = ${orgId} AND person_id = ${r.person} ORDER BY person_id`;
@@ -238,7 +240,6 @@ const make = Effect.gen(function* () {
               row,
               request: r,
               closed: item === null || item.head.status !== "open" || item.head.invalid_at !== null,
-              answered: replies.length > 0,
               handle: person[0]?.handle ?? "member",
               quiet: isQuiet(
                 now,
@@ -248,6 +249,14 @@ const make = Effect.gen(function* () {
             };
           }).pipe(Effect.result);
           if (result._tag === "Failure") {
+            if (
+              result.failure._tag === "MemoryDuplicateId" ||
+              result.failure._tag === "KinChatError"
+            ) {
+              const stopped =
+                yield* sql`UPDATE kin_ping_items SET stopped_at = ${now} WHERE org_id = ${orgId} AND person = ${row.person} AND item_id = ${row.item_id} AND stopped_at IS NULL AND request_json = ${row.request_json} AND first_seq IS ${row.first_seq} RETURNING item_id`;
+              if (stopped.length === 0) continue;
+            }
             yield* Effect.logWarning("Kin ping row skipped", {
               orgId,
               person: row.person,
@@ -262,7 +271,7 @@ const make = Effect.gen(function* () {
           Effect.gen(function* () {
             const batches = new Map<string, typeof candidates>();
             for (const candidate of candidates) {
-              const { row, request: r, closed, answered } = candidate;
+              const { row, request: r, closed } = candidate;
               const current =
                 yield* sql<Row>`SELECT * FROM kin_ping_items WHERE org_id = ${orgId} AND person = ${r.person} AND item_id = ${r.itemId} AND stopped_at IS NULL ORDER BY item_id`;
               if (
@@ -271,12 +280,20 @@ const make = Effect.gen(function* () {
                 current[0].first_seq !== row.first_seq
               )
                 continue;
-              if (closed || answered) {
+              const replies =
+                yield* sql`SELECT m.message_id FROM kin_messages m JOIN kin_ping_deliveries d
+              ON d.org_id = m.org_id AND d.person = ${r.person} AND d.item_id = ${r.itemId}
+              WHERE m.org_id = ${orgId} AND m.chat_id = ${r.chatId} AND m.author_person_id = ${r.person}
+              AND m.author_kind = 'human' AND m.status = 'posted' AND m.seq > d.seq
+              AND (m.reply_to = d.message_id OR d.item_count = 1) ORDER BY m.seq LIMIT 1`;
+
+              if (closed || replies.length > 0) {
                 yield* stop(r, now, closed);
                 continue;
               }
               const valid = yield* checkOwner(r).pipe(Effect.andThen(validate(r)), Effect.result);
               if (valid._tag === "Failure") {
+                if (valid.failure._tag === "KinChatError") yield* stop(r, now, false);
                 yield* Effect.logWarning("Kin ping destination skipped", {
                   orgId,
                   person: r.person,
@@ -287,6 +304,7 @@ const make = Effect.gen(function* () {
               }
               const batch = batches.get(r.person) ?? [];
               if (batch[0] && batch[0].request.chatId !== r.chatId) {
+                yield* stop(r, now, false);
                 yield* Effect.logWarning("Kin ping chat mismatch", {
                   orgId,
                   person: r.person,
@@ -300,6 +318,7 @@ const make = Effect.gen(function* () {
             }
             for (const candidates of batches.values()) {
               const batch = [];
+              let body = "Reminder: next step below.";
               for (const candidate of candidates) {
                 const { row, request: r, handle } = candidate;
                 const pending =
@@ -325,7 +344,12 @@ const make = Effect.gen(function* () {
                 if (candidate.quiet) continue;
                 const sent =
                   yield* sql`SELECT item_id FROM kin_ping_ledger WHERE org_id = ${orgId} AND person = ${r.person} AND item_id = ${r.itemId} AND day = ${day} ORDER BY item_id`;
-                if (!sent.length) batch.push({ ...candidate, escalatedAt });
+                if (!sent.length) {
+                  const line = `\n${quoted(`${r.itemId}: ${r.nextStep}`)}`;
+                  if (body.length + line.length > KIN_MESSAGE_BODY_MAX_LENGTH) continue;
+                  body += line;
+                  batch.push({ ...candidate, escalatedAt });
+                }
               }
               const first = batch[0];
               if (!first) continue;
@@ -333,7 +357,7 @@ const make = Effect.gen(function* () {
                 messageId: yield* decodeMessageId(SecureRandom.uuidV4Unsafe()).pipe(Effect.orDie),
                 orgId,
                 chatId: first.request.chatId,
-                body: `Reminder: next step below.\n${batch.map(({ request: r }) => quoted(`${r.itemId}: ${r.nextStep}`)).join("\n")}`,
+                body,
               });
               for (const { request: r, escalatedAt } of batch) {
                 yield* sql`INSERT INTO kin_ping_deliveries (org_id, person, item_id, message_id, seq, item_count)

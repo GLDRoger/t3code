@@ -122,7 +122,10 @@ export class Memory extends Context.Service<
     readonly readItem: (
       orgId: KinOrgId,
       id: KinMemoryItemId,
-      options?: { readonly recordRead?: boolean },
+    ) => Effect.Effect<MemoryCache.MemoryItem, MemoryFailure | MemoryNotFound | MemoryDuplicateId>;
+    readonly readItemQuietly: (
+      orgId: KinOrgId,
+      id: KinMemoryItemId,
     ) => Effect.Effect<MemoryCache.MemoryItem, MemoryFailure | MemoryNotFound | MemoryDuplicateId>;
     readonly query: (
       orgId: KinOrgId,
@@ -650,14 +653,14 @@ const make = Effect.gen(function* () {
   const readItem = Effect.fn("Memory.readItem")(function* (
     orgId: KinOrgId,
     id: KinMemoryItemId,
-    options?: { readonly recordRead?: boolean },
+    recordRead: boolean,
   ) {
     const { items } = yield* load(orgId);
     const matches = items.filter((item) => item.head.id === id);
     const item = matches[0];
     if (!item) return yield* new MemoryNotFound({ orgId, id });
     if (matches.length > 1) return yield* new MemoryDuplicateId({ orgId, id });
-    if (options?.recordRead !== false)
+    if (recordRead)
       yield* cache.read(orgId, id).pipe(
         Effect.catchTags({
           MemoryHistoryError: () =>
@@ -826,8 +829,11 @@ const make = Effect.gen(function* () {
     readIndex: Effect.fn("Memory.readIndex")((orgId) => locked(orgId, readFile(orgId, "INDEX.md"))),
     readRules: Effect.fn("Memory.readRules")((orgId) => locked(orgId, readFile(orgId, "rules.md"))),
     query: Effect.fn("Memory.queryLocked")((orgId, q) => locked(orgId, query(orgId, q))),
-    readItem: Effect.fn("Memory.readItemLocked")((orgId, id, options) =>
-      locked(orgId, readItem(orgId, id, options)),
+    readItem: Effect.fn("Memory.readItemLocked")((orgId, id) =>
+      locked(orgId, readItem(orgId, id, true)),
+    ),
+    readItemQuietly: Effect.fn("Memory.readItemQuietly")((orgId, id) =>
+      locked(orgId, readItem(orgId, id, false)),
     ),
     rebuildIndex: Effect.fn("Memory.rebuildIndexLocked")((orgId) =>
       locked(orgId, rebuildIndex(orgId)),

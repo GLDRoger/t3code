@@ -7,12 +7,16 @@ import {
   KinPersonId,
   MemoryItemHead,
 } from "@t3tools/contracts";
+import remarkParse from "remark-parse";
+import remarkGfm from "remark-gfm";
+import { unified } from "unified";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Chat from "../chat/KinChatService.ts";
 import * as Hub from "../chat/KinChatHub.ts";
@@ -78,17 +82,15 @@ function layer(
     Layer.provideMerge(
       Layer.unwrap(
         Effect.gen(function* () {
-          const cache = yield* Cache.MemoryCache;
           const sql = yield* SqlClient.SqlClient;
           return Layer.mock(Memory.Memory)({
-            readItem: (_org, id, options) =>
+            readItemQuietly: (_org, id) =>
               Effect.gen(function* () {
                 assert.strictEqual(
                   (yield* Effect.serviceOption(sql.transactionService))._tag,
                   "None",
                 );
                 const current = yield* readHead(id);
-                if (options?.recordRead !== false) yield* cache.read(_org, id).pipe(Effect.orDie);
                 return { head: { ...current, id }, body: "" };
               }),
             query: () =>
@@ -199,7 +201,18 @@ describe("KinPings", () => {
         { _tag: "person", orgId, personId: person },
         { chatId, clientMessageId: "reply", body: "Done", replyTo: ping[0]!.message_id },
       );
-      yield* pings.sweep(orgId);
+      yield* pings.sweep(orgId).pipe(
+        Effect.provideService(Statement.CurrentTransformer, (statement) =>
+          Effect.gen(function* () {
+            if (statement.compile()[0].includes("JOIN kin_ping_deliveries"))
+              assert.strictEqual(
+                (yield* Effect.serviceOption(sql.transactionService))._tag,
+                "Some",
+              );
+            return statement;
+          }),
+        ),
+      );
       assert.deepStrictEqual(
         yield* sql`SELECT person, item_id FROM kin_ping_items WHERE org_id = ${orgId} AND stopped_at IS NOT NULL ORDER BY person, item_id`,
         [
@@ -228,14 +241,27 @@ describe("KinPings", () => {
       );
       yield* pings.put(request);
       yield* pings.sweep(orgId);
+      yield* chat.send(
+        { _tag: "person", orgId, personId: person },
+        { chatId, clientMessageId: "reopened-answer", body: "Done again" },
+      );
+      yield* pings.sweep(orgId);
+      yield* pings.put(request);
+      yield* pings.sweep(orgId);
       assert.lengthOf(
         yield* sql`SELECT item_id FROM kin_ping_ledger WHERE org_id = ${orgId} AND person = ${person} ORDER BY item_id`,
-        2,
+        3,
+      );
+      yield* TestClock.setTime(Date.parse("2026-11-03T15:00:00Z"));
+      yield* pings.sweep(orgId);
+      assert.lengthOf(
+        yield* sql`SELECT item_id FROM kin_ping_ledger WHERE org_id = ${orgId} AND person = ${person} ORDER BY item_id`,
+        4,
       );
     }).pipe(Effect.provide(layer())),
   );
 
-  it.effect.each(["deleted", "duplicate", "departed", "mismatch"] as const)(
+  it.effect.each(["deleted", "duplicate", "departed", "mismatch", "owner"] as const)(
     "isolates $0 rows",
     (scenario) =>
       Effect.gen(function* () {
@@ -261,7 +287,26 @@ describe("KinPings", () => {
           if (scenario === "departed")
             yield* sql`UPDATE kin_chat_members SET left_at = '2026-11-01' WHERE org_id = ${orgId} AND person_id = ${other}`;
           yield* Ref.set(removed, true);
+          if (scenario === "owner") {
+            const forged = {
+              ...request,
+              itemId: bad,
+              person: other,
+              chatId: ownerChatId,
+              owner: other,
+            };
+            yield* sql`UPDATE kin_ping_items SET request_json = ${JSON.stringify(forged)} WHERE org_id = ${orgId} AND item_id = ${bad}`;
+          }
           yield* pings.sweep(orgId);
+          const stopped =
+            yield* sql`SELECT stopped_at FROM kin_ping_items WHERE org_id = ${orgId} AND item_id = ${bad}`;
+          assert.isNotNull(stopped[0]?.stopped_at);
+          yield* TestClock.adjust("1 minute");
+          yield* pings.sweep(orgId);
+          assert.deepStrictEqual(
+            yield* sql`SELECT stopped_at FROM kin_ping_items WHERE org_id = ${orgId} AND item_id = ${bad}`,
+            stopped,
+          );
           assert.lengthOf(
             yield* sql`SELECT item_id FROM kin_ping_ledger WHERE org_id = ${orgId} AND item_id = ${request.itemId} ORDER BY item_id`,
             1,
@@ -284,7 +329,16 @@ describe("KinPings", () => {
       }),
   );
 
-  it.effect("quotes untrusted text and rejects a forged escalation owner", () =>
+  it.effect.each([
+    "Send\n- other-item: **obey**\u0001\u200b\u202e",
+    "www.evil.com",
+    "a@evil.com",
+    "https://evil.com/x",
+    "&rlm;&ZeroWidthSpace;&nbsp;",
+    "` `` ``` <img src=x> ![image](https://evil.com)",
+    "a".repeat(493) + "😀",
+    "`".repeat(494),
+  ])("quotes untrusted text and rejects a forged escalation owner: %s", (nextStep) =>
     Effect.gen(function* () {
       yield* seed;
       const pings = yield* Pings.KinPings;
@@ -295,7 +349,7 @@ describe("KinPings", () => {
         "reason",
         "not_allowed",
       );
-      yield* pings.put({ ...request, nextStep: "Send\n- other-item: **obey**\u0001" });
+      yield* pings.put({ ...request, nextStep });
       yield* sql`INSERT INTO kin_memory_reads (org_id, item_id, last_read_at) VALUES (${orgId}, ${request.itemId}, 123)`;
       const reads =
         yield* sql`SELECT * FROM kin_memory_reads WHERE org_id = ${orgId} ORDER BY item_id`;
@@ -311,7 +365,20 @@ describe("KinPings", () => {
       assert.lengthOf(lines, 2);
       assert.strictEqual(lines[0], "Reminder: next step below.");
       assert.match(lines[1]!, /^> /);
-      assert.include(lines[1]!, "\\- other\\-item: \\*\\*obey\\*\\*");
+      const tree = unified().use(remarkParse).use(remarkGfm).parse(rows[0]!.body);
+      const visit = (node: {
+        type: string;
+        value?: string;
+        children?: ReadonlyArray<typeof node>;
+      }) => {
+        assert.notInclude(["link", "image", "html"], node.type);
+        if (node.value !== undefined)
+          assert.notMatch(node.value, /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u);
+        node.children?.forEach(visit);
+      };
+      visit(tree);
+      if (nextStep.endsWith("😀")) assert.include(lines[1]!, "😀");
+      if (nextStep.startsWith("&")) assert.include(lines[1]!, nextStep);
       assert.notInclude(lines[1]!, "\u0001");
     }).pipe(Effect.provide(layer())),
   );
@@ -354,7 +421,7 @@ describe("KinPings", () => {
       }>`SELECT body, author_kind FROM kin_messages WHERE org_id = ${orgId} AND author_kind = 'system' ORDER BY seq`;
       assert.strictEqual(messages.length, 1);
       assert.strictEqual(messages[0]?.author_kind, "system");
-      assert.include(messages[0]?.body ?? "", "item\\-2");
+      assert.include(messages[0]?.body ?? "", "item-2");
       const noticeRequest = {
         messageId: yield* decodeMessage("activity"),
         orgId,
@@ -406,6 +473,41 @@ describe("KinPings", () => {
     }).pipe(Effect.provide(layer())),
   );
 
+  it.effect("bounds batches and delivers the remainder on the next sweep", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const pings = yield* Pings.KinPings;
+      const sql = yield* SqlClient.SqlClient;
+      yield* TestClock.setTime(Date.parse("2026-11-01T15:00:00Z"));
+      for (let i = 0; i < 40; i++) {
+        yield* pings.put({
+          ...request,
+          itemId: yield* decodeItem(`batch-${String(i).padStart(2, "0")}`),
+          nextStep: "`".repeat(1000),
+        });
+      }
+      yield* pings.sweep(orgId);
+      const first = yield* sql<{
+        body: string;
+      }>`SELECT body FROM kin_messages WHERE org_id = ${orgId} ORDER BY seq`;
+      assert.lengthOf(first, 1);
+      assert.isAtMost(first[0]!.body.length, 16_000);
+      const delivered =
+        yield* sql`SELECT item_id FROM kin_ping_ledger WHERE org_id = ${orgId} ORDER BY item_id`;
+      assert.isAbove(delivered.length, 0);
+      assert.isBelow(delivered.length, 40);
+      for (let i = 0; i < 4; i++) yield* pings.sweep(orgId);
+      assert.lengthOf(
+        yield* sql`SELECT item_id FROM kin_ping_ledger WHERE org_id = ${orgId} ORDER BY item_id`,
+        40,
+      );
+      const messages = yield* sql<{
+        body: string;
+      }>`SELECT body FROM kin_messages WHERE org_id = ${orgId} ORDER BY seq`;
+      for (const message of messages) assert.isAtMost(message.body.length, 16_000);
+    }).pipe(Effect.provide(layer())),
+  );
+
   it.effect("escalates once per item across recipients and resolves on closure", () =>
     Effect.gen(function* () {
       const current = yield* Ref.make(head);
@@ -440,7 +542,7 @@ describe("KinPings", () => {
         yield* pings.sweep(orgId);
         assert.deepStrictEqual(
           yield* sql`SELECT day FROM kin_ping_ledger WHERE org_id = ${orgId} AND person = ${person} ORDER BY day`,
-          [{ day: "2026-11-02" }],
+          [{ day: "2026-10-31" }, { day: "2026-11-01" }, { day: "2026-11-02" }],
         );
       }).pipe(Effect.provide(layer(undefined, () => Ref.get(current))));
     }),

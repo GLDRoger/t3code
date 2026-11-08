@@ -69,6 +69,7 @@ const memory = Layer.succeed(
     readRules: () => Effect.die("Unused"),
     query: () => Effect.die("Unused"),
     readItem: () => Effect.die("Unused"),
+    readItemQuietly: () => Effect.die("Unused"),
     rebuildIndex: () => Effect.die("Unused"),
     rebuildCache: () => Effect.die("Unused"),
   }),

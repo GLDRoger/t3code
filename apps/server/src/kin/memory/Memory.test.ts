@@ -402,7 +402,7 @@ it.effect(
         yield* memory.query(orgA, {});
         const reads =
           yield* sql`SELECT * FROM kin_memory_reads WHERE org_id = ${orgA} ORDER BY item_id`;
-        yield* memory.readItem(orgA, itemId, { recordRead: false });
+        yield* memory.readItemQuietly(orgA, itemId);
         expect(
           yield* sql`SELECT * FROM kin_memory_reads WHERE org_id = ${orgA} ORDER BY item_id`,
         ).toEqual(reads);
