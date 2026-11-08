@@ -238,7 +238,7 @@ Every screen handles the same seven states. Each state's copy is fixed below.
 3. `prTitle` on its own line, plain text, limited to 2 lines.
 4. Facts list, one line each:
    - Repository: `GLDRoger/t3code`
-   - Commit: first 7 characters of `headSha`, with the full SHA in the accessibility label and on long-press copy
+   - Commit: first 16 characters of `headSha`, with the full SHA in the accessibility label and on long-press copy
    - Merge method: Squash
    - Changes: 4 files, +120 −30
    - Checks: 12 passed, 0 failed, 1 pending, with each required check underneath

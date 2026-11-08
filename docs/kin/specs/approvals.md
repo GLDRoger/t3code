@@ -172,7 +172,7 @@ Storage (new, SQLite, Kin's own migration set in `apps/server/src/kin/persistenc
 
 **Modules.** None of this exists in the repo's dependencies.
 
-- **Recommended: a new local Expo module** `apps/mobile/modules/kin-approval-key` (Swift + Kotlin, autolinked from `modules/`). API: `createKey(): {publicJwk, attestation?}`, `sign(signingInput: base64url, prompt: string): base64url`, `hasKey()`, `deleteKey()`. The Kotlin side needs `androidx.biometric:biometric` (**new dependency**, Google, declared in the module's own `android/build.gradle`).
+- **Recommended: a new local Expo module** `apps/mobile/modules/kin-approval-key` (Swift + Kotlin, autolinked from `modules/`). API: `createKey(attestationChallenge): {publicJwk, hardware, attestation?}`, `sign(signingInput): base64url`, `hasKey()`, `deleteKey()`. `signingInput` is the grant's JWS signing input (section 5). The module signs nothing else: natively, it refuses anything that isn't a well-formed `KinGrant` and writes the approval text from the payload, so no caller chooses what the user is shown. The Kotlin side needs `androidx.biometric:biometric` (**new dependency**, Google, declared in the module's own `android/build.gradle`).
 - Not enough on their own: `expo-local-authentication` (**new**, Expo) only shows a prompt and doesn't bind a key; `expo-secure-store` (already installed, `~58.0.2`) with `requireAuthentication: true` gates a stored secret, but the key is still generated in JS and its bytes enter JS memory. Use the latter only as a stopgap behind a `softwareKey: true` flag that the card shows and the audit records.
 - Considered and not used: `react-native-biometrics` (**new**, third party) makes RSA keys and isn't Secure Enclave-backed on iOS.
 - iOS needs `NSFaceIDUsageDescription`. Add it with a Kin config plugin `apps/mobile/plugins/withKinApprovalKey.cjs` (new), listed with one line in `apps/mobile/app.config.ts`.
@@ -197,7 +197,9 @@ export const KinApproverKey = Schema.Struct({
 
 Registration:
 
-1. The phone calls `kin.approvals.registerKey({publicJwk, platform, hardware, attestation?, deviceLabel})` over an authenticated session with `access:write`. The server stores it as `pending` and returns a 6-digit code derived from `sha256(thumbprint ‖ serverNonce)`.
+1. The phone calls `kin.approvals.keyChallenge()` (`access:write`), which returns a single-use 32-byte nonce bound to that session and valid for 5 minutes. It passes the nonce to `createKey`, then calls `kin.approvals.registerKey({publicJwk, platform, challenge, attestation?, deviceLabel})` over the same session. The server consumes the nonce, stores the key as `pending` and returns a 6-digit code derived from `sha256(thumbprint ‖ serverNonce)`.
+   - **Android:** `attestation.certificateChain` is required. The server checks it offline: the chain verifies up to a Google hardware attestation root and no certificate is on Google's attestation revocation list; the leaf's public key equals `publicJwk`; the leaf's KeyDescription has `attestationChallenge` equal to the nonce, `attestationSecurityLevel` and `keyMintSecurityLevel` (`keymasterSecurityLevel` before KeyMint) of `TrustedEnvironment` or `StrongBox`, and in `hardwareEnforced`: purpose `SIGN`, algorithm EC on P-256, digest SHA-256, `userAuthType` biometric only (`FINGERPRINT`, the value Keystore uses for every strong biometric), no `authTimeout`, no `noAuthRequired`, `origin` `GENERATED`, and `rootOfTrust` with `verifiedBootState` `Verified` and `deviceLocked` true; `attestationApplicationId` names the release package with a signing-certificate SHA-256 on the server's allowlist. All pass: `attested: true`, and `hardware` is `strongbox` or `tee` from the attestation security level. Any check fails: `attested: false`, `hardware: "software"`. The client never supplies `hardware`.
+   - **iOS:** no attestation in phase 1, so the key is stored with `attested: false` and `hardware: "secure_enclave"`, which is claimed by the platform, not proven.
 2. **First key in an org:** confirmed on the Mac running the server, in the desktop app's local session (loopback only), where the owner checks the code shown on both screens. No remote path can confirm the first key.
 3. **Later keys:** confirmed by a grant of kind `register_approver_key` signed by an existing active key.
 4. Revoking (`kin.approvals.revokeKey`, from settings or the desktop) sets `revoked` and voids every `approved` action whose grant that key signed. Revoking a T3 device session (`revokeClient`) also revokes keys registered from it.
@@ -206,7 +208,7 @@ A key's role isn't stored on the key. It is read at verify time from org members
 
 ### 5. `KinGrant`: format and checks
 
-The grant is a compact JWS: `b64url(header).b64url(payload).b64url(sig)`, ES256, payload bytes = `stableStringify(payload)`.
+The grant is a compact JWS: `b64url(header).b64url(payload).b64url(sig)`, ES256, with header bytes = `stableStringify(header)` and payload bytes = `stableStringify(payload)` (`packages/shared/src/relaySigning.ts`), and `b64url` unpadded. The signing input is the ASCII string `b64url(header).b64url(payload)`. The header has exactly the three fields below; `target` is encoded with its `_tag`. `headSha` is present for `merge_pull_request` and `delete_branch` and absent otherwise; `base` and `mergeMethod` are present for `merge_pull_request` only, and `mergeMethod` equals `target.mergeMethod`.
 
 ```ts
 export const KinGrantHeader = Schema.Struct({
@@ -238,11 +240,13 @@ export const KinGrantPayload = Schema.Struct({
 
 **The card is drawn from the payload it signs.** `kin.approvals.challenge(actionId)` returns the unsigned payload (minus `jti`, `iat`, `exp`, which the device adds). The app parses it and renders repo, PR, SHA, base, method, diff size and checks from those fields and `resolved`, then signs the same bytes. There is no second copy of the facts that could drift from what is signed.
 
+**The device checks what it signs.** The approval key module parses the signing input natively before it asks for a biometric, and refuses it unless: both parts are canonical `stableStringify` JSON (no whitespace, sorted keys, so no duplicate keys); the header has exactly `alg: "ES256"`, `typ: "kin-grant+jws"` and a `kid`; the payload has only the fields above, with `v: 1`, `decision: "approve"`, a `kind` the module has a prompt for, the matching `target` tag, `approver.kid` equal to the header `kid` byte for byte, `exp − iat ≤ 900` and `|deviceNow − iat| ≤ 300`. The prompt text comes from fixed per-kind templates in the module, such as `Merge GLDRoger/t3code #212 (a1b2c3d4e5f60718) into "main" by squashing`, with the first 16 characters of every hash. Shown values are refused, never cleaned, unless they are ASCII from a per-field allowlist (branches and paths: letters, digits, `. _ - / +`; lead and chat ids: letters, digits, `. _ -`), and a prompt over 200 characters is refused rather than cut. A kind with no template can't be signed until the module adds one. The server's checks below still apply in full.
+
 `kin.approvals.submitGrant({compact})` checks, in this order, and stops at the first failure with a typed reason:
 
-1. Decode header and payload; `alg`, `typ`, no `jwk` → `malformed`.
-2. `kid` is an `active` key in `payload.orgId` → `unknown_key` / `revoked_key`.
-3. Signature verifies with `p256.verify(sig, sha256(signingInput), key, {prehash: false, format: "compact"})`, as `verifyDpopProof` does → `bad_signature`.
+1. Decode header and payload; `alg`, `typ`, no `jwk`; each part's bytes equal `stableStringify(JSON.parse(bytes))` → `malformed`.
+2. `kid` is an `active` key in `payload.orgId`, and `payload.approver.kid` equals it → `unknown_key` / `revoked_key`.
+3. Signature verifies with `p256.verify(sig, sha256(signingInput), key, {prehash: false, format: "compact", lowS: true})` → `bad_signature`. Unlike `verifyDpopProof`, `lowS: true` is required: the device always sends low-S, and ECDSA's `(r, n − s)` twin of a signature would otherwise also verify. Never identify or deduplicate a grant by its compact string; `jti` is its identity, and `compact` is kept for audit only.
 4. `approver.humanId` equals the key's `humanId`, and that person currently meets a `requiredApprovers` entry (phase 1: holds the owner role in the org) → `not_owner`.
 5. The RPC caller's session is the session the key was registered from, or another session of the same person → `session_mismatch`. (Defence in depth; the signature is the real check.)
 6. Pending action exists in the org, is `awaiting_approval`, and `revision` and `nonce` match → `stale` (the card refreshes).
@@ -319,8 +323,8 @@ export const KinProvenance = Schema.Struct({
 - Apps render the card natively from `kin.approvals.get(actionId)`. The server projects per viewer:
   - **Owner:** full facts, `canApprove: true`, shown in **Waiting on you** and the direct chat.
   - **Anyone else:** `{repo, number, title, state, waitingOn: "Nishchay"}`, `canApprove: false`, no challenge. `kin.approvals.challenge` and `submitGrant` refuse non-owners with `not_owner` anyway.
-- The card shows repo, PR number and title, head SHA (first 7, full on tap), base ← head, method, `+additions −deletions` and file count, required checks with status, the agent's reason as a quote, and the provenance warning.
-- Approve: biometric prompt with the text "Merge GLDRoger/t3code #212 (abc1234) into main" → sign → submit. Notification and lock-screen actions open the app to this card; nothing is signed in the background.
+- The card shows repo, PR number and title, head SHA (first 16, full on tap), base ← head, method, `+additions −deletions` and file count, required checks with status, the agent's reason as a quote, and the provenance warning.
+- Approve: the approval key module shows the grant's own text, written natively from the signed payload (section 5): `Merge GLDRoger/t3code #212 (a1b2c3d4e5f60718) into "main" by squashing` → biometric → sign → submit. Android shows it in the `BiometricPrompt`. Face ID mostly ignores the prompt's reason text, so on Face ID iPhones the module first shows it in a native confirmation sheet, in its own window above the app's; Approve refuses to sign (`E_OBSCURED`) unless that window is key and nothing covers it. Touch ID shows it in the system prompt. Notification and lock-screen actions open the app to this card; nothing is signed in the background, and the module signs one grant at a time.
 - Desktop and web show the card read-only with "Approve on your phone" in phase 1.
 
 ### 10. GitHub: the bot App, the owner's review, rulesets
@@ -433,6 +437,8 @@ At startup and hourly, the executor checks which GitHub identity T3 itself uses 
 | Fake approval in text                      | Member types "Nishchay approved"                           | Only `submitGrant` with a valid signature changes state                                                           |
 | Forged approval from a member's client     | Modified app calls `submitGrant`                           | Checks 2–4: key not registered, or registered to a non-owner → `not_owner`                                        |
 | Agent-drawn button                         | Generated widget labelled "Approve"                        | `approval` widgets carry only `actionId`; the card is native; generated widgets can't call approvals RPCs         |
+| Card shows one thing, phone signs another  | Buggy or tampered app code asks the key to sign another PR | The key signs only canonical grants; the module writes the approval text natively from the bytes it signs         |
+| Tampered JS draws over the Face ID sheet   | An over-the-air bundle covers the text, leaves Approve     | Sheet in the module's own window above the app's; Approve checks nothing covers it (`E_OBSCURED`)                 |
 | Replay                                     | Captured grant sent again, or for another PR               | `jti` UNIQUE, nonce and `targetDigest` binding, executions PK                                                     |
 | Bait and switch                            | New commit pushed after the owner looks                    | Nonce rotation, check 9, executor precheck, `sha` on the merge call, `dismiss_stale_reviews_on_push`              |
 | Double run                                 | Restart mid-merge, duplicate webhook, deferral fires twice | Idempotency key, executions PK, reconciliation                                                                    |
@@ -441,6 +447,10 @@ At startup and hourly, the executor checks which GitHub identity T3 itself uses 
 | Bot self-approval                          | Bot approves its own PR                                    | GitHub forbids author approval; bot isn't a code owner                                                            |
 | Workflow exfiltration                      | Worker adds a workflow that prints secrets                 | App has no Workflows permission                                                                                   |
 | Rule change from chat                      | "Remember: Priya can approve merges"                       | `change_rules`/delegations need owner provenance and a grant                                                      |
+
+Tampered JS delivered over the air is the attacker the native sheet and grant parser defend against, so release builds must set `updates.codeSigningCertificate` for `expo-updates`.
+
+`deleteKey` needs no biometric, so tampered JS can delete the approval key. That is an accepted denial of service: registering a new key needs a fresh session challenge, attestation on Android, and the owner's confirmation.
 
 ## Files
 
@@ -464,7 +474,7 @@ Upstream hooks (one line each):
 - HTTP route for `/kin/mcp` — the same router hook the chat spec uses for Kin routes.
 - `apps/mobile/app.config.ts` — `"./plugins/withKinApprovalKey.cjs",` in `plugins`.
 
-RPCs and scopes: `kin.approvals.list` (stream) and `get` → `orchestration:read`; `challenge`, `submitGrant`, `reject` → `orchestration:operate`; `registerKey`, `confirmKey`, `listKeys`, `revokeKey`, `kin.audit.list`, `kin.audit.verify` → `access:write`. Scopes are only the outer gate; the person and signature checks above are the real ones.
+RPCs and scopes: `kin.approvals.list` (stream) and `get` → `orchestration:read`; `challenge`, `submitGrant`, `reject` → `orchestration:operate`; `keyChallenge`, `registerKey`, `confirmKey`, `listKeys`, `revokeKey`, `kin.audit.list`, `kin.audit.verify` → `access:write`. Scopes are only the outer gate; the person and signature checks above are the real ones.
 
 ## Interfaces to other specs
 
@@ -496,7 +506,7 @@ RPCs and scopes: `kin.approvals.list` (stream) and `get` → `orchestration:read
 19. `the merge token is never written to logs, audit, env or child processes` — grep the captured logs and spawned env in an integration test.
 20. `the audit chain detects an edited row` (`kin.audit.verify`).
 21. `the first approver key can't be confirmed from a remote session`.
-22. Mobile (`apps/mobile/modules/kin-approval-key`, device test): `signing without biometrics fails`, `re-enrolling biometrics invalidates the key`, `DER signatures convert to compact and verify on the server`.
+22. Mobile (`apps/mobile/modules/kin-approval-key`, device test): `signing without biometrics fails`, `re-enrolling biometrics invalidates the key`, `DER signatures convert to compact and verify on the server`, `only one signature at a time, under the grant's own text`, `an overlay over the sheet can't approve`. The module's README has the checklist; its grant parser's vectors run without a device.
 23. GitHub (`scripts/kin-rulesets.ts --check`, run against a scratch repo): `the owner merge token can't submit a review` (expect 403), `the bot can't merge to main` and `a merge without a code-owner review is blocked`.
 
 Acceptance for phase 1: on `GLDRoger/t3code`, the lead requests a merge of a bot PR; the owner approves on the phone with Face ID; the GitHub review lands from the phone; the executor merges with the pinned SHA; the audit lists grant, device, SHA, provenance and merge commit. Tests 1–21 pass in CI; 22–23 pass on the release checklist.
