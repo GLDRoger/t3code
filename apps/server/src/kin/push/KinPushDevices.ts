@@ -95,14 +95,10 @@ const make = Effect.gen(function* () {
   // as ApproverKeys does. Runs before every send. Expired sessions stay: a live socket outlives
   // the session it registered under. A repaired proof key keeps its pushes; the phone
   // re-registers on connect anyway (mobile spec).
-  const revoked = revokedBySession(
-    sql,
-    {
-      sessionId: sql`kin_push_devices.session_id`,
-      proofKey: sql`kin_push_devices.proof_key_thumbprint`,
-    },
-    { honorRepairs: true },
-  );
+  const revoked = revokedBySession(sql, {
+    sessionId: sql`kin_push_devices.session_id`,
+    proofKey: sql`kin_push_devices.proof_key_thumbprint`,
+  });
   const reconcileSessions = Effect.fn("KinPushDevices.reconcileSessions")(
     function* () {
       const removed = yield* sql`DELETE FROM kin_push_devices WHERE ${revoked} RETURNING token`;
