@@ -104,20 +104,25 @@ export const event = (id: string) =>
     routine: "owner_check",
   });
 
-export function harness(
-  options: {
-    readonly sharedWith?: ReadonlyArray<ThreadId>;
-    readonly releaseEntered?: Deferred.Deferred<void>;
-    readonly releaseHold?: Deferred.Deferred<void>;
-    readonly releaseDone?: Deferred.Deferred<void>;
-    readonly hold?: Deferred.Deferred<void>;
-    readonly entered?: Deferred.Deferred<void>;
-    readonly failed?: boolean;
-    readonly writer?: Layer.Layer<Writer.MemoryWriter, never, SqlClient.SqlClient>;
-    readonly piUsage?: boolean;
-    readonly prepare?: Memory.Memory["Service"]["prepareWakeup"];
-  } = {},
-) {
+type HarnessOptions = {
+  readonly sharedWith?: ReadonlyArray<ThreadId>;
+  readonly releaseEntered?: Deferred.Deferred<void>;
+  readonly releaseHold?: Deferred.Deferred<void>;
+  readonly releaseDone?: Deferred.Deferred<void>;
+  readonly hold?: Deferred.Deferred<void>;
+  readonly entered?: Deferred.Deferred<void>;
+  readonly failed?: boolean;
+  readonly writer?: Layer.Layer<Writer.MemoryWriter, never, SqlClient.SqlClient>;
+  readonly piUsage?: boolean;
+  readonly prepare?: Memory.Memory["Service"]["prepareWakeup"];
+};
+
+export function harness(options: HarnessOptions = {}) {
+  return WakeupRunner.layer.pipe(Layer.provideMerge(orchestrationHarness(options)));
+}
+
+/** The fake-provider orchestration stack without the wake-up runner. */
+export function orchestrationHarness(options: HarnessOptions = {}) {
   let nativeOrdinal = 0;
   const driver = ProviderDriverKind.make("codex");
   const adapter: ProviderAdapter.ProviderAdapterV2["Service"] = {
@@ -370,9 +375,5 @@ export function harness(
       ),
     ),
   ).pipe(Layer.provideMerge(database));
-  return WakeupRunner.layer.pipe(
-    Layer.provideMerge(
-      Layer.merge(services, (options.writer ?? Layer.empty).pipe(Layer.provide(database))),
-    ),
-  );
+  return Layer.merge(services, (options.writer ?? Layer.empty).pipe(Layer.provide(database)));
 }
