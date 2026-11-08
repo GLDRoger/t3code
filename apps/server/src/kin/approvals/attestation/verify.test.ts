@@ -6,6 +6,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   androidChain,
   appleAttestation,
+  certificate,
   makeTrustFixture,
   newKey,
   type AndroidChainSpec,
@@ -78,6 +79,58 @@ describe("Android key attestation", () => {
       attested: false,
       reason: "a certificate in the chain is revoked",
     });
+  });
+
+  it("refuses a repeated signing digest when the allowlist has two", () => {
+    const signers = ["ab".repeat(32), "cd".repeat(32)];
+    const trust = {
+      ...fixture.trust,
+      androidApps: [{ packageName: "com.gldroger.kin", signingCertSha256: signers }],
+    };
+    assert.isTrue(verify({ signers }, trust).attested);
+    const result = verify({ signers: [signers[0]!, signers[0]!] }, trust);
+    assert.deepStrictEqual(result, {
+      attested: false,
+      reason: "signing certificates don't match the allowlist",
+    });
+  });
+
+  it("checks links and validity against the pinned root, not the copy the chain sends", () => {
+    // Google reissued its RSA root under the same key, so a device may send either copy.
+    const reissue = (notAfter: string) =>
+      Buffer.from(
+        certificate({
+          subject: "Test Google Root",
+          issuer: "Test Google Root",
+          subjectKey: fixture.googleRoot.publicKey,
+          issuerKey: fixture.googleRoot.privateKey,
+          ca: true,
+          notBefore: "200101000000Z",
+          notAfter,
+        }),
+      ).toString("base64");
+    const chain = androidChain(fixture, { challenge });
+    const base = { challenge, publicJwk: chain.publicJwk, now: NOW };
+    const expiredPin = verifyAndroidKeyAttestation({
+      ...base,
+      certificateChain: chain.certificateChain,
+      trust: {
+        ...fixture.trust,
+        googleRoots: [
+          new NodeCrypto.X509Certificate(Buffer.from(reissue("260601000000Z"), "base64")),
+        ],
+      },
+    });
+    assert.deepStrictEqual(expiredPin, {
+      attested: false,
+      reason: "certificate 2 is outside its validity",
+    });
+    const expiredCopy = verifyAndroidKeyAttestation({
+      ...base,
+      certificateChain: [...chain.certificateChain.slice(0, -1), reissue("260601000000Z")],
+      trust: fixture.trust,
+    });
+    assert.deepStrictEqual(expiredCopy, { attested: true, hardware: "strongbox" });
   });
 
   it("refuses a chain for another key and malformed input", () => {

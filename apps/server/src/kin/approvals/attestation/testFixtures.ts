@@ -90,7 +90,7 @@ export type CertificateSpec = {
   readonly serial?: Uint8Array;
 };
 
-function certificate(spec: CertificateSpec): Uint8Array {
+export function certificate(spec: CertificateSpec): Uint8Array {
   const extensions = [
     ...(spec.ca
       ? [der.seq(der.oid("2.5.29.19"), der.bool(true), der.octet(der.seq(der.bool(true))))]
