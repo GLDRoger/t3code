@@ -1,3 +1,5 @@
+import { JudgeShadow } from "../floor/JudgeShadow.ts";
+import * as Floor from "../floor/KinFloor.ts";
 import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import * as TaskCard from "../widgets/taskCard.ts";
@@ -55,7 +57,10 @@ type Viewers = ReadonlyArray<PersonIdentity>;
 type Caller = Identity | Viewers;
 type PersonCaller = PersonIdentity | Viewers;
 type ServiceError = Repository.RepositoryError;
-type SendInput = KinMessagesSendInput & { readonly intent?: KinAgentIntent };
+type SendInput = KinMessagesSendInput & {
+  readonly intent?: KinAgentIntent;
+  readonly floorGrant?: string | undefined;
+};
 type WidgetUpsertInput = {
   readonly chatId: KinChatId;
   readonly widgetId?: KinWidgetId | undefined;
@@ -190,6 +195,8 @@ const requireRecord = Effect.fn("KinChatService.requireRecord")(function* <A, E,
 });
 
 const make = Effect.gen(function* () {
+  const floor = yield* Floor.KinFloor;
+  const shadow = yield* Effect.serviceOption(JudgeShadow);
   const cards = yield* TaskCard.TaskCardIndex;
   const repo = yield* Repository.KinChatRepository;
   const hub = yield* Hub.KinChatHub;
@@ -335,6 +342,7 @@ const make = Effect.gen(function* () {
       readonly widgetId: KinWidgetId | null;
       readonly kind: "text" | "widget_action";
       readonly publish?: boolean;
+      readonly floorRunId?: string | null;
       readonly clientId: { readonly kind: "send" | "act"; readonly id: string } | null;
     },
   ) {
@@ -351,14 +359,19 @@ const make = Effect.gen(function* () {
       mentions: input.mentions,
       replyTo: input.replyTo,
       widgetId: input.widgetId,
-      floorRunId: null,
+      floorRunId: input.floorRunId ?? null,
       status: "posted",
       sentBy: null,
       clientMessageId: input.clientId,
       createdAt: yield* now,
       editedAt: null,
     });
-    if (message.messageId !== messageId || input.publish === false) return message;
+    if (message.messageId !== messageId) return message;
+    if (message.author._tag === "human") {
+      const decision = yield* floor.open(message, yield* requireRecord(repo.getChat(member)));
+      if (Option.isSome(shadow)) yield* shadow.value.observe(message, decision);
+    }
+    if (input.publish === false) return message;
     yield* hub.publish({ type: "message.posted", orgId: identity.orgId, message });
     if (message.author._tag === "agent" && message.intent === "question") {
       const chat = yield* requireRecord(repo.getChat(member));
@@ -551,16 +564,21 @@ const make = Effect.gen(function* () {
           const identity = yield* personFor(caller, input);
           const live = yield* hub.subscribeForViewer(identity);
           const member = yield* memberFor(identity, input.chatId);
-          const resumed = yield* repo.resume({ ...member, afterSeq: input.afterSeq ?? 0 });
+          const resumed = yield* repo.resume({
+            ...member,
+            afterSeq: input.afterSeq ?? 0,
+            afterChangeSeq: input.afterChangeSeq,
+          });
           const backlog: KinChatStreamEvent = resumed.reset
-            ? { _tag: "reset", lastSeq: resumed.lastSeq }
+            ? { _tag: "reset", lastSeq: resumed.lastSeq, lastChangeSeq: resumed.lastChangeSeq }
             : {
                 _tag: "backlog",
                 lastSeq: resumed.lastSeq,
+                lastChangeSeq: resumed.lastChangeSeq,
                 messages: resumed.messages,
                 widgets: resumed.widgets,
               };
-          const lastHistorySeq = backlog.lastSeq;
+          const messageChanges = new Map<string, number>();
           const revisions = new Map(
             backlog._tag === "backlog" ? backlog.widgets.map((w) => [w.widgetId, w.revision]) : [],
           );
@@ -570,11 +588,14 @@ const make = Effect.gen(function* () {
               Stream.map((event) => {
                 switch (event.type) {
                   case "message.posted": {
+                    const change = event.message.changeSeq ?? event.message.seq;
                     if (
                       event.message.chatId !== input.chatId ||
-                      event.message.seq <= lastHistorySeq
+                      change <= resumed.lastChangeSeq ||
+                      change <= (messageChanges.get(event.message.messageId) ?? 0)
                     )
                       return Option.none();
+                    messageChanges.set(event.message.messageId, change);
                     return Option.some<KinChatStreamEvent>({
                       _tag: "message",
                       message: event.message,
@@ -747,15 +768,31 @@ const make = Effect.gen(function* () {
         input.intent === undefined
           ? null
           : yield* decodeIntent(input.intent).pipe(Effect.mapError(() => invalidState));
-      return yield* post(identity, member, {
+      const existing = yield* repo.findClientMessage({
+        orgId: identity.orgId,
+        chatId: request.chatId,
+        memberId: member.memberId,
+        kind: "send",
+        clientId: request.clientMessageId,
+      });
+      const chat = yield* requireRecord(repo.getChat(member));
+      const authorization =
+        identity._tag === "agent" && Option.isNone(existing)
+          ? yield* floor.authorize(identity, chat, intent ?? "answer", input.floorGrant)
+          : { runId: null };
+      const message = yield* post(identity, member, {
         ...request,
         kind: "text",
         intent,
+        floorRunId: authorization.runId,
         mentions: request.mentions ?? [],
         replyTo: request.replyTo ?? null,
         widgetId: null,
         clientId: { kind: "send", id: request.clientMessageId },
       });
+      if (Option.isNone(existing) && identity._tag === "agent" && authorization.runId === null)
+        yield* floor.recordNotice(identity, message);
+      return message;
     }, transaction),
     read: Effect.fn("KinChatService.read")(function* (identity, input) {
       const request = yield* decodeRead(input).pipe(Effect.mapError(() => invalidState));
@@ -1130,4 +1167,7 @@ const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(KinChatService, make).pipe(Layer.provideMerge(TaskCard.layer));
+export const layer = Layer.effect(KinChatService, make).pipe(
+  Layer.provideMerge(TaskCard.layer),
+  Layer.provide(Floor.layer),
+);

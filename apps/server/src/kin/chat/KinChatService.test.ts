@@ -1,7 +1,7 @@
 import { environment } from "./TaskCard.testkit.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import { CommandId } from "@t3tools/contracts";
-import { startWakeupRun, authorityLayer } from "./WakeupAuthority.testkit.ts";
+import { startWakeupRun, authorityLayer, startAgentWakeup } from "./WakeupAuthority.testkit.ts";
 import { assert, describe, it } from "@effect/vitest";
 import {
   AuthSessionId,
@@ -88,7 +88,7 @@ const state = Schema.decodeSync(KinTaskCardState)({
   lastError: null,
   updatedAt: timestamp,
 });
-const seed = Effect.gen(function* () {
+const seed = Effect.fn("test.seed")(function* (notice = false) {
   const repo = yield* Repository.KinChatRepository;
   const service = yield* Service.KinChatService;
   const identity = yield* Identity.KinIdentity.pipe(Effect.provide(identityLayer));
@@ -107,10 +107,19 @@ const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
     VALUES (${agentId}, ${person.orgId}, 'Lead', 0, '{}', '[]', ${chat.chatId})`;
-  yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status, event_ids)
-    VALUES ('service-wakeup', ${person.orgId}, ${agentId}, ${threadId}, 'test', 0, 'running', '[]')`;
-  const run = yield* startWakeupRun(threadId, "service-wakeup");
-  yield* sql`UPDATE kin_wakeups SET run_id = ${run.id} WHERE wakeup_id = 'service-wakeup'`;
+  const prompt = notice
+    ? undefined
+    : yield* service.send(person, {
+        chatId: chat.chatId,
+        body: "Owner question",
+        clientMessageId: "seed-human",
+      });
+  yield* startAgentWakeup({
+    orgId: person.orgId,
+    agentId,
+    threadId,
+    ...(prompt === undefined ? {} : { message: prompt }),
+  });
   yield* startWakeupRun(state.threadId!, "worker");
   const agent = yield* identity.resolveAgent(caller);
   return { repo, service, identity, person, agent, chat };
@@ -121,7 +130,7 @@ describe("KinChatService", () => {
     "creates exactly two members, derives authors from identity, and deduplicates sends",
     () =>
       Effect.gen(function* () {
-        const { repo, service, person, agent, chat } = yield* seed;
+        const { repo, service, person, agent, chat } = yield* seed();
         const retries = yield* Effect.all(
           Array.from({ length: 5 }, () =>
             service.createDirect(person, { orgId: person.orgId, agentId }),
@@ -162,7 +171,7 @@ describe("KinChatService", () => {
           chatId: chat.chatId,
           clientMessageId: "first",
           body: "Evidence",
-          intent: "evidence",
+          intent: "answer",
         });
         assert.deepStrictEqual(posted.author, {
           _tag: "agent",
@@ -177,13 +186,13 @@ describe("KinChatService", () => {
               chatId: chat.chatId,
               clientMessageId: "first",
               body: "Evidence",
-              intent: "answer",
+              intent: "evidence",
             }),
           ),
           { reason: "not_allowed" },
         );
         assert.strictEqual(posted.authorRole, "member");
-        assert.strictEqual(posted.seq, 2);
+        assert.strictEqual(posted.seq, 3);
         const resumed = decodeThreadId("new-thread");
         yield* repo.registerAgentThread({
           orgId: agent.orgId,
@@ -212,10 +221,11 @@ describe("KinChatService", () => {
           service.send(person, { chatId: chat.chatId, clientMessageId: "blank", body: " " }),
         ])
           assert.include(yield* Effect.flip(operation), { reason: "invalid_state" });
+        const { clientMessageId: _postedId, ...postedForPerson } = posted;
         assert.deepStrictEqual(
-          (yield* service.history(person, { chatId: chat.chatId, beforeSeq: 3, limit: 1 }))
+          (yield* service.history(person, { chatId: chat.chatId, beforeSeq: 4, limit: 1 }))
             .messages,
-          [posted],
+          [postedForPerson],
         );
         const widget = yield* service.createTaskCard({
           orgId: person.orgId,
@@ -245,7 +255,7 @@ describe("KinChatService", () => {
             .pipe(Effect.flip),
           { reason: "not_allowed" },
         );
-        yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'service-wakeup'`;
+        yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE org_id = ${person.orgId} AND thread_id = ${threadId}`;
         assert.include(
           yield* service
             .upsertWidget(agent, {
@@ -263,7 +273,7 @@ describe("KinChatService", () => {
 
   it.effect("hides foreign org ids on every method and checks active membership and roles", () =>
     Effect.gen(function* () {
-      const { repo, service, person, agent, chat } = yield* seed;
+      const { repo, service, person, agent, chat } = yield* seed();
       const widget = yield* service.createTaskCard({
         orgId: person.orgId,
         chatId: chat.chatId,
@@ -427,7 +437,7 @@ describe("KinChatService", () => {
 
   it.effect("creates trusted cards idempotently and enforces ownership and server fields", () =>
     Effect.gen(function* () {
-      const { repo, service, person, agent, chat } = yield* seed;
+      const { repo, service, person, agent, chat } = yield* seed();
       for (const caller of [agent, person])
         assert.include(
           yield* service
@@ -460,7 +470,7 @@ describe("KinChatService", () => {
       );
       assert.strictEqual(
         (yield* repo.history({ ...chat, beforeSeq: 99, limit: 100 })).messages.length,
-        1,
+        2,
       );
       const anchor = Option.getOrThrow(yield* repo.getMessage(widget));
       assert.include(anchor.author, { _tag: "agent", agentId: agent.agentId });
@@ -487,7 +497,7 @@ describe("KinChatService", () => {
       yield* identity.registerAgentThread({ ...person, agentId: otherId, threadId: otherThread });
       const sql = yield* SqlClient.SqlClient;
       yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id) VALUES (${otherId}, ${person.orgId}, 'Other', 0, '{}', '[]', ${chat.chatId})`;
-      yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'service-wakeup'`;
+      yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE org_id = ${person.orgId} AND thread_id = ${threadId}`;
       const otherRun = yield* startWakeupRun(otherThread, "other-wakeup");
       yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids) VALUES ('other-wakeup', ${person.orgId}, ${otherId}, ${otherThread}, ${otherRun.id}, 'test', 0, 'running', '[]')`;
       const other = yield* identity.resolveAgent({
@@ -517,7 +527,7 @@ describe("KinChatService", () => {
         { reason: "not_allowed" },
       );
       yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'other-wakeup'`;
-      yield* sql`UPDATE kin_wakeups SET status = 'running' WHERE wakeup_id = 'service-wakeup'`;
+      yield* sql`UPDATE kin_wakeups SET status = 'running' WHERE org_id = ${person.orgId} AND thread_id = ${threadId}`;
       const updated = yield* service.upsertWidget(agent, {
         chatId: chat.chatId,
         widgetId: widget.widgetId,
@@ -599,7 +609,7 @@ describe("KinChatService", () => {
           .pipe(Effect.flip),
         { reason: "widget_changed" },
       );
-      yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'service-wakeup'`;
+      yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE org_id = ${person.orgId} AND thread_id = ${threadId}`;
       const serverThread = ThreadId.make("server-only");
       yield* startWakeupRun(serverThread, "server-only");
       assert.strictEqual(
@@ -613,7 +623,7 @@ describe("KinChatService", () => {
     "publishes question waiting and reply resolution, rolls back atomically, and keeps read state monotonic",
     () =>
       Effect.gen(function* () {
-        const { repo, service, person, agent, chat } = yield* seed;
+        const { repo, service, person, agent, chat } = yield* seed(true);
         const hub = yield* Hub.KinChatHub;
         const events = yield* Stream.toQueue(yield* hub.subscribeForViewer(person), {
           capacity: "unbounded",
@@ -776,7 +786,7 @@ describe("KinChatService", () => {
   );
   it.effect("filters every hub event against current viewer membership at delivery", () =>
     Effect.gen(function* () {
-      const { repo, service, person, agent, chat } = yield* seed;
+      const { repo, service, person, agent, chat } = yield* seed(true);
       const hub = yield* Hub.KinChatHub;
       const viewer = yield* hub.subscribeForViewer(person);
       const other = yield* repo.createChat({
@@ -802,7 +812,7 @@ describe("KinChatService", () => {
         chatId: other.chatId,
         body: "Private",
         clientMessageId: "private",
-        intent: "answer",
+        intent: "evidence",
       });
       const widget = yield* service.createTaskCard({
         orgId: person.orgId,
@@ -868,7 +878,11 @@ describe("KinChatService", () => {
       for (const event of events) yield* hub.publish(event);
       assert.deepStrictEqual(
         yield* Stream.runCollect(viewer.pipe(Stream.take(events.length))),
-        events,
+        events.map((event) => {
+          if (event.type !== "message.posted") return event;
+          const { clientMessageId: _id, ...visible } = event.message;
+          return { ...event, message: visible };
+        }),
       );
       const agentViewer = yield* hub.subscribeForViewer(agent);
       const suggestion: Hub.KinChatHubEvent = {
@@ -900,7 +914,7 @@ describe("KinChatService", () => {
     "requires an owner to remove members and publishes cancelled waiting only after commit",
     () =>
       Effect.gen(function* () {
-        const { repo, service, person, chat } = yield* seed;
+        const { repo, service, person, chat } = yield* seed();
         const hub = yield* Hub.KinChatHub;
         const sql = yield* SqlClient.SqlClient;
         const other = { ...person, personId: KinPersonId.make("other-person") };
