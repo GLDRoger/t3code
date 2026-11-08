@@ -1,6 +1,7 @@
 import { KinOrgId, KinMemoryItemId, MemoryItemHead } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Sqlite from "../../persistence/Sqlite.ts";
@@ -65,24 +66,37 @@ export function fixture<E = never>(
   const dependencies = Layer.mergeAll(
     options.memory ??
       Layer.unwrap(
-        Effect.map(SqlClient.SqlClient, (sql) =>
-          Layer.mock(Memory.Memory)({
-            query:
-              options.query?.(sql) ??
-              ((orgId) =>
-                Effect.succeed(
-                  items
-                    .filter((item) => item.orgId === orgId)
-                    .map((item) => ({ ...item, duplicate: false })),
-                )),
+        Effect.map(SqlClient.SqlClient, (sql) => {
+          // Memory takes its org lock, which load holds while it waits for the SQLite writer.
+          const outsideTransaction = <A, E>(name: string, effect: Effect.Effect<A, E>) =>
+            Effect.serviceOption(sql.transactionService).pipe(
+              Effect.flatMap((open) =>
+                Option.isSome(open)
+                  ? Effect.die(`Memory.${name} ran inside a SQLite transaction`)
+                  : effect,
+              ),
+            );
+          const query =
+            options.query?.(sql) ??
+            ((orgId: KinOrgId) =>
+              Effect.succeed(
+                items
+                  .filter((item) => item.orgId === orgId)
+                  .map((item) => ({ ...item, duplicate: false })),
+              ));
+          return Layer.mock(Memory.Memory)({
+            query: (orgId, input) => outsideTransaction("query", query(orgId, input)),
             readItemQuietly: (orgId, id) => {
               const head = items.find((item) => item.orgId === orgId && item.id === id);
-              return head === undefined
-                ? Effect.fail(new Memory.MemoryNotFound({ orgId, id }))
-                : Effect.succeed({ head, body: "Body\n" });
+              return outsideTransaction(
+                "readItemQuietly",
+                head === undefined
+                  ? Effect.fail(new Memory.MemoryNotFound({ orgId, id }))
+                  : Effect.succeed({ head, body: "Body\n" }),
+              );
             },
-          }),
-        ),
+          });
+        }),
       ),
     Chat.layer.pipe(Layer.provide(JudgeShadow.layerOff), Layer.provideMerge(Hub.layer)),
     TriggerScheduler.layer,

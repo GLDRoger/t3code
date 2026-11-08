@@ -22,7 +22,10 @@ export class KinDeferralGithubError extends Schema.TaggedError<KinDeferralGithub
 ) {}
 
 export interface KinDeferralGithubReaderShape {
-  /** Read-only: one issue or PR's state, assignees and linked PR numbers. */
+  /**
+   * Read-only: one issue or PR's state, assignees and linked PR numbers.
+   * Called under the org memory lock from syncOrg, so a real reader must be time-bounded.
+   */
   readonly read: (
     orgId: KinOrgId,
     ref: GithubRef,

@@ -126,7 +126,10 @@ const make = Effect.gen(function* () {
   const cards = yield* makeDeferralCards;
   const start = yield* makeDeferralStarter;
   // Per process: the 24 h give-up is the durable bound, so a restart only retries sooner.
-  const retries = new Map<string, { readonly notBefore: number; readonly failures: number }>();
+  const retries = new Map<
+    KinOrgId,
+    Map<string, { readonly notBefore: number; readonly failures: number }>
+  >();
   const sweptAt = new Map<KinOrgId, number>();
 
   const readRun = (orgId: KinOrgId, itemId: KinMemoryItemId) =>
@@ -390,6 +393,14 @@ const make = Effect.gen(function* () {
       yield* Effect.gen(function* () {
         const timeZone = yield* cache.ownerTimeZone(orgId);
         const fires = yield* inbox.listPending(orgId, 100, "deferral");
+        const orgRetries = retries.get(orgId) ?? new Map();
+        retries.set(orgId, orgRetries);
+        // A full page may hide pending fires, so only a short one can prove an entry stale.
+        if (fires.length < 100) {
+          const pending = new Set(fires.map((fire) => fire.fireId));
+          for (const fireId of orgRetries.keys())
+            if (!pending.has(fireId)) orgRetries.delete(fireId);
+        }
         // Catch-up fires share received_at; handle them by due time.
         for (const fire of fires.toSorted(
           (a, b) =>
@@ -398,13 +409,13 @@ const make = Effect.gen(function* () {
         )) {
           if (fire.payload.kind !== "time" || fire.payload.subject.type !== "deferral") continue;
           const { itemId, phase } = fire.payload.subject;
-          const retry = retries.get(fire.fireId);
+          const retry = orgRetries.get(fire.fireId);
           const giveUp = now - Date.parse(fire.dueAt) > GIVE_UP_MS;
           if (retry !== undefined && now < retry.notBefore && !giveUp) continue;
           yield* process(orgId, fire, itemId, phase, now, timeZone).pipe(
             Effect.tap((put) =>
               Effect.sync(() => {
-                retries.delete(fire.fireId);
+                orgRetries.delete(fire.fireId);
                 if (put) chased = true;
               }),
             ),
@@ -427,10 +438,10 @@ const make = Effect.gen(function* () {
                 );
                 if (!consume) {
                   const delay = Math.min(RETRY_MAX_MS, RETRY_FIRST_MS * 2 ** (failures - 1));
-                  retries.set(fire.fireId, { notBefore: now + delay, failures });
+                  orgRetries.set(fire.fireId, { notBefore: now + delay, failures });
                   return;
                 }
-                retries.delete(fire.fireId);
+                orgRetries.delete(fire.fireId);
                 yield* noticeFailure(orgId, fire, itemId, timeZone).pipe(
                   Effect.catch((cause) =>
                     Effect.logWarning("Kin deferral failure notice failed", {
