@@ -111,8 +111,10 @@ export const KinChatState = Schema.Struct({
   reads: Schema.Record(Schema.String, Schema.Number),
   /** The server reported a gap of more than 200; reload the latest page with history. */
   needsHistoryReload: Schema.Boolean,
-  /** The viewer left; the stream has ended. */
+  /** The viewer left; the stream has ended. Never cached. */
   left: Schema.Boolean,
+  /** The host refused the chat stream; it has ended. Never cached. */
+  closed: Schema.NullOr(Schema.Literals(["not_found", "not_allowed", "unavailable"])),
 });
 export type KinChatState = typeof KinChatState.Type;
 
@@ -123,13 +125,23 @@ export const emptyKinChat: KinChatState = {
   reads: {},
   needsHistoryReload: false,
   left: false,
+  closed: null,
 };
+
+export type KinChatClosedReason = NonNullable<KinChatState["closed"]>;
 
 function mergeMessages(
   current: ReadonlyArray<KinMessage>,
   incoming: ReadonlyArray<KinMessage>,
 ): ReadonlyArray<KinMessage> {
   if (incoming.length === 0) return current;
+  // Live messages arrive in order past the last held one.
+  if (
+    (current.length === 0 || incoming[0]!.seq > current[current.length - 1]!.seq) &&
+    incoming.every((message, index) => index === 0 || message.seq > incoming[index - 1]!.seq)
+  ) {
+    return [...current, ...incoming];
+  }
   const bySeq = new Map(current.map((message) => [message.seq, message]));
   // A later copy of the same seq carries its newest status or edit.
   for (const message of incoming) bySeq.set(message.seq, message);
@@ -229,5 +241,7 @@ export function trimKinChatForCache(state: KinChatState): KinChatState {
     ...state,
     messages,
     widgets: state.widgets.filter((widget) => kept.has(widget.messageId)),
+    left: false,
+    closed: null,
   };
 }

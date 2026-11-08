@@ -21,9 +21,11 @@ const savedKinHostAtom = connectionAtomRuntime.atom(
   }).pipe(Effect.orElseSucceed(() => null)),
 );
 
-const saveKinHostAtom = connectionAtomRuntime.fn((environmentId: EnvironmentId) =>
+const saveKinHostAtom = connectionAtomRuntime.fn((environmentId: EnvironmentId, get) =>
   MobileSecureStorage.MobileSecureStorage.pipe(
     Effect.flatMap((storage) => storage.setItem(KIN_HOST_STORAGE_KEY, environmentId)),
+    // Re-read so `saved` matches what was written and the write isn't repeated.
+    Effect.andThen(Effect.sync(() => get.refresh(savedKinHostAtom))),
     Effect.catch(() => Effect.logWarning("Saving the Kin host failed")),
   ),
 );

@@ -83,9 +83,10 @@ Why not a fourth workspace tab: it isn't a one-line hook. A `"kin"` tab needs ed
 
 Kin runs on the Kin host, which the phone reaches as an ordinary T3 environment. `useKinHost()` (**new**) picks it this way:
 
-1. Use the environment id saved under Kin's own key (`kin.hostEnvironmentId`, through `MobileSecureStorage`, so no upstream storage file changes) if it is still in the catalog and doesn't answer as "not Kin". An offline saved host is still the host, so its cache can show.
+1. Use the environment id saved under Kin's own key (`kin.hostEnvironmentId`, through `MobileSecureStorage`, so no upstream storage file changes) if it is still in the catalog and doesn't answer as "not Kin". An offline saved host is still the host, so its cache can show. A saved host whose `me` is empty yields to another host that has an identity.
 2. Otherwise, use the first `connected` environment, in catalog order, whose `kin.orgs.list` call (chat spec) succeeds with a non-empty `me`, and save its id. A host whose `me` is empty is used only when no other host has an identity, and is never saved.
-3. An environment whose server lacks the Kin RPC answers with an RPC error, and one with `KIN_ENABLED` off answers `KinChatError.reason = "unavailable"`. Treat both as "no Kin here", not as a failure. A missing scope is "Not authorized".
+3. A server without the Kin RPCs answers the unknown method with a defect (`Exit.die("Unknown request tag: …")`), and one with `KIN_ENABLED` off answers `KinChatError.reason = "unavailable"`. Treat both as "no Kin here", not as a failure. A missing scope is "Not authorized".
+4. A lost transport, an unreachable environment or a timeout says nothing about Kin: it is an `error` probe with `transient: true`. It never replaces the saved host and never picks an unsaved one. `kinClient.orgs` re-runs when the environment's next session comes up.
 
 The rules are pure in `state/kinHost.ts` (`resolveKinHost`, `classifyKinProbe`) and unit-tested.
 
@@ -96,7 +97,9 @@ Phase 1 has one organization. `orgId` is carried in every route param and atom i
 Atoms are built on `connectionAtomRuntime`. As built in MOB-1 (`kinClient`): `orgs`, `inbox`, `chat`, `history`, `createDirect`, `send`, `markRead` and `widgetAction`. `pendingAction` and `registerPush` arrive with the approvals spec and MOB-10. Two differences from the sketch below:
 
 - Every `kin.*` method, reads included, is in `CLIENT_GUARDED_RPC_SCOPES`, so `createEnvironmentRpcQueryAtomFamily` refuses them. `orgs` and `history` are query atoms that run the method through `createEnvironmentRpcCommand`'s scope check.
-- `inbox` and `chat` fold their streams in `state/kinInboxModel.ts` and emit `KinSynced<State>` (`{ value, live, savedAt }`). `chat` resubscribes with `afterSeq` = the highest contiguous seq held, read at each (re)subscription. A `member` event with `leftAt` removes the chat from `inbox`.
+- `inbox` and `chat` (built in `state/kinStreams.ts`) fold their streams in `state/kinInboxModel.ts` and emit `KinSynced<State>` (`{ value, live, savedAt }`), only when the state changes. `chat` resubscribes with `afterSeq` = the highest contiguous seq held, read at each (re)subscription, and then re-reads the latest page with `history`, because the backlog only covers `seq > afterSeq` (see the request to the chat spec below). A `reset` also re-reads it.
+- A `member` event with `leftAt` ends the `chat` stream with `left: true`, drops that chat's cache entry, and removes the chat from `inbox`. That removal reaches `inbox` only through an open chat stream; otherwise the host's next snapshot drops it. `KinChatError` `not_found`, `not_allowed` or `unavailable` on the chat stream ends it with `closed` set instead of failing the atom. Neither `left` nor `closed` is cached.
+- The Kin streams are scope-checked on the server only. The client checks scopes for `orgs`, `history` and the commands.
 
 The original sketch:
 
@@ -140,7 +143,9 @@ export const kinClient = {
 };
 ```
 
-Offline cache: the last inbox state, and the last 50 messages of each opened chat (with the widgets they anchor and the contiguous seq), are saved with `persistQuery(...)` on every change the stream makes. The stream emits the cached value first with `live: false`. On a cold start, the cache renders at once, marked "Offline · last updated 9:41" from `savedAt`.
+Offline cache: the last inbox state, and the last 50 messages of each opened chat (with the widgets they anchor and the contiguous seq), are saved with `persistQuery(...)` under Kin's own `"kin"` cache kind (`state/kinCache.ts`). Each stream saves at most every 1.5 s and flushes its last change when it stops. A reset never saves its empty feed over cached messages. The store keeps the 40 most recently saved entries per environment and skips a record over 512 KiB. The cache belongs to `me[0].personId`. When the host answers with another person, or with none, that environment's Kin cache is cleared. The stream emits the cached value first with `live: false`. On a cold start, the cache renders at once, marked "Offline · last updated 9:41" from `savedAt`.
+
+Request to the chat spec (issue #12): `kin.chat.subscribe`'s backlog only covers `seq > afterSeq`, so edits, status changes and widget revisions to older messages made while the phone was away are missed. Mobile re-reads the latest page as a stopgap; older messages stay stale. A resume cursor that also replays changes (for example an `afterChange` revision) would close the gap.
 
 ### Shapes mobile reads (owned by the chat and approvals specs)
 
@@ -307,20 +312,21 @@ New, all under `apps/mobile/src/features/chats/` unless noted:
 - `KinHomeEntry.tsx`, `KinChatsScreen.tsx`, `KinChatScreen.tsx`, `KinWaitingScreen.tsx`, `KinApprovalRouteScreen.tsx`
 - `components/KinAvatar.tsx`, `KinChatRow.tsx`, `KinWaitingBanner.tsx`, `KinMessageBubble.tsx`, `KinFoldLine.tsx`, `KinComposer.tsx`, `KinScreenState.tsx` (the state table as one component)
 - `widgets/KinWidgetView.tsx`, `KinTaskCard.tsx`, `KinDeferralCard.tsx`, `KinApprovalCard.tsx`, `kinCardPresentation.ts` (pure copy and format functions, unit-tested)
-- `state/kinClient.ts`, `state/useKinHost.ts`, `state/kinOutbox.ts`, `state/kinInboxModel.ts` (sorting, merge of deltas, unit-tested)
+- `state/kinClient.ts`, `state/kinStreams.ts`, `state/kinCache.ts`, `state/useKinHost.ts`, `state/kinOutbox.ts`, `state/kinInboxModel.ts` (sorting, merge of deltas, unit-tested)
 - `notifications/installKinNotifications.ts`, `notifications/kinPushPayload.ts`, `notifications/kinCategories.ts`
 - `packages/contracts/src/kinPush.ts`, `apps/server/src/kin/push/KinPushSender.ts`, `apps/server/src/kin/push/KinPushDevices.ts` (backend)
 
 Upstream files touched, one hook each:
 
-| File                                           | Hook                                                                                                                                 |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `apps/mobile/src/Stack.tsx`                    | `import { KIN_SCREENS } from "./features/chats/routes";` and `...KIN_SCREENS,` in `screens`                                          |
-| `apps/mobile/src/features/home/HomeScreen.tsx` | `import { KinHomeEntry } ...` and `<KinHomeEntry />` after `{listHeader}` in `v2ListHeader`                                          |
-| `apps/mobile/src/App.tsx`                      | `import { installKinNotifications } ...` and `installKinNotifications(linkToAppPath),` in `appServiceDisposers`                      |
-| `packages/client-runtime/src/rpc/client.ts`    | add Kin stream tags to `EnvironmentSubscriptionRpcTag` (one line per tag; may be done by the chat spec)                              |
-| `apps/mobile/index.ts`                         | `import "./src/features/chats/state/kinDevLogEntry";` (MOB-1, dev only: with `EXPO_PUBLIC_KIN_DEV_LOG=1` it logs the host and inbox) |
-| `apps/mobile/vite.config.ts`                   | `"src/features/chats/**/*.test.tsx",` in `reactTests` (only if Kin adds component tests)                                             |
+| File                                             | Hook                                                                                                                                                                      |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/mobile/src/Stack.tsx`                      | `import { KIN_SCREENS } from "./features/chats/routes";` and `...KIN_SCREENS,` in `screens`                                                                               |
+| `apps/mobile/src/features/home/HomeScreen.tsx`   | `import { KinHomeEntry } ...` and `<KinHomeEntry />` after `{listHeader}` in `v2ListHeader`                                                                               |
+| `apps/mobile/src/App.tsx`                        | `import { installKinNotifications } ...` and `installKinNotifications(linkToAppPath),` in `appServiceDisposers`                                                           |
+| `packages/client-runtime/src/rpc/client.ts`      | add Kin stream tags to `EnvironmentSubscriptionRpcTag` (one line per tag; may be done by the chat spec)                                                                   |
+| `apps/mobile/index.ts`                           | `import "./src/features/chats/state/kinDevLogEntry";` (MOB-1, dev only: with `EXPO_PUBLIC_KIN_DEV_LOG=1` it logs the host and inbox). Remove it once MOB-2 lands screens. |
+| `apps/mobile/src/persistence/mobile-database.ts` | `"kin",` in `ClientCacheKind`                                                                                                                                             |
+| `apps/mobile/vite.config.ts`                     | `"src/features/chats/**/*.test.tsx",` in `reactTests` (only if Kin adds component tests)                                                                                  |
 
 ## Interfaces to other specs
 
@@ -342,7 +348,8 @@ Upstream files touched, one hook each:
 Commands, from `apps/mobile`: `vp run typecheck` and `vp test run --project unit src/features/chats`. Server: `vp test run apps/server/src/kin/push`.
 
 - `kinInboxModel.test.ts`: waiting chats sort first, deltas merge by `seq`, contiguous-seq tracking, `leftAt` removal, reset and history. `KinMessage` carries no `clientMessageId`, so replacing the pending bubble belongs to the outbox (MOB-5), matched by the send reply's `messageId`.
-- `kinHost.test.ts`: probe classification and host choice.
+- `kinHost.test.ts`: probe classification (including a transport error and a defect) and host choice.
+- `kinStreams.test.ts`: across a session swap, the cached value comes first with `live: false`, the second subscription's `afterSeq` comes from the current state, the latest page is re-read, and a `left` event ends the chat, drops its cache entry and reaches the inbox.
 - `kinCardPresentation.test.ts`: the approval title template, the SHA short form, the checks summary, every `status` line, owner vs member eyebrow, Approve disabled while checks are pending, deferral time format across timezones.
 - `kinPushPayload.test.ts`: valid payloads route; `/threads/...`, `//evil`, query strings and malformed JSON are dropped; an action response produces one `widgetAction` per notification id.
 - `KinPushSender.test.ts`: category per widget kind; approval pushes only reach approver devices; skipped when a foreground subscription exists.
