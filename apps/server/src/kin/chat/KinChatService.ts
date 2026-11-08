@@ -198,7 +198,7 @@ const requireRecord = Effect.fn("KinChatService.requireRecord")(function* <A, E,
 
 const make = Effect.gen(function* () {
   const floor = yield* Floor.KinFloor;
-  const shadow = yield* Effect.serviceOption(JudgeShadow);
+  const shadow = yield* JudgeShadow;
   const cards = yield* TaskCard.TaskCardIndex;
   const repo = yield* Repository.KinChatRepository;
   const hub = yield* Hub.KinChatHub;
@@ -371,7 +371,7 @@ const make = Effect.gen(function* () {
     if (message.messageId !== messageId) return message;
     if (message.author._tag === "human") {
       const decision = yield* floor.open(message, yield* requireRecord(repo.getChat(member)));
-      if (Option.isSome(shadow)) yield* shadow.value.observe(message, decision);
+      yield* shadow.observe(message, decision);
     }
     if (input.publish === false) return message;
     yield* hub.publish({ type: "message.posted", orgId: identity.orgId, message });

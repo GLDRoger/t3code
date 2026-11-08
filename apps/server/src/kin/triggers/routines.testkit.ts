@@ -8,6 +8,7 @@ import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as Chat from "../chat/KinChatService.ts";
+import * as JudgeShadow from "../floor/JudgeShadow.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as Persistence from "../persistence/KinPersistence.ts";
@@ -80,7 +81,7 @@ export function fixture(
         }),
       ),
     ),
-    Chat.layer.pipe(Layer.provideMerge(Hub.layer)),
+    Chat.layer.pipe(Layer.provide(JudgeShadow.layerOff), Layer.provideMerge(Hub.layer)),
     TriggerScheduler.layer,
   ).pipe(
     Layer.provideMerge(repositories),
