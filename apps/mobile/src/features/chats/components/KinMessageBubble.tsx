@@ -7,12 +7,7 @@ import {
   SelectableMarkdownText,
   type NativeMarkdownTextStyle,
 } from "../../../native/SelectableMarkdownText";
-import {
-  kinDayLabel,
-  kinMessageLabel,
-  kinMessageLinks,
-  type KinFeedRow,
-} from "../state/kinChatFeed";
+import { kinMessageLabel, kinMessageLinks, type KinFeedRow } from "../state/kinChatFeed";
 import { KinWidgetView } from "../widgets/KinWidgetView";
 
 type MessageRow = Extract<KinFeedRow, { readonly type: "message" }>;
@@ -125,7 +120,7 @@ export function KinDayLine(props: { readonly row: DayRow }) {
   return (
     <View className="items-center px-8 pb-1 pt-4" accessibilityRole="header">
       <Text textRole="caption" className="font-t3-medium text-foreground-muted">
-        {kinDayLabel(props.row.at)}
+        {props.row.label}
       </Text>
     </View>
   );
