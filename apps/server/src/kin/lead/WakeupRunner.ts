@@ -29,6 +29,7 @@ import * as ThreadManagementService from "../../orchestration-v2/ThreadManagemen
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import * as KinIdentity from "../chat/KinIdentity.ts";
+import * as Writer from "../memory/MemoryWriter.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinBudget from "./KinBudget.ts";
@@ -97,6 +98,7 @@ const make = Effect.gen(function* () {
   const queue = yield* KinEventQueue.KinEventQueue;
   const budget = yield* KinBudget.KinBudget;
   const memory = yield* Memory.Memory;
+  const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
   const hooks = yield* Effect.serviceOption(KinWakeupHooks);
   const prompt = yield* KinLeadPrompt;
   const identity = yield* KinIdentity.KinIdentity;
@@ -206,6 +208,19 @@ const make = Effect.gen(function* () {
             wakeupId: row.wakeupId,
             runId,
           });
+      }
+      if (Option.isSome(writer)) {
+        const ended =
+          yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId} AND call_key = 'end'`;
+        if (ended.length === 0)
+          yield* writer.value.appendJournal(row.orgId, row.wakeupId, [
+            "Lead ended without calling kin_end.",
+          ]);
+        yield* writer.value.commitWakeup(
+          row.orgId,
+          row.wakeupId,
+          status === "completed" ? "completed" : "failed",
+        );
       }
       yield* capture(row);
       yield* queue.finish({ orgId: row.orgId, wakeupId: row.wakeupId, status });

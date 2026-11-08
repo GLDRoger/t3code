@@ -15,6 +15,8 @@ import JudgeLog from "./migrations/K009_JudgeLog.ts";
 import ChatChanges from "./migrations/K010_ChatChanges.ts";
 import MemoryHeads from "./migrations/K011_MemoryHeads.ts";
 
+import LeadToolCalls from "./migrations/K013_LeadToolCalls.ts";
+
 const run = Migrator.make({});
 const loader = Migrator.fromRecord({
   "1_ChatCore": ChatCore,
@@ -28,6 +30,7 @@ const loader = Migrator.fromRecord({
   "9_JudgeLog": JudgeLog,
   "10_ChatChanges": ChatChanges,
   "11_MemoryHeads": MemoryHeads,
+  "13_LeadToolCalls": LeadToolCalls,
 });
 
 export const runKinMigrations = Effect.fn("KinMigrations.run")(function* () {

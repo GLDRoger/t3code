@@ -9,6 +9,8 @@ import { parseBearerToken } from "../../auth/EnvironmentAuth.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { McpInvocationContext } from "../../mcp/McpInvocationContext.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
+import * as KinLead from "../lead/layer.ts";
+import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import { KinServer } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatToolkit, handlers } from "./KinChatToolkit.ts";
@@ -65,9 +67,17 @@ export const transport = (base: typeof McpHttpServer.layer) =>
     Layer.unwrap(
       Effect.gen(function* () {
         const kin = yield* KinServer;
-        // The isolated registry also doubles HtmlRender's per-registry headless Chrome cap.
+        // Kin leads cannot bypass their toolkit through T3 scheduling or thread-launch tools.
         return Option.isSome(kin.services)
-          ? endpoint(Layer.merge(McpHttpServer.layerTools, registration))
+          ? endpoint(
+              Layer.mergeAll(
+                registration,
+                KinLead.layerMcp.pipe(
+                  Layer.provide(Layer.succeedContext(kin.services.value)),
+                  Layer.provide(SqlitePersistence.layerConfig),
+                ),
+              ),
+            )
           : Layer.empty;
       }),
     ),

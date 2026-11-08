@@ -33,6 +33,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Budget from "./KinBudget.ts";
 import * as KinIdentity from "../chat/KinIdentity.ts";
+import * as Writer from "../memory/MemoryWriter.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryConfig from "../memory/MemoryConfig.ts";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
@@ -114,7 +115,39 @@ describe("WakeupRunner", () => {
           { event_id: "urgent", state: "done", attempts: 0 },
         ],
       );
-    }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
+    }).pipe(
+      Effect.provide(
+        harness({
+          writer: Layer.effect(
+            Writer.MemoryWriter,
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient;
+              return Writer.MemoryWriter.of({
+                stage: () => Effect.die("unused"),
+                discard: () => Effect.die("unused"),
+                appendJournal: (_org, _wakeup, lines) =>
+                  Effect.sync(() =>
+                    assert.deepStrictEqual(lines, ["Lead ended without calling kin_end."]),
+                  ),
+                commitWakeup: Effect.fn("test.commitWakeup")(function* (org, wakeupId, outcome) {
+                  assert.strictEqual(org, orgId);
+                  assert.strictEqual(outcome, "completed");
+                  const [row] = yield* sql<{
+                    status: string;
+                    runStatus: string;
+                  }>`SELECT w.status, r.status AS "runStatus" FROM kin_wakeups w JOIN orchestration_v2_projection_runs r ON r.run_id = w.run_id WHERE w.wakeup_id = ${wakeupId}`.pipe(
+                    Effect.orDie,
+                  );
+                  assert.deepStrictEqual(row, { status: "running", runStatus: "completed" });
+                  return { commit: "fixture-commit" };
+                }),
+              });
+            }),
+          ),
+        }),
+      ),
+      provideDeterministicTestRuntime,
+    ),
   );
   it.effect(
     "defers P3 until the owner-local reset without attempts and re-admits it after limits rise",

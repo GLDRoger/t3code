@@ -1,0 +1,392 @@
+import { stableStringify } from "@t3tools/shared/relaySigning";
+import type { KinOrgId, KinAgentId, MemoryTrust, ThreadId } from "@t3tools/contracts";
+import * as Digest from "effect/crypto/Digest";
+import * as Hex from "effect/encoding/Hex";
+import {
+  KinChatError,
+  KinChatId,
+  KinEvent,
+  KinMemoryItemId,
+  MemoryItemFrontMatter,
+  MemoryItemHead,
+  TrimmedNonEmptyString,
+} from "@t3tools/contracts";
+import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
+import * as SqlClient from "effect/sql/SqlClient";
+import { stringify } from "yaml";
+import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
+import { KinIdentity } from "../chat/KinIdentity.ts";
+import * as Memory from "../memory/Memory.ts";
+import * as Writer from "../memory/MemoryWriter.ts";
+import * as Cache from "../memory/MemoryCache.ts";
+import { MemoryItemError, memoryDateMillis } from "../memory/frontMatter.ts";
+import { KinLeadRegistry } from "./KinLeadRegistry.ts";
+
+const text = Schema.String.check(Schema.isMaxLength(100_000));
+const date = Schema.String.check(
+  Schema.makeFilter((value) => Number.isFinite(memoryDateMillis(value)), {
+    expected: "a date or timestamp with explicit offset",
+  }),
+);
+const itemId = KinMemoryItemId.check(Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,199}$/));
+export const SearchInput = Schema.Struct({
+  kind: Schema.optional(MemoryItemFrontMatter.fields.kind),
+  status: Schema.optional(MemoryItemFrontMatter.fields.status),
+  dueBefore: Schema.optional(date),
+  dueAfter: Schema.optional(date),
+  reviewOverdue: Schema.optional(Schema.Boolean),
+  saidBy: Schema.optional(TrimmedNonEmptyString),
+  linksTo: Schema.optional(text),
+  limit: Schema.optional(
+    Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(200)),
+  ),
+});
+export const ReadInput = Schema.Struct({ id: KinMemoryItemId });
+export const WriteInput = Schema.Struct({
+  op: Schema.Literals(["create", "update", "supersede", "invalidate"]),
+  item: Schema.Struct({
+    ...MemoryItemFrontMatter.fields,
+    id: itemId,
+    review_by: Schema.optional(MemoryItemFrontMatter.fields.review_by),
+    body: text,
+  }),
+  sourceEventId: TrimmedNonEmptyString,
+  supersedes: Schema.optional(KinMemoryItemId),
+});
+export const DeferInput = Schema.Struct({
+  itemId: Schema.optional(itemId),
+  what: TrimmedNonEmptyString.check(Schema.isMaxLength(8000)),
+  due: date,
+  onDue: Schema.Literals(["remind", "start", "ask", "chase"]),
+  chatId: KinChatId,
+  sourceEventId: TrimmedNonEmptyString,
+});
+export const JournalInput = Schema.Struct({
+  saw: Schema.Array(text).check(Schema.isMaxLength(100)),
+  did: Schema.Array(text).check(Schema.isMaxLength(100)),
+  skipped: Schema.optional(Schema.Array(text).check(Schema.isMaxLength(100))),
+});
+export const EndInput = Schema.Struct({ summary: text });
+export const ItemResult = Schema.Struct({ itemId: KinMemoryItemId });
+export const ReadResult = Schema.Struct({
+  head: MemoryItemHead,
+  body: Schema.String,
+  reviewOverdue: Schema.Boolean,
+  misleading: Schema.Boolean,
+});
+export const SearchResult = Schema.Array(
+  Schema.Struct({ ...MemoryItemHead.fields, duplicate: Schema.Boolean }),
+);
+const denied = () =>
+  new KinChatError({ reason: "not_allowed", message: "Lead operation is not allowed." });
+const missing = () => new KinChatError({ reason: "not_found", message: "Kin record not found." });
+const isChatError = Schema.is(KinChatError);
+const isNotFound = Schema.is(Memory.MemoryNotFound);
+const isConflict = Schema.is(Writer.MemoryConflict);
+const isRejected = Schema.is(Writer.MemoryWriteRejected);
+const isItemError = Schema.is(MemoryItemError);
+const isQueryError = Schema.is(Memory.MemoryQueryDecodeError);
+const failure = (error: unknown) =>
+  isChatError(error)
+    ? error
+    : isNotFound(error)
+      ? missing()
+      : isConflict(error) || isRejected(error) || isItemError(error) || isQueryError(error)
+        ? denied()
+        : new KinChatError({ reason: "unavailable", message: "Kin memory is unavailable." });
+const decodeEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(KinEvent));
+
+export class LeadMemory extends Context.Service<
+  LeadMemory,
+  {
+    readonly visible: (threadId: ThreadId) => boolean;
+    readonly search: (
+      scope: McpInvocationScope,
+      input: typeof SearchInput.Type,
+    ) => Effect.Effect<typeof SearchResult.Type, KinChatError>;
+    readonly read: (
+      scope: McpInvocationScope,
+      input: typeof ReadInput.Type,
+    ) => Effect.Effect<typeof ReadResult.Type, KinChatError>;
+    readonly write: (
+      scope: McpInvocationScope,
+      input: typeof WriteInput.Type,
+    ) => Effect.Effect<typeof ItemResult.Type, KinChatError>;
+    readonly defer: (
+      scope: McpInvocationScope,
+      input: typeof DeferInput.Type,
+    ) => Effect.Effect<typeof ItemResult.Type, KinChatError>;
+    readonly journal: (
+      scope: McpInvocationScope,
+      input: typeof JournalInput.Type,
+    ) => Effect.Effect<void, KinChatError>;
+    readonly end: (
+      scope: McpInvocationScope,
+      input: typeof EndInput.Type,
+    ) => Effect.Effect<void, KinChatError>;
+  }
+>()("t3/kin/lead/LeadMemory") {}
+
+export const authority = Layer.effect(
+  Writer.MemoryWriterAuthority,
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const cache = yield* Cache.MemoryCache;
+    return Writer.MemoryWriterAuthority.of({
+      resolve: Effect.fn("LeadMemory.writerAuthority")(
+        function* (orgId, wakeupId) {
+          const [row] = yield* sql<{
+            agentId: KinAgentId;
+            level: "L0" | "L1" | "L2" | "L3";
+            startedAt: number;
+          }>`SELECT w.agent_id AS "agentId", l.level, w.started_at AS "startedAt" FROM kin_wakeups w JOIN kin_leads l ON l.org_id = w.org_id AND l.agent_id = w.agent_id WHERE w.org_id = ${orgId} AND w.wakeup_id = ${wakeupId} AND w.status = 'running'`;
+          if (!row)
+            return yield* new Writer.MemoryWriteRejected({ reason: "Wake-up is not running" });
+          const events = yield* sql<{
+            json: string;
+          }>`SELECT json FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND agent_id = ${row.agentId} ORDER BY event_id`;
+          const sources = new Map<string, { saidBy: string; trust: MemoryTrust; source: string }>();
+          for (const record of events) {
+            const event = yield* decodeEvent(record.json);
+            const who = event.provenance;
+            const person =
+              who._tag === "human"
+                ? (yield* sql<{
+                    handle: string;
+                    role: string;
+                  }>`SELECT p.handle, m.role FROM kin_people p JOIN kin_chat_members m ON m.org_id = p.org_id AND m.person_id = p.person_id WHERE p.org_id = ${orgId} AND p.person_id = ${who.personId} AND m.member_id = ${who.memberId}`)[0]
+                : undefined;
+            if (who._tag === "human" && !person)
+              return yield* new Writer.MemoryWriteRejected({ reason: "Unknown source person" });
+            sources.set(event.eventId, {
+              saidBy: person?.handle ?? (who._tag === "agent" ? who.agentId : "external"),
+              trust: person
+                ? person.role === "owner"
+                  ? "owner"
+                  : "member"
+                : who._tag === "agent"
+                  ? "agent"
+                  : "external",
+              source:
+                event._tag === "chat.message" || event._tag === "widget.action"
+                  ? `kin:chat:${event.chatId}:message:${event.messageId}`
+                  : `kin:event:${event.eventId}`,
+            });
+          }
+          return {
+            orgId,
+            wakeupId,
+            agentId: row.agentId,
+            level: row.level,
+            startedAt: DateTime.formatIso(DateTime.makeUnsafe(row.startedAt)),
+            timeZone: yield* cache.ownerTimeZone(orgId),
+            eventIds: [...sources.keys()],
+            sources,
+          };
+        },
+        Effect.mapError(
+          () => new Writer.MemoryWriteRejected({ reason: "Invalid writer authority" }),
+        ),
+      ),
+    });
+  }),
+);
+
+const make = Effect.gen(function* () {
+  const digest = yield* Digest.Digest;
+  const hash = Effect.fn("LeadMemory.hash")((value: unknown) =>
+    digest
+      .digest(Digest.sha256, new TextEncoder().encode(stableStringify(value)))
+      .pipe(Effect.map(Hex.encode)),
+  );
+  const identity = yield* KinIdentity;
+  const memory = yield* Memory.Memory;
+  const writer = yield* Writer.MemoryWriter;
+  const sql = yield* SqlClient.SqlClient;
+  const registry = yield* KinLeadRegistry;
+  const lock = yield* Semaphore.make(1);
+  const ended = new Map<KinOrgId, string>();
+  const resolve = Effect.fn("LeadMemory.resolve")(function* (
+    scope: McpInvocationScope,
+    allowEnded = false,
+  ) {
+    const agent = yield* identity.resolveAgent(scope);
+    const [row] = yield* sql<{
+      wakeupId: string;
+      startedAt: number;
+    }>`SELECT w.wakeup_id AS "wakeupId", w.started_at AS "startedAt" FROM kin_wakeups w JOIN kin_leads l ON l.org_id = w.org_id AND l.agent_id = w.agent_id JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id WHERE w.org_id = ${agent.orgId} AND w.agent_id = ${agent.agentId} AND w.thread_id = ${agent.threadId} AND l.thread_id = w.thread_id AND a.role = 'lead' AND w.status = 'running'`;
+    if (!row) return yield* denied();
+    if (!allowEnded) {
+      const ended =
+        yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${agent.orgId} AND wakeup_id = ${row.wakeupId} AND call_key = 'end'`;
+      if (ended.length > 0) return yield* denied();
+    }
+    return { ...agent, ...row };
+  });
+  const checkSource = Effect.fn("LeadMemory.checkSource")(function* (
+    ctx: Effect.Success<ReturnType<typeof resolve>>,
+    eventId: string,
+  ) {
+    const [row] =
+      yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${ctx.orgId} AND agent_id = ${ctx.agentId} AND wakeup_id = ${ctx.wakeupId} AND event_id = ${eventId}`;
+    if (!row) return yield* missing();
+  });
+  const receipt = Effect.fn("LeadMemory.receipt")(function* (
+    ctx: Effect.Success<ReturnType<typeof resolve>>,
+    key: string,
+    request: unknown,
+    operation: Effect.Effect<
+      void,
+      Effect.Error<ReturnType<Writer.MemoryWriter["Service"]["stage"]>>
+    >,
+  ) {
+    const digest = yield* hash(request);
+    const [prior] = yield* sql<{
+      request_hash: string;
+    }>`SELECT request_hash FROM kin_lead_tool_calls WHERE org_id = ${ctx.orgId} AND wakeup_id = ${ctx.wakeupId} AND call_key = ${key}`;
+    if (prior && prior.request_hash !== digest) return yield* denied();
+    // Re-stage identical writes after recovery; staged bytes deliberately never live in SQLite.
+    yield* operation;
+    yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash) VALUES (${ctx.orgId}, ${ctx.wakeupId}, ${key}, ${digest}) ON CONFLICT DO NOTHING`;
+  });
+  const stage = Effect.fn("LeadMemory.stage")(function* (
+    ctx: Effect.Success<ReturnType<typeof resolve>>,
+    input: typeof WriteInput.Type,
+  ) {
+    yield* checkSource(ctx, input.sourceEventId);
+    const { body, ...fields } = input.item;
+    if (input.op === "supersede" && (!input.supersedes || input.supersedes === fields.id))
+      return yield* denied();
+    if (input.op !== "supersede" && input.supersedes !== undefined) return yield* denied();
+    const current = yield* memory
+      .readItemQuietly(ctx.orgId, fields.id)
+      .pipe(Effect.asSome, Effect.catchTags({ MemoryNotFound: () => Effect.succeedNone }));
+    if (input.op === "update" || input.op === "invalidate") {
+      if (current._tag === "None") return yield* missing();
+    }
+    if (input.op === "invalidate" && fields.invalid_at === null) return yield* denied();
+    const folder = fields.kind === "person" ? "people" : `${fields.kind}s`;
+    yield* receipt(
+      ctx,
+      `item:${fields.id}`,
+      input,
+      writer.stage(ctx.orgId, ctx.wakeupId, {
+        path: current._tag === "Some" ? current.value.head.path : `${folder}/${fields.id}.md`,
+        content: `---\n${stringify(fields)}---\n${body}`,
+        sourceEventId: input.sourceEventId,
+        ...(input.supersedes === undefined ? {} : { supersedes: input.supersedes }),
+      }),
+    );
+    return { itemId: fields.id };
+  });
+  return LeadMemory.of({
+    visible: (threadId) => registry.lookup(threadId) !== undefined,
+    search: Effect.fn("LeadMemory.search")(function* (scope, input) {
+      const ctx = yield* resolve(scope);
+      return yield* memory.query(ctx.orgId, {
+        ...(input.kind === undefined ? {} : { kind: input.kind }),
+        ...(input.status === undefined ? {} : { status: input.status }),
+        ...(input.dueBefore === undefined ? {} : { dueBefore: input.dueBefore }),
+        ...(input.dueAfter === undefined ? {} : { dueAfter: input.dueAfter }),
+        ...(input.reviewOverdue === undefined ? {} : { reviewOverdue: input.reviewOverdue }),
+        ...(input.saidBy === undefined ? {} : { saidBy: input.saidBy }),
+        ...(input.linksTo === undefined ? {} : { linksTo: input.linksTo }),
+        limit: input.limit ?? 50,
+      });
+    }, Effect.mapError(failure)),
+    read: Effect.fn("LeadMemory.read")(function* (scope, input) {
+      const ctx = yield* resolve(scope);
+      const item = yield* memory.readItem(ctx.orgId, input.id);
+      const now = DateTime.toEpochMillis(yield* DateTime.now);
+      return {
+        ...item,
+        reviewOverdue: item.head.review_by !== null && memoryDateMillis(item.head.review_by) < now,
+        misleading: item.head.invalid_at !== null,
+      };
+    }, Effect.mapError(failure)),
+    write: Effect.fn("LeadMemory.write")(
+      function* (scope, input) {
+        return yield* stage(yield* resolve(scope), input);
+      },
+      lock.withPermits(1),
+      Effect.mapError(failure),
+    ),
+    defer: Effect.fn("LeadMemory.defer")(
+      function* (scope, input) {
+        const ctx = yield* resolve(scope);
+        yield* checkSource(ctx, input.sourceEventId);
+        const [chat] =
+          yield* sql`SELECT 1 FROM kin_chats WHERE org_id = ${ctx.orgId} AND chat_id = ${input.chatId}`;
+        if (!chat) return yield* missing();
+        const id =
+          input.itemId ??
+          KinMemoryItemId.make(
+            `def-${(yield* hash({ wakeup: ctx.wakeupId, input })).slice(0, 32)}`,
+          );
+        const recorded = DateTime.formatIso(DateTime.makeUnsafe(ctx.startedAt));
+        const fields = {
+          id,
+          kind: "deferral" as const,
+          title: input.what,
+          status: "open" as const,
+          due: input.due,
+          on_due: input.onDue,
+          recorded_at: recorded,
+          valid_from: recorded,
+          invalid_at: null,
+          superseded_by: null,
+          source: "",
+          said_by: ctx.agentId,
+          trust: "owner" as const,
+          links: [],
+          what: input.what,
+          chat: input.chatId,
+          source_event: input.sourceEventId,
+        };
+        yield* receipt(
+          ctx,
+          `item:${id}`,
+          { ...input, itemId: id },
+          writer.stage(ctx.orgId, ctx.wakeupId, {
+            path: `deferrals/${id}.md`,
+            content: `---\n${stringify(fields)}---\n${input.what}\n`,
+            sourceEventId: input.sourceEventId,
+          }),
+        );
+        return { itemId: id };
+      },
+      lock.withPermits(1),
+      Effect.mapError(failure),
+    ),
+    journal: Effect.fn("LeadMemory.journal")(function* (scope, input) {
+      const ctx = yield* resolve(scope);
+      yield* writer.appendJournal(ctx.orgId, ctx.wakeupId, [
+        ...input.saw.map((x) => `Saw: ${x}`),
+        ...input.did.map((x) => `Did: ${x}`),
+        ...(input.skipped ?? []).map((x) => `Skipped: ${x}`),
+      ]);
+    }, Effect.mapError(failure)),
+    end: Effect.fn("LeadMemory.end")(
+      function* (scope, input) {
+        const ctx = yield* resolve(scope, true);
+        yield* receipt(
+          ctx,
+          "end",
+          input,
+          ended.get(ctx.orgId) === ctx.wakeupId
+            ? Effect.void
+            : writer.appendJournal(ctx.orgId, ctx.wakeupId, [`Summary: ${input.summary}`]),
+        );
+        ended.set(ctx.orgId, ctx.wakeupId);
+      },
+      lock.withPermits(1),
+      Effect.mapError(failure),
+    ),
+  });
+});
+export const layer = Layer.effect(LeadMemory, make);
