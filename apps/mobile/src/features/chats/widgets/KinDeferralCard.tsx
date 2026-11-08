@@ -40,15 +40,16 @@ export const KinDeferralCard = memo(function KinDeferralCard(props: {
   const sent = sentRevision === deferral.revision;
 
   const run = async (tap: KinDeferralTap) => {
-    actions.current ??= createKinCardActions({
-      newId: uuidv4,
-      post: async (input) => {
-        const result = await post({ environmentId, input });
-        return AsyncResult.isFailure(result)
-          ? { ok: false, cause: squashAtomCommandFailure(result) }
-          : { ok: true };
-      },
-    });
+    if (actions.current === null)
+      actions.current = createKinCardActions({
+        newId: uuidv4,
+        post: async (input) => {
+          const result = await post({ environmentId, input });
+          return AsyncResult.isFailure(result)
+            ? { ok: false, cause: squashAtomCommandFailure(result) }
+            : { ok: true };
+        },
+      });
     const outcome = await actions.current(deferral, tap, () => {
       setPending(tap.id);
       setNotice(null);

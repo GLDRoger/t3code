@@ -129,6 +129,7 @@ const clamp = (text: string, max: number) => {
 };
 
 const decodeDeferral = Schema.decodeUnknownOption(KinDeferralCard);
+const isKinChatError = Schema.is(KinChatError);
 
 export function kinDeferralCardView(
   widget: KinWidget,
@@ -214,7 +215,7 @@ export type KinCardNotice = { readonly kind: "stale" | "error"; readonly text: s
 
 /** What the card says when the host refuses an action. */
 export function kinActionFailureNotice(cause: unknown): KinCardNotice {
-  if (cause instanceof KinChatError) {
+  if (isKinChatError(cause)) {
     switch (cause.reason) {
       case "widget_changed":
         return { kind: "stale", text: KIN_STALE_CARD_TEXT };
