@@ -326,17 +326,38 @@ describe("ApproverKeys", () => {
     }).pipe(Effect.provide(relayLayer)),
   );
 
-  it.effect("a proof key revoked before can't register an approver key, even repaired", () =>
+  it.effect("a proof key registers an approver key once every revocation of it is repaired", () =>
     Effect.gen(function* () {
       const { keys, sessions, relay } = yield* seedRelay;
-      yield* sessions.revoke((yield* relay("phone-a")).session.sessionId);
-      const repaired = yield* repairProofKey("phone-a");
-      const exit = yield* Effect.exit(
-        registerAndroid(keys, relayPhone(repaired.sessionId, "phone-a")),
+      const signedOut = yield* relay("phone-a");
+      yield* sessions.revoke(signedOut.session.sessionId);
+      // A call that authenticated just before the revocation landed.
+      assert.strictEqual(
+        reasonOf(yield* Effect.exit(registerAndroid(keys, signedOut))),
+        "invalid_state",
       );
-      assert.strictEqual(reasonOf(exit), "invalid_state");
-      const fresh = yield* registerAndroid(keys, yield* relay("phone-a-fresh"));
-      assert.strictEqual(fresh.key.state, "pending");
+      const repaired = yield* repairProofKey("phone-a");
+      yield* TestClock.adjust(Duration.minutes(1));
+      const { key } = yield* registerAndroid(keys, relayPhone(repaired.sessionId, "phone-a"));
+      // Reconcile doesn't count the repaired revocation from before the key existed.
+      assert.strictEqual(Option.getOrThrow(yield* keys.get(key)).state, "pending");
+    }).pipe(Effect.provide(relayLayer)),
+  );
+
+  it.effect("a revocation after a key registered revokes it for good, even once repaired", () =>
+    Effect.gen(function* () {
+      const { keys, sessions, relay } = yield* seedRelay;
+      const phoneA = yield* relay("phone-a");
+      const first = yield* registerAndroid(keys, phoneA);
+      yield* TestClock.adjust(Duration.minutes(1));
+      // No key read between the revocation and the repair, so only `created_at` can catch it.
+      yield* sessions.revoke(phoneA.session.sessionId);
+      const repaired = yield* repairProofKey("phone-a");
+      yield* TestClock.adjust(Duration.minutes(1));
+      assert.strictEqual(Option.getOrThrow(yield* keys.get(first.key)).state, "revoked");
+      const second = yield* registerAndroid(keys, relayPhone(repaired.sessionId, "phone-a"));
+      assert.strictEqual(Option.getOrThrow(yield* keys.get(second.key)).state, "pending");
+      assert.strictEqual(Option.getOrThrow(yield* keys.get(first.key)).state, "revoked");
     }).pipe(Effect.provide(relayLayer)),
   );
 

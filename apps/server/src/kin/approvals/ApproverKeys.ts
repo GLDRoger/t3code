@@ -252,8 +252,7 @@ const make = Effect.gen(function* () {
         WHERE k.state != 'revoked' AND ${revokedBySession(
           sql,
           { sessionId: sql`k.session_id`, proofKey: sql`k.proof_key_thumbprint` },
-          // A repair re-trusts a proof key, never an approver key (spec section 4).
-          { honorRepairs: false },
+          { since: sql`k.created_at` },
         )}`;
       for (const row of rows) {
         yield* revokeRow({ orgId: row.org_id, thumbprint: row.thumbprint }, "session_revoked");
@@ -316,16 +315,16 @@ const make = Effect.gen(function* () {
         return yield* fail("bad_challenge", "Ask for a new key challenge on this connection.");
       const challenge = new Uint8Array(Buffer.from(input.challenge, "base64url"));
       yield* reconcileSessions();
-      // Reconcile ignores repairs, so a key from a re-paired proof key would be revoked at once.
+      // Mobile keeps one DPoP key per install, so a repaired revocation must not lock it out.
       const proofKey = caller.session.proofKeyThumbprint;
       if (proofKey !== undefined) {
-        const [seen] = yield* sql<{ revoked: number }>`SELECT ${proofKeyRevoked(sql, proofKey, {
-          honorRepairs: false,
-        })} AS revoked`;
+        const [seen] = yield* sql<{
+          revoked: number;
+        }>`SELECT ${proofKeyRevoked(sql, proofKey)} AS revoked`;
         if (seen?.revoked === 1)
           return yield* fail(
             "invalid_state",
-            "This phone's connection key was revoked before. Pair the phone again so it makes a new key, then add the approver key.",
+            "This phone was signed out. Ask the owner to restore it, then try again.",
           );
       }
 

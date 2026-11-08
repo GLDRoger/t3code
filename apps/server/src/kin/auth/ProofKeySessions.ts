@@ -12,21 +12,35 @@ import * as KinEnabled from "../KinEnabled.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { SessionHooks } from "./sessionHooks.ts";
 
-type Column = Statement.Fragment | string;
-type RevocationOptions = { readonly honorRepairs: boolean };
+type Column = Statement.Fragment | string | number;
+/**
+ * Repaired revocations don't count, except ones at or after `since` (epoch ms): a repair re-trusts
+ * a proof key, never an approver key registered before the revocation (approvals spec section 4).
+ */
+type RevocationOptions = { readonly since?: Column };
+
+// `auth_sessions` stores ISO-8601 UTC text; Kin stores integer milliseconds.
+const epochMillis = (sql: SqlClient.SqlClient, iso: Statement.Fragment) =>
+  sql`CAST(ROUND((julianday(${iso}) - 2440587.5) * 86400000) AS INTEGER)`;
+
+const unrepaired = (sql: SqlClient.SqlClient, options: RevocationOptions) =>
+  options.since === undefined
+    ? sql`m.repaired_at IS NULL`
+    : sql`(m.repaired_at IS NULL OR ${epochMillis(sql, sql`s.revoked_at`)} >= ${options.since})`;
 
 /**
  * A revocation reaches a proof key when it was individual (bulk sign-out never marks the caller's
- * own key) and landed before that session expired. Approver keys ignore repairs (spec section 4).
+ * own key), landed before that session expired, and isn't repaired (see `RevocationOptions`).
  */
 export const proofKeyRevoked = (
   sql: SqlClient.SqlClient,
   proofKey: Column,
-  options: RevocationOptions,
+  options: RevocationOptions = {},
 ) =>
+  // The literal `individually_revoked = 1` lets SQLite use the partial index from K016.
   sql`EXISTS (SELECT 1 FROM kin_auth_session_keys m JOIN auth_sessions s ON s.session_id = m.session_id
     WHERE m.proof_key_thumbprint = ${proofKey} AND m.individually_revoked = 1
-      ${options.honorRepairs ? sql`AND m.repaired_at IS NULL` : sql``}
+      AND ${unrepaired(sql, options)}
       AND s.revoked_at IS NOT NULL AND s.revoked_at <= s.expires_at)`;
 
 /**
@@ -36,12 +50,11 @@ export const proofKeyRevoked = (
 export const revokedBySession = (
   sql: SqlClient.SqlClient,
   row: { readonly sessionId: Column; readonly proofKey: Column },
-  options: RevocationOptions,
+  options: RevocationOptions = {},
 ) =>
   sql`(EXISTS (SELECT 1 FROM auth_sessions s LEFT JOIN kin_auth_session_keys m ON m.session_id = s.session_id
     WHERE s.session_id = ${row.sessionId} AND s.revoked_at IS NOT NULL AND s.revoked_at <= s.expires_at
-      AND (m.session_id IS NULL OR (m.individually_revoked = 1
-        ${options.honorRepairs ? sql`AND m.repaired_at IS NULL` : sql``})))
+      AND (m.session_id IS NULL OR (m.individually_revoked = 1 AND ${unrepaired(sql, options)})))
     OR ${proofKeyRevoked(sql, row.proofKey, options)})`;
 
 const enabled = Layer.effect(
@@ -50,9 +63,9 @@ const enabled = Layer.effect(
     const sql = yield* SqlClient.SqlClient;
     const blocked = Effect.fn("ProofKeySessions.blocked")(
       function* (thumbprint: string) {
-        const [row] = yield* sql<{ blocked: number }>`SELECT ${proofKeyRevoked(sql, thumbprint, {
-          honorRepairs: true,
-        })} AS blocked`;
+        const [row] = yield* sql<{
+          blocked: number;
+        }>`SELECT ${proofKeyRevoked(sql, thumbprint)} AS blocked`;
         return row?.blocked === 1;
       },
       Effect.mapError(toPersistenceSqlError("ProofKeySessions.blocked")),
