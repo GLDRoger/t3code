@@ -194,7 +194,7 @@ Table `kin_wakeups` (**new**): `org_id, wakeup_id, agent_id, thread_id, run_id, 
 Setup once per organization (`Memory.ensureCheckouts` owns the checkouts; the wake-up runner owns project bootstrap):
 
 - Writer checkout: `${stateDir}/kin/<orgId>/memory`, a clone of the organization's memory repo.
-- Read checkout: `${stateDir}/kin/<orgId>/memory-read`, a `git worktree` of the same repo, detached at the latest commit. This is the lead's working directory.
+- Read checkout: `${stateDir}/kin/<orgId>/memory-read`, a disposable independent clone, detached at the SQLite-pinned commit. This is the lead's working directory.
 - Lead project: `ProjectService.bootstrap({ workspaceRoot: <memory-read>, title: "Kin · <org name>" })`.
 
 Each wake-up:
@@ -250,19 +250,25 @@ No wake-up timestamps or ids go above the divider (dates and item ids already in
 
 ### Lead tools (`KinLeadToolkit`)
 
-**New** `apps/server/src/kin/lead/mcp/tools.ts` and `handlers.ts`, served on Kin's own `/kin/mcp` endpoint (set up in CHAT-7 and shared with the approvals spec), not in upstream's `layerTools`. Only lead threads are given that endpoint, and each call is checked with `KinIdentity.resolveAgent`, binding the server-resolved `McpInvocationContext.thread.threadId` to the persisted running wake-up's current non-terminal run, rejecting subagents. Other threads never see these tools, so `AgentContextBudget.test.ts` stays unchanged. Each handler derives `{ orgId, agentId }` from that identity and `wakeupId` from its matching running database row, never from tool input, so a lead can't act for another organization.
+Agent bearer tokens are endpoint-bound: they authenticate only on `/kin/mcp` and are rejected with 401 on `/mcp`. Non-agent T3 session tokens continue to authenticate on `/mcp`.
 
-| Tool             | Input (sketch)                                                                                                                                                                                              | What it does                                                                                                                                                |
-| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `kin_chat_post`  | `{ chatId, text, widget?, replaceMessageId? }`                                                                                                                                                              | Calls the chat spec's `KinChatService.postAgentMessage` with author `{ kind: "agent", agentId }`. `replaceMessageId` updates a widget in place.             |
-| `kin_delegate`   | `{ kind: "build" \| "review" \| "research", title, goal, brief, quoted?: [{ role, name, text }], projectId, baseRef?, model?: "strong" \| "cheap" \| ModelSelection, memoryItemIds?, reviewOf?: workerId }` | Starts a worker (below). Returns `{ workerId, threadLink }`.                                                                                                |
-| `request_action` | owned by the approvals spec                                                                                                                                                                                 | Creates a `KinPendingAction`. This spec only adds the level check before it.                                                                                |
-| `memory_search`  | `{ kind?, status?, dueBefore?, dueAfter?, reviewOverdue?, saidBy?, linksTo?, limit }`                                                                                                                       | Structured query over the front matter cache. Free-text search is the lead's own `rg`.                                                                      |
-| `memory_read`    | `{ id }`                                                                                                                                                                                                    | One item, plus its flags (overdue `review_by`, `misleading`). Marks it read for the "unused items fade" rule.                                               |
-| `memory_write`   | `{ op: "create" \| "update" \| "supersede" \| "invalidate", item, sourceEventId, supersedes? }`                                                                                                             | Stages a change through the writer (rules below).                                                                                                           |
-| `kin_defer`      | `{ itemId?, what, due, onDue: "remind" \| "start" \| "ask" \| "chase", chatId, sourceEventId }`                                                                                                             | Writes the deferral item through the writer and calls the triggers spec's `KinTriggerService` to arm it (TRIG-7). The lead never gets T3's `schedule_task`. |
-| `kin_journal`    | `{ saw: string[], did: string[], skipped?: string[] }`                                                                                                                                                      | Adds the lead's lines to this wake-up's journal entry.                                                                                                      |
-| `kin_end`        | `{ summary }`                                                                                                                                                                                               | Marks the wake-up done. The runner commits after the run ends.                                                                                              |
+The `/kin/mcp` endpoint deliberately exposes only Kin tools, never T3 tools (including scheduling and thread launch), so leads cannot bypass server authority; worker launch comes through the server-only LEAD-9 path.
+
+**New** `apps/server/src/kin/lead/mcp/tools.ts` and `handlers.ts`, served on Kin's own `/kin/mcp` endpoint (set up in CHAT-7 and shared with the approvals spec), not in upstream's `layerTools`. Registered Kin agent threads are given that endpoint, but only registered lead threads see the lead toolkit; each call is checked with `KinIdentity.resolveAgent`, binding the server-resolved `McpInvocationContext.thread.threadId` to the persisted running wake-up's current non-terminal run, rejecting subagents. Other threads never see these tools, so `AgentContextBudget.test.ts` stays unchanged. Each handler derives `{ orgId, agentId }` from that identity and `wakeupId` from its matching running database row, never from tool input, so a lead can't act for another organization.
+
+| Tool             | Input (sketch)                                                                                                                                                                                              | What it does                                                                                                                                                 |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `kin_chat_post`  | `{ chatId, text, widget?, replaceMessageId? }`                                                                                                                                                              | Calls the chat spec's `KinChatService.postAgentMessage` with author `{ kind: "agent", agentId }`. `replaceMessageId` updates a widget in place.              |
+| `kin_delegate`   | `{ kind: "build" \| "review" \| "research", title, goal, brief, quoted?: [{ role, name, text }], projectId, baseRef?, model?: "strong" \| "cheap" \| ModelSelection, memoryItemIds?, reviewOf?: workerId }` | Starts a worker (below). Returns `{ workerId, threadLink }`.                                                                                                 |
+| `request_action` | owned by the approvals spec                                                                                                                                                                                 | Creates a `KinPendingAction`. This spec only adds the level check before it.                                                                                 |
+| `memory_search`  | `{ kind?, status?, dueBefore?, dueAfter?, reviewOverdue?, saidBy?, linksTo?, limit }`                                                                                                                       | Structured query over the front matter cache. Free-text search is the lead's own `rg`.                                                                       |
+| `memory_read`    | `{ id }`                                                                                                                                                                                                    | One item, plus its flags (overdue `review_by`, `misleading`). Marks it read for the "unused items fade" rule.                                                |
+| `memory_write`   | `{ op: "create" \| "update" \| "supersede" \| "invalidate", item, sourceEventId, supersedes? }`                                                                                                             | Stages a change through the writer (rules below).                                                                                                            |
+| `kin_defer`      | `{ itemId?, what, due, onDue: "remind" \| "start" \| "ask" \| "chase", chatId, sourceEventId }`                                                                                                             | Writes a deferral item through the writer API; the cache's `KinTriggerService.syncItem` callback arms it (TRIG-7). The lead never gets T3's `schedule_task`. |
+| `kin_journal`    | `{ saw: string[], did: string[], skipped?: string[] }`                                                                                                                                                      | Adds the lead's lines to this wake-up's journal entry.                                                                                                       |
+| `kin_end`        | `{ summary }`                                                                                                                                                                                               | Marks the wake-up done. The runner commits after the run ends.                                                                                               |
+
+Create deferrals only with `kin_defer`. Use `memory_write` update/invalidate on a stored deferral to change only `status` (`done`/`cancelled`) and `invalid_at`. The server preserves `chat`, `source_event`, `what` and `on_due`; attempts to change them are refused. Closing or cancelling disarms the deferral.
 
 ### Workers and WorkerReport
 
@@ -385,28 +391,28 @@ export class Memory extends Context.Service<
 
 Writer rules, enforced in code on `stage`:
 
-- Paths: only `objectives/`, `commitments/`, `deferrals/`, `decisions/`, `people/`, `claims/` and `journal/`. `rules.md` is refused. `INDEX.md` is written only by `rebuildIndex`. `README.md` is never touched.
+- Paths: only `objectives/`, `commitments/`, `deferrals/`, `decisions/`, `people/`, `claims/` and `journal/`. `rules.md` is refused. `INDEX.md` is generated from validated memory heads, never staged by a lead. `README.md` is never touched.
 - No deletes. `invalidate` sets `invalid_at`; `supersede` sets the old item's `superseded_by` and `status: superseded` and creates the new one.
 - Provenance comes from the event, not the model. The writer looks up `sourceEventId` in the current batch and sets `said_by`, `source` and `trust` from the event's `provenance`. Owner → `owner`, member → `member`, webhook or outside text → `external`, worker suggestion → `agent`. The lead may lower trust but never raise it. A member's statement that reads like a rule is stored under `claims/`.
 - `review_by` defaults by kind: person 90 days, commitment and deferral at `due`, decision `null`, claim 30 days; objective at the next milestone date (falling back to `due`, then +30 days from `recorded_at`). Explicit `review_by: null` is preserved.
 - Contradictions: if an open item of the same kind shares a link or id and says something different, and `supersedes` was not passed, `stage` fails with `MemoryConflict { existingId }`. The lead then supersedes (same source, newer) or posts a question to the owner.
-- Secret scan: before commit, the staged diff goes through `MemorySecretScan.check` (triggers spec). A hit refuses the whole commit, keeps the journal line "Commit refused: possible secret in <path>", and tells the owner.
+- Secret scan: before commit, the staged diff goes through `KinSecretScan.scan({ orgId, files })` (triggers spec). A hit refuses the whole commit, discards staged content and emits a typed `MemorySecretBlocked` notification. The runner records the refusal in its next safe journal entry and tells the owner.
 
-Staged changes live in the writer checkout's working tree. `commitWakeup("completed")` writes the journal entry, rebuilds the front matter cache for changed files, runs the scan, commits once with message `kin(<agentId>): wake-up <wakeupId>` plus event ids, and pushes. `commitWakeup("failed")` discards staged item changes (`git checkout -- . && git clean -fd` on item folders) and commits only the journal entry, which records the failure.
+Staged bytes live only in server memory. Discard requires no checkout validation and works after restart. Completed commits contain only validated bytes, a journal appended to the recorded tree, and an optional generated index. Failed wake-ups discard item changes and commit the failure journal. A private index and `hash-object --no-filters`, `read-tree`, `update-index`, `write-tree`, `commit-tree`, and compare-and-swap `update-ref` build commits on the SQLite-recorded parent, never HEAD. Author and committer identity come from server configuration (default Kin Memory Bot <kin-memory@localhost>), never repository configuration.
 
 Branches: at L1 and above the writer commits to the default branch. At L0 it commits to `kin/shadow/<agentId>` (see Levels). Dreaming (triggers spec) commits to `dream/<date>` branches and takes the same per-organization semaphore while it writes, so it never runs during a wake-up.
 
-Push failures retry with backoff. Unpushed commits stay local and the next `prepareWakeup` rebases them on `pull`. A rebase conflict (the owner edited the same file on GitHub) is aborted, restores the writer, and fails the wake-up with `MemorySyncConflict`; the write-side owner notification is LEAD-3 work. A fetch failure logs a warning and the wake-up proceeds pinned to the local writer HEAD. Existing writers are never replaced on validation failure: `MemoryCheckoutInvalid` leaves recovery to a human.
+Pushes and fetches use the configured URL explicitly, never a local remote name or pushurl. A retry of an already recorded wake-up pushes again before returning success. Synchronization uses verified ancestry and plumbing-only fast-forwards. Divergent trees merge disjoint edits and append-only journals in process, then use `commit-tree` with both parents. Content conflicts preserve the local head on a conflict branch, reset to the remote anchor and notify the owner. Missing or ambiguous merge bases preserve and notify, then fail closed without resetting; the organization stays blocked until an operator runs `Memory.recover`, and repeated attempts reuse the conflict branch already holding that head. Failed fetches retain the SQLite anchor. Existing writers with mismatched or missing anchors fail closed as `MemoryCheckoutInvalid`.
 
 Front matter matches the kin-memory README, including snake_case keys. Date-only values mean UTC midnight; date-times require an explicit UTC offset, and invalid dates make an item malformed. `links` values containing `#` must be quoted. `owner` and `said_by` hold handles; `orgId` and `path` belong only to the server-side `MemoryItemHead`.
 
 LEAD-2: the front matter parser must use YAML’s core or JSON schema; YAML 1.1 turns `review_by: 2026-11-13` into a Date.
 
-The production `MemoryConfig` layer derives its server-owned base from `ServerConfig.stateDir`, using `${stateDir}/kin/<orgId>/memory` and `memory-read` (organization ids are path-encoded). Tests may supply an isolated base and relative paths. Paths must not overlap or escape that base. `ensureCheckouts` clones a missing writer and validates an existing one; `prepareWakeup` refuses a writer with an unfinished rebase, merge or cherry-pick, syncs it with `pull --rebase` and force-refreshes the disposable detached read worktree, including generated files. Project bootstrap belongs to the wake-up runner, not Memory.
+The production `MemoryConfig` layer derives its server-owned base from `ServerConfig.stateDir`, using `${stateDir}/kin/<orgId>/memory` and `memory-read` (organization ids are path-encoded). Tests may supply an isolated base and relative paths. Paths must not overlap or escape that base. `ensureCheckouts` bootstraps a missing writer from a fresh fetch of the configured URL and configured default branch (`main` by default). K011 stores `(org_id, branch, head)` in `kin_memory_heads`; no writable file or local remote ref can bootstrap an existing checkout. Before committing or pushing, each local branch tip must match its anchor. Compare-and-swap branch updates and SQLite recording happen together in the writer operation; a crash between them is rolled back to the recorded anchor with a compare-and-swap and an operator notice. Prepare and commit share a per-org lock. Pinned reads and writer operations skip re-bootstrap; writer operations still validate the writer checkout every time, and reads validate when they set a new pin. Read clones are replaced from scratch on prepare: git is never run in an existing lead read clone. Every git invocation uses a private git directory excluding repository config, hooks and grafts; merge plumbing uses verified bytes and a private index, never git merge-tree or a writer work tree, with system/global config disabled and hooks/fsmonitor disabled.
 
-`ensureCheckouts` uses the server user’s git credentials: on the Kin host, the bot or GitHub App identity.
+**Threat model.** Leads currently run full-access as the same OS user (`kin`) as the server. Assume leads can modify everything under `${stateDir}/kin/*/memory*`, including `.git` and file anchors. Code trusts only SQLite and server configuration, checks recorded branch tips, and builds commits from server-validated bytes rather than ambient working-tree/index content. These are not an OS sandbox: a same-user lead can still attack server processes or SQLite itself. Separating leads into an OS user unable to write `${stateDir}/kin` remains Nishchay's operations decision and is required before production use.
 
-The read side pins the server-owned writer repository’s HEAD at wake-up (or first read), never the lead’s read-checkout HEAD or working-tree edits. Snapshots reload only on a new wake-up pin or explicit `rebuildCache`; blob contents and parse failures are cached by SHA. Symlinks are skipped; oversized blobs (over 256 KiB), malformed items and kind/folder mismatches are logged and skipped. Queries return duplicate ids with `duplicate: true` on each copy and mark them in the index; ambiguous `readItem` calls fail with `MemoryDuplicateId`. Queries include invalid items unless `excludeInvalid` is set; `invalid_at` remains on each returned `MemoryItemHead`. Date bounds are inclusive and compare instants; date-only strings mean midnight UTC. Missing or unparsable dates do not match a bounded date query. Overdue review means strictly before the current clock.
+The read side pins the SQLite-anchored default-branch head at wake-up (or first read), never the lead’s read-checkout HEAD or working-tree edits. Snapshots reload only on a new wake-up pin or explicit `rebuildCache`; blob contents and parse failures are cached by SHA. Symlinks are skipped; oversized blobs (over 256 KiB), malformed items and kind/folder mismatches are logged and skipped. Queries return duplicate ids with `duplicate: true` on each copy and mark them in the index; ambiguous `readItem` calls fail with `MemoryDuplicateId`. Queries include invalid items unless `excludeInvalid` is set; `invalid_at` remains on each returned `MemoryItemHead`. Date bounds are inclusive and compare instants; date-only strings mean midnight UTC. Missing or unparsable dates do not match a bounded date query. Overdue review means strictly before the current clock.
 
 `readItem` best-effort records integer-millisecond last-read times in Kin’s `kin_memory_reads` table, keyed by organization and item id so moves preserve history. Failed history writes are logged without failing the read. Never-read items use `recorded_at` as the baseline; index generation and queries do not count as reading an item. At eight weeks unread, items leave only the index, not search or git. Rebuilds use original heads, cap the index at 200 physical lines including the `As of <ISO>` first line, and flag invalid and overdue items. TRIG-12 extends this builder with sections, ordering and freshness defaults; no writer methods or automatic defaults are part of LEAD-2.
 
@@ -468,7 +474,7 @@ T3 runs on the owner's subscriptions, so budget is counted in tokens, not money.
 - Deferred P2/P3 events wait until the next owner-local reset unless limits change.
 - A wake-up spanning midnight bills the owner-local day on which the charge is made.
 - `admitWorker(orgId)` refuses at 0 worker units left. The lead gets an error and tells the owner. LEAD-9 owns charging `worker_units` from worker runs; it must not also count the lead turn's Claude `otherUsage`, which is already lead units.
-- Providers without a per-turn `turnTokenUsage` ledger (currently Pi, Cursor and Grok) fall back to `usedTokens` at weight 1, which is their context size, so cache-heavy turns are over-billed until their adapters emit a turn ledger.
+- Kin targets Claude Code and Codex. Other providers need only a safe fallback: without a per-turn `turnTokenUsage` ledger, use `usedTokens` at weight 1 conservatively; no ledger integration for those providers is required.
 - Deferred events stay queued with `not_before` and show in the morning brief ("3 checks postponed for budget").
 
 `UsageLimitSources` (`apps/server/src/usage/UsageLimitSources.ts`) only reads cliproxy accounts, so plan headroom is not generally known. Kin uses its own counters. See open questions.
@@ -494,7 +500,7 @@ RPC (**new**, through the chat spec's `kinRpcs.ts`): `kin.org.pause` and `kin.or
 
 ### Morning and evening routines: content
 
-Scheduling is the triggers spec's. Each fires a `routine` event, and the lead writes the message. `routines.ts` holds these templates. Each is one message of at most 12 lines, plus widgets, posted to the owner's direct chat (shadow summary at L0).
+Scheduling is the triggers spec's. Each fires a `routine` event, and the lead writes the message. A request carries its original due time, lateness and any folded routine dates; content must acknowledge those dates rather than imply an on-time run. The owner check selects memory-review items in code and posts its native card after budget admission; its taps use owner-authored writer sources, not model authority. `routines.ts` holds these templates. Each is one message of at most 12 lines, plus widgets, posted to the owner's direct chat (shadow summary at L0).
 
 Morning brief, from the dream's prepared brief plus a live recheck:
 
@@ -600,7 +606,7 @@ LEAD-1. **Contracts and tables.** `kinLead.ts` schemas; Kin migrations for all l
 
 LEAD-2. **Memory read side.** `ensureCheckouts`, `prepareWakeup`, front matter parser, cache, `query`, `readItem`, `rebuildIndex` (200-line cap, "As of" line, fading after 8 weeks unread). Files: `apps/server/src/kin/memory/{Memory,MemoryCache,frontMatter}.ts`. Depends on: LEAD-1. Done when: tests create a temporary git repo from invented fixtures matching the kin-memory README; kind/date/review queries, malformed-item isolation, organization isolation, cache invalidation, index cap/As-of and TestClock fading all pass. Never use real organization memory as a fixture. Owner: backend.
 
-LEAD-3. **Memory git writer.** `stage` with every writer rule, `commitWakeup`, push and rebase, shadow branch, the secret scan hook (stub until the triggers spec lands). Files: `MemoryWriter.ts`, `journal.ts`. Depends on: LEAD-2, TRIG-16 (stub allowed). Done when: tests show provenance override, `rules.md` refusal, conflict error, one commit per wake-up, discard on failure. Owner: backend.
+LEAD-3. **Memory git writer.** `stage` with every writer rule, `commitWakeup`, push and rebase, shadow branch, the secret scan hook (TRIG-16 supplies the scanner layer). Files: `MemoryWriter.ts`, `journal.ts`. Depends on: LEAD-2, TRIG-16 (stub allowed). Done when: tests show provenance override, `rules.md` refusal, conflict error, one commit per wake-up, discard on failure. Owner: backend.
 
 LEAD-4. **Event queue and coalescer.** `enqueue`, dedupe, priorities, quiet window, claim, restart requeue, per-org semaphore. Files: `KinEventQueue.ts`. Depends on: LEAD-1. Done when: coalescing and one-writer tests pass with `TestClock`. Owner: backend.
 
@@ -642,3 +648,66 @@ LEAD-14. **End-to-end shadow week dry run.** Script that replays a day of record
 - Which privileged kinds besides merge may an L3 lead request (deploy, release)? This spec allows only low-risk merges.
 - Task ids for dependencies in the chat, approvals and triggers specs are named by subject here. Swap in the real ids once those specs are written.
 - The lead's thread shows in T3's thread list under the "Kin · <org>" project. Hide it, or leave it as the lead's readable log?
+
+### LEAD-3 integration boundaries
+
+`MemoryWriterAuthority.resolve` is runner-only: resolve organization, wake-up, active lead, level, timestamps, timezone and event provenance from same-organization rows inside the runner's transaction. Never expose this context as tool input. Owner-confirmed sources must be verified there; absent a source, provenance is the lead's agent id. `MemoryWriterHooks.notify` consumes checkout, conflict and secret-block notices without chat transport coupling.
+
+`KinSecretScan` is deliberately supplied separately. `secretScan.layer` supplies the TRIG-16 scanner and reads the owner-signed allowlist; there is no no-findings production stub. Any finding or scanner failure blocks the whole commit. TRIG-16 must preserve this fail-closed interface: `scan({ orgId, files: ReadonlyArray<{ path: string; content: Uint8Array }> })` returns `{ path, ruleId, line }[]`, with typed `KinSecretScanError`.
+
+`commitWakeup` builds TRIG-12's sectioned `INDEX.md` from the hash-verified recorded tree plus staged files, read history, the server clock and the owner's time zone, in the same wake-up commit. The read-side rebuild is display-only; no read-checkout text is trusted. K011 adds the SQLite branch anchors required by the writer. The runner serializes prepare/stage/commit and dreaming per organization. Identical commit retries find the existing wake-up commit; failed pushes retain local commits, and failures discard uncommitted files. Journal additions use `appendJournal`, never replacement through `stage`.
+
+### Memory writer operations
+
+**Run leads as a separate OS user before production.** Same-user residual attacks include direct SQLite edits (including `kin_memory_heads`), deleting the writer and losing never-pushed commits, object/pack/ref races between check and use (for example a crafted pack fooling git ancestry commands), `~/.ssh/config` and credential-input tampering, read-clone races, reading other orgs' directories, and attacking the server process. Hash-verifying reads and SQLite anchors are defense in depth, not a same-user sandbox. This writer now walks verified commit parents itself rather than trusting `merge-base`; races at other git check/use boundaries still require OS-user separation.
+
+`prepareWakeup` checks git integrity once. Every application object read independently checks its hash. Three-way merging walks verified commit parents to find a common ancestor, then reads base, local and remote bytes with hash verification. Paths changed on both sides conflict except append-only journals and the regenerated INDEX.md. Journal append conflicts retain remote bytes followed by local entries in order. Original modes, symlinks and gitlinks are preserved; writer changes create only regular files. Other conflicts preserve the unpushed tip under `kin/conflict/<orgId>/<wakeupId>-<unique-suffix>` (or a server-generated recovery id when no wake-up id is supplied), then compare-and-swap the writer and anchor to the remote head and notify via `MemoryRecoveryHooks`. The next wake-up proceeds; the owner can inspect and cherry-pick the conflict branch. Existing conflict branches are never intentionally overwritten.
+
+Operators or owners can call server-only `Memory.recover(orgId)` after losing a writer or to reconcile its anchors. It fetches remote main and shadow heads, preserves surviving unpushed anchored work on a conflict branch, recreates a missing writer, records remote anchors and notifies. This method must never be registered as an agent tool. For writers predating K011 anchors, stop the runner and delete only that organization's writer directory, then bootstrap again. Do not delete anchored writers to recover unpushed work; call `recover` first. Recovery cannot restore commits lost with a deleted writer before they reached any remote.
+
+Each wake-up must start a fresh provider process with cwd set to the newly replaced read clone; LEAD-5 creates a fresh provider session for every wake-up.
+
+**Running on the Kin host.** Git pushes use the server's credentials. Since system/global/repository git config is excluded, supply a server-owned `MemoryConfig.credentialHelper` command for HTTPS or `MemoryConfig.sshCommand` for SSH. These are passed through command config/environment only; repository credential helpers cannot override them. Configure the Kin host's dedicated server user and credentials before enabling writes; never put credentials in memory, repository config, or lead instructions. See also “Running on the Kin host” in `triggers.md`.
+
+The existing CLI has no Kin repository configuration or service layer, so a recovery subcommand would require more than a 1–2 line upstream hook. The operator entry point remains the typed `Memory.recover(orgId)`, never RPC or MCP. Stop the runner first. From `apps/server`, run `node --input-type=module < /absolute/path/to/operator-recover.mjs` with this operator-owned script, substituting explicit database, repository and directory values (no default live-state path):
+
+```js
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { KinOrgId } from "@t3tools/contracts";
+import * as Memory from "./src/kin/memory/Memory.ts";
+import { MemoryConfig } from "./src/kin/memory/MemoryConfig.ts";
+import * as Sqlite from "./src/persistence/Sqlite.ts";
+import * as KinPersistence from "./src/kin/persistence/KinPersistence.ts";
+import * as Vcs from "./src/vcs/VcsProcess.ts";
+const orgId = KinOrgId.make("fixture-org");
+const database = KinPersistence.layer.pipe(
+  Layer.provideMerge(Sqlite.layerFromPath("/absolute/operator-selected/statev2.sqlite")),
+);
+const config = Layer.succeed(MemoryConfig, {
+  baseDirectory: "/absolute/operator-selected/kin",
+  repositories: [{ orgId, path: "fixture-org", repoUrl: "/absolute/fixture.git" }],
+});
+await Effect.runPromise(
+  Effect.scoped(
+    Effect.flatMap(Memory.Memory, (memory) => memory.recover(orgId)).pipe(
+      Effect.provide(
+        Memory.layer.pipe(
+          Layer.provide(config),
+          Layer.provide(
+            Layer.succeed(Memory.MemoryRecoveryHooks, {
+              notify: (notice) => Effect.logWarning("Memory recovery", notice),
+            }),
+          ),
+        ),
+      ),
+      Effect.provide(database),
+      Effect.provide(Vcs.layer),
+      Effect.provide(NodeServices.layer),
+    ),
+  ),
+);
+```
+
+Recovery takes target names and SHAs only from the configured URL's `ls-remote` advertisement, fetches exact SHAs and hash-verifies their contents. Local shadow-ref enumeration is deletion-only; local `rev-parse` reads are used solely as compare-and-swap expectations, never as anchors or remote targets. Bootstrap also fetches an advertised exact SHA. There is no writer `symbolic-ref` lookup. Recovery removes local shadow branches not in its target set. A replaced non-descendant tip is reset to its SQLite anchor with a notice: any unpushed work at that tampered tip is already lost.

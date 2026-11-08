@@ -15,7 +15,15 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
-import { KinAgentId, KinChatId, KinMessageId, KinOrgId, KinPersonId } from "./kinChat.ts";
+import {
+  KinAgentId,
+  KinChatId,
+  KinMessageId,
+  KinOrgId,
+  KinPersonId,
+  KinText,
+  KinTrimmedText,
+} from "./kinChat.ts";
 import { CanonicalUtcTimestamp, KinLevel } from "./kinLead.ts";
 import { PullRequestMergeMethod } from "./pullRequest.ts";
 
@@ -111,7 +119,7 @@ const KIN_ACTION_TARGET_TAG = {
 } as const satisfies Partial<Record<KinActionKind, KinActionTarget["_tag"]>>;
 
 export const KinCheckRun = Schema.Struct({
-  name: TrimmedNonEmptyString,
+  name: KinTrimmedText,
   required: Schema.Boolean,
   status: Schema.Literals(["passed", "failed", "pending", "skipped"]),
 });
@@ -123,7 +131,7 @@ export const KinResolvedTarget = Schema.Union([
     headSha: Sha40,
     base: BranchName,
     head: BranchName,
-    title: Schema.String,
+    title: KinText,
     additions: NonNegativeInt,
     deletions: NonNegativeInt,
     files: NonNegativeInt,
@@ -183,12 +191,12 @@ export const KinPendingAction = Schema.Struct({
   targetDigest: Hex64,
   nonce: Base64UrlString,
   revision: NonNegativeInt,
-  reason: Schema.String.check(Schema.isMaxLength(500)),
+  reason: KinText.check(Schema.isMaxLength(500)),
   requestedBy: Schema.Struct({ agentId: KinAgentId, threadId: ThreadId }),
   provenance: KinProvenance,
   requiredApprovers: Schema.Array(KinApproverRequirement),
   state: KinPendingActionState,
-  stateReason: Schema.optional(Schema.String),
+  stateReason: Schema.optional(KinText),
   createdAt: CanonicalUtcTimestamp,
   updatedAt: CanonicalUtcTimestamp,
   expiresAt: CanonicalUtcTimestamp,
@@ -220,7 +228,7 @@ export const KinApproverKey = Schema.Struct({
   thumbprint: KinKeyThumbprint,
   publicJwk: KinApproverPublicJwk,
   humanId: KinPersonId,
-  deviceLabel: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
+  deviceLabel: KinTrimmedText.check(Schema.isMaxLength(80)),
   platform: KinApproverKeyPlatform,
   hardware: KinApproverKeyHardware,
   attested: Schema.Boolean,
@@ -358,12 +366,12 @@ export const KinAuditEntry = Schema.Struct({
   kind: Schema.optional(KinActionKind),
   target: Schema.optional(KinActionTarget),
   headSha: Schema.optional(Sha40),
-  grantJti: Schema.optional(Schema.String),
+  grantJti: Schema.optional(KinText),
   keyThumbprint: Schema.optional(KinKeyThumbprint),
-  deviceLabel: Schema.optional(Schema.String),
+  deviceLabel: Schema.optional(KinText),
   sessionId: Schema.optional(AuthSessionId),
   provenance: Schema.optional(KinProvenance),
-  result: Schema.optional(Schema.String),
+  result: Schema.optional(KinText),
   prevHash: Hex64,
   hash: Hex64,
 });
@@ -381,9 +389,9 @@ export const KinApprovalView = Schema.Union([
     kind: KinActionKind,
     repo: Schema.NullOr(RepoSlug),
     number: Schema.NullOr(PositiveInt),
-    title: Schema.NullOr(Schema.String),
+    title: Schema.NullOr(KinText),
     state: KinPendingActionState,
-    waitingOn: Schema.String,
+    waitingOn: KinText,
     canApprove: Schema.Literal(false),
   }),
 ]);
@@ -435,7 +443,7 @@ export const KinApprovalsRegisterKeyInput = Schema.Struct({
   attestation: Schema.optional(
     Schema.Struct({ certificateChain: Schema.Array(Schema.String).check(Schema.isMaxLength(10)) }),
   ),
-  deviceLabel: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
+  deviceLabel: KinTrimmedText.check(Schema.isMaxLength(80)),
 });
 export type KinApprovalsRegisterKeyInput = typeof KinApprovalsRegisterKeyInput.Type;
 export const KinApprovalsRegisterKeyResult = Schema.Struct({

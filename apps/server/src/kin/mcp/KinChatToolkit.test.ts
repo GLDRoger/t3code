@@ -388,7 +388,15 @@ it.effect("admits only active provider agents at /kin/mcp", () =>
       const http = yield* HttpRouter.toHttpEffect(
         KinMcp.endpoint(McpHttpServer.toolkitRegistration(KinChatToolkit, handlers)).pipe(
           Layer.provide(Layer.succeed(Kin.KinServer, kin)),
-          Layer.provide(authRegistry),
+          Layer.provide(
+            Layer.effect(
+              KinMcp.KinAgentSessions,
+              Effect.gen(function* () {
+                const registry = yield* McpSessions.McpSessionRegistry;
+                return { resolveAgent: registry.resolve };
+              }),
+            ).pipe(Layer.provideMerge(authRegistry)),
+          ),
           Layer.provide(ServerSettings.layerTest()),
         ),
       );
@@ -437,9 +445,12 @@ it.effect("invalidates credentials when registration changes their endpoint", ()
     assert.isUndefined(yield* resolve(ordinary));
     const agent = yield* registry.issue(thread);
     assert.strictEqual(agent.config.endpoint, "http://127.0.0.1:43123/kin/mcp");
-    assert.isDefined(yield* resolve(agent));
+    assert.isUndefined(yield* resolve(agent));
+    const agents = yield* KinMcp.KinAgentSessions;
+    assert.isDefined(yield* agents.resolveAgent(agent.config.authorizationHeader.slice(7)));
     yield* identity.endAgentThread({ orgId: person.orgId, threadId });
     assert.isUndefined(yield* resolve(agent));
+    assert.isUndefined(yield* agents.resolveAgent(agent.config.authorizationHeader.slice(7)));
     const ended = yield* registry.issue(thread);
     assert.strictEqual(ended.config.endpoint, ordinary.config.endpoint);
     assert.isDefined(yield* resolve(ended));
