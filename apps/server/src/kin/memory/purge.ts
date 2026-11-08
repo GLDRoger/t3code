@@ -631,6 +631,23 @@ const make = Effect.gen(function* () {
       repo.repoUrl,
       `${work}/.git`,
     ]).pipe(failed(orgId, "clone", "Bare clone failed"));
+    // filter-repo rewrites commits only, and `historyFiles` walks commits only.
+    const nonCommitTags = (yield* git(work, [
+      "for-each-ref",
+      "--format=%(refname) %(objecttype) %(*objecttype)",
+      "refs/tags/",
+    ]).pipe(failed(orgId, "clone", "Could not list tags")))
+      .split("\n")
+      .flatMap((line) => {
+        const [ref, type, peeled] = line.split(" ");
+        return ref && type !== "commit" && !(type === "tag" && peeled === "commit") ? [ref] : [];
+      });
+    if (nonCommitTags.length > 0)
+      return yield* fail(
+        orgId,
+        "clone",
+        `Remote has tags that don't point at a commit; remove them first: ${nonCommitTags.slice(0, 10).join(", ")}`,
+      );
     const before = yield* branchRefs(work).pipe(failed(orgId, "clone", "Could not list refs"));
     const head = before.get(`refs/heads/${config.defaultBranch ?? "main"}`);
     if (!head) return yield* fail(orgId, "clone", "Remote default branch is missing");
@@ -804,6 +821,19 @@ const make = Effect.gen(function* () {
           }),
       ),
     );
+    // The lease covers only refs this purge saw, so one created since can still hold the old history.
+    const clean = yield* mirror(orgId, repo).pipe(
+      Effect.flatMap((fresh) => planInHistory(plan, blobs, fresh.work)),
+      Effect.map((remaining) => !remaining),
+      Effect.orElseSucceed(() => false),
+    );
+    if (!clean)
+      return yield* new KinPurgeFailed({
+        orgId,
+        stage: "push",
+        reason: "The remote may still hold purged history after the push; reconcile it",
+        queueHeld: true,
+      });
     yield* history
       .reclone()
       .pipe(failed(orgId, "rebuild", "Could not rebuild local memory checkouts"));

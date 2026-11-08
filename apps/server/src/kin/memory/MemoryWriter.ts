@@ -925,6 +925,18 @@ const make = Effect.gen(function* () {
             const { writer } = yield* validate(orgId);
             yield* refuseDuringPurge(orgId);
             const repo = yield* repoFor(orgId);
+            // A purge's reclone drops the old history, so a dream started before it has no base here.
+            if (
+              !/^[a-f0-9]{40}([a-f0-9]{24})?$/.test(input.base) ||
+              (yield* git(orgId, writer, ["cat-file", "-e", `${input.base}^{commit}`]).pipe(
+                Effect.result,
+              ))._tag === "Failure"
+            )
+              return yield* new MemorySyncConflict({
+                orgId,
+                operation: "push",
+                reason: "The dream's base is no longer in memory history",
+              });
             const baseFiles = yield* filesAt(orgId, writer, input.base);
             const regular = yield* regularPaths(orgId, writer, input.base);
             const combined = new Map(

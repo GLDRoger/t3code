@@ -314,6 +314,17 @@ describe.skipIf(filterRepoMissing)("purge with git-filter-repo", () => {
         expect(
           yield* writer.commitWakeup(orgId, "wake1", "completed").pipe(Effect.result),
         ).toMatchObject({ failure: { _tag: "MemorySyncConflict" } });
+        // A dream that read its base before the purge.
+        expect(
+          yield* writer
+            .commitDream(orgId, {
+              branch: "dream/2026-11-08",
+              base: oldMain,
+              files: new Map(),
+              message: "dream",
+            })
+            .pipe(Effect.result),
+        ).toMatchObject({ failure: { _tag: "MemorySyncConflict" } });
         expect(yield* git(remote, ["rev-parse", "refs/heads/main"])).toBe(newMain);
         expect(yield* reconcile(plan)).toBe("done");
         expect(yield* git(remote, ["rev-parse", "refs/pull/1/head"])).toBe(pullHead);
@@ -392,6 +403,8 @@ describe.skipIf(filterRepoMissing)("purge with git-filter-repo", () => {
     ["no pause", { _tag: "KinPurgePauseUnavailable" }],
     // `clone --bare` leaves notes and custom refs behind, and they would keep the old history.
     ["notes ref", { _tag: "KinPurgeFailed", stage: "clone", queueHeld: false }],
+    // filter-repo leaves a tag on a blob or tree alone, and history checks walk commits only.
+    ["blob tag", { _tag: "KinPurgeFailed", stage: "clone", queueHeld: false }],
   ] as const)(
     "a purge that stops before the push resumes the queue and changes nothing: %s",
     ([scenario, expected]) =>
@@ -415,6 +428,12 @@ describe.skipIf(filterRepoMissing)("purge with git-filter-repo", () => {
               : dropPlan(remoteUrl, scenario === "path typo" ? ["claims/leek.md"] : undefined);
           if (scenario === "notes ref")
             yield* git(remote, ["update-ref", "refs/notes/commits", "refs/heads/side"]);
+          if (scenario === "blob tag")
+            yield* git(remote, [
+              "update-ref",
+              "refs/tags/blobtag",
+              "refs/heads/side:claims/leak.md",
+            ]);
           const exit = yield* runPurge(plan);
 
           expect(Exit.isFailure(exit)).toBe(true);
@@ -429,9 +448,13 @@ describe.skipIf(filterRepoMissing)("purge with git-filter-repo", () => {
             expect(failureOf(exit)).toMatchObject({
               value: { reason: expect.stringMatching(/not in history/) },
             });
-          if (scenario === "notes ref") {
+          if (scenario === "notes ref" || scenario === "blob tag") {
             expect(failureOf(exit)).toMatchObject({
-              value: { reason: expect.stringContaining("refs/notes/commits") },
+              value: {
+                reason: expect.stringContaining(
+                  scenario === "notes ref" ? "refs/notes/commits" : "refs/tags/blobtag",
+                ),
+              },
             });
             expect(yield* reconcile(plan)).toBe("unknown");
           }
@@ -559,9 +582,14 @@ describe.skipIf(filterRepoMissing)("purge with git-filter-repo", () => {
       }).pipe(Effect.provide(services), Effect.scoped),
   );
 
+  const lateRef = "The remote may still hold purged history after the push; reconcile it";
   it.live.each([
-    ["refused", "remote_rejected", "not_done"],
-    ["lease rejected", "lease_rejected", "unknown"],
+    ["refused", "Force-push failed: remote_rejected", "not_done"],
+    ["lease rejected", "Force-push failed: lease_rejected", "unknown"],
+    // Created after the mirror clone, so the push's lease never covers them.
+    ["late branch", lateRef, "unknown"],
+    ["late tag", lateRef, "unknown"],
+    ["late notes ref", lateRef, "unknown"],
   ] as const)(
     "a push that does not land holds the queue until reconcile: %s",
     ([scenario, reason, verdict]) =>
@@ -584,13 +612,26 @@ describe.skipIf(filterRepoMissing)("purge with git-filter-repo", () => {
             push: (input) =>
               scenario === "refused"
                 ? Effect.fail(new PurgePush.KinPurgePushError({ reason: "remote_rejected" }))
-                : Effect.gen(function* () {
-                    // The remote moves after the purge's mirror clone.
-                    yield* fs.writeFileString(`${source}/claims/other.md`, "Invented later note\n");
-                    yield* git(source, ["add", "--", "."]);
-                    yield* commit("later");
-                    yield* git(source, ["push", "-q", remote, "main"]);
-                  }).pipe(Effect.orDie, Effect.andThen(real.push(input))),
+                : scenario !== "lease rejected"
+                  ? git(remote, [
+                      "update-ref",
+                      {
+                        "late branch": "refs/heads/sneaky",
+                        "late tag": "refs/tags/sneaky",
+                        "late notes ref": "refs/notes/commits",
+                      }[scenario],
+                      "refs/heads/side",
+                    ]).pipe(Effect.orDie, Effect.andThen(real.push(input)))
+                  : Effect.gen(function* () {
+                      // The remote moves after the purge's mirror clone.
+                      yield* fs.writeFileString(
+                        `${source}/claims/other.md`,
+                        "Invented later note\n",
+                      );
+                      yield* git(source, ["add", "--", "."]);
+                      yield* commit("later");
+                      yield* git(source, ["push", "-q", remote, "main"]);
+                    }).pipe(Effect.orDie, Effect.andThen(real.push(input))),
           }),
         });
         yield* Effect.gen(function* () {
@@ -603,7 +644,7 @@ describe.skipIf(filterRepoMissing)("purge with git-filter-repo", () => {
               _tag: "KinPurgeFailed",
               stage: "push",
               queueHeld: true,
-              reason: `Force-push failed: ${reason}`,
+              reason,
             },
           });
           expect(events).toEqual(["pause"]);

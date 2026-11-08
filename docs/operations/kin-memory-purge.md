@@ -4,11 +4,13 @@
 
 ## Refs a purge can't rewrite
 
-A purge rewrites only `refs/heads/*` and `refs/tags/*`. GitHub's read-only `refs/pull/*` are left alone. If the remote advertises any other ref, such as `refs/notes/commits` or a custom `refs/custom/*`, the purge fails at the clone stage, changes nothing and resumes the queue, and `reconcile` answers `unknown`. Those refs can still hold the purged content, so list them with `git ls-remote <memory repo>`, delete them on the remote (`git push <memory repo> --delete <ref>`), and run the purge again.
+A purge rewrites only `refs/heads/*` and `refs/tags/*`. GitHub's read-only `refs/pull/*` are left alone. If the remote advertises any other ref, such as `refs/notes/commits` or a custom `refs/custom/*`, the purge fails at the clone stage, changes nothing and resumes the queue, and `reconcile` answers `unknown`. Those refs can still hold the purged content, so list them with `git ls-remote <memory repo>`, delete them on the remote (`git push <memory repo> --delete <ref>`), and run the purge again. A tag that points at a blob or tree fails the same way. A ref created on the remote while a purge runs fails it at the push stage with the queue held, and `reconcile` answers `unknown` until you delete that ref.
 
 ## A stuck purge marker
 
 A purge writes `<state>/kin/<org path>/purge-in-flight` before it force-pushes, and leaves it there when the push fails, crashes or is interrupted. While it exists, the org's lead queue stays paused, memory won't clone a checkout, and nothing pushes memory history. `reconcile` on the action clears it: it reads the plan from the marker, so it works even after the plan file is gone. Retry `reconcile` first; it answers `unknown` while the remote is unreachable, has moved, or advertises refs a purge can't rewrite.
+
+The marker and the `purge-plans/*.tombstones.json` files live beside the lead's read workspace, and `reconcile` trusts them, so a lead with full filesystem access could tamper with them.
 
 Delete the marker by hand only when `reconcile` keeps answering `unknown` and you have checked the remote yourself. First stop the T3 server, or confirm that no purge or `reconcile` for the org is running: both hold the memory writer lock and write these paths. Deleting the marker tells Kin that no local copy of the old history will be pushed again, so first delete everything under `<org path>` that can hold it:
 
