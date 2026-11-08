@@ -41,6 +41,10 @@ export type KinContentPath = typeof KinContentPath.Type;
 /** RFC 7638 SHA-256 thumbprint of a P-256 JWK, base64url without padding. */
 export const KinKeyThumbprint = pattern(/^[A-Za-z0-9_-]{43}$/, "a base64url JWK thumbprint");
 export type KinKeyThumbprint = typeof KinKeyThumbprint.Type;
+// Ids the phone shows in a prompt take only the device's id characters (§5).
+const shownId = Schema.makeFilter((value: string) => /^[A-Za-z0-9._-]+$/.test(value), {
+  expected: "an id of letters, digits and . _ -",
+});
 const Base64UrlString = pattern(/^[A-Za-z0-9_-]+$/, "unpadded base64url");
 
 export const KinActionId = TrimmedNonEmptyString.pipe(Schema.brand("KinActionId"));
@@ -83,11 +87,16 @@ export const KinActionTarget = Schema.Union([
   }),
   Schema.TaggedStruct("content", { path: KinContentPath, sha256: Hex64 }),
   Schema.TaggedStruct("level", {
-    agentId: KinAgentId,
-    chatId: Schema.optional(KinChatId),
+    agentId: KinAgentId.check(shownId),
+    chatId: Schema.optional(KinChatId.check(shownId)),
     level: KinLevel,
   }),
-  Schema.TaggedStruct("device_key", { thumbprint: KinKeyThumbprint }),
+  // Only an attested hardware key can be activated, so a grant never targets any other (§4).
+  Schema.TaggedStruct("device_key", {
+    thumbprint: KinKeyThumbprint,
+    hardware: Schema.Literals(["secure_enclave", "strongbox", "tee"]),
+    attested: Schema.Literal(true),
+  }),
 ]);
 export type KinActionTarget = typeof KinActionTarget.Type;
 

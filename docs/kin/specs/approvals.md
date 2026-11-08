@@ -94,7 +94,11 @@ export const KinActionTarget = Schema.Union([
     chatId: Schema.optional(KinChatId),
     level: KinLevel,
   }),
-  Schema.TaggedStruct("device_key", { thumbprint: Schema.String }),
+  Schema.TaggedStruct("device_key", {
+    thumbprint: Schema.String,
+    hardware: Schema.Literals(["secure_enclave", "strongbox", "tee"]), // the server's record
+    attested: Schema.Literal(true), // only an attested key can be proposed
+  }),
 ]);
 ```
 
@@ -154,7 +158,7 @@ Transitions (every one is a compare-and-set `UPDATE … WHERE id = ? AND state =
 Storage (new, SQLite, Kin's own migration track in `apps/server/src/kin/persistence/` (`KinMigrations.ts`, one `migrations/K00N_*.ts` file per change) with its own `Migrator` table `kin_sql_migrations`; owned with the chat spec so all Kin tables share one runner):
 
 - `kin_pending_actions` — columns as above; `UNIQUE(org_id, idempotency_key)`; index `(org_id, state)`.
-- `kin_grants` — `id`, `org_id`, `action_id`, `revision`, `jti` **UNIQUE**, `approver_human_id`, `key_thumbprint`, `compact` (the signed token), `iat`, `exp`, `accepted_at`, `consumed_at`; `UNIQUE(action_id, approver_human_id)`.
+- `kin_grants` — `id`, `org_id`, `action_id`, `revision`, `jti` **UNIQUE**, `approver_human_id`, `key_thumbprint`, `compact` (the signed token), `iat_s`, `exp_s` (the token's seconds), `accepted_at`, `consumed_at`; `UNIQUE(action_id, approver_human_id)`.
 - `kin_executions` — `action_id` **PRIMARY KEY**, `grant_id`, `started_at`, `finished_at`, `outcome`, `github_request_id`, `merge_commit_sha`, `error`. Inserting this row is the claim; a second insert fails.
 - `kin_approver_keys` — section 4.
 - `kin_audit` — section 9.
@@ -253,7 +257,7 @@ export const KinGrantPayload = Schema.Struct({
 7. `kind`, `target`, `targetDigest`, `headSha`, `base`, `mergeMethod` equal the server's record → `target_mismatch`.
 8. `|now − iat| ≤ 300` and `exp − iat ≤ 900` → `time_window`.
 9. Re-read the PR from GitHub with the bot token; head and base still match → `head_moved` (rotate nonce, refresh card).
-10. In one transaction: insert `kin_grants` (`jti` UNIQUE, `(action_id, approver)` UNIQUE) and CAS the action to `approved` → `replayed` on conflict.
+10. In one transaction: insert `kin_grants` (`jti` UNIQUE, `(action_id, approver)` UNIQUE) and CAS the action to `approved` while both the action and the grant are unexpired → `replayed` when that org already holds the `jti` or this approver's grant for the action, `stale` otherwise.
 
 The grant's life ends at `min(exp, acceptedAt + 15 min)`. It is consumed when the executor claims the action, and can't be used for anything else: the binding is to `actionId`, `nonce` and `targetDigest`, all server-chosen.
 
