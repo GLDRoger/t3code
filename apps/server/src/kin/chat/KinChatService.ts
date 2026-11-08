@@ -278,7 +278,9 @@ const make = Effect.gen(function* () {
   ) {
     if (yield* repo.resolveWaiting({ ...item, resolution, resolvedAt: yield* now })) {
       const updated = yield* requireRecord(repo.getWaiting(item));
-      yield* hub.publish({ type: "waiting.updated", orgId: item.orgId, item: updated });
+      yield* sql.afterCommit(
+        hub.publish({ type: "waiting.updated", orgId: item.orgId, item: updated }),
+      );
       return updated;
     }
     return item;
@@ -465,7 +467,7 @@ const make = Effect.gen(function* () {
         createdAt: yield* now,
         editedAt: null,
       });
-      yield* hub.publish({ type: "message.posted", orgId: input.orgId, message });
+      yield* sql.afterCommit(hub.publish({ type: "message.posted", orgId: input.orgId, message }));
       let waiting: KinWaitingItem | null = null;
       if (input.waitingFor !== undefined) {
         waiting = {
@@ -481,7 +483,9 @@ const make = Effect.gen(function* () {
           resolution: null,
         };
         yield* repo.addWaiting(waiting);
-        yield* hub.publish({ type: "waiting.updated", orgId: input.orgId, item: waiting });
+        yield* sql.afterCommit(
+          hub.publish({ type: "waiting.updated", orgId: input.orgId, item: waiting }),
+        );
       }
       return { message, waiting };
     }, transaction),

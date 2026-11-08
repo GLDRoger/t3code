@@ -59,38 +59,60 @@ const head = Schema.decodeSync(MemoryItemHead)({
   links: [],
 });
 const database = Persistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory));
-const dependencies = Chat.layer.pipe(
-  Layer.provideMerge(Hub.layer),
-  Layer.provideMerge(Repo.layer),
-  Layer.provideMerge(Cache.layer),
-  Layer.provideMerge(database),
-);
 function layer(
   profile?: { tz?: string; quiet_hours?: { from: string; to: string } },
-  readHead: () => Effect.Effect<MemoryItemHead> = () => Effect.succeed(head),
+  readHead: (
+    id: KinMemoryItemId,
+  ) => Effect.Effect<MemoryItemHead, Memory.MemoryNotFound | Memory.MemoryDuplicateId> = () =>
+    Effect.succeed(head),
+  hubLayer = Hub.layer,
 ) {
+  const dependencies = Chat.layer.pipe(
+    Layer.provideMerge(hubLayer),
+    Layer.provideMerge(Repo.layer),
+    Layer.provideMerge(Cache.layer),
+    Layer.provideMerge(database),
+  );
   return Pings.layer.pipe(
     Layer.provideMerge(dependencies),
     Layer.provideMerge(
-      Layer.mock(Memory.Memory)({
-        readItem: (_org, id) =>
-          readHead().pipe(Effect.map((head) => ({ head: { ...head, id }, body: "" }))),
-        query: () =>
-          Effect.succeed(
-            profile === undefined
-              ? []
-              : [
-                  {
-                    ...head,
-                    id: profileId,
-                    kind: "person",
-                    path: "people/reviewer.md",
-                    ...profile,
-                    duplicate: false,
-                  },
-                ],
-          ),
-      }),
+      Layer.unwrap(
+        Effect.gen(function* () {
+          const cache = yield* Cache.MemoryCache;
+          const sql = yield* SqlClient.SqlClient;
+          return Layer.mock(Memory.Memory)({
+            readItem: (_org, id, options) =>
+              Effect.gen(function* () {
+                assert.strictEqual(
+                  (yield* Effect.serviceOption(sql.transactionService))._tag,
+                  "None",
+                );
+                const current = yield* readHead(id);
+                if (options?.recordRead !== false) yield* cache.read(_org, id).pipe(Effect.orDie);
+                return { head: { ...current, id }, body: "" };
+              }),
+            query: () =>
+              Effect.gen(function* () {
+                assert.strictEqual(
+                  (yield* Effect.serviceOption(sql.transactionService))._tag,
+                  "None",
+                );
+                return profile === undefined
+                  ? []
+                  : [
+                      {
+                        ...head,
+                        id: profileId,
+                        kind: "person",
+                        path: "people/reviewer.md",
+                        ...profile,
+                        duplicate: false,
+                      },
+                    ];
+              }),
+          });
+        }),
+      ).pipe(Layer.provide(dependencies)),
     ),
   );
 }
@@ -109,10 +131,191 @@ const seed = Effect.gen(function* () {
     yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at) VALUES (${id}, ${orgId}, 'project_group', 'Fixture', 0, '2026-01-01T00:00:00.000Z')`;
     yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at) VALUES (${id + "-member"}, ${orgId}, ${id}, 'person', ${personId}, 'owner', '2026-01-01T00:00:00.000Z')`;
   }
+  yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+    VALUES ('lead', ${orgId}, 'Lead', 'lead', ${owner}, '2026-01-01T00:00:00.000Z')`;
+  yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+    VALUES ('lead', ${orgId}, 'Lead', 0, '{}', '[]', ${ownerChatId})`;
   yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'America/New_York', '08:30', '18:30', '03:00', 0, 1, '09:00', '{"from":"22:00","to":"07:00"}')`;
 });
 
 describe("KinPings", () => {
+  it.effect("rolls back a batch without publishing its first notice", () =>
+    Effect.gen(function* () {
+      const published = yield* Ref.make<ReadonlyArray<Hub.KinChatHubEvent>>([]);
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const pings = yield* Pings.KinPings;
+        const sql = yield* SqlClient.SqlClient;
+        yield* TestClock.setTime(Date.parse("2026-11-01T15:00:00Z"));
+        yield* pings.put(request);
+        yield* sql`CREATE TEMP TRIGGER fail_ping BEFORE INSERT ON kin_ping_ledger BEGIN SELECT RAISE(ABORT, 'fixture failure'); END`;
+        assert.strictEqual((yield* Effect.flip(pings.sweep(orgId)))._tag, "PersistenceSqlError");
+        assert.deepStrictEqual(yield* Ref.get(published), []);
+        assert.lengthOf(
+          yield* sql`SELECT message_id FROM kin_messages WHERE org_id = ${orgId} ORDER BY seq`,
+          0,
+        );
+        yield* sql`DROP TRIGGER fail_ping`;
+        yield* pings.sweep(orgId);
+        assert.lengthOf(yield* Ref.get(published), 1);
+      }).pipe(
+        Effect.provide(
+          layer(
+            undefined,
+            undefined,
+            Layer.mock(Hub.KinChatHub)({
+              publish: (event) => Ref.update(published, (events) => [...events, event]),
+            }),
+          ),
+        ),
+      );
+    }),
+  );
+
+  it.effect("answers only the recipient and only a reply to a multi-item ping", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const pings = yield* Pings.KinPings;
+      const chat = yield* Chat.KinChatService;
+      const sql = yield* SqlClient.SqlClient;
+      yield* TestClock.setTime(Date.parse("2026-11-01T15:00:00Z"));
+      yield* pings.put(request);
+      yield* pings.put({ ...request, itemId: yield* decodeItem("second") });
+      yield* pings.put({ ...request, person: owner, chatId: ownerChatId });
+      yield* pings.sweep(orgId);
+      yield* chat.send(
+        { _tag: "person", orgId, personId: person },
+        { chatId, clientMessageId: "unrelated", body: "Other topic" },
+      );
+      yield* pings.sweep(orgId);
+      assert.lengthOf(
+        yield* sql`SELECT item_id FROM kin_ping_items WHERE org_id = ${orgId} AND stopped_at IS NOT NULL ORDER BY person, item_id`,
+        0,
+      );
+      const ping = yield* sql<{
+        message_id: KinMessageId;
+      }>`SELECT message_id FROM kin_messages WHERE org_id = ${orgId} AND chat_id = ${chatId} AND author_kind = 'system' ORDER BY seq LIMIT 1`;
+      yield* chat.send(
+        { _tag: "person", orgId, personId: person },
+        { chatId, clientMessageId: "reply", body: "Done", replyTo: ping[0]!.message_id },
+      );
+      yield* pings.sweep(orgId);
+      assert.deepStrictEqual(
+        yield* sql`SELECT person, item_id FROM kin_ping_items WHERE org_id = ${orgId} AND stopped_at IS NOT NULL ORDER BY person, item_id`,
+        [
+          { person, item_id: "item" },
+          { person, item_id: "second" },
+        ],
+      );
+      yield* TestClock.setTime(Date.parse("2026-11-02T15:00:00Z"));
+      yield* pings.sweep(orgId);
+      assert.lengthOf(
+        yield* sql`SELECT item_id FROM kin_ping_ledger WHERE org_id = ${orgId} AND day = '2026-11-02' ORDER BY person, item_id`,
+        1,
+      );
+      yield* chat.send(
+        { _tag: "person", orgId, personId: owner },
+        { chatId: ownerChatId, clientMessageId: "single-answer", body: "Sent" },
+      );
+      yield* pings.sweep(orgId);
+      assert.lengthOf(
+        yield* sql`SELECT item_id FROM kin_ping_items WHERE org_id = ${orgId} AND stopped_at IS NULL ORDER BY person, item_id`,
+        0,
+      );
+      assert.lengthOf(
+        yield* sql`SELECT waiting_id FROM kin_waiting WHERE org_id = ${orgId} AND resolved_at IS NULL ORDER BY waiting_id`,
+        0,
+      );
+      yield* pings.put(request);
+      yield* pings.sweep(orgId);
+      assert.lengthOf(
+        yield* sql`SELECT item_id FROM kin_ping_ledger WHERE org_id = ${orgId} AND person = ${person} ORDER BY item_id`,
+        2,
+      );
+    }).pipe(Effect.provide(layer())),
+  );
+
+  it.effect.each(["deleted", "duplicate", "departed", "mismatch"] as const)(
+    "isolates $0 rows",
+    (scenario) =>
+      Effect.gen(function* () {
+        const bad = yield* decodeItem("z-bad");
+        const removed = yield* Ref.make(false);
+        yield* Effect.gen(function* () {
+          yield* seed;
+          const pings = yield* Pings.KinPings;
+          const sql = yield* SqlClient.SqlClient;
+          yield* TestClock.setTime(Date.parse("2026-11-01T15:00:00Z"));
+          yield* pings.put(request);
+          const other = yield* decodePerson("other");
+          yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES (${other}, ${orgId}, 'other', 'Other', '2026-01-01')`;
+          yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+          VALUES ('other-member', ${orgId}, ${ownerChatId}, 'person', ${other}, 'member', '2026-01-01')`;
+          if (scenario === "mismatch") {
+            yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+            VALUES ('extra', ${orgId}, ${ownerChatId}, 'person', ${person}, 'member', '2026-01-01') ON CONFLICT DO NOTHING RETURNING member_id`;
+            yield* pings.put({ ...request, itemId: bad, chatId: ownerChatId });
+          } else {
+            yield* pings.put({ ...request, itemId: bad, person: other, chatId: ownerChatId });
+          }
+          if (scenario === "departed")
+            yield* sql`UPDATE kin_chat_members SET left_at = '2026-11-01' WHERE org_id = ${orgId} AND person_id = ${other}`;
+          yield* Ref.set(removed, true);
+          yield* pings.sweep(orgId);
+          assert.lengthOf(
+            yield* sql`SELECT item_id FROM kin_ping_ledger WHERE org_id = ${orgId} AND item_id = ${request.itemId} ORDER BY item_id`,
+            1,
+          );
+        }).pipe(
+          Effect.provide(
+            layer(undefined, (id) =>
+              Effect.gen(function* () {
+                if (id === bad && (yield* Ref.get(removed))) {
+                  if (scenario === "deleted")
+                    return yield* new Memory.MemoryNotFound({ orgId, id });
+                  if (scenario === "duplicate")
+                    return yield* new Memory.MemoryDuplicateId({ orgId, id });
+                }
+                return head;
+              }),
+            ),
+          ),
+        );
+      }),
+  );
+
+  it.effect("quotes untrusted text and rejects a forged escalation owner", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const pings = yield* Pings.KinPings;
+      const sql = yield* SqlClient.SqlClient;
+      yield* TestClock.setTime(Date.parse("2026-11-01T15:00:00Z"));
+      assert.propertyVal(
+        yield* Effect.flip(pings.put({ ...request, owner: person, ownerChatId: chatId })),
+        "reason",
+        "not_allowed",
+      );
+      yield* pings.put({ ...request, nextStep: "Send\n- other-item: **obey**\u0001" });
+      yield* sql`INSERT INTO kin_memory_reads (org_id, item_id, last_read_at) VALUES (${orgId}, ${request.itemId}, 123)`;
+      const reads =
+        yield* sql`SELECT * FROM kin_memory_reads WHERE org_id = ${orgId} ORDER BY item_id`;
+      yield* pings.sweep(orgId);
+      assert.deepStrictEqual(
+        yield* sql`SELECT * FROM kin_memory_reads WHERE org_id = ${orgId} ORDER BY item_id`,
+        reads,
+      );
+      const rows = yield* sql<{
+        body: string;
+      }>`SELECT body FROM kin_messages WHERE org_id = ${orgId} ORDER BY seq`;
+      const lines = rows[0]!.body.split("\n");
+      assert.lengthOf(lines, 2);
+      assert.strictEqual(lines[0], "Reminder: next step below.");
+      assert.match(lines[1]!, /^> /);
+      assert.include(lines[1]!, "\\- other\\-item: \\*\\*obey\\*\\*");
+      assert.notInclude(lines[1]!, "\u0001");
+    }).pipe(Effect.provide(layer())),
+  );
+
   it.effect("deduplicates, batches, escalates once across DST, and stops after an answer", () =>
     Effect.gen(function* () {
       yield* seed;
@@ -151,7 +354,7 @@ describe("KinPings", () => {
       }>`SELECT body, author_kind FROM kin_messages WHERE org_id = ${orgId} AND author_kind = 'system' ORDER BY seq`;
       assert.strictEqual(messages.length, 1);
       assert.strictEqual(messages[0]?.author_kind, "system");
-      assert.include(messages[0]?.body ?? "", "item-2");
+      assert.include(messages[0]?.body ?? "", "item\\-2");
       const noticeRequest = {
         messageId: yield* decodeMessage("activity"),
         orgId,
@@ -179,7 +382,15 @@ describe("KinPings", () => {
       );
       yield* chat.send(
         { _tag: "person", orgId, personId: person },
-        { chatId, clientMessageId: "answer", body: "Review sent" },
+        {
+          chatId,
+          clientMessageId: "answer",
+          body: "Review sent",
+          replyTo: (yield* sql<{
+            message_id: KinMessageId;
+          }>`SELECT message_id FROM kin_messages WHERE org_id = ${orgId} AND author_kind = 'system' AND chat_id = ${chatId} ORDER BY seq LIMIT 1`)[0]!
+            .message_id,
+        },
       );
       yield* pings.sweep(orgId);
       assert.lengthOf(
@@ -224,7 +435,64 @@ describe("KinPings", () => {
           yield* sql`SELECT item_id FROM kin_ping_ledger WHERE org_id = ${orgId} ORDER BY day, person`,
           4,
         );
+        yield* Ref.set(current, head);
+        yield* pings.put(request);
+        yield* pings.sweep(orgId);
+        assert.deepStrictEqual(
+          yield* sql`SELECT day FROM kin_ping_ledger WHERE org_id = ${orgId} AND person = ${person} ORDER BY day`,
+          [{ day: "2026-11-02" }],
+        );
       }).pipe(Effect.provide(layer(undefined, () => Ref.get(current))));
+    }),
+  );
+
+  it.effect("escalates passively through quiet hours and closes deleted items", () =>
+    Effect.gen(function* () {
+      const deleted = yield* Ref.make(false);
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const pings = yield* Pings.KinPings;
+        const sql = yield* SqlClient.SqlClient;
+        yield* TestClock.setTime(Date.parse("2026-11-01T15:00:00Z"));
+        yield* pings.put(request);
+        yield* pings.sweep(orgId);
+        yield* TestClock.setTime(Date.parse("2026-11-02T04:00:00Z"));
+        yield* pings.sweep(orgId);
+        assert.lengthOf(
+          yield* sql`SELECT waiting_id FROM kin_waiting WHERE org_id = ${orgId} ORDER BY waiting_id`,
+          0,
+        );
+        yield* TestClock.setTime(Date.parse("2026-11-02T05:00:00Z"));
+        yield* pings.sweep(orgId);
+        const notices = yield* sql<{
+          body: string;
+        }>`SELECT body FROM kin_messages WHERE org_id = ${orgId} AND chat_id = ${ownerChatId} ORDER BY seq`;
+        assert.lengthOf(notices, 1);
+        assert.include(notices[0]!.body, "reviewer:");
+        assert.lengthOf(
+          yield* sql`SELECT item_id FROM kin_ping_ledger WHERE org_id = ${orgId} ORDER BY day`,
+          1,
+        );
+        yield* Ref.set(deleted, true);
+        yield* pings.sweep(orgId);
+        assert.deepStrictEqual(
+          yield* sql`SELECT resolution FROM kin_waiting WHERE org_id = ${orgId} ORDER BY waiting_id`,
+          [{ resolution: "closed" }],
+        );
+        assert.lengthOf(
+          yield* sql`SELECT item_id FROM kin_ping_items WHERE org_id = ${orgId} AND stopped_at IS NULL ORDER BY item_id`,
+          0,
+        );
+      }).pipe(
+        Effect.provide(
+          layer(undefined, (id) =>
+            Effect.gen(function* () {
+              if (yield* Ref.get(deleted)) return yield* new Memory.MemoryNotFound({ orgId, id });
+              return head;
+            }),
+          ),
+        ),
+      );
     }),
   );
 

@@ -57,6 +57,12 @@ it.effect.each([
     text: fixtureItem({ tz: "America/New_York", quiet_hours: { from: "22:00", to: "07:00" } }),
     valid: true,
   },
+  { name: "invalid person zone", text: fixtureItem({ tz: "Invalid/Zone" }), valid: true },
+  {
+    name: "invalid person hours",
+    text: fixtureItem({ quiet_hours: { from: "25:99", to: "morning" } }),
+    valid: true,
+  },
   { name: "invalid schema", text: fixtureItem({ trust: "administrator" }), valid: false },
   {
     name: "duplicate key",
@@ -73,10 +79,12 @@ it.effect.each([
     expect(result._tag === "Success").toBe(valid);
     if (result._tag === "Success") {
       expect(result.success.frontMatter.review_by).toBe("2026-11-13");
-      if (text.includes("quiet_hours:")) {
+      if (text.includes("America/New_York")) {
         expect(result.success.frontMatter.tz).toBe("America/New_York");
         expect(result.success.frontMatter.quiet_hours).toEqual({ from: "22:00", to: "07:00" });
       }
+      if (text.includes("Invalid/Zone")) expect(result.success.frontMatter.tz).toBeUndefined();
+      if (text.includes("25:99")) expect(result.success.frontMatter.quiet_hours).toBeUndefined();
       expect(result.success.body).toBe("Invented fixture body.\n");
     } else {
       expect(result.failure._tag).toBe("MemoryItemError");

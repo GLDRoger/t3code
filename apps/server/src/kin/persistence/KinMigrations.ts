@@ -6,7 +6,6 @@ import Lead from "./migrations/K002_Lead.ts";
 import Triggers from "./migrations/K003_Triggers.ts";
 import MemoryReads from "./migrations/K004_MemoryReads.ts";
 import OneChatOwner from "./migrations/K005_OneChatOwner.ts";
-
 import Pings from "./migrations/K007_Pings.ts";
 
 const run = Migrator.make({});

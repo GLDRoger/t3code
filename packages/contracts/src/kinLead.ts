@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -17,6 +18,7 @@ import {
   KinOrgId,
   KinPersonId,
 } from "./kinChat.ts";
+import { TimeOfDay, TimeZone } from "./kinTime.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import { ScheduledTaskWebhookDeliveryId } from "./scheduledTask.ts";
 
@@ -78,8 +80,14 @@ export const MemoryItemFrontMatter = Schema.Struct({
   due: Schema.NullOr(Schema.String),
   on_due: Schema.optional(Schema.Literals(["remind", "start", "ask", "chase"])),
   owner: Schema.optional(TrimmedNonEmptyString),
-  tz: Schema.optional(Schema.String),
-  quiet_hours: Schema.optional(Schema.Struct({ from: Schema.String, to: Schema.String })),
+  tz: Schema.optional(
+    Schema.UndefinedOr(TimeZone).pipe(Schema.catchDecoding(() => Effect.succeedSome(undefined))),
+  ),
+  quiet_hours: Schema.optional(
+    Schema.UndefinedOr(Schema.Struct({ from: TimeOfDay, to: TimeOfDay })).pipe(
+      Schema.catchDecoding(() => Effect.succeedSome(undefined)),
+    ),
+  ),
   recorded_at: Schema.String,
   valid_from: Schema.String,
   invalid_at: Schema.NullOr(Schema.String),

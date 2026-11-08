@@ -24,4 +24,15 @@ export default Effect.gen(function* () {
       PRIMARY KEY (org_id, item_id)
     )
   `;
+  yield* sql`CREATE INDEX idx_kin_ping_items_item ON kin_ping_items(org_id, item_id)`;
+  yield* sql`CREATE INDEX idx_kin_ping_items_pending ON kin_ping_items(org_id, person, item_id) WHERE stopped_at IS NULL`;
+  yield* sql`CREATE TABLE kin_ping_deliveries (
+    org_id TEXT NOT NULL REFERENCES kin_orgs(org_id),
+    person TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    message_id TEXT NOT NULL REFERENCES kin_messages(message_id),
+    seq INTEGER NOT NULL,
+    item_count INTEGER NOT NULL,
+    PRIMARY KEY (org_id, person, item_id, message_id)
+  )`;
 });

@@ -162,6 +162,7 @@ export const KinMessage = Schema.Struct({
 - **Mentions:** each mentioned member must still be active in the same org and chat, checked inside the send transaction; mentions of members who have left are refused.
 - **Idempotency:** unique `(chat_id, author_member_id, client_message_id)`. An identical retry returns the first insert; a changed retry (body, mentions, replyTo, or intent) fails `not_allowed`.
 - **Agent posts** come only through the Kin MCP tool `kin_chat_post` (CHAT-7). The author is built from `KinIdentity.resolveAgent`. Agent text is never trusted as a claim about authority (section 9.3); that rule lives in the approvals spec, but the chat never offers a way to make agent text look human.
+- **System-authored notices:** server-only code templates, not model-authored instructions. Untrusted item text appears only as a single quoted line per item: remove newlines and control characters, escape Markdown, and cap its length. Never interpolate untrusted text into the template instructions.
 - **Citable link:** `kinMessageLink({ orgId, chatId, messageId })` returns `kin-chat://<orgId>/<chatId>/<messageId>`. kin-memory items use it as `source`.
 - **Deletion** sets `status: "deleted"` and clears `body`. Purge and retention are phase 5 (org policy).
 
