@@ -493,7 +493,7 @@ it.live(
             .pipe(Effect.flip)).reason,
           "not_found",
         );
-        for (const due of ["bad", "2026-02-30", "2026-11-13T09:00:00"])
+        for (const due of ["bad", "2026-02-30", "2026-11-13T09:00:00", "1969-12-31", "0000-01-01"])
           assert.strictEqual(
             (yield* decodeDefer({ ...deferred, due }).pipe(Effect.result))._tag,
             "Failure",

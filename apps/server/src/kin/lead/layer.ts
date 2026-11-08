@@ -4,6 +4,7 @@ import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as TriggerScheduler from "../triggers/KinTriggerScheduler.ts";
 import * as TriggerStore from "../triggers/KinTriggerStore.ts";
 import * as TriggerInbox from "../triggers/KinTriggerInbox.ts";
+import * as TriggerService from "../triggers/KinTriggerService.ts";
 import { forkParked } from "../../serverActivation.ts";
 import { KinOrgId, KinChatId, KinMessageId } from "@t3tools/contracts";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -127,6 +128,12 @@ const withServices = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
           });
         }),
       ).pipe(Layer.provide(KinChatRepository.layer)),
+    ),
+    Layer.provide(
+      TriggerService.syncHooksLayer.pipe(
+        Layer.provide(TriggerService.layer),
+        Layer.provide(KinChatRepository.layer),
+      ),
     ),
     Layer.provide(KinPersistence.layer),
   );
