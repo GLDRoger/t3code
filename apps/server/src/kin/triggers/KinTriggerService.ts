@@ -138,9 +138,13 @@ const make = Effect.gen(function* () {
       }
       const phase = phases.find((each) => deferralTriggerId(row.itemId, each) === row.triggerId);
       if (phase === undefined || row.schedule === null) continue;
-      const schedule = yield* decodeSchedule(row.schedule);
+      // An undecodable row reads as stale, so the next apply overwrites it instead of failing the org.
+      const schedule = yield* decodeSchedule(row.schedule).pipe(Effect.option);
       entry.triggers.set(phase, {
-        runAt: schedule.type === "once" ? Date.parse(schedule.runAt) : undefined,
+        runAt:
+          Option.isSome(schedule) && schedule.value.type === "once"
+            ? Date.parse(schedule.value.runAt)
+            : Number.NaN,
         enabled: row.enabled === 1,
         nextRunAt: row.nextRunAt,
       });
@@ -350,15 +354,20 @@ const make = Effect.gen(function* () {
 
 export const layer = Layer.effect(KinTriggerService, make).pipe(Layer.provide(MemoryCache.layer));
 
-/** Arms deferrals from each new memory head; a failed sync retries on the next load. */
+const maxSyncAttempts = 3;
+
+/** Arms deferrals from each new memory head; a failed sync retries on the next few loads. */
 export const syncHooksLayer = Layer.effect(
   Memory.MemorySyncHooks,
   Effect.gen(function* () {
     const service = yield* KinTriggerService;
     const syncedHeads = new Map<KinOrgId, string>();
+    const failedAttempts = new Map<KinOrgId, { head: string; count: number }>();
     return {
       syncItems: Effect.fn("KinTriggerService.syncItems")(function* (orgId, snapshot) {
         if (syncedHeads.get(orgId) === snapshot.head) return;
+        const failed = failedAttempts.get(orgId);
+        const attempt = failed?.head === snapshot.head ? failed.count + 1 : 1;
         yield* service
           .syncOrg(
             orgId,
@@ -368,13 +377,24 @@ export const syncHooksLayer = Layer.effect(
             })),
           )
           .pipe(
-            Effect.tap(() => Effect.sync(() => syncedHeads.set(orgId, snapshot.head))),
-            Effect.catch((error) =>
-              Effect.logWarning("Could not sync deferral triggers; retrying on next load", {
-                orgId,
-                cause: error,
+            Effect.tap(() =>
+              Effect.sync(() => {
+                syncedHeads.set(orgId, snapshot.head);
+                failedAttempts.delete(orgId);
               }),
             ),
+            Effect.catch((error) => {
+              // A permanent failure would otherwise rerun the sync inside the memory lock on every load.
+              const giveUp = attempt >= maxSyncAttempts;
+              if (giveUp) syncedHeads.set(orgId, snapshot.head);
+              else failedAttempts.set(orgId, { head: snapshot.head, count: attempt });
+              return Effect.logWarning(
+                giveUp
+                  ? "Could not sync deferral triggers; skipping this head"
+                  : "Could not sync deferral triggers; retrying on next load",
+                { orgId, attempt, cause: error },
+              );
+            }),
           );
       }),
     };

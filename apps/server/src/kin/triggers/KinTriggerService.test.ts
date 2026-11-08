@@ -130,6 +130,24 @@ it.effect("arms from front matter, re-arms on edits, and re-syncs without writes
       SELECT state, due_at AS "dueAt", on_due AS "onDue" FROM kin_deferral_runs
       WHERE org_id = ${orgId} ORDER BY item_id`;
     assert.deepEqual(run, { state: "armed", dueAt: Date.parse(moved), onDue: "remind" });
+
+    // Same fires, different on_due: only the run row and card can tell them apart.
+    assert.equal(yield* service.syncItem(deferral({ due: moved, on_due: "ask" })), "armed");
+    const [asked] = yield* sql<{ onDue: string }>`SELECT on_due AS "onDue" FROM kin_deferral_runs
+      WHERE org_id = ${orgId} ORDER BY item_id`;
+    assert.equal(asked?.onDue, "ask");
+    assert.equal((yield* card(orgId))[0]?.state.onDue, "ask");
+
+    yield* sql`UPDATE kin_triggers SET schedule_json = 'not json'
+      WHERE org_id = ${orgId} AND trigger_id = 'deferral:def-1:due'`;
+    assert.equal(yield* service.syncItem(deferral({ due: moved, on_due: "ask" })), "armed");
+    assert.deepEqual(
+      (yield* triggers(orgId)).map(({ enabled, nextRunAt }) => [enabled, nextRunAt]),
+      [
+        [1, Date.parse(moved)],
+        [0, null],
+      ],
+    );
   }).pipe(Effect.provide(layer)),
 );
 
@@ -255,6 +273,24 @@ it.effect("syncs each head once, retries failures, and isolates failing items", 
         ["deferral:def-2:due", 1],
         ["deferral:def-2:heads_up", 1],
       ],
+    );
+
+    const stuck = deferral({ id: KinMemoryItemId.make("def-3"), path: "deferrals/def-3.md" });
+    yield* sql`CREATE TRIGGER fail_def_3 BEFORE INSERT ON kin_deferral_runs
+      WHEN NEW.item_id = 'def-3' BEGIN SELECT RAISE(ABORT, 'fixture'); END`;
+    for (let attempt = 0; attempt < 3; attempt++)
+      yield* hooks.syncItems(orgId, snapshot("h3", [stuck, other]));
+    yield* sql`DROP TRIGGER fail_def_3`;
+    yield* hooks.syncItems(orgId, snapshot("h3", [stuck, other]));
+    assert.notInclude(
+      (yield* runs()).map(({ itemId }) => itemId),
+      "def-3",
+      "a head that failed three times is not retried",
+    );
+    yield* hooks.syncItems(orgId, snapshot("h4", [stuck, other]));
+    assert.include(
+      (yield* runs()).map(({ itemId }) => itemId),
+      "def-3",
     );
   }).pipe(Effect.provide(layer)),
 );
