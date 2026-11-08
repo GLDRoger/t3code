@@ -9,7 +9,13 @@ import { KinBudget } from "./lead/KinBudget.ts";
 import { KinEventQueue } from "./lead/KinEventQueue.ts";
 import { ApproverKeys } from "./approvals/ApproverKeys.ts";
 
-export type Services = KinIdentity | KinChatService | KinBudget | KinEventQueue | ApproverKeys;
+export type Services =
+  | KinIdentity
+  | KinChatService
+  | KinBudget
+  | KinEventQueue
+  | KinChatHub
+  | ApproverKeys;
 
 export class KinServer extends Context.Service<
   KinServer,

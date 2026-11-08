@@ -32,6 +32,7 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import * as KinIdentity from "../chat/KinIdentity.ts";
+import * as Writer from "../memory/MemoryWriter.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as Budget from "./KinBudget.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
@@ -112,6 +113,7 @@ export function harness(
     readonly hold?: Deferred.Deferred<void>;
     readonly entered?: Deferred.Deferred<void>;
     readonly failed?: boolean;
+    readonly writer?: Layer.Layer<Writer.MemoryWriter, never, SqlClient.SqlClient>;
     readonly piUsage?: boolean;
     readonly prepare?: Memory.Memory["Service"]["prepareWakeup"];
   } = {},
@@ -368,5 +370,9 @@ export function harness(
       ),
     ),
   ).pipe(Layer.provideMerge(database));
-  return WakeupRunner.layer.pipe(Layer.provideMerge(services));
+  return WakeupRunner.layer.pipe(
+    Layer.provideMerge(
+      Layer.merge(services, (options.writer ?? Layer.empty).pipe(Layer.provide(database))),
+    ),
+  );
 }
