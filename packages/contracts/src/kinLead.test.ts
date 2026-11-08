@@ -146,7 +146,16 @@ const samples = {
     schema: Kin.KinBudgetLimits,
     values: [limits, { leadUnits: 0, workerUnits: 0 }],
   },
-  KinBudget: { schema: Kin.KinBudget, values: [budget] },
+  KinBudget: {
+    schema: Kin.KinBudget,
+    values: [
+      budget,
+      ...["2024-02-29", "2000-02-29", "0000-01-01", "9999-12-31"].map((day) => ({
+        ...budget,
+        day,
+      })),
+    ],
+  },
   KinBudgetGetInput: { schema: Kin.KinBudgetGetInput, values: [{ orgId: "org-1" }] },
   KinBudgetSetInput: { schema: Kin.KinBudgetSetInput, values: [{ orgId: "org-1", limits }] },
   KinOrgState: {
@@ -181,7 +190,17 @@ describe("Kin lead contracts", () => {
     { schema: Kin.WorkerReport, value: { ...report, summary: "x".repeat(801) } },
     { schema: Kin.KinLead, value: { ...lead, levelSince: "yesterday" } },
     { schema: Kin.KinLead, value: { ...lead, levelSince: "2026-11-07T05:30:00.000+05:30" } },
-    { schema: Kin.KinBudget, value: { ...budget, day: "tomorrow" } },
+    ...[
+      "tomorrow",
+      "2026-13-45",
+      "2026-02-30",
+      "2026-02-29",
+      "1900-02-29",
+      "2026-00-01",
+      "2026-01-00",
+      "2026-04-31",
+      "2026-1-01",
+    ].map((day) => ({ schema: Kin.KinBudget, value: { ...budget, day } })),
     { schema: Kin.KinBudget, value: { ...budget, leadUnits: Infinity } },
     { schema: Kin.KinBudgetLimits, value: { ...limits, workerUnits: Infinity } },
     { schema: Kin.KinBudgetLimits, value: { ...limits, leadUnits: Number.MAX_SAFE_INTEGER + 1 } },
