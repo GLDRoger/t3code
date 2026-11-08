@@ -10,6 +10,7 @@ import {
   formatKinTime,
   kinChatRowLabel,
   kinChatRowView,
+  kinChatTitle,
   kinDirectory,
   kinHomeSubtitle,
   kinInboxNotice,
@@ -18,6 +19,7 @@ import {
   kinLeadChatId,
   kinPreviewText,
   kinWaitingBannerView,
+  kinWaitingRowView,
 } from "./kinScreenState";
 
 const environmentId = EnvironmentId.make("env-kin");
@@ -360,5 +362,66 @@ describe("formatKinTime", () => {
     ["just after midnight", new Date(2026, 10, 8, 0, 10), day.format(lateLastNight)],
   ])("reads a time against now on %s", (_name, now, label) => {
     expect(formatKinTime(lateLastNight, now)).toBe(label);
+  });
+});
+
+const agentNames = new Map([["agent-atlas", "Atlas"]]);
+const member = (principal: object, leftAt: string | null = null) => ({ principal, leftAt });
+const owner = member({ _tag: "person", personId: "owner" });
+const atlas = member({ _tag: "agent", agentId: "agent-atlas" });
+
+describe("kinChatTitle", () => {
+  it.each([
+    ["the host's title", { title: "Payments", kind: "team_group", members: [atlas] }, "Payments"],
+    ["a direct chat's agent", { title: null, kind: "direct", members: [owner, atlas] }, "Atlas"],
+    [
+      "a direct chat whose agent left",
+      { title: null, kind: "direct", members: [owner, member(atlas.principal, "2026-11-08")] },
+      "Direct chat",
+    ],
+    [
+      "an agent the directory doesn't name",
+      { title: null, kind: "direct", members: [member({ _tag: "agent", agentId: "x" })] },
+      "Direct chat",
+    ],
+    ["an untitled group", { title: null, kind: "team_group", members: [owner] }, "Chat"],
+  ] as const)("names %s", (_name, chat, title) => {
+    expect(kinChatTitle(chat as never, agentNames)).toBe(title);
+  });
+});
+
+describe("kinWaitingRowView", () => {
+  const chats = [
+    {
+      chatId: "chat-1",
+      title: null,
+      kind: "direct",
+      members: [owner, atlas],
+      lastMessage: { messageId: "m-2", status: "visible", body: "Merge #212 now?" },
+    },
+  ] as never;
+  const item = (messageId: string | null, chatId = "chat-1") =>
+    ({
+      chatId,
+      messageId,
+      reason: "question",
+      createdAt: "2026-11-08T09:30:00.000Z",
+    }) as never;
+
+  it("shows the asking message and the chat's derived title", () => {
+    expect(kinWaitingRowView(item("m-2"), chats, agentNames)).toEqual({
+      label: "Question",
+      chatTitle: "Atlas",
+      text: "Merge #212 now?",
+      createdAt: "2026-11-08T09:30:00.000Z",
+    });
+  });
+
+  it("has no text when the inbox doesn't carry the message", () => {
+    expect(kinWaitingRowView(item("m-1"), chats, agentNames).text).toBeNull();
+    expect(kinWaitingRowView(item(null, "chat-9"), chats, agentNames)).toMatchObject({
+      chatTitle: "Direct chat",
+      text: null,
+    });
   });
 });

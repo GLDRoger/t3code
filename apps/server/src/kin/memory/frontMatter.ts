@@ -2,6 +2,7 @@ import { MemoryItemFrontMatter, type KinOrgId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { defaultReviewBy } from "./freshness.ts";
 import { isSeq, parseDocument } from "yaml";
 
 export class MemoryItemError extends Schema.TaggedError<MemoryItemError>()("MemoryItemError", {
@@ -34,12 +35,19 @@ export const memoryDateMillis = (value: string | null) => {
 };
 
 const decodeFrontMatter = Schema.decodeUnknownEffect(MemoryItemFrontMatter);
+const decodeStaged = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    ...MemoryItemFrontMatter.fields,
+    review_by: Schema.optional(MemoryItemFrontMatter.fields.review_by),
+  }),
+);
 
 // Parsing runs per blob under Memory.load; avoid creating a span for every item.
 export const parseFrontMatter = Effect.fnUntraced(function* (
   orgId: KinOrgId,
   path: string,
   text: string,
+  staged = false,
 ) {
   const parts = /^(?:\uFEFF)?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)([\s\S]*)$/.exec(text);
   if (!parts) {
@@ -81,18 +89,22 @@ export const parseFrontMatter = Effect.fnUntraced(function* (
       new MemoryItemError({
         orgId,
         path,
-        reason: cause instanceof Error ? cause.message : "Malformed YAML",
-        cause,
+        reason: staged
+          ? "Malformed YAML front matter"
+          : cause instanceof Error
+            ? cause.message
+            : "Malformed YAML",
+        ...(staged ? {} : { cause }),
       }),
   });
-  const frontMatter = yield* decodeFrontMatter(value).pipe(
+  const decoded = yield* (staged ? decodeStaged(value) : decodeFrontMatter(value)).pipe(
     Effect.mapError(
       (cause) => new MemoryItemError({ orgId, path, reason: "Invalid front matter schema", cause }),
     ),
   );
   for (const field of ["recorded_at", "valid_from", "invalid_at", "review_by", "due"] as const) {
-    const value = frontMatter[field];
-    if (value !== null && !Number.isFinite(memoryDateMillis(value))) {
+    const value = decoded[field];
+    if (value !== null && value !== undefined && !Number.isFinite(memoryDateMillis(value))) {
       return yield* new MemoryItemError({
         orgId,
         path,
@@ -100,5 +112,16 @@ export const parseFrontMatter = Effect.fnUntraced(function* (
       });
     }
   }
+  const frontMatter = {
+    ...decoded,
+    review_by: defaultReviewBy(
+      {
+        kind: decoded.kind,
+        due: decoded.due,
+        ...(decoded.review_by === undefined ? {} : { review_by: decoded.review_by }),
+      },
+      Date.parse(decoded.recorded_at),
+    ),
+  };
   return { frontMatter, body: parts[2] ?? "" };
 });

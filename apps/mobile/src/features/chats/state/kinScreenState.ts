@@ -2,6 +2,7 @@ import {
   EnvironmentAuthorizationError,
   type EnvironmentId,
   type KinChatId,
+  type KinChatSummary,
   type KinWaitingItem,
   type KinWaitingReason,
 } from "@t3tools/contracts";
@@ -309,4 +310,50 @@ export function kinLeadChatId(rows: ReadonlyArray<KinInboxRow>): KinChatId | nul
     }
   }
   return best?.chatId ?? null;
+}
+
+/** The host's title, else the chat's agent by name: the host leaves direct chats untitled. */
+export function kinChatTitle(
+  chat: Pick<KinChatSummary, "title" | "kind" | "members">,
+  agentNames: ReadonlyMap<string, string>,
+): string {
+  if (chat.title !== null) return chat.title;
+  for (const member of chat.members) {
+    if (member.leftAt !== null || member.principal._tag !== "agent") continue;
+    const name = agentNames.get(member.principal.agentId);
+    if (name !== undefined) return name;
+  }
+  return chat.kind === "direct" ? "Direct chat" : "Chat";
+}
+
+const WAITING_REASON_LABELS: Record<KinWaitingReason, string> = {
+  approval: "Approval",
+  decision: "Decision",
+  question: "Question",
+  suggestion: "Suggestion",
+  mention: "Mention",
+};
+
+export interface KinWaitingRowView {
+  readonly label: string;
+  readonly chatTitle: string;
+  /** The message that asks, when the inbox carries it; items have no text of their own. */
+  readonly text: string | null;
+  readonly createdAt: string;
+}
+
+export function kinWaitingRowView(
+  item: KinWaitingItem,
+  chats: ReadonlyArray<KinChatSummary>,
+  agentNames: ReadonlyMap<string, string>,
+): KinWaitingRowView {
+  const chat = chats.find((held) => held.chatId === item.chatId);
+  const last = chat?.lastMessage ?? null;
+  const message = last !== null && last.messageId === item.messageId ? last : null;
+  return {
+    label: WAITING_REASON_LABELS[item.reason],
+    chatTitle: chat === undefined ? "Direct chat" : kinChatTitle(chat, agentNames),
+    text: message === null || message.status === "deleted" ? null : message.body,
+    createdAt: item.createdAt,
+  };
 }

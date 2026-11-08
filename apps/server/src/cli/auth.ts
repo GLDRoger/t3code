@@ -7,7 +7,7 @@ import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import { Argument, Command, Flag, GlobalFlag } from "effect/cli";
 
-import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import * as EnvironmentAuth from "../kin/auth/EnvironmentAuthRuntime.ts";
 
 import {
   formatIssuedPairingCredential,
@@ -88,6 +88,7 @@ const tokenOnlyFlag = Flag.Boolean("token-only").pipe(
 );
 
 const pairingCreateCommand = Command.make("create", {
+  ...EnvironmentAuth.repairFlags,
   ...authLocationFlags,
   scopes: authScopesFlag(AuthStandardClientScopes),
   ttl: ttlFlag,
@@ -101,7 +102,7 @@ const pairingCreateCommand = Command.make("create", {
       flags,
       (environmentAuth) =>
         Effect.gen(function* () {
-          const issued = yield* environmentAuth.createPairingLink({
+          const issued = yield* EnvironmentAuth.createRepairPairing(environmentAuth, flags, {
             scopes: flags.scopes,
             subject: "one-time-token",
             ...(Option.isSome(flags.ttl) ? { ttl: flags.ttl.value } : {}),

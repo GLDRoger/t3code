@@ -28,7 +28,7 @@ import * as Schema from "effect/Schema";
 import { Command, Flag, GlobalFlag } from "effect/cli";
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
-import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import * as EnvironmentAuth from "../kin/auth/EnvironmentAuthRuntime.ts";
 import * as ServerConfig from "../config.ts";
 import * as ManagedLimits from "../policy/managedLimits.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";

@@ -8,7 +8,7 @@ import { KinChatHub } from "./chat/KinChatHub.ts";
 import { KinBudget } from "./lead/KinBudget.ts";
 import { KinEventQueue } from "./lead/KinEventQueue.ts";
 
-export type Services = KinIdentity | KinChatService | KinBudget | KinEventQueue;
+export type Services = KinIdentity | KinChatService | KinBudget | KinEventQueue | KinChatHub;
 
 export class KinServer extends Context.Service<
   KinServer,

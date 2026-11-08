@@ -14,6 +14,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { McpServer } from "effect/ai";
+import { KinAgentSessions } from "./layer.ts";
 import { KinChatToolkit, handlers } from "./KinChatToolkit.ts";
 import budget from "./agentContextBudget.json" with { type: "json" };
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -120,14 +121,22 @@ it.effect.each([true, false])(
         const ready =
           yield* Deferred.make<
             Context.Context<
-              Kin.KinServer | McpSessions.McpSessionRegistry | SqlClient.SqlClient | OrchestratorV2
+              | Kin.KinServer
+              | KinAgentSessions
+              | McpSessions.McpSessionRegistry
+              | SqlClient.SqlClient
+              | OrchestratorV2
             >
           >();
         const routes = Layer.merge(
           Kin.mcpLayer(McpHttpServer.layer),
           Layer.effectDiscard(
             Effect.context<
-              Kin.KinServer | McpSessions.McpSessionRegistry | SqlClient.SqlClient | OrchestratorV2
+              | Kin.KinServer
+              | KinAgentSessions
+              | McpSessions.McpSessionRegistry
+              | SqlClient.SqlClient
+              | OrchestratorV2
             >().pipe(Effect.flatMap((context) => Deferred.succeed(ready, context))),
           ),
         ).pipe(
@@ -268,6 +277,41 @@ it.effect.each([true, false])(
           initialize,
         );
         assert.strictEqual(initialized.status, 200);
+        const toolList = yield* request(
+          "/kin/mcp",
+          issued.config.authorizationHeader,
+          "tools/list",
+          {},
+          initialized.headers["mcp-session-id"],
+        );
+        const toolListText = yield* Effect.promise(() => HttpServerResponse.toWeb(toolList).text());
+        assert.include(toolListText, "kin_chat_read");
+        assert.notInclude(toolListText, "schedule_task");
+        assert.notInclude(toolListText, "t3_thread_launch");
+        assert.notInclude(toolListText, "create_threads");
+        assert.strictEqual(
+          (yield* request("/mcp", issued.config.authorizationHeader, "initialize", initialize))
+            .status,
+          401,
+        );
+        const ordinary = yield* registry.issue({
+          threadId: ThreadId.make("ordinary-thread"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        });
+        assert.strictEqual(
+          (yield* request("/mcp", ordinary.config.authorizationHeader, "initialize", initialize))
+            .status,
+          200,
+        );
+        assert.strictEqual(
+          (yield* request(
+            "/kin/mcp",
+            ordinary.config.authorizationHeader,
+            "initialize",
+            initialize,
+          )).status,
+          401,
+        );
         const result = yield* request(
           "/kin/mcp",
           issued.config.authorizationHeader,
@@ -287,14 +331,20 @@ it.effect.each([true, false])(
         const text = yield* Effect.promise(() => HttpServerResponse.toWeb(result).text());
         assert.include(text, "Production composition");
         assert.notInclude(text, '"isError":true');
-        const caller = yield* registry.resolve(issued.config.authorizationHeader.slice(7));
+        const agentSessions = Context.get(services, KinAgentSessions);
+        assert.isUndefined(yield* registry.resolve(issued.config.authorizationHeader.slice(7)));
+        const caller = yield* agentSessions.resolveAgent(
+          issued.config.authorizationHeader.slice(7),
+        );
         assert.isDefined(caller);
         const agent = yield* identity.resolveAgent(caller);
         const rows = yield* chatService.read(agent, { chatId: chat.chatId });
         assert.lengthOf(rows, 1);
         assert.strictEqual(rows[0]?.author._tag, "agent");
         yield* identity.endAgentThread({ orgId: person.orgId, threadId });
-        assert.isUndefined(yield* registry.resolve(issued.config.authorizationHeader.slice(7)));
+        assert.isUndefined(
+          yield* agentSessions.resolveAgent(issued.config.authorizationHeader.slice(7)),
+        );
       }),
     ),
 );
