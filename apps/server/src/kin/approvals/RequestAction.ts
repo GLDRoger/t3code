@@ -16,12 +16,14 @@ import {
   type KinProvenanceRole,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
 import { sourceControlDefinitions } from "../../sourceControl/sourceControlDefinitions.ts";
@@ -165,6 +167,8 @@ const OWNER_ONLY_KINDS: ReadonlySet<KinActionKind> = new Set([
 // Kinds whose target the server can resolve and whose handler is specified for phase 1.
 // The executor's handler registry (APPR-9) replaces this list.
 const REQUESTABLE_KINDS: ReadonlySet<KinActionKind> = new Set(["merge_pull_request"]);
+// Bounds how many cards one lead can put in front of the owner at once.
+export const MAX_OPEN_ACTIONS_PER_LEAD = 10;
 
 const refuse = (reason: KinApprovalError["reason"], message: string) =>
   Effect.fail(new KinApprovalError({ reason, message }));
@@ -191,25 +195,29 @@ const make = Effect.gen(function* () {
   const facts = yield* KinPullRequestFacts;
 
   /** Who stands behind one event, from stored rows; event provenance alone never names a role. */
-  const roleOf = Effect.fn("KinRequestAction.roleOf")(function* (
-    agent: AgentIdentity,
-    event: KinEvent,
-  ) {
-    const author = event.provenance;
-    if (author._tag !== "human") return "none" as const;
-    const rows =
-      event._tag === "chat.message"
-        ? yield* sql<{ role: KinProvenanceRole }>`SELECT author_role AS role FROM kin_messages
+  const roleOf = Effect.fn("KinRequestAction.roleOf")(
+    function* (agent: AgentIdentity, event: KinEvent) {
+      const author = event.provenance;
+      if (author._tag !== "human") return "none" as const;
+      const rows =
+        event._tag === "chat.message"
+          ? yield* sql<{ role: KinProvenanceRole }>`SELECT author_role AS role FROM kin_messages
             WHERE org_id = ${event.orgId} AND message_id = ${event.messageId} AND chat_id = ${event.chatId}
               AND author_kind = 'human' AND author_person_id = ${author.personId}
-              AND author_member_id = ${author.memberId} AND status = 'posted'`
-        : yield* sql<{ role: KinProvenanceRole }>`SELECT role FROM kin_chat_members
+              AND author_member_id = ${author.memberId} AND status = 'posted'
+            ORDER BY message_id`
+          : yield* sql<{ role: KinProvenanceRole }>`SELECT role FROM kin_chat_members
             WHERE org_id = ${event.orgId} AND member_id = ${author.memberId}
-              AND principal_kind = 'person' AND person_id = ${author.personId} AND left_at IS NULL`;
-    const role = rows[0]?.role ?? ("none" as const);
-    // Only this lead's own owner counts as owner; anyone else in the chat is a member.
-    return role === "owner" && author.personId !== agent.ownerPersonId ? ("member" as const) : role;
-  });
+              AND principal_kind = 'person' AND person_id = ${author.personId} AND left_at IS NULL
+            ORDER BY member_id`;
+      const role = rows[0]?.role ?? ("none" as const);
+      // Only this lead's own owner counts as owner; anyone else in the chat is a member.
+      return role === "owner" && author.personId !== agent.ownerPersonId
+        ? ("member" as const)
+        : role;
+    },
+    Effect.mapError(toPersistenceSqlError("KinRequestAction.roleOf")),
+  );
 
   /** Provenance from the wake-up the caller is running, never from tool input (spec section 8). */
   const provenanceFor = Effect.fn("KinRequestAction.provenanceFor")(function* (
@@ -220,7 +228,9 @@ const make = Effect.gen(function* () {
       JOIN kin_wakeups w ON w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id
       WHERE w.org_id = ${agent.orgId} AND w.agent_id = ${agent.agentId}
         AND w.thread_id = ${agent.threadId} AND w.status = 'running' AND e.state = 'claimed'
-      ORDER BY e.received_at, e.event_id`;
+      ORDER BY e.received_at, e.event_id`.pipe(
+      Effect.mapError(toPersistenceSqlError("KinRequestAction.provenanceFor")),
+    );
     const events = yield* Effect.forEach(rows, (row) => decodeEvent(row.json));
     const chain = yield* Effect.forEach(events, (event) =>
       roleOf(agent, event).pipe(
@@ -270,25 +280,38 @@ const make = Effect.gen(function* () {
     return { provenance, ceilingIsOwner };
   });
 
+  const leadOf = (agent: AgentIdentity) =>
+    sql<{ worker_projects_json: string }>`SELECT l.worker_projects_json
+      FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+      WHERE l.org_id = ${agent.orgId} AND l.agent_id = ${agent.agentId}
+        AND a.role = 'lead' AND a.retired_at IS NULL
+      ORDER BY l.agent_id`.pipe(Effect.mapError(toPersistenceSqlError("KinRequestAction.leadOf")));
+
+  /** Who may ask and from which event, checked again inside the write after the GitHub read. */
+  const authorize = Effect.fn("KinRequestAction.authorize")(function* (
+    agent: AgentIdentity,
+    input: RequestActionInput,
+  ) {
+    const [lead] = yield* leadOf(agent);
+    if (lead === undefined)
+      return yield* refuse("not_a_lead", "Only a Kin lead can request actions.");
+    const origin = yield* provenanceFor(agent, input.sourceEventId);
+    if (origin === undefined)
+      return yield* refuse(
+        "invalid_state",
+        "sourceEventId must name an event in your current wake-up.",
+      );
+    if (OWNER_ONLY_KINDS.has(input.kind) && !origin.ceilingIsOwner)
+      return yield* refuse(
+        "not_owner",
+        `${input.kind} needs a request from the owner alone; ask the owner to send it directly.`,
+      );
+    return { lead, origin };
+  });
+
   const request = Effect.fn("KinRequestAction.request")(
     function* (agent: AgentIdentity, input: RequestActionInput) {
-      const [lead] = yield* sql<{ worker_projects_json: string }>`SELECT l.worker_projects_json
-        FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
-        WHERE l.org_id = ${agent.orgId} AND l.agent_id = ${agent.agentId}
-          AND a.role = 'lead' AND a.retired_at IS NULL`;
-      if (lead === undefined)
-        return yield* refuse("not_a_lead", "Only a Kin lead can request actions.");
-      const origin = yield* provenanceFor(agent, input.sourceEventId);
-      if (origin === undefined)
-        return yield* refuse(
-          "invalid_state",
-          "sourceEventId must name an event in your current wake-up.",
-        );
-      if (OWNER_ONLY_KINDS.has(input.kind) && !origin.ceilingIsOwner)
-        return yield* refuse(
-          "not_owner",
-          `${input.kind} needs a request from the owner alone; ask the owner to send it directly.`,
-        );
+      const { lead } = yield* authorize(agent, input);
       if (!REQUESTABLE_KINDS.has(input.kind))
         return yield* refuse("unsupported_kind", `${input.kind} can't be requested yet.`);
       // Defensive: decoding here too keeps only declared fields, whoever calls the service.
@@ -299,18 +322,60 @@ const make = Effect.gen(function* () {
         target: named,
         projectIds: yield* decodeProjects(lead.worker_projects_json),
       });
-      const { action } = yield* pending.create({
+      const source = input.sourceEventId;
+      const idempotencyKey = PendingActions.kinIdempotencyKey({
         orgId: agent.orgId,
         kind: input.kind,
         target,
-        resolved,
-        targetDigest: kinTargetDigest({ kind: input.kind, target, resolved }),
-        reason: input.reason,
-        requestedBy: { agentId: agent.agentId, threadId: agent.threadId },
-        provenance: origin.provenance,
-        source: input.sourceEventId,
+        source,
       });
-      return { actionId: action.id, state: action.state, waitingOn: "owner" as const };
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          // The lead may be retired or its wake-up ended while GitHub answered.
+          const { origin } = yield* authorize(agent, input);
+          const now = yield* Clock.currentTimeMillis;
+          const open = yield* sql<{ action_id: KinActionId; idempotency_key: string }>`
+            SELECT action_id, idempotency_key FROM kin_pending_actions
+            WHERE org_id = ${agent.orgId} AND kind = ${input.kind} AND state = 'awaiting_approval'
+              AND expires_at > ${now}
+              AND lower(json_extract(target_json, '$.repo')) = ${target.repo.toLowerCase()}
+              AND json_extract(target_json, '$.number') = ${target.number}
+            ORDER BY created_at, action_id`.pipe(
+            Effect.mapError(toPersistenceSqlError("KinRequestAction.openForTarget")),
+          );
+          const other = open.find((row) => row.idempotency_key !== idempotencyKey);
+          if (other !== undefined)
+            return yield* refuse(
+              "invalid_state",
+              `Action ${other.action_id} for this pull request is already waiting on the owner; wait for it to be decided.`,
+            );
+          if (open.length === 0) {
+            const [count] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_pending_actions
+              WHERE org_id = ${agent.orgId} AND requested_by_agent_id = ${agent.agentId}
+                AND state = 'awaiting_approval' AND expires_at > ${now}
+              ORDER BY n`.pipe(
+              Effect.mapError(toPersistenceSqlError("KinRequestAction.openCount")),
+            );
+            if ((count?.n ?? 0) >= MAX_OPEN_ACTIONS_PER_LEAD)
+              return yield* refuse(
+                "invalid_state",
+                `You already have ${MAX_OPEN_ACTIONS_PER_LEAD} actions waiting on the owner; wait for some to be decided.`,
+              );
+          }
+          const { action } = yield* pending.create({
+            orgId: agent.orgId,
+            kind: input.kind,
+            target,
+            resolved,
+            targetDigest: kinTargetDigest({ kind: input.kind, target, resolved }),
+            reason: input.reason,
+            requestedBy: { agentId: agent.agentId, threadId: agent.threadId },
+            provenance: origin.provenance,
+            source,
+          });
+          return { actionId: action.id, state: action.state, waitingOn: "owner" as const };
+        }),
+      );
     },
     Effect.catchIf(
       (error) => !isApprovalError(error),

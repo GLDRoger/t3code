@@ -30,6 +30,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as SqlError from "effect/sql/SqlError";
 import * as TestClock from "effect/testing/TestClock";
 import { McpSchema, McpServer } from "effect/ai";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
@@ -45,7 +46,11 @@ import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinChatToolkit, handlers as chatHandlers } from "../mcp/KinChatToolkit.ts";
 import { KinApprovalsToolkit, registrationWith } from "./mcp.ts";
-import { layerPullRequestFacts } from "./RequestAction.ts";
+import {
+  KinPullRequestFacts,
+  layerPullRequestFacts,
+  MAX_OPEN_ACTIONS_PER_LEAD,
+} from "./RequestAction.ts";
 
 const threadId = ThreadId.make("lead-thread");
 const agentId = KinAgentId.make("lead");
@@ -139,25 +144,57 @@ const facts = layerPullRequestFacts.pipe(
     }),
   ),
 );
-const layer = Layer.mergeAll(
-  registrationWith(facts),
-  McpHttpServer.toolkitRegistration(KinChatToolkit, chatHandlers),
-).pipe(
-  Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
-  Layer.provideMerge(
-    Kin.layer.pipe(
-      Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+const layerWith = <E, R>(pullRequestFacts: Layer.Layer<KinPullRequestFacts, E, R>) =>
+  Layer.mergeAll(
+    registrationWith(pullRequestFacts),
+    McpHttpServer.toolkitRegistration(KinChatToolkit, chatHandlers),
+  ).pipe(
+    Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+    Layer.provideMerge(
+      Kin.layer.pipe(
+        Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+      ),
     ),
-  ),
-  Layer.provideMerge(Layer.mergeAll(KinChatRepository.layer, KinEventQueue.layer)),
-  Layer.provideMerge(authorityLayer),
-  Layer.provideMerge(
-    Layer.mock(ThreadManagement.ThreadManagementService)({
-      getThreadShell: (id) =>
-        Effect.succeed({ ...liveThreadShell(id), providerInstanceId: thread.providerInstanceId }),
+    Layer.provideMerge(Layer.mergeAll(KinChatRepository.layer, KinEventQueue.layer)),
+    Layer.provideMerge(authorityLayer),
+    Layer.provideMerge(
+      Layer.mock(ThreadManagement.ThreadManagementService)({
+        getThreadShell: (id) =>
+          Effect.succeed({ ...liveThreadShell(id), providerInstanceId: thread.providerInstanceId }),
+      }),
+    ),
+  );
+const layer = layerWith(facts);
+/** Any PR number reads as open; `during` runs while "GitHub" answers, as a slow read would allow. */
+const factsDuring = (
+  during: (sql: SqlClient.SqlClient) => Effect.Effect<unknown, SqlError.SqlError>,
+) =>
+  Layer.effect(
+    KinPullRequestFacts,
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      return KinPullRequestFacts.of({
+        read: ({ target }) =>
+          during(sql).pipe(
+            Effect.orDie,
+            Effect.as({
+              target: { ...target, repo: "acme/app" },
+              resolved: {
+                _tag: "pull_request" as const,
+                headSha: serverHead,
+                base: "main",
+                head: "feature",
+                title: `acme/app#${target.number}`,
+                additions: 1,
+                deletions: 1,
+                files: 1,
+                checks: [],
+              },
+            }),
+          ),
+      });
     }),
-  ),
-);
+  );
 
 // What the Kin MCP endpoint's auth middleware provides to each call.
 const asKinCall = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -532,4 +569,54 @@ it.effect("a repo outside the lead's worker projects is refused like a missing P
     assert.deepStrictEqual(refusal(yield* call(named("acme/app", 404))), outside);
     assert.lengthOf(yield* rows, 0);
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a lead retired or a wake-up ended while GitHub answers gets no card", () =>
+  Effect.gen(function* () {
+    for (const during of [
+      (sql: SqlClient.SqlClient) =>
+        sql`UPDATE kin_agents SET retired_at = '1970-01-01T00:00:01.000Z' WHERE agent_id = ${agentId}`,
+      (sql: SqlClient.SqlClient) =>
+        sql`UPDATE kin_wakeups SET status = 'interrupted' WHERE wakeup_id = ${wakeupId}`,
+    ])
+      yield* Effect.gen(function* () {
+        const { eventIds, rows } = yield* seed(["owner"]);
+        const refused = refusal(yield* call(merge(eventIds.owner)));
+        assert.oneOf((refused as { reason: string }).reason, ["not_a_lead", "invalid_state"]);
+        assert.lengthOf(yield* rows, 0);
+      }).pipe(Effect.provide(layerWith(factsDuring(during))));
+  }),
+);
+
+it.effect("one PR gets one waiting card, and one lead a bounded number", () =>
+  Effect.gen(function* () {
+    const { eventIds, rows, sql } = yield* seed(["owner", "github"]);
+    const first = success(yield* call(merge(eventIds.owner))) as { actionId: string };
+    assert.deepStrictEqual(success(yield* call(merge(eventIds.owner))), first);
+    // Another method, delete flag or cited event for the same PR is not a second card.
+    for (const input of [
+      merge(eventIds.owner, {
+        target: { ...merge(eventIds.owner).target, mergeMethod: "rebase" },
+      }),
+      merge(eventIds.owner, {
+        target: { ...merge(eventIds.owner).target, deleteBranchAfter: false },
+      }),
+      merge(eventIds.github),
+    ]) {
+      const refused = refusal(yield* call(input)) as { reason: string; message: string };
+      assert.strictEqual(refused.reason, "invalid_state");
+      assert.include(refused.message, first.actionId);
+    }
+    assert.lengthOf(yield* rows, 1);
+    // Once decided, the PR can be asked about again.
+    yield* sql`UPDATE kin_pending_actions SET state = 'rejected' WHERE action_id = ${first.actionId}`;
+    success(yield* call(merge(eventIds.github)));
+    const numbered = (number: number) =>
+      merge(eventIds.owner, { target: { ...merge(eventIds.owner).target, number } });
+    for (let number = 100; number < 100 + MAX_OPEN_ACTIONS_PER_LEAD - 1; number++)
+      success(yield* call(numbered(number)));
+    const capped = refusal(yield* call(numbered(999))) as { reason: string };
+    assert.strictEqual(capped.reason, "invalid_state");
+    assert.lengthOf(yield* rows, MAX_OPEN_ACTIONS_PER_LEAD + 1);
+  }).pipe(Effect.provide(layerWith(factsDuring(() => Effect.void)))),
 );
