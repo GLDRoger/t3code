@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.gldroger.kin</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Kin</name>
+  <summary>AI team leads in chat</summary>
+  <description>
+    <p>Kin: AI team leads in chat, built on T3 Code.</p>
+  </description>
+  <launchable type="desktop-id">kin.desktop</launchable>
+  <icon type="stock">kin</icon>
+  <provides>
+    <binary>kin</binary>
+  </provides>
+  <categories>
+    <category>Development</category>
+  </categories>
+</component>
