@@ -33,6 +33,9 @@ const options = ClaudeAdapterV2.makeClaudeQueryOptions({
   permissionMode: "acceptEdits",
 });
 
+const canUseTool: NonNullable<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions["canUseTool"]> = () =>
+  Promise.resolve({ behavior: "deny", message: "declined" });
+
 it.effect("a dream query loads no user config, MCP or shell and edits only its checkout", () =>
   Effect.gen(function* () {
     const opened: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
@@ -61,9 +64,20 @@ it.effect("a dream query loads no user config, MCP or shell and edits only its c
           .pipe(Effect.exit);
       yield* open("kin-dream:dream_20261108_fixture:extract");
       yield* open("thread-1");
+      // Anyone can name a thread with the prefix, so the wrapper must never widen its mode.
+      yield* runner
+        .open({
+          threadId: ThreadId.make("kin-dream:spoofed"),
+          providerSessionId: ProviderSessionId.make("session"),
+          options: { ...options, permissionMode: "default", canUseTool, hooks: {} },
+        })
+        .pipe(Effect.exit);
     }).pipe(Effect.provide(DreamIsolation.claudeQueryRunner(base)));
 
-    const [dream, other] = opened;
+    const [dream, other, spoofed] = opened;
+    assert.strictEqual(spoofed?.permissionMode, "default");
+    assert.strictEqual(spoofed?.canUseTool, canUseTool);
+    assert.isUndefined(spoofed?.hooks);
     assert.strictEqual(options.permissionMode, "bypassPermissions");
     assert.strictEqual(other, options);
     assert.strictEqual(dream?.permissionMode, "acceptEdits");

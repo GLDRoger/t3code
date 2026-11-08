@@ -17,6 +17,27 @@ const keptSettings = new Set([
   "autoCompactWindow",
 ]);
 
+// Only these adapter fields pass through, so a new SDK option can't silently widen a dream.
+const keptOptions = [
+  "model",
+  "effort",
+  "thinking",
+  "includePartialMessages",
+  "resume",
+  "sessionId",
+  "resumeSessionAt",
+  "canUseTool",
+  "onUserDialog",
+  "onElicitation",
+  "supportedDialogKinds",
+  "pathToClaudeCodeExecutable",
+  "env",
+  "cwd",
+  "systemPrompt",
+] as const satisfies ReadonlyArray<keyof ClaudeAdapterV2.ClaudeAgentSdkQueryOptions>;
+// Modes that already ask at least as often as acceptEdits; anything wider is narrowed to it.
+const narrowModes = new Set(["default", "plan", "dontAsk", "acceptEdits"]);
+
 /**
  * Dream material is untrusted, so a dream query loads no user, project or flag config and no MCP server,
  * and its only tools read and edit the checkout. Approvals for anything else reach DreamSession, which declines.
@@ -24,26 +45,21 @@ const keptSettings = new Set([
 const isolateClaudeDream = (
   options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions,
 ): ClaudeAdapterV2.ClaudeAgentSdkQueryOptions => {
-  const {
-    mcpServers: _mcpServers,
-    allowedTools: _allowedTools,
-    additionalDirectories: _additionalDirectories,
-    allowDangerouslySkipPermissions: _skip,
-    hooks: _hooks,
-    plugins: _plugins,
-    agents: _agents,
-    settings,
-    extraArgs,
-    ...rest
-  } = options;
+  const { settings, extraArgs, permissionMode } = options;
   const kept =
     typeof settings === "object" && settings !== null
       ? Object.fromEntries(Object.entries(settings).filter(([key]) => keptSettings.has(key)))
       : {};
   const thinking = extraArgs?.["thinking-display"];
   return {
-    ...rest,
-    permissionMode: "acceptEdits",
+    ...Object.fromEntries(
+      keptOptions.flatMap((key) => (options[key] === undefined ? [] : [[key, options[key]]])),
+    ),
+    // The prefix is not reserved, so the wrapper may narrow a thread's mode but never widen it.
+    permissionMode:
+      permissionMode !== undefined && narrowModes.has(permissionMode)
+        ? permissionMode
+        : "acceptEdits",
     settingSources: [],
     strictMcpConfig: true,
     tools: dreamTools,
