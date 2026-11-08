@@ -12,6 +12,7 @@ import {
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -105,13 +106,21 @@ const database = KinPersistence.layer.pipe(
   Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
 );
 
-function services(memoryDown: Ref.Ref<boolean>) {
+function services(memoryDown: Ref.Ref<boolean>, ticks: Map<string, Effect.Effect<void>>) {
   return Layer.mergeAll(
     KinTriggerStore.layer,
     KinTriggerInbox.layer,
     KinTriggerSink.layer,
     KinEventQueue.layer,
-    Layer.succeed(Scheduler.Scheduler, { register: () => Effect.void }),
+    Layer.succeed(Scheduler.Scheduler, {
+      register: Effect.fn("KinGithubEventsTest.register")(function* <E, R>(
+        name: string,
+        work: Effect.Effect<void, E, R>,
+      ) {
+        const context = yield* Effect.context<R>();
+        ticks.set(name, work.pipe(Effect.provideContext(context), Effect.orDie));
+      }),
+    }),
     Layer.succeed(GithubEvents.KinGithubRepoScope, { repos: ["Owner/Repo"] }),
     Layer.mock(Memory.Memory)({
       query: (org) =>
@@ -136,17 +145,20 @@ const run = <A, E, R>(
     deliver: (
       githubDelivery: string,
       payload: unknown,
+      event?: string,
     ) => Effect.Effect<ScheduledTaskWebhookDeliveryId, ScheduledTaskError>;
     redeliver: (
       githubDelivery: string,
       payload: unknown,
     ) => Effect.Effect<string, ScheduledTaskError>;
     drain: Effect.Effect<void, GithubEvents.KinGithubEventsError>;
+    tick: Effect.Effect<void>;
     memoryDown: Ref.Ref<boolean>;
   }) => Effect.Effect<A, E, R>,
 ) =>
   Effect.gen(function* () {
     const memoryDown = yield* Ref.make(false);
+    const ticks = new Map<string, Effect.Effect<void>>();
     return yield* Effect.gen(function* () {
       yield* seed;
       return yield* withScheduledTasks((tasks) =>
@@ -154,15 +166,19 @@ const run = <A, E, R>(
           const { task } = yield* tasks.upsert(
             yield* webhookTask(source.scheduledTaskId, `project-${orgId}`),
           );
-          yield* (yield* KinTriggerStore.KinTriggerStore).registerSource(source);
+          const store = yield* KinTriggerStore.KinTriggerStore;
+          yield* store.registerSource(source);
+          yield* store.bindSecret(orgId, source.id, Redacted.make("test-secret"));
+          // Deliveries must arrive after the secret they were signed with was bound.
+          yield* TestClock.adjust("1 second");
           const consumer = yield* Effect.provide(
             Effect.service(GithubEvents.KinGithubEvents),
             GithubEvents.layer,
           );
           return yield* body({
-            deliver: (githubDelivery, payload) =>
+            deliver: (githubDelivery, payload, event) =>
               waitForDispatch(
-                tasks.triggerWebhook(signedRequest(task, githubDelivery, payload)),
+                tasks.triggerWebhook(signedRequest(task, githubDelivery, payload, event)),
               ).pipe(
                 Effect.map((result) =>
                   result._tag === "accepted"
@@ -175,11 +191,12 @@ const run = <A, E, R>(
                 .triggerWebhook(signedRequest(task, githubDelivery, payload))
                 .pipe(Effect.map((result) => (result._tag === "accepted" ? result.outcome : ""))),
             drain: consumer.drain(orgId),
+            tick: ticks.get("kin-github-events") ?? Effect.die("tick not registered"),
             memoryDown,
           });
         }),
       );
-    }).pipe(Effect.provide(services(memoryDown)));
+    }).pipe(Effect.provide(services(memoryDown, ticks)));
   });
 
 const events = Effect.gen(function* () {
@@ -189,6 +206,13 @@ const events = Effect.gen(function* () {
   }>`SELECT json FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`;
   return rows.map((row) => decodeEvent(row.json));
 });
+const queueDown = (down: boolean) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* down
+      ? sql`CREATE TRIGGER queue_down BEFORE INSERT ON kin_events BEGIN SELECT RAISE(ABORT, 'down'); END`
+      : sql`DROP TRIGGER queue_down`;
+  });
 const pending = (kind: "github" | "github_recheck") =>
   Effect.gen(function* () {
     const inbox = yield* KinTriggerInbox.KinTriggerInbox;
@@ -209,7 +233,7 @@ describe("KinGithubEvents", () => {
           dedupeKey: "gh-1",
           eventName: "pull_request",
           repo: "owner/repo",
-          summary: "pull_request.closed in owner/repo #212 by alice",
+          summary: "pull_request.closed in owner/repo #212 by alice (hint; verify on GitHub)",
           scheduledTaskId: source.scheduledTaskId,
           webhookDeliveryId: deliveryId,
           provenance: { _tag: "system" },
@@ -217,6 +241,8 @@ describe("KinGithubEvents", () => {
         assert.deepInclude(condition, {
           _tag: "watchdog",
           dedupeKey: "github-condition:gh-1",
+          finding:
+            "GitHub event suggests condition met (hint; verify on GitHub before acting): pull_request.closed owner/repo#212 (merged)",
           itemIds: [whenMerged.id],
           provenance: { _tag: "system" },
         });
@@ -271,20 +297,134 @@ describe("KinGithubEvents", () => {
     ),
   );
 
-  it.effect("retries a failing fire and consumes it after 24 hours", () =>
+  it.effect("drops a pull_request header whose body is an issue", () =>
+    run(({ deliver, drain }) =>
+      Effect.gen(function* () {
+        const { pull_request: _, ...issue } = pullRequest();
+        yield* deliver("gh-5", { ...issue, issue: { number: 212 } });
+        yield* drain;
+        assert.strictEqual((yield* events).length, 0);
+        const [recheck] = yield* pending("github_recheck");
+        assert.include(recheck?.payload, { reason: "body_unparseable" });
+      }),
+    ),
+  );
+
+  it.effect("still enqueues the event while memory is down, without matching conditions", () =>
     run(({ deliver, drain, memoryDown }) =>
       Effect.gen(function* () {
         yield* Ref.set(memoryDown, true);
         yield* deliver("gh-4", pullRequest());
+        yield* drain;
+        assert.deepStrictEqual(
+          (yield* events).map((event) => event._tag),
+          ["github"],
+        );
+        assert.strictEqual((yield* pending("github")).length, 0);
+      }),
+    ),
+  );
+
+  it.effect("backs a failing fire off before retrying it", () =>
+    run(({ deliver, drain }) =>
+      Effect.gen(function* () {
+        yield* queueDown(true);
+        yield* deliver("gh-6", pullRequest());
+        yield* drain;
+        yield* queueDown(false);
+        yield* drain;
+        assert.strictEqual((yield* events).length, 0);
+        assert.strictEqual((yield* pending("github")).length, 1);
+        yield* TestClock.adjust("1 minute");
+        yield* drain;
+        assert.strictEqual((yield* events).length, 2);
+        assert.strictEqual((yield* pending("github")).length, 0);
+      }),
+    ),
+  );
+
+  it.effect("turns a fire still failing after 24 hours into a stale recheck", () =>
+    run(({ deliver, drain }) =>
+      Effect.gen(function* () {
+        yield* queueDown(true);
+        const deliveryId = yield* deliver("gh-7", pullRequest());
         yield* drain;
         assert.strictEqual((yield* pending("github")).length, 1);
         yield* TestClock.adjust("25 hours");
         yield* drain;
         assert.strictEqual((yield* pending("github")).length, 0);
         assert.strictEqual((yield* events).length, 0);
+        const [recheck] = yield* pending("github_recheck");
+        assert.deepStrictEqual(recheck?.payload, {
+          kind: "github_recheck",
+          repo: null,
+          reason: "stale",
+          sourceFireId: KinTriggerFireId.make(`gh:${orgId}:${deliveryId}`),
+        });
       }),
     ),
   );
+
+  it.effect("the tick consumes fires whose source was removed", () =>
+    run(({ deliver, tick }) =>
+      Effect.gen(function* () {
+        yield* deliver("gh-8", pullRequest());
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DELETE FROM kin_webhook_sources WHERE org_id = ${orgId}`;
+        yield* tick;
+        assert.strictEqual((yield* pending("github")).length, 0);
+        assert.strictEqual((yield* pending("github_recheck")).length, 0);
+        assert.strictEqual((yield* events).length, 0);
+      }),
+    ),
+  );
+});
+
+describe("KinGithubRepoScope", () => {
+  const scope = (env: Record<string, string>) =>
+    Effect.service(GithubEvents.KinGithubRepoScope).pipe(
+      Effect.map(({ repos }) => repos),
+      Effect.provide(
+        GithubEvents.repoScopeLayer.pipe(
+          Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(env))),
+        ),
+      ),
+    );
+  it.effect.each([
+    { name: "unset", env: {}, repos: [] },
+    { name: "empty", env: { KIN_GITHUB_REPOS: " , " }, repos: [] },
+    {
+      name: "spaced",
+      env: { KIN_GITHUB_REPOS: " owner/repo , Owner/Other " },
+      repos: ["owner/repo", "Owner/Other"],
+    },
+    { name: "invalid", env: { KIN_GITHUB_REPOS: "owner/repo,not a repo" }, repos: [] },
+  ])("$name", ({ env, repos }) =>
+    Effect.gen(function* () {
+      assert.deepStrictEqual(yield* scope(env), repos);
+    }),
+  );
+});
+
+describe("githubEventFromDelivery", () => {
+  const delivery = (event: string, payload: unknown) => ({
+    id: ScheduledTaskWebhookDeliveryId.make("delivery:1"),
+    receivedAt: timestamp,
+    headers: { "x-github-event": event, "x-github-delivery": "gh" },
+    body: JSON.stringify(payload),
+    bodyTruncated: false,
+  });
+  it.each([
+    { event: "ping", payload: { zen: "hi" }, tag: "drop" },
+    { event: "installation", payload: pullRequest(), tag: "drop" },
+    { event: "Pull-Request", payload: pullRequest(), tag: "recheck" },
+    { event: "push", payload: pullRequest(), tag: "recheck" },
+  ])("$event becomes a $tag", ({ event, payload, tag }) => {
+    assert.strictEqual(
+      GithubEvents.githubEventFromDelivery(orgId, delivery(event, payload))._tag,
+      tag,
+    );
+  });
 });
 
 describe("matchConditions", () => {

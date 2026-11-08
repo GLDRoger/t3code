@@ -101,7 +101,7 @@ export const KinTriggerFired = Schema.Struct({
     Schema.Struct({
       kind: Schema.Literal("github_recheck"),
       repo: Schema.NullOr(GithubRepoSlug),
-      reason: Schema.Literals(["delivery_missing", "body_unparseable", "repo_unknown"]),
+      reason: Schema.Literals(["delivery_missing", "body_unparseable", "repo_unknown", "stale"]),
       sourceFireId: KinTriggerFireId,
     }),
   ]),
