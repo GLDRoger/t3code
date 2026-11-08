@@ -260,9 +260,13 @@ const make = Effect.gen(function* () {
         run.push({ text, line });
         while (run.length > 8 || run.reduce((sum, part) => sum + part.text.length, 0) > 4096)
           run.shift();
-        if (run.length > 1) yield* inspect(run.map((part) => part.text).join(""), run[0]!.line, 0);
+        if (run.length < 2) return;
+        const joined = run.map((part) => part.text).join("");
+        // No rule matches without an anchor and no decoder starts below 20 characters.
+        if (joined.length >= 20 || anchors.test(joined)) yield* inspect(joined, run[0]!.line, 0);
       };
       for (const [index, raw] of lines.entries()) {
+        if (index % 1024 === 1023) yield* Effect.yieldNow;
         const words = raw
           .replace(/\\?\r$/, "")
           .replace(/\\$/, "")
