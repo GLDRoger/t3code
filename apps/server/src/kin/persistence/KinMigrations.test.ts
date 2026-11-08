@@ -106,6 +106,8 @@ describe("Kin migrations", () => {
         );
         for (const [table, names] of [
           ["kin_triggers", ["next_run_at", "created_at", "updated_at"]],
+          ["kin_auth_session_keys", ["created_at", "repaired_at"]],
+          ["kin_auth_key_repairs", ["created_at", "consumed_at"]],
           ["kin_trigger_fires", ["fired_at"]],
           ["kin_trigger_inbox", ["received_at", "consumed_at"]],
           ["kin_ping_ledger", ["pinged_at", "escalated_at"]],
@@ -124,7 +126,9 @@ describe("Kin migrations", () => {
           yield* sql`SELECT name FROM pragma_table_info('kin_webhook_sources') WHERE pk > 0 ORDER BY pk`,
           [{ name: "org_id" }, { name: "source_id" }],
         );
-        for (const { name } of before.filter((row) => !["kin_auth_session_keys", "kin_auth_key_repairs"].includes(row.name))) {
+        for (const { name } of before.filter(
+          (row) => !["kin_auth_session_keys", "kin_auth_key_repairs"].includes(row.name),
+        )) {
           const columns = yield* sql<{ name: string; notnull: number }>`
           SELECT name, "notnull" FROM pragma_table_info(${name})
         `;

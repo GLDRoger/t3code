@@ -1,4 +1,4 @@
-import { sessionHooks } from "../kin/auth/sessionHooks.ts";
+import { SessionHooks } from "../kin/auth/sessionHooks.ts";
 import {
   AuthSessionId,
   AuthStandardClientScopes,
@@ -496,7 +496,6 @@ const make = Effect.gen(function* () {
   const serverEnvironment = yield* ServerEnvironment.ServerEnvironmentIdentity;
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
   const authSessions = yield* AuthSessions.AuthSessionRepository;
-  const proofKeys = yield* sessionHooks;
   const signer = yield* PayloadSigner.fromSecret(
     yield* secretStore.getOrCreateRandom(SIGNING_SECRET_NAME, 32),
   );
@@ -700,7 +699,6 @@ const make = Effect.gen(function* () {
         issuedAt,
         expiresAt,
       } satisfies AuthSessions.CreateAuthSessionInput;
-      if (claims.jkt) yield* proofKeys.onIssue(sessionId, claims.jkt);
       const replacedSessionIds = yield* (
         input?.replaceSessionId !== undefined || input?.replaceActiveForSubjectAndMethod
           ? authSessions.createReplacingActive({
@@ -1101,7 +1099,7 @@ const make = Effect.gen(function* () {
     );
   });
 
-  return SessionStore.of({
+  return (yield* SessionHooks).wrap({
     cookieName,
     legacyCookieName,
     issue,

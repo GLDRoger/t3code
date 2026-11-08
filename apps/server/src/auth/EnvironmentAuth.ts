@@ -1,5 +1,5 @@
 import * as ProofKeySessions from "../kin/auth/ProofKeySessions.ts";
-import { sessionHooks } from "../kin/auth/sessionHooks.ts";
+import { SessionHooks } from "../kin/auth/sessionHooks.ts";
 import {
   AuthAccessTokenType,
   AuthAccessWriteScope,
@@ -715,7 +715,6 @@ export const make = Effect.gen(function* () {
   const policy = yield* EnvironmentAuthPolicy.EnvironmentAuthPolicy;
   const bootstrapCredentials = yield* PairingGrantStore.PairingGrantStore;
   const sessions = yield* SessionStore.SessionStore;
-  const proofKeys = yield* sessionHooks;
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
   const digest = yield* Digest.Digest;
   const descriptor = yield* policy.getDescriptor();
@@ -911,7 +910,7 @@ export const make = Effect.gen(function* () {
 
   type ResolvedBootstrapGrant = Pick<
     PairingGrantStore.BootstrapGrant,
-    "scopes" | "subject" | "label" | "proofKeyThumbprint"
+    "scopes" | "subject" | "label"
   > & {
     readonly method: PairingGrantStore.BootstrapGrant["method"] | "reusable-dev-token";
   };
@@ -964,7 +963,7 @@ export const make = Effect.gen(function* () {
       }).pipe(
         Effect.flatMap((grant) =>
           Effect.gen(function* () {
-            yield* proofKeys.checkExchange(input?.proofKeyThumbprint, grant);
+            yield* (yield* SessionHooks).checkExchange(input?.proofKeyThumbprint, grant);
             const grantedScopes =
               requestedScopes === undefined
                 ? grant.scopes
@@ -1468,7 +1467,7 @@ export const layer = Layer.effect(EnvironmentAuth, make).pipe(
 const layerStorage = Layer.mergeAll(ServerSecretStore.layer, SqlitePersistence.layerConfig);
 
 export const layerRuntime = layer.pipe(
-  Layer.provide(ProofKeySessions.layer),
+  Layer.provideMerge(ProofKeySessions.layer),
   Layer.provideMerge(ManagedPolicy.layer),
   Layer.provideMerge(layerStorage),
   Layer.provideMerge(ServerEnvironment.layerIdentity),
