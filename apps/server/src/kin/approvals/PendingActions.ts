@@ -34,6 +34,7 @@ import {
   type PersistenceSqlError,
   toPersistenceSqlError,
 } from "../../persistence/Errors.ts";
+import { revokedBySession } from "../auth/ProofKeySessions.ts";
 
 const AWAITING_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 // A grant lapses at min(exp, acceptedAt + 15 min) (approvals spec section 5).
@@ -346,8 +347,11 @@ const make = Effect.gen(function* () {
   }) => sql`EXISTS (SELECT 1 FROM kin_approver_keys k
     WHERE k.org_id = ${input.orgId} AND k.thumbprint = ${input.keyThumbprint}
       AND k.human_id = ${input.approverHumanId} AND k.state = 'active' AND k.attested = 1
-      AND NOT EXISTS (SELECT 1 FROM auth_sessions s
-        WHERE s.session_id = k.session_id AND s.revoked_at IS NOT NULL))`;
+      AND NOT ${revokedBySession(
+        sql,
+        { sessionId: sql`k.session_id`, proofKey: sql`k.proof_key_thumbprint` },
+        { honorRepairs: false },
+      )})`;
 
   const heldGrant = Effect.fn("KinPendingActions.heldGrant")(
     selectHeld,

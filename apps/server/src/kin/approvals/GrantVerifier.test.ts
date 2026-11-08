@@ -19,6 +19,7 @@ import {
 import { computeDpopJwkThumbprint } from "@t3tools/shared/dpop";
 import { encodeGrantSigningInput } from "@t3tools/shared/kinGrant";
 import { stableStringify } from "@t3tools/shared/relaySigning";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -27,7 +28,9 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as SessionStore from "../../auth/SessionStore.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
+import { layerKinAuthTest } from "../auth/ProofKeySessions.testkit.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { ApproverKeys, layer as approverKeysLayer, type KinKeyCaller } from "./ApproverKeys.ts";
 import { KinAttestationTrust } from "./attestation/AttestationTrust.ts";
@@ -121,14 +124,17 @@ function harness() {
     append: (entry) => Effect.sync(() => void audit.push(entry)),
   });
   const trust = Layer.succeed(KinAttestationTrust, { load: () => Effect.succeed(fixture.trust) });
-  const database = Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory);
-  const layer = grantVerifierLayer.pipe(
-    Layer.provideMerge(approverKeysLayer),
-    Layer.provideMerge(pendingActionsLayer),
-    Layer.provide(Layer.mergeAll(trust, roles, live, auditLayer)),
-    Layer.provideMerge(database),
-  );
-  return { audit, github, race, layer };
+  const on = <A, E, R>(database: Layer.Layer<A, E, R>) =>
+    grantVerifierLayer.pipe(
+      Layer.provideMerge(approverKeysLayer),
+      Layer.provideMerge(pendingActionsLayer),
+      Layer.provide(Layer.mergeAll(trust, roles, live, auditLayer)),
+      Layer.provideMerge(Layer.provideMerge(KinPersistence.layer, database)),
+    );
+  const layer = on(Sqlite.layerMemory);
+  // Real T3 auth with Kin's proof key hooks, so revocations write what #54 writes.
+  const relayLayer = on(layerKinAuthTest("kin-grants-"));
+  return { audit, github, race, layer, relayLayer };
 }
 
 const seed = Effect.gen(function* () {
@@ -271,6 +277,20 @@ const reasonOf = <A>(exit: Exit.Exit<A, KinApprovalError>) =>
 
 const stateOf = (actions: KinPendingActions["Service"], action: KinPendingAction) =>
   actions.get({ orgId, actionId: action.id }).pipe(Effect.map((found) => Option.getOrThrow(found)));
+
+/** The owner's relay phone: a DPoP session that renews under a new id with the same proof key. */
+const relayPhone = (ttl: Duration.Duration) =>
+  Effect.gen(function* () {
+    const issued = yield* (yield* SessionStore.SessionStore).issue({
+      proofKeyThumbprint: "relay-phone",
+      ttl,
+    });
+    const phone = callerFor(issued.sessionId, owner);
+    return {
+      ...phone,
+      session: { ...phone.session, method: "dpop-access-token", proofKeyThumbprint: "relay-phone" },
+    } satisfies KinKeyCaller;
+  });
 
 const signerOf = (key: { key: { thumbprint: string }; privateKey: NodeCrypto.KeyObject }) => ({
   privateKey: key.privateKey,
@@ -838,6 +858,58 @@ describe("GrantVerifier", () => {
         SELECT action_id FROM kin_pending_actions WHERE state = 'awaiting_approval')`;
       assert.strictEqual(held.length, 0);
     }).pipe(Effect.provide(h.layer));
+  });
+
+  it.effect(
+    "revoking a relay phone's renewed session rejects its key's grants, even mid-check",
+    () => {
+      const h = harness();
+      return Effect.gen(function* () {
+        const { grants, actions, keys } = yield* enrol;
+        const sessions = yield* SessionStore.SessionStore;
+        const first = yield* relayPhone(Duration.minutes(1));
+        const relayKey = yield* register(keys, first);
+        assert.isTrue(yield* keys.activateByGrant(relayKey.key));
+        yield* TestClock.adjust(Duration.minutes(2));
+        const renewed = yield* relayPhone(Duration.hours(1));
+
+        // Settings revokes the session it lists, while check 9 reads GitHub.
+        const raced = yield* requestMerge(actions, 212, h.github);
+        const compact = yield* signFor(grants, renewed, raced, signerOf(relayKey));
+        h.race.during = Effect.orDie(sessions.revoke(renewed.session.sessionId));
+        assert.strictEqual(
+          reasonOf(yield* Effect.exit(grants.submitGrant(renewed, { compact }))),
+          "revoked_key",
+        );
+        assert.strictEqual((yield* stateOf(actions, raced)).state, "awaiting_approval");
+        delete h.race.during;
+
+        const later = yield* requestMerge(actions, 213, h.github);
+        const next = yield* signFor(grants, renewed, later, signerOf(relayKey));
+        assert.strictEqual(
+          reasonOf(yield* Effect.exit(grants.submitGrant(renewed, { compact: next }))),
+          "revoked_key",
+        );
+      }).pipe(Effect.provide(h.relayLayer));
+    },
+  );
+
+  it.effect("a phone that signs out other devices still approves with its own key", () => {
+    const h = harness();
+    return Effect.gen(function* () {
+      const { grants, actions, keys } = yield* enrol;
+      const sessions = yield* SessionStore.SessionStore;
+      const first = yield* relayPhone(Duration.hours(1));
+      const relayKey = yield* register(keys, first);
+      assert.isTrue(yield* keys.activateByGrant(relayKey.key));
+      const renewed = yield* relayPhone(Duration.hours(1));
+      yield* sessions.revokeAllExcept(renewed.session.sessionId);
+
+      const action = yield* requestMerge(actions, 212, h.github);
+      const compact = yield* signFor(grants, renewed, action, signerOf(relayKey));
+      yield* grants.submitGrant(renewed, { compact });
+      assert.strictEqual((yield* stateOf(actions, action)).state, "approved");
+    }).pipe(Effect.provide(h.relayLayer));
   });
 
   it.effect("an active key the server never attested can't sign", () => {
