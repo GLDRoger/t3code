@@ -315,6 +315,17 @@ describe("ApproverKeys", () => {
     }).pipe(Effect.provide(relayLayer)),
   );
 
+  it.effect("signing out other devices revokes a phone whose sessions had all expired", () =>
+    Effect.gen(function* () {
+      const { keys, sessions, relay } = yield* seedRelay;
+      const other = yield* registerAndroid(keys, yield* relay("phone-b"));
+      yield* TestClock.adjust(Duration.minutes(61));
+      const current = yield* relay("phone-a");
+      yield* sessions.revokeAllExcept(current.session.sessionId);
+      assert.strictEqual(Option.getOrThrow(yield* keys.get(other.key)).state, "revoked");
+    }).pipe(Effect.provide(relayLayer)),
+  );
+
   it.effect("revoking a session after it expired leaves its key alone", () =>
     Effect.gen(function* () {
       const { keys, sessions, relay } = yield* seedRelay;
