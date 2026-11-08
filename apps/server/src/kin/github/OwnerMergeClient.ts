@@ -71,6 +71,8 @@ function classifyProbe(
   ) {
     return "rate_limited";
   }
+  // GitHub's secondary limit can come with neither header.
+  if (answer.message?.toLowerCase().includes("secondary rate limit")) return "rate_limited";
   return answer.message?.trim() === NOT_ACCESSIBLE_MESSAGE ? "denied" : "allowed";
 }
 

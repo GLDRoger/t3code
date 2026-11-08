@@ -154,6 +154,9 @@ describe("OwnerMergeClient", () => {
       assert.isTrue(Exit.isSuccess(yield* client.token(fresh).pipe(Effect.exit)));
       yield* TestClock.adjust("1 millis");
       assert.isTrue(Exit.hasDies(yield* client.token(fresh).pipe(Effect.exit)));
+      assert.throws(() => {
+        (fresh.report as { checkedAt: unknown }).checkedAt = NOW + DAY;
+      });
     }).pipe(Effect.provide(layer));
   });
 
@@ -305,6 +308,15 @@ describe("OwnerMergeClient", () => {
       }),
       "rate_limited",
       "Administration on GLDRoger/t3code: HTTP 403",
+    ],
+    [
+      "a secondary rate limit with no rate-limit headers",
+      answering("/repos/GLDRoger/t3code/hooks", {
+        status: 403,
+        body: { message: "You have exceeded a secondary rate limit." },
+      }),
+      "rate_limited",
+      "Webhooks on GLDRoger/t3code: HTTP 403",
     ],
     [
       "a 429",
