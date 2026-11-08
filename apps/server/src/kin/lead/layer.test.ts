@@ -30,28 +30,36 @@ vi.mock("../memory/Memory.ts", async (importOriginal) => {
   const DateTime = await import("effect/DateTime");
   return {
     ...original,
-    layer: Layer.sync(original.Memory, () => {
-      let prepared = false;
-      return original.Memory.of({
-        ensureCheckouts: () => Effect.succeed({ writer: "/private/tmp", read: "/private/tmp" }),
-        prepareWakeup: () =>
-          Effect.sync(() => {
-            prepared = true;
-            return { head: "fixture-head", indexAsOf: DateTime.makeUnsafe(0) };
-          }),
-        readPromptSnapshot: (_orgId, head) =>
-          prepared && head === "fixture-head"
-            ? Effect.succeed({ rules: "Fixture standing rules", index: "Fixture memory index" })
-            : Effect.die("Prompt and runner must share pinned memory"),
-        readIndex: () => Effect.die("unused"),
-        readRules: () => Effect.die("unused"),
-        query: () => Effect.die("unused"),
-        readItem: () => Effect.die("unused"),
-        readItemQuietly: () => Effect.die("unused"),
-        rebuildIndex: () => Effect.die("unused"),
-        rebuildCache: () => Effect.die("unused"),
-      });
-    }),
+    layer: Layer.effect(
+      original.Memory,
+      Effect.gen(function* () {
+        yield* original.MemoryRecoveryHooks;
+        let prepared = false;
+        return original.Memory.of({
+          withWriterLock: (_orgId, effect) => effect,
+          anchor: () => Effect.die("unused"),
+          record: () => Effect.die("unused"),
+          recover: () => Effect.die("unused"),
+          ensureCheckouts: () => Effect.succeed({ writer: "/private/tmp", read: "/private/tmp" }),
+          prepareWakeup: () =>
+            Effect.sync(() => {
+              prepared = true;
+              return { head: "fixture-head", indexAsOf: DateTime.makeUnsafe(0) };
+            }),
+          readPromptSnapshot: (_orgId, head) =>
+            prepared && head === "fixture-head"
+              ? Effect.succeed({ rules: "Fixture standing rules", index: "Fixture memory index" })
+              : Effect.die("Prompt and runner must share pinned memory"),
+          readIndex: () => Effect.die("unused"),
+          readRules: () => Effect.die("unused"),
+          query: () => Effect.die("unused"),
+          readItem: () => Effect.die("unused"),
+          readItemQuietly: () => Effect.die("unused"),
+          rebuildIndex: () => Effect.die("unused"),
+          rebuildCache: () => Effect.die("unused"),
+        });
+      }),
+    ),
   };
 });
 

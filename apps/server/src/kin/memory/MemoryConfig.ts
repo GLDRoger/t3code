@@ -10,6 +10,11 @@ export class MemoryConfig extends Context.Service<
   MemoryConfig,
   {
     readonly baseDirectory: string;
+    readonly defaultBranch?: string;
+    readonly botName?: string;
+    readonly credentialHelper?: string;
+    readonly sshCommand?: string;
+    readonly botEmail?: string;
     readonly repositories: ReadonlyArray<{
       readonly orgId: KinOrgId;
       readonly repoUrl: string;

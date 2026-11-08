@@ -44,7 +44,20 @@ export const layer = Layer.effectDiscard(
   Layer.provide(WakeupRunner.layer),
   Layer.provide(
     Layer.mergeAll(KinLeadRegistry.layer, KinLeadPrompt.layer).pipe(
-      Layer.provideMerge(Layer.mergeAll(Memory.layer, KinChatRepository.layer)),
+      Layer.provideMerge(
+        Layer.mergeAll(
+          Memory.layer.pipe(
+            Layer.provide(
+              Layer.succeed(Memory.MemoryRecoveryHooks, {
+                notify: Effect.fn("KinMemoryRecovery.notify")((notice) =>
+                  Effect.logWarning("Kin memory recovery requires operator attention", notice),
+                ),
+              }),
+            ),
+          ),
+          KinChatRepository.layer,
+        ),
+      ),
     ),
   ),
   Layer.provide(KinPersistence.layer),

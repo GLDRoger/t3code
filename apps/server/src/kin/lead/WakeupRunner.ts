@@ -351,7 +351,7 @@ const make = Effect.gen(function* () {
             }
             if (events.length === 0) return;
             const budgetContext = yield* budget.promptContext(orgId);
-            const pinned = yield* memory.prepareWakeup(orgId).pipe(
+            const pinned = yield* memory.prepareWakeup(orgId, wakeupId).pipe(
               Effect.tapError((error) =>
                 Effect.logError("Kin memory preparation failed", {
                   orgId,
