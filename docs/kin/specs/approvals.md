@@ -197,7 +197,9 @@ export const KinApproverKey = Schema.Struct({
 
 Registration:
 
-1. The phone calls `kin.approvals.registerKey({publicJwk, platform, hardware, attestation?, deviceLabel})` over an authenticated session with `access:write`. The server stores it as `pending` and returns a 6-digit code derived from `sha256(thumbprint ‖ serverNonce)`.
+1. The phone calls `kin.approvals.keyChallenge()` (`access:write`), which returns a single-use 32-byte nonce bound to that session and valid for 5 minutes. It passes the nonce to `createKey`, then calls `kin.approvals.registerKey({publicJwk, platform, challenge, attestation?, deviceLabel})` over the same session. The server consumes the nonce, stores the key as `pending` and returns a 6-digit code derived from `sha256(thumbprint ‖ serverNonce)`.
+   - **Android:** `attestation.certificateChain` is required. The server checks it offline: the chain verifies up to a Google hardware attestation root and no certificate is on Google's attestation revocation list; the leaf's public key equals `publicJwk`; the leaf's KeyDescription has `attestationChallenge` equal to the nonce, `attestationSecurityLevel` and `keyMintSecurityLevel` (`keymasterSecurityLevel` before KeyMint) of `TrustedEnvironment` or `StrongBox`, and in `hardwareEnforced`: purpose `SIGN`, algorithm EC on P-256, digest SHA-256, `userAuthType` biometric only (`FINGERPRINT`, the value Keystore uses for every strong biometric), no `authTimeout`, no `noAuthRequired`, `origin` `GENERATED`, and `rootOfTrust` with `verifiedBootState` `Verified` and `deviceLocked` true; `attestationApplicationId` names the release package with a signing-certificate SHA-256 on the server's allowlist. All pass: `attested: true`, and `hardware` is `strongbox` or `tee` from the attestation security level. Any check fails: `attested: false`, `hardware: "software"`. The client never supplies `hardware`.
+   - **iOS:** no attestation in phase 1, so the key is stored with `attested: false` and `hardware: "secure_enclave"`, which is claimed by the platform, not proven.
 2. **First key in an org:** confirmed on the Mac running the server, in the desktop app's local session (loopback only), where the owner checks the code shown on both screens. No remote path can confirm the first key.
 3. **Later keys:** confirmed by a grant of kind `register_approver_key` signed by an existing active key.
 4. Revoking (`kin.approvals.revokeKey`, from settings or the desktop) sets `revoked` and voids every `approved` action whose grant that key signed. Revoking a T3 device session (`revokeClient`) also revokes keys registered from it.
@@ -206,7 +208,7 @@ A key's role isn't stored on the key. It is read at verify time from org members
 
 ### 5. `KinGrant`: format and checks
 
-The grant is a compact JWS: `b64url(header).b64url(payload).b64url(sig)`, ES256, payload bytes = `stableStringify(payload)`.
+The grant is a compact JWS: `b64url(header).b64url(payload).b64url(sig)`, ES256, with header bytes = `stableStringify(header)` and payload bytes = `stableStringify(payload)` (`packages/shared/src/relaySigning.ts`), and `b64url` unpadded. The signing input is the ASCII string `b64url(header).b64url(payload)`. The header has exactly the three fields below; `target` is encoded with its `_tag`. `headSha` is present for `merge_pull_request` and `delete_branch` and absent otherwise; `base` and `mergeMethod` are present for `merge_pull_request` only, and `mergeMethod` equals `target.mergeMethod`.
 
 ```ts
 export const KinGrantHeader = Schema.Struct({
@@ -240,9 +242,9 @@ export const KinGrantPayload = Schema.Struct({
 
 `kin.approvals.submitGrant({compact})` checks, in this order, and stops at the first failure with a typed reason:
 
-1. Decode header and payload; `alg`, `typ`, no `jwk` → `malformed`.
-2. `kid` is an `active` key in `payload.orgId` → `unknown_key` / `revoked_key`.
-3. Signature verifies with `p256.verify(sig, sha256(signingInput), key, {prehash: false, format: "compact"})`, as `verifyDpopProof` does → `bad_signature`.
+1. Decode header and payload; `alg`, `typ`, no `jwk`; each part's bytes equal `stableStringify(JSON.parse(bytes))` → `malformed`.
+2. `kid` is an `active` key in `payload.orgId`, and `payload.approver.kid` equals it → `unknown_key` / `revoked_key`.
+3. Signature verifies with `p256.verify(sig, sha256(signingInput), key, {prehash: false, format: "compact", lowS: true})` → `bad_signature`. Unlike `verifyDpopProof`, `lowS: true` is required: the device always sends low-S, and ECDSA's `(r, n − s)` twin of a signature would otherwise also verify. Never identify or deduplicate a grant by its compact string; `jti` is its identity, and `compact` is kept for audit only.
 4. `approver.humanId` equals the key's `humanId`, and that person currently meets a `requiredApprovers` entry (phase 1: holds the owner role in the org) → `not_owner`.
 5. The RPC caller's session is the session the key was registered from, or another session of the same person → `session_mismatch`. (Defence in depth; the signature is the real check.)
 6. Pending action exists in the org, is `awaiting_approval`, and `revision` and `nonce` match → `stale` (the card refreshes).
@@ -464,7 +466,7 @@ Upstream hooks (one line each):
 - HTTP route for `/kin/mcp` — the same router hook the chat spec uses for Kin routes.
 - `apps/mobile/app.config.ts` — `"./plugins/withKinApprovalKey.cjs",` in `plugins`.
 
-RPCs and scopes: `kin.approvals.list` (stream) and `get` → `orchestration:read`; `challenge`, `submitGrant`, `reject` → `orchestration:operate`; `registerKey`, `confirmKey`, `listKeys`, `revokeKey`, `kin.audit.list`, `kin.audit.verify` → `access:write`. Scopes are only the outer gate; the person and signature checks above are the real ones.
+RPCs and scopes: `kin.approvals.list` (stream) and `get` → `orchestration:read`; `challenge`, `submitGrant`, `reject` → `orchestration:operate`; `keyChallenge`, `registerKey`, `confirmKey`, `listKeys`, `revokeKey`, `kin.audit.list`, `kin.audit.verify` → `access:write`. Scopes are only the outer gate; the person and signature checks above are the real ones.
 
 ## Interfaces to other specs
 
