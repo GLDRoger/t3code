@@ -12,6 +12,7 @@ import * as HttpRouter from "effect/http/HttpRouter";
 import * as Option from "effect/Option";
 import * as KinChat from "./chat/layer.ts";
 import * as KinApprovals from "./approvals/layer.ts";
+import * as KinPush from "./push/layer.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
 
 import { KinServer, type Services } from "./KinServer.ts";
@@ -41,7 +42,7 @@ const enabled = Layer.effect(
   Layer.provide(
     Layer.merge(
       KinChat.layer.pipe(Layer.provide(JudgeShadow.layer.pipe(Layer.provide(NoopJudge.layer)))),
-      KinApprovals.layer,
+      KinPush.layer.pipe(Layer.provideMerge(KinApprovals.layer)),
     ),
   ),
 );

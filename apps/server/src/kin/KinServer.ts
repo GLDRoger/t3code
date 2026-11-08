@@ -8,8 +8,19 @@ import { KinChatHub } from "./chat/KinChatHub.ts";
 import { KinBudget } from "./lead/KinBudget.ts";
 import { KinEventQueue } from "./lead/KinEventQueue.ts";
 import { ApproverKeys } from "./approvals/ApproverKeys.ts";
+import type { KinPushDevices } from "./push/KinPushDevices.ts";
+import type { KinPushPresence } from "./push/KinPushPresence.ts";
+import type { KinPushSender } from "./push/KinPushSender.ts";
 
-export type Services = KinIdentity | KinChatService | KinBudget | KinEventQueue | ApproverKeys;
+export type Services =
+  | KinIdentity
+  | KinChatService
+  | KinBudget
+  | KinEventQueue
+  | ApproverKeys
+  | KinPushDevices
+  | KinPushPresence
+  | KinPushSender;
 
 export class KinServer extends Context.Service<
   KinServer,

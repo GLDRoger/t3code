@@ -128,7 +128,7 @@ export const kinClient = {
   }),
   registerPush: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:register-push",
-    tag: KIN_PUSH_METHODS.registerDevice,
+    tag: KIN_PUSH_WS_METHODS.registerDevice,
   }),
 };
 ```
@@ -163,14 +163,14 @@ KinPendingAction (view) = { orgId, pendingActionId, kind: "merge" | ..., status:
   expiresAt? }
 ```
 
-Mobile-owned data (**new**, `features/chats/notifications/kinPushPayload.ts`, decoded with Effect Schema):
+Push data, shared with the sender as `KinPushData` in `packages/contracts/src/kinPush.ts` and decoded by `features/chats/notifications/kinPushPayload.ts`:
 
 ```ts
 export const KinPushData = Schema.Struct({
   kin: Schema.Literal(1),
   orgId: KinOrgId,
-  chatId: Schema.String,
-  widgetId: Schema.optional(Schema.String),
+  chatId: Schema.optional(KinChatId), // approvals with no chat have none
+  widgetId: Schema.optional(KinWidgetId),
   revision: Schema.optional(Schema.Number),
   pendingActionId: Schema.optional(Schema.String),
   deepLink: Schema.String, // must match /kin/... ; anything else is dropped
@@ -258,12 +258,15 @@ Hiding the buttons is a convenience, not the protection (DESIGN 9.3). The server
 
 ### Notifications with action buttons
 
-**Sending (backend, this spec).** T3's relay can't carry Kin's pushes (see Design corrections). `apps/server/src/kin/push/KinPushSender.ts` (**new**) sends APNs pushes directly from the Kin server, over HTTP/2 with token auth. The `.p8` key is in the Kin host's keychain via `ServerSecretStore` (`apps/server/src/auth/ServerSecretStore.ts`).
+**Sending (backend, this spec).** T3's relay can't carry Kin's pushes (see Design corrections). `apps/server/src/kin/push/KinPushSender.ts` sends APNs pushes directly from the Kin server, over HTTP/2 with token auth. The `.p8` key is a file on the Kin host outside the repo, named by `KIN_APNS_KEY_FILE`, with `KIN_APNS_KEY_ID`, `KIN_APNS_TEAM_ID` and `KIN_APNS_TOPIC` (the Kin bundle id), in the same environment as `KIN_ENABLED`. If any is missing or the key won't load, push is off: Kin still starts, nothing is sent, the server logs why, and `registerDevice` answers `sending: "unconfigured"`.
 
-- Device tokens are registered through `kin.push.registerDevice` (**new**, contracts in `packages/contracts/src/kinPush.ts`).
-- The payload carries `aps.category` and `KinPushData`. Its text stays short and contains no PR body or agent free text, for example "Merge #212 is waiting on you".
-- The sender skips a push when the device holds a live subscription to that chat and the app is in the foreground. Upstream owns the foreground handler, so this check has to happen on the server.
-- Approval pushes go only to the approvers' devices (DESIGN 9.3).
+- Device tokens are registered through `kin.push.registerDevice` and removed through `kin.push.unregisterDevice` (contracts in `packages/contracts/src/kinPush.ts`, `orchestration:read`). A row is per org and token, owned by the person and session that last registered it. The phone registers on every connect, which moves the row to its current session. Rows go away on unregister, when APNs says the token is dead, and when the registering T3 session is revoked (read from `auth_sessions`, as approver keys do).
+- The payload carries `aps.category` and `KinPushData` under the `body` key, which is what expo-notifications returns as `content.data` for a remote push. `chatId` is optional, because an approval such as adding a key has no chat. Its text is fixed per kind and contains no PR body or agent free text, for example "Merge #212 is waiting on you".
+- The sender skips a device whose session has a live `kin.chat.subscribe` stream for that chat. Upstream owns the foreground handler, so this check has to happen on the server. MOB-11 must end the chat stream when the app leaves the foreground, so that a live stream means the chat is on screen.
+- Approval pushes go only to the devices of people with an `active` approver key (DESIGN 9.3), read after session revocations. Approval cards in chat never push on their own.
+- Callers pass ids only, `notify({ _tag: "approval", actionId } | { _tag: "message", messageId } | { _tag: "widget", widgetId })`. The sender reads recipients from the database: approvers, the chat's people other than the author for messages (muted members skipped), and the widget's `awaiting` people who are still in the chat. Not wired yet: APPR-3's `request_action` and `registerKey` call `approval` after creating an action, and lane A calls `message` after a post and `widget` when a deferral changes phase or a card starts waiting on someone.
+
+**Test push (dev only).** Nishchay creates an APNs auth key (Keys, Apple Push Notifications service) in the team that signs the Kin build, then, on the Kin host with a development build installed, runs `cd apps/server && KIN_APNS_KEY_FILE=… KIN_APNS_KEY_ID=… KIN_APNS_TEAM_ID=… KIN_APNS_TOPIC=<bundle id> node scripts/kin-push-test.ts <device token> development`. The token comes from `Notifications.getDevicePushTokenAsync()` on the phone. APNs answering 200 and the banner showing is MOB-10's last "done when".
 
 **Receiving (`features/chats/notifications/installKinNotifications.ts`, new).**
 
@@ -327,7 +330,7 @@ Upstream files touched, one hook each:
 - No widget kind falls back to a WebView in phase 1. Generated widgets (phase 2) go through `makeMcpAppHost` with the existing outer-document check that a real person tapped.
 - Push payloads hold ids and short fixed text only. Apple sees them.
 - Deep links from notifications are checked (`/kin/` prefix, schema decode) before navigation. Route params are treated as untrusted: a `KinApproval` link for an action the viewer can't approve shows the read-only card.
-- The `.p8` APNs key stays in the server secret store, never in the repo or logs.
+- The `.p8` APNs key stays in a file on the Kin host, never in the repo or logs. Device tokens are never logged; logs use a 12-character hash.
 
 ## Tests and acceptance criteria
 

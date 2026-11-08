@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 import { KinBudget, KinBudgetGetInput, KinBudgetSetInput } from "./kinLead.ts";
 import { KinApprovalRpcs, KIN_APPROVAL_RPC_SCOPES } from "./kinApprovals.ts";
 import { KinChatError, KinChatRpcs, KIN_CHAT_RPC_SCOPES } from "./kinChat.ts";
+import { KinPushRpcs, KIN_PUSH_RPC_SCOPES } from "./kinPush.ts";
 import {
   EnvironmentAuthorizationError,
   AuthOrchestrationReadScope,
@@ -22,10 +23,11 @@ const KinBudgetRpcs = [
   }),
 ] as const;
 export const KinChatAndBudgetRpcs = [...KinChatRpcs, ...KinBudgetRpcs] as const;
-export const KinRpcs = [...KinChatAndBudgetRpcs, ...KinApprovalRpcs] as const;
+export const KinRpcs = [...KinChatAndBudgetRpcs, ...KinApprovalRpcs, ...KinPushRpcs] as const;
 export const KIN_RPC_SCOPES = {
   ...KIN_CHAT_RPC_SCOPES,
   ...KIN_APPROVAL_RPC_SCOPES,
+  ...KIN_PUSH_RPC_SCOPES,
   "kin.budget.get": AuthOrchestrationReadScope,
   "kin.budget.set": AuthSettingsWriteScope,
 } as const;
@@ -53,4 +55,6 @@ export const KIN_RPC_AGGREGATES = {
   "kin.approvals.revokeKey": "kin-approvals",
   "kin.audit.list": "kin-approvals",
   "kin.audit.verify": "kin-approvals",
+  "kin.push.registerDevice": "kin-push",
+  "kin.push.unregisterDevice": "kin-push",
 } as const;

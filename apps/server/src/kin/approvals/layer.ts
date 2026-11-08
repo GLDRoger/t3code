@@ -7,7 +7,7 @@ import * as AttestationTrust from "./attestation/AttestationTrust.ts";
 import * as PendingActions from "./PendingActions.ts";
 
 export const layer = ApproverKeys.layer.pipe(
-  Layer.provide(PendingActions.layer),
+  Layer.provideMerge(PendingActions.layer),
   Layer.provide(AttestationTrust.layer.pipe(Layer.provide(FetchHttpClient.layer))),
   Layer.provide(KinPersistence.layer),
 );

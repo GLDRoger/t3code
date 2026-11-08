@@ -1,0 +1,388 @@
+import { assert, describe, it } from "@effect/vitest";
+import {
+  AuthSessionId,
+  KinEventId,
+  KinMessageId,
+  KinOrgId,
+  KinPersonId,
+  KinWidgetId,
+  type KinPushError,
+  type KinPushToken,
+} from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
+
+import * as Sqlite from "../../persistence/Sqlite.ts";
+import * as ApproverKeys from "../approvals/ApproverKeys.ts";
+import { KinAttestationTrust } from "../approvals/attestation/AttestationTrust.ts";
+import * as PendingActions from "../approvals/PendingActions.ts";
+import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { KinApnsTransport, type KinApnsPush, type KinApnsResult } from "./Apns.ts";
+import { KinPushDevices, type KinPushCaller } from "./KinPushDevices.ts";
+import { KinPushPresence } from "./KinPushPresence.ts";
+import * as Devices from "./KinPushDevices.ts";
+import * as Presence from "./KinPushPresence.ts";
+import * as Sender from "./KinPushSender.ts";
+
+const NOW = Date.parse("2026-11-08T00:00:00Z");
+const T = "2026-11-07T00:00:00.000Z";
+const orgId = Schema.decodeSync(KinOrgId)("org_01");
+const owner = Schema.decodeSync(KinPersonId)("h_owner");
+const member = Schema.decodeSync(KinPersonId)("h_member");
+const token = (fill: string) => fill.repeat(64) as KinPushToken;
+const ownerPhone = token("a");
+const ownerTablet = token("b");
+const memberPhone = token("c");
+
+const caller = (session: string, personId: KinPersonId): KinPushCaller => ({
+  session: {
+    sessionId: AuthSessionId.make(session),
+    subject: session,
+    method: "bearer-access-token",
+    scopes: [],
+  },
+  people: [{ _tag: "person", orgId, personId }],
+});
+
+/** A fake APNs: records every push and answers each token as told (200 by default). */
+const makeApns = (status: "ready" | "unconfigured" = "ready") => {
+  const sent: Array<KinApnsPush> = [];
+  const answers = new Map<string, KinApnsResult>();
+  const layer = Layer.succeed(KinApnsTransport, {
+    status,
+    send: (push) =>
+      Effect.sync(() => {
+        sent.push(push);
+        return answers.get(push.token) ?? { status: 200, reason: undefined };
+      }),
+  });
+  return { sent, answers, layer };
+};
+
+const build = (apns: ReturnType<typeof makeApns>) =>
+  Sender.layer.pipe(
+    Layer.provideMerge(Layer.mergeAll(Devices.layer, Presence.layer, apns.layer)),
+    Layer.provideMerge(ApproverKeys.layer),
+    Layer.provideMerge(PendingActions.layer),
+    Layer.provide(Layer.succeed(KinAttestationTrust, { load: () => Effect.die("unused") })),
+    Layer.provideMerge(Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory)),
+  );
+
+const seed = Effect.gen(function* () {
+  yield* TestClock.setTime(NOW);
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org_01', 'Kin', ${T})`;
+  for (const [person, handle] of [
+    [owner, "owner"],
+    [member, "priya"],
+  ] as const) {
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES (${person}, 'org_01', ${handle}, ${handle}, ${T})`;
+  }
+  for (const id of ["sess-owner-phone", "sess-owner-tablet", "sess-member", "sess-key"]) {
+    yield* sql`INSERT INTO auth_sessions (session_id, subject, scopes, method, issued_at, expires_at)
+      VALUES (${id}, ${id}, '[]', 'bearer-access-token', ${T}, '2026-12-07T00:00:00.000Z')`;
+  }
+  // The owner holds the org's active approver key; Priya's key never got past pending.
+  for (const [thumbprint, person, state] of [
+    ["k".repeat(43), owner, "active"],
+    ["m".repeat(43), member, "pending"],
+  ] as const) {
+    yield* sql`INSERT INTO kin_approver_keys (thumbprint, org_id, public_jwk_json, human_id,
+        device_label, platform, hardware, attested, session_id, state, created_at)
+      VALUES (${thumbprint}, 'org_01', '{}', ${person}, 'Phone', 'ios', 'secure_enclave', 1,
+        'sess-key', ${state}, ${NOW})`;
+  }
+  yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+    VALUES ('chat_team', 'org_01', 'project_group', 0, ${T})`;
+  for (const [memberId, person, role] of [
+    ["m_owner", owner, "owner"],
+    ["m_priya", member, "member"],
+  ] as const) {
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id,
+        role, joined_at)
+      VALUES (${memberId}, 'org_01', 'chat_team', 'person', ${person}, ${role}, ${T})`;
+  }
+  const devices = yield* KinPushDevices;
+  yield* devices.register(caller("sess-owner-phone", owner), {
+    orgId,
+    token: ownerPhone,
+    platform: "ios",
+    apsEnvironment: "development",
+  });
+  yield* devices.register(caller("sess-owner-tablet", owner), {
+    orgId,
+    token: ownerTablet,
+    platform: "ios",
+    apsEnvironment: "production",
+  });
+  yield* devices.register(caller("sess-member", member), {
+    orgId,
+    token: memberPhone,
+    platform: "ios",
+    apsEnvironment: "development",
+  });
+  return { sql, devices, sender: yield* Sender.KinPushSender };
+});
+
+const postMessage = (
+  sql: SqlClient.SqlClient,
+  author: { readonly personId: KinPersonId; readonly memberId: string } | "system",
+  status = "posted",
+) =>
+  Effect.gen(function* () {
+    const [{ seq }] = (yield* sql<{ seq: number }>`
+      SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM kin_messages`) as [{ seq: number }];
+    const messageId = KinMessageId.make(`msg_${seq}`);
+    const human = author !== "system";
+    yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+        author_person_id, author_member_id, author_role, kind, body, mentions_json, status, created_at)
+      VALUES (${messageId}, 'org_01', 'chat_team', ${seq}, ${human ? "human" : "system"},
+        ${human ? author.personId : null}, ${human ? author.memberId : null}, 'member', 'text',
+        'Ship it before Friday, the secret is hunter2', '[]', ${status}, ${T})`;
+    return messageId;
+  });
+
+const postWidget = (
+  sql: SqlClient.SqlClient,
+  type: string,
+  state: object,
+  awaiting: ReadonlyArray<KinPersonId>,
+) =>
+  Effect.gen(function* () {
+    const messageId = yield* postMessage(sql, "system");
+    const widgetId = KinWidgetId.make(`w_${messageId}`);
+    yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class, type,
+        revision, state_json, awaiting_json, updated_at)
+      VALUES (${widgetId}, 'org_01', 'chat_team', ${messageId}, 'native', ${type}, 3,
+        ${JSON.stringify(state)}, ${JSON.stringify(awaiting)}, ${T})`;
+    return widgetId;
+  });
+
+const categories = (sent: ReadonlyArray<KinApnsPush>) =>
+  sent.map((push) => (push.payload as { aps: { category: string } }).aps.category);
+
+describe("KinPushSender", () => {
+  it.effect("sends approval pushes only to approvers' devices, with ids and fixed text", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { sender, sql } = yield* seed;
+      const actions = yield* PendingActions.KinPendingActions;
+      const { action } = yield* actions.create({
+        orgId,
+        kind: "merge_pull_request",
+        target: {
+          _tag: "pull_request",
+          host: "github.com",
+          repo: "GLDRoger/t3code",
+          number: 212,
+          mergeMethod: "squash",
+          deleteBranchAfter: false,
+        },
+        resolved: {
+          _tag: "pull_request",
+          headSha: "a".repeat(40),
+          base: "main",
+          head: "kin/fix-212",
+          title: "Fix the flaky payments test",
+          additions: 3,
+          deletions: 1,
+          files: 1,
+          checks: [],
+        },
+        targetDigest: "1".repeat(64),
+        reason: "Approve now, the token is ghp_secret",
+        requestedBy: { agentId: "lead", threadId: "thread-lead" },
+        provenance: { startedBy: { humanId: member }, startedByRole: "member", chain: [] },
+        source: KinEventId.make("evt-212"),
+      } as unknown as PendingActions.KinPendingActionCreateInput);
+
+      const outcome = yield* sender.notify({ _tag: "approval", orgId, actionId: action.id });
+      assert.deepStrictEqual(outcome, { status: "ready", sent: 2, suppressed: 0, failed: 0 });
+      assert.deepStrictEqual(
+        apns.sent.map((push) => [push.token, push.environment]),
+        [
+          [ownerPhone, "development"],
+          [ownerTablet, "production"],
+        ],
+      );
+      assert.deepStrictEqual(apns.sent[0]?.payload, {
+        aps: {
+          alert: { title: "Approval needed", body: "Merge #212 is waiting on you" },
+          category: "kin.approval",
+          sound: "default",
+        },
+        body: {
+          kin: 1,
+          orgId,
+          pendingActionId: action.id,
+          deepLink: `/kin/org_01/actions/${encodeURIComponent(action.id)}`,
+        },
+      });
+      const wire = JSON.stringify(apns.sent.map((push) => push.payload));
+      for (const leaked of ["ghp_secret", "flaky payments", "a".repeat(40)])
+        assert.notInclude(wire, leaked);
+
+      // Once the approver's key session is revoked, nobody is an approver and nothing is sent.
+      yield* sql`UPDATE auth_sessions SET revoked_at = ${T} WHERE session_id = 'sess-key'`;
+      const after = yield* sender.notify({ _tag: "approval", orgId, actionId: action.id });
+      assert.strictEqual(after.sent, 0);
+      assert.strictEqual(apns.sent.length, 2);
+    }).pipe(Effect.provide(build(apns)));
+  });
+
+  it.effect("picks the category from the widget and routes only to who it awaits", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { sender, sql } = yield* seed;
+      const cases = [
+        ["deferral", { phase: "confirmed" }, [member], ["kin.deferral.confirmed"]],
+        [
+          "deferral",
+          { phase: "heads_up" },
+          [owner],
+          ["kin.deferral.heads_up", "kin.deferral.heads_up"],
+        ],
+        ["deferral", { phase: "done" }, [owner], []],
+        ["task", { status: "needs_decision" }, [member], ["kin.message"]],
+        // Approval cards announce nothing themselves; the pending action does, to approvers.
+        ["approval", { pendingActionId: "act_1" }, [member], []],
+      ] as const;
+      for (const [type, state, awaiting, expected] of cases) {
+        apns.sent.length = 0;
+        const widgetId = yield* postWidget(sql, type, state, awaiting);
+        yield* sender.notify({ _tag: "widget", orgId, widgetId });
+        assert.deepStrictEqual(
+          categories(apns.sent),
+          [...expected],
+          `${type} ${JSON.stringify(state)}`,
+        );
+      }
+      apns.sent.length = 0;
+      const widgetId = yield* postWidget(sql, "deferral", { phase: "confirmed" }, [member]);
+      yield* sender.notify({ _tag: "widget", orgId, widgetId });
+      assert.deepStrictEqual(apns.sent[0]?.payload, {
+        aps: {
+          alert: { title: "Deferred", body: "A deferral needs a look" },
+          category: "kin.deferral.confirmed",
+          sound: "default",
+          "thread-id": "kin:org_01:chat_team",
+        },
+        body: {
+          kin: 1,
+          orgId,
+          chatId: "chat_team",
+          widgetId,
+          revision: 3,
+          deepLink: "/kin/org_01/chats/chat_team",
+        },
+      });
+
+      apns.sent.length = 0;
+      const messageId = yield* postMessage(sql, { personId: owner, memberId: "m_owner" });
+      yield* sender.notify({ _tag: "message", orgId, messageId });
+      // The author doesn't hear about their own message, and the text never leaves the server.
+      assert.deepStrictEqual(
+        apns.sent.map((push) => push.token),
+        [memberPhone],
+      );
+      assert.deepStrictEqual(categories(apns.sent), ["kin.message"]);
+      assert.notInclude(JSON.stringify(apns.sent), "hunter2");
+      // A suggestion only the owner can see isn't announced to anyone.
+      const suggested = yield* postMessage(sql, "system", "suggested");
+      assert.strictEqual(
+        (yield* sender.notify({ _tag: "message", orgId, messageId: suggested })).sent,
+        0,
+      );
+    }).pipe(Effect.provide(build(apns)));
+  });
+
+  it.effect("skips a device while its session has the chat open", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { sender, sql } = yield* seed;
+      const presence = yield* KinPushPresence;
+      const messageId = yield* postMessage(sql, { personId: member, memberId: "m_priya" });
+      const watched = yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* presence.watch(AuthSessionId.make("sess-owner-phone"), "chat_team" as never);
+          return yield* sender.notify({ _tag: "message", orgId, messageId });
+        }),
+      );
+      assert.deepStrictEqual(watched, { status: "ready", sent: 1, suppressed: 1, failed: 0 });
+      assert.deepStrictEqual(
+        apns.sent.map((push) => push.token),
+        [ownerTablet],
+      );
+      // Closing the chat stream ends the suppression.
+      const closed = yield* sender.notify({ _tag: "message", orgId, messageId });
+      assert.deepStrictEqual(closed, { status: "ready", sent: 2, suppressed: 0, failed: 0 });
+    }).pipe(Effect.provide(build(apns)));
+  });
+
+  it.effect("sends nothing without an APNs key", () => {
+    const apns = makeApns("unconfigured");
+    return Effect.gen(function* () {
+      const { sender, sql } = yield* seed;
+      const messageId = yield* postMessage(sql, { personId: owner, memberId: "m_owner" });
+      assert.deepStrictEqual(yield* sender.notify({ _tag: "message", orgId, messageId }), {
+        status: "unconfigured",
+        sent: 0,
+        suppressed: 0,
+        failed: 0,
+      });
+      assert.strictEqual(apns.sent.length, 0);
+    }).pipe(Effect.provide(build(apns)));
+  });
+});
+
+describe("KinPushDevices", () => {
+  const tokens = (sql: SqlClient.SqlClient) =>
+    sql<{ token: string; person_id: string; session_id: string }>`
+      SELECT token, person_id, session_id FROM kin_push_devices ORDER BY token`;
+
+  it.effect("removes devices on unregister, session revoke and a dead token", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { sender, sql, devices } = yield* seed;
+      const outsider: KinPushCaller = { ...caller("sess-member", member), people: [] };
+      const refused = yield* Effect.exit(
+        devices.register(outsider, {
+          orgId,
+          token: token("d"),
+          platform: "ios",
+          apsEnvironment: "production",
+        }),
+      );
+      assert.isTrue(
+        Exit.isFailure(refused) &&
+          (refused.cause.reasons[0] as { error?: KinPushError }).error?.reason === "not_member",
+      );
+      // Someone else can't unregister your phone.
+      assert.isFalse(
+        (yield* devices.unregister(caller("sess-member", member), { orgId, token: ownerPhone }))
+          .removed,
+      );
+      assert.isTrue(
+        (yield* devices.unregister(caller("sess-owner-tablet", owner), {
+          orgId,
+          token: ownerTablet,
+        })).removed,
+      );
+      yield* sql`UPDATE auth_sessions SET revoked_at = ${T} WHERE session_id = 'sess-member'`;
+      assert.strictEqual(yield* devices.reconcileSessions(), 1);
+      assert.deepStrictEqual(yield* tokens(sql), [
+        { token: ownerPhone, person_id: owner, session_id: "sess-owner-phone" },
+      ]);
+
+      apns.answers.set(ownerPhone, { status: 410, reason: "Unregistered" });
+      const messageId = yield* postMessage(sql, { personId: member, memberId: "m_priya" });
+      assert.strictEqual((yield* sender.notify({ _tag: "message", orgId, messageId })).failed, 1);
+      assert.deepStrictEqual(yield* tokens(sql), []);
+    }).pipe(Effect.provide(build(apns)));
+  });
+});

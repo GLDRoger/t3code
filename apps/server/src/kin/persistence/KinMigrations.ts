@@ -12,6 +12,7 @@ import Budget from "./migrations/K007_Budget.ts";
 import Floor from "./migrations/K008_Floor.ts";
 import JudgeLog from "./migrations/K009_JudgeLog.ts";
 import Approvals from "./migrations/K010_Approvals.ts";
+import PushDevices from "./migrations/K011_PushDevices.ts";
 
 const table = "kin_sql_migrations";
 const run = Migrator.make({});
@@ -26,6 +27,7 @@ const loader = Migrator.fromRecord({
   "8_Floor": Floor,
   "9_JudgeLog": JudgeLog,
   "10_Approvals": Approvals,
+  "11_PushDevices": PushDevices,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that
