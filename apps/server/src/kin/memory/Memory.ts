@@ -1389,9 +1389,9 @@ const make = Effect.gen(function* () {
     purgeInFlight: Effect.fn("Memory.purgeInFlightLocked")((orgId) =>
       locked(orgId, purgeInFlight(orgId)),
     ),
-    historyGeneration: Effect.fn("Memory.historyGeneration")(function* (orgId) {
-      return historyGenerations.get(orgId) ?? 0;
-    }),
+    historyGeneration: Effect.fn("Memory.historyGeneration")((orgId) =>
+      Effect.sync(() => historyGenerations.get(orgId) ?? 0),
+    ),
     recover: Effect.fn("Memory.recoverLocked")((orgId) =>
       withWriterLock(orgId, locked(orgId, recover(orgId))),
     ),
