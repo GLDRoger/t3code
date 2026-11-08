@@ -112,10 +112,10 @@ const make = Effect.gen(function* () {
   const store = yield* KinTriggerStore.KinTriggerStore;
   const ticks = yield* Scheduler.Scheduler;
   const vcs = yield* VcsProcess;
-  /** One dream per org, reserved before its claim. `decided` marks whether the dream or `cancel` won. */
+  /** One dream per org, reserved before its claim; `cancel` acts once it is claimed. `decided` marks whether the dream or `cancel` won. */
   const live = new Map<
     KinOrgId,
-    { dreamId: string; signal: Deferred.Deferred<void>; decided: boolean }
+    { dreamId: string; signal: Deferred.Deferred<void>; claimed: boolean; decided: boolean }
   >();
   const fail = (orgId: KinOrgId) =>
     Effect.mapError(
@@ -239,10 +239,14 @@ const make = Effect.gen(function* () {
     const paths = yield* memory.ensureCheckouts(orgId);
     const dreams = path.join(path.dirname(paths.writer), "dreams");
     const root = path.join(dreams, dreamId);
-    // Only this org's live dream uses `dreams/`; anything else was left by a crash.
-    if (yield* fs.exists(dreams))
+    const existing = yield* fs.lstat(dreams).pipe(Effect.option);
+    if (Option.isSome(existing)) {
+      if (existing.value.type !== "Directory")
+        return yield* Effect.die(new Error("The dreams folder is not a real directory"));
+      // Only this org's live dream uses `dreams/`; anything else was left by a crash.
       for (const entry of yield* fs.readDirectory(dreams))
         yield* fs.remove(path.join(dreams, entry), { recursive: true, force: true });
+    }
     yield* fs.makeDirectory(path.join(root, scratch), { recursive: true });
     for (const [relative, bytes] of files) {
       const target = path.join(root, relative);
@@ -454,11 +458,12 @@ const make = Effect.gen(function* () {
         DateTime.formatIsoDate(zoned(yield* Clock.currentTimeMillis, timeZone));
       const dreamId = yield* newDreamId(ownerDate);
       if (live.has(orgId)) return { _tag: "busy" } satisfies DreamOutcome;
-      const slot = { dreamId, signal: Deferred.makeUnsafe<void>(), decided: false };
+      const slot = { dreamId, signal: Deferred.makeUnsafe<void>(), claimed: false, decided: false };
       live.set(orgId, slot);
       return yield* Effect.gen(function* () {
         const claimed = yield* claim(orgId, dreamId, ownerDate, options.full);
         if (claimed === undefined) return { _tag: "busy" } satisfies DreamOutcome;
+        slot.claimed = true;
         return yield* attempt(orgId, claimed, slot, ownerDate, options.full, timeZone);
       }).pipe(
         Effect.ensuring(
@@ -590,7 +595,7 @@ const make = Effect.gen(function* () {
     run,
     cancel: Effect.fn("DreamRunner.cancel")(function* (orgId) {
       const slot = live.get(orgId);
-      if (slot === undefined || slot.decided) return false;
+      if (slot === undefined || !slot.claimed || slot.decided) return false;
       slot.decided = true;
       return yield* Deferred.succeed(slot.signal, undefined);
     }),

@@ -73,6 +73,12 @@ const dreamJson = (contradictions: ReadonlyArray<object> = []) =>
     contradictions,
   });
 
+/** Run inside the runner: before `deleteDreamBranch`, and after it removes a path. */
+type RunnerHooks = {
+  beforeDelete: Effect.Effect<void>;
+  removed: (path: string) => Effect.Effect<void>;
+};
+
 const fixture = <A, E>(
   body: (input: {
     readonly git: (cwd: string, args: ReadonlyArray<string>) => Effect.Effect<string>;
@@ -83,6 +89,7 @@ const fixture = <A, E>(
     readonly turns: Array<DreamSession.DreamTurn>;
     readonly notices: Array<string>;
     readonly refuseBudget: () => void;
+    readonly hooks: RunnerHooks;
   }) => Effect.Effect<
     A,
     E,
@@ -134,6 +141,7 @@ const fixture = <A, E>(
 
     let behavior: Behavior = "good";
     let budgetAllowed = true;
+    const hooks: RunnerHooks = { beforeDelete: Effect.void, removed: () => Effect.void };
     const turns: Array<DreamSession.DreamTurn> = [];
     const notices: Array<string> = [];
     const session = Layer.succeed(DreamSession.DreamSession, {
@@ -204,7 +212,7 @@ const fixture = <A, E>(
     const recovery = Layer.succeed(Memory.MemoryRecoveryHooks, {
       notify: (notice) => Effect.sync(() => void notices.push(notice.reason)),
     });
-    const writer = Writer.layer.pipe(
+    const realWriter = Writer.layer.pipe(
       Layer.provideMerge(Memory.layer),
       Layer.provide(
         Layer.succeed(Writer.MemoryWriterAuthority, {
@@ -213,7 +221,24 @@ const fixture = <A, E>(
       ),
       Layer.provide(Layer.succeed(Writer.MemoryWriterHooks, { notify: () => Effect.void })),
     );
+    const writer = Layer.effect(
+      Writer.MemoryWriter,
+      Effect.map(Writer.MemoryWriter, (real) => ({
+        ...real,
+        deleteDreamBranch: (org: KinOrgId, branch: string) =>
+          hooks.beforeDelete.pipe(Effect.andThen(real.deleteDreamBranch(org, branch))),
+      })),
+    ).pipe(Layer.provideMerge(realWriter));
+    const files = Layer.effect(
+      FileSystem.FileSystem,
+      Effect.map(FileSystem.FileSystem, (real) => ({
+        ...real,
+        remove: (target: string, options?: Parameters<typeof real.remove>[1]) =>
+          real.remove(target, options).pipe(Effect.tap(() => hooks.removed(target))),
+      })),
+    );
     const runner = DreamRunner.layer.pipe(
+      Layer.provide(files),
       Layer.provideMerge(
         Layer.mergeAll(
           writer,
@@ -266,6 +291,7 @@ const fixture = <A, E>(
         refuseBudget: () => {
           budgetAllowed = false;
         },
+        hooks,
       });
     }).pipe(Effect.provide(runner));
   }).pipe(
@@ -371,6 +397,79 @@ it.live("a fixture dream pushes dream/<date> with its changes and records dream.
       expect(notices).toEqual([]);
       const fs = yield* FileSystem.FileSystem;
       expect(yield* fs.exists(`${root}/state/dreams/${outcome.dreamId}`)).toBe(false);
+    }),
+  ),
+);
+
+it.live("a dream clears scratch a crashed dream left and refuses a symlinked dreams folder", () =>
+  fixture(({ root, turns }) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const runner = yield* DreamRunner.DreamRunner;
+      const crashed = `${root}/state/dreams/dream_20261107_crashed`;
+      yield* fs.makeDirectory(`${crashed}/claims`, { recursive: true });
+      yield* fs.writeFileString(`${crashed}/claims/left.md`, "Left by a crash\n");
+      const outcome = yield* runner.run(orgId, { full: false, ownerDate: "2026-11-08" });
+      expect(outcome._tag).toBe("succeeded");
+      expect(turns).toHaveLength(1);
+      expect(yield* fs.exists(crashed)).toBe(false);
+
+      yield* fs.remove(`${root}/state/dreams`, { recursive: true });
+      yield* fs.makeDirectory(`${root}/outside/dream_20261108_victim`, { recursive: true });
+      yield* fs.writeFileString(`${root}/outside/dream_20261108_victim/keep.md`, "Keep\n");
+      yield* fs.symlink(`${root}/outside`, `${root}/state/dreams`);
+      const refused = yield* runner.run(orgId, { full: false, ownerDate: "2026-11-09" });
+      expect(refused._tag).toBe("failed");
+      if (refused._tag === "failed")
+        expect(refused.failures.join("\n")).toContain("not a real directory");
+      expect(turns).toHaveLength(1);
+      expect(yield* fs.readDirectory(`${root}/outside`)).toEqual(["dream_20261108_victim"]);
+      expect(yield* fs.readFileString(`${root}/outside/dream_20261108_victim/keep.md`)).toBe(
+        "Keep\n",
+      );
+    }),
+  ),
+);
+
+it.live("a cancel after the dream decides returns false and the outcome stands", () =>
+  fixture(({ behave, hooks }) =>
+    Effect.gen(function* () {
+      const runner = yield* DreamRunner.DreamRunner;
+      const settling = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      hooks.beforeDelete = Deferred.succeed(settling, undefined).pipe(
+        Effect.andThen(Deferred.await(release)),
+      );
+      behave("rules");
+      const fiber = yield* runner
+        .run(orgId, { full: false, ownerDate: "2026-11-08" })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(settling);
+      expect((yield* runRow())[0]?.status).toBe("running");
+      const cancelled = yield* runner.cancel(orgId);
+      yield* Deferred.succeed(release, undefined);
+      expect(cancelled).toBe(false);
+      expect((yield* Fiber.join(fiber))._tag).toBe("failed");
+      expect((yield* runRow())[0]?.status).toBe("failed");
+    }),
+  ),
+);
+
+it.live("a cancel after the dream pushed but before it decides wins", () =>
+  fixture(({ git, remote, root, hooks }) =>
+    Effect.gen(function* () {
+      const runner = yield* DreamRunner.DreamRunner;
+      const answers: Array<boolean> = [];
+      // The dream removes its checkout last, after the push and right before it decides.
+      hooks.removed = (target) =>
+        /\/dreams\/dream_[^/]+$/.test(target)
+          ? runner.cancel(orgId).pipe(Effect.map((answer) => void answers.push(answer)))
+          : Effect.void;
+      const outcome = yield* runner.run(orgId, { full: false, ownerDate: "2026-11-08" });
+      expect(answers).toEqual([true]);
+      expect(outcome._tag).toBe("cancelled");
+      expect((yield* runRow())[0]?.status).toBe("cancelled");
+      expect(yield* git(root, ["ls-remote", "--heads", remote])).not.toContain("dream/");
     }),
   ),
 );
