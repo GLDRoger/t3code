@@ -1121,8 +1121,8 @@ export const make = Effect.gen(function* () {
       Effect.withSpan("EnvironmentAuth.listSessions"),
     );
 
-  const revokeSession: EnvironmentAuth["Service"]["revokeSession"] = (sessionId) =>
-    sessions.revoke(sessionId).pipe(
+  const revokeSession = (sessionId: AuthSessionId, callerSessionId?: AuthSessionId) =>
+    sessions.revoke(sessionId, callerSessionId).pipe(
       Effect.mapError((cause) => new ServerAuthSessionRevocationError({ cause })),
       Effect.withSpan("EnvironmentAuth.revokeSession"),
     );
@@ -1191,7 +1191,7 @@ export const make = Effect.gen(function* () {
     if (currentSessionId === targetSessionId) {
       return yield* new ServerAuthForbiddenOperationError({});
     }
-    return yield* revokeSession(targetSessionId);
+    return yield* revokeSession(targetSessionId, currentSessionId);
   });
 
   const revokeOtherClientSessions: EnvironmentAuth["Service"]["revokeOtherClientSessions"] = (
