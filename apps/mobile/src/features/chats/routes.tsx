@@ -1,6 +1,7 @@
 import { createNativeStackScreen } from "@react-navigation/native-stack";
 
 import { pageRoute } from "../layout/route-options";
+import { KinChatScreen } from "./KinChatScreen";
 import { KinChatsScreen } from "./KinChatsScreen";
 import { KinWaitingScreen } from "./KinWaitingScreen";
 
@@ -15,5 +16,10 @@ export const KIN_SCREENS = {
     screen: KinWaitingScreen,
     linking: "kin/waiting",
     options: pageRoute({ title: "Waiting on you" }),
+  }),
+  KinChat: createNativeStackScreen({
+    screen: KinChatScreen,
+    linking: "kin/:orgId/chats/:chatId",
+    options: pageRoute({ duoMinimize: "onScrollUp" }),
   }),
 };
