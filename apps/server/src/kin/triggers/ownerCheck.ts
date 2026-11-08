@@ -333,6 +333,13 @@ const make = Effect.gen(function* () {
               Effect.mapError((cause) =>
                 isSqlError(cause) ? toPersistenceSqlError("OwnerCheck.act")(cause) : cause,
               ),
+              Effect.tapError((cause) =>
+                cause._tag === "KinChatError" &&
+                cause.reason === "widget_changed" &&
+                verified.action.actionId !== "update"
+                  ? writer.discard(orgId, wakeupId)
+                  : Effect.void,
+              ),
             );
           return {
             chatId: verified.chatId,

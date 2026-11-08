@@ -8,6 +8,7 @@ import {
   KinTriggerSettings,
   type KinTrigger,
 } from "@t3tools/contracts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -269,8 +270,22 @@ const make = Effect.gen(function* () {
           if (name !== "morning_brief" && name !== "evening_summary" && name !== "owner_check")
             continue;
 
-          yield* sql
-            .withTransaction(
+          const eventId = KinEventId.make(
+            `routine_${Array.from(new TextEncoder().encode(`${orgId.length}:${orgId}${fire.fireId}`), (byte) => byte.toString(16).padStart(2, "0")).join("")}`,
+          );
+          yield* Effect.gen(function* () {
+            const [pending] = yield* sql<{ handled: number }>`SELECT EXISTS(
+              SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND event_id = ${eventId}
+            ) AS handled FROM kin_trigger_inbox WHERE org_id = ${orgId}
+              AND fire_id = ${fire.fireId} AND consumed_at IS NULL`.pipe(NodeSqliteClient.readOnly);
+            if (pending === undefined) return;
+            if (pending.handled === 1) {
+              yield* inbox.markConsumed(orgId, [fire.fireId]);
+              return;
+            }
+            // Memory takes an org lock and may anchor a checkout in SQLite.
+            const items = name === "owner_check" ? yield* ownerCheck.select(orgId) : undefined;
+            yield* sql.withTransaction(
               Effect.gen(function* () {
                 const settings = yield* settingsFor(orgId);
                 const unconsumed =
@@ -288,9 +303,6 @@ const make = Effect.gen(function* () {
                   });
                   return;
                 }
-                const eventId = KinEventId.make(
-                  `routine_${Array.from(new TextEncoder().encode(`${orgId.length}:${orgId}${fire.fireId}`), (byte) => byte.toString(16).padStart(2, "0")).join("")}`,
-                );
                 const previous =
                   yield* sql`SELECT event_id FROM kin_events WHERE org_id = ${orgId} AND event_id = ${eventId} ORDER BY event_id`;
                 if (previous.length > 0) {
@@ -322,8 +334,6 @@ const make = Effect.gen(function* () {
                     routine: string;
                     due_at: number;
                   }>`SELECT routine, due_at FROM kin_routine_folds WHERE org_id = ${orgId} AND fold_into = ${name} ORDER BY due_at, fire_id`;
-                  const items =
-                    name === "owner_check" ? yield* ownerCheck.select(orgId) : undefined;
                   const event = yield* decodeEvent({
                     _tag: "routine",
                     eventId,
@@ -346,22 +356,26 @@ const make = Effect.gen(function* () {
                 }
                 yield* inbox.markConsumed(orgId, [fire.fireId]);
               }),
-            )
-            .pipe(
-              Effect.mapError((cause) =>
-                isSqlError(cause) ? toPersistenceSqlError("KinRoutines.drain")(cause) : cause,
-              ),
-              Effect.catch((cause) =>
-                Effect.gen(function* () {
-                  yield* Effect.logWarning("Kin routine fire consumed: processing failed", {
-                    orgId,
-                    fireId: fire.fireId,
-                    errorTag: cause._tag,
-                  });
-                  yield* inbox.markConsumed(orgId, [fire.fireId]);
-                }),
-              ),
             );
+          }).pipe(
+            Effect.mapError((cause) =>
+              isSqlError(cause) ? toPersistenceSqlError("KinRoutines.drain")(cause) : cause,
+            ),
+            Effect.catch((cause) =>
+              Effect.gen(function* () {
+                const consume =
+                  Schema.isSchemaError(cause) || now - Date.parse(fire.dueAt) > 24 * 60 * 60 * 1000;
+                yield* Effect.logWarning("Kin routine fire processing failed", {
+                  orgId,
+                  fireId: fire.fireId,
+                  errorTag: cause._tag,
+                  message: cause.message,
+                  disposition: consume ? "consumed" : "retry",
+                });
+                if (consume) yield* inbox.markConsumed(orgId, [fire.fireId]);
+              }),
+            ),
+          );
         }
       }),
     ),
@@ -391,7 +405,14 @@ const make = Effect.gen(function* () {
         );
       }
       if (reconcileDue) nextReconcileAt = now + 15 * 60 * 1000;
-    }).pipe(Effect.catch(() => Effect.logWarning("Kin routines scan failed"))),
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("Kin routines scan failed", {
+          errorTag: cause._tag,
+          message: cause.message,
+        }),
+      ),
+    ),
   );
   return KinRoutines.of({
     isEnabled: Effect.fn("KinRoutines.isEnabled")((orgId, routine) =>

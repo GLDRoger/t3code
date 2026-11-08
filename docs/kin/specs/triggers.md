@@ -252,6 +252,8 @@ The dream consumer suppresses a `dream` fire whose `dueAt`, in owner time, falls
 
 Routine delivery is a lead-queue request, not a second posting path: TRIG-9 enqueues `routine`; LEAD-13 owns the brief/summary message and prepared-brief content. Late boundaries are measured from the scheduled owner's calendar date (a summary expires at the first dream after its due time). Folds retain the original routine and due instant, survive restart, and move with an expired summary into the next brief. Same-tick fires are handled by due time, not inbox receipt order. Disabling a routine expires its queued requests; enabling it schedules the next slot without backfill. Pause/resume preserves individual opt-outs.
 
+Routine processing consumes schema/decode failures immediately. Other failures (including SQLite contention, enqueue failure and unavailable memory checkouts) stay pending for the next tick; a failing fire more than 24 hours past its due instant is consumed to bound poison retries. Successful late fires still follow the normal fold/post policy. Owner-check selection runs before the enqueue transaction, which rechecks consumption and event identity.
+
 Owner-check ties use review date (missing last), then item id and path. Invalid, superseded and duplicate-id items are excluded. Low trust means any trust below owner; with no status-claim subtype in memory, evidence-free means a claim with no evidence links. Keep sets the next review to now +90 days for people or +30 days otherwise, so repeated Keeps do not grow the review interval. Update returns the owner direct-chat/item target; Keep and Drop stage through the writer with the verified, claimed owner action as their source, never model-supplied provenance. Native clients own presenting the three actions; the server owns their authorization.
 
 **Owner-check release gate (TRIG-9):** selection and routine enqueue are live, but
@@ -266,6 +268,8 @@ lands. Before enabling it:
   only after verifying the claimed owner tap, binding its item id and action.
   An owner chat citation is not review-date authority;
 - web and mobile must render the native card, its handled items, and closed state.
+
+If a concurrent card update wins after Keep or Drop is staged, the writer session is discarded before returning the revision conflict.
 
 Each accepted action advances the card revision and marks that item handled;
 the last handled item closes it. Misleading-memory selection reads reports

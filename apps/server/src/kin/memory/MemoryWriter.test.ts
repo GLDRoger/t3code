@@ -43,6 +43,8 @@ it.live.each([
   "P10-lost-git-dir",
   "sha256",
   "owner-keep",
+  "owner-other-item-keep",
+  "owner-drop-keep",
   "owner-chat-keep",
   "agent-keep",
   "review-default",
@@ -220,14 +222,16 @@ it.live.each([
                 >([
                   [
                     "owner",
-                    scenario === "owner-keep"
+                    scenario === "owner-keep" ||
+                    scenario === "owner-other-item-keep" ||
+                    scenario === "owner-drop-keep"
                       ? {
                           saidBy: "fixture-owner",
                           trust: "owner",
                           source: "fixture-owner-message",
                           kind: "owner_check",
-                          itemId: "def-001",
-                          action: "keep",
+                          itemId: scenario === "owner-other-item-keep" ? "other-item" : "def-001",
+                          action: scenario === "owner-drop-keep" ? "drop" : "keep",
                         }
                       : {
                           saidBy: "fixture-owner",

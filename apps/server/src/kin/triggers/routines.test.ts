@@ -1,5 +1,9 @@
 import { assert, it } from "@effect/vitest";
 import { KinOrgId, KinTriggerId, KinEvent, type KinTriggerSettings } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
+import * as Semaphore from "effect/Semaphore";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -177,34 +181,56 @@ it.effect(
     }).pipe(Effect.provide(fixture())),
 );
 
-it.effect("consumes a failing fire and still delivers the following good fire", () =>
-  Effect.gen(function* () {
-    yield* seed();
-    const routines = yield* Routines.KinRoutines;
-    const scheduler = yield* TriggerScheduler.KinTriggerScheduler;
-    const sql = yield* SqlClient.SqlClient;
-    yield* TestClock.setTime(Date.parse("2026-11-09T02:00:00.000Z"));
-    yield* routines.configure(settings);
-    yield* TestClock.setTime(Date.parse("2026-11-09T13:00:00.000Z"));
-    yield* scheduler.runDue();
-    yield* sql`CREATE TRIGGER reject_fold BEFORE INSERT ON kin_routine_folds BEGIN SELECT RAISE(ABORT, 'fixture failure'); END`;
-    yield* routines.drain(orgA);
-    const rows = yield* sql<{
-      json: string;
-    }>`SELECT json FROM kin_events WHERE org_id = ${orgA} AND tag = 'routine' ORDER BY event_id`;
-    assert.isTrue(
-      rows.some((row) => {
-        const event = decodeEventJson(row.json);
-        return (
-          event._tag === "routine" && event.routine === "evening_summary" && event.lateByMs === 0
+it.effect.each(["transient", "decode", "expired"] as const)(
+  "handles a %s failure without blocking the following good fire",
+  (failure) =>
+    Effect.gen(function* () {
+      yield* seed();
+      const routines = yield* Routines.KinRoutines;
+      const scheduler = yield* TriggerScheduler.KinTriggerScheduler;
+      const sql = yield* SqlClient.SqlClient;
+      yield* TestClock.setTime(Date.parse("2026-11-09T02:00:00.000Z"));
+      yield* routines.configure(settings);
+      yield* TestClock.setTime(Date.parse("2026-11-09T13:00:00.000Z"));
+      yield* scheduler.runDue();
+      if (failure === "decode")
+        yield* sql`INSERT INTO kin_routine_folds VALUES (${orgA}, 'bad-fold', 'invalid-routine', 1, 'evening_summary')`;
+      else
+        yield* sql`CREATE TRIGGER reject_fold BEFORE INSERT ON kin_routine_folds BEGIN SELECT RAISE(ABORT, 'fixture failure'); END`;
+      if (failure === "expired") {
+        yield* routines.drain(orgA);
+        assert.lengthOf(
+          yield* sql`SELECT fire_id FROM kin_trigger_inbox WHERE org_id = ${orgA} AND consumed_at IS NULL`,
+          1,
         );
-      }),
-    );
-    assert.lengthOf(
-      yield* sql`SELECT fire_id FROM kin_trigger_inbox WHERE org_id = ${orgA} AND consumed_at IS NULL ORDER BY fire_id`,
-      0,
-    );
-  }).pipe(Effect.provide(fixture())),
+        yield* TestClock.adjust("25 hours");
+      }
+      yield* routines.drain(orgA);
+      const rows = yield* sql<{
+        json: string;
+      }>`SELECT json FROM kin_events WHERE org_id = ${orgA} AND tag = 'routine' ORDER BY event_id`;
+      assert.equal(
+        rows.some((row) => {
+          const event = decodeEventJson(row.json);
+          return (
+            event._tag === "routine" && event.routine === "evening_summary" && event.lateByMs === 0
+          );
+        }),
+        failure !== "decode",
+      );
+      assert.lengthOf(
+        yield* sql`SELECT fire_id FROM kin_trigger_inbox WHERE org_id = ${orgA} AND consumed_at IS NULL ORDER BY fire_id`,
+        failure === "transient" ? 1 : 0,
+      );
+      if (failure === "transient") {
+        yield* sql`DROP TRIGGER reject_fold`;
+        yield* routines.drain(orgA);
+        assert.lengthOf(
+          yield* sql`SELECT fire_id FROM kin_trigger_inbox WHERE org_id = ${orgA} AND consumed_at IS NULL`,
+          0,
+        );
+      }
+    }).pipe(Effect.provide(fixture())),
 );
 
 it.effect.each([false, true])(
@@ -242,4 +268,94 @@ it.effect.each([false, true])(
           assert.equal(event.foldedRoutines?.[0]?.routine, "morning_brief");
       }
     }).pipe(Effect.provide(fixture())),
+);
+
+it.effect("waits for Memory's org lock without holding SQLite's writer", () =>
+  Effect.gen(function* () {
+    const lock = yield* Semaphore.make(1);
+    const held = yield* Deferred.make<void>();
+    const selecting = yield* Deferred.make<boolean>();
+    const write = yield* Deferred.make<boolean>();
+    yield* Effect.gen(function* () {
+      yield* seed();
+      const sql = yield* SqlClient.SqlClient;
+      const routines = yield* Routines.KinRoutines;
+      const scheduler = yield* TriggerScheduler.KinTriggerScheduler;
+      yield* TestClock.setTime(Date.parse("2026-11-09T03:29:59.000Z"));
+      yield* routines.configure(settings);
+      yield* TestClock.adjust("1 second");
+      yield* scheduler.runDue();
+      const holder = yield* lock
+        .withPermits(1)(
+          Effect.gen(function* () {
+            yield* Deferred.succeed(held, undefined);
+            const canWrite = yield* Deferred.await(write);
+            if (canWrite)
+              yield* sql.withTransaction(
+                sql`UPDATE kin_orgs SET name = 'Memory anchor' WHERE org_id = ${orgA}`,
+              );
+          }),
+        )
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(held);
+      const drain = yield* routines.drain(orgA).pipe(Effect.forkScoped);
+      const inTransaction = yield* Deferred.await(selecting);
+      yield* Deferred.succeed(write, !inTransaction);
+      yield* Fiber.join(holder);
+      yield* Fiber.join(drain);
+      assert.isFalse(inTransaction);
+      assert.lengthOf(
+        yield* sql`SELECT event_id FROM kin_events WHERE org_id = ${orgA} AND json_extract(json, '$.routine') = 'owner_check'`,
+        1,
+      );
+    }).pipe(
+      Effect.provide(
+        fixture([], {
+          query: (sql) => () =>
+            Effect.gen(function* () {
+              const transaction = yield* Effect.serviceOption(sql.transactionService);
+              yield* Deferred.succeed(selecting, Option.isSome(transaction));
+              return yield* lock.withPermits(1)(Effect.succeed([]));
+            }),
+        }),
+      ),
+    );
+  }).pipe(Effect.scoped),
+);
+
+it.effect("reconciles at fifteen minutes, not intervening five-second ticks", () =>
+  Effect.gen(function* () {
+    let tick = Effect.void;
+    yield* Effect.gen(function* () {
+      yield* seed();
+      const sql = yield* SqlClient.SqlClient;
+      yield* tick;
+      yield* sql`DELETE FROM kin_triggers WHERE org_id = ${orgA} AND trigger_id = 'routine:owner_check'`;
+      for (let index = 1; index < 180; index++) {
+        yield* TestClock.adjust("5 seconds");
+        yield* tick;
+        assert.lengthOf(
+          yield* sql`SELECT trigger_id FROM kin_triggers WHERE org_id = ${orgA} AND trigger_id = 'routine:owner_check'`,
+          0,
+        );
+      }
+      yield* TestClock.adjust("5 seconds");
+      yield* tick;
+      assert.lengthOf(
+        yield* sql`SELECT trigger_id FROM kin_triggers WHERE org_id = ${orgA} AND trigger_id = 'routine:owner_check'`,
+        1,
+      );
+    }).pipe(
+      Effect.provide(
+        fixture([], {
+          register: Effect.fn(function* <E, R>(name: string, work: Effect.Effect<void, E, R>) {
+            if (name === "kin-routines") {
+              const context = yield* Effect.context<R>();
+              tick = work.pipe(Effect.provideContext(context), Effect.orDie);
+            }
+          }),
+        }),
+      ),
+    );
+  }),
 );

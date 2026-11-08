@@ -212,3 +212,65 @@ it.effect(
       ),
     ),
 );
+
+it.effect.each(["keep", "drop"] as const)("discards staged %s when the card changes", (action) =>
+  Effect.gen(function* () {
+    yield* seed();
+    yield* TestClock.setTime(now);
+    const service = yield* OwnerCheck.OwnerCheck;
+    const chat = yield* Service.KinChatService;
+    const queue = yield* Queue.KinEventQueue;
+    const sql = yield* SqlClient.SqlClient;
+    yield* service.post(orgId, "race", yield* service.select(orgId));
+    const widgetId = KinWidgetId.make("owner-check:a:race");
+    const message = yield* chat.act(
+      { _tag: "person", orgId, personId: KinPersonId.make("owner-a") },
+      { widgetId, revision: 1, actionId: action, value: "old-review", clientActionId: action },
+    );
+    yield* queue.enqueue(
+      decodeEvent({
+        _tag: "widget.action",
+        orgId,
+        eventId: action,
+        agentId: "lead-a",
+        receivedAt: "2026-11-09T09:00:00.000Z",
+        dedupeKey: action,
+        provenance: { _tag: "human", personId: "owner-a", memberId: "owner-member-a" },
+        chatId: "chat-a",
+        messageId: message.messageId,
+        actionId: action,
+      }),
+    );
+    yield* TestClock.adjust("20 seconds");
+    const wakeupId = KinWakeupId.make("racing-review");
+    yield* queue.claim({ orgId, agentId: KinAgentId.make("lead-a"), wakeupId, model: "fixture" });
+    let staged = false;
+    let discarded = false;
+    const writer = Layer.mock(MemoryWriter.MemoryWriter)({
+      stage: () =>
+        Effect.gen(function* () {
+          staged = true;
+          yield* sql`UPDATE kin_widgets SET revision = revision + 1 WHERE org_id = ${orgId} AND widget_id = ${widgetId}`.pipe(
+            Effect.orDie,
+          );
+        }),
+      discard: (org, wakeup) =>
+        Effect.sync(() => {
+          assert.equal(org, orgId);
+          assert.equal(wakeup, wakeupId);
+          discarded = true;
+          staged = false;
+        }),
+    });
+    const failure = yield* service
+      .act(orgId, wakeupId, KinEventId.make(action))
+      .pipe(Effect.provide(writer), Effect.flip);
+    assert.equal(failure._tag, "OwnerCheckError");
+    assert.isTrue(discarded);
+    assert.isFalse(staged);
+    const [widget] = yield* sql<{
+      state_json: string;
+    }>`SELECT state_json FROM kin_widgets WHERE org_id = ${orgId} AND widget_id = ${widgetId}`;
+    assert.isUndefined(decodeCard(widget!.state_json).items[0]?.handled);
+  }).pipe(Effect.provide(fixture(memoryItems)), Effect.scoped),
+);

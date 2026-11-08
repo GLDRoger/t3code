@@ -42,7 +42,13 @@ export const item = (id: string, overrides: Partial<MemoryItemHead> = {}) =>
     links: ["https://example.com/evidence"],
     ...overrides,
   });
-export function fixture(items: ReadonlyArray<MemoryItemHead> = []) {
+export function fixture(
+  items: ReadonlyArray<MemoryItemHead> = [],
+  options: {
+    query?: (sql: SqlClient.SqlClient) => Memory.Memory["Service"]["query"];
+    register?: Scheduler.Scheduler["Service"]["register"];
+  } = {},
+) {
   const database = Persistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory));
   const repositories = Layer.mergeAll(
     Repository.layer,
@@ -54,30 +60,40 @@ export function fixture(items: ReadonlyArray<MemoryItemHead> = []) {
     Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
   );
   const dependencies = Layer.mergeAll(
-    Layer.mock(Memory.Memory)({
-      query: (orgId) =>
-        Effect.succeed(
-          items
-            .filter((item) => item.orgId === orgId)
-            .map((item) => ({ ...item, duplicate: false })),
-        ),
-      readItemQuietly: (orgId, id) => {
-        const head = items.find((item) => item.orgId === orgId && item.id === id);
-        return head === undefined
-          ? Effect.fail(new Memory.MemoryNotFound({ orgId, id }))
-          : Effect.succeed({ head, body: "Body\n" });
-      },
-    }),
+    Layer.unwrap(
+      Effect.map(SqlClient.SqlClient, (sql) =>
+        Layer.mock(Memory.Memory)({
+          query:
+            options.query?.(sql) ??
+            ((orgId) =>
+              Effect.succeed(
+                items
+                  .filter((item) => item.orgId === orgId)
+                  .map((item) => ({ ...item, duplicate: false })),
+              )),
+          readItemQuietly: (orgId, id) => {
+            const head = items.find((item) => item.orgId === orgId && item.id === id);
+            return head === undefined
+              ? Effect.fail(new Memory.MemoryNotFound({ orgId, id }))
+              : Effect.succeed({ head, body: "Body\n" });
+          },
+        }),
+      ),
+    ),
     Chat.layer.pipe(Layer.provideMerge(Hub.layer)),
     TriggerScheduler.layer,
   ).pipe(
     Layer.provideMerge(repositories),
-    Layer.provide(Layer.succeed(Scheduler.Scheduler, { register: () => Effect.void })),
+    Layer.provide(
+      Layer.succeed(Scheduler.Scheduler, { register: options.register ?? (() => Effect.void) }),
+    ),
   );
   const owner = OwnerCheck.layer.pipe(Layer.provideMerge(dependencies));
   return Routines.layer.pipe(
     Layer.provideMerge(owner),
-    Layer.provideMerge(Layer.succeed(Scheduler.Scheduler, { register: () => Effect.void })),
+    Layer.provideMerge(
+      Layer.succeed(Scheduler.Scheduler, { register: options.register ?? (() => Effect.void) }),
+    ),
   );
 }
 export const seed = Effect.fn("test.routinesSeed")(function* () {
