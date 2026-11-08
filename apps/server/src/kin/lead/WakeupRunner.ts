@@ -103,14 +103,21 @@ const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
   const launch = yield* ThreadLaunchService.ThreadLaunchService;
   const threads = yield* ThreadManagementService.ThreadManagementService;
-  const threadActivity = threads.streamDomainEvents.pipe(
-    Stream.filter(
-      (event) =>
-        event.type === "run.updated" ||
-        (event.type === "provider-turn.updated" && event.payload.completedAt !== null),
-    ),
-    Stream.runHead,
-  );
+  const threadActivity = Effect.fn("WakeupRunner.threadActivity")(function* (orgId: KinOrgId) {
+    const rows = yield* sql<{
+      threadId: string;
+    }>`SELECT thread_id AS "threadId" FROM kin_leads WHERE org_id = ${orgId} AND thread_id IS NOT NULL ORDER BY thread_id`;
+    const leadThreads = new Set(rows.map((row) => row.threadId));
+    return yield* threads.streamDomainEvents.pipe(
+      Stream.filter(
+        (event) =>
+          leadThreads.has(event.threadId) &&
+          (event.type === "run.updated" ||
+            (event.type === "provider-turn.updated" && event.payload.completedAt !== null)),
+      ),
+      Stream.runHead,
+    );
+  });
 
   const lead = Effect.fn("WakeupRunner.lead")(function* (orgId: KinOrgId, agentId: KinAgentId) {
     const [row] = yield* sql`SELECT l.org_id AS "orgId", l.agent_id AS "agentId", l.name,
@@ -267,7 +274,7 @@ const make = Effect.gen(function* () {
           WHERE thread_id = ${record.threadId}
             AND status IN ${sql.in(["queued", ...ThreadManagementService.ACTIVE_RUN_STATUSES])} LIMIT 1`;
         if (unfinished.length > 0 || busy.length > 0) {
-          yield* Effect.raceFirst(yield* queue.changes(orgId), threadActivity).pipe(
+          yield* Effect.raceFirst(yield* queue.changes(orgId), threadActivity(orgId)).pipe(
             Effect.timeoutOrElse({ duration: 60_000, orElse: () => Effect.void }),
           );
           return;
@@ -553,7 +560,7 @@ const make = Effect.gen(function* () {
           const unfinished =
             yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${orgId} AND status = 'running'`;
           if (unfinished.length > 0) {
-            yield* Effect.raceFirst(changed, threadActivity).pipe(
+            yield* Effect.raceFirst(changed, threadActivity(orgId)).pipe(
               Effect.timeoutOrElse({ duration: 60_000, orElse: () => Effect.void }),
             );
             return;
@@ -572,7 +579,7 @@ const make = Effect.gen(function* () {
             yield* runOnce(orgId, next.agentId);
             return;
           }
-          yield* Effect.raceFirst(changed, threadActivity).pipe(
+          yield* Effect.raceFirst(changed, threadActivity(orgId)).pipe(
             Effect.timeoutOrElse({
               duration: Math.min(60_000, Math.max(1, (next?.readyAt ?? Infinity) - now)),
               orElse: () => Effect.void,

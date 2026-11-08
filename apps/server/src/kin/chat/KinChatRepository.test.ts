@@ -1052,9 +1052,14 @@ describe("KinChatRepository", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect.each(["restartContinuationOfRunId", "usageLimitContinuationOfRunId"] as const)(
-    "authorizes only the wake-up active run across reused ids and %s",
-    (continuationField) =>
+  it.effect.each([
+    ["restartContinuationOfRunId", "agent"],
+    ["usageLimitContinuationOfRunId", "agent"],
+    ["restartContinuationOfRunId", "user"],
+    ["usageLimitContinuationOfRunId", "user"],
+  ] as const)(
+    "authorizes only the wake-up active run across reused ids and %s created by %s",
+    ([continuationField, continuedBy]) =>
       Effect.gen(function* () {
         const repo = yield* seed;
         const sql = yield* SqlClient.SqlClient;
@@ -1157,7 +1162,7 @@ describe("KinChatRepository", () => {
           attachments: [],
           dispatchMode: { type: "start_immediately" },
           restartContinuationOfRunId: next.id,
-          createdBy: "system",
+          createdBy: continuedBy,
           creationSource: "server",
         });
         let continuation = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
@@ -1186,7 +1191,7 @@ describe("KinChatRepository", () => {
             commandId: CommandId.make("start-continuation"),
             threadId,
           });
-        assert.isTrue(yield* repo.hasRunningWakeup(scope));
+        assert.strictEqual(yield* repo.hasRunningWakeup(scope), continuedBy === "agent");
         assert.notEqual(next.id, wakeup.id);
       }).pipe(Effect.provide(layer)),
   );
