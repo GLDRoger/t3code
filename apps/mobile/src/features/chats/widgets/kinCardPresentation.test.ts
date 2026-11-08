@@ -56,6 +56,17 @@ describe("kinCardView", () => {
       kinCardView(widget({ state: taskState({ status: "paused" }) }), HOST, known()).kind,
     ).toBe("unknown");
     expect(kinCardView(widget({ state: { title: "no ids" } }), HOST, known()).kind).toBe("unknown");
+    expect(kinCardView(widget({ type: "deferral" }), HOST, known()).kind).toBe("unknown");
+    const deferral = {
+      itemId: "def-1",
+      title: "Rate limiting",
+      dueAt: "2026-11-13T09:00:00.000Z",
+      onDue: "start",
+      text: "",
+    };
+    expect(kinCardView(widget({ type: "deferral", state: deferral }), HOST, known()).kind).toBe(
+      "deferral",
+    );
   });
 
   it("ignores fields this build doesn't know", () => {

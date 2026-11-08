@@ -2,6 +2,8 @@ import { KinTaskCardState, type EnvironmentId, type KinWidget } from "@t3tools/c
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { kinDeferralCardView, type KinDeferralCardView } from "./kinDeferralPresentation";
+
 export const KIN_UNKNOWN_CARD_TEXT = "This card needs a newer version of Kin.";
 export const KIN_MISSING_CARD_TEXT = "This card hasn't loaded yet.";
 
@@ -27,6 +29,7 @@ export interface KinTaskCardView {
 
 export type KinCardView =
   | { readonly kind: "task"; readonly task: KinTaskCardView }
+  | { readonly kind: "deferral"; readonly deferral: KinDeferralCardView }
   | { readonly kind: "missing" }
   | { readonly kind: "unknown" };
 
@@ -122,6 +125,10 @@ export function kinCardView(
             task: kinTaskCardView(state.value, hostEnvironmentId, isKnownEnvironment),
           }
         : { kind: "unknown" };
+    }
+    case "deferral": {
+      const deferral = kinDeferralCardView(widget);
+      return deferral === null ? { kind: "unknown" } : { kind: "deferral", deferral };
     }
     default:
       return { kind: "unknown" };

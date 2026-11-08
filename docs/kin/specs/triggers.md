@@ -216,7 +216,8 @@ Code posts the card, never the model. It goes to the item's `chat` when that cha
 - the owner-check gate's dispatcher steps must land (chat act enqueues `widget.action`; `WakeupRunner` intercepts card actions without showing them to the model);
 - `WakeupRunner` must run `Deferrals.act` for `deferral` actions, then `MemoryWriter.commitWakeup` (the commit re-arms through the cache hook), then queue `finish`. [Change] goes to the lead as an owner message about the item;
 - production `MemoryWriterAuthority.resolve` must grant `kind: "deferral_card"` (item id, action `remind`) only after verifying the claimed owner tap. With that grant, the writer lets `on_due` change, and only to `remind`;
-- web and mobile must render the native card and its closed state.
+- web and mobile must render the native card and its closed state. Mobile (MOB-7) posts `value: itemId`, except **Change**, which posts `value: { itemId, dueAt }` with the owner's chosen time, so the lead needn't ask for it. `Deferrals.act` must accept that shape;
+- TRIG-8 moves the same widget to the heads-up by setting `phase: "heads_up"`, `recheck` and, when late, `graceEndsAt` on `KinDeferralCard`, and adds `start`, `monday` and `cancel` to `deferralCardActions`.
 
 **Flow for `start`** (`kin_deferral_runs.state`):
 
@@ -490,7 +491,7 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
   - runs dream-mode sessions;
   - provides the front-matter cache (`syncItem` callback), `lastReadAt`, the `Memory` git writer (calls `secretScan.scan`), the budget priority (owner message > due deferral > chase > dream) and the stop switch;
   - provides the `kin_defer` tool.
-- **CHAT:** `KinOrgId`; delivering messages and pings; `KinWidget` payloads `KinDeferralCard`, `KinHeadsUpCard`, `KinOwnerCheckCard`, `KinDreamReviewCard`; the chat message store for dream material; verified authors for trust checks.
+- **CHAT:** `KinOrgId`; delivering messages and pings; `KinWidget` payloads `KinDeferralCard` (its `heads_up` phase is the heads-up card), `KinOwnerCheckCard`, `KinDreamReviewCard`; the chat message store for dream material; verified authors for trust checks.
 - **APPR:**
   - action kinds `github.repo_hook.create`, `memory.dream_review`, `memory.purge`, `kin.secret_allow`;
   - the standing `dream:auto` delegation;

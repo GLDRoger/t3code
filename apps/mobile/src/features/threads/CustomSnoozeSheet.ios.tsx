@@ -48,6 +48,10 @@ const units = [
 export function CustomSnoozeSheet(props: {
   readonly onClose: () => void;
   readonly onSnooze: (snoozedUntil: string) => void;
+  /** Copy for reuse outside thread snoozing; defaults to the snooze wording. */
+  readonly title?: string;
+  readonly description?: string;
+  readonly confirmLabel?: string;
 }) {
   const { width, height } = useWindowDimensions();
   const [mode, setMode] = useState<CustomSnoozeInput["mode"]>("date");
@@ -102,6 +106,8 @@ export function CustomSnoozeSheet(props: {
             height={popoverHeight}
             onClose={props.onClose}
             onSubmit={submit}
+            title={props.title ?? "Custom snooze"}
+            confirmLabel={props.confirmLabel ?? "Snooze"}
           >
             <Host
               matchContents={{ vertical: true }}
@@ -216,6 +222,8 @@ function SnoozePopoverNavigation(props: {
   readonly height: number;
   readonly onClose: () => void;
   readonly onSubmit: () => void;
+  readonly title: string;
+  readonly confirmLabel: string;
   readonly children: ReactNode;
 }) {
   return (
@@ -224,10 +232,10 @@ function SnoozePopoverNavigation(props: {
         <View style={{ width: props.width, height: props.height }}>
           <StandaloneStack>
             <SheetHeader
-              title="Custom snooze"
+              title={props.title}
               onCancel={props.onClose}
-              accessibilityLabel="Cancel custom snooze"
-              confirm={{ label: "Snooze", onPress: props.onSubmit }}
+              accessibilityLabel={`Cancel ${props.title.toLowerCase()}`}
+              confirm={{ label: props.confirmLabel, onPress: props.onSubmit }}
             />
             <ScrollView
               contentInsetAdjustmentBehavior="automatic"

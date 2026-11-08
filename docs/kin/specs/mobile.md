@@ -237,10 +237,11 @@ Every screen handles the same seven states. Each state's copy is fixed below.
   - The thread was deleted: the thread screen shows its not-found state.
 - A PR chip, if present, opens the PR with the existing `useOpenPullRequest` (`native/useOpenPullRequest.ts`).
 
-**Deferral card.** Data: `{ what, dueAt, onDue: "remind" | "start" | "ask" | "chase", phase: "confirmed" | "heads_up" | "done" | "cancelled", graceEndsAt? }`.
+**Deferral card.** Data: `KinDeferralCard` in `packages/contracts/src/kinLead.ts`: `{ itemId, title, dueAt, onDue: "remind" | "start" | "ask" | "chase", text, phase?: "confirmed" | "heads_up", recheck?, graceEndsAt? }`. A missing `phase` means `confirmed`. A done or cancelled deferral closes the widget (`closedAt`), and the card reads "Closed." with no buttons.
 
-- In the `confirmed` phase it reads "Deferred to Fri 13 Nov, 9:00. I'll start then." with buttons **Change** and **Just remind me**. **Change** opens `CustomSnoozeSheet`, and `onSnooze(iso)` posts `actionId: "change"` with `{ dueAt: iso }`.
-- In the `heads_up` phase it reads "Starting rate limiting at 9:00", followed by the server's recheck line ("Issue #88 is still open."), with buttons **Start now**, **Monday** and **Cancel**. A countdown reads "Starts in 24 min unless you stop it".
+- In the `confirmed` phase it reads "Deferred to Fri 13 Nov, 9:00. I'll start then." with buttons **Change** and **Just remind me** (hidden when `onDue` is already `remind`). **Change** opens `CustomSnoozeSheet`, and `onSnooze(iso)` posts `actionId: "change"` with `value: { itemId, dueAt: iso }`. Every other action posts `value: itemId`.
+- In the `heads_up` phase it reads "Starting Rate limiting at 9:00", followed by the server's `recheck` line ("Issue #88 is still open."), with buttons **Start now**, **Monday** and **Cancel**. A countdown reads "Starts in 24 min unless you stop it". A late heads-up counts down to `graceEndsAt` and adds "This was due at 9:00."
+- The countdown follows the shared minute tick, never a timer of its own. After an action is sent, the buttons stay off until the card's next revision.
 - All times are in the device timezone, written as "Fri 13 Nov, 9:00" (`Intl.DateTimeFormat`).
 
 **Approval card.** It renders **only** from `kinClient.pendingAction({ pendingActionId })`, the server's pending action. The widget carries nothing but `pendingActionId`. Any agent-supplied text is shown last, quoted and labelled, and never as a title or a button. The exact content, top to bottom:
@@ -349,7 +350,8 @@ Commands, from `apps/mobile`: `vp run typecheck` and `vp test run --project unit
 - `kinInboxModel.test.ts`: waiting chats sort first, backlog changes replace held messages and widgets by id, contiguous-seq and change-cursor tracking, `leftAt` removal, reset and history. The author's `KinMessage` carries its `clientMessageId`, which the outbox (MOB-5) uses to replace the pending bubble.
 - `kinHost.test.ts`: probe classification (including a transport error and a defect) and host choice.
 - `kinStreams.test.ts`: across a session swap, the cached value comes first with `live: false`, the second subscription's `afterSeq` and `afterChangeSeq` come from the current state, no history page is re-read, `unavailable` backs off and resubscribes while other refusals close the chat, and a `left` event ends the chat, drops its cache entry and reaches the inbox.
-- `kinCardPresentation.test.ts`: the approval title template, the SHA short form, the checks summary, every `status` line, owner vs member eyebrow, Approve disabled while checks are pending, deferral time format across timezones.
+- `kinCardPresentation.test.ts`: the approval title template, the SHA short form, the checks summary, every `status` line, owner vs member eyebrow, Approve disabled while checks are pending.
+- `kinDeferralPresentation.test.ts`: each phase's actions, deferral time format across timezones, countdown boundaries, one posted action per tap, and the stale-revision notice.
 - `kinPushPayload.test.ts`: valid payloads route; `/threads/...`, `//evil`, query strings and malformed JSON are dropped; an action response produces one `widgetAction` per notification id.
 - `KinPushSender.test.ts`: category per widget kind; approval pushes only reach approver devices; skipped when a foreground subscription exists.
 - Upstream tests still pass: `dependency-graph.test.ts`, `reactCompilerCoverage.test.ts`, `notificationNavigation.test.ts`.
