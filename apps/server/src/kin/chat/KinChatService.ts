@@ -193,6 +193,7 @@ const decodeAct = Schema.decodeEffect(KinWidgetsActInput);
 const encodeAction = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const invalidState = new KinChatError({ reason: "invalid_state", message: "Invalid chat input." });
 const notFound = new KinChatError({ reason: "not_found", message: "Kin record not found." });
+const isKinChatError = Schema.is(KinChatError);
 // Live inserts also advance change_seq, so refresh the client's frozen change cursor well under
 // resume's 200-message reset cap.
 const checkpointEvery = 100;
@@ -681,7 +682,7 @@ const make = Effect.gen(function* () {
                       Effect.map((next) => [event, next]),
                       // A member who just left gets not_found; the member event that follows ends the stream.
                       Effect.catchIf(
-                        (error) => error.reason === "not_found",
+                        (error) => isKinChatError(error) && error.reason === "not_found",
                         () => Effect.succeed([event]),
                       ),
                     )
