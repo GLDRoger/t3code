@@ -1,3 +1,4 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   KinAgentId,
@@ -15,8 +16,11 @@ import {
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
+import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
@@ -24,6 +28,10 @@ import * as TestClock from "effect/testing/TestClock";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as Queue from "../lead/KinEventQueue.ts";
 import { WorkerLaunchGate } from "../lead/Workers.ts";
+import { fixtureItem } from "../memory/__fixtures__/items.ts";
+import { fakeRepository } from "../memory/__fixtures__/repository.ts";
+import * as Memory from "../memory/Memory.ts";
+import * as MemoryConfig from "../memory/MemoryConfig.ts";
 import * as MemoryWriter from "../memory/MemoryWriter.ts";
 import * as DeferralFlow from "./deferralFlow.ts";
 import {
@@ -56,11 +64,14 @@ const widgetId = widgetFor("def-1");
 const dueAt = Date.parse("2026-11-13T03:30:00.000Z");
 const headsUpAt = dueAt - 30 * 60_000;
 
-const layerFor = (items: ReadonlyArray<MemoryItemHead>) =>
+const layerFor = <E = never>(
+  items: ReadonlyArray<MemoryItemHead>,
+  options: Parameters<typeof fixture<E>>[1] = {},
+) =>
   DeferralFlow.layer.pipe(
     Layer.provideMerge(Deferrals.layer),
     Layer.provideMerge(TriggerService.layer),
-    Layer.provideMerge(fixture(items)),
+    Layer.provideMerge(fixture(items, options)),
   );
 
 const fakeGithub = (states: Map<string, Omit<GithubLinkState, "link">>) => ({
@@ -594,4 +605,162 @@ it.effect("remind, ask and chase act at due, noting lateness", () => {
     assert.equal((yield* runOf("def-x"))?.state, "armed");
     assert.lengthOf(yield* pendingFires(), 0);
   }).pipe(Effect.provide(layerFor(items)));
+});
+
+it.effect("chases through the real memory lock without reading memory inside the write", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+    const repository = fakeRepository(fs);
+    for (const dir of ["memory/.git/objects", "memory/.git/refs", "memory-read"])
+      yield* fs.makeDirectory(`${root}/a/${dir}`, { recursive: true });
+    const memoryItem = (id: string, due: string, onDue: string) =>
+      fixtureItem({
+        id,
+        due,
+        on_due: onDue,
+        owner: "owner",
+        said_by: "owner",
+        chat: "chat-a",
+        links: [],
+      });
+    repository.files.set(
+      "deferrals/def-c.md",
+      memoryItem("def-c", "2026-11-13T09:00+05:30", "chase"),
+    );
+    const writing: Array<string> = [];
+    const spied = Layer.effect(
+      Memory.Memory,
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const memory = yield* Memory.Memory;
+        // Any memory call while this fiber holds the SQLite writer can deadlock against load.
+        const spy = <A, E>(name: string, effect: Effect.Effect<A, E>) =>
+          Effect.serviceOption(sql.transactionService).pipe(
+            Effect.tap((open) => Effect.sync(() => Option.isSome(open) && writing.push(name))),
+            Effect.andThen(effect),
+          );
+        return Memory.Memory.of({
+          ...memory,
+          query: (org, q) => spy("query", memory.query(org, q)),
+          readItem: (org, id) => spy("readItem", memory.readItem(org, id)),
+          readItemQuietly: (org, id) => spy("readItemQuietly", memory.readItemQuietly(org, id)),
+        });
+      }),
+    ).pipe(
+      Layer.provide(Memory.layer),
+      Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
+      Layer.provide(TriggerService.syncHooksLayer.pipe(Layer.provide(TriggerService.layer))),
+      Layer.provide(
+        Layer.succeed(MemoryConfig.MemoryConfig, {
+          baseDirectory: root,
+          repositories: [{ orgId, repoUrl: "unused", path: "a" }],
+        }),
+      ),
+      Layer.provide(repository.layer),
+      Layer.provide(NodeServices.layer),
+    );
+    yield* Effect.gen(function* () {
+      yield* setup();
+      const sql = yield* SqlClient.SqlClient;
+      const memory = yield* Memory.Memory;
+      yield* memory.anchor(orgId, "main", repository.head());
+      yield* memory.query(orgId, {});
+      assert.equal((yield* runOf("def-c"))?.state, "armed");
+
+      // A new head lands before the chase, so its load re-syncs triggers under the memory lock.
+      repository.files.set(
+        "deferrals/def-n.md",
+        memoryItem("def-n", "2026-11-20T09:00+05:30", "remind"),
+      );
+      yield* memory.record(orgId, "main", yield* memory.anchor(orgId, "main"), repository.commit());
+      yield* tick(dueAt);
+
+      assert.equal((yield* runOf("def-c"))?.state, "chased");
+      assert.equal((yield* runOf("def-n"))?.state, "armed");
+      const pings = yield* sql`SELECT person FROM kin_ping_items
+        WHERE org_id = ${orgId} AND item_id = 'def-c' ORDER BY person`;
+      assert.deepStrictEqual(pings, [{ person: "owner-a" }]);
+      assert.deepStrictEqual(writing, []);
+    }).pipe(Effect.provide(layerFor([], { memory: spied })));
+  }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+);
+
+it.effect("backs off a failing fire and warns once", () => {
+  const remind = makeDeferral("def-r", { on_due: "remind" });
+  const failures: Array<string> = [];
+  const logger = Logger.layer(
+    [
+      Logger.make(({ message, logLevel }) => {
+        if (String(message).includes("Kin deferral fire processing failed"))
+          failures.push(logLevel);
+      }),
+    ],
+    { mergeWithExisting: false },
+  );
+  return Effect.gen(function* () {
+    yield* setup();
+    const sql = yield* SqlClient.SqlClient;
+    yield* (yield* TriggerService.KinTriggerService).syncItem(remind);
+    yield* sql`CREATE TEMP TRIGGER fail_remind BEFORE INSERT ON kin_messages
+      BEGIN SELECT RAISE(ABORT, 'fixture failure'); END`;
+    for (const seconds of [0, 5, 60, 90, 180]) yield* tick(dueAt + seconds * 1000);
+    // Retries at +1 and +3 minutes, each after a longer wait.
+    assert.deepStrictEqual(failures, ["Warn", "Debug", "Debug"]);
+    yield* sql`DROP TRIGGER fail_remind`;
+    yield* tick(dueAt + 400_000);
+    assert.lengthOf(failures, 3);
+    yield* tick(dueAt + 420_000);
+    assert.equal((yield* runOf("def-r"))?.state, "reminded");
+    assert.lengthOf(yield* pendingFires(), 0);
+  }).pipe(
+    Effect.provide(layerFor([remind])),
+    Effect.provide(logger),
+    Effect.provideService(References.MinimumLogLevel, "Debug"),
+  );
+});
+
+it.effect("sweeps pings once a minute unless a chase just put one", () => {
+  const chase = makeDeferral("def-c", { on_due: "chase", owner: "owner" });
+  const items = [chase];
+  let sweeps = 0;
+  const query = () => (org: typeof orgId) =>
+    Effect.sync(() => {
+      sweeps++;
+      return items
+        .filter((entry) => entry.orgId === org)
+        .map((entry) => ({ ...entry, duplicate: false }));
+    });
+  return Effect.gen(function* () {
+    yield* setup();
+    const sql = yield* SqlClient.SqlClient;
+    const service = yield* TriggerService.KinTriggerService;
+    yield* service.syncItem(chase);
+    yield* tick(dueAt);
+    assert.equal((yield* runOf("def-c"))?.state, "chased");
+    assert.equal(sweeps, 1);
+    yield* tick(dueAt + 5_000);
+    assert.equal(sweeps, 1);
+    yield* tick(dueAt + 65_000);
+    assert.equal(sweeps, 2);
+
+    // Re-chasing with a new due while the first ping is pending asks instead.
+    items[0] = makeDeferral("def-c", {
+      on_due: "chase",
+      owner: "owner",
+      due: "2026-11-14T09:00+05:30",
+    });
+    assert.equal(yield* service.syncItem(items[0]), "armed");
+    yield* tick(dueAt + 24 * 60 * 60_000);
+    assert.equal((yield* runOf("def-c"))?.state, "asked");
+    assert.include((yield* cardOf("def-c")).text, "I couldn't chase owner");
+    assert.equal(sweeps, 3);
+
+    // An undecodable inbox row fails the drain, but the sweep still runs.
+    yield* sql`INSERT INTO kin_trigger_inbox (fire_id, org_id, payload_json, received_at)
+      VALUES ('bad', ${orgId}, '{"payload":{"subject":{"type":"deferral"}}}', 0)`;
+    const failed = yield* tick(dueAt + 24 * 60 * 60_000 + 65_000).pipe(Effect.flip);
+    assert.equal(failed._tag, "KinDeferralFlowError");
+    assert.equal(sweeps, 4);
+  }).pipe(Effect.provide(layerFor(items, { query })));
 });

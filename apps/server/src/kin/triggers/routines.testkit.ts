@@ -43,11 +43,13 @@ export const item = (id: string, overrides: Partial<MemoryItemHead> = {}) =>
     links: ["https://example.com/evidence"],
     ...overrides,
   });
-export function fixture(
+export function fixture<E = never>(
   items: ReadonlyArray<MemoryItemHead> = [],
   options: {
     query?: (sql: SqlClient.SqlClient) => Memory.Memory["Service"]["query"];
     register?: Scheduler.Scheduler["Service"]["register"];
+    /** Replaces the mock, e.g. with the real layer over a fake repository. */
+    memory?: Layer.Layer<Memory.Memory, E, SqlClient.SqlClient | Repository.KinChatRepository>;
   } = {},
 ) {
   const database = Persistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory));
@@ -61,26 +63,27 @@ export function fixture(
     Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
   );
   const dependencies = Layer.mergeAll(
-    Layer.unwrap(
-      Effect.map(SqlClient.SqlClient, (sql) =>
-        Layer.mock(Memory.Memory)({
-          query:
-            options.query?.(sql) ??
-            ((orgId) =>
-              Effect.succeed(
-                items
-                  .filter((item) => item.orgId === orgId)
-                  .map((item) => ({ ...item, duplicate: false })),
-              )),
-          readItemQuietly: (orgId, id) => {
-            const head = items.find((item) => item.orgId === orgId && item.id === id);
-            return head === undefined
-              ? Effect.fail(new Memory.MemoryNotFound({ orgId, id }))
-              : Effect.succeed({ head, body: "Body\n" });
-          },
-        }),
+    options.memory ??
+      Layer.unwrap(
+        Effect.map(SqlClient.SqlClient, (sql) =>
+          Layer.mock(Memory.Memory)({
+            query:
+              options.query?.(sql) ??
+              ((orgId) =>
+                Effect.succeed(
+                  items
+                    .filter((item) => item.orgId === orgId)
+                    .map((item) => ({ ...item, duplicate: false })),
+                )),
+            readItemQuietly: (orgId, id) => {
+              const head = items.find((item) => item.orgId === orgId && item.id === id);
+              return head === undefined
+                ? Effect.fail(new Memory.MemoryNotFound({ orgId, id }))
+                : Effect.succeed({ head, body: "Body\n" });
+            },
+          }),
+        ),
       ),
-    ),
     Chat.layer.pipe(Layer.provide(JudgeShadow.layerOff), Layer.provideMerge(Hub.layer)),
     TriggerScheduler.layer,
   ).pipe(
