@@ -266,6 +266,9 @@ const make = Effect.gen(function* () {
     put: Effect.fn("KinTriggerStore.put")(
       function* (trigger) {
         const value = yield* decodePutTrigger({ ...trigger, lastFireId: null });
+        const timeZone = new Intl.DateTimeFormat("en-US", {
+          timeZone: value.timeZone,
+        }).resolvedOptions().timeZone;
         const subject = yield* encodeSubject(value.subject);
         const schedule = yield* encodeSchedule(value.schedule);
         const nextRunAt = value.nextRunAt === null ? null : yield* epoch(value.nextRunAt);
@@ -276,7 +279,7 @@ const make = Effect.gen(function* () {
           trigger_id, org_id, subject_json, schedule_json, time_zone, enabled,
           next_run_at, last_fire_id, created_at, updated_at
         ) VALUES (
-          ${value.id}, ${value.orgId}, ${subject}, ${schedule}, ${value.timeZone}, ${value.enabled ? 1 : 0},
+          ${value.id}, ${value.orgId}, ${subject}, ${schedule}, ${timeZone}, ${value.enabled ? 1 : 0},
           ${nextRunAt}, NULL,
           ${createdAt}, ${updatedAt}
         )

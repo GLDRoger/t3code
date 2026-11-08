@@ -130,6 +130,9 @@ const make = Effect.gen(function* () {
         PersistenceDecodeError.fromSchemaError("KinTriggerScheduler.recompute", cause),
       ),
     );
+    const timeZone = new Intl.DateTimeFormat("en-US", {
+      timeZone: settings.timeZone,
+    }).resolvedOptions().timeZone;
     const now = yield* Clock.currentTimeMillis;
     yield* sql
       .withTransaction(
@@ -137,7 +140,7 @@ const make = Effect.gen(function* () {
           for (const trigger of yield* store.list(settings.orgId)) {
             const updated = {
               ...trigger,
-              timeZone: settings.timeZone,
+              timeZone,
               schedule: routineSchedule(trigger, settings),
             };
             const next = !updated.enabled

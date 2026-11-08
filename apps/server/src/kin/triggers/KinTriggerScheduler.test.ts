@@ -307,8 +307,14 @@ describe("KinTriggerScheduler", () => {
         yield* scheduler.recompute(settings());
         assert.deepStrictEqual(yield* store.get(orgA, once.id), {
           ...once,
-          timeZone: "Asia/Kolkata",
+          timeZone: new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Kolkata" }).resolvedOptions()
+            .timeZone,
         });
+        const before = yield* store.list(orgA);
+        yield* TestClock.adjust("1 second");
+        yield* scheduler.recompute(settings(orgA, "asia/kolkata"));
+        assert.deepStrictEqual(yield* store.list(orgA), before);
+        yield* TestClock.setTime(millis(timestamp));
         assert.isNull((yield* store.get(orgA, trigger({ id: "disabled" }).id))?.nextRunAt);
         for (const [id, next] of [
           ["morning_brief", "2026-11-07T03:30:00.000Z"],

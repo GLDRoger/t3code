@@ -41,11 +41,13 @@ const isNonBlankBody = Schema.makeFilter((value: string) => value.trim().length 
 });
 
 // node:sqlite truncates TEXT results at NUL, even when the full value was stored.
-const MessageBody = Schema.String.check(
+export const KinText = Schema.String.check(
   Schema.makeFilter((value) => !value.includes("\u0000"), {
-    expected: "a message body without NUL characters",
+    expected: "text without NUL characters",
   }),
 );
+
+const KinTrimmedText = TrimmedNonEmptyString.check(Schema.makeFilter(Schema.is(KinText)));
 
 export const KinChatKind = Schema.Literals(["direct", "team_group", "project_group", "router"]);
 export type KinChatKind = typeof KinChatKind.Type;
@@ -66,7 +68,7 @@ export const KinChat = Schema.Struct({
   orgId: KinOrgId,
   chatId: KinChatId,
   kind: KinChatKind,
-  title: Schema.NullOr(TrimmedNonEmptyString),
+  title: Schema.NullOr(KinTrimmedText),
   teamId: Schema.NullOr(TrimmedNonEmptyString),
   lastSeq: NonNegativeInt,
   lastMessageAt: Schema.NullOr(IsoDateTime),
@@ -151,7 +153,7 @@ export const KinMessage = Schema.Struct({
   author: KinAuthor,
   authorRole: KinRole,
   kind: KinMessageKind,
-  body: MessageBody,
+  body: KinText,
   intent: Schema.NullOr(KinAgentIntent),
   mentions: Schema.Array(KinMemberId),
   replyTo: Schema.NullOr(KinMessageId),
@@ -184,11 +186,11 @@ export const KinWidget = Schema.Struct({
   widgetId: KinWidgetId,
   messageId: KinMessageId,
   widgetClass: KinWidgetClass,
-  type: TrimmedNonEmptyString,
+  type: KinTrimmedText,
   revision: PositiveInt,
   state: Schema.Unknown,
   source: Schema.NullOr(Schema.Struct({ threadId: ThreadId, itemId: TurnItemId })),
-  feed: Schema.NullOr(Schema.Struct({ kind: TrimmedNonEmptyString, key: TrimmedNonEmptyString })),
+  feed: Schema.NullOr(Schema.Struct({ kind: KinTrimmedText, key: KinTrimmedText })),
   awaiting: Schema.Array(KinPersonId),
   pinnedAt: Schema.NullOr(IsoDateTime),
   closedAt: Schema.NullOr(IsoDateTime),
@@ -201,8 +203,8 @@ export const KinTaskCardState = Schema.Struct({
   environmentId: EnvironmentId,
   threadId: Schema.NullOr(ThreadId),
   remoteEnvironmentId: Schema.NullOr(EnvironmentId),
-  title: TrimmedNonEmptyString,
-  model: Schema.NullOr(Schema.String),
+  title: KinTrimmedText,
+  model: Schema.NullOr(KinText),
   status: Schema.Literals([
     "working",
     "waiting",
@@ -213,7 +215,7 @@ export const KinTaskCardState = Schema.Struct({
     "cancelled",
   ]),
   pullRequests: Schema.Array(Schema.Struct({ url: Schema.String, number: Schema.Int })),
-  lastError: Schema.NullOr(Schema.String),
+  lastError: Schema.NullOr(KinText),
   updatedAt: IsoDateTime,
 });
 export type KinTaskCardState = typeof KinTaskCardState.Type;
@@ -319,7 +321,7 @@ export const KIN_MESSAGE_BODY_MAX_LENGTH = 16_000;
 export const KinMessagesSendInput = Schema.Struct({
   chatId: KinChatId,
   clientMessageId: TrimmedNonEmptyString,
-  body: MessageBody.check(isNonBlankBody, Schema.isMaxLength(KIN_MESSAGE_BODY_MAX_LENGTH)),
+  body: KinText.check(isNonBlankBody, Schema.isMaxLength(KIN_MESSAGE_BODY_MAX_LENGTH)),
   mentions: Schema.optional(Schema.Array(KinMemberId)),
   replyTo: Schema.optional(KinMessageId),
 });
