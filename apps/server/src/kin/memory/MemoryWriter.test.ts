@@ -1,3 +1,4 @@
+import * as SqlClient from "effect/sql/SqlClient";
 import { memoryGit } from "./git.ts";
 import * as NodeZlib from "node:zlib";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -23,6 +24,8 @@ it.live.each([
   "completed",
   "failed",
   "blocked",
+  "scan unavailable",
+  "scan limit",
   "forged",
   "conflict",
   "B1-shadow",
@@ -601,10 +604,23 @@ it.live.each([
         yield* writer.appendJournal(orgId, "wake1", [
           ["gh", "p_"].join("") + "aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0iL3oR6",
         ]);
+      if (scenario === "scan unavailable") {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DROP TABLE kin_secret_allow`;
+      }
+      if (scenario === "scan limit")
+        yield* writer.appendJournal(orgId, "wake1", ["a".repeat(1024 * 1024)]);
       const result = yield* writer
         .commitWakeup(orgId, "wake1", scenario === "failed" ? "failed" : "completed")
         .pipe(Effect.result);
       if (result._tag === "Failure") yield* Effect.logError(result.failure);
+      if (scenario === "scan unavailable" || scenario === "scan limit") {
+        expect(result._tag).toBe("Failure");
+        expect(notices).toHaveLength(1);
+        expect(notices[0]!.error._tag).toBe("KinSecretScanError");
+        expect(yield* git(paths.writer, ["rev-parse", "HEAD"])).toBe(original);
+        return;
+      }
       if (scenario === "tree-substitution") {
         expect(result._tag).toBe("Failure");
         if (result._tag === "Failure") expect(result.failure._tag).toBe("MemoryCheckoutInvalid");

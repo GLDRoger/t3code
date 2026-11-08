@@ -324,12 +324,12 @@ GitHub then blocks a bad auto-merge even if Kin's classifier is wrong. This forc
 **Rules:**
 
 - GitHub tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`);
-- Anthropic `sk-ant-`, OpenAI `sk-`/`sk-proj-`;
+- Anthropic `sk-ant-`; OpenAI legacy `sk-` with the `T3BlbkFJ` marker and `sk-proj-`/`sk-svcacct-`/`sk-admin-` with mixed case or digits;
 - AWS `AKIA…`/`ASIA…`;
 - Slack `xox[abposr]-`;
 - Stripe `sk_live_`/`rk_live_`;
 - Google `AIza`;
-- PEM `-----BEGIN … PRIVATE KEY-----`;
+- PEM `-----BEGIN … PRIVATE KEY-----`, including `PGP PRIVATE KEY BLOCK`;
 - JWTs (`eyJ…`, three base64url parts);
 - URLs with a password in them (`scheme://user:pass@`);
 - `password|secret|token|api_key = <value of ≥ 20 chars and high entropy>`.
@@ -342,9 +342,9 @@ GitHub then blocks a bad auto-merge even if Kin's classifier is wrong. This forc
 
 **On a finding**, the writer blocks the entire commit, discards staged text and emits a typed owner-notification hook. The runner journals the refusal without secret content and tells the owner to review and rotate the affected credential. Automatic redaction is not part of the writer contract.
 
-**False positives:** the owner adds the fingerprint to `kin_secret_allow` through a signed action. A model can never add to it. Entries are scoped to organization, exact path, rule and SHA-256 of `ruleId + "\0" + normalized matched value`, with the signed action id retained. The scanner is read-only; the APPR executor must verify the owner grant before inserting. Until that executor lands, there is no agent or MCP allowlist-write path. Migration K012 is provisional and will be renumbered at merge.
+**False positives:** the owner adds the fingerprint to `kin_secret_allow` through a signed action. A model can never add to it. Entries are scoped to organization, exact path, rule and SHA-256 of `ruleId + "\0" + normalized matched value`, with `created_at` in integer milliseconds and `signed_action_id` reserved for the future APPR executor id. The scanner is read-only; the APPR executor must verify the owner grant before inserting. Until that executor lands, there is no agent or MCP allowlist-write path. Migration K012 is provisional and will be renumbered at merge.
 
-The scanner normalizes NFKC, common Cyrillic/Greek lookalikes and invisible format characters, checks wrapped tokens, and decodes URL/base64 content up to two levels. It fails closed above 1 MiB per file, 8 MiB or 1024 files per call, 4096 allowlist entries per organization, or 32 MiB of transformed scan text. These are conservative detectors, not a guarantee against arbitrary encryption or steganography.
+The scanner checks paths as well as content, redacts paths that contain a finding, normalizes NFKC, common Cyrillic/Greek/Latin lookalikes and Default Ignorable code points, checks newline-wrapped tokens, and decodes URL/base64 content up to two levels. Base64 decoding tries all four alignments; malformed percent bytes and non-ASCII decoded bytes become separators. Prefix rules have token boundaries and bounded lengths; each regex sees at most 8192 characters with 4096-character overlap. Merge scanning covers only bytes changed from the fetched remote plus the rebuilt `INDEX.md`, not pre-existing remote content. Scanner failures notify through the writer hook, just like findings. Merge blocks use the recovery hook; production owner delivery still waits on a notifier. It fails closed above 1 MiB per file, 8 MiB or 1024 files per call, 4096 allowlist entries per organization, or 32 MiB of transformed scan text. Splits by a space, `\r`, U+2028, across journal bullets, markdown or HTML comments, `\u` escapes, and hex encoding remain out of scope. These are conservative detectors, not a guarantee against arbitrary encryption or steganography.
 
 ### Owner-signed purge (gap 5)
 

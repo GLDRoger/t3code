@@ -9,6 +9,7 @@ export default Effect.gen(function* () {
     rule_id TEXT NOT NULL,
     fingerprint TEXT NOT NULL CHECK(length(fingerprint) = 64),
     signed_action_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
     PRIMARY KEY (org_id, path, rule_id, fingerprint)
   )`;
 });

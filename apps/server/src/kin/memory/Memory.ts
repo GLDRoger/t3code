@@ -1071,6 +1071,7 @@ const make = Effect.gen(function* () {
                 });
               } else {
                 const { files: mergedFiles, modes } = merged;
+                const remoteOriginal = new Map(remoteFiles);
                 remoteFiles.clear();
                 for (const [file, bytes] of mergedFiles) remoteFiles.set(file, bytes);
                 const heads = [];
@@ -1093,7 +1094,12 @@ const make = Effect.gen(function* () {
                 const findings = yield* scanner
                   .scan({
                     orgId,
-                    files: [...remoteFiles].map(([path, content]) => ({ path, content })),
+                    files: [...remoteFiles]
+                      .filter(
+                        ([path, bytes]) =>
+                          path === "INDEX.md" || !remoteOriginal.get(path)?.equals(bytes),
+                      )
+                      .map(([path, content]) => ({ path, content })),
                   })
                   .pipe(
                     Effect.mapError(
@@ -1104,12 +1110,12 @@ const make = Effect.gen(function* () {
                   yield* notify({
                     orgId,
                     branch,
-                    reason: `Secret scan blocked merge: ${findings[0]!.ruleId} in ${findings[0]!.path}`,
+                    reason: `Secret scan blocked merge: ${findings[0]!.ruleId} in ${findings[0]!.pathHit ? "[redacted]" : findings[0]!.path}`,
                   });
                   return yield* new MemoryError({
                     orgId,
                     operation: "secretScan",
-                    reason: `Secret scan blocked merge: ${findings[0]!.ruleId} in ${findings[0]!.path}`,
+                    reason: `Secret scan blocked merge: ${findings[0]!.ruleId} in ${findings[0]!.pathHit ? "[redacted]" : findings[0]!.path}`,
                   });
                 }
                 tree = yield* Effect.scoped(

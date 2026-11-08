@@ -859,6 +859,8 @@ it.live("uses filesystem identity for a case-mismatched base without recloning",
 it.live.each([
   "diverged",
   "secret merge",
+  "remote secret merge",
+  "large remote merge",
   "conflict",
   "network down",
   "dirty writer",
@@ -933,7 +935,11 @@ it.live.each([
       } else
         yield* fs.writeFileString(
           `${writer}/rules.md`,
-          scenario === "H2-merge-swap" ? h2Local : "Local invented rules\n",
+          scenario === "H2-merge-swap"
+            ? h2Local
+            : scenario === "secret merge"
+              ? ["gh", "p_", "a".repeat(36)].join("")
+              : "Local invented rules\n",
         );
       let local = yield* commit(writer);
       if (scenario === "push retry") {
@@ -953,15 +959,20 @@ it.live.each([
       }
       yield* memory.record(orgA, "main", initial.head, local);
       yield* fs.writeFileString(
-        `${source}/${scenario === "push retry" || scenario === "diverged" || scenario === "secret merge" || scenario === "network down" || scenario === "dirty writer" || scenario === "H2-merge-swap" ? "remote-only" : "rules.md"}`,
+        `${source}/${scenario === "push retry" || scenario === "diverged" || scenario === "secret merge" || scenario === "remote secret merge" || scenario === "large remote merge" || scenario === "network down" || scenario === "dirty writer" || scenario === "H2-merge-swap" ? "remote-only" : "rules.md"}`,
         "Remote invented edit\n",
       );
       if (scenario === "journal conflict" || scenario === "push retry") {
         yield* fs.writeFileString(`${source}/journal/day.md`, "remote entry\n");
         yield* fs.writeFileString(`${source}/INDEX.md`, "remote generated index\n");
       }
-      if (scenario === "secret merge")
+      if (scenario === "remote secret merge")
         yield* fs.writeFileString(`${source}/remote-only`, ["gh", "p_", "a".repeat(36)].join(""));
+      if (scenario === "large remote merge") {
+        yield* fs.makeDirectory(`${source}/archive`);
+        for (let i = 0; i < 1030; i++)
+          yield* fs.writeFileString(`${source}/archive/${i}.txt`, "clean");
+      }
       if (scenario === "H2-merge-swap")
         yield* fs.writeFileString(`${source}/rules.md`, h2Base.replace("base tail", "remote tail"));
       yield* commit(source);
@@ -1076,7 +1087,8 @@ it.live.each([
       } else if (
         scenario === "network down" ||
         scenario === "diverged" ||
-        scenario === "secret merge" ||
+        scenario === "remote secret merge" ||
+        scenario === "large remote merge" ||
         scenario === "dirty writer"
       ) {
         expect(result._tag).toBe("Success");
@@ -1086,7 +1098,9 @@ it.live.each([
             expect(result.success.head).not.toBe(local);
             expect(yield* memory.readRules(orgA)).toBe("Local invented rules\n");
             expect(yield* git(writer, ["show", `${result.success.head}:remote-only`])).toBe(
-              "Remote invented edit",
+              scenario === "remote secret merge"
+                ? ["gh", "p_", "a".repeat(36)].join("")
+                : "Remote invented edit",
             );
           }
         }
