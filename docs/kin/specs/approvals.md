@@ -211,6 +211,25 @@ Registration:
 3. **Later keys:** confirmed by a grant of kind `register_approver_key` signed by an existing active key.
 4. Revoking (`kin.approvals.revokeKey`, from settings or the desktop) sets `revoked` and voids every `approved` action whose grant that key signed. Revoking a T3 device session (`revokeClient`) also revokes keys registered from it.
 
+#### Device session revocation (lane B integration)
+
+PR #54 must land before or with #42. Keep the registering `session_id` reconcile alongside this exact-thumbprint fallback:
+
+```sql
+SELECT DISTINCT k.org_id, k.thumbprint FROM kin_approver_keys k
+JOIN kin_auth_session_keys m ON m.proof_key_thumbprint = k.proof_key_thumbprint
+JOIN auth_sessions s ON s.session_id = m.session_id
+WHERE k.state != 'revoked' AND s.revoked_at IS NOT NULL
+```
+
+There is no backfill: historical `jkt` values exist only in signed tokens, not stored sessions. The mapping is environment-local, not org-owned; the approver table supplies org isolation. K015_AuthSessionKeys owns this environment-local exception; these auth tables intentionally have no org_id.
+
+With Kin enabled, an individually revoked mapped session blocks fresh exchanges for that exact proof key, including cloud re-mints; revocations after expiry do not block. Individual revocation also revokes all live sessions sharing the key. Session insertion, mapping and a second block check share a transaction with individual revocation, so either race ordering leaves the new session revoked and issuance fails rather than returning a dead token. Revoke notifications and connected-session removals run only after commit. Upstream issue still updates in-memory state and emits an upsert inside the transaction: a DPoP issue that rolls back can leave a stale upsert. Bulk “sign out other devices” blocks the other devices' live mapped keys, but excludes the caller's exact key, including earlier renewals. With Kin disabled the server hooks are no-ops; the CLI uses a read-only sqlite_master check to enable hooks against existing Kin auth tables without running Kin migrations, and remains a no-op when the table is absent; enabled-store initialization failure fails closed. Managed-policy revocations ("no remote clients") are individual revocations too, so those keys stay blocked after remote access is turned back on until the owner repairs them. A revoke that lands between insert and commit fails the exchange with a server-side issue error rather than a credential rejection; a retry is harmless because the bootstrap credential is already spent.
+
+The server owner can deliberately re-pair the same key with `t3 auth pairing create --repair-proof-key <RFC-7638-thumbprint>` against the target environment's home directory, with Kin enabled or with Kin off when that database already has the Kin auth tables; the repair is consumed once Kin is on. The flag accepts only canonical 43-character base64url SHA-256 thumbprints. The CLI preserves upstream's `one-time-token` subject and records a key-bound repair in `kin_auth_key_repairs` with its pairing link id and integer-millisecond creation/consumption timestamps. Exchanges atomically consume that exact repair and acknowledge existing individual revocations; cloud mints, unbound links, another key and replay cannot acknowledge them. A later individual revocation blocks again. Repair consumption and acknowledgement precede session insertion in a separate transaction because upstream resolves/consumes bootstrap grants before issuing a session; the post-insert check covers intervening revocation. If session issuance fails after consumption, the repair is spent and the key is already unblocked; a fresh ordinary pairing can retry unless a later revocation blocks it again. Repair never restores sessions or approver keys or bypasses registration/confirmation.
+
+Lane B (#42) must keep the registering-session reconcile and exact-key fallback, but exclude sessions whose mapped thumbprint matches the caller's during `revokeAllExcept`, and sessions revoked after expiry. Its historical join still sees repaired revocations: use a fresh proof key for new approver registration unless lane B implements repair-aware registration. These approver-key reconciliation changes remain lane B's responsibility, not #54. Nishchay's sign-off on the environment-local auth-table exception is still required.
+
 A key's role isn't stored on the key. It is read at verify time from org membership (chat spec), so demoting a person takes effect at once.
 
 ### 5. `KinGrant`: format and checks

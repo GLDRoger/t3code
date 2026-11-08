@@ -50,6 +50,7 @@ import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import { buildCodexAdditionalContext } from "../../apps/server/src/provider/CodexDeveloperInstructions.ts";
 import { makeSideChatContext } from "../../apps/server/src/orchestration-v2/ContextHandoffService.ts";
 import { withInlineContext } from "../../apps/server/src/orchestration-v2/ContextHandoffDelivery.ts";
+import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
 import { KinChatToolkit } from "../../apps/server/src/kin/mcp/KinChatToolkit.ts";
 import { KinApprovalsToolkit } from "../../apps/server/src/kin/approvals/mcp.ts";
 import { AttachmentToolkit } from "../../apps/server/src/mcp/toolkits/attachment/tools.ts";
@@ -438,6 +439,7 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   HtmlToolkit,
   KinChatToolkit,
   KinApprovalsToolkit,
+  KinLeadToolkit,
 ].flatMap((toolkit): ReadonlyArray<Tool.Any> => Object.values(toolkit.tools));
 // McpHttpServer decodes arguments with each tool's JSON codec, which drops undeclared keys.
 const t3InputDecoders = new Map(
@@ -489,13 +491,21 @@ const visibleT3Tools = (options: {
   readonly subagent?: boolean;
   readonly links?: boolean;
   readonly kinAgent?: boolean;
+  readonly kinLead?: boolean;
 }) =>
   t3Tools.filter(
     (tool) =>
-      (options.kinAgent === true ||
-        ![...Object.keys(KinChatToolkit.tools), ...Object.keys(KinApprovalsToolkit.tools)].some(
-          (name) => tool.name === `${T3_PREFIX}${name}`,
-        )) &&
+      (options.kinAgent === true || options.kinLead === true
+        ? [...Object.keys(KinChatToolkit.tools), ...Object.keys(KinApprovalsToolkit.tools)].some(
+            (name) => tool.name === `${T3_PREFIX}${name}`,
+          ) ||
+          (options.kinLead === true &&
+            Object.keys(KinLeadToolkit.tools).some((name) => tool.name === `${T3_PREFIX}${name}`))
+        : ![
+            ...Object.keys(KinChatToolkit.tools),
+            ...Object.keys(KinLeadToolkit.tools),
+            ...Object.keys(KinApprovalsToolkit.tools),
+          ].some((name) => tool.name === `${T3_PREFIX}${name}`)) &&
       (options.links === true || !hiddenWhileLinksOff.has(tool.name)) &&
       !(options.subagent === true && hiddenFromSubagents.has(tool.name)),
   );
@@ -605,6 +615,7 @@ export const buildBase = (
     readonly subagent?: boolean;
     readonly links?: boolean;
     readonly kinAgent?: boolean;
+    readonly kinLead?: boolean;
     /** A native subagent starts from its task: T3 appends nothing to its system prompt. */
     readonly nativeSubagent?: boolean;
     /** false: the thread has no agent device access, so T3's text leaves devices out. */
@@ -698,6 +709,7 @@ const buildCodexBase = (
     readonly subagent?: boolean;
     readonly links?: boolean;
     readonly kinAgent?: boolean;
+    readonly kinLead?: boolean;
     /** false: the thread has no agent device access, so T3's text leaves devices out. */
     readonly deviceAccess?: boolean;
   },
@@ -2383,6 +2395,7 @@ const main = Effect.gen(function* () {
     deviceAccess: boolean,
     links: boolean,
     kinAgent = false,
+    kinLead = false,
   ): Effect.Effect<Base, Schema.SchemaError> =>
     codex
       ? decodeCodexCapture(template).pipe(
@@ -2394,6 +2407,7 @@ const main = Effect.gen(function* () {
               subagent: role === "delegated-child",
               links,
               kinAgent,
+              kinLead,
               deviceAccess,
             }),
           ),
@@ -2407,6 +2421,7 @@ const main = Effect.gen(function* () {
               nativeSubagent: role === "native-subagent",
               links,
               kinAgent,
+              kinLead,
               deviceAccess,
             });
             return role === "native-subagent"
@@ -2418,19 +2433,29 @@ const main = Effect.gen(function* () {
         );
   // Codex has no native subagents; its cases with that role run as top-level threads.
   const baseKey = ({ setup }: McpToolUseCase) =>
-    `${codex && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.world?.kinAgent === true}`;
+    `${codex && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.world?.kinAgent === true}:${setup.world?.kinLead === true}`;
   const base = yield* buildFor("top", true, false);
-  const bases = new Map<string, Base>([["top:true:false:false", base]]);
+  const bases = new Map<string, Base>([["top:true:false:false:false", base]]);
   for (const testCase of selected) {
     const key = baseKey(testCase);
     if (bases.has(key)) continue;
-    const [role = "top", access, links, kinAgent] = key.split(":") as [
+    const [role = "top", access, links, kinAgent, kinLead] = key.split(":") as [
       McpToolUseCase["setup"]["role"],
       string,
       string,
       string,
+      string,
     ];
-    bases.set(key, yield* buildFor(role, access === "true", links === "true", kinAgent === "true"));
+    bases.set(
+      key,
+      yield* buildFor(
+        role,
+        access === "true",
+        links === "true",
+        kinAgent === "true",
+        kinLead === "true",
+      ),
+    );
   }
   const baseFor = (testCase: McpToolUseCase) => bases.get(baseKey(testCase)) ?? base;
   const effort = flags.effort ?? base.codex?.reasoning.effort ?? "high";
