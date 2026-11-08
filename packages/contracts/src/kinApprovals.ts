@@ -87,7 +87,12 @@ export const KinActionTarget = Schema.Union([
     chatId: Schema.optional(KinChatId),
     level: KinLevel,
   }),
-  Schema.TaggedStruct("device_key", { thumbprint: KinKeyThumbprint }),
+  // The server never activates an unattested key, so only attested keys can be approved.
+  Schema.TaggedStruct("device_key", {
+    thumbprint: KinKeyThumbprint,
+    hardware: Schema.Literals(["secure_enclave", "strongbox", "tee"]),
+    attested: Schema.Literal(true),
+  }),
 ]);
 export type KinActionTarget = typeof KinActionTarget.Type;
 
@@ -417,15 +422,29 @@ export const KinApprovalsKeyChallengeResult = Schema.Struct({
   expiresAt: CanonicalUtcTimestamp,
 });
 export type KinApprovalsKeyChallengeResult = typeof KinApprovalsKeyChallengeResult.Type;
+const Base64Blob = Schema.String.check(Schema.isMaxLength(16_384));
+export const KinApproverKeyAttestation = Schema.Union([
+  Schema.Struct({
+    format: Schema.Literal("android-key"),
+    /** Base64 DER certificates, leaf first. */
+    certificateChain: Schema.Array(Base64Blob).check(Schema.isMaxLength(10)),
+  }),
+  Schema.Struct({
+    format: Schema.Literal("apple-app-attest"),
+    /** Base64 SHA-256 of the App Attest key's public key. */
+    keyId: Base64Blob,
+    /** Base64 CBOR from `DCAppAttestService.attestKey` over `sha256(challenge ‖ 0x04 ‖ x ‖ y)`. */
+    attestationObject: Base64Blob,
+  }),
+]);
+export type KinApproverKeyAttestation = typeof KinApproverKeyAttestation.Type;
 export const KinApprovalsRegisterKeyInput = Schema.Struct({
   orgId: KinOrgId,
   publicJwk: KinApproverPublicJwk,
   platform: KinApproverKeyPlatform,
   challenge: Base64UrlString,
-  // Base64 DER certificates, leaf first. Required on Android; the server derives `hardware`.
-  attestation: Schema.optional(
-    Schema.Struct({ certificateChain: Schema.Array(Schema.String).check(Schema.isMaxLength(10)) }),
-  ),
+  // Without one the key is stored unattested and can never be activated. The server derives `hardware`.
+  attestation: Schema.optional(KinApproverKeyAttestation),
   deviceLabel: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
 });
 export type KinApprovalsRegisterKeyInput = typeof KinApprovalsRegisterKeyInput.Type;
@@ -479,6 +498,7 @@ export class KinApprovalError extends Schema.TaggedError<KinApprovalError>()("Ki
       "bad_challenge",
       "bad_code",
       "not_local",
+      "unattested",
     ]),
   ]),
   message: Schema.String,

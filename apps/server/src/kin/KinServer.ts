@@ -3,8 +3,9 @@ import * as Option from "effect/Option";
 import { KinIdentity } from "./chat/KinIdentity.ts";
 import { KinChatService } from "./chat/KinChatService.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
+import { ApproverKeys } from "./approvals/ApproverKeys.ts";
 
-export type Services = KinIdentity | KinChatService;
+export type Services = KinIdentity | KinChatService | ApproverKeys;
 
 export class KinServer extends Context.Service<
   KinServer,
