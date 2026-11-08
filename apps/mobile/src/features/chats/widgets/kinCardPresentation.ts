@@ -104,11 +104,17 @@ export function kinTaskCardView(
     open,
     unknownEnvironment: state.threadId !== null && !known,
     pullRequests,
-    accessibilityLabel: `${parts.filter((part) => part !== null).join(". ")}.`,
+    accessibilityLabel: parts
+      .filter((part) => part !== null)
+      .map((part) => (/[.!?…]$/.test(part) ? part : `${part}.`))
+      .join(" "),
   };
 }
 
-/** What a message's card draws. Anything this build can't read falls back to plain text. */
+/**
+ * What a message's card draws. Anything this build can't read falls back to plain text, including
+ * reserved types whose cards haven't shipped, such as `deferral`.
+ */
 export function kinCardView(
   widget: KinWidget | undefined,
   hostEnvironmentId: EnvironmentId,

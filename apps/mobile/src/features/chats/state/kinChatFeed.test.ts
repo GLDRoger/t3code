@@ -18,9 +18,11 @@ import {
   kinActivePaging,
   kinChatScreenState,
   kinChatStatusLine,
+  kinDayLabel,
   kinEarlierPage,
   kinMessageLabel,
   kinMessageLinks,
+  kinSeqToMarkRead,
   kinUnseenCount,
   mergeKinFeed,
   type KinFeedRow,
@@ -145,11 +147,16 @@ describe("in-place widget updates", () => {
     expect(status(mergeKinFeed(live, earlier))).toBe("done");
   });
 });
+const localIso = (day: number, hour: number) => new Date(2026, 10, day, hour).toISOString();
+
+// Days are covered on their own below; these cases read the rows within one day.
+const messageRows = (...args: Parameters<typeof buildKinFeedRows>) =>
+  buildKinFeedRows(...args).filter((row) => row.type !== "day");
 
 describe("rows", () => {
   it("folds a run of agent messages into one line after the message before it", () => {
     // Seqs 22-24 of the fixture are one three-message floor run.
-    const rows = buildKinFeedRows(all.slice(19, 26), viewer, new Set());
+    const rows = messageRows(all.slice(19, 26), viewer, new Set());
     expect(rows.map((row) => row.type)).toEqual([
       "message",
       "message",
@@ -171,7 +178,7 @@ describe("rows", () => {
     const messages = all
       .slice(19, 26)
       .map((m) => (m.seq === 23 ? { ...m, status: "deleted" as const } : m));
-    const rows = buildKinFeedRows(messages, viewer, new Set());
+    const rows = messageRows(messages, viewer, new Set());
     expect(rows.map((row) => row.type)).toEqual([
       "message",
       "message",
@@ -191,7 +198,7 @@ describe("rows", () => {
   });
 
   it("lists an expanded run's messages right after its fold line", () => {
-    const rows = buildKinFeedRows(all.slice(19, 26), viewer, new Set(["run-0"]));
+    const rows = messageRows(all.slice(19, 26), viewer, new Set(["run-0"]));
     expect(rows.map((row) => (row.type === "message" ? row.message.seq : row.type))).toEqual([
       20,
       21,
@@ -206,7 +213,7 @@ describe("rows", () => {
 
   it("does not fold a single run message or a run broken by another author", () => {
     const run = { floorRunId: "r" };
-    const rows = buildKinFeedRows(
+    const rows = messageRows(
       [agentMessage(1, run), ownMessage(3), agentMessage(4, run)],
       viewer,
       new Set(),
@@ -215,7 +222,7 @@ describe("rows", () => {
   });
 
   it("shows the author line once per stretch of one author, never on own messages", () => {
-    const rows = buildKinFeedRows(
+    const rows = messageRows(
       [ownMessage(1), agentMessage(2), agentMessage(3), ownMessage(5), agentMessage(6)],
       viewer,
       new Set(),
@@ -230,7 +237,7 @@ describe("rows", () => {
   });
 
   it("hides dismissed suggestions and draws system messages as their own rows", () => {
-    const rows = buildKinFeedRows(
+    const rows = messageRows(
       [
         agentMessage(1),
         agentMessage(2, { status: "dismissed" }),
@@ -247,16 +254,76 @@ describe("rows", () => {
     ]);
     expect(rows[1]!.type).toBe("system");
   });
+
+  it("starts each local day with a separator and restarts author lines after it", () => {
+    const rows = buildKinFeedRows(
+      [
+        agentMessage(1, { createdAt: localIso(7, 21) }),
+        agentMessage(2, { createdAt: localIso(7, 22) }),
+        agentMessage(3, { createdAt: localIso(8, 9) }),
+        ownMessage(5),
+      ].map((m, index) => (index === 3 ? { ...m, createdAt: localIso(8, 10) } : m)),
+      viewer,
+      new Set(),
+    );
+    expect(
+      rows.map((row) =>
+        row.type === "day" ? row.key : row.type === "message" ? row.showAuthor : row.type,
+      ),
+    ).toEqual(["day:2026-11-07", true, false, "day:2026-11-08", true, false]);
+  });
+
+  it("puts a fold under the day its run starts on", () => {
+    const run = { floorRunId: "r" };
+    const rows = buildKinFeedRows(
+      [
+        agentMessage(1, { createdAt: localIso(7, 9) }),
+        agentMessage(2, { ...run, createdAt: localIso(8, 9) }),
+        agentMessage(3, { ...run, createdAt: localIso(8, 10) }),
+      ],
+      viewer,
+      new Set(),
+    );
+    expect(rows.map((row) => row.type)).toEqual(["day", "message", "day", "fold"]);
+  });
+});
+
+describe("kinDayLabel", () => {
+  const now = new Date(2026, 10, 8, 12);
+  it.each([
+    ["earlier today", localIso(8, 0), "Today"],
+    ["late yesterday", new Date(2026, 10, 7, 23, 59).toISOString(), "Yesterday"],
+    [
+      "earlier this year",
+      localIso(3, 9),
+      new Intl.DateTimeFormat(undefined, {
+        weekday: "short",
+        day: "numeric",
+        month: "short",
+      }).format(new Date(2026, 10, 3, 9)),
+    ],
+    [
+      "another year",
+      new Date(2025, 11, 31, 9).toISOString(),
+      new Intl.DateTimeFormat(undefined, {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+      }).format(new Date(2025, 11, 31, 9)),
+    ],
+  ])("names %s", (_name, iso, label) => {
+    expect(kinDayLabel(iso, now)).toBe(label);
+  });
 });
 
 describe("message labels", () => {
   const row = (overrides: Partial<KinMessage>) =>
-    buildKinFeedRows([agentMessage(1, overrides)], viewer, new Set())[0] as Extract<
+    messageRows([agentMessage(1, overrides)], viewer, new Set())[0] as Extract<
       KinFeedRow,
       { type: "message" }
     >;
   const ownRow = (body: string) =>
-    buildKinFeedRows([{ ...ownMessage(1), body }], viewer, new Set())[0] as Extract<
+    messageRows([{ ...ownMessage(1), body }], viewer, new Set())[0] as Extract<
       KinFeedRow,
       { type: "message" }
     >;
@@ -321,6 +388,19 @@ describe("message labels", () => {
       { label: "https://a.b/c", href: "https://a.b/c" },
     ]);
     expect(kinMessageLinks("No links here.")).toEqual([]);
+  });
+});
+
+describe("kinSeqToMarkRead", () => {
+  const base = { seesEnd: true, latestSeq: 9, markedSeq: 4, unread: 2 };
+  it.each([
+    ["marks the latest seq when the reader sees the end", base, 9],
+    ["waits while the reader is away from the end", { ...base, seesEnd: false }, null],
+    ["sends a seq once", { ...base, markedSeq: 9 }, null],
+    ["skips a chat with nothing unread", { ...base, unread: 0 }, null],
+    ["marks before the inbox has counted unread", { ...base, unread: null }, 9],
+  ] as const)("%s", (_name, input, seq) => {
+    expect(kinSeqToMarkRead(input)).toBe(seq);
   });
 });
 

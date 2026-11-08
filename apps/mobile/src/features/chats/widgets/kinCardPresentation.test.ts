@@ -51,6 +51,10 @@ describe("kinCardView", () => {
   it("falls back on a missing widget, an unknown type, a non-native class or bad state", () => {
     expect(kinCardView(undefined, HOST, known()).kind).toBe("missing");
     expect(kinCardView(widget({ type: "poll" }), HOST, known()).kind).toBe("unknown");
+    expect(
+      kinCardView(widget({ type: "deferral", state: { what: "Rate limiting" } }), HOST, known())
+        .kind,
+    ).toBe("unknown");
     expect(kinCardView(widget({ widgetClass: "generated" }), HOST, known()).kind).toBe("unknown");
     expect(
       kinCardView(widget({ state: taskState({ status: "paused" }) }), HOST, known()).kind,
@@ -109,6 +113,22 @@ describe("kinCardView", () => {
       "Tests failed 3 of 120",
     );
     expect(task(widget({ state: taskState({ status: "failed" }) })).detail).toBeNull();
+  });
+
+  it.each([
+    ["no error", {}, "Task: Fix the payments test. Working. GPT-6.1 Sol. Opens the thread."],
+    [
+      "an error that ends a sentence",
+      { status: "failed", lastError: "Tests also fail." },
+      "Task: Fix the payments test. Failed. Tests also fail. GPT-6.1 Sol. Opens the thread.",
+    ],
+    [
+      "a title that ends a question",
+      { title: "Why is CI red?", model: null },
+      "Task: Why is CI red? Working. Opens the thread.",
+    ],
+  ])("reads one sentence per part with %s", (_name, overrides, label) => {
+    expect(task(widget({ state: taskState(overrides) })).accessibilityLabel).toBe(label);
   });
 
   it("clamps without splitting an emoji", () => {
