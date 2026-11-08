@@ -69,6 +69,7 @@ const decodeActionId = Schema.decodeEffect(KinActionId);
 
 type ActionRef = { readonly orgId: KinOrgId; readonly actionId: KinActionId };
 type RevisionRef = ActionRef & { readonly revision: number };
+type GrantRef = ActionRef & { readonly jti: string; readonly approverHumanId: KinPersonId };
 
 export type KinApproveResult =
   | { readonly _tag: "approved"; readonly grant: KinGrant }
@@ -91,6 +92,23 @@ export const kinIdempotencyKey = (input: {
         kind: input.kind,
         target: input.target,
         source: input.source,
+      }),
+    )
+    .digest("hex");
+
+/** `sha256(stableStringify({kind, target, headSha, base}))`, approvals spec section 3. */
+export const kinTargetDigest = (
+  kind: KinActionKind,
+  target: KinActionTarget,
+  resolved: KinResolvedTarget,
+): Hex64 =>
+  NodeCrypto.createHash("sha256")
+    .update(
+      stableStringify({
+        kind,
+        target,
+        headSha: resolved._tag === "none" ? undefined : resolved.headSha,
+        base: resolved._tag === "pull_request" ? resolved.base : undefined,
       }),
     )
     .digest("hex");
@@ -178,6 +196,8 @@ export class KinPendingActions extends Context.Service<
         readonly exp: number;
       },
     ) => Effect.Effect<KinApproveResult, Errors>;
+    /** Whether the org already holds this `jti`, or this approver's grant for the action. */
+    readonly heldGrant: (ref: GrantRef) => Effect.Effect<boolean, Errors>;
     /** The executor's single claim: the `kin_executions` insert plus `approved → executing`. */
     readonly claim: (
       input: RevisionRef & { readonly grantId: KinGrant["id"] },
@@ -297,6 +317,18 @@ const make = Effect.gen(function* () {
     Effect.mapError(toError("KinPendingActions.transition")),
   );
 
+  const selectHeld = (ref: GrantRef) =>
+    sql`SELECT 1 FROM kin_grants
+      WHERE org_id = ${ref.orgId} AND (jti = ${ref.jti} OR (action_id = ${ref.actionId}
+        AND approver_human_id = ${ref.approverHumanId}))`.pipe(
+      Effect.map((rows) => rows.length > 0),
+    );
+
+  const heldGrant = Effect.fn("KinPendingActions.heldGrant")(
+    selectHeld,
+    Effect.mapError(toError("KinPendingActions.heldGrant")),
+  );
+
   const approve = Effect.fn("KinPendingActions.approve")(
     function* (
       input: RevisionRef & {
@@ -324,12 +356,9 @@ const make = Effect.gen(function* () {
               ON CONFLICT DO NOTHING
               RETURNING grant_id`;
             if (inserted === undefined) {
-              const [seen] = yield* sql`SELECT 1 FROM kin_grants
-                WHERE org_id = ${input.orgId} AND (jti = ${input.jti} OR (action_id = ${input.actionId}
-                  AND approver_human_id = ${input.approverHumanId}))`;
-              return seen === undefined
-                ? { _tag: "stale" as const }
-                : { _tag: "replayed" as const };
+              return (yield* selectHeld(input))
+                ? { _tag: "replayed" as const }
+                : { _tag: "stale" as const };
             }
             const won = yield* sql`UPDATE kin_pending_actions
               SET state = 'approved', updated_at = ${now}
@@ -452,7 +481,17 @@ const make = Effect.gen(function* () {
     Effect.mapError(toError("KinPendingActions.sweep")),
   );
 
-  return KinPendingActions.of({ create, get, refresh, transition, approve, claim, finish, sweep });
+  return KinPendingActions.of({
+    create,
+    get,
+    refresh,
+    transition,
+    approve,
+    heldGrant,
+    claim,
+    finish,
+    sweep,
+  });
 });
 
 const isDecodeError = Schema.is(PersistenceDecodeError);

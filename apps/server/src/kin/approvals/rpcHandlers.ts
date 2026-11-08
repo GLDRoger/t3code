@@ -10,9 +10,10 @@ import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinServer } from "../KinServer.ts";
 import { ApproverKeys, type KinKeyCaller } from "./ApproverKeys.ts";
+import { GrantVerifier } from "./GrantVerifier.ts";
 
 const group = RpcGroup.make(...KinApprovalRpcs);
-// Every method refuses until its task lands (APPR-3, -4, -10); nothing here can approve.
+// Methods refuse until their task lands (APPR-3, -10). Approving only goes through GrantVerifier.
 const unavailable = Effect.fail(
   new KinApprovalError({ reason: "unavailable", message: "Kin approvals are unavailable." }),
 );
@@ -39,14 +40,21 @@ export const makeKinApprovalHandlers = Effect.fn("makeKinApprovalHandlers")(func
     const services = kin.value.services.value;
     const people = yield* Context.get(services, KinIdentity).resolve(session);
     const caller: KinKeyCaller = { session, people, connection };
-    return { keys: Context.get(services, ApproverKeys), caller };
+    return {
+      keys: Context.get(services, ApproverKeys),
+      grants: Context.get(services, GrantVerifier),
+      caller,
+    };
   });
   return group.of({
     "kin.approvals.list": () => Stream.fromEffect(unavailable),
     "kin.approvals.get": () => unavailable,
-    "kin.approvals.challenge": () => unavailable,
-    "kin.approvals.submitGrant": () => unavailable,
-    "kin.approvals.reject": () => unavailable,
+    "kin.approvals.challenge": (input) =>
+      keys.pipe(Effect.flatMap(({ grants, caller }) => grants.challenge(caller, input))),
+    "kin.approvals.submitGrant": (input) =>
+      keys.pipe(Effect.flatMap(({ grants, caller }) => grants.submitGrant(caller, input))),
+    "kin.approvals.reject": (input) =>
+      keys.pipe(Effect.flatMap(({ grants, caller }) => grants.reject(caller, input))),
     "kin.approvals.keyChallenge": () =>
       keys.pipe(Effect.flatMap(({ keys, caller }) => keys.keyChallenge(caller))),
     "kin.approvals.registerKey": (input) =>

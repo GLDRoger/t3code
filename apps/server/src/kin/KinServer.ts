@@ -4,8 +4,9 @@ import { KinIdentity } from "./chat/KinIdentity.ts";
 import { KinChatService } from "./chat/KinChatService.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
 import { ApproverKeys } from "./approvals/ApproverKeys.ts";
+import { GrantVerifier } from "./approvals/GrantVerifier.ts";
 
-export type Services = KinIdentity | KinChatService | ApproverKeys;
+export type Services = KinIdentity | KinChatService | ApproverKeys | GrantVerifier;
 
 export class KinServer extends Context.Service<
   KinServer,

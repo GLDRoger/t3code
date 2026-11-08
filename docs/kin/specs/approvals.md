@@ -244,7 +244,7 @@ export const KinGrantPayload = Schema.Struct({
 });
 ```
 
-**The card is drawn from the payload it signs.** `kin.approvals.challenge(actionId)` returns the unsigned payload (minus `jti`, `iat`, `exp`, which the device adds). The app parses it and renders repo, PR, SHA, base, method, diff size and checks from those fields and `resolved`, then signs the same bytes. There is no second copy of the facts that could drift from what is signed.
+**The card is drawn from the payload it signs.** `kin.approvals.challenge(actionId)` returns the unsigned payload (minus `jti`, `iat`, `exp`, which the device adds). The app parses it and renders repo, PR, SHA, base, method, diff size and checks from those fields and `resolved`, then signs the same bytes. There is no second copy of the facts that could drift from what is signed. `challenge` takes no org: the server looks the action up in the caller's own orgs and refuses anyone who isn't an approver (`not_owner`). For `merge_pull_request` and `delete_branch` it re-reads GitHub first and, if anything in `resolved` changed, rotates the nonce before answering. `approver.kid` is the person's active key registered from this session, else their most recently confirmed one.
 
 `kin.approvals.submitGrant({compact})` checks, in this order, and stops at the first failure with a typed reason:
 
@@ -256,12 +256,14 @@ export const KinGrantPayload = Schema.Struct({
 6. Pending action exists in the org, is `awaiting_approval`, and `revision` and `nonce` match → `stale` (the card refreshes), or `replayed` when the org already holds this `jti` or this approver's grant for the action. An accepted grant sent again fails here, before check 10, because its action is no longer `awaiting_approval`.
 7. `kind`, `target`, `targetDigest`, `headSha`, `base`, `mergeMethod` equal the server's record → `target_mismatch`.
 8. `now` is a finite number, `|now − iat| ≤ 300`, `iat < exp`, `exp − iat ≤ 900` and `now < exp` → `time_window`.
-9. Re-read the PR from GitHub with the bot token; head and base still match → `head_moved` (rotate nonce, refresh card).
+9. Re-read the PR from GitHub with the bot token; head and base still match → `head_moved` (rotate nonce, refresh card). Only `merge_pull_request` and `delete_branch` (head only) have GitHub state to re-read. If GitHub can't be read, the grant fails `unavailable`.
 10. In one transaction: insert `kin_grants` (`jti` UNIQUE, `(action_id, approver)` UNIQUE) and CAS the action to `approved` while both the action and the grant are unexpired → `replayed` when that org already holds the `jti` or this approver's grant for the action, `stale` otherwise.
 
 The grant's life ends at `min(exp, acceptedAt + 15 min)`. It is consumed when the executor claims the action, and can't be used for anything else: the binding is to `actionId`, `nonce` and `targetDigest`, all server-chosen.
 
-A rejection doesn't need a signature (rejecting is always safe) but is still recorded with the session that sent it.
+A rejection doesn't need a signature (rejecting is always safe) but is still recorded with the session that sent it. `reject({actionId, revision})` is limited to the action's approvers and is a compare-and-set on the revision.
+
+Every refused grant writes `grant_rejected` with its reason, the sending session, and the grant's claimed `actionId`, `kind`, `jti`, `kid` and `headSha`. The entry goes in the key's org once check 2 has found the key, and before that in the caller's org. A session with no Kin person is only logged. Each session gets at most 20 rejection entries a minute. The first entry after the limit counts the ones it skipped (`malformed; 5 more not recorded`), so a flood can't grow the audit chain without bound.
 
 ### 6. The action executor
 
