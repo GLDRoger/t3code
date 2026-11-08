@@ -52,7 +52,7 @@ const actionFor = (plan: Purge.PurgePlan): KinPendingAction => ({
   revision: 1,
   reason: "Invented purge",
   requestedBy: { agentId: KinAgentId.make("fixture-lead"), threadId: ThreadId.make("thread-1") },
-  provenance: { startedBy: "schedule", startedByRole: "none", chain: [] },
+  provenance: { startedBy: "schedule", startedByRole: "none", chain: [], ceilingBelowOwner: true },
   requiredApprovers: [{ role: "owner" }],
   state: "executing",
   createdAt: DateTime.makeUnsafe("2026-11-08T00:00:00.000Z"),

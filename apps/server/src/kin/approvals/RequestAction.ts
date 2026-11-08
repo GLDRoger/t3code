@@ -28,6 +28,7 @@ import * as ProjectService from "../../project/ProjectService.ts";
 import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
 import { sourceControlDefinitions } from "../../sourceControl/sourceControlDefinitions.ts";
 import type { AgentIdentity } from "../chat/KinIdentity.ts";
+import * as Audit from "./Audit.ts";
 import * as PendingActions from "./PendingActions.ts";
 
 export const RequestActionInput = Schema.Struct({
@@ -389,4 +390,6 @@ const make = Effect.gen(function* () {
   return KinRequestAction.of({ request });
 });
 
-export const layer = Layer.effect(KinRequestAction, make).pipe(Layer.provide(PendingActions.layer));
+export const layer = Layer.effect(KinRequestAction, make).pipe(
+  Layer.provide(PendingActions.layer.pipe(Layer.provide(Audit.layer))),
+);

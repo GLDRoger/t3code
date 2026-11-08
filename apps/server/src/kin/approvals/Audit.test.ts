@@ -79,7 +79,7 @@ const request = {
   targetDigest: "1".repeat(64),
   reason: "CI is green.",
   requestedBy: { agentId: "lead", threadId: "thread-lead" },
-  provenance: { startedBy: "github", startedByRole: "none", chain: [] },
+  provenance: { startedBy: "github", startedByRole: "none", chain: [], ceilingBelowOwner: true },
   source: decodeEventId("webhook-delivery-1"),
 } as unknown as KinPendingActionCreateInput;
 
