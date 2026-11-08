@@ -515,6 +515,14 @@ describe("KinPushDevices", () => {
       assert.deepStrictEqual(yield* tokens(sql), [
         { token: ownerPhone, person_id: owner, session_id: "sess-owner-phone" },
       ]);
+      yield* sql`ALTER TABLE kin_push_devices RENAME TO kin_push_devices_gone`;
+      const broken = yield* Effect.exit(
+        devices.unregister(caller("sess-owner-phone", owner), { orgId, token: ownerPhone }),
+      );
+      assert.isTrue(
+        Exit.isFailure(broken) &&
+          (broken.cause.reasons[0] as { error?: KinPushError }).error?.reason === "unavailable",
+      );
     }).pipe(Effect.provide(build(apns)));
   });
 

@@ -13,8 +13,8 @@ import { KinPushPresence } from "./KinPushPresence.ts";
 import { KinPushSender } from "./KinPushSender.ts";
 
 const group = RpcGroup.make(...KinPushRpcs);
-const unavailable = Effect.fail(
-  new KinPushError({ reason: "unavailable", message: "Kin notifications are unavailable." }),
+const disabled = Effect.fail(
+  new KinPushError({ reason: "disabled", message: "Kin is not running on this host." }),
 );
 
 export const makeKinPushHandlers = Effect.fn("makeKinPushHandlers")(function* (
@@ -22,7 +22,7 @@ export const makeKinPushHandlers = Effect.fn("makeKinPushHandlers")(function* (
 ) {
   const kin = yield* Effect.serviceOption(KinServer);
   const caller = Effect.gen(function* () {
-    if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
+    if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* disabled;
     const services = kin.value.services.value;
     const people = yield* Context.get(services, KinIdentity).resolve(session);
     return {

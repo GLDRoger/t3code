@@ -90,7 +90,7 @@ export const KinPushWatchBeat = Schema.Literal("beat");
 export type KinPushWatchBeat = typeof KinPushWatchBeat.Type;
 
 export class KinPushError extends Schema.TaggedError<KinPushError>()("KinPushError", {
-  reason: Schema.Literals(["not_member", "unavailable"]),
+  reason: Schema.Literals(["not_member", "unavailable", "disabled"]),
   message: Schema.String,
 }) {}
 
