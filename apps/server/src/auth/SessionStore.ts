@@ -416,6 +416,7 @@ export class SessionStore extends Context.Service<
     ) => Effect.Effect<void, SessionCredentialVerificationError>;
     readonly revoke: (
       sessionId: AuthSessionId,
+      callerSessionId?: AuthSessionId,
     ) => Effect.Effect<boolean, SessionCredentialInternalError>;
     readonly revokeAllExcept: (
       sessionId: AuthSessionId,
