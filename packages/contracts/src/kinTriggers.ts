@@ -1,11 +1,13 @@
 import * as Schema from "effect/Schema";
 
 import { NonNegativeInt, ScheduledTaskId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { KinOrgId, KinPersonId } from "./kinChat.ts";
+import { KinOrgId, KinPersonId, KinText } from "./kinChat.ts";
 import { CanonicalUtcTimestamp, KinMemoryItemId } from "./kinLead.ts";
 import { ScheduledTaskUpsertSchedule, ScheduledTaskWebhookDeliveryId } from "./scheduledTask.ts";
 
 import { TimeOfDay, TimeZone } from "./kinTime.ts";
+
+export { canonicalTimeZone } from "./kinTime.ts";
 
 const [interval, fixedTime, once] = ScheduledTaskUpsertSchedule.members;
 const Weekday = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 6 }));
@@ -96,11 +98,11 @@ export type KinTriggerFired = typeof KinTriggerFired.Type;
 export const KinWebhookSource = Schema.Struct({
   id: KinWebhookSourceId,
   orgId: KinOrgId,
-  repo: Schema.String,
+  repo: KinText,
   scheduledTaskId: ScheduledTaskId,
   inboxThreadId: ThreadId,
   githubHookId: Schema.NullOr(Schema.Int),
-  botLogin: Schema.String,
+  botLogin: KinText,
   status: Schema.Literals(["active", "paused_in_t3", "blocked_by_policy", "missing"]),
 });
 export type KinWebhookSource = typeof KinWebhookSource.Type;
