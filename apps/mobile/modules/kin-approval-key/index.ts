@@ -1,4 +1,5 @@
 import type { DpopPublicJwk } from "@t3tools/shared/dpopCommon";
+import * as Base64 from "effect/encoding/Base64";
 import * as Base64Url from "effect/encoding/Base64Url";
 import * as Result from "effect/Result";
 import { requireOptionalNativeModule } from "expo";
@@ -23,15 +24,25 @@ export type KinApprovalKeyErrorCode =
   | "E_NOT_A_GRANT"
   | "E_NO_ACTIVITY"
   | "E_OBSCURED"
+  | "E_ATTESTATION_FAILED"
   | "E_INVALID_INPUT"
   | "E_KEYCHAIN"
   | "E_KEYSTORE";
 
-export interface KinApprovalKeyAttestation {
-  readonly format: "android-key";
-  /** Leaf first, base64 (not base64url) DER, as in a JWS `x5c`. */
-  readonly certificateChain: ReadonlyArray<string>;
-}
+export type KinApprovalKeyAttestation =
+  | {
+      readonly format: "android-key";
+      /** Leaf first, base64 (not base64url) DER, as in a JWS `x5c`. */
+      readonly certificateChain: ReadonlyArray<string>;
+    }
+  | {
+      /** Its client data hash is `sha256(challenge ‖ 0x04 ‖ x ‖ y)` of the new key. */
+      readonly format: "apple-app-attest";
+      /** Base64: the SHA-256 of the App Attest key's public key. */
+      readonly keyId: string;
+      /** Base64 CBOR attestation object from `DCAppAttestService.attestKey`. */
+      readonly attestationObject: string;
+    };
 
 export interface KinApprovalKey {
   readonly publicJwk: DpopPublicJwk;
@@ -44,6 +55,7 @@ interface NativeKinApprovalKey {
     readonly publicKey: string;
     readonly hardware: KinApprovalKeyHardware;
     readonly attestationChain?: ReadonlyArray<string>;
+    readonly appAttest?: { readonly keyId: string; readonly attestationObject: string };
   }>;
   signDer(signingInput: string): Promise<string>;
   hasKey(): Promise<boolean>;
@@ -62,6 +74,32 @@ function native(): NativeKinApprovalKey {
   return module;
 }
 
+const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const APP_ATTEST_KEY_ID_BYTES = 32;
+
+function decodeBase64(value: unknown, label: string): Uint8Array {
+  const decoded =
+    typeof value === "string" && BASE64.test(value) ? Base64.decode(value) : undefined;
+  if (!decoded || Result.isFailure(decoded) || decoded.success.length === 0)
+    throw new Error(`${label} is not base64.`);
+  return decoded.success;
+}
+
+function attestationOf(created: Awaited<ReturnType<NativeKinApprovalKey["createKey"]>>) {
+  if (created.attestationChain) {
+    for (const certificate of created.attestationChain) decodeBase64(certificate, "certificate");
+    return { format: "android-key", certificateChain: created.attestationChain } as const;
+  }
+  if (created.appAttest) {
+    const { keyId, attestationObject } = created.appAttest;
+    if (decodeBase64(keyId, "keyId").length !== APP_ATTEST_KEY_ID_BYTES)
+      throw new Error("keyId is not a SHA-256 hash.");
+    decodeBase64(attestationObject, "attestationObject");
+    return { format: "apple-app-attest", keyId, attestationObject } as const;
+  }
+  return undefined;
+}
+
 function decodeBase64Url(value: string, label: string): Uint8Array {
   const decoded = BASE64URL.test(value) ? Base64Url.decode(value) : undefined;
   if (!decoded || Result.isFailure(decoded)) throw new Error(`${label} is not base64url.`);
@@ -69,10 +107,9 @@ function decodeBase64Url(value: string, label: string): Uint8Array {
 }
 
 /**
- * Creates the device's approval key in the Secure Enclave or Android Keystore. Fails with
- * `E_KEY_EXISTS` rather than replacing a key the server may already trust.
- * `attestationChallenge` is the server's registration nonce as unpadded base64url of 16 to 128
- * bytes. Android binds it into the attestation chain; iOS has no attestation yet and ignores it.
+ * Creates the approval key; `E_KEY_EXISTS` rather than replacing one the server may trust.
+ * `attestationChallenge` is the server's nonce (base64url, 16 to 128 bytes), bound into the
+ * Keystore chain or App Attest client data. No `attestation`: the server won't activate the key.
  */
 export async function createKey(attestationChallenge: string): Promise<KinApprovalKey> {
   const challenge = decodeBase64Url(attestationChallenge, "attestationChallenge");
@@ -80,13 +117,8 @@ export async function createKey(attestationChallenge: string): Promise<KinApprov
     throw new Error("attestationChallenge must encode 16 to 128 bytes.");
   const created = await native().createKey(attestationChallenge);
   const publicJwk = publicJwkFromNativePublicKey(decodeBase64Url(created.publicKey, "publicKey"));
-  return {
-    publicJwk,
-    hardware: created.hardware,
-    ...(created.attestationChain
-      ? { attestation: { format: "android-key", certificateChain: created.attestationChain } }
-      : {}),
-  };
+  const attestation = attestationOf(created);
+  return { publicJwk, hardware: created.hardware, ...(attestation ? { attestation } : {}) };
 }
 
 /**

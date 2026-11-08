@@ -120,13 +120,16 @@ enum KinGrant {
         : "Purge memory using \"\(path)\" (sha256 \(hash))"
     case "register_approver_key":
       try only(p, [])
-      try exactKeys(target, ["_tag", "thumbprint"], [], "target")
+      try exactKeys(target, ["_tag", "thumbprint", "hardware", "attested"], [], "target")
       try tag(target, "device_key")
       let thumbprint = try string(target, "thumbprint").utf8
       guard thumbprint.count == 43, thumbprint.allSatisfy(isBase64UrlByte) else {
         throw NotAGrant("thumbprint is malformed")
       }
-      text = "Add approver key \(Bytes(Array(thumbprint.prefix(shownHashLength))))"
+      // The server never activates an unattested key, so there is nothing to approve for one.
+      guard case .bool(true) = target["attested"] else { throw NotAGrant("the key is not attested") }
+      text = "Add approver key \(Bytes(Array(thumbprint.prefix(shownHashLength)))) "
+        + "(\(try hardwareWords(try string(target, "hardware"))), attested)"
     default:
       throw NotAGrant("kind has no prompt template")
     }
@@ -153,6 +156,15 @@ enum KinGrant {
     case "squash": return "by squashing"
     case "rebase": return "by rebasing"
     default: throw NotAGrant("mergeMethod is unknown")
+    }
+  }
+
+  private static func hardwareWords(_ hardware: Bytes) throws -> String {
+    switch hardware {
+    case "secure_enclave": return "Secure Enclave"
+    case "strongbox": return "StrongBox"
+    case "tee": return "TEE"
+    default: throw NotAGrant("hardware is not secure_enclave, strongbox or tee")
     }
   }
 

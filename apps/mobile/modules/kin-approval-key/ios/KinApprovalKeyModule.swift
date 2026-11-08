@@ -1,4 +1,5 @@
 import CryptoKit
+import DeviceCheck
 import ExpoModulesCore
 import Foundation
 import LocalAuthentication
@@ -17,9 +18,8 @@ public class KinApprovalKeyModule: Module {
   public func definition() -> ModuleDefinition {
     Name("KinApprovalKey")
 
-    // iOS has no attestation in phase 1, so the challenge is unused here.
-    AsyncFunction("createKey") { (_: String) throws -> [String: Any] in
-      try createKey()
+    AsyncFunction("createKey") { (attestationChallenge: String, promise: Promise) in
+      createKey(attestationChallenge: attestationChallenge, promise: promise)
     }
 
     AsyncFunction("signDer") { (signingInput: String, promise: Promise) in
@@ -40,7 +40,53 @@ public class KinApprovalKeyModule: Module {
   }
 }
 
-private func createKey() throws -> [String: Any] {
+/// Makes the Secure Enclave key, then an App Attest attestation over
+/// `sha256(challenge ‖ that key's X9.63 public key)`. The module hashes the key it just made
+/// itself, so JS can never get an attestation over a key or data of its own.
+private func createKey(attestationChallenge: String, promise: Promise) {
+  let challenge: Data
+  let publicKey: Data
+  do {
+    challenge = try decodeChallenge(attestationChallenge)
+    publicKey = try createSecureEnclaveKey()
+  } catch {
+    return promise.reject(error)
+  }
+  let created: [String: Any] = ["publicKey": base64UrlEncode(publicKey), "hardware": "secure_enclave"]
+  let service = DCAppAttestService.shared
+  // Simulators and devices without App Attest: the server stores the key unattested and unusable.
+  guard service.isSupported else { return promise.resolve(created) }
+  let clientDataHash = Data(SHA256.hash(data: challenge + publicKey))
+  let fail: (Error?) -> Void = { error in
+    if let error = error as? DCError, error.code == .featureUnsupported { return promise.resolve(created) }
+    // No half-made key: a retry must make and attest a fresh one.
+    SecItemDelete(privateKeyQuery() as CFDictionary)
+    SecItemDelete(biometryStateQuery() as CFDictionary)
+    promise.reject(ApprovalKeyException(
+      "E_ATTESTATION_FAILED", "App Attest couldn't attest the approval key; try again.", cause: error))
+  }
+  service.generateKey { keyId, error in
+    guard let keyId else { return fail(error) }
+    service.attestKey(keyId, clientDataHash: clientDataHash) { attestationObject, error in
+      guard let attestationObject else { return fail(error) }
+      var result = created
+      result["appAttest"] = ["keyId": keyId, "attestationObject": attestationObject.base64EncodedString()]
+      promise.resolve(result)
+    }
+  }
+}
+
+private func decodeChallenge(_ value: String) throws -> Data {
+  var base64 = value.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+  base64 += String(repeating: "=", count: (4 - base64.count % 4) % 4)
+  guard !value.contains("="), let data = Data(base64Encoded: base64), (16...128).contains(data.count) else {
+    throw ApprovalKeyException("E_INVALID_INPUT", "attestationChallenge must be base64url of 16 to 128 bytes.")
+  }
+  return data
+}
+
+/// Returns the new key's public key in X9.63 form (`04 ‖ x ‖ y`).
+private func createSecureEnclaveKey() throws -> Data {
   guard SecureEnclave.isAvailable else {
     throw ApprovalKeyException("E_NO_SECURE_HARDWARE", "This device has no Secure Enclave.")
   }
@@ -87,7 +133,7 @@ private func createKey() throws -> [String: Any] {
       "E_KEYCHAIN", "Exporting the approval public key failed.", cause: error?.takeRetainedValue())
   }
   storeBiometryState(context.domainState.biometry.stateHash)
-  return ["publicKey": base64UrlEncode(x963), "hardware": "secure_enclave"]
+  return x963
 }
 
 /// One `sign` call. Only one may be in flight; every path settles its promise exactly once.

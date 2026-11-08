@@ -449,7 +449,7 @@ Commands, from `apps/mobile`: `vp run typecheck` and `vp test run --project unit
 
 ## Open questions
 
-- Which Apple Developer team signs the Kin build, and who creates its APNs key? Android FCM waits until someone uses Android.
+- Which Apple Developer team signs the Kin build, and who creates its APNs key? Its App ID also needs the App Attest capability, or approval keys can't be activated (approvals spec, section 4). Android FCM waits until someone uses Android.
 - Is "Kin" the right label for the entry row, or should it carry the lead's name?
 - Should the Waiting on you banner also show on T3's Home list when the Kin row is scrolled away (for example, as a pinned header)?
 - Does phase 1 need folded agent talk, given there is one agent in a direct chat?

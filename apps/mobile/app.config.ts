@@ -454,7 +454,16 @@ const config: ExpoConfig = {
     "./plugins/withAndroidModernAlertDialog.cjs",
     "./plugins/withAndroidPredictiveBackCompat.cjs",
     "./plugins/withAndroidTabletOrientation.cjs",
-    "./plugins/withKinApprovalKey.cjs",
+    [
+      "./plugins/withKinApprovalKey.cjs",
+      {
+        appAttestEnvironment: isIosPersonalTeamBuild
+          ? null
+          : APP_VARIANT === "development"
+            ? "development"
+            : "production",
+      },
+    ],
     ...(isIosPersonalTeamBuild ? ["./plugins/withoutIosPersonalTeamCapabilities.cjs"] : []),
   ],
   extra: {

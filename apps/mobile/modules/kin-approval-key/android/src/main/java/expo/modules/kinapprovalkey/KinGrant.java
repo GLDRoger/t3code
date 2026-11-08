@@ -142,9 +142,13 @@ final class KinGrant {
       }
       case "register_approver_key": {
         only(p);
-        exactKeys(target, setOf("_tag", "thumbprint"), setOf(), "target");
+        exactKeys(target, setOf("_tag", "thumbprint", "hardware", "attested"), setOf(), "target");
         tag(target, "device_key");
-        text = "Add approver key " + matches(target, "thumbprint", THUMBPRINT).substring(0, SHOWN_HASH_LENGTH);
+        String thumbprint = matches(target, "thumbprint", THUMBPRINT);
+        // The server never activates an unattested key, so there is nothing to approve for one.
+        if (!Boolean.TRUE.equals(target.get("attested"))) throw new NotAGrantException("the key is not attested");
+        text = "Add approver key " + thumbprint.substring(0, SHOWN_HASH_LENGTH)
+            + " (" + hardwareWords(string(target, "hardware")) + ", attested)";
         break;
       }
       default:
@@ -168,6 +172,19 @@ final class KinGrant {
   private static void githubRepo(Map<String, Object> target) throws NotAGrantException {
     if (!"github.com".equals(target.get("host"))) throw new NotAGrantException("host is not github.com");
     matches(target, "repo", REPO);
+  }
+
+  private static String hardwareWords(String hardware) throws NotAGrantException {
+    switch (hardware) {
+      case "secure_enclave":
+        return "Secure Enclave";
+      case "strongbox":
+        return "StrongBox";
+      case "tee":
+        return "TEE";
+      default:
+        throw new NotAGrantException("hardware is not secure_enclave, strongbox or tee");
+    }
   }
 
   private static String methodWords(String method) throws NotAGrantException {

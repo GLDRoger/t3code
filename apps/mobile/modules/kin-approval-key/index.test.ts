@@ -8,12 +8,14 @@ import { MalformedDerSignatureError } from "./src/derSignature";
 
 const mocks = vi.hoisted(() => ({
   signDer: vi.fn<(signingInput: string) => Promise<string>>(),
-  createKey:
-    vi.fn<
-      (
-        challenge: string,
-      ) => Promise<{ publicKey: string; hardware: "tee"; attestationChain: string[] }>
-    >(),
+  createKey: vi.fn<
+    (challenge: string) => Promise<{
+      publicKey: string;
+      hardware: "tee" | "secure_enclave";
+      attestationChain?: string[];
+      appAttest?: { keyId: string; attestationObject: string };
+    }>
+  >(),
 }));
 
 vi.mock("expo", () => ({
@@ -82,5 +84,61 @@ describe("createKey", () => {
     setup();
     await expect(createKey(challenge)).rejects.toThrow("attestationChallenge");
     expect(mocks.createKey).not.toHaveBeenCalled();
+  });
+
+  const challenge = b64(new Uint8Array(32).fill(7));
+  const point = p256.getPublicKey(p256.utils.randomPrivateKey(), false);
+  const keyId = Buffer.alloc(32, 1).toString("base64");
+
+  it.each([
+    [
+      "an App Attest object",
+      { appAttest: { keyId, attestationObject: "o2NmbXQ=" } },
+      {
+        attestation: { format: "apple-app-attest", keyId, attestationObject: "o2NmbXQ=" },
+      },
+    ],
+    [
+      "a Keystore chain",
+      { attestationChain: ["MIIB", "MIIC"] },
+      {
+        attestation: { format: "android-key", certificateChain: ["MIIB", "MIIC"] },
+      },
+    ],
+    ["no attestation", {}, {}],
+  ])("returns %s as the attestation", async (_name, native, expected) => {
+    setup();
+    mocks.createKey.mockResolvedValueOnce({
+      publicKey: b64(point),
+      hardware: "secure_enclave",
+      ...native,
+    });
+    const created = await createKey(challenge);
+    expect(mocks.createKey).toHaveBeenCalledWith(challenge);
+    expect({ ...created, publicJwk: undefined }).toEqual({
+      publicJwk: undefined,
+      hardware: "secure_enclave",
+      ...expected,
+    });
+  });
+
+  it.each([
+    [
+      "a keyId that isn't 32 bytes",
+      { keyId: Buffer.alloc(16).toString("base64"), attestationObject: "o2NmbXQ=" },
+    ],
+    [
+      "a base64url keyId",
+      { keyId: Buffer.alloc(32, 0xff).toString("base64url"), attestationObject: "o2NmbXQ=" },
+    ],
+    ["an empty attestation object", { keyId, attestationObject: "" }],
+  ])("refuses an App Attest result with %s", async (_name, appAttest) => {
+    setup();
+    mocks.createKey.mockResolvedValueOnce({
+      publicKey: b64(point),
+      hardware: "secure_enclave",
+      appAttest,
+    });
+    await expect(createKey(challenge)).rejects.toThrow();
   });
 });
