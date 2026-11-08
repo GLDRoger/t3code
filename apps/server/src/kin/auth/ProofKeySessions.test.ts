@@ -355,7 +355,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
         yield* TestClock.adjust(Duration.minutes(2));
         yield* sessions.revoke(renewed.sessionId);
         const revoked = (proofKey: string) =>
-          sql`SELECT ${ProofKeySessions.proofKeyRevoked(sql, proofKey, { honorRepairs: false })} AS revoked`;
+          sql`SELECT ${ProofKeySessions.proofKeyRevoked(sql, proofKey)} AS revoked`;
         expect(yield* revoked("device")).toEqual([{ revoked: 1 }]);
         expect(yield* revoked("other")).toEqual([{ revoked: 0 }]);
         expect(
