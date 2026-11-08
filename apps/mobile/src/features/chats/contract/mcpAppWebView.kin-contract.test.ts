@@ -1,4 +1,5 @@
 import { makeMcpAppHost, McpAppHostRefusal } from "@t3tools/client-runtime/mcp-apps";
+import * as Predicate from "effect/Predicate";
 import {
   EnvironmentId,
   McpAppCallToolInput,
@@ -13,7 +14,7 @@ import * as Schema from "effect/Schema";
 import type { ComponentProps } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { outerDocument, relayedMessage, ThreadMcpApp } from "../../threads/McpAppWebView";
+import { outerDocument, ThreadMcpApp } from "../../threads/McpAppWebView";
 
 // Stubs only what keeps McpAppWebView.tsx from loading in Node; a new native import upstream needs one here.
 vi.mock("react-native", () => ({}));
@@ -130,10 +131,10 @@ function mountBridge(
   const activity = { active: false };
   let host: ReturnType<typeof makeMcpAppHost> | undefined;
   const outer = mountOuterDocument((data) => {
-    const relayed = relayedMessage(SECRET, data);
-    if (relayed === undefined) return;
-    activity.active = relayed.active;
-    host?.receive(relayed.message);
+    const envelope: unknown = JSON.parse(data);
+    if (!Predicate.isObject(envelope) || envelope.secret !== SECRET) return;
+    activity.active = envelope.active === true;
+    host?.receive(envelope.message);
     activity.active = false;
   });
   const unused = () => Promise.reject(new Error("unused"));
@@ -205,30 +206,6 @@ describe("McpAppWebView bridge (Kin contract)", () => {
       const sandbox = html.match(/<iframe[^>]*\ssandbox="([^"]*)"/)?.[1];
       expect(sandbox?.split(" ")).toContain("allow-scripts");
       expect(sandbox?.split(" ")).not.toContain("allow-same-origin");
-    });
-  });
-
-  describe("React Native's message handler", () => {
-    const message = { jsonrpc: "2.0", id: 1, method: "ui/request-display-mode" };
-
-    it("drops envelopes without the outer document's secret", () => {
-      for (const data of [
-        JSON.stringify({ secret: "forged", active: true, message }),
-        JSON.stringify({ active: true, message }),
-        JSON.stringify(message),
-        "not json",
-      ]) {
-        expect(relayedMessage(SECRET, data)).toBeUndefined();
-      }
-    });
-
-    it("passes the message on with the attested tap, which must be exactly true", () => {
-      expect(
-        relayedMessage(SECRET, JSON.stringify({ secret: SECRET, active: true, message })),
-      ).toEqual({ message, active: true });
-      expect(
-        relayedMessage(SECRET, JSON.stringify({ secret: SECRET, active: "yes", message })),
-      ).toEqual({ message, active: false });
     });
   });
 

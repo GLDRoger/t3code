@@ -27,7 +27,7 @@ import { useNavigation } from "@react-navigation/native";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { Platform, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { WebView } from "react-native-webview";
+import { WebView, type WebViewMessageEvent } from "react-native-webview";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { shareGeneratedAttachment } from "../../lib/attachmentDownload";
@@ -63,18 +63,6 @@ frame.addEventListener("load",function(){loads+=1;if(loads>1&&live){live=false;s
 window.addEventListener("message",function(e){if(live&&e.source===frame.contentWindow)send(e.data);});
 window.__t3McpAppReceive=function(m){live&&frame.contentWindow&&frame.contentWindow.postMessage(m,"*");};
 frame.src=${JSON.stringify(src).replace(/</g, "\\u003c")};})();</script></body></html>`;
-}
-
-/** React Native's side of the relay: only envelopes carrying the secret reach the host. */
-export function relayedMessage(secret: string, data: string) {
-  let envelope: unknown;
-  try {
-    envelope = JSON.parse(data);
-  } catch {
-    return undefined;
-  }
-  if (!Predicate.isObject(envelope) || envelope.secret !== secret) return undefined;
-  return { message: envelope.message, active: envelope.active === true };
 }
 
 const commandFailure = (result: {
@@ -559,16 +547,22 @@ export function ThreadMcpApp(props: {
           onLoadEnd={() => setLoaded(true)}
           onError={() => setCrashed(true)}
           onHttpError={() => setCrashed(true)}
-          onMessage={(event) => {
-            const relayed = relayedMessage(secret, event.nativeEvent.data);
-            if (relayed === undefined) return;
-            if (Predicate.isObject(relayed.message) && relayed.message.t3 === "navigated") {
+          onMessage={(event: WebViewMessageEvent) => {
+            let envelope: unknown;
+            try {
+              envelope = JSON.parse(event.nativeEvent.data);
+            } catch {
+              return;
+            }
+            if (!Predicate.isObject(envelope) || envelope.secret !== secret) return;
+            const message = envelope.message;
+            if (Predicate.isObject(message) && message.t3 === "navigated") {
               host?.dispose();
               setNavigatedAway(true);
               return;
             }
-            userActive.current = relayed.active;
-            host?.receive(relayed.message);
+            userActive.current = envelope.active === true;
+            host?.receive(message);
             userActive.current = false;
           }}
         />
