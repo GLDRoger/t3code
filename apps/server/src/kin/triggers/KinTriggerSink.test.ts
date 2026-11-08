@@ -433,6 +433,7 @@ describe("KinTriggerSink", () => {
                 undefined,
                 DateTime.formatIso(DateTime.makeUnsafe(boundAt - 60_000)),
               ],
+              ["received-at-bind", {}, undefined, DateTime.formatIso(DateTime.makeUnsafe(boundAt))],
             ] as const) {
               const { task: weak } = yield* service.upsert(yield* weakened("task-org-a", schedule));
               yield* dispatchFailed(weak, key, secret, receivedAt);

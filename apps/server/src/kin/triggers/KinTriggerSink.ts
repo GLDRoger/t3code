@@ -48,6 +48,7 @@ export const findLaunchDelivery = (
   FROM scheduled_task_webhook_deliveries d
   JOIN scheduled_tasks t ON t.task_id = d.task_id
   WHERE d.task_id = ${input.taskId} AND d.delivery_id = ${input.deliveryId}
+    AND d.signature_verified = 1 AND d.outcome = 'accepted'
     AND t.project_id = ${input.projectId}
     AND t.thread_id IS NULL AND t.thread_mode = 'new_thread'
     AND json_extract(t.schedule_json, '$.type') = 'webhook'

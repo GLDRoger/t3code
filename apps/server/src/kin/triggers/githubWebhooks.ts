@@ -404,9 +404,8 @@ export const make = Effect.gen(function* () {
           return yield* invalid("GitHub events already go to another project.");
         const url = task.webhook?.url ?? null;
         if (url === null) return yield* needsConnect(input.orgId);
-        if (!task.enabled) yield* tasks.setEnabled({ id: task.id, enabled: true });
-        // Restores Kin's shape (say, a newer event list) while gated; an unsigned task has no
-        // secret to keep, so only a re-key or setSecret can repair it.
+        // Restores Kin's shape (say, a newer event list) before enabling, so a tampered task never
+        // runs; an unsigned task has no secret to keep, so only a re-key or setSecret repairs it.
         if (task.schedule.type === "webhook" && task.schedule.signature !== null)
           yield* upsert({
             orgId: input.orgId,
@@ -417,6 +416,7 @@ export const make = Effect.gen(function* () {
             secret: undefined,
             enabled: true,
           });
+        else if (!task.enabled) yield* tasks.setEnabled({ id: task.id, enabled: true });
         // Re-keys only when GitHub took the new secret; otherwise the owner's secret stays.
         const secret = yield* newSecret;
         if (!(yield* offer(input.orgId, url, secret)))
