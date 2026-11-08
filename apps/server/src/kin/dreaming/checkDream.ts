@@ -42,6 +42,9 @@ const decodeDream = Schema.decodeUnknownEffect(Schema.fromJsonString(DreamJson))
 const isItemPath = (path: string) =>
   path.endsWith(".md") && itemFolders.some((folder) => path.startsWith(`${folder}/`));
 const isJournalPath = (path: string) => path.startsWith("journal/") && path.endsWith(".md");
+/** What a dream checkout holds. Anything else at HEAD, such as `.mcp.json` or `.claude/`, could configure the provider. */
+export const isDreamPath = (path: string) =>
+  path === "rules.md" || path === "INDEX.md" || isItemPath(path) || isJournalPath(path);
 
 /**
  * The code checks a dream must pass before anything is committed. `tree` is what the

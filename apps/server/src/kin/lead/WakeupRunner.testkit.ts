@@ -43,6 +43,7 @@ import * as Hub from "../chat/KinChatHub.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
+import * as KinIssuedTokens from "../mcp/KinIssuedTokens.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
@@ -121,6 +122,11 @@ type HarnessOptions = {
   /** Each turn opens a command approval and ends only once it is answered. */
   readonly approval?: Deferred.Deferred<ProviderApprovalDecision | undefined>;
   readonly runtimeModes?: Array<RuntimeMode>;
+  /** The fake provider registers as the default Claude instance instead of Codex. */
+  readonly claude?: boolean;
+  readonly settings?: Parameters<typeof ServerSettings.layerTest>[0];
+  /** Runtime requests are opened with this capability instead of `live`. */
+  readonly requestCapability?: "not_resumable";
 };
 
 export function harness(options: HarnessOptions = {}) {
@@ -130,9 +136,10 @@ export function harness(options: HarnessOptions = {}) {
 /** The fake-provider orchestration stack without the wake-up runner. */
 export function orchestrationHarness(options: HarnessOptions = {}) {
   let nativeOrdinal = 0;
-  const driver = ProviderDriverKind.make("codex");
+  const driver = ProviderDriverKind.make(options.claude ? "claudeAgent" : "codex");
+  const instanceId = options.claude ? ProviderInstanceId.make("claudeAgent") : selection.instanceId;
   const adapter: ProviderAdapter.ProviderAdapterV2["Service"] = {
-    instanceId: selection.instanceId,
+    instanceId,
     driver,
     getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
     planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
@@ -141,13 +148,13 @@ export function orchestrationHarness(options: HarnessOptions = {}) {
         const now = yield* DateTime.now;
         const events = yield* PubSub.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
         const runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
-          instanceId: selection.instanceId,
+          instanceId,
           driver,
           providerSessionId: session.providerSessionId,
           providerSession: {
             id: session.providerSessionId,
             driver,
-            providerInstanceId: selection.instanceId,
+            providerInstanceId: instanceId,
             status: "ready",
             cwd: "/private/tmp",
             model: selection.model,
@@ -161,7 +168,7 @@ export function orchestrationHarness(options: HarnessOptions = {}) {
             Effect.sync(() => ({
               id: ProviderThreadId.make(`native-${++nativeOrdinal}`),
               driver,
-              providerInstanceId: selection.instanceId,
+              providerInstanceId: instanceId,
               providerSessionId: session.providerSessionId,
               appThreadId: input.threadId,
               ownerNodeId: null,
@@ -226,10 +233,10 @@ export function orchestrationHarness(options: HarnessOptions = {}) {
                   nativeRequestRef: null,
                   kind: "command",
                   status: "pending",
-                  responseCapability: {
-                    type: "live",
-                    providerSessionId: session.providerSessionId,
-                  },
+                  responseCapability:
+                    options.requestCapability === "not_resumable"
+                      ? { type: "not_resumable", reason: "Fixture process stopped" }
+                      : { type: "live", providerSessionId: session.providerSessionId },
                   createdAt: time,
                   resolvedAt: null,
                 },
@@ -312,7 +319,7 @@ export function orchestrationHarness(options: HarnessOptions = {}) {
     ProviderAdapterRegistry.layerFromAdapters([adapter]),
     { databaseLayer: database },
   );
-  const settings = ServerSettings.layerTest();
+  const settings = ServerSettings.layerTest(options.settings);
   const receipts = CommandReceiptStore.layer.pipe(Layer.provide(database));
   const sharedWith = options.sharedWith;
   const management = ThreadManagement.layer.pipe(
@@ -394,6 +401,11 @@ export function orchestrationHarness(options: HarnessOptions = {}) {
     management,
     projectLayer,
     orchestration,
+    settings,
+    Layer.effect(
+      KinIssuedTokens.KinIssuedTokens,
+      Effect.map(KinIssuedTokens.make, (tokens) => tokens.service),
+    ),
     McpSessionRegistry.layer.pipe(
       Layer.provide(
         Layer.mergeAll(

@@ -41,6 +41,8 @@ import * as Memory from "../memory/Memory.ts";
 import * as MemoryConfig from "../memory/MemoryConfig.ts";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
+import * as ServerSettings from "../../serverSettings.ts";
+import * as KinIssuedTokens from "../mcp/KinIssuedTokens.ts";
 import * as KinLead from "./layer.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
@@ -1106,6 +1108,8 @@ describe("WakeupRunner", () => {
             Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
             Layer.mock(ThreadManagement.ThreadManagementService)({}),
             Layer.mock(ProjectService.ProjectService)({}),
+            Layer.mock(ServerSettings.ServerSettingsService)({}),
+            Layer.mock(KinIssuedTokens.KinIssuedTokens)({}),
             Layer.succeed(KinLeadPrompt, { build: () => Effect.succeed("unused") }),
             Layer.effect(MemoryConfig.MemoryConfig, Effect.die("invalid memory config")),
             Layer.mock(VcsProcess.VcsProcess)({}),

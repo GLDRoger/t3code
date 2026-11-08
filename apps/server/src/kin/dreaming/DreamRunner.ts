@@ -29,9 +29,10 @@ import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import * as SecretScan from "../memory/secretScan.ts";
+import { KinIssuedTokens } from "../mcp/KinIssuedTokens.ts";
 import * as KinTriggerInbox from "../triggers/KinTriggerInbox.ts";
 import * as KinTriggerStore from "../triggers/KinTriggerStore.ts";
-import { checkDream, DreamJson } from "./checkDream.ts";
+import { checkDream, DreamJson, isDreamPath } from "./checkDream.ts";
 import * as DreamSession from "./DreamSession.ts";
 import { collectMaterial, type DreamMaterial } from "./material.ts";
 
@@ -105,6 +106,7 @@ const make = Effect.gen(function* () {
   const notices = yield* Memory.MemoryRecoveryHooks;
   const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
   const scanner = yield* SecretScan.KinSecretScan;
+  const tokens = yield* KinIssuedTokens;
   const cache = yield* MemoryCache.MemoryCache;
   const session = yield* DreamSession.DreamSession;
   const budget = yield* KinBudget.KinBudget;
@@ -310,9 +312,8 @@ const make = Effect.gen(function* () {
     const base = yield* writer.value.dreamBase(orgId);
     yield* sql`UPDATE kin_dream_runs SET base_head = ${base.head}
       WHERE org_id = ${orgId} AND dream_id = ${dreamId} AND status = 'running' RETURNING dream_id`;
-    const baseText = new Map(
-      [...base.files].map(([file, bytes]) => [file, bytes.toString("utf8")]),
-    );
+    const files = new Map([...base.files].filter(([file]) => isDreamPath(file)));
+    const baseText = new Map([...files].map(([file, bytes]) => [file, bytes.toString("utf8")]));
     const material = yield* collectMaterial({
       orgId,
       from: claimed.from,
@@ -321,7 +322,7 @@ const make = Effect.gen(function* () {
       timeZone,
       files: baseText,
     }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
-    const root = yield* prepareCheckout(orgId, dreamId, base.files, material);
+    const root = yield* prepareCheckout(orgId, dreamId, files, material);
     return yield* Effect.gen(function* () {
       const turn = Effect.fn("DreamRunner.turn")(function* (
         name: "extract" | "resolve",
@@ -385,9 +386,13 @@ const make = Effect.gen(function* () {
               ]),
         ],
       });
+      let credential = false;
+      for (const text of [...checked.changes.values(), checkout.dreamJson ?? ""])
+        if (yield* tokens.containsIssuedToken(text)) credential = true;
       const failures = [
         ...checked.failures,
         ...(findings.length > 0 ? [`The secret scan found ${findings.length} findings`] : []),
+        ...(credential ? ["The dream output contains a live T3 credential"] : []),
       ];
       if (failures.length > 0 || checked.dream === undefined) return failed(failures);
       const { commit } = yield* writer.value.commitDream(orgId, {
