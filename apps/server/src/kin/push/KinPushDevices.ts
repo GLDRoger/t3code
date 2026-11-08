@@ -19,6 +19,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
+import { revokedBySession } from "../auth/ProofKeySessions.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 
 export type KinPushCaller = {
@@ -91,14 +92,20 @@ const make = Effect.gen(function* () {
   };
 
   // T3 revokes sessions in SessionStore; reading its table keeps auth free of Kin hooks,
-  // as ApproverKeys does. Runs before every send. Relay sessions renew under new ids, so this
-  // misses a revoked relay phone until #54 joins on proof_key_thumbprint (mobile spec).
-  // Expired sessions stay: a live socket outlives the session it registered under.
+  // as ApproverKeys does. Runs before every send. Expired sessions stay: a live socket outlives
+  // the session it registered under. A repaired proof key keeps its pushes; the phone
+  // re-registers on connect anyway (mobile spec).
+  const revoked = revokedBySession(
+    sql,
+    {
+      sessionId: sql`kin_push_devices.session_id`,
+      proofKey: sql`kin_push_devices.proof_key_thumbprint`,
+    },
+    { honorRepairs: true },
+  );
   const reconcileSessions = Effect.fn("KinPushDevices.reconcileSessions")(
     function* () {
-      const removed = yield* sql`DELETE FROM kin_push_devices WHERE session_id IN (
-          SELECT session_id FROM auth_sessions WHERE revoked_at IS NOT NULL)
-        RETURNING token`;
+      const removed = yield* sql`DELETE FROM kin_push_devices WHERE ${revoked} RETURNING token`;
       return removed.length;
     },
     Effect.mapError(internal("KinPushDevices.reconcileSessions")),
@@ -109,7 +116,7 @@ const make = Effect.gen(function* () {
       const person = yield* personIn(caller, input.orgId);
       const now = yield* Clock.currentTimeMillis;
       // A phone re-registers on every connect, which also moves the row to its current session.
-      // Someone else's token moves only once the session that registered it is revoked or gone.
+      // Someone else's token moves only once reconcile would drop it, or its session is gone.
       const saved = yield* sql`INSERT INTO kin_push_devices ${sql.insert({
         org_id: input.orgId,
         token: input.token,
@@ -130,9 +137,8 @@ const make = Effect.gen(function* () {
           session_id = excluded.session_id,
           proof_key_thumbprint = excluded.proof_key_thumbprint,
           updated_at = excluded.updated_at
-        WHERE kin_push_devices.person_id = excluded.person_id OR NOT EXISTS (
-          SELECT 1 FROM auth_sessions s
-          WHERE s.session_id = kin_push_devices.session_id AND s.revoked_at IS NULL)
+        WHERE kin_push_devices.person_id = excluded.person_id OR ${revoked} OR NOT EXISTS (
+          SELECT 1 FROM auth_sessions WHERE session_id = kin_push_devices.session_id)
         RETURNING token`;
       if (saved.length === 0)
         return yield* fail("not_member", "This device is registered to someone else.");

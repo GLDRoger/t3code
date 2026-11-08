@@ -11,6 +11,7 @@ import {
   type KinPushToken,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -20,10 +21,12 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as SessionStore from "../../auth/SessionStore.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ApproverKeys from "../approvals/ApproverKeys.ts";
 import { KinAttestationTrust } from "../approvals/attestation/AttestationTrust.ts";
 import * as PendingActions from "../approvals/PendingActions.ts";
+import { layerKinAuthTest, repairProofKey } from "../auth/ProofKeySessions.testkit.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { KinApnsTransport, type KinApnsPush, type KinApnsResult } from "./Apns.ts";
 import { KinPushDevices, type KinPushCaller } from "./KinPushDevices.ts";
@@ -77,14 +80,18 @@ const makeApns = (
   return { sent, answers, layer };
 };
 
-const build = (apns: ReturnType<typeof makeApns>) =>
+const buildOn = <A, E, R>(apns: ReturnType<typeof makeApns>, database: Layer.Layer<A, E, R>) =>
   Sender.layer.pipe(
     Layer.provideMerge(Layer.mergeAll(Devices.layer, Presence.layer, apns.layer)),
     Layer.provideMerge(ApproverKeys.layer),
     Layer.provideMerge(PendingActions.layer),
     Layer.provide(Layer.succeed(KinAttestationTrust, { load: () => Effect.die("unused") })),
-    Layer.provideMerge(Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory)),
+    Layer.provideMerge(Layer.provideMerge(KinPersistence.layer, database)),
   );
+const build = (apns: ReturnType<typeof makeApns>) => buildOn(apns, Sqlite.layerMemory);
+// Real T3 auth with Kin's proof key hooks, so revocations write what #54 writes.
+const buildRelay = (apns: ReturnType<typeof makeApns>) =>
+  buildOn(apns, layerKinAuthTest("kin-push-"));
 
 const seed = Effect.gen(function* () {
   yield* TestClock.setTime(NOW);
@@ -550,6 +557,112 @@ describe("KinPushDevices", () => {
       }
     }).pipe(Effect.provide(build(apns)));
   });
+
+  /** A relay phone: a DPoP session that renews under a new id with the same proof key. */
+  const relay = (personId: KinPersonId, proofKeyThumbprint: string, ttl: Duration.Duration) =>
+    SessionStore.SessionStore.pipe(
+      Effect.flatMap((sessions) => sessions.issue({ proofKeyThumbprint, ttl })),
+      Effect.map((issued) => caller(issued.sessionId, personId, { proofKeyThumbprint })),
+    );
+  const registerToken = (from: KinPushCaller, deviceToken: KinPushToken) =>
+    KinPushDevices.pipe(
+      Effect.flatMap((devices) =>
+        devices.register(from, {
+          orgId,
+          token: deviceToken,
+          platform: "ios",
+          apsEnvironment: "development",
+        }),
+      ),
+    );
+  const holder = (sql: SqlClient.SqlClient, deviceToken: KinPushToken) =>
+    sql<{ person_id: string }>`SELECT person_id FROM kin_push_devices WHERE token = ${deviceToken}`;
+  const relayToken = token("e");
+
+  it.effect(
+    "drops a relay phone revoked by its renewed session, until the owner repairs it",
+    () => {
+      const apns = makeApns();
+      return Effect.gen(function* () {
+        const { sql, devices } = yield* seed;
+        const sessions = yield* SessionStore.SessionStore;
+        // The phone's socket keeps the session it registered under while the session renews.
+        yield* registerToken(yield* relay(owner, "relay-a", Duration.minutes(1)), relayToken);
+        yield* TestClock.adjust(Duration.minutes(2));
+        const renewed = yield* relay(owner, "relay-a", Duration.hours(1));
+        yield* sessions.revoke(renewed.session.sessionId);
+        yield* devices.reconcileSessions();
+        assert.deepStrictEqual(yield* holder(sql, relayToken), []);
+
+        const repaired = yield* repairProofKey("relay-a");
+        yield* registerToken(
+          caller(repaired.sessionId, owner, { proofKeyThumbprint: "relay-a" }),
+          relayToken,
+        );
+        yield* devices.reconcileSessions();
+        assert.deepStrictEqual(yield* holder(sql, relayToken), [{ person_id: owner }]);
+      }).pipe(Effect.provide(buildRelay(apns)));
+    },
+  );
+
+  it.effect("signing out other devices from a phone keeps its own device", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { sql, devices } = yield* seed;
+      const sessions = yield* SessionStore.SessionStore;
+      const otherToken = token("f");
+      yield* registerToken(yield* relay(owner, "relay-a", Duration.hours(1)), relayToken);
+      yield* registerToken(yield* relay(member, "relay-b", Duration.hours(1)), otherToken);
+      yield* TestClock.adjust(Duration.minutes(30));
+      // Both renew early; the phone's first session is still live when it signs the others out.
+      const current = yield* relay(owner, "relay-a", Duration.hours(1));
+      yield* relay(member, "relay-b", Duration.hours(1));
+      yield* sessions.revokeAllExcept(current.session.sessionId);
+      yield* devices.reconcileSessions();
+      assert.deepStrictEqual(yield* holder(sql, relayToken), [{ person_id: owner }]);
+      assert.deepStrictEqual(yield* holder(sql, otherToken), []);
+    }).pipe(Effect.provide(buildRelay(apns)));
+  });
+
+  it.effect("revoking a session after it expired keeps its device", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { sql, devices } = yield* seed;
+      const sessions = yield* SessionStore.SessionStore;
+      const phone = yield* relay(owner, "relay-a", Duration.minutes(1));
+      yield* registerToken(phone, relayToken);
+      yield* TestClock.adjust(Duration.minutes(2));
+      yield* sessions.revoke(phone.session.sessionId);
+      yield* devices.reconcileSessions();
+      assert.deepStrictEqual(yield* holder(sql, relayToken), [{ person_id: owner }]);
+    }).pipe(Effect.provide(buildRelay(apns)));
+  });
+
+  it.effect(
+    "hands a relay phone's token to another person only once reconcile would drop it",
+    () => {
+      const apns = makeApns();
+      return Effect.gen(function* () {
+        const { sql } = yield* seed;
+        const sessions = yield* SessionStore.SessionStore;
+        const first = yield* relay(owner, "relay-a", Duration.minutes(1));
+        yield* registerToken(first, relayToken);
+        yield* TestClock.adjust(Duration.minutes(2));
+        const takeover = registerToken(caller("sess-member", member), relayToken);
+        yield* sessions.revoke(first.session.sessionId);
+        const refused = yield* Effect.exit(takeover);
+        assert.isTrue(
+          Exit.isFailure(refused) &&
+            (refused.cause.reasons[0] as { error?: KinPushError }).error?.reason === "not_member",
+        );
+        yield* sessions.revoke(
+          (yield* relay(owner, "relay-a", Duration.hours(1))).session.sessionId,
+        );
+        yield* takeover;
+        assert.deepStrictEqual(yield* holder(sql, relayToken), [{ person_id: member }]);
+      }).pipe(Effect.provide(buildRelay(apns)));
+    },
+  );
 
   it.effect("keeps the ten most recently registered devices per person", () => {
     const apns = makeApns();
