@@ -1,3 +1,5 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Supersession fingerprints compare in-process strings synchronously.
+import * as NodeCrypto from "node:crypto";
 import type { PersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Clock from "effect/Clock";
 import { readFiles, readCommit, readTree, objectHash, verifyTree } from "./objects.ts";
@@ -28,6 +30,8 @@ import {
 import { parseFrontMatter, MemoryItemError } from "./frontMatter.ts";
 import { journalEntry, MemoryJournalError, type JournalContext } from "./journal.ts";
 import { KinSecretScan, KinSecretScanError } from "./secretScan.ts";
+
+export const LEAD_ENDED_WITHOUT_KIN_END = "Lead ended without calling kin_end.";
 
 export interface WakeupContext extends JournalContext {
   readonly orgId: KinOrgId;
@@ -440,13 +444,7 @@ const make = Effect.gen(function* () {
             const supersessionHash =
               change.supersedes === undefined
                 ? undefined
-                : yield* git(
-                    orgId,
-                    writer,
-                    ["hash-object", "--no-filters", "--stdin"],
-                    {},
-                    stringify(change),
-                  );
+                : NodeCrypto.createHash("sha256").update(stringify(change)).digest("hex");
             if (
               superseded?.status === "superseded" &&
               superseded.superseded_by === fm.id &&
@@ -577,7 +575,7 @@ const make = Effect.gen(function* () {
         orgId,
         Effect.gen(function* () {
           const { ctx, state } = yield* session(orgId, wakeupId);
-          if (lines.length === 1 && lines[0] === "Lead ended without calling kin_end.") {
+          if (lines.length === 1 && lines[0] === LEAD_ENDED_WITHOUT_KIN_END) {
             const { writer } = yield* validate(orgId);
             const branch =
               ctx.level === "L0" ? `kin/shadow/${ctx.agentId}` : (config.defaultBranch ?? "main");

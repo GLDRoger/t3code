@@ -250,6 +250,8 @@ No wake-up timestamps or ids go above the divider (dates and item ids already in
 
 ### Lead tools (`KinLeadToolkit`)
 
+Agent bearer tokens are endpoint-bound: they authenticate only on `/kin/mcp` and are rejected with 401 on `/mcp`. Non-agent T3 session tokens continue to authenticate on `/mcp`.
+
 The `/kin/mcp` endpoint deliberately exposes only Kin tools, never T3 tools (including scheduling and thread launch), so leads cannot bypass server authority; worker launch comes through the server-only LEAD-9 path.
 
 **New** `apps/server/src/kin/lead/mcp/tools.ts` and `handlers.ts`, served on Kin's own `/kin/mcp` endpoint (set up in CHAT-7 and shared with the approvals spec), not in upstream's `layerTools`. Registered Kin agent threads are given that endpoint, but only registered lead threads see the lead toolkit; each call is checked with `KinIdentity.resolveAgent`, binding the server-resolved `McpInvocationContext.thread.threadId` to the persisted running wake-up's current non-terminal run, rejecting subagents. Other threads never see these tools, so `AgentContextBudget.test.ts` stays unchanged. Each handler derives `{ orgId, agentId }` from that identity and `wakeupId` from its matching running database row, never from tool input, so a lead can't act for another organization.

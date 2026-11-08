@@ -217,7 +217,7 @@ const make = Effect.gen(function* () {
             yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId} AND call_key = 'end'`;
           if (ended.length === 0)
             yield* writer.value.appendJournal(row.orgId, row.wakeupId, [
-              "Lead ended without calling kin_end.",
+              Writer.LEAD_ENDED_WITHOUT_KIN_END,
             ]);
           yield* writer.value.commitWakeup(
             row.orgId,

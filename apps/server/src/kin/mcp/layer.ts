@@ -15,6 +15,11 @@ import { KinServer } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatToolkit, handlers } from "./KinChatToolkit.ts";
 
+export class KinAgentSessions extends Context.Service<
+  KinAgentSessions,
+  { readonly resolveAgent: McpSessionRegistry.McpSessionRegistryShape["resolve"] }
+>()("t3/kin/mcp/layer/KinAgentSessions") {}
+
 const registration = McpHttpServer.toolkitRegistration(KinChatToolkit, handlers);
 type Auth = (
   effect: Effect.Effect<
@@ -29,7 +34,7 @@ type Auth = (
 >;
 const auth = HttpRouter.middleware<{ provides: McpInvocationContext | KinServer }>()(
   Effect.gen(function* () {
-    const registry = yield* McpSessionRegistry.McpSessionRegistry;
+    const registry = yield* KinAgentSessions;
     const kin = yield* KinServer;
     // Untraced: a span here would wrap the tool call; the HTTP server span already covers it.
     return Effect.fnUntraced(function* (
@@ -40,7 +45,7 @@ const auth = HttpRouter.middleware<{ provides: McpInvocationContext | KinServer 
       >,
     ) {
       const request = yield* HttpServerRequest.HttpServerRequest;
-      const scope = yield* registry.resolve(parseBearerToken(request) ?? "");
+      const scope = yield* registry.resolveAgent(parseBearerToken(request) ?? "");
       if (scope === undefined) return HttpServerResponse.empty({ status: 401 });
       if (Option.isNone(kin.services)) return HttpServerResponse.empty({ status: 503 });
       const identity = Context.get(kin.services.value, KinIdentity);
@@ -56,6 +61,16 @@ const auth = HttpRouter.middleware<{ provides: McpInvocationContext | KinServer 
 
 export const endpoint = <A, E, R>(registrations: Layer.Layer<A, E, R>) =>
   McpHttpServer.layerMcpTransport(registrations).pipe(
+    Layer.provide(
+      Layer.effect(
+        McpSessionRegistry.McpSessionRegistry,
+        Effect.gen(function* () {
+          const registry = yield* McpSessionRegistry.McpSessionRegistry;
+          const agents = yield* KinAgentSessions;
+          return { ...registry, resolve: agents.resolveAgent };
+        }),
+      ),
+    ),
     Layer.fresh,
     Layer.updateService(HttpRouter.HttpRouter, (router) => router.prefixed("/kin")),
     Layer.provide(auth),
@@ -84,8 +99,7 @@ export const transport = (base: typeof McpHttpServer.layer) =>
   );
 
 export const registry = <E, R>(base: Layer.Layer<McpSessionRegistry.McpSessionRegistry, E, R>) =>
-  Layer.effect(
-    McpSessionRegistry.McpSessionRegistry,
+  Layer.effectContext(
     Effect.gen(function* () {
       const base = yield* McpSessionRegistry.McpSessionRegistry;
       const kin = yield* KinServer;
@@ -97,14 +111,22 @@ export const registry = <E, R>(base: Layer.Layer<McpSessionRegistry.McpSessionRe
         thread.subagent !== true &&
         Option.isSome(kin.services) &&
         Context.get(kin.services.value, KinIdentity).isAgentThread(thread.threadId);
-      return McpSessionRegistry.McpSessionRegistry.of({
+      const resolveAgent = Effect.fn("KinMcp.resolveAgent")(function* (token: string) {
+        const scope = yield* base.resolve(token);
+        return scope !== undefined &&
+          isAgentThread(scope.thread) &&
+          agentSessions.has(scope.thread.providerSessionId)
+          ? scope
+          : undefined;
+      });
+      const wrapped = McpSessionRegistry.McpSessionRegistry.of({
         ...base,
         resolve: Effect.fn("KinMcp.resolve")(function* (token) {
           const scope = yield* base.resolve(token);
           if (scope === undefined) return undefined;
-          return isAgentThread(scope.thread) === agentSessions.has(scope.thread.providerSessionId)
-            ? scope
-            : undefined;
+          return isAgentThread(scope.thread) || agentSessions.has(scope.thread.providerSessionId)
+            ? undefined
+            : scope;
         }),
         revokeProviderSession: Effect.fn("KinMcp.revokeProviderSession")(function* (id) {
           yield* base.revokeProviderSession(id);
@@ -129,5 +151,8 @@ export const registry = <E, R>(base: Layer.Layer<McpSessionRegistry.McpSessionRe
             : issued;
         }),
       });
+      return Context.make(McpSessionRegistry.McpSessionRegistry, wrapped).pipe(
+        Context.add(KinAgentSessions, { resolveAgent }),
+      );
     }),
   ).pipe(Layer.provide(base));

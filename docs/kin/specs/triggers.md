@@ -272,8 +272,7 @@ lands. Before enabling it:
 
 Each accepted action advances the card revision and marks that item handled;
 the last handled item closes it. Misleading-memory selection reads reports
-ended in the last 90 days. K013_Routines is provisional and must be renumbered at
-merge if TRIG-16 or LEAD-7 takes the slot first.
+ended in the last 90 days.
 
 ### Watchdogs (`interval`)
 
