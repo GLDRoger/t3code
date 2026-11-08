@@ -374,7 +374,7 @@ Kin serves these tools at **`/kin/mcp`**, alongside the existing T3 tools, never
 
 `kin_chat_post` accepts an optional `clientMessageId` retry key. Reusing it with identical content returns the stored row; changed content fails `not_allowed`. Omission creates a fresh post on each call. Bodies are nonblank, at most 16,000 characters, and contain no NUL; mentions are capped at 100. Reads are per-call, ascending after a non-negative safe-integer `afterSeq`, with a default limit of 50 and a maximum of 100, and preserve the viewer's suggestion visibility. No agent stream is exposed.
 
-Widget creation accepts `replyTo` as the new anchor message's parent, validated within the same org/chat. Updates require `widgetId` plus the expected `revision`; missing revision is refused, stale revision fails `widget_changed`, and `replyTo` on an update is refused (the anchor is immutable). Widget ownership is CHAT-8. Neither trusted waiting APIs nor hub subscriptions are exposed. `approval` is refused by the service. `kin_floor_bid` and `floorGrant` are phase 2 and absent from the phase-1 toolkit.
+Task-card creation is server-only and unavailable through this toolkit. Updates require `widgetId` plus the expected `revision`; missing revision is refused and stale revision fails `widget_changed`. The anchor is immutable, and an agent can update only cards anchored by its own member. Neither trusted waiting APIs nor hub subscriptions are exposed. `approval` is refused by the service. `kin_floor_bid` and `floorGrant` are phase 2 and absent from the phase-1 toolkit.
 
 ### Floor manager (plain code)
 
