@@ -1,0 +1,28 @@
+# Kin server: a source build of GLDRoger/t3code (branch `kin`), run as the `kin` user.
+# Installed by setup.sh into ~kin/.config/systemd/user/. See ops/kin/host/README.md.
+[Unit]
+Description=Kin server (T3 Code source build)
+Documentation=https://github.com/GLDRoger/t3code/tree/kin/ops/kin/host
+# The user manager has no reliable network-online target; server networking retries itself.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+# Owner overrides, such as T3CODE_LAN=true. Backed up with the state.
+EnvironmentFile=-%h/.t3/service.env
+# Read last so service.env can't override it. Written by setup.sh and update.sh:
+# KIN_ENABLED, PATH, KIN_REPO, KIN_CHECKOUT (~/kin-current) and KIN_NODE_VERSION.
+EnvironmentFile=%h/.config/kin/kin-server.env
+# systemd does not expand variables in the executable, so env finds mise on PATH.
+ExecStart=/usr/bin/env mise exec node@${KIN_NODE_VERSION} -- node ${KIN_CHECKOUT}/apps/server/dist/bin.mjs serve --base-dir %h/.t3
+Restart=always
+RestartSec=5
+KillMode=mixed
+# Provider CLIs share this cgroup; the default OOMPolicy=stop would stop the server if one is OOM-killed.
+OOMPolicy=continue
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target
