@@ -1,3 +1,4 @@
+import * as SqlClient from "effect/sql/SqlClient";
 import { memoryGit } from "./git.ts";
 import * as NodeZlib from "node:zlib";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -23,6 +24,8 @@ it.live.each([
   "completed",
   "failed",
   "blocked",
+  "scan unavailable",
+  "scan limit",
   "forged",
   "conflict",
   "B1-shadow",
@@ -223,10 +226,7 @@ it.live.each([
               }),
       ),
     });
-    const scan =
-      scenario === "blocked"
-        ? Scan.testLayer([{ path: "claims/new.md", ruleId: "fixture", line: 1 }])
-        : Scan.noFindingsStubLayer;
+    const scan = Scan.layer;
     const layer = Writer.layer.pipe(
       Layer.provideMerge(memoryLayer),
       Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
@@ -600,10 +600,52 @@ it.live.each([
       }
       if (scenario === "tree-substitution")
         substituteTree = yield* git(paths.writer, ["rev-parse", `${original}^{tree}`]);
+      if (scenario === "blocked") {
+        const tokenPath = "claims/" + ["gh", "p_", "a".repeat(36)].join("") + ".md";
+        const malformed = yield* writer
+          .stage(orgId, "wake1", {
+            path: tokenPath,
+            content: "---\nid: [\n" + tokenPath + ": [\n---\nbody",
+          })
+          .pipe(Effect.result);
+        expect(malformed._tag).toBe("Failure");
+        if (malformed._tag === "Failure") {
+          expect(malformed.failure._tag).toBe("MemoryItemError");
+          expect(JSON.stringify(malformed.failure).includes(tokenPath.slice(7, -3))).toBe(false);
+          if (malformed.failure._tag === "MemoryItemError")
+            expect(malformed.failure.path).toBe("[redacted]");
+        }
+        const inaccessible = yield* writer
+          .stage(orgId, "wake1", {
+            path: tokenPath.slice(0, -3) + "_".repeat(260) + ".md",
+            content: "missing front matter",
+          })
+          .pipe(Effect.result);
+        expect(inaccessible._tag).toBe("Failure");
+        if (inaccessible._tag === "Failure")
+          expect(JSON.stringify(inaccessible.failure).includes(tokenPath.slice(7, -3))).toBe(false);
+      }
+      if (scenario === "blocked")
+        yield* writer.appendJournal(orgId, "wake1", [
+          ["gh", "p_"].join("") + "aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0iL3oR6",
+        ]);
+      if (scenario === "scan unavailable") {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DROP TABLE kin_secret_allow`;
+      }
+      if (scenario === "scan limit")
+        yield* writer.appendJournal(orgId, "wake1", ["a".repeat(1024 * 1024)]);
       const result = yield* writer
         .commitWakeup(orgId, "wake1", scenario === "failed" ? "failed" : "completed")
         .pipe(Effect.result);
       if (result._tag === "Failure") yield* Effect.logError(result.failure);
+      if (scenario === "scan unavailable" || scenario === "scan limit") {
+        expect(result._tag).toBe("Failure");
+        expect(notices).toHaveLength(1);
+        expect(notices[0]!.error._tag).toBe("KinSecretScanError");
+        expect(yield* git(paths.writer, ["rev-parse", "HEAD"])).toBe(original);
+        return;
+      }
       if (scenario === "tree-substitution") {
         expect(result._tag).toBe("Failure");
         if (result._tag === "Failure") expect(result.failure._tag).toBe("MemoryCheckoutInvalid");
@@ -618,6 +660,19 @@ it.live.each([
           );
 
         expect(notices).toHaveLength(1);
+        if (scenario === "blocked") {
+          expect(JSON.stringify(notices)).not.toContain("aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0iL3oR6");
+          expect(yield* git(paths.writer, ["rev-parse", "HEAD"])).toBe(original);
+          expect(
+            (yield* git(root, [
+              `--git-dir=${remote}`,
+              "show-ref",
+              "--verify",
+              `refs/heads/kin/shadow/${agentId}`,
+            ]).pipe(Effect.result))._tag,
+          ).toBe("Failure");
+          expect(yield* fs.exists(`${paths.writer}/claims/new.md`)).toBe(false);
+        }
         expect(yield* fs.exists(`${paths.writer}/.git/rebase-merge`)).toBe(false);
       } else {
         expect(result._tag).toBe("Success");

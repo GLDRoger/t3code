@@ -324,12 +324,12 @@ GitHub then blocks a bad auto-merge even if Kin's classifier is wrong. This forc
 **Rules:**
 
 - GitHub tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`);
-- Anthropic `sk-ant-`, OpenAI `sk-`/`sk-proj-`;
+- Anthropic `sk-ant-`; OpenAI legacy `sk-` with the `T3BlbkFJ` marker and `sk-proj-`/`sk-svcacct-`/`sk-admin-` containing an uppercase letter;
 - AWS `AKIA…`/`ASIA…`;
 - Slack `xox[abposr]-`;
 - Stripe `sk_live_`/`rk_live_`;
 - Google `AIza`;
-- PEM `-----BEGIN … PRIVATE KEY-----`;
+- PEM `-----BEGIN … PRIVATE KEY-----`, including `PGP PRIVATE KEY BLOCK`;
 - JWTs (`eyJ…`, three base64url parts);
 - URLs with a password in them (`scheme://user:pass@`);
 - `password|secret|token|api_key = <value of ≥ 20 chars and high entropy>`.
@@ -342,7 +342,11 @@ GitHub then blocks a bad auto-merge even if Kin's classifier is wrong. This forc
 
 **On a finding**, the writer blocks the entire commit, discards staged text and emits a typed owner-notification hook. The runner journals the refusal without secret content and tells the owner to review and rotate the affected credential. Automatic redaction is not part of the writer contract.
 
-**False positives:** the owner adds the fingerprint to `kin_secret_allow` through a signed action. A model can never add to it.
+**False positives:** the owner adds the fingerprint to `kin_secret_allow` through a signed action. A model can never add to it. Entries are scoped to organization, exact path, rule and SHA-256 of `ruleId + "\0" + normalized matched value`, with `created_at` in integer milliseconds and `signed_action_id` reserved for the future APPR executor id. The scanner is read-only; the APPR executor must verify the owner grant before inserting. Until that executor lands, there is no agent or MCP allowlist-write path. Migration K012 is provisional and will be renumbered at merge.
+
+The scanner checks paths as well as content, redacts paths that contain a finding, normalizes NFKC, common Cyrillic/Greek/Latin lookalikes and Default Ignorable code points, checks newline-wrapped tokens, and decodes URL/base64 content up to two levels. Base64 decoding tries all four alignments; malformed percent bytes and non-ASCII decoded bytes become separators. Prefix rules use alphanumeric left boundaries and body-specific right boundaries (fixed-width Google keys also tolerate underscore metadata suffixes); each precompiled regex sees at most 8192 characters plus one character of boundary context on each side, with 4096-character overlap. JWT detection matches a bounded prefix: an eyJ header followed by 5–2048 base64url characters, then an eyJ payload prefix followed by 8–1024 characters, without requiring the signature or the payload end. Its maximum match is 3080 characters, within the overlap. Wrapped tokens are inspected after each appended fragment once the joined run has 20 characters or an anchor, retaining up to eight fragments and 4 KiB. A prose line closes the prior run with its first word and opens a new run with its last word, so adjacent prose and trailing words do not hide a wrapped token. Merge scanning covers only bytes changed from the fetched remote plus the rebuilt `INDEX.md`, not pre-existing remote content. Scanner failures notify through the writer hook, just like findings. Staged YAML parser errors omit source-bearing diagnostics and filesystem path errors omit the underlying path-bearing cause. Merge blocks use the recovery hook; production owner delivery still waits on a notifier. It fails closed above 1 MiB per file, 8 MiB or 1024 files per call, 4096 allowlist entries per organization, or 64 MiB of weighted work (inspected characters, encoded candidate characters, window characters, and 64 units per regex match). A cheap anchor pre-filter skips rule execution on irrelevant windows, including decoded candidates; recursive decoding remains active to find double-encoded tokens. Scanning yields between windows and decoder candidates so multi-file batches do not monopolize the event loop. Base64 runs shorter than 27 characters and fully percent-encoded runs shorter than 60 characters are not decoded; mixed percent/plain runs retain a 20-byte minimum to prevent partial-encoding bypasses. Wrapped runs beyond eight fragments or 4 KiB, splits by a space, `\r`, U+2028, across journal bullets, markdown or HTML comments, `\u` escapes, and hex encoding remain out of scope. These are conservative detectors, not a guarantee against arbitrary encryption or steganography.
+
+Known gaps, accepted for phase 1: JWE (five-part) tokens and JWT headers longer than 2051 characters; multi-part secrets (JWT, PEM header, URL password, `KEY=value`) with only some bytes percent-encoded; lookalikes outside the folding table (for example Greek `ρ`, Cyrillic `І`/`Ј`/`к`, small caps, U+2800, combining marks inside an anchor). A file of about 1 MiB made only of long whitespace-free lines (such as one path per line) exhausts the work budget after about 15 s and fails closed, blocking that commit; realistic journals up to 1 MiB pass.
 
 ### Owner-signed purge (gap 5)
 
@@ -475,7 +479,7 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
 - **Sink:** a signed GitHub `pull_request` request through the real `ScheduledTaskService` gives exactly one inbox row and no thread launch. A replay gives `duplicate` and no new row. A bot-sender request gives `filtered`. A non-Kin task still launches normally.
 - **Deferral:** unchanged recheck, then heads-up, then silence, then `started` at due. A linked issue closed before due leads to `asked`, and nothing starts. With the stop switch on, it asks. [Monday] re-arms to next Monday 09:00.
 - **Dream:** a dream touching `rules.md` fails, and `main` is unchanged. A dream with one journal fold and one `decisions/` change opens two PRs, and only the auto one merges.
-- **Secret scan:** a journal line holding `ghp_` plus 36 characters is committed as `[redacted:github-token]`, and the owner gets one message.
+- **Secret scan:** a journal line holding `ghp_` plus 36 characters blocks the entire commit, and the owner gets one typed notification without the value.
 - **Purge:** on a fixture repo, the file is gone from `git log --all -p`, a tombstone exists, and an audit row exists.
 - **Contract tests:** `vp test run kin-contract` passes on today's upstream. Renaming `scheduledTaskId` in a scratch branch makes it fail.
 
