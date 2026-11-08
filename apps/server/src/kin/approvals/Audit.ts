@@ -144,12 +144,16 @@ export const make = Effect.gen(function* () {
 
   const list = Effect.fn("KinAudit.list")(
     function* (input: KinAuditListInput) {
-      const rows = yield* sql<{ entry_json: string }>`
-        SELECT entry_json FROM kin_audit
+      const rows = yield* sql<{ seq: number; entry_json: string }>`
+        SELECT seq, entry_json FROM kin_audit
         WHERE org_id = ${input.orgId} AND seq > ${input.afterSeq ?? 0}
         ORDER BY seq LIMIT ${input.limit + 1}`;
-      const entries = yield* Effect.forEach(rows.slice(0, input.limit), (row) =>
-        decodeEntry(parseJson(row.entry_json)),
+      // One bad row becomes a marker instead of failing every page that includes it.
+      const entries = rows.slice(0, input.limit).map((row) =>
+        Option.getOrElse(decodeEntryOption(parseJson(row.entry_json)), () => ({
+          seq: row.seq,
+          corrupt: true as const,
+        })),
       );
       return { entries, hasMore: rows.length > input.limit };
     },

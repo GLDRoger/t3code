@@ -23,11 +23,16 @@ export const makeKinApprovalHandlers = Effect.fn("makeKinApprovalHandlers")(func
 ) {
   const kin = yield* Effect.serviceOption(KinServer);
   const audit = yield* Audit.make;
-  // Owner-only (spec section 11). Phase 1 identity resolves a session to the org owner or to no one.
+  // Owner-only (spec section 11): membership in the org is not enough.
   const asOwner = Effect.fn("KinApprovals.asOwner")(function* (orgId: KinOrgId) {
     if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
-    const people = yield* Context.get(kin.value.services.value, KinIdentity).resolve(session);
-    if (!people.some((person) => person.orgId === orgId)) {
+    const identity = Context.get(kin.value.services.value, KinIdentity);
+    const people = yield* identity.resolve(session);
+    const { owner } = identity;
+    const isOwner = people.some(
+      (person) => person.orgId === owner.orgId && person.personId === owner.personId,
+    );
+    if (owner.orgId !== orgId || !isOwner) {
       return yield* new KinApprovalError({ reason: "not_owner", message: "Owner only." });
     }
     return audit;

@@ -433,15 +433,23 @@ const make = Effect.gen(function* () {
           }),
         )
         .pipe(Effect.catchTags({ Rollback: () => Effect.succeed({ _tag: "stale" as const }) }));
-      // A refused grant still leaves a trace (spec section 11); the rolled-back attempt can't.
+      // A refused grant still leaves a trace (spec section 11), but only on the chain of the org
+      // that owns the action: an unknown org or action stays `stale` and writes nothing.
       if (result._tag !== "approved") {
-        yield* audit.append({
-          orgId: input.orgId,
-          event: "grant_rejected",
-          actionId: input.actionId,
-          ...who,
-          result: result._tag,
-        });
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const [owned] = yield* sql`SELECT 1 FROM kin_pending_actions
+              WHERE org_id = ${input.orgId} AND action_id = ${input.actionId}`;
+            if (owned === undefined) return;
+            yield* audit.append({
+              orgId: input.orgId,
+              event: "grant_rejected",
+              actionId: input.actionId,
+              ...who,
+              result: result._tag,
+            });
+          }),
+        );
       }
       return result;
     },

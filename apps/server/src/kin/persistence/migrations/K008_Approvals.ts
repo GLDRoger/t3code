@@ -99,4 +99,13 @@ export default Effect.gen(function* () {
       UNIQUE (org_id, seq)
     )
   `;
+  // The hash chain detects edits; these refuse them outright.
+  yield* sql`
+    CREATE TRIGGER kin_audit_no_update BEFORE UPDATE ON kin_audit
+    BEGIN SELECT RAISE(ABORT, 'kin_audit is append-only'); END
+  `;
+  yield* sql`
+    CREATE TRIGGER kin_audit_no_delete BEFORE DELETE ON kin_audit
+    BEGIN SELECT RAISE(ABORT, 'kin_audit is append-only'); END
+  `;
 });
