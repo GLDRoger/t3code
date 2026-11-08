@@ -69,6 +69,12 @@ type KeyPair = {
 };
 export const newKey = (): KeyPair => NodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
 
+// A positive, minimally encoded INTEGER: no leading zero byte.
+const randomSerial = () => {
+  const bytes = new Uint8Array(NodeCrypto.randomBytes(8));
+  bytes[0] = (bytes[0]! & 0x7f) | 0x01;
+  return bytes;
+};
 const name = (cn: string) => der.seq(der.set(der.seq(der.oid("2.5.4.3"), der.utf8(cn))));
 const ECDSA_SHA256 = der.seq(der.oid("1.2.840.10045.4.3.2"));
 
@@ -95,7 +101,7 @@ function certificate(spec: CertificateSpec): Uint8Array {
   ];
   const tbs = der.seq(
     der.explicit(0, der.int(2)),
-    der.serial(spec.serial ?? new Uint8Array(NodeCrypto.randomBytes(8))),
+    der.serial(spec.serial ?? randomSerial()),
     ECDSA_SHA256,
     name(spec.issuer),
     der.seq(
