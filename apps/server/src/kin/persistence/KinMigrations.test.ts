@@ -36,6 +36,8 @@ const tableNames = [
   "kin_ping_items",
   "kin_ping_ledger",
   "kin_read_state",
+  "kin_routine_folds",
+  "kin_routine_preferences",
   "kin_secret_allow",
   "kin_session_bindings",
   "kin_shadow_entries",
@@ -100,6 +102,7 @@ describe("Kin migrations", () => {
           { migration_id: 10, name: "ChatChanges" },
           { migration_id: 11, name: "MemoryHeads" },
           { migration_id: 12, name: "SecretAllow" },
+          { migration_id: 13, name: "Routines" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
@@ -154,6 +157,7 @@ describe("Kin migrations", () => {
           { migration_id: 10, name: "ChatChanges" },
           { migration_id: 11, name: "MemoryHeads" },
           { migration_id: 12, name: "SecretAllow" },
+          { migration_id: 13, name: "Routines" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -162,6 +166,10 @@ describe("Kin migrations", () => {
         assert.deepStrictEqual(
           yield* sql`SELECT name FROM pragma_index_info('idx_kin_triggers_due') ORDER BY seqno`,
           ["next_run_at", "org_id", "trigger_id"].map((name) => ({ name })),
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT name FROM pragma_index_info('kin_workers_owner_review') ORDER BY seqno`,
+          ["org_id", "ended_at", "worker_id"].map((name) => ({ name })),
         );
         const indexes = yield* sql<{ name: string }>`
         SELECT name FROM sqlite_master WHERE type = 'index' AND name GLOB 'idx_kin_*' ORDER BY name
@@ -233,6 +241,7 @@ describe("Kin migrations", () => {
         [10, "ChatChanges"],
         [11, "MemoryHeads"],
         [12, "SecretAllow"],
+        [13, "Routines"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -271,6 +280,9 @@ describe("Kin migrations", () => {
       yield* sql`DROP INDEX kin_chat_members_one_owner`;
       yield* sql`DROP TABLE kin_memory_heads`;
       yield* sql`DROP TABLE kin_secret_allow`;
+      yield* sql`DROP INDEX kin_workers_owner_review`;
+      yield* sql`DROP TABLE kin_routine_folds`;
+      yield* sql`DROP TABLE kin_routine_preferences`;
       yield* sql`DROP TABLE kin_budget_charges`;
       yield* sql`ALTER TABLE kin_events DROP COLUMN budget_deferred`;
       yield* sql`UPDATE kin_chats SET last_seq = 1 WHERE org_id = 'org' AND chat_id = 'existing-chat'`;
@@ -286,6 +298,7 @@ describe("Kin migrations", () => {
         [10, "ChatChanges"],
         [11, "MemoryHeads"],
         [12, "SecretAllow"],
+        [13, "Routines"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,
@@ -323,6 +336,7 @@ describe("Kin migrations", () => {
         { migration_id: 10, name: "ChatChanges" },
         { migration_id: 11, name: "MemoryHeads" },
         { migration_id: 12, name: "SecretAllow" },
+        { migration_id: 13, name: "Routines" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);

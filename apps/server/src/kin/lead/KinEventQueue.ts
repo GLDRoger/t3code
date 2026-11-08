@@ -228,6 +228,9 @@ const make = Effect.gen(function* () {
             case "worker.report":
               priority = "P1";
               break;
+            case "routine":
+              if (event.routine === "owner_check") priority = "P3";
+              break;
             case "watchdog":
               priority = "P3";
               break;

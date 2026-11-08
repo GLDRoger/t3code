@@ -22,6 +22,9 @@ import {
   ProjectId,
   ProviderInstanceId,
 } from "@t3tools/contracts";
+import * as OwnerCheck from "../triggers/ownerCheck.ts";
+import * as ChatService from "../chat/KinChatService.ts";
+import * as ChatHub from "../chat/KinChatHub.ts";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -86,6 +89,34 @@ const run = Effect.fn("test.run")(function* () {
 });
 
 describe("WakeupRunner", () => {
+  it.effect("handles the owner check in code without starting a provider turn", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const queue = yield* KinEventQueue.KinEventQueue;
+      const sql = yield* SqlClient.SqlClient;
+      yield* queue.enqueue(event("owner-check"));
+      yield* Fiber.join(yield* run());
+      assert.deepEqual(
+        yield* sql`SELECT state FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`,
+        [{ state: "done" }],
+      );
+      assert.deepEqual(
+        yield* sql`SELECT thread_id, status FROM kin_wakeups WHERE org_id = ${orgId} ORDER BY wakeup_id`,
+        [{ thread_id: null, status: "completed" }],
+      );
+      assert.lengthOf(
+        yield* sql`SELECT thread_id FROM kin_agent_threads WHERE org_id = ${orgId} ORDER BY thread_id`,
+        0,
+      );
+    }).pipe(
+      Effect.provide(
+        harness().pipe(
+          Layer.provide(Layer.mock(OwnerCheck.OwnerCheck)({ post: () => Effect.succeed([]) })),
+        ),
+      ),
+      provideDeterministicTestRuntime,
+    ),
+  );
   it.effect("uses the cheap model for exhausted P0 even when a routine is in the batch", () =>
     Effect.gen(function* () {
       yield* seed;
@@ -962,6 +993,8 @@ describe("WakeupRunner", () => {
         Layer.provide(Layer.mock(KinIdentity.KinIdentity)({ isAgentThread: () => false })),
         Layer.provide(
           Layer.mergeAll(
+            Layer.mock(ChatService.KinChatService)({}),
+            Layer.mock(ChatHub.KinChatHub)({}),
             Layer.mock(Budget.KinBudget)({}),
             Layer.mock(KinEventQueue.KinEventQueue)({}),
             Layer.mock(ThreadLaunch.ThreadLaunchService)({}),

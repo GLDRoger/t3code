@@ -1,8 +1,14 @@
 import { forkParked } from "../../serverActivation.ts";
 import { KinOrgId } from "@t3tools/contracts";
+import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Routines from "../triggers/routines.ts";
+import * as OwnerCheck from "../triggers/ownerCheck.ts";
+import * as TriggerScheduler from "../triggers/KinTriggerScheduler.ts";
+import * as TriggerStore from "../triggers/KinTriggerStore.ts";
+import * as TriggerInbox from "../triggers/KinTriggerInbox.ts";
 import * as Schema from "effect/Schema";
 
 import * as KinChatRepository from "../chat/KinChatRepository.ts";
@@ -35,13 +41,24 @@ export function containStartup<A, E, R>(layer: Layer.Layer<A, E, R>) {
   );
 }
 
+const routineRuntime = Routines.layer.pipe(
+  Layer.provideMerge(TriggerScheduler.layer),
+  Layer.provide(Layer.mergeAll(TriggerStore.layer, TriggerInbox.layer)),
+  // Kin builds in its contained startup scope; orchestration runtime does not expose its scheduler.
+  Layer.provide(Scheduler.layer),
+);
+
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const runner = yield* WakeupRunner.WakeupRunner;
-    yield* runner.start.pipe(forkParked);
+    yield* Effect.gen(function* () {
+      const context = yield* Layer.build(routineRuntime);
+      yield* runner.start.pipe(Effect.provideContext(context));
+    }).pipe(forkParked);
   }),
 ).pipe(
   Layer.provide(WakeupRunner.layer),
+  Layer.provide(OwnerCheck.layer),
   Layer.provide(
     Layer.mergeAll(KinLeadRegistry.layer, KinLeadPrompt.layer).pipe(
       Layer.provideMerge(

@@ -30,10 +30,14 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import * as KinIdentity from "../chat/KinIdentity.ts";
 import * as Memory from "../memory/Memory.ts";
+import * as Routines from "../triggers/routines.ts";
+import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinBudget from "./KinBudget.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
+
+const ownerCheckDispatcherReady = false;
 
 export class KinWakeupError extends Schema.TaggedError<KinWakeupError>()("KinWakeupError", {
   orgId: KinOrgId,
@@ -93,6 +97,7 @@ const ulid = Effect.gen(function* () {
 });
 
 const make = Effect.gen(function* () {
+  const ownerCheck = yield* Effect.serviceOption(OwnerCheck.OwnerCheck);
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
   const budget = yield* KinBudget.KinBudget;
@@ -349,7 +354,17 @@ const make = Effect.gen(function* () {
                 events = events.filter((event) => !deferred.has(event.eventId));
               }
             }
-            if (events.length === 0) return;
+            const routines = yield* Effect.serviceOption(Routines.KinRoutines);
+            if (Option.isSome(routines))
+              events = yield* Effect.filter(events, (event) =>
+                event._tag === "routine"
+                  ? routines.value.isEnabled(orgId, event.routine)
+                  : Effect.succeed(true),
+              );
+            if (events.length === 0) {
+              yield* queue.finish({ orgId, wakeupId, status: "completed" });
+              return;
+            }
             const budgetContext = yield* budget.promptContext(orgId);
             const pinned = yield* memory.prepareWakeup(orgId, wakeupId).pipe(
               Effect.tapError((error) =>
@@ -365,6 +380,21 @@ const make = Effect.gen(function* () {
                   : Effect.void,
               ),
             );
+            if (Option.isSome(ownerCheck)) {
+              for (const event of events) {
+                if (event._tag === "routine" && event.routine === "owner_check")
+                  // Keep cards dark until the verified action dispatcher and clients land.
+                  if (ownerCheckDispatcherReady)
+                    yield* ownerCheck.value.post(orgId, event.eventId, event.ownerCheckItems ?? []);
+              }
+              events = events.filter(
+                (event) => event._tag !== "routine" || event.routine !== "owner_check",
+              );
+              if (events.length === 0) {
+                yield* queue.finish({ orgId, wakeupId, status: "completed" });
+                return;
+              }
+            }
             const paths = yield* memory.ensureCheckouts(orgId);
             const { project } = yield* projects.bootstrap({
               commandId: CommandId.make(`kin-project:${orgId}`),

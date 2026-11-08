@@ -45,6 +45,11 @@ it.live.each([
   "P9-shadow",
   "P10-lost-git-dir",
   "sha256",
+  "owner-keep",
+  "owner-other-item-keep",
+  "owner-drop-keep",
+  "owner-chat-keep",
+  "agent-keep",
   "review-default",
   "review-null",
   "credentials",
@@ -86,7 +91,12 @@ it.live.each([
     ]);
     yield* fs.writeFileString(`${source}/rules.md`, "Invented rules\n");
     yield* fs.writeFileString(`${source}/INDEX.md`, "As of 2026-11-08T00:00:00.000Z\n");
-    if (scenario.startsWith("B6") || scenario === "P3-object" || scenario === "P6-malformed") {
+    if (
+      scenario.startsWith("B6") ||
+      scenario.endsWith("-keep") ||
+      scenario === "P3-object" ||
+      scenario === "P6-malformed"
+    ) {
       yield* fs.makeDirectory(`${source}/claims`);
       yield* fs.writeFileString(
         `${source}/claims/existing.md`,
@@ -95,7 +105,7 @@ it.live.each([
           : fixtureItem({
               kind: "claim",
               status: scenario === "B6-owner-open" ? "open" : "done",
-              trust: scenario === "B6-agent-own" ? "agent" : "owner",
+              trust: scenario === "B6-agent-own" || scenario === "agent-keep" ? "agent" : "owner",
               said_by: scenario === "B6-agent-own" ? agentId : "fixture-owner",
             }),
       );
@@ -209,10 +219,28 @@ it.live.each([
                 timeZone: "Asia/Kolkata",
                 startedAt: "2026-11-08T00:00:00.000Z",
                 eventIds: [],
-                sources: new Map([
+                sources: new Map<
+                  string,
+                  Writer.WakeupContext["sources"] extends ReadonlyMap<string, infer S> ? S : never
+                >([
                   [
                     "owner",
-                    { saidBy: "fixture-owner", trust: "owner", source: "fixture-owner-message" },
+                    scenario === "owner-keep" ||
+                    scenario === "owner-other-item-keep" ||
+                    scenario === "owner-drop-keep"
+                      ? {
+                          saidBy: "fixture-owner",
+                          trust: "owner",
+                          source: "fixture-owner-message",
+                          kind: "owner_check",
+                          itemId: scenario === "owner-other-item-keep" ? "other-item" : "def-001",
+                          action: scenario === "owner-drop-keep" ? "drop" : "keep",
+                        }
+                      : {
+                          saidBy: "fixture-owner",
+                          trust: "owner",
+                          source: "fixture-owner-message",
+                        },
                   ],
                   [
                     "member",
@@ -500,6 +528,31 @@ it.live.each([
         expect(
           (yield* writer.commitWakeup(orgId, "wake1", "completed").pipe(Effect.result))._tag,
         ).toBe("Success");
+        return;
+      }
+      if (scenario.endsWith("-keep")) {
+        const content = fixtureItem({
+          kind: "claim",
+          status: "done",
+          trust: scenario === "agent-keep" ? "agent" : "owner",
+          said_by: "fixture-owner",
+          review_by: "2026-12-13",
+        });
+        const result = yield* writer
+          .stage(orgId, "wake1", {
+            path: "claims/existing.md",
+            content,
+            ...(scenario !== "agent-keep" ? { sourceEventId: "owner" } : {}),
+          })
+          .pipe(Effect.result);
+        expect(result._tag).toBe(scenario === "owner-keep" ? "Success" : "Failure");
+        if (result._tag === "Failure") expect(result.failure._tag).toBe("MemoryConflict");
+        if (result._tag === "Success") {
+          const committed = yield* writer.commitWakeup(orgId, "wake1", "completed");
+          expect(
+            yield* git(paths.writer, ["show", `${committed.commit}:claims/existing.md`]),
+          ).toContain("review_by: 2026-12-13");
+        }
         return;
       }
       if (scenario.startsWith("B6")) {

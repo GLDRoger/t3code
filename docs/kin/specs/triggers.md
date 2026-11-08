@@ -250,6 +250,31 @@ The dream consumer suppresses a `dream` fire whose `dueAt`, in owner time, falls
 | `dream_full`      | The same pipeline over all items, not just new material.                                                                                                                                                                                                                                                                              |
 | `owner_check`     | Code picks 5 items: past `review_by`, flagged misleading, low-trust claims older than 30 days, and evidence-free status claims, in that order. It posts a native card with Keep (push `review_by` out one period), Update (opens the direct chat on the item) and Drop (set `invalid_at` now). Taps are owner-authored memory writes. |
 
+Routine delivery is a lead-queue request, not a second posting path: TRIG-9 enqueues `routine`; LEAD-13 owns the brief/summary message and prepared-brief content. Late boundaries are measured from the scheduled owner's calendar date (a summary expires at the first dream after its due time). Folds retain the original routine and due instant, survive restart, and move with an expired summary into the next brief. Same-tick fires are handled by due time, not inbox receipt order. Disabling a routine expires its queued requests; enabling it schedules the next slot without backfill. Pause/resume preserves individual opt-outs.
+
+Routine processing consumes schema/decode failures immediately. Other failures (including SQLite contention, enqueue failure and unavailable memory checkouts) stay pending for the next tick; a failing fire more than 24 hours past its due instant is consumed to bound poison retries. Successful late fires still follow the normal fold/post policy. Owner-check selection runs before the enqueue transaction, which rechecks consumption and event identity.
+
+Owner-check ties use review date (missing last), then item id and path. Invalid, superseded and duplicate-id items are excluded. Low trust means any trust below owner; with no status-claim subtype in memory, evidence-free means a claim with no evidence links. Keep sets the next review to now +90 days for people or +30 days otherwise, so repeated Keeps do not grow the review interval. Update returns the owner direct-chat/item target; Keep and Drop stage through the writer with the verified, claimed owner action as their source, never model-supplied provenance. Native clients own presenting the three actions; the server owns their authorization.
+
+**Owner-check release gate (TRIG-9):** selection and routine enqueue are live, but
+`WakeupRunner` keeps native card posting explicitly disabled until the dispatcher
+lands. Before enabling it:
+
+- chat act must enqueue `widget.action`;
+- `WakeupRunner` must intercept `owner_check` actions, run `OwnerCheck.act`,
+  then `MemoryWriter.commitWakeup`, then queue `finish`, without exposing these
+  actions to the model prompt;
+- production `MemoryWriterAuthority.resolve` must grant `kind: "owner_check"`
+  only after verifying the claimed owner tap, binding its item id and action.
+  An owner chat citation is not review-date authority;
+- web and mobile must render the native card, its handled items, and closed state;
+- a revision conflict after Keep or Drop is staged must unstage only that item's path. Today it discards the whole wake-up session, which would drop the lead's other staged writes.
+
+Each accepted action advances the card revision and marks that item handled;
+the last handled item closes it. Misleading-memory selection reads reports
+ended in the last 90 days. K013_Routines is provisional and must be renumbered at
+merge if TRIG-16 or LEAD-7 takes the slot first.
+
 ### Watchdogs (`interval`)
 
 All are plain code. They write memory only through the LEAD queue as code-only events, which keeps one writer per org (gap 1).

@@ -494,7 +494,7 @@ RPC (**new**, through the chat spec's `kinRpcs.ts`): `kin.org.pause` and `kin.or
 
 ### Morning and evening routines: content
 
-Scheduling is the triggers spec's. Each fires a `routine` event, and the lead writes the message. `routines.ts` holds these templates. Each is one message of at most 12 lines, plus widgets, posted to the owner's direct chat (shadow summary at L0).
+Scheduling is the triggers spec's. Each fires a `routine` event, and the lead writes the message. A request carries its original due time, lateness and any folded routine dates; content must acknowledge those dates rather than imply an on-time run. The owner check selects memory-review items in code and posts its native card after budget admission; its taps use owner-authored writer sources, not model authority. `routines.ts` holds these templates. Each is one message of at most 12 lines, plus widgets, posted to the owner's direct chat (shadow summary at L0).
 
 Morning brief, from the dream's prepared brief plus a live recheck:
 
