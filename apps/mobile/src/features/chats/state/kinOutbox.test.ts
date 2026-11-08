@@ -42,6 +42,7 @@ function makeHost() {
         messageId: `m${rows.size + 1}` as KinMessageId,
         seq: rows.size + 1,
         body: record.body,
+        clientMessageId: record.clientMessageId,
       };
       rows.set(record.clientMessageId, row);
     }
@@ -164,7 +165,38 @@ describe("kinOutbox", () => {
     expect(host.calls).toHaveLength(2);
 
     expect(splitKinOutbox(chat(), [])).toEqual({ acked: [ack], pending: [], echoed: [] });
-    expect(splitKinOutbox(chat(), echoed)).toEqual({ acked: [], pending: [], echoed: ["m1"] });
+    expect(splitKinOutbox(chat(), echoed)).toEqual({
+      acked: [],
+      pending: [],
+      echoed: ["client-1"],
+    });
+  });
+
+  it("settles a send the stream carries by clientMessageId, even with its reply lost", async () => {
+    const { host, disk, outbox, chat } = setup();
+    host.setOnline(true);
+    host.setDropReplies(true);
+    await outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: "Once" });
+    await outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: "Twice" });
+    await outbox.deliver(ENV);
+    expect(chat().map((entry) => entry.state)).toEqual(["waiting", "waiting"]);
+
+    // The host holds only the first; the second is still pending.
+    const streamed = [host.rows.get("client-1")!];
+    const split = splitKinOutbox(chat(), streamed);
+    expect(split).toMatchObject({ acked: [], echoed: ["client-1"] });
+    expect(split.pending.map((entry) => entry.clientMessageId)).toEqual(["client-2"]);
+
+    outbox.forgetEchoed(new Set(split.echoed));
+    await outbox.flushWrites();
+    expect(chat().map((entry) => entry.clientMessageId)).toEqual(["client-2"]);
+    expect(disk.saved().map((entry: KinOutboxRecord) => entry.clientMessageId)).toEqual([
+      "client-2",
+    ]);
+    host.setDropReplies(false);
+    host.calls.length = 0;
+    await outbox.deliver(ENV);
+    expect(host.calls).toEqual(["client-2"]);
   });
 
   it("fails a refused send for good: kept across a restart, never resent, editable", async () => {
@@ -260,7 +292,7 @@ describe("kinOutbox", () => {
     host.setOnline(true);
     await outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: "acked" });
     await outbox.deliver(ENV);
-    outbox.forgetEchoed(new Set(["m1"]));
+    outbox.forgetEchoed(new Set(["client-1"]));
     expect(chat()).toEqual([]);
 
     host.setOnline(false);

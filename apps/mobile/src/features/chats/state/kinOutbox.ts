@@ -1,6 +1,7 @@
 import {
   EnvironmentAuthorizationError,
   EnvironmentId,
+  KIN_MESSAGE_BODY_MAX_LENGTH,
   KinChatError,
   KinChatId,
   type KinMessage,
@@ -9,7 +10,7 @@ import * as Schema from "effect/Schema";
 import { Atom, type AtomRegistry } from "effect/reactivity";
 
 /** `KinMessagesSendInput.body`'s max length; longer bodies would be refused for good. */
-export const KIN_MESSAGE_MAX_LENGTH = 16_000;
+export const KIN_MESSAGE_MAX_LENGTH = KIN_MESSAGE_BODY_MAX_LENGTH;
 /** Unsent messages one environment may hold; past it, Send keeps the text in the draft. */
 export const KIN_OUTBOX_MAX_ENTRIES = 200;
 /** A send with no reply by then waits for the next attempt; dedupe makes the resend safe. */
@@ -269,11 +270,15 @@ export function createKinOutbox(options: KinOutboxOptions) {
     return entry.body;
   };
 
-  /** Forgets acked entries once the chat's stream carries their message. */
-  const forgetEchoed = (messageIds: ReadonlySet<string>) => {
+  /** Forgets entries the chat's stream carries, acked or not, by `clientMessageId`. */
+  const forgetEchoed = (clientMessageIds: ReadonlySet<string>) => {
+    let unsent = false;
     for (const entry of entries.values()) {
-      if (entry.sent !== null && messageIds.has(entry.sent.messageId)) remove(entry);
+      if (!clientMessageIds.has(entry.clientMessageId)) continue;
+      unsent ||= entry.state !== "sent";
+      remove(entry);
     }
+    if (unsent) void persist();
   };
 
   /** The environment was removed from this device; its unsent messages go with it. */
@@ -311,7 +316,8 @@ export type KinOutbox = ReturnType<typeof createKinOutbox>;
 /**
  * Splits a chat's outbox for the feed: acked messages join the stream's (its copy wins once it
  * arrives) and the rest render as pending bubbles after the last message. `echoed` lists the
- * acked messages the stream already holds, so the outbox can forget them.
+ * `clientMessageId`s the stream already carries, even for a send whose reply never came back,
+ * so the outbox can forget them and the author sees one bubble.
  */
 export function splitKinOutbox(
   outbox: ReadonlyArray<KinOutboxEntry>,
@@ -322,13 +328,14 @@ export function splitKinOutbox(
   readonly echoed: ReadonlyArray<string>;
 } {
   if (outbox.length === 0) return { acked: [], pending: EMPTY, echoed: [] };
-  const known = new Set(streamed.map((message) => message.messageId));
+  // The host returns `clientMessageId` only to the message's author, which is who holds the outbox.
+  const known = new Set(streamed.map((message) => message.clientMessageId));
   const acked: KinMessage[] = [];
   const pending: KinOutboxEntry[] = [];
   const echoed: string[] = [];
   for (const entry of outbox) {
-    if (entry.sent === null) pending.push(entry);
-    else if (known.has(entry.sent.messageId)) echoed.push(entry.sent.messageId);
+    if (known.has(entry.clientMessageId)) echoed.push(entry.clientMessageId);
+    else if (entry.sent === null) pending.push(entry);
     else acked.push(entry.sent);
   }
   return { acked, pending, echoed };

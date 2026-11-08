@@ -336,7 +336,7 @@ function KinChatFeed(props: {
   const streamed = mergeKinFeed(live, paging.earlier);
   const { acked, pending, echoed } = splitKinOutbox(outbox, streamed.messages);
   const echoedKey = echoed.join("\n");
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- frees acked outbox entries once the stream carries their message
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- frees outbox entries once the stream carries their message
   useEffect(() => {
     if (echoedKey !== "") kinOutbox.forgetEchoed(new Set(echoedKey.split("\n")));
   }, [echoedKey]);
