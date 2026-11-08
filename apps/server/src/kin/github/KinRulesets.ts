@@ -52,9 +52,9 @@ export const kinRulesets = (requiredChecks: ReadonlyArray<string>): ReadonlyArra
           required_approving_review_count: 1,
           require_code_owner_review: true,
           dismiss_stale_reviews_on_push: true,
-          // Off: it adds nothing against the bot, whose pushes the owner must approve anyway, and
-          // it deadlocks an upstream sync branch the owner pushed (spec section 10).
-          require_last_push_approval: false,
+          // Stale dismissal ignores diff-neutral pushes, so a bot commit added then reverted would
+          // keep the owner's approval. Upstream syncs end with a bot push for this (spec section 10).
+          require_last_push_approval: true,
           required_review_thread_resolution: true,
           // `merge` is for the owner's upstream syncs; the executor squashes bot PRs.
           allowed_merge_methods: ["squash", "merge"],

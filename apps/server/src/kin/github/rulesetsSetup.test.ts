@@ -282,6 +282,13 @@ describe("kin-rulesets --check", () => {
       "  FAIL rules.pull_request.require_code_owner_review: expected true, got false",
     ],
     [
+      "last-push approval switched off",
+      (rulesets: Array<StoredRuleset>) => {
+        ruleParameters(rulesets, "pull_request").require_last_push_approval = false;
+      },
+      "  FAIL rules.pull_request.require_last_push_approval: expected true, got false",
+    ],
+    [
       "rebase merges allowed",
       (rulesets: Array<StoredRuleset>) => {
         ruleParameters(rulesets, "pull_request").allowed_merge_methods = [
@@ -460,7 +467,18 @@ describe("test 23 refusal matching", () => {
       "review_required",
       false,
     ],
-    [403, { message: "Resource not accessible by personal access token" }, "forbidden", true],
+    [403, NOT_ACCESSIBLE, "forbidden", true],
+    [403, { message: "Resource not accessible by integration" }, "forbidden", false],
+    [
+      403,
+      {
+        message:
+          "Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization.",
+      },
+      "forbidden",
+      false,
+    ],
+    [403, { message: "Must have admin rights to Repository." }, "forbidden", false],
     [404, { message: "Not Found" }, "forbidden", false],
     [404, { message: "Not Found" }, "refused", true],
     [200, { message: "" }, "refused", false],
@@ -495,6 +513,9 @@ const scratchRepo = (
     readonly botCanMerge?: boolean;
     readonly pushAllowed?: boolean;
     readonly tagMovable?: boolean;
+    readonly tagCreatable?: boolean;
+    /** Reading back the tag the probe tried to create is rate-limited. */
+    readonly rateLimitTagRead?: boolean;
     readonly noStaleDismissal?: boolean;
     readonly anyoneCanAdminister?: boolean;
     readonly noReleaseTag?: boolean;
@@ -527,6 +548,9 @@ const scratchRepo = (
       }
       const ref = request.path.match(new RegExp(`^${base}/git/refs?/(.+)$`))?.[1];
       if (request.method === "GET" && ref !== undefined && request.path.includes("/git/ref/")) {
+        if (broken.rateLimitTagRead && ref.startsWith("tags/v0.0.0-kin-test-23")) {
+          return { status: 429, body: { message: "API rate limit exceeded" } };
+        }
         const at = refs.get(ref);
         return at === undefined
           ? { status: 404, body: { message: "Not Found" } }
@@ -542,7 +566,7 @@ const scratchRepo = (
       }
       if (route === `POST ${base}/git/refs`) {
         const name = body!.ref!.slice("refs/".length);
-        if (name.startsWith("tags/v")) {
+        if (name.startsWith("tags/v") && !broken.tagCreatable) {
           return violation("Cannot create ref due to creations being restricted.");
         }
         refs.set(name, body!.sha!);
@@ -608,10 +632,7 @@ const scratchRepo = (
             });
             return { status: 200, body: {} };
           }
-          return {
-            status: 403,
-            body: { message: "Resource not accessible by personal access token" },
-          };
+          return { status: 403, body: NOT_ACCESSIBLE };
         case `GET ${base}/pulls/7/reviews?per_page=100`:
           return { status: 200, body: reviews };
         case `PUT ${base}/pulls/7/merge`:
@@ -632,6 +653,8 @@ const scratchRepo = (
   });
   return { ...github, refs, state };
 };
+
+const scratchBroken = { pushAllowed: { pushAllowed: true } } as const;
 
 const tokens = Effect.succeed({
   botToken: Redacted.make(BOT_TOKEN),
@@ -686,7 +709,7 @@ describe("security test 23 (kin-rulesets --test-23)", () => {
   it.effect.each([
     ["a merge token that can review", { mergeTokenCanReview: true }, "can't submit a review"],
     ["a bot that can merge alone", { botCanMerge: true }, "the bot can't merge"],
-    ["a push to the default branch", { pushAllowed: true }, "but heads/kin is now"],
+    ["a push to the default branch", scratchBroken.pushAllowed, "but heads/kin is now"],
     ["a movable release tag", { tagMovable: true }, "but tags/v1.0.0 is now"],
     ["no stale-review dismissal", { noStaleDismissal: true }, "dismissed GLDRoger's review"],
     [
@@ -706,6 +729,30 @@ describe("security test 23 (kin-rulesets --test-23)", () => {
       assert.isFalse(github.refs.has("tags/v0.0.0-kin-test-23-0"));
       assert.strictEqual(github.refs.get("tags/v1.0.0"), sha("7"));
       if (!github.state.merged) assert.isTrue(github.state.closed);
+      if (broken === scratchBroken.pushAllowed) {
+        assert.include(
+          result.lines,
+          "  WARN cleanup: undo by hand: kin moved to bbbbbbb; disable kin-main, then `git push --force origin aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:refs/heads/kin`, then apply kin-rulesets to GLDRoger/kin-scratch again.",
+        );
+      }
+    }).pipe(Effect.provide(github.layer));
+  });
+
+  it.effect("deletes a tag it created even when reading it back fails", () => {
+    const github = scratchRepo({ tagCreatable: true, rateLimitTagRead: true });
+    return Effect.gen(function* () {
+      const error = yield* Effect.flip(test23());
+      assert.strictEqual(error._tag, "KinGitHubRequestError");
+      assert.isTrue(
+        github.requests.some(
+          (request) =>
+            request.method === "DELETE" &&
+            request.path === "/repos/GLDRoger/kin-scratch/git/refs/tags/v0.0.0-kin-test-23-0",
+        ),
+      );
+      assert.isFalse(github.refs.has("tags/v0.0.0-kin-test-23-0"));
+      assert.isTrue(github.state.closed);
+      assert.isTrue(github.state.revoked);
     }).pipe(Effect.provide(github.layer));
   });
 

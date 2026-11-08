@@ -5,23 +5,28 @@ import type { RepoSlug } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import type * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/http";
 
 import {
+  GITHUB_PAT_NOT_ACCESSIBLE,
   gitHubAnswer,
   gitHubJson,
   isGitHubRateLimit,
+  KinGitHubRequestError,
   repoPath,
   type GitHubAnswer,
-  type KinGitHubRequestError,
 } from "./githubRest.ts";
 import { GITHUB_ACTIONS_INTEGRATION_ID, type KinRuleset } from "./KinRulesets.ts";
 
 /** What a refused call must look like; anything else, success included, fails the probe. */
 export type KinBlock =
-  /** 403: the token lacks the permission. */
+  /**
+   * 403 with GitHub's missing-permission message for a fine-grained token, the only kind it's used
+   * for (the merge token). A 403 for SAML, an IP allow list or a block isn't the permission.
+   */
   | "forbidden"
   /** 403 or 404. GitHub answers 404 to hide an endpoint the token can't use; nothing is written. */
   | "refused"
@@ -41,7 +46,7 @@ export function isKinBlock(
   if (isGitHubRateLimit(answer)) return false;
   switch (block) {
     case "forbidden":
-      return answer.status === 403;
+      return answer.status === 403 && answer.message.trim() === GITHUB_PAT_NOT_ACCESSIBLE;
     case "refused":
       return answer.status === 403 || answer.status === 404;
     case "rule_violation":
@@ -161,10 +166,24 @@ export const runTest23Probes = Effect.fn("kinRulesets.test23")(function* (input:
       token: input.ownerToken,
       schema,
     }).pipe(Effect.map((response) => response.body));
+  /** `null` only for a 404: any other failed read can't show the ref is missing. */
   const refSha = (ref: string) =>
     call("git.getRef", "GET", `/git/ref/${refPath(ref)}`, input.ownerToken).pipe(
-      Effect.map((answer) => (answer.status === 200 ? decodeRef(answer.body) : undefined)),
-      Effect.map((ref) => (ref === undefined || ref._tag === "None" ? null : ref.value.object.sha)),
+      Effect.flatMap((answer) => {
+        if (answer.status === 404) return Effect.succeed(null);
+        const found = answer.status === 200 ? decodeRef(answer.body) : Option.none();
+        return Option.match(found, {
+          onSome: (value) => Effect.succeed<string | null>(value.object.sha),
+          onNone: () =>
+            Effect.fail(
+              new KinGitHubRequestError({
+                operation: "git.getRef",
+                stage: answer.status === 200 ? "decode" : "status",
+                status: answer.status,
+              }),
+            ),
+        });
+      }),
     );
 
   // Moving a tag needs one to exist, and the tag ruleset stops even the owner from making one.
@@ -208,6 +227,7 @@ export const runTest23Probes = Effect.fn("kinRulesets.test23")(function* (input:
     merged: false,
     tagCreated: false,
     tagMoved: false,
+    defaultMovedTo: null as string | null,
   };
   const botCommit = Effect.fn("kinRulesets.test23.botCommit")(function* (file: string) {
     const answer = yield* call(
@@ -320,12 +340,20 @@ export const runTest23Probes = Effect.fn("kinRulesets.test23")(function* (input:
       );
     const mergeAs = (token: Redacted.Redacted<string>, sha: string) =>
       call("pulls.merge", "PUT", `${pullRoute}/merge`, token, { sha, merge_method: "squash" });
+    // Records a wrongly accepted write before the read-back, which can fail.
+    const marking = (
+      request: Effect.Effect<GitHubAnswer, KinGitHubRequestError>,
+      accepted: number,
+      mark: () => void,
+    ) =>
+      request.pipe(Effect.tap((answer) => Effect.sync(() => answer.status === accepted && mark())));
     const unmoved = (ref: string, sha: string | null) =>
       refSha(ref).pipe(
         Effect.map((now) => {
           if (now === sha) return null;
           if (ref === newTag) state.tagCreated = true;
           if (ref === releaseRef) state.tagMoved = true;
+          if (ref === defaultRef) state.defaultMovedTo = now;
           return `but ${ref} is now ${now ?? "missing"}`;
         }),
       );
@@ -350,25 +378,37 @@ export const runTest23Probes = Effect.fn("kinRulesets.test23")(function* (input:
         probe(
           `${who} can't push to ${input.defaultBranch}`,
           "rule_violation",
-          call("git.updateRef", "PATCH", `/git/refs/${refPath(defaultRef)}`, token, {
-            sha: h1,
-            force: false,
-          }),
+          marking(
+            call("git.updateRef", "PATCH", `/git/refs/${refPath(defaultRef)}`, token, {
+              sha: h1,
+              force: false,
+            }),
+            200,
+            () => (state.defaultMovedTo = h1),
+          ),
           unmoved(defaultRef, baseSha),
         ),
         probe(
           `${who} can't create a v* tag`,
           "rule_violation",
-          call("git.createRef", "POST", "/git/refs", token, { ref: `refs/${newTag}`, sha: h1 }),
+          marking(
+            call("git.createRef", "POST", "/git/refs", token, { ref: `refs/${newTag}`, sha: h1 }),
+            201,
+            () => (state.tagCreated = true),
+          ),
           unmoved(newTag, null),
         ),
         probe(
           `${who} can't move ${releaseRef.slice("tags/".length)}`,
           "rule_violation",
-          call("git.updateRef", "PATCH", `/git/refs/${refPath(releaseRef)}`, token, {
-            sha: h1,
-            force: true,
-          }),
+          marking(
+            call("git.updateRef", "PATCH", `/git/refs/${refPath(releaseRef)}`, token, {
+              sha: h1,
+              force: true,
+            }),
+            200,
+            () => (state.tagMoved = true),
+          ),
           unmoved(releaseRef, releaseTag.object.sha),
         ),
         ...input.rulesets.flatMap(({ id, desired }) => [
@@ -500,7 +540,13 @@ export const runTest23Probes = Effect.fn("kinRulesets.test23")(function* (input:
       Effect.orElseSucceed(() => "GitHub unreachable"),
       Effect.map((problem) => {
         if (problem !== null) cleanupLines.push(`  WARN cleanup: couldn't ${name} (${problem})`);
+        return problem === null;
       }),
+    );
+  // The rulesets have no bypass, so the owner can't undo these either until one is disabled.
+  const byHand = (steps: string) =>
+    cleanupLines.push(
+      `  WARN cleanup: undo by hand: ${steps}, then apply kin-rulesets to ${input.repo} again.`,
     );
   const cleanup = Effect.gen(function* () {
     if (!state.merged && state.pull !== undefined) {
@@ -517,20 +563,31 @@ export const runTest23Probes = Effect.fn("kinRulesets.test23")(function* (input:
       [204, 422],
     );
     if (state.tagCreated) {
-      yield* attempt(
+      const deleted = yield* attempt(
         `delete ${newTag}`,
         call("git.deleteRef", "DELETE", `/git/refs/${refPath(newTag)}`, input.ownerToken),
         [204],
       );
+      if (!deleted) byHand(`disable kin-release, then delete refs/${newTag}`);
     }
     if (state.tagMoved) {
-      yield* attempt(
+      const restored = yield* attempt(
         `move ${releaseRef} back to ${releaseTag.object.sha.slice(0, 7)}`,
         call("git.updateRef", "PATCH", `/git/refs/${refPath(releaseRef)}`, input.ownerToken, {
           sha: releaseTag.object.sha,
           force: true,
         }),
         [200],
+      );
+      if (!restored) {
+        byHand(
+          `disable kin-release, then move refs/${releaseRef} back to ${releaseTag.object.sha}`,
+        );
+      }
+    }
+    if (state.defaultMovedTo !== null) {
+      byHand(
+        `${input.defaultBranch} moved to ${state.defaultMovedTo.slice(0, 7)}; disable kin-main, then \`git push --force origin ${baseSha}:refs/heads/${input.defaultBranch}\``,
       );
     }
   });

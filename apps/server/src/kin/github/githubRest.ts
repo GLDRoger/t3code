@@ -143,6 +143,12 @@ export const isGitHubRateLimit = (
       // GitHub's secondary limit can come with neither header.
       (answer.message?.toLowerCase().includes("secondary rate limit") ?? false)));
 
+/**
+ * GitHub's 403 message when a fine-grained token lacks the permission an endpoint needs. An App
+ * installation token gets "Resource not accessible by integration" instead.
+ */
+export const GITHUB_PAT_NOT_ACCESSIBLE = "Resource not accessible by personal access token";
+
 /** `/repos/{owner}/{name}` for an `owner/name` slug. */
 export const repoPath = (repo: string) => {
   const [owner = "", name = ""] = repo.split("/");
