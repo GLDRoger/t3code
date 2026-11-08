@@ -334,7 +334,7 @@ it.effect("hides foreign chats with the same not_found error", () =>
   Effect.gen(function* () {
     const { sql } = yield* seed();
     yield* sql`INSERT INTO kin_orgs VALUES ('foreign', 'Foreign', '1970-01-01T00:00:00.000Z')`;
-    yield* sql`INSERT INTO kin_chats VALUES ('foreign-chat', 'foreign', 'team_group', NULL, NULL, NULL, 0, NULL, '1970-01-01T00:00:00.000Z', NULL)`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, team_id, direct_key, last_seq, last_message_at, created_at, archived_at) VALUES ('foreign-chat', 'foreign', 'team_group', NULL, NULL, NULL, 0, NULL, '1970-01-01T00:00:00.000Z', NULL)`;
     for (const chatId of ["missing", "foreign-chat"]) {
       const result = yield* call("kin_chat_read", { chatId });
       assert.include(errorOf(result), { reason: "not_found" });
