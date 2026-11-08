@@ -102,19 +102,32 @@ export function selectKinInboxView(state: KinInboxState): KinInboxView {
 // One chat's feed
 
 export const KinChatState = Schema.Struct({
-  /** Ascending by seq, one per seq. */
+  /** Ascending by seq, one per message. */
   messages: Schema.Array(KinMessage),
   /** Highest revision per widget. */
   widgets: Schema.Array(KinWidget),
   /** Highest seq up to which nothing is missing; the `afterSeq` to resume the stream with. */
   contiguousSeq: Schema.Number,
+  /** The last backlog's `lastChangeSeq`; the `afterChangeSeq` that replays edits made offline. */
+  changeSeq: Schema.Number,
   reads: Schema.Record(Schema.String, Schema.Number),
   /** The server reported a gap of more than 200; reload the latest page with history. */
   needsHistoryReload: Schema.Boolean,
   /** The viewer left; the stream has ended. Never cached. */
   left: Schema.Boolean,
-  /** The host refused the chat stream; it has ended. Never cached. */
-  closed: Schema.NullOr(Schema.Literals(["not_found", "not_allowed", "unavailable"])),
+  /** The host refused the chat stream for good; it has ended. Never cached. */
+  closed: Schema.NullOr(
+    Schema.Literals([
+      "not_found",
+      "not_allowed",
+      "widget_changed",
+      "use_approvals",
+      "invalid_state",
+      "limit",
+      "floor_not_granted",
+      "floor_closed",
+    ]),
+  ),
 });
 export type KinChatState = typeof KinChatState.Type;
 
@@ -122,12 +135,14 @@ export const emptyKinChat: KinChatState = {
   messages: [],
   widgets: [],
   contiguousSeq: 0,
+  changeSeq: 0,
   reads: {},
   needsHistoryReload: false,
   left: false,
   closed: null,
 };
 
+/** Every Kin refusal but `unavailable`, which the stream retries. */
 export type KinChatClosedReason = NonNullable<KinChatState["closed"]>;
 
 function mergeMessages(
@@ -135,17 +150,18 @@ function mergeMessages(
   incoming: ReadonlyArray<KinMessage>,
 ): ReadonlyArray<KinMessage> {
   if (incoming.length === 0) return current;
-  // Live messages arrive in order past the last held one.
+  // Live messages arrive in order past the last held one. Anything else, such as a backlog's
+  // changed older messages, replaces the held copy of that message.
   if (
     (current.length === 0 || incoming[0]!.seq > current[current.length - 1]!.seq) &&
     incoming.every((message, index) => index === 0 || message.seq > incoming[index - 1]!.seq)
   ) {
     return [...current, ...incoming];
   }
-  const bySeq = new Map(current.map((message) => [message.seq, message]));
-  // A later copy of the same seq carries its newest status or edit.
-  for (const message of incoming) bySeq.set(message.seq, message);
-  return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
+  const byId = new Map(current.map((message) => [message.messageId, message]));
+  // A later copy of the same message carries its newest status or edit.
+  for (const message of incoming) byId.set(message.messageId, message);
+  return [...byId.values()].sort((a, b) => a.seq - b.seq);
 }
 
 function mergeWidgets(
@@ -186,6 +202,8 @@ export function applyKinChatEvent(state: KinChatState, event: KinChatStreamEvent
         messages,
         widgets: mergeWidgets(state.widgets, event.widgets),
         contiguousSeq: advanceContiguous(messages, filled),
+        // Only a fully applied backlog moves it; live events keep this snapshot cursor.
+        changeSeq: event.lastChangeSeq ?? state.changeSeq,
       };
     }
     case "reset":
@@ -194,6 +212,7 @@ export function applyKinChatEvent(state: KinChatState, event: KinChatStreamEvent
         messages: [],
         widgets: [],
         contiguousSeq: event.lastSeq,
+        changeSeq: event.lastChangeSeq ?? 0,
         needsHistoryReload: true,
       };
     case "message": {
