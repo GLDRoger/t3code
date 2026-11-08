@@ -186,11 +186,12 @@ describe("KinEventQueue", () => {
             "report",
             "resolved",
             "github",
-            "routine",
             "noisy",
+            "routine",
             "watch",
           ],
         );
+        assert.equal(events.find((entry) => entry.eventId === "routine")?.priority, "P3");
         yield* finish("priority");
         yield* sql`UPDATE kin_chat_members SET role = 'member'`;
         yield* queue.enqueue(yield* event("member", "chat.message"));

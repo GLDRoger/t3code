@@ -250,6 +250,30 @@ The dream consumer suppresses a `dream` fire whose `dueAt`, in owner time, falls
 | `dream_full`      | The same pipeline over all items, not just new material.                                                                                                                                                                                                                                                                              |
 | `owner_check`     | Code picks 5 items: past `review_by`, flagged misleading, low-trust claims older than 30 days, and evidence-free status claims, in that order. It posts a native card with Keep (push `review_by` out one period), Update (opens the direct chat on the item) and Drop (set `invalid_at` now). Taps are owner-authored memory writes. |
 
+Routine delivery is a lead-queue request, not a second posting path: TRIG-9 enqueues `routine`; LEAD-13 owns the brief/summary message and prepared-brief content. Late boundaries are measured from the scheduled owner's calendar date (a summary expires at the first dream after its due time). Folds retain the original routine and due instant, survive restart, and move with an expired summary into the next brief. Same-tick fires are handled by due time, not inbox receipt order. Disabling a routine expires its queued requests; enabling it schedules the next slot without backfill. Pause/resume preserves individual opt-outs.
+
+Routine processing consumes schema/decode failures immediately. Other failures (including SQLite contention, enqueue failure and unavailable memory checkouts) stay pending for the next tick; a failing fire more than 24 hours past its due instant is consumed to bound poison retries. Successful late fires still follow the normal fold/post policy. Owner-check selection runs before the enqueue transaction, which rechecks consumption and event identity.
+
+Owner-check ties use review date (missing last), then item id and path. Invalid, superseded and duplicate-id items are excluded. Low trust means any trust below owner; with no status-claim subtype in memory, evidence-free means a claim with no evidence links. Keep sets the next review to now +90 days for people or +30 days otherwise, so repeated Keeps do not grow the review interval. Update returns the owner direct-chat/item target; Keep and Drop stage through the writer with the verified, claimed owner action as their source, never model-supplied provenance. Native clients own presenting the three actions; the server owns their authorization.
+
+**Owner-check release gate (TRIG-9):** selection and routine enqueue are live, but
+`WakeupRunner` keeps native card posting explicitly disabled until the dispatcher
+lands. Before enabling it:
+
+- chat act must enqueue `widget.action`;
+- `WakeupRunner` must intercept `owner_check` actions, run `OwnerCheck.act`,
+  then `MemoryWriter.commitWakeup`, then queue `finish`, without exposing these
+  actions to the model prompt;
+- production `MemoryWriterAuthority.resolve` must grant `kind: "owner_check"`
+  only after verifying the claimed owner tap, binding its item id and action.
+  An owner chat citation is not review-date authority;
+- web and mobile must render the native card, its handled items, and closed state;
+- a revision conflict after Keep or Drop is staged must unstage only that item's path. Today it discards the whole wake-up session, which would drop the lead's other staged writes.
+
+Each accepted action advances the card revision and marks that item handled;
+the last handled item closes it. Misleading-memory selection reads reports
+ended in the last 90 days.
+
 ### Watchdogs (`interval`)
 
 All are plain code. They write memory only through the LEAD queue as code-only events, which keeps one writer per org (gap 1).
@@ -319,17 +343,17 @@ GitHub then blocks a bad auto-merge even if Kin's classifier is wrong. This forc
 
 ### Secret scan before memory commits (gap 5)
 
-`secretScan.ts` exposes `scan(files: ReadonlyArray<{ path; content }>) → Finding[]`. Each finding has `rule`, `path`, `line` and a `fingerprint` (sha256 of the match).
+`apps/server/src/kin/memory/secretScan.ts` defines `KinSecretScan.scan({ orgId, files: ReadonlyArray<{ path: string; content: Uint8Array }> })`, returning an Effect of `{ path, ruleId, line }[]` with typed `KinSecretScanError`. LEAD-3 supplies an explicitly named no-findings stub; TRIG-16 replaces that layer with the real scanner. Fingerprints stay internal to the scanner allowlist, never matched secrets in findings.
 
 **Rules:**
 
 - GitHub tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`);
-- Anthropic `sk-ant-`, OpenAI `sk-`/`sk-proj-`;
+- Anthropic `sk-ant-`; OpenAI legacy `sk-` with the `T3BlbkFJ` marker and `sk-proj-`/`sk-svcacct-`/`sk-admin-` containing an uppercase letter;
 - AWS `AKIA…`/`ASIA…`;
 - Slack `xox[abposr]-`;
 - Stripe `sk_live_`/`rk_live_`;
 - Google `AIza`;
-- PEM `-----BEGIN … PRIVATE KEY-----`;
+- PEM `-----BEGIN … PRIVATE KEY-----`, including `PGP PRIVATE KEY BLOCK`;
 - JWTs (`eyJ…`, three base64url parts);
 - URLs with a password in them (`scheme://user:pass@`);
 - `password|secret|token|api_key = <value of ≥ 20 chars and high entropy>`.
@@ -340,9 +364,13 @@ GitHub then blocks a bad auto-merge even if Kin's classifier is wrong. This forc
 - The dream runs it before pushing.
 - The memory repo CI runs gitleaks as a second, independent check.
 
-**On a finding**, the writer replaces the matched span with `[redacted:<rule>]`, commits the redacted text, and posts to the owner: "I removed what looked like a GitHub token from journal 8 Nov before saving. It is still in chat #tech, message 8812; rotate it." Redacting beats blocking, because blocking would lose the memory write.
+**On a finding**, the writer blocks the entire commit, discards staged text and emits a typed owner-notification hook. The runner journals the refusal without secret content and tells the owner to review and rotate the affected credential. Automatic redaction is not part of the writer contract.
 
-**False positives:** the owner adds the fingerprint to `kin_secret_allow` through a signed action. A model can never add to it.
+**False positives:** the owner adds the fingerprint to `kin_secret_allow` through a signed action. A model can never add to it. Entries are scoped to organization, exact path, rule and SHA-256 of `ruleId + "\0" + normalized matched value`, with `created_at` in integer milliseconds and `signed_action_id` reserved for the future APPR executor id. The scanner is read-only; the APPR executor must verify the owner grant before inserting. Until that executor lands, there is no agent or MCP allowlist-write path. Migration K012 is provisional and will be renumbered at merge.
+
+The scanner checks paths as well as content, redacts paths that contain a finding, normalizes NFKC, common Cyrillic/Greek/Latin lookalikes and Default Ignorable code points, checks newline-wrapped tokens, and decodes URL/base64 content up to two levels. Base64 decoding tries all four alignments; malformed percent bytes and non-ASCII decoded bytes become separators. Prefix rules use alphanumeric left boundaries and body-specific right boundaries (fixed-width Google keys also tolerate underscore metadata suffixes); each precompiled regex sees at most 8192 characters plus one character of boundary context on each side, with 4096-character overlap. JWT detection matches a bounded prefix: an eyJ header followed by 5–2048 base64url characters, then an eyJ payload prefix followed by 8–1024 characters, without requiring the signature or the payload end. Its maximum match is 3080 characters, within the overlap. Wrapped tokens are inspected after each appended fragment once the joined run has 20 characters or an anchor, retaining up to eight fragments and 4 KiB. A prose line closes the prior run with its first word and opens a new run with its last word, so adjacent prose and trailing words do not hide a wrapped token. Merge scanning covers only bytes changed from the fetched remote plus the rebuilt `INDEX.md`, not pre-existing remote content. Scanner failures notify through the writer hook, just like findings. Staged YAML parser errors omit source-bearing diagnostics and filesystem path errors omit the underlying path-bearing cause. Merge blocks use the recovery hook; production owner delivery still waits on a notifier. It fails closed above 1 MiB per file, 8 MiB or 1024 files per call, 4096 allowlist entries per organization, or 64 MiB of weighted work (inspected characters, encoded candidate characters, window characters, and 64 units per regex match). A cheap anchor pre-filter skips rule execution on irrelevant windows, including decoded candidates; recursive decoding remains active to find double-encoded tokens. Scanning yields between windows and decoder candidates so multi-file batches do not monopolize the event loop. Base64 runs shorter than 27 characters and fully percent-encoded runs shorter than 60 characters are not decoded; mixed percent/plain runs retain a 20-byte minimum to prevent partial-encoding bypasses. Wrapped runs beyond eight fragments or 4 KiB, splits by a space, `\r`, U+2028, across journal bullets, markdown or HTML comments, `\u` escapes, and hex encoding remain out of scope. These are conservative detectors, not a guarantee against arbitrary encryption or steganography.
+
+Known gaps, accepted for phase 1: JWE (five-part) tokens and JWT headers longer than 2051 characters; multi-part secrets (JWT, PEM header, URL password, `KEY=value`) with only some bytes percent-encoded; lookalikes outside the folding table (for example Greek `ρ`, Cyrillic `І`/`Ј`/`к`, small caps, U+2800, combining marks inside an anchor). A file of about 1 MiB made only of long whitespace-free lines (such as one path per line) exhausts the work budget after about 15 s and fails closed, blocking that commit; realistic journals up to 1 MiB pass.
 
 ### Owner-signed purge (gap 5)
 
@@ -475,7 +503,7 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
 - **Sink:** a signed GitHub `pull_request` request through the real `ScheduledTaskService` gives exactly one inbox row and no thread launch. A replay gives `duplicate` and no new row. A bot-sender request gives `filtered`. A non-Kin task still launches normally.
 - **Deferral:** unchanged recheck, then heads-up, then silence, then `started` at due. A linked issue closed before due leads to `asked`, and nothing starts. With the stop switch on, it asks. [Monday] re-arms to next Monday 09:00.
 - **Dream:** a dream touching `rules.md` fails, and `main` is unchanged. A dream with one journal fold and one `decisions/` change opens two PRs, and only the auto one merges.
-- **Secret scan:** a journal line holding `ghp_` plus 36 characters is committed as `[redacted:github-token]`, and the owner gets one message.
+- **Secret scan:** a journal line holding `ghp_` plus 36 characters blocks the entire commit, and the owner gets one typed notification without the value.
 - **Purge:** on a fixture repo, the file is gone from `git log --all -p`, a tombstone exists, and an audit row exists.
 - **Contract tests:** `vp test run kin-contract` passes on today's upstream. Renaming `scheduledTaskId` in a scratch branch makes it fail.
 
@@ -491,7 +519,7 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
 | TRIG-4  | `KinTriggerSink` and the runtime-layer hook                                                                    | `KinTriggerSink.ts`, `runtimeLayer.ts` (1 line)            | TRIG-2                                                                                              | sink tests pass; non-Kin tasks unchanged (existing `ScheduledTaskService*.test.ts` green)                                                                          | backend |
 | TRIG-5  | GitHub webhook sources: create, rotate, inbox thread, hook via executor                                        | `githubWebhooks.ts`                                        | TRIG-4, APPR-9                                                                                      | test against a fake GitHub creates a task with signature, replay key and filters; a null URL posts the T3 Connect message                                          | backend |
 | TRIG-6  | GitHub event consumer and conditions                                                                           | `githubEvents.ts`                                          | TRIG-5, LEAD-4                                                                                      | delivery turns into a `KinGithubEvent`; a trimmed delivery falls back to `github_recheck`; a condition on #212 matches a merge                                     | backend |
-| TRIG-7  | Deferral arming from memory, and the confirm card                                                              | `KinTriggerService.ts`, `deferrals.ts`                     | TRIG-3, LEAD-2, LEAD-7 (`kin_defer`), CHAT-7                                                        | editing `due` in an item re-arms; `status: done` disarms                                                                                                           | backend |
+| TRIG-7  | Deferral arming from memory (including items written by `kin_defer`), and the confirm card                     | `KinTriggerService.ts`, `deferrals.ts`                     | TRIG-3, LEAD-2, LEAD-7 (`kin_defer`), CHAT-7                                                        | editing `due` in an item re-arms; `status: done` disarms                                                                                                           | backend |
 | TRIG-8  | Deferral due flow: recheck, heads-up, grace, start/ask/remind/chase, late                                      | `deferrals.ts`                                             | TRIG-7, TRIG-11, LEAD-8, LEAD-9, LEAD-11                                                            | the deferral tests above pass                                                                                                                                      | backend |
 | TRIG-9  | Routines: brief, summary, owner check                                                                          | `routines.ts`, `ownerCheck.ts`                             | TRIG-3, TRIG-12                                                                                     | at 08:30 owner time a brief is posted; late after 18:30 it folds into the summary; the owner check picks 5 by the stated order                                     | backend |
 | TRIG-10 | Watchdogs                                                                                                      | `watchdogs.ts`                                             | TRIG-3, TRIG-6, TRIG-11                                                                             | closing a linked issue on a fake GitHub marks the commitment done with an evidence link; a paused T3 task sets `paused_in_t3` and isn't re-enabled                 | backend |
@@ -500,7 +528,7 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
 | TRIG-13 | Dream runner: material, branch, dream session, checks                                                          | `DreamRunner.ts`                                           | TRIG-12, TRIG-16, LEAD-5, LEAD-6                                                                    | fixture dream produces a branch and `dream.json`; `rules.md` edit fails it                                                                                         | backend |
 | TRIG-14 | Dream split, auto-merge under delegation, review card, rejections; full weekly variant                         | `classifyDream.ts`, `DreamRunner.ts`                       | TRIG-13, APPR-4; auto-merge waits for APPR-12 (phase 3), and until then the owner approves both PRs | the two-PR test passes; a rejected item is not proposed again                                                                                                      | backend |
 | TRIG-15 | Memory repo guard rails                                                                                        | `kin-memory`: `CODEOWNERS`, `memory-check.yml`, ruleset    | APPR-11                                                                                             | a PR touching `decisions/` can't merge without owner review; a planted token fails the check                                                                       | backend |
-| TRIG-16 | Secret scanner, writer hook, allowlist                                                                         | `secretScan.ts`                                            | LEAD-3                                                                                              | rule fixtures (one hit and one near-miss per rule) pass; redaction and owner message tested                                                                        | backend |
+| TRIG-16 | Secret scanner, writer hook, allowlist                                                                         | `secretScan.ts`                                            | LEAD-3                                                                                              | rule fixtures (one hit and one near-miss per rule) pass; commit refusal and typed owner notification tested                                                        | backend |
 | TRIG-17 | Owner-signed purge                                                                                             | `purge.ts`                                                 | TRIG-16, APPR-9, APPR-10                                                                            | purge test passes on a fixture repo; `git-filter-repo` provenance noted in the PR                                                                                  | backend |
 | TRIG-18 | Server contract tests: triggers, relay, `delegate_task`, managed policy                                        | `apps/server/src/kin/contract/*`                           | TRIG-4                                                                                              | `cd apps/server && vp test run kin-contract` passes                                                                                                                | backend |
 | TRIG-19 | `McpAppWebView` contract test                                                                                  | `apps/mobile/src/features/chats/contract/*`                | —                                                                                                   | `cd apps/mobile && vp test run kin-contract` passes                                                                                                                | UI      |
