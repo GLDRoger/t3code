@@ -32,7 +32,7 @@ export const connectionOf = Effect.serviceOption(HttpServerRequest.HttpServerReq
 export const makeKinApprovalHandlers = Effect.fn("makeKinApprovalHandlers")(function* (
   session: AuthenticatedSession,
   // Passed in rather than read from `KinServer`, whose service union reaches the judge.
-  kin: Option.Option<Context.Context<KinIdentity | ApproverKeys>>,
+  kin: Option.Option<Context.Context<KinIdentity | ApproverKeys | GrantVerifier>>,
 ) {
   const connection = yield* connectionOf;
   const keys = Effect.gen(function* () {
