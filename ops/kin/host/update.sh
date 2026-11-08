@@ -62,6 +62,8 @@ mise exec "node@$node_version" -- vp run build:desktop
 trap - ERR
 
 mkdir -p "$(dirname "$ENV_FILE")" "$UNIT_DIR"
+rm -f "$ENV_FILE.prev"
+if [ -f "$ENV_FILE" ]; then cp -p "$ENV_FILE" "$ENV_FILE.prev"; fi
 tmp="$(mktemp "$ENV_FILE.XXXXXX")"
 printf '%s\n' \
   "KIN_ENABLED=true" \
@@ -89,23 +91,36 @@ state="$(systemctl --user show -P ActiveState kin-server)"
 restarts="$(systemctl --user show -P NRestarts kin-server)"
 if [ "$state" != active ] || [ "$restarts" != 0 ]; then
   echo "update.sh: $SHA didn't stay up (ActiveState=$state NRestarts=$restarts)." >&2
+  touch "$BUILD/.failed"
+  systemctl --user reset-failed kin-server 2>/dev/null || true
   if [ -n "$PREVIOUS" ] && [ -f "$PREVIOUS/apps/server/dist/bin.mjs" ]; then
+    # The previous build goes back with its own Node version.
+    if [ -f "$ENV_FILE.prev" ]; then mv -f "$ENV_FILE.prev" "$ENV_FILE"; fi
     ln -sfn "$PREVIOUS" "$CURRENT.new"
     mv -T "$CURRENT.new" "$CURRENT"
-    systemctl --user restart kin-server
-    echo "update.sh: rolled back to $PREVIOUS. $BUILD is kept for inspection." >&2
+    systemctl --user daemon-reload
+    systemctl --user restart kin-server || {
+      echo "update.sh: rollback restart failed; see systemctl --user status kin-server" >&2
+      exit 1
+    }
+    echo "update.sh: rolled back to $PREVIOUS. $BUILD is kept for inspection until the next good update." >&2
+  else
+    # First install: nothing to go back to. Stop the crash loop so a rerun rebuilds.
+    systemctl --user stop kin-server || true
+    rm -f "$CURRENT"
+    echo "update.sh: no previous build; kin-server is stopped. $BUILD is kept for inspection." >&2
   fi
   exit 1
 fi
 echo "update.sh: running $SHA. Previous build: ${PREVIOUS:-none}."
 
 # Keep the newest complete builds, the running one and the previous one. Interrupted
-# builds (no dist/bin.mjs) take no rollback slot and are removed.
+# builds (no dist/bin.mjs) and builds that failed their health check take no slot and are removed.
 kept=1
 if [ -n "$PREVIOUS" ] && [ "$PREVIOUS" != "$BUILD" ]; then kept=2; fi
 while IFS= read -r dir; do
   if [ "$dir" = "$BUILD" ] || [ "$dir" = "$PREVIOUS" ]; then continue; fi
-  if [ -f "$dir/apps/server/dist/bin.mjs" ] && [ "$kept" -lt "$KEEP_BUILDS" ]; then
+  if [ -f "$dir/apps/server/dist/bin.mjs" ] && [ ! -e "$dir/.failed" ] && [ "$kept" -lt "$KEEP_BUILDS" ]; then
     kept=$((kept + 1))
     continue
   fi
