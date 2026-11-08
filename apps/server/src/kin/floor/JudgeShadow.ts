@@ -1,4 +1,4 @@
-import { KinAgentRole, type KinMessage } from "@t3tools/contracts";
+import { KinAgentId, KinAgentRole, type KinMessage } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -28,10 +28,27 @@ const decodeVerdict = Schema.decodeUnknownEffect(
       }),
     ),
   }),
+  { onExcessProperty: "error" },
+);
+const decodeDecision = Schema.decodeUnknownEffect(
+  Schema.NullOr(
+    Schema.Union([
+      Schema.TaggedStruct("grant", { agentId: KinAgentId }),
+      Schema.TaggedStruct("wait", {}),
+      Schema.TaggedStruct("close", {
+        reason: Schema.Literals(["turn_budget", "no_bids", "nothing_to_add"]),
+      }),
+    ]),
+  ),
+  { onExcessProperty: "error" },
+);
+const decodeName = Schema.decodeUnknownEffect(
+  Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(100)),
 );
 const decodeAgents = Schema.decodeUnknownEffect(
   Schema.Array(
     Schema.Struct({
+      agent_id: KinAgentId,
       role: KinAgentRole,
     }),
   ),
@@ -60,6 +77,28 @@ const make = Effect.gen(function* () {
       ORDER BY CASE a.role WHEN 'lead' THEN 0 ELSE 1 END, m.joined_at, a.agent_id`.pipe(
         Effect.flatMap(decodeAgents),
       );
+      const validMessage = yield* sql`SELECT message_id FROM kin_messages
+        WHERE org_id = ${message.orgId} AND chat_id = ${message.chatId}
+          AND message_id = ${message.messageId} AND author_kind = 'human' AND status = 'posted'`;
+      const boundary = yield* Effect.all({
+        decision: decodeDecision(floorDecision),
+        name: decodeName(judge.name),
+      }).pipe(Effect.option);
+      if (
+        validMessage.length !== 1 ||
+        boundary._tag === "None" ||
+        (boundary.value.decision?._tag === "grant" &&
+          !agents.some(
+            (agent) =>
+              boundary.value.decision?._tag === "grant" &&
+              agent.agent_id === boundary.value.decision.agentId,
+          ))
+      ) {
+        yield* Effect.logWarning("Kin shadow judge record rejected.", {
+          category: "invalid_boundary",
+        });
+        return;
+      }
       const recent = yield* sql<{
         author_kind: "human" | "agent";
         author_role: string;
@@ -82,31 +121,37 @@ const make = Effect.gen(function* () {
       };
       const started = yield* Clock.currentTimeMillis;
       const result = yield* Effect.suspend(() => judge.judge(input)).pipe(
-        Effect.flatMap(decodeVerdict),
         Effect.map((verdict) => ({ verdict, error: null })),
         Effect.catchCause(() => Effect.succeed({ verdict: null, error: "judge_error" as const })),
-        Effect.timeoutOrElse({
-          duration: 3000,
-          orElse: () => Effect.succeed({ verdict: null, error: "timeout" as const }),
-        }),
       );
+      const verdict =
+        result.error !== null ? null : yield* decodeVerdict(result.verdict).pipe(Effect.option);
+      if (verdict?._tag === "None") {
+        yield* Effect.logWarning("Kin shadow judge record rejected.", {
+          category: "invalid_verdict",
+        });
+        return;
+      }
       const now = yield* Clock.currentTimeMillis;
       if (result.error !== null)
         yield* Effect.logWarning("Kin shadow judge failed.", { category: result.error });
       yield* sql`INSERT INTO kin_judge_log
       (org_id, id, chat_id, message_id, judge, verdict_json, floor_decision_json, latency_ms, error, created_at)
       VALUES (${message.orgId}, ${SecureRandom.uuidV4Unsafe()}, ${message.chatId}, ${message.messageId},
-        ${judge.name.slice(0, 100)}, ${result.verdict === null ? null : yield* encodeJson(result.verdict)},
-        ${yield* encodeJson(floorDecision)}, ${Math.max(0, now - started)}, ${result.error}, ${now})
+        ${boundary.value.name}, ${verdict === null ? null : yield* encodeJson(verdict.value)},
+        ${yield* encodeJson(boundary.value.decision)}, ${Math.max(0, now - started)}, ${result.error}, ${now})
       ON CONFLICT DO NOTHING RETURNING id`;
     },
+    Effect.timeout(3000),
+    Effect.catchTags({
+      TimeoutError: () => Effect.logWarning("Kin shadow judge record timed out."),
+    }),
     Effect.mapError(toPersistenceSqlError("KinJudge.record")),
   );
   return JudgeShadow.of({
     drain: FiberSet.awaitEmpty(workers),
     observe: Effect.fn("KinJudge.observe")(function* (message, decision) {
-      if (JUDGE_MODE !== "shadow" || message.author._tag !== "human" || message.status !== "posted")
-        return;
+      if (message.author._tag !== "human" || message.status !== "posted") return;
       // Fork only after commit, without inheriting the post's transaction connection.
       yield* sql.afterCommit(
         permits
@@ -120,4 +165,8 @@ const make = Effect.gen(function* () {
     }),
   });
 });
-export const layer = Layer.effect(JudgeShadow, make);
+export const layerOff = Layer.succeed(JudgeShadow, {
+  drain: Effect.void,
+  observe: Effect.fn("KinJudge.observeOff")(() => Effect.void),
+});
+export const layer = JUDGE_MODE === "shadow" ? Layer.effect(JudgeShadow, make) : layerOff;

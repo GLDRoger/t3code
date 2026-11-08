@@ -1,4 +1,10 @@
-import { KinOrgId, KinTriggerFireId, KinTriggerFired, NonNegativeInt } from "@t3tools/contracts";
+import {
+  KinOrgId,
+  KinRoutine,
+  KinTriggerFireId,
+  KinTriggerFired,
+  NonNegativeInt,
+} from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -36,6 +42,7 @@ const isInboxConflict = Schema.is(KinTriggerInboxConflict);
 const PendingRequest = Schema.Struct({
   orgId: KinOrgId,
   limit: Schema.Int.check(Schema.isGreaterThan(0)),
+  routines: Schema.optional(Schema.Array(KinRoutine)),
 });
 const InboxRow = Schema.Struct({ payload: Schema.fromJsonString(KinTriggerFired) });
 const decodeInboxRow = Schema.decodeUnknownEffect(InboxRow);
@@ -50,6 +57,7 @@ export class KinTriggerInbox extends Context.Service<
     readonly listPending: (
       orgId: KinOrgId,
       limit?: number,
+      routines?: ReadonlyArray<KinRoutine>,
     ) => Effect.Effect<ReadonlyArray<KinTriggerFired>, InboxError>;
     readonly markConsumed: (
       orgId: KinOrgId,
@@ -73,9 +81,14 @@ const make = Effect.gen(function* () {
   const pending = SqlSchema.findAll({
     Request: PendingRequest,
     Result: InboxRow,
-    execute: ({ orgId, limit }) => sql`
+    execute: ({ orgId, limit, routines }) => sql`
       SELECT payload_json AS payload FROM kin_trigger_inbox
       WHERE org_id = ${orgId} AND consumed_at IS NULL
+        ${
+          routines === undefined
+            ? sql``
+            : sql`AND json_extract(payload_json, '$.payload.subject.routine') IN (${sql.join(",", false)(routines.map((routine) => sql`${routine}`))})`
+        }
       ORDER BY received_at, fire_id LIMIT ${limit}
     `,
   });
@@ -144,10 +157,12 @@ const make = Effect.gen(function* () {
       Effect.mapError(toInboxError("KinTriggerInbox.put")),
     ),
     listPending: Effect.fn("KinTriggerInbox.listPending")(
-      function* (orgId, limit = 100) {
-        return (yield* pending({ orgId, limit }).pipe(NodeSqliteClient.readOnly)).map(
-          (row) => row.payload,
-        );
+      function* (orgId, limit = 100, routines) {
+        return (yield* pending({
+          orgId,
+          limit,
+          ...(routines === undefined ? {} : { routines }),
+        }).pipe(NodeSqliteClient.readOnly)).map((row) => row.payload);
       },
       Effect.mapError(toInboxError("KinTriggerInbox.listPending")),
     ),

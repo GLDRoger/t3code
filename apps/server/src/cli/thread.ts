@@ -26,7 +26,7 @@ import * as Stdio from "effect/Stdio";
 import * as Stream from "effect/Stream";
 import { Argument, Command, Flag, GlobalFlag } from "effect/cli";
 
-import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import * as EnvironmentAuth from "../kin/auth/EnvironmentAuthRuntime.ts";
 import * as ServerConfig from "../config.ts";
 import { mcpToolSession, type McpToolSession } from "../mcp/AcpMcpStdioBridge.ts";
 import { expandHomePath } from "../os-jank.ts";
