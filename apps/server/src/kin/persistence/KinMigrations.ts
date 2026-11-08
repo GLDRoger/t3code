@@ -8,6 +8,7 @@ import MemoryReads from "./migrations/K004_MemoryReads.ts";
 import OneChatOwner from "./migrations/K005_OneChatOwner.ts";
 import Pings from "./migrations/K006_Pings.ts";
 import Budget from "./migrations/K007_Budget.ts";
+import Floor from "./migrations/K008_Floor.ts";
 
 const run = Migrator.make({});
 const loader = Migrator.fromRecord({
@@ -18,6 +19,7 @@ const loader = Migrator.fromRecord({
   "5_OneChatOwner": OneChatOwner,
   "6_Pings": Pings,
   "7_Budget": Budget,
+  "8_Floor": Floor,
 });
 
 export const runKinMigrations = Effect.fn("KinMigrations.run")(function* () {
