@@ -75,6 +75,10 @@ it.effect("a dream query loads no user config, MCP or shell and edits only its c
     }).pipe(Effect.provide(DreamIsolation.claudeQueryRunner(base)));
 
     const [dream, other, spoofed] = opened;
+    assert.deepStrictEqual(
+      Object.keys(dream ?? {}).filter((key) => !DreamIsolation.dreamOptionFields.has(key)),
+      [],
+    );
     assert.strictEqual(spoofed?.permissionMode, "default");
     assert.strictEqual(spoofed?.canUseTool, canUseTool);
     assert.isUndefined(spoofed?.hooks);
