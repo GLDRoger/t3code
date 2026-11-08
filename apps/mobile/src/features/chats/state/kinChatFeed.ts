@@ -10,11 +10,17 @@ import {
   type KinWidget,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import type { AsyncResult } from "effect/reactivity";
+import { AsyncResult } from "effect/reactivity";
 
 import type { KinHost } from "./kinHost";
-import { applyKinChatHistory, type KinChatClosedReason, type KinChatState } from "./kinInboxModel";
+import {
+  applyKinChatHistory,
+  emptyKinChat,
+  type KinChatClosedReason,
+  type KinChatState,
+} from "./kinInboxModel";
 import type { KinSynced } from "./kinStreams";
 
 export const KIN_HISTORY_PAGE_SIZE = 50;
@@ -35,6 +41,8 @@ export type KinChatScreenState =
       readonly environmentId: EnvironmentId;
       readonly connected: boolean;
       readonly chat: KinSynced<KinChatState>;
+      /** The stream failed after the feed loaded; shown above the cached list. */
+      readonly error: string | null;
     };
 
 const isAuthorizationError = Schema.is(EnvironmentAuthorizationError);
@@ -51,27 +59,34 @@ export function kinChatScreenState(
   if (host.probe._tag === "error" && !host.probe.transient) {
     return { _tag: "error", message: host.probe.message, retry: "orgs" };
   }
-  if (host.probe._tag === "error" && chat?._tag !== "Success") {
+  const loaded = chat === null ? null : Option.getOrNull(AsyncResult.value(chat));
+  if (host.probe._tag === "error" && loaded === null) {
     return { _tag: "error", message: "Couldn't reach Kin.", retry: "orgs" };
   }
   if (chat === null || chat._tag === "Initial") {
     return host.connected ? { _tag: "loading" } : { _tag: "offline" };
   }
-  if (chat._tag === "Success") {
-    const { value } = chat.value;
+  let message: string | null = null;
+  if (chat._tag === "Failure") {
+    const error = Cause.squash(chat.cause);
+    if (isAuthorizationError(error)) return { _tag: "unauthorized" };
+    const text = error instanceof Error && error.message.length > 0 ? error.message : null;
+    message = text ?? "Kin didn't answer.";
+  }
+  if (loaded !== null) {
+    const { value } = loaded;
     if (value.left) return { _tag: "gone", reason: "left" };
     if (value.closed !== null) return { _tag: "gone", reason: value.closed };
     return {
       _tag: "ready",
       environmentId: host.environmentId,
       connected: host.connected,
-      chat: chat.value,
+      chat: loaded,
+      // Offline, the notice already says why the feed stopped.
+      error: host.connected ? message : null,
     };
   }
   if (!host.connected) return { _tag: "offline" };
-  const error = Cause.squash(chat.cause);
-  if (isAuthorizationError(error)) return { _tag: "unauthorized" };
-  const message = error instanceof Error && error.message.length > 0 ? error.message : null;
   return { _tag: "error", message: message ?? "Kin didn't answer.", retry: "chat" };
 }
 
@@ -86,6 +101,37 @@ export function kinEarlierPage(
   const oldest = messages[0];
   if (exhausted || oldest === undefined || oldest.seq <= 1) return null;
   return { chatId, beforeSeq: oldest.seq, limit: KIN_HISTORY_PAGE_SIZE };
+}
+
+/** "Load earlier" pages held under the stream, and the page in flight. */
+export interface KinPaging {
+  readonly earlier: KinChatState;
+  /** The stream's oldest seq when the first earlier page was read. */
+  readonly anchorSeq: number | null;
+  readonly exhausted: boolean;
+  /** The page in flight, by request number. */
+  readonly request: number | null;
+  readonly error: string | null;
+}
+
+export const initialKinPaging: KinPaging = {
+  earlier: emptyKinChat,
+  anchorSeq: null,
+  exhausted: false,
+  request: null,
+  error: null,
+};
+
+/**
+ * The paging that still fits the stream. Earlier pages end where the stream started when they
+ * were read; once a reset or reload moves the stream's start later, they would leave a hole.
+ */
+export function kinActivePaging(paging: KinPaging, live: KinChatState): KinPaging {
+  if (paging.anchorSeq === null) return paging;
+  const oldest = live.messages[0]?.seq;
+  return live.needsHistoryReload || oldest === undefined || oldest > paging.anchorSeq
+    ? initialKinPaging
+    : paging;
 }
 
 /** Earlier pages under the live stream. The stream's copy of a message or widget wins. */
@@ -141,8 +187,30 @@ export function kinAuthorLabel(message: KinMessage, viewer: KinFeedViewer): stri
 const isSystem = (message: KinMessage) =>
   message.kind === "system" || message.author._tag === "system";
 
+// A deleted message stays in its run, so deleting one doesn't split the fold in two.
 const foldRunId = (message: KinMessage) =>
-  message.author._tag === "agent" && message.status !== "deleted" ? message.floorRunId : null;
+  message.author._tag === "agent" ? message.floorRunId : null;
+
+type MessageRow = Extract<KinFeedRow, { readonly type: "message" }>;
+
+// Rows for unchanged messages keep their identity, so one new message doesn't redraw every bubble.
+const messageRows = new WeakMap<KinMessage, MessageRow>();
+
+function messageRow(message: KinMessage, fields: Omit<MessageRow, "type" | "key" | "message">) {
+  const held = messageRows.get(message);
+  if (
+    held !== undefined &&
+    held.own === fields.own &&
+    held.authorLabel === fields.authorLabel &&
+    held.authorKind === fields.authorKind &&
+    held.showAuthor === fields.showAuthor
+  ) {
+    return held;
+  }
+  const row: MessageRow = { type: "message", key: message.messageId, message, ...fields };
+  messageRows.set(message, row);
+  return row;
+}
 
 const authorKey = (message: KinMessage) =>
   message.author._tag === "system" ? "system" : message.author.memberId;
@@ -158,6 +226,7 @@ export function buildKinFeedRows(
 ): ReadonlyArray<KinFeedRow> {
   const visible = messages.filter((message) => message.status !== "dismissed");
   const rows: KinFeedRow[] = [];
+  const foldKeys = new Set<string>();
   let previousAuthor: string | null = null;
 
   const pushMessage = (message: KinMessage) => {
@@ -168,15 +237,14 @@ export function buildKinFeedRows(
     }
     const own = message.author._tag === "human" && message.author.personId === viewer.personId;
     const author = authorKey(message);
-    rows.push({
-      type: "message",
-      key: message.messageId,
-      message,
-      own,
-      authorLabel: kinAuthorLabel(message, viewer),
-      authorKind: message.author._tag === "agent" ? "agent" : "person",
-      showAuthor: !own && previousAuthor !== author,
-    });
+    rows.push(
+      messageRow(message, {
+        own,
+        authorLabel: kinAuthorLabel(message, viewer),
+        authorKind: message.author._tag === "agent" ? "agent" : "person",
+        showAuthor: !own && previousAuthor !== author,
+      }),
+    );
     previousAuthor = author;
   };
 
@@ -194,11 +262,19 @@ export function buildKinFeedRows(
     }
     const run = visible.slice(index, end);
     const authors = [...new Set(run.map((message) => kinAuthorLabel(message, viewer)))];
-    const decision = run.findLast((message) => message.intent === "decision")?.body ?? null;
+    const decision =
+      run.findLast((message) => message.intent === "decision" && message.status !== "deleted")
+        ?.body ?? null;
     const expanded = expandedRuns.has(runId);
+    // Keyed by run so a page prepended into the run keeps the row; a run split by another
+    // author falls back to its first message.
+    const key = foldKeys.has(`fold:${runId}`)
+      ? `fold:${runId}:${first.messageId}`
+      : `fold:${runId}`;
+    foldKeys.add(key);
     rows.push({
       type: "fold",
-      key: `fold:${runId}:${first.messageId}`,
+      key,
       runId,
       count: run.length,
       authors,
@@ -210,6 +286,62 @@ export function buildKinFeedRows(
     index = end;
   }
   return rows;
+}
+
+// Accessibility
+
+const MARKDOWN_LINK = /!?\[([^\]]*)\]\(\s*<?([^)\s>]+)>?[^)]*\)/g;
+const BARE_URL = /<?(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])>?/g;
+
+/** Markdown read aloud: link text without its address, no markers, one sentence per line. */
+export function kinPlainText(markdown: string): string {
+  return markdown
+    .split("\n")
+    .filter((line) => !/^\s*(```|~~~)/.test(line))
+    .map((line) =>
+      line
+        .replace(MARKDOWN_LINK, "$1")
+        .replace(/^\s*(#{1,6}\s+|>\s?|[-*+]\s+(\[[ xX]\]\s+)?|\d+[.)]\s+)/, "")
+        .replace(/\*\*|__|~~|[*`]/g, "")
+        .trim(),
+    )
+    .filter((line) => line.length > 0)
+    .map((line) => (/[.!?:;,]$/.test(line) ? line : `${line}.`))
+    .join(" ");
+}
+
+export interface KinMessageLink {
+  readonly label: string;
+  readonly href: string;
+}
+
+/** Links in a message, in order, for the bubble's accessibility actions. */
+export function kinMessageLinks(markdown: string): ReadonlyArray<KinMessageLink> {
+  const links: KinMessageLink[] = [];
+  const rest = markdown.replace(MARKDOWN_LINK, (match, label: string, href: string) => {
+    if (!match.startsWith("!")) links.push({ label: label.trim() || href, href });
+    return " ";
+  });
+  for (const match of rest.matchAll(BARE_URL)) links.push({ label: match[1]!, href: match[1]! });
+  return links.filter((link, index) => links.findIndex((l) => l.href === link.href) === index);
+}
+
+const sentence = (text: string) => (/[.!?]$/.test(text) ? text : `${text}.`);
+
+/** The bubble's one VoiceOver label: "Tech lead, agent. Payments test fixed. 9:30." */
+export function kinMessageLabel(row: MessageRow, time: string): string {
+  const { message } = row;
+  const deleted = message.status === "deleted";
+  const parts = [row.own ? "You." : `${row.authorLabel}, ${row.authorKind}.`];
+  if (deleted) parts.push("Message deleted.");
+  else {
+    const body = kinPlainText(message.body);
+    if (body.length > 0) parts.push(sentence(body));
+  }
+  parts.push(`${time}.`);
+  if (message.status === "suggested") parts.push("Suggestion, not sent yet.");
+  else if (message.editedAt !== null && !deleted) parts.push("Edited.");
+  return parts.join(" ");
 }
 
 // Follow-the-end
