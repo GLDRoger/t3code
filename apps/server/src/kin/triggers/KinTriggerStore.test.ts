@@ -55,7 +55,8 @@ function trigger(id = "trigger-a", orgId = orgA): KinTrigger {
     orgId,
     subject: { type: "reminder", itemId: "item" },
     schedule: { type: "interval", everyMs: 60000 },
-    timeZone: "Asia/Kolkata",
+    timeZone: new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Kolkata" }).resolvedOptions()
+      .timeZone,
     enabled: true,
     nextRunAt: timestamp,
     lastFireId: null,
@@ -82,6 +83,23 @@ describe("KinTriggerStore", () => {
       const store = yield* KinTriggerStore.KinTriggerStore;
       const sql = yield* SqlClient.SqlClient;
       const value = trigger();
+      for (const [timeZone, canonical] of [
+        ["america/new_york", "America/New_York"],
+        ["us/eastern", "America/New_York"],
+        ["utc", "UTC"],
+      ] as const) {
+        yield* store.put({ ...value, timeZone });
+        assert.strictEqual((yield* store.get(orgA, value.id))?.timeZone, canonical);
+        assert.deepStrictEqual(yield* sql`SELECT time_zone FROM kin_triggers`, [
+          { time_zone: canonical },
+        ]);
+      }
+      for (const timeZone of ["Not/AZone", "+05:30", "UTC\u0000hidden"]) {
+        assert.strictEqual(
+          (yield* Effect.flip(store.put({ ...value, timeZone })))._tag,
+          "PersistenceDecodeError",
+        );
+      }
       for (const lastFireId of ["unknown", "another-trigger:0"]) {
         const untrusted = { ...value, lastFireId: decodeFireId(lastFireId) };
         yield* store.put(untrusted);
