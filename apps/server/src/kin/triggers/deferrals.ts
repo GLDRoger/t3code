@@ -308,12 +308,18 @@ export const makeDeferralStarter = Effect.gen(function* () {
     readonly provenance: KinAuthor;
     readonly at: number;
     readonly now: number;
+    /** The run state the caller read in this transaction. */
+    readonly from: string;
   }) {
     const { orgId, itemId, dueAt, at, now } = input;
     const [lead] = yield* sql<{ agentId: string }>`SELECT l.agent_id AS "agentId" FROM kin_leads l
       JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
       WHERE l.org_id = ${orgId} AND a.retired_at IS NULL ORDER BY l.agent_id LIMIT 1`;
     if (lead === undefined) return false;
+    const moved = yield* sql`UPDATE kin_deferral_runs SET state = 'started', updated_at = ${now}
+      WHERE org_id = ${orgId} AND item_id = ${itemId} AND due_at = ${dueAt}
+        AND state = ${input.from} RETURNING item_id`;
+    if (moved.length === 0) return false;
     const dedupeKey = deferralStartKey(itemId, dueAt);
     yield* queue
       .enqueue(
@@ -333,14 +339,22 @@ export const makeDeferralStarter = Effect.gen(function* () {
         // A start under this key from another path (tap vs fire) already handed the work over.
         Effect.catchTags({
           KinEventQueueConflict: Effect.fn("Deferrals.startConflict")(function* (conflict) {
-            const [stored] = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId}
-              AND dedupe_key = ${dedupeKey} AND tag = 'deferral.due' ORDER BY event_id`;
+            const [stored] = yield* sql<{ agentId: string }>`SELECT agent_id AS "agentId"
+              FROM kin_events WHERE org_id = ${orgId} AND dedupe_key = ${dedupeKey}
+                AND tag = 'deferral.due' ORDER BY event_id`;
             if (stored === undefined) return yield* conflict;
+            if (stored.agentId !== lead.agentId) {
+              yield* Effect.logWarning("Kin deferral start went to another lead", {
+                orgId,
+                itemId,
+                agentId: lead.agentId,
+                storedAgentId: stored.agentId,
+              });
+              return yield* conflict;
+            }
           }),
         }),
       );
-    yield* sql`UPDATE kin_deferral_runs SET state = 'started', updated_at = ${now}
-      WHERE org_id = ${orgId} AND item_id = ${itemId} AND due_at = ${dueAt}`;
     yield* cards.write({
       orgId,
       itemId,
@@ -469,6 +483,7 @@ const make = Effect.gen(function* () {
                   provenance: tap.provenance,
                   at: now,
                   now,
+                  from: run.state,
                 });
               }),
             );
