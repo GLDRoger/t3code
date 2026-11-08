@@ -33,6 +33,9 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import * as KinIdentity from "../chat/KinIdentity.ts";
 import * as Memory from "../memory/Memory.ts";
+import * as Budget from "./KinBudget.ts";
+import * as MemoryCache from "../memory/MemoryCache.ts";
+import * as Hub from "../chat/KinChatHub.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
@@ -84,7 +87,7 @@ export const seed = Effect.gen(function* () {
   yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at) VALUES ('owner-chat', 'org', 'team_group', 0, ${timestamp})`;
   const models = yield* encodeJson({
     strong: selection,
-    cheap: selection,
+    cheap: { ...selection, model: "gpt-5.1-codex-mini" },
   });
   yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id) VALUES ('lead', 'org', 'Lead', 0, ${models}, '[]', 'owner-chat')`;
 });
@@ -108,6 +111,7 @@ export function harness(
     readonly releaseDone?: Deferred.Deferred<void>;
     readonly hold?: Deferred.Deferred<void>;
     readonly entered?: Deferred.Deferred<void>;
+    readonly failed?: boolean;
     readonly prepare?: Memory.Memory["Service"]["prepareWakeup"];
   } = {},
 ) {
@@ -174,7 +178,7 @@ export function harness(
                 runAttemptId: input.attemptId,
                 nativeTurnRef: null,
                 ordinal: input.runOrdinal,
-                status: "completed",
+                status: options.failed ? "failed" : "completed",
                 startedAt: time,
                 completedAt: time,
                 tokenUsage: {
@@ -192,8 +196,18 @@ export function harness(
               providerThreadId: input.providerThread.id,
               providerTurnId: id,
               runOrdinal: input.runOrdinal,
-              status: "completed",
-              failure: null,
+              ...(options.failed
+                ? {
+                    status: "failed" as const,
+                    failureItemOrdinal: 1,
+                    failure: {
+                      class: "provider_error" as const,
+                      message: "Fixture provider failure",
+                      code: null,
+                      retryable: false,
+                    },
+                  }
+                : { status: "completed" as const, failure: null }),
               threadDisposition: "reusable",
             });
           }),
@@ -261,6 +275,15 @@ export function harness(
   );
   const kin = Layer.mergeAll(
     KinEventQueue.layer,
+    Budget.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          MemoryCache.layer,
+          KinEventQueue.layer,
+          Hub.layer.pipe(Layer.provideMerge(KinChatRepository.layer)),
+        ),
+      ),
+    ),
     KinLeadRegistry.layer,
     KinIdentity.KinIdentity.layer.pipe(
       Layer.provide(KinChatRepository.layer),

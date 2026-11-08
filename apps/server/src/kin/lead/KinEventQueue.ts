@@ -41,6 +41,7 @@ const ClaimInput = Schema.Struct({
 });
 type ClaimInput = typeof ClaimInput.Type;
 const ReleaseFields = {
+  budgetDeferred: Schema.optional(Schema.Boolean),
   orgId: KinOrgId,
   wakeupId: KinWakeupId,
   eventIds: Schema.optional(Schema.Array(KinEventId)),
@@ -120,6 +121,7 @@ export class KinEventQueue extends Context.Service<
       | KinEventQueueUnknownAgent
       | KinEventQueueRetiredAgent
     >;
+    readonly reconsiderBudget: (orgId: KinOrgId) => Effect.Effect<void, PersistenceSqlError>;
     readonly changes: (orgId: KinOrgId) => Effect.Effect<Effect.Effect<void>>;
     readonly nextReady: (
       orgId: KinOrgId,
@@ -377,7 +379,7 @@ const make = Effect.gen(function* () {
                         received_at: number;
                         event_id: string;
                       }>`
-                UPDATE kin_events SET state = 'claimed', wakeup_id = ${input.wakeupId}
+                UPDATE kin_events SET state = 'claimed', wakeup_id = ${input.wakeupId}, budget_deferred = 0
                 WHERE org_id = ${input.orgId} AND event_id IN (
                   SELECT event_id FROM kin_events
                   WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND state = 'queued'
@@ -430,7 +432,7 @@ const make = Effect.gen(function* () {
           const rows = yield* sql<{ event_id: string; state: string }>`
           UPDATE kin_events SET attempts = attempts + ${input.countAttempt ? 1 : 0},
             state = CASE WHEN attempts + ${input.countAttempt ? 1 : 0} >= 3 THEN 'failed' ELSE 'queued' END,
-            wakeup_id = NULL, not_before = ${notBefore}
+            wakeup_id = NULL, not_before = ${notBefore}, budget_deferred = ${input.budgetDeferred === true ? 1 : 0}
           WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed'
             AND (${ids ?? null} IS NULL OR event_id IN (SELECT value FROM json_each(${ids ?? null})))
             AND EXISTS (SELECT 1 FROM kin_wakeups WHERE org_id = ${input.orgId}
@@ -575,6 +577,13 @@ const make = Effect.gen(function* () {
     Effect.mapError(toQueuePersistenceError("KinEventQueue.nextReady")),
   );
   return KinEventQueue.of({
+    reconsiderBudget: Effect.fn("KinEventQueue.reconsiderBudget")(function* (orgId) {
+      yield* sql`UPDATE kin_events SET not_before = NULL, budget_deferred = 0
+        WHERE org_id = ${orgId} AND state = 'queued' AND budget_deferred = 1`.pipe(
+        Effect.mapError(toPersistenceSqlError("KinEventQueue.reconsiderBudget")),
+      );
+      yield* sql.afterCommit(notify(orgId));
+    }),
     enqueue,
     claim,
     release,

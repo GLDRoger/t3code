@@ -7,6 +7,8 @@ import Triggers from "./migrations/K003_Triggers.ts";
 import MemoryReads from "./migrations/K004_MemoryReads.ts";
 import OneChatOwner from "./migrations/K005_OneChatOwner.ts";
 
+import Budget from "./migrations/K008_Budget.ts";
+
 const run = Migrator.make({});
 const loader = Migrator.fromRecord({
   "1_ChatCore": ChatCore,
@@ -14,6 +16,7 @@ const loader = Migrator.fromRecord({
   "3_Triggers": Triggers,
   "4_MemoryReads": MemoryReads,
   "5_OneChatOwner": OneChatOwner,
+  "8_Budget": Budget,
 });
 
 export const runKinMigrations = Effect.fn("KinMigrations.run")(function* () {

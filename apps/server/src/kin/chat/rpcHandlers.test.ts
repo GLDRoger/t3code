@@ -8,6 +8,7 @@ import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import {
   AuthSessionId,
   AuthSettingsWriteScope,
+  AuthOrchestrationReadScope,
   KinChatError,
   KinMemberId,
   KinPersonId,
@@ -17,7 +18,7 @@ import {
   KinAgentId,
   KinChatId,
   KinMessageId,
-  KinChatRpcs,
+  KinRpcs,
   KinOrgId,
   ThreadId,
   RpcScopeAuthorization,
@@ -73,7 +74,7 @@ const probe = WsRpcGroup.omit(
       tag !== WS_METHODS.serverProbe,
   ),
 );
-const group = RpcGroup.make(...KinChatRpcs, ...probe.requests.values()).middleware(
+const group = RpcGroup.make(...KinRpcs, ...probe.requests.values()).middleware(
   RpcScopeAuthorization,
 );
 const seed = Effect.gen(function* () {
@@ -517,4 +518,80 @@ it.effect("drops a failed waiting read without ending the chat list stream", () 
     assert.strictEqual(next._tag, "chat");
     if (next._tag === "chat") assert.strictEqual(next.chat.lastSeq, 1);
   }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
+);
+
+it.effect(
+  "serves budget settings to the owner and refuses non-owner and foreign organizations",
+  () =>
+    Effect.gen(function* () {
+      const { person, repo } = yield* seed;
+      const handlers = yield* makeKinChatHandlers(session);
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.merge(
+            group.toLayer({ ...handlers, "server.probe": () => Effect.succeed({}) }),
+            RpcAuthorization.layer(AuthStandardClientScopes),
+          ),
+        ),
+      );
+      const input = { orgId: person.orgId, limits: { leadUnits: 300, workerUnits: 600 } };
+      assert.deepStrictEqual((yield* client["kin.budget.set"](input)).limits, input.limits);
+      assert.deepStrictEqual(
+        (yield* client["kin.budget.get"]({ orgId: person.orgId })).limits,
+        input.limits,
+      );
+      assert.include(
+        yield* client["kin.budget.set"]({ ...input, orgId: KinOrgId.make("foreign") }).pipe(
+          Effect.flip,
+        ),
+        { reason: "not_found" },
+      );
+      const memberId = KinPersonId.make("non-owner");
+      yield* repo.insertPerson({
+        orgId: person.orgId,
+        personId: memberId,
+        handle: "member",
+        displayName: "Member",
+        githubLogin: null,
+        createdAt: "1970-01-01T00:00:00.000Z",
+      });
+      const kin = yield* Kin.KinServer;
+      const services = Option.getOrThrow(kin.services);
+      const identity = Context.get(services, KinIdentity);
+      const memberHandlers = yield* makeKinChatHandlers(session).pipe(
+        Effect.provideService(Kin.KinServer, {
+          ...kin,
+          services: Option.some(
+            Context.add(services, KinIdentity, {
+              ...identity,
+              resolve: () =>
+                Effect.succeed([{ _tag: "person", orgId: person.orgId, personId: memberId }]),
+            }),
+          ),
+        }),
+      );
+      const memberClient = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.merge(
+            group.toLayer({ ...memberHandlers, "server.probe": () => Effect.succeed({}) }),
+            RpcAuthorization.layer(AuthStandardClientScopes),
+          ),
+        ),
+      );
+      assert.include(yield* memberClient["kin.budget.set"](input).pipe(Effect.flip), {
+        reason: "not_allowed",
+      });
+      const readOnly = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.merge(
+            group.toLayer({ ...handlers, "server.probe": () => Effect.succeed({}) }),
+            RpcAuthorization.layer([AuthOrchestrationReadScope]),
+          ),
+        ),
+      );
+      assert.strictEqual(
+        (yield* readOnly["kin.budget.set"](input).pipe(Effect.flip))._tag,
+        "EnvironmentAuthorizationError",
+      );
+    }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );

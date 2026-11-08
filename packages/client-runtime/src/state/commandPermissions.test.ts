@@ -1,3 +1,4 @@
+import { createKinBudgetEnvironmentAtoms } from "./kinBudget.ts";
 import { requestGuarded, runStreamGuarded } from "../rpc/client.ts";
 import { EnvironmentSupervisor } from "../connection/supervisor.ts";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -68,6 +69,35 @@ const setup = Effect.gen(function* () {
 });
 
 describe("command permissions", () => {
+  it.effect("guards Kin budget mutations with the destination settings grant", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        const budget = createKinBudgetEnvironmentAtoms(runtime);
+        const permissions = createCommandPermissions(runtime, "kin.budget.set");
+        registry.set(sessions(env), AsyncResult.success(grant(true)));
+        expect(registry.get(budget.set.permissionAtom(env))).toBe(false);
+        expect((yield* permissions.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
+          "EnvironmentAuthorizationError",
+        );
+        registry.set(
+          sessions(env),
+          AsyncResult.success({
+            ...grant(false),
+            scopes: [AuthSettingsWriteScope],
+            permissions: [AuthSettingsWriteScope],
+          }),
+        );
+        expect(registry.get(budget.set.permissionAtom(env))).toBe(true);
+        yield* permissions.authorize(registry, env);
+        registry.set(sessions(other), AsyncResult.success(grant(false)));
+        expect(registry.get(budget.set.permissionAtom(other))).toBe(false);
+        expect((yield* permissions.authorize(registry, other).pipe(Effect.flip))._tag).toBe(
+          "EnvironmentAuthorizationError",
+        );
+      }),
+    ),
+  );
   it.effect("requires the destination read grant to refresh providers", () =>
     Effect.scoped(
       Effect.gen(function* () {

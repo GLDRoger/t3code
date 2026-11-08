@@ -1,9 +1,35 @@
-import { KinChatRpcs, KIN_CHAT_RPC_SCOPES } from "./kinChat.ts";
+import * as Rpc from "effect/rpc/Rpc";
+import * as Schema from "effect/Schema";
+import { KinBudget, KinBudgetGetInput, KinBudgetSetInput } from "./kinLead.ts";
+import { KinChatError, KinChatRpcs, KIN_CHAT_RPC_SCOPES } from "./kinChat.ts";
+import {
+  EnvironmentAuthorizationError,
+  AuthOrchestrationReadScope,
+  AuthSettingsWriteScope,
+} from "./auth.ts";
 
-export const KinRpcs = [...KinChatRpcs] as const;
-export const KIN_RPC_SCOPES = { ...KIN_CHAT_RPC_SCOPES } as const;
+const KinBudgetRpcs = [
+  Rpc.make("kin.budget.get", {
+    payload: KinBudgetGetInput,
+    success: KinBudget,
+    error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make("kin.budget.set", {
+    payload: KinBudgetSetInput,
+    success: KinBudget,
+    error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
+  }),
+] as const;
+export const KinRpcs = [...KinChatRpcs, ...KinBudgetRpcs] as const;
+export const KIN_RPC_SCOPES = {
+  ...KIN_CHAT_RPC_SCOPES,
+  "kin.budget.get": AuthOrchestrationReadScope,
+  "kin.budget.set": AuthSettingsWriteScope,
+} as const;
 
 export const KIN_RPC_AGGREGATES = {
+  "kin.budget.get": "kin-budget",
+  "kin.budget.set": "kin-budget",
   "kin.orgs.list": "kin-chat",
   "kin.chats.subscribe": "kin-chat",
   "kin.chats.createDirect": "kin-chat",
