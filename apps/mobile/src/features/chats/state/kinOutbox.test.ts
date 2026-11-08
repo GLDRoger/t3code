@@ -325,12 +325,16 @@ describe("kinOutbox", () => {
 });
 
 describe("classifyKinSendFailure", () => {
-  it("fails only a typed refusal; Kin being off or any other error waits to resend", () => {
+  it("fails only a typed refusal; a Kin outage or any other error waits to resend", () => {
     const refused = (reason: KinChatError["reason"]) =>
       classifyKinSendFailure(new KinChatError({ reason, message: "Cannot do that" }));
     expect(refused("limit")).toEqual({ _tag: "rejected", message: "over the limit" });
     expect(refused("invalid_state")._tag).toBe("rejected");
     expect(refused("not_allowed")._tag).toBe("rejected");
+    expect(refused("disabled")).toEqual({
+      _tag: "rejected",
+      message: "Kin is turned off on this server",
+    });
     expect(
       classifyKinSendFailure(
         new EnvironmentAuthorizationError({

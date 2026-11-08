@@ -81,13 +81,14 @@ const isAuthorizationError = Schema.is(EnvironmentAuthorizationError);
 const refusalReasons: Partial<Record<KinChatError["reason"], string>> = {
   not_found: "this chat is gone",
   not_allowed: "you can't post here",
+  disabled: "Kin is turned off on this server",
   invalid_state: "the chat can't take it",
   limit: "over the limit",
 };
 
 /**
- * Only a typed refusal fails the bubble. Kin being off, a dropped connection, a lost or
- * undecodable reply all wait and resend under the same id.
+ * Only a typed refusal, Kin turned off included, fails the bubble. A Kin outage, a dropped
+ * connection, a lost or undecodable reply all wait and resend under the same id.
  */
 export function classifyKinSendFailure(error: unknown): KinSendOutcome {
   if (isAuthorizationError(error)) return { _tag: "rejected", message: "not allowed here" };
