@@ -347,14 +347,18 @@ function KinChatStateView(props: {
             title={
               state.reason === "left"
                 ? "You were removed from this chat"
-                : "This chat isn't available"
+                : state.reason === "disabled"
+                  ? "Kin is turned off on this server"
+                  : "This chat isn't available"
             }
             detail={
               state.reason === "left"
                 ? "Ask the chat's owner to add you back."
-                : state.reason === "not_found" || state.reason === "not_allowed"
-                  ? "It may have been removed, or you're no longer a member."
-                  : "Kin couldn't open this chat. Go back to your chats and try again."
+                : state.reason === "disabled"
+                  ? "Ask whoever runs Kin here to turn it back on, then come back."
+                  : state.reason === "not_found" || state.reason === "not_allowed"
+                    ? "It may have been removed, or you're no longer a member."
+                    : "Kin couldn't open this chat. Go back to your chats and try again."
             }
             actionLabel="Back to chats"
             onAction={() => navigation.dispatch(StackActions.popTo("KinChats"))}

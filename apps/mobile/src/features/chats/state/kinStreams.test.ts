@@ -161,6 +161,7 @@ const kinError = (reason: KinChatError["reason"]) => new KinChatError({ reason, 
 describe("Kin streams", () => {
   it.each([
     ["unavailable", true],
+    ["disabled", false],
     ["not_found", false],
     ["not_allowed", false],
     ["invalid_state", false],
@@ -265,6 +266,7 @@ describe("Kin streams", () => {
   it.effect.each([
     ["not_found", false],
     ["not_allowed", false],
+    ["disabled", true],
     ["limit", true],
     ["invalid_state", true],
   ] as const)("on a %s refusal keeps the cached chat: %s", ([reason, kept]) =>
@@ -327,6 +329,17 @@ describe("Kin streams", () => {
       const unknown = yield* retryKinProbe(probe, () => false).pipe(Effect.flip);
       expect(unknown.reason).toBe("unavailable");
       expect(calls).toBe(1);
+
+      // `disabled` is final even on a known host.
+      const off = yield* retryKinProbe(
+        Effect.suspend(() => {
+          calls += 1;
+          return Effect.fail(kinError("disabled"));
+        }),
+        () => true,
+      ).pipe(Effect.flip);
+      expect(off.reason).toBe("disabled");
+      expect(calls).toBe(2);
     }),
   );
 
