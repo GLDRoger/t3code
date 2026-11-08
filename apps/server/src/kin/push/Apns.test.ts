@@ -110,8 +110,14 @@ it.effect("loads the .p8 only when fully configured, and signs a token APNs can 
 
 type Answer = { readonly status: number; readonly body?: object } | "hang";
 
-/** A local APNs over cleartext HTTP/2. Answers requests in order; "hang" never answers. */
-const fakeApns = (answers: ReadonlyArray<Answer>) =>
+/**
+ * A local APNs over cleartext HTTP/2. Answers requests in order; "hang" never answers.
+ * With `hold`, requests from index `from` are answered only once `until` have arrived.
+ */
+const fakeApns = (
+  answers: ReadonlyArray<Answer>,
+  hold: { readonly from: number; readonly until: number } = { from: 0, until: 0 },
+) =>
   Effect.acquireRelease(
     Effect.callback<{
       readonly origin: string;
@@ -122,6 +128,7 @@ const fakeApns = (answers: ReadonlyArray<Answer>) =>
       const server = NodeHttp2.createServer();
       const seen: Array<{ session: number; authorization: string }> = [];
       const sessions: Array<NodeHttp2.ServerHttp2Session> = [];
+      const held: Array<() => void> = [];
       let markHung = () => {};
       const hung = new Promise<void>((resolve) => (markHung = resolve));
       server.on("session", (session) => sessions.push(session));
@@ -132,8 +139,13 @@ const fakeApns = (answers: ReadonlyArray<Answer>) =>
         });
         const answer = answers[seen.length - 1] ?? { status: 200 };
         if (answer === "hang") return markHung();
-        stream.respond({ ":status": answer.status });
-        stream.end(answer.body === undefined ? undefined : JSON.stringify(answer.body));
+        const reply = () => {
+          stream.respond({ ":status": answer.status });
+          stream.end(answer.body === undefined ? undefined : JSON.stringify(answer.body));
+        };
+        if (seen.length - 1 < hold.from) return reply();
+        held.push(reply);
+        if (seen.length >= hold.until) held.splice(0).forEach((send) => send());
       });
       server.listen(0, "127.0.0.1", () => {
         const address = server.address();
@@ -231,5 +243,26 @@ it.effect("renews an expired provider token at most every 20 minutes and keeps a
     assert.notStrictEqual(renewed, expired);
     assert.strictEqual(refused, renewed);
     assert.strictEqual(kept, renewed);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("two sends that hit an expired token together renew it once", () =>
+  Effect.gen(function* () {
+    const expired = { status: 403, body: { reason: "ExpiredProviderToken" } } as const;
+    const apns = yield* fakeApns([{ status: 200 }, expired, expired], { from: 1, until: 3 });
+    const transport = yield* makeApnsTransport(credentials, () => apns.origin);
+    yield* transport.send(push);
+    yield* TestClock.adjust("20 minutes");
+    // Both hold the old token when APNs calls it expired; only one may sign a new one.
+    const both = yield* Effect.all([transport.send(push), transport.send(push)], {
+      concurrency: 2,
+    });
+    assert.deepStrictEqual(both, [
+      { status: 200, reason: undefined },
+      { status: 200, reason: undefined },
+    ]);
+    const tokens = new Set(apns.seen.slice(1).map((request) => request.authorization));
+    assert.strictEqual(apns.seen.length, 5);
+    assert.strictEqual(tokens.size, 2);
   }).pipe(Effect.scoped),
 );
