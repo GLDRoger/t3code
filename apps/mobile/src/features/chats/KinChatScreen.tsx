@@ -9,11 +9,10 @@ import {
   type KinChatSummary,
   type KinMessage,
 } from "@t3tools/contracts";
-import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { Atom, AtomRegistry, type AsyncResult } from "effect/reactivity";
+import { Atom, type AsyncResult } from "effect/reactivity";
 import { useRef, useState } from "react";
 import { View } from "react-native";
 
@@ -34,14 +33,9 @@ import { useMarkdownPreviewStyles } from "../files/FileMarkdownPreview";
 import { KinFoldLine } from "./components/KinFoldLine";
 import { KinMessageBubble, KinSystemLine } from "./components/KinMessageBubble";
 import {
-  KIN_FIXTURE_AGENT,
-  KIN_FIXTURE_CHAT_ID,
-  KIN_FIXTURE_OWNER,
-  makeKinFixtureMessages,
-  readKinFixtureHistory,
-} from "./state/kinChatFixtures";
-import {
   buildKinFeedRows,
+  initialKinPaging,
+  kinActivePaging,
   kinChatScreenState,
   kinChatStatusLine,
   kinEarlierPage,
@@ -52,8 +46,15 @@ import {
   type KinChatScreenState,
   type KinFeedRow,
   type KinFeedViewer,
+  type KinPaging,
 } from "./state/kinChatFeed";
 import { kinClient, type KinSynced } from "./state/kinClient";
+import {
+  initialKinFeedFollow,
+  kinFollowsEnd,
+  resolveKinFeedFollow,
+  type KinFeedFollowEvent,
+} from "./state/kinFeedFollow";
 import {
   applyKinChatHistory,
   emptyKinChat,
@@ -65,8 +66,13 @@ import { useKinHost } from "./state/useKinHost";
 
 type KinChatParams = { readonly orgId: string; readonly chatId: string };
 
+type KinFixtures = typeof import("./state/kinChatFixtures");
+
 export function KinChatScreen({ route }: StaticScreenProps<KinChatParams>) {
-  if (__DEV__ && route.params.chatId === KIN_FIXTURE_CHAT_ID) return <KinFixtureChat />;
+  // `KIN_FIXTURE_CHAT_ID`; required inside the `__DEV__` branch so release builds drop it.
+  if (__DEV__ && route.params.chatId === "dev-fixture") {
+    return <KinFixtureChat fixtures={require("./state/kinChatFixtures") as KinFixtures} />;
+  }
   return <KinLiveChat orgId={route.params.orgId} chatId={route.params.chatId} />;
 }
 
@@ -109,32 +115,24 @@ function KinLiveChat(props: { readonly orgId: string; readonly chatId: string })
       : undefined;
 
   const retry = () => {
-    if (environmentId === null || state._tag !== "error") return;
-    if (state.retry === "orgs") {
+    if (environmentId === null) return;
+    if (state._tag === "error" && state.retry === "orgs") {
       appAtomRegistry.refresh(kinClient.orgs({ environmentId, input: {} }));
-    } else {
+    } else if (state._tag === "error" || (state._tag === "ready" && state.error !== null)) {
       appAtomRegistry.refresh(chatAtom);
     }
   };
 
-  const readHistory = (environment: EnvironmentId, input: KinChatHistoryInput) =>
-    Effect.runPromiseExit(
-      AtomRegistry.getResult(
-        appAtomRegistry,
-        kinClient.history({ environmentId: environment, input }),
-      ),
-    );
-
   return (
     <KinChatPage
-      chatId={chatId ?? KIN_FIXTURE_CHAT_ID}
+      chatId={chatId ?? (props.chatId as KinChatId)}
       title={chatTitle(summary, viewer)}
       state={state}
       viewer={viewer}
       onRetry={retry}
       readHistory={
         state._tag === "ready" && state.connected
-          ? (input) => readHistory(state.environmentId, input)
+          ? (input) => kinClient.readHistoryPage(state.environmentId, input)
           : null
       }
     />
@@ -142,10 +140,12 @@ function KinLiveChat(props: { readonly orgId: string; readonly chatId: string })
 }
 
 let fixtureMessages: ReadonlyArray<KinMessage> | null = null;
-const getFixtureMessages = () => (fixtureMessages ??= makeKinFixtureMessages(500));
+const readFixtureMessages = (fixtures: KinFixtures) =>
+  (fixtureMessages ??= fixtures.makeKinFixtureMessages(500));
 
 /** Dev only: 500 local messages, the latest 50 live, older ones paged in by "Load earlier". */
-function KinFixtureChat() {
+function KinFixtureChat({ fixtures }: { readonly fixtures: KinFixtures }) {
+  const getFixtureMessages = () => readFixtureMessages(fixtures);
   const chat: KinSynced<KinChatState> = {
     value: { ...emptyKinChat, messages: getFixtureMessages().slice(-KIN_CACHED_MESSAGE_LIMIT) },
     live: true,
@@ -153,21 +153,22 @@ function KinFixtureChat() {
   };
   return (
     <KinChatPage
-      chatId={KIN_FIXTURE_CHAT_ID}
+      chatId={fixtures.KIN_FIXTURE_CHAT_ID}
       title="Tech lead"
       state={{
         _tag: "ready",
         environmentId: "dev-fixture" as EnvironmentId,
         connected: true,
         chat,
+        error: null,
       }}
       viewer={{
-        personId: KIN_FIXTURE_OWNER,
-        agentNames: new Map([[KIN_FIXTURE_AGENT, "Tech lead"]]),
+        personId: fixtures.KIN_FIXTURE_OWNER,
+        agentNames: new Map([[fixtures.KIN_FIXTURE_AGENT, "Tech lead"]]),
       }}
       onRetry={() => {}}
       readHistory={(input) =>
-        Promise.resolve(Exit.succeed(readKinFixtureHistory(getFixtureMessages(), input)))
+        Promise.resolve(Exit.succeed(fixtures.readKinFixtureHistory(getFixtureMessages(), input)))
       }
     />
   );
@@ -196,9 +197,13 @@ function KinChatPage(props: {
       <ScreenContent surface="screen">
         {state._tag === "ready" ? (
           <KinChatFeed
+            // Paging, folds and follow belong to one chat.
+            key={`${state.environmentId}:${props.chatId}`}
             chatId={props.chatId}
             chat={state.chat}
             connected={state.connected}
+            error={state.error}
+            onRetry={props.onRetry}
             viewer={props.viewer}
             readHistory={props.readHistory}
           />
@@ -285,48 +290,40 @@ function KinChatStateView(props: {
   return <View className="flex-1 justify-center p-4">{body}</View>;
 }
 
-interface Paging {
-  readonly earlier: KinChatState;
-  readonly exhausted: boolean;
-  readonly loading: boolean;
-  readonly error: string | null;
-}
-
-const initialPaging: Paging = {
-  earlier: emptyKinChat,
-  exhausted: false,
-  loading: false,
-  error: null,
-};
-
 const offlineTime = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 
 function KinChatFeed(props: {
   readonly chatId: KinChatId;
   readonly chat: KinSynced<KinChatState>;
   readonly connected: boolean;
+  /** The stream failed after the feed loaded. */
+  readonly error: string | null;
+  readonly onRetry: () => void;
   readonly viewer: KinFeedViewer;
   readonly readHistory: ReadHistory | null;
 }) {
   const listRef = useRef<LegendListRef>(null);
+  const lastRequest = useRef(0);
   const reduceMotion = useReduceMotionEnabled();
   const markdownStyle = useMarkdownPreviewStyles().nativeTextStyle;
   const openLink = useOpenPullRequest();
-  const [paging, setPaging] = useState<Paging>(initialPaging);
+  const [heldPaging, setPaging] = useState<KinPaging>(initialKinPaging);
   const [expandedRuns, setExpandedRuns] = useState<ReadonlySet<string>>(new Set());
-  const [atEnd, setAtEnd] = useState(true);
-  // The latest seq when the reader left the end; later messages from others light the pill.
-  const [seenSeq, setSeenSeq] = useState(0);
-  // Set by "Load earlier" so the prepended page keeps the reader's place, even at the end.
-  const [holdPosition, setHoldPosition] = useState(false);
+  const [follow, setFollow] = useState(initialKinFeedFollow);
 
-  const feed = mergeKinFeed(props.chat.value, paging.earlier);
+  const live = props.chat.value;
+  const paging = kinActivePaging(heldPaging, live);
+  const feed = mergeKinFeed(live, paging.earlier);
   const { messages } = feed;
   const rows = buildKinFeedRows(messages, props.viewer, expandedRuns);
-  const unseen = atEnd ? 0 : kinUnseenCount(messages, seenSeq, props.viewer.personId);
-  const followsEnd = atEnd && !holdPosition;
+  const followsEnd = kinFollowsEnd(follow);
+  const unseen = followsEnd ? 0 : kinUnseenCount(messages, follow.seenSeq, props.viewer.personId);
+  const loading = paging.request !== null;
   const earlierPage = kinEarlierPage(props.chatId, messages, paging.exhausted);
   const canLoadEarlier = props.readHistory !== null && earlierPage !== null;
+
+  const transition = (event: KinFeedFollowEvent) =>
+    setFollow((current) => resolveKinFeedFollow(current, event));
   const notice =
     (props.connected && props.chat.live) || props.chat.savedAt === null
       ? null
@@ -334,33 +331,48 @@ function KinChatFeed(props: {
 
   const loadEarlier = () => {
     const read = props.readHistory;
-    if (read === null || earlierPage === null || paging.loading) return;
-    setHoldPosition(true);
-    setPaging((current) => ({ ...current, loading: true, error: null }));
+    if (read === null || earlierPage === null || loading) return;
+    const request = ++lastRequest.current;
+    // Starts from the paging that fits the stream, so pages dropped by a reset stay dropped.
+    setPaging({
+      ...paging,
+      anchorSeq: paging.anchorSeq ?? live.messages[0]?.seq ?? null,
+      request,
+      error: null,
+    });
+    transition({ type: "page-start", latestSeq: latestKinSeq(messages) });
     void read(earlierPage).then((exit) => {
+      // A newer request or a remount owns the state now.
+      if (lastRequest.current !== request) return;
       setPaging((current) =>
         Exit.isSuccess(exit)
           ? {
+              ...current,
               earlier: applyKinChatHistory(current.earlier, exit.value),
               exhausted: !exit.value.hasMore,
-              loading: false,
-              error: null,
+              request: null,
             }
-          : { ...current, loading: false, error: "Couldn't load earlier messages." },
+          : { ...current, request: null, error: "Couldn't load earlier messages." },
       );
+      transition({
+        type: "page-settled",
+        added: Exit.isSuccess(exit) && exit.value.messages.length > 0,
+      });
     });
   };
 
-  const handleScroll = () => {
+  const checkEnd = () => {
     const isAtEnd = listRef.current?.getState().isAtEnd ?? true;
-    if (isAtEnd === atEnd) return;
-    if (!isAtEnd) setSeenSeq(latestKinSeq(messages));
-    setAtEnd(isAtEnd);
+    const next = resolveKinFeedFollow(follow, {
+      type: "end-check",
+      isAtEnd,
+      latestSeq: latestKinSeq(messages),
+    });
+    if (next !== follow) setFollow(next);
   };
 
   const jumpToEnd = () => {
-    setHoldPosition(false);
-    setAtEnd(true);
+    transition({ type: "jump-to-end" });
     void listRef.current?.scrollToEnd({ animated: !reduceMotion });
   };
 
@@ -391,6 +403,14 @@ function KinChatFeed(props: {
 
   const header = (
     <View className="gap-3 px-4 pb-3">
+      {props.error === null ? null : (
+        <View className="gap-3">
+          <ErrorBanner message={props.error} />
+          <View className="self-start">
+            <Button tone="secondary" size="compact" label="Retry" onPress={props.onRetry} />
+          </View>
+        </View>
+      )}
       {notice === null ? null : (
         <Notice {...(props.connected ? {} : { icon: "wifi.slash" as const })} message={notice} />
       )}
@@ -400,10 +420,18 @@ function KinChatFeed(props: {
             tone="secondary"
             size="compact"
             icon="chevron.up"
-            label={paging.loading ? "Loading earlier messages…" : "Load earlier"}
-            accessibilityLabel="Load earlier messages"
-            loading={paging.loading}
-            disabled={paging.loading}
+            label={
+              loading
+                ? "Loading earlier messages…"
+                : paging.error === null
+                  ? "Load earlier"
+                  : "Retry"
+            }
+            accessibilityLabel={
+              paging.error === null ? "Load earlier messages" : "Retry loading earlier messages"
+            }
+            loading={loading}
+            disabled={loading}
             onPress={loadEarlier}
           />
         </View>
@@ -412,7 +440,8 @@ function KinChatFeed(props: {
     </View>
   );
 
-  if (rows.length === 0 && earlierPage === null) {
+  // After a reset the feed is empty until the latest page reloads; that's not an empty chat.
+  if (rows.length === 0 && earlierPage === null && !live.needsHistoryReload) {
     return (
       <View className="flex-1 justify-center p-4">
         {header}
@@ -437,6 +466,7 @@ function KinChatFeed(props: {
         keyExtractor={(row) => row.key}
         getItemType={(row) => (row.type === "message" ? (row.own ? "own" : "other") : row.type)}
         renderItem={renderItem}
+        extraData={markdownStyle}
         estimatedItemSize={72}
         drawDistance={500}
         alignItemsAtEnd
@@ -447,10 +477,10 @@ function KinChatFeed(props: {
             : false
         }
         maintainVisibleContentPosition={followsEnd ? false : { data: true, size: true }}
-        onScroll={handleScroll}
-        onScrollBeginDrag={() => {
-          if (holdPosition) setHoldPosition(false);
-        }}
+        onScroll={checkEnd}
+        onScrollBeginDrag={() => transition({ type: "drag-begin" })}
+        onScrollEndDrag={checkEnd}
+        onMomentumScrollEnd={checkEnd}
         scrollEventThrottle={32}
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
