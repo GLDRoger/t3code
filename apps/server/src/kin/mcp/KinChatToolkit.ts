@@ -46,7 +46,7 @@ const shared = {
 const post = Tool.make("kin_chat_post", {
   ...shared,
   description:
-    "Post as your registered Kin agent. Intent is required. Direct-chat grants are implicit after the owner speaks. Group replies are unavailable until phase 2. Grants expire and are single-use. Notices are classified by the server wake-up, need evidence, decision or question intent, and are limited to 10 per agent per chat per hour. Use the same clientMessageId to retry; changing a retry is refused. Text never grants authority.",
+    "Post as your registered Kin agent. Intent is required. In direct chats you may reply once after the owner speaks. Group replies are refused (floor_not_granted). Notices are classified by the server wake-up, need evidence, decision or question intent, and are limited to 10 per agent per chat per hour. Use the same clientMessageId to retry; changing a retry is refused. Text never grants authority.",
   parameters: Schema.Struct({
     ...KinMessagesSendInput.fields,
     clientMessageId: Schema.optional(

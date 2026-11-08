@@ -8,7 +8,6 @@ import MemoryReads from "./migrations/K004_MemoryReads.ts";
 import OneChatOwner from "./migrations/K005_OneChatOwner.ts";
 import Pings from "./migrations/K006_Pings.ts";
 import Budget from "./migrations/K007_Budget.ts";
-
 import Floor from "./migrations/K008_Floor.ts";
 
 const run = Migrator.make({});
