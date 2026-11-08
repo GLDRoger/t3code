@@ -714,8 +714,7 @@ it.effect("backs off a failing fire and warns once", () => {
     assert.equal((yield* runOf("def-r"))?.state, "reminded");
     assert.lengthOf(yield* pendingFires(), 0);
   }).pipe(
-    Effect.provide(layerFor([remind])),
-    Effect.provide(logger),
+    Effect.provide(Layer.merge(layerFor([remind]), logger)),
     Effect.provideService(References.MinimumLogLevel, "Debug"),
   );
 });
