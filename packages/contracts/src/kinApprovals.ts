@@ -490,6 +490,7 @@ export class KinApprovalError extends Schema.TaggedError<KinApprovalError>()("Ki
     Schema.Literals([
       "not_found",
       "unavailable",
+      "disabled",
       "invalid_state",
       "unsupported_kind",
       "not_a_lead",
