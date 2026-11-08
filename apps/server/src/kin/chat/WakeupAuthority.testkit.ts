@@ -17,19 +17,26 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 
 const database = KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory));
 const instanceId = ProviderInstanceId.make("codex");
-export const authorityLayer = ProviderReplayHarness.layerWithRegistry(
-  { name: "wakeup-authority" },
-  ProviderAdapterRegistry.layerFromAdapters([
-    {
-      instanceId,
-      driver: ProviderDriverKind.make("codex"),
-      getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
-      planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
-      openSession: () => Effect.die("Authority tests do not start provider processes"),
-    },
-  ]),
-  { databaseLayer: database, runEffectWorker: false },
-).pipe(Layer.provideMerge(database));
+export const authorityLayerWithDatabase = (
+  databaseLayer: NonNullable<
+    NonNullable<Parameters<typeof ProviderReplayHarness.layerWithRegistry>[2]>["databaseLayer"]
+  >,
+) =>
+  ProviderReplayHarness.layerWithRegistry(
+    { name: "wakeup-authority" },
+    ProviderAdapterRegistry.layerFromAdapters([
+      {
+        instanceId,
+        driver: ProviderDriverKind.make("codex"),
+        getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+        planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
+        openSession: () => Effect.die("Authority tests do not start provider processes"),
+      },
+    ]),
+    { databaseLayer, runEffectWorker: false },
+  ).pipe(Layer.provideMerge(databaseLayer));
+
+export const authorityLayer = authorityLayerWithDatabase(database);
 
 export const startWakeupRun = Effect.fn("test.startWakeupRun")(function* (
   threadId: ThreadId,

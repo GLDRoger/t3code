@@ -477,6 +477,12 @@ describe("KinChatService", () => {
           agentId: otherId,
           threadId: otherThread,
         });
+        yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'service-wakeup'`;
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+          VALUES (${otherId}, ${person.orgId}, 'Other', 0, '{}', '[]', ${chat.chatId})`;
+        const otherRun = yield* startWakeupRun(otherThread, "other-wakeup");
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids)
+          VALUES ('other-wakeup', ${person.orgId}, ${otherId}, ${otherThread}, ${otherRun.id}, 'test', 0, 'running', '[]')`;
         const other = yield* identity.resolveAgent({
           ...caller,
           thread: { ...caller.thread!, threadId: otherThread },
@@ -494,6 +500,8 @@ describe("KinChatService", () => {
             .pipe(Effect.flip),
           { reason: "not_allowed" },
         );
+        yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'other-wakeup'`;
+        yield* sql`UPDATE kin_wakeups SET status = 'running' WHERE wakeup_id = 'service-wakeup'`;
         for (const update of [{}, { revision: 1, replyTo: question.messageId }])
           assert.include(
             yield* service

@@ -2,6 +2,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { HttpServer } from "effect/http";
 import * as NetAddress from "effect/net/NetAddress";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
+import * as ProviderSessionManager from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as McpSessionRegistryTestkit from "../../mcp/McpSessionRegistry.testkit.ts";
 import { assert, describe, it } from "@effect/vitest";
@@ -553,25 +554,54 @@ describe("WakeupRunner", () => {
 
   it.effect("expires retired leads' queued events and ends their durable thread registration", () =>
     Effect.gen(function* () {
-      yield* seed;
-      const queue = yield* KinEventQueue.KinEventQueue;
-      const runner = yield* WakeupRunner.WakeupRunner;
-      const sql = yield* SqlClient.SqlClient;
-      yield* queue.enqueue(event("first"));
-      yield* Fiber.join(yield* run());
-      yield* queue.enqueue(event("retired"));
-      yield* sql`UPDATE kin_agents SET retired_at = '2026-11-08T00:00:00.000Z' WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
-      yield* runner.runOnce(orgId, agentId);
-      assert.deepStrictEqual(yield* sql`SELECT state FROM kin_events WHERE event_id = 'retired'`, [
-        { state: "expired" },
-      ]);
-      assert.strictEqual(
-        (yield* sql`SELECT 1 FROM kin_agent_threads WHERE ended_at IS NULL AND org_id = ${orgId}`)
-          .length,
-        0,
-      );
-      assert.strictEqual((yield* sql`SELECT 1 FROM kin_wakeups`).length, 1);
-    }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
+      const entered = yield* Deferred.make<void>();
+      const hold = yield* Deferred.make<void>();
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const sql = yield* SqlClient.SqlClient;
+        yield* queue.enqueue(event("first"));
+        const active = yield* run();
+        yield* Deferred.await(entered);
+        yield* queue.enqueue(event("retired"));
+        yield* sql`UPDATE kin_agents SET retired_at = '2026-11-08T00:00:00.000Z' WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+        const identity = yield* KinIdentity.KinIdentity;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const retiringRunner = yield* WakeupRunner.WakeupRunner.pipe(
+          Effect.provide(Layer.fresh(WakeupRunner.layer)),
+          Effect.provideService(KinIdentity.KinIdentity, {
+            ...identity,
+            endAgentThread: Effect.fn("test.endAgentThread")(function* (
+              input: Parameters<typeof identity.endAgentThread>[0],
+            ) {
+              const projection = yield* threads
+                .getThreadProjection(input.threadId)
+                .pipe(Effect.orDie);
+              assert.isTrue(identity.isAgentThread(input.threadId));
+              for (const providerThread of projection.providerThreads)
+                if (providerThread.providerSessionId !== null)
+                  assert.isFalse(yield* sessions.isLive(providerThread.providerSessionId));
+              return yield* identity.endAgentThread(input);
+            }),
+          }),
+        );
+        yield* retiringRunner
+          .runOnce(orgId, agentId)
+          .pipe(Effect.ensuring(Deferred.succeed(hold, undefined)));
+        yield* Fiber.join(active);
+        assert.deepStrictEqual(
+          yield* sql`SELECT state FROM kin_events WHERE event_id = 'retired'`,
+          [{ state: "expired" }],
+        );
+        assert.strictEqual(
+          (yield* sql`SELECT 1 FROM kin_agent_threads WHERE ended_at IS NULL AND org_id = ${orgId}`)
+            .length,
+          0,
+        );
+        assert.strictEqual((yield* sql`SELECT 1 FROM kin_wakeups`).length, 1);
+      }).pipe(Effect.provide(harness({ entered, hold })));
+    }).pipe(provideDeterministicTestRuntime),
   );
 
   it.effect(

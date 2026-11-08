@@ -130,8 +130,11 @@ const make = Effect.gen(function* () {
   const retire = Effect.fn("WakeupRunner.retire")(function* (record: typeof LeadRow.Type) {
     if (retired.has(record.agentId)) return;
     yield* queue.expireAgent(record.orgId, record.agentId);
-    if (record.threadId !== null)
+    if (record.threadId !== null) {
+      const stopped = yield* threads.forceStopThread({ threadId: record.threadId });
+      if (stopped.outcome === "releasing" || stopped.outcome === "shared") return;
       yield* identity.endAgentThread({ orgId: record.orgId, threadId: record.threadId });
+    }
     retired.add(record.agentId);
   });
   const capture = Effect.fn("WakeupRunner.capture")(function* (row: typeof RunningRow.Type) {

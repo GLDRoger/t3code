@@ -4,7 +4,6 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as Option from "effect/Option";
-import * as KinLead from "./lead/layer.ts";
 import * as KinChat from "./chat/layer.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
 
@@ -14,7 +13,6 @@ import type * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as KinMcp from "./mcp/layer.ts";
 
-const lead = KinLead.layerServer;
 const enabled = Layer.effect(
   KinServer,
   Effect.gen(function* () {
@@ -25,7 +23,7 @@ const enabled = Layer.effect(
       subscribeForViewer: Option.some(hub.subscribeForViewer),
     };
   }),
-).pipe(Layer.provide(lead.pipe(Layer.provideMerge(KinChat.layer))));
+).pipe(Layer.provide(KinChat.layer));
 const disabled = Layer.succeed(KinServer, {
   services: Option.none(),
   subscribeForViewer: Option.none(),
