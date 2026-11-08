@@ -12,9 +12,9 @@ import {
   EnvironmentId,
   MessageId,
   KinWakeupId,
-  KinPersonId,
   KinEvent,
   KinAgentId,
+  KinPersonId,
   ThreadId,
   RunId,
   RunAttemptId,
@@ -1101,7 +1101,12 @@ describe("WakeupRunner", () => {
     return Effect.gen(function* () {
       yield* seed;
       const failing = KinLead.layer.pipe(
-        Layer.provide(Layer.mock(KinIdentity.KinIdentity)({ isAgentThread: () => false })),
+        Layer.provide(
+          Layer.mock(KinIdentity.KinIdentity)({
+            owner: { _tag: "person", orgId, personId: KinPersonId.make("owner") },
+            isAgentThread: () => false,
+          }),
+        ),
         Layer.provide(
           Layer.mergeAll(
             Layer.mock(ChatService.KinChatService)({}),

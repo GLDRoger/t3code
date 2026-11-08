@@ -619,7 +619,7 @@ it.effect("denies settings-only sessions before Kin handlers execute", () =>
       (yield* client["kin.orgs.list"]({}).pipe(Effect.flip))._tag,
       "EnvironmentAuthorizationError",
     );
-  }),
+  }).pipe(Effect.provide(Sqlite.layerMemory)),
 );
 
 it.effect("drops a failed waiting read without ending the chat list stream", () =>

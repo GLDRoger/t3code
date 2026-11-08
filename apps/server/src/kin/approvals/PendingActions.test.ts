@@ -22,9 +22,13 @@ import {
   layer as pendingActionsLayer,
   type KinPendingActionCreateInput,
 } from "./PendingActions.ts";
+import * as Audit from "./Audit.ts";
 
 const database = Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory);
-const layer = pendingActionsLayer.pipe(Layer.provideMerge(database));
+const layer = pendingActionsLayer.pipe(
+  Layer.provideMerge(Audit.layer),
+  Layer.provideMerge(database),
+);
 
 const decodeEventId = Schema.decodeSync(KinEventId);
 const owner = Schema.decodeSync(KinPersonId)("h_owner");
