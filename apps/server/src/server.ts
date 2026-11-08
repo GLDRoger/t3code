@@ -1,3 +1,4 @@
+import * as ProofKeySessions from "./kin/auth/ProofKeySessions.ts";
 import * as Kin from "./kin/layer.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
@@ -529,6 +530,7 @@ const layerProjectFaviconResolver = ProjectFaviconResolver.layer.pipe(
 const layerServerEnvironment = ServerEnvironment.layer.pipe(Layer.provide(ServerSecretStore.layer));
 
 const layerAuth = EnvironmentAuth.layer.pipe(
+  Layer.provide(ProofKeySessions.layer),
   Layer.provideMerge(layerPersistence),
   Layer.provide(layerServerEnvironment),
   Layer.provide(ServerSecretStore.layer),

@@ -1,3 +1,4 @@
+import { sessionHooks } from "../kin/auth/sessionHooks.ts";
 import {
   AuthSessionId,
   AuthStandardClientScopes,
@@ -495,6 +496,7 @@ const make = Effect.gen(function* () {
   const serverEnvironment = yield* ServerEnvironment.ServerEnvironmentIdentity;
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
   const authSessions = yield* AuthSessions.AuthSessionRepository;
+  const proofKeys = yield* sessionHooks;
   const signer = yield* PayloadSigner.fromSecret(
     yield* secretStore.getOrCreateRandom(SIGNING_SECRET_NAME, 32),
   );
@@ -684,7 +686,6 @@ const make = Effect.gen(function* () {
       const client = input?.client ?? createDefaultClientMetadata();
       const sessionRecord = {
         sessionId,
-        proofKeyThumbprint: claims.jkt ?? null,
         subject: claims.sub,
         scopes: claims.scopes,
         method: claims.method,
@@ -699,6 +700,7 @@ const make = Effect.gen(function* () {
         issuedAt,
         expiresAt,
       } satisfies AuthSessions.CreateAuthSessionInput;
+      if (claims.jkt) yield* proofKeys.onIssue(sessionId, claims.jkt);
       const replacedSessionIds = yield* (
         input?.replaceSessionId !== undefined || input?.replaceActiveForSubjectAndMethod
           ? authSessions.createReplacingActive({
@@ -988,21 +990,21 @@ const make = Effect.gen(function* () {
   const revoke: SessionStore["Service"]["revoke"] = Effect.fn("SessionStore.revoke")(
     function* (sessionId) {
       const revokedAt = yield* DateTime.now;
-      const revokedSessionIds = yield* authSessions
+      const revoked = yield* authSessions
         .revoke({
           sessionId,
           revokedAt,
         })
         .pipe(Effect.mapError((cause) => new SessionRevocationError({ sessionId, cause })));
-      if (revokedSessionIds.length > 0) {
+      if (revoked) {
         yield* Ref.update(connectedSessionsRef, (current) => {
           const next = new Map(current);
-          for (const id of revokedSessionIds) next.delete(id);
+          next.delete(sessionId);
           return next;
         });
-        yield* Effect.forEach(revokedSessionIds, emitRemoved, { discard: true });
+        yield* emitRemoved(sessionId);
       }
-      return revokedSessionIds.length > 0;
+      return revoked;
     },
   );
 

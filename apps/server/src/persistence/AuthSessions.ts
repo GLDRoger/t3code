@@ -45,7 +45,6 @@ export const AuthSessionRecord = Schema.Struct({
 export type AuthSessionRecord = typeof AuthSessionRecord.Type;
 
 export const CreateAuthSessionInput = Schema.Struct({
-  proofKeyThumbprint: Schema.optionalKey(Schema.NullOr(Schema.String)),
   sessionId: AuthSessionId,
   subject: Schema.String,
   scopes: AuthEnvironmentScopes,
@@ -113,7 +112,7 @@ export class AuthSessionRepository extends Context.Service<
     ) => Effect.Effect<ReadonlyArray<AuthSessionRecord>, AuthSessionRepositoryError>;
     readonly revoke: (
       input: RevokeAuthSessionInput,
-    ) => Effect.Effect<ReadonlyArray<AuthSessionId>, AuthSessionRepositoryError>;
+    ) => Effect.Effect<boolean, AuthSessionRepositoryError>;
     readonly revokeAllExcept: (
       input: RevokeOtherAuthSessionsInput,
     ) => Effect.Effect<ReadonlyArray<AuthSessionId>, AuthSessionRepositoryError>;
@@ -205,7 +204,6 @@ export const make = Effect.gen(function* () {
       execute: (input) =>
         sql`
         INSERT INTO auth_sessions (
-          proof_key_thumbprint,
           session_id,
           subject,
           scopes,
@@ -221,7 +219,6 @@ export const make = Effect.gen(function* () {
           revoked_at
         )
         VALUES (
-          ${input.proofKeyThumbprint ?? null},
           ${input.sessionId},
           ${input.subject},
           ${JSON.stringify(input.scopes)},
@@ -331,9 +328,7 @@ export const make = Effect.gen(function* () {
       sql`
         UPDATE auth_sessions
         SET revoked_at = ${revokedAt}
-        WHERE (session_id = ${sessionId} OR proof_key_thumbprint = (
-          SELECT proof_key_thumbprint FROM auth_sessions WHERE session_id = ${sessionId}
-        ))
+        WHERE session_id = ${sessionId}
           AND revoked_at IS NULL
         RETURNING session_id AS "sessionId"
       `,
@@ -459,7 +454,7 @@ export const make = Effect.gen(function* () {
           { sessionId: input.sessionId },
         ),
       ),
-      Effect.map((rows) => rows.map((row) => row.sessionId)),
+      Effect.map((rows) => rows.length > 0),
     );
 
   const revokeAllExcept: AuthSessionRepository["Service"]["revokeAllExcept"] = (input) =>

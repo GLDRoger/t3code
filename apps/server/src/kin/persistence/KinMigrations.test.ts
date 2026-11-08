@@ -13,6 +13,8 @@ import * as KinPersistence from "./KinPersistence.ts";
 const tableNames = [
   "kin_agent_threads",
   "kin_agents",
+  "kin_auth_key_repairs",
+  "kin_auth_session_keys",
   "kin_budget",
   "kin_budget_charges",
   "kin_budget_limits",
@@ -95,6 +97,7 @@ describe("Kin migrations", () => {
           { migration_id: 7, name: "Budget" },
           { migration_id: 8, name: "Floor" },
           { migration_id: 9, name: "JudgeLog" },
+          { migration_id: 10, name: "AuthSessionKeys" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
@@ -120,7 +123,7 @@ describe("Kin migrations", () => {
           yield* sql`SELECT name FROM pragma_table_info('kin_webhook_sources') WHERE pk > 0 ORDER BY pk`,
           [{ name: "org_id" }, { name: "source_id" }],
         );
-        for (const { name } of before) {
+        for (const { name } of before.filter((row) => !row.name.startsWith("kin_auth_"))) {
           const columns = yield* sql<{ name: string; notnull: number }>`
           SELECT name, "notnull" FROM pragma_table_info(${name})
         `;
@@ -146,6 +149,7 @@ describe("Kin migrations", () => {
           { migration_id: 7, name: "Budget" },
           { migration_id: 8, name: "Floor" },
           { migration_id: 9, name: "JudgeLog" },
+          { migration_id: 10, name: "AuthSessionKeys" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -221,6 +225,7 @@ describe("Kin migrations", () => {
         [7, "Budget"],
         [8, "Floor"],
         [9, "JudgeLog"],
+        [10, "AuthSessionKeys"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -238,6 +243,8 @@ describe("Kin migrations", () => {
         VALUES ('existing-chat', 'org', 'project_group', 0, ${timestamp})`;
       yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
         VALUES ('existing-owner', 'org', 'existing-chat', 'person', 'owner', 'owner', ${timestamp})`;
+      yield* sql`DROP TABLE kin_auth_key_repairs`;
+      yield* sql`DROP TABLE kin_auth_session_keys`;
       yield* sql`DROP TABLE kin_judge_log`;
       yield* sql`DROP TABLE kin_floor_notices`;
       yield* sql`DROP TABLE kin_floor_grants`;
@@ -255,6 +262,7 @@ describe("Kin migrations", () => {
         [7, "Budget"],
         [8, "Floor"],
         [9, "JudgeLog"],
+        [10, "AuthSessionKeys"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,
@@ -276,6 +284,7 @@ describe("Kin migrations", () => {
         { migration_id: 7, name: "Budget" },
         { migration_id: 8, name: "Floor" },
         { migration_id: 9, name: "JudgeLog" },
+        { migration_id: 10, name: "AuthSessionKeys" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);

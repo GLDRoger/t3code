@@ -202,6 +202,23 @@ Registration:
 3. **Later keys:** confirmed by a grant of kind `register_approver_key` signed by an existing active key.
 4. Revoking (`kin.approvals.revokeKey`, from settings or the desktop) sets `revoked` and voids every `approved` action whose grant that key signed. Revoking a T3 device session (`revokeClient`) also revokes keys registered from it.
 
+#### Device session revocation (lane B integration)
+
+PR #54 must land before or with #42. Keep the registering `session_id` reconcile alongside this exact-thumbprint fallback:
+
+```sql
+SELECT DISTINCT k.org_id, k.thumbprint FROM kin_approver_keys k
+JOIN kin_auth_session_keys m ON m.proof_key_thumbprint = k.proof_key_thumbprint
+JOIN auth_sessions s ON s.session_id = m.session_id
+WHERE k.state != 'revoked' AND s.revoked_at IS NOT NULL
+```
+
+There is no backfill: historical `jkt` values exist only in signed tokens, not stored sessions. The mapping is environment-local, not org-owned; the approver table supplies org isolation. K010 is provisional and renumbers at merge if another lane claims it.
+
+A revoked mapped session blocks fresh token exchanges for that exact proof key, including cloud re-mints. The server owner can deliberately re-pair the same key with `t3 auth pairing create --repair-proof-key <RFC-7638-thumbprint>` against the target environment's home directory. Redeem that one-time credential with the matching DPoP key. Only this bound `kin-owner-repair` grant acknowledges existing revoked session IDs in `kin_auth_key_repairs`; a later revocation blocks exchanges again. Cloud mints always use `cloud-connect` and cannot acknowledge revocation. Repair does not un-revoke sessions or approver keys, erase audit evidence, or bypass approver-key registration/confirmation. The historical join below still sees acknowledged revocations: use a fresh device proof key for new approver registration unless lane B implements repair-aware registration.
+
+Lane B must fix `revokeAllExcept` reconciliation before shipping: “sign out other devices” currently revokes the phone's own older sessions, so this join would revoke its own approver key. Exclude sessions whose mapped thumbprint matches the caller's. If this belongs in upstream `AuthSessions.revokeAllExcept`, propose a 1–2-line optional Kin predicate hook with an allow-all default; lane B owns that change and the reconcile, not #54.
+
 A key's role isn't stored on the key. It is read at verify time from org membership (chat spec), so demoting a person takes effect at once.
 
 ### 5. `KinGrant`: format and checks

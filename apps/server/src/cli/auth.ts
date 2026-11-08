@@ -1,3 +1,4 @@
+import * as RepairPairing from "../kin/auth/repairPairing.ts";
 import { AuthSessionId, AuthStandardClientScopes } from "@t3tools/contracts";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
@@ -88,6 +89,7 @@ const tokenOnlyFlag = Flag.Boolean("token-only").pipe(
 );
 
 const pairingCreateCommand = Command.make("create", {
+  ...RepairPairing.flags,
   ...authLocationFlags,
   scopes: authScopesFlag(AuthStandardClientScopes),
   ttl: ttlFlag,
@@ -104,6 +106,7 @@ const pairingCreateCommand = Command.make("create", {
           const issued = yield* environmentAuth.createPairingLink({
             scopes: flags.scopes,
             subject: "one-time-token",
+            ...RepairPairing.grant(flags),
             ...(Option.isSome(flags.ttl) ? { ttl: flags.ttl.value } : {}),
             ...(Option.isSome(flags.label) ? { label: flags.label.value } : {}),
           });

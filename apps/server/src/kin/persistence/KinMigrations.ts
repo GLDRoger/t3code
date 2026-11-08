@@ -12,6 +12,8 @@ import Floor from "./migrations/K008_Floor.ts";
 
 import JudgeLog from "./migrations/K009_JudgeLog.ts";
 
+import AuthSessionKeys from "./migrations/K010_AuthSessionKeys.ts";
+
 const run = Migrator.make({});
 const loader = Migrator.fromRecord({
   "1_ChatCore": ChatCore,
@@ -23,6 +25,7 @@ const loader = Migrator.fromRecord({
   "7_Budget": Budget,
   "8_Floor": Floor,
   "9_JudgeLog": JudgeLog,
+  "10_AuthSessionKeys": AuthSessionKeys,
 });
 
 export const runKinMigrations = Effect.fn("KinMigrations.run")(function* () {
