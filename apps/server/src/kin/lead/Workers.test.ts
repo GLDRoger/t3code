@@ -20,10 +20,12 @@ import {
   ProviderThreadId,
   ProviderTurnId,
   RunAttemptId,
+  RunId,
   ThreadId,
   type KinEvent,
   type OrchestrationV2Run,
   type OrchestrationV2StoredEvent,
+  type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
@@ -35,10 +37,14 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
-import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
+import {
+  OrchestratorProjectionError,
+  OrchestratorV2,
+} from "../../orchestration-v2/Orchestrator.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { PersistenceSqlError } from "../../persistence/Errors.ts";
@@ -188,16 +194,18 @@ const harness = () => {
   const shells = new Map<ThreadId, OrchestrationV2ThreadShell | null>();
   // The tracker follows these instead of the real stored-event stream.
   const stored: Array<OrchestrationV2StoredEvent> = [];
-  const faults = { enqueue: 0 };
-  const failed = Deferred.makeUnsafe<void>();
+  const faults = { enqueue: 0, projection: new Set<ThreadId>() };
+  const settles = new Map<RunId, Partial<ThreadManagement.ThreadManagementWaitResult>>();
   const drained = Deferred.makeUnsafe<void>();
   const orchestration = Layer.unwrap(
     Effect.gen(function* () {
       const orchestrator = yield* OrchestratorV2;
       const projection = (threadId: ThreadId) =>
-        orchestrator
-          .getThreadProjection(threadId)
-          .pipe(Effect.map((real) => ({ ...real, ...projections.get(threadId) })));
+        faults.projection.has(threadId)
+          ? Effect.fail(new OrchestratorProjectionError({ threadId }))
+          : orchestrator
+              .getThreadProjection(threadId)
+              .pipe(Effect.map((real) => ({ ...real, ...projections.get(threadId) })));
       return Layer.mergeAll(
         Layer.mock(ThreadLaunch.ThreadLaunchService)({
           launch: (input) =>
@@ -238,7 +246,12 @@ const harness = () => {
               };
             }).pipe(Effect.orDie),
           waitForThread: (input) =>
-            Effect.succeed({ threadId: input.threadId, run: null, timedOut: false }),
+            Effect.succeed({
+              threadId: input.threadId,
+              run: null,
+              timedOut: false,
+              ...(input.runId === undefined ? {} : settles.get(input.runId)),
+            }),
           interruptThread: (input) =>
             Effect.sync(() => {
               interrupts.push(input);
@@ -284,11 +297,7 @@ const harness = () => {
             faults.enqueue > 0
               ? Effect.suspend(() => {
                   faults.enqueue -= 1;
-                  return Deferred.succeed(failed, undefined).pipe(
-                    Effect.andThen(
-                      Effect.fail(new PersistenceSqlError({ operation: "test.enqueue" })),
-                    ),
-                  );
+                  return Effect.fail(new PersistenceSqlError({ operation: "test.enqueue" }));
                 })
               : real.enqueue(event),
         }),
@@ -304,7 +313,7 @@ const harness = () => {
     shells,
     stored,
     faults,
-    failed,
+    settles,
     drained,
     orchestration,
     tracking,
@@ -341,6 +350,8 @@ const run = <A, E>(
     readonly tracker: Tracker.WorkerTracker["Service"];
   }) => Effect.Effect<A, E, SqlClient.SqlClient | OrchestratorV2 | Registry.KinLeadRegistry>,
   level = "L2",
+  // The release gate is shut in production; tests open it unless they check that default.
+  gate: "open" | "production" = "open",
 ) =>
   Effect.gen(function* () {
     const ctx = yield* setup(level);
@@ -353,6 +364,8 @@ const run = <A, E>(
         tracker: yield* Tracker.WorkerTracker,
       });
     }).pipe(
+      gate === "open" ? Effect.provideService(Workers.WorkerLaunchGate, true) : (effect) => effect,
+      Effect.provideService(Tracker.WorkerTrackerRetry, Schedule.recurs(16)),
       Effect.provide(
         Layer.mergeAll(Workers.layer, Tracker.layer).pipe(
           Layer.provideMerge(Registry.layer),
@@ -454,6 +467,51 @@ const ended = Effect.fn("WorkersTest.ended")(function* (
           ],
   });
   return runEvent(threadId, finished);
+});
+const subagent = (input: {
+  readonly threadId: ThreadId;
+  readonly origin: "app_owned" | "provider_native";
+  readonly driver?: string;
+  readonly childThreadId?: ThreadId;
+}): OrchestrationV2Subagent => ({
+  id: NodeId.make(`child:${input.origin}:${input.threadId}:${input.childThreadId ?? "none"}`),
+  threadId: input.threadId,
+  runId: null,
+  parentNodeId: NodeId.make("root"),
+  origin: input.origin,
+  createdBy: "agent",
+  driver: ProviderDriverKind.make(input.driver ?? "codex"),
+  providerInstanceId: codex.instanceId,
+  providerThreadId: null,
+  childThreadId: input.childThreadId ?? null,
+  nativeTaskRef: null,
+  prompt: "stray",
+  title: null,
+  model: null,
+  status: "running",
+  result: null,
+  startedAt: null,
+  completedAt: null,
+  updatedAt: DateTime.makeUnsafe(0),
+});
+/** A provider-native child's turn: it runs on the child's thread with no run attempt. */
+const nativeTurn = (threadId: ThreadId, startedAt: number, inputTokens: number) => ({
+  id: ProviderTurnId.make(`turn:${threadId}:${startedAt}`),
+  providerThreadId: ProviderThreadId.make(`provider:${threadId}`),
+  nodeId: NodeId.make("root"),
+  runAttemptId: null,
+  nativeTurnRef: null,
+  ordinal: 1,
+  status: "completed" as const,
+  startedAt: DateTime.makeUnsafe(startedAt),
+  completedAt: DateTime.makeUnsafe(startedAt),
+  turnTokenUsage: {
+    usageScope: "main_agent" as const,
+    usageStatus: "complete" as const,
+    inputTokens,
+    outputTokens: 5,
+    hasSubagents: false,
+  },
 });
 const queued = (sql: SqlClient.SqlClient, orgId: KinOrgId) =>
   sql<{
@@ -576,6 +634,31 @@ it.effect("kin_delegate below L2 records a shadow entry and starts nothing", () 
   ),
 );
 
+it.effect("at L2 the production release gate refuses kin_delegate and kin_follow_up", () =>
+  run(
+    ({ ctx, fakes, workers }) =>
+      Effect.gen(function* () {
+        yield* ctx.sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id, model_json, provenance_json, status, started_at) VALUES ('old-worker', ${ctx.orgId}, ${leadId}, 'wake', 'build', 'old-thread', ${JSON.stringify(codex)}, '{"_tag":"system"}', 'completed', 0)`;
+        for (const attempt of [
+          workers.delegate(scope, delegateInput),
+          workers.followUp(scope, {
+            workerId: KinWorkerId.make("old-worker"),
+            brief: "More",
+            sourceEventId: "lead-event",
+          }),
+        ] as ReadonlyArray<Effect.Effect<object, KinChatError>>) {
+          const refused = yield* Effect.flip(attempt);
+          assert.strictEqual(refused.reason, "not_allowed");
+          assert.include(refused.message, "until T3 tool scoping lands");
+        }
+        assert.lengthOf(fakes.launches, 0);
+        assert.lengthOf(fakes.sends, 0);
+      }),
+    "L2",
+    "production",
+  ),
+);
+
 it.effect("a reviewer needs a different instance and model and sees only the author's refs", () =>
   run(({ fakes, workers, tracker }) =>
     Effect.gen(function* () {
@@ -647,38 +730,82 @@ it.effect(
           "completed",
           `Done.\n\`\`\`kin-report\n${JSON.stringify(report)}\n\`\`\``,
         );
+        const spawn = (name: string) =>
+          startThread({
+            ...fakes.launches[0]!,
+            threadId: ThreadId.make(name),
+            commandId: CommandId.make(`${name}-launch`),
+            initialMessage: {
+              messageId: MessageId.make(`${name}-msg`),
+              text: "Sub-task",
+              attachments: [],
+            },
+          });
+        // Codex bills its native children per thread, inside the run's window; Claude already
+        // folds them into the parent turn's otherUsage.
+        const codexChild = yield* spawn("codex-native-child");
+        const claudeChild = yield* spawn("claude-native-child");
+        fakes.projections.set(codexChild, {
+          providerTurns: [nativeTurn(codexChild, 500, 50), nativeTurn(codexChild, 5_000, 1_000)],
+        });
+        fakes.projections.set(claudeChild, { providerTurns: [nativeTurn(claudeChild, 500, 50)] });
+        fakes.projections.set(doneThread, {
+          ...fakes.projections.get(doneThread),
+          subagents: [
+            subagent({
+              threadId: doneThread,
+              origin: "provider_native",
+              childThreadId: codexChild,
+            }),
+            subagent({
+              threadId: doneThread,
+              origin: "provider_native",
+              driver: "claudeAgent",
+              childThreadId: claudeChild,
+            }),
+          ],
+        });
         yield* tracker.process(completedEvent);
+        // A replay later, after the clock moved, is still the same report and the same charge.
+        yield* TestClock.adjust("5 seconds");
         yield* tracker.process(completedEvent);
         yield* tracker.process(yield* ended(fakes, cancelledThread, "cancelled"));
         // The worker's delegate_task child bills to the worker, once, and does not report.
-        const child = yield* startThread({
-          ...fakes.launches[0]!,
-          threadId: ThreadId.make("worker-child"),
-          commandId: CommandId.make("child-launch"),
-          initialMessage: {
-            messageId: MessageId.make("child-msg"),
-            text: "Sub-task",
-            attachments: [],
-          },
-        });
         const orchestrator = yield* OrchestratorV2;
-        const shell = (yield* orchestrator.getThreadShell(child))!;
-        fakes.shells.set(child, {
-          ...shell,
-          creationSource: "server",
-          lineage: {
-            parentThreadId: doneThread,
-            relationshipToParent: "subagent",
-            rootThreadId: doneThread,
-          },
-        });
+        const lineage = (
+          threadId: ThreadId,
+          relationshipToParent: "fork" | "subagent",
+          parentThreadId: ThreadId,
+        ) =>
+          Effect.gen(function* () {
+            const shell = (yield* orchestrator.getThreadShell(codexChild))!;
+            fakes.shells.set(threadId, {
+              ...shell,
+              id: threadId,
+              creationSource: "server",
+              lineage: { parentThreadId, relationshipToParent, rootThreadId: doneThread },
+            });
+          });
+        const child = yield* spawn("worker-child");
+        yield* lineage(child, "subagent", doneThread);
+        // Someone's fork of the worker keeps its rootThreadId but is not the worker's work.
+        const fork = ThreadId.make("worker-fork");
+        const forkChild = yield* spawn("worker-fork-child");
+        yield* lineage(fork, "fork", doneThread);
+        yield* lineage(forkChild, "subagent", fork);
         const childEvent = yield* ended(fakes, child, "completed");
         yield* tracker.process(childEvent);
         yield* tracker.process(childEvent);
-        const childCharges = yield* ctx.sql<{
-          workerId: string;
-        }>`SELECT worker_id AS "workerId" FROM kin_worker_charges WHERE org_id = ${ctx.orgId} AND run_id = ${childEvent.event.payload.id} ORDER BY run_id`;
-        assert.deepStrictEqual(childCharges, [{ workerId: done.workerId }]);
+        const forkEvent = yield* ended(fakes, forkChild, "completed");
+        yield* tracker.process(forkEvent);
+        const charged = (runId: RunId) =>
+          ctx.sql<{
+            workerId: string;
+          }>`SELECT worker_id AS "workerId" FROM kin_worker_charges WHERE org_id = ${ctx.orgId} AND run_id = ${runId} ORDER BY run_id`;
+        assert.deepStrictEqual(yield* charged(childEvent.event.payload.id), [
+          { workerId: done.workerId },
+        ]);
+        assert.deepStrictEqual(yield* charged(forkEvent.event.payload.id), []);
         const events = (yield* queued(ctx.sql, ctx.orgId)).map((row) => ({
           priority: row.priority,
           event: JSON.parse(row.json) as Extract<KinEvent, { _tag: "worker.report" }>,
@@ -695,9 +822,10 @@ it.effect(
         assert.strictEqual(synthesized.summary, "Worker ended cancelled without a report.");
         assert.isFalse(synthesized.parsed);
         assert.strictEqual(synthesized.evidence[0]!.kind, "link");
-        // Each run is charged once at worker weights (100 input + 4 × 10 output); lead units stay untouched.
+        // Each run is charged once at worker weights (100 input + 4 × 10 output), plus the Codex
+        // child's in-window turn (50 + 4 × 5); lead units stay untouched.
         const spent = yield* budget.get(ctx.orgId);
-        assert.strictEqual(spent.workerUnits, 420);
+        assert.strictEqual(spent.workerUnits, 490);
         assert.strictEqual(spent.leadUnits, 0);
         const state = new Map(
           (yield* cards(ctx.sql, ctx.orgId)).map((card) => [card.widgetId, card.closedAt]),
@@ -714,6 +842,46 @@ it.effect(
     ),
 );
 
+it.effect("a parent run re-emitted after its delivery run settled reports that answer once", () =>
+  run(({ ctx, fakes, workers, tracker }) =>
+    Effect.gen(function* () {
+      const worker = yield* workers.delegate(scope, delegateInput);
+      assert.ok("workerId" in worker);
+      const threadId = ThreadId.make(`kin-worker-${worker.workerId}`);
+      const parentEvent = yield* ended(
+        fakes,
+        threadId,
+        "completed",
+        `Done.\n\`\`\`kin-report\n${JSON.stringify(report)}\n\`\`\``,
+      );
+      const parent = parentEvent.event.payload;
+      // The parent ends while its delegated child still runs, so it does not report yet.
+      fakes.settles.set(parent.id, { timedOut: true });
+      yield* tracker.process(parentEvent);
+      const delivery = {
+        ...parent,
+        id: RunId.make("delivery-run"),
+        completedAt: DateTime.makeUnsafe(2_000),
+      };
+      const projection = fakes.projections.get(threadId)!;
+      fakes.projections.set(threadId, {
+        ...projection,
+        runs: [parent, delivery],
+        messages: projection.messages!.map((message) => ({ ...message, runId: delivery.id })),
+      });
+      fakes.settles.set(delivery.id, { resultRun: delivery });
+      yield* tracker.process(runEvent(threadId, delivery, 11));
+      // A delegated-completion group update re-emits the parent, which now settles to the delivery.
+      fakes.settles.set(parent.id, { resultRun: delivery });
+      yield* tracker.process(runEvent(threadId, parent, 12));
+      const reports = (yield* queued(ctx.sql, ctx.orgId)).map(
+        (row) => (JSON.parse(row.json) as KinEvent).eventId,
+      );
+      assert.deepStrictEqual(reports, ["worker-report:delivery-run"]);
+    }),
+  ),
+);
+
 it.effect("stopping a worker closes its card and a follow-up reopens the same card", () =>
   run(({ ctx, fakes, workers }) =>
     Effect.gen(function* () {
@@ -725,12 +893,20 @@ it.effect("stopping a worker closes its card and a follow-up reopens the same ca
       assert.deepStrictEqual(fakes.stopped, [threadId]);
       const [closed] = yield* cards(ctx.sql, ctx.orgId);
       assert.isNotNull(closed!.closedAt);
-      // An identical retry after the stop returns the worker without reopening its card.
+      // An identical retry after the stop returns the worker without reopening its card. A row an
+      // earlier launch failure left failed restarts its clock, then takes the thread's outcome.
       const orchestrator = yield* OrchestratorV2;
       const last = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
       fakes.projections.set(threadId, { runs: [{ ...last, status: "interrupted" }] });
+      yield* ctx.sql`UPDATE kin_workers SET status = 'failed', started_at = -1 WHERE org_id = ${ctx.orgId} AND worker_id = ${worker.workerId}`;
+      yield* TestClock.adjust("5 seconds");
       assert.deepStrictEqual(yield* workers.delegate(scope, delegateInput), worker);
       assert.deepStrictEqual(yield* cards(ctx.sql, ctx.orgId), [closed!]);
+      const [retried] = yield* ctx.sql<{
+        status: string;
+        startedAt: number;
+      }>`SELECT status, started_at AS "startedAt" FROM kin_workers WHERE org_id = ${ctx.orgId} AND worker_id = ${worker.workerId}`;
+      assert.deepStrictEqual(retried, { status: "interrupted", startedAt: 5_000 });
       fakes.projections.delete(threadId);
       yield* workers.followUp(scope, {
         workerId: worker.workerId,
@@ -756,15 +932,17 @@ it.effect("stopping a worker closes its card and a follow-up reopens the same ca
 );
 
 it.effect(
-  "tracker start fails crashed launches and replays a failed event from its cursor exactly once",
+  "tracker start fails crashed launches, replays a failed event once and abandons a stuck one",
   () =>
     run(({ ctx, fakes, workers, tracker }) =>
       Effect.gen(function* () {
         const budget = Context.get(ctx.services, KinBudget);
         const worker = yield* workers.delegate(scope, delegateInput);
         const crashed = yield* workers.delegate(scope, { ...delegateInput, title: "Second task" });
-        assert.ok("workerId" in worker && "workerId" in crashed);
+        const stuck = yield* workers.delegate(scope, { ...delegateInput, title: "Third task" });
+        assert.ok("workerId" in worker && "workerId" in crashed && "workerId" in stuck);
         const threadId = ThreadId.make(`kin-worker-${worker.workerId}`);
+        const stuckThread = ThreadId.make(`kin-worker-${stuck.workerId}`);
         // The second row predates this process and its thread was never created.
         fakes.shells.set(ThreadId.make(`kin-worker-${crashed.workerId}`), null);
         yield* ctx.sql`UPDATE kin_workers SET started_at = -1 WHERE org_id = ${ctx.orgId} AND worker_id = ${crashed.workerId}`;
@@ -773,32 +951,49 @@ it.effect(
         const lead = (yield* orchestrator.getThreadProjection(leadThread)).runs.at(-1)!;
         fakes.stored.push(
           yield* ended(fakes, threadId, "cancelled"),
+          yield* ended(fakes, stuckThread, "completed").pipe(
+            Effect.map((event) => ({ ...event, sequence: 11 })),
+          ),
           runEvent(leadThread, { ...lead, status: "completed" }, 12),
         );
         fakes.faults.enqueue = 1;
+        // The stuck worker's projection never loads, so every attempt at its event fails.
+        fakes.faults.projection.add(stuckThread);
         yield* tracker.start;
-        yield* Deferred.await(fakes.failed);
+        yield* Deferred.await(fakes.drained);
         const status = (id: KinWorkerId) =>
           ctx.sql<{
             status: string;
           }>`SELECT status FROM kin_workers WHERE org_id = ${ctx.orgId} AND worker_id = ${id} ORDER BY worker_id`;
         assert.deepStrictEqual(yield* status(crashed.workerId), [{ status: "failed" }]);
-        const open = (yield* cards(ctx.sql, ctx.orgId)).filter((card) => card.closedAt === null);
-        assert.lengthOf(open, 1);
-        yield* TestClock.adjust("30 seconds");
-        yield* Deferred.await(fakes.drained);
-        assert.lengthOf(yield* queued(ctx.sql, ctx.orgId), 1);
+        assert.deepStrictEqual(yield* status(worker.workerId), [{ status: "cancelled" }]);
+        assert.deepStrictEqual(yield* status(stuck.workerId), [{ status: "failed" }]);
+        const reports = new Map(
+          (yield* queued(ctx.sql, ctx.orgId)).map((row) => {
+            const event = JSON.parse(row.json) as Extract<KinEvent, { _tag: "worker.report" }>;
+            return [event.workerId, event.report];
+          }),
+        );
+        assert.strictEqual(reports.size, 2);
+        assert.strictEqual(
+          reports.get(worker.workerId)!.summary,
+          "Worker ended cancelled without a report.",
+        );
+        assert.deepInclude(reports.get(stuck.workerId)!, {
+          result: "blocked",
+          summary: "Kin's tracker could not process the run.",
+          parsed: false,
+        });
         assert.strictEqual((yield* budget.get(ctx.orgId)).workerUnits, 140);
         assert.lengthOf(
           (yield* cards(ctx.sql, ctx.orgId)).filter((card) => card.closedAt === null),
           0,
         );
-        assert.deepStrictEqual(yield* status(worker.workerId), [{ status: "cancelled" }]);
-        // Only the worker's event moves the cursor; the lead's run is not persisted.
+        // Only worker events move the cursor; the lead's run is not persisted.
         const [cursor] = yield* ctx.sql<{
           after: number;
         }>`SELECT after_sequence AS after FROM kin_cursor WHERE org_id = ${ctx.orgId} AND consumer = 'worker-tracker' ORDER BY org_id`;
-        assert.strictEqual(cursor!.after, 10);
+        assert.strictEqual(cursor!.after, 11);
       }).pipe(Effect.scoped),
     ),
 );
@@ -813,7 +1008,7 @@ it.effect("an app-owned delegate_task child on a lead thread is stopped", () =>
         wakeupId: KinWakeupId.make("wake"),
         level: "L2",
       });
-      const subagent = (origin: "app_owned" | "provider_native", threadId: ThreadId) => ({
+      const updated = (origin: "app_owned" | "provider_native", threadId: ThreadId) => ({
         sequence: 11,
         commandId: null,
         event: {
@@ -821,34 +1016,14 @@ it.effect("an app-owned delegate_task child on a lead thread is stopped", () =>
           id: EventId.make(`event:${origin}:${threadId}`),
           threadId,
           occurredAt: DateTime.makeUnsafe(0),
-          payload: {
-            id: NodeId.make(`child:${origin}:${threadId}`),
-            threadId,
-            runId: null,
-            parentNodeId: NodeId.make("root"),
-            origin,
-            createdBy: "agent" as const,
-            driver: ProviderDriverKind.make("codex"),
-            providerInstanceId: codex.instanceId,
-            providerThreadId: null,
-            childThreadId: null,
-            nativeTaskRef: null,
-            prompt: "stray",
-            title: null,
-            model: null,
-            status: "running" as const,
-            result: null,
-            startedAt: null,
-            completedAt: null,
-            updatedAt: DateTime.makeUnsafe(0),
-          },
+          payload: subagent({ threadId, origin }),
         },
       });
-      yield* tracker.process(subagent("provider_native", leadThread));
-      yield* tracker.process(subagent("app_owned", ThreadId.make("ordinary")));
+      yield* tracker.process(updated("provider_native", leadThread));
+      yield* tracker.process(updated("app_owned", ThreadId.make("ordinary")));
       assert.deepStrictEqual(fakes.stopped, []);
-      yield* tracker.process(subagent("app_owned", leadThread));
-      yield* tracker.process(subagent("app_owned", leadThread));
+      yield* tracker.process(updated("app_owned", leadThread));
+      yield* tracker.process(updated("app_owned", leadThread));
       assert.deepStrictEqual(fakes.stopped, [leadThread]);
     }).pipe(Effect.scoped),
   ),

@@ -23,6 +23,7 @@ import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Digest from "effect/crypto/Digest";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
@@ -78,6 +79,13 @@ export const DelegateResult = Schema.Union([
   Schema.Struct({ shadowed: Schema.Literal(true), entryId: TrimmedNonEmptyString }),
 ]);
 export const StopResult = Schema.Struct({ workerId: KinWorkerId, stopped: Schema.Boolean });
+
+// lead.md release gate: workers hold a full /mcp credential until T3 scopes tools per capability.
+const workerLaunchReady = false;
+/** Test seam for the release gate; production always reads `workerLaunchReady`. */
+export const WorkerLaunchGate = Context.Reference<boolean>("t3/kin/lead/Workers/WorkerLaunchGate", {
+  defaultValue: () => workerLaunchReady,
+});
 
 const supportedDrivers = new Set([
   ProviderDriverKind.make("claudeAgent"),
@@ -211,6 +219,8 @@ const make = Effect.gen(function* () {
     return { shadowed: true as const, entryId };
   });
   const admit = Effect.fn("KinWorkers.admit")(function* (orgId: KinOrgId) {
+    if (!(yield* WorkerLaunchGate))
+      return yield* denied("Worker launches are disabled until T3 tool scoping lands.");
     if (!(yield* budget.admitWorker(orgId)))
       return yield* new KinChatError({
         reason: "limit",
@@ -352,7 +362,7 @@ const make = Effect.gen(function* () {
           const stored = yield* worker(ctx.orgId, workerId);
           if (stored.wakeupId !== ctx.wakeupId || stored.threadId !== threadId)
             return yield* denied();
-          yield* sql`UPDATE kin_workers SET status = 'queued', ended_at = NULL
+          yield* sql`UPDATE kin_workers SET status = 'queued', started_at = ${startedAt}, ended_at = NULL
             WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId} AND status = 'failed'`;
         }
         const [row] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_workers
@@ -399,6 +409,17 @@ const make = Effect.gen(function* () {
             }),
         ),
       );
+    const live = launched.projection.runs.some(isLive);
+    // A resumed launch can start nothing; the row then takes the thread's real outcome.
+    if (!live) {
+      const last = launched.projection.runs.at(-1);
+      const endedAt =
+        last?.completedAt == null
+          ? yield* Clock.currentTimeMillis
+          : DateTime.toEpochMillis(last.completedAt);
+      yield* sql`UPDATE kin_workers SET status = ${last?.status ?? "failed"}, ended_at = ${endedAt}
+        WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId} AND status = 'queued'`;
+    }
     yield* showCard({
       orgId: ctx.orgId,
       chatId,
@@ -406,7 +427,7 @@ const make = Effect.gen(function* () {
       threadId,
       title: input.title,
       model: modelSelection.model,
-      reopen: launched.projection.runs.some(isLive),
+      reopen: live,
     });
     return { workerId, threadLink: yield* threadLink(threadId) };
   }, guarded("KinWorkers.delegate"));

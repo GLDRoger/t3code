@@ -8,14 +8,16 @@ import {
   KinWorkerId,
   ThreadId,
   isProviderNativeSubagentThread,
+  type OrchestrationV2ProviderTurn,
   type OrchestrationV2Run,
   type OrchestrationV2StoredEvent,
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
-  type RunId,
+  type OrchestrationV2ThreadShell,
   type WorkerReport,
 } from "@t3tools/contracts";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -49,8 +51,23 @@ const ended = new Set<OrchestrationV2Run["status"]>([
   "rolled_back",
 ]);
 const stoppedStatuses = new Set<OrchestrationV2Run["status"]>(["interrupted", "cancelled"]);
-const backoff = Schedule.min([Schedule.exponential("1 second"), Schedule.spaced("30 seconds")]);
+// Claude folds native subagent usage into the parent turn's otherUsage; Codex bills each native thread.
+const separatelyBilledNativeDrivers = new Set<string>(["codex"]);
 const maxEventAttempts = 8;
+const maxLineageDepth = 32;
+
+/** Retry policy for the tracker's start and each event; tests swap in a zero-delay schedule. */
+export const WorkerTrackerRetry = Context.Reference<Schedule.Schedule<unknown, unknown>>(
+  "t3/kin/lead/WorkerTracker/WorkerTrackerRetry",
+  {
+    defaultValue: () =>
+      Schedule.min([Schedule.exponential("1 second"), Schedule.spaced("30 seconds")]),
+  },
+);
+const toMillis = (value: DateTime.Utc | null) =>
+  value === null ? undefined : DateTime.toEpochMillis(value);
+const endedAtMillis = (run: OrchestrationV2Run) =>
+  toMillis(run.completedAt) ?? toMillis(run.startedAt) ?? DateTime.toEpochMillis(run.requestedAt);
 const WorkerRow = Schema.Struct({
   orgId: KinOrgId,
   workerId: KinWorkerId,
@@ -129,27 +146,116 @@ const make = Effect.gen(function* () {
       WHERE w.thread_id = ${threadId} ORDER BY w.worker_id`;
     return raw === undefined ? undefined : yield* decodeWorker(raw);
   });
+  // Separately billed native children run their turns on their own thread with no run attempt; the
+  // run's time window picks them out, and run windows on one thread never overlap.
+  const nativeChildTurns = Effect.fn("WorkerTracker.nativeChildTurns")(function* (
+    projection: OrchestrationV2ThreadProjection,
+    run: OrchestrationV2Run,
+  ) {
+    const from = toMillis(run.startedAt) ?? DateTime.toEpochMillis(run.requestedAt);
+    const until = toMillis(run.completedAt) ?? Number.POSITIVE_INFINITY;
+    const turns: Array<OrchestrationV2ProviderTurn> = [];
+    const seen = new Set<ThreadId>();
+    const pending = [projection];
+    for (let parent = pending.pop(); parent !== undefined; parent = pending.pop()) {
+      for (const subagent of parent.subagents) {
+        const childId = subagent.childThreadId;
+        if (
+          subagent.origin !== "provider_native" ||
+          !separatelyBilledNativeDrivers.has(subagent.driver) ||
+          childId === null ||
+          seen.has(childId)
+        )
+          continue;
+        seen.add(childId);
+        // A child that cannot load must not cost the worker its report; charges only grow later.
+        const child = yield* threads.getThreadProjection(childId).pipe(
+          Effect.tapError((cause) =>
+            Effect.logWarning("Kin worker native child usage unavailable", { childId, cause }),
+          ),
+          Effect.orElseSucceed(() => undefined),
+        );
+        if (child === undefined) continue;
+        for (const turn of child.providerTurns) {
+          const at = toMillis(turn.startedAt) ?? toMillis(turn.completedAt);
+          if (turn.runAttemptId === null && at !== undefined && at >= from && at <= until)
+            turns.push(turn);
+        }
+        pending.push(child);
+      }
+    }
+    return turns;
+  });
+  /** Charges are keyed on the run and only grow, so a replay never bills twice. */
   const charge = Effect.fn("WorkerTracker.charge")(function* (
     worker: typeof WorkerRow.Type,
     projection: OrchestrationV2ThreadProjection,
-    runId: RunId,
+    run: OrchestrationV2Run,
   ) {
     const attempts = new Set(
-      projection.attempts.filter((item) => item.runId === runId).map((item) => item.id),
+      projection.attempts.filter((item) => item.runId === run.id).map((item) => item.id),
+    );
+    const own = projection.providerTurns.filter(
+      (turn) => turn.runAttemptId !== null && attempts.has(turn.runAttemptId),
     );
     yield* budget.chargeWorker({
       orgId: worker.orgId,
       workerId: worker.workerId,
-      runId,
-      usage: projection.providerTurns
-        .filter((turn) => turn.runAttemptId !== null && attempts.has(turn.runAttemptId))
-        .map((turn) => ({
-          providerTurnId: turn.id,
-          ...(turn.turnTokenUsage === undefined ? {} : { turnTokenUsage: turn.turnTokenUsage }),
-          ...(turn.tokenUsage === undefined ? {} : { tokenUsage: turn.tokenUsage }),
-          usedTokens: turn.tokenUsage?.usedTokens,
-        })),
+      runId: run.id,
+      usage: [...own, ...(yield* nativeChildTurns(projection, run))].map((turn) => ({
+        providerTurnId: turn.id,
+        ...(turn.turnTokenUsage === undefined ? {} : { turnTokenUsage: turn.turnTokenUsage }),
+        ...(turn.tokenUsage === undefined ? {} : { tokenUsage: turn.tokenUsage }),
+        usedTokens: turn.tokenUsage?.usedTokens,
+      })),
     });
+  });
+  // Every field comes from stored state, so a replay enqueues byte-identical JSON.
+  const enqueueReport = Effect.fn("WorkerTracker.enqueueReport")(function* (
+    worker: typeof WorkerRow.Type,
+    run: OrchestrationV2Run,
+    report: WorkerReport,
+  ) {
+    const eventId = KinEventId.make(`worker-report:${run.id}`);
+    yield* queue
+      .enqueue({
+        _tag: "worker.report",
+        orgId: worker.orgId,
+        eventId,
+        agentId: worker.agentId,
+        receivedAt: DateTime.makeUnsafe(endedAtMillis(run)),
+        dedupeKey: eventId,
+        provenance: yield* author(worker),
+        workerId: worker.workerId,
+        report,
+      })
+      .pipe(
+        Effect.catchTags({
+          // The same id already holds a report for this run; only its provenance can have drifted.
+          KinEventQueueConflict: (error) =>
+            error.eventId === eventId ? Effect.void : Effect.fail(error),
+          KinEventQueueRetiredAgent: () => Effect.void,
+          KinEventQueueUnknownAgent: () => Effect.void,
+        }),
+      );
+  });
+  const blocked = Effect.fn("WorkerTracker.blocked")(function* (
+    worker: typeof WorkerRow.Type,
+    summary: string,
+  ) {
+    const link = formatThreadLink({
+      environmentId: yield* environment.getEnvironmentId,
+      threadId: worker.threadId,
+    });
+    return {
+      result: "blocked",
+      summary,
+      evidence: [{ kind: "link", ref: link }],
+      openQuestions: [],
+      memorySuggestions: [],
+      misleadingMemory: [],
+      parsed: false,
+    } satisfies WorkerReport;
   });
   // Cards are best effort, so a worker without one has nothing to close.
   const closeCard = (input: {
@@ -162,22 +268,25 @@ const make = Effect.gen(function* () {
         KinChatError: (error) => (error.reason === "not_found" ? Effect.void : Effect.fail(error)),
       }),
     );
-  // A worker's delegate_task children bill to it; provider-native children are already in its turns.
+  // A worker's delegate_task descendants bill to it; provider-native children bill with their parent
+  // run. Only subagent links count: a fork is someone else's work, even though it keeps rootThreadId.
   const childRunEnded = Effect.fn("WorkerTracker.childRunEnded")(function* (
     run: OrchestrationV2Run,
   ) {
-    const shell = yield* threads.getThreadShell(run.threadId);
-    if (
-      shell === null ||
-      shell.lineage.relationshipToParent !== "subagent" ||
-      isProviderNativeSubagentThread(shell) ||
-      shell.lineage.rootThreadId === run.threadId
-    )
-      return undefined;
-    const owner = yield* workerFor(shell.lineage.rootThreadId);
-    if (owner === undefined) return undefined;
-    yield* charge(owner, yield* threads.getThreadProjection(run.threadId), run.id);
-    return owner.orgId;
+    let shell: OrchestrationV2ThreadShell | null = yield* threads.getThreadShell(run.threadId);
+    if (shell === null || isProviderNativeSubagentThread(shell)) return undefined;
+    for (let depth = 0; depth < maxLineageDepth; depth += 1) {
+      const parentId: ThreadId | null = shell.lineage.parentThreadId;
+      if (shell.lineage.relationshipToParent !== "subagent" || parentId === null) return undefined;
+      const owner = yield* workerFor(parentId);
+      if (owner !== undefined) {
+        yield* charge(owner, yield* threads.getThreadProjection(run.threadId), run);
+        return owner.orgId;
+      }
+      shell = yield* threads.getThreadShell(parentId);
+      if (shell === null) return undefined;
+    }
+    return undefined;
   });
 
   /** Returns the organization whose worker the run belonged to, if any. */
@@ -186,7 +295,7 @@ const make = Effect.gen(function* () {
     const worker = yield* workerFor(run.threadId);
     if (worker === undefined) return yield* childRunEnded(run);
     const projection = yield* threads.getThreadProjection(worker.threadId);
-    yield* charge(worker, projection, run.id);
+    yield* charge(worker, projection, run);
     // A restart or usage-limit continuation carries the work on; its own end reports.
     if (
       projection.runs.some(
@@ -205,53 +314,54 @@ const make = Effect.gen(function* () {
     });
     // The worker's own children will wake it again; that later run reports.
     if (settled.timedOut) return worker.orgId;
+    // The report keys on the answer run: a re-emitted parent run settles to the same answer.
     const answer = settled.resultRun ?? run;
     const reply = projection.messages.findLast(
       (message) =>
         message.role === "assistant" && message.runId === answer.id && !message.streaming,
     );
-    const link = formatThreadLink({
-      environmentId: yield* environment.getEnvironmentId,
-      threadId: worker.threadId,
-    });
-    const report: WorkerReport = (answer.status === "completed" && reply !== undefined
-      ? parseReport(reply.text)
-      : undefined) ?? {
-      result: "blocked",
-      summary: `Worker ended ${run.status} without a report.`,
-      evidence: [{ kind: "link", ref: link }],
-      openQuestions: [],
-      memorySuggestions: [],
-      misleadingMemory: [],
-      parsed: false,
-    };
-    const now = yield* Clock.currentTimeMillis;
-    const endedAt = run.completedAt === null ? now : DateTime.toEpochMillis(run.completedAt);
-    yield* sql`UPDATE kin_workers SET status = ${run.status}, report_json = ${yield* encodeJson(report)},
-      ended_at = ${endedAt} WHERE org_id = ${worker.orgId} AND worker_id = ${worker.workerId}`;
-    const eventId = KinEventId.make(`worker-report:${run.id}`);
-    yield* queue
-      .enqueue({
-        _tag: "worker.report",
-        orgId: worker.orgId,
-        eventId,
-        agentId: worker.agentId,
-        receivedAt: DateTime.makeUnsafe(now),
-        dedupeKey: eventId,
-        provenance: yield* author(worker),
-        workerId: worker.workerId,
-        report,
-      })
-      .pipe(
-        Effect.catchTags({
-          KinEventQueueRetiredAgent: () => Effect.void,
-          KinEventQueueUnknownAgent: () => Effect.void,
-        }),
-      );
-    if (stoppedStatuses.has(run.status) && worker.chatId !== null)
+    const report =
+      (answer.status === "completed" && reply !== undefined
+        ? parseReport(reply.text)
+        : undefined) ?? (yield* blocked(worker, `Worker ended ${answer.status} without a report.`));
+    yield* sql`UPDATE kin_workers SET status = ${answer.status}, report_json = ${yield* encodeJson(report)},
+      ended_at = ${endedAtMillis(answer)} WHERE org_id = ${worker.orgId} AND worker_id = ${worker.workerId}`;
+    yield* enqueueReport(worker, answer, report);
+    if (stoppedStatuses.has(answer.status) && worker.chatId !== null)
       yield* closeCard({ orgId: worker.orgId, chatId: worker.chatId, threadId: worker.threadId });
     return worker.orgId;
   });
+
+  // After the last attempt the worker must not stay open with no report and a live card.
+  const abandon = Effect.fn("WorkerTracker.abandon")(
+    function* (stored: OrchestrationV2StoredEvent, cause: Cause.Cause<unknown>) {
+      yield* Effect.logError("Kin worker tracker gave up on an event", {
+        sequence: stored.sequence,
+        attempts: maxEventAttempts,
+        cause,
+      });
+      const { event } = stored;
+      if (event.type !== "run.updated" || !ended.has(event.payload.status)) return false;
+      const run = event.payload;
+      const worker = yield* workerFor(run.threadId).pipe(Effect.orElseSucceed(() => undefined));
+      if (worker === undefined) return false;
+      const report = yield* blocked(worker, "Kin's tracker could not process the run.");
+      const closed = yield* sql`UPDATE kin_workers SET status = 'failed',
+      report_json = ${yield* encodeJson(report)}, ended_at = ${endedAtMillis(run)}
+      WHERE org_id = ${worker.orgId} AND worker_id = ${worker.workerId}
+        AND status NOT IN ${sql.in([...ended])} RETURNING worker_id`;
+      if (closed.length === 0) return true;
+      yield* enqueueReport(worker, run, report).pipe(Effect.ignore);
+      if (worker.chatId !== null)
+        yield* closeCard({
+          orgId: worker.orgId,
+          chatId: worker.chatId,
+          threadId: worker.threadId,
+        }).pipe(Effect.ignore);
+      return true;
+    },
+    Effect.orElseSucceed(() => true),
+  );
 
   const strays = new Set<string>();
   const strayDelegation = Effect.fn("WorkerTracker.strayDelegation")(function* (
@@ -294,32 +404,29 @@ const make = Effect.gen(function* () {
       ),
   );
 
-  // A stream end or a failed event resubscribes after the last processed event; every step is
-  // idempotent, so the failed event replays. One that keeps failing is skipped, not retried forever.
-  const follow = (eventType: "run.updated" | "subagent.updated", from: number) => {
+  // Every step is idempotent, so each event retries on a fresh schedule and a stream failure
+  // resubscribes after the last handled event. An event that keeps failing is abandoned.
+  const follow = Effect.fnUntraced(function* (
+    eventType: "run.updated" | "subagent.updated",
+    from: number,
+  ) {
+    const retry = yield* WorkerTrackerRetry;
     let after = from;
-    let failing = { sequence: -1, attempts: 0 };
     const step = (stored: OrchestrationV2StoredEvent) =>
       process(stored).pipe(
+        Effect.retry({ schedule: retry, times: maxEventAttempts - 1 }),
+        Effect.catchCauseIf(
+          (cause) => !Cause.hasInterruptsOnly(cause),
+          (cause) => abandon(stored, cause),
+        ),
         Effect.flatMap((touched) => (touched ? advance(stored.sequence) : Effect.void)),
-        Effect.catchCause((cause) => {
-          const attempts = failing.sequence === stored.sequence ? failing.attempts + 1 : 1;
-          failing = { sequence: stored.sequence, attempts };
-          return attempts < maxEventAttempts
-            ? Effect.failCause(cause)
-            : Effect.logError("Kin worker tracker skipped an event that kept failing", {
-                sequence: stored.sequence,
-                attempts,
-                cause,
-              });
-        }),
         Effect.tap(() =>
           Effect.sync(() => {
             after = Math.max(after, stored.sequence);
           }),
         ),
       );
-    return Effect.suspend(() =>
+    return yield* Effect.suspend(() =>
       orchestrator
         .streamStoredEventsFrom({ eventType, afterSequence: after })
         .pipe(Stream.runForEach(step)),
@@ -331,10 +438,10 @@ const make = Effect.gen(function* () {
           cause,
         }),
       ),
-      Effect.retry(backoff),
+      Effect.retry(retry),
       Effect.forkScoped,
     );
-  };
+  });
 
   // A crash between the insert and the launch leaves a queued row with no thread. Rows from this
   // process are skipped: their launch may still be in flight.
@@ -355,7 +462,7 @@ const make = Effect.gen(function* () {
     }
   });
 
-  const start = Effect.gen(function* () {
+  const begin = Effect.gen(function* () {
     const latest = yield* events.latestAgentSequence();
     const orgs = yield* orgIds();
     for (const orgId of orgs) {
@@ -379,11 +486,12 @@ const make = Effect.gen(function* () {
     Effect.tapCause((cause) =>
       Effect.logWarning("Kin worker tracker could not start; retrying", { cause }),
     ),
-    Effect.retry(backoff),
-    Effect.flatMap(({ runs, latest }) =>
-      Effect.andThen(follow("run.updated", runs), follow("subagent.updated", latest)),
-    ),
-    Effect.asVoid,
+  );
+  const start = Effect.gen(function* () {
+    const { runs, latest } = yield* begin.pipe(Effect.retry(yield* WorkerTrackerRetry));
+    yield* follow("run.updated", runs);
+    yield* follow("subagent.updated", latest);
+  }).pipe(
     Effect.catchCause((cause) => Effect.logError("Kin worker tracker unavailable", { cause })),
   );
 
