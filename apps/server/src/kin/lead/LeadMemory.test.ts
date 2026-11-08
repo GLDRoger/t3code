@@ -39,6 +39,7 @@ import * as Writer from "../memory/MemoryWriter.ts";
 import * as Scan from "../memory/secretScan.ts";
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import * as Lead from "./LeadMemory.ts";
+import { KinWorkers } from "./Workers.ts";
 import * as Registry from "./KinLeadRegistry.ts";
 import { KinLeadToolkit } from "./mcp/tools.ts";
 import { handlers } from "./mcp/handlers.ts";
@@ -68,6 +69,7 @@ const client = McpSchema.McpServerClient.of({
 });
 const registration = McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers).pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+  Layer.provide(Layer.mock(KinWorkers)({})),
   Layer.provide(
     Layer.mock(Threads.ThreadManagementService)({
       getThreadShell: (id) => Effect.succeed({ ...liveThreadShell(id), providerInstanceId }),
@@ -266,7 +268,17 @@ it.live(
         );
         assert.sameMembers(
           yield* visible.pipe(Effect.provideService(McpInvocationContext, scope)),
-          ["memory_search", "memory_read", "memory_write", "kin_defer", "kin_journal", "kin_end"],
+          [
+            "kin_delegate",
+            "kin_follow_up",
+            "kin_worker_stop",
+            "memory_search",
+            "memory_read",
+            "memory_write",
+            "kin_defer",
+            "kin_journal",
+            "kin_end",
+          ],
         );
         for (const thread of [
           undefined,
