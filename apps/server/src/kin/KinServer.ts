@@ -17,6 +17,7 @@ export type Services =
   | KinChatService
   | KinBudget
   | KinEventQueue
+  | KinChatHub
   | ApproverKeys
   | KinPushDevices
   | KinPushPresence

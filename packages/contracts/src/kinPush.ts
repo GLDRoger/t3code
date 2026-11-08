@@ -8,7 +8,7 @@ import {
 } from "./auth.ts";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinActionId } from "./kinApprovals.ts";
-import { KinChatId, KinOrgId, KinWidgetId } from "./kinChat.ts";
+import { KinChatId, KinOrgId, KinTrimmedText, KinWidgetId } from "./kinChat.ts";
 
 /** A native APNs device token in hex. Apple says not to fix the length; today it is 32 bytes. */
 export const KinPushToken = Schema.String.check(
@@ -62,7 +62,7 @@ export const KinPushRegisterDeviceInput = Schema.Struct({
   token: KinPushToken,
   platform: KinPushPlatform,
   apsEnvironment: KinApsEnvironment,
-  deviceLabel: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(80))),
+  deviceLabel: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(80))),
 });
 export type KinPushRegisterDeviceInput = typeof KinPushRegisterDeviceInput.Type;
 

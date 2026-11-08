@@ -15,6 +15,8 @@ const tableNames = [
   "kin_agents",
   "kin_approver_keys",
   "kin_audit",
+  "kin_auth_key_repairs",
+  "kin_auth_session_keys",
   "kin_budget",
   "kin_budget_charges",
   "kin_budget_limits",
@@ -28,7 +30,9 @@ const tableNames = [
   "kin_floor_runs",
   "kin_grants",
   "kin_judge_log",
+  "kin_lead_tool_calls",
   "kin_leads",
+  "kin_memory_heads",
   "kin_memory_reads",
   "kin_messages",
   "kin_org_state",
@@ -41,6 +45,9 @@ const tableNames = [
   "kin_ping_ledger",
   "kin_push_devices",
   "kin_read_state",
+  "kin_routine_folds",
+  "kin_routine_preferences",
+  "kin_secret_allow",
   "kin_session_bindings",
   "kin_shadow_entries",
   "kin_trigger_fires",
@@ -102,8 +109,13 @@ describe("Kin migrations", () => {
           { migration_id: 8, name: "Floor" },
           { migration_id: 9, name: "JudgeLog" },
           { migration_id: 10, name: "ChatChanges" },
-          { migration_id: 11, name: "Approvals" },
-          { migration_id: 12, name: "PushDevices" },
+          { migration_id: 11, name: "MemoryHeads" },
+          { migration_id: 12, name: "SecretAllow" },
+          { migration_id: 13, name: "Routines" },
+          { migration_id: 14, name: "LeadToolCalls" },
+          { migration_id: 15, name: "AuthSessionKeys" },
+          { migration_id: 16, name: "Approvals" },
+          { migration_id: 17, name: "PushDevices" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
@@ -111,6 +123,8 @@ describe("Kin migrations", () => {
         );
         for (const [table, names] of [
           ["kin_triggers", ["next_run_at", "created_at", "updated_at"]],
+          ["kin_auth_session_keys", ["created_at", "repaired_at"]],
+          ["kin_auth_key_repairs", ["created_at", "consumed_at"]],
           ["kin_trigger_fires", ["fired_at"]],
           ["kin_trigger_inbox", ["received_at", "consumed_at"]],
           ["kin_ping_ledger", ["pinged_at", "escalated_at"]],
@@ -133,7 +147,9 @@ describe("Kin migrations", () => {
           yield* sql`SELECT name FROM pragma_table_info('kin_webhook_sources') WHERE pk > 0 ORDER BY pk`,
           [{ name: "org_id" }, { name: "source_id" }],
         );
-        for (const { name } of before) {
+        for (const { name } of before.filter(
+          (row) => !["kin_auth_session_keys", "kin_auth_key_repairs"].includes(row.name),
+        )) {
           const columns = yield* sql<{ name: string; notnull: number }>`
           SELECT name, "notnull" FROM pragma_table_info(${name})
         `;
@@ -160,8 +176,13 @@ describe("Kin migrations", () => {
           { migration_id: 8, name: "Floor" },
           { migration_id: 9, name: "JudgeLog" },
           { migration_id: 10, name: "ChatChanges" },
-          { migration_id: 11, name: "Approvals" },
-          { migration_id: 12, name: "PushDevices" },
+          { migration_id: 11, name: "MemoryHeads" },
+          { migration_id: 12, name: "SecretAllow" },
+          { migration_id: 13, name: "Routines" },
+          { migration_id: 14, name: "LeadToolCalls" },
+          { migration_id: 15, name: "AuthSessionKeys" },
+          { migration_id: 16, name: "Approvals" },
+          { migration_id: 17, name: "PushDevices" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -170,6 +191,10 @@ describe("Kin migrations", () => {
         assert.deepStrictEqual(
           yield* sql`SELECT name FROM pragma_index_info('idx_kin_triggers_due') ORDER BY seqno`,
           ["next_run_at", "org_id", "trigger_id"].map((name) => ({ name })),
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT name FROM pragma_index_info('kin_workers_owner_review') ORDER BY seqno`,
+          ["org_id", "ended_at", "worker_id"].map((name) => ({ name })),
         );
         const indexes = yield* sql<{ name: string }>`
         SELECT name FROM sqlite_master WHERE type = 'index' AND name GLOB 'idx_kin_*' ORDER BY name
@@ -243,8 +268,13 @@ describe("Kin migrations", () => {
         [8, "Floor"],
         [9, "JudgeLog"],
         [10, "ChatChanges"],
-        [11, "Approvals"],
-        [12, "PushDevices"],
+        [11, "MemoryHeads"],
+        [12, "SecretAllow"],
+        [13, "Routines"],
+        [14, "LeadToolCalls"],
+        [15, "AuthSessionKeys"],
+        [16, "Approvals"],
+        [17, "PushDevices"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -273,6 +303,8 @@ describe("Kin migrations", () => {
       yield* sql`DROP INDEX idx_kin_messages_changes`;
       yield* sql`ALTER TABLE kin_messages DROP COLUMN change_seq`;
       yield* sql`ALTER TABLE kin_chats DROP COLUMN change_seq`;
+      yield* sql`DROP TABLE kin_auth_key_repairs`;
+      yield* sql`DROP TABLE kin_auth_session_keys`;
       yield* sql`DROP TABLE kin_judge_log`;
       yield* sql`DROP TABLE kin_floor_notices`;
       yield* sql`DROP TABLE kin_floor_grants`;
@@ -281,6 +313,12 @@ describe("Kin migrations", () => {
       yield* sql`DROP TABLE kin_ping_escalations`;
       yield* sql`DROP TABLE kin_ping_items`;
       yield* sql`DROP INDEX kin_chat_members_one_owner`;
+      yield* sql`DROP TABLE kin_lead_tool_calls`;
+      yield* sql`DROP TABLE kin_memory_heads`;
+      yield* sql`DROP TABLE kin_secret_allow`;
+      yield* sql`DROP INDEX kin_workers_owner_review`;
+      yield* sql`DROP TABLE kin_routine_folds`;
+      yield* sql`DROP TABLE kin_routine_preferences`;
       yield* sql`DROP TABLE kin_budget_charges`;
       yield* sql`ALTER TABLE kin_events DROP COLUMN budget_deferred`;
       for (const table of [
@@ -304,8 +342,13 @@ describe("Kin migrations", () => {
         [8, "Floor"],
         [9, "JudgeLog"],
         [10, "ChatChanges"],
-        [11, "Approvals"],
-        [12, "PushDevices"],
+        [11, "MemoryHeads"],
+        [12, "SecretAllow"],
+        [13, "Routines"],
+        [14, "LeadToolCalls"],
+        [15, "AuthSessionKeys"],
+        [16, "Approvals"],
+        [17, "PushDevices"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,
@@ -341,8 +384,13 @@ describe("Kin migrations", () => {
         { migration_id: 8, name: "Floor" },
         { migration_id: 9, name: "JudgeLog" },
         { migration_id: 10, name: "ChatChanges" },
-        { migration_id: 11, name: "Approvals" },
-        { migration_id: 12, name: "PushDevices" },
+        { migration_id: 11, name: "MemoryHeads" },
+        { migration_id: 12, name: "SecretAllow" },
+        { migration_id: 13, name: "Routines" },
+        { migration_id: 14, name: "LeadToolCalls" },
+        { migration_id: 15, name: "AuthSessionKeys" },
+        { migration_id: 16, name: "Approvals" },
+        { migration_id: 17, name: "PushDevices" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);
@@ -354,13 +402,13 @@ describe("Kin migrations", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runKinMigrations();
-      // What a database looks like when K012 merged before a lower-numbered migration.
+      // What a database looks like when K017 merged before a lower-numbered migration.
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 5`;
       const history = yield* kinHistory;
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 12");
+      assert.include(String(exit), "below the latest applied migration 17");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -369,11 +417,11 @@ describe("Kin migrations", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runKinMigrations();
-      // What a database looks like after running another branch's K012.
-      yield* sql`UPDATE kin_sql_migrations SET name = 'Budget' WHERE migration_id = 12`;
+      // What a database looks like after running another branch's K017.
+      yield* sql`UPDATE kin_sql_migrations SET name = 'Budget' WHERE migration_id = 17`;
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
-      assert.include(String(exit), "12_PushDevices");
+      assert.include(String(exit), "17_PushDevices");
       assert.include(String(exit), "share a number");
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
