@@ -35,6 +35,7 @@ import {
   PersistenceSqlError,
   toPersistenceSqlError,
 } from "../../persistence/Errors.ts";
+import { KIN_COMMAND_PREFIX, KIN_TASK_PREFIX } from "./taskIds.ts";
 
 export class KinTriggerFireConflict extends Schema.TaggedError<KinTriggerFireConflict>()(
   "KinTriggerFireConflict",
@@ -93,11 +94,11 @@ const decodeInboxRow = Schema.decodeUnknownEffect(
 const Scope = Schema.Struct({ orgId: KinOrgId, id: KinTriggerId });
 
 export const githubAppCommandId = (orgId: KinOrgId) =>
-  CommandId.make(`kin:webhook:${orgId}:${KIN_GITHUB_APP_SOURCE}`);
+  CommandId.make(`${KIN_COMMAND_PREFIX}webhook:${orgId}:${KIN_GITHUB_APP_SOURCE}`);
 // Upstream names a task created by commandId `scheduled-task:${commandId}`.
 export const githubAppTaskId = (orgId: KinOrgId) =>
   ScheduledTaskId.make(`scheduled-task:${githubAppCommandId(orgId)}`);
-export const KIN_WEBHOOK_TASK_PREFIX = "scheduled-task:kin:webhook:";
+export const KIN_WEBHOOK_TASK_PREFIX = `${KIN_TASK_PREFIX}webhook:`;
 export const GITHUB_REPLAY_KEY = "{{headers.x-github-delivery}}";
 // Exactly this, no coalesce window: a held delivery would outlive a re-key.
 export const GITHUB_DEDUPE = { replayKey: GITHUB_REPLAY_KEY };
