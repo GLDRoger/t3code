@@ -236,11 +236,21 @@ export const KinTaskCardState = Schema.Struct({
 
 Flow:
 
-1. The lead calls `delegate_task`, then `kin_widget_upsert({ chatId, type: "task", state })` with the ids from the result. The server checks that the thread exists with `OrchestratorV2.getThreadShell`.
-2. **`KinTaskCardUpdater`** (**new**, `apps/server/src/kin/chat/TaskCardUpdater.ts`) follows `OrchestratorV2.streamDomainEvents`. For a thread linked to an open task card it re-reads `getThreadShell` (debounced 1 s per thread) and maps `status`, `activityRunStatus`, `pendingRuntimeRequest` (gives `needs_decision`), `lastError` and `pullRequests` onto the card. It bumps `revision` and publishes `widget.updated`. No new message is posted (interface rule 2).
-3. On start it rechecks every open task card once, since events during downtime are not replayed to it.
+1. Kin's worker launcher (LEAD-9) calls the server-only `KinChatService.createTaskCard` after launching a worker with `ThreadLaunchService.launch`; the lead never creates task cards. The method derives the environment, checks the local thread, lead and chat inside the write transaction, and creates a message authored by the lead's member in `kin-default`. It is not exposed through RPC or MCP. Agent and client task-card creation is refused with `not_allowed`.
+2. **`KinTaskCardUpdater`** (**new**, `apps/server/src/kin/chat/TaskCardUpdater.ts`) follows `OrchestratorV2.streamDomainEvents`. For a thread linked to an open task card it re-reads `getThreadShell` (throttled per thread, leading and trailing at most once per second) and maps `status`, `activityRunStatus`, `pendingRuntimeRequest` (gives `needs_decision`), `lastError` and `pullRequests` onto the card. Only a real state change, ignoring `updatedAt`, bumps `revision` and publishes `widget.updated`. No new message is posted (interface rule 2).
+3. On start and every stream reconnect it queues a throttled recheck of every open task card, since events during downtime are not replayed to it. Invalid stored task state is left unchanged for the client to show as a placeholder, with a server warning; other cards keep updating.
 4. Tapping the card opens the thread: the app routes `formatThreadLink({ environmentId, threadId })` the way thread chips do. Remote tasks use `remoteEnvironmentId`. Members without thread access see the card without the open action.
-5. The lead closes the card (`closedAt`) when it posts the result with evidence.
+5. The lead closes the card (`closedAt`) when it posts the result with evidence. Closed cards are removed from the live index and stop updating; reopening resumes updates.
+
+Task-card authority: only the server creates local cards, deriving status, pullRequests, lastError and updatedAt from the shell. Identical creation retries return the stored card; conflicting retries fail `not_allowed`. After creation these four fields belong to the updater; agent and human upserts preserve their stored values, while title, model, awaiting and closed remain editable. Task and thread identity fields are immutable. An identical retry at the previous revision returns the stored row; a different stale write fails `widget_changed` inside the transaction. The published `KinTaskCardState` contract is unchanged for lane B.
+
+Status follows the thread's current state, not a terminal latch: done or cancelled can return to working on a later run. Reopening queues a throttled recheck of the thread.
+
+Remote-task rule: CHAT-8 creates local task cards only. Existing remote cards are never resolved against same-named local threads; their last stored state is retained. Remote creation belongs to the future trusted worker launcher integration.
+
+Mapping precedence: archived/deleted gives cancelled with "Thread no longer available"; a missing local shell does the same while retaining other stored fields. Otherwise pendingRuntimeRequest gives needs_decision unless blocking is false; blockedOnThreadWait gives blocked; activityRunStatus gives working (or waiting); otherwise completed gives done, failed gives failed, interrupted/cancelled/rolled_back give cancelled, idle/waiting give waiting, and preparing/queued/starting/running give working. Errors and PR links come only from the shell.
+
+The phase-1 updater rebuilds its open-card index for the reserved default org and tracks subsequent committed card creates/closes. Unlinked events do no SQL. Each linked thread has a sliding single-entry queue with a leading/trailing one-second Effect Clock throttle; closing its last card releases its worker. A bounded coalesced index-change signal reconciles workers without retaining closed thread ids. The credential registry is constructed before orchestration, so the shared Kin root owns the index and the gated MCP transport starts the updater after orchestration is available.
 
 ### Read state and Waiting on you
 
@@ -355,7 +365,7 @@ export const KinChatStreamEvent = Schema.Union([
 
 - `kin_chat_post({ chatId, body, intent, mentions?, replyTo?, clientMessageId? })`
 - `kin_chat_read({ chatId, afterSeq?, limit? })`: messages as data. Text from anyone but the owner is wrapped in quoted blocks labelled with the author's role (section 9.4) by the lead spec's brief builder, not here; this tool returns `authorRole` so it can.
-- `kin_widget_upsert({ chatId, widgetId?, revision?, type, state, awaiting?, replyTo? })`: creates (with a message) or updates in place. Refuses `approval`.
+- `kin_widget_upsert({ chatId, widgetId, revision, type, state, awaiting?, closed? })`: updates an existing task card anchored by the agent's own member. Server-owned state is preserved. Agents never create task cards; creation returns `not_allowed`. Refuses `approval`.
 - `kin_floor_bid({ chatId, runId, reason, intent })` (phase 2).
 
 Kin serves these tools at **`/kin/mcp`**, alongside the existing T3 tools, never in upstream `layerTools`. Two one-line hooks in `server.ts` wrap transport construction and credential issuance; the registry wrapper is the sole Kin construction root for both WS and MCP. The credential wrapper uses the environment's shared `KinIdentity` instance to give only registered agent threads this endpoint; ordinary threads and subagents retain `/mcp`. The Kin transport is mounted only when Kin is enabled and has an isolated MCP registry, authenticates only server-issued provider credentials, and calls `resolveAgent` on every HTTP request. It does not accept OAuth client identities. Credentials become unresolvable when registration changes their required endpoint, and only a new provider session reissues them: an attached live session keeps its dead token and loses every tool. So LEAD-5 registers a lead thread before its first provider session opens and ends it only after its session stops.
@@ -364,7 +374,7 @@ Kin serves these tools at **`/kin/mcp`**, alongside the existing T3 tools, never
 
 `kin_chat_post` accepts an optional `clientMessageId` retry key. Reusing it with identical content returns the stored row; changed content fails `not_allowed`. Omission creates a fresh post on each call. Bodies are nonblank, at most 16,000 characters, and contain no NUL; mentions are capped at 100. Reads are per-call, ascending after a non-negative safe-integer `afterSeq`, with a default limit of 50 and a maximum of 100, and preserve the viewer's suggestion visibility. No agent stream is exposed.
 
-Widget creation accepts `replyTo` as the new anchor message's parent, validated within the same org/chat. Updates require `widgetId` plus the expected `revision`; missing revision is refused, stale revision fails `widget_changed`, and `replyTo` on an update is refused (the anchor is immutable). Widget ownership is CHAT-8. Neither trusted waiting APIs nor hub subscriptions are exposed. `approval` is refused by the service. `kin_floor_bid` and `floorGrant` are phase 2 and absent from the phase-1 toolkit.
+Task-card creation is server-only and unavailable through this toolkit. Updates require `widgetId` plus the expected `revision`; missing revision is refused and stale revision fails `widget_changed`. The anchor is immutable, and an agent can update only cards anchored by its own member. Neither trusted waiting APIs nor hub subscriptions are exposed. `approval` is refused by the service. `kin_floor_bid` and `floorGrant` are phase 2 and absent from the phase-1 toolkit.
 
 ### Floor manager (plain code)
 
@@ -491,6 +501,7 @@ Upstream files touched, hooks only:
 
 ## Security notes
 
+- **Task cards:** the environment id must match this server. Only trusted server code (`KinChatService.createTaskCard`, called by LEAD-9's worker launcher) creates task cards; agents and clients get `not_allowed`. Missing or foreign threads return `not_found`.
 - **Authors are server-made.** People: from the `/ws` session through `KinIdentity`. Agents: from the MCP caller thread through the registry. No input schema has an author field.
 - **No cross-org reads.** Every chat-content query filters by `org_id` from resolved identity or chat membership, never from the client. Trusted bootstrap and MCP caller-thread discovery may find an org; subsequent identity lookups stay in that stored org.
 - **Not-found over forbidden** for chats outside the caller's membership.
@@ -533,7 +544,7 @@ Run with `cd apps/server && vp test run src/kin` and `cd packages/contracts && v
 
 **CHAT-7. Agent MCP tools.** What: `KinChatToolkit` with `kin_chat_post`, `kin_chat_read`, `kin_widget_upsert`; `EnabledWhen` from the shared identity; separate `/kin/mcp` transport and credential wrapper with two `server.ts` hooks. Files: `apps/server/src/kin/mcp/*`. Depends on: CHAT-5. Done when: agent-post tests pass and `AgentContextBudget.test.ts` passes unchanged. Owner: backend. Use the same shared `KinIdentity` instance as WS handlers and test that it is shared.
 
-**CHAT-8. Task cards.** What: `TaskCardUpdater` following `streamDomainEvents` and `getThreadShell`, startup recheck. Files: `apps/server/src/kin/chat/TaskCardUpdater.ts`, `widgets/taskCard.ts`, tests. Depends on: CHAT-5, CHAT-7. Done when: the task card test passes, and a manual run of `delegate_task` from a lead thread shows the card change state in `kin.chat.subscribe` output. Owner: backend.
+**CHAT-8. Task cards.** What: `TaskCardUpdater` following `streamDomainEvents` and `getThreadShell`, startup recheck. Files: `apps/server/src/kin/chat/TaskCardUpdater.ts`, `widgets/taskCard.ts`, tests. Depends on: CHAT-5, CHAT-7. Done when: the task card test passes, and a real `delegate_task` integration test with a server-created card shows the card change state in `kin.chat.subscribe` output. Owner: backend.
 
 **CHAT-9. Floor manager.** What: pure `FloorManager.ts` (rules 1 to 5, replies vs notices), floor tables at the next free migration number, grant tokens in `kin_chat_post`, implicit grants in direct chats, notice rate limit. Files: `apps/server/src/kin/floor/FloorManager.ts`, `migrations/KNNN_Floor.ts` (next free number), tests. Depends on: CHAT-7. Done when: floor table tests pass and a direct-chat test shows a second unprompted reply refused with `floor_not_granted` while a notice passes. Owner: backend.
 

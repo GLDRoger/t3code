@@ -8,6 +8,7 @@ import Triggers from "./migrations/K003_Triggers.ts";
 import MemoryReads from "./migrations/K004_MemoryReads.ts";
 import OneChatOwner from "./migrations/K005_OneChatOwner.ts";
 import Pings from "./migrations/K006_Pings.ts";
+import Budget from "./migrations/K007_Budget.ts";
 import Approvals from "./migrations/K009_Approvals.ts";
 
 const table = "kin_sql_migrations";
@@ -19,6 +20,7 @@ const loader = Migrator.fromRecord({
   "4_MemoryReads": MemoryReads,
   "5_OneChatOwner": OneChatOwner,
   "6_Pings": Pings,
+  "7_Budget": Budget,
   "9_Approvals": Approvals,
 });
 

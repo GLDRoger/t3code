@@ -166,6 +166,32 @@ describe("verifyKinGrant", () => {
         "time_window",
       ],
       ["exp not after iat", signedGrant(key, { exp: NOW - 10 }).compact, "time_window"],
+      [
+        "exp already past, with iat and lifetime in range",
+        signedGrant(key, { iat: NOW - 100, exp: NOW + 50 }).compact,
+        "time_window",
+        NOW + 100,
+      ],
+      [
+        "exp before iat, with now before both",
+        signedGrant(key, { iat: NOW + 100, exp: NOW + 50 }).compact,
+        "time_window",
+      ],
+      ["a clock that isn't a number", compact, "time_window", Number.NaN],
+      [
+        "an id that decodes differently from its signed bytes",
+        signedGrant(key, { orgId: " org_01" as KinGrantPayload["orgId"] }).compact,
+        "malformed",
+      ],
+      [
+        "an extra field nested in approver",
+        signText(
+          key.privateKey,
+          headerText,
+          stableStringify({ ...payload, approver: { ...payload.approver, extra: "x" } }),
+        ),
+        "malformed",
+      ],
     ];
     for (const [name, tampered, reason, now] of cases) {
       assert.deepStrictEqual(verify(tampered, now), { ok: false, reason }, name);
