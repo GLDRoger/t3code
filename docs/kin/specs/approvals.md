@@ -212,12 +212,12 @@ The server's attestation allowlist comes from `KIN_ANDROID_PACKAGE`, `KIN_ANDROI
 
 #### Device session revocation (lane B integration)
 
-`ApproverKeys.reconcileSessions` revokes a key when either of these holds (`revokedBySession` in `apps/server/src/kin/auth/ProofKeySessions.ts`; the exchange block below uses the same proof key rule, except that it honours repairs):
+`ApproverKeys.reconcileSessions` revokes a key when either of these holds (`revokedBySession` in `apps/server/src/kin/auth/ProofKeySessions.ts`, which grant check 10 also uses):
 
 - Its registering session was revoked before it expired, and that session either has no `kin_auth_session_keys` row or is marked `individually_revoked`.
 - Any session mapped to the key's `proof_key_thumbprint` is marked `individually_revoked` and was revoked before it expired. This is how a renewed relay session's revocation reaches a key registered under an earlier id.
 
-"Sign out other devices" revokes every other session, but marks only other keys' live sessions as individual, so the caller's own key and its earlier renewals keep their approver keys. A phone whose sessions had all expired isn't reached by it, or by revoking one of those expired sessions; revoke that phone's key itself. Repairs don't count here: the join still sees a repaired revocation, so a repair never restores an approver key. For the same reason `registerKey` refuses (`invalid_state`) a session whose proof key has such a revocation; the phone pairs again with a fresh DPoP key and registers from that.
+"Sign out other devices" revokes every other session, but marks only other keys' live sessions as individual, so the caller's own key and its earlier renewals keep their approver keys. A phone whose sessions had all expired isn't reached by it, or by revoking one of those expired sessions; revoke that phone's key itself. Either revocation counts against a key unless it was repaired and landed before the key's `created_at` (integer milliseconds; `auth_sessions.revoked_at` is ISO-8601 text, converted to milliseconds before comparing). So a revocation after a key registered revokes it for good, even once repaired, and a repair never restores an approver key; the phone registers a new one. `registerKey` refuses (`invalid_state`) a proof key with any unrepaired revocation and allows one whose revocations are all repaired, because mobile keeps one DPoP key per install and can't pair with a fresh one. The exchange block below uses the same proof key rule, where every repaired revocation stops counting.
 
 There is no backfill: historical `jkt` values exist only in signed tokens, not stored sessions. The mapping is environment-local, not org-owned; the approver table supplies org isolation. K015_AuthSessionKeys owns this environment-local exception; these auth tables intentionally have no org_id.
 

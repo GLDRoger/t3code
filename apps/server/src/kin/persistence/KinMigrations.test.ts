@@ -201,6 +201,7 @@ describe("Kin migrations", () => {
       `;
         assert.deepStrictEqual(indexes, [
           { name: "idx_kin_agents_org_agent" },
+          { name: "idx_kin_auth_session_keys_revoked" },
           { name: "idx_kin_chat_members_agent" },
           { name: "idx_kin_chat_members_person" },
           { name: "idx_kin_chats_org_chat" },
