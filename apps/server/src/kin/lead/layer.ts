@@ -60,7 +60,11 @@ export function containStartup<A, E, R>(layer: Layer.Layer<A, E, R>) {
   );
 }
 
-const routineRuntime = Layer.mergeAll(Routines.layer, DeferralFlow.layer, GithubEvents.consumerLayer).pipe(
+const routineRuntime = Layer.mergeAll(
+  Routines.layer,
+  DeferralFlow.layer,
+  GithubEvents.consumerLayer,
+).pipe(
   Layer.provideMerge(TriggerScheduler.layer),
   Layer.provideMerge(Layer.mergeAll(TriggerStore.layer, TriggerInbox.layer)),
   // Kin builds in its contained startup scope; orchestration runtime does not expose its scheduler.
