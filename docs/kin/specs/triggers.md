@@ -77,7 +77,7 @@ GitHub ──relay──▶ /api/hooks (T3) ─▶ ScheduledTaskService ─▶ T
 KinTriggerScheduler (Scheduler tick, kin_triggers) ────────▶ kin_trigger_inbox ─▶ LEAD queue
 ```
 
-- **Webhooks use T3's scheduled tasks**, because the relay only forwards to `/api/hooks/:hookId/:token`, and signature, replay, filters, the offline hold and the delivery log all live there. Kin owns one unbound T3 webhook task per (org, repo).
+- **Webhooks use T3's scheduled tasks**, because the relay only forwards to `/api/hooks/:hookId/:token`, and signature, replay, filters, the offline hold and the delivery log all live there. Kin owns one unbound T3 webhook task per org, fed by the GitHub App's own webhook.
 - **Time triggers use Kin's own table** on T3's `Scheduler`, reusing `nextScheduledRunAt`. T3's runs always start an agent, `fixed_time` uses the server's zone, late `fixed_time` runs are dropped, and a crash can lose a `once`. Kin needs the owner's zone per org, a late policy per kind, multi-step deferrals, `orgId`, and priority for the budget. Those trigger rows are derived from memory (deferrals) and org settings (routines), so they can be rebuilt.
 - **Why a durable inbox.** The sink sits inside `ScheduledTaskService`'s dependencies, so it depends only on `SqlClient`, `ThreadManagementService`, and Kin's SQL-backed inbox/store. Its layer runs Kin migrations before looking up sources. Otherwise the Kin layer, which itself needs `ScheduledTaskService`, would form a cycle. The inbox row also survives a crash between receipt and processing.
 
@@ -98,7 +98,7 @@ Defaults: brief 08:30 daily, summary 18:30 Mon–Fri, dream 03:00 daily, full re
 - `kin_triggers` stores the `KinTrigger` fields, with `subject_json` and `schedule_json`. Trigger and fire IDs are unique within an org; fire and event deduplication are org-scoped. CRUD is org-scoped; due scans span orgs. `next_run_at`, `created_at` and `updated_at` are integer epoch milliseconds. Indexed due scans use keyset paging on `(next_run_at, org_id, trigger_id)`; a concurrent fire cannot shift an OFFSET page. Time trigger IDs may not start with `gh:`, which is reserved for webhook fires.
 - `kin_trigger_fires` stores `fire_id`, `org_id` and indexed integer `fired_at`. Retention deletes only rows strictly older than `now - 30 days`, not inbox work. Pending inbox rows continue to reject replays after fire retention; consumed inbox rows are separately removed after 7 days, so the inbox does not generally outlive the fire ledger.
 - `kin_trigger_inbox` stores the full `KinTriggerFired` envelope in `payload_json`, integer `received_at` and nullable integer `consumed_at`. Both receive paths insert with `ON CONFLICT (org_id, fire_id) DO NOTHING RETURNING fire_id`; other constraint failures raise. `listPending(orgId, limit)` reads unconsumed rows in `received_at, fire_id` order using an org-scoped pending index. The lead consumer reads pending rows, performs read-only or idempotent I/O (which can run again on replay), then in one transaction inserts into `kin_events` with `ON CONFLICT DO NOTHING` on `(org_id, dedupe_key)` and calls `markConsumed(orgId, fireIds)`. A crash replays pending work; durable event dedupe absorbs it. There are no claims or recovery loop. Reconciliation deletes consumed rows strictly older than 7 days using the `consumed_at` index.
-- `kin_webhook_sources` stores the `KinWebhookSource` fields, keyed by `(org_id, source_id)`, unique by `(org_id, repo)` and by `scheduled_task_id` for the sink lookup. Task and thread IDs have no upstream foreign keys. `kin_trigger_settings` stores one `KinTriggerSettings` per org, including `quiet_hours_json`.
+- `kin_webhook_sources` stores the `KinWebhookSource` fields, keyed by `(org_id, source_id)`, unique by `(org_id, repo)` and by `scheduled_task_id` for the sink lookup. The App source's `repo` is the marker `github-app` (`KIN_GITHUB_APP_SOURCE`), which can't collide with an `owner/name` slug; its id is also `github-app` and its `githubHookId` is null. Task and thread IDs have no upstream foreign keys. `kin_trigger_settings` stores one `KinTriggerSettings` per org, including `quiet_hours_json`.
 - `kin_ping_ledger` has the unique key `(org_id, person, item_id, day)`, where `day` is the owner's local calendar date, plus integer `pinged_at` and nullable integer `escalated_at`. TRIG-11 owns sending, batching and escalation.
 
 ### Time triggers: `KinTriggerScheduler`
@@ -125,17 +125,19 @@ Defaults: brief 08:30 daily, summary 18:30 Mon–Fri, dream 03:00 daily, full re
 
 ### GitHub webhooks
 
-**Creating a source** (`KinWebhookSources.add(orgId, repo)`):
+**One App webhook, not per-repo hooks.** The GitHub App's own webhook covers every repo it is installed on, so Kin needs no `admin:repo_hook` token. An App has one hook config, so there is **one App webhook source per host**: setup refuses with `conflict` while another org holds it, checked again inside `registerSource`'s transaction. Routing one App to several orgs by `installation.id` is a later option. The App covers every repo it is installed on, so TRIG-6 must drop events for repos outside the org's allowlist before anything reaches a prompt. Trade-off: one T3 task's limits (60 accepted per minute, 20 queued) are shared by all of those repos. That is enough for one team; `github_recheck` covers anything the limit drops.
 
-1. Generate a 32-byte secret with `SecureRandom`.
-2. Create the org's inbox thread once. It is a real thread, launched with `ThreadLaunchService.launch` without a message, then archived and stored as `inboxThreadId`. The inbox thread is never an agent thread and is never registered in `kin_agent_threads`. The sink can read an archived inbox projection without posting a message to it.
-3. Call `ScheduledTaskService.upsert`. Kin holds the secret only for this call:
+**Setup** (`KinGithubWebhooks.setup`, owner-only RPC `kin.webhooks.github.setup({ orgId, projectId })`, in `githubWebhooks.ts`):
+
+1. Check the caller is the org's owner (the `KinBudget.set` rule). `kin_orgs` has no project, so the owner passes `projectId`; it must exist and have a default model, which the task and inbox thread use. A second setup naming another project fails. Choosing a quiet project does not fence the task: any live agent can edit or delete it through the orchestrator MCP tools, including agents in other projects (`assertLiveCallerForOtherProject` lets a running caller through). The sink's shape check and secret binding (below) are what keep those edits from authoring deliveries.
+2. Generate a 32-byte secret with `SecureRandom`. `botLogin` comes from `KIN_GITHUB_BOT_LOGIN`, the same key APPR-8's `KinGitHubScope` reads; it must end in `[bot]`, or setup fails with a config error.
+3. Call `ScheduledTaskService.upsert` **disabled**, with `commandId: kin:webhook:${orgId}:github-app`:
 
 ```ts
-{ title: `Kin · GitHub · ${repo}`, prompt: KIN_SINK_PROMPT, enabled: true, projectId: org.projectId,
+{ title: `Kin · GitHub App · ${orgId}`, prompt: KIN_SINK_PROMPT, enabled: false, projectId,
   threadId: null, threadMode: "new_thread", workspaceStrategy: { type: "root" },
   modelSelection: <project default>, runtimeMode: "approval-required", interactionMode: "plan",
-  createdBy: "system", creationSource: "server", commandId: `kin:webhook:${orgId}:${repo}`,
+  createdBy: "system", creationSource: "server",
   schedule: { type: "webhook",
     signature: { header: "x-hub-signature-256", encoding: "hex", prefix: "sha256=", secret },
     maxDeliveryAgeMinutes: null,            // run held requests too; the consumer re-reads state
@@ -144,42 +146,68 @@ Defaults: brief 08:30 daily, summary 18:30 Mon–Fri, dream 03:00 daily, full re
       { path: "headers.x-github-event", op: "in", value: [ "pull_request", "pull_request_review",
         "pull_request_review_comment", "issue_comment", "issues", "check_suite", "workflow_run",
         "push" ] },
-      { path: "body.sender.login", op: "notEquals", value: org.botLogin },  // no loops
+      { path: "body.sender.login", op: "notEquals", value: botLogin },  // no loops
     ] } }
 ```
 
-4. Create the hook on GitHub: `POST /repos/{owner}/{repo}/hooks` with the returned `task.webhook.url`, the secret, `content_type: json` and the same events. This needs `admin:repo_hook`, so it is a privileged action: `request_action({ kind: "github.repo_hook.create", target: repo })` (APPR), and the executor runs it. The secret goes from Kin's create step to the executor through the pending action's sealed payload, never through a model or a chat message. **Fallback:** the setup screen shows the URL, and the owner pastes it in GitHub with a secret they paste into a `request_secret` card.
-5. If `task.webhook.url` is null, T3 Connect is off. Kin posts "GitHub events need T3 Connect on the Kin host" and stops.
+4. If `task.webhook.url` is null, T3 Connect is off: delete the task, post "GitHub events need T3 Connect on the Kin host" to the owner chat as a system notice, return `needs_connect` and stop.
+5. Create the org's inbox thread once: `ThreadLaunchService.launch` without a message (its `commandId` includes org and project, so launch receipts return the same thread on every setup), then archive it. It is never registered in `kin_agent_threads`; `registerSource` and `registerAgentThread` each reject the overlap inside their own write transaction.
+6. `registerSource`, bind the secret's hash, and only then enable the task, so no delivery can reach a real launch with `KIN_SINK_PROMPT`. If registering or binding fails, setup deletes the disabled task.
+7. Point the App at the URL with the executor action `github.app_hook.configure` (`PATCH /app/hook/config` with `url`, `secret`, `content_type: json`). It needs the App's private key, so it is **gated until APPR-9** (`appHookConfigureReady = false`; while off it refuses with `GithubAppHookRefused { reason: "gated" }`). The secret travels in-process as `Redacted`, never through a model, a chat message or a log. The call times out after 30 s (`reason: "timeout"`), because it runs under the host-wide lock. Success returns `configured`.
+8. **Fallback while gated:** return `needs_secret` with the URL to the owner-only surface. The owner sets that URL and a new secret in the GitHub App's webhook settings, then sends the secret with `kin.webhooks.github.setSecret`, which re-saves the task in the shape above with that secret and binds its hash. The secret arrives on the owner's authenticated session (`AuthSettingsWriteScope`, owner check) and stays in-process; a `request_secret` card would hand an agent a ref instead. Until then deliveries fail closed with `rejected_signature`.
+
+Setup, setSecret, rotate and remove take one host-wide lock (`KinGithubWebhookLock`, in Kin's services), so the cross-org check and each source change run one at a time. A repeated setup returns the same source. Before offering GitHub a secret, it re-saves the task in Kin's shape without a secret, so T3 keeps the stored one and the bound hash stays valid; this repairs a task someone edited, or one saved with an older event list, even while gated. A task saved unsigned has no secret to keep, so only a re-key or `setSecret` repairs it. With the gate on setup then re-keys: GitHub takes a fresh secret first, then T3, then the hash binding.
 
 `KIN_SINK_PROMPT` = "Kin trigger. If you are reading this, Kin's trigger sink is not installed. Do nothing and stop." Plan mode plus approval-required keeps an accidental run harmless.
 
-**Why no coalescing.** T3 coalescing keeps only the latest payload, so two PRs in one window would lose one. LEAD's per-org merge window does the batching without dropping events. Rotation: `rotateWebhookToken`, then update the GitHub hook URL through the same executor action.
+**Why no coalescing.** T3 coalescing keeps only the latest payload, so two PRs in one window would lose one. LEAD's per-org merge window does the batching without dropping events.
+
+**Rotate** (`kin.webhooks.github.rotate`): `rotateWebhookToken`, then `github.app_hook.configure` with the new URL only. While gated it returns `needs_url` and the owner updates the URL in the App settings. The old URL stops working at once, so deliveries fail until GitHub has the new one.
+
+**Remove** (`kin.webhooks.github.remove`): disable the task, `unregisterSource`, then delete the task. The archived inbox thread stays for a later setup. `unregisterSource` refuses (`task_active`) while the task is enabled or a delivery is in flight (`last_run_status = 'running'`, or a `dispatching`/`running` pending row), so a delivery can't lose its source mid-dispatch. A delivery that read the task just before remove has no source by the time it launches; the sink refuses any task whose id starts with `scheduled-task:kin:webhook:` (upstream names a commandId-created task `scheduled-task:${commandId}`), so it fails with `dispatch_failed` instead of launching. With no source row, remove still deletes that deterministic task if it exists.
 
 **Receiving: `KinTriggerSink`.** It wraps the `ThreadLaunchService` and `ThreadManagementService` given only to `ScheduledTaskService`:
 
 ```ts
-launch: (input) => {
+receive: (input) => {
   const taskId = input.initialMessage?.scheduledTaskId;
-  const source = taskId && sources.byTaskId(taskId);          // SQL, kin_webhook_sources
-  if (!source) return inner.launch(input);                    // not Kin's: unchanged
-  const deliveryId = parseDelivery(input.commandId, taskId);  // suffix after `${taskId}:webhook:`
-  if (deliveryId === null) return Effect.fail(launchError(input, "dispatch-message"));
-  return inbox.put({ fireId: `gh:${source.orgId}:${deliveryId}`, ... })   // ON CONFLICT (org_id, fire_id) DO NOTHING
-    .pipe(Effect.andThen(threads.getThreadProjection(source.inboxThreadId)),
-          Effect.map((projection) => ({ threadId: source.inboxThreadId, projection, resumed: false })));
+  if (taskId === undefined) return undefined;                 // caller falls through to inner.launch
+  const source = store.sourceByTaskId(taskId);                // SQL, kin_webhook_sources
+  if (source === undefined) {
+    if (taskId starts with "scheduled-task:kin:webhook:") fail(KinTriggerSinkRefused);  // racing remove
+    return undefined;                                         // not Kin's: unchanged
+  }
+  // From here every failure is a ThreadLaunchError("dispatch-message"): no real launch.
+  require(input.commandId starts with `scheduled-task:${taskId}:webhook:` && source.status === "active");
+  const deliveryId = input.commandId.slice(prefix.length);
+  const delivery = findLaunchDelivery(sql, { taskId, deliveryId, projectId: input.projectId,
+    botLogin: source.botLogin });
+  require(delivery);  // unbound new_thread webhook task in this project, signed, with Kin's replay
+                      // dedupe object, event list and bot-sender filter: any live agent can re-save it
+  require(sha256(delivery.secret) equals source.secret_sha256);   // timingSafeEqual; NULL refuses
+  require(delivery.receivedAt > source.secret_bound_at);          // verified under this secret
+  const projection = threads.getThreadProjection(source.inboxThreadId);
+  require(projection.thread.projectId === input.projectId && projection.thread.deletedAt === null);
+  inbox.put({ fireId: `gh:${source.orgId}:${deliveryId}`, dueAt: delivery.receivedAt, firedAt: now,
+    payload: { kind: "github", sourceId: source.id, scheduledTaskId: taskId, deliveryId } }, now);
+  return { threadId: source.inboxThreadId, projection, resumed: false };
 }
 ```
 
-A registered Kin task never falls through to a real launch. The wrapper is local to scheduled tasks and is given the existing thread-management layer explicitly; other callers retain the original launch and thread-management services. Bound Kin sends and failed source lookups are rejected before dispatch; ordinary sends pass through. If parsing, source validation or inbox persistence fails, the launch fails, and T3 logs `dispatch_failed` in Deliveries.
+A registered Kin task never falls through to a real launch. The wrapper is local to scheduled tasks and is given the existing thread-management layer explicitly; other callers retain the original launch and thread-management services. Bound Kin sends, including a `scheduled-task:kin:webhook:` task with no source, and failed source lookups are rejected before dispatch; ordinary sends pass through. If parsing, source validation or inbox persistence fails, the launch fails, and T3 logs `dispatch_failed` in Deliveries.
 
-`KinTriggerStore.registerSource` requires an existing org and an unbound `new_thread` webhook task. `getThreadProjection` checks that the inbox thread is not deleted and its project matches the task's project. Identical registration returns the stored source; conflicting identity fails. TRIG-5 must retain this unbound task shape on edits and disable/delete the upstream task before unregistering its source. Sources have no upstream org column: the `kin_webhook_sources` row establishes ownership; registration rejects task or inbox IDs already owned by another org.
+**Secret binding.** Every Kin save that sets a secret (create, the re-key with the gate on, `setSecret`) is followed under the lock by `bindSecret`, which stores the secret's SHA-256 in `kin_webhook_sources.secret_sha256` and the bind time from `Clock` in `secret_bound_at` (migration K019). The sink hashes the task's current `webhook_secret` and compares the two with `timingSafeEqual`, and it requires the delivery's `received_at` to be later than `secret_bound_at`. T3 verifies a signature when the request arrives, but the sink reads the secret at launch, and a queued delivery can launch after a re-key; the time check ties each delivery to the secret it was verified against. `received_at` is the server clock, or the relay's receive time only with its signed proof (`RelayDeliveryProof`), capped at now, so a caller can backdate it only with the relay's signature. A NULL hash (a source made before K019), a mismatch (an agent swapped the secret, or a re-key is between its save and its bind, when the old hash is still bound) or an early delivery refuses the same way a weakened task does: each fails closed. The way out is `kin.webhooks.github.setSecret`, which re-saves and re-binds. A legitimate delivery the relay held while the host was offline and received before a re-key also refuses; `github_recheck` picks up what it carried. So an agent that re-saves the task with a secret it chose can get forged deliveries accepted upstream, but none reaches the inbox, even if the owner re-keys while one is queued. Neither value is logged, traced or put in an error. The sink also requires Kin's exact dedupe object (`{"replayKey":"{{headers.x-github-delivery}}"}`, no coalesce key or window) and event list, so an edit can't switch off dedupe to replay a delivery or hold one in a coalesce window.
+
+What stays open: an agent can still delete, disable or re-key the task. That stops deliveries (denial of service) but cannot author an inbox row. `trigger_reconcile` (TRIG-10) must report a missing or disabled task, or a hash mismatch, to the owner. Fencing the MCP tools off Kin's task is still an open question.
+
+`KinTriggerStore.registerSource` requires an existing org and an unbound `new_thread` webhook task. It reads the inbox projection before opening its transaction, then checks that the thread is not deleted and its project matches the task's. Identical registration returns the stored source; conflicting identity fails. Sources have no upstream org column: the `kin_webhook_sources` row establishes ownership; registration rejects task or inbox IDs already owned by another org.
 
 The sink verifies the delivery-log row belongs to the scheduled task. `dueAt` is the log's `received_at`, `firedAt` comes from `Clock`, and `lateByMs` is their nonnegative difference. `KinTriggerFired` carries only T3's delivery-log id, not GitHub's delivery header; TRIG-6 reads `x-github-delivery` through `getWebhookDelivery` as described below. No contract change or payload parsing is needed here.
 
 **Consuming (Kin layer, outside the cycle).**
 
 1. For each `github` inbox row, call `ScheduledTaskService.getWebhookDelivery({ id, deliveryId, acceptAnyOutcome: true })`.
-2. Build a `KinGithubEvent` from `headers["x-github-event"]`, `x-github-delivery` and the parsed body. `heldByRelay` is true when the delivery id starts with `delivery:relay:`.
+2. Build a `KinGithubEvent` from `headers["x-github-event"]`, `x-github-delivery` and the parsed body, and drop events for repos outside the org (the App webhook covers every installed repo). `heldByRelay` is true when the delivery id starts with `delivery:relay:`.
 3. The event is a hint. The lead re-reads the PR, issue or run from GitHub before acting, because a held request can be 24 h old, a body over 64 KB is truncated, and the log keeps only 50 deliveries. If the delivery is gone, or `bodyTruncated` is set and the payload can't be parsed, emit a `github_recheck` for that repo instead.
 4. Hand the event to the LEAD queue. Payload text is untrusted (section 9.4): `trust: external`, quoted, never obeyed.
 
@@ -292,14 +320,14 @@ ended in the last 90 days.
 
 All are plain code. They write memory only through the LEAD queue as code-only events, which keeps one writer per org (gap 1).
 
-| Watchdog            | Every                  | Does                                                                                                                                                                                                                                                                                  |
-| ------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `github_recheck`    | 10 min, and at startup | For open items with GitHub links: a closed issue marks its commitment done, a merged PR closes its deferral, and the evidence link is recorded. Matches conditions. Batches GraphQL reads per repo.                                                                                   |
-| `stale_review`      | 30 min                 | PRs with a review requested over 24 h ago: chase the reviewer (ping rules).                                                                                                                                                                                                           |
-| `promise_overdue`   | 30 min                 | Open commitments past `due`: chase whoever promised.                                                                                                                                                                                                                                  |
-| `objective_at_risk` | 6 h                    | Milestone due within 3 days with open linked issues: flag to the owner.                                                                                                                                                                                                               |
-| `index_freshness`   | 1 h                    | `INDEX.md` "As of" older than 36 h: rebuild it (code, below).                                                                                                                                                                                                                         |
-| `trigger_reconcile` | 15 min, and at startup | Every open deferral has armed triggers; every routine exists. Every `KinWebhookSource` task exists, is enabled and isn't `blockedByPolicy`; if not, set `status` and tell the owner. It never re-enables a task the owner paused in T3. Clears consumed inbox rows older than 7 days. |
+| Watchdog            | Every                  | Does                                                                                                                                                                                                                                                                                                                      |
+| ------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `github_recheck`    | 10 min, and at startup | For open items with GitHub links: a closed issue marks its commitment done, a merged PR closes its deferral, and the evidence link is recorded. Matches conditions. Batches GraphQL reads per repo.                                                                                                                       |
+| `stale_review`      | 30 min                 | PRs with a review requested over 24 h ago: chase the reviewer (ping rules).                                                                                                                                                                                                                                               |
+| `promise_overdue`   | 30 min                 | Open commitments past `due`: chase whoever promised.                                                                                                                                                                                                                                                                      |
+| `objective_at_risk` | 6 h                    | Milestone due within 3 days with open linked issues: flag to the owner.                                                                                                                                                                                                                                                   |
+| `index_freshness`   | 1 h                    | `INDEX.md` "As of" older than 36 h: rebuild it (code, below).                                                                                                                                                                                                                                                             |
+| `trigger_reconcile` | 15 min, and at startup | Every open deferral has armed triggers; every routine exists. Every `KinWebhookSource` task exists, is enabled, isn't `blockedByPolicy`, and its secret matches the bound hash; if not, set `status` and tell the owner. It never re-enables a task the owner paused in T3. Clears consumed inbox rows older than 7 days. |
 
 ### Staying fresh (section 4)
 
@@ -503,7 +531,7 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
   - provides the `kin_defer` tool.
 - **CHAT:** `KinOrgId`; delivering messages and pings; `KinWidget` payloads `KinDeferralCard`, `KinHeadsUpCard`, `KinOwnerCheckCard`, `KinDreamReviewCard`; the chat message store for dream material; verified authors for trust checks.
 - **APPR:**
-  - action kinds `github.repo_hook.create`, `memory.dream_review`, `memory.purge`, `kin.secret_allow`;
+  - action kinds `github.app_hook.configure`, `memory.dream_review`, `memory.purge`, `kin.secret_allow`;
   - the standing `dream:auto` delegation;
   - the executor merging at a bound SHA;
   - `KinAuditEntry`;
@@ -515,7 +543,7 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
 - **Webhooks.** Every Kin webhook task requires the HMAC signature, and the URL token is the second factor. A missing secret is a setup error, not "token only". Payload text is untrusted (`trust: external`) and is quoted into briefs, never obeyed. The bot-sender filter stops Kin reacting to itself.
 - **Relay hold.** With hold on, request bodies, including private PR text, sit on T3 Connect's relay (operated by upstream) for up to 24 h. The owner chooses; the setup screen says so.
 - **Lead and worker sessions must not have T3's `schedule_task` tools.** Otherwise a prompt injection could create a recurring agent run with full prompts. LEAD must disable the orchestrator scheduling tools for Kin threads, or Kin must refuse tasks whose `creationSource` is `mcp` in Kin projects. See Open questions.
-- **Secrets.** The webhook secret is passed once to `upsert` and to the executor's sealed payload; it is never logged. T3 stores it in SQLite as plain text, so backups are encrypted.
+- **Secrets.** The webhook secret is passed to `upsert` and, once APPR-9 lands, to the `github.app_hook.configure` action as `Redacted`; it is never logged. While that action is gated, the owner's secret arrives only through the owner-only `setSecret` RPC. T3 stores it in SQLite as plain text, so backups are encrypted.
 - **Auto-merge.** It is bounded twice: Kin's classifier and executor path check, then GitHub `CODEOWNERS` with code-owner review.
 
 ## Tests and acceptance criteria
@@ -540,7 +568,7 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
 | TRIG-2  | Trigger tables and store                                                                                       | `KinTriggerStore.ts`, `KinTriggerInbox.ts`, Kin migrations          | TRIG-1, CHAT-2 (Kin migration list)                                                                 | store tests: idempotent `put`, `orgId` on every row                                                                                                                | backend |
 | TRIG-3  | `KinTriggerScheduler`: owner zone, firing, lateness                                                            | `KinTriggerScheduler.ts`                                            | TRIG-2                                                                                              | scheduler and timezone tests above pass                                                                                                                            | backend |
 | TRIG-4  | `KinTriggerSink` and the runtime-layer hook                                                                    | `KinTriggerSink.ts`, `runtimeLayer.ts` (1 line)                     | TRIG-2                                                                                              | sink tests pass; non-Kin tasks unchanged (existing `ScheduledTaskService*.test.ts` green)                                                                          | backend |
-| TRIG-5  | GitHub webhook sources: create, rotate, inbox thread, hook via executor                                        | `githubWebhooks.ts`                                                 | TRIG-4, APPR-9                                                                                      | test against a fake GitHub creates a task with signature, replay key and filters; a null URL posts the T3 Connect message                                          | backend |
+| TRIG-5  | GitHub App webhook source: setup, secret, rotate, remove, inbox thread; App hook via executor (gated)          | `githubWebhooks.ts`, `webhookRpcHandlers.ts`                        | TRIG-4; APPR-9 opens the gate                                                                       | test against a fake GitHub App creates a task with signature, replay key and filters; a null URL posts the T3 Connect message                                      | backend |
 | TRIG-6  | GitHub event consumer and conditions                                                                           | `githubEvents.ts`                                                   | TRIG-5, LEAD-4                                                                                      | delivery turns into a `KinGithubEvent`; a trimmed delivery falls back to `github_recheck`; a condition on #212 matches a merge                                     | backend |
 | TRIG-7  | Deferral arming from memory (including items written by `kin_defer`), and the confirm card                     | `KinTriggerService.ts`, `deferrals.ts`                              | TRIG-3, LEAD-2, LEAD-7 (`kin_defer`), CHAT-7                                                        | editing `due` in an item re-arms; `status: done` disarms                                                                                                           | backend |
 | TRIG-8  | Deferral due flow: recheck, heads-up, grace, start/ask/remind/chase, late                                      | `deferrals.ts`                                                      | TRIG-7, TRIG-11, LEAD-8, LEAD-9, LEAD-11                                                            | the deferral tests above pass                                                                                                                                      | backend |
@@ -573,7 +601,6 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
 
 ## Open questions
 
-- **GitHub App webhook vs. per-repo hooks.** One App webhook URL would avoid `admin:repo_hook`, but it shares one T3 task's 60-per-minute limit across all repos and orgs. Decide with APPR.
 - **Daytime lead writes.** With the memory repo's `main` requiring PRs (needed for the CODEOWNERS guard), LEAD's daytime writes must land as auto-merged PRs too. Otherwise drop the ruleset and rely on Kin's checks only.
 - **Fencing T3's scheduling tools.** Can `McpToolAccess` remove `schedule_task` for specific threads, or does Kin need a check on `creationSource: "mcp"` in Kin projects? Decide with LEAD.
 - **Owner-check day.** Should the weekly owner check move to the owner's quietest weekday, learned from activity?

@@ -4,6 +4,12 @@ import { KinBudget, KinBudgetGetInput, KinBudgetSetInput } from "./kinLead.ts";
 import { KinApprovalRpcs, KIN_APPROVAL_RPC_SCOPES } from "./kinApprovals.ts";
 import { KinChatError, KinChatRpcs, KIN_CHAT_RPC_SCOPES } from "./kinChat.ts";
 import {
+  KinGithubWebhookOrgInput,
+  KinGithubWebhookSecretInput,
+  KinGithubWebhookSetup,
+  KinGithubWebhookSetupInput,
+} from "./kinTriggers.ts";
+import {
   EnvironmentAuthorizationError,
   AuthOrchestrationReadScope,
   AuthSettingsWriteScope,
@@ -21,13 +27,44 @@ const KinBudgetRpcs = [
     error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
   }),
 ] as const;
+const kinError = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
+export const KinGithubWebhookRpcs = [
+  Rpc.make("kin.webhooks.github.setup", {
+    payload: KinGithubWebhookSetupInput,
+    success: KinGithubWebhookSetup,
+    error: kinError,
+  }),
+  Rpc.make("kin.webhooks.github.setSecret", {
+    payload: KinGithubWebhookSecretInput,
+    success: KinGithubWebhookSetup,
+    error: kinError,
+  }),
+  Rpc.make("kin.webhooks.github.rotate", {
+    payload: KinGithubWebhookOrgInput,
+    success: KinGithubWebhookSetup,
+    error: kinError,
+  }),
+  Rpc.make("kin.webhooks.github.remove", {
+    payload: KinGithubWebhookOrgInput,
+    success: Schema.Struct({}),
+    error: kinError,
+  }),
+] as const;
 export const KinChatAndBudgetRpcs = [...KinChatRpcs, ...KinBudgetRpcs] as const;
-export const KinRpcs = [...KinChatAndBudgetRpcs, ...KinApprovalRpcs] as const;
+export const KinRpcs = [
+  ...KinChatAndBudgetRpcs,
+  ...KinApprovalRpcs,
+  ...KinGithubWebhookRpcs,
+] as const;
 export const KIN_RPC_SCOPES = {
   ...KIN_CHAT_RPC_SCOPES,
   ...KIN_APPROVAL_RPC_SCOPES,
   "kin.budget.get": AuthOrchestrationReadScope,
   "kin.budget.set": AuthSettingsWriteScope,
+  "kin.webhooks.github.setup": AuthSettingsWriteScope,
+  "kin.webhooks.github.setSecret": AuthSettingsWriteScope,
+  "kin.webhooks.github.rotate": AuthSettingsWriteScope,
+  "kin.webhooks.github.remove": AuthSettingsWriteScope,
 } as const;
 
 export const KIN_RPC_AGGREGATES = {
@@ -53,4 +90,8 @@ export const KIN_RPC_AGGREGATES = {
   "kin.approvals.revokeKey": "kin-approvals",
   "kin.audit.list": "kin-approvals",
   "kin.audit.verify": "kin-approvals",
+  "kin.webhooks.github.setup": "kin-webhooks",
+  "kin.webhooks.github.setSecret": "kin-webhooks",
+  "kin.webhooks.github.rotate": "kin-webhooks",
+  "kin.webhooks.github.remove": "kin-webhooks",
 } as const;

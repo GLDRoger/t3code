@@ -21,6 +21,7 @@ import AuthSessionKeys from "./migrations/K015_AuthSessionKeys.ts";
 import DeferralRuns from "./migrations/K016_DeferralRuns.ts";
 import Workers from "./migrations/K017_Workers.ts";
 import Dreams from "./migrations/K018_Dreams.ts";
+import WebhookSecretHash from "./migrations/K019_WebhookSecretHash.ts";
 
 const run = Migrator.make({});
 const loader = Migrator.fromRecord({
@@ -42,6 +43,7 @@ const loader = Migrator.fromRecord({
   "16_DeferralRuns": DeferralRuns,
   "17_Workers": Workers,
   "18_Dreams": Dreams,
+  "19_WebhookSecretHash": WebhookSecretHash,
 });
 
 export const runKinMigrations = Effect.fn("KinMigrations.run")(function* () {
