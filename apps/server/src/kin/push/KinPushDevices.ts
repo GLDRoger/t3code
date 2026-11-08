@@ -18,6 +18,8 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { revokedBySession } from "../auth/ProofKeySessions.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
@@ -79,10 +81,17 @@ export class KinPushDevices extends Context.Service<
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
+  // Callers see a plain refusal; the cause is logged through the persistence error shape.
   const internal = (operation: string) => (cause: unknown) =>
     isKinPushError(cause)
-      ? cause
-      : new KinPushError({ reason: "unavailable", message: `${operation} failed.` });
+      ? Effect.fail(cause)
+      : Effect.logWarning(`${operation} failed`, toPersistenceSqlError(operation)(cause)).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new KinPushError({ reason: "unavailable", message: `${operation} failed.` }),
+            ),
+          ),
+        );
 
   const personIn = (caller: KinPushCaller, orgId: KinOrgId) => {
     const person = caller.people.find((candidate) => candidate.orgId === orgId);
@@ -101,30 +110,33 @@ const make = Effect.gen(function* () {
   });
   const reconcileSessions = Effect.fn("KinPushDevices.reconcileSessions")(
     function* () {
+      // No org filter: sessions are environment-local, so a revoked one is revoked in every org.
       const removed = yield* sql`DELETE FROM kin_push_devices WHERE ${revoked} RETURNING token`;
       return removed.length;
     },
-    Effect.mapError(internal("KinPushDevices.reconcileSessions")),
+    Effect.catch(internal("KinPushDevices.reconcileSessions")),
   );
 
   const register = Effect.fn("KinPushDevices.register")(
     function* (caller: KinPushCaller, input: KinPushRegisterDeviceInput) {
       const person = yield* personIn(caller, input.orgId);
       const now = yield* Clock.currentTimeMillis;
-      // A phone re-registers on every connect, which also moves the row to its current session.
-      // Someone else's token moves only once reconcile would drop it, or its session is gone.
-      const saved = yield* sql`INSERT INTO kin_push_devices ${sql.insert({
-        org_id: input.orgId,
-        token: input.token,
-        person_id: person.personId,
-        platform: input.platform,
-        aps_environment: input.apsEnvironment,
-        device_label: input.deviceLabel ?? null,
-        session_id: caller.session.sessionId,
-        proof_key_thumbprint: caller.session.proofKeyThumbprint ?? null,
-        created_at: now,
-        updated_at: now,
-      })}
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          // A phone re-registers on every connect, which also moves the row to its current session.
+          // Someone else's token moves only once reconcile would drop it, or its session is gone.
+          const saved = yield* sql`INSERT INTO kin_push_devices ${sql.insert({
+            org_id: input.orgId,
+            token: input.token,
+            person_id: person.personId,
+            platform: input.platform,
+            aps_environment: input.apsEnvironment,
+            device_label: input.deviceLabel ?? null,
+            session_id: caller.session.sessionId,
+            proof_key_thumbprint: caller.session.proofKeyThumbprint ?? null,
+            created_at: now,
+            updated_at: now,
+          })}
         ON CONFLICT (org_id, token) DO UPDATE SET
           person_id = excluded.person_id,
           platform = excluded.platform,
@@ -136,18 +148,20 @@ const make = Effect.gen(function* () {
         WHERE kin_push_devices.person_id = excluded.person_id OR ${revoked} OR NOT EXISTS (
           SELECT 1 FROM auth_sessions WHERE session_id = kin_push_devices.session_id)
         RETURNING token`;
-      if (saved.length === 0)
-        return yield* fail("not_member", "This device is registered to someone else.");
-      yield* sql`DELETE FROM kin_push_devices
+          if (saved.length === 0)
+            return yield* fail("not_member", "This device is registered to someone else.");
+          yield* sql`DELETE FROM kin_push_devices
         WHERE org_id = ${input.orgId} AND person_id = ${person.personId} AND token != ${input.token}
           AND token NOT IN (
             SELECT token FROM kin_push_devices
             WHERE org_id = ${input.orgId} AND person_id = ${person.personId}
               AND token != ${input.token}
             ORDER BY updated_at DESC, token LIMIT ${KIN_PUSH_DEVICES_PER_PERSON - 1})`;
-      return { deviceId: kinPushDeviceId(input.token) };
+          return { deviceId: kinPushDeviceId(input.token) };
+        }),
+      );
     },
-    Effect.mapError(internal("KinPushDevices.register")),
+    Effect.catch(internal("KinPushDevices.register")),
   );
 
   const unregister = Effect.fn("KinPushDevices.unregister")(
@@ -158,7 +172,7 @@ const make = Effect.gen(function* () {
         RETURNING token`;
       return { removed: removed.length > 0 };
     },
-    Effect.mapError(internal("KinPushDevices.unregister")),
+    Effect.catch(internal("KinPushDevices.unregister")),
   );
 
   const forPeople = Effect.fn("KinPushDevices.forPeople")(
@@ -181,7 +195,7 @@ const make = Effect.gen(function* () {
         sessionId: row.session_id,
       }));
     },
-    Effect.mapError(internal("KinPushDevices.forPeople")),
+    Effect.catch(internal("KinPushDevices.forPeople")),
   );
 
   const forget = Effect.fn("KinPushDevices.forget")(
@@ -189,7 +203,7 @@ const make = Effect.gen(function* () {
       yield* sql`DELETE FROM kin_push_devices WHERE org_id = ${orgId} AND token = ${token}
         ${invalidSince === undefined ? sql`` : sql`AND updated_at < ${invalidSince}`}`;
     },
-    Effect.mapError(internal("KinPushDevices.forget")),
+    Effect.catch(internal("KinPushDevices.forget")),
   );
 
   return KinPushDevices.of({ register, unregister, forPeople, forget, reconcileSessions });

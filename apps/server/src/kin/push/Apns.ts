@@ -258,6 +258,9 @@ export const makeApnsTransport = Effect.fn("KinApns.makeTransport")(function* (
       const result = yield* attempt(push, body.value, token.value);
       if (RETRY_STATUSES.has(result.status)) return yield* attempt(push, body.value, token.value);
       if (result.reason === "ExpiredProviderToken") {
+        // A concurrent send already renewed it; reuse that instead of signing another.
+        if (jwt !== undefined && jwt.at > token.at)
+          return yield* attempt(push, body.value, jwt.value);
         const now = yield* Clock.currentTimeMillis;
         // APNs throttles provider tokens renewed more often than every 20 minutes.
         if (now - token.at < JWT_MIN_RENEW_MS) {

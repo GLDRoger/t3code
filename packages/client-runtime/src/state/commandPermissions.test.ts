@@ -97,18 +97,15 @@ describe("command permissions", () => {
       }),
     ),
   );
-  it.effect.each([WS_METHODS.serverRefreshProviders, ...Object.values(KIN_PUSH_WS_METHODS)])(
+  it.effect.each(Object.values(KIN_PUSH_WS_METHODS))(
     "requires the destination read grant for %s",
     (method) =>
       Effect.scoped(
         Effect.gen(function* () {
           const registry = yield* setup;
-          const refresh = createCommandPermissions(runtime, method);
+          const push = createCommandPermissions(runtime, method);
           registry.set(sessions(env), AsyncResult.success(grant(true)));
-          expect(registry.get(refresh.permissionAtom(env))).toBe(false);
-          expect((yield* refresh.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
-            "EnvironmentAuthorizationError",
-          );
+          expect(registry.get(push.permissionAtom(env))).toBe(false);
           registry.set(
             sessions(env),
             AsyncResult.success({
@@ -117,20 +114,47 @@ describe("command permissions", () => {
               permissions: [AuthOrchestrationReadScope],
             }),
           );
-          expect(registry.get(refresh.permissionAtom(env))).toBe(true);
-          yield* refresh.authorize(registry, env);
+          expect(registry.get(push.permissionAtom(env))).toBe(true);
+          yield* push.authorize(registry, env);
           registry.set(sessions(other), AsyncResult.success(grant(false)));
-          expect(registry.get(refresh.permissionAtom(other))).toBe(false);
-          expect((yield* refresh.authorize(registry, other).pipe(Effect.flip))._tag).toBe(
-            "EnvironmentAuthorizationError",
-          );
-          registry.set(sessions(env), AsyncResult.success(grant(false)));
-          expect(registry.get(refresh.permissionAtom(env))).toBe(false);
-          expect((yield* refresh.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
+          expect((yield* push.authorize(registry, other).pipe(Effect.flip))._tag).toBe(
             "EnvironmentAuthorizationError",
           );
         }),
       ),
+  );
+  it.effect("requires the destination read grant to refresh providers", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        const refresh = createCommandPermissions(runtime, WS_METHODS.serverRefreshProviders);
+        registry.set(sessions(env), AsyncResult.success(grant(true)));
+        expect(registry.get(refresh.permissionAtom(env))).toBe(false);
+        expect((yield* refresh.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
+          "EnvironmentAuthorizationError",
+        );
+        registry.set(
+          sessions(env),
+          AsyncResult.success({
+            ...grant(false),
+            scopes: [AuthOrchestrationReadScope],
+            permissions: [AuthOrchestrationReadScope],
+          }),
+        );
+        expect(registry.get(refresh.permissionAtom(env))).toBe(true);
+        yield* refresh.authorize(registry, env);
+        registry.set(sessions(other), AsyncResult.success(grant(false)));
+        expect(registry.get(refresh.permissionAtom(other))).toBe(false);
+        expect((yield* refresh.authorize(registry, other).pipe(Effect.flip))._tag).toBe(
+          "EnvironmentAuthorizationError",
+        );
+        registry.set(sessions(env), AsyncResult.success(grant(false)));
+        expect(registry.get(refresh.permissionAtom(env))).toBe(false);
+        expect((yield* refresh.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
+          "EnvironmentAuthorizationError",
+        );
+      }),
+    ),
   );
 
   it.effect("requires the destination preview grant to close a browser tab", () =>

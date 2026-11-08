@@ -423,6 +423,9 @@ describe("KinPushSender", () => {
       assert.deepStrictEqual(yield* recipients("2026-11-08T03:00:00+05:00", null), [memberPhone]);
       assert.deepStrictEqual(yield* recipients("2026-11-08T01:00:00Z", null), []);
       assert.deepStrictEqual(yield* recipients(null, T), []);
+      // A phone whose session was revoked hears nothing, even before anything reconciles.
+      yield* sql`UPDATE auth_sessions SET revoked_at = ${T} WHERE session_id = 'sess-member'`;
+      assert.deepStrictEqual(yield* recipients(null, null), []);
     }).pipe(Effect.provide(build(apns)));
   });
 

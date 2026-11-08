@@ -122,7 +122,8 @@ const make = Effect.gen(function* () {
     const rows = yield* sql<{ person_id: KinPersonId; muted_until: string | null }>`
       SELECT person_id, muted_until FROM kin_chat_members
       WHERE org_id = ${orgId} AND chat_id = ${chatId} AND principal_kind = 'person'
-        AND left_at IS NULL`;
+        AND left_at IS NULL
+      ORDER BY person_id`;
     return rows
       .filter(
         (row) =>
