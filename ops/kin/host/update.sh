@@ -93,12 +93,17 @@ if [ "$state" != active ] || [ "$restarts" != 0 ]; then
   echo "update.sh: $SHA didn't stay up (ActiveState=$state NRestarts=$restarts)." >&2
   touch "$BUILD/.failed"
   systemctl --user reset-failed kin-server 2>/dev/null || true
-  if [ -n "$PREVIOUS" ] && [ -f "$PREVIOUS/apps/server/dist/bin.mjs" ]; then
+  if [ -n "$PREVIOUS" ] && [ "$PREVIOUS" != "$BUILD" ] && [ -f "$PREVIOUS/apps/server/dist/bin.mjs" ]; then
     # The previous build goes back with its own Node version.
-    if [ -f "$ENV_FILE.prev" ]; then mv -f "$ENV_FILE.prev" "$ENV_FILE"; fi
-    ln -sfn "$PREVIOUS" "$CURRENT.new"
-    mv -T "$CURRENT.new" "$CURRENT"
-    systemctl --user daemon-reload
+    {
+      if [ -f "$ENV_FILE.prev" ]; then mv -f "$ENV_FILE.prev" "$ENV_FILE"; fi
+      ln -sfn "$PREVIOUS" "$CURRENT.new"
+      mv -T "$CURRENT.new" "$CURRENT"
+      systemctl --user daemon-reload
+    } || {
+      echo "update.sh: rollback to $PREVIOUS failed; see systemctl --user status kin-server" >&2
+      exit 1
+    }
     systemctl --user restart kin-server || {
       echo "update.sh: rollback restart failed; see systemctl --user status kin-server" >&2
       exit 1
@@ -112,6 +117,7 @@ if [ "$state" != active ] || [ "$restarts" != 0 ]; then
   fi
   exit 1
 fi
+rm -f "$ENV_FILE.prev"
 echo "update.sh: running $SHA. Previous build: ${PREVIOUS:-none}."
 
 # Keep the newest complete builds, the running one and the previous one. Interrupted
