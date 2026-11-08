@@ -267,9 +267,8 @@ lands. Before enabling it:
 - production `MemoryWriterAuthority.resolve` must grant `kind: "owner_check"`
   only after verifying the claimed owner tap, binding its item id and action.
   An owner chat citation is not review-date authority;
-- web and mobile must render the native card, its handled items, and closed state.
-
-If a concurrent card update wins after Keep or Drop is staged, the writer session is discarded before returning the revision conflict.
+- web and mobile must render the native card, its handled items, and closed state;
+- a revision conflict after Keep or Drop is staged must unstage only that item's path. Today it discards the whole wake-up session, which would drop the lead's other staged writes.
 
 Each accepted action advances the card revision and marks that item handled;
 the last handled item closes it. Misleading-memory selection reads reports

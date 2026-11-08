@@ -98,7 +98,15 @@ export class KinRoutines extends Context.Service<
   }
 >()("t3/kin/triggers/routines/KinRoutines") {}
 
+const isPermanent = (cause: unknown): boolean =>
+  Schema.isSchemaError(cause) ||
+  (typeof cause === "object" &&
+    cause !== null &&
+    (("_tag" in cause && cause._tag === "PersistenceDecodeError") ||
+      ("cause" in cause && isPermanent(cause.cause))));
+
 const make = Effect.gen(function* () {
+  const warnedFires = new Set<string>();
   const sql = yield* SqlClient.SqlClient;
   const store = yield* KinTriggerStore.KinTriggerStore;
   const scheduler = yield* KinTriggerScheduler.KinTriggerScheduler;
@@ -364,7 +372,11 @@ const make = Effect.gen(function* () {
             Effect.catch((cause) =>
               Effect.gen(function* () {
                 const consume =
-                  Schema.isSchemaError(cause) || now - Date.parse(fire.dueAt) > 24 * 60 * 60 * 1000;
+                  isPermanent(cause) || now - Date.parse(fire.dueAt) > 24 * 60 * 60 * 1000;
+                const key = `${orgId}:${fire.fireId}`;
+                if (consume) warnedFires.delete(key);
+                else if (warnedFires.has(key)) return;
+                else warnedFires.add(key);
                 yield* Effect.logWarning("Kin routine fire processing failed", {
                   orgId,
                   fireId: fire.fireId,

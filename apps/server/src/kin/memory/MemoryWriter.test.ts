@@ -546,6 +546,7 @@ it.live.each([
           })
           .pipe(Effect.result);
         expect(result._tag).toBe(scenario === "owner-keep" ? "Success" : "Failure");
+        if (result._tag === "Failure") expect(result.failure._tag).toBe("MemoryConflict");
         if (result._tag === "Success") {
           const committed = yield* writer.commitWakeup(orgId, "wake1", "completed");
           expect(
