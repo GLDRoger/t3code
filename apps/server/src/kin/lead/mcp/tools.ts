@@ -6,6 +6,7 @@ import { McpSchema, Tool, Toolkit } from "effect/ai";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as Lead from "../LeadMemory.ts";
+import * as Workers from "../Workers.ts";
 
 const enabled = () => {
   const fiber = Fiber.getCurrent();
@@ -23,7 +24,29 @@ const shared = {
   failureMode: "return" as const,
   dependencies: [Lead.LeadMemory, McpInvocationContext, ThreadManagementService],
 };
+const workers = { ...shared, dependencies: [...shared.dependencies, Workers.KinWorkers] };
 export const KinLeadToolkit = Toolkit.make(
+  Tool.make("kin_delegate", {
+    ...workers,
+    description:
+      "Start a worker for one build, review or research task in one of this lead's worker projects. Needs L2; below it the call is recorded as shadow work and nothing starts. Brief it with one goal, the facts it needs, and member text in quoted. The server adds the report format and posts the task card. model defaults to strong. For review, set reviewOf to the author workerId and pick a model with a different instance and model; the reviewer gets only your goal and the author's reported PR or commit. Identical retries return the same worker. Returns workerId and threadLink. Do not wait: its report arrives as a worker.report event in a later wake-up. Never use delegate_task.",
+    parameters: Workers.DelegateInput,
+    success: Workers.DelegateResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("kin_follow_up", {
+    ...workers,
+    description:
+      "Send more instructions to an existing worker in this organization instead of starting a new one. It keeps its thread and model, and its task card reopens. Needs L2. Review workers refuse follow-ups with not_allowed; start a new review with kin_delegate. Identical retries are not resent. Its next report arrives as a new worker.report event.",
+    parameters: Workers.FollowUpInput,
+    success: Workers.DelegateResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("kin_worker_stop", {
+    ...workers,
+    description:
+      "Stop a worker in this organization: interrupts its running turn and its own delegated tasks, and closes its task card. Returns stopped: false when it had no running turn. Use kin_follow_up to restart it later.",
+    parameters: Workers.StopInput,
+    success: Workers.StopResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("memory_search", {
     ...shared,
     description:

@@ -11,16 +11,23 @@ import * as KinEnabled from "../KinEnabled.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { SessionHooks } from "./sessionHooks.ts";
 
+// `individually_revoked`: 0 none; 1 blocks only if `revoked_at <= expires_at`; 2 blocks unconditionally
+// (bulk sign-out, or a revoke that killed an active session).
+const GUARDED_BLOCK = 1;
+const UNCONDITIONAL_BLOCK = 2;
+
 const enabled = Layer.effect(
   SessionHooks,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const blocked = Effect.fn("ProofKeySessions.blocked")(
       function* (thumbprint: string) {
+        // Readers of `individually_revoked` test `!= 0` and apply the expiry guard only to 1.
         const rows =
           yield* sql`SELECT 1 FROM kin_auth_session_keys m JOIN auth_sessions s ON s.session_id = m.session_id
-      WHERE m.proof_key_thumbprint = ${thumbprint} AND m.individually_revoked = 1 AND m.repaired_at IS NULL
-        AND s.revoked_at IS NOT NULL AND s.revoked_at <= s.expires_at LIMIT 1`;
+      WHERE m.proof_key_thumbprint = ${thumbprint} AND m.repaired_at IS NULL AND s.revoked_at IS NOT NULL
+        AND m.individually_revoked != 0
+        AND (m.individually_revoked != ${GUARDED_BLOCK} OR s.revoked_at <= s.expires_at) LIMIT 1`;
         return rows.length > 0;
       },
       Effect.mapError(toPersistenceSqlError("ProofKeySessions.blocked")),
@@ -91,7 +98,7 @@ const enabled = Layer.effect(
               AND consumed_at IS NULL RETURNING pairing_link_id`;
                 if (repairs.length > 0)
                   yield* sql`UPDATE kin_auth_session_keys SET repaired_at = ${now.epochMilliseconds}
-            WHERE proof_key_thumbprint = ${thumbprint} AND individually_revoked = 1
+            WHERE proof_key_thumbprint = ${thumbprint} AND individually_revoked != 0
               AND session_id IN (SELECT session_id FROM auth_sessions WHERE revoked_at IS NOT NULL)`;
               }
               return !(yield* blocked(thumbprint));
@@ -110,11 +117,21 @@ const enabled = Layer.effect(
             next.delete(sessionId);
             return next;
           }).pipe(Effect.andThen(notifications.emitRemoved(sessionId)));
-        const revoke = (sessionId: AuthSessionId, bulk: boolean) =>
+        const revoke = (sessionId: AuthSessionId, bulk: boolean, callerSessionId?: AuthSessionId) =>
           sql
             .withTransaction(
               Effect.gen(function* () {
                 const now = yield* DateTime.now;
+                // Upstream keeps an expired session active while it stays connected.
+                const connected = sql.in([
+                  ...(yield* Ref.get(notifications.connectedSessionsRef)).keys(),
+                ]);
+                const active = sql`SELECT session_id FROM auth_sessions WHERE expires_at >= ${DateTime.formatIso(now)} OR session_id IN ${connected}`;
+                const keyOf = (id: AuthSessionId | null) =>
+                  sql`SELECT proof_key_thumbprint FROM kin_auth_session_keys WHERE session_id = ${id}`;
+                const caller = bulk ? sessionId : (callerSessionId ?? null);
+                // A caller never signs itself out or blocks the key it is signed in with.
+                const notCallerKey = sql`proof_key_thumbprint IS NOT (${keyOf(caller)})`;
                 const selected = bulk
                   ? sql<{
                       session_id: AuthSessionId;
@@ -122,13 +139,24 @@ const enabled = Layer.effect(
                   : sql<{
                       session_id: AuthSessionId;
                     }>`SELECT s.session_id FROM auth_sessions s LEFT JOIN kin_auth_session_keys m ON m.session_id = s.session_id
-              WHERE s.revoked_at IS NULL AND (s.session_id = ${sessionId} OR (s.expires_at > ${DateTime.formatIso(now)} AND m.proof_key_thumbprint = (SELECT proof_key_thumbprint FROM kin_auth_session_keys WHERE session_id = ${sessionId})))`;
+              WHERE s.revoked_at IS NULL AND s.session_id IS NOT ${caller} AND (s.session_id = ${sessionId}
+                OR (m.proof_key_thumbprint = (${keyOf(sessionId)}) AND s.session_id IN (${active})))`;
+                const blockedKeys = bulk
+                  ? sql`SELECT proof_key_thumbprint FROM kin_auth_session_keys
+              WHERE session_id != ${sessionId} AND ${notCallerKey}`
+                  : sql`SELECT proof_key_thumbprint FROM kin_auth_session_keys
+              WHERE session_id IN (${selected}) AND individually_revoked = ${UNCONDITIONAL_BLOCK} AND ${notCallerKey}`;
                 if (bulk) {
-                  yield* sql`UPDATE kin_auth_session_keys SET individually_revoked = 1 WHERE session_id IN (SELECT session_id FROM auth_sessions WHERE session_id != ${sessionId} AND revoked_at IS NULL AND expires_at > ${DateTime.formatIso(now)})
-              AND proof_key_thumbprint != COALESCE((SELECT proof_key_thumbprint FROM kin_auth_session_keys WHERE session_id = ${sessionId}), '')`;
+                  yield* sql`UPDATE kin_auth_session_keys SET individually_revoked = ${UNCONDITIONAL_BLOCK}, repaired_at = NULL
+              WHERE proof_key_thumbprint IN (${blockedKeys})`;
                 } else {
-                  yield* sql`UPDATE kin_auth_session_keys SET individually_revoked = 1 WHERE session_id = ${sessionId} AND EXISTS (SELECT 1 FROM auth_sessions WHERE session_id = ${sessionId} AND revoked_at IS NULL)`;
+                  yield* sql`UPDATE kin_auth_session_keys SET individually_revoked =
+                CASE WHEN session_id IN (${active}) THEN ${UNCONDITIONAL_BLOCK} ELSE ${GUARDED_BLOCK} END
+              WHERE session_id IN (${selected}) AND ${notCallerKey}`;
                 }
+                // A repair link issued before this block must not lift it.
+                yield* sql`UPDATE kin_auth_key_repairs SET consumed_at = ${now.epochMilliseconds}
+              WHERE consumed_at IS NULL AND thumbprint IN (${blockedKeys})`;
                 return yield* sql<{
                   session_id: AuthSessionId;
                 }>`UPDATE auth_sessions SET revoked_at = ${DateTime.formatIso(now)} WHERE session_id IN (${selected}) AND revoked_at IS NULL RETURNING session_id`;
@@ -179,8 +207,8 @@ const enabled = Layer.effect(
                 ),
               );
           }),
-          revoke: Effect.fn("ProofKeySessions.revoke")((sessionId) =>
-            revoke(sessionId, false).pipe(
+          revoke: Effect.fn("ProofKeySessions.revoke")((sessionId, callerSessionId) =>
+            revoke(sessionId, false, callerSessionId).pipe(
               Effect.map((ids) => ids.some((row) => row.session_id === sessionId)),
               Effect.mapError(
                 (cause) =>

@@ -6,6 +6,8 @@ import {
   KinMessageId,
   type KinOrgId,
   type KinWakeupId,
+  type KinWorkerId,
+  type RunId,
   type TurnTokenUsage,
   type OrchestrationV2ProviderTurnTokenUsage,
 } from "@t3tools/contracts";
@@ -25,7 +27,7 @@ import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as Queue from "./KinEventQueue.ts";
 
 type Priority = "P0" | "P1" | "P2" | "P3" | "P4";
-type Usage = {
+export type Usage = {
   readonly providerTurnId: string;
   readonly turnTokenUsage?: TurnTokenUsage;
   readonly tokenUsage?: OrchestrationV2ProviderTurnTokenUsage;
@@ -94,6 +96,13 @@ export class KinBudget extends Context.Service<
       readonly wakeupId: KinWakeupId;
       readonly usage: ReadonlyArray<Usage>;
     }) => Effect.Effect<Charge, BudgetError>;
+    /** Worker runs bill worker units only; lead turns, including Claude's otherUsage, stay lead units. */
+    readonly chargeWorker: (input: {
+      readonly orgId: KinOrgId;
+      readonly workerId: KinWorkerId;
+      readonly runId: RunId;
+      readonly usage: ReadonlyArray<Usage>;
+    }) => Effect.Effect<{ readonly day: string; readonly units: number }, BudgetError>;
   }
 >()("t3/kin/lead/KinBudget") {}
 
@@ -177,6 +186,61 @@ const make = Effect.gen(function* () {
     });
     yield* hub.publish({ type: "message.posted", orgId, message });
   });
+  const measure = Effect.fn("KinBudget.measure")(function* (
+    usage: ReadonlyArray<Usage>,
+    context: Readonly<Record<string, string>>,
+  ) {
+    let units = 0;
+    const valid = (value: number | undefined) =>
+      value !== undefined && Number.isFinite(value) && value >= 0;
+    const count = (value: number | undefined) => (valid(value) ? value! : 0);
+    const ids = new Set<string>();
+    if (usage.length === 0)
+      yield* Effect.logWarning("Kin budget turn usage unavailable", {
+        ...context,
+      });
+    for (const turn of usage) {
+      if (ids.has(turn.providerTurnId)) continue;
+      ids.add(turn.providerTurnId);
+      const ledger = turn.turnTokenUsage;
+      const complete =
+        ledger?.usageStatus === "complete" &&
+        valid(ledger.inputTokens) &&
+        valid(ledger.outputTokens) &&
+        (ledger.cachedInputTokens === undefined || valid(ledger.cachedInputTokens));
+      if (!complete) {
+        yield* Effect.logWarning("Kin budget using fallback usage", {
+          ...context,
+          usageStatus: ledger?.usageStatus ?? "missing",
+          hasUsedTokens: valid(turn.usedTokens),
+        });
+      }
+      if (!complete && valid(turn.usedTokens)) {
+        units += count(turn.usedTokens);
+        continue;
+      }
+      const incoming = count(ledger?.inputTokens);
+      const cached = Math.min(incoming, count(ledger?.cachedInputTokens));
+      if (cached !== count(ledger?.cachedInputTokens))
+        yield* Effect.logWarning("Kin budget clamped cached usage", {
+          ...context,
+        });
+      units +=
+        incoming -
+        cached +
+        0.1 * cached +
+        4 * count(ledger?.outputTokens) +
+        count(ledger?.otherUsage?.inputTokens) +
+        4 * count(ledger?.otherUsage?.outputTokens);
+    }
+    if (!Number.isFinite(units)) {
+      yield* Effect.logWarning("Kin budget usage overflow", {
+        ...context,
+      });
+      units = 0;
+    }
+    return units;
+  });
   return KinBudget.of({
     get,
     view: Effect.fn("KinBudget.view")(function* (people, orgId) {
@@ -240,59 +304,7 @@ const make = Effect.gen(function* () {
       return `${Math.floor(share(yield* get(orgId)) * 100)}% of today left`;
     }),
     charge: Effect.fn("KinBudget.charge")(function* (input) {
-      let units = 0;
-      const valid = (value: number | undefined) =>
-        value !== undefined && Number.isFinite(value) && value >= 0;
-      const count = (value: number | undefined) => (valid(value) ? value! : 0);
-      const ids = new Set<string>();
-      if (input.usage.length === 0)
-        yield* Effect.logWarning("Kin budget turn usage unavailable", {
-          orgId: input.orgId,
-          wakeupId: input.wakeupId,
-        });
-      for (const turn of input.usage) {
-        if (ids.has(turn.providerTurnId)) continue;
-        ids.add(turn.providerTurnId);
-        const ledger = turn.turnTokenUsage;
-        const complete =
-          ledger?.usageStatus === "complete" &&
-          valid(ledger.inputTokens) &&
-          valid(ledger.outputTokens) &&
-          (ledger.cachedInputTokens === undefined || valid(ledger.cachedInputTokens));
-        if (!complete) {
-          yield* Effect.logWarning("Kin budget using fallback usage", {
-            orgId: input.orgId,
-            wakeupId: input.wakeupId,
-            usageStatus: ledger?.usageStatus ?? "missing",
-            hasUsedTokens: valid(turn.usedTokens),
-          });
-        }
-        if (!complete && valid(turn.usedTokens)) {
-          units += count(turn.usedTokens);
-          continue;
-        }
-        const incoming = count(ledger?.inputTokens);
-        const cached = Math.min(incoming, count(ledger?.cachedInputTokens));
-        if (cached !== count(ledger?.cachedInputTokens))
-          yield* Effect.logWarning("Kin budget clamped cached usage", {
-            orgId: input.orgId,
-            wakeupId: input.wakeupId,
-          });
-        units +=
-          incoming -
-          cached +
-          0.1 * cached +
-          4 * count(ledger?.outputTokens) +
-          count(ledger?.otherUsage?.inputTokens) +
-          4 * count(ledger?.otherUsage?.outputTokens);
-      }
-      if (!Number.isFinite(units)) {
-        yield* Effect.logWarning("Kin budget usage overflow", {
-          orgId: input.orgId,
-          wakeupId: input.wakeupId,
-        });
-        units = 0;
-      }
+      const units = yield* measure(input.usage, { orgId: input.orgId, wakeupId: input.wakeupId });
       const tokensJson = yield* encodeJson(usageJsonValue(input.usage));
       const { day } = yield* period(input.orgId);
       return yield* sql.withTransaction(
@@ -321,6 +333,42 @@ const make = Effect.gen(function* () {
             units: chargedUnits,
             tokensJson,
           };
+        }),
+      );
+    }, Effect.mapError(mapError)),
+    chargeWorker: Effect.fn("KinBudget.chargeWorker")(function* (input) {
+      const units = yield* measure(input.usage, {
+        orgId: input.orgId,
+        workerId: input.workerId,
+        runId: input.runId,
+      });
+      const tokensJson = yield* encodeJson(usageJsonValue(input.usage));
+      const { day } = yield* period(input.orgId);
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const worker =
+            yield* sql`SELECT 1 FROM kin_workers WHERE org_id = ${input.orgId} AND worker_id = ${input.workerId} ORDER BY worker_id`;
+          if (worker.length === 0) return yield* notFound;
+          const [stored] = yield* sql<{
+            day: string;
+            units: number;
+            tokensJson: string;
+          }>`SELECT day, units, tokens_json AS "tokensJson" FROM kin_worker_charges WHERE org_id = ${input.orgId} AND run_id = ${input.runId} ORDER BY run_id`;
+          if (stored !== undefined && (stored.tokensJson === tokensJson || units <= stored.units))
+            return { day: stored.day, units: stored.units };
+          const delta = Math.max(0, units - (stored?.units ?? 0));
+          yield* ensure(input.orgId, day);
+          const before = yield* snapshot(input.orgId, day);
+          if (!Number.isFinite(before.workerUnits + delta)) return yield* invalid;
+          const inserted =
+            yield* sql`INSERT INTO kin_worker_charges (org_id, worker_id, run_id, day, units, tokens_json)
+            VALUES (${input.orgId}, ${input.workerId}, ${input.runId}, ${day}, ${units}, ${tokensJson})
+            ON CONFLICT DO NOTHING RETURNING run_id`;
+          if (inserted.length === 0)
+            yield* sql`UPDATE kin_worker_charges SET units = ${units}, tokens_json = ${tokensJson}
+              WHERE org_id = ${input.orgId} AND run_id = ${input.runId}`;
+          yield* sql`UPDATE kin_budget SET worker_units = worker_units + ${delta} WHERE org_id = ${input.orgId} AND day = ${day}`;
+          return { day: stored?.day ?? day, units };
         }),
       );
     }, Effect.mapError(mapError)),
