@@ -188,8 +188,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
     "other-key",
     "other-key-expired",
     "expired-revocation",
+    "expired-revocation-live-sibling",
     "individual",
     "individual-connected-expired",
+    "individual-connected-expired-original",
+    "individual-connected-expired-alone",
     "insert-race",
   ] as const)("%s", (action) =>
     Effect.gen(function* () {
@@ -240,6 +243,27 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
         yield* TestClock.adjust(Duration.minutes(61));
         yield* sessions.revoke(original.sessionId);
         yield* exchange();
+      } else if (
+        action === "expired-revocation-live-sibling" ||
+        action === "individual-connected-expired-original" ||
+        action === "individual-connected-expired-alone"
+      ) {
+        if (action !== "expired-revocation-live-sibling")
+          yield* sessions.markConnected(original.sessionId);
+        yield* TestClock.adjust(Duration.minutes(61));
+        if (action !== "individual-connected-expired-alone") yield* exchange();
+        yield* sessions.revoke(original.sessionId);
+        const link = yield* auth.createPairingLink({
+          subject: "cloud-connect",
+          proofKeyThumbprint: "device",
+        });
+        expect(
+          (yield* auth
+            .exchangeBootstrapCredentialForAccessToken(link.credential, undefined, metadata, {
+              proofKeyThumbprint: "device",
+            })
+            .pipe(Effect.flip))._tag,
+        ).toBe("ServerAuthInvalidCredentialError");
       } else if (action === "individual") {
         const sibling = yield* exchange();
         yield* sessions.revoke(original.sessionId);
@@ -297,7 +321,13 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
     }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 
-  it.effect.each(["wrong-link", "spent"] as const)("repair guard: %s", (guard) =>
+  it.effect.each([
+    "wrong-link",
+    "spent",
+    "bulk-after-repair",
+    "issued-before-revoke",
+    "issued-before-bulk",
+  ] as const)("repair guard: %s", (guard) =>
     Effect.gen(function* () {
       const sessions = yield* SessionStore.SessionStore;
       const sql = yield* SqlClient.SqlClient;
@@ -313,14 +343,23 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
           ),
         ),
       );
+      const bulkFromDesktop = sessions
+        .issue({ proofKeyThumbprint: "desktop" })
+        .pipe(Effect.flatMap((desktop) => sessions.revokeAllExcept(desktop.sessionId)));
       const first = yield* sessions.issue({ proofKeyThumbprint: "device" });
-      yield* sessions.revoke(first.sessionId);
-      yield* hooks.recordRepair("device", "A");
+      const issuedBefore = guard === "issued-before-revoke" || guard === "issued-before-bulk";
+      if (issuedBefore) yield* hooks.recordRepair("device", "A");
+      if (guard === "issued-before-bulk") yield* bulkFromDesktop;
+      else yield* sessions.revoke(first.sessionId);
+      if (!issuedBefore) yield* hooks.recordRepair("device", "A");
       const grant = { method: "one-time-token", proofKeyThumbprint: "device", pairingLinkId: "A" };
       if (guard === "spent") {
         expect(yield* hooks.checkExchange("device", grant)).toBe(true);
         const next = yield* sessions.issue({ proofKeyThumbprint: "device" });
         yield* sessions.revoke(next.sessionId);
+      } else if (guard === "bulk-after-repair") {
+        expect(yield* hooks.checkExchange("device", grant)).toBe(true);
+        yield* bulkFromDesktop;
       }
       expect(
         yield* hooks.checkExchange("device", {
