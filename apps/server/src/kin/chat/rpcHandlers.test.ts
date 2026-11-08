@@ -1,3 +1,4 @@
+import * as JudgeShadow from "../floor/JudgeShadow.ts";
 import { dormantLeadDependencies } from "../lead/layer.testkit.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -330,6 +331,7 @@ it.effect(
       const service = yield* KinChatService.pipe(
         Effect.provide(
           Layer.fresh(Service.layer).pipe(
+            Layer.provide(JudgeShadow.layerOff),
             Layer.provide(Layer.succeed(Repository.KinChatRepository, interceptedRepo)),
             Layer.provide(
               Layer.succeed(Hub.KinChatHub, {
@@ -439,6 +441,7 @@ it.effect("subscribes before the list snapshot and drops buffered state already 
     const service = yield* KinChatService.pipe(
       Effect.provide(
         Layer.fresh(Service.layer).pipe(
+          Layer.provide(JudgeShadow.layerOff),
           Layer.provide(
             Layer.succeed(
               Repository.KinChatRepository,
@@ -507,6 +510,7 @@ it.effect("drops a failed waiting read without ending the chat list stream", () 
     const service = yield* KinChatService.pipe(
       Effect.provide(
         Layer.fresh(Service.layer).pipe(
+          Layer.provide(JudgeShadow.layerOff),
           Layer.provide(
             Layer.succeed(Repository.KinChatRepository, {
               ...repo,
