@@ -74,7 +74,7 @@ All Kin code lives in `apps/mobile/src/features/chats/`. It reaches upstream thr
 | `KinChat`     | `kin/:orgId/chats/:chatId`            | `pageRoute({ duoMinimize: "onScrollUp" })` | Direct chat                                       |
 | `KinApproval` | `kin/:orgId/actions/:pendingActionId` | `sheetRoute({ detent: 0.75 })`             | Approval detail (also opened from a notification) |
 
-2. **Entry row.** `features/home/HomeScreen.tsx` renders `<KinHomeEntry />` as the first child of `v2ListHeader`. That is one import and one line. The row reads "Kin" with the latest preview, or "Waiting on you · 2" in the highlighted style when anything waits. A tap pushes `KinChats`. It renders nothing when no connected environment hosts a Kin organization, so upstream T3 users see no change.
+2. **Entry row.** `features/home/HomeScreen.tsx` renders `<KinHomeEntry />` in `v2ListHeader`, right after Android's top spacer and before the iOS filters (above the spacer it would sit under the Android bar). That is one import and one line. The row reads "Kin" with the latest preview, or "Waiting on you · 2" in the highlighted style when anything waits. A tap pushes `KinChats`. It renders nothing when no connected environment hosts a Kin organization, so upstream T3 users see no change. It lives in the thread list's header, so it doesn't show where Home skips the list: with no environment, and on Android with no threads.
 3. **Notifications.** `App.tsx` adds `installKinNotifications(linkToAppPath),` to `appServiceDisposers`, plus its import.
 
 Why not a fourth workspace tab: it isn't a one-line hook. A `"kin"` tab needs edits in `navigation-tab-order.ts` (order and labels), `navigation-tabs.ts` (icon), `workspace-tabs-state.ts` (`initialWorkspaceTabsState`), `WorkspaceExtraTab.tsx` (render), `WorkspaceToolbar.ios.tsx` (`SEARCH_LABELS`), `workspace-tab-navigation.ts` (the `tab !== "usage"` column rule), and `createWorkspaceStackNavigator.ios.tsx` (its hard-coded tab list), along with their tests. Revisit in phase 3, when Kin is the main surface.
@@ -303,7 +303,7 @@ Hiding the buttons is a convenience, not the protection (DESIGN 9.3). The server
 
 New, all under `apps/mobile/src/features/chats/` unless noted:
 
-- `routes.tsx`: `KIN_SCREENS` (the four routes above)
+- `routes.tsx`: `KIN_SCREENS` (the four routes above; MOB-2 adds `KinChats` and `KinWaiting`, and `KinChat` and `KinApproval` arrive with their screens)
 - `KinHomeEntry.tsx`, `KinChatsScreen.tsx`, `KinChatScreen.tsx`, `KinWaitingScreen.tsx`, `KinApprovalRouteScreen.tsx`
 - `components/KinAvatar.tsx`, `KinChatRow.tsx`, `KinWaitingBanner.tsx`, `KinMessageBubble.tsx`, `KinFoldLine.tsx`, `KinComposer.tsx`, `KinScreenState.tsx` (the state table as one component)
 - `widgets/KinWidgetView.tsx`, `KinTaskCard.tsx`, `KinDeferralCard.tsx`, `KinApprovalCard.tsx`, `kinCardPresentation.ts` (pure copy and format functions, unit-tested)
@@ -316,7 +316,7 @@ Upstream files touched, one hook each:
 | File                                           | Hook                                                                                                                                 |
 | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | `apps/mobile/src/Stack.tsx`                    | `import { KIN_SCREENS } from "./features/chats/routes";` and `...KIN_SCREENS,` in `screens`                                          |
-| `apps/mobile/src/features/home/HomeScreen.tsx` | `import { KinHomeEntry } ...` and `<KinHomeEntry />` first in `v2ListHeader`                                                         |
+| `apps/mobile/src/features/home/HomeScreen.tsx` | `import { KinHomeEntry } ...` and `<KinHomeEntry />` after `{listHeader}` in `v2ListHeader`                                          |
 | `apps/mobile/src/App.tsx`                      | `import { installKinNotifications } ...` and `installKinNotifications(linkToAppPath),` in `appServiceDisposers`                      |
 | `packages/client-runtime/src/rpc/client.ts`    | add Kin stream tags to `EnvironmentSubscriptionRpcTag` (one line per tag; may be done by the chat spec)                              |
 | `apps/mobile/index.ts`                         | `import "./src/features/chats/state/kinDevLogEntry";` (MOB-1, dev only: with `EXPO_PUBLIC_KIN_DEV_LOG=1` it logs the host and inbox) |
