@@ -1,7 +1,3 @@
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto has no createHmac.
-import * as NodeCrypto from "node:crypto";
-
-import * as Crypto from "@effect/platform-node/NodeCrypto";
 import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
@@ -29,22 +25,23 @@ import { OrchestratorCommandRejectedError } from "../../orchestration-v2/Orchest
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
-import * as ManagedPolicy from "../../policy/ManagedPolicy.ts";
-import * as ManagedProjectFolders from "../../project/ManagedProjectFolders.ts";
-import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
-import * as Scheduler from "../../scheduling/Scheduler.ts";
-import * as SecretRequests from "../../secrets/SecretRequests.ts";
 import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as KinTriggerSink from "./KinTriggerSink.ts";
 import * as KinTriggerStore from "./KinTriggerStore.ts";
-import { projection, timestamp, waitForDispatch } from "./webhooks.testkit.ts";
+import {
+  projection,
+  signedRequest,
+  timestamp,
+  waitForDispatch,
+  webhookTask,
+  withScheduledTasks,
+} from "./webhooks.testkit.ts";
 
 const orgA = KinOrgId.make("org-a");
 const orgB = KinOrgId.make("org-b");
 const decodeSource = Schema.decodeUnknownSync(KinWebhookSource);
-const decodeUpsert = Schema.decodeEffect(ScheduledTaskUpsertInput);
 const decodeUnknownUpsert = Schema.decodeUnknownEffect(ScheduledTaskUpsertInput);
 const decodeFire = Schema.decodeEffect(KinTriggerFired);
 const configured = ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }));
@@ -78,34 +75,7 @@ function source(orgId: KinOrgId) {
   });
 }
 
-const upsert = (id: string, orgId = orgA) =>
-  decodeUpsert({
-    id,
-    title: "Kin webhook",
-    prompt: "Do nothing",
-    enabled: true,
-    projectId: `project-${orgId}`,
-    threadId: null,
-    threadMode: "new_thread",
-    workspaceStrategy: { type: "root" },
-    modelSelection: { instanceId: "codex", model: "gpt-5.4" },
-    runtimeMode: "approval-required",
-    interactionMode: "plan",
-    schedule: {
-      type: "webhook",
-      signature: {
-        header: "x-hub-signature-256",
-        encoding: "hex",
-        prefix: "sha256=",
-        secret: "test-secret",
-      },
-      dedupe: { replayKey: KinTriggerStore.GITHUB_REPLAY_KEY },
-      filters: [
-        { path: "headers.x-github-event", op: "in", value: KinTriggerStore.GITHUB_EVENTS },
-        { path: "body.sender.login", op: "notEquals", value: "kin[bot]" },
-      ],
-    },
-  });
+const upsert = (id: string, orgId = orgA) => webhookTask(id, `project-${orgId}`);
 
 const testSecret = Redacted.make("test-secret");
 
@@ -120,96 +90,21 @@ const threads = Layer.mock(ThreadManagementService.ThreadManagementService)({
   getThreadProjection: (id) => Effect.succeed(projection(id === `inbox-${orgB}` ? orgB : orgA)),
 });
 
-const withService = <A, E, R>(
-  body: (
-    service: ScheduledTaskService.ScheduledTaskService["Service"],
-    launches: ThreadLaunchService.ThreadLaunchInput[],
-    sends: ThreadManagementService.ThreadManagementSendInput[],
-  ) => Effect.Effect<A, E, R>,
-  workers?: Map<string, Effect.Effect<void>>,
-) =>
-  Effect.gen(function* () {
-    const launches: ThreadLaunchService.ThreadLaunchInput[] = [];
-    const sends: ThreadManagementService.ThreadManagementSendInput[] = [];
-    const boundThreads = Layer.mock(ThreadManagementService.ThreadManagementService)({
-      getThreadProjection: (id) => Effect.succeed(projection(id === `inbox-${orgB}` ? orgB : orgA)),
-      sendToThread: (input) =>
-        Effect.gen(function* () {
-          sends.push(input);
-          return yield* new OrchestratorCommandRejectedError({
-            commandId: input.commandId,
-            commandType: "test.inner_send",
-          });
-        }),
-    });
-    const inner = Layer.mock(ThreadLaunchService.ThreadLaunchService)({
-      launch: (input) =>
-        Effect.sync(() => {
-          launches.push(input);
-          return {
-            threadId: projection(orgA).thread.id,
-            projection: projection(orgA),
-            resumed: false,
-          };
-        }),
-    });
-    const serviceLayer = ScheduledTaskService.layer.pipe(
-      Layer.provide(
-        Layer.mergeAll(
-          KinTriggerSink.wrapTaskDispatch(inner, boundThreads),
-          Crypto.layer,
-          workers === undefined
-            ? Scheduler.layer
-            : Layer.succeed(Scheduler.Scheduler, {
-                register: Effect.fn("KinTriggerSinkTest.register")(function* <E2, R2>(
-                  name: string,
-                  work: Effect.Effect<void, E2, R2>,
-                ) {
-                  const context = yield* Effect.context<R2>();
-                  workers.set(name, work.pipe(Effect.provideContext(context), Effect.orDie));
-                }),
-              }),
-          ManagedPolicy.layerTest(),
-          Layer.mock(SecretRequests.SecretRequests)({}),
-          Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
-            namedProjectsRoot: "/projects",
-            isScratchProject: () => Effect.succeed(false),
-          }),
-          Layer.succeed(
-            ScheduledTaskService.ScheduledTaskWebhookOrigin,
-            Effect.succeed({ relayHookBaseUrl: null }),
-          ),
-        ),
-      ),
-    );
-    return yield* Effect.gen(function* () {
-      return yield* body(yield* ScheduledTaskService.ScheduledTaskService, launches, sends);
-    }).pipe(Effect.provide(serviceLayer));
-  });
+const withService = withScheduledTasks;
 
 const request = (
   task: { id: string; webhook?: { path: string } | undefined },
   githubDelivery: string,
   sender = "owner",
   secret = Redacted.value(testSecret),
-) => {
-  const bodyText = JSON.stringify({ sender: { login: sender }, orgId: orgB, sourceId: "foreign" });
-  return {
-    hookId: task.id,
-    token: task.webhook?.path.split("/").at(-1) ?? "",
-    method: "POST",
-    path: "/api/hooks",
-    query: "",
-    bodyText,
-    body: new TextEncoder().encode(bodyText),
-    headers: {
-      "content-type": "application/json",
-      "x-github-event": "pull_request",
-      "x-github-delivery": githubDelivery,
-      "x-hub-signature-256": `sha256=${NodeCrypto.createHmac("sha256", secret).update(bodyText).digest("hex")}`,
-    },
-  };
-};
+) =>
+  signedRequest(
+    task,
+    githubDelivery,
+    { sender: { login: sender }, orgId: orgB, sourceId: "foreign" },
+    "pull_request",
+    secret,
+  );
 
 const services = Layer.mergeAll(
   KinChatRepository.layer,

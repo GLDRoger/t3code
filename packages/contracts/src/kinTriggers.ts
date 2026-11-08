@@ -8,7 +8,7 @@ import {
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { KinOrgId, KinPersonId, KinText } from "./kinChat.ts";
-import { CanonicalUtcTimestamp, KinMemoryItemId } from "./kinLead.ts";
+import { CanonicalUtcTimestamp, GithubRepoSlug, KinMemoryItemId } from "./kinLead.ts";
 import { ScheduledTaskUpsertSchedule, ScheduledTaskWebhookDeliveryId } from "./scheduledTask.ts";
 
 import { TimeOfDay, TimeZone } from "./kinTime.ts";
@@ -96,6 +96,13 @@ export const KinTriggerFired = Schema.Struct({
       sourceId: KinWebhookSourceId,
       scheduledTaskId: ScheduledTaskId,
       deliveryId: ScheduledTaskWebhookDeliveryId,
+    }),
+    /** TRIG-6 asks TRIG-10's sweep to re-read GitHub; `repo: null` means every scoped repo. */
+    Schema.Struct({
+      kind: Schema.Literal("github_recheck"),
+      repo: Schema.NullOr(GithubRepoSlug),
+      reason: Schema.Literals(["delivery_missing", "body_unparseable", "repo_unknown", "stale"]),
+      sourceFireId: KinTriggerFireId,
     }),
   ]),
 });
