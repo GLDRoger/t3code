@@ -54,7 +54,7 @@ Then turn on **Hold webhooks while offline** for this environment in Settings, f
 
 In a kin shell: `~/t3code/ops/kin/host/update.sh`. It fetches `kin` and builds it in a fresh worktree, `~/kin-builds/<sha>`: `vp i`, then `(cd apps/server && vp test run kin-contract)`, then `vp run build:desktop`. The running build is never touched. Only after every step passes does it refresh the units and the Node version, switch `~/kin-current` to the new build and run `systemctl --user restart kin-server`. A failed step deletes the half-built worktree and the server keeps running the old build. It keeps the 3 newest builds.
 
-After the restart it waits 15 seconds and fails if the server isn't still up with no restarts, printing the rollback command.
+After the restart it waits 15 seconds. If the server isn't still up with no restarts, it switches `~/kin-current` back to the previous build, restarts it, keeps the failed build for inspection and exits non-zero.
 
 To roll back: `ln -sfn ~/kin-builds/<previous-sha> ~/kin-current.new && mv -T ~/kin-current.new ~/kin-current && systemctl --user restart kin-server`. Use the absolute path `update.sh` printed, with no trailing slash. If the Node version changed, re-run `sudo ops/kin/host/setup.sh`, which rewrites `KIN_NODE_VERSION` from `~/kin-current`.
 

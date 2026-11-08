@@ -88,7 +88,7 @@ fi
 if user_exists; then
   say "User $KIN_USER exists."
 else
-  run useradd --create-home --shell /bin/bash "$KIN_USER"
+  run useradd --create-home --home-dir "$KIN_HOME" --shell /bin/bash "$KIN_USER"
 fi
 KIN_UID="$(id -u "$KIN_USER" 2>/dev/null || echo '<uid>')"
 

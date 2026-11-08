@@ -87,7 +87,6 @@ trap 'rm -rf "$STAGE"' EXIT
 mkdir "$STAGE/$NAME" "$STAGE/$NAME/userdata"
 {
   tar -C "$USERDATA" --anchored --warning=no-file-changed --warning=no-file-removed \
-    --ignore-failed-read \
     --exclude=./statev2.sqlite --exclude=./statev2.sqlite-wal --exclude=./statev2.sqlite-shm \
     --exclude=./statev2.sqlite-journal --exclude=./logs --exclude=./worktrees \
     --exclude=./browser-artifacts --exclude=./server-runtime.json \

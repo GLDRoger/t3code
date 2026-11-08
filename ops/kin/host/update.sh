@@ -46,7 +46,7 @@ mkdir -p "$BUILDS"
 if [ -e "$BUILD" ]; then git -C "$REPO" worktree remove --force "$BUILD" 2>/dev/null || rm -rf "$BUILD"; fi
 git -C "$REPO" worktree prune
 git -C "$REPO" worktree add --detach "$BUILD" "$SHA"
-trap 'echo "update.sh: build of $SHA failed; the server still runs ${PREVIOUS:-nothing}." >&2; git -C "$REPO" worktree remove --force "$BUILD"' ERR
+trap 'echo "update.sh: build of $SHA failed; the server still runs ${PREVIOUS:-nothing}." >&2; git -C "$REPO" worktree remove --force "$BUILD" 2>/dev/null || rm -rf "$BUILD"' ERR
 cp -p "$REPO/.env" "$BUILD/.env"
 
 node_version="$(sed -n '/"engines"/,/}/s/.*"node": *"\([^"]*\)".*/\1/p' "$BUILD/package.json" | head -n1)"
@@ -84,11 +84,16 @@ systemctl --user daemon-reload
 systemctl --user restart kin-server
 # A build that crashes on boot still reads "active" right after restart; Restart=always hides it.
 sleep 15
-health="$(systemctl --user show -p ActiveState -p NRestarts --value kin-server | paste -sd' ')"
-if [ "$health" != "active 0" ]; then
-  echo "update.sh: $SHA didn't stay up (ActiveState NRestarts: $health)." >&2
-  if [ -n "$PREVIOUS" ]; then
-    echo "Roll back: ln -sfn $PREVIOUS $CURRENT.new && mv -T $CURRENT.new $CURRENT && systemctl --user restart kin-server" >&2
+# systemctl show prints properties in its own order, so read them one at a time.
+state="$(systemctl --user show -P ActiveState kin-server)"
+restarts="$(systemctl --user show -P NRestarts kin-server)"
+if [ "$state" != active ] || [ "$restarts" != 0 ]; then
+  echo "update.sh: $SHA didn't stay up (ActiveState=$state NRestarts=$restarts)." >&2
+  if [ -n "$PREVIOUS" ] && [ -f "$PREVIOUS/apps/server/dist/bin.mjs" ]; then
+    ln -sfn "$PREVIOUS" "$CURRENT.new"
+    mv -T "$CURRENT.new" "$CURRENT"
+    systemctl --user restart kin-server
+    echo "update.sh: rolled back to $PREVIOUS. $BUILD is kept for inspection." >&2
   fi
   exit 1
 fi
