@@ -34,7 +34,8 @@ describe("classifyKinProbe", () => {
     ["pending", AsyncResult.initial(true), "pending"],
     ["an identity", AsyncResult.success(withIdentity), "ready"],
     ["an empty me", AsyncResult.success(orgs([])), "noIdentity"],
-    ["Kin turned off", fail(new KinChatError({ reason: "unavailable", message: "off" })), "notKin"],
+    ["Kin turned off", fail(new KinChatError({ reason: "disabled", message: "off" })), "notKin"],
+    ["a Kin outage", fail(new KinChatError({ reason: "unavailable", message: "down" })), "error"],
     ["a plain T3 server", AsyncResult.failure(Cause.die(new Error("unknown method"))), "notKin"],
     ["a Kin refusal", fail(new KinChatError({ reason: "not_allowed", message: "no" })), "error"],
     [
