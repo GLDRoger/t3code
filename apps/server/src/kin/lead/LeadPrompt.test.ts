@@ -7,6 +7,7 @@ import {
   KinMessageId,
   KinOrgId,
   KinPersonId,
+  ProviderInstanceId,
   KinWakeupId,
   ThreadId,
   type KinAuthor,
@@ -18,9 +19,8 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
-import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
-import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { startWakeupRun, authorityLayer } from "../chat/WakeupAuthority.testkit.ts";
 import * as Memory from "../memory/Memory.ts";
 import { KinLeadPrompt, type KinLeadPromptInput } from "./LeadPrompt.ts";
 
@@ -54,7 +54,7 @@ const event = (messageId: string) =>
     dedupeKey: null,
     provenance: { _tag: "system" },
   });
-const database = KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory));
+const database = authorityLayer;
 const repository = Chat.layer.pipe(Layer.provide(database));
 const memory = Layer.succeed(
   Memory.Memory,
@@ -164,6 +164,11 @@ it.effect.each([
     const { role, tag, label } = row;
     const repo = yield* seed;
     const threadId = ThreadId.make("fixture-thread");
+    const caller = {
+      threadId,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      providerSessionId: "provider-session",
+    };
     if (tag === "agent") {
       yield* repo.insertAgent({
         orgId,
@@ -180,6 +185,14 @@ it.effect.each([
         startedAt: timestamp,
         endedAt: null,
       });
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_leads
+        (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+        VALUES (${agentId}, ${orgId}, 'Fixture lead', 0, '{}', '[]', ${chatId})`;
+      const run = yield* startWakeupRun(threadId, input.wakeupId);
+      yield* sql`INSERT INTO kin_wakeups
+        (wakeup_id, org_id, agent_id, thread_id, model, started_at, status, event_ids, run_id)
+        VALUES (${input.wakeupId}, ${orgId}, ${agentId}, ${threadId}, 'test', 0, 'running', '[]', ${run.id})`;
     }
     yield* repo.addMember({
       orgId,
@@ -205,6 +218,7 @@ it.effect.each([
       chatId,
       messageId: KinMessageId.make("message"),
       author,
+      caller: tag === "agent" ? caller : undefined,
       kind: "text",
       body,
       intent: null,

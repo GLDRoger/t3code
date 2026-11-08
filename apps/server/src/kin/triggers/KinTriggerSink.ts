@@ -181,8 +181,63 @@ export function wrapTaskDispatch<E, R, E2, R2>(
       }),
     ),
   ).pipe(
+    Layer.provide(Layer.mergeAll(layer, KinTriggerStore.layer)),
+    Layer.catchCause((cause) =>
+      Layer.mergeAll(
+        Layer.effectDiscard(
+          KinEnabled.KinEnabled.pipe(Effect.flatMap((config) => config.reportFailure(cause))),
+        ),
+        Layer.effect(
+          ThreadLaunchService.ThreadLaunchService,
+          Effect.gen(function* () {
+            const service = yield* ThreadLaunchService.ThreadLaunchService;
+            return ThreadLaunchService.ThreadLaunchService.of({
+              ...service,
+              launch: Effect.fn("KinTriggerSink.disabledLaunch")(function* (input) {
+                const taskId = input.initialMessage?.scheduledTaskId;
+                if (
+                  taskId === undefined ||
+                  !input.commandId.startsWith(`scheduled-task:${taskId}:webhook:`)
+                )
+                  return yield* service.launch(input);
+                return yield* new ThreadLaunchService.ThreadLaunchError({
+                  operation: "dispatch-message",
+                  commandId: input.commandId,
+                  projectId: input.projectId,
+                  cause: new Error("Kin is unavailable; webhook dispatch refused.", { cause }),
+                });
+              }),
+            });
+          }),
+        ),
+        Layer.effect(
+          ThreadManagementService.ThreadManagementService,
+          Effect.gen(function* () {
+            const service = yield* ThreadManagementService.ThreadManagementService;
+            const sql = yield* SqlClient.SqlClient;
+            return ThreadManagementService.ThreadManagementService.of({
+              ...service,
+              sendToThread: Effect.fn("KinTriggerSink.disabledSend")(function* (input) {
+                if (input.scheduledTaskId === undefined) return yield* service.sendToThread(input);
+                const webhook =
+                  yield* sql`SELECT 1 FROM scheduled_tasks WHERE task_id = ${input.scheduledTaskId}
+                  AND json_extract(schedule_json, '$.type') = 'webhook'`.pipe(
+                    Effect.map((rows) => rows.length > 0),
+                    Effect.catchCause(() => Effect.succeed(true)),
+                  );
+                if (!webhook) return yield* service.sendToThread(input);
+                return yield* new OrchestratorCommandRejectedError({
+                  commandId: input.commandId,
+                  commandType: "kin.trigger.disabled",
+                  cause,
+                });
+              }),
+            });
+          }),
+        ),
+      ),
+    ),
     Layer.provide(Layer.mergeAll(inner, threads)),
-    Layer.provide(Layer.mergeAll(layer, KinTriggerStore.layer).pipe(Layer.provide(threads))),
   );
   const degraded = Layer.mergeAll(
     Layer.effect(
