@@ -32,7 +32,7 @@ interface FloorBid {
   readonly intent: KinAgentIntent;
   readonly at: number;
 }
-type FloorDecision =
+export type FloorDecision =
   | { readonly _tag: "grant"; readonly agentId: KinAgentId }
   | { readonly _tag: "wait" }
   | { readonly _tag: "close"; readonly reason: "turn_budget" | "no_bids" | "nothing_to_add" };
