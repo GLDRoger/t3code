@@ -159,7 +159,19 @@ const make = Effect.gen(function* () {
     identity: NodeJS.ProcessEnv = {},
     stdin?: string,
   ) {
-    return (yield* io(orgId, memoryGit(cwd, args, stdin, identity))).trim();
+    return (yield* memoryGit(cwd, args, stdin, identity).pipe(
+      Effect.mapError((cause) =>
+        cause._tag === "MemoryGitMissingRepository"
+          ? new MemoryCheckoutInvalid({
+              orgId,
+              operation: "git",
+              reason: "Writer .git is missing or not a directory",
+              path: cwd,
+              cause,
+            })
+          : new MemoryError({ orgId, operation: "writer", cause }),
+      ),
+    )).trim();
   });
   const branchHead = Effect.fn("MemoryWriter.branchHead")(function* (
     orgId: KinOrgId,

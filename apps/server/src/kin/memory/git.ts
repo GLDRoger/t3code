@@ -6,12 +6,12 @@ import * as FileSystem from "effect/FileSystem";
 import { VcsProcess } from "../../vcs/VcsProcess.ts";
 
 class MemoryGitRefRace extends Schema.TaggedError<MemoryGitRefRace>()("MemoryGitRefRace", {}) {}
-class MemoryGitMissingRepository extends Schema.TaggedError<MemoryGitMissingRepository>()(
+export class MemoryGitMissingRepository extends Schema.TaggedError<MemoryGitMissingRepository>()(
   "MemoryGitMissingRepository",
   { command: Schema.String },
 ) {}
 
-const repositoryFree = new Set(["clone", "clone-snapshot", "init", "ls-remote"]);
+const repositoryFree = new Set(["clone", "ls-remote"]);
 
 const formats = new Map<string, "sha1" | "sha256">();
 
@@ -29,7 +29,8 @@ export const memoryGit = Effect.fn("Memory.gitHardened")(function* (
   return yield* Effect.scoped(
     Effect.gen(function* () {
       const directory = yield* fs.makeTempDirectoryScoped();
-      const repo = yield* fs.exists(`${cwd}/.git`);
+      const entry = yield* fs.lstat(`${cwd}/.git`).pipe(Effect.option);
+      const repo = Option.isSome(entry) && entry.value.type === "Directory";
       // Without --git-dir, git would discover a parent repository and its config.
       if (!repo && !repositoryFree.has(args[0] ?? ""))
         return yield* new MemoryGitMissingRepository({ command: args[0] ?? "" });
