@@ -9,15 +9,17 @@ import * as Schema from "effect/Schema";
 
 export const KIN_STALE_CARD_TEXT = "This card changed. Check it again.";
 export const KIN_SENT_CARD_TEXT = "Sent. Your lead will update this card.";
+export const KIN_CHANGE_SENT_TEXT = "Sent. Your lead will ask what to change.";
+export const KIN_SEND_FAILED_TEXT = "Couldn't send that. Try again.";
 
-export type KinDeferralActionId = "change" | "remind" | "start" | "monday" | "cancel";
-export type KinDeferralPhase = "confirmed" | "heads_up" | "closed";
+export type KinDeferralActionId = "change" | "remind";
+export type KinDeferralPhase = "confirmed" | "closed";
 
 export interface KinDeferralAction {
   readonly id: KinDeferralActionId;
   readonly label: string;
   readonly accessibilityLabel: string;
-  readonly tone: "primary" | "secondary" | "danger";
+  readonly tone: "secondary";
 }
 
 export interface KinDeferralCardView {
@@ -25,7 +27,6 @@ export interface KinDeferralCardView {
   readonly revision: number;
   readonly itemId: string;
   readonly phase: KinDeferralPhase;
-  readonly eyebrow: string;
   readonly title: string;
   readonly lines: ReadonlyArray<string>;
   /** Epoch ms the countdown runs to; null when the card is closed. */
@@ -46,7 +47,7 @@ const ACTIONS: Record<KinDeferralActionId, KinDeferralAction> = {
   change: {
     id: "change",
     label: "Change",
-    accessibilityLabel: "Change when this happens",
+    accessibilityLabel: "Change this deferral with your lead",
     tone: "secondary",
   },
   remind: {
@@ -55,23 +56,16 @@ const ACTIONS: Record<KinDeferralActionId, KinDeferralAction> = {
     accessibilityLabel: "Just remind me, don't start it",
     tone: "secondary",
   },
-  start: { id: "start", label: "Start now", accessibilityLabel: "Start now", tone: "primary" },
-  monday: {
-    id: "monday",
-    label: "Monday",
-    accessibilityLabel: "Move it to Monday",
-    tone: "secondary",
-  },
-  cancel: { id: "cancel", label: "Cancel", accessibilityLabel: "Cancel deferral", tone: "danger" },
 };
 
+// Keyed by the resolved zone, so a device that changes timezone gets a fresh formatter.
 const formatters = new Map<string, Intl.DateTimeFormat>();
 function partsOf(ms: number, timeZone: string | undefined) {
-  const key = timeZone ?? "";
-  let format = formatters.get(key);
+  const zone = timeZone ?? new Intl.DateTimeFormat().resolvedOptions().timeZone;
+  let format = formatters.get(zone);
   if (format === undefined) {
     format = new Intl.DateTimeFormat("en-GB", {
-      timeZone,
+      timeZone: zone,
       weekday: "short",
       day: "numeric",
       month: "short",
@@ -79,15 +73,9 @@ function partsOf(ms: number, timeZone: string | undefined) {
       minute: "2-digit",
       hourCycle: "h23",
     });
-    formatters.set(key, format);
+    formatters.set(zone, format);
   }
   return Object.fromEntries(format.formatToParts(ms).map((part) => [part.type, part.value]));
-}
-
-/** "9:00" in the device timezone, or `timeZone` when given. */
-export function formatKinClock(ms: number, timeZone?: string): string {
-  const parts = partsOf(ms, timeZone);
-  return `${Number(parts.hour)}:${parts.minute}`;
 }
 
 /** "Fri 13 Nov, 9:00" in the device timezone, or `timeZone` when given. */
@@ -111,14 +99,8 @@ function span(ms: number): string {
 }
 
 /** The countdown line. `nowMs` comes from the minute tick, so this changes at most once a minute. */
-export function kinDeferralCountdown(
-  phase: Exclude<KinDeferralPhase, "closed">,
-  targetMs: number,
-  nowMs: number,
-): string {
+export function kinDeferralCountdown(targetMs: number, nowMs: number): string {
   const remaining = targetMs - nowMs;
-  if (phase === "heads_up")
-    return remaining <= 0 ? "Starting now" : `Starts in ${span(remaining)} unless you stop it`;
   return remaining <= 0 ? "Due now" : `Due in ${span(remaining)}`;
 }
 
@@ -147,7 +129,6 @@ export function kinDeferralCardView(
     return {
       ...base,
       phase: "closed",
-      eyebrow: "Deferral",
       title,
       lines: ["Closed."],
       countdownTo: null,
@@ -156,85 +137,60 @@ export function kinDeferralCardView(
     };
   }
 
-  if (card.phase === "heads_up") {
-    const graceMs = card.graceEndsAt === undefined ? null : Date.parse(card.graceEndsAt);
-    const startMs = graceMs ?? dueMs;
-    const lines = [
-      ...(graceMs === null ? [] : [`This was due at ${formatKinClock(dueMs, timeZone)}.`]),
-      ...(card.recheck === undefined || clamp(card.recheck, 280) === ""
-        ? []
-        : [clamp(card.recheck, 280)]),
-    ];
-    const heading = `Starting ${title} at ${formatKinClock(startMs, timeZone)}`;
-    return {
-      ...base,
-      phase: "heads_up",
-      eyebrow: "Starting soon",
-      title: heading,
-      lines,
-      countdownTo: startMs,
-      actions: [ACTIONS.start, ACTIONS.monday, ACTIONS.cancel],
-      accessibilityLabel: [heading, ...lines].join(". "),
-    };
-  }
-
   const summary = `Deferred to ${formatKinDeferralTime(dueMs, timeZone)}. ${then[card.onDue]}`;
+  // The host writes `text` in the owner's zone; show it only when it adds to the local summary.
+  const text = clamp(card.text, 280);
+  const lines = text === "" || text === summary ? [summary] : [summary, text];
   return {
     ...base,
     phase: "confirmed",
-    eyebrow: "Deferral",
     title,
-    lines: [summary],
+    lines,
     countdownTo: dueMs,
     // "Just remind me" changes nothing on a deferral that already only reminds.
     actions: card.onDue === "remind" ? [ACTIONS.change] : [ACTIONS.change, ACTIONS.remind],
-    accessibilityLabel: `Deferral: ${title}. ${summary}`,
+    accessibilityLabel: [`Deferral: ${title}`, ...lines].join(". "),
   };
 }
 
-export type KinDeferralTap =
-  | { readonly id: "change"; readonly dueAt: string }
-  | { readonly id: Exclude<KinDeferralActionId, "change"> };
+type KinCardTarget = Pick<KinDeferralCardView, "widgetId" | "revision" | "itemId">;
 
-/** The one structured action a tap posts. Change carries the owner's new time for the lead. */
+/** The one structured action a tap posts. Both actions carry only the item id (TRIG-7). */
 export function kinDeferralActInput(
-  view: Pick<KinDeferralCardView, "widgetId" | "revision" | "itemId">,
-  tap: KinDeferralTap,
+  view: KinCardTarget,
+  actionId: KinDeferralActionId,
   clientActionId: string,
 ): KinWidgetsActInput {
   return {
     widgetId: view.widgetId,
     revision: view.revision,
-    actionId: tap.id,
-    value: tap.id === "change" ? { itemId: view.itemId, dueAt: tap.dueAt } : view.itemId,
+    actionId,
+    value: view.itemId,
     clientActionId,
   };
 }
 
-export type KinCardNotice = { readonly kind: "stale" | "error"; readonly text: string };
+export type KinCardNotice = {
+  readonly kind: "sent" | "stale" | "error";
+  readonly text: string;
+};
 
-/** What the card says when the host refuses an action. */
+/** What the card says when the host refuses an action or the send fails. */
 export function kinActionFailureNotice(cause: unknown): KinCardNotice {
-  if (isKinChatError(cause)) {
-    switch (cause.reason) {
-      case "widget_changed":
-        return { kind: "stale", text: KIN_STALE_CARD_TEXT };
-      case "not_allowed":
-        return {
-          kind: "error",
-          text: "Kin didn't take that answer. Tell your lead in the chat instead.",
-        };
-      case "invalid_state":
-        return { kind: "error", text: "This card can't take that answer any more." };
-      default:
-        return { kind: "error", text: "Couldn't send that. Try again." };
-    }
+  if (!isKinChatError(cause)) return { kind: "error", text: KIN_SEND_FAILED_TEXT };
+  switch (cause.reason) {
+    case "widget_changed":
+      return { kind: "stale", text: KIN_STALE_CARD_TEXT };
+    case "not_allowed":
+      return {
+        kind: "error",
+        text: "Kin didn't take that answer. Tell your lead in the chat instead.",
+      };
+    case "invalid_state":
+      return { kind: "error", text: "This card can't take that answer any more." };
+    default:
+      return { kind: "error", text: KIN_SEND_FAILED_TEXT };
   }
-  return {
-    kind: "error",
-    text:
-      cause instanceof Error && cause.message ? cause.message : "Couldn't send that. Try again.",
-  };
 }
 
 export type KinActionOutcome =
@@ -244,7 +200,8 @@ export type KinActionOutcome =
 
 /**
  * Posts card taps one at a time: a tap while another is in flight is ignored, so a double
- * tap posts once. Each accepted tap gets a fresh `clientActionId`.
+ * tap posts once. Retrying the same action on the same revision after a transport failure
+ * reuses its `clientActionId`, since the host may have taken the first send.
  */
 export function createKinCardActions(options: {
   readonly post: (
@@ -253,24 +210,64 @@ export function createKinCardActions(options: {
   readonly newId: () => string;
 }) {
   let busy = false;
+  let unsettled: { readonly key: string; readonly clientActionId: string } | null = null;
   return async (
-    view: Pick<KinDeferralCardView, "widgetId" | "revision" | "itemId">,
-    tap: KinDeferralTap,
+    view: KinCardTarget,
+    actionId: KinDeferralActionId,
     /** Runs only for an accepted tap, before it posts. */
     onStart?: () => void,
   ): Promise<KinActionOutcome> => {
     if (busy) return { status: "ignored" };
     busy = true;
+    const key = `${view.widgetId}\u0000${view.revision}\u0000${actionId}`;
+    const clientActionId = unsettled?.key === key ? unsettled.clientActionId : options.newId();
+    unsettled = null;
+    const transportFailure = (): KinActionOutcome => {
+      unsettled = { key, clientActionId };
+      return { status: "failed", notice: kinActionFailureNotice(undefined) };
+    };
     try {
       onStart?.();
-      const result = await options.post(kinDeferralActInput(view, tap, options.newId()));
-      return result.ok
-        ? { status: "sent" }
-        : { status: "failed", notice: kinActionFailureNotice(result.cause) };
-    } catch (cause) {
-      return { status: "failed", notice: kinActionFailureNotice(cause) };
+      const result = await options.post(kinDeferralActInput(view, actionId, clientActionId));
+      if (result.ok) return { status: "sent" };
+      return isKinChatError(result.cause)
+        ? { status: "failed", notice: kinActionFailureNotice(result.cause) }
+        : transportFailure();
+    } catch {
+      return transportFailure();
     } finally {
       busy = false;
     }
   };
+}
+
+/** What a card shows after a tap, tied to the revision it was raised on. */
+export interface KinCardStatus {
+  readonly revision: number;
+  readonly notice: KinCardNotice | null;
+  /** True while the buttons wait for the host's next revision. */
+  readonly holding: boolean;
+}
+
+/**
+ * Change writes nothing on the host, so the card stays usable after it. Remind re-arms and
+ * bumps the card, so the buttons hold until that new revision arrives.
+ */
+export function kinCardStatusAfter(
+  outcome: Exclude<KinActionOutcome, { readonly status: "ignored" }>,
+  actionId: KinDeferralActionId,
+  revision: number,
+): KinCardStatus {
+  if (outcome.status === "failed") return { revision, notice: outcome.notice, holding: false };
+  return actionId === "change"
+    ? { revision, notice: { kind: "sent", text: KIN_CHANGE_SENT_TEXT }, holding: false }
+    : { revision, notice: { kind: "sent", text: KIN_SENT_CARD_TEXT }, holding: true };
+}
+
+/** A status raised on an older revision no longer describes the card. */
+export function visibleKinCardStatus(
+  status: KinCardStatus | null,
+  revision: number,
+): KinCardStatus | null {
+  return status !== null && status.revision === revision ? status : null;
 }

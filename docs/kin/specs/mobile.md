@@ -26,7 +26,7 @@ All paths are under `apps/mobile/src` unless noted. Each was read for this spec.
 - `components/ComposerEditor.tsx` is the reusable editor. It is keyed by an arbitrary `draftKey` (`state/use-composer-drafts.ts`, `useComposerDraft(draftKey)`), and draft pruning only removes keys prefixed with an environment id (`removeComposerDraftsForEnvironment`). A `kin:` prefix is safe.
 - `native/SelectableMarkdownText.tsx` renders message markdown. `components/RelativeTime.tsx` renders times. `components/ProviderIcon.tsx` draws provider marks.
 - `features/threads/PendingApprovalCard.tsx` is T3's provider-approval card. It is the visual reference for Kin's approval card (`rounded-[20px] border border-border bg-card-alt p-4`, uppercase eyebrow, full-width `Button`s with `primary` and `danger` tones). Kin doesn't reuse it: its data is a provider runtime request.
-- `features/threads/CustomSnoozeSheet.tsx` is a date and time picker with `onSnooze(snoozedUntil: string)`. Kin reuses it for "Change" on a deferral.
+- `features/threads/CustomSnoozeSheet.tsx` is a date and time picker with `onSnooze(snoozedUntil: string)`. Kin doesn't use it: a deferral's **Change** hands the item to the lead, which asks the owner.
 - UI kit in `components/ui/`: `AppText` (`textRole`), `Button` (`tone: primary | secondary | danger | text | contrast`), `EmptyState` (`card | plain`), `ErrorBanner`, `Notice`, `LoadingStrip`, `ListRow`, `Toast`, `Sheet`, `Dialog`.
 
 **Theming.** Uniwind (Tailwind classes) with tokens generated into `generated-uniwind-themes.css`: `bg-screen`, `bg-card`, `bg-card-alt`, `border-border`, `text-foreground`, `text-foreground-secondary`, `text-foreground-muted`, `bg-primary`, `text-primary-foreground`, `bg-secondary`, `text-warning-foreground`, `bg-danger`, `bg-user-bubble`, `text-user-bubble-foreground`. Fonts are DM Sans via `font-sans`, `font-t3-medium` and `font-t3-bold` (`global.css`). Shape and motion constants are in `lib/designTokens.ts` (`MOBILE_SHAPE`, `MOBILE_MOTION`). Kin adds no tokens.
@@ -239,11 +239,13 @@ Every screen handles the same seven states. Each state's copy is fixed below.
   - The thread was deleted: the thread screen shows its not-found state.
 - A PR chip, if present, opens the PR with the existing `useOpenPullRequest` (`native/useOpenPullRequest.ts`).
 
-**Deferral card.** Data: `KinDeferralCard` in `packages/contracts/src/kinLead.ts`: `{ itemId, title, dueAt, onDue: "remind" | "start" | "ask" | "chase", text, phase?: "confirmed" | "heads_up", recheck?, graceEndsAt? }`. A missing `phase` means `confirmed`. A done or cancelled deferral closes the widget (`closedAt`), and the card reads "Closed." with no buttons.
+**Deferral card.** Data: `KinDeferralCard` in `packages/contracts/src/kinLead.ts`: `{ itemId, title, dueAt, onDue: "remind" | "start" | "ask" | "chase", text }`. A disarmed deferral closes the widget (`closedAt`), and the card reads "Closed." with no buttons.
 
-- In the `confirmed` phase it reads "Deferred to Fri 13 Nov, 9:00. I'll start then." with buttons **Change** and **Just remind me** (hidden when `onDue` is already `remind`). **Change** opens `CustomSnoozeSheet`, and `onSnooze(iso)` posts `actionId: "change"` with `value: { itemId, dueAt: iso }`. Every other action posts `value: itemId`.
-- In the `heads_up` phase it reads "Starting Rate limiting at 9:00", followed by the server's `recheck` line ("Issue #88 is still open."), with buttons **Start now**, **Monday** and **Cancel**. A countdown reads "Starts in 24 min unless you stop it". A late heads-up counts down to `graceEndsAt` and adds "This was due at 9:00."
-- The countdown follows the shared minute tick, never a timer of its own. After an action is sent, the buttons stay off until the card's next revision.
+- It reads "Deferred to Fri 13 Nov, 9:00. I'll start then.", then the server's `text` when that adds something, a countdown ("Due in 3 days"), and buttons **Change** and **Just remind me** (hidden when `onDue` is already `remind`). Both post `value: itemId` (TRIG-7).
+- **Change** writes nothing on the server: it hands the item to the lead, which asks the owner what to change. The card says "Sent. Your lead will ask what to change." and its buttons stay usable. **Just remind me** re-arms the deferral and bumps the card, so its buttons stay off until the next revision.
+- Notices belong to the revision they were raised on and disappear when the card changes. A retry of the same action on the same revision after a dropped send reuses its `clientActionId`.
+- The countdown follows the shared minute tick, never a timer of its own.
+- Follow-up: the `heads_up` phase (**Start now**, **Monday**, **Cancel** and its countdown) waits on TRIG-8 adding it to lane A's card contract.
 - All times are in the device timezone, written as "Fri 13 Nov, 9:00" (`Intl.DateTimeFormat`).
 
 **Approval card.** It renders **only** from `kinClient.pendingAction({ pendingActionId })`, the server's pending action. The widget carries nothing but `pendingActionId`. Any agent-supplied text is shown last, quoted and labelled, and never as a title or a button. The exact content, top to bottom:
@@ -353,7 +355,7 @@ Commands, from `apps/mobile`: `vp run typecheck` and `vp test run --project unit
 - `kinHost.test.ts`: probe classification (including a transport error and a defect) and host choice.
 - `kinStreams.test.ts`: across a session swap, the cached value comes first with `live: false`, the second subscription's `afterSeq` and `afterChangeSeq` come from the current state, no history page is re-read, `unavailable` backs off and resubscribes while other refusals close the chat, and a `left` event ends the chat, drops its cache entry and reaches the inbox.
 - `kinCardPresentation.test.ts`: the approval title template, the SHA short form, the checks summary, every `status` line, owner vs member eyebrow, Approve disabled while checks are pending.
-- `kinDeferralPresentation.test.ts`: each phase's actions, deferral time format across timezones, countdown boundaries, one posted action per tap, and the stale-revision notice.
+- `kinDeferralPresentation.test.ts`: the confirmed and closed cards, deferral time format across timezones, countdown boundaries, one posted action per tap, `clientActionId` reuse on retry, and notices tied to a revision.
 - `kinPushPayload.test.ts`: valid payloads route; `/threads/...`, `//evil`, query strings and malformed JSON are dropped; an action response produces one `widgetAction` per notification id.
 - `KinPushSender.test.ts`: category per widget kind; approval pushes only reach approver devices; skipped when a foreground subscription exists.
 - Upstream tests still pass: `dependency-graph.test.ts`, `reactCompilerCoverage.test.ts`, `notificationNavigation.test.ts`.
@@ -411,10 +413,10 @@ Commands, from `apps/mobile`: `vp run typecheck` and `vp test run --project unit
 
 **MOB-7 Deferral card** (UI)
 
-- What: the `confirmed` and `heads_up` phases, the countdown, and Change through `CustomSnoozeSheet`.
+- What: the confirmed card, its countdown, and its closed state. The `heads_up` phase follows once TRIG-8 defines it.
 - Files: `widgets/KinDeferralCard.tsx`.
 - Depends on: MOB-6, TRIG-7.
-- Done when: Change, Just remind me, Start now, Monday and Cancel each post one action, and a stale revision shows "This card changed".
+- Done when: Change and Just remind me each post one action, and a stale revision shows "This card changed".
 
 **MOB-8 Approval card and sheet** (UI)
 

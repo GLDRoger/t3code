@@ -142,7 +142,7 @@ export function CustomSnoozeSheet(props: Props) {
                 verticalArrangement={{ spacedBy: 16 }}
                 modifiers={[fillMaxWidth(), padding(24, 24, 24, 16)]}
               >
-                <Text style={titleTypography}>{props.title ?? "Custom snooze"}</Text>
+                <Text style={titleTypography}>Custom snooze</Text>
                 <RNHostView matchContents={{ vertical: true }} modifiers={[fillMaxWidth()]}>
                   <SegmentedControl
                     variant="card"
@@ -262,7 +262,7 @@ export function CustomSnoozeSheet(props: Props) {
                     onClick={submit}
                     colors={{ contentColor: colors["--color-foreground"] }}
                   >
-                    <Text style={bodyTypography}>{props.confirmLabel ?? "Snooze"}</Text>
+                    <Text style={bodyTypography}>Snooze</Text>
                   </TextButton>
                 </Row>
               </Column>

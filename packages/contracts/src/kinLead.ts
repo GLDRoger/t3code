@@ -148,12 +148,6 @@ export const KinDeferralCard = Schema.Struct({
   dueAt: Schema.toEncoded(CanonicalUtcTimestamp),
   onDue: Schema.Literals(["remind", "start", "ask", "chase"]),
   text: Schema.String,
-  // Absent means `confirmed`. The due flow (TRIG-8) moves the same card to `heads_up`.
-  phase: Schema.optional(Schema.Literals(["confirmed", "heads_up"])),
-  /** The server's recheck line on a heads-up, such as "Issue #88 is still open." */
-  recheck: Schema.optional(Schema.String),
-  /** A late heads-up starts at the end of its grace instead of at `dueAt`. */
-  graceEndsAt: Schema.optional(Schema.toEncoded(CanonicalUtcTimestamp)),
 });
 export type KinDeferralCard = typeof KinDeferralCard.Type;
 
