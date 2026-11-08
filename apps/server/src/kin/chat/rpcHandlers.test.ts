@@ -395,7 +395,7 @@ it.effect("keeps transport handlers out of persistence", () =>
 
 it.effect("resets large backlogs and bounds a resume to the current snapshot", () =>
   Effect.gen(function* () {
-    const { chat, person, direct } = yield* seed;
+    const { chat, person, direct, repo, context } = yield* seed;
     for (let i = 0; i < 201; i++)
       yield* chat.send(person, {
         chatId: direct.chatId,
@@ -468,6 +468,88 @@ it.effect("resets large backlogs and bounds a resume to the current snapshot", (
       ),
     );
     assert.strictEqual(reconnect._tag, "backlog");
+
+    // Widget writes bump their anchor's change_seq too, so widget-only activity must refresh it.
+    const hub = Context.get(context, Hub.KinChatHub);
+    const anchors = yield* sql<{
+      messageId: string;
+      seq: number;
+    }>`SELECT message_id AS "messageId", seq
+      FROM kin_messages WHERE org_id = ${person.orgId} AND chat_id = ${direct.chatId} ORDER BY seq LIMIT 201`;
+    const widgets = [];
+    for (const [i, anchor] of anchors.entries()) {
+      const widget = {
+        orgId: person.orgId,
+        chatId: direct.chatId,
+        widgetId: KinWidgetId.make(`live-widget-${i}`),
+        messageId: KinMessageId.make(anchor.messageId),
+        widgetClass: "native" as const,
+        revision: 1,
+        source: null,
+        feed: null,
+        awaiting: [],
+        pinnedAt: null,
+        closedAt: null,
+        updatedAt: direct.createdAt,
+        type: "task" as const,
+        state: yield* decodeTaskState({
+          taskId: `task-${i}`,
+          environmentId: "environment",
+          threadId: ThreadId.make(`thread-${i}`),
+          remoteEnvironmentId: null,
+          title: "Task",
+          model: null,
+          status: "working",
+          pullRequests: [],
+          lastError: null,
+          updatedAt: direct.createdAt,
+        }),
+      };
+      yield* repo.insertWidget(widget);
+      widgets.push(widget);
+    }
+    const [frozen] = yield* sql<{ seq: number; change: number }>`SELECT MAX(seq) AS seq,
+      MAX(change_seq) AS change FROM kin_messages WHERE org_id = ${person.orgId} AND chat_id = ${direct.chatId}`;
+    const widgetEvents = yield* Stream.toQueue(
+      chat.subscribe(person, {
+        chatId: direct.chatId,
+        afterSeq: frozen!.seq,
+        afterChangeSeq: frozen!.change,
+      }),
+      { capacity: "unbounded" },
+    );
+    let widgetCursor = yield* Queue.take(widgetEvents);
+    assert.strictEqual(widgetCursor._tag, "backlog");
+    for (const widget of widgets) {
+      yield* sql`UPDATE kin_widgets SET revision = 2 WHERE org_id = ${person.orgId} AND widget_id = ${widget.widgetId}`;
+      yield* hub.publish({
+        type: "widget.updated",
+        orgId: person.orgId,
+        widget: { ...widget, revision: 2 },
+      });
+    }
+    // Updates the checkpoint already carried arrive in its backlog, not again live.
+    const seen = new Set<string>();
+    while (seen.size < widgets.length) {
+      const event = yield* Queue.take(widgetEvents);
+      if (event._tag === "widget") seen.add(event.widget.widgetId);
+      else if (event._tag === "backlog") {
+        widgetCursor = event;
+        for (const widget of event.widgets) seen.add(widget.widgetId);
+      }
+    }
+    assert.strictEqual(widgetCursor._tag, "backlog");
+    if (widgetCursor._tag !== "backlog") return;
+    const widgetReconnect = Option.getOrThrow(
+      yield* Stream.runHead(
+        chat.subscribe(person, {
+          chatId: direct.chatId,
+          afterSeq: frozen!.seq,
+          afterChangeSeq: widgetCursor.lastChangeSeq,
+        }),
+      ),
+    );
+    assert.strictEqual(widgetReconnect._tag, "backlog");
   }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 

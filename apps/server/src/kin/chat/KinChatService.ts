@@ -659,9 +659,19 @@ const make = Effect.gen(function* () {
               }),
               Stream.filter(Option.isSome),
               Stream.map((event) => event.value),
+              // Widget writes bump their anchor's change_seq, so they count toward the refresh too.
+              // The dedupe state above is updated per event; the hub delivers one event per chunk.
               Stream.mapEffect((event) =>
-                event._tag === "message" && ++delivered >= checkpointEvery
-                  ? checkpoint().pipe(Effect.map((next) => [event, next]))
+                (event._tag === "message" || event._tag === "widget") &&
+                ++delivered >= checkpointEvery
+                  ? checkpoint().pipe(
+                      Effect.map((next) => [event, next]),
+                      // A member who just left gets not_found; the member event that follows ends the stream.
+                      Effect.catchIf(
+                        (error) => error.reason === "not_found",
+                        () => Effect.succeed([event]),
+                      ),
+                    )
                   : Effect.succeed([event]),
               ),
               Stream.flattenIterable,
