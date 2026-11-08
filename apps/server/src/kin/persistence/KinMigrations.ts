@@ -8,7 +8,7 @@ import Triggers from "./migrations/K003_Triggers.ts";
 import MemoryReads from "./migrations/K004_MemoryReads.ts";
 import OneChatOwner from "./migrations/K005_OneChatOwner.ts";
 import Pings from "./migrations/K006_Pings.ts";
-import Approvals from "./migrations/K008_Approvals.ts";
+import Approvals from "./migrations/K009_Approvals.ts";
 
 const table = "kin_sql_migrations";
 const run = Migrator.make({});
@@ -19,7 +19,7 @@ const loader = Migrator.fromRecord({
   "4_MemoryReads": MemoryReads,
   "5_OneChatOwner": OneChatOwner,
   "6_Pings": Pings,
-  "8_Approvals": Approvals,
+  "9_Approvals": Approvals,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that
@@ -28,17 +28,25 @@ const refuseSkippedMigrations = Effect.fn("KinMigrations.refuseSkipped")(functio
   const sql = yield* SqlClient.SqlClient;
   const exists = yield* sql`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ${table}`;
   if (exists.length === 0) return;
-  const applied = new Set(
-    (yield* sql<{ migration_id: number }>`SELECT migration_id FROM ${sql(table)}`).map(
-      (row) => row.migration_id,
-    ),
+  const applied = new Map(
+    (yield* sql<{
+      migration_id: number;
+      name: string;
+    }>`SELECT migration_id, name FROM ${sql(table)}`).map((row) => [row.migration_id, row.name]),
   );
-  const latest = Math.max(0, ...applied);
-  const skipped = (yield* loader).filter(([id]) => id < latest && !applied.has(id));
-  if (skipped.length === 0) return;
+  const latest = Math.max(0, ...applied.keys());
+  const registered = yield* loader;
+  const skipped = registered.filter(([id]) => id < latest && !applied.has(id));
+  // Two branches can take the same number; the Migrator would treat the second as already run.
+  const renamed = registered.filter(([id, name]) => applied.has(id) && applied.get(id) !== name);
+  if (skipped.length === 0 && renamed.length === 0) return;
+  const names = (list: typeof registered) => list.map(([id, name]) => `${id}_${name}`).join(", ");
   return yield* new Migrator.MigrationError({
     kind: "BadState",
-    message: `Kin migrations ${skipped.map(([id, name]) => `${id}_${name}`).join(", ")} are registered below the latest applied migration ${latest} but never ran. They merged out of order; renumber them above ${latest}.`,
+    message:
+      skipped.length > 0
+        ? `Kin migrations ${names(skipped)} are registered below the latest applied migration ${latest} but never ran. They merged out of order; renumber them above ${latest}.`
+        : `Kin migrations ${names(renamed)} share a number with a different migration this database already ran. Renumber them above ${latest}.`,
   });
 });
 

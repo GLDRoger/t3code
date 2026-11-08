@@ -406,7 +406,7 @@ const make = Effect.gen(function* () {
               SET state = 'approved', updated_at = ${now}
               WHERE org_id = ${input.orgId} AND action_id = ${input.actionId}
                 AND state = 'awaiting_approval' AND revision = ${input.revision}
-                AND nonce = ${input.nonce} AND expires_at > ${now}
+                AND nonce = ${input.nonce} AND expires_at > ${now} AND ${input.exp} * 1000 > ${now}
               RETURNING action_id, kind, resolved_json`;
             if (won === undefined) return yield* new Rollback();
             yield* audit.append({
