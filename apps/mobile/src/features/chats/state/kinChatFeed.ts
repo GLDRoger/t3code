@@ -164,6 +164,8 @@ export type KinFeedRow =
       readonly showAuthor: boolean;
     }
   | { readonly type: "system"; readonly key: string; readonly message: KinMessage }
+  /** Starts each local day; `at` is the day's first message time. */
+  | { readonly type: "day"; readonly key: string; readonly at: string }
   | {
       readonly type: "fold";
       readonly key: string;
@@ -212,6 +214,17 @@ function messageRow(message: KinMessage, fields: Omit<MessageRow, "type" | "key"
   return row;
 }
 
+type DayRow = Extract<KinFeedRow, { readonly type: "day" }>;
+const dayRows = new WeakMap<KinMessage, DayRow>();
+
+function dayRow(first: KinMessage, day: string): DayRow {
+  const held = dayRows.get(first);
+  if (held !== undefined && held.key === `day:${day}`) return held;
+  const row: DayRow = { type: "day", key: `day:${day}`, at: first.createdAt };
+  dayRows.set(first, row);
+  return row;
+}
+
 const authorKey = (message: KinMessage) =>
   message.author._tag === "system" ? "system" : message.author.memberId;
 
@@ -228,8 +241,18 @@ export function buildKinFeedRows(
   const rows: KinFeedRow[] = [];
   const foldKeys = new Set<string>();
   let previousAuthor: string | null = null;
+  let previousDay: string | null = null;
+
+  const startDay = (message: KinMessage) => {
+    const day = kinLocalDayKey(message.createdAt);
+    if (day === previousDay) return;
+    previousDay = day;
+    previousAuthor = null;
+    rows.push(dayRow(message, day));
+  };
 
   const pushMessage = (message: KinMessage) => {
+    startDay(message);
     if (isSystem(message)) {
       rows.push({ type: "system", key: message.messageId, message });
       previousAuthor = null;
@@ -261,6 +284,7 @@ export function buildKinFeedRows(
       continue;
     }
     const run = visible.slice(index, end);
+    startDay(first);
     const authors = [...new Set(run.map((message) => kinAuthorLabel(message, viewer)))];
     const decision =
       run.findLast((message) => message.intent === "decision" && message.status !== "deleted")
@@ -286,6 +310,37 @@ export function buildKinFeedRows(
     index = end;
   }
   return rows;
+}
+
+/** The local calendar day of an ISO time, as `2026-11-08`. */
+export function kinLocalDayKey(iso: string): string {
+  const date = new Date(iso);
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+const kinWeekdayFormat = new Intl.DateTimeFormat(undefined, {
+  weekday: "short",
+  day: "numeric",
+  month: "short",
+});
+const kinFullDateFormat = new Intl.DateTimeFormat(undefined, {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+});
+
+/** A day separator: "Today", "Yesterday", "Mon, 3 Nov", or with the year once it differs. */
+export function kinDayLabel(iso: string, now: Date = new Date()): string {
+  const day = kinLocalDayKey(iso);
+  if (day === kinLocalDayKey(now.toISOString())) return "Today";
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  if (day === kinLocalDayKey(yesterday.toISOString())) return "Yesterday";
+  const date = new Date(iso);
+  return date.getFullYear() === now.getFullYear()
+    ? kinWeekdayFormat.format(date)
+    : kinFullDateFormat.format(date);
 }
 
 // Accessibility
@@ -368,6 +423,20 @@ export function kinUnseenCount(
 
 export const latestKinSeq = (messages: ReadonlyArray<KinMessage>) =>
   messages[messages.length - 1]?.seq ?? 0;
+
+/**
+ * The seq to mark read, or null. Only while the reader sees the end, past the last seq already
+ * sent, and while the inbox counts anything unread (`null` while the inbox hasn't loaded).
+ */
+export function kinSeqToMarkRead(input: {
+  readonly seesEnd: boolean;
+  readonly latestSeq: number;
+  readonly markedSeq: number;
+  readonly unread: number | null;
+}): number | null {
+  if (!input.seesEnd || input.latestSeq <= input.markedSeq || input.unread === 0) return null;
+  return input.latestSeq;
+}
 
 // Header
 

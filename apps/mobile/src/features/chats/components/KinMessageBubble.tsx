@@ -6,10 +6,16 @@ import {
   SelectableMarkdownText,
   type NativeMarkdownTextStyle,
 } from "../../../native/SelectableMarkdownText";
-import { kinMessageLabel, kinMessageLinks, type KinFeedRow } from "../state/kinChatFeed";
+import {
+  kinDayLabel,
+  kinMessageLabel,
+  kinMessageLinks,
+  type KinFeedRow,
+} from "../state/kinChatFeed";
 
 type MessageRow = Extract<KinFeedRow, { readonly type: "message" }>;
 type SystemRow = Extract<KinFeedRow, { readonly type: "system" }>;
+type DayRow = Extract<KinFeedRow, { readonly type: "day" }>;
 
 const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 const formatTime = (iso: string) => timeFormat.format(new Date(iso));
@@ -54,7 +60,8 @@ export function KinMessageBubble(props: {
         }}
         className={cn(
           "max-w-[85%] gap-1 rounded-[20px] px-3.5 py-2.5",
-          row.own ? "bg-user-bubble" : "bg-card-alt",
+          // The thread composer's surface: `card-alt` vanishes into the light screen.
+          row.own ? "bg-user-bubble" : "bg-composer-surface",
           suggested && "border border-dashed border-border",
         )}
       >
@@ -95,6 +102,17 @@ export function KinSystemLine(props: { readonly row: SystemRow }) {
     <View className="items-center px-8 py-2">
       <Text textRole="caption" className="text-center text-foreground-muted">
         {props.row.message.body}
+      </Text>
+    </View>
+  );
+}
+
+/** Starts a day in the feed: "Today", "Yesterday", or its date. */
+export function KinDayLine(props: { readonly row: DayRow }) {
+  return (
+    <View className="items-center px-8 pb-1 pt-4" accessibilityRole="header">
+      <Text textRole="caption" className="font-t3-medium text-foreground-muted">
+        {kinDayLabel(props.row.at)}
       </Text>
     </View>
   );
