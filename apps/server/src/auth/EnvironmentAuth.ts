@@ -1,3 +1,4 @@
+import { authHooks } from "../kin/auth/authHooks.ts";
 import {
   AuthAccessTokenType,
   AuthAccessWriteScope,
@@ -710,6 +711,7 @@ function isBrowserOriginAllowed(
 
 /** @public */
 export const make = Effect.gen(function* () {
+  const kinHooks = yield* authHooks;
   const policy = yield* EnvironmentAuthPolicy.EnvironmentAuthPolicy;
   const bootstrapCredentials = yield* PairingGrantStore.PairingGrantStore;
   const sessions = yield* SessionStore.SessionStore;
@@ -961,6 +963,7 @@ export const make = Effect.gen(function* () {
       }).pipe(
         Effect.flatMap((grant) =>
           Effect.gen(function* () {
+            yield* kinHooks.checkExchange(input?.proofKeyThumbprint, grant);
             const grantedScopes =
               requestedScopes === undefined
                 ? grant.scopes
