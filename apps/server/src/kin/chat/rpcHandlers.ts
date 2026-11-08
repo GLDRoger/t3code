@@ -1,4 +1,4 @@
-import { KinChatError, KinRpcs } from "@t3tools/contracts";
+import { KinChatError, KinChatAndBudgetRpcs } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -11,13 +11,10 @@ import { KinBudget } from "../lead/KinBudget.ts";
 import { KinIdentity } from "./KinIdentity.ts";
 import { KinChatService } from "./KinChatService.ts";
 
-const group = RpcGroup.make(...KinRpcs);
+const group = RpcGroup.make(...KinChatAndBudgetRpcs);
 const unavailable = new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
 const isKinChatError = Schema.is(KinChatError);
-const mapError = (error: { readonly _tag: string }) =>
-  isKinChatError(error)
-    ? error
-    : new KinChatError({ reason: "invalid_state", message: "Kin operation failed." });
+const mapError = (error: unknown) => (isKinChatError(error) ? error : unavailable);
 
 export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
   session: AuthenticatedSession,
@@ -44,6 +41,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
             .pipe(Effect.flatMap((people) => budget.view(people, input.orgId))),
         ),
         Effect.mapError(mapError),
+        Effect.catchDefect(() => Effect.fail(unavailable)),
       ),
     "kin.budget.set": (input) =>
       services.pipe(
@@ -51,6 +49,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
           identity.resolve(session).pipe(Effect.flatMap((people) => budget.set(people, input))),
         ),
         Effect.mapError(mapError),
+        Effect.catchDefect(() => Effect.fail(unavailable)),
       ),
     "kin.orgs.list": () =>
       services.pipe(
@@ -58,6 +57,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
           identity.resolve(session).pipe(Effect.flatMap(chat.orgs)),
         ),
         Effect.mapError(mapError),
+        Effect.catchDefect(() => Effect.fail(unavailable)),
       ),
     "kin.chats.subscribe": (input) =>
       Stream.unwrap(
@@ -68,36 +68,47 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
               .pipe(Effect.map((people) => chat.subscribeChats(people, input))),
           ),
         ),
-      ).pipe(Stream.mapError(mapError)),
+      ).pipe(
+        Stream.mapError(mapError),
+        Stream.catchDefect(() => Stream.fail(unavailable)),
+      ),
     "kin.chat.subscribe": (input) =>
       Stream.unwrap(
         viewer.pipe(Effect.map(({ chat, people }) => chat.subscribe(people, input))),
-      ).pipe(Stream.mapError(mapError)),
+      ).pipe(
+        Stream.mapError(mapError),
+        Stream.catchDefect(() => Stream.fail(unavailable)),
+      ),
     "kin.chats.createDirect": (input) =>
       viewer.pipe(
         Effect.flatMap(({ chat, people }) => chat.createDirect(people, input)),
         Effect.mapError(mapError),
+        Effect.catchDefect(() => Effect.fail(unavailable)),
       ),
     "kin.chat.history": (input) =>
       viewer.pipe(
         Effect.flatMap(({ chat, people }) => chat.history(people, input)),
         Effect.mapError(mapError),
+        Effect.catchDefect(() => Effect.fail(unavailable)),
       ),
     "kin.messages.send": (input) =>
       viewer.pipe(
         Effect.flatMap(({ chat, people }) => chat.send(people, input)),
         Effect.mapError(mapError),
+        Effect.catchDefect(() => Effect.fail(unavailable)),
       ),
     "kin.messages.markRead": (input) =>
       viewer.pipe(
         Effect.flatMap(({ chat, people }) => chat.markRead(people, input)),
         Effect.as({}),
         Effect.mapError(mapError),
+        Effect.catchDefect(() => Effect.fail(unavailable)),
       ),
     "kin.widgets.act": (input) =>
       viewer.pipe(
         Effect.flatMap(({ chat, people }) => chat.act(people, input)),
         Effect.mapError(mapError),
+        Effect.catchDefect(() => Effect.fail(unavailable)),
       ),
   });
 });
