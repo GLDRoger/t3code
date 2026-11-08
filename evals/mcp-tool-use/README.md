@@ -34,7 +34,7 @@ Check that the case builds with `--dry-run --case <id>`. Then run it on the text
 
 ## Kin chat cases
 
-`cases/kin.ndjson` guards PR #32's registered-agent posting and task-widget schema. Set `setup.world.kinAgent` to expose the three Kin tools; other cases retain the ordinary T3 list. The runner imports the real Kin toolkit, not copied schemas.
+`cases/kin.ndjson` checks that registered Kin agents post with the server-bound author and the advertised task-widget state, and that ordinary threads never see Kin tools. Set `setup.world.kinAgent` to expose the three Kin tools; other cases retain the ordinary T3 list. The runner imports the real Kin toolkit, not copied schemas.
 
 ## Device manager cases
 
