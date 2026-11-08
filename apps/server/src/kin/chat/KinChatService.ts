@@ -229,7 +229,8 @@ const make = Effect.gen(function* () {
         agent.retiredAt !== null ||
         thread.endedAt !== null ||
         thread.agentId !== agent.agentId ||
-        agent.ownerPersonId !== identity.ownerPersonId
+        agent.ownerPersonId !== identity.ownerPersonId ||
+        !(yield* repo.hasRunningWakeup(identity))
       )
         return yield* notAllowed;
     }
@@ -309,6 +310,7 @@ const make = Effect.gen(function* () {
     const messageId = yield* decodeMessageId(SecureRandom.uuidV4Unsafe()).pipe(Effect.orDie);
     const message = yield* repo.insertMessage({
       orgId: identity.orgId,
+      caller: identity._tag === "agent" ? identity.caller : undefined,
       chatId: input.chatId,
       messageId,
       author: authorFor(identity, member),
