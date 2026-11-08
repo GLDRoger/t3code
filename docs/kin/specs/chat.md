@@ -356,7 +356,7 @@ export const KinChatStreamEvent = Schema.Union([
 - **Removal:** a removed member receives their own resolved waiting rows even after membership ends. Their chat stream emits a final typed `member` event with non-null `leftAt`, then ends. The chat-list stream stays open; an event whose summary or waiting read fails is dropped and logged at debug level, not allowed to terminate the subscription.
 - **Agent discovery:** `kin.orgs.list` includes each org's `agents: [{ agentId, displayName, retired }]`, filtered by org and ordered by display name then agent id. Use a non-retired agent id with `createDirect`.
 - **Filtering per viewer:** suggestions go only to their author and the chat owner. Agent subscribers do not exist on `/ws`; agents read through `kin_chat_read`.
-- **Availability:** disabled or failed Kin initialization returns `KinChatError.reason = "unavailable"`, distinct from a role refusal.
+- **Availability:** when Kin is off on the host (disabled, misconfigured, or failed to initialize), Kin RPCs return `KinChatError.reason = "disabled"`; don't retry until the host changes. Transient infrastructure failures and defects return `"unavailable"`, which clients may retry. Both are distinct from a role refusal.
 - **Hub:** `KinChatHub` (**new**), a `PubSub` keyed by `orgId`. The lead spec subscribes to `message.posted` from it to fill its per-org event queue.
 
 ### Authorisation, in two layers
