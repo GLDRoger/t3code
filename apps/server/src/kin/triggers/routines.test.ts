@@ -166,5 +166,80 @@ it.effect(
       yield* TestClock.setTime(Date.parse("2026-10-31T12:30:00.000Z"));
       yield* scheduler.runDue();
       assert.equal((yield* store.get(orgA, id))?.nextRunAt, "2026-11-01T13:30:00.000Z");
+      yield* sql`UPDATE kin_agents SET retired_at = '2026-11-01T13:00:00.000Z' WHERE org_id = ${orgA} AND agent_id = 'lead-a'`;
+      yield* routines.drain(orgA);
+      yield* routines.configure(settings);
+      assert.isTrue((yield* store.list(orgA)).every((trigger) => !trigger.enabled));
+      assert.lengthOf(
+        yield* sql`SELECT fire_id FROM kin_trigger_inbox WHERE org_id = ${orgA} AND consumed_at IS NULL ORDER BY fire_id`,
+        0,
+      );
+    }).pipe(Effect.provide(fixture())),
+);
+
+it.effect("consumes a failing fire and still delivers the following good fire", () =>
+  Effect.gen(function* () {
+    yield* seed();
+    const routines = yield* Routines.KinRoutines;
+    const scheduler = yield* TriggerScheduler.KinTriggerScheduler;
+    const sql = yield* SqlClient.SqlClient;
+    yield* TestClock.setTime(Date.parse("2026-11-09T02:00:00.000Z"));
+    yield* routines.configure(settings);
+    yield* TestClock.setTime(Date.parse("2026-11-09T13:00:00.000Z"));
+    yield* scheduler.runDue();
+    yield* sql`CREATE TRIGGER reject_fold BEFORE INSERT ON kin_routine_folds BEGIN SELECT RAISE(ABORT, 'fixture failure'); END`;
+    yield* routines.drain(orgA);
+    const rows = yield* sql<{
+      json: string;
+    }>`SELECT json FROM kin_events WHERE org_id = ${orgA} AND tag = 'routine' ORDER BY event_id`;
+    assert.isTrue(
+      rows.some((row) => {
+        const event = decodeEventJson(row.json);
+        return (
+          event._tag === "routine" && event.routine === "evening_summary" && event.lateByMs === 0
+        );
+      }),
+    );
+    assert.lengthOf(
+      yield* sql`SELECT fire_id FROM kin_trigger_inbox WHERE org_id = ${orgA} AND consumed_at IS NULL ORDER BY fire_id`,
+      0,
+    );
+  }).pipe(Effect.provide(fixture())),
+);
+
+it.effect.each([false, true])(
+  "repoints stranded folds, or drops them when both routines are off: %s",
+  (bothOff) =>
+    Effect.gen(function* () {
+      yield* seed();
+      const routines = yield* Routines.KinRoutines;
+      const sql = yield* SqlClient.SqlClient;
+      yield* TestClock.setTime(Date.parse("2026-11-09T02:00:00.000Z"));
+      yield* routines.configure(settings);
+      yield* sql`INSERT INTO kin_routine_folds VALUES (${orgA}, 'old-fire', 'morning_brief', 1, 'evening_summary')`;
+      yield* routines.setEnabled(orgA, "evening_summary", false);
+      const folds = yield* sql<{
+        fold_into: string;
+      }>`SELECT fold_into FROM kin_routine_folds WHERE org_id = ${orgA} ORDER BY fire_id`;
+      assert.deepEqual(folds, [{ fold_into: "morning_brief" }]);
+      if (bothOff) {
+        yield* routines.setEnabled(orgA, "morning_brief", false);
+        assert.lengthOf(
+          yield* sql`SELECT fire_id FROM kin_routine_folds WHERE org_id = ${orgA} ORDER BY fire_id`,
+          0,
+        );
+      } else {
+        const scheduler = yield* TriggerScheduler.KinTriggerScheduler;
+        yield* TestClock.setTime(Date.parse("2026-11-09T03:00:00.000Z"));
+        yield* scheduler.runDue();
+        yield* routines.drain(orgA);
+        const [row] = yield* sql<{
+          json: string;
+        }>`SELECT json FROM kin_events WHERE org_id = ${orgA} ORDER BY event_id LIMIT 1`;
+        const event = decodeEventJson(row!.json);
+        assert.equal(event._tag, "routine");
+        if (event._tag === "routine")
+          assert.equal(event.foldedRoutines?.[0]?.routine, "morning_brief");
+      }
     }).pipe(Effect.provide(fixture())),
 );

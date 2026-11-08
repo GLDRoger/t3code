@@ -37,6 +37,8 @@ import * as KinBudget from "./KinBudget.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 
+const ownerCheckDispatcherReady = false;
+
 export class KinWakeupError extends Schema.TaggedError<KinWakeupError>()("KinWakeupError", {
   orgId: KinOrgId,
   agentId: KinAgentId,
@@ -381,7 +383,9 @@ const make = Effect.gen(function* () {
             if (Option.isSome(ownerCheck)) {
               for (const event of events) {
                 if (event._tag === "routine" && event.routine === "owner_check")
-                  yield* ownerCheck.value.post(orgId, event.eventId);
+                  // Keep cards dark until the verified action dispatcher and clients land.
+                  if (ownerCheckDispatcherReady)
+                    yield* ownerCheck.value.post(orgId, event.eventId, event.ownerCheckItems ?? []);
               }
               events = events.filter(
                 (event) => event._tag !== "routine" || event.routine !== "owner_check",

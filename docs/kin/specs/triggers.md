@@ -254,6 +254,24 @@ Routine delivery is a lead-queue request, not a second posting path: TRIG-9 enqu
 
 Owner-check ties use review date (missing last), then item id and path. Invalid, superseded and duplicate-id items are excluded. Low trust means any trust below owner; with no status-claim subtype in memory, evidence-free means a claim with no evidence links. Keep sets the next review to now +90 days for people or +30 days otherwise, so repeated Keeps do not grow the review interval. Update returns the owner direct-chat/item target; Keep and Drop stage through the writer with the verified, claimed owner action as their source, never model-supplied provenance. Native clients own presenting the three actions; the server owns their authorization.
 
+**Owner-check release gate (TRIG-9):** selection and routine enqueue are live, but
+`WakeupRunner` keeps native card posting explicitly disabled until the dispatcher
+lands. Before enabling it:
+
+- chat act must enqueue `widget.action`;
+- `WakeupRunner` must intercept `owner_check` actions, run `OwnerCheck.act`,
+  then `MemoryWriter.commitWakeup`, then queue `finish`, without exposing these
+  actions to the model prompt;
+- production `MemoryWriterAuthority.resolve` must grant `kind: "owner_check"`
+  only after verifying the claimed owner tap, binding its item id and action.
+  An owner chat citation is not review-date authority;
+- web and mobile must render the native card, its handled items, and closed state.
+
+Each accepted action advances the card revision and marks that item handled;
+the last handled item closes it. Misleading-memory selection reads reports
+ended in the last 90 days. K013_Routines is provisional and must be renumbered at
+merge if TRIG-16 or LEAD-7 takes the slot first.
+
 ### Watchdogs (`interval`)
 
 All are plain code. They write memory only through the LEAD queue as code-only events, which keeps one writer per org (gap 1).

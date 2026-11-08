@@ -34,7 +34,14 @@ export interface WakeupContext extends JournalContext {
   readonly level: "L0" | "L1" | "L2" | "L3";
   readonly sources: ReadonlyMap<
     string,
-    { readonly saidBy: string; readonly trust: MemoryTrust; readonly source: string }
+    { readonly saidBy: string; readonly trust: MemoryTrust; readonly source: string } & (
+      | { readonly kind?: undefined }
+      | {
+          readonly kind: "owner_check";
+          readonly itemId: string;
+          readonly action: "keep" | "update" | "drop";
+        }
+    )
   >;
 }
 // The runner resolves this context from same-org records, never tool input.
@@ -338,7 +345,12 @@ const make = Effect.gen(function* () {
             const parsed = yield* parseFrontMatter(orgId, change.path, change.content, true);
             const source =
               change.sourceEventId === undefined
-                ? { saidBy: ctx.agentId, trust: "agent", source: `wakeup:${wakeupId}` }
+                ? {
+                    saidBy: ctx.agentId,
+                    trust: "agent",
+                    source: `wakeup:${wakeupId}`,
+                    kind: undefined,
+                  }
                 : ctx.sources.get(change.sourceEventId);
             if (!source)
               return yield* new MemoryWriteRejected({
@@ -443,7 +455,12 @@ const make = Effect.gen(function* () {
                     "said_by",
                     "source",
                   ]);
-                  if (source.trust === "owner") mutable.add("review_by");
+                  if (
+                    source.kind === "owner_check" &&
+                    source.itemId === item.id &&
+                    source.action === "keep"
+                  )
+                    mutable.add("review_by");
                   if (
                     Object.entries(item).some(
                       ([key, value]) =>

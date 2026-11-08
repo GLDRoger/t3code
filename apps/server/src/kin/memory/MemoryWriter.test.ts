@@ -43,6 +43,7 @@ it.live.each([
   "P10-lost-git-dir",
   "sha256",
   "owner-keep",
+  "owner-chat-keep",
   "agent-keep",
   "review-default",
   "review-null",
@@ -213,10 +214,26 @@ it.live.each([
                 timeZone: "Asia/Kolkata",
                 startedAt: "2026-11-08T00:00:00.000Z",
                 eventIds: [],
-                sources: new Map([
+                sources: new Map<
+                  string,
+                  Writer.WakeupContext["sources"] extends ReadonlyMap<string, infer S> ? S : never
+                >([
                   [
                     "owner",
-                    { saidBy: "fixture-owner", trust: "owner", source: "fixture-owner-message" },
+                    scenario === "owner-keep"
+                      ? {
+                          saidBy: "fixture-owner",
+                          trust: "owner",
+                          source: "fixture-owner-message",
+                          kind: "owner_check",
+                          itemId: "def-001",
+                          action: "keep",
+                        }
+                      : {
+                          saidBy: "fixture-owner",
+                          trust: "owner",
+                          source: "fixture-owner-message",
+                        },
                   ],
                   [
                     "member",
@@ -521,7 +538,7 @@ it.live.each([
           .stage(orgId, "wake1", {
             path: "claims/existing.md",
             content,
-            ...(scenario === "owner-keep" ? { sourceEventId: "owner" } : {}),
+            ...(scenario !== "agent-keep" ? { sourceEventId: "owner" } : {}),
           })
           .pipe(Effect.result);
         expect(result._tag).toBe(scenario === "owner-keep" ? "Success" : "Failure");

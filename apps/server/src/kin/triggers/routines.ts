@@ -142,8 +142,27 @@ const make = Effect.gen(function* () {
           },
     );
   });
+  const nextFoldTarget = Effect.fn("KinRoutines.nextFoldTarget")(function* (
+    orgId: KinOrgId,
+    excludeFireId: string,
+  ) {
+    const [next] = yield* sql<{
+      routine: string;
+    }>`SELECT json_extract(t.subject_json, '$.routine') AS routine
+      FROM kin_triggers t WHERE t.org_id = ${orgId} AND t.enabled = 1
+      AND t.trigger_id IN ('routine:morning_brief', 'routine:evening_summary')
+      ORDER BY MIN(t.next_run_at, COALESCE((
+        SELECT MIN(CAST(unixepoch(json_extract(i.payload_json, '$.dueAt')) * 1000 AS INTEGER))
+        FROM kin_trigger_inbox i WHERE i.org_id = t.org_id AND i.consumed_at IS NULL
+        AND i.fire_id <> ${excludeFireId}
+        AND json_extract(i.payload_json, '$.payload.subject.routine') = json_extract(t.subject_json, '$.routine')
+      ), t.next_run_at)), t.trigger_id LIMIT 1`;
+    return next?.routine;
+  });
   const reconcile = Effect.fn("KinRoutines.reconcile")(function* (settings: KinTriggerSettings) {
     const now = yield* Clock.currentTimeMillis;
+    const activeLead =
+      yield* sql`SELECT l.agent_id FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id WHERE l.org_id = ${settings.orgId} AND a.retired_at IS NULL ORDER BY l.agent_id LIMIT 1`;
     for (const routine of routines) {
       const id = KinTriggerId.make(`routine:${routine}`);
       const existing = yield* store.get(settings.orgId, id);
@@ -152,7 +171,7 @@ const make = Effect.gen(function* () {
         enabled: number;
         paused: number;
       }>`SELECT enabled, paused FROM kin_routine_preferences WHERE org_id = ${settings.orgId} AND routine = ${routine} ORDER BY routine`;
-      const enabled = preference?.enabled === 1 && preference.paused === 0;
+      const enabled = activeLead.length > 0 && preference?.enabled === 1 && preference.paused === 0;
       if (existing !== undefined && existing.enabled === enabled) continue;
       const timing = schedule(routine, settings);
       const next = enabled
@@ -171,6 +190,18 @@ const make = Effect.gen(function* () {
       });
     }
     yield* scheduler.recompute(settings);
+    const target = yield* nextFoldTarget(settings.orgId, "");
+    if (target !== undefined) {
+      yield* sql`UPDATE kin_routine_folds SET fold_into = ${target} WHERE org_id = ${settings.orgId}`;
+    } else {
+      const dropped =
+        yield* sql`DELETE FROM kin_routine_folds WHERE org_id = ${settings.orgId} RETURNING fire_id`;
+      if (dropped.length > 0)
+        yield* Effect.logWarning("Kin routine folds dropped: no enabled destination", {
+          orgId: settings.orgId,
+          count: dropped.length,
+        });
+    }
   });
   const wrap = <A, E, R>(orgId: KinOrgId, effect: Effect.Effect<A, E, R>) =>
     effect.pipe(Effect.mapError((cause) => new KinRoutinesError({ orgId, cause })));
@@ -212,8 +243,6 @@ const make = Effect.gen(function* () {
               yield* reconcile(settings);
               if ((routine === null && value) || (routine !== null && !value)) {
                 yield* sql`UPDATE kin_events SET state = 'expired' WHERE org_id = ${orgId} AND tag = 'routine' AND state = 'queued' AND (${routine} IS NULL OR json_extract(json, '$.routine') = ${routine})`;
-                if (routine !== null)
-                  yield* sql`DELETE FROM kin_routine_folds WHERE org_id = ${orgId} AND routine = ${routine}`;
               }
             }),
           )
@@ -240,7 +269,6 @@ const make = Effect.gen(function* () {
           if (name !== "morning_brief" && name !== "evening_summary" && name !== "owner_check")
             continue;
 
-          const items = name === "owner_check" ? yield* ownerCheck.select(orgId) : undefined;
           yield* sql
             .withTransaction(
               Effect.gen(function* () {
@@ -251,7 +279,15 @@ const make = Effect.gen(function* () {
                 const [lead] = yield* sql<{
                   agent_id: string;
                 }>`SELECT l.agent_id FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id WHERE l.org_id = ${orgId} AND a.retired_at IS NULL ORDER BY l.agent_id LIMIT 1`;
-                if (lead === undefined) return;
+                if (lead === undefined) {
+                  yield* inbox.markConsumed(orgId, [fire.fireId]);
+                  yield* sql`UPDATE kin_triggers SET enabled = 0, next_run_at = NULL WHERE org_id = ${orgId} AND trigger_id IN ('routine:morning_brief', 'routine:evening_summary', 'routine:owner_check')`;
+                  yield* Effect.logWarning("Kin routine consumed: lead retired", {
+                    orgId,
+                    fireId: fire.fireId,
+                  });
+                  return;
+                }
                 const eventId = KinEventId.make(
                   `routine_${Array.from(new TextEncoder().encode(`${orgId.length}:${orgId}${fire.fireId}`), (byte) => byte.toString(16).padStart(2, "0")).join("")}`,
                 );
@@ -270,7 +306,15 @@ const make = Effect.gen(function* () {
                   return;
                 }
                 if (routineDisposition(name, fire.dueAt, iso(now), settings) === "fold") {
-                  const target = name === "morning_brief" ? "evening_summary" : "morning_brief";
+                  const target = yield* nextFoldTarget(orgId, fire.fireId);
+                  if (target === undefined) {
+                    yield* Effect.logWarning("Kin routine fold dropped: no enabled destination", {
+                      orgId,
+                      fireId: fire.fireId,
+                    });
+                    yield* inbox.markConsumed(orgId, [fire.fireId]);
+                    return;
+                  }
                   yield* sql`UPDATE kin_routine_folds SET fold_into = ${target} WHERE org_id = ${orgId} AND fold_into = ${name}`;
                   yield* sql`INSERT INTO kin_routine_folds (org_id, fire_id, routine, due_at, fold_into) VALUES (${orgId}, ${fire.fireId}, ${name}, ${Date.parse(fire.dueAt)}, ${target}) ON CONFLICT DO NOTHING RETURNING fire_id`;
                 } else {
@@ -278,6 +322,8 @@ const make = Effect.gen(function* () {
                     routine: string;
                     due_at: number;
                   }>`SELECT routine, due_at FROM kin_routine_folds WHERE org_id = ${orgId} AND fold_into = ${name} ORDER BY due_at, fire_id`;
+                  const items =
+                    name === "owner_check" ? yield* ownerCheck.select(orgId) : undefined;
                   const event = yield* decodeEvent({
                     _tag: "routine",
                     eventId,
@@ -288,7 +334,7 @@ const make = Effect.gen(function* () {
                     dedupeKey: `routine:${orgId}:${fire.fireId}`,
                     routine: name,
                     dueAt: fire.dueAt,
-                    lateByMs: now - Date.parse(fire.dueAt),
+                    lateByMs: Math.max(0, now - Date.parse(fire.dueAt)),
                     foldedRoutines: folds.map((fold) => ({
                       routine: fold.routine,
                       dueAt: iso(fold.due_at),
@@ -305,31 +351,47 @@ const make = Effect.gen(function* () {
               Effect.mapError((cause) =>
                 isSqlError(cause) ? toPersistenceSqlError("KinRoutines.drain")(cause) : cause,
               ),
+              Effect.catch((cause) =>
+                Effect.gen(function* () {
+                  yield* Effect.logWarning("Kin routine fire consumed: processing failed", {
+                    orgId,
+                    fireId: fire.fireId,
+                    errorTag: cause._tag,
+                  });
+                  yield* inbox.markConsumed(orgId, [fire.fireId]);
+                }),
+              ),
             );
         }
       }),
     ),
   );
+  let nextReconcileAt = 0;
   yield* ticks.register(
     "kin-routines",
     Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      const reconcileDue = now >= nextReconcileAt;
+      // Scheduler maintenance deliberately scans organizations; all work below remains org-scoped.
       const orgs = yield* sql<{
         org_id: string;
       }>`SELECT org_id FROM kin_leads WHERE org_id IN (SELECT org_id FROM kin_orgs) ORDER BY org_id`;
       for (const row of orgs) {
         const orgId = KinOrgId.make(row.org_id);
         yield* Effect.gen(function* () {
-          yield* sql.withTransaction(
-            Effect.gen(function* () {
-              yield* reconcile(yield* settingsFor(orgId));
-            }),
-          );
+          if (reconcileDue)
+            yield* sql.withTransaction(
+              Effect.gen(function* () {
+                yield* reconcile(yield* settingsFor(orgId));
+              }),
+            );
           yield* drain(orgId);
         }).pipe(
           Effect.catch((cause) => Effect.logWarning("Kin routines tick failed", { orgId, cause })),
         );
       }
-    }).pipe(Effect.catch((cause) => Effect.logWarning("Kin routines scan failed", { cause }))),
+      if (reconcileDue) nextReconcileAt = now + 15 * 60 * 1000;
+    }).pipe(Effect.catch(() => Effect.logWarning("Kin routines scan failed"))),
   );
   return KinRoutines.of({
     isEnabled: Effect.fn("KinRoutines.isEnabled")((orgId, routine) =>

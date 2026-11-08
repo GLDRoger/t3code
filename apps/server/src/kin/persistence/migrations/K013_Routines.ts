@@ -3,6 +3,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE INDEX kin_workers_owner_review ON kin_workers (org_id, ended_at, worker_id) WHERE report_json IS NOT NULL`;
   yield* sql`CREATE TABLE kin_routine_preferences (
     org_id TEXT NOT NULL REFERENCES kin_orgs(org_id),
     routine TEXT NOT NULL CHECK (routine IN ('morning_brief', 'evening_summary', 'owner_check')),

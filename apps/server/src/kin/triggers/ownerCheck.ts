@@ -106,6 +106,7 @@ export class OwnerCheck extends Context.Service<
     readonly post: (
       orgId: KinOrgId,
       fireId: string,
+      selections: ReadonlyArray<Selection>,
     ) => Effect.Effect<ReadonlyArray<Selection>, OwnerCheckError>;
     readonly act: (
       orgId: KinOrgId,
@@ -135,10 +136,11 @@ const make = Effect.gen(function* () {
     wrap(
       orgId,
       Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
         const items = yield* memory.query(orgId, { excludeInvalid: true });
         const reports = yield* sql<{
           report_json: string;
-        }>`SELECT report_json FROM kin_workers WHERE org_id = ${orgId} AND report_json IS NOT NULL ORDER BY ended_at, worker_id`.pipe(
+        }>`SELECT report_json FROM kin_workers WHERE org_id = ${orgId} AND report_json IS NOT NULL AND ended_at >= ${now - 90 * day} ORDER BY ended_at, worker_id`.pipe(
           Effect.mapError((cause) =>
             isSqlError(cause) ? toPersistenceSqlError("OwnerCheck.select")(cause) : cause,
           ),
@@ -148,82 +150,82 @@ const make = Effect.gen(function* () {
           const report = yield* decodeReport(row.report_json);
           for (const finding of report.misleadingMemory) misleading.add(finding.itemId);
         }
-        return pickOwnerCheckItems(orgId, items, misleading, yield* Clock.currentTimeMillis);
+        return pickOwnerCheckItems(orgId, items, misleading, now);
       }),
     ),
   );
-  const post = Effect.fn("OwnerCheck.post")((orgId: KinOrgId, fireId: string) =>
-    wrap(
-      orgId,
-      Effect.gen(function* () {
-        const widgetId = KinWidgetId.make(`owner-check:${orgId}:${fireId}`);
-        const previous = yield* repo.getWidget({ orgId, widgetId });
-        if (Option.isSome(previous))
-          return (yield* decodeCard(previous.value.state)).items.map(({ itemId, reason }) => ({
-            itemId,
-            reason,
-          }));
-        const selections = yield* select(orgId);
-        const heads = yield* Effect.forEach(selections, (selection) =>
-          memory.readItemQuietly(orgId, selection.itemId),
-        );
-        return yield* sql
-          .withTransaction(
-            Effect.gen(function* () {
-              const existing = yield* repo.getWidget({ orgId, widgetId });
-              if (Option.isSome(existing))
-                return (yield* decodeCard(existing.value.state)).items.map(
-                  ({ itemId, reason }) => ({ itemId, reason }),
-                );
-              if (selections.length === 0) return selections;
-              const [lead] = yield* sql<{
-                owner_chat_id: string;
-                owner_person_id: string;
-              }>`SELECT l.owner_chat_id, a.owner_person_id FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id WHERE l.org_id = ${orgId} AND a.retired_at IS NULL ORDER BY l.agent_id LIMIT 1`;
-              if (lead === undefined) return yield* Effect.fail("missing_lead");
-              const chatId = KinChatId.make(lead.owner_chat_id);
-              const { message } = yield* chat.notice({
-                orgId,
-                chatId,
-                messageId: KinMessageId.make(widgetId),
-                body: "Memory to review",
-              });
-              const now = DateTime.formatIso(yield* DateTime.now);
-              const state = {
-                items: selections.map((selection, index) => ({
-                  ...selection,
-                  title: heads[index]?.head.title ?? "",
-                  path: heads[index]?.head.path ?? "",
-                })),
-              };
-              const widget: KinWidget = {
-                orgId,
-                chatId,
-                messageId: message.messageId,
-                widgetId,
-                widgetClass: "native",
-                type: "owner_check",
-                revision: 1,
-                state,
-                source: null,
-                feed: null,
-                awaiting: [KinPersonId.make(lead.owner_person_id)],
-                pinnedAt: null,
-                closedAt: null,
-                updatedAt: now,
-              };
-              yield* repo.insertWidget(widget);
-              yield* sql.afterCommit(hub.publish({ type: "widget.updated", orgId, widget }));
-              return selections;
-            }),
-          )
-          .pipe(
-            Effect.mapError((cause) =>
-              isSqlError(cause) ? toPersistenceSqlError("OwnerCheck.post")(cause) : cause,
-            ),
+  const post = Effect.fn("OwnerCheck.post")(
+    (orgId: KinOrgId, fireId: string, selections: ReadonlyArray<Selection>) =>
+      wrap(
+        orgId,
+        Effect.gen(function* () {
+          const widgetId = KinWidgetId.make(`owner-check:${orgId}:${fireId}`);
+          const previous = yield* repo.getWidget({ orgId, widgetId });
+          if (Option.isSome(previous))
+            return (yield* decodeCard(previous.value.state)).items.map(({ itemId, reason }) => ({
+              itemId,
+              reason,
+            }));
+          const heads = yield* Effect.forEach(selections, (selection) =>
+            memory.readItemQuietly(orgId, selection.itemId),
           );
-      }),
-    ),
+          return yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                const existing = yield* repo.getWidget({ orgId, widgetId });
+                if (Option.isSome(existing))
+                  return (yield* decodeCard(existing.value.state)).items.map(
+                    ({ itemId, reason }) => ({ itemId, reason }),
+                  );
+                if (selections.length === 0) return selections;
+                const [lead] = yield* sql<{
+                  owner_chat_id: string;
+                  owner_person_id: string;
+                }>`SELECT l.owner_chat_id, a.owner_person_id FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id WHERE l.org_id = ${orgId} AND a.retired_at IS NULL ORDER BY l.agent_id LIMIT 1`;
+                if (lead === undefined) return yield* Effect.fail("missing_lead");
+                const chatId = KinChatId.make(lead.owner_chat_id);
+                const { message } = yield* chat.notice({
+                  orgId,
+                  chatId,
+                  messageId: KinMessageId.make(widgetId),
+                  body: "Memory to review",
+                });
+                const now = DateTime.formatIso(yield* DateTime.now);
+                const state = {
+                  items: selections.map((selection, index) => ({
+                    ...selection,
+                    title: heads[index]?.head.title ?? "",
+                    path: heads[index]?.head.path ?? "",
+                  })),
+                };
+                const widget: KinWidget = {
+                  orgId,
+                  chatId,
+                  messageId: message.messageId,
+                  widgetId,
+                  widgetClass: "native",
+                  type: "owner_check",
+                  revision: 1,
+                  state,
+                  source: null,
+                  feed: null,
+                  awaiting: [KinPersonId.make(lead.owner_person_id)],
+                  pinnedAt: null,
+                  closedAt: null,
+                  updatedAt: now,
+                };
+                yield* repo.insertWidget(widget);
+                yield* sql.afterCommit(hub.publish({ type: "widget.updated", orgId, widget }));
+                return selections;
+              }),
+            )
+            .pipe(
+              Effect.mapError((cause) =>
+                isSqlError(cause) ? toPersistenceSqlError("OwnerCheck.post")(cause) : cause,
+              ),
+            );
+        }),
+      ),
   );
   const act = Effect.fn("OwnerCheck.act")(
     (orgId: KinOrgId, wakeupId: string, eventId: KinEventId) =>
@@ -273,9 +275,13 @@ const make = Effect.gen(function* () {
                 )
                   return yield* Effect.fail("invalid_card");
                 const card = yield* decodeCard(widget.value.state);
-                if (!card.items.some((item) => item.itemId === action.value))
+                if (
+                  !card.items.some(
+                    (item) => item.itemId === action.value && item.handled === undefined,
+                  )
+                )
                   return yield* Effect.fail("unknown_item");
-                return { action, chatId: event.chatId };
+                return { action, chatId: event.chatId, widget: widget.value, card };
               }),
             )
             .pipe(
@@ -301,6 +307,33 @@ const make = Effect.gen(function* () {
               sourceEventId: eventId,
             });
           }
+          const at = DateTime.formatIso(yield* DateTime.now);
+          const items = verified.card.items.map((item) =>
+            item.itemId === verified.action.value
+              ? { ...item, handled: verified.action.actionId }
+              : item,
+          );
+          yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                const widget = yield* repo.updateWidget({
+                  ...verified.widget,
+                  expectedRevision: verified.widget.revision,
+                  state: { items },
+                  awaiting: items.every((item) => item.handled !== undefined)
+                    ? []
+                    : verified.widget.awaiting,
+                  closedAt: items.every((item) => item.handled !== undefined) ? at : null,
+                  updatedAt: at,
+                });
+                yield* sql.afterCommit(hub.publish({ type: "widget.updated", orgId, widget }));
+              }),
+            )
+            .pipe(
+              Effect.mapError((cause) =>
+                isSqlError(cause) ? toPersistenceSqlError("OwnerCheck.act")(cause) : cause,
+              ),
+            );
           return {
             chatId: verified.chatId,
             itemId: verified.action.value,

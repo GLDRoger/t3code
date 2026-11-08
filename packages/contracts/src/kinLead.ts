@@ -152,6 +152,7 @@ export const KinOwnerCheckCard = Schema.Struct({
     Schema.Struct({
       itemId: KinMemoryItemId,
       reason: Schema.Literals(["past_review", "misleading", "old_low_trust", "no_evidence"]),
+      handled: Schema.optional(Schema.Literals(["keep", "update", "drop"])),
       title: Schema.String,
       path: Schema.String,
     }),
