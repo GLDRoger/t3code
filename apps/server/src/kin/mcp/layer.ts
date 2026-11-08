@@ -9,6 +9,7 @@ import { parseBearerToken } from "../../auth/EnvironmentAuth.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { McpInvocationContext } from "../../mcp/McpInvocationContext.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
+import * as DreamSession from "../dreaming/DreamSession.ts";
 import * as KinLead from "../lead/layer.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import { KinServer } from "../KinServer.ts";
@@ -111,6 +112,9 @@ export const registry = <E, R>(base: Layer.Layer<McpSessionRegistry.McpSessionRe
         thread.subagent !== true &&
         Option.isSome(kin.services) &&
         Context.get(kin.services.value, KinIdentity).isAgentThread(thread.threadId);
+      // Dream threads read untrusted material, so they get no MCP authority on either endpoint.
+      const isDreamThread = (threadId: ThreadId) =>
+        Option.isSome(kin.services) && threadId.startsWith(DreamSession.threadPrefix);
       const resolveAgent = Effect.fn("KinMcp.resolveAgent")(function* (token: string) {
         const scope = yield* base.resolve(token);
         return scope !== undefined &&
@@ -124,7 +128,9 @@ export const registry = <E, R>(base: Layer.Layer<McpSessionRegistry.McpSessionRe
         resolve: Effect.fn("KinMcp.resolve")(function* (token) {
           const scope = yield* base.resolve(token);
           if (scope === undefined) return undefined;
-          return isAgentThread(scope.thread) || agentSessions.has(scope.thread.providerSessionId)
+          return isAgentThread(scope.thread) ||
+            isDreamThread(scope.thread.threadId) ||
+            agentSessions.has(scope.thread.providerSessionId)
             ? undefined
             : scope;
         }),
@@ -139,6 +145,10 @@ export const registry = <E, R>(base: Layer.Layer<McpSessionRegistry.McpSessionRe
         revokeAll: base.revokeAll.pipe(Effect.tap(() => Effect.sync(() => agentSessions.clear()))),
         issue: Effect.fn("KinMcp.issue")(function* (request) {
           const issued = yield* base.issue(request);
+          if (isDreamThread(request.threadId)) {
+            yield* base.revokeProviderSession(issued.config.providerSessionId);
+            return issued;
+          }
           const isAgent = isAgentThread(request);
           if (isAgent) agentSessions.set(issued.config.providerSessionId, request.threadId);
           return isAgent

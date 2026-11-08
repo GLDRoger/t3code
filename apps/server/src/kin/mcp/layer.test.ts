@@ -312,6 +312,16 @@ it.effect.each([true, false])(
           )).status,
           401,
         );
+        const dream = yield* registry.issue({
+          threadId: ThreadId.make("kin-dream:dream_20260101_abc:extract"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        });
+        for (const path of ["/mcp", "/kin/mcp"])
+          assert.strictEqual(
+            (yield* request(path, dream.config.authorizationHeader, "initialize", initialize))
+              .status,
+            401,
+          );
         const result = yield* request(
           "/kin/mcp",
           issued.config.authorizationHeader,

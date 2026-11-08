@@ -29,7 +29,7 @@ export interface DreamTurn {
   readonly text: string;
 }
 
-/** One provider turn in the dream checkout. The thread is not a lead thread, so it gets no Kin tools. */
+/** One provider turn in the dream checkout. The Kin MCP registry refuses its thread on every endpoint. */
 export class DreamSession extends Context.Service<
   DreamSession,
   {
@@ -43,6 +43,7 @@ export class DreamSession extends Context.Service<
 >()("t3/kin/dreaming/DreamSession") {}
 
 const timeoutMs = 900_000;
+export const threadPrefix = "kin-dream:";
 
 export const layer = Layer.effect(
   DreamSession,
@@ -59,7 +60,7 @@ export const layer = Layer.effect(
           title: `Kin dreams · ${turn.orgId}`,
         });
         const key = `${turn.dreamId}:${turn.turn}`;
-        const threadId = ThreadId.make(`kin-dream:${key}`);
+        const threadId = ThreadId.make(`${threadPrefix}${key}`);
         const messageId = MessageId.make(`kin-dream-msg:${key}`);
         const sent = yield* launch.launch({
           commandId: CommandId.make(`kin-dream:${key}`),
