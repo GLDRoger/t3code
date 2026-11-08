@@ -161,6 +161,21 @@ export class KinTriggerStore extends Context.Service<
     readonly sourceByTaskId: (
       id: ScheduledTaskId,
     ) => Effect.Effect<KinWebhookSource | undefined, StoreError>;
+    readonly listSources: (
+      orgId: KinOrgId,
+    ) => Effect.Effect<ReadonlyArray<KinWebhookSource>, StoreError>;
+    /** Records what `trigger_reconcile` saw; false when the status was no longer `from`. */
+    readonly setSourceStatus: (
+      orgId: KinOrgId,
+      id: KinWebhookSourceId,
+      from: KinWebhookSource["status"],
+      to: KinWebhookSource["status"],
+    ) => Effect.Effect<boolean, StoreError>;
+    /** True when the task's current secret is the one bound to the source. */
+    readonly secretMatchesTask: (
+      orgId: KinOrgId,
+      id: KinWebhookSourceId,
+    ) => Effect.Effect<boolean, StoreError>;
     readonly put: (trigger: Omit<KinTrigger, "lastFireId">) => Effect.Effect<void, StoreError>;
     readonly get: (
       orgId: KinOrgId,
@@ -394,6 +409,38 @@ const make = Effect.gen(function* () {
         return row === undefined ? undefined : yield* decodeSource(row);
       },
       Effect.mapError(toPersistenceOrDecodeError("KinTriggerStore.sourceByTaskId")),
+    ),
+    listSources: Effect.fn("KinTriggerStore.listSources")(
+      function* (orgId) {
+        const rows = yield* sql`SELECT ${sql.literal(sourceColumns)} FROM kin_webhook_sources
+          WHERE org_id = ${orgId} ORDER BY source_id`.pipe(NodeSqliteClient.readOnly);
+        return yield* Effect.forEach(rows, (row) => decodeSource(row));
+      },
+      Effect.mapError(toPersistenceOrDecodeError("KinTriggerStore.listSources")),
+    ),
+    setSourceStatus: Effect.fn("KinTriggerStore.setSourceStatus")(
+      function* (orgId, id, from, to) {
+        const rows = yield* sql`UPDATE kin_webhook_sources SET status = ${to}
+          WHERE org_id = ${orgId} AND source_id = ${id} AND status = ${from}
+          RETURNING source_id`;
+        return rows.length === 1;
+      },
+      Effect.mapError(toPersistenceSqlError("KinTriggerStore.setSourceStatus")),
+    ),
+    secretMatchesTask: Effect.fn("KinTriggerStore.secretMatchesTask")(
+      function* (orgId, id) {
+        const [row] = yield* sql<{
+          readonly hash: string | null;
+          readonly secret: string | null;
+        }>`SELECT s.secret_sha256 AS hash, t.webhook_secret AS secret FROM kin_webhook_sources s
+          JOIN scheduled_tasks t ON t.task_id = s.scheduled_task_id
+          WHERE s.org_id = ${orgId} AND s.source_id = ${id}`.pipe(NodeSqliteClient.readOnly);
+        if (row?.hash == null || row.secret == null) return false;
+        const bound = Buffer.from(row.hash, "hex");
+        const given = secretDigest(Redacted.make(row.secret));
+        return bound.length === given.length && NodeCrypto.timingSafeEqual(bound, given);
+      },
+      Effect.mapError(toPersistenceSqlError("KinTriggerStore.secretMatchesTask")),
     ),
     put: Effect.fn("KinTriggerStore.put")(
       function* (trigger) {

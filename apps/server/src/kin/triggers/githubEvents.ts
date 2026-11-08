@@ -101,7 +101,7 @@ export const repoScopeLayer = Layer.effect(
   ),
 );
 
-const inRepoScope = (repos: ReadonlyArray<string>, repo: string) =>
+export const inRepoScope = (repos: ReadonlyArray<string>, repo: string) =>
   repos.some((scoped) => scoped.toLowerCase() === repo.toLowerCase());
 
 const header = (headers: Readonly<Record<string, string>>, name: string) =>
