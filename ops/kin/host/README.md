@@ -27,7 +27,7 @@ export XDG_RUNTIME_DIR=/run/user/$(id -u)
 2. In a kin shell, install the tools in kin's own home so the owner's logins never reach it:
    - mise: `curl https://mise.run | sh` (it lands in `~/.local/bin`), then `mise use -g node@<engines.node from package.json>`. The global default puts npm-installed CLIs such as `codex` on mise's shims, which the unit's `PATH` includes. A Node bump in the repo installs the new Node, but globals installed under the old one don't move: rerun `mise use -g node@<new>` and reinstall them.
    - `vp` ([Vite+](https://viteplus.dev/guide/)), Claude Code and Codex. Sign the two CLIs in to the owner's plans.
-   - `git`, `gh`, `git-filter-repo`, `gitleaks` and `sqlite3` come from the distribution, system-wide.
+   - `git`, `gh`, `git-filter-repo`, `gitleaks`, `sqlite3`, `pkg-config` and `libsecret-1-dev` come from the distribution, system-wide. `update.sh` builds the desktop bundle, which needs `libsecret-1`.
 3. In a kin shell: `git clone https://github.com/GLDRoger/t3code ~/t3code && cd ~/t3code && git switch kin && cp .env.example .env && ops/kin/host/update.sh`. That builds the first release into `~/kin-builds/<sha>`, points `~/kin-current` at it and starts the server.
 4. As the owner: `sudo ~kin/t3code/ops/kin/host/setup.sh` again. Every check should pass.
 
