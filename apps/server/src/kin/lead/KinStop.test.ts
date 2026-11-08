@@ -97,7 +97,7 @@ describe("KinStop", () => {
           assert.include(ThreadManagement.ACTIVE_RUN_STATUSES, yield* live(workerThread));
 
           const paused = yield* stop.pause(owner, { orgId, reason: "Testing" });
-          assert.include(paused, { paused: true, pausedBy: "owner", reason: "Testing" });
+          assert.include(paused, { paused: true, pausedBy: owner[0]!.personId, reason: "Testing" });
           yield* worker.drain();
           yield* Fiber.join(wakeup);
 
