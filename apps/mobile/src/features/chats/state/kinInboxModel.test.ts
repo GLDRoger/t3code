@@ -253,6 +253,24 @@ describe("kin chat feed", () => {
     expect(state.changeSeq).toBe(9);
   });
 
+  it("takes a mid-stream backlog's cursors without duplicating what arrived live", () => {
+    let state = applyKinChatEvent(emptyKinChat, backlog([message(1)], 1, [widget("w", 1)], 3));
+    // Live traffic: the change cursor stays frozen at the last backlog.
+    state = applyKinChatEvent(state, { _tag: "message", message: message(2) });
+    state = applyKinChatEvent(state, { _tag: "message", message: message(3) });
+    state = applyKinChatEvent(state, { _tag: "widget", widget: widget("w", 2) });
+    expect(state).toMatchObject({ contiguousSeq: 3, changeSeq: 3 });
+    // The periodic backlog carries only seq 4, committed but not yet published live.
+    state = applyKinChatEvent(state, backlog([message(4)], 4, [], 120));
+    expect(state).toMatchObject({ contiguousSeq: 4, changeSeq: 120 });
+    // Its late live copy and further live events leave the new cursor alone.
+    state = applyKinChatEvent(state, { _tag: "message", message: message(4) });
+    state = applyKinChatEvent(state, { _tag: "message", message: message(5) });
+    expect(seqs(state)).toEqual([1, 2, 3, 4, 5]);
+    expect(state.widgets.map((w) => w.revision)).toEqual([2]);
+    expect(state).toMatchObject({ contiguousSeq: 5, changeSeq: 120 });
+  });
+
   it("keeps the highest widget revision", () => {
     let state = applyKinChatEvent(emptyKinChat, backlog([message(1)], 1, [widget("w", 2)]));
     const stale = applyKinChatEvent(state, { _tag: "widget", widget: widget("w", 1) });

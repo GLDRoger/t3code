@@ -342,6 +342,7 @@ export class KinChatError extends Schema.TaggedError<KinChatError>()("KinChatErr
     "not_found",
     "not_allowed",
     "unavailable",
+    "disabled",
     "widget_changed",
     "use_approvals",
     "invalid_state",
