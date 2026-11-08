@@ -4,6 +4,7 @@ import {
   authScopeRequiredResponse,
   type EnvironmentId,
   type ClientGuardedRpcTag,
+  KIN_CHAT_WS_METHODS,
   ORCHESTRATION_V2_WS_METHODS,
   WS_METHODS,
 } from "@t3tools/contracts";
@@ -72,8 +73,8 @@ export type EnvironmentSubscriptionRpcTag =
   | typeof WS_METHODS.subscribeProjectClones
   | typeof WS_METHODS.terminalAttach
   | typeof WS_METHODS.terminalObserve
-  | "kin.chats.subscribe"
-  | "kin.chat.subscribe";
+  | typeof KIN_CHAT_WS_METHODS.chatsSubscribe
+  | typeof KIN_CHAT_WS_METHODS.chatSubscribe;
 
 export type EnvironmentStreamCommandRpcTag =
   | typeof WS_METHODS.chatGptHandoffSubscribe

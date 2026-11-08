@@ -15,7 +15,8 @@ export type KinProbe =
   /** A Kin host that maps this session to no person. */
   | { readonly _tag: "noIdentity"; readonly orgs: KinOrgsListResult }
   | { readonly _tag: "unauthorized"; readonly message: string }
-  | { readonly _tag: "error"; readonly message: string }
+  /** `transient` for transport failures and timeouts: the host may still be Kin. */
+  | { readonly _tag: "error"; readonly message: string; readonly transient: boolean }
   /** A plain T3 server, or Kin with `KIN_ENABLED` off. */
   | { readonly _tag: "notKin" };
 
@@ -31,15 +32,20 @@ export function classifyKinProbe(
       : { _tag: "ready", orgs: result.value };
   }
   if (result._tag === "Initial") return { _tag: "pending" };
-  const error = Cause.squash(result.cause);
-  if (isAuthorizationError(error)) return { _tag: "unauthorized", message: error.message };
-  if (isKinChatError(error)) {
-    return error.reason === "unavailable"
-      ? { _tag: "notKin" }
-      : { _tag: "error", message: error.message };
+  const failures = result.cause.reasons.filter(Cause.isFailReason).map((reason) => reason.error);
+  for (const error of failures) {
+    if (isAuthorizationError(error)) return { _tag: "unauthorized", message: error.message };
+    if (isKinChatError(error)) {
+      return error.reason === "unavailable"
+        ? { _tag: "notKin" }
+        : { _tag: "error", message: error.message, transient: false };
+    }
   }
-  // A server without the Kin RPCs rejects the method; that is "no Kin here", not a failure.
-  return { _tag: "notKin" };
+  // A server without the Kin RPCs answers `Exit.die("Unknown request tag: ...")`.
+  if (failures.length === 0 && Cause.hasDies(result.cause)) return { _tag: "notKin" };
+  if (Cause.hasInterruptsOnly(result.cause)) return { _tag: "pending" };
+  // Transport loss, an unreachable environment, or a timeout says nothing about Kin.
+  return { _tag: "error", message: Cause.pretty(result.cause), transient: true };
 }
 
 export interface KinHostCandidate {
@@ -60,12 +66,12 @@ export type KinHost =
       readonly probe: KinProbe;
     };
 
-const usable = (probe: KinProbe) => probe._tag !== "pending" && probe._tag !== "notKin";
+const isTransient = (probe: KinProbe) => probe._tag === "error" && probe.transient;
 
 /**
- * The saved host wins while it is in the catalog and still answers as Kin. Otherwise the first
- * connected environment, in catalog order, that answers as Kin. Waiting on an earlier probe keeps
- * the choice stable when several environments host Kin.
+ * Saved host first, unless it isn't Kin or lacks an identity another host has; then the first
+ * connected host with an identity, in catalog order; then one without. Earlier pending probes are
+ * awaited so the choice stays stable. A transient failure never replaces or picks a host.
  */
 export function resolveKinHost(input: {
   readonly candidates: ReadonlyArray<KinHostCandidate>;
@@ -75,6 +81,7 @@ export function resolveKinHost(input: {
 }): KinHost {
   if (input.savedHostId === undefined) return { _tag: "searching" };
   const saved = input.candidates.find((c) => c.environmentId === input.savedHostId);
+  let fallback: KinHost | null = null;
   if (saved !== undefined) {
     if (!saved.connected) {
       return {
@@ -85,19 +92,23 @@ export function resolveKinHost(input: {
       };
     }
     const probe = input.probe(saved.environmentId);
-    if (probe._tag !== "notKin") {
-      return { _tag: "host", environmentId: saved.environmentId, connected: true, probe };
-    }
+    const host: KinHost = {
+      _tag: "host",
+      environmentId: saved.environmentId,
+      connected: true,
+      probe,
+    };
+    if (probe._tag === "noIdentity") fallback = host;
+    else if (probe._tag !== "notKin") return host;
   }
-  let fallback: KinHost | null = null;
   for (const candidate of input.candidates) {
     if (!candidate.connected || candidate === saved) continue;
     const probe = input.probe(candidate.environmentId);
-    if (probe._tag === "pending") return { _tag: "searching" };
+    if (probe._tag === "pending") return fallback ?? { _tag: "searching" };
     if (probe._tag === "ready") {
       return { _tag: "host", environmentId: candidate.environmentId, connected: true, probe };
     }
-    if (fallback === null && usable(probe)) {
+    if (fallback === null && probe._tag !== "notKin" && !isTransient(probe)) {
       fallback = { _tag: "host", environmentId: candidate.environmentId, connected: true, probe };
     }
   }

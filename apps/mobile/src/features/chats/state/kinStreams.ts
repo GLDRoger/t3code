@@ -1,0 +1,251 @@
+import { EnvironmentSupervisor } from "@t3tools/client-runtime/connection";
+import { subscribe, subscribeDynamic } from "@t3tools/client-runtime/rpc";
+import { persistQuery } from "@t3tools/client-runtime/state/query-persistence";
+import { queryPersistenceKey } from "@t3tools/client-runtime/state/runtime";
+import {
+  KIN_CHAT_WS_METHODS,
+  KinChatError,
+  type EnvironmentId,
+  type KinChatHistoryInput,
+  type KinChatHistoryResult,
+  type KinChatId,
+  type KinChatsSubscribeInput,
+  type KinChatStreamEvent,
+} from "@t3tools/contracts";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
+import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
+
+import { removeKinCacheEntry, withKinCache } from "./kinCache";
+import {
+  applyKinChatEvent,
+  applyKinChatHistory,
+  applyKinInboxEvent,
+  emptyKinChat,
+  emptyKinInbox,
+  KIN_CACHED_MESSAGE_LIMIT,
+  KinChatState,
+  KinInboxState,
+  trimKinChatForCache,
+  type KinChatClosedReason,
+  type KinInboxEvent,
+} from "./kinInboxModel";
+
+/** A stream's folded state, seeded from the device cache until the host answers. */
+export interface KinSynced<A> {
+  readonly value: A;
+  /** False while only the cache has been read. */
+  readonly live: boolean;
+  /** When the shown value was last saved or received, ISO time; null with no cache. */
+  readonly savedAt: string | null;
+}
+
+export const KIN_INBOX_LABEL = "kin:inbox";
+export const KIN_CHAT_LABEL = "kin:chat";
+/** Streams save at most this often; the last change is flushed when the stream stops. */
+export const KIN_CACHE_SAVE_INTERVAL = Duration.millis(1500);
+
+const inboxCache = persistQuery(Schema.Struct({ inbox: KinInboxState, savedAt: Schema.String }));
+const chatCache = persistQuery(Schema.Struct({ chat: KinChatState, savedAt: Schema.String }));
+
+const isKinChatError = Schema.is(KinChatError);
+const isClosedReason = (reason: KinChatError["reason"]): reason is KinChatClosedReason =>
+  reason === "not_found" || reason === "not_allowed" || reason === "unavailable";
+
+// The viewer's chat stream learns it left a chat; the list stream never says so.
+const leftChatsByEnvironment = new Map<EnvironmentId, PubSub.PubSub<KinChatId>>();
+function leftChats(environmentId: EnvironmentId): PubSub.PubSub<KinChatId> {
+  let pubsub = leftChatsByEnvironment.get(environmentId);
+  if (pubsub === undefined) {
+    pubsub = Effect.runSync(PubSub.unbounded<KinChatId>());
+    leftChatsByEnvironment.set(environmentId, pubsub);
+  }
+  return pubsub;
+}
+
+const currentEnvironmentId = EnvironmentSupervisor.EnvironmentSupervisor.pipe(
+  Effect.map((supervisor) => supervisor.target.environmentId),
+);
+
+const nowIso = () => new Date().toISOString();
+
+/** Keeps the latest value and saves it on an interval, then once more when the scope closes. */
+const throttledSave = Effect.fnUntraced(function* <A, R>(
+  save: (value: A) => Effect.Effect<void, never, R>,
+) {
+  let pending = Option.none<A>();
+  const flush = Effect.suspend(() => {
+    if (Option.isNone(pending)) return Effect.void;
+    const value = pending.value;
+    pending = Option.none();
+    return save(value);
+  });
+  yield* Effect.addFinalizer(() => flush);
+  yield* flush.pipe(Effect.delay(KIN_CACHE_SAVE_INTERVAL), Effect.forever, Effect.forkScoped);
+  return {
+    offer: (value: A) => {
+      pending = Option.some(value);
+    },
+    discard: () => {
+      pending = Option.none();
+    },
+  };
+});
+
+export function kinInboxStream(input: KinChatsSubscribeInput) {
+  return Stream.unwrap(
+    Effect.gen(function* () {
+      const environmentId = yield* currentEnvironmentId;
+      const key = queryPersistenceKey(KIN_INBOX_LABEL, input);
+      const cached = yield* withKinCache(inboxCache.load(environmentId, key));
+      let state = Option.match(cached, { onNone: () => emptyKinInbox, onSome: (c) => c.inbox });
+      let live = false;
+      const saver = yield* throttledSave((value: { inbox: KinInboxState; savedAt: string }) =>
+        withKinCache(inboxCache.save(environmentId, key, value)),
+      );
+      const events: Stream.Stream<
+        KinInboxEvent,
+        unknown,
+        EnvironmentSupervisor.EnvironmentSupervisor
+      > = Stream.merge(
+        subscribe(KIN_CHAT_WS_METHODS.chatsSubscribe, input),
+        Stream.fromPubSub(leftChats(environmentId)).pipe(
+          Stream.map((chatId) => ({ _tag: "left", chatId }) as const),
+        ),
+      );
+      const updates = events.pipe(
+        Stream.map((event): ReadonlyArray<KinSynced<KinInboxState>> => {
+          const next = applyKinInboxEvent(state, event);
+          if (next === state && live) return [];
+          const savedAt = nowIso();
+          if (next !== state) saver.offer({ inbox: next, savedAt });
+          state = next;
+          live = true;
+          return [{ value: next, live: true, savedAt }];
+        }),
+        Stream.flattenIterable,
+      );
+      return Option.match(cached, {
+        onNone: () => updates,
+        onSome: (c) =>
+          Stream.succeed<KinSynced<KinInboxState>>({
+            value: c.inbox,
+            live: false,
+            savedAt: c.savedAt,
+          }).pipe(Stream.concat(updates)),
+      });
+    }),
+  );
+}
+
+/** Reads one page of `kin.chat.history`; the client wires in its scope-checked command. */
+export type KinReadHistory<E, R> = (
+  input: KinChatHistoryInput,
+) => Effect.Effect<KinChatHistoryResult, E, R>;
+
+export function makeKinChatStream<E, R>(readHistory: KinReadHistory<E, R>) {
+  return (input: { readonly chatId: KinChatId }) =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        const environmentId = yield* currentEnvironmentId;
+        const key = queryPersistenceKey(KIN_CHAT_LABEL, input);
+        const cached = yield* withKinCache(chatCache.load(environmentId, key));
+        let state = Option.match(cached, { onNone: () => emptyKinChat, onSome: (c) => c.chat });
+        let live = false;
+        let savedMessages = Option.exists(cached, (c) => c.chat.messages.length > 0);
+        // Set per subscription: the backlog only covers seq > afterSeq, so a held feed re-reads
+        // its latest page for edits and widget changes made while it was away.
+        let rereadLatest = false;
+        const saver = yield* throttledSave((value: { chat: KinChatState; savedAt: string }) =>
+          withKinCache(chatCache.save(environmentId, key, value)),
+        );
+        const forget = Effect.suspend(() => {
+          saver.discard();
+          return withKinCache(removeKinCacheEntry(environmentId, key));
+        });
+
+        const step = (next: KinChatState): ReadonlyArray<KinSynced<KinChatState>> => {
+          if (next === state && live) return [];
+          const savedAt = nowIso();
+          if (next !== state) {
+            const trimmed = trimKinChatForCache(next);
+            // A reset empties the feed until history refills it; keep the cached messages.
+            if (trimmed.messages.length > 0 || !savedMessages) {
+              saver.offer({ chat: trimmed, savedAt });
+              savedMessages = trimmed.messages.length > 0;
+            }
+          }
+          state = next;
+          live = true;
+          return [{ value: next, live: true, savedAt }];
+        };
+
+        const onEvent = Effect.fnUntraced(function* (event: KinChatStreamEvent) {
+          const views = [...step(applyKinChatEvent(state, event))];
+          if (state.left) {
+            yield* forget;
+            yield* PubSub.publish(leftChats(environmentId), input.chatId);
+            return views;
+          }
+          if (rereadLatest || event._tag === "reset") {
+            rereadLatest = false;
+            const page = yield* readHistory({
+              chatId: input.chatId,
+              beforeSeq: state.contiguousSeq + 1,
+              limit: KIN_CACHED_MESSAGE_LIMIT,
+            }).pipe(
+              Effect.asSome,
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Kin latest page re-read failed", cause).pipe(
+                  Effect.as(Option.none<KinChatHistoryResult>()),
+                ),
+              ),
+            );
+            if (Option.isSome(page)) views.push(...step(applyKinChatHistory(state, page.value)));
+          }
+          return views;
+        });
+
+        const updates = subscribeDynamic(KIN_CHAT_WS_METHODS.chatSubscribe, () =>
+          Effect.sync(() => {
+            const holdsAny = state.contiguousSeq > 0 || state.messages.length > 0;
+            rereadLatest = holdsAny;
+            return holdsAny
+              ? { chatId: input.chatId, afterSeq: state.contiguousSeq }
+              : { chatId: input.chatId };
+          }),
+        ).pipe(
+          Stream.mapEffect(onEvent),
+          Stream.flattenIterable,
+          Stream.catchIf(
+            (error): error is KinChatError => isKinChatError(error) && isClosedReason(error.reason),
+            (error) =>
+              Stream.fromEffect(
+                Effect.gen(function* () {
+                  const reason = error.reason as KinChatClosedReason;
+                  if (reason !== "unavailable") yield* forget;
+                  return {
+                    value: { ...state, closed: reason },
+                    live: true,
+                    savedAt: nowIso(),
+                  } satisfies KinSynced<KinChatState>;
+                }),
+              ),
+          ),
+          Stream.takeUntil((view) => view.value.left || view.value.closed !== null),
+        );
+        return Option.match(cached, {
+          onNone: () => updates,
+          onSome: (c) =>
+            Stream.succeed<KinSynced<KinChatState>>({
+              value: state,
+              live: false,
+              savedAt: c.savedAt,
+            }).pipe(Stream.concat(updates)),
+        });
+      }),
+    );
+}

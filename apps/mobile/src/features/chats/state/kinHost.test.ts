@@ -1,3 +1,4 @@
+import { EnvironmentRpcUnavailableError } from "@t3tools/client-runtime/rpc";
 import {
   EnvironmentAuthorizationError,
   EnvironmentId,
@@ -5,6 +6,7 @@ import {
   type KinOrgsListResult,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import { RpcClientError } from "effect/rpc";
 import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -29,6 +31,20 @@ describe("classifyKinProbe", () => {
     ["Kin turned off", fail(new KinChatError({ reason: "unavailable", message: "off" })), "notKin"],
     ["a plain T3 server", AsyncResult.failure(Cause.die(new Error("unknown method"))), "notKin"],
     ["a Kin refusal", fail(new KinChatError({ reason: "not_allowed", message: "no" })), "error"],
+    [
+      "a lost transport",
+      fail(
+        new RpcClientError.RpcClientError({
+          reason: new RpcClientError.RpcClientDefect({ message: "socket closed", cause: null }),
+        }),
+      ),
+      "error",
+    ],
+    [
+      "an unreachable environment",
+      fail(new EnvironmentRpcUnavailableError({ environmentId: "env-a", message: "offline" })),
+      "error",
+    ],
     [
       "a missing scope",
       fail(
@@ -94,6 +110,16 @@ describe("resolveKinHost", () => {
     });
   });
 
+  it("keeps the saved host through a transient failure, and never picks one that failed", () => {
+    const flaky: KinProbe = { _tag: "error", message: "socket closed", transient: true };
+    expect(resolve({ [a]: flaky, [b]: ready }, { savedHostId: a })).toMatchObject({
+      environmentId: a,
+      probe: { _tag: "error" },
+    });
+    expect(resolve({ [a]: flaky, [b]: ready })).toMatchObject({ environmentId: b });
+    expect(resolve({ [a]: flaky })).toEqual({ _tag: "none" });
+  });
+
   it("moves on from a saved host that is no longer Kin or left the catalog", () => {
     expect(resolve({ [b]: ready }, { savedHostId: a })).toMatchObject({ environmentId: b });
     expect(resolve({ [b]: ready }, { savedHostId: EnvironmentId.make("gone") })).toMatchObject({
@@ -108,6 +134,10 @@ describe("resolveKinHost", () => {
     expect(host).toMatchObject({ environmentId: a, probe: { _tag: "noIdentity" } });
     expect(kinHostIdToSave(host)).toBeNull();
     expect(kinHostIdToSave(resolve({ [b]: ready }))).toBe(b);
+    expect(resolve({ [a]: noIdentity, [b]: ready }, { savedHostId: a })).toMatchObject({
+      environmentId: b,
+    });
+    expect(resolve({ [a]: noIdentity }, { savedHostId: a })).toMatchObject({ environmentId: a });
   });
 
   it("ignores offline environments it has not saved", () => {
