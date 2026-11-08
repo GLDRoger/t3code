@@ -66,7 +66,7 @@ function guardedRead<Input, A, E>(command: {
 const readOrgs = guardedRead(orgsRead);
 
 // Hosts that answered `kin.orgs.list` this run, plus the saved host. Their `unavailable` is an
-// outage to wait out, not a sign Kin is absent.
+// outage to wait out; `disabled` is how a host says Kin is off.
 const knownKinHosts = new Set<EnvironmentId>();
 export const markKinHostKnown = (environmentId: EnvironmentId) => {
   knownKinHosts.add(environmentId);
