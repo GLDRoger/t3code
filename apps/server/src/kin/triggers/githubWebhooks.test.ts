@@ -23,8 +23,10 @@ import {
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
+import * as References from "effect/References";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcTest from "effect/rpc/RpcTest";
 import * as Schema from "effect/Schema";
@@ -230,6 +232,7 @@ const harness = <A, E, R>(
               }),
           }),
           Crypto.layer,
+          GithubWebhooks.lockLayer,
         ),
       ),
     );
@@ -285,6 +288,19 @@ describe("KinGithubWebhooks", () => {
                 )).reason,
                 "not_found",
               );
+              const unbotted = yield* webhooks
+                .setup(owner, { orgId, projectId: project.id })
+                .pipe(
+                  Effect.flip,
+                  Effect.provide(
+                    ConfigProvider.layer(
+                      ConfigProvider.fromUnknown({ KIN_GITHUB_BOT_LOGIN: "kin-app" }),
+                    ),
+                  ),
+                );
+              assert.include(unbotted, { reason: "invalid_state" });
+              assert.include(unbotted.message, "[bot]");
+              assert.deepStrictEqual((yield* tasks.list()).tasks, []);
               const setup = yield* webhooks.setup(owner, { orgId, projectId: project.id });
               assert.strictEqual(setup.status, "needs_secret");
               const [task] = (yield* tasks.list()).tasks;
@@ -402,7 +418,6 @@ describe("KinGithubWebhooks", () => {
             assert.deepInclude(first, { url: setup.url, content_type: "json", insecure_ssl: "0" });
             if (first?.secret === undefined) return assert.fail("no secret sent");
             assert.match(Redacted.value(first.secret), /^[0-9a-f]{64}$/);
-            assert.notInclude(String(first.secret), Redacted.value(first.secret));
             const send = (delivery: string, secret: Redacted.Redacted<string>) =>
               tasks.triggerWebhook(signed(task, { delivery, secret: Redacted.value(secret) }));
             const accepted = yield* waitForDispatch(send("gh-1", first.secret));
@@ -491,6 +506,9 @@ describe("KinGithubWebhooks", () => {
               secret: Redacted.value(ownerSecret),
             });
             assert.strictEqual((yield* tasks.triggerWebhook(early))._tag, "disabled");
+            assert.strictEqual(stranded.id, KinTriggerStore.githubAppTaskId(orgId));
+            yield* webhooks.remove(owner, { orgId });
+            assert.deepStrictEqual((yield* tasks.list()).tasks, []);
 
             yield* sql`DELETE FROM kin_agent_threads WHERE thread_id = ${inboxId}`;
             const setup = yield* webhooks.setup(owner, { orgId, projectId: project.id });
@@ -534,6 +552,97 @@ describe("KinGithubWebhooks", () => {
           }),
         );
       }).pipe(Effect.provide(services)),
+  );
+
+  it.effect("keeps the App source to one org per host until that org removes it", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const orgB = KinOrgId.make("org-b");
+      const ownerB = [
+        { _tag: "person", orgId: orgB, personId: KinPersonId.make("owner-b") },
+      ] as const;
+      yield* sql`INSERT INTO kin_orgs VALUES (${orgB}, 'Kin B', ${timestamp})`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('owner-b', ${orgB}, 'owner-b', 'owner-b', ${timestamp})`;
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+        VALUES ('lead-b', ${orgB}, 'Lead', 'lead', 'owner-b', ${timestamp})`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+        VALUES ('owner-chat-b', ${orgB}, 'direct', 'direct-b', 0, ${timestamp})`;
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+        VALUES ('lead-b', ${orgB}, 'Lead', 0, '{}', '[]', 'owner-chat-b')`;
+      const store = yield* KinTriggerStore.KinTriggerStore;
+      yield* harness({}, ({ webhooks, tasks }) =>
+        Effect.gen(function* () {
+          yield* webhooks.setup(owner, { orgId, projectId: project.id });
+          const taken = yield* Effect.flip(
+            webhooks.setup(ownerB, { orgId: orgB, projectId: project.id }),
+          );
+          assert.include(taken, { reason: "conflict" });
+          assert.lengthOf((yield* tasks.list()).tasks, 1);
+          const [held] = (yield* tasks.list()).tasks;
+          if (held === undefined) return assert.fail("task");
+          const direct = yield* Effect.flip(
+            store.registerSource({
+              id: KinWebhookSourceId.make(KIN_GITHUB_APP_SOURCE),
+              orgId: orgB,
+              repo: KIN_GITHUB_APP_SOURCE,
+              scheduledTaskId: held.id,
+              inboxThreadId: projection(orgId).thread.id,
+              githubHookId: null,
+              botLogin: "kin-app[bot]",
+              status: "active",
+            }),
+          );
+          assert.include(direct, { _tag: "KinWebhookSourceConflict", reason: "app_source_taken" });
+          yield* webhooks.remove(owner, { orgId });
+          assert.strictEqual(
+            (yield* webhooks.setup(ownerB, { orgId: orgB, projectId: project.id })).status,
+            "needs_secret",
+          );
+          const [moved] = (yield* tasks.list()).tasks;
+          assert.strictEqual(moved?.id, KinTriggerStore.githubAppTaskId(orgB));
+        }),
+      );
+    }).pipe(Effect.provide(services)),
+  );
+
+  it.effect("never writes a webhook secret to logs or errors, even when a save fails", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const lines: string[] = [];
+      const logger = Logger.map(Logger.formatJson, (line) => void lines.push(line));
+      const failing = Redacted.make("forced-failure-secret-0123456789");
+      const { generated, errors } = yield* harness({}, ({ webhooks }) =>
+        Effect.gen(function* () {
+          yield* webhooks.setup(owner, { orgId, projectId: project.id });
+          const [stored] = yield* sql<{ readonly secret: string }>`
+            SELECT webhook_secret AS secret FROM scheduled_tasks`;
+          yield* webhooks.setSecret(owner, { orgId, secret: ownerSecret });
+          yield* sql`CREATE TRIGGER reject_task_save BEFORE UPDATE ON scheduled_tasks
+            BEGIN SELECT RAISE(ABORT, 'forced'); END`;
+          const failed = yield* Effect.flip(webhooks.setSecret(owner, { orgId, secret: failing }));
+          yield* sql`DROP TRIGGER reject_task_save`;
+          return {
+            generated: stored === undefined ? [] : [Redacted.make(stored.secret)],
+            errors: [failed],
+          };
+        }),
+      ).pipe(
+        Effect.provide(Logger.layer([logger], { mergeWithExisting: false })),
+        Effect.provideService(References.MinimumLogLevel, "All"),
+      );
+      assert.lengthOf(generated, 1);
+      for (const error of errors) assert.include(error, { _tag: "KinChatError" });
+      const output = [
+        ...lines,
+        ...errors.flatMap((error) => [String(error), JSON.stringify(error), error.message]),
+      ].join("\n");
+      assert.isNotEmpty(lines);
+      for (const secret of [...generated, ownerSecret, failing])
+        assert.notInclude(output, Redacted.value(secret));
+    }).pipe(Effect.provide(services)),
   );
 
   it.effect("refuses every setup RPC without the settings grant before the handler runs", () =>

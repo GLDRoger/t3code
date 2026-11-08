@@ -125,12 +125,12 @@ Defaults: brief 08:30 daily, summary 18:30 Mon–Fri, dream 03:00 daily, full re
 
 ### GitHub webhooks
 
-**One App webhook, not per-repo hooks.** The GitHub App's own webhook covers every repo it is installed on, so Kin needs no `admin:repo_hook` token. Each org has one source; the consumer (TRIG-6) keeps only events for that org's repos. Trade-off: one T3 task's limits (60 accepted per minute, 20 queued) are shared by all of the org's repos. That is enough for one team; `github_recheck` covers anything the limit drops.
+**One App webhook, not per-repo hooks.** The GitHub App's own webhook covers every repo it is installed on, so Kin needs no `admin:repo_hook` token. An App has one hook config, so there is **one App webhook source per host**: setup refuses with `conflict` while another org holds it, checked again inside `registerSource`'s transaction. Routing one App to several orgs by `installation.id` is a later option. The App covers every repo it is installed on, so TRIG-6 must drop events for repos outside the org's allowlist before anything reaches a prompt. Trade-off: one T3 task's limits (60 accepted per minute, 20 queued) are shared by all of those repos. That is enough for one team; `github_recheck` covers anything the limit drops.
 
 **Setup** (`KinGithubWebhooks.setup`, owner-only RPC `kin.webhooks.github.setup({ orgId, projectId })`, in `githubWebhooks.ts`):
 
-1. Check the caller is the org's owner (the `KinBudget.set` rule). `kin_orgs` has no project, so the owner passes `projectId`; it must exist and have a default model, which the task and inbox thread use. A second setup naming another project fails.
-2. Generate a 32-byte secret with `SecureRandom`. `botLogin` comes from `KIN_GITHUB_BOT_LOGIN`, the same key APPR-8's `KinGitHubScope` reads.
+1. Check the caller is the org's owner (the `KinBudget.set` rule). `kin_orgs` has no project, so the owner passes `projectId`; it must exist and have a default model, which the task and inbox thread use. A second setup naming another project fails. Pick a project where no agents run: any agent in it can re-save the task with `schedule_task`. The sink then refuses deliveries (below), but fencing those tools is still an open question.
+2. Generate a 32-byte secret with `SecureRandom`. `botLogin` comes from `KIN_GITHUB_BOT_LOGIN`, the same key APPR-8's `KinGitHubScope` reads; it must end in `[bot]`, or setup fails with a config error.
 3. Call `ScheduledTaskService.upsert` **disabled**, with `commandId: kin:webhook:${orgId}:github-app`:
 
 ```ts
@@ -156,15 +156,15 @@ Defaults: brief 08:30 daily, summary 18:30 Mon–Fri, dream 03:00 daily, full re
 7. Point the App at the URL with the executor action `github.app_hook.configure` (`PATCH /app/hook/config` with `url`, `secret`, `content_type: json`). It needs the App's private key, so it is **gated until APPR-9** (`appHookConfigureReady = false`; while off it refuses with `GithubAppHookRefused { reason: "gated" }`). The secret travels in-process as `Redacted`, never through a model, a chat message or a log. Success returns `configured`.
 8. **Fallback while gated:** return `needs_secret` with the URL to the owner-only surface. The owner sets that URL and a new secret in the GitHub App's webhook settings, then sends the secret with `kin.webhooks.github.setSecret`, which re-saves the task in the shape above with that secret. The secret arrives on the owner's authenticated session (`AuthSettingsWriteScope`, owner check) and stays in-process; a `request_secret` card would hand an agent a ref instead. Until then deliveries fail closed with `rejected_signature`.
 
-A repeated setup returns the same source. With the gate on it re-keys: GitHub takes a fresh secret first, then T3. Re-saving restores the unbound task shape if someone edited it in T3.
+Setup, setSecret, rotate and remove take one host-wide lock (`KinGithubWebhookLock`, in Kin's services), so the cross-org check and each source change run one at a time. A repeated setup returns the same source. With the gate on it re-keys: GitHub takes a fresh secret first, then T3. Re-saving restores the unbound task shape if someone edited it in T3.
 
 `KIN_SINK_PROMPT` = "Kin trigger. If you are reading this, Kin's trigger sink is not installed. Do nothing and stop." Plan mode plus approval-required keeps an accidental run harmless.
 
 **Why no coalescing.** T3 coalescing keeps only the latest payload, so two PRs in one window would lose one. LEAD's per-org merge window does the batching without dropping events.
 
-**Rotate** (`kin.webhooks.github.rotate`): `rotateWebhookToken`, then `github.app_hook.configure` with the new URL only. While gated it returns `needs_url` and the owner updates the URL in the App settings.
+**Rotate** (`kin.webhooks.github.rotate`): `rotateWebhookToken`, then `github.app_hook.configure` with the new URL only. While gated it returns `needs_url` and the owner updates the URL in the App settings. The old URL stops working at once, so deliveries fail until GitHub has the new one.
 
-**Remove** (`kin.webhooks.github.remove`): disable the task, `unregisterSource`, then delete the task. The archived inbox thread stays for a later setup. `unregisterSource` refuses (`task_active`) while the task is enabled or a delivery is in flight (`last_run_status = 'running'`, or a `dispatching`/`running` pending row), so a delivery can't lose its source mid-dispatch and fall through to a real launch. A delivery that has read the task but not yet marked it running can still slip through in that instant; the harmless prompt covers it.
+**Remove** (`kin.webhooks.github.remove`): disable the task, `unregisterSource`, then delete the task. The archived inbox thread stays for a later setup. `unregisterSource` refuses (`task_active`) while the task is enabled or a delivery is in flight (`last_run_status = 'running'`, or a `dispatching`/`running` pending row), so a delivery can't lose its source mid-dispatch. A delivery that read the task just before remove has no source by the time it launches; the sink refuses any task whose id starts with `scheduled-task:kin:webhook:` (upstream names a commandId-created task `scheduled-task:${commandId}`), so it fails with `dispatch_failed` instead of launching. With no source row, remove still deletes that deterministic task if it exists.
 
 **Receiving: `KinTriggerSink`.** It wraps the `ThreadLaunchService` and `ThreadManagementService` given only to `ScheduledTaskService`:
 
@@ -173,12 +173,17 @@ receive: (input) => {
   const taskId = input.initialMessage?.scheduledTaskId;
   if (taskId === undefined) return undefined;                 // caller falls through to inner.launch
   const source = store.sourceByTaskId(taskId);                // SQL, kin_webhook_sources
-  if (source === undefined) return undefined;                 // not Kin's: unchanged
+  if (source === undefined) {
+    if (taskId starts with "scheduled-task:kin:webhook:") fail(KinTriggerSinkRefused);  // racing remove
+    return undefined;                                         // not Kin's: unchanged
+  }
   // From here every failure is a ThreadLaunchError("dispatch-message"): no real launch.
   require(input.commandId starts with `scheduled-task:${taskId}:webhook:` && source.status === "active");
   const deliveryId = input.commandId.slice(prefix.length);
-  const delivery = findLaunchDelivery(sql, { taskId, deliveryId, projectId: input.projectId });
-  require(delivery);                                          // unbound new_thread webhook task in this project
+  const delivery = findLaunchDelivery(sql, { taskId, deliveryId, projectId: input.projectId,
+    botLogin: source.botLogin });
+  require(delivery);  // unbound new_thread webhook task in this project, still signed, with its secret
+                      // and the bot-sender filter, since any agent can re-save it via schedule_task
   const projection = threads.getThreadProjection(source.inboxThreadId);
   require(projection.thread.projectId === input.projectId && projection.thread.deletedAt === null);
   inbox.put({ fireId: `gh:${source.orgId}:${deliveryId}`, dueAt: delivery.receivedAt, firedAt: now,

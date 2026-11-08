@@ -24,10 +24,12 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
+import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
@@ -49,15 +51,15 @@ export const GITHUB_EVENTS = [
 ];
 const sourceId = KinWebhookSourceId.make(KIN_GITHUB_APP_SOURCE);
 
-const GitHubLogin = Schema.String.check(
+// The sender filter must match the App's own events, which GitHub always signs as `<slug>[bot]`.
+const GitHubBotLogin = Schema.String.check(
   Schema.makeFilter(
-    (value: string) =>
-      /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}(?:\[bot\])?$/.test(value),
-    { expected: "a GitHub login" },
+    (value: string) => /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}\[bot\]$/.test(value),
+    { expected: "a GitHub App bot login" },
   ),
 );
 // Same key APPR-8's KinGitHubScope reads; switch to that service once it lands.
-const BotLogin = Config.schema(GitHubLogin, "KIN_GITHUB_BOT_LOGIN");
+const BotLogin = Config.schema(GitHubBotLogin, "KIN_GITHUB_BOT_LOGIN");
 
 // Gated until APPR-9: the App's private key and the action executor don't exist yet.
 const appHookConfigureReady = false;
@@ -113,6 +115,10 @@ const isChatError = Schema.is(KinChatError);
 const isTaskError = Schema.is(ScheduledTaskError);
 const isSourceConflict = Schema.is(KinTriggerStore.KinWebhookSourceConflict);
 const notFound = new KinChatError({ reason: "not_found", message: "Kin record not found." });
+const appSourceTaken = new KinChatError({
+  reason: "conflict",
+  message: "Another Kin org on this host already receives the GitHub App's events.",
+});
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 
 // Upstream messages are user-facing and carry no secret; causes are not logged.
@@ -121,11 +127,13 @@ const mapError = (cause: unknown) => {
   if (isTaskError(cause)) return Effect.succeed(invalid(cause.message));
   if (isSourceConflict(cause))
     return Effect.succeed(
-      invalid(
-        cause.reason === "task_active"
-          ? "A GitHub delivery is still running. Try again."
-          : "The GitHub source conflicts with existing Kin records.",
-      ),
+      cause.reason === "app_source_taken"
+        ? appSourceTaken
+        : invalid(
+            cause.reason === "task_active"
+              ? "A GitHub delivery is still running. Try again."
+              : "The GitHub source conflicts with existing Kin records.",
+          ),
     );
   return Effect.logError("Kin GitHub webhook operation failed", cause).pipe(
     Effect.as(new KinChatError({ reason: "unavailable", message: "Kin is unavailable." })),
@@ -155,6 +163,14 @@ export class KinGithubWebhooks extends Context.Service<
   }
 >()("t3/kin/triggers/githubWebhooks/KinGithubWebhooks") {}
 
+/** One permit per host: setup's cross-org check and every source change run one at a time. */
+export class KinGithubWebhookLock extends Context.Service<
+  KinGithubWebhookLock,
+  Semaphore.Semaphore
+>()("t3/kin/triggers/githubWebhooks/KinGithubWebhookLock") {}
+
+export const lockLayer = Layer.effect(KinGithubWebhookLock, Semaphore.make(1));
+
 export const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const tasks = yield* ScheduledTaskService.ScheduledTaskService;
@@ -164,6 +180,7 @@ export const make = Effect.gen(function* () {
   const random = yield* SecureRandom.SecureRandom;
   const chat = yield* KinChatService;
   const store = yield* KinTriggerStore.KinTriggerStore;
+  const exclusive = (yield* KinGithubWebhookLock).withPermits(1);
 
   const requireOwner = Effect.fn("KinGithubWebhooks.requireOwner")(function* (
     people: ReadonlyArray<PersonIdentity>,
@@ -177,7 +194,9 @@ export const make = Effect.gen(function* () {
       AND ((p.org_id = 'kin-default' AND p.person_id = 'kin-default-owner'
         AND NOT EXISTS (SELECT 1 FROM kin_leads WHERE org_id = p.org_id)) OR EXISTS (
         SELECT 1 FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
-        WHERE l.org_id = p.org_id AND a.owner_person_id = p.person_id))`;
+        WHERE l.org_id = p.org_id AND a.owner_person_id = p.person_id))`.pipe(
+        Effect.mapError(toPersistenceSqlError("KinGithubWebhooks.requireOwner")),
+      );
     if (owner.length === 0)
       return yield* new KinChatError({ reason: "not_allowed", message: "Only the owner can." });
   });
@@ -229,13 +248,19 @@ export const make = Effect.gen(function* () {
           { path: "body.sender.login", op: "notEquals", value: input.botLogin },
         ],
       },
-    }).pipe(Effect.flatMap(tasks.upsert));
+    }).pipe(
+      // The decode issue would carry the secret, so it never reaches mapError's log.
+      Effect.mapError(() => invalid("The GitHub source could not be saved.")),
+      Effect.flatMap(tasks.upsert),
+    );
 
   const needsConnect = Effect.fn("KinGithubWebhooks.needsConnect")(function* (orgId: KinOrgId) {
     const [lead] = yield* sql<{ readonly chatId: string }>`
       SELECT l.owner_chat_id AS "chatId" FROM kin_leads l
       JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
-      WHERE l.org_id = ${orgId} AND a.retired_at IS NULL ORDER BY l.agent_id LIMIT 1`;
+      WHERE l.org_id = ${orgId} AND a.retired_at IS NULL ORDER BY l.agent_id LIMIT 1`.pipe(
+      Effect.mapError(toPersistenceSqlError("KinGithubWebhooks.needsConnect")),
+    );
     if (lead !== undefined)
       yield* chat.notice({
         orgId,
@@ -305,7 +330,7 @@ export const make = Effect.gen(function* () {
     const secret = yield* newSecret;
     const { task } = yield* upsert({
       orgId: input.orgId,
-      target: { commandId: CommandId.make(`kin:webhook:${input.orgId}:${KIN_GITHUB_APP_SOURCE}`) },
+      target: { commandId: KinTriggerStore.githubAppCommandId(input.orgId) },
       projectId: input.projectId,
       modelSelection,
       botLogin,
@@ -349,9 +374,18 @@ export const make = Effect.gen(function* () {
       function* (people, input) {
         yield* requireOwner(people, input.orgId);
         const botLogin = yield* BotLogin.pipe(
-          Effect.mapError(() => invalid("Set KIN_GITHUB_BOT_LOGIN to the GitHub App's bot login.")),
+          Effect.mapError(() =>
+            invalid("Set KIN_GITHUB_BOT_LOGIN to the GitHub App's bot login, ending in [bot]."),
+          ),
         );
         const source = yield* store.getSource(input.orgId, sourceId);
+        if (
+          source === undefined &&
+          (yield* KinTriggerStore.appSourceHeldElsewhere(sql, input.orgId).pipe(
+            Effect.mapError(toPersistenceSqlError("KinGithubWebhooks.setup")),
+          ))
+        )
+          return yield* appSourceTaken;
         const task = source === undefined ? undefined : yield* findTask(source.scheduledTaskId);
         if (source !== undefined && task === undefined)
           yield* store.unregisterSource(input.orgId, sourceId);
@@ -376,6 +410,7 @@ export const make = Effect.gen(function* () {
         });
         return { status: "configured", sourceId, url } as const;
       },
+      exclusive,
       Effect.catch((cause) => Effect.flatMap(mapError(cause), Effect.fail)),
     ),
     setSecret: Effect.fn("KinGithubWebhooks.setSecret")(
@@ -395,6 +430,7 @@ export const make = Effect.gen(function* () {
         if (url === null) return yield* needsConnect(input.orgId);
         return { status: "configured", sourceId, url } as const;
       },
+      exclusive,
       Effect.catch((cause) => Effect.flatMap(mapError(cause), Effect.fail)),
     ),
     rotate: Effect.fn("KinGithubWebhooks.rotate")(
@@ -410,18 +446,24 @@ export const make = Effect.gen(function* () {
           url,
         } as const;
       },
+      exclusive,
       Effect.catch((cause) => Effect.flatMap(mapError(cause), Effect.fail)),
     ),
     remove: Effect.fn("KinGithubWebhooks.remove")(
       function* (people, input) {
         yield* requireOwner(people, input.orgId);
         const source = yield* store.getSource(input.orgId, sourceId);
-        if (source === undefined) return;
+        if (source === undefined) {
+          const orphan = yield* findTask(KinTriggerStore.githubAppTaskId(input.orgId));
+          if (orphan !== undefined) yield* tasks.delete({ id: orphan.id });
+          return;
+        }
         const task = yield* findTask(source.scheduledTaskId);
         if (task?.enabled === true) yield* tasks.setEnabled({ id: task.id, enabled: false });
         yield* store.unregisterSource(input.orgId, sourceId);
         if (task !== undefined) yield* tasks.delete({ id: task.id });
       },
+      exclusive,
       Effect.catch((cause) => Effect.flatMap(mapError(cause), Effect.fail)),
     ),
   });

@@ -29,6 +29,7 @@ export const makeKinWebhookHandlers = Effect.fn("makeKinWebhookHandlers")(functi
   session: AuthenticatedSession,
 ) {
   const kin = yield* Effect.serviceOption(KinServer);
+  const services = Option.flatMap(kin, (server) => server.services);
   // Optional so handler tests that build only Kin chat services still compile and run.
   const runtime = Option.all({
     sql: yield* Effect.serviceOption(SqlClient.SqlClient),
@@ -38,25 +39,34 @@ export const makeKinWebhookHandlers = Effect.fn("makeKinWebhookHandlers")(functi
     projects: yield* Effect.serviceOption(ProjectService.ProjectService),
     random: yield* Effect.serviceOption(SecureRandom.SecureRandom),
   });
+  // Built once per session; the host-wide lock comes from Kin's shared services.
+  const webhooks =
+    Option.isSome(services) && Option.isSome(runtime)
+      ? Option.some(
+          yield* GithubWebhooks.make.pipe(
+            Effect.provide(KinTriggerStore.layer),
+            Effect.provideContext(
+              Context.make(SqlClient.SqlClient, runtime.value.sql).pipe(
+                Context.add(ScheduledTaskService.ScheduledTaskService, runtime.value.tasks),
+                Context.add(ThreadLaunchService.ThreadLaunchService, runtime.value.launcher),
+                Context.add(ThreadManagementService.ThreadManagementService, runtime.value.threads),
+                Context.add(ProjectService.ProjectService, runtime.value.projects),
+                Context.add(SecureRandom.SecureRandom, runtime.value.random),
+                Context.add(KinChatService, Context.get(services.value, KinChatService)),
+                Context.add(
+                  GithubWebhooks.KinGithubWebhookLock,
+                  Context.get(services.value, GithubWebhooks.KinGithubWebhookLock),
+                ),
+              ),
+            ),
+          ),
+        )
+      : Option.none();
   const service = Effect.gen(function* () {
-    if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* disabled;
-    if (Option.isNone(runtime)) return yield* unavailable;
-    const services = kin.value.services.value;
-    const deps = runtime.value;
-    const context = Context.make(SqlClient.SqlClient, deps.sql).pipe(
-      Context.add(ScheduledTaskService.ScheduledTaskService, deps.tasks),
-      Context.add(ThreadLaunchService.ThreadLaunchService, deps.launcher),
-      Context.add(ThreadManagementService.ThreadManagementService, deps.threads),
-      Context.add(ProjectService.ProjectService, deps.projects),
-      Context.add(SecureRandom.SecureRandom, deps.random),
-      Context.add(KinChatService, Context.get(services, KinChatService)),
-    );
-    const webhooks = yield* GithubWebhooks.make.pipe(
-      Effect.provide(KinTriggerStore.layer),
-      Effect.provideContext(context),
-    );
-    const people = yield* Context.get(services, KinIdentity).resolve(session);
-    return { webhooks, people };
+    if (Option.isNone(services)) return yield* disabled;
+    if (Option.isNone(webhooks)) return yield* unavailable;
+    const people = yield* Context.get(services.value, KinIdentity).resolve(session);
+    return { webhooks: webhooks.value, people };
   });
   const run = <A>(
     body: (
