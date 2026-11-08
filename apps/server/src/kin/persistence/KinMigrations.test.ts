@@ -14,6 +14,7 @@ const tableNames = [
   "kin_agent_threads",
   "kin_agents",
   "kin_budget",
+  "kin_budget_charges",
   "kin_budget_limits",
   "kin_chat_members",
   "kin_chats",
@@ -90,7 +91,8 @@ describe("Kin migrations", () => {
           { migration_id: 4, name: "MemoryReads" },
           { migration_id: 5, name: "OneChatOwner" },
           { migration_id: 6, name: "Pings" },
-          { migration_id: 7, name: "Floor" },
+          { migration_id: 7, name: "Budget" },
+          { migration_id: 8, name: "Floor" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
@@ -139,7 +141,8 @@ describe("Kin migrations", () => {
           { migration_id: 4, name: "MemoryReads" },
           { migration_id: 5, name: "OneChatOwner" },
           { migration_id: 6, name: "Pings" },
-          { migration_id: 7, name: "Floor" },
+          { migration_id: 7, name: "Budget" },
+          { migration_id: 8, name: "Floor" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -212,7 +215,8 @@ describe("Kin migrations", () => {
         [4, "MemoryReads"],
         [5, "OneChatOwner"],
         [6, "Pings"],
-        [7, "Floor"],
+        [7, "Budget"],
+        [8, "Floor"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -233,17 +237,18 @@ describe("Kin migrations", () => {
       yield* sql`DROP TABLE kin_floor_notices`;
       yield* sql`DROP TABLE kin_floor_grants`;
       yield* sql`DROP TABLE kin_floor_runs`;
-      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 7`;
       yield* sql`DROP TABLE kin_ping_deliveries`;
       yield* sql`DROP TABLE kin_ping_escalations`;
       yield* sql`DROP TABLE kin_ping_items`;
-      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 6`;
       yield* sql`DROP INDEX kin_chat_members_one_owner`;
-      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 5`;
+      yield* sql`DROP TABLE kin_budget_charges`;
+      yield* sql`ALTER TABLE kin_events DROP COLUMN budget_deferred`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 5`;
       assert.deepStrictEqual(yield* runKinMigrations(), [
         [5, "OneChatOwner"],
         [6, "Pings"],
-        [7, "Floor"],
+        [7, "Budget"],
+        [8, "Floor"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,
@@ -262,7 +267,8 @@ describe("Kin migrations", () => {
         { migration_id: 4, name: "MemoryReads" },
         { migration_id: 5, name: "OneChatOwner" },
         { migration_id: 6, name: "Pings" },
-        { migration_id: 7, name: "Floor" },
+        { migration_id: 7, name: "Budget" },
+        { migration_id: 8, name: "Floor" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);
@@ -323,6 +329,7 @@ describe("Kin migrations", () => {
           wakeup_id: "wake",
           not_before: null,
           attempts: 1,
+          budget_deferred: 0,
         },
         kin_workers: {
           org_id: "org",
