@@ -1,3 +1,4 @@
+import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import {
   KinAgentIntent,
   KinChatError,
@@ -84,6 +85,7 @@ const read = Tool.make("kin_chat_read", {
 }).annotate(McpSchema.EnabledWhen, enabled);
 const widget = Tool.make("kin_widget_upsert", {
   ...shared,
+  dependencies: [...shared.dependencies, OrchestratorV2],
   description:
     "Create a Kin widget, or update widgetId with its expected revision. replyTo applies only to creation. Approval widgets are refused; use signed approvals. Only task widgets are supported; state must match the task schema.",
   parameters: Schema.Struct({

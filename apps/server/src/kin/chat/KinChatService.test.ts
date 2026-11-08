@@ -1,3 +1,4 @@
+import { orchestration } from "./TaskCard.testkit.ts";
 import { assert, describe, it } from "@effect/vitest";
 import {
   AuthSessionId,
@@ -42,7 +43,9 @@ const decodeSend = Schema.decodeUnknownEffect(KinMessagesSendInput);
 const database = Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory);
 const repositories = Layer.provideMerge(Repository.layer, database);
 const dependencies = Layer.provideMerge(Hub.layer, repositories);
-const layer = Layer.provideMerge(Service.layer, dependencies);
+const layer = Layer.provideMerge(Service.layer, dependencies).pipe(
+  Layer.provideMerge(orchestration),
+);
 const identityLayer = Identity.KinIdentity.layer.pipe(
   Layer.provide(
     Layer.succeed(Identity.KinIdentityConfig, {

@@ -1,3 +1,5 @@
+import { liveThreadShell as taskShell } from "../../mcp/McpToolAccess.testkit.ts";
+import * as Stream from "effect/Stream";
 import { McpProviderSessions } from "@t3tools/provider-core/server/McpProviderSessions";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -74,7 +76,10 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(GitWorkflowService)({}),
   Layer.mock(ManagedProjectFolders)({ namedProjectsRoot: "" }),
   Layer.mock(McpProviderSessions)({}),
-  Layer.mock(OrchestratorV2)({}),
+  Layer.mock(OrchestratorV2)({
+    getThreadShell: (id) => Effect.succeed(taskShell(id)),
+    streamDomainEvents: Stream.empty,
+  }),
   Layer.mock(PeerForwarding)({}),
   Layer.mock(PeerLinkRequests)({}),
   Layer.mock(PeerLinks)({}),

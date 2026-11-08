@@ -1,3 +1,4 @@
+import * as TaskCardUpdater from "./chat/TaskCardUpdater.ts";
 import * as Cause from "effect/Cause";
 import * as KinEnabled from "./KinEnabled.ts";
 import * as Effect from "effect/Effect";
@@ -68,7 +69,24 @@ const middleware = HttpRouter.middleware<{ provides: KinServer }>()(
 
 export const layer = middleware.pipe(Layer.provideMerge(runtime));
 
-export const mcpLayer = (base: Parameters<typeof KinMcp.transport>[0]) => KinMcp.transport(base);
+// The credential registry precedes orchestration; start its consumer with the transport instead.
+export const mcpLayer = (base: Parameters<typeof KinMcp.transport>[0]) =>
+  Layer.merge(
+    KinMcp.transport(base),
+    Layer.unwrap(
+      Effect.gen(function* () {
+        const kin = yield* KinServer;
+        return Option.isSome(kin.services)
+          ? TaskCardUpdater.layer.pipe(
+              Layer.provide(Layer.succeedContext(kin.services.value)),
+              Layer.catchCause(() =>
+                Layer.effectDiscard(Effect.logWarning("Kin task card updater disabled.")),
+              ),
+            )
+          : Layer.empty;
+      }),
+    ),
+  );
 export const mcpRegistryLayer = <E, R>(
   base: Layer.Layer<McpSessionRegistry.McpSessionRegistry, E, R>,
 ) =>

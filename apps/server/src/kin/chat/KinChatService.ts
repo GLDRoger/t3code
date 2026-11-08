@@ -1,3 +1,5 @@
+import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
+import * as TaskCard from "../widgets/taskCard.ts";
 import {
   KinChatError,
   KinChatId,
@@ -108,7 +110,7 @@ export class KinChatService extends Context.Service<
     readonly upsertWidget: (
       identity: Identity,
       input: WidgetUpsertInput,
-    ) => Effect.Effect<KinWidget, ServiceError>;
+    ) => Effect.Effect<KinWidget, ServiceError, OrchestratorV2>;
     readonly act: (
       identity: PersonCaller,
       input: KinWidgetsActInput,
@@ -162,6 +164,7 @@ const requireRecord = Effect.fn("KinChatService.requireRecord")(function* <A, E,
 });
 
 const make = Effect.gen(function* () {
+  const cards = yield* TaskCard.TaskCardIndex;
   const repo = yield* Repository.KinChatRepository;
   const hub = yield* Hub.KinChatHub;
   const sql = yield* SqlClient.SqlClient;
@@ -681,10 +684,30 @@ const make = Effect.gen(function* () {
           reason: "use_approvals",
           message: "Use the signed approvals service.",
         });
-      const state = yield* validateState(input.type, input.state);
+      let state = yield* validateState(input.type, input.state);
       let widget: KinWidget;
       if (input.widgetId === undefined) {
         if (input.revision !== undefined) return yield* invalidState;
+        if (input.type === "task") {
+          const task = TaskCard.decodeTaskCard(state);
+          if (task.threadId === null) return yield* notFound;
+          if (task.remoteEnvironmentId === null) {
+            const orchestrator = yield* OrchestratorV2;
+            const shell = yield* orchestrator
+              .getThreadShell(task.threadId)
+              .pipe(Effect.orElseSucceed(() => null));
+            if (shell === null) return yield* notFound;
+            state = TaskCard.taskCardState(task, shell, yield* now);
+          } else {
+            state = {
+              ...task,
+              status: "waiting",
+              pullRequests: [],
+              lastError: null,
+              updatedAt: yield* now,
+            };
+          }
+        }
         const message = yield* post(identity, member, {
           chatId: input.chatId,
           body: "",
@@ -735,13 +758,40 @@ const make = Effect.gen(function* () {
           input.replyTo !== undefined
         )
           return yield* invalidState;
+        const awaiting =
+          input.closed === true || (input.closed === undefined && existing.closedAt !== null)
+            ? []
+            : (input.awaiting ?? existing.awaiting);
+        if (existing.type === "task") {
+          const previous = TaskCard.decodeTaskCard(existing.state);
+          const next = TaskCard.decodeTaskCard(state);
+          if (
+            previous.threadId !== next.threadId ||
+            previous.taskId !== next.taskId ||
+            previous.environmentId !== next.environmentId ||
+            previous.remoteEnvironmentId !== next.remoteEnvironmentId
+          )
+            return yield* invalidState;
+          state = {
+            ...next,
+            status: previous.status,
+            pullRequests: previous.pullRequests,
+            lastError: previous.lastError,
+            updatedAt: previous.updatedAt,
+          };
+          if (
+            existing.revision === input.revision + 1 &&
+            TaskCard.taskCardEquivalent(TaskCard.decodeTaskCard(state), previous) &&
+            awaiting.length === existing.awaiting.length &&
+            awaiting.every((personId, index) => personId === existing.awaiting[index]) &&
+            (input.closed === undefined || input.closed === (existing.closedAt !== null))
+          )
+            return existing;
+        }
         widget = yield* repo.updateWidget({
           ...existing,
           state,
-          awaiting:
-            input.closed === true || (input.closed === undefined && existing.closedAt !== null)
-              ? []
-              : (input.awaiting ?? existing.awaiting),
+          awaiting,
           expectedRevision: input.revision,
           closedAt:
             input.closed === undefined ? existing.closedAt : input.closed ? yield* now : null,
@@ -761,6 +811,7 @@ const make = Effect.gen(function* () {
             widgetId: widget.widgetId,
             reason: "decision",
           });
+      yield* sql.afterCommit(cards.track(widget));
       yield* hub.publish({ type: "widget.updated", orgId: identity.orgId, widget });
       return widget;
     }, transaction),
@@ -870,4 +921,4 @@ const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(KinChatService, make);
+export const layer = Layer.effect(KinChatService, make).pipe(Layer.provideMerge(TaskCard.layer));

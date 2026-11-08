@@ -166,6 +166,9 @@ export class KinChatRepository extends Context.Service<
     readonly getMessage: (
       input: Scope & { readonly messageId: KinMessageId },
     ) => Effect.Effect<Option.Option<KinMessage>, RepositoryError>;
+    readonly openTaskCards: (
+      input: Scope,
+    ) => Effect.Effect<ReadonlyArray<KinWidget>, RepositoryError>;
     readonly getWidget: (
       input: Scope & { readonly widgetId: KinWidgetId },
     ) => Effect.Effect<Option.Option<KinWidget>, RepositoryError>;
@@ -534,6 +537,16 @@ const make = Effect.gen(function* () {
     getChat: chatOne,
     getMember: memberOne,
     getMessage: messageOne,
+    openTaskCards: Effect.fn("KinChatRepository.openTaskCards")(
+      (input) =>
+        SqlSchema.findAll({
+          Request: Schema.Unknown,
+          Result: WidgetRow,
+          execute: () =>
+            sql`SELECT ${sql.literal(widgetColumns)} FROM kin_widgets WHERE org_id = ${input.orgId} AND type = 'task' AND closed_at IS NULL ORDER BY widget_id`,
+        })(input),
+      Effect.mapError(toRepositoryError("KinChatRepository.openTaskCards")),
+    ),
     getWidget: widgetOne,
     getWaiting: waitingOne,
     getAgentThread: agentThreadOne,

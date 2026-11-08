@@ -1,3 +1,4 @@
+import { orchestration } from "../chat/TaskCard.testkit.ts";
 import * as FileSystem from "effect/FileSystem";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -58,7 +59,10 @@ const client = McpSchema.McpServerClient.of({
   getClient: Effect.die("unused"),
 });
 const runtime = (config: Record<string, unknown>) =>
-  Kin.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(config))));
+  Kin.layer.pipe(
+    Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(config))),
+    Layer.provideMerge(orchestration),
+  );
 const registration = McpHttpServer.toolkitRegistration(KinChatToolkit, handlers).pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
 );
