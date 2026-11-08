@@ -625,7 +625,7 @@ it.effect(
     }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 
-it.effect("replays offline edits, deletions and widget revisions once with afterSeq", () =>
+it.effect("replays offline edits, deletions and widget revisions once with afterChangeSeq", () =>
   Effect.gen(function* () {
     const { chat, repo, person, direct } = yield* seed;
     const sql = yield* SqlClient.SqlClient;
@@ -660,14 +660,33 @@ it.effect("replays offline edits, deletions and widget revisions once with after
       closedAt: null,
       updatedAt: direct.createdAt,
     });
+    const baseline = Option.getOrThrow(
+      yield* Stream.runHead(
+        chat.subscribe(person, { chatId: direct.chatId, afterSeq: latest.seq }),
+      ),
+    );
+    assert.strictEqual(baseline._tag, "backlog");
+    if (baseline._tag !== "backlog") return;
     yield* sql`UPDATE kin_messages SET body = 'Edited', edited_at = '1970-01-01T00:00:01.000Z' WHERE org_id = ${person.orgId} AND message_id = ${old.messageId}`;
     yield* sql`UPDATE kin_messages SET body = '', status = 'deleted' WHERE org_id = ${person.orgId} AND message_id = ${removed.messageId}`;
     yield* sql`UPDATE kin_widgets SET revision = 2 WHERE org_id = ${person.orgId} AND widget_id = ${widgetId}`;
     const event = Option.getOrThrow(
       yield* Stream.runHead(
+        chat.subscribe(person, {
+          chatId: direct.chatId,
+          afterSeq: latest.seq,
+          afterChangeSeq: baseline.lastChangeSeq,
+        }),
+      ),
+    );
+    const legacy = Option.getOrThrow(
+      yield* Stream.runHead(
         chat.subscribe(person, { chatId: direct.chatId, afterSeq: latest.seq }),
       ),
     );
+    assert.include(legacy, { _tag: "backlog" });
+    if (legacy._tag === "backlog")
+      assert.deepStrictEqual([legacy.messages, legacy.widgets], [[], []]);
     assert.strictEqual(event._tag, "backlog");
     if (event._tag !== "backlog") return;
     assert.deepStrictEqual(

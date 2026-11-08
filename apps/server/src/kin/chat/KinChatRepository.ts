@@ -817,7 +817,8 @@ const make = Effect.gen(function* () {
           change_seq: number;
         }>`SELECT change_seq FROM kin_chats WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
         const lastChangeSeq = counters[0]!.change_seq;
-        const afterChangeSeq = input.afterChangeSeq ?? input.afterSeq;
+        // Without a change cursor, replay only new messages; change_seq runs ahead of seq.
+        const afterChangeSeq = input.afterChangeSeq ?? lastChangeSeq;
         const visible = sql`(${member.role === "owner" ? 1 : 0} = 1 OR status NOT IN ('suggested', 'dismissed') OR author_member_id = ${member.memberId})`;
         const messages = yield* SqlSchema.findAll({
           Request: Schema.Unknown,

@@ -15,6 +15,10 @@ const group = RpcGroup.make(...KinChatAndBudgetRpcs);
 const unavailable = new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
 const isKinChatError = Schema.is(KinChatError);
 const mapError = (error: unknown) => (isKinChatError(error) ? error : unavailable);
+const logInfra = (error: unknown) =>
+  isKinChatError(error) ? Effect.void : Effect.logWarning("Kin RPC failed.", error);
+const defect = (cause: unknown) =>
+  Effect.logWarning("Kin RPC defect.", cause).pipe(Effect.andThen(Effect.fail(unavailable)));
 
 export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
   session: AuthenticatedSession,
@@ -40,24 +44,27 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
             .resolve(session)
             .pipe(Effect.flatMap((people) => budget.view(people, input.orgId))),
         ),
+        Effect.tapError(logInfra),
         Effect.mapError(mapError),
-        Effect.catchDefect(() => Effect.fail(unavailable)),
+        Effect.catchDefect(defect),
       ),
     "kin.budget.set": (input) =>
       services.pipe(
         Effect.flatMap(({ identity, budget }) =>
           identity.resolve(session).pipe(Effect.flatMap((people) => budget.set(people, input))),
         ),
+        Effect.tapError(logInfra),
         Effect.mapError(mapError),
-        Effect.catchDefect(() => Effect.fail(unavailable)),
+        Effect.catchDefect(defect),
       ),
     "kin.orgs.list": () =>
       services.pipe(
         Effect.flatMap(({ identity, chat }) =>
           identity.resolve(session).pipe(Effect.flatMap(chat.orgs)),
         ),
+        Effect.tapError(logInfra),
         Effect.mapError(mapError),
-        Effect.catchDefect(() => Effect.fail(unavailable)),
+        Effect.catchDefect(defect),
       ),
     "kin.chats.subscribe": (input) =>
       Stream.unwrap(
@@ -69,46 +76,53 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
           ),
         ),
       ).pipe(
+        Stream.tapError(logInfra),
         Stream.mapError(mapError),
-        Stream.catchDefect(() => Stream.fail(unavailable)),
+        Stream.catchDefect((cause) => Stream.fromEffect(defect(cause))),
       ),
     "kin.chat.subscribe": (input) =>
       Stream.unwrap(
         viewer.pipe(Effect.map(({ chat, people }) => chat.subscribe(people, input))),
       ).pipe(
+        Stream.tapError(logInfra),
         Stream.mapError(mapError),
-        Stream.catchDefect(() => Stream.fail(unavailable)),
+        Stream.catchDefect((cause) => Stream.fromEffect(defect(cause))),
       ),
     "kin.chats.createDirect": (input) =>
       viewer.pipe(
         Effect.flatMap(({ chat, people }) => chat.createDirect(people, input)),
+        Effect.tapError(logInfra),
         Effect.mapError(mapError),
-        Effect.catchDefect(() => Effect.fail(unavailable)),
+        Effect.catchDefect(defect),
       ),
     "kin.chat.history": (input) =>
       viewer.pipe(
         Effect.flatMap(({ chat, people }) => chat.history(people, input)),
+        Effect.tapError(logInfra),
         Effect.mapError(mapError),
-        Effect.catchDefect(() => Effect.fail(unavailable)),
+        Effect.catchDefect(defect),
       ),
     "kin.messages.send": (input) =>
       viewer.pipe(
         Effect.flatMap(({ chat, people }) => chat.send(people, input)),
+        Effect.tapError(logInfra),
         Effect.mapError(mapError),
-        Effect.catchDefect(() => Effect.fail(unavailable)),
+        Effect.catchDefect(defect),
       ),
     "kin.messages.markRead": (input) =>
       viewer.pipe(
         Effect.flatMap(({ chat, people }) => chat.markRead(people, input)),
         Effect.as({}),
+        Effect.tapError(logInfra),
         Effect.mapError(mapError),
-        Effect.catchDefect(() => Effect.fail(unavailable)),
+        Effect.catchDefect(defect),
       ),
     "kin.widgets.act": (input) =>
       viewer.pipe(
         Effect.flatMap(({ chat, people }) => chat.act(people, input)),
+        Effect.tapError(logInfra),
         Effect.mapError(mapError),
-        Effect.catchDefect(() => Effect.fail(unavailable)),
+        Effect.catchDefect(defect),
       ),
   });
 });
