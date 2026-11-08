@@ -564,16 +564,21 @@ const make = Effect.gen(function* () {
           const identity = yield* personFor(caller, input);
           const live = yield* hub.subscribeForViewer(identity);
           const member = yield* memberFor(identity, input.chatId);
-          const resumed = yield* repo.resume({ ...member, afterSeq: input.afterSeq ?? 0 });
+          const resumed = yield* repo.resume({
+            ...member,
+            afterSeq: input.afterSeq ?? 0,
+            afterChangeSeq: input.afterChangeSeq,
+          });
           const backlog: KinChatStreamEvent = resumed.reset
-            ? { _tag: "reset", lastSeq: resumed.lastSeq }
+            ? { _tag: "reset", lastSeq: resumed.lastSeq, lastChangeSeq: resumed.lastChangeSeq }
             : {
                 _tag: "backlog",
                 lastSeq: resumed.lastSeq,
+                lastChangeSeq: resumed.lastChangeSeq,
                 messages: resumed.messages,
                 widgets: resumed.widgets,
               };
-          const lastHistorySeq = backlog.lastSeq;
+          const messageChanges = new Map<string, number>();
           const revisions = new Map(
             backlog._tag === "backlog" ? backlog.widgets.map((w) => [w.widgetId, w.revision]) : [],
           );
@@ -583,11 +588,14 @@ const make = Effect.gen(function* () {
               Stream.map((event) => {
                 switch (event.type) {
                   case "message.posted": {
+                    const change = event.message.changeSeq ?? event.message.seq;
                     if (
                       event.message.chatId !== input.chatId ||
-                      event.message.seq <= lastHistorySeq
+                      change <= resumed.lastChangeSeq ||
+                      change <= (messageChanges.get(event.message.messageId) ?? 0)
                     )
                       return Option.none();
+                    messageChanges.set(event.message.messageId, change);
                     return Option.some<KinChatStreamEvent>({
                       _tag: "message",
                       message: event.message,
