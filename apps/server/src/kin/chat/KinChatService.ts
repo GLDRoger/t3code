@@ -10,6 +10,7 @@ import {
   KinMessageId,
   KinWaitingId,
   KinWidgetId,
+  KinOwnerCheckCard,
   KinMessagesSendInput,
   KinWidgetsActInput,
   KinAgentIntent,
@@ -179,6 +180,7 @@ const decodeWidgetId = Schema.decodeEffect(KinWidgetId);
 const decodeWaitingId = Schema.decodeEffect(KinWaitingId);
 const decodeSend = Schema.decodeEffect(KinMessagesSendInput);
 const decodeIntent = Schema.decodeEffect(KinAgentIntent);
+const decodeOwnerCheckCard = Schema.decodeUnknownEffect(KinOwnerCheckCard);
 const decodeAct = Schema.decodeEffect(KinWidgetsActInput);
 const encodeAction = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const invalidState = new KinChatError({ reason: "invalid_state", message: "Invalid chat input." });
@@ -196,7 +198,7 @@ const requireRecord = Effect.fn("KinChatService.requireRecord")(function* <A, E,
 
 const make = Effect.gen(function* () {
   const floor = yield* Floor.KinFloor;
-  const shadow = yield* Effect.serviceOption(JudgeShadow);
+  const shadow = yield* JudgeShadow;
   const cards = yield* TaskCard.TaskCardIndex;
   const repo = yield* Repository.KinChatRepository;
   const hub = yield* Hub.KinChatHub;
@@ -369,7 +371,7 @@ const make = Effect.gen(function* () {
     if (message.messageId !== messageId) return message;
     if (message.author._tag === "human") {
       const decision = yield* floor.open(message, yield* requireRecord(repo.getChat(member)));
-      if (Option.isSome(shadow)) yield* shadow.value.observe(message, decision);
+      yield* shadow.observe(message, decision);
     }
     if (input.publish === false) return message;
     yield* hub.publish({ type: "message.posted", orgId: identity.orgId, message });
@@ -947,7 +949,8 @@ const make = Effect.gen(function* () {
           reason: "use_approvals",
           message: "Use the signed approvals service.",
         });
-      if (input.type === "task" && input.widgetId === undefined) return yield* notAllowed;
+      if (input.type === "owner_check" || (input.type === "task" && input.widgetId === undefined))
+        return yield* notAllowed;
       let state = yield* validateState(input.type, input.state);
       let widget: KinWidget;
       if (input.widgetId === undefined) {
@@ -1074,6 +1077,17 @@ const make = Effect.gen(function* () {
           reason: "use_approvals",
           message: "Use the signed approvals service.",
         });
+      if (widget.type === "owner_check") {
+        if (member.role !== "owner") return yield* notAllowed;
+        const card = yield* decodeOwnerCheckCard(widget.state).pipe(
+          Effect.mapError(() => invalidState),
+        );
+        if (
+          !["keep", "update", "drop"].includes(request.actionId) ||
+          !card.items.some((item) => item.itemId === request.value)
+        )
+          return yield* invalidState;
+      }
       const body = yield* encodeAction({
         widgetId: request.widgetId,
         revision: request.revision,

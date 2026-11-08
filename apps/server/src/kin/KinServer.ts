@@ -15,6 +15,7 @@ export type Services =
   | KinChatService
   | KinBudget
   | KinEventQueue
+  | KinChatHub
   | ApproverKeys
   | GrantVerifier;
 

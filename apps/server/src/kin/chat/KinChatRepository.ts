@@ -77,6 +77,11 @@ const isSqlError = Schema.is(PersistenceSqlError);
 const encodeMentions = Schema.encodeEffect(Schema.fromJsonString(KinMessage.fields.mentions));
 const encodeWidgetState = Schema.encodeEffect(Schema.fromJsonString(KinWidget.fields.state));
 const encodeAwaiting = Schema.encodeEffect(Schema.fromJsonString(KinWidget.fields.awaiting));
+const decodeChatTitle = Schema.decodeEffect(KinChat.fields.title);
+const decodeWidgetText = Schema.decodeEffect(
+  Schema.Struct({ type: KinWidget.fields.type, feed: KinWidget.fields.feed }),
+);
+const decodeWidgetFeed = Schema.decodeEffect(KinWidget.fields.feed);
 const decodeBody = Schema.decodeEffect(KinMessage.fields.body);
 const decodeHistory = Schema.decodeEffect(KinChatHistoryInput);
 const decodeSeq = Schema.decodeEffect(NonNegativeInt);
@@ -1062,6 +1067,7 @@ const make = Effect.gen(function* () {
     ),
     createChat: Effect.fn("KinChatRepository.createChat")(
       function* (input) {
+        yield* decodeChatTitle(input.title);
         if ((input.kind === "direct") !== (input.directKey !== null))
           return yield* new KinChatError({
             reason: "invalid_state",
@@ -1349,6 +1355,7 @@ const make = Effect.gen(function* () {
     ),
     insertWidget: Effect.fn("KinChatRepository.insertWidget")(
       function* (input) {
+        yield* decodeWidgetText(input);
         yield* requireRecord(chatOne(input));
         const message = yield* requireRecord(messageOne(input));
         if (message.chatId !== input.chatId)
@@ -1373,6 +1380,7 @@ const make = Effect.gen(function* () {
     ),
     updateWidget: Effect.fn("KinChatRepository.updateWidget")(
       function* (input) {
+        yield* decodeWidgetFeed(input.feed);
         return yield* sql.withTransaction(
           Effect.gen(function* () {
             const widget = yield* requireRecord(widgetOne(input));

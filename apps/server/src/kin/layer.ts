@@ -1,5 +1,3 @@
-import * as JudgeShadow from "./floor/JudgeShadow.ts";
-import * as NoopJudge from "./floor/NoopJudge.ts";
 import { TaskCardIndex } from "./widgets/taskCard.ts";
 import { KinChatRepository } from "./chat/KinChatRepository.ts";
 import type * as SqlClient from "effect/sql/SqlClient";
@@ -19,7 +17,6 @@ export { KinServer } from "./KinServer.ts";
 import type * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as KinMcp from "./mcp/layer.ts";
-import * as KinLead from "./lead/layer.ts";
 
 const enabled = Layer.effect(
   KinServer,
@@ -37,14 +34,7 @@ const enabled = Layer.effect(
       subscribeForViewer: Option.some(hub.subscribeForViewer),
     };
   }),
-).pipe(
-  Layer.provide(
-    Layer.merge(
-      KinChat.layer.pipe(Layer.provide(JudgeShadow.layer.pipe(Layer.provide(NoopJudge.layer)))),
-      KinApprovals.layer,
-    ),
-  ),
-);
+).pipe(Layer.provide(Layer.merge(KinChat.layer, KinApprovals.layer)));
 const disabled = Layer.succeed(KinServer, {
   taskCardUpdater: Layer.empty,
   services: Option.none(),
@@ -96,18 +86,6 @@ const middleware = HttpRouter.middleware<{ provides: KinServer }>()(
 
 export const layer = middleware.pipe(Layer.provideMerge(runtime));
 
-const leadRuntime = Layer.unwrap(
-  Effect.gen(function* () {
-    const kin = yield* KinServer;
-    return Option.isSome(kin.services)
-      ? KinLead.layerServer.pipe(
-          Layer.provide(Layer.succeedContext(kin.services.value)),
-          Layer.provide(SqlitePersistence.layerConfig),
-        )
-      : Layer.empty;
-  }),
-);
-
 const taskCardUpdater = Layer.unwrap(
   Effect.gen(function* () {
     const kin = yield* KinServer;
@@ -122,7 +100,7 @@ const taskCardUpdater = Layer.unwrap(
 );
 
 export const mcpLayer = (base: Parameters<typeof KinMcp.transport>[0]) =>
-  Layer.mergeAll(KinMcp.transport(base), leadRuntime, taskCardUpdater);
+  Layer.mergeAll(KinMcp.transport(base), taskCardUpdater);
 
 export const mcpRegistryLayer = <E, R>(
   base: Layer.Layer<McpSessionRegistry.McpSessionRegistry, E, R>,

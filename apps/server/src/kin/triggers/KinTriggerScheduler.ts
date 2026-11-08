@@ -1,4 +1,9 @@
-import { KinTrigger, KinTriggerFired, KinTriggerSettings } from "@t3tools/contracts";
+import {
+  canonicalTimeZone,
+  KinTrigger,
+  KinTriggerFired,
+  KinTriggerSettings,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -130,6 +135,7 @@ const make = Effect.gen(function* () {
         PersistenceDecodeError.fromSchemaError("KinTriggerScheduler.recompute", cause),
       ),
     );
+    const timeZone = canonicalTimeZone(settings.timeZone);
     const now = yield* Clock.currentTimeMillis;
     yield* sql
       .withTransaction(
@@ -137,7 +143,7 @@ const make = Effect.gen(function* () {
           for (const trigger of yield* store.list(settings.orgId)) {
             const updated = {
               ...trigger,
-              timeZone: settings.timeZone,
+              timeZone,
               schedule: routineSchedule(trigger, settings),
             };
             const next = !updated.enabled
