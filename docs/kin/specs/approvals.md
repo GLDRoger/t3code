@@ -257,7 +257,7 @@ export const KinGrantPayload = Schema.Struct({
 7. `kind`, `target`, `targetDigest`, `headSha`, `base`, `mergeMethod` equal the server's record → `target_mismatch`.
 8. `now` is a finite number, `|now − iat| ≤ 300`, `iat < exp`, `exp − iat ≤ 900` and `now < exp` → `time_window`.
 9. Re-read the PR from GitHub with the bot token; head and base still match → `head_moved` (rotate nonce, refresh card).
-10. In one transaction: insert `kin_grants` (`jti` UNIQUE, `(action_id, approver)` UNIQUE) and CAS the action to `approved` → `replayed` on conflict.
+10. In one transaction: insert `kin_grants` (`jti` UNIQUE, `(action_id, approver)` UNIQUE) and CAS the action to `approved` while both the action and the grant are unexpired → `replayed` when that org already holds the `jti` or this approver's grant for the action, `stale` otherwise.
 
 The grant's life ends at `min(exp, acceptedAt + 15 min)`. It is consumed when the executor claims the action, and can't be used for anything else: the binding is to `actionId`, `nonce` and `targetDigest`, all server-chosen.
 

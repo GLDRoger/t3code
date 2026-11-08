@@ -321,6 +321,12 @@ describe("KinPendingActions", () => {
       yield* TestClock.adjust("1 millis");
       assert.isFalse(yield* acceptedLate.claim);
       assert.strictEqual(yield* state(acceptedLate.action), "approved");
+      // A grant already past its own exp can't approve, even while the action is still open.
+      const deadGrantFor = (yield* actions.create(request("dead-grant"))).action;
+      assert.deepStrictEqual(yield* actions.approve(grant(deadGrantFor, "jti-dead", 0, 600)), {
+        _tag: "stale",
+      });
+      assert.strictEqual(yield* state(deadGrantFor), "awaiting_approval");
 
       const created = yield* Clock.currentTimeMillis;
       const approvable = (yield* actions.create(request("approve-ok"))).action;
@@ -344,15 +350,17 @@ describe("KinPendingActions", () => {
 
       yield* TestClock.adjust(`${created + week - 1 - (yield* Clock.currentTimeMillis)} millis`);
       assert.isFalse(yield* expire(unapprovable));
+      const nowS = Math.floor((yield* Clock.currentTimeMillis) / 1000);
       assert.strictEqual(
-        (yield* actions.approve(grant(approvable, "jti-approve-ok")))._tag,
+        (yield* actions.approve(grant(approvable, "jti-approve-ok", nowS, nowS + 600)))._tag,
         "approved",
       );
       assert.isTrue(Option.isSome(yield* refresh(0)));
       yield* TestClock.adjust("1 millis");
-      assert.deepStrictEqual(yield* actions.approve(grant(unapprovable, "jti-approve-late")), {
-        _tag: "stale",
-      });
+      assert.deepStrictEqual(
+        yield* actions.approve(grant(unapprovable, "jti-approve-late", nowS, nowS + 600)),
+        { _tag: "stale" },
+      );
       assert.isTrue(Option.isNone(yield* refresh(1)));
       assert.strictEqual(yield* state(unapprovable), "awaiting_approval");
       assert.isTrue(yield* expire(unapprovable));
