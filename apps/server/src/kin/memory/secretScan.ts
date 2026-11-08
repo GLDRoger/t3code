@@ -29,15 +29,15 @@ export class KinSecretScan extends Context.Service<
 >()("t3/kin/memory/secretScan/KinSecretScan") {}
 
 const rules = [
-  ["github-token", /\b(?:gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82})\b/],
-  ["anthropic-key", /\bsk-ant-[A-Za-z0-9_-]{40,200}\b/],
-  ["openai-key", /\bsk-(?!ant-)(?:proj-)?[A-Za-z0-9_-]{32,200}\b/],
-  ["aws-access-key", /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/],
-  ["slack-token", /\bxox[abposr]-[A-Za-z0-9-]{20,200}\b/],
-  ["stripe-key", /\b[rs]k_live_[A-Za-z0-9]{24,200}\b/],
-  ["google-key", /\bAIza[A-Za-z0-9_-]{35}\b/],
+  ["github-token", /(?:gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82})/],
+  ["anthropic-key", /sk-ant-[A-Za-z0-9_-]{40,200}/],
+  ["openai-key", /sk-(?!ant-)(?:proj-)?[A-Za-z0-9_-]{32,200}/],
+  ["aws-access-key", /(?:AKIA|ASIA)[A-Z0-9]{16}/],
+  ["slack-token", /xox[abposr]-[A-Za-z0-9-]{20,200}/],
+  ["stripe-key", /[rs]k_live_[A-Za-z0-9]{24,200}/],
+  ["google-key", /AIza[A-Za-z0-9_-]{35}/],
   ["pem-private-key", /-----BEGIN (?:(?:RSA|EC|DSA|OPENSSH|ENCRYPTED) )?PRIVATE KEY-----/],
-  ["jwt", /\beyJ[A-Za-z0-9_-]{5,8192}\.[A-Za-z0-9_-]{8,8192}\.[A-Za-z0-9_-]{16,8192}\b/],
+  ["jwt", /eyJ[A-Za-z0-9_-]{5,8192}\.[A-Za-z0-9_-]{8,8192}\.[A-Za-z0-9_-]{16,8192}/],
   ["url-password", /\b[a-z][a-z0-9+.-]{0,31}:\/\/[^\s/:@]{1,512}:([^\s/@]{1,512})@/i],
   [
     "secret-assignment",
@@ -123,7 +123,6 @@ const make = Effect.gen(function* () {
         value: string,
         baseLine: number,
         depth: number,
-        compact = false,
         lineAt?: Uint32Array,
       ): void => {
         budget -= value.length;
@@ -145,7 +144,7 @@ const make = Effect.gen(function* () {
             break;
           }
         }
-        if (depth === 2 || compact) return;
+        if (depth === 2) return;
         let cursor = 0;
         let decodedLine = baseLine;
         for (const match of value.matchAll(/(?:%[0-9a-fA-F]{2}|[A-Za-z0-9_+/-]){24,}={0,2}/g)) {
@@ -164,7 +163,7 @@ const make = Effect.gen(function* () {
             if (!/^[\x09\x0a\x0d\x20-\x7e]+$/.test(decoded)) continue;
           }
           if (decoded === encoded) continue;
-          inspect(normalize(decoded), decodedLine, depth + 1);
+          inspect(normalize(decoded), lineAt?.[match.index] ?? decodedLine, depth + 1);
         }
       };
       inspect(text, 1, 0);
@@ -180,7 +179,7 @@ const make = Effect.gen(function* () {
         offset += chunk.length;
         return chunk;
       });
-      inspect(compact, 1, 2, true, lineAt);
+      inspect(compact, 1, 0, lineAt);
     }
     if (budget < 0 || findings.length > 1024)
       return yield* new KinSecretScanError({ reason: "Scan work limit exceeded" });

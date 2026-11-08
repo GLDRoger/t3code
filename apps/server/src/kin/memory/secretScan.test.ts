@@ -88,6 +88,32 @@ it.effect("blocks encoded, wrapped and confusable tokens with safe findings", ()
     }
   }).pipe(Effect.provide(layer)),
 );
+it.effect("reports source lines and blocks AWS credential pairs without leaking values", () =>
+  Effect.gen(function* () {
+    const scanner = yield* Scan.KinSecretScan;
+    for (const content of [
+      "safe\n\n" + github,
+      "safe\n\n" + github.slice(0, 12) + "\n" + github.slice(12),
+    ]) {
+      const result = yield* scanner.scan({
+        orgId,
+        files: [{ path: "claims/test.md", content: Buffer.from(content) }],
+      });
+      expect(result.every((f) => f.line === 3)).toBe(true);
+      expect(result.length).toBeGreaterThan(0);
+    }
+    const pair = [
+      "AWS_ACCESS_KEY_ID=" + ["AK", "IA", "X".repeat(16)].join(""),
+      "AWS_SECRET_ACCESS_KEY=" + body + "aB3d",
+    ].join("\n");
+    const findings = yield* scanner.scan({
+      orgId,
+      files: [{ path: ".env", content: Buffer.from(pair) }],
+    });
+    expect(findings.some((f) => f.ruleId === "aws-access-key")).toBe(true);
+    expect(findings.some((f) => f.ruleId === "secret-assignment")).toBe(true);
+  }).pipe(Effect.provide(layer)),
+);
 it.effect("allowlist is exact, org scoped, and read only to scanner callers", () =>
   Effect.gen(function* () {
     const scanner = yield* Scan.KinSecretScan;
@@ -109,6 +135,23 @@ it.effect("allowlist is exact, org scoped, and read only to scanner callers", ()
     expect(Object.keys(scanner)).toEqual(["scan"]);
     yield* sql`DROP TABLE kin_secret_allow`;
     expect((yield* run(orgId, "claims/test.md").pipe(Effect.result))._tag).toBe("Failure");
+  }).pipe(Effect.provide(layer)),
+);
+it.effect("fails closed when decoded findings or the allowlist exceed their bounds", () =>
+  Effect.gen(function* () {
+    const scanner = yield* Scan.KinSecretScan;
+    const content = Buffer.from(
+      Array.from({ length: 1100 }, () => Buffer.from(github).toString("base64")).join("\n"),
+    );
+    expect(
+      (yield* scanner
+        .scan({ orgId, files: [{ path: "claims/many.md", content }] })
+        .pipe(Effect.result))._tag,
+    ).toBe("Failure");
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`WITH RECURSIVE entries(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM entries WHERE n < 4097)
+    INSERT INTO kin_secret_allow SELECT ${orgId}, 'claims/' || n, 'github-token', ${"0".repeat(64)}, 'signed-fixture' FROM entries`;
+    expect((yield* scanner.scan({ orgId, files: [] }).pipe(Effect.result))._tag).toBe("Failure");
   }).pipe(Effect.provide(layer)),
 );
 it.effect("fails closed at file, batch and count limits", () =>
