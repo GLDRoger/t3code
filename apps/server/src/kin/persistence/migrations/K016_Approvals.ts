@@ -99,4 +99,10 @@ export default Effect.gen(function* () {
       UNIQUE (org_id, seq)
     )
   `;
+  // Approver keys and push devices check revocation by proof key on every read; K015's index
+  // covers every renewal row, this one only the revoked ones.
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS idx_kin_auth_session_keys_revoked
+    ON kin_auth_session_keys(proof_key_thumbprint) WHERE individually_revoked = 1
+  `;
 });
