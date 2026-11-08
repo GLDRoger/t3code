@@ -56,9 +56,9 @@ export function decideFloor(input: {
   const mentioned = run.mentionQueue.find((agent) => agent !== run.lastSpeaker);
   if (mentioned !== undefined) return { _tag: "grant", agentId: mentioned };
   if (input.now < input.bidWindowOpenedAt + FLOOR_BID_WINDOW_MS) return { _tag: "wait" };
-  const role = /\b(test|tests|bug|bugs)\b/i.test(input.text)
+  const role = /\b(test|tests|testing|bug|bugs)\b/i.test(input.text)
     ? "qa"
-    : /\b(deploy|deployment|release)\b/i.test(input.text)
+    : /\b(deploy|deploying|deployment|release|released)\b/i.test(input.text)
       ? "release"
       : "lead";
   const score = (bid: FloorBid) =>

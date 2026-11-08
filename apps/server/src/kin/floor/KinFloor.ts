@@ -1,7 +1,9 @@
 import {
   KinChatError,
   KinAgentId,
-  type KinMessageId,
+  KinAgentRole,
+  KinMemberId,
+  KinMessageId,
   type KinAgentIntent,
   type KinChat,
   type KinMessage,
@@ -26,8 +28,31 @@ import {
   replyIntentAllowed,
 } from "./FloorManager.ts";
 
-const encodeAgents = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
-const decodeAgents = Schema.decodeEffect(Schema.fromJsonString(Schema.Array(KinAgentId)));
+const encodeAgents = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(KinAgentId)));
+const decodeMembers = Schema.decodeUnknownEffect(
+  Schema.Array(
+    Schema.Struct({
+      agent_id: KinAgentId,
+      member_id: KinMemberId,
+      role: KinAgentRole,
+    }),
+  ),
+);
+const decodeRun = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    run_id: Schema.String,
+    agent_turns: Schema.Int,
+    last_speaker: Schema.NullOr(KinAgentId),
+    state: Schema.Literals(["open", "closed"]),
+    opened_by: KinMessageId,
+    mention_queue: Schema.fromJsonString(Schema.Array(KinAgentId)),
+    spoken: Schema.fromJsonString(Schema.Array(KinAgentId)),
+  }),
+);
+const invalidIntent = new KinChatError({
+  reason: "invalid_state",
+  message: "The intent or grant is invalid for this wake-up.",
+});
 const isKinChatError = Schema.is(KinChatError);
 const notGranted = new KinChatError({
   reason: "floor_not_granted",
@@ -77,19 +102,23 @@ const make = Effect.gen(function* () {
       if (message.author._tag !== "human" || message.status !== "posted") return;
       const now = yield* Clock.currentTimeMillis;
       yield* close(message);
-      const agents = yield* sql<{ agent_id: KinAgentId; member_id: string; role: string }>`
+      const agents = yield* sql`
       SELECT a.agent_id, m.member_id, a.role FROM kin_chat_members m
       JOIN kin_agents a ON a.org_id = m.org_id AND a.agent_id = m.agent_id
       WHERE m.org_id = ${message.orgId} AND m.chat_id = ${message.chatId}
         AND m.left_at IS NULL AND a.retired_at IS NULL
-      ORDER BY CASE a.role WHEN 'lead' THEN 0 ELSE 1 END, m.joined_at, a.agent_id`;
+      ORDER BY CASE a.role WHEN 'lead' THEN 0 ELSE 1 END, m.joined_at, a.agent_id`.pipe(
+        Effect.flatMap(decodeMembers),
+      );
       const lead = agents[0];
       const mentions = message.mentions.flatMap((id) =>
         agents.filter((agent) => agent.member_id === id).map((agent) => agent.agent_id),
       );
+      const mentionQueue =
+        chat.kind === "direct" && lead !== undefined ? [lead.agent_id] : mentions;
       const runId = SecureRandom.uuidV4Unsafe();
       yield* sql`INSERT INTO kin_floor_runs (org_id, run_id, chat_id, opened_by, mention_queue, state, opened_at)
-      VALUES (${message.orgId}, ${runId}, ${message.chatId}, ${message.messageId}, ${yield* encodeAgents(mentions).pipe(Effect.orDie)}, 'open', ${now})
+      VALUES (${message.orgId}, ${runId}, ${message.chatId}, ${message.messageId}, ${yield* encodeAgents(mentionQueue)}, 'open', ${now})
       ON CONFLICT DO NOTHING RETURNING run_id`;
       if (lead === undefined) return;
       const decision = decideFloor({
@@ -97,7 +126,7 @@ const make = Effect.gen(function* () {
           runId,
           chatId: chat.chatId,
           openedBy: message.messageId,
-          mentionQueue: chat.kind === "direct" ? [lead.agent_id] : mentions,
+          mentionQueue,
           agentTurns: 0,
           lastSpeaker: null,
           spoken: [],
@@ -110,7 +139,7 @@ const make = Effect.gen(function* () {
         bidWindowOpenedAt: now,
         now,
       });
-      // Group bidding and wake offers are phase 2; a human mention can already grant a turn.
+      // Group tokens remain internal until phase-2 wake-up delivery.
       if (decision._tag !== "grant") return;
       yield* issue({ ...message, runId, agentId: decision.agentId }, now);
     },
@@ -123,7 +152,7 @@ const make = Effect.gen(function* () {
       chat: KinChat,
       intent: KinAgentIntent,
       token?: string,
-    ): Effect.fn.Return<Authorization, SqlError | KinChatError> {
+    ): Effect.fn.Return<Authorization, SqlError | KinChatError | Schema.SchemaError> {
       const now = yield* Clock.currentTimeMillis;
       // Notice authority comes from the running wake-up's stored events, never tool input.
       const wakeups = yield* sql<{
@@ -149,7 +178,7 @@ const make = Effect.gen(function* () {
         wakeup.notices === wakeup.total &&
         wakeup.replies === 0
       ) {
-        if (!noticeIntentAllowed(intent) || token !== undefined) return yield* notGranted;
+        if (!noticeIntentAllowed(intent) || token !== undefined) return yield* invalidIntent;
         const recent = yield* sql<{ message_id: string }>`SELECT message_id FROM kin_floor_notices
         WHERE org_id = ${identity.orgId} AND chat_id = ${chat.chatId} AND agent_id = ${identity.agentId}
           AND posted_at > ${now - 3_600_000} ORDER BY posted_at, message_id LIMIT 10`;
@@ -160,26 +189,16 @@ const make = Effect.gen(function* () {
           });
         return { runId: null };
       }
-      const runs = yield* sql<{
-        run_id: string;
-        agent_turns: number;
-        last_speaker: string | null;
-        state: string;
-        opened_by: KinMessageId;
-        mention_queue: string;
-      }>`
-      SELECT run_id, agent_turns, last_speaker, state, opened_by, mention_queue FROM kin_floor_runs
+      const runs = yield* sql`
+      SELECT run_id, agent_turns, last_speaker, state, opened_by, mention_queue, spoken FROM kin_floor_runs
       WHERE org_id = ${identity.orgId} AND chat_id = ${chat.chatId}
       ORDER BY opened_at DESC, rowid DESC LIMIT 1`;
-      const run = runs[0];
+      const run = runs[0] === undefined ? undefined : yield* decodeRun(runs[0]);
       if (run?.agent_turns === FLOOR_MAX_AGENT_TURNS || run?.state === "closed")
         return yield* new KinChatError({ reason: "floor_closed", message: "The floor is closed." });
-      if (
-        run === undefined ||
-        run.last_speaker === identity.agentId ||
-        !replyIntentAllowed(run.agent_turns, intent)
-      )
-        return yield* notGranted;
+      if (run === undefined) return yield* notGranted;
+      if (!replyIntentAllowed(run.agent_turns, intent)) return yield* invalidIntent;
+      if (run.last_speaker === identity.agentId) return yield* notGranted;
       if (chat.kind !== "direct" && token === undefined) return yield* notGranted;
       const grants = yield* sql<{ token: string }>`SELECT token FROM kin_floor_grants
       WHERE org_id = ${identity.orgId} AND chat_id = ${chat.chatId} AND agent_id = ${identity.agentId}
@@ -198,9 +217,8 @@ const make = Effect.gen(function* () {
       mention_queue = (SELECT COALESCE(json_group_array(value), '[]') FROM json_each(mention_queue) WHERE value != ${identity.agentId} ORDER BY key),
       state = CASE WHEN agent_turns + 1 >= ${FLOOR_MAX_AGENT_TURNS} THEN 'closed' ELSE 'open' END
       WHERE org_id = ${identity.orgId} AND run_id = ${run.run_id}`;
-      const remaining = (yield* decodeAgents(run.mention_queue).pipe(Effect.orDie)).filter(
-        (agent) => agent !== identity.agentId,
-      );
+      const remaining = run.mention_queue.filter((agent) => agent !== identity.agentId);
+      // With no bids, only the remaining mentions can win; leadAgentId is unused.
       const next = decideFloor({
         run: {
           runId: run.run_id,
@@ -209,9 +227,9 @@ const make = Effect.gen(function* () {
           mentionQueue: remaining,
           agentTurns: run.agent_turns + 1,
           lastSpeaker: identity.agentId,
-          spoken: [],
+          spoken: [...run.spoken, identity.agentId],
           grant: null,
-          state: "open",
+          state: run.agent_turns + 1 >= FLOOR_MAX_AGENT_TURNS ? "closed" : "open",
         },
         bids: [],
         text: "",

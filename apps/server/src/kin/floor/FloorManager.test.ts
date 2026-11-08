@@ -44,14 +44,17 @@ it.each([
   { name: "plain question prefers chat lead", expected: { _tag: "grant", agentId: lead } },
   {
     name: "test words prefer QA",
-    text: "Please test this bug",
+    text: "testing",
     expected: { _tag: "grant", agentId: qa },
   },
-  {
-    name: "release words prefer release",
-    text: "deploy release",
-    expected: { _tag: "grant", agentId: release },
-  },
+  ...["deploy", "deployment", "release", "deploying", "released"].map(
+    (text) =>
+      ({
+        name: `${text} prefers release`,
+        text,
+        expected: { _tag: "grant", agentId: release },
+      }) as const,
+  ),
   {
     name: "role ties use earliest bid",
     text: "test",
