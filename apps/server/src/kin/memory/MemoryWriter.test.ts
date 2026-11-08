@@ -600,6 +600,21 @@ it.live.each([
       }
       if (scenario === "tree-substitution")
         substituteTree = yield* git(paths.writer, ["rev-parse", `${original}^{tree}`]);
+      if (scenario === "blocked") {
+        const tokenPath = "claims/" + ["gh", "p_", "a".repeat(36)].join("") + ".md";
+        const malformed = yield* writer
+          .stage(orgId, "wake1", {
+            path: tokenPath,
+            content: "missing front matter",
+          })
+          .pipe(Effect.result);
+        expect(malformed._tag).toBe("Failure");
+        if (malformed._tag === "Failure") {
+          expect(malformed.failure._tag).toBe("MemoryItemError");
+          if (malformed.failure._tag === "MemoryItemError")
+            expect(malformed.failure.path).toBe("[redacted]");
+        }
+      }
       if (scenario === "blocked")
         yield* writer.appendJournal(orgId, "wake1", [
           ["gh", "p_"].join("") + "aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0iL3oR6",

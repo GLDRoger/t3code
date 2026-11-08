@@ -1,5 +1,6 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Bounded synchronous fingerprint hashing shares the scan loop.
 import * as NodeCrypto from "node:crypto";
+import { vi } from "vite-plus/test";
 import { expect, it } from "@effect/vitest";
 import { KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -15,6 +16,23 @@ const layer = Scan.layer.pipe(Layer.provideMerge(database));
 const body = "aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0iL3oR6";
 const github = ["gh", "p_"].join("") + body;
 const fixtures = [
+  ...["X-Api-Key: ", "client-secret: ", '{"password": "', '"api_key":"'].map((prefix) => [
+    "secret-assignment",
+    prefix + body + '"',
+    prefix + "short",
+  ]),
+  ...["_", "token_"].map((prefix) => [
+    "github-token",
+    prefix + github + "_rotated",
+    "task-follow-up-with-design-team",
+  ]),
+  ["aws-access-key", ["AK", "IA"].join("") + "Q".repeat(16) + "_old", "ASIAPACIFICREGION2026"],
+  [
+    "jwt",
+    ["ey", "J"].join("") + "a".repeat(100) + "." + "b".repeat(1800) + "." + "c".repeat(100),
+    "eyJshort.two.parts",
+  ],
+
   ...["p", "o", "u", "s", "r"].map((kind) => [
     "github-token",
     "gh" + kind + "_" + body,
@@ -72,6 +90,7 @@ it.effect("blocks encoded, wrapped and confusable tokens with safe findings", ()
     const scanner = yield* Scan.KinSecretScan;
     const values = [
       github,
+      "%67" + github.slice(1),
       ...["/", "-", "_", "+", "word"].map(
         (prefix) => prefix + Buffer.from(github).toString("base64"),
       ),
@@ -92,6 +111,9 @@ it.effect("blocks encoded, wrapped and confusable tokens with safe findings", ()
       Buffer.from(Buffer.from(github).toString("base64")).toString("base64"),
       [...github].map((c) => `%${c.charCodeAt(0).toString(16)}`).join(""),
       github.slice(0, 12) + "\n" + github.slice(12),
+      ...["next word", " next word"].map(
+        (suffix) => github.slice(0, 12) + "\n" + github.slice(12) + "\n" + suffix,
+      ),
       github.slice(0, 12) + "\\\n " + github.slice(12),
       github.replace("p", "р"),
       [...github].map((c) => String.fromCharCode(c.charCodeAt(0) + 0xfee0)).join(""),
@@ -193,7 +215,7 @@ it.effect("fails closed at file, batch and count limits", () =>
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect("round 2 near misses and private key headers", () =>
+it.effect("near misses and private key headers", () =>
   Effect.gen(function* () {
     const scanner = yield* Scan.KinSecretScan;
     for (const content of [
@@ -206,6 +228,10 @@ it.effect("round 2 near misses and private key headers", () =>
       "github_token_scopes: repo,workflow,admin:org,read:user",
       "postgres://user:${DB_PASSWORD}@example.invalid/db",
       "ASIAPACIFICREGION2026",
+      ["sk-", "proj-2026-11-follow-up-with-design-team-on-onboarding"].join(""),
+      ["sk-", "admin-rotation-plan-for-2026-q3-and-next-year"].join(""),
+      "z".repeat(4096) + ["AK", "IA"].join("") + "Q".repeat(16),
+      " ".repeat(8173) + ["AK", "IA"].join("") + "Q".repeat(16) + "z",
     ])
       expect(
         (yield* scanner.scan({
@@ -225,7 +251,7 @@ it.effect("round 2 near misses and private key headers", () =>
       ).toBe(true);
   }).pipe(Effect.provide(layer)),
 );
-it.effect("round 2 scans paths without exposing them", () =>
+it.effect("scans paths without exposing them", () =>
   Effect.gen(function* () {
     const scanner = yield* Scan.KinSecretScan;
     const findings = yield* scanner.scan({
@@ -234,25 +260,89 @@ it.effect("round 2 scans paths without exposing them", () =>
     });
     expect(findings.some((f) => f.ruleId === "github-token")).toBe(true);
     expect(JSON.stringify(findings).includes(github)).toBe(false);
+    const indexFindings = yield* scanner.scan({
+      orgId,
+      files: [
+        { path: "claims/item.md", content: Buffer.from("clean") },
+        { path: "INDEX.md", content: Buffer.from("- [claim] " + github + " (claims/item.md)") },
+      ],
+    });
+    expect(indexFindings.some((f) => f.itemPath === "claims/item.md")).toBe(true);
   }).pipe(Effect.provide(layer)),
 );
-it.effect("round 2 bounds adversarial rule inputs structurally", () =>
+it.effect("bounds adversarial rule inputs structurally", () =>
   Effect.gen(function* () {
     const scanner = yield* Scan.KinSecretScan;
     for (const prefix of ["eyJ", "sk-", "AKIA"]) {
       const content = prefix.repeat(Math.floor((1024 * 1024 - 100) / prefix.length));
       let examined = 0;
       for (const window of Scan.ruleWindows(content)) {
-        expect(window.text.length).toBeLessThanOrEqual(8192);
+        expect(window.text.length).toBeLessThanOrEqual(8194);
         examined += window.text.length;
       }
-      expect(examined).toBeLessThanOrEqual(content.length * 2);
+      expect(examined).toBeLessThanOrEqual(
+        content.length * 2 + Math.ceil(content.length / 4096) * 2,
+      );
       expect(
         (yield* scanner.scan({
           orgId,
           files: [{ path: "claims/test.md", content: Buffer.from(content) }],
         })).length,
       ).toBe(0);
+    }
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("scans ordinary journals and multi-file batches without exhausting work", () =>
+  Effect.gen(function* () {
+    const scanner = yield* Scan.KinSecretScan;
+    const journal = "Discussed the next steps with the team. Follow up tomorrow.\n";
+    for (const files of [
+      [
+        {
+          path: "journal/test.md",
+          content: Buffer.from(journal.repeat(Math.ceil((256 * 1024) / journal.length))),
+        },
+      ],
+      Array.from({ length: 30 }, (_, i) => ({
+        path: `journal/${i}.md`,
+        content: Buffer.from(journal.repeat(Math.ceil((60 * 1024) / journal.length))),
+      })),
+    ])
+      expect((yield* scanner.scan({ orgId, files })).length).toBe(0);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("bounds rule executions for random runs, word lines and multi-file inputs", () =>
+  Effect.gen(function* () {
+    const scanner = yield* Scan.KinSecretScan;
+    let seed = 42;
+    const random = (length: number) =>
+      Array.from({ length }, () => {
+        seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+        return "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"[seed % 62];
+      }).join("");
+    const runs = Array.from({ length: Math.floor((1024 * 1024 - 100) / 25) }, () =>
+      random(24),
+    ).join(" ");
+    const words = (Array.from({ length: 10 }, () => random(7)).join(" ") + "\n").repeat(13000);
+    for (const files of [
+      [{ path: "runs", content: Buffer.from(runs) }],
+      [{ path: "words", content: Buffer.from(words) }],
+      Array.from({ length: 8 }, (_, i) => ({ path: `runs-${i}`, content: Buffer.from(runs) })),
+    ]) {
+      let executions = 0;
+      const exec = RegExp.prototype.exec;
+      using _spy = vi.spyOn(RegExp.prototype, "exec").mockImplementation(function (
+        this: RegExp,
+        value: string,
+      ) {
+        if (this.source.startsWith("(?<![")) executions++;
+        return exec.call(this, value);
+      });
+      const result = yield* scanner.scan({ orgId, files }).pipe(Effect.result);
+      expect(result._tag).toBe("Success");
+      expect(executions).toBeLessThanOrEqual(40000);
     }
   }).pipe(Effect.provide(layer)),
 );

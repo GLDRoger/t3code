@@ -859,6 +859,7 @@ it.live("uses filesystem identity for a case-mismatched base without recloning",
 it.live.each([
   "diverged",
   "secret merge",
+  "scan failure merge",
   "remote secret merge",
   "large remote merge",
   "conflict",
@@ -959,7 +960,7 @@ it.live.each([
       }
       yield* memory.record(orgA, "main", initial.head, local);
       yield* fs.writeFileString(
-        `${source}/${scenario === "push retry" || scenario === "diverged" || scenario === "secret merge" || scenario === "remote secret merge" || scenario === "large remote merge" || scenario === "network down" || scenario === "dirty writer" || scenario === "H2-merge-swap" ? "remote-only" : "rules.md"}`,
+        `${source}/${scenario === "push retry" || scenario === "diverged" || scenario === "scan failure merge" || scenario === "secret merge" || scenario === "remote secret merge" || scenario === "large remote merge" || scenario === "network down" || scenario === "dirty writer" || scenario === "H2-merge-swap" ? "remote-only" : "rules.md"}`,
         "Remote invented edit\n",
       );
       if (scenario === "journal conflict" || scenario === "push retry") {
@@ -1018,6 +1019,10 @@ it.live.each([
         yield* memory.record(orgA, "main", local, replacement);
         local = replacement;
       }
+      if (scenario === "scan failure merge") {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DROP TABLE kin_secret_allow`;
+      }
       const result = yield* memory.prepareWakeup(orgA, "fixture-wakeup").pipe(Effect.result);
       if (scenario === "unrelated" || scenario === "criss-cross") {
         expect(result._tag).toBe("Failure");
@@ -1052,6 +1057,12 @@ it.live.each([
         expect(
           (yield* memory.prepareWakeup(orgA, "fixture-wakeup-3").pipe(Effect.result))._tag,
         ).toBe("Success");
+      } else if (scenario === "scan failure merge") {
+        expect(result._tag).toBe("Failure");
+        expect(
+          messages.some((message) => message.includes("Secret scan failed: Allowlist unavailable")),
+        ).toBe(true);
+        expect(yield* memory.anchor(orgA, "main")).toBe(local);
       } else if (scenario === "secret merge") {
         expect(result._tag).toBe("Failure");
         if (result._tag === "Failure") {

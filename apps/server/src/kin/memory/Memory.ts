@@ -1112,6 +1112,9 @@ const make = Effect.gen(function* () {
                       .map(([path, content]) => ({ path, content })),
                   })
                   .pipe(
+                    Effect.tapError((cause) =>
+                      notify({ orgId, branch, reason: `Secret scan failed: ${cause.reason}` }),
+                    ),
                     Effect.mapError(
                       (cause) => new MemoryError({ orgId, operation: "secretScan", cause }),
                     ),
@@ -1120,12 +1123,12 @@ const make = Effect.gen(function* () {
                   yield* notify({
                     orgId,
                     branch,
-                    reason: `Secret scan blocked merge: ${findings[0]!.ruleId} in ${findings[0]!.pathHit ? "[redacted]" : findings[0]!.path}`,
+                    reason: `Secret scan blocked merge: ${findings[0]!.ruleId} in ${findings[0]!.pathHit ? "[redacted]" : (findings[0]!.itemPath ?? findings[0]!.path)}`,
                   });
                   return yield* new MemoryError({
                     orgId,
                     operation: "secretScan",
-                    reason: `Secret scan blocked merge: ${findings[0]!.ruleId} in ${findings[0]!.pathHit ? "[redacted]" : findings[0]!.path}`,
+                    reason: `Secret scan blocked merge: ${findings[0]!.ruleId} in ${findings[0]!.pathHit ? "[redacted]" : (findings[0]!.itemPath ?? findings[0]!.path)}`,
                   });
                 }
                 tree = yield* Effect.scoped(

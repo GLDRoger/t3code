@@ -20,6 +20,7 @@ export interface SecretFinding {
   readonly ruleId: string;
   readonly line: number;
   readonly pathHit?: boolean;
+  readonly itemPath?: string;
 }
 export class KinSecretScan extends Context.Service<
   KinSecretScan,
@@ -43,17 +44,35 @@ const rules = [
   ["stripe-key", /[rs]k_live_[A-Za-z0-9]{24,200}/],
   ["google-key", /AIza[A-Za-z0-9_-]{35}/],
   ["pem-private-key", /-----BEGIN (?:[A-Z0-9]+ ){0,8}PRIVATE KEY(?: BLOCK)?-----/],
-  ["jwt", /eyJ[A-Za-z0-9_-]{5,1024}\.[A-Za-z0-9_-]{8,1024}\.[A-Za-z0-9_-]{16,1024}/],
+  ["jwt", /eyJ[A-Za-z0-9_-]{5,509}\.[A-Za-z0-9_-]{8,2500}\.[A-Za-z0-9_-]{16,1024}/],
   ["url-password", /\b[a-z][a-z0-9+.-]{0,31}:\/\/[^\s/:@]{1,512}:([^\s/@]{1,512})@/i],
   [
     "secret-assignment",
-    /\b[A-Za-z0-9_]{0,64}(?:password|secret|token|api[_-]?key|access[_-]?key)[A-Za-z0-9_]{0,64}\s{0,32}[:=]\s{0,32}["']?([^\s"';#]{20,512})/i,
+    /\b[A-Za-z0-9_]{0,64}(?:password|secret|token|api[_-]?key|access[_-]?key)[A-Za-z0-9_]{0,64}["']?\s{0,32}[:=]\s{0,32}["']?([^\s"';#]{20,512})/i,
   ],
 ] as const;
+const compiledRules = rules.map(([id, pattern]) => {
+  const alphabet =
+    id === "github-token" || id === "aws-access-key"
+      ? "A-Za-z0-9"
+      : id === "secret-assignment"
+        ? "A-Za-z0-9_"
+        : "A-Za-z0-9_-";
+  const right = id === "url-password" || id === "secret-assignment" ? "" : `(?![${alphabet}])`;
+  return [
+    id,
+    new RegExp(`(?<![${alphabet}])(?:${pattern.source})${right}`, `${pattern.flags}g`),
+  ] as const;
+});
 // Every rule sees bounded windows; overlap exceeds the longest possible match (a JWT).
 export const ruleWindows = function* (value: string) {
   for (let offset = 0; offset < value.length; offset += 4096)
-    yield { text: value.slice(offset, offset + 8192), offset };
+    yield {
+      text: value.slice(Math.max(0, offset - 1), offset + 8193),
+      offset: Math.max(0, offset - 1),
+      leftContext: offset > 0 ? 1 : 0,
+      rightContext: offset + 8192 < value.length ? 1 : 0,
+    };
 };
 const entropy = (value: string) => {
   const counts = new Map<string, number>();
@@ -137,34 +156,35 @@ const make = Effect.gen(function* () {
     const allow = new Set(allowed.map((r) => JSON.stringify([r.path, r.rule_id, r.fingerprint])));
     const findings: SecretFinding[] = [];
     const seen = new Set<string>();
-    let budget = 32 * 1024 * 1024;
+    let budget = 64 * 1024 * 1024;
     for (const file of input.files) {
       const text = normalize(Buffer.from(file.content).toString("utf8"));
+      const lines = text.split("\n");
       const pathFindingStart = findings.length;
       let pathHit = true;
       let redactPath = false;
-      const inspect = (
-        value: string,
-        baseLine: number,
-        depth: number,
-        lineAt?: Uint32Array,
-      ): void => {
-        budget -= value.length;
+      const inspect = function* (value: string, baseLine: number, depth: number): Generator<void> {
+        // Charge fixed work as well as bytes to bound decoder fan-out on short values.
+        budget -= value.length + 4096;
         if (budget < 0 || findings.length > 1024) return;
-        for (const [ruleId, pattern] of rules) {
-          for (const window of ruleWindows(value)) {
-            const bounded = new RegExp(
-              `(?<![A-Za-z0-9_-])(?:${pattern.source})${ruleId === "url-password" ? "" : "(?![A-Za-z0-9_-])"}`,
-              `${pattern.flags}g`,
-            );
-            for (const match of window.text.matchAll(bounded)) {
-              const index = window.offset + match.index;
-              const secret = match[1] ?? match[0];
+        for (const window of ruleWindows(value)) {
+          budget -= window.text.length;
+          if (budget < 0) return;
+          yield;
+          for (const [ruleId, bounded] of compiledRules) {
+            bounded.lastIndex = 0;
+            let match: RegExpExecArray | null;
+            while ((match = bounded.exec(window.text)) !== null) {
+              budget -= 64;
+              if (budget < 0) return;
               if (
-                ruleId === "openai-key" &&
-                !((/[A-Z]/.test(secret) && /[a-z]/.test(secret)) || /[0-9]/.test(secret))
+                match.index < window.leftContext ||
+                match.index + match[0].length > window.text.length - window.rightContext
               )
                 continue;
+              const index = window.offset + match.index;
+              const secret = match[1] ?? match[0];
+              if (ruleId === "openai-key" && !/[A-Z]/.test(secret)) continue;
               if (ruleId === "url-password" && /^\$\{[^}]+\}$/.test(secret)) continue;
               if (
                 ruleId === "secret-assignment" &&
@@ -177,16 +197,18 @@ const make = Effect.gen(function* () {
                 continue;
               if (allow.has(JSON.stringify([file.path, ruleId, fingerprint(ruleId, secret)])))
                 continue;
-              const line =
-                lineAt?.[index] ?? baseLine + (value.slice(0, index).match(/\n/g)?.length ?? 0);
+              const line = baseLine + (value.slice(0, index).match(/\n/g)?.length ?? 0);
               const key = JSON.stringify([file.path, ruleId, line, pathHit]);
               if (!seen.has(key)) {
+                const indexLine = file.path === "INDEX.md" ? lines[line - 1] : undefined;
+                const itemPath = indexLine?.match(/\(([^()]+\.md)\)/)?.[1];
                 seen.add(key);
                 findings.push({
                   path: pathHit || redactPath ? "[redacted]" : file.path,
                   ruleId,
                   line,
                   ...(pathHit ? { pathHit: true } : {}),
+                  ...(itemPath && input.files.some((f) => f.path === itemPath) ? { itemPath } : {}),
                 });
               }
               break;
@@ -196,10 +218,15 @@ const make = Effect.gen(function* () {
         if (depth === 2) return;
         let cursor = 0;
         let decodedLine = baseLine;
-        for (const match of value.matchAll(/(?:%[0-9a-fA-F]{2}|[A-Za-z0-9_+/-]){24,}={0,2}/g)) {
+        for (const match of value.matchAll(/(?:%[0-9a-fA-F]{2}|[A-Za-z0-9_+/-]){20,}={0,2}/g)) {
+          const encoded = match[0];
+          // Mixed percent/plain encodings can represent 20 bytes in fewer than 60 characters.
+          if (!encoded.includes("%") && encoded.length < 27) continue;
           decodedLine += value.slice(cursor, match.index).match(/\n/g)?.length ?? 0;
           cursor = match.index;
-          const encoded = match[0];
+          yield;
+          budget -= 4096;
+          if (budget < 0) return;
           const candidates = encoded.includes("%")
             ? [
                 Buffer.from(
@@ -215,39 +242,43 @@ const make = Effect.gen(function* () {
           for (const candidate of candidates) {
             if (budget < 0 || findings.length > 1024) return;
             const decoded = normalize(candidate).replace(/[^\x09\x0a\x0d\x20-\x7e]/g, " ");
-            if (decoded !== encoded)
-              inspect(decoded, lineAt?.[match.index] ?? decodedLine, depth + 1);
+            if (decoded !== encoded) yield* inspect(decoded, decodedLine, depth + 1);
           }
         }
       };
-      inspect(normalize(file.path), 1, 0);
+      for (const _ of inspect(normalize(file.path), 1, 0)) yield* Effect.yieldNow;
       redactPath = findings.length > pathFindingStart;
       pathHit = false;
-      inspect(text, 1, 0);
-      const lineAt = new Uint32Array(text.length);
+      for (const _ of inspect(text, 1, 0)) yield* Effect.yieldNow;
+      let run = "";
+      let runLine = 1;
       let line = 1;
-      let offset = 0;
-      const starts = new Set<number>();
-      const compact = text.replace(/\\?\r?\n[\t ]*|[^\r\n\\]+|./g, (chunk) => {
-        if (chunk.includes("\n")) {
-          line++;
-          starts.add(offset);
-          return "";
+      let fragments = 0;
+      for (const raw of lines) {
+        const fragment = raw
+          .replace(/\\?\r$/, "")
+          .replace(/\\$/, "")
+          .trim();
+        if (fragment && !/\s/.test(fragment)) {
+          if (!fragments) runLine = line;
+          run += fragment;
+          fragments++;
+        } else {
+          if (fragments > 1) for (const _ of inspect(run, runLine, 0)) yield* Effect.yieldNow;
+          run = "";
+          fragments = 0;
         }
-        lineAt.fill(line, offset, offset + chunk.length);
-        offset += chunk.length;
-        return chunk;
-      });
-      inspect(compact, 1, 0, lineAt);
-      // A wrapped token may start after prose that compacting joined to its left boundary.
-      for (const start of starts) {
-        if (budget < 0 || findings.length > 1024) break;
-        inspect(compact.slice(start, start + 8192), lineAt[start] ?? 1, 0, lineAt.subarray(start));
+        line++;
       }
+      if (fragments > 1) for (const _ of inspect(run, runLine, 0)) yield* Effect.yieldNow;
     }
     if (budget < 0 || findings.length > 1024)
       return yield* new KinSecretScanError({ reason: "Scan work limit exceeded" });
-    return findings;
+    const unsafePaths = findings.some((f) => f.pathHit);
+    return findings.map(({ itemPath, ...finding }) => ({
+      ...finding,
+      ...(itemPath && !unsafePaths ? { itemPath } : {}),
+    }));
   });
   return KinSecretScan.of({ scan });
 });

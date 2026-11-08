@@ -66,6 +66,7 @@ export class MemorySecretBlocked extends Schema.TaggedError<MemorySecretBlocked>
         ruleId: Schema.String,
         line: Schema.Number,
         pathHit: Schema.optional(Schema.Boolean),
+        itemPath: Schema.optional(Schema.String),
       }),
     ),
   },
@@ -315,6 +316,20 @@ const make = Effect.gen(function* () {
   });
   const report = <A>(orgId: KinOrgId, wakeupId: string, effect: Effect.Effect<A, Failure>) =>
     effect.pipe(
+      Effect.catchTags({
+        MemoryItemError: (error) =>
+          scanner.scan({ orgId, files: [{ path: error.path, content: new Uint8Array() }] }).pipe(
+            Effect.flatMap((findings) =>
+              Effect.fail(
+                new MemoryItemError({
+                  orgId: error.orgId,
+                  path: findings.length ? "[redacted]" : error.path,
+                  reason: error.reason,
+                }),
+              ),
+            ),
+          ),
+      }),
       Effect.tapError((error) =>
         error._tag === "MemoryCheckoutInvalid" ||
         error._tag === "MemorySyncConflict" ||
