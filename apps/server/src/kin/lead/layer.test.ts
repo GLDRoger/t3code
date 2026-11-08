@@ -122,5 +122,5 @@ it.effect("leaves unconfigured Kin silent and inert without building its depende
       ),
     );
     assert.deepStrictEqual(entries, []);
-  }).pipe(Effect.provide(external), Effect.provide(harness()), provideDeterministicTestRuntime),
+  }).pipe(Effect.provide(Layer.mergeAll(harness(), external)), provideDeterministicTestRuntime),
 );
