@@ -8,7 +8,6 @@ import {
   KinPersonId,
   KinWidget,
   KinWidgetId,
-  KinMessageId,
   KinTaskCardState,
   OrchestratorMcpFailure,
 } from "@t3tools/contracts";
@@ -85,15 +84,15 @@ const read = Tool.make("kin_chat_read", {
 const widget = Tool.make("kin_widget_upsert", {
   ...shared,
   description:
-    "Create a Kin widget, or update widgetId with its expected revision. replyTo applies only to creation. Approval widgets are refused; use signed approvals. Only task widgets are supported; state must match the task schema.",
+    "Update your existing Kin task card by widgetId and expected revision. Task cards are created only by Kin's worker launcher, never by agents or clients. Server-owned fields are preserved. Approval widgets are refused; use signed approvals.",
   parameters: Schema.Struct({
     chatId: KinChatId,
-    widgetId: Schema.optional(KinWidgetId),
-    revision: Schema.optional(KinWidget.fields.revision),
+    widgetId: KinWidgetId,
+    revision: KinWidget.fields.revision,
     type: Schema.Literal("task"),
     state: KinTaskCardState,
     awaiting: Schema.optional(Schema.Array(KinPersonId).check(Schema.isMaxLength(100))),
-    replyTo: Schema.optional(KinMessageId),
+    closed: Schema.optional(Schema.Boolean),
   }),
   success: KinWidget,
 }).annotate(McpSchema.EnabledWhen, enabled);
