@@ -1,3 +1,4 @@
+import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import {
   KinAgentIntent,
@@ -43,7 +44,7 @@ const enabled = () => {
 const shared = {
   failure: Schema.Union([KinChatError, OrchestratorMcpFailure]),
   failureMode: "return" as const,
-  dependencies: [KinServer, McpInvocationContext, ThreadManagementService],
+  dependencies: [KinServer, McpInvocationContext, ThreadManagementService, ServerEnvironment],
 };
 const post = Tool.make("kin_chat_post", {
   ...shared,

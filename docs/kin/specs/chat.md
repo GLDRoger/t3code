@@ -235,19 +235,21 @@ export const KinTaskCardState = Schema.Struct({
 
 Flow:
 
-1. The lead calls `delegate_task`, then `kin_widget_upsert({ chatId, type: "task", state })` with the ids from the result. The server checks that the thread exists with `OrchestratorV2.getThreadShell`.
-2. **`KinTaskCardUpdater`** (**new**, `apps/server/src/kin/chat/TaskCardUpdater.ts`) follows `OrchestratorV2.streamDomainEvents`. For a thread linked to an open task card it re-reads `getThreadShell` (debounced 1 s per thread) and maps `status`, `activityRunStatus`, `pendingRuntimeRequest` (gives `needs_decision`), `lastError` and `pullRequests` onto the card. It bumps `revision` and publishes `widget.updated`. No new message is posted (interface rule 2).
-3. On start it rechecks every open task card once, since events during downtime are not replayed to it.
+1. The lead calls `delegate_task`, then `kin_widget_upsert({ chatId, type: "task", state })` with the ids from the result. The server checks the local thread and author linkage with `OrchestratorV2.getThreadShell`; task cards can only be created in `kin-default`.
+2. **`KinTaskCardUpdater`** (**new**, `apps/server/src/kin/chat/TaskCardUpdater.ts`) follows `OrchestratorV2.streamDomainEvents`. For a thread linked to an open task card it re-reads `getThreadShell` (throttled per thread, leading and trailing at most once per second) and maps `status`, `activityRunStatus`, `pendingRuntimeRequest` (gives `needs_decision`), `lastError` and `pullRequests` onto the card. Only a real state change, ignoring `updatedAt`, bumps `revision` and publishes `widget.updated`. No new message is posted (interface rule 2).
+3. On start it asynchronously rechecks every open task card once, since events during downtime are not replayed to it. Invalid stored task state is left unchanged for the client to show as a placeholder, with a server warning; other cards keep updating.
 4. Tapping the card opens the thread: the app routes `formatThreadLink({ environmentId, threadId })` the way thread chips do. Remote tasks use `remoteEnvironmentId`. Members without thread access see the card without the open action.
 5. The lead closes the card (`closedAt`) when it posts the result with evidence. Closed cards are removed from the live index and stop updating; reopening resumes updates.
 
 Task-card authority: on local creation the server reads the shell and ignores supplied status, pullRequests, lastError and updatedAt. After creation these four fields belong to the updater; agent and human upserts preserve their stored values, while title, model, awaiting and closed remain editable. Task and thread identity fields are immutable. An identical retry at the previous revision returns the stored row; a different stale write fails `widget_changed` inside the transaction. The published `KinTaskCardState` contract is unchanged for lane B.
 
+Status follows the thread's current state, not a terminal latch: done or cancelled can return to working on a later run. Reopening immediately rechecks the thread.
+
 Remote-task rule: a non-null remoteEnvironmentId is never resolved against a same-named local thread. Creation requires a non-null threadId but cannot verify its existence locally; initialize server-owned fields to waiting, empty pullRequests and null lastError. No remote reads are attempted in CHAT-8. Keep the last stored state when a remote or unreadable local shell cannot be read, without failing the updater.
 
-Mapping precedence: archived/deleted gives cancelled with "Thread no longer available"; a missing local shell does the same while retaining other stored fields. Otherwise pendingRuntimeRequest gives needs_decision; blockedOnThreadWait gives blocked; activityRunStatus gives working (or waiting); otherwise completed gives done, failed gives failed, interrupted/cancelled/rolled_back give cancelled, idle/waiting give waiting, and preparing/queued/starting/running give working. Errors and PR links come only from the shell.
+Mapping precedence: archived/deleted gives cancelled with "Thread no longer available"; a missing local shell does the same while retaining other stored fields. Otherwise pendingRuntimeRequest gives needs_decision unless blocking is false; blockedOnThreadWait gives blocked; activityRunStatus gives working (or waiting); otherwise completed gives done, failed gives failed, interrupted/cancelled/rolled_back give cancelled, idle/waiting give waiting, and preparing/queued/starting/running give working. Errors and PR links come only from the shell.
 
-The phase-1 updater rebuilds its open-card index for the reserved default org and tracks subsequent committed card creates/closes. Unlinked events do no SQL. Each linked thread has a sliding single-entry queue with a one-second Effect Clock debounce; closing its last card releases its worker. A bounded coalesced index-change signal reconciles workers without retaining closed thread ids. The credential registry is constructed before orchestration, so the shared Kin root owns the index and the gated MCP transport starts the updater after orchestration is available.
+The phase-1 updater rebuilds its open-card index for the reserved default org and tracks subsequent committed card creates/closes. Unlinked events do no SQL. Each linked thread has a sliding single-entry queue with a leading/trailing one-second Effect Clock throttle; closing its last card releases its worker. A bounded coalesced index-change signal reconciles workers without retaining closed thread ids. The credential registry is constructed before orchestration, so the shared Kin root owns the index and the gated MCP transport starts the updater after orchestration is available.
 
 ### Read state and Waiting on you
 
@@ -498,6 +500,7 @@ Upstream files touched, hooks only:
 
 ## Security notes
 
+- **Task cards:** the environment id must match this server. Only the reserved org owner or an agent linking its own delegated child may create a local card. Local children prove linkage through `lineage.parentThreadId` with `relationshipToParent: "subagent"`, or a same-environment `delegatedFrom`. Foreign and unlinked threads return the same `not_found` as missing threads.
 - **Authors are server-made.** People: from the `/ws` session through `KinIdentity`. Agents: from the MCP caller thread through the registry. No input schema has an author field.
 - **No cross-org reads.** Every chat-content query filters by `org_id` from resolved identity or chat membership, never from the client. Trusted bootstrap and MCP caller-thread discovery may find an org; subsequent identity lookups stay in that stored org.
 - **Not-found over forbidden** for chats outside the caller's membership.

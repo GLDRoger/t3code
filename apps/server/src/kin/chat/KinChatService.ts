@@ -1,3 +1,4 @@
+import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import * as TaskCard from "../widgets/taskCard.ts";
 import {
@@ -110,7 +111,7 @@ export class KinChatService extends Context.Service<
     readonly upsertWidget: (
       identity: Identity,
       input: WidgetUpsertInput,
-    ) => Effect.Effect<KinWidget, ServiceError, OrchestratorV2>;
+    ) => Effect.Effect<KinWidget, ServiceError, OrchestratorV2 | ServerEnvironment>;
     readonly act: (
       identity: PersonCaller,
       input: KinWidgetsActInput,
@@ -690,13 +691,30 @@ const make = Effect.gen(function* () {
         if (input.revision !== undefined) return yield* invalidState;
         if (input.type === "task") {
           const task = TaskCard.decodeTaskCard(state);
-          if (task.threadId === null) return yield* notFound;
+          const environment = yield* ServerEnvironment;
+          if (
+            task.threadId === null ||
+            identity.orgId !== "kin-default" ||
+            task.environmentId !== (yield* environment.getEnvironmentId) ||
+            (identity._tag === "person" && identity.personId !== "kin-default-owner")
+          )
+            return yield* notFound;
           if (task.remoteEnvironmentId === null) {
             const orchestrator = yield* OrchestratorV2;
             const shell = yield* orchestrator
               .getThreadShell(task.threadId)
               .pipe(Effect.orElseSucceed(() => null));
-            if (shell === null) return yield* notFound;
+            if (
+              shell === null ||
+              (identity._tag === "agent" &&
+                !(
+                  (shell.delegatedFrom?.threadId === identity.threadId &&
+                    shell.delegatedFrom.environmentId === task.environmentId) ||
+                  (shell.lineage.parentThreadId === identity.threadId &&
+                    shell.lineage.relationshipToParent === "subagent")
+                ))
+            )
+              return yield* notFound;
             state = TaskCard.taskCardState(task, shell, yield* now);
           } else {
             state = {
@@ -763,7 +781,9 @@ const make = Effect.gen(function* () {
             ? []
             : (input.awaiting ?? existing.awaiting);
         if (existing.type === "task") {
-          const previous = TaskCard.decodeTaskCard(existing.state);
+          const previous = yield* TaskCard.decodeTaskCardEffect(existing.state).pipe(
+            Effect.mapError(() => invalidState),
+          );
           const next = TaskCard.decodeTaskCard(state);
           if (
             previous.threadId !== next.threadId ||

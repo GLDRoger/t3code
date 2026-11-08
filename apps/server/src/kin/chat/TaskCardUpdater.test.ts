@@ -1,3 +1,4 @@
+import { environment } from "./TaskCard.testkit.ts";
 import { SecretRequests } from "../../secrets/SecretRequests.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { OrchestratorMcpService } from "../../mcp/OrchestratorMcpService.ts";
@@ -35,15 +36,20 @@ import {
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { idleThreadProjection, liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
-import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
+import {
+  OrchestratorV2,
+  OrchestratorDomainEventStreamError,
+} from "../../orchestration-v2/Orchestrator.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Chat from "./layer.ts";
 import { KinIdentity } from "./KinIdentity.ts";
@@ -67,7 +73,10 @@ const state = {
   lastError: "invented",
   updatedAt: timestamp,
 };
-const base = Chat.layer.pipe(Layer.provideMerge(Sqlite.layerMemory));
+const base = Chat.layer.pipe(
+  Layer.provideMerge(Sqlite.layerMemory),
+  Layer.provideMerge(environment),
+);
 const seed = Effect.gen(function* () {
   const repo = yield* KinChatRepository;
   const identity = yield* KinIdentity;
@@ -88,7 +97,11 @@ const seed = Effect.gen(function* () {
     createdAt: timestamp,
   });
   const chat = yield* service.createDirect(person, { orgId: person.orgId, agentId });
-  yield* identity.registerAgentThread({ ...person, agentId, threadId });
+  yield* identity.registerAgentThread({
+    ...person,
+    agentId,
+    threadId: ThreadId.make("lead-thread"),
+  });
   const agent = yield* identity.resolveAgent({
     environmentId: TaskCard.decodeTaskCard(state).environmentId,
     issuedAt: 0,
@@ -96,7 +109,7 @@ const seed = Effect.gen(function* () {
     requestNamespace: "test",
     client: undefined,
     thread: {
-      threadId,
+      threadId: ThreadId.make("lead-thread"),
       providerSessionId: "session",
       providerInstanceId: liveThreadShell(threadId).providerInstanceId,
     },
@@ -110,6 +123,21 @@ it.effect("maps authoritative thread state, including pending decisions", () =>
     const rows: ReadonlyArray<[Partial<OrchestrationV2ThreadShell>, string]> = [
       [{ status: "running" }, "working"],
       [{ status: "queued" }, "working"],
+      [{ status: "preparing" }, "working"],
+      [{ status: "starting" }, "working"],
+      [{ status: "completed", activityRunStatus: "preparing" }, "working"],
+      [{ status: "completed", activityRunStatus: "starting" }, "working"],
+      [
+        {
+          pendingRuntimeRequest: {
+            id: RuntimeRequestId.make("async"),
+            kind: "command",
+            createdAt: shell.createdAt,
+            blocking: false,
+          },
+        },
+        "working",
+      ],
       [{ blockedOnThreadWait: true }, "blocked"],
       [{ status: "waiting" }, "waiting"],
       [{ status: "idle" }, "waiting"],
@@ -142,12 +170,51 @@ it.effect("maps authoritative thread state, including pending decisions", () =>
   }),
 );
 
+it.effect("does not revise or publish an unchanged shell", () =>
+  Effect.gen(function* () {
+    const reads = yield* Queue.unbounded<void>();
+    const orchestration = Layer.mock(OrchestratorV2)({
+      getThreadShell: () =>
+        Queue.offer(reads, undefined).pipe(Effect.as(liveThreadShell(threadId))),
+      streamDomainEvents: Stream.never,
+    });
+    yield* Effect.gen(function* () {
+      const { service, person, chat, repo } = yield* seed;
+      const widget = yield* service.upsertWidget(person, {
+        chatId: chat.chatId,
+        type: "task",
+        state,
+      });
+      yield* Queue.take(reads);
+      const stream = yield* Stream.toQueue(service.subscribe([person], { chatId: chat.chatId }), {
+        capacity: "unbounded",
+      });
+      yield* Queue.take(stream);
+      yield* Layer.build(Updater.layer);
+      yield* Queue.take(reads);
+      assert.strictEqual(
+        Option.getOrThrow(yield* repo.getWidget(widget)).revision,
+        widget.revision,
+      );
+      assert.strictEqual(yield* Queue.size(stream), 0);
+    }).pipe(Effect.provide(base.pipe(Layer.provideMerge(orchestration))));
+  }),
+);
+
 it.effect.each(["completed", "missing"] as const)(
   "rechecks %s startup cards, coalesces events, preserves authority, and stops closed cards",
   (startupStatus) =>
     Effect.gen(function* () {
       const events = yield* Queue.unbounded<OrchestrationV2DomainEvent>();
-      let shell: OrchestrationV2ThreadShell | null = liveThreadShell(threadId);
+      const received = yield* Queue.unbounded<void>();
+      let shell: OrchestrationV2ThreadShell | null = {
+        ...liveThreadShell(threadId),
+        lineage: {
+          parentThreadId: ThreadId.make("lead-thread"),
+          relationshipToParent: "subagent",
+          rootThreadId: ThreadId.make("lead-thread"),
+        },
+      };
       let reads = 0;
       const orchestration = Layer.mock(OrchestratorV2)({
         getThreadShell: () =>
@@ -155,7 +222,9 @@ it.effect.each(["completed", "missing"] as const)(
             reads++;
             return shell;
           }),
-        streamDomainEvents: Stream.fromQueue(events),
+        streamDomainEvents: Stream.fromQueue(events).pipe(
+          Stream.tap(() => Queue.offer(received, undefined)),
+        ),
       });
       yield* Effect.gen(function* () {
         const { repo, service, agent, person, chat } = yield* seed;
@@ -203,11 +272,16 @@ it.effect.each(["completed", "missing"] as const)(
           orgId: otherOrg,
           agentId: otherAgent,
         });
-        const otherCard = yield* service.upsertWidget(otherPerson, {
-          chatId: otherChat.chatId,
-          type: "task",
-          state,
-        });
+        assert.include(
+          yield* service
+            .upsertWidget(otherPerson, {
+              chatId: otherChat.chatId,
+              type: "task",
+              state,
+            })
+            .pipe(Effect.flip),
+          { reason: "not_found" },
+        );
         const stream = yield* Stream.toQueue(service.subscribe([person], { chatId: chat.chatId }), {
           capacity: "unbounded",
         });
@@ -235,15 +309,14 @@ it.effect.each(["completed", "missing"] as const)(
               };
         const startupReads = reads;
         yield* Layer.build(Updater.layer);
-        assert.strictEqual(reads, startupReads + 1);
         const startup = yield* Queue.take(stream);
+        assert.strictEqual(reads, startupReads + 1);
         assert.strictEqual(startup._tag, "widget");
         if (startup._tag !== "widget") return;
         assert.strictEqual(
           TaskCard.decodeTaskCard(startup.widget.state).status,
           startupStatus === "missing" ? "cancelled" : "done",
         );
-        assert.deepEqual(Option.getOrThrow(yield* repo.getWidget(otherCard)), otherCard);
         const before = reads;
         shell = {
           ...liveThreadShell(threadId),
@@ -263,6 +336,9 @@ it.effect.each(["completed", "missing"] as const)(
           payload: idleThreadProjection(liveThreadShell(threadId)).thread,
         };
         yield* Queue.offerAll(events, [event, event, event]);
+        yield* Queue.take(received);
+        yield* Queue.take(received);
+        yield* Queue.take(received);
         yield* TestClock.adjust("1 second");
         const decision = yield* Queue.take(stream);
         assert.strictEqual(decision._tag, "widget");
@@ -301,9 +377,10 @@ it.effect.each(["completed", "missing"] as const)(
         });
         assert.isNotNull(closed.closedAt);
         const index = yield* TaskCard.TaskCardIndex;
-        assert.isFalse(index.threads.has(threadId));
+        assert.isFalse(index.has(threadId));
         const closedReads = reads;
         yield* Queue.offer(events, event);
+        yield* Queue.take(received);
         yield* TestClock.adjust("2 seconds");
         assert.strictEqual(reads, closedReads);
         assert.strictEqual(
@@ -315,7 +392,6 @@ it.effect.each(["completed", "missing"] as const)(
             .messages.length,
           1,
         );
-        assert.deepEqual(Option.getOrThrow(yield* repo.getWidget(otherCard)), otherCard);
         shell = null;
         assert.include(
           yield* service
@@ -329,7 +405,7 @@ it.effect.each(["completed", "missing"] as const)(
           state: { ...state, remoteEnvironmentId: "remote" },
         });
         assert.strictEqual(TaskCard.decodeTaskCard(remote.state).status, "waiting");
-        assert.isFalse(index.threads.has(threadId));
+        assert.isFalse(index.has(threadId));
       }).pipe(Effect.provide(base.pipe(Layer.provideMerge(orchestration))));
     }),
 );
@@ -354,6 +430,8 @@ it.effect("streams a real delegated child state change through kin.chat.subscrib
       const orchestrator = yield* OrchestratorV2;
       const { service, agent, person, chat } = yield* seed;
       const parent = ThreadId.make("lead-parent");
+      const identity = yield* KinIdentity;
+      yield* identity.registerAgentThread({ ...person, agentId: agent.agentId, threadId: parent });
       const modelSelection = { instanceId, model: "test-model" };
       yield* orchestrator.dispatch({
         type: "thread.create",
@@ -437,18 +515,20 @@ it.effect("streams a real delegated child state change through kin.chat.subscrib
         { task: "Work", clientRequestId: "delegate", mode: "async" },
       );
       const child = task.childThreadId!;
-      const widget = yield* service.upsertWidget(agent, {
-        chatId: chat.chatId,
-        type: "task",
-        state: { ...state, taskId: task.taskId, threadId: child },
-      });
+      const widget = yield* service.upsertWidget(
+        { ...agent, threadId: parent },
+        {
+          chatId: chat.chatId,
+          type: "task",
+          state: { ...state, taskId: task.taskId, threadId: child },
+        },
+      );
       assert.strictEqual(TaskCard.decodeTaskCard(widget.state).status, "working");
       const stream = yield* Stream.toQueue(service.subscribe([person], { chatId: chat.chatId }), {
         capacity: "unbounded",
       });
       yield* Queue.take(stream);
       yield* Layer.build(Updater.layer);
-      yield* Queue.take(stream);
       const childRun = (yield* orchestrator.getThreadProjection(child)).runs[0]!;
       yield* orchestrator.dispatch({
         type: "run.interrupt",
@@ -456,7 +536,6 @@ it.effect("streams a real delegated child state change through kin.chat.subscrib
         threadId: child,
         runId: childRun.id,
       });
-      yield* TestClock.adjust("1 second");
       const updated = yield* Queue.take(stream);
       assert.strictEqual(updated._tag, "widget");
       if (updated._tag !== "widget") return;
@@ -468,5 +547,235 @@ it.effect("streams a real delegated child state change through kin.chat.subscrib
         1,
       );
     }).pipe(Effect.provide(base.pipe(Layer.provideMerge(runtime))));
+  }),
+);
+
+it.effect("refreshes during continuous events and resumes when a closed card reopens", () =>
+  Effect.gen(function* () {
+    const events = yield* Queue.unbounded<OrchestrationV2DomainEvent>();
+    const received = yield* Queue.unbounded<void>();
+    const reads = yield* Queue.unbounded<void>();
+    let shell = liveThreadShell(threadId);
+    const orchestration = Layer.mock(OrchestratorV2)({
+      getThreadShell: () => Queue.offer(reads, undefined).pipe(Effect.map(() => shell)),
+      streamDomainEvents: Stream.fromQueue(events).pipe(
+        Stream.tap(() => Queue.offer(received, undefined)),
+      ),
+    });
+    yield* Effect.gen(function* () {
+      const { service, person, chat, repo } = yield* seed;
+      const widget = yield* service.upsertWidget(person, {
+        chatId: chat.chatId,
+        type: "task",
+        state,
+      });
+      yield* Queue.take(reads);
+      const stream = yield* Stream.toQueue(service.subscribe([person], { chatId: chat.chatId }), {
+        capacity: "unbounded",
+      });
+      yield* Queue.take(stream);
+      yield* Layer.build(Updater.layer);
+      yield* Queue.take(reads);
+      const event: OrchestrationV2DomainEvent = {
+        id: EventId.make("streaming"),
+        threadId,
+        type: "thread.deleted",
+        occurredAt: DateTime.makeUnsafe(timestamp),
+        payload: idleThreadProjection(shell).thread,
+      };
+      shell = { ...shell, status: "completed" };
+      yield* Queue.offer(events, event);
+      yield* Queue.take(received);
+      const leading = yield* Queue.take(stream);
+      assert.strictEqual(leading._tag, "widget");
+      if (leading._tag !== "widget") return;
+      assert.strictEqual(TaskCard.decodeTaskCard(leading.widget.state).status, "done");
+      for (const lastError of ["one", "two", "three", "four"]) {
+        shell = { ...shell, status: "running", lastError };
+        yield* Queue.offer(events, event);
+        yield* Queue.take(received);
+        yield* TestClock.adjust("250 millis");
+      }
+      assert.strictEqual(
+        TaskCard.decodeTaskCard(Option.getOrThrow(yield* repo.getWidget(widget)).state).status,
+        "working",
+      );
+      const trailing = yield* Queue.take(stream);
+      assert.strictEqual(trailing._tag, "widget");
+      if (trailing._tag !== "widget") return;
+      assert.strictEqual(TaskCard.decodeTaskCard(trailing.widget.state).status, "working");
+      assert.strictEqual(trailing.widget.revision, leading.widget.revision + 1);
+      assert.strictEqual(yield* Queue.size(stream), 0);
+      const closed = yield* service.upsertWidget(person, {
+        chatId: chat.chatId,
+        widgetId: widget.widgetId,
+        revision: trailing.widget.revision,
+        type: "task",
+        state,
+        closed: true,
+      });
+      yield* Queue.take(stream);
+      shell = { ...shell, status: "completed" };
+      const reopened = yield* service.upsertWidget(person, {
+        chatId: chat.chatId,
+        widgetId: widget.widgetId,
+        revision: closed.revision,
+        type: "task",
+        state,
+        closed: false,
+      });
+      const reopenedEvent = yield* Queue.take(stream);
+      const resumed =
+        reopenedEvent._tag === "widget" && reopenedEvent.widget.revision === reopened.revision
+          ? yield* Queue.take(stream)
+          : reopenedEvent;
+      assert.strictEqual(resumed._tag, "widget");
+      if (resumed._tag !== "widget") return;
+      assert.strictEqual(resumed.widget.revision, reopened.revision + 1);
+      assert.strictEqual(TaskCard.decodeTaskCard(resumed.widget.state).status, "done");
+    }).pipe(Effect.provide(base.pipe(Layer.provideMerge(orchestration))));
+  }),
+);
+
+it.effect("builds without awaiting shell reads and skips malformed stored cards", () =>
+  Effect.gen(function* () {
+    const started = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    let blocked = false;
+    const orchestration = Layer.mock(OrchestratorV2)({
+      getThreadShell: () =>
+        Effect.gen(function* () {
+          if (blocked) {
+            yield* Deferred.succeed(started, undefined);
+            yield* Deferred.await(release);
+          }
+          return {
+            ...liveThreadShell(threadId),
+            status: blocked ? ("completed" as const) : ("running" as const),
+          };
+        }),
+      streamDomainEvents: Stream.never,
+    });
+    yield* Effect.gen(function* () {
+      const { service, repo, person, chat } = yield* seed;
+      const bad = yield* service.upsertWidget(person, { chatId: chat.chatId, type: "task", state });
+      const malformed = yield* repo.updateWidget({
+        ...bad,
+        expectedRevision: bad.revision,
+        state: {},
+      });
+      assert.include(
+        yield* service
+          .upsertWidget(person, {
+            chatId: chat.chatId,
+            widgetId: bad.widgetId,
+            revision: malformed.revision,
+            type: "task",
+            state,
+          })
+          .pipe(Effect.flip),
+        { reason: "invalid_state" },
+      );
+      const good = yield* service.upsertWidget(person, {
+        chatId: chat.chatId,
+        type: "task",
+        state,
+      });
+      const stream = yield* Stream.toQueue(service.subscribe([person], { chatId: chat.chatId }), {
+        capacity: "unbounded",
+      });
+      yield* Queue.take(stream);
+      blocked = true;
+      yield* Layer.build(Updater.layer);
+      yield* Deferred.await(started);
+      yield* Deferred.succeed(release, undefined);
+      const updated = yield* Queue.take(stream);
+      assert.strictEqual(updated._tag, "widget");
+      if (updated._tag !== "widget") return;
+      assert.strictEqual(updated.widget.widgetId, good.widgetId);
+      assert.strictEqual(TaskCard.decodeTaskCard(updated.widget.state).status, "done");
+      assert.deepEqual(Option.getOrThrow(yield* repo.getWidget(bad)).state, {});
+    }).pipe(Effect.provide(base.pipe(Layer.provideMerge(orchestration))));
+  }),
+);
+
+it.effect("reconnects the domain stream after a failure", () =>
+  Effect.gen(function* () {
+    const attempts = yield* Queue.unbounded<number>();
+    const events = yield* Queue.unbounded<OrchestrationV2DomainEvent>();
+    const reads = yield* Queue.unbounded<void>();
+    let subscriptions = 0;
+    let shell = liveThreadShell(threadId);
+    const orchestration = Layer.mock(OrchestratorV2)({
+      getThreadShell: () => Queue.offer(reads, undefined).pipe(Effect.map(() => shell)),
+      streamDomainEvents: Stream.unwrap(
+        Effect.gen(function* () {
+          subscriptions++;
+          yield* Queue.offer(attempts, subscriptions);
+          return subscriptions === 1
+            ? Stream.fail(new OrchestratorDomainEventStreamError({}))
+            : Stream.fromQueue(events);
+        }),
+      ),
+    });
+    yield* Effect.gen(function* () {
+      const { service, person, chat } = yield* seed;
+      yield* service.upsertWidget(person, { chatId: chat.chatId, type: "task", state });
+      yield* Queue.take(reads);
+      const stream = yield* Stream.toQueue(service.subscribe([person], { chatId: chat.chatId }), {
+        capacity: "unbounded",
+      });
+      yield* Queue.take(stream);
+      yield* Layer.build(Updater.layer);
+      yield* Queue.take(reads);
+      assert.strictEqual(yield* Queue.take(attempts), 1);
+      yield* TestClock.adjust("1 second");
+      assert.strictEqual(yield* Queue.take(attempts), 2);
+      shell = { ...shell, status: "completed" };
+      yield* Queue.offer(events, {
+        id: EventId.make("reconnected"),
+        threadId,
+        type: "thread.deleted",
+        occurredAt: DateTime.makeUnsafe(timestamp),
+        payload: idleThreadProjection(shell).thread,
+      });
+      const updated = yield* Queue.take(stream);
+      assert.strictEqual(updated._tag, "widget");
+      if (updated._tag !== "widget") return;
+      assert.strictEqual(TaskCard.decodeTaskCard(updated.widget.state).status, "done");
+    }).pipe(Effect.provide(base.pipe(Layer.provideMerge(orchestration))));
+  }),
+);
+
+it.effect("removes a stale index entry whose row closed before tracking", () =>
+  Effect.gen(function* () {
+    const orchestration = Layer.mock(OrchestratorV2)({
+      getThreadShell: () => Effect.succeed(liveThreadShell(threadId)),
+      streamDomainEvents: Stream.never,
+    });
+    yield* Effect.gen(function* () {
+      const { service, person, chat, repo } = yield* seed;
+      const widget = yield* service.upsertWidget(person, {
+        chatId: chat.chatId,
+        type: "task",
+        state,
+      });
+      yield* service.upsertWidget(person, {
+        chatId: chat.chatId,
+        widgetId: widget.widgetId,
+        revision: widget.revision,
+        type: "task",
+        state,
+        closed: true,
+      });
+      const index = yield* TaskCard.TaskCardIndex;
+      yield* index.track(widget);
+      const changes = yield* PubSub.subscribe(index.changes);
+      yield* Layer.build(Updater.layer);
+      yield* PubSub.take(changes);
+      yield* PubSub.take(changes);
+      assert.isFalse(index.has(threadId));
+      assert.isNotNull(Option.getOrThrow(yield* repo.getWidget(widget)).closedAt);
+    }).pipe(Effect.provide(base.pipe(Layer.provideMerge(orchestration))));
   }),
 );

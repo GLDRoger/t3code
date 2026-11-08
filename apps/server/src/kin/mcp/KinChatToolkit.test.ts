@@ -445,7 +445,7 @@ it.effect.each(["deleted", "archived"] as const)("refuses writes from %s threads
 const taskState = {
   taskId: "task",
   environmentId: "environment",
-  threadId,
+  threadId: ThreadId.make("worker"),
   remoteEnvironmentId: null,
   title: "Work",
   model: null,

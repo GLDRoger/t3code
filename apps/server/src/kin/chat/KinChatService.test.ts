@@ -79,7 +79,7 @@ const timestamp = "1970-01-01T00:00:00.000Z";
 const state = Schema.decodeSync(KinTaskCardState)({
   taskId: "task",
   environmentId: "environment",
-  threadId,
+  threadId: decodeThreadId("worker"),
   remoteEnvironmentId: null,
   title: "Work",
   model: null,
@@ -383,6 +383,45 @@ describe("KinChatService", () => {
             { reason: input.type === "approval" ? "use_approvals" : "invalid_state" },
           );
         }
+        for (const patch of [
+          { environmentId: "foreign" },
+          { threadId: decodeThreadId("unlinked") },
+        ]) {
+          assert.include(
+            yield* service
+              .upsertWidget(agent, {
+                chatId: chat.chatId,
+                type: "task",
+                state: { ...state, ...patch },
+              })
+              .pipe(Effect.flip),
+            { reason: "not_found", message: "Kin record not found." },
+          );
+        }
+        const writer = { ...person, personId: decodeKinPersonId("writer") };
+        yield* repo.insertPerson({
+          ...writer,
+          handle: "writer",
+          displayName: "Writer",
+          githubLogin: null,
+          createdAt: timestamp,
+        });
+        yield* repo.addMember({
+          ...writer,
+          chatId: chat.chatId,
+          memberId: decodeKinMemberId("writer-member"),
+          principal: writer,
+          role: "member",
+          joinedAt: timestamp,
+          leftAt: null,
+          mutedUntil: null,
+        });
+        assert.include(
+          yield* service
+            .upsertWidget(writer, { chatId: chat.chatId, type: "task", state })
+            .pipe(Effect.flip),
+          { reason: "not_found", message: "Kin record not found." },
+        );
         assert.strictEqual(Option.getOrThrow(yield* repo.getChat(chat)).lastSeq, 0);
         const question = yield* service.send(person, {
           chatId: chat.chatId,
