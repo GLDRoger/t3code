@@ -894,6 +894,38 @@ describe("GrantVerifier", () => {
     },
   );
 
+  it.effect(
+    "an approved grant can't be claimed once a renewed relay session of its key is revoked",
+    () => {
+      const h = harness();
+      return Effect.gen(function* () {
+        const { grants, actions, keys, sql } = yield* enrol;
+        const sessions = yield* SessionStore.SessionStore;
+        const relayKey = yield* register(keys, yield* relayPhone(Duration.minutes(1)));
+        assert.isTrue(yield* keys.activateByGrant(relayKey.key));
+        yield* TestClock.adjust(Duration.minutes(2));
+        const renewed = yield* relayPhone(Duration.hours(1));
+        const action = yield* requestMerge(actions, 212, h.github);
+        const compact = yield* signFor(grants, renewed, action, signerOf(relayKey));
+        yield* grants.submitGrant(renewed, { compact });
+        assert.strictEqual((yield* stateOf(actions, action)).state, "approved");
+
+        // No key read runs between the revoke and the claim, so nothing has voided the action yet.
+        yield* sessions.revoke(renewed.session.sessionId);
+        const [grant] = yield* sql<{ grant_id: string }>`SELECT grant_id FROM kin_grants
+        WHERE action_id = ${action.id}`;
+        assert.isFalse(
+          yield* actions.claim({
+            orgId,
+            actionId: action.id,
+            revision: action.revision,
+            grantId: grant!.grant_id as never,
+          }),
+        );
+      }).pipe(Effect.provide(h.relayLayer));
+    },
+  );
+
   it.effect("a phone that signs out other devices still approves with its own key", () => {
     const h = harness();
     return Effect.gen(function* () {

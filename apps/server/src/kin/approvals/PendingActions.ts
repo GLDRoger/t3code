@@ -28,6 +28,7 @@ import * as Schema from "effect/Schema";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Base64Url from "effect/encoding/Base64Url";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as Statement from "effect/sql/Statement";
 
 import {
   PersistenceDecodeError,
@@ -339,18 +340,19 @@ const make = Effect.gen(function* () {
       Effect.map((rows) => rows.length > 0),
     );
 
-  // A revoke can land while check 9 reads GitHub, so check 10 re-reads the key in its own write.
+  // A revoke can land while check 9 reads GitHub, so check 10 re-reads the key in its own write,
+  // and so does `claim`, since a revoke between them only voids the action on the next key read.
   const signingKeyUsable = (input: {
-    readonly orgId: KinOrgId;
-    readonly keyThumbprint: KinKeyThumbprint;
-    readonly approverHumanId: KinPersonId;
+    readonly orgId: KinOrgId | Statement.Fragment;
+    readonly keyThumbprint: KinKeyThumbprint | Statement.Fragment;
+    readonly approverHumanId: KinPersonId | Statement.Fragment;
   }) => sql`EXISTS (SELECT 1 FROM kin_approver_keys k
     WHERE k.org_id = ${input.orgId} AND k.thumbprint = ${input.keyThumbprint}
       AND k.human_id = ${input.approverHumanId} AND k.state = 'active' AND k.attested = 1
       AND NOT ${revokedBySession(
         sql,
         { sessionId: sql`k.session_id`, proofKey: sql`k.proof_key_thumbprint` },
-        { honorRepairs: false },
+        { since: sql`k.created_at` },
       )})`;
 
   const heldGrant = Effect.fn("KinPendingActions.heldGrant")(
@@ -440,6 +442,11 @@ const make = Effect.gen(function* () {
                 AND action_id = ${input.actionId} AND revision = ${input.revision}
                 AND consumed_at IS NULL
                 AND MIN(exp_s * 1000, accepted_at + ${GRANT_ACCEPTED_TTL_MS}) > ${now}
+                AND ${signingKeyUsable({
+                  orgId: sql`kin_grants.org_id`,
+                  keyThumbprint: sql`kin_grants.key_thumbprint`,
+                  approverHumanId: sql`kin_grants.approver_human_id`,
+                })}
               ON CONFLICT DO NOTHING
               RETURNING action_id`;
             if (claimed.length === 0) return false;
