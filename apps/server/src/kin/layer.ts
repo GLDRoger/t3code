@@ -1,3 +1,7 @@
+import { TaskCardIndex } from "./widgets/taskCard.ts";
+import { KinChatRepository } from "./chat/KinChatRepository.ts";
+import type * as SqlClient from "effect/sql/SqlClient";
+import * as TaskCardUpdater from "./chat/TaskCardUpdater.ts";
 import * as Cause from "effect/Cause";
 import * as KinEnabled from "./KinEnabled.ts";
 import * as Effect from "effect/Effect";
@@ -19,13 +23,20 @@ const enabled = Layer.effect(
   Effect.gen(function* () {
     const services = yield* Effect.context<Services>();
     const hub = yield* KinChatHub;
+    const updaterServices = yield* Effect.context<
+      KinChatRepository | TaskCardIndex | KinChatHub | SqlClient.SqlClient
+    >();
     return {
+      taskCardUpdater: TaskCardUpdater.layer.pipe(
+        Layer.provide(Layer.succeedContext(updaterServices)),
+      ),
       services: Option.some(services),
       subscribeForViewer: Option.some(hub.subscribeForViewer),
     };
   }),
 ).pipe(Layer.provide(KinChat.layer));
 const disabled = Layer.succeed(KinServer, {
+  taskCardUpdater: Layer.empty,
   services: Option.none(),
   subscribeForViewer: Option.none(),
 });
@@ -38,9 +49,13 @@ const runtime = Layer.unwrap(
           Layer.catchCause((cause) =>
             Layer.effect(
               KinServer,
-              config
-                .reportFailure(cause)
-                .pipe(Effect.as({ services: Option.none(), subscribeForViewer: Option.none() })),
+              config.reportFailure(cause).pipe(
+                Effect.as({
+                  taskCardUpdater: Layer.empty,
+                  services: Option.none(),
+                  subscribeForViewer: Option.none(),
+                }),
+              ),
             ),
           ),
         )
@@ -52,7 +67,11 @@ const runtime = Layer.unwrap(
     Layer.effect(
       KinServer,
       Effect.logError("Kin disabled: invalid configuration.", Cause.pretty(cause)).pipe(
-        Effect.as({ services: Option.none(), subscribeForViewer: Option.none() }),
+        Effect.as({
+          taskCardUpdater: Layer.empty,
+          services: Option.none(),
+          subscribeForViewer: Option.none(),
+        }),
       ),
     ),
   ),
@@ -79,8 +98,22 @@ const leadRuntime = Layer.unwrap(
   }),
 );
 
+const taskCardUpdater = Layer.unwrap(
+  Effect.gen(function* () {
+    const kin = yield* KinServer;
+    return Option.isSome(kin.services)
+      ? kin.taskCardUpdater.pipe(
+          Layer.catchCause(() =>
+            Layer.effectDiscard(Effect.logWarning("Kin task card updater disabled.")),
+          ),
+        )
+      : Layer.empty;
+  }),
+);
+
 export const mcpLayer = (base: Parameters<typeof KinMcp.transport>[0]) =>
-  Layer.merge(KinMcp.transport(base), leadRuntime);
+  Layer.mergeAll(KinMcp.transport(base), leadRuntime, taskCardUpdater);
+
 export const mcpRegistryLayer = <E, R>(
   base: Layer.Layer<McpSessionRegistry.McpSessionRegistry, E, R>,
 ) =>

@@ -253,7 +253,7 @@ export const KinGrantPayload = Schema.Struct({
 5. The RPC caller's session is the session the key was registered from, or another session of the same person → `session_mismatch`. (Defence in depth; the signature is the real check.)
 6. Pending action exists in the org, is `awaiting_approval`, and `revision` and `nonce` match → `stale` (the card refreshes).
 7. `kind`, `target`, `targetDigest`, `headSha`, `base`, `mergeMethod` equal the server's record → `target_mismatch`.
-8. `|now − iat| ≤ 300` and `exp − iat ≤ 900` → `time_window`.
+8. `now` is a finite number, `|now − iat| ≤ 300`, `iat < exp`, `exp − iat ≤ 900` and `now < exp` → `time_window`.
 9. Re-read the PR from GitHub with the bot token; head and base still match → `head_moved` (rotate nonce, refresh card).
 10. In one transaction: insert `kin_grants` (`jti` UNIQUE, `(action_id, approver)` UNIQUE) and CAS the action to `approved` while both the action and the grant are unexpired → `replayed` when that org already holds the `jti` or this approver's grant for the action, `stale` otherwise.
 
