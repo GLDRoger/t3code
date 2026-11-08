@@ -88,3 +88,22 @@ export const gitHubJson = Effect.fn("KinGitHub.request")(function* <S extends Sc
     S["Type"]
   >;
 });
+
+/** One GitHub REST call where only the status matters; the body is never read. */
+export const gitHubStatus = Effect.fn("KinGitHub.status")(function* (input: {
+  readonly client: HttpClient.HttpClient;
+  readonly operation: string;
+  readonly method: "GET" | "POST" | "PUT" | "DELETE";
+  readonly path: string;
+  readonly token: Redacted.Redacted<string>;
+  readonly body?: unknown;
+}) {
+  yield* Effect.annotateCurrentSpan({ "kin.github.operation": input.operation });
+  const fail = () => new KinGitHubRequestError({ operation: input.operation, stage: "transport" });
+  let request = gitHubRequest(input.method, input.path, input.token);
+  if (input.body !== undefined) {
+    request = yield* HttpClientRequest.bodyJson(request, input.body).pipe(Effect.mapError(fail));
+  }
+  const response = yield* input.client.execute(request).pipe(Effect.mapError(fail));
+  return response.status;
+});

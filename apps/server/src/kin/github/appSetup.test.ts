@@ -10,7 +10,7 @@ import { describe } from "vite-plus/test";
 import recorded from "./__fixtures__/github-app.json" with { type: "json" };
 import * as AppSetup from "./appSetup.ts";
 import * as KinGitHubApp from "./KinGitHubApp.ts";
-import { fakeGitHub, memoryKeychain, type FakeAnswer } from "./testFakes.ts";
+import { fakeGitHub, memoryKeychain, scopeLayer, type FakeAnswer } from "./testFakes.ts";
 
 const privateKeyPem = NodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 })
   .privateKey.export({ type: "pkcs8", format: "pem" })
@@ -19,7 +19,7 @@ const privateKeyPem = NodeCrypto.generateKeyPairSync("rsa", { modulusLength: 204
 const checkWith = (answers: { readonly app: unknown; readonly installations: unknown }) => {
   const github = fakeGitHub((request): FakeAnswer => {
     if (request.path === "/app") return { status: 200, body: answers.app };
-    if (request.path === "/app/installations?per_page=100") {
+    if (request.path === "/app/installations?per_page=100&page=1") {
       return { status: 200, body: answers.installations };
     }
     return { status: 404 };
@@ -35,6 +35,7 @@ const checkWith = (answers: { readonly app: unknown; readonly installations: unk
           memoryKeychain({ "kin-github-app/123456": JSON.stringify({ privateKeyPem }) }).layer,
         ),
         Layer.provide(github.layer),
+        Layer.provide(scopeLayer()),
       ),
     ),
   );
@@ -120,7 +121,7 @@ describe("kin-github-app manifest conversion", () => {
         : { status: 404 },
     );
     return Effect.gen(function* () {
-      const result = yield* AppSetup.completeManifest("abc123");
+      const result = yield* AppSetup.completeManifest("abc123", "gldroger");
       assert.isTrue(result.ok);
       assert.strictEqual(github.requests[0]?.authorization, undefined);
       assert.deepStrictEqual(JSON.parse(keychain.items.get("kin-github-app/123456") ?? "{}"), {
@@ -141,10 +142,40 @@ describe("kin-github-app manifest conversion", () => {
     const keychain = memoryKeychain();
     const github = fakeGitHub(() => ({ status: 500 }));
     return Effect.gen(function* () {
-      const result = yield* AppSetup.completeManifest("../../user");
+      const result = yield* AppSetup.completeManifest("../../user", "GLDRoger");
       assert.isFalse(result.ok);
       assert.lengthOf(github.requests, 0);
       assert.strictEqual(keychain.items.size, 0);
     }).pipe(Effect.provide(Layer.mergeAll(keychain.layer, github.layer)));
+  });
+
+  it.effect.each([
+    ["another owner", conversion, "Mallory"],
+    [
+      "permissions that differ from the table",
+      { ...conversion, permissions: { ...conversion.permissions, workflows: "write" } },
+      "GLDRoger",
+    ],
+  ] as const)("stores nothing for an App with %s", ([, answer, expectedOwner]) => {
+    const keychain = memoryKeychain();
+    const github = fakeGitHub(() => ({ status: 201, body: answer }));
+    return Effect.gen(function* () {
+      const result = yield* AppSetup.completeManifest("abc123", expectedOwner);
+      assert.isFalse(result.ok);
+      assert.strictEqual(keychain.items.size, 0);
+      assert.notInclude(result.lines.join("\n"), "PRIVATE KEY");
+    }).pipe(Effect.provide(Layer.mergeAll(keychain.layer, github.layer)));
+  });
+});
+
+describe("kin-github-app loopback server", () => {
+  it.each([
+    ["127.0.0.1:47821", true],
+    ["localhost:47821", true],
+    ["127.0.0.1:1", false],
+    ["evil.example:47821", false],
+    [undefined, false],
+  ] as const)("accepts Host %s: %s", (host, accepted) => {
+    assert.strictEqual(AppSetup.isLoopbackHost(host, 47821), accepted);
   });
 });

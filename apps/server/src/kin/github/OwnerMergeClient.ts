@@ -8,13 +8,27 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/http";
 
-import { gitHubJson, type KinGitHubRequestError } from "./githubRest.ts";
+// A value import back into CredentialHygiene, which imports this file; both only use the other
+// inside effects, after both modules have loaded.
+import { CredentialHygienePass } from "../approvals/CredentialHygiene.ts";
+import { gitHubJson, gitHubStatus, type KinGitHubRequestError } from "./githubRest.ts";
 import * as Keychain from "./Keychain.ts";
+import { isScopedRepo, KinGitHubScope } from "./KinGitHubScope.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** Spec section 6: the token is made with a 90-day expiry; one day of slack for time zones. */
 const MAX_LIFETIME_MS = 91 * DAY_MS;
 const OWNER_MERGE_TOKEN_WARN_MS = 7 * DAY_MS;
+/**
+ * Any PR number works if GitHub checks the token's permissions before it looks the PR up (to be
+ * confirmed on a scratch repo, spec section 10). The invalid `event` and `commit_id` make GitHub
+ * refuse with 422 even when the token could review, so the probe can never create a review.
+ */
+const REVIEW_PROBE_PR = 1;
+const REVIEW_PROBE_BODY = {
+  event: "KIN_PERMISSION_PROBE",
+  commit_id: "0000000000000000000000000000000000000000",
+};
 
 /** Keychain item `kin-owner-merge` / `<orgId>`. `login` lets the hygiene check spot T3 using it. */
 const StoredMergeToken = Schema.Struct({
@@ -28,9 +42,24 @@ const encodeStored = Schema.encodeSync(Schema.fromJsonString(StoredMergeToken));
 
 export class OwnerMergeTokenRefusedError extends Schema.TaggedError<OwnerMergeTokenRefusedError>()(
   "OwnerMergeTokenRefusedError",
-  { reason: Schema.Literals(["not_fine_grained", "no_expiry", "expired", "lifetime_too_long"]) },
+  {
+    reason: Schema.Literals([
+      "not_fine_grained",
+      "no_expiry",
+      "expired",
+      "lifetime_too_long",
+      "wrong_owner",
+      "no_repos",
+      "repo_unreachable",
+      "too_broad",
+      "other_repos",
+    ]),
+    // A login, repository or permission name with the probe's HTTP status; never the token.
+    detail: Schema.optional(Schema.String),
+  },
 ) {
   override get message(): string {
+    const detail = this.detail ?? "unknown";
     switch (this.reason) {
       case "not_fine_grained":
         return "Use a fine-grained personal access token (github_pat_…) with Contents: Read and write and Metadata: Read only.";
@@ -40,6 +69,16 @@ export class OwnerMergeTokenRefusedError extends Schema.TaggedError<OwnerMergeTo
         return "The token has already expired.";
       case "lifetime_too_long":
         return "The token expires more than 90 days from now. Make one that expires in 90 days.";
+      case "wrong_owner":
+        return `The token belongs to ${detail}, not the Kin owner set in KIN_GITHUB_OWNER_LOGIN.`;
+      case "no_repos":
+        return "KIN_GITHUB_REPOS names no repository, so the token can't be checked.";
+      case "repo_unreachable":
+        return `The token can't read ${detail}. Give it access to every repository in KIN_GITHUB_REPOS.`;
+      case "too_broad":
+        return `The token has more than Contents and Metadata (${detail}). Make one with Contents: Read and write and Metadata: Read only.`;
+      case "other_repos":
+        return `The token reaches repositories outside KIN_GITHUB_REPOS (${detail}). Choose Only select repositories.`;
     }
   }
 }
@@ -86,7 +125,10 @@ function parseTokenExpiration(header: string | undefined): number | null {
 export class OwnerMergeClient extends Context.Service<
   OwnerMergeClient,
   {
-    /** Checks the token with `GET /user` (its own login and expiry) and stores it in the keychain. */
+    /**
+     * Checks the token's login and expiry, then probes that it holds only Contents and Metadata on
+     * the scoped repositories and reaches no others (spec section 6), and stores it.
+     */
     readonly save: (input: {
       readonly orgId: KinOrgId;
       readonly token: Redacted.Redacted<string>;
@@ -97,8 +139,9 @@ export class OwnerMergeClient extends Context.Service<
     readonly status: (
       orgId: KinOrgId,
     ) => Effect.Effect<OwnerMergeTokenStatus, Keychain.KinKeychainError>;
+    /** Only `CredentialHygiene.requirePassing` makes a pass, so the token needs a passing check. */
     readonly token: (
-      orgId: KinOrgId,
+      pass: CredentialHygienePass,
     ) => Effect.Effect<
       Redacted.Redacted<string>,
       OwnerMergeTokenMissingError | Keychain.KinKeychainError
@@ -109,6 +152,7 @@ export class OwnerMergeClient extends Context.Service<
 const make = Effect.gen(function* () {
   const keychain = yield* Keychain.KinKeychain;
   const client = yield* HttpClient.HttpClient;
+  const scope = yield* KinGitHubScope;
 
   const stored = (orgId: KinOrgId) =>
     keychain
@@ -119,7 +163,7 @@ const make = Effect.gen(function* () {
     readonly orgId: KinOrgId;
     readonly token: Redacted.Redacted<string>;
   }) {
-    // Classic tokens carry repo-wide scopes that can submit reviews; fine-grained ones are checked below.
+    // Classic tokens carry scopes, not per-repository permissions, so the probes below can't bound them.
     if (!Redacted.value(input.token).startsWith("github_pat_")) {
       return yield* new OwnerMergeTokenRefusedError({ reason: "not_fine_grained" });
     }
@@ -139,6 +183,62 @@ const make = Effect.gen(function* () {
       return yield* new OwnerMergeTokenRefusedError({ reason: "lifetime_too_long" });
     }
     const login = user.body.login;
+    if (login.toLowerCase() !== scope.ownerLogin.toLowerCase()) {
+      return yield* new OwnerMergeTokenRefusedError({ reason: "wrong_owner", detail: login });
+    }
+    if (scope.repos.length === 0) {
+      return yield* new OwnerMergeTokenRefusedError({ reason: "no_repos" });
+    }
+    const status = (operation: string, method: "GET" | "POST", path: string, body?: unknown) =>
+      gitHubStatus({ client, operation, method, path, token: input.token, body });
+    for (const repo of scope.repos) {
+      const [owner, name] = repo.split("/") as [string, string];
+      const base = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+      const readable = yield* status("repos.get", "GET", base);
+      if (readable !== 200) {
+        return yield* new OwnerMergeTokenRefusedError({
+          reason: "repo_unreachable",
+          detail: `${repo}: HTTP ${readable}`,
+        });
+      }
+      // Each must be 403: anything else means the token holds that permission, or GitHub can't say.
+      const probes = [
+        ["Administration", "repos.actionsPermissions", "GET", `${base}/actions/permissions`],
+        ["Webhooks", "repos.hooks", "GET", `${base}/hooks`],
+        ["Pull requests", "pulls.createReview", "POST", `${base}/pulls/${REVIEW_PROBE_PR}/reviews`],
+      ] as const;
+      for (const [permission, operation, method, path] of probes) {
+        const answer = yield* status(
+          operation,
+          method,
+          path,
+          method === "POST" ? REVIEW_PROBE_BODY : undefined,
+        );
+        if (answer !== 403) {
+          return yield* new OwnerMergeTokenRefusedError({
+            reason: "too_broad",
+            detail: `${permission} on ${repo}: HTTP ${answer}`,
+          });
+        }
+      }
+    }
+    // Fine-grained tokens list only the repositories they were granted. Public repositories stay
+    // readable to every token; this catches "All repositories" and extra selected ones.
+    const reachable = yield* gitHubJson({
+      client,
+      operation: "user.repos",
+      method: "GET",
+      path: "/user/repos?per_page=100",
+      token: input.token,
+      schema: Schema.Array(Schema.Struct({ full_name: Schema.String })),
+    });
+    const outside = reachable.body.filter((repo) => !isScopedRepo(scope.repos, repo.full_name));
+    if (outside.length > 0) {
+      return yield* new OwnerMergeTokenRefusedError({
+        reason: "other_repos",
+        detail: `${outside.length}${reachable.body.length === 100 ? " or more" : ""}`,
+      });
+    }
     yield* keychain.set(
       "kin-owner-merge",
       input.orgId,
@@ -166,7 +266,10 @@ const make = Effect.gen(function* () {
     ) satisfies OwnerMergeTokenStatus;
   });
 
-  const token = Effect.fn("OwnerMergeClient.token")(function* (orgId: KinOrgId) {
+  const token = Effect.fn("OwnerMergeClient.token")(function* (pass: CredentialHygienePass) {
+    const orgId = CredentialHygienePass.orgIdOf(pass);
+    if (orgId === null)
+      return yield* Effect.die("OwnerMergeClient.token needs a real hygiene pass");
     const item = yield* stored(orgId);
     if (Option.isNone(item)) {
       return yield* new OwnerMergeTokenMissingError({ orgId, expired: false });

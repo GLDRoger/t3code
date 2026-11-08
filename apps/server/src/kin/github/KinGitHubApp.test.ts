@@ -5,13 +5,20 @@ import { assert, it } from "@effect/vitest";
 import type { RepoSlug } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Redacted from "effect/Redacted";
 import * as TestClock from "effect/testing/TestClock";
 import { describe } from "vite-plus/test";
 
 import * as KinGitHubApp from "./KinGitHubApp.ts";
 import type { KinGitHubPermissionSet } from "./KinGitHubPermissions.ts";
-import { fakeGitHub, memoryKeychain, type FakeAnswer, type RecordedRequest } from "./testFakes.ts";
+import {
+  fakeGitHub,
+  memoryKeychain,
+  scopeLayer,
+  type FakeAnswer,
+  type RecordedRequest,
+} from "./testFakes.ts";
 
 const APP_ID = "123456";
 const REPO = "GLDRoger/t3code" as RepoSlug;
@@ -21,7 +28,7 @@ const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toStri
 
 const setup = (
   route: (request: RecordedRequest) => FakeAnswer | undefined,
-  options: { readonly withKey?: boolean } = {},
+  options: { readonly withKey?: boolean; readonly selection?: "all" | "selected" } = {},
 ) => {
   const keychain = memoryKeychain(
     options.withKey === false
@@ -30,7 +37,10 @@ const setup = (
   );
   const github = fakeGitHub((request) => {
     if (request.method === "GET" && request.path === `/repos/${REPO}/installation`) {
-      return { status: 200, body: { id: 77 } };
+      return {
+        status: 200,
+        body: { id: 77, repository_selection: options.selection ?? "selected" },
+      };
     }
     return route(request) ?? { status: 404, body: { message: "Not Found" } };
   });
@@ -38,16 +48,28 @@ const setup = (
     Layer.provide(Layer.succeed(KinGitHubApp.KinGitHubAppConfig, { appId: APP_ID })),
     Layer.provide(keychain.layer),
     Layer.provide(github.layer),
+    Layer.provide(scopeLayer({ repos: [REPO, "GLDRoger/kin-memory"] })),
   );
   return { requests: github.requests, layer };
 };
 
-const mint = (permissions: KinGitHubPermissionSet) =>
+const mint = (
+  permissions: KinGitHubPermissionSet,
+  options: { readonly repo?: RepoSlug; readonly holder?: KinGitHubApp.KinGitHubTokenHolder } = {},
+) =>
   Effect.gen(function* () {
     yield* TestClock.setTime(NOW_MS);
     const app = yield* KinGitHubApp.KinGitHubApp;
-    return yield* app.installationToken({ repo: REPO, permissions });
+    return yield* app.installationToken({
+      repo: options.repo ?? REPO,
+      permissions,
+      holder: options.holder ?? "worker",
+    });
   });
+
+/** Own keys, as a JSON body carries them; an object literal's `__proto__` sets the prototype. */
+const ownKey = (name: string, level: string): Record<string, string> =>
+  JSON.parse(`{${JSON.stringify(name)}:${JSON.stringify(level)}}`);
 
 const granted = (permissions: Record<string, string>, repositories = [REPO]) => ({
   status: 201,
@@ -104,6 +126,9 @@ describe("KinGitHubApp.installationToken", () => {
     [{ secrets: "read" }, "secrets is not a Kin App permission"],
     [{ checks: "write" }, "checks: write exceeds the App's read"],
     [{ contents: "admin" }, "contents must be read or write"],
+    [ownKey("toString", "read"), "toString is not a Kin App permission"],
+    [ownKey("constructor", "read"), "constructor is not a Kin App permission"],
+    [ownKey("__proto__", "read"), "__proto__ is not a Kin App permission"],
   ] as const)("refuses %j before calling GitHub", ([permissions, reason]) => {
     const { requests, layer } = setup(() => undefined);
     return Effect.gen(function* () {
@@ -115,11 +140,52 @@ describe("KinGitHubApp.installationToken", () => {
   });
 
   it.effect.each([
-    ["more permission than asked", granted({ contents: "write", metadata: "read" })],
-    ["an extra permission", granted({ contents: "read", issues: "write" })],
-    ["every repository", granted({ contents: "read" }, [])],
-    ["another repository", granted({ contents: "read" }, ["GLDRoger/kin-memory" as RepoSlug])],
-  ] as const)("revokes and refuses a token GitHub granted with %s", ([, answer]) => {
+    [
+      "a repository outside KIN_GITHUB_REPOS",
+      { contents: "read" },
+      { repo: "GLDRoger/other" as RepoSlug },
+      "not a repository in KIN_GITHUB_REPOS",
+    ],
+    [
+      "contents: write for a lead",
+      { contents: "write" },
+      { holder: "lead" },
+      "a lead can't have contents: write",
+    ],
+  ] as const)("refuses %s before calling GitHub", ([, permissions, options, reason]) => {
+    const { requests, layer } = setup(() => undefined);
+    return Effect.gen(function* () {
+      const error = yield* mint(permissions, options).pipe(Effect.flip);
+      assert.deepInclude(error, { _tag: "KinGitHubTokenNarrowingError", stage: "request", reason });
+      assert.lengthOf(requests, 0);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("refuses an installation on all of the account's repositories without minting", () => {
+    const { requests, layer } = setup(() => undefined, { selection: "all" });
+    return Effect.gen(function* () {
+      const error = yield* mint({ contents: "read" }).pipe(Effect.flip);
+      assert.deepInclude(error, { _tag: "KinGitHubTokenNarrowingError", stage: "installation" });
+      assert.isFalse(requests.some((request) => request.method === "POST"));
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect.each([
+    ["more permission than asked", { contents: "read" }, granted({ contents: "write" })],
+    ["admin where write was asked", { contents: "write" }, granted({ contents: "admin" })],
+    ["an extra permission", { contents: "read" }, granted({ contents: "read", issues: "write" })],
+    [
+      "a prototype-named permission",
+      { contents: "read" },
+      granted({ contents: "read", ...ownKey("toString", "write") }),
+    ],
+    ["every repository", { contents: "read" }, granted({ contents: "read" }, [])],
+    [
+      "another repository",
+      { contents: "read" },
+      granted({ contents: "read" }, ["GLDRoger/kin-memory" as RepoSlug]),
+    ],
+  ] as const)("revokes and refuses a token GitHub granted with %s", ([, asked, answer]) => {
     const { requests, layer } = setup((request) =>
       request.method === "POST"
         ? answer
@@ -128,7 +194,7 @@ describe("KinGitHubApp.installationToken", () => {
           : undefined,
     );
     return Effect.gen(function* () {
-      const error = yield* mint({ contents: "read" }).pipe(Effect.flip);
+      const error = yield* mint(asked).pipe(Effect.flip);
       assert.deepInclude(error, { _tag: "KinGitHubTokenNarrowingError", stage: "granted" });
       assert.notInclude(error.message, "ghs_");
       const revoke = requests.find((request) => request.method === "DELETE");
@@ -139,12 +205,68 @@ describe("KinGitHubApp.installationToken", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect(
+    "revokes a token whose answer doesn't decode, and logs a failed revoke without it",
+    () => {
+      const logged: Array<unknown> = [];
+      const logger = Logger.make(({ message }) => {
+        logged.push(message);
+      });
+      const { requests, layer } = setup((request) =>
+        request.method === "POST"
+          ? { status: 201, body: { token: "ghs_fake_installation_token", permissions: "odd" } }
+          : request.method === "DELETE"
+            ? { status: 500 }
+            : undefined,
+      );
+      return Effect.gen(function* () {
+        const error = yield* mint({ contents: "read" }).pipe(Effect.flip);
+        assert.deepInclude(error, { _tag: "KinGitHubRequestError", stage: "decode", status: 201 });
+        const revoke = requests.find((request) => request.method === "DELETE");
+        assert.strictEqual(revoke?.authorization, "Bearer ghs_fake_installation_token");
+        assert.include(JSON.stringify(logged), "Could not revoke a Kin App token");
+        assert.notInclude(JSON.stringify(logged), "ghs_");
+      }).pipe(
+        Effect.provide(layer),
+        Effect.provide(Logger.layer([logger], { mergeWithExisting: false })),
+      );
+    },
+  );
+
   it.effect("reports a missing private key without calling GitHub", () => {
     const { requests, layer } = setup(() => undefined, { withKey: false });
     return Effect.gen(function* () {
       const error = yield* mint({ contents: "read" }).pipe(Effect.flip);
       assert.deepInclude(error, { _tag: "KinGitHubAppNotConfiguredError", appId: APP_ID });
       assert.lengthOf(requests, 0);
+    }).pipe(Effect.provide(layer));
+  });
+});
+
+describe("KinGitHubApp.installations", () => {
+  it.effect("reads every page", () => {
+    const installation = {
+      account: { login: "GLDRoger" },
+      repository_selection: "selected",
+      permissions: {},
+      events: [],
+    };
+    const { requests, layer } = setup((request) => {
+      const page = /[?&]page=(\d+)/.exec(request.path)?.[1];
+      const size = page === "1" ? 100 : page === "2" ? 1 : 0;
+      return {
+        status: 200,
+        body: Array.from({ length: size }, (_, index) => ({ ...installation, id: index })),
+      };
+    });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(NOW_MS);
+      const app = yield* KinGitHubApp.KinGitHubApp;
+      assert.lengthOf(yield* app.installations, 101);
+      assert.deepStrictEqual(
+        requests.map((request) => request.path),
+        ["/app/installations?per_page=100&page=1", "/app/installations?per_page=100&page=2"],
+      );
     }).pipe(Effect.provide(layer));
   });
 });

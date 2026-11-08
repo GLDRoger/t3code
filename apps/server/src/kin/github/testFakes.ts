@@ -4,7 +4,26 @@ import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import { HttpClient, HttpClientResponse } from "effect/http";
 
+import type { RepoSlug } from "@t3tools/contracts";
+
 import * as Keychain from "./Keychain.ts";
+import { KinGitHubScope } from "./KinGitHubScope.ts";
+
+export const scopeLayer = (
+  scope: {
+    readonly ownerLogin?: string;
+    readonly botLogin?: string;
+    readonly repos?: ReadonlyArray<string>;
+  } = {},
+) =>
+  Layer.succeed(
+    KinGitHubScope,
+    KinGitHubScope.of({
+      ownerLogin: scope.ownerLogin ?? "Nishchay",
+      botLogin: scope.botLogin ?? "kin-bot",
+      repos: (scope.repos ?? ["GLDRoger/t3code"]) as ReadonlyArray<RepoSlug>,
+    }),
+  );
 
 export const memoryKeychain = (initial: Record<string, string> = {}) => {
   const items = new Map(Object.entries(initial));
@@ -21,6 +40,7 @@ export const memoryKeychain = (initial: Record<string, string> = {}) => {
       remove: Effect.fn("fakeKeychain.remove")(function* (service, account) {
         items.delete(key(service, account));
       }),
+      ready: Effect.fn("fakeKeychain.ready")(function* () {}),
     }),
   );
   return { items, layer };

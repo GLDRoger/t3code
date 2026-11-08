@@ -44,6 +44,10 @@ export const KIN_GITHUB_APP_EVENTS = [
 const rank = (access: string | undefined): number =>
   access === "read" ? 1 : access === "write" ? 2 : access === undefined ? 0 : 3;
 
+/** Own keys only: `toString`, `constructor` and `__proto__` must not resolve through the prototype. */
+const lookup = (table: Readonly<Record<string, string>>, name: string): string | undefined =>
+  Object.hasOwn(table, name) ? table[name] : undefined;
+
 export interface KinPermissionDiffLine {
   readonly permission: string;
   readonly expected: string;
@@ -60,12 +64,12 @@ export function diffAppPermissions(
   const names = [
     ...Object.keys(expected),
     ...Object.keys(actual)
-      .filter((name) => !(name in expected))
+      .filter((name) => !Object.hasOwn(expected, name))
       .toSorted(),
   ];
   return names.map((permission) => {
-    const want = expected[permission];
-    const got = actual[permission];
+    const want = lookup(expected, permission);
+    const got = lookup(actual, permission);
     const status =
       want === got
         ? "ok"
@@ -78,7 +82,7 @@ export function diffAppPermissions(
               : "too_low";
     const why =
       status === "extra" || status === "too_high"
-        ? (KIN_GITHUB_APP_FORBIDDEN as Readonly<Record<string, string>>)[permission]
+        ? lookup(KIN_GITHUB_APP_FORBIDDEN, permission)
         : undefined;
     return {
       permission,
@@ -99,11 +103,29 @@ export function narrowingViolation(requested: Readonly<Record<string, string>>):
   if (names.length === 0) return "a token must name the permissions it needs";
   const expected: Readonly<Record<string, string>> = KIN_GITHUB_APP_PERMISSIONS;
   for (const name of names) {
-    const want = expected[name];
-    const got = requested[name];
+    const want = lookup(expected, name);
+    const got = lookup(requested, name);
     if (want === undefined) return `${name} is not a Kin App permission`;
     if (got !== "read" && got !== "write") return `${name} must be read or write`;
     if (rank(got) > rank(want)) return `${name}: ${got} exceeds the App's ${want}`;
+  }
+  return null;
+}
+
+/**
+ * The reason GitHub's granted permissions are wider than `requested`, or `null`. Levels compare by
+ * rank, so `admin` or an unknown level counts as wider than `write`.
+ */
+export function grantWidening(
+  requested: Readonly<Record<string, string>>,
+  granted: Readonly<Record<string, string>>,
+): string | null {
+  for (const [name, level] of Object.entries(granted)) {
+    // GitHub adds metadata: read to every narrowed token.
+    if (name === "metadata" && level === "read") continue;
+    const want = lookup(requested, name);
+    if (want === undefined) return `${name}: ${level} was not asked for`;
+    if (rank(level) > rank(want)) return `${name}: ${level} exceeds ${want}`;
   }
   return null;
 }
