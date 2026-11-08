@@ -508,6 +508,11 @@ describe("KinPendingActions audit trail", () => {
         Option.getOrThrow(yield* actions.get({ orgId: org, actionId: action.id })).state,
         "awaiting_approval",
       );
+      // A refused grant stays refused when only its trace can't be written.
+      assert.deepStrictEqual(
+        yield* actions.approve(grant({ ...action, revision: 7 }, "jti-unwritten")),
+        { _tag: "stale" },
+      );
     }).pipe(Effect.provide(layer)),
   );
 });

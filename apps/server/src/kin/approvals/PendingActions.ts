@@ -436,20 +436,27 @@ const make = Effect.gen(function* () {
       // A refused grant still leaves a trace (spec section 11), but only on the chain of the org
       // that owns the action: an unknown org or action stays `stale` and writes nothing.
       if (result._tag !== "approved") {
-        yield* sql.withTransaction(
-          Effect.gen(function* () {
-            const [owned] = yield* sql`SELECT 1 FROM kin_pending_actions
+        yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const [owned] = yield* sql`SELECT 1 FROM kin_pending_actions
               WHERE org_id = ${input.orgId} AND action_id = ${input.actionId}`;
-            if (owned === undefined) return;
-            yield* audit.append({
-              orgId: input.orgId,
-              event: "grant_rejected",
-              actionId: input.actionId,
-              ...who,
-              result: result._tag,
-            });
-          }),
-        );
+              if (owned === undefined) return;
+              yield* audit.append({
+                orgId: input.orgId,
+                event: "grant_rejected",
+                actionId: input.actionId,
+                ...who,
+                result: result._tag,
+              });
+            }),
+          )
+          .pipe(
+            // The refusal is already decided; a lost trace must not turn it into an error.
+            Effect.catch((error) =>
+              Effect.logWarning("Kin audit: grant_rejected not written", error),
+            ),
+          );
       }
       return result;
     },
@@ -481,13 +488,13 @@ const make = Effect.gen(function* () {
             const [grant] = yield* sql<{ jti: string; key_thumbprint: KinKeyThumbprint }>`
               UPDATE kin_grants SET consumed_at = ${now} WHERE grant_id = ${input.grantId}
               RETURNING jti, key_thumbprint`;
+            if (grant === undefined) return yield* new Rollback();
             yield* audit.append({
               orgId: input.orgId,
               event: "execution_started",
               ...(yield* auditFacts(won)),
-              ...(grant === undefined
-                ? {}
-                : { grantJti: grant.jti, keyThumbprint: grant.key_thumbprint }),
+              grantJti: grant.jti,
+              keyThumbprint: grant.key_thumbprint,
             });
             return true;
           }),
