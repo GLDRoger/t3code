@@ -35,7 +35,7 @@ import {
   PersistenceSqlError,
   toPersistenceSqlError,
 } from "../../persistence/Errors.ts";
-import { KIN_COMMAND_PREFIX, KIN_TASK_PREFIX } from "../mcp/ScheduledTaskFence.ts";
+import { KIN_COMMAND_PREFIX, KIN_TASK_PREFIX } from "./taskIds.ts";
 
 export class KinTriggerFireConflict extends Schema.TaggedError<KinTriggerFireConflict>()(
   "KinTriggerFireConflict",

@@ -4,10 +4,7 @@ import * as Layer from "effect/Layer";
 
 import * as ScheduledTasks from "../../scheduledTasks/ScheduledTaskService.ts";
 import * as KinEnabled from "../KinEnabled.ts";
-
-export const KIN_COMMAND_PREFIX = "kin:";
-// Upstream names a task created with a commandId `scheduled-task:${commandId}`.
-export const KIN_TASK_PREFIX = `scheduled-task:${KIN_COMMAND_PREFIX}`;
+import { KIN_TASK_PREFIX } from "../triggers/taskIds.ts";
 
 const isKinTask = (id: string) => id.startsWith(KIN_TASK_PREFIX);
 
