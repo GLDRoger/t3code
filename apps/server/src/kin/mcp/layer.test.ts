@@ -1,4 +1,4 @@
-import { authorityLayerWithDatabase, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
+import { authorityLayerWithDatabase, startAgentWakeup } from "../chat/WakeupAuthority.testkit.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { McpProviderSessions } from "@t3tools/provider-core/server/McpProviderSessions";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -258,11 +258,9 @@ it.effect.each([true, false])(
         );
         yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
           VALUES (${agentId}, ${person.orgId}, 'Lead', 0, '{}', '[]', ${chat.chatId})`;
-        const run = yield* startWakeupRun(threadId, "composition-wakeup").pipe(
+        yield* startAgentWakeup({ orgId: person.orgId, agentId, threadId }).pipe(
           Effect.provide(services),
         );
-        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids)
-          VALUES ('composition-wakeup', ${person.orgId}, ${agentId}, ${threadId}, ${run.id}, 'test', 0, 'running', '[]')`;
         const initialized = yield* request(
           "/kin/mcp",
           issued.config.authorizationHeader,
