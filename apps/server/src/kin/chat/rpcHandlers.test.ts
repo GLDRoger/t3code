@@ -748,6 +748,80 @@ it.effect(
     }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 
+it.effect("lets only the owner stop and resume Kin over RPC; members may read the state", () =>
+  Effect.gen(function* () {
+    const { person, repo } = yield* seed;
+    const clientFor = (
+      handlers: Effect.Success<ReturnType<typeof makeKinHandlers>>,
+      scopes: ReadonlyArray<(typeof AuthStandardClientScopes)[number]> = AuthStandardClientScopes,
+    ) =>
+      RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.merge(
+            group.toLayer({ ...handlers, "server.probe": () => Effect.succeed({}) }),
+            RpcAuthorization.layer(scopes),
+          ),
+        ),
+      );
+    const handlers = yield* makeKinHandlers(session);
+    const client = yield* clientFor(handlers);
+    const input = { orgId: person.orgId };
+    const paused = yield* client["kin.org.pause"]({ ...input, reason: "Going offline" });
+    assert.include(paused, { paused: true, pausedBy: person.personId, reason: "Going offline" });
+    assert.deepStrictEqual(yield* client["kin.org.pause"](input), paused);
+    assert.deepStrictEqual(yield* client["kin.org.get"](input), paused);
+    assert.include(
+      yield* client["kin.org.pause"]({ orgId: KinOrgId.make("foreign") }).pipe(Effect.flip),
+      { reason: "not_found" },
+    );
+
+    const memberId = KinPersonId.make("stop-member");
+    yield* repo.insertPerson({
+      orgId: person.orgId,
+      personId: memberId,
+      handle: "stop-member",
+      displayName: "Member",
+      githubLogin: null,
+      createdAt: "1970-01-01T00:00:00.000Z",
+    });
+    const kin = yield* Kin.KinServer;
+    const services = Option.getOrThrow(kin.services);
+    const identity = Context.get(services, KinIdentity);
+    const member = yield* clientFor(
+      yield* makeKinHandlers(session).pipe(
+        Effect.provideService(Kin.KinServer, {
+          ...kin,
+          services: Option.some(
+            Context.add(services, KinIdentity, {
+              ...identity,
+              resolve: () =>
+                Effect.succeed([{ _tag: "person", orgId: person.orgId, personId: memberId }]),
+            }),
+          ),
+        }),
+      ),
+    );
+    assert.deepStrictEqual(yield* member["kin.org.get"](input), paused);
+    assert.include(yield* member["kin.org.resume"](input).pipe(Effect.flip), {
+      reason: "not_allowed",
+    });
+    assert.include(yield* member["kin.org.pause"](input).pipe(Effect.flip), {
+      reason: "not_allowed",
+    });
+    const readOnly = yield* clientFor(handlers, [AuthOrchestrationReadScope]);
+    for (const method of ["kin.org.pause", "kin.org.resume"] as const)
+      assert.strictEqual(
+        (yield* readOnly[method](input).pipe(Effect.flip))._tag,
+        "EnvironmentAuthorizationError",
+      );
+    assert.isTrue((yield* readOnly["kin.org.get"](input)).paused);
+
+    const resumed = yield* client["kin.org.resume"](input);
+    assert.isFalse(resumed.paused);
+    assert.deepStrictEqual(yield* client["kin.org.resume"](input), resumed);
+  }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
+);
+
 it.effect("replays offline edits, deletions and widget revisions once with afterChangeSeq", () =>
   Effect.gen(function* () {
     const { chat, repo, person, direct } = yield* seed;

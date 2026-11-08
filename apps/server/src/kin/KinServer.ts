@@ -7,6 +7,7 @@ import { KinChatService } from "./chat/KinChatService.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
 import { KinBudget } from "./lead/KinBudget.ts";
 import { KinEventQueue } from "./lead/KinEventQueue.ts";
+import { KinStop } from "./lead/KinStop.ts";
 import type { KinGithubWebhookLock } from "./triggers/githubWebhooks.ts";
 
 export type Services =
@@ -15,6 +16,7 @@ export type Services =
   | KinBudget
   | KinEventQueue
   | KinChatHub
+  | KinStop
   | KinGithubWebhookLock;
 
 export class KinServer extends Context.Service<

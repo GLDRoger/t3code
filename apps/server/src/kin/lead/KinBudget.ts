@@ -25,6 +25,7 @@ import * as Chat from "../chat/KinChatRepository.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as Queue from "./KinEventQueue.ts";
+import { isOrgOwner } from "./orgState.ts";
 
 type Priority = "P0" | "P1" | "P2" | "P3" | "P4";
 export type Usage = {
@@ -263,14 +264,10 @@ const make = Effect.gen(function* () {
           yield* ensure(input.orgId, day);
           const person = people.find((p) => p.orgId === input.orgId);
           if (person === undefined) return yield* notFound;
-          // The reserved bootstrap owner is authoritative before a lead is configured.
-          const owner =
-            yield* sql`SELECT 1 FROM kin_people p WHERE p.org_id = ${input.orgId} AND p.person_id = ${person.personId}
-          AND ((p.org_id = 'kin-default' AND p.person_id = 'kin-default-owner'
-            AND NOT EXISTS (SELECT 1 FROM kin_leads WHERE org_id = p.org_id)) OR EXISTS (
-            SELECT 1 FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
-            WHERE l.org_id = p.org_id AND a.owner_person_id = p.person_id))`;
-          if (owner.length === 0) return yield* notAllowed;
+          const owner = yield* isOrgOwner(input.orgId, person.personId).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          );
+          if (!owner) return yield* notAllowed;
           const json = yield* encodeJson(limits);
           yield* sql`INSERT INTO kin_budget_limits (org_id, limits_json) VALUES (${input.orgId}, ${json}) ON CONFLICT DO NOTHING RETURNING org_id`;
           yield* sql`UPDATE kin_budget_limits SET limits_json = ${json} WHERE org_id = ${input.orgId}`;

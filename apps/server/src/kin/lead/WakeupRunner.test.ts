@@ -45,6 +45,7 @@ import * as ServerSettings from "../../serverSettings.ts";
 import * as KinIssuedTokens from "../mcp/KinIssuedTokens.ts";
 import * as KinLead from "./layer.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
+import * as KinStop from "./KinStop.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
@@ -193,6 +194,7 @@ describe("WakeupRunner", () => {
         ...event("urgent"),
         _tag: "resume",
         pausedAt: DateTime.makeUnsafe(0),
+        expired: { count: 0, events: [] },
       });
       yield* queue.enqueue(event("routine"));
       yield* Fiber.join(yield* run());
@@ -270,6 +272,7 @@ describe("WakeupRunner", () => {
             receivedAt: "1970-01-01T00:00:00.000Z",
             _tag: "resume",
             pausedAt: "1970-01-01T00:00:00.000Z",
+            expired: { count: 0, events: [] },
           }),
         );
         yield* Fiber.join(yield* run());
@@ -1104,6 +1107,7 @@ describe("WakeupRunner", () => {
             Layer.mock(ChatService.KinChatService)({}),
             Layer.mock(ChatHub.KinChatHub)({}),
             Layer.mock(Budget.KinBudget)({}),
+            Layer.mock(KinStop.KinStop)({}),
             Layer.mock(KinEventQueue.KinEventQueue)({}),
             Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
             Layer.mock(ThreadManagement.ThreadManagementService)({}),
