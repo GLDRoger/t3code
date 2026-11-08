@@ -47,9 +47,10 @@ private func createKey(attestationChallenge: String, promise: Promise) {
   let challenge: Data
   let publicKey: Data
   let keyLabel: Data
+  let biometryState: Data?
   do {
     challenge = try decodeChallenge(attestationChallenge)
-    (publicKey, keyLabel) = try createSecureEnclaveKey()
+    (publicKey, keyLabel, biometryState) = try createSecureEnclaveKey()
   } catch {
     return promise.reject(error)
   }
@@ -65,7 +66,10 @@ private func createKey(attestationChallenge: String, promise: Promise) {
     var thisKey = privateKeyQuery()
     thisKey[kSecAttrApplicationLabel as String] = keyLabel
     SecItemDelete(thisKey as CFDictionary)
-    if (try? loadPrivateKey(context: nil)) == nil { SecItemDelete(biometryStateQuery() as CFDictionary) }
+    // Compare, then delete: a newer createKey that stored its own state in between keeps it.
+    if let biometryState, (try? loadPrivateKey(context: nil)) == nil, storedBiometryState() == biometryState {
+      SecItemDelete(biometryStateQuery() as CFDictionary)
+    }
     promise.reject(ApprovalKeyException(
       "E_ATTESTATION_FAILED", "App Attest couldn't attest the approval key; try again.", cause: error))
   }
@@ -89,8 +93,9 @@ private func decodeChallenge(_ value: String) throws -> Data {
   return data
 }
 
-/// Returns the new key's public key in X9.63 form (`04 ‖ x ‖ y`) and its keychain application label.
-private func createSecureEnclaveKey() throws -> (publicKey: Data, label: Data) {
+/// Returns the new key's public key in X9.63 form (`04 ‖ x ‖ y`), its keychain application label,
+/// and the biometric state hash stored with it.
+private func createSecureEnclaveKey() throws -> (publicKey: Data, label: Data, biometryState: Data?) {
   guard SecureEnclave.isAvailable else {
     throw ApprovalKeyException("E_NO_SECURE_HARDWARE", "This device has no Secure Enclave.")
   }
@@ -133,12 +138,13 @@ private func createSecureEnclaveKey() throws -> (publicKey: Data, label: Data) {
   guard let publicKey = SecKeyCopyPublicKey(privateKey),
         let x963 = SecKeyCopyExternalRepresentation(publicKey, &error) as Data?,
         let label = (SecKeyCopyAttributes(privateKey) as? [String: Any])?[kSecAttrApplicationLabel as String] as? Data else {
-    SecItemDelete(privateKeyQuery() as CFDictionary)
+    SecItemDelete([kSecClass as String: kSecClassKey, kSecValueRef as String: privateKey] as CFDictionary)
     throw ApprovalKeyException(
       "E_KEYCHAIN", "Exporting the approval public key failed.", cause: error?.takeRetainedValue())
   }
-  storeBiometryState(context.domainState.biometry.stateHash)
-  return (x963, label)
+  let biometryState = context.domainState.biometry.stateHash
+  storeBiometryState(biometryState)
+  return (x963, label, biometryState)
 }
 
 /// One `sign` call. Only one may be in flight; every path settles its promise exactly once.
@@ -333,13 +339,16 @@ private func storeBiometryState(_ state: Data?) {
   SecItemAdd(item as CFDictionary, nil)
 }
 
-private func biometryStateChanged(_ current: Data?) -> Bool {
+private func storedBiometryState() -> Data? {
   var query = biometryStateQuery()
   query[kSecReturnData as String] = true
   var item: CFTypeRef?
-  guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess, let stored = item as? Data else {
-    return false
-  }
+  guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess else { return nil }
+  return item as? Data
+}
+
+private func biometryStateChanged(_ current: Data?) -> Bool {
+  guard let stored = storedBiometryState() else { return false }
   return stored != current
 }
 

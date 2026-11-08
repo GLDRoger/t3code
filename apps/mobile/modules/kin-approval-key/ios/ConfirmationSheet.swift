@@ -20,6 +20,8 @@ final class ConfirmationSheet {
   /// How long the sheet must stay key and uncovered, sampled every frame, before Approve takes a
   /// tap, so a tap aimed at something JS drew (or the second tap of a double tap) can't land on it.
   private static let armDelay: CFTimeInterval = 0.7
+  /// Frames between passes that end web-view picture in picture started while the sheet is up.
+  private static let mediaCloseInterval = 10
 
   private let window: UIWindow
   private let controller: ConfirmationController
@@ -27,7 +29,8 @@ final class ConfirmationSheet {
   private var observers: [NSObjectProtocol] = []
   private var onOutcome: ((Outcome) -> Void)?
   private var armed = false
-  private var arming: CADisplayLink?
+  private var sampler: CADisplayLink?
+  private var frames = 0
   private var clearSince: CFTimeInterval?
   private var tookKey = false
   private var keyboardVisible = false
@@ -72,14 +75,19 @@ final class ConfirmationSheet {
     // An input accessory view lives in the keyboard's window, above every app window.
     for window in scene.windows { window.endEditing(true) }
     // The browser preview can stream JS-drawn frames into system picture in picture, over the sheet.
-    for window in scene.windows { Self.closeMediaPresentations(in: window) }
+    closeMediaPresentations()
     window.makeKeyAndVisible()
+    // Runs until close(), so a cover that appears after Approve arms disarms it on the next frame.
+    let link = CADisplayLink(target: ArmingTarget(self), selector: #selector(ArmingTarget.sample))
+    link.add(to: .main, forMode: .common)
+    sampler = link
   }
 
   /// Removes the sheet without an outcome; safe to call more than once.
   func close() {
     onOutcome = nil
-    stopArming()
+    sampler?.invalidate()
+    sampler = nil
     for observer in observers { NotificationCenter.default.removeObserver(observer) }
     observers = []
     window.isHidden = true
@@ -99,29 +107,32 @@ final class ConfirmationSheet {
     onOutcome(outcome)
   }
 
-  /// Disables Approve and samples coverage every frame until the sheet has been key and clear for
-  /// `armDelay` in a row. Any sample that isn't clear starts the delay over.
+  /// Disables Approve until every frame for `armDelay` has found the sheet key and clear.
   private func rearm() {
     guard onOutcome != nil else { return }
     armed = false
     clearSince = nil
     tookKey = false
     controller.approve.isEnabled = false
-    guard arming == nil else { return }
-    let link = CADisplayLink(target: ArmingTarget(self), selector: #selector(ArmingTarget.sample))
-    link.add(to: .main, forMode: .common)
-    arming = link
   }
 
-  fileprivate func sampleCoverage() {
-    guard onOutcome != nil else { return stopArming() }
+  /// Called every frame. Unarmed, it arms after `armDelay` of clear frames; armed, any frame that
+  /// isn't clear disarms, so arming starts over.
+  fileprivate func sample() {
+    guard onOutcome != nil else { return }
+    frames &+= 1
+    if frames % Self.mediaCloseInterval == 0 { closeMediaPresentations() }
     let now = CACurrentMediaTime()
-    switch coverage {
+    let current = coverage
+    if armed {
+      if current != .clear { rearm() }
+      return
+    }
+    switch current {
     case .clear:
       let since = clearSince ?? now
       clearSince = since
       guard now - since >= Self.armDelay else { return }
-      stopArming()
       armed = true
       controller.approve.isEnabled = true
     case .notKey:
@@ -134,11 +145,6 @@ final class ConfirmationSheet {
     case .covered:
       clearSince = nil
     }
-  }
-
-  private func stopArming() {
-    arming?.invalidate()
-    arming = nil
   }
 
   private func approveTapped() {
@@ -198,9 +204,14 @@ final class ConfirmationSheet {
 
   private static let appBundlePath = Bundle.main.bundleURL.path
 
-  /// Ends picture in picture and fullscreen video started from any web view in this tree.
+  /// Ends picture in picture and fullscreen video started from any web view in the app's windows.
+  private func closeMediaPresentations() {
+    guard let scene = window.windowScene else { return }
+    for other in scene.windows where other !== window { Self.closeMediaPresentations(in: other) }
+  }
+
   private static func closeMediaPresentations(in view: UIView) {
-    if let webView = view as? WKWebView { webView.closeAllMediaPresentations(completionHandler: nil) }
+    if let webView = view as? WKWebView { return webView.closeAllMediaPresentations(completionHandler: nil) }
     for subview in view.subviews { closeMediaPresentations(in: subview) }
   }
 }
@@ -214,7 +225,7 @@ private final class ArmingTarget: NSObject {
 
   @objc func sample(_ link: CADisplayLink) {
     guard let sheet else { return link.invalidate() }
-    sheet.sampleCoverage()
+    sheet.sample()
   }
 }
 
