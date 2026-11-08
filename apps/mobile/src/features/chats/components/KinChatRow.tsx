@@ -16,7 +16,7 @@ const ROW_CLASS_NAME = "min-h-[72px] flex-row items-center gap-3 px-4 py-3";
 export function KinChatRow(props: {
   readonly view: KinChatRowView;
   readonly accessibilityLabel: string;
-  /** Unset until the direct chat screen exists. */
+  /** Unset in static previews. */
   readonly onPress?: () => void;
 }) {
   const { view } = props;

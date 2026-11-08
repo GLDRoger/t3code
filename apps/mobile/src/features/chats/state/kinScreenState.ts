@@ -201,11 +201,7 @@ export function kinChatRowView(row: KinInboxRow, directory: KinDirectory): KinCh
   // A direct chat is one person and one agent, so the other side is its agent.
   const counterpart =
     others.find((member) => member.principal._tag === "agent") ?? others[0] ?? null;
-  const counterpartName =
-    counterpart?.principal._tag === "agent"
-      ? directory.agentNames.get(counterpart.principal.agentId)
-      : undefined;
-  const title = chat.title ?? counterpartName ?? "Direct chat";
+  const title = kinChatTitle(chat, directory.agentNames);
   const last = chat.lastMessage;
   const author =
     last === null

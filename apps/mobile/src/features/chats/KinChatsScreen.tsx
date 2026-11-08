@@ -36,6 +36,16 @@ export function KinChatsScreen() {
           directory={kinDirectory(host)}
           onRetry={retry}
           onOpenWaiting={() => navigation.navigate("KinWaiting")}
+          onOpenChat={(chatId) => {
+            if (state._tag !== "ready") return;
+            const chat = state.inbox.value.chats.find((held) => held.chatId === chatId);
+            if (chat === undefined) return;
+            navigation.navigate("KinChat", {
+              environmentId: state.environmentId,
+              orgId: chat.orgId,
+              chatId,
+            });
+          }}
         />
       </ScreenContent>
     </View>
@@ -48,8 +58,7 @@ export function KinChatsView(props: {
   readonly directory: KinDirectory;
   readonly onRetry: () => void;
   readonly onOpenWaiting: () => void;
-  /** Unset until the direct chat screen (MOB-4) exists; rows and the footer are then static. */
-  readonly onOpenChat?: (chatId: KinChatRowView["chatId"]) => void;
+  readonly onOpenChat: (chatId: KinChatRowView["chatId"]) => void;
 }) {
   const { state, onOpenChat } = props;
   const view = state._tag === "ready" ? selectKinInboxView(state.inbox.value) : null;
@@ -93,7 +102,7 @@ export function KinChatsView(props: {
         <KinChatRow
           view={item}
           accessibilityLabel={kinChatRowLabel(item, (date) => formatKinTime(date))}
-          {...(onOpenChat === undefined ? {} : { onPress: () => onOpenChat(item.chatId) })}
+          onPress={() => onOpenChat(item.chatId)}
         />
       )}
       ItemSeparatorComponent={KinRowDivider}
@@ -106,11 +115,7 @@ export function KinChatsView(props: {
         </View>
       }
       ListFooterComponent={
-        <KinAskRow
-          {...(onOpenChat === undefined || leadChatId === null
-            ? {}
-            : { onPress: () => onOpenChat(leadChatId) })}
-        />
+        <KinAskRow {...(leadChatId === null ? {} : { onPress: () => onOpenChat(leadChatId) })} />
       }
     />
   );
