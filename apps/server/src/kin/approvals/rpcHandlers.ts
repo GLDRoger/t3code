@@ -14,6 +14,10 @@ const group = RpcGroup.make(...KinApprovalRpcs);
 const unavailable = Effect.fail(
   new KinApprovalError({ reason: "unavailable", message: "Kin approvals are unavailable." }),
 );
+const disabled = new KinApprovalError({
+  reason: "disabled",
+  message: "Kin is not running on this host.",
+});
 const failed = () =>
   new KinApprovalError({ reason: "unavailable", message: "Kin audit is unavailable." });
 
@@ -25,7 +29,7 @@ export const makeKinApprovalHandlers = Effect.fn("makeKinApprovalHandlers")(func
   const audit = yield* Audit.make;
   // Owner-only (spec section 11): membership in the org is not enough.
   const asOwner = Effect.fn("KinApprovals.asOwner")(function* (orgId: KinOrgId) {
-    if (Option.isNone(kin)) return yield* unavailable;
+    if (Option.isNone(kin)) return yield* disabled;
     const identity = Context.get(kin.value, KinIdentity);
     const people = yield* identity.resolve(session);
     const { owner } = identity;

@@ -566,6 +566,16 @@ describe("kin.audit RPCs", () => {
         yield* memberHandlers["kin.audit.list"]({ orgId: defaultOrg, limit: 10 }).pipe(Effect.flip),
         { reason: "not_owner" },
       );
+
+      const kinOff = yield* handlersFor(AuthStandardClientScopes, Option.none());
+      assert.include(yield* kinOff["kin.audit.verify"]({ orgId: defaultOrg }).pipe(Effect.flip), {
+        reason: "disabled",
+      });
+      yield* sql`ALTER TABLE kin_audit RENAME TO kin_audit_gone`;
+      assert.include(
+        yield* ownerHandlers["kin.audit.list"]({ orgId: defaultOrg, limit: 10 }).pipe(Effect.flip),
+        { reason: "unavailable" },
+      );
     }).pipe(Effect.provide(Sqlite.layerMemory)),
   );
 });
