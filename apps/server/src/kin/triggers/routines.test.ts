@@ -9,6 +9,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
+import * as Memory from "../memory/Memory.ts";
 import * as Routines from "./routines.ts";
 import * as TriggerScheduler from "./KinTriggerScheduler.ts";
 import * as TriggerStore from "./KinTriggerStore.ts";
@@ -321,6 +322,41 @@ it.effect("waits for Memory's org lock without holding SQLite's writer", () =>
       ),
     );
   }).pipe(Effect.scoped),
+);
+
+const decodeNoItems = Schema.decodeUnknownEffect(Schema.Array(Schema.Never));
+
+it.effect("consumes an owner check whose selection fails to decode", () =>
+  Effect.gen(function* () {
+    yield* seed();
+    const sql = yield* SqlClient.SqlClient;
+    const routines = yield* Routines.KinRoutines;
+    const scheduler = yield* TriggerScheduler.KinTriggerScheduler;
+    yield* TestClock.setTime(Date.parse("2026-11-09T03:29:59.000Z"));
+    yield* routines.configure(settings);
+    yield* TestClock.adjust("1 second");
+    yield* scheduler.runDue();
+    yield* routines.drain(orgA);
+    assert.lengthOf(
+      yield* sql`SELECT fire_id FROM kin_trigger_inbox WHERE org_id = ${orgA} AND consumed_at IS NULL ORDER BY fire_id`,
+      0,
+    );
+    assert.lengthOf(
+      yield* sql`SELECT event_id FROM kin_events WHERE org_id = ${orgA} AND json_extract(json, '$.routine') = 'owner_check' ORDER BY event_id`,
+      0,
+    );
+  }).pipe(
+    Effect.provide(
+      fixture([], {
+        query: () => () =>
+          decodeNoItems(["bad"]).pipe(
+            Effect.mapError(
+              (cause) => new Memory.MemoryError({ orgId: orgA, operation: "query", cause }),
+            ),
+          ),
+      }),
+    ),
+  ),
 );
 
 it.effect("reconciles at fifteen minutes, not intervening five-second ticks", () =>
