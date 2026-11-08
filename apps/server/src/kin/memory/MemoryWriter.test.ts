@@ -222,10 +222,7 @@ it.live.each([
               }),
       ),
     });
-    const scan =
-      scenario === "blocked"
-        ? Scan.testLayer([{ path: "claims/new.md", ruleId: "fixture", line: 1 }])
-        : Scan.noFindingsStubLayer;
+    const scan = Scan.layer;
     const layer = Writer.layer.pipe(
       Layer.provideMerge(memoryLayer),
       Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
@@ -585,6 +582,10 @@ it.live.each([
       }
       if (scenario === "tree-substitution")
         substituteTree = yield* git(paths.writer, ["rev-parse", `${original}^{tree}`]);
+      if (scenario === "blocked")
+        yield* writer.appendJournal(orgId, "wake1", [
+          ["gh", "p_"].join("") + "aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0iL3oR6",
+        ]);
       const result = yield* writer
         .commitWakeup(orgId, "wake1", scenario === "failed" ? "failed" : "completed")
         .pipe(Effect.result);
@@ -603,6 +604,19 @@ it.live.each([
           );
 
         expect(notices).toHaveLength(1);
+        if (scenario === "blocked") {
+          expect(JSON.stringify(notices)).not.toContain("aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0iL3oR6");
+          expect(yield* git(paths.writer, ["rev-parse", "HEAD"])).toBe(original);
+          expect(
+            (yield* git(root, [
+              `--git-dir=${remote}`,
+              "show-ref",
+              "--verify",
+              `refs/heads/kin/shadow/${agentId}`,
+            ]).pipe(Effect.result))._tag,
+          ).toBe("Failure");
+          expect(yield* fs.exists(`${paths.writer}/claims/new.md`)).toBe(false);
+        }
         expect(yield* fs.exists(`${paths.writer}/.git/rebase-merge`)).toBe(false);
       } else {
         expect(result._tag).toBe("Success");

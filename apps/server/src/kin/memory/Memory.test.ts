@@ -861,6 +861,7 @@ it.live("uses filesystem identity for a case-mismatched base without recloning",
 
 it.live.each([
   "diverged",
+  "secret merge",
   "conflict",
   "network down",
   "dirty writer",
@@ -955,13 +956,15 @@ it.live.each([
       }
       yield* memory.record(orgA, "main", initial.head, local);
       yield* fs.writeFileString(
-        `${source}/${scenario === "push retry" || scenario === "diverged" || scenario === "network down" || scenario === "dirty writer" || scenario === "H2-merge-swap" ? "remote-only" : "rules.md"}`,
+        `${source}/${scenario === "push retry" || scenario === "diverged" || scenario === "secret merge" || scenario === "network down" || scenario === "dirty writer" || scenario === "H2-merge-swap" ? "remote-only" : "rules.md"}`,
         "Remote invented edit\n",
       );
       if (scenario === "journal conflict" || scenario === "push retry") {
         yield* fs.writeFileString(`${source}/journal/day.md`, "remote entry\n");
         yield* fs.writeFileString(`${source}/INDEX.md`, "remote generated index\n");
       }
+      if (scenario === "secret merge")
+        yield* fs.writeFileString(`${source}/remote-only`, ["gh", "p_", "a".repeat(36)].join(""));
       if (scenario === "H2-merge-swap")
         yield* fs.writeFileString(`${source}/rules.md`, h2Base.replace("base tail", "remote tail"));
       yield* commit(source);
@@ -1041,6 +1044,16 @@ it.live.each([
         expect(
           (yield* memory.prepareWakeup(orgA, "fixture-wakeup-3").pipe(Effect.result))._tag,
         ).toBe("Success");
+      } else if (scenario === "secret merge") {
+        expect(result._tag).toBe("Failure");
+        if (result._tag === "Failure") {
+          expect(result.failure._tag).toBe("MemoryError");
+          expect(result.failure.operation).toBe("secretScan");
+        }
+        expect(yield* memory.anchor(orgA, "main")).toBe(local);
+        expect(yield* git(root, [`--git-dir=${remote}`, "rev-parse", "main"])).toBe(
+          yield* git(source, ["rev-parse", "HEAD"]),
+        );
       } else if (scenario === "push retry") {
         expect(result._tag).toBe("Success");
         if (result._tag === "Success") {
@@ -1066,6 +1079,7 @@ it.live.each([
       } else if (
         scenario === "network down" ||
         scenario === "diverged" ||
+        scenario === "secret merge" ||
         scenario === "dirty writer"
       ) {
         expect(result._tag).toBe("Success");

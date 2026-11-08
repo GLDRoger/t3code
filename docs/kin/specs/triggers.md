@@ -342,7 +342,9 @@ GitHub then blocks a bad auto-merge even if Kin's classifier is wrong. This forc
 
 **On a finding**, the writer blocks the entire commit, discards staged text and emits a typed owner-notification hook. The runner journals the refusal without secret content and tells the owner to review and rotate the affected credential. Automatic redaction is not part of the writer contract.
 
-**False positives:** the owner adds the fingerprint to `kin_secret_allow` through a signed action. A model can never add to it.
+**False positives:** the owner adds the fingerprint to `kin_secret_allow` through a signed action. A model can never add to it. Entries are scoped to organization, exact path, rule and SHA-256 of `ruleId + "\0" + normalized matched value`, with the signed action id retained. The scanner is read-only; the APPR executor must verify the owner grant before inserting. Until that executor lands, there is no agent or MCP allowlist-write path. Migration K012 is provisional and will be renumbered at merge.
+
+The scanner normalizes NFKC, common Cyrillic/Greek lookalikes and invisible format characters, checks wrapped tokens, and decodes URL/base64 content up to two levels. It fails closed above 1 MiB per file, 8 MiB or 1024 files per call, 4096 allowlist entries per organization, or 32 MiB of transformed scan text. These are conservative detectors, not a guarantee against arbitrary encryption or steganography.
 
 ### Owner-signed purge (gap 5)
 
@@ -475,7 +477,7 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
 - **Sink:** a signed GitHub `pull_request` request through the real `ScheduledTaskService` gives exactly one inbox row and no thread launch. A replay gives `duplicate` and no new row. A bot-sender request gives `filtered`. A non-Kin task still launches normally.
 - **Deferral:** unchanged recheck, then heads-up, then silence, then `started` at due. A linked issue closed before due leads to `asked`, and nothing starts. With the stop switch on, it asks. [Monday] re-arms to next Monday 09:00.
 - **Dream:** a dream touching `rules.md` fails, and `main` is unchanged. A dream with one journal fold and one `decisions/` change opens two PRs, and only the auto one merges.
-- **Secret scan:** a journal line holding `ghp_` plus 36 characters is committed as `[redacted:github-token]`, and the owner gets one message.
+- **Secret scan:** a journal line holding `ghp_` plus 36 characters blocks the entire commit, and the owner gets one typed notification without the value.
 - **Purge:** on a fixture repo, the file is gone from `git log --all -p`, a tombstone exists, and an audit row exists.
 - **Contract tests:** `vp test run kin-contract` passes on today's upstream. Renaming `scheduledTaskId` in a scratch branch makes it fail.
 
