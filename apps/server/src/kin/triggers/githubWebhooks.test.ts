@@ -22,6 +22,7 @@ import {
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
@@ -360,6 +361,21 @@ describe("KinGithubWebhooks", () => {
                 }).pipe(Effect.flip)).reason,
                 "gated",
               );
+              const stalled = yield* GithubWebhooks.configureAppHook({
+                kind: "github.app_hook.configure",
+                orgId,
+                sourceId: setup.sourceId,
+                url: setup.url,
+              }).pipe(
+                Effect.flip,
+                Effect.provideService(GithubWebhooks.AppHookConfigureGate, true),
+                Effect.provideService(GithubWebhooks.GithubAppHookClient, {
+                  patchHookConfig: () => Effect.never,
+                }),
+                Effect.forkChild({ startImmediately: true }),
+              );
+              yield* TestClock.adjust("30 seconds");
+              assert.strictEqual((yield* Fiber.join(stalled)).reason, "timeout");
 
               const rejected = yield* tasks.triggerWebhook(
                 signed(task, { delivery: "before-secret", secret: Redacted.value(ownerSecret) }),

@@ -53,6 +53,7 @@ const BotLogin = Config.schema(GitHubBotLogin, "KIN_GITHUB_BOT_LOGIN");
 
 // Gated until APPR-9: the App's private key and the action executor don't exist yet.
 const appHookConfigureReady = false;
+const APP_HOOK_TIMEOUT = "30 seconds";
 /** Test seam for the release gate; production always reads `appHookConfigureReady`. */
 export const AppHookConfigureGate = Context.Reference<boolean>(
   "t3/kin/triggers/githubWebhooks/AppHookConfigureGate",
@@ -70,7 +71,7 @@ export interface AppHookConfigure {
 
 export class GithubAppHookRefused extends Schema.TaggedError<GithubAppHookRefused>()(
   "GithubAppHookRefused",
-  { reason: Schema.Literals(["gated", "unavailable", "failed"]) },
+  { reason: Schema.Literals(["gated", "unavailable", "failed", "timeout"]) },
 ) {}
 
 /** `PATCH /app/hook/config`, signed with the App's JWT. APPR-9's executor provides it. */
@@ -92,12 +93,20 @@ export const configureAppHook = Effect.fn("KinGithubWebhooks.configureAppHook")(
   if (!(yield* AppHookConfigureGate)) return yield* new GithubAppHookRefused({ reason: "gated" });
   const client = yield* Effect.serviceOption(GithubAppHookClient);
   if (Option.isNone(client)) return yield* new GithubAppHookRefused({ reason: "unavailable" });
-  yield* client.value.patchHookConfig({
-    url: action.url,
-    content_type: "json",
-    insecure_ssl: "0",
-    ...(action.secret === undefined ? {} : { secret: action.secret }),
-  });
+  // Callers hold the host-wide webhook lock across this call.
+  yield* client.value
+    .patchHookConfig({
+      url: action.url,
+      content_type: "json",
+      insecure_ssl: "0",
+      ...(action.secret === undefined ? {} : { secret: action.secret }),
+    })
+    .pipe(
+      Effect.timeoutOrElse({
+        duration: APP_HOOK_TIMEOUT,
+        orElse: () => Effect.fail(new GithubAppHookRefused({ reason: "timeout" })),
+      }),
+    );
 });
 
 const decodeUpsert = Schema.decodeEffect(ScheduledTaskUpsertInput);
