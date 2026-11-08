@@ -855,7 +855,7 @@ describe("GrantVerifier", () => {
     }).pipe(Effect.provide(h.layer));
   });
 
-  it.effect("junk rejections are bounded per session per minute; ones naming a key never", () => {
+  it.effect("rejections are bounded per session per minute, with junk on its own budget", () => {
     const h = harness();
     return Effect.gen(function* () {
       const { grants, actions, ownerKey, memberKey, sql } = yield* enrol;
@@ -875,14 +875,22 @@ describe("GrantVerifier", () => {
         [h.audit.length, h.audit.at(-1)?.keyThumbprint, h.audit.at(-1)?.sessionId],
         [21, ownerKey.key.thumbprint, "sess-member"],
       );
+      // Forgeries against a real key have a budget of their own, so they can't flood the chain either.
+      for (let attempt = 0; attempt < 24; attempt++) {
+        yield* Effect.exit(grants.submitGrant(memberPhone, { compact: forged }));
+      }
+      assert.strictEqual(h.audit.length, 40);
       // Another session has its own budget.
       yield* Effect.exit(grants.submitGrant(ownerPhone, { compact: "not.a.grant" }));
-      assert.strictEqual(h.audit.length, 22);
-      // The skipped count is written when the window ends, not on a later rejection.
+      assert.strictEqual(h.audit.length, 41);
+      // The skipped counts are written when the windows end, not on a later rejection.
       yield* TestClock.adjust("1 minute");
       assert.deepStrictEqual(
-        h.audit.slice(22).map((entry) => [entry.event, entry.sessionId, entry.result]),
-        [["grant_rejected", "sess-member", "5 more not recorded"]],
+        h.audit.slice(41).map((entry) => [entry.event, entry.sessionId, entry.result]),
+        [
+          ["grant_rejected", "sess-member", "5 more not recorded"],
+          ["grant_rejected", "sess-member", "5 more not recorded"],
+        ],
       );
 
       // Before its signature verifies, a grant naming another org's key is audited in the
@@ -901,7 +909,7 @@ describe("GrantVerifier", () => {
         reasonOf(yield* Effect.exit(grants.submitGrant(memberPhone, { compact: elsewhere }))),
         "bad_signature",
       );
-      assert.strictEqual(h.audit.length, 24);
+      assert.strictEqual(h.audit.length, 44);
       assert.isTrue(h.audit.every((entry) => entry.orgId === orgId));
     }).pipe(Effect.provide(h.layer));
   });

@@ -34,12 +34,16 @@ import {
 } from "./GrantPorts.ts";
 import { KinPendingActions, kinTargetDigest } from "./PendingActions.ts";
 
-// Junk that names no key: enough to see a flood, the rest only counted. Anything that
-// names a real key is always recorded.
-const JUNK_AUDITS_PER_WINDOW = 20;
+// Each kind of rejection gets its own budget per session and org a minute, so junk can't use up
+// the budget that records forgeries against a real key. Past the budget, rejections are counted.
+const AUDITS_PER_WINDOW = 20;
 const JUNK_WINDOW = Duration.minutes(1);
-const isJunk = (reason: KinApprovalError["reason"]) =>
-  reason === "malformed" || reason === "unknown_key";
+const auditBucket = (reason: KinApprovalError["reason"], signatureVerified: boolean) =>
+  signatureVerified
+    ? "signed"
+    : reason === "malformed" || reason === "unknown_key"
+      ? "junk"
+      : "names_key";
 
 // A jti is 16+ random bytes (spec section 5): 22 unpadded base64url characters. Kept out of the
 // shared decoder so it stays byte-for-byte with the device's parser.
@@ -327,10 +331,9 @@ const make = Effect.gen(function* () {
       sessionId,
       result: error.reason,
     };
-    if (!isJunk(error.reason)) return yield* audit.append(entry);
-    const slot = `${orgId} ${sessionId}`;
+    const slot = `${orgId} ${sessionId} ${auditBucket(error.reason, seen.orgId !== undefined)}`;
     const window = junkWindows.get(slot) ?? (yield* openJunkWindow(slot, orgId, sessionId));
-    if (window.used >= JUNK_AUDITS_PER_WINDOW) {
+    if (window.used >= AUDITS_PER_WINDOW) {
       window.skipped += 1;
       return;
     }
@@ -426,13 +429,15 @@ const make = Effect.gen(function* () {
       action.state === "awaiting_approval" &&
       DateTime.toEpochMillis(action.expiresAt) <= (yield* Clock.currentTimeMillis)
     ) {
-      yield* actions.transition({
+      const expired = yield* actions.transition({
         orgId: action.orgId,
         actionId: action.id,
         revision: action.revision,
         to: "expired",
         reason: "expired",
       });
+      // An approve that landed first wins; say so rather than claim it expired.
+      if (!expired) return yield* fail("stale", "This action already changed; refresh the card.");
       return yield* fail("invalid_state", "This action expired.");
     }
     const won = yield* actions.transition({
