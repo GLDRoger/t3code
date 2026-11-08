@@ -3,7 +3,12 @@ import { memoryGit } from "./git.ts";
 import * as NodeZlib from "node:zlib";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
-import { KinAgentId, KinOrgId, VcsProcessSpawnError } from "@t3tools/contracts";
+import {
+  KinAgentId,
+  KinOrgId,
+  type MemoryItemHead,
+  VcsProcessSpawnError,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -58,6 +63,9 @@ it.live.each([
   "review-null",
   "credentials",
   "read-during-record",
+  "deferral-card-remind",
+  "deferral-plain-remind",
+  "deferral-card-other-item",
   "H3-packed-ref",
   "M1-unanchored",
   "M2-nondescendant",
@@ -119,6 +127,10 @@ it.live.each([
               said_by: scenario === "B6-agent-own" ? agentId : "fixture-owner",
             }),
       );
+    }
+    if (scenario.startsWith("deferral-")) {
+      yield* fs.makeDirectory(`${source}/deferrals`);
+      yield* fs.writeFileString(`${source}/deferrals/def-001.md`, fixtureItem());
     }
     if (scenario === "B5-journal" || scenario === "P4-journal") {
       yield* fs.makeDirectory(`${source}/journal/2026`, { recursive: true });
@@ -207,9 +219,18 @@ it.live.each([
       credentialHelper: "fixture-server-helper",
       repositories: [{ orgId, repoUrl: remote, path: "state" }],
     });
+    const synced: Array<ReadonlyArray<MemoryItemHead>> = [];
     const memoryLayer = Memory.layer.pipe(
       Layer.provide(config),
       Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
+      Layer.provide(
+        Layer.succeed(Memory.MemorySyncHooks, {
+          syncItems: (_org, snapshot) =>
+            Effect.sync(() => {
+              synced.push(snapshot.items.map(({ head }) => head));
+            }),
+        }),
+      ),
     );
     const hooks = Layer.succeed(Writer.MemoryWriterHooks, {
       notify: Effect.fn("Test.notice")((notice) =>
@@ -233,7 +254,8 @@ it.live.each([
                 level:
                   scenario === "conflict" ||
                   scenario === "B5-journal" ||
-                  scenario === "read-during-record"
+                  scenario === "read-during-record" ||
+                  scenario.startsWith("deferral-")
                     ? "L1"
                     : "L0",
                 timeZone: "Asia/Kolkata",
@@ -258,11 +280,22 @@ it.live.each([
                           itemId: scenario === "owner-other-item-keep" ? "other-item" : "def-001",
                           action: scenario === "owner-drop-keep" ? "drop" : "keep",
                         }
-                      : {
-                          saidBy: "fixture-owner",
-                          trust: "owner",
-                          source: "fixture-owner-message",
-                        },
+                      : scenario === "deferral-card-remind" ||
+                          scenario === "deferral-card-other-item"
+                        ? {
+                            saidBy: "fixture-owner",
+                            trust: "owner",
+                            source: "fixture-owner-message",
+                            kind: "deferral_card",
+                            itemId:
+                              scenario === "deferral-card-other-item" ? "other-item" : "def-001",
+                            action: "remind",
+                          }
+                        : {
+                            saidBy: "fixture-owner",
+                            trust: "owner",
+                            source: "fixture-owner-message",
+                          },
                   ],
                   [
                     "member",
@@ -607,6 +640,37 @@ it.live.each([
         expect(
           (yield* writer.commitWakeup(orgId, "wake1", "completed").pipe(Effect.result))._tag,
         ).toBe("Success");
+        return;
+      }
+      if (scenario === "deferral-plain-remind" || scenario === "deferral-card-other-item") {
+        const result = yield* writer
+          .stage(orgId, "wake1", {
+            path: "deferrals/def-001.md",
+            content: fixtureItem({ on_due: "remind" }),
+            sourceEventId: "owner",
+          })
+          .pipe(Effect.result);
+        expect(result._tag === "Failure" && result.failure._tag).toBe("MemoryConflict");
+        return;
+      }
+      if (scenario === "deferral-card-remind") {
+        const stage = (onDue: string) =>
+          writer
+            .stage(orgId, "wake1", {
+              path: "deferrals/def-001.md",
+              content: fixtureItem({ on_due: onDue }),
+              sourceEventId: "owner",
+            })
+            .pipe(Effect.result);
+        const forged = yield* stage("ask");
+        expect(forged._tag === "Failure" && forged.failure._tag).toBe("MemoryConflict");
+        expect((yield* stage("remind"))._tag).toBe("Success");
+        const committed = yield* writer.commitWakeup(orgId, "wake1", "completed");
+        expect(
+          yield* git(paths.writer, ["show", `${committed.commit}:deferrals/def-001.md`]),
+        ).toContain("on_due: remind");
+        const last = synced.at(-1)?.find((item) => item.id === "def-001");
+        expect(last?.on_due).toBe("remind");
         return;
       }
       if (scenario.endsWith("-keep")) {
