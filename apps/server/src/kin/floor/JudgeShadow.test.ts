@@ -1,5 +1,12 @@
 import { assert, describe, it } from "@effect/vitest";
-import { KinAgentId, KinChatId, KinMemberId, KinOrgId, KinPersonId } from "@t3tools/contracts";
+import {
+  KinAgentId,
+  KinChatId,
+  KinMemberId,
+  KinMessageId,
+  KinOrgId,
+  KinPersonId,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
@@ -11,6 +18,7 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as Statement from "effect/sql/Statement";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer } from "../chat/WakeupAuthority.testkit.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
@@ -30,9 +38,17 @@ const timestamp = "1970-01-01T00:00:00.000Z";
 const person = { _tag: "person" as const, orgId, personId };
 const database = Repository.layer.pipe(Layer.provideMerge(authorityLayer));
 const dependencies = Hub.layer.pipe(Layer.provideMerge(database));
-const testLayer = (judge: Layer.Layer<Judge>) =>
+const testLayer = (
+  judge: Layer.Layer<Judge>,
+  sqlLayer:
+    | Layer.Layer<SqlClient.SqlClient, never, SqlClient.SqlClient>
+    | Layer.Layer<never> = Layer.empty,
+  off = false,
+) =>
   Chat.layer.pipe(
-    Layer.provideMerge(Shadow.layer.pipe(Layer.provide(judge))),
+    Layer.provideMerge(
+      (off ? Shadow.layerOff : Shadow.layer).pipe(Layer.provide(judge), Layer.provide(sqlLayer)),
+    ),
     Layer.provideMerge(dependencies),
     Layer.provide(environment),
   );
@@ -83,13 +99,13 @@ const seed = Effect.gen(function* () {
       mutedUntil: null,
     });
 });
-const send = (key: string) =>
+const send = (key: string, grant = true) =>
   Effect.flatMap(Chat.KinChatService, (service) =>
     service.send(person, {
       chatId,
       clientMessageId: key,
       body: `Untrusted human text ${key}`,
-      mentions: [agentMemberId],
+      mentions: grant ? [agentMemberId] : [],
     }),
   );
 const logs = Effect.gen(function* () {
@@ -106,8 +122,11 @@ const logs = Effect.gen(function* () {
 });
 const floor = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  return yield* sql`SELECT run_id, opened_by, state, agent_turns, last_speaker FROM kin_floor_runs
-    WHERE org_id = ${orgId} AND chat_id = ${chatId} ORDER BY opened_at, run_id`;
+  return {
+    runs: yield* sql`SELECT * FROM kin_floor_runs WHERE org_id = ${orgId} AND chat_id = ${chatId} ORDER BY run_id`,
+    grants:
+      yield* sql`SELECT * FROM kin_floor_grants WHERE org_id = ${orgId} AND chat_id = ${chatId} ORDER BY token`,
+  };
 });
 
 describe("JudgeShadow", () => {
@@ -151,43 +170,174 @@ describe("JudgeShadow", () => {
       }).pipe(Effect.provide(testLayer(NoopJudge.layer))),
   );
 
+  it.effect("the record deadline includes the log write", () =>
+    Effect.gen(function* () {
+      const modelEntered = yield* Deferred.make<void>();
+      const modelResult = yield* Deferred.make<JudgeVerdict>();
+      const writeEntered = yield* Deferred.make<void>();
+      const writeResult = yield* Deferred.make<void>();
+      const judge = Layer.succeed(Judge, {
+        name: "blocked-write",
+        judge: () =>
+          Deferred.succeed(modelEntered, undefined).pipe(
+            Effect.andThen(Deferred.await(modelResult)),
+          ),
+      });
+      const sqlLayer = Layer.effect(
+        SqlClient.SqlClient,
+        Effect.map(
+          SqlClient.SqlClient,
+          (sql) =>
+            new Proxy(sql, {
+              apply(target, thisArg, args) {
+                const query = Reflect.apply(target, thisArg, args) as Statement.Statement<never>;
+                if (String(args[0]).includes("INSERT INTO kin_judge_log"))
+                  return Deferred.succeed(writeEntered, undefined).pipe(
+                    Effect.andThen(Deferred.await(writeResult)),
+                    Effect.andThen(query),
+                  );
+                return query;
+              },
+            }),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        yield* seed;
+        yield* send("deadline");
+        yield* Deferred.await(modelEntered);
+        yield* TestClock.adjust(2000);
+        yield* Deferred.succeed(modelResult, {
+          needsResponse: { value: false, confidence: 0 },
+          role: { value: null, confidence: 0 },
+          urgency: { value: "normal", confidence: 0 },
+          needsHumanDecision: { value: false, confidence: 0 },
+          commitment: { value: { kind: "none", text: null }, confidence: 0 },
+        });
+        yield* Deferred.await(writeEntered);
+        const drained = yield* (yield* Shadow.JudgeShadow).drain.pipe(Effect.forkScoped);
+        yield* TestClock.adjust(1000);
+        assert.isTrue(drained.pollUnsafe() !== undefined);
+        yield* Deferred.succeed(writeResult, undefined);
+        yield* Fiber.join(drained);
+        assert.deepStrictEqual(yield* logs, []);
+      }).pipe(Effect.provide(testLayer(judge, sqlLayer)));
+    }),
+  );
+
+  it.effect.each(["extra", "text", "name", "agent", "chat", "org", "message", "null"] as const)(
+    "drops records outside the allowlist: %s",
+    (invalid) =>
+      Effect.gen(function* () {
+        const verdict: JudgeVerdict = {
+          needsResponse: { value: true, confidence: 1 },
+          role: { value: "lead", confidence: 1 },
+          urgency: { value: "normal", confidence: 1 },
+          needsHumanDecision: { value: false, confidence: 1 },
+          commitment: {
+            value: { kind: "promise", text: invalid === "text" ? "x".repeat(1001) : null },
+            confidence: 1,
+          },
+        };
+        const judge = Layer.succeed(Judge, {
+          name: invalid === "name" ? "x".repeat(101) : "boundary",
+          judge: () =>
+            Effect.succeed(
+              invalid === "null"
+                ? (null as unknown as JudgeVerdict)
+                : invalid === "extra"
+                  ? { ...verdict, token: "not-authority" }
+                  : verdict,
+            ),
+        });
+        yield* Effect.gen(function* () {
+          yield* seed;
+          const message = yield* send("boundary");
+          const shadow = yield* Shadow.JudgeShadow;
+          yield* shadow.drain;
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`DELETE FROM kin_judge_log`;
+          const before = yield* floor;
+          yield* shadow.observe(
+            {
+              ...message,
+              chatId: invalid === "chat" ? KinChatId.make("other") : chatId,
+              orgId: invalid === "org" ? KinOrgId.make("other") : orgId,
+              messageId: invalid === "message" ? KinMessageId.make("missing") : message.messageId,
+            },
+            { _tag: "grant", agentId: invalid === "agent" ? KinAgentId.make("outsider") : agentId },
+          );
+          yield* shadow.drain;
+          assert.deepStrictEqual(yield* logs, []);
+          assert.deepStrictEqual(yield* floor, before);
+        }).pipe(Effect.provide(testLayer(judge)));
+      }),
+  );
+
   it.effect.prop(
     "arbitrary verdicts cannot change a group floor decision",
     {
+      grant: Schema.Boolean,
+      off: Schema.Boolean,
       response: Schema.Boolean,
       human: Schema.Boolean,
       role: Schema.NullOr(Schema.Literals(["lead", "qa", "release"])),
       urgency: Schema.Literals(["low", "normal", "high"]),
-      confidence: Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 })),
+      confidence: Schema.Union([
+        Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 })),
+        Schema.Literals([-1, 2]),
+      ]),
       commitment: Schema.Literals(["none", "defer", "promise"]),
     },
     (values) =>
       Effect.gen(function* () {
+        const ready = yield* Deferred.make<void>();
         const verdict: JudgeVerdict = {
-          needsResponse: { value: values.response, confidence: Math.abs(values.confidence) },
-          needsHumanDecision: { value: values.human, confidence: Math.abs(values.confidence) },
-          role: { value: values.role, confidence: Math.abs(values.confidence) },
-          urgency: { value: values.urgency, confidence: Math.abs(values.confidence) },
+          needsResponse: {
+            value: values.response,
+            confidence: values.confidence === 0 ? 0 : values.confidence,
+          },
+          needsHumanDecision: {
+            value: values.human,
+            confidence: values.confidence === 0 ? 0 : values.confidence,
+          },
+          role: { value: values.role, confidence: values.confidence === 0 ? 0 : values.confidence },
+          urgency: {
+            value: values.urgency,
+            confidence: values.confidence === 0 ? 0 : values.confidence,
+          },
           commitment: {
             value: { kind: values.commitment, text: null },
-            confidence: Math.abs(values.confidence),
+            confidence: values.confidence === 0 ? 0 : values.confidence,
           },
         };
         const judge = Layer.succeed(Judge, {
           name: "generated",
-          judge: (input) => Effect.succeed({ ...verdict, untrustedExtra: input.text }),
+          judge: () => Deferred.await(ready).pipe(Effect.as(verdict)),
         });
         yield* Effect.gen(function* () {
           yield* seed;
-          yield* send("generated");
+          yield* send("generated", values.grant);
           const before = yield* floor;
+          yield* Deferred.succeed(ready, undefined);
           yield* (yield* Shadow.JudgeShadow).drain;
           assert.deepStrictEqual(yield* floor, before);
           const [row] = yield* logs;
+          if (values.off || values.confidence < 0 || values.confidence > 1) {
+            assert.isUndefined(row);
+            return;
+          }
           assert.isNull(row!.error);
-          assert.deepStrictEqual(JSON.parse(row!.floor_decision_json), { _tag: "grant", agentId });
-          assert.deepStrictEqual(JSON.parse(row!.verdict_json!), verdict);
-        }).pipe(Effect.provide(testLayer(judge)));
+          assert.deepStrictEqual(
+            JSON.parse(row!.floor_decision_json),
+            values.grant ? { _tag: "grant", agentId } : { _tag: "wait" },
+          );
+          const stored: JudgeVerdict = JSON.parse(row!.verdict_json!);
+          assert.deepStrictEqual(stored, verdict);
+          for (const score of Object.values(stored)) {
+            assert.isAtLeast(score.confidence, 0);
+            assert.isAtMost(score.confidence, 1);
+          }
+        }).pipe(Effect.provide(testLayer(judge, Layer.empty, values.off)));
       }),
     { arbitrary: { runs: 20 } },
   );
@@ -248,8 +398,12 @@ describe("JudgeShadow", () => {
           yield* (yield* Shadow.JudgeShadow).drain;
           assert.deepStrictEqual(yield* floor, before);
           const [row] = yield* logs;
-          assert.strictEqual(row!.error, mode === "slow" ? "timeout" : "judge_error");
-          assert.strictEqual(row!.latency_ms, mode === "slow" ? 3000 : 0);
+          if (mode === "slow") {
+            assert.isUndefined(row);
+            return;
+          }
+          assert.strictEqual(row!.error, "judge_error");
+          assert.strictEqual(row!.latency_ms, 0);
           assert.isNull(row!.verdict_json);
         }).pipe(Effect.provide(testLayer(judge)));
       }),
