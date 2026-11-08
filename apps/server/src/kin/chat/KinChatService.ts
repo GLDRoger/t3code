@@ -144,6 +144,13 @@ export class KinChatService extends Context.Service<
       readonly title: string;
       readonly model: string | null;
     }) => Effect.Effect<KinWidget, ServiceError, OrchestratorV2 | ServerEnvironment>;
+    /** Server-only, like createTaskCard: Kin's worker launcher closes and reopens worker cards. */
+    readonly setTaskCardClosed: (input: {
+      readonly orgId: KinOrgId;
+      readonly chatId: KinChatId;
+      readonly threadId: ThreadId;
+      readonly closed: boolean;
+    }) => Effect.Effect<KinWidget, ServiceError>;
     readonly act: (
       identity: PersonCaller,
       input: KinWidgetsActInput,
@@ -199,6 +206,12 @@ const requireRecord = Effect.fn("KinChatService.requireRecord")(function* <A, E,
   const value = yield* effect;
   return Option.isSome(value) ? value.value : yield* notFound;
 });
+
+const taskCardWidgetId = (input: { readonly chatId: KinChatId; readonly threadId: ThreadId }) =>
+  encodeAction([input.chatId, input.threadId]).pipe(
+    Effect.orDie,
+    Effect.map((key) => KinWidgetId.make(`task:${key}`)),
+  );
 
 const make = Effect.gen(function* () {
   const floor = yield* Floor.KinFloor;
@@ -899,9 +912,7 @@ const make = Effect.gen(function* () {
         (thread) => thread.orgId === input.orgId && thread.agentId === agent.agentId,
       );
       if (member === undefined || thread === undefined) return yield* notFound;
-      const widgetId = KinWidgetId.make(
-        `task:${yield* encodeAction([input.chatId, input.threadId]).pipe(Effect.orDie)}`,
-      );
+      const widgetId = yield* taskCardWidgetId(input);
       const clientId = yield* encodeAction([
         input.threadId,
         input.authorAgentId,
@@ -981,6 +992,25 @@ const make = Effect.gen(function* () {
       yield* hub.publish({ type: "message.posted", orgId: input.orgId, message: anchor });
       yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
       yield* sql.afterCommit(cards.track(widget));
+      return widget;
+    }, transaction),
+    setTaskCardClosed: Effect.fn("KinChatService.setTaskCardClosed")(function* (input) {
+      const existing = yield* requireRecord(
+        repo.getWidget({ orgId: input.orgId, widgetId: yield* taskCardWidgetId(input) }),
+      );
+      if (existing.type !== "task" || existing.chatId !== input.chatId) return yield* notFound;
+      if ((existing.closedAt !== null) === input.closed) return existing;
+      const widget = yield* repo.updateWidget({
+        ...existing,
+        awaiting: input.closed ? [] : existing.awaiting,
+        expectedRevision: existing.revision,
+        closedAt: input.closed ? yield* now : null,
+        updatedAt: yield* now,
+      });
+      if (input.closed)
+        for (const item of yield* repo.waitingForWidget(widget)) yield* resolve(item, "closed");
+      yield* sql.afterCommit(cards.track(widget));
+      yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
       return widget;
     }, transaction),
     upsertWidget: Effect.fn("KinChatService.upsertWidget")(function* (identity, input) {
