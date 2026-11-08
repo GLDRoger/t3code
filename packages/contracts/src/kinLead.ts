@@ -148,6 +148,10 @@ export const KinDeferralCard = Schema.Struct({
   dueAt: Schema.toEncoded(CanonicalUtcTimestamp),
   onDue: Schema.Literals(["remind", "start", "ask", "chase"]),
   text: Schema.String,
+  // Absent on the confirm card ([Change] [Just remind me]); heads_up and asked offer
+  // [Start now] [Monday] [Cancel]; started offers nothing.
+  phase: Schema.optional(Schema.Literals(["heads_up", "asked", "started"])),
+  graceEndsAt: Schema.optional(Schema.toEncoded(CanonicalUtcTimestamp)),
 });
 export type KinDeferralCard = typeof KinDeferralCard.Type;
 
