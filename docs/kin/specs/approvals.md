@@ -276,7 +276,7 @@ export const KinGrantPayload = Schema.Struct({
 9. Re-read the PR from GitHub with the bot token; head and base still match → `head_moved` (rotate nonce, refresh card). Only `merge_pull_request` and `delete_branch` (head only) have GitHub state to re-read. If GitHub can't be read, the grant fails `unavailable`.
 10. In one transaction: insert `kin_grants` (`jti` UNIQUE, `(action_id, approver)` UNIQUE) and CAS the action to `approved` while both the action and the grant are unexpired and the signing key is still `active`, attested and from an unrevoked session → `replayed` when that org already holds the `jti` or this approver's grant for the action, `revoked_key` when the key was revoked after check 2 (say, during check 9's read), `stale` otherwise.
 
-The grant's life ends at `min(exp, acceptedAt + 15 min)`. It is consumed when the executor claims the action, and can't be used for anything else: the binding is to `actionId`, `nonce` and `targetDigest`, all server-chosen.
+The grant's life ends at `min(exp, acceptedAt + 15 min)`. It is consumed when the executor claims the action, which needs the signing key to pass check 10's key test again, since a session revocation voids the action only on the next key read. It can't be used for anything else: the binding is to `actionId`, `nonce` and `targetDigest`, all server-chosen.
 
 A rejection doesn't need a signature (rejecting is always safe) but is still recorded with the session that sent it. `reject({actionId, revision})` is limited to the action's approvers and is a compare-and-set on the revision. An action past `expiresAt` moves to `expired` instead, and the reject fails `invalid_state`.
 
