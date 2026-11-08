@@ -42,7 +42,7 @@ it.effect("key methods refuse as disabled when Kin is off", () =>
     assert.include(yield* handlers["kin.approvals.listKeys"]({ orgId }).pipe(Effect.flip), {
       reason: "disabled",
     });
-    assert.include(yield* handlers["kin.approvals.keyChallenge"]({}).pipe(Effect.flip), {
+    assert.include(yield* handlers["kin.approvals.keyChallenge"]().pipe(Effect.flip), {
       reason: "disabled",
     });
   }),
