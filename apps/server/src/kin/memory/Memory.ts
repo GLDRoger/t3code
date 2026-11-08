@@ -471,8 +471,10 @@ const make = Effect.gen(function* () {
     reusePin = false,
   ) {
     const paths = yield* pathsFor(orgId);
-    if (reusePin && initializedCheckouts.has(orgId) && pinnedHeads.has(orgId))
+    if (reusePin && initializedCheckouts.has(orgId) && pinnedHeads.has(orgId)) {
+      yield* validateWriter(orgId, paths, false);
       return { writer: paths.writer, read: paths.read };
+    }
     yield* io(orgId, "mkdir", fs.makeDirectory(paths.root, { recursive: true }));
     if (yield* io(orgId, "exists", fs.exists(paths.writer))) {
       yield* validateWriter(orgId, paths, false);
@@ -520,8 +522,9 @@ const make = Effect.gen(function* () {
 
   const load = Effect.fn("Memory.load")(function* (orgId: KinOrgId, force = false) {
     const paths = yield* pathsFor(orgId);
-    yield* validateWriter(orgId, paths, false);
-    const head = pinnedHeads.get(orgId) ?? (yield* anchor(orgId, config.defaultBranch ?? "main"));
+    const pinned = pinnedHeads.get(orgId);
+    if (pinned === undefined) yield* validateWriter(orgId, paths, false);
+    const head = pinned ?? (yield* anchor(orgId, config.defaultBranch ?? "main"));
     pinnedHeads.set(orgId, head);
     const previous = snapshots.get(orgId);
     if (!force && previous?.head === head) return previous;

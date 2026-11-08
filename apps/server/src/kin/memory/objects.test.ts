@@ -15,6 +15,8 @@ it.effect(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const cwd = yield* fs.makeTempDirectoryScoped();
+      yield* fs.makeDirectory(`${cwd}/.git/objects`, { recursive: true });
+      yield* fs.makeDirectory(`${cwd}/.git/refs`, { recursive: true });
       const objects = new Map<string, { type: string; bytes: Buffer }>();
       const object = (type: string, text: string) => {
         const bytes = Buffer.from(text);
@@ -76,6 +78,11 @@ it.effect(
           new Map([["rules.md", { mode: "100644", sha: "0".repeat(40) }]]),
         ).pipe(Effect.result);
         expect(rejected._tag).toBe("Failure");
+        yield* fs.remove(`${cwd}/.git`, { recursive: true });
+        calls = 0;
+        const missing = yield* ancestors(org, cwd, tip).pipe(Effect.result);
+        expect(missing._tag).toBe("Failure");
+        expect(calls).toBe(0);
       }).pipe(Effect.provideService(VcsProcess, vcs));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
