@@ -2,32 +2,50 @@ import type { DpopPublicJwk } from "@t3tools/shared/dpopCommon";
 import * as Base64 from "effect/encoding/Base64";
 import * as Base64Url from "effect/encoding/Base64Url";
 import * as Result from "effect/Result";
-import { requireOptionalNativeModule } from "expo";
+import { CodedError, requireOptionalNativeModule } from "expo";
 
 import { derEcdsaSignatureToCompact } from "./src/derSignature";
 import { publicJwkFromNativePublicKey } from "./src/publicJwk";
 
 export type KinApprovalKeyHardware = "secure_enclave" | "strongbox" | "tee";
 
-/** Codes on errors the native side rejects with; see README.md. */
-export type KinApprovalKeyErrorCode =
-  | "E_NO_SECURE_HARDWARE"
-  | "E_UNSUPPORTED_OS"
-  | "E_BIOMETRY_UNAVAILABLE"
-  | "E_BIOMETRY_LOCKOUT"
-  | "E_KEY_EXISTS"
-  | "E_KEY_NOT_FOUND"
-  | "E_KEY_INVALIDATED"
-  | "E_USER_CANCELED"
-  | "E_AUTH_FAILED"
-  | "E_BUSY"
-  | "E_NOT_A_GRANT"
-  | "E_NO_ACTIVITY"
-  | "E_OBSCURED"
-  | "E_ATTESTATION_FAILED"
-  | "E_INVALID_INPUT"
-  | "E_KEYCHAIN"
-  | "E_KEYSTORE";
+const ERROR_CODES = [
+  "E_MODULE_UNAVAILABLE",
+  "E_NO_SECURE_HARDWARE",
+  "E_UNSUPPORTED_OS",
+  "E_BIOMETRY_UNAVAILABLE",
+  "E_BIOMETRY_LOCKOUT",
+  "E_KEY_EXISTS",
+  "E_KEY_NOT_FOUND",
+  "E_KEY_INVALIDATED",
+  "E_USER_CANCELED",
+  "E_AUTH_FAILED",
+  "E_BUSY",
+  "E_NOT_A_GRANT",
+  "E_NO_ACTIVITY",
+  "E_OBSCURED",
+  "E_ATTESTATION_FAILED",
+  "E_INVALID_INPUT",
+  "E_KEYCHAIN",
+  "E_KEYSTORE",
+] as const;
+const KNOWN_ERROR_CODES: ReadonlySet<string> = new Set(ERROR_CODES);
+
+/** Codes on errors this module throws or the native side rejects with; see README.md. */
+export type KinApprovalKeyErrorCode = (typeof ERROR_CODES)[number];
+
+export function isKinApprovalKeyError(
+  error: unknown,
+): error is Error & { readonly code: KinApprovalKeyErrorCode } {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    typeof error.code === "string" &&
+    KNOWN_ERROR_CODES.has(error.code)
+  );
+}
+
+const invalidInput = (message: string) => new CodedError("E_INVALID_INPUT", message);
 
 export type KinApprovalKeyAttestation =
   | {
@@ -70,7 +88,10 @@ const MAX_CHALLENGE_BYTES = 128;
 function native(): NativeKinApprovalKey {
   const module = requireOptionalNativeModule<NativeKinApprovalKey>("KinApprovalKey");
   if (!module)
-    throw new Error("KinApprovalKey is not in this build; install a current dev client.");
+    throw new CodedError(
+      "E_MODULE_UNAVAILABLE",
+      "KinApprovalKey is not in this build; install a current dev client.",
+    );
   return module;
 }
 
@@ -81,7 +102,7 @@ function decodeBase64(value: unknown, label: string): Uint8Array {
   const decoded =
     typeof value === "string" && BASE64.test(value) ? Base64.decode(value) : undefined;
   if (!decoded || Result.isFailure(decoded) || decoded.success.length === 0)
-    throw new Error(`${label} is not base64.`);
+    throw invalidInput(`${label} is not base64.`);
   return decoded.success;
 }
 
@@ -93,7 +114,7 @@ function attestationOf(created: Awaited<ReturnType<NativeKinApprovalKey["createK
   if (created.appAttest) {
     const { keyId, attestationObject } = created.appAttest;
     if (decodeBase64(keyId, "keyId").length !== APP_ATTEST_KEY_ID_BYTES)
-      throw new Error("keyId is not a SHA-256 hash.");
+      throw invalidInput("keyId is not a SHA-256 hash.");
     decodeBase64(attestationObject, "attestationObject");
     return { format: "apple-app-attest", keyId, attestationObject } as const;
   }
@@ -102,7 +123,7 @@ function attestationOf(created: Awaited<ReturnType<NativeKinApprovalKey["createK
 
 function decodeBase64Url(value: string, label: string): Uint8Array {
   const decoded = BASE64URL.test(value) ? Base64Url.decode(value) : undefined;
-  if (!decoded || Result.isFailure(decoded)) throw new Error(`${label} is not base64url.`);
+  if (!decoded || Result.isFailure(decoded)) throw invalidInput(`${label} is not base64url.`);
   return decoded.success;
 }
 
@@ -114,7 +135,7 @@ function decodeBase64Url(value: string, label: string): Uint8Array {
 export async function createKey(attestationChallenge: string): Promise<KinApprovalKey> {
   const challenge = decodeBase64Url(attestationChallenge, "attestationChallenge");
   if (challenge.length < MIN_CHALLENGE_BYTES || challenge.length > MAX_CHALLENGE_BYTES)
-    throw new Error("attestationChallenge must encode 16 to 128 bytes.");
+    throw invalidInput("attestationChallenge must encode 16 to 128 bytes.");
   const created = await native().createKey(attestationChallenge);
   const publicJwk = publicJwkFromNativePublicKey(decodeBase64Url(created.publicKey, "publicKey"));
   const attestation = attestationOf(created);
@@ -129,7 +150,7 @@ export async function createKey(attestationChallenge: string): Promise<KinApprov
  */
 export async function sign(signingInput: string): Promise<string> {
   if (!SIGNING_INPUT.test(signingInput))
-    throw new Error("signingInput must be two unpadded base64url parts joined by one dot.");
+    throw invalidInput("signingInput must be two unpadded base64url parts joined by one dot.");
   const der = await native().signDer(signingInput);
   return Base64Url.encode(derEcdsaSignatureToCompact(decodeBase64Url(der, "signature")));
 }

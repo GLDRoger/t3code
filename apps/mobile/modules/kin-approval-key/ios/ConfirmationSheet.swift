@@ -121,7 +121,7 @@ final class ConfirmationSheet {
   fileprivate func sample() {
     guard onOutcome != nil else { return }
     frames &+= 1
-    if frames % Self.mediaCloseInterval == 0 { closeMediaPresentations() }
+    if frames.isMultiple(of: Self.mediaCloseInterval) { closeMediaPresentations() }
     let now = CACurrentMediaTime()
     let current = coverage
     if armed {
@@ -323,6 +323,8 @@ private final class ConfirmationController: UIViewController {
     label.font = .preferredFont(forTextStyle: style)
     label.adjustsFontForContentSizeCategory = true
     label.numberOfLines = 0
+    // Wraps a full hash across lines rather than truncating it.
+    label.lineBreakMode = .byWordWrapping
     label.textAlignment = .center
     label.translatesAutoresizingMaskIntoConstraints = false
     return label

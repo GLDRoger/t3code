@@ -23,7 +23,9 @@ class KinApprovalKeyModule : Module() {
     Name("KinApprovalKey")
 
     AsyncFunction("createKey") { attestationChallenge: String ->
-      val context = appContext.reactContext ?: throw ApprovalKeyException(E_NO_ACTIVITY, "The app is not active.")
+      val context =
+        appContext.reactContext
+          ?: throw ApprovalKeyException(E_NO_ACTIVITY, "The app is not active.")
       requireStrongBiometrics(BiometricManager.from(context))
       ApprovalKeyStore.create(context, decodeBase64Url(attestationChallenge))
     }
@@ -51,7 +53,9 @@ private class SignRequest private constructor(private val promise: Promise) {
 
     fun start(activity: Activity?, signingInput: String, promise: Promise) {
       if (!busy.compareAndSet(false, true)) {
-        promise.reject(ApprovalKeyException(E_BUSY, "Another approval is already waiting for the user."))
+        promise.reject(
+          ApprovalKeyException(E_BUSY, "Another approval is already waiting for the user.")
+        )
         return
       }
       SignRequest(promise).prepare(activity, signingInput)
@@ -64,10 +68,17 @@ private class SignRequest private constructor(private val promise: Promise) {
       val prompt = try {
         KinGrant.prompt(signingInput, System.currentTimeMillis() / MILLIS_PER_SECOND)
       } catch (error: KinGrant.NotAGrantException) {
-        throw ApprovalKeyException(E_NOT_A_GRANT, "Only Kin grants can be signed: ${error.message}.", error)
+        throw ApprovalKeyException(
+          E_NOT_A_GRANT,
+          "Only Kin grants can be signed: ${error.message}.",
+          error
+        )
       }
       val host = activity as? FragmentActivity
-        ?: throw ApprovalKeyException(E_NO_ACTIVITY, "No foreground activity to show the prompt in.")
+        ?: throw ApprovalKeyException(
+          E_NO_ACTIVITY,
+          "No foreground activity to show the prompt in."
+        )
       requireStrongBiometrics(BiometricManager.from(host))
       val signature = ApprovalKeyStore.initSignature()
       // KinGrant accepted it, so it is two base64url segments: plain ASCII.
@@ -79,7 +90,12 @@ private class SignRequest private constructor(private val promise: Promise) {
   }
 
   @Suppress("TooGenericExceptionCaught")
-  private fun show(activity: FragmentActivity, prompt: String, signature: Signature, message: ByteArray) {
+  private fun show(
+    activity: FragmentActivity,
+    prompt: String,
+    signature: Signature,
+    message: ByteArray
+  ) {
     try {
       val foreground = activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
       // BiometricPrompt.authenticate silently does nothing once state is saved.
@@ -87,11 +103,17 @@ private class SignRequest private constructor(private val promise: Promise) {
         throw ApprovalKeyException(E_NO_ACTIVITY, "Approvals need the app in the foreground.")
       }
       val biometricPrompt =
-        BiometricPrompt(activity, ContextCompat.getMainExecutor(activity), callback(signature, message))
+        BiometricPrompt(
+          activity,
+          ContextCompat.getMainExecutor(activity),
+          callback(signature, message)
+        )
       // The system prompt can outlive the screen; an approval must not.
       val observer = LifecycleEventObserver { _, event ->
         if (event == Lifecycle.Event.ON_STOP) {
-          reject(ApprovalKeyException(E_USER_CANCELED, "The app left the foreground during approval."))
+          reject(
+            ApprovalKeyException(E_USER_CANCELED, "The app left the foreground during approval.")
+          )
           biometricPrompt.cancelAuthentication()
         }
       }
@@ -106,7 +128,9 @@ private class SignRequest private constructor(private val promise: Promise) {
       handler.postDelayed(timeout, PROMPT_TIMEOUT_MILLIS)
       cleanup = {
         handler.removeCallbacks(timeout)
-        ContextCompat.getMainExecutor(activity).execute { activity.lifecycle.removeObserver(observer) }
+        ContextCompat.getMainExecutor(activity).execute {
+          activity.lifecycle.removeObserver(observer)
+        }
       }
       val info = BiometricPrompt.PromptInfo.Builder()
         .setTitle("Confirm approval")
@@ -121,25 +145,26 @@ private class SignRequest private constructor(private val promise: Promise) {
     }
   }
 
-  private fun callback(signature: Signature, message: ByteArray) = object : BiometricPrompt.AuthenticationCallback() {
-    override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-      // androidx.biometric keeps one callback and one CryptoObject per activity, so a prompt from
-      // elsewhere could hand this callback an operation that isn't ours. Only sign our own.
-      if (result.cryptoObject?.signature !== signature) {
-        reject(ApprovalKeyException(E_AUTH_FAILED, "The prompt unlocked a different operation."))
-        return
+  private fun callback(signature: Signature, message: ByteArray) =
+    object : BiometricPrompt.AuthenticationCallback() {
+      override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+        // androidx.biometric keeps one callback and one CryptoObject per activity, so a prompt from
+        // elsewhere could hand this callback an operation that isn't ours. Only sign our own.
+        if (result.cryptoObject?.signature !== signature) {
+          reject(ApprovalKeyException(E_AUTH_FAILED, "The prompt unlocked a different operation."))
+          return
+        }
+        if (settled.get()) return
+        signer.execute { signUnlocked(signature, message) }
       }
-      if (settled.get()) return
-      signer.execute { signUnlocked(signature, message) }
-    }
 
-    override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-      reject(authenticationError(errorCode, errString.toString()))
-    }
+      override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+        reject(authenticationError(errorCode, errString.toString()))
+      }
 
-    // A non-matching finger keeps the prompt open; only the terminal callbacks settle the promise.
-    override fun onAuthenticationFailed() = Unit
-  }
+      // A non-matching finger keeps the prompt open; only the terminal callbacks settle the promise.
+      override fun onAuthenticationFailed() = Unit
+    }
 
   @Suppress("TooGenericExceptionCaught")
   private fun signUnlocked(signature: Signature, message: ByteArray) {
@@ -157,7 +182,9 @@ private class SignRequest private constructor(private val promise: Promise) {
 
   private fun reject(error: Throwable) {
     if (!finish()) return
-    promise.reject(error as? CodedException ?: ApprovalKeyException(E_KEYSTORE, "Approval failed.", error))
+    promise.reject(
+      error as? CodedException ?: ApprovalKeyException(E_KEYSTORE, "Approval failed.", error)
+    )
   }
 
   private fun finish(): Boolean {

@@ -25,7 +25,6 @@ final class KinGrant {
   private static final int MAX_SIGNING_INPUT = 8192;
   private static final int MAX_DEPTH = 3;
   private static final int MAX_PROMPT_CHARS = 200;
-  private static final int SHOWN_HASH_LENGTH = 16;
   private static final long MAX_SAFE_INTEGER = 9007199254740991L;
   private static final long MAX_LIFETIME_SECONDS = 900;
   private static final long MAX_CLOCK_SKEW_SECONDS = 300;
@@ -133,7 +132,7 @@ final class KinGrant {
         only(p);
         exactKeys(target, setOf("_tag", "path", "sha256"), setOf(), "target");
         tag(target, "content");
-        String hash = matches(target, "sha256", HEX64).substring(0, SHOWN_HASH_LENGTH);
+        String hash = matches(target, "sha256", HEX64);
         String path = shown(target, "path", NAME);
         text = kind.equals("change_rules")
             ? "Change rules to \"" + path + "\" (sha256 " + hash + ")"
@@ -147,7 +146,7 @@ final class KinGrant {
         String thumbprint = matches(target, "thumbprint", THUMBPRINT);
         // The server never activates an unattested key, so there is nothing to approve for one.
         if (!Boolean.TRUE.equals(target.get("attested"))) throw new NotAGrantException("the key is not attested");
-        text = "Add approver key " + thumbprint.substring(0, SHOWN_HASH_LENGTH)
+        text = "Add approver key " + thumbprint
             + " (" + hardwareWords(string(target, "hardware")) + ", attested)";
         break;
       }
@@ -201,7 +200,7 @@ final class KinGrant {
   }
 
   private static String headSha(Map<String, Object> p) throws NotAGrantException {
-    return matches(p, "headSha", SHA40).substring(0, SHOWN_HASH_LENGTH);
+    return matches(p, "headSha", SHA40);
   }
 
   /** The optional payload fields allowed for this kind; any other optional field is refused. */

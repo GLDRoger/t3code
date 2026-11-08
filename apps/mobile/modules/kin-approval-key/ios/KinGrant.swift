@@ -15,13 +15,14 @@ enum KinGrant {
     let utf8: [UInt8]
     init(_ utf8: [UInt8]) { self.utf8 = utf8 }
     init(stringLiteral value: String) { utf8 = Array(value.utf8) }
+    // Lossy is fine: shown values are checked against ASCII allowlists before they reach a prompt.
+    // swiftlint:disable:next optional_data_string_conversion
     var description: String { String(decoding: utf8, as: UTF8.self) }
   }
 
   private static let maxSigningInput = 8192
   private static let maxDepth = 3
   private static let maxPromptBytes = 200
-  private static let shownHashLength = 16
   private static let maxSafeInteger: Int64 = 9_007_199_254_740_991
   private static let maxLifetimeSeconds: Int64 = 900
   private static let maxClockSkewSeconds: Int64 = 300
@@ -59,6 +60,7 @@ enum KinGrant {
     try nonEmpty(header, "kid")
   }
 
+  // swiftlint:disable:next cyclomatic_complexity - one branch per kind, mirroring KinGrant.java.
   private static func promptFor(_ p: [Bytes: Value], kid: Bytes, now: Int64) throws -> String {
     try exactKeys(p, payloadRequired, payloadOptional, "payload")
     guard try integer(p, "v") == 1 else { throw NotAGrant("v is not 1") }
@@ -113,7 +115,7 @@ enum KinGrant {
       try only(p, [])
       try exactKeys(target, ["_tag", "path", "sha256"], [], "target")
       try tag(target, "content")
-      let hash = try hex(target, "sha256", length: 64).prefix(shownHashLength)
+      let hash = try hex(target, "sha256", length: 64)
       let path = try shown(target, "path", .name)
       text = kind == "change_rules"
         ? "Change rules to \"\(path)\" (sha256 \(hash))"
@@ -128,7 +130,7 @@ enum KinGrant {
       }
       // The server never activates an unattested key, so there is nothing to approve for one.
       guard case .bool(true) = target["attested"] else { throw NotAGrant("the key is not attested") }
-      text = "Add approver key \(Bytes(Array(thumbprint.prefix(shownHashLength)))) "
+      text = "Add approver key \(Bytes(Array(thumbprint))) "
         + "(\(try hardwareWords(try string(target, "hardware"))), attested)"
     default:
       throw NotAGrant("kind has no prompt template")
@@ -169,7 +171,7 @@ enum KinGrant {
   }
 
   private static func headSha(_ p: [Bytes: Value]) throws -> String {
-    String(try hex(p, "headSha", length: 40).prefix(shownHashLength))
+    try hex(p, "headSha", length: 40)
   }
 
   /// The optional payload fields allowed for this kind, all required; any other is refused.
@@ -206,6 +208,7 @@ enum KinGrant {
     let value = try string(map, key).utf8
     let lowerHex = value.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     guard value.count == length, lowerHex else { throw NotAGrant("\(key) is malformed") }
+    // swiftlint:disable:next optional_data_string_conversion
     return String(decoding: value, as: UTF8.self)
   }
 
@@ -352,6 +355,7 @@ enum KinGrant {
       }
     }
 
+    // swiftlint:disable:next cyclomatic_complexity - one branch per escape, mirroring KinGrant.java.
     private mutating func parseString() throws -> Bytes {
       at += 1
       var out: [UInt8] = []
@@ -418,6 +422,7 @@ enum KinGrant {
       if at < bytes.count, [UInt8(ascii: "."), UInt8(ascii: "e"), UInt8(ascii: "E")].contains(bytes[at]) {
         throw fail("not an integer")
       }
+      // swiftlint:disable:next optional_data_string_conversion
       let digits = String(decoding: bytes[start..<at], as: UTF8.self)
       guard digits != "-0" else { throw fail("negative zero") }
       guard digits.utf8.count <= 17, let value = Int64(digits), abs(value) <= KinGrant.maxSafeInteger else {

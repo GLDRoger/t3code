@@ -17,16 +17,16 @@ This key only signs grants. It is separate from the relay DPoP key in `src/featu
 
 The caller doesn't choose the approval text. `ios/KinGrant.swift` and `android/.../KinGrant.java` parse the signing input natively and accept only canonical `stableStringify` JSON with the exact `KinGrant` header and fields (spec section 5), `approver.kid` equal to the header `kid`, an `iat` within 300 seconds of the device clock, and a kind that has a template. The text comes from a fixed template per kind:
 
-| Kind                    | Text                                                                                           |
-| ----------------------- | ---------------------------------------------------------------------------------------------- |
-| `merge_pull_request`    | Merge GLDRoger/t3code #212 (a1b2c3d4e5f60718) into "main" by squashing, then delete its branch |
-| `delete_branch`         | Delete branch "kin/fix-212" (a1b2c3d4e5f60718) in GLDRoger/t3code                              |
-| `set_level`             | Set lead "tech-lead" to L2 in chat "chat_7" (or "in all chats")                                |
-| `change_rules`          | Change rules to "rules.md" (sha256 9f86d081884c7d65)                                           |
-| `memory_purge`          | Purge memory using "purge/item-4.json" (sha256 9f86d081884c7d65)                               |
-| `register_approver_key` | Add approver key NzbLsXh8uDCcd-6M (Secure Enclave, attested)                                   |
+| Kind                    | Text                                                                                                                   |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `merge_pull_request`    | Merge GLDRoger/t3code #212 (a1b2c3d4e5f60718293a4b5c6d7e8f9012345678) into "main" by squashing, then delete its branch |
+| `delete_branch`         | Delete branch "kin/fix-212" (a1b2c3d4e5f60718293a4b5c6d7e8f9012345678) in GLDRoger/t3code                              |
+| `set_level`             | Set lead "tech-lead" to L2 in chat "chat_7" (or "in all chats")                                                        |
+| `change_rules`          | Change rules to "rules.md" (sha256 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08)                   |
+| `memory_purge`          | Purge memory using "purge/item-4.json" (sha256 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08)       |
+| `register_approver_key` | Add approver key NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs (Secure Enclave, attested)                                |
 
-Every hash shows its first 16 characters. A shown value is never cleaned or cut: the grant is refused (`E_NOT_A_GRANT`) unless each value is ASCII from its field's allowlist, so nothing invisible, look-alike or reordering reaches the prompt and no platform Unicode table is involved:
+Every hash is shown in full: the agent writes the commits and content, so it could grind a second value that matches a shortened hash. The prompt wraps long values onto more lines rather than cutting them. A shown value is never cleaned or cut: the grant is refused (`E_NOT_A_GRANT`) unless each value is ASCII from its field's allowlist, so nothing invisible, look-alike or reordering reaches the prompt and no platform Unicode table is involved:
 
 - Repo: GitHub's `owner/name` rules (owner: letters, digits, `-`, up to 39; name: letters, digits, `. _ -`, up to 100).
 - Branches (`base`, `ref`) and `path`: letters, digits and `. _ - / +`. That is a subset of what git allows, so a merge into a branch with other characters (non-ASCII, `@`, `#` and so on) can't be approved from the phone.
@@ -36,7 +36,7 @@ Every hash shows its first 16 characters. A shown value is never cleaned or cut:
 
 None of these allow a space or a quote, so the quotes around a value in the template can't be faked. A prompt over 200 characters is refused, so the merge method and ", then delete its branch" always show.
 
-A new action kind needs a template in both parsers and new rows in `fixtures/grant-vectors.json`. The two parsers must agree; `test/native/run.sh` checks both against the vectors on a Mac with the Xcode command line tools and a JDK (no simulator or Android SDK). `src/grantVectors.test.ts` checks in CI that the accepted vectors are exactly what `stableStringify` writes.
+A new action kind needs a template in both parsers and new rows in `fixtures/grant-vectors.json`. The two parsers must agree; `test/native/run.sh` checks both against the vectors on a Mac with the Xcode command line tools and a JDK (no simulator or Android SDK); CI runs its Java half (`run.sh java`) on Linux. `src/grantVectors.test.ts` checks in CI that the accepted vectors are exactly what `stableStringify` writes.
 
 The Android parser is Java rather than Kotlin so it compiles and runs with a plain JDK.
 
@@ -44,10 +44,10 @@ The Android parser is Java rather than Kotlin so it compiles and runs with a pla
 
 The native side returns DER signatures. `src/derSignature.ts` converts them to compact low-S form and rejects anything that isn't canonical DER.
 
-Error codes on rejected promises:
+Error codes on rejected promises. Every error the module throws, in JS or natively, carries one in `code`; `isKinApprovalKeyError(error)` narrows to these.
 
 - `E_NOT_A_GRANT`: the signing input isn't a well-formed grant the module can describe.
-- `E_BUSY`: another `sign` call hasn't settled yet. One signature at a time, on both platforms.
+- `E_BUSY`: another `sign` call, or another `createKey` call, hasn't settled yet. One signature and one key creation at a time, on both platforms.
 - `E_NO_SECURE_HARDWARE`: no Secure Enclave, or the Keystore says the key or its auth gate isn't in secure hardware.
 - `E_UNSUPPORTED_OS`: Android before 11. Per-use `AUTH_BIOMETRIC_STRONG` keys need API 30.
 - `E_BIOMETRY_UNAVAILABLE`: no strong biometric enrolled, or no passcode.
@@ -59,7 +59,9 @@ Error codes on rejected promises:
 - `E_NO_ACTIVITY`: the app isn't in the foreground or the device is locked, so nothing can be shown.
 - `E_OBSCURED` (Face ID): Approve was tapped while something covered the confirmation sheet, after it had been clear for the arming delay. Nothing is signed. See the confirmation sheet below for what counts.
 - `E_ATTESTATION_FAILED` (iOS): App Attest returned an error other than "unsupported", for example while offline. The new key is deleted, so `createKey` can be called again.
-- `E_INVALID_INPUT`, `E_KEYCHAIN`, `E_KEYSTORE`.
+- `E_INVALID_INPUT`: an argument, or a value the native side returned, is malformed.
+- `E_MODULE_UNAVAILABLE`: the native module isn't in this build (an outdated dev client, or web).
+- `E_KEYCHAIN`, `E_KEYSTORE`.
 
 ## Platform notes
 
@@ -109,7 +111,7 @@ console.log(`${b(header)}.${b(payload)}`);
 7. With biometrics turned off for the app (iOS: Settings → Face ID & Passcode → Other Apps; Android: remove all fingerprints), `sign` rejects with `E_BIOMETRY_UNAVAILABLE` or `E_AUTH_FAILED`.
 8. On an Android phone whose only biometric is face unlock that isn't Class 3, `createKey` and `sign` reject with `E_BIOMETRY_UNAVAILABLE`.
 9. Call `sign` with any other bytes, for example `b64url("test").b64url("{}")`, and with the input from step 2 with `typ` changed, a field added, or `base` set to `"ma\u00a0in"`. Each rejects with `E_NOT_A_GRANT` before any prompt.
-10. Make an input whose prompt is exactly 200 characters (step 2 with `mergeMethod: "merge"`, `deleteBranchAfter: true` and `base` of 103 `x`). The whole text, ending ", then delete its branch", shows without truncation in the sheet, the Touch ID prompt and `BiometricPrompt`. With 104 `x`, it rejects with `E_NOT_A_GRANT`.
+10. Make an input whose prompt is exactly 200 characters (step 2 with `mergeMethod: "merge"`, `deleteBranchAfter: true` and `base` of 79 `x`). The whole text, including the full 40-character head SHA and ending ", then delete its branch", wraps without truncation in the sheet, the Touch ID prompt and `BiometricPrompt`. With 80 `x`, it rejects with `E_NOT_A_GRANT`.
 
 ### 2. One signature at a time
 

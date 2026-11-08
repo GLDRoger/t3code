@@ -3,10 +3,11 @@ import * as NodeCrypto from "node:crypto";
 import { p256 } from "@noble/curves/nist";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { createKey, sign } from "./index";
+import { createKey, isKinApprovalKeyError, sign } from "./index";
 import { MalformedDerSignatureError } from "./src/derSignature";
 
 const mocks = vi.hoisted(() => ({
+  installed: true,
   signDer: vi.fn<(signingInput: string) => Promise<string>>(),
   createKey: vi.fn<
     (challenge: string) => Promise<{
@@ -19,10 +20,21 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("expo", () => ({
-  requireOptionalNativeModule: () => ({ signDer: mocks.signDer, createKey: mocks.createKey }),
+  // expo's CodedError, which can't be imported here without React Native.
+  CodedError: class CodedError extends Error {
+    constructor(
+      readonly code: string,
+      message: string,
+    ) {
+      super(message);
+    }
+  },
+  requireOptionalNativeModule: () =>
+    mocks.installed ? { signDer: mocks.signDer, createKey: mocks.createKey } : null,
 }));
 
 function setup() {
+  mocks.installed = true;
   mocks.signDer.mockReset();
   mocks.createKey.mockReset();
 }
@@ -63,6 +75,7 @@ describe("sign", () => {
   ])("rejects %s before reaching the native module", async (_name, input) => {
     setup();
     await expect(sign(input)).rejects.toThrow("two unpadded base64url parts");
+    await expect(sign(input)).rejects.toMatchObject({ code: "E_INVALID_INPUT" });
     expect(mocks.signDer).not.toHaveBeenCalled();
   });
 
@@ -72,6 +85,27 @@ describe("sign", () => {
     await expect(sign(signingInput)).rejects.toThrow(MalformedDerSignatureError);
     mocks.signDer.mockResolvedValueOnce("not base64url!");
     await expect(sign(signingInput)).rejects.toThrow("signature is not base64url");
+  });
+
+  it("rejects with E_MODULE_UNAVAILABLE when the build has no native module", async () => {
+    setup();
+    mocks.installed = false;
+    await expect(sign(signingInput)).rejects.toMatchObject({ code: "E_MODULE_UNAVAILABLE" });
+  });
+});
+
+describe("isKinApprovalKeyError", () => {
+  it("is true for the module's codes, from JS or native, and false otherwise", async () => {
+    setup();
+    const thrown = await sign("").catch((error: unknown) => error);
+    expect(isKinApprovalKeyError(thrown) && thrown.code).toBe("E_INVALID_INPUT");
+    const native = Object.assign(new Error("busy"), { code: "E_BUSY" });
+    mocks.signDer.mockRejectedValueOnce(native);
+    const rejected = await sign(signingInput).catch((error: unknown) => error);
+    expect(isKinApprovalKeyError(rejected) && rejected.code).toBe("E_BUSY");
+    expect(isKinApprovalKeyError(new Error("plain"))).toBe(false);
+    expect(isKinApprovalKeyError(Object.assign(new Error("x"), { code: "ERR_OTHER" }))).toBe(false);
+    expect(isKinApprovalKeyError({ code: "E_BUSY", message: "not an Error" })).toBe(false);
   });
 });
 
@@ -83,6 +117,7 @@ describe("createKey", () => {
   ])("refuses an attestation challenge that is %s", async (_name, challenge) => {
     setup();
     await expect(createKey(challenge)).rejects.toThrow("attestationChallenge");
+    await expect(createKey(challenge)).rejects.toMatchObject({ code: "E_INVALID_INPUT" });
     expect(mocks.createKey).not.toHaveBeenCalled();
   });
 
@@ -139,6 +174,6 @@ describe("createKey", () => {
       hardware: "secure_enclave",
       appAttest,
     });
-    await expect(createKey(challenge)).rejects.toThrow();
+    await expect(createKey(challenge)).rejects.toMatchObject({ code: "E_INVALID_INPUT" });
   });
 });

@@ -16,6 +16,7 @@ import java.security.PrivateKey
 import java.security.ProviderException
 import java.security.Signature
 import java.security.spec.ECGenParameterSpec
+import java.util.concurrent.atomic.AtomicBoolean
 
 private const val KEYSTORE = "AndroidKeyStore"
 
@@ -25,6 +26,9 @@ private const val MIN_CHALLENGE_BYTES = 16
 private const val MAX_CHALLENGE_BYTES = 128
 
 internal object ApprovalKeyStore {
+  // Two concurrent creates would share one alias, binding the returned chain to the wrong challenge.
+  private val creating = AtomicBoolean(false)
+
   private fun keyStore(): KeyStore = KeyStore.getInstance(KEYSTORE).apply { load(null) }
 
   fun has(): Boolean = keyStore().containsAlias(ALIAS)
@@ -35,6 +39,17 @@ internal object ApprovalKeyStore {
   }
 
   fun create(context: Context, attestationChallenge: ByteArray): Map<String, Any> {
+    if (!creating.compareAndSet(false, true)) {
+      throw ApprovalKeyException(E_BUSY, "Another approval key is already being created.")
+    }
+    try {
+      return createUngated(context, attestationChallenge)
+    } finally {
+      creating.set(false)
+    }
+  }
+
+  private fun createUngated(context: Context, attestationChallenge: ByteArray): Map<String, Any> {
     // setUserAuthenticationParameters(0, AUTH_BIOMETRIC_STRONG) is API 30+; older devices get no key.
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
       throw ApprovalKeyException(E_UNSUPPORTED_OS, "Approval keys need Android 11 or later.")
@@ -49,8 +64,15 @@ internal object ApprovalKeyStore {
   @RequiresApi(Build.VERSION_CODES.R)
   @Suppress("TooGenericExceptionCaught") // Never leave behind a key that failed its checks.
   private fun createOnR(context: Context, challenge: ByteArray): Map<String, Any> {
-    if (has()) throw ApprovalKeyException(E_KEY_EXISTS, "An approval key already exists; delete it first.")
-    val hasStrongBox = context.packageManager.hasSystemFeature(PackageManager.FEATURE_STRONGBOX_KEYSTORE)
+    if (has()) {
+      throw ApprovalKeyException(
+        E_KEY_EXISTS,
+        "An approval key already exists; delete it first."
+      )
+    }
+    val hasStrongBox = context.packageManager.hasSystemFeature(
+      PackageManager.FEATURE_STRONGBOX_KEYSTORE
+    )
     // StrongBoxUnavailableException is a ProviderException, and some StrongBox chips throw the plain
     // one for keys they can't make. Only those fall back to the TEE; anything else fails closed.
     val inStrongBox = hasStrongBox && try {
@@ -124,7 +146,10 @@ internal object ApprovalKeyStore {
       info.userAuthenticationValidityDurationSeconds <= 0 &&
       info.isInvalidatedByBiometricEnrollment
     if (!gated) {
-      throw ApprovalKeyException(E_KEYSTORE, "The approval key's biometric gate isn't the one requested.")
+      throw ApprovalKeyException(
+        E_KEYSTORE,
+        "The approval key's biometric gate isn't the one requested."
+      )
     }
     val secure = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
       info.securityLevel != KeyProperties.SECURITY_LEVEL_SOFTWARE &&
@@ -134,7 +159,10 @@ internal object ApprovalKeyStore {
       info.isInsideSecureHardware
     }
     if (!secure || !info.isUserAuthenticationRequirementEnforcedBySecureHardware) {
-      throw ApprovalKeyException(E_NO_SECURE_HARDWARE, "This device can't keep the approval key in secure hardware.")
+      throw ApprovalKeyException(
+        E_NO_SECURE_HARDWARE,
+        "This device can't keep the approval key in secure hardware."
+      )
     }
     // Advisory only: the server takes `hardware` from the attestation (approvals spec, section 4).
     val strongBoxLevel = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -147,9 +175,13 @@ internal object ApprovalKeyStore {
 }
 
 internal fun decodeBase64Url(value: String): ByteArray {
-  val alphabet = value.all { (it in 'A'..'Z') || (it in 'a'..'z') || (it in '0'..'9') || it == '-' || it == '_' }
+  val alphabet = value.all {
+    it in 'A'..'Z' || it in 'a'..'z' || it in '0'..'9' || it == '-' || it == '_'
+  }
   val decoded = if (value.isNotEmpty() && alphabet) {
-    runCatching { Base64.decode(value, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP) }.getOrNull()
+    runCatching {
+      Base64.decode(value, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
+    }.getOrNull()
   } else {
     null
   }
