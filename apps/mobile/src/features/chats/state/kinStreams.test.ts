@@ -10,6 +10,7 @@ import { queryPersistenceKey } from "@t3tools/client-runtime/state/runtime";
 import {
   EnvironmentId,
   KIN_CHAT_WS_METHODS,
+  KinChatError,
   type KinChatHistoryInput,
   type KinChatId,
   type KinChatListEvent,
@@ -26,10 +27,17 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import * as TestClock from "effect/testing/TestClock";
 
 import { MobileDatabase } from "../../../persistence/mobile-database";
 import { KinChatState, type KinInboxState } from "./kinInboxModel";
-import { KIN_CHAT_LABEL, kinInboxStream, makeKinChatStream, type KinSynced } from "./kinStreams";
+import {
+  isKinRetryable,
+  KIN_CHAT_LABEL,
+  kinInboxStream,
+  makeKinChatStream,
+  type KinSynced,
+} from "./kinStreams";
 
 const environmentId = EnvironmentId.make("kin-host");
 const chatId = "c1" as KinChatId;
@@ -120,8 +128,93 @@ function fakeSession(streams: {
   } as unknown as RpcSession;
 }
 
+const provider = Effect.fnUntraced(function* (
+  activeSession: SubscriptionRef.SubscriptionRef<Option.Option<RpcSession>>,
+  rows: Map<string, string>,
+) {
+  const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+    target: new PrimaryConnectionTarget({
+      environmentId,
+      label: "Kin host",
+      httpBaseUrl: "https://kin.example.test",
+      wsBaseUrl: "wss://kin.example.test",
+    }),
+    state: yield* SubscriptionRef.make<SupervisorConnectionState>(AVAILABLE_CONNECTION_STATE),
+    session: activeSession,
+    prepared: yield* SubscriptionRef.make<Option.Option<PreparedConnection>>(Option.none()),
+    connect: Effect.void,
+    disconnect: Effect.void,
+    retryNow: Effect.void,
+  } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
+  return <A, E>(
+    effect: Effect.Effect<A, E, EnvironmentSupervisor.EnvironmentSupervisor | MobileDatabase>,
+  ) =>
+    effect.pipe(
+      Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+      Effect.provideService(MobileDatabase, fakeDatabase(rows)),
+    );
+});
+
+const kinError = (reason: KinChatError["reason"]) => new KinChatError({ reason, message: reason });
+
 describe("Kin streams", () => {
-  it.effect("resumes from the current state across sessions and drops a left chat", () =>
+  it.each([
+    ["unavailable", true],
+    ["not_found", false],
+    ["not_allowed", false],
+    ["invalid_state", false],
+    ["limit", false],
+    ["widget_changed", false],
+  ] as const)("retries a %s Kin error: %s", (reason, retryable) => {
+    expect(isKinRetryable(kinError(reason))).toBe(retryable);
+  });
+
+  it.effect("backs off and resubscribes after unavailable, and ends on a refusal", () =>
+    Effect.gen(function* () {
+      const subscribed = yield* Queue.unbounded<KinChatSubscribeInput>();
+      const replies = [
+        Stream.fail(kinError("unavailable")),
+        Stream.make({
+          _tag: "backlog",
+          messages: [message(1)],
+          widgets: [],
+          lastSeq: 1,
+          lastChangeSeq: 4,
+        } as unknown as KinChatStreamEvent).pipe(Stream.concat(Stream.fail(kinError("limit")))),
+      ];
+      const activeSession = yield* SubscriptionRef.make<Option.Option<RpcSession>>(
+        Option.some(
+          fakeSession({
+            chat: (input) =>
+              Stream.fromEffect(Queue.offer(subscribed, input)).pipe(
+                Stream.drain,
+                Stream.concat(replies.shift() ?? Stream.never),
+              ) as Stream.Stream<KinChatStreamEvent>,
+            inbox: Stream.never,
+          }),
+        ),
+      );
+      const provide = yield* provider(activeSession, new Map());
+      const views = yield* Queue.unbounded<KinSynced<KinChatState>>();
+      const fiber = yield* makeKinChatStream(() => Effect.never)({ chatId }).pipe(
+        Stream.runForEach((view) => Queue.offer(views, view)),
+        provide,
+        Effect.forkChild,
+      );
+
+      expect(yield* Queue.take(subscribed)).toEqual({ chatId });
+      yield* TestClock.adjust("999 millis");
+      expect(yield* Queue.size(subscribed)).toBe(0);
+      yield* TestClock.adjust("1 millis");
+      expect(yield* Queue.take(subscribed)).toEqual({ chatId });
+      expect((yield* Queue.take(views)).value).toMatchObject({ contiguousSeq: 1, changeSeq: 4 });
+      expect((yield* Queue.take(views)).value.closed).toBe("limit");
+      yield* Fiber.join(fiber);
+      expect(yield* Queue.size(subscribed)).toBe(0);
+    }),
+  );
+
+  it.effect("resumes from both cursors across sessions and drops a left chat", () =>
     Effect.gen(function* () {
       const rows = new Map<string, string>();
       rows.set(
@@ -131,6 +224,7 @@ describe("Kin streams", () => {
             messages: [message(1), message(2)],
             widgets: [],
             contiguousSeq: 2,
+            changeSeq: 7,
             reads: {},
             needsHistoryReload: false,
             left: false,
@@ -163,27 +257,7 @@ describe("Kin streams", () => {
       const activeSession = yield* SubscriptionRef.make<Option.Option<RpcSession>>(
         Option.some(session(firstChat, Stream.fromQueue(firstInbox))),
       );
-      const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
-        target: new PrimaryConnectionTarget({
-          environmentId,
-          label: "Kin host",
-          httpBaseUrl: "https://kin.example.test",
-          wsBaseUrl: "wss://kin.example.test",
-        }),
-        state: yield* SubscriptionRef.make<SupervisorConnectionState>(AVAILABLE_CONNECTION_STATE),
-        session: activeSession,
-        prepared: yield* SubscriptionRef.make<Option.Option<PreparedConnection>>(Option.none()),
-        connect: Effect.void,
-        disconnect: Effect.void,
-        retryNow: Effect.void,
-      } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
-      const provide = <A, E>(
-        effect: Effect.Effect<A, E, EnvironmentSupervisor.EnvironmentSupervisor | MobileDatabase>,
-      ) =>
-        effect.pipe(
-          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-          Effect.provideService(MobileDatabase, fakeDatabase(rows)),
-        );
+      const provide = yield* provider(activeSession, rows);
 
       const inboxFiber = yield* kinInboxStream({}).pipe(
         Stream.runForEach((view) => Queue.offer(inboxViews, view)),
@@ -213,25 +287,27 @@ describe("Kin streams", () => {
       const cachedView = yield* Queue.take(chatViews);
       expect(cachedView).toMatchObject({ live: false, savedAt: "cached-at" });
       expect(cachedView.value.messages.map((m) => m.seq)).toEqual([1, 2]);
-      expect(yield* Queue.take(subscribed)).toEqual({ chatId, afterSeq: 2 });
+      expect(yield* Queue.take(subscribed)).toEqual({ chatId, afterSeq: 2, afterChangeSeq: 7 });
 
+      // The backlog carries the offline edit itself; no history page is re-read for it.
       yield* Queue.offer(firstChat, {
         _tag: "backlog",
-        messages: [message(3)],
+        messages: [message(2, "edited offline"), message(3)],
         widgets: [],
         lastSeq: 3,
+        lastChangeSeq: 11,
       } as unknown as KinChatStreamEvent);
-      expect((yield* Queue.take(chatViews)).value.contiguousSeq).toBe(3);
-      expect(yield* Queue.take(historyReads)).toEqual({ chatId, beforeSeq: 4, limit: 50 });
-      const reread = yield* Queue.take(chatViews);
-      expect(reread.value.messages.map((m) => m.body)).toEqual([
+      const resumed = (yield* Queue.take(chatViews)).value;
+      expect(resumed).toMatchObject({ contiguousSeq: 3, changeSeq: 11 });
+      expect(resumed.messages.map((m) => m.body)).toEqual([
         "message 1",
         "edited offline",
         "message 3",
       ]);
 
       yield* SubscriptionRef.set(activeSession, Option.some(session(secondChat, Stream.never)));
-      expect(yield* Queue.take(subscribed)).toEqual({ chatId, afterSeq: 3 });
+      expect(yield* Queue.take(subscribed)).toEqual({ chatId, afterSeq: 3, afterChangeSeq: 11 });
+      expect(yield* Queue.size(historyReads)).toBe(0);
 
       yield* Queue.offer(secondChat, leftEvent);
       expect((yield* Queue.take(chatViews)).value.left).toBe(true);

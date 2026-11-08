@@ -52,8 +52,42 @@ const inboxCache = persistQuery(Schema.Struct({ inbox: KinInboxState, savedAt: S
 const chatCache = persistQuery(Schema.Struct({ chat: KinChatState, savedAt: Schema.String }));
 
 const isKinChatError = Schema.is(KinChatError);
-const isClosedReason = (reason: KinChatError["reason"]): reason is KinChatClosedReason =>
-  reason === "not_found" || reason === "not_allowed" || reason === "unavailable";
+
+/** `unavailable` is the host's only retryable Kin error; every other reason is a final refusal. */
+export const isKinRetryable = (error: unknown): boolean =>
+  isKinChatError(error) && error.reason === "unavailable";
+const isKinRefusal = (
+  error: unknown,
+): error is KinChatError & { readonly reason: KinChatClosedReason } =>
+  isKinChatError(error) && error.reason !== "unavailable";
+
+export const KIN_RETRY_BASE_DELAY = Duration.seconds(1);
+export const KIN_RETRY_MAX_DELAY = Duration.seconds(30);
+
+/** Resubscribes after `unavailable`: 1 s, doubling to 30 s, starting over once events flow again. */
+export function retryWhileKinUnavailable<A, E, R>(stream: Stream.Stream<A, E, R>) {
+  let attempt = 0;
+  const run = (): Stream.Stream<A, E, R> =>
+    stream.pipe(
+      Stream.onFirst(() =>
+        Effect.sync(() => {
+          attempt = 0;
+        }),
+      ),
+      Stream.catchIf(isKinRetryable, () => {
+        const delay = Duration.min(
+          Duration.times(KIN_RETRY_BASE_DELAY, 2 ** attempt),
+          KIN_RETRY_MAX_DELAY,
+        );
+        attempt += 1;
+        return Stream.fromEffect(Effect.sleep(delay)).pipe(
+          Stream.drain,
+          Stream.concat(Stream.suspend(run)),
+        );
+      }),
+    );
+  return Stream.suspend(run);
+}
 
 // The viewer's chat stream learns it left a chat; the list stream never says so.
 const leftChatsByEnvironment = new Map<EnvironmentId, PubSub.PubSub<KinChatId>>();
@@ -111,7 +145,7 @@ export function kinInboxStream(input: KinChatsSubscribeInput) {
         unknown,
         EnvironmentSupervisor.EnvironmentSupervisor
       > = Stream.merge(
-        subscribe(KIN_CHAT_WS_METHODS.chatsSubscribe, input),
+        retryWhileKinUnavailable(subscribe(KIN_CHAT_WS_METHODS.chatsSubscribe, input)),
         Stream.fromPubSub(leftChats(environmentId)).pipe(
           Stream.map((chatId) => ({ _tag: "left", chatId }) as const),
         ),
@@ -156,9 +190,6 @@ export function makeKinChatStream<E, R>(readHistory: KinReadHistory<E, R>) {
         let state = Option.match(cached, { onNone: () => emptyKinChat, onSome: (c) => c.chat });
         let live = false;
         let savedMessages = Option.exists(cached, (c) => c.chat.messages.length > 0);
-        // Set per subscription: the backlog only covers seq > afterSeq, so a held feed re-reads
-        // its latest page for edits and widget changes made while it was away.
-        let rereadLatest = false;
         const saver = yield* throttledSave((value: { chat: KinChatState; savedAt: string }) =>
           withKinCache(chatCache.save(environmentId, key, value)),
         );
@@ -190,8 +221,7 @@ export function makeKinChatStream<E, R>(readHistory: KinReadHistory<E, R>) {
             yield* PubSub.publish(leftChats(environmentId), input.chatId);
             return views;
           }
-          if (rereadLatest || event._tag === "reset") {
-            rereadLatest = false;
+          if (event._tag === "reset") {
             const page = yield* readHistory({
               chatId: input.chatId,
               beforeSeq: state.contiguousSeq + 1,
@@ -199,7 +229,7 @@ export function makeKinChatStream<E, R>(readHistory: KinReadHistory<E, R>) {
             }).pipe(
               Effect.asSome,
               Effect.catchCause((cause) =>
-                Effect.logWarning("Kin latest page re-read failed", cause).pipe(
+                Effect.logWarning("Kin latest page reload after reset failed", cause).pipe(
                   Effect.as(Option.none<KinChatHistoryResult>()),
                 ),
               ),
@@ -209,31 +239,30 @@ export function makeKinChatStream<E, R>(readHistory: KinReadHistory<E, R>) {
           return views;
         });
 
-        const updates = subscribeDynamic(KIN_CHAT_WS_METHODS.chatSubscribe, () =>
-          Effect.sync(() => {
-            const holdsAny = state.contiguousSeq > 0 || state.messages.length > 0;
-            rereadLatest = holdsAny;
-            return holdsAny
-              ? { chatId: input.chatId, afterSeq: state.contiguousSeq }
-              : { chatId: input.chatId };
-          }),
+        const updates = retryWhileKinUnavailable(
+          subscribeDynamic(KIN_CHAT_WS_METHODS.chatSubscribe, () =>
+            Effect.sync(() =>
+              state.contiguousSeq > 0 || state.messages.length > 0
+                ? {
+                    chatId: input.chatId,
+                    afterSeq: state.contiguousSeq,
+                    afterChangeSeq: state.changeSeq,
+                  }
+                : { chatId: input.chatId },
+            ),
+          ).pipe(Stream.mapEffect(onEvent), Stream.flattenIterable),
         ).pipe(
-          Stream.mapEffect(onEvent),
-          Stream.flattenIterable,
-          Stream.catchIf(
-            (error): error is KinChatError => isKinChatError(error) && isClosedReason(error.reason),
-            (error) =>
-              Stream.fromEffect(
-                Effect.gen(function* () {
-                  const reason = error.reason as KinChatClosedReason;
-                  if (reason !== "unavailable") yield* forget;
-                  return {
-                    value: { ...state, closed: reason },
-                    live: true,
-                    savedAt: nowIso(),
-                  } satisfies KinSynced<KinChatState>;
-                }),
-              ),
+          Stream.catchIf(isKinRefusal, (error) =>
+            Stream.fromEffect(
+              Effect.gen(function* () {
+                if (error.reason === "not_found" || error.reason === "not_allowed") yield* forget;
+                return {
+                  value: { ...state, closed: error.reason },
+                  live: true,
+                  savedAt: nowIso(),
+                } satisfies KinSynced<KinChatState>;
+              }),
+            ),
           ),
           Stream.takeUntil((view) => view.value.left || view.value.closed !== null),
         );
