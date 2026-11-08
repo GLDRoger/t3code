@@ -10,6 +10,8 @@ import Pings from "./migrations/K006_Pings.ts";
 import Budget from "./migrations/K007_Budget.ts";
 import Floor from "./migrations/K008_Floor.ts";
 
+import JudgeLog from "./migrations/K009_JudgeLog.ts";
+
 const run = Migrator.make({});
 const loader = Migrator.fromRecord({
   "1_ChatCore": ChatCore,
@@ -20,6 +22,7 @@ const loader = Migrator.fromRecord({
   "6_Pings": Pings,
   "7_Budget": Budget,
   "8_Floor": Floor,
+  "9_JudgeLog": JudgeLog,
 });
 
 export const runKinMigrations = Effect.fn("KinMigrations.run")(function* () {
