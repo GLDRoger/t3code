@@ -21,7 +21,20 @@ const layer = Budget.layer.pipe(
   Layer.provideMerge(database),
 );
 const owner = [{ _tag: "person" as const, orgId, personId: KinPersonId.make("owner") }];
-const usage = [{ providerTurnId: "turn", inputTokens: 20, cachedInputTokens: 5, outputTokens: 10 }];
+const usage = [
+  {
+    providerTurnId: "turn",
+    usedTokens: 30,
+    turnTokenUsage: {
+      usageScope: "main_agent" as const,
+      usageStatus: "complete" as const,
+      hasSubagents: false,
+      inputTokens: 20,
+      cachedInputTokens: 5,
+      outputTokens: 10,
+    },
+  },
+];
 
 describe("KinBudget", () => {
   it.effect(
@@ -122,26 +135,108 @@ describe("KinBudget", () => {
           yield* sql`SELECT tokens_json FROM kin_wakeups WHERE org_id = ${orgId} ORDER BY wakeup_id`,
           [{ tokens_json: first.tokensJson }],
         );
-        assert.include(
-          yield* budget
-            .charge({ orgId, wakeupId, usage: [{ ...usage[0]!, outputTokens: 11 }] })
-            .pipe(Effect.flip),
-          { reason: "not_allowed" },
-        );
+        const full = [
+          { ...usage[0]!, turnTokenUsage: { ...usage[0]!.turnTokenUsage, outputTokens: 11 } },
+        ];
+        const updated = yield* budget.charge({ orgId, wakeupId, usage: full });
+        assert.strictEqual(updated.units, 59.5);
+        assert.deepStrictEqual(yield* budget.charge({ orgId, wakeupId, usage: full }), updated);
+        assert.strictEqual((yield* budget.get(orgId)).leadUnits, 4);
         assert.include(
           yield* budget
             .charge({ orgId: KinOrgId.make("foreign"), wakeupId, usage })
             .pipe(Effect.flip),
           { reason: "not_found" },
         );
-        for (const bad of [-1, NaN, Infinity]) {
-          assert.include(
-            yield* budget
-              .charge({ orgId, wakeupId, usage: [{ ...usage[0]!, inputTokens: bad }] })
-              .pipe(Effect.flip),
-            { reason: "invalid_state" },
+      }).pipe(Effect.provide(layer)),
+  );
+  it.effect(
+    "charges partial retries only by their positive delta and tolerates unusable usage",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const budget = yield* Budget.KinBudget;
+        const cases = [
+          {
+            id: "partial",
+            usedTokens: 30,
+            turnTokenUsage: { ...usage[0]!.turnTokenUsage, usageStatus: "partial" as const },
+            units: 30,
+          },
+          { id: "missing-fields", usedTokens: 30, turnTokenUsage: undefined, units: 30 },
+          {
+            id: "unavailable",
+            usedTokens: 30,
+            turnTokenUsage: { ...usage[0]!.turnTokenUsage, usageStatus: "unavailable" as const },
+            units: 30,
+          },
+          { id: "no-usage", usedTokens: undefined, turnTokenUsage: undefined, units: 0 },
+          {
+            id: "pi-normalized",
+            usedTokens: 150,
+            turnTokenUsage: {
+              ...usage[0]!.turnTokenUsage,
+              inputTokens: 140,
+              cachedInputTokens: 100,
+            },
+            units: 90,
+          },
+          {
+            id: "clamp",
+            usedTokens: undefined,
+            turnTokenUsage: { ...usage[0]!.turnTokenUsage, cachedInputTokens: 100 },
+            units: 42,
+          },
+          {
+            id: "other-usage",
+            usedTokens: undefined,
+            turnTokenUsage: {
+              ...usage[0]!.turnTokenUsage,
+              otherUsage: { inputTokens: 10, outputTokens: 2 },
+            },
+            units: 73.5,
+          },
+          ...[-1, NaN, Infinity].map((bad, i) => ({
+            id: `garbage-${i}`,
+            usedTokens: 30,
+            turnTokenUsage: { ...usage[0]!.turnTokenUsage, inputTokens: bad },
+            units: 30,
+          })),
+        ];
+        for (const row of cases) {
+          const wakeupId = KinWakeupId.make(row.id);
+          yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids) VALUES (${orgId}, ${wakeupId}, ${agentId}, 'cheap', 0, 'running', '[]')`;
+          const charge = yield* budget.charge({
+            orgId,
+            wakeupId,
+            usage: [
+              {
+                providerTurnId: row.id,
+                usedTokens: row.usedTokens,
+                ...(row.turnTokenUsage === undefined ? {} : { turnTokenUsage: row.turnTokenUsage }),
+              },
+            ],
+          });
+          assert.strictEqual(charge.units, row.units, row.id);
+          yield* (yield* Queue.KinEventQueue).finish({ orgId, wakeupId, status: "completed" });
+          assert.deepStrictEqual(
+            yield* sql`SELECT status FROM kin_wakeups WHERE wakeup_id = ${wakeupId}`,
+            [{ status: "completed" }],
           );
+          assert.isNotNull(
+            (yield* sql`SELECT tokens_json FROM kin_wakeups WHERE wakeup_id = ${wakeupId}`)[0]!
+              .tokens_json,
+          );
+          if (row.id === "partial") {
+            const full = yield* budget.charge({ orgId, wakeupId, usage });
+            assert.strictEqual(full.units, 55.5);
+            assert.deepStrictEqual(yield* budget.charge({ orgId, wakeupId, usage }), full);
+            const lower = yield* budget.charge({ orgId, wakeupId, usage: [] });
+            assert.strictEqual(lower.units, 55.5);
+          }
         }
+        assert.strictEqual((yield* budget.get(orgId)).leadUnits, 411);
       }).pipe(Effect.provide(layer)),
   );
   it.effect("requires the same-org owner and validates limits before writing", () =>
@@ -167,6 +262,26 @@ describe("KinBudget", () => {
         );
       }
       assert.deepStrictEqual((yield* budget.set(owner, input)).limits, input.limits);
+      const defaultOrg = KinOrgId.make("kin-default");
+      const bootstrap = [
+        {
+          _tag: "person" as const,
+          orgId: defaultOrg,
+          personId: KinPersonId.make("kin-default-owner"),
+        },
+      ];
+      yield* sql`INSERT INTO kin_orgs VALUES (${defaultOrg}, 'Default', '1970-01-01T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('kin-default-owner', ${defaultOrg}, 'owner', 'Owner', '1970-01-01T00:00:00.000Z'), ('other-owner', ${defaultOrg}, 'other', 'Other', '1970-01-01T00:00:00.000Z')`;
+      const defaults = { orgId: defaultOrg, limits: input.limits };
+      assert.deepStrictEqual((yield* budget.set(bootstrap, defaults)).limits, input.limits);
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at) VALUES ('default-lead', ${defaultOrg}, 'Lead', 'lead', 'other-owner', '1970-01-01T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at) VALUES ('default-chat', ${defaultOrg}, 'team_group', 0, '1970-01-01T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id) SELECT 'default-lead', ${defaultOrg}, name, level_since, models_json, worker_projects_json, 'default-chat' FROM kin_leads WHERE org_id = ${orgId}`;
+      assert.include(yield* budget.set(bootstrap, defaults).pipe(Effect.flip), {
+        reason: "not_allowed",
+      });
+      yield* sql`UPDATE kin_agents SET owner_person_id = 'kin-default-owner' WHERE org_id = ${defaultOrg}`;
+      assert.deepStrictEqual((yield* budget.set(bootstrap, defaults)).limits, input.limits);
     }).pipe(Effect.provide(layer)),
   );
 });

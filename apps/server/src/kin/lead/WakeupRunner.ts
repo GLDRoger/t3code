@@ -159,9 +159,12 @@ const make = Effect.gen(function* () {
     const turns = projection.providerTurns.filter(
       (turn) => turn.runAttemptId !== null && attempts.has(turn.runAttemptId),
     );
-    const usage = turns.flatMap((turn) =>
-      turn.tokenUsage === undefined ? [] : [{ providerTurnId: turn.id, ...turn.tokenUsage }],
-    );
+    const usage = turns.map((turn) => ({
+      providerTurnId: turn.id,
+      ...(turn.turnTokenUsage === undefined ? {} : { turnTokenUsage: turn.turnTokenUsage }),
+      ...(turn.tokenUsage === undefined ? {} : { tokenUsage: turn.tokenUsage }),
+      usedTokens: turn.tokenUsage?.usedTokens,
+    }));
     yield* budget.charge({ orgId: row.orgId, wakeupId: row.wakeupId, usage });
   });
   const wait = Effect.fn("WakeupRunner.wait")(function* (
@@ -325,17 +328,13 @@ const make = Effect.gen(function* () {
               yield* queue.finish({ orgId, wakeupId, status: "failed" });
               return yield* retire(current);
             }
-            const claimed = yield* sql<{
-              eventId: string;
-              priority: "P0" | "P1" | "P2" | "P3";
-            }>`SELECT event_id AS "eventId", priority FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND state = 'claimed' ORDER BY priority, received_at, event_id`;
             let cheapOnly = false;
-            for (const priority of new Set(claimed.map((item) => item.priority))) {
+            for (const priority of new Set(events.map((item) => item.priority))) {
               const admission = yield* budget.admit(orgId, priority);
               cheapOnly ||= admission.cheapOnly;
               if (!admission.allowed) {
                 const deferred = new Set(
-                  claimed.filter((item) => item.priority === priority).map((item) => item.eventId),
+                  events.filter((item) => item.priority === priority).map((item) => item.eventId),
                 );
                 yield* queue.release({
                   orgId,

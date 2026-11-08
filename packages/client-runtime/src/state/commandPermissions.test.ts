@@ -1,4 +1,3 @@
-import { createKinBudgetEnvironmentAtoms } from "./kinBudget.ts";
 import { requestGuarded, runStreamGuarded } from "../rpc/client.ts";
 import { EnvironmentSupervisor } from "../connection/supervisor.ts";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -73,10 +72,9 @@ describe("command permissions", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const registry = yield* setup;
-        const budget = createKinBudgetEnvironmentAtoms(runtime);
         const permissions = createCommandPermissions(runtime, "kin.budget.set");
         registry.set(sessions(env), AsyncResult.success(grant(true)));
-        expect(registry.get(budget.set.permissionAtom(env))).toBe(false);
+        expect(registry.get(permissions.permissionAtom(env))).toBe(false);
         expect((yield* permissions.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
           "EnvironmentAuthorizationError",
         );
@@ -88,10 +86,10 @@ describe("command permissions", () => {
             permissions: [AuthSettingsWriteScope],
           }),
         );
-        expect(registry.get(budget.set.permissionAtom(env))).toBe(true);
+        expect(registry.get(permissions.permissionAtom(env))).toBe(true);
         yield* permissions.authorize(registry, env);
         registry.set(sessions(other), AsyncResult.success(grant(false)));
-        expect(registry.get(budget.set.permissionAtom(other))).toBe(false);
+        expect(registry.get(permissions.permissionAtom(other))).toBe(false);
         expect((yield* permissions.authorize(registry, other).pipe(Effect.flip))._tag).toBe(
           "EnvironmentAuthorizationError",
         );

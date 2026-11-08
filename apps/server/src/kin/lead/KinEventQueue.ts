@@ -140,7 +140,7 @@ export class KinEventQueue extends Context.Service<
     readonly claim: (
       input: ClaimInput,
     ) => Effect.Effect<
-      ReadonlyArray<KinEvent>,
+      ReadonlyArray<KinEvent & { readonly priority: "P0" | "P1" | "P2" | "P3" }>,
       | PersistenceSqlError
       | PersistenceDecodeError
       | KinEventQueueBusy
@@ -375,7 +375,7 @@ const make = Effect.gen(function* () {
                         return yield* new KinEventQueueBusy({ orgId: input.orgId });
                       const rows = yield* sql<{
                         json: string;
-                        priority: string;
+                        priority: "P0" | "P1" | "P2" | "P3";
                         received_at: number;
                         event_id: string;
                       }>`
@@ -394,7 +394,11 @@ const make = Effect.gen(function* () {
                           a.received_at - b.received_at ||
                           compare(a.event_id, b.event_id),
                       );
-                      const events = yield* Effect.forEach(ordered, (row) => decodeEvent(row.json));
+                      const events = yield* Effect.forEach(ordered, (row) =>
+                        decodeEvent(row.json).pipe(
+                          Effect.map((event) => ({ ...event, priority: row.priority })),
+                        ),
+                      );
                       const eventIds = yield* encodeEventIds(events.map((event) => event.eventId));
                       yield* sql`UPDATE kin_wakeups SET event_ids = ${eventIds}
                 WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId}`;

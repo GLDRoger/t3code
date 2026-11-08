@@ -57,9 +57,11 @@ const decodeUsage = Schema.decodeEffect(
   Schema.fromJsonString(
     Schema.Array(
       Schema.Struct({
-        inputTokens: Schema.Number,
-        cachedInputTokens: Schema.Number,
-        outputTokens: Schema.Number,
+        turnTokenUsage: Schema.Struct({
+          inputTokens: Schema.Number,
+          cachedInputTokens: Schema.Number,
+          outputTokens: Schema.Number,
+        }),
       }),
     ),
   ),
@@ -158,6 +160,28 @@ describe("WakeupRunner", () => {
         );
       }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
   );
+  it.effect("completes Pi wake-ups with disjoint snapshot counters and no turn ledger", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* (yield* KinEventQueue.KinEventQueue).enqueue(event("pi"));
+      yield* Fiber.join(yield* run());
+      const rows = yield* sql<{
+        status: string;
+        tokens_json: string;
+      }>`SELECT status, tokens_json FROM kin_wakeups WHERE org_id = ${orgId}`;
+      assert.strictEqual(rows[0]!.status, "completed");
+      assert.include(JSON.parse(rows[0]!.tokens_json)[0].tokenUsage, {
+        inputTokens: 2,
+        cachedInputTokens: 100,
+      });
+      assert.strictEqual((yield* (yield* Budget.KinBudget).get(orgId)).leadUnits, 30);
+      assert.deepStrictEqual(
+        yield* sql`SELECT state, attempts FROM kin_events WHERE org_id = ${orgId}`,
+        [{ state: "done", attempts: 0 }],
+      );
+    }).pipe(Effect.provide(harness({ piUsage: true })), provideDeterministicTestRuntime),
+  );
   it.effect(
     "charges failed provider turns from the exact usage recorded on the failed wake-up",
     () =>
@@ -213,7 +237,7 @@ describe("WakeupRunner", () => {
         for (const row of rows) {
           const usage = yield* decodeUsage(row.tokens_json);
           assert.deepStrictEqual(usage, [
-            { inputTokens: 20, cachedInputTokens: 5, outputTokens: 10 },
+            { turnTokenUsage: { inputTokens: 20, cachedInputTokens: 5, outputTokens: 10 } },
           ]);
         }
         const charged = yield* sql<{

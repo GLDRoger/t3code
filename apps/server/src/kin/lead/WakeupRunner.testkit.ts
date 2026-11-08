@@ -112,6 +112,7 @@ export function harness(
     readonly hold?: Deferred.Deferred<void>;
     readonly entered?: Deferred.Deferred<void>;
     readonly failed?: boolean;
+    readonly piUsage?: boolean;
     readonly prepare?: Memory.Memory["Service"]["prepareWakeup"];
   } = {},
 ) {
@@ -168,6 +169,37 @@ export function harness(
             if (options.hold !== undefined) yield* Deferred.await(options.hold);
             const time = yield* DateTime.now;
             const id = ProviderTurnId.make(`turn-${input.runOrdinal}`);
+            if (!options.piUsage)
+              yield* PubSub.publish(events, {
+                type: "provider_turn.updated",
+                driver,
+                providerTurn: {
+                  id,
+                  providerThreadId: input.providerThread.id,
+                  nodeId: input.rootNodeId,
+                  runAttemptId: input.attemptId,
+                  nativeTurnRef: null,
+                  ordinal: input.runOrdinal,
+                  status: "running",
+                  startedAt: time,
+                  completedAt: null,
+                  tokenUsage: {
+                    usedTokens: 22,
+                    inputTokens: 18,
+                    cachedInputTokens: 4,
+                    outputTokens: 4,
+                    updatedAt: DateTime.formatIso(time),
+                  },
+                  turnTokenUsage: {
+                    usageScope: "main_agent",
+                    usageStatus: "partial",
+                    hasSubagents: false,
+                    inputTokens: 18,
+                    cachedInputTokens: 4,
+                    outputTokens: 4,
+                  },
+                },
+              });
             yield* PubSub.publish(events, {
               type: "provider_turn.updated",
               driver,
@@ -181,11 +213,23 @@ export function harness(
                 status: options.failed ? "failed" : "completed",
                 startedAt: time,
                 completedAt: time,
+                ...(options.piUsage
+                  ? {}
+                  : {
+                      turnTokenUsage: {
+                        usageScope: "main_agent",
+                        usageStatus: "complete",
+                        hasSubagents: false,
+                        inputTokens: 20,
+                        cachedInputTokens: 5,
+                        outputTokens: 10,
+                      },
+                    }),
                 tokenUsage: {
                   usedTokens: 30,
-                  inputTokens: 20,
-                  cachedInputTokens: 5,
-                  outputTokens: 10,
+                  inputTokens: 2,
+                  cachedInputTokens: options.piUsage ? 100 : 1,
+                  outputTokens: 6,
                   updatedAt: DateTime.formatIso(time),
                 },
               },

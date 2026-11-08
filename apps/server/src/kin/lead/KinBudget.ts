@@ -6,6 +6,8 @@ import {
   KinMessageId,
   type KinOrgId,
   type KinWakeupId,
+  type TurnTokenUsage,
+  type OrchestrationV2ProviderTurnTokenUsage,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -25,9 +27,8 @@ import * as Queue from "./KinEventQueue.ts";
 type Priority = "P0" | "P1" | "P2" | "P3" | "P4";
 type Usage = {
   readonly providerTurnId: string;
-  readonly inputTokens?: number | undefined;
-  readonly cachedInputTokens?: number | undefined;
-  readonly outputTokens?: number | undefined;
+  readonly turnTokenUsage?: TurnTokenUsage;
+  readonly tokenUsage?: OrchestrationV2ProviderTurnTokenUsage;
   readonly usedTokens?: number | undefined;
 };
 type BudgetError = KinChatError | PersistenceSqlError;
@@ -43,6 +44,16 @@ type Charge = {
   readonly day: string;
   readonly units: number;
   readonly tokensJson: string;
+};
+// JSON has no representation for non-finite counters; retain their diagnostic values as strings.
+const usageJsonValue = (value: unknown): unknown => {
+  if (typeof value === "number" && !Number.isFinite(value)) return String(value);
+  if (Array.isArray(value)) return value.map(usageJsonValue);
+  if (typeof value === "object" && value !== null)
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, usageJsonValue(item)]),
+    );
+  return value;
 };
 const defaults = { leadUnits: 2_000_000, workerUnits: 6_000_000 };
 const decodeLimits = Schema.decodeUnknownEffect(KinBudgetLimits);
@@ -191,7 +202,8 @@ const make = Effect.gen(function* () {
           // The reserved bootstrap owner is authoritative before a lead is configured.
           const owner =
             yield* sql`SELECT 1 FROM kin_people p WHERE p.org_id = ${input.orgId} AND p.person_id = ${person.personId}
-          AND ((p.org_id = 'kin-default' AND p.person_id = 'kin-default-owner') OR EXISTS (
+          AND ((p.org_id = 'kin-default' AND p.person_id = 'kin-default-owner'
+            AND NOT EXISTS (SELECT 1 FROM kin_leads WHERE org_id = p.org_id)) OR EXISTS (
             SELECT 1 FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
             WHERE l.org_id = p.org_id AND a.owner_person_id = p.person_id))`;
           if (owner.length === 0) return yield* notAllowed;
@@ -229,22 +241,59 @@ const make = Effect.gen(function* () {
     }),
     charge: Effect.fn("KinBudget.charge")(function* (input) {
       let units = 0;
+      const valid = (value: number | undefined) =>
+        value !== undefined && Number.isFinite(value) && value >= 0;
+      const count = (value: number | undefined) => (valid(value) ? value! : 0);
       const ids = new Set<string>();
+      if (input.usage.length === 0)
+        yield* Effect.logWarning("Kin budget turn usage unavailable", {
+          orgId: input.orgId,
+          wakeupId: input.wakeupId,
+        });
       for (const turn of input.usage) {
-        const incoming = turn.inputTokens ?? 0;
-        const cached = turn.cachedInputTokens ?? 0;
-        const outgoing = turn.outputTokens ?? 0;
-        if (
-          ids.has(turn.providerTurnId) ||
-          [incoming, cached, outgoing].some((v) => !Number.isFinite(v) || v < 0) ||
-          cached > incoming
-        )
-          return yield* invalid;
+        if (ids.has(turn.providerTurnId)) continue;
         ids.add(turn.providerTurnId);
-        units += incoming - cached + 0.1 * cached + 4 * outgoing;
+        const ledger = turn.turnTokenUsage;
+        const complete =
+          ledger?.usageStatus === "complete" &&
+          valid(ledger.inputTokens) &&
+          valid(ledger.outputTokens) &&
+          (ledger.cachedInputTokens === undefined || valid(ledger.cachedInputTokens));
+        if (!complete) {
+          yield* Effect.logWarning("Kin budget using fallback usage", {
+            orgId: input.orgId,
+            wakeupId: input.wakeupId,
+            usageStatus: ledger?.usageStatus ?? "missing",
+            hasUsedTokens: valid(turn.usedTokens),
+          });
+        }
+        if (!complete && valid(turn.usedTokens)) {
+          units += count(turn.usedTokens);
+          continue;
+        }
+        const incoming = count(ledger?.inputTokens);
+        const cached = Math.min(incoming, count(ledger?.cachedInputTokens));
+        if (cached !== count(ledger?.cachedInputTokens))
+          yield* Effect.logWarning("Kin budget clamped cached usage", {
+            orgId: input.orgId,
+            wakeupId: input.wakeupId,
+          });
+        units +=
+          incoming -
+          cached +
+          0.1 * cached +
+          4 * count(ledger?.outputTokens) +
+          count(ledger?.otherUsage?.inputTokens) +
+          4 * count(ledger?.otherUsage?.outputTokens);
       }
-      if (!Number.isFinite(units)) return yield* invalid;
-      const tokensJson = yield* encodeJson(input.usage);
+      if (!Number.isFinite(units)) {
+        yield* Effect.logWarning("Kin budget usage overflow", {
+          orgId: input.orgId,
+          wakeupId: input.wakeupId,
+        });
+        units = 0;
+      }
+      const tokensJson = yield* encodeJson(usageJsonValue(input.usage));
       const { day } = yield* period(input.orgId);
       return yield* sql.withTransaction(
         Effect.gen(function* () {
@@ -253,21 +302,24 @@ const make = Effect.gen(function* () {
           if (existing.length === 0) return yield* notFound;
           const [stored] =
             yield* sql<Charge>`SELECT org_id AS "orgId", wakeup_id AS "wakeupId", day, units, tokens_json AS "tokensJson" FROM kin_budget_charges WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId}`;
-          if (stored !== undefined) {
-            if (stored.tokensJson !== tokensJson) return yield* notAllowed;
-            return stored;
-          }
+          if (stored?.tokensJson === tokensJson) return stored;
+          const delta = Math.max(0, units - (stored?.units ?? 0));
+          const chargedUnits = Math.max(units, stored?.units ?? 0);
           yield* ensure(input.orgId, day);
           const before = yield* snapshot(input.orgId, day);
-          if (!Number.isFinite(before.leadUnits + units)) return yield* invalid;
-          const [charged] =
-            yield* sql<Charge>`INSERT INTO kin_budget_charges (org_id, wakeup_id, day, units, tokens_json)
-          VALUES (${input.orgId}, ${input.wakeupId}, ${day}, ${units}, ${tokensJson}) ON CONFLICT DO NOTHING
-          RETURNING org_id AS "orgId", wakeup_id AS "wakeupId", day, units, tokens_json AS "tokensJson"`;
-          if (charged === undefined) return yield* notAllowed;
-          yield* sql`UPDATE kin_budget SET lead_units = lead_units + ${units} WHERE org_id = ${input.orgId} AND day = ${day}`;
+          if (!Number.isFinite(before.leadUnits + delta)) return yield* invalid;
+          yield* sql`INSERT INTO kin_budget_charges (org_id, wakeup_id, day, units, tokens_json)
+            VALUES (${input.orgId}, ${input.wakeupId}, ${day}, ${chargedUnits}, ${tokensJson})
+            ON CONFLICT (org_id, wakeup_id) DO UPDATE SET units = excluded.units, tokens_json = excluded.tokens_json`;
+          yield* sql`UPDATE kin_budget SET lead_units = lead_units + ${delta} WHERE org_id = ${input.orgId} AND day = ${day}`;
           yield* sql`UPDATE kin_wakeups SET tokens_json = ${tokensJson} WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId}`;
-          return charged;
+          return {
+            orgId: input.orgId,
+            wakeupId: input.wakeupId,
+            day: stored?.day ?? day,
+            units: chargedUnits,
+            tokensJson,
+          };
         }),
       );
     }, Effect.mapError(mapError)),
