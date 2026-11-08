@@ -7,7 +7,6 @@ import * as RpcGroup from "effect/rpc/RpcGroup";
 
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
-import { KinServer } from "../KinServer.ts";
 import * as Audit from "./Audit.ts";
 
 const group = RpcGroup.make(...KinApprovalRpcs);
@@ -20,13 +19,14 @@ const failed = () =>
 
 export const makeKinApprovalHandlers = Effect.fn("makeKinApprovalHandlers")(function* (
   session: AuthenticatedSession,
+  // Passed in rather than read from `KinServer`, whose service union reaches the judge.
+  kin: Option.Option<Context.Context<KinIdentity>>,
 ) {
-  const kin = yield* Effect.serviceOption(KinServer);
   const audit = yield* Audit.make;
   // Owner-only (spec section 11): membership in the org is not enough.
   const asOwner = Effect.fn("KinApprovals.asOwner")(function* (orgId: KinOrgId) {
-    if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
-    const identity = Context.get(kin.value.services.value, KinIdentity);
+    if (Option.isNone(kin)) return yield* unavailable;
+    const identity = Context.get(kin.value, KinIdentity);
     const people = yield* identity.resolve(session);
     const { owner } = identity;
     const isOwner = people.some(

@@ -524,13 +524,11 @@ describe("kin.audit RPCs", () => {
       );
       if (Option.isNone(kin.services)) return assert.fail("Kin services missing");
       const services = kin.services.value;
-      const handlersFor = (scopes: AuthenticatedSession["scopes"], server = kin) =>
-        makeKinApprovalHandlers({
-          sessionId,
-          subject: "browser",
-          method: "browser-session-cookie",
-          scopes,
-        }).pipe(Effect.provideService(Kin.KinServer, server));
+      const handlersFor = (scopes: AuthenticatedSession["scopes"], kinServices = kin.services) =>
+        makeKinApprovalHandlers(
+          { sessionId, subject: "browser", method: "browser-session-cookie", scopes },
+          kinServices,
+        );
       const ownerHandlers = yield* handlersFor(AuthStandardClientScopes);
       assert.deepStrictEqual(yield* ownerHandlers["kin.audit.verify"]({ orgId: defaultOrg }), {
         ok: true,
@@ -552,16 +550,13 @@ describe("kin.audit RPCs", () => {
       yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, github_login, created_at)
         VALUES (${member}, ${defaultOrg}, 'member', 'Member', NULL, '2026-11-08T00:00:00.000Z')`;
       const identity = Context.get(services, KinIdentity);
-      const asMember = {
-        ...kin,
-        services: Option.some(
-          Context.add(services, KinIdentity, {
-            ...identity,
-            resolve: () =>
-              Effect.succeed([{ _tag: "person" as const, orgId: defaultOrg, personId: member }]),
-          }),
-        ),
-      };
+      const asMember = Option.some(
+        Context.add(services, KinIdentity, {
+          ...identity,
+          resolve: () =>
+            Effect.succeed([{ _tag: "person" as const, orgId: defaultOrg, personId: member }]),
+        }),
+      );
       const memberHandlers = yield* handlersFor(AuthStandardClientScopes, asMember);
       assert.include(
         yield* memberHandlers["kin.audit.verify"]({ orgId: defaultOrg }).pipe(Effect.flip),
