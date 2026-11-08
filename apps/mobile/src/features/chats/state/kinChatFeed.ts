@@ -14,7 +14,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 
-import type { KinHost } from "./kinHost";
+import type { KinRouteHost } from "./kinHost";
 import {
   applyKinChatHistory,
   emptyKinChat,
@@ -31,6 +31,8 @@ export type KinChatScreenState =
   | { readonly _tag: "loading" }
   | { readonly _tag: "offline" }
   | { readonly _tag: "noHost" }
+  /** The route's environment isn't paired with this device. */
+  | { readonly _tag: "unpaired" }
   | { readonly _tag: "unauthorized" }
   | { readonly _tag: "noIdentity" }
   | { readonly _tag: "error"; readonly message: string; readonly retry: "orgs" | "chat" }
@@ -49,11 +51,12 @@ const isAuthorizationError = Schema.is(EnvironmentAuthorizationError);
 
 /** The same host rules as the inbox (`kinInboxScreenState`), over one chat's stream. */
 export function kinChatScreenState(
-  host: KinHost,
+  host: KinRouteHost,
   chat: AsyncResult.AsyncResult<KinSynced<KinChatState>, unknown> | null,
 ): KinChatScreenState {
   if (host._tag === "searching") return { _tag: "loading" };
   if (host._tag === "none") return { _tag: "noHost" };
+  if (host._tag === "unpaired") return { _tag: "unpaired" };
   if (host.probe._tag === "unauthorized") return { _tag: "unauthorized" };
   if (host.probe._tag === "noIdentity") return { _tag: "noIdentity" };
   if (host.probe._tag === "error" && !host.probe.transient) {
@@ -164,8 +167,8 @@ export type KinFeedRow =
       readonly showAuthor: boolean;
     }
   | { readonly type: "system"; readonly key: string; readonly message: KinMessage }
-  /** Starts each local day; `at` is the day's first message time. */
-  | { readonly type: "day"; readonly key: string; readonly at: string }
+  /** Starts each local day; `label` is relative to the day the rows were built on. */
+  | { readonly type: "day"; readonly key: string; readonly label: string }
   | {
       readonly type: "fold";
       readonly key: string;
@@ -217,10 +220,11 @@ function messageRow(message: KinMessage, fields: Omit<MessageRow, "type" | "key"
 type DayRow = Extract<KinFeedRow, { readonly type: "day" }>;
 const dayRows = new WeakMap<KinMessage, DayRow>();
 
-function dayRow(first: KinMessage, day: string): DayRow {
+function dayRow(first: KinMessage, day: string, now: Date): DayRow {
+  const label = kinDayLabel(first.createdAt, now);
   const held = dayRows.get(first);
-  if (held !== undefined && held.key === `day:${day}`) return held;
-  const row: DayRow = { type: "day", key: `day:${day}`, at: first.createdAt };
+  if (held !== undefined && held.key === `day:${day}` && held.label === label) return held;
+  const row: DayRow = { type: "day", key: `day:${day}`, label };
   dayRows.set(first, row);
   return row;
 }
@@ -236,6 +240,7 @@ export function buildKinFeedRows(
   messages: ReadonlyArray<KinMessage>,
   viewer: KinFeedViewer,
   expandedRuns: ReadonlySet<string>,
+  now: Date = new Date(),
 ): ReadonlyArray<KinFeedRow> {
   const visible = messages.filter((message) => message.status !== "dismissed");
   const rows: KinFeedRow[] = [];
@@ -248,7 +253,7 @@ export function buildKinFeedRows(
     if (day === previousDay) return;
     previousDay = day;
     previousAuthor = null;
-    rows.push(dayRow(message, day));
+    rows.push(dayRow(message, day, now));
   };
 
   const pushMessage = (message: KinMessage) => {
@@ -424,18 +429,27 @@ export const latestKinSeq = (messages: ReadonlyArray<KinMessage>) =>
   messages[messages.length - 1]?.seq ?? 0;
 
 /**
- * The seq to mark read, or null. Only while the reader sees the end, past the last seq already
- * sent, and while the inbox counts anything unread (`null` while the inbox hasn't loaded).
+ * The seq to mark read, or null. Only while the reader sees the end, past the last seq marked or
+ * already tried, and while the inbox counts anything unread (`null` while the inbox hasn't loaded).
+ * A refused seq stays tried until the caller rearms it, so a failing host isn't asked on every render.
  */
 export function kinSeqToMarkRead(input: {
   readonly seesEnd: boolean;
   readonly latestSeq: number;
   readonly markedSeq: number;
+  readonly attemptedSeq: number;
   readonly unread: number | null;
 }): number | null {
-  if (!input.seesEnd || input.latestSeq <= input.markedSeq || input.unread === 0) return null;
+  const sent = Math.max(input.markedSeq, input.attemptedSeq);
+  if (!input.seesEnd || input.latestSeq <= sent || input.unread === 0) return null;
   return input.latestSeq;
 }
+
+/** Whether a refused mark may be retried: the reader came back online or back to the chat. */
+export const kinMarkReadRearms = (
+  was: { readonly connected: boolean; readonly focused: boolean },
+  now: { readonly connected: boolean; readonly focused: boolean },
+) => (now.connected && !was.connected) || (now.focused && !was.focused);
 
 // Header
 
