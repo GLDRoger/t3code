@@ -108,6 +108,34 @@ const send = (key: string, grant = true) =>
       mentions: grant ? [agentMemberId] : [],
     }),
   );
+const otherChatId = KinChatId.make("other-group");
+const sendInOtherChat = Effect.gen(function* () {
+  const repo = yield* Repository.KinChatRepository;
+  yield* repo.createChat({
+    orgId,
+    chatId: otherChatId,
+    kind: "team_group",
+    title: "Other",
+    teamId: null,
+    directKey: null,
+    lastMessageAt: null,
+    createdAt: timestamp,
+    archivedAt: null,
+  });
+  yield* repo.addMember({
+    orgId,
+    chatId: otherChatId,
+    memberId: KinMemberId.make("owner-other"),
+    principal: { _tag: "person", personId },
+    role: "owner",
+    joinedAt: timestamp,
+    leftAt: null,
+    mutedUntil: null,
+  });
+  return yield* Effect.flatMap(Chat.KinChatService, (service) =>
+    service.send(person, { chatId: otherChatId, clientMessageId: "other", body: "Other chat" }),
+  );
+});
 const logs = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   return yield* sql<{
@@ -224,53 +252,61 @@ describe("JudgeShadow", () => {
     }),
   );
 
-  it.effect.each(["extra", "text", "name", "agent", "chat", "org", "message", "null"] as const)(
-    "drops records outside the allowlist: %s",
-    (invalid) =>
-      Effect.gen(function* () {
-        const verdict: JudgeVerdict = {
-          needsResponse: { value: true, confidence: 1 },
-          role: { value: "lead", confidence: 1 },
-          urgency: { value: "normal", confidence: 1 },
-          needsHumanDecision: { value: false, confidence: 1 },
-          commitment: {
-            value: { kind: "promise", text: invalid === "text" ? "x".repeat(1001) : null },
-            confidence: 1,
+  it.effect.each([
+    "extra",
+    "text",
+    "name",
+    "agent",
+    "chat",
+    "org",
+    "message",
+    "crossChat",
+    "null",
+  ] as const)("drops records outside the allowlist: %s", (invalid) =>
+    Effect.gen(function* () {
+      const verdict: JudgeVerdict = {
+        needsResponse: { value: true, confidence: 1 },
+        role: { value: "lead", confidence: 1 },
+        urgency: { value: "normal", confidence: 1 },
+        needsHumanDecision: { value: false, confidence: 1 },
+        commitment: {
+          value: { kind: "promise", text: invalid === "text" ? "x".repeat(1001) : null },
+          confidence: 1,
+        },
+      };
+      const judge = Layer.succeed(Judge, {
+        name: invalid === "name" ? "x".repeat(101) : "boundary",
+        judge: () =>
+          Effect.succeed(
+            invalid === "null"
+              ? (null as unknown as JudgeVerdict)
+              : invalid === "extra"
+                ? { ...verdict, token: "not-authority" }
+                : verdict,
+          ),
+      });
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const message = invalid === "crossChat" ? yield* sendInOtherChat : yield* send("boundary");
+        const shadow = yield* Shadow.JudgeShadow;
+        yield* shadow.drain;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DELETE FROM kin_judge_log`;
+        const before = yield* floor;
+        yield* shadow.observe(
+          {
+            ...message,
+            chatId: invalid === "chat" ? KinChatId.make("other") : chatId,
+            orgId: invalid === "org" ? KinOrgId.make("other") : orgId,
+            messageId: invalid === "message" ? KinMessageId.make("missing") : message.messageId,
           },
-        };
-        const judge = Layer.succeed(Judge, {
-          name: invalid === "name" ? "x".repeat(101) : "boundary",
-          judge: () =>
-            Effect.succeed(
-              invalid === "null"
-                ? (null as unknown as JudgeVerdict)
-                : invalid === "extra"
-                  ? { ...verdict, token: "not-authority" }
-                  : verdict,
-            ),
-        });
-        yield* Effect.gen(function* () {
-          yield* seed;
-          const message = yield* send("boundary");
-          const shadow = yield* Shadow.JudgeShadow;
-          yield* shadow.drain;
-          const sql = yield* SqlClient.SqlClient;
-          yield* sql`DELETE FROM kin_judge_log`;
-          const before = yield* floor;
-          yield* shadow.observe(
-            {
-              ...message,
-              chatId: invalid === "chat" ? KinChatId.make("other") : chatId,
-              orgId: invalid === "org" ? KinOrgId.make("other") : orgId,
-              messageId: invalid === "message" ? KinMessageId.make("missing") : message.messageId,
-            },
-            { _tag: "grant", agentId: invalid === "agent" ? KinAgentId.make("outsider") : agentId },
-          );
-          yield* shadow.drain;
-          assert.deepStrictEqual(yield* logs, []);
-          assert.deepStrictEqual(yield* floor, before);
-        }).pipe(Effect.provide(testLayer(judge)));
-      }),
+          { _tag: "grant", agentId: invalid === "agent" ? KinAgentId.make("outsider") : agentId },
+        );
+        yield* shadow.drain;
+        assert.deepStrictEqual(yield* logs, []);
+        assert.deepStrictEqual(yield* floor, before);
+      }).pipe(Effect.provide(testLayer(judge)));
+    }),
   );
 
   it.effect.prop(
@@ -291,23 +327,25 @@ describe("JudgeShadow", () => {
     (values) =>
       Effect.gen(function* () {
         const ready = yield* Deferred.make<void>();
+        // Normalise -0 so the JSON round-trip compares equal.
+        const confidence = values.confidence + 0;
         const verdict: JudgeVerdict = {
           needsResponse: {
             value: values.response,
-            confidence: values.confidence === 0 ? 0 : values.confidence,
+            confidence,
           },
           needsHumanDecision: {
             value: values.human,
-            confidence: values.confidence === 0 ? 0 : values.confidence,
+            confidence,
           },
-          role: { value: values.role, confidence: values.confidence === 0 ? 0 : values.confidence },
+          role: { value: values.role, confidence },
           urgency: {
             value: values.urgency,
-            confidence: values.confidence === 0 ? 0 : values.confidence,
+            confidence,
           },
           commitment: {
             value: { kind: values.commitment, text: null },
-            confidence: values.confidence === 0 ? 0 : values.confidence,
+            confidence,
           },
         };
         const judge = Layer.succeed(Judge, {
