@@ -1,3 +1,5 @@
+import * as JudgeShadow from "./floor/JudgeShadow.ts";
+import * as NoopJudge from "./floor/NoopJudge.ts";
 import { TaskCardIndex } from "./widgets/taskCard.ts";
 import { KinChatRepository } from "./chat/KinChatRepository.ts";
 import type * as SqlClient from "effect/sql/SqlClient";
@@ -35,7 +37,14 @@ const enabled = Layer.effect(
       subscribeForViewer: Option.some(hub.subscribeForViewer),
     };
   }),
-).pipe(Layer.provide(Layer.merge(KinChat.layer, KinApprovals.layer)));
+).pipe(
+  Layer.provide(
+    Layer.merge(
+      KinChat.layer.pipe(Layer.provide(JudgeShadow.layer.pipe(Layer.provide(NoopJudge.layer)))),
+      KinApprovals.layer,
+    ),
+  ),
+);
 const disabled = Layer.succeed(KinServer, {
   taskCardUpdater: Layer.empty,
   services: Option.none(),
