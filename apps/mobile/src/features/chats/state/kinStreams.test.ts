@@ -111,7 +111,7 @@ function fakeDatabase(rows: Map<string, string>) {
 }
 
 function fakeSession(streams: {
-  readonly chat: (input: KinChatSubscribeInput) => Stream.Stream<KinChatStreamEvent>;
+  readonly chat: (input: KinChatSubscribeInput) => Stream.Stream<KinChatStreamEvent, KinChatError>;
   readonly inbox: Stream.Stream<KinChatListEvent>;
 }): RpcSession {
   return {
@@ -189,7 +189,7 @@ describe("Kin streams", () => {
               Stream.fromEffect(Queue.offer(subscribed, input)).pipe(
                 Stream.drain,
                 Stream.concat(replies.shift() ?? Stream.never),
-              ) as Stream.Stream<KinChatStreamEvent>,
+              ),
             inbox: Stream.never,
           }),
         ),
