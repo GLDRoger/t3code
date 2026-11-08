@@ -1,3 +1,5 @@
+import { ACTIVE_RUN_STATUSES } from "../../orchestration-v2/ThreadManagementService.ts";
+import type { McpThreadCaller } from "../../mcp/McpInvocationContext.ts";
 import {
   KinOrg,
   KinOrgId,
@@ -58,8 +60,11 @@ type Scope = { readonly orgId: KinOrgId };
 type ChatScope = Scope & { readonly chatId: KinChatId };
 type MemberScope = ChatScope & { readonly memberId: KinMemberId };
 type InsertMessage = Omit<KinMessage, "seq" | "authorRole"> & {
+  readonly caller?: McpThreadCaller | undefined;
+  // Only the server-only task card creator may attribute a message outside an agent wake-up.
+  readonly serverTaskCard?: true;
   readonly clientMessageId: {
-    readonly kind: "send" | "act";
+    readonly kind: "send" | "act" | "task-card";
     readonly id: typeof TrimmedNonEmptyString.Type;
   } | null;
 };
@@ -166,6 +171,9 @@ export class KinChatRepository extends Context.Service<
     readonly getMessage: (
       input: Scope & { readonly messageId: KinMessageId },
     ) => Effect.Effect<Option.Option<KinMessage>, RepositoryError>;
+    readonly openTaskCards: (
+      input: Scope,
+    ) => Effect.Effect<ReadonlyArray<KinWidget>, RepositoryError>;
     readonly getWidget: (
       input: Scope & { readonly widgetId: KinWidgetId },
     ) => Effect.Effect<Option.Option<KinWidget>, RepositoryError>;
@@ -181,6 +189,13 @@ export class KinChatRepository extends Context.Service<
       readonly ownerDisplayName: string;
       readonly createdAt: IsoDateTime;
     }) => Effect.Effect<KinPerson, RepositoryError | KinIdentityBootstrapError>;
+    readonly hasRunningWakeup: (
+      input: Scope & {
+        readonly agentId: KinAgentId;
+        readonly threadId: ThreadId;
+        readonly caller: McpThreadCaller;
+      },
+    ) => Effect.Effect<boolean, RepositoryError>;
     readonly findAgentThread: (
       threadId: ThreadId,
     ) => Effect.Effect<Option.Option<KinAgentThread>, RepositoryError>;
@@ -253,7 +268,10 @@ export class KinChatRepository extends Context.Service<
       },
     ) => Effect.Effect<KinChat, RepositoryError>;
     readonly findClientMessage: (
-      input: MemberScope & { readonly kind: "send" | "act"; readonly clientId: string },
+      input: MemberScope & {
+        readonly kind: "send" | "act" | "task-card";
+        readonly clientId: string;
+      },
     ) => Effect.Effect<Option.Option<KinMessage>, RepositoryError>;
     readonly insertMessage: (input: InsertMessage) => Effect.Effect<KinMessage, RepositoryError>;
     readonly history: (
@@ -407,6 +425,52 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(toRepositoryError("KinChatRepository.getAgentThread")),
   );
+  const hasRunningWakeup = Effect.fn("KinChatRepository.hasRunningWakeup")(
+    function* (
+      input: Scope & {
+        readonly agentId: KinAgentId;
+        readonly threadId: ThreadId;
+        readonly caller: McpThreadCaller;
+      },
+    ) {
+      if (input.caller.subagent === true || input.caller.threadId !== input.threadId) return false;
+      const rows =
+        yield* sql`WITH RECURSIVE ancestors(run_id, thread_id, ordinal, payload_json) AS (
+        SELECT run_id, thread_id, ordinal, payload_json
+        FROM orchestration_v2_projection_runs INDEXED BY orchestration_v2_projection_runs_thread_status_idx
+        WHERE thread_id = ${input.threadId} AND status IN ${sql.in(ACTIVE_RUN_STATUSES)}
+        UNION
+        SELECT p.run_id, p.thread_id, p.ordinal, p.payload_json
+        FROM ancestors child JOIN orchestration_v2_projection_runs p
+          ON p.thread_id = child.thread_id
+          AND (p.run_id = json_extract(child.payload_json, '$.restartContinuationOfRunId')
+            OR p.run_id = json_extract(child.payload_json, '$.usageLimitContinuationOfRunId'))
+        -- Continuation links plus agent/server provenance come only from the restart and usage-limit workers.
+        JOIN orchestration_v2_projection_messages cm
+          ON cm.message_id = json_extract(child.payload_json, '$.userMessageId')
+          AND cm.thread_id = child.thread_id AND cm.run_id = child.run_id
+          AND json_extract(cm.payload_json, '$.createdBy') = 'agent'
+          AND json_extract(cm.payload_json, '$.creationSource') = 'server'
+      )
+      SELECT 1 FROM kin_wakeups w JOIN ancestors root ON root.thread_id = w.thread_id
+      JOIN orchestration_v2_projection_messages m
+        ON m.message_id = json_extract(root.payload_json, '$.userMessageId')
+        AND m.thread_id = root.thread_id AND m.run_id = root.run_id
+      WHERE w.org_id = ${input.orgId} AND w.agent_id = ${input.agentId}
+        AND w.thread_id = ${input.threadId} AND w.status = 'running'
+        AND json_extract(root.payload_json, '$.userMessageId') = 'kin-wakeup-msg:' || w.wakeup_id
+        AND json_extract(m.payload_json, '$.createdBy') = 'system'
+        AND json_extract(m.payload_json, '$.creationSource') = 'server'
+        AND root.run_id = COALESCE(w.run_id, (
+          SELECT first.run_id FROM orchestration_v2_projection_runs first
+          WHERE first.thread_id = w.thread_id
+            AND json_extract(first.payload_json, '$.userMessageId') = 'kin-wakeup-msg:' || w.wakeup_id
+          ORDER BY first.ordinal LIMIT 1
+        )) LIMIT 1`;
+      return rows.length > 0;
+    },
+    Effect.mapError(toRepositoryError("KinChatRepository.hasRunningWakeup")),
+  );
   const validateWidgetReferences = Effect.fn("KinChatRepository.validateWidgetReferences")(
     function* (input: Pick<KinWidget, "orgId" | "chatId" | "awaiting" | "source">) {
       for (const personId of input.awaiting) {
@@ -528,12 +592,23 @@ const make = Effect.gen(function* () {
     Effect.mapError(toRepositoryError("KinChatRepository.addWaiting")),
   );
   return KinChatRepository.of({
+    hasRunningWakeup,
     getOrg: orgOne,
     getPerson: personOne,
     getAgent: agentOne,
     getChat: chatOne,
     getMember: memberOne,
     getMessage: messageOne,
+    openTaskCards: Effect.fn("KinChatRepository.openTaskCards")(
+      (input) =>
+        SqlSchema.findAll({
+          Request: Schema.Unknown,
+          Result: WidgetRow,
+          execute: () =>
+            sql`SELECT ${sql.literal(widgetColumns)} FROM kin_widgets WHERE org_id = ${input.orgId} AND type = 'task' AND closed_at IS NULL ORDER BY widget_id`,
+        })(input),
+      Effect.mapError(toRepositoryError("KinChatRepository.openTaskCards")),
+    ),
     getWidget: widgetOne,
     getWaiting: waitingOne,
     getAgentThread: agentThreadOne,
@@ -900,6 +975,13 @@ const make = Effect.gen(function* () {
                 reason: "not_allowed",
                 message: "Retired Kin agents cannot register threads.",
               });
+            const inbox =
+              yield* sql`SELECT 1 FROM kin_webhook_sources WHERE inbox_thread_id = ${input.threadId}`;
+            if (inbox.length > 0)
+              return yield* new KinChatError({
+                reason: "not_allowed",
+                message: "Webhook inbox threads cannot be Kin agents.",
+              });
             const existing = yield* SqlSchema.findOneOption({
               Request: Schema.Unknown,
               Result: AgentThreadRow,
@@ -1061,6 +1143,21 @@ const make = Effect.gen(function* () {
                   message: "Kin record not found.",
                 });
             }
+            if (
+              author._tag === "agent" &&
+              input.serverTaskCard !== true &&
+              (input.caller === undefined ||
+                !(yield* hasRunningWakeup({
+                  ...input,
+                  agentId: author.agentId,
+                  threadId: author.threadId,
+                  caller: input.caller,
+                })))
+            )
+              return yield* new KinChatError({
+                reason: "not_allowed",
+                message: "Kin wake-up is not running.",
+              });
             if (input.replyTo !== null) {
               const reply = yield* requireRecord(
                 messageOne({ orgId: input.orgId, messageId: input.replyTo }),

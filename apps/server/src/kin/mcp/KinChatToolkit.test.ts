@@ -1,3 +1,5 @@
+import { environment } from "../chat/TaskCard.testkit.ts";
+import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
 import * as FileSystem from "effect/FileSystem";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -58,7 +60,10 @@ const client = McpSchema.McpServerClient.of({
   getClient: Effect.die("unused"),
 });
 const runtime = (config: Record<string, unknown>) =>
-  Kin.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(config))));
+  Kin.layer.pipe(
+    Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(config))),
+    Layer.provideMerge(environment),
+  );
 const registration = McpHttpServer.toolkitRegistration(KinChatToolkit, handlers).pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
 );
@@ -97,7 +102,7 @@ const liveThreads = Layer.mock(ThreadManagement.ThreadManagementService)({
 });
 const layer = Layer.merge(registration, KinMcp.registry(fakeRegistry)).pipe(
   Layer.provideMerge(runtime({ KIN_ENABLED: true })),
-  Layer.provideMerge(Sqlite.layerMemory),
+  Layer.provideMerge(authorityLayer),
   Layer.provideMerge(liveThreads),
 );
 const visible = Effect.gen(function* () {
@@ -149,6 +154,11 @@ const seed = Effect.gen(function* () {
   );
   yield* identity.registerAgentThread({ orgId: person.orgId, agentId, threadId });
   const chat = yield* chatService.createDirect(person, { orgId: person.orgId, agentId });
+  yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+    VALUES (${agentId}, ${person.orgId}, 'Lead', 0, '{}', '[]', ${chat.chatId})`;
+  const run = yield* startWakeupRun(threadId, "toolkit-wakeup");
+  yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids)
+    VALUES ('toolkit-wakeup', ${person.orgId}, ${agentId}, ${threadId}, ${run.id}, 'test', 0, 'running', '[]')`;
   return { identity, chatService, person, chat, sql };
 });
 
@@ -214,6 +224,12 @@ it.effect(
         state: {},
       }).pipe(Effect.result);
       assert.strictEqual(refused._tag, "Failure");
+      const create = yield* call("kin_widget_upsert", {
+        chatId: chat.chatId,
+        type: "task",
+        state: taskState,
+      }).pipe(Effect.result);
+      assert.strictEqual(create._tag, "Failure");
       for (const changed of [
         { afterSeq: -1 },
         { afterSeq: 0.5 },
@@ -338,7 +354,7 @@ it.effect.each([{}, { KIN_ENABLED: false }, { KIN_ENABLED: "maybe" }])(
 it.effect("admits only active provider agents at /kin/mcp", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      const { identity, person } = yield* seed;
+      const { identity, person, sql } = yield* seed;
       const kin = yield* Kin.KinServer;
       const providerScope = { ...scope, thread };
       const authRegistry = Layer.mock(McpSessions.McpSessionRegistry)({
@@ -382,6 +398,9 @@ it.effect("admits only active provider agents at /kin/mcp", () =>
         );
       assert.strictEqual((yield* request("missing")).status, 401);
       assert.strictEqual((yield* request("ordinary")).status, 403);
+      yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'toolkit-wakeup'`;
+      assert.strictEqual((yield* request("agent")).status, 403);
+      yield* sql`UPDATE kin_wakeups SET status = 'running' WHERE wakeup_id = 'toolkit-wakeup'`;
       assert.strictEqual((yield* request("agent")).status, 200);
       yield* identity.endAgentThread({ orgId: person.orgId, threadId });
       assert.strictEqual((yield* request("agent")).status, 403);
@@ -414,7 +433,10 @@ it.effect.each(["deleted", "archived"] as const)("refuses writes from %s threads
     const { chat } = yield* seed;
     for (const [name, input] of [
       ["kin_chat_post", { chatId: chat.chatId, body: "No", intent: "answer" }],
-      ["kin_widget_upsert", { chatId: chat.chatId, type: "task", state: taskState }],
+      [
+        "kin_widget_upsert",
+        { chatId: chat.chatId, widgetId: "widget-1", revision: 1, type: "task", state: taskState },
+      ],
     ] as const) {
       const result = yield* call(name, input).pipe(
         Effect.provide(
@@ -441,7 +463,7 @@ it.effect.each(["deleted", "archived"] as const)("refuses writes from %s threads
 const taskState = {
   taskId: "task",
   environmentId: "environment",
-  threadId,
+  threadId: ThreadId.make("worker"),
   remoteEnvironmentId: null,
   title: "Work",
   model: null,
