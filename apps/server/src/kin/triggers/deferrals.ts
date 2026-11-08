@@ -25,6 +25,7 @@ import { stringify } from "yaml";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { WorkerLaunchGate } from "../lead/Workers.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as MemoryWriter from "../memory/MemoryWriter.ts";
@@ -82,6 +83,8 @@ export const DeferralSnapshot = Schema.Struct({
   supersededBy: Schema.NullOr(KinMemoryItemId),
   links: Schema.Array(Schema.String),
   github: Schema.optional(Schema.NullOr(Schema.Array(GithubLinkState))),
+  /** The re-armed due fire's instant while the run is in `grace`. */
+  graceEndsAt: Schema.optional(Schema.Number),
 });
 export type DeferralSnapshot = typeof DeferralSnapshot.Type;
 export const deferralSnapshot = (
@@ -203,6 +206,9 @@ export const KinDeferralStopSwitch = Context.Reference<{
   defaultValue: () => ({ isStopped: () => Effect.succeed(true) }),
 });
 
+/** The lead level work may start at; an owner tap is not a level grant. */
+export const startsAtLevel = (level: string) => level === "L2" || level === "L3";
+
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
 
@@ -291,7 +297,8 @@ export const makeDeferralStarter = Effect.gen(function* () {
   /**
    * Marks the run started and hands the work to the lead as `deferral.due`, inside the
    * caller's transaction. The event dedupes on the due fire id, so a replay, a late fire
-   * and a [Start now] tap share one start.
+   * and a [Start now] tap share one start. `at` is the fire's time, so a replay enqueues
+   * the same event.
    */
   return Effect.fn("Deferrals.start")(function* (input: {
     readonly orgId: KinOrgId;
@@ -299,27 +306,39 @@ export const makeDeferralStarter = Effect.gen(function* () {
     readonly dueAt: number;
     readonly card: KinDeferralCard;
     readonly provenance: KinAuthor;
+    readonly at: number;
     readonly now: number;
   }) {
-    const { orgId, itemId, dueAt, now } = input;
+    const { orgId, itemId, dueAt, at, now } = input;
     const [lead] = yield* sql<{ agentId: string }>`SELECT l.agent_id AS "agentId" FROM kin_leads l
       JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
       WHERE l.org_id = ${orgId} AND a.retired_at IS NULL ORDER BY l.agent_id LIMIT 1`;
     if (lead === undefined) return false;
     const dedupeKey = deferralStartKey(itemId, dueAt);
-    yield* queue.enqueue(
-      yield* decodeEvent({
-        _tag: "deferral.due",
-        eventId: KinEventId.make(`deferral_${hex(`${orgId.length}:${orgId}${dedupeKey}`)}`),
-        orgId,
-        agentId: KinAgentId.make(lead.agentId),
-        receivedAt: iso(now),
-        provenance: input.provenance,
-        dedupeKey,
-        subject: { type: "deferral", itemId, phase: "due" },
-        lateByMs: Math.max(0, now - dueAt),
-      }),
-    );
+    yield* queue
+      .enqueue(
+        yield* decodeEvent({
+          _tag: "deferral.due",
+          eventId: KinEventId.make(`deferral_${hex(`${orgId.length}:${orgId}${dedupeKey}`)}`),
+          orgId,
+          agentId: KinAgentId.make(lead.agentId),
+          receivedAt: iso(at),
+          provenance: input.provenance,
+          dedupeKey,
+          subject: { type: "deferral", itemId, phase: "due" },
+          lateByMs: Math.max(0, at - dueAt),
+        }),
+      )
+      .pipe(
+        // A start under this key from another path (tap vs fire) already handed the work over.
+        Effect.catchTags({
+          KinEventQueueConflict: Effect.fn("Deferrals.startConflict")(function* (conflict) {
+            const [stored] = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId}
+              AND dedupe_key = ${dedupeKey} AND tag = 'deferral.due' ORDER BY event_id`;
+            if (stored === undefined) return yield* conflict;
+          }),
+        }),
+      );
     yield* sql`UPDATE kin_deferral_runs SET state = 'started', updated_at = ${now}
       WHERE org_id = ${orgId} AND item_id = ${itemId} AND due_at = ${dueAt}`;
     yield* cards.write({
@@ -428,6 +447,12 @@ const make = Effect.gen(function* () {
             const dueAt = Date.parse(card.dueAt);
             if (yield* (yield* KinDeferralStopSwitch).isStopped(orgId))
               return yield* Effect.fail("stopped" as const);
+            if (!(yield* WorkerLaunchGate)) return yield* Effect.fail("workers_blocked" as const);
+            const [lead] = yield* sql<{ level: string }>`SELECT l.level FROM kin_leads l
+              JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+              WHERE l.org_id = ${orgId} AND a.retired_at IS NULL ORDER BY l.agent_id LIMIT 1`;
+            if (lead === undefined || !startsAtLevel(lead.level))
+              return yield* Effect.fail("below_l2" as const);
             const now = yield* Clock.currentTimeMillis;
             const started = yield* sql.withTransaction(
               Effect.gen(function* () {
@@ -442,6 +467,7 @@ const make = Effect.gen(function* () {
                   dueAt,
                   card,
                   provenance: tap.provenance,
+                  at: now,
                   now,
                 });
               }),

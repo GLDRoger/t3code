@@ -265,10 +265,21 @@ it.effect("unchanged recheck, heads-up, silence, then starts once at due", () =>
     ["acme/api#12", { state: "open" as const, assignees: ["bob"], linkedPrs: [] }],
   ]);
   const linked = makeDeferral("def-1", { links: [issue] });
+  const foreign = makeDeferral("def-b", { orgId: otherOrg, chat: KinChatId.make("chat-b") });
   return Effect.gen(function* () {
     yield* setup();
     const sql = yield* SqlClient.SqlClient;
-    yield* (yield* TriggerService.KinTriggerService).syncItem(linked);
+    const service = yield* TriggerService.KinTriggerService;
+    yield* service.syncItem(linked);
+    yield* service.syncItem(foreign);
+    const foreignState = () =>
+      Effect.all({
+        runs: sql`SELECT state, due_at FROM kin_deferral_runs WHERE org_id = ${otherOrg}
+          ORDER BY item_id`,
+        cards: sql`SELECT revision, state_json FROM kin_widgets WHERE org_id = ${otherOrg}
+          ORDER BY widget_id`,
+      });
+    const foreignBefore = yield* foreignState();
 
     yield* tick(headsUpAt);
     assert.equal((yield* runOf("def-1"))?.state, "heads_up");
@@ -287,12 +298,20 @@ it.effect("unchanged recheck, heads-up, silence, then starts once at due", () =>
     assert.equal(started?.dedupeKey, `deferral:def-1:due:${dueAt}`);
     assert.lengthOf(yield* pendingFires(), 0);
 
-    // A replay of the due fire after a crash can't start a second worker.
+    // A later replay of the due fire after a crash enqueues the same event, not a second worker.
     yield* sql`UPDATE kin_trigger_inbox SET consumed_at = NULL WHERE org_id = ${orgId}`;
     yield* sql`UPDATE kin_deferral_runs SET state = 'heads_up' WHERE org_id = ${orgId}`;
-    yield* tick(dueAt);
+    yield* tick(dueAt + 5 * 60_000);
     assert.lengthOf(yield* starts(), 1);
-  }).pipe(openGates(github), Effect.provide(layerFor([linked])));
+    assert.equal((yield* runOf("def-1"))?.state, "started");
+    assert.lengthOf(yield* pendingFires(), 0);
+
+    // Org a's ticks never touch org b's run, card or fires.
+    assert.deepStrictEqual(yield* foreignState(), foreignBefore);
+    const foreignFires = yield* sql`SELECT fire_id FROM kin_trigger_inbox
+      WHERE org_id = ${otherOrg} AND consumed_at IS NULL ORDER BY fire_id`;
+    assert.lengthOf(foreignFires, 2);
+  }).pipe(openGates(github), Effect.provide(layerFor([linked, foreign])));
 });
 
 it.effect("asks instead of starting when a linked issue closes before due", () => {
@@ -378,6 +397,29 @@ it.effect(
       assert.equal(cancel._tag, "Success");
       assert.include(staged[1]!.content, "status: cancelled");
 
+      // An owner tap isn't a level grant: [Start now] passes the same gates as silence.
+      const sql = yield* SqlClient.SqlClient;
+      const before = { run: yield* runOf("def-1"), card: yield* cardOf("def-1") };
+      const refusals = [
+        yield* tap("start_now", "stopped", staged).pipe(
+          Effect.provideService(Deferrals.KinDeferralStopSwitch, {
+            isStopped: () => Effect.succeed(true),
+          }),
+        ),
+        yield* tap("start_now", "gated", staged).pipe(
+          Effect.provideService(WorkerLaunchGate, false),
+        ),
+      ];
+      yield* sql`UPDATE kin_leads SET level = 'L1' WHERE org_id = ${orgId}`;
+      refusals.push(yield* tap("start_now", "level", staged));
+      yield* sql`UPDATE kin_leads SET level = 'L2' WHERE org_id = ${orgId}`;
+      assert.deepStrictEqual(
+        refusals.map((result) => result._tag === "Failure" && result.failure.cause),
+        ["stopped", "workers_blocked", "below_l2"],
+      );
+      assert.deepStrictEqual({ run: yield* runOf("def-1"), card: yield* cardOf("def-1") }, before);
+      assert.lengthOf(yield* starts(), 0);
+
       const start = yield* tap("start_now", "owner", staged);
       assert.equal(start._tag === "Success" && start.success.action, "start_now");
       assert.equal((yield* runOf("def-1"))?.state, "started");
@@ -393,7 +435,6 @@ it.effect(
       items[0] = makeDeferral("def-1", { due: "2026-11-16T09:00:00.000+05:30" });
       assert.equal(yield* service.syncItem(items[0]), "armed");
       const nextDue = Date.parse("2026-11-16T03:30:00.000Z");
-      const sql = yield* SqlClient.SqlClient;
       const triggers = yield* sql<{ id: string; nextRunAt: number | null }>`SELECT trigger_id AS id,
       next_run_at AS "nextRunAt" FROM kin_triggers WHERE org_id = ${orgId} ORDER BY trigger_id`;
       assert.deepStrictEqual(triggers, [
@@ -448,15 +489,22 @@ it.effect("drops queued fires for disarmed or moved deferrals", () => {
   const items = [
     makeDeferral("def-1", { on_due: "remind" }),
     makeDeferral("def-2", { on_due: "remind" }),
+    makeDeferral("def-3"),
   ];
   return Effect.gen(function* () {
     yield* setup();
     const sql = yield* SqlClient.SqlClient;
     const service = yield* TriggerService.KinTriggerService;
+    const scheduler = yield* TriggerScheduler.KinTriggerScheduler;
     for (const entry of items) yield* service.syncItem(entry);
     yield* TestClock.setTime(dueAt);
-    yield* (yield* TriggerScheduler.KinTriggerScheduler).runDue();
-    assert.lengthOf(yield* pendingFires(), 2);
+    yield* scheduler.runDue();
+    assert.lengthOf(yield* pendingFires(), 4);
+
+    // def-3's 9:00 due fire is still queued when due moves to 8:50, already past.
+    items[2] = makeDeferral("def-3", { due: "2026-11-13T08:50+05:30" });
+    assert.equal(yield* service.syncItem(items[2]), "armed");
+    yield* scheduler.runDue();
 
     assert.equal(
       yield* service.syncItem(makeDeferral("def-1", { on_due: "remind", status: "done" })),
@@ -469,6 +517,12 @@ it.effect("drops queued fires for disarmed or moved deferrals", () => {
     assert.lengthOf(yield* pendingFires(), 0);
     assert.equal((yield* runOf("def-1"))?.state, "disarmed");
     assert.equal((yield* runOf("def-2"))?.state, "armed");
+    // 8:50 is handled and goes to grace; the old 9:00 fire isn't taken for the grace fire.
+    assert.equal((yield* runOf("def-3"))?.state, "grace");
+    assert.lengthOf(yield* starts(), 0);
+    yield* tick(dueAt + 30 * 60_000);
+    assert.equal((yield* runOf("def-3"))?.state, "started");
+    assert.lengthOf(yield* starts(), 1);
     const reminders = () =>
       sql<{ body: string }>`SELECT body FROM kin_messages WHERE org_id = ${orgId}
         AND body LIKE 'Reminder:%' ORDER BY seq`;
@@ -476,19 +530,41 @@ it.effect("drops queued fires for disarmed or moved deferrals", () => {
 
     yield* tick(Date.parse("2026-11-14T03:30:00.000Z"));
     assert.deepStrictEqual(yield* reminders(), [{ body: "Reminder: def-2." }]);
-  }).pipe(Effect.provide(layerFor(items)));
+  }).pipe(openGates(new Map()), Effect.provide(layerFor(items)));
 });
 
 it.effect("remind, ask and chase act at due, noting lateness", () => {
   const remind = makeDeferral("def-r", { on_due: "remind" });
   const ask = makeDeferral("def-a", { on_due: "ask" });
   const chase = makeDeferral("def-c", { on_due: "chase", owner: "owner" });
+  const quiet = makeDeferral("def-q", {
+    on_due: "chase",
+    owner: "owner",
+    due: "2026-11-13T07:00+05:30",
+  });
+  const broken = makeDeferral("def-x", { on_due: "ask" });
+  const items = [remind, ask, chase, quiet, broken];
   return Effect.gen(function* () {
     yield* setup();
     const sql = yield* SqlClient.SqlClient;
     const service = yield* TriggerService.KinTriggerService;
-    for (const entry of [remind, ask, chase]) yield* service.syncItem(entry);
+    for (const entry of items) yield* service.syncItem(entry);
+    const quietPings = () =>
+      sql`SELECT body FROM kin_messages WHERE org_id = ${orgId}
+        AND body LIKE '%def-q was due%' ORDER BY seq`;
+
+    // A chase due in quiet hours waits for a later tick, then pings once.
+    yield* tick(Date.parse("2026-11-13T01:30:00.000Z"));
+    assert.equal((yield* runOf("def-q"))?.state, "chased");
+    assert.lengthOf(yield* quietPings(), 0);
+    yield* tick(Date.parse("2026-11-13T02:35:00.000Z"));
+    assert.lengthOf(yield* quietPings(), 1);
+
+    yield* sql`UPDATE kin_deferral_runs SET snapshot_json = 'not json'
+      WHERE org_id = ${orgId} AND item_id = 'def-x'`;
     yield* tick(dueAt + 20 * 60_000);
+    yield* tick(dueAt + 25 * 60_000);
+    assert.lengthOf(yield* quietPings(), 1);
 
     const messages = yield* sql<{ body: string }>`SELECT body FROM kin_messages
       WHERE org_id = ${orgId} AND kind = 'system' ORDER BY seq`;
@@ -506,7 +582,16 @@ it.effect("remind, ask and chase act at due, noting lateness", () => {
     assert.equal((yield* runOf("def-c"))?.state, "chased");
     const ledger =
       yield* sql`SELECT item_id FROM kin_ping_ledger WHERE org_id = ${orgId} ORDER BY item_id`;
-    assert.lengthOf(ledger, 1);
+    assert.lengthOf(ledger, 2);
     assert.lengthOf(yield* starts(), 0);
-  }).pipe(Effect.provide(layerFor([remind, ask, chase])));
+
+    // A fire that can't be handled is consumed after telling the owner.
+    assert.isTrue(
+      messages.some(
+        ({ body }) => body === "I couldn't handle the deferral def-x due Fri 13 Nov, 9:00.",
+      ),
+    );
+    assert.equal((yield* runOf("def-x"))?.state, "armed");
+    assert.lengthOf(yield* pendingFires(), 0);
+  }).pipe(Effect.provide(layerFor(items)));
 });

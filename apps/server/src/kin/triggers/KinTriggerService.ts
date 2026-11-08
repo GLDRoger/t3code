@@ -276,6 +276,9 @@ const make = Effect.gen(function* () {
       const timeZone = yield* cache.ownerTimeZone(item.orgId);
       const now = yield* Clock.currentTimeMillis;
       const plan = planDeferral(item);
+      // GitHub is read only when the run will be (re-)armed, not on every head.
+      const stored = yield* readStored(item.orgId, item.id).pipe(wrap(item.orgId));
+      if (isCurrent(plan, stored.get(item.id))) return "unchanged" as const;
       const github = plan.armed ? yield* readGithubLinks(item.orgId, item.links) : null;
       return yield* apply(item.orgId, item.id, item, plan, timeZone, now, github).pipe(
         wrap(item.orgId),

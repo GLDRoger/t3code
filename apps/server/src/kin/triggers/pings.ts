@@ -207,6 +207,9 @@ const make = Effect.gen(function* () {
     }),
     sweep: Effect.fn("KinPings.sweep")(
       function* (orgId) {
+        const rows =
+          yield* sql<Row>`SELECT * FROM kin_ping_items WHERE org_id = ${orgId} AND stopped_at IS NULL ORDER BY person, item_id`;
+        if (rows.length === 0) return;
         const now = yield* Clock.currentTimeMillis;
         const zone = yield* cache.ownerTimeZone(orgId);
         const day = ownerDay(now, zone);
@@ -217,8 +220,6 @@ const make = Effect.gen(function* () {
         const hours =
           defaultHours._tag === "Some" ? defaultHours.value : { from: "21:00", to: "08:00" };
         const people = yield* memory.query(orgId, { kind: "person", excludeInvalid: true });
-        const rows =
-          yield* sql<Row>`SELECT * FROM kin_ping_items WHERE org_id = ${orgId} AND stopped_at IS NULL ORDER BY person, item_id`;
         const candidates: Array<{
           row: Row;
           request: Request;

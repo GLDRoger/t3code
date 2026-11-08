@@ -36,6 +36,7 @@ import {
   ownerDateTime,
   ownerTime,
   snapshotChanges,
+  startsAtLevel,
   makeDeferralCards,
   makeDeferralStarter,
 } from "./deferrals.ts";
@@ -50,7 +51,10 @@ export class KinDeferralFlowError extends Schema.TaggedError<KinDeferralFlowErro
 export class KinDeferralFlow extends Context.Service<
   KinDeferralFlow,
   {
-    /** Consumes this org's pending deferral fires: recheck, heads-up, grace, start or ask. */
+    /**
+     * Consumes this org's pending deferral fires (recheck, heads-up, grace, start or ask),
+     * then sweeps its pings so chases deliver once quiet hours end.
+     */
     readonly drain: (orgId: KinOrgId) => Effect.Effect<void, KinDeferralFlowError>;
   }
 >()("t3/kin/triggers/deferralFlow/KinDeferralFlow") {}
@@ -69,6 +73,7 @@ type Step =
 /** Which step a fire takes, from its run row. Disarmed, moved and handled runs drop it. */
 function classifyFire(
   run: Run | undefined,
+  graceEndsAt: number | undefined,
   phase: "heads_up" | "due",
   fireAt: number,
   now: number,
@@ -87,13 +92,14 @@ function classifyFire(
       ? { kind: "due", dueAt, grace: false }
       : { kind: "drop" };
   // A late due fire re-arms the due trigger at the end of its grace window.
-  return run.onDue === "start" && run.state === "grace" && fireAt > dueAt
+  return run.onDue === "start" && run.state === "grace" && fireAt === graceEndsAt
     ? { kind: "due", dueAt, grace: true }
     : { kind: "drop" };
 }
 
 const decodeOnDue = Schema.decodeUnknownEffect(KinDeferralCard.fields.onDue);
 const decodeSnapshot = Schema.decodeUnknownEffect(Schema.fromJsonString(DeferralSnapshot));
+const encodeSnapshot = Schema.encodeEffect(Schema.fromJsonString(DeferralSnapshot));
 const isDecodeError = Schema.is(PersistenceDecodeError);
 const isPermanent = (error: unknown) => {
   let current = error;
@@ -104,7 +110,6 @@ const isPermanent = (error: unknown) => {
   return false;
 };
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
-const levels = ["L0", "L1", "L2", "L3"];
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -191,8 +196,9 @@ const make = Effect.gen(function* () {
   ) {
     const fireAt = Date.parse(fire.dueAt);
     const run = yield* readRun(orgId, itemId).pipe(NodeSqliteClient.readOnly);
-    const step = classifyFire(run, phase, fireAt, now);
-    if (step.kind === "drop" || run === undefined)
+    const snapshot = run === undefined ? undefined : yield* decodeSnapshot(run.snapshot);
+    const step = classifyFire(run, snapshot?.graceEndsAt, phase, fireAt, now);
+    if (step.kind === "drop" || run === undefined || snapshot === undefined)
       return yield* inbox.markConsumed(orgId, [fire.fireId]);
 
     // Read-only or idempotent I/O; a replay repeats it.
@@ -201,21 +207,12 @@ const make = Effect.gen(function* () {
     const decodedOnDue = yield* decodeOnDue(onDue);
     const gates: Array<string> = [];
     if (onDue === "start") {
-      const snapshot = yield* decodeSnapshot(run.snapshot);
       const github = yield* readGithubLinks(orgId, item?.links ?? snapshot.links);
       gates.push(...snapshotChanges(snapshot, item, github));
       if (yield* (yield* KinDeferralStopSwitch).isStopped(orgId))
         gates.push("the stop switch is on");
       if (!(yield* WorkerLaunchGate)) gates.push("workers can't launch yet");
     }
-    const chaseFailure =
-      onDue === "chase" && step.kind === "due"
-        ? item === undefined
-          ? "the item is gone"
-          : yield* prepareChase(orgId, item, step.dueAt, timeZone)
-        : null;
-
-    let chased = false;
     yield* sql.withTransaction(
       Effect.gen(function* () {
         const pending = yield* sql`SELECT fire_id FROM kin_trigger_inbox WHERE org_id = ${orgId}
@@ -224,7 +221,12 @@ const make = Effect.gen(function* () {
         const reasons = [...gates];
         const current = yield* readRun(orgId, itemId);
         // Moved or handled since the reads above: classify again on the next tick.
-        if (current?.state !== run.state || current.dueAt !== run.dueAt) return;
+        if (
+          current?.state !== run.state ||
+          current.dueAt !== run.dueAt ||
+          current.snapshot !== run.snapshot
+        )
+          return;
         const dueAt = step.dueAt;
         const title = item?.title ?? itemId;
         const card = (phase: KinDeferralCard["phase"], text: string, graceEndsAt?: number) => ({
@@ -259,8 +261,7 @@ const make = Effect.gen(function* () {
             JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
             WHERE l.org_id = ${orgId} AND a.retired_at IS NULL ORDER BY l.agent_id LIMIT 1`;
           if (lead === undefined) reasons.push("there is no active lead");
-          else if (levels.indexOf(lead.level) < levels.indexOf("L2"))
-            reasons.push(`Kin is at ${lead.level}, below L2`);
+          else if (!startsAtLevel(lead.level)) reasons.push(`Kin is at ${lead.level}, below L2`);
         }
 
         if (step.kind === "heads_up") {
@@ -290,6 +291,9 @@ const make = Effect.gen(function* () {
               updated_at = max(updated_at, ${now})
               WHERE org_id = ${orgId} AND trigger_id = ${deferralTriggerId(itemId, "due")}
                 AND enabled = 1`;
+            const graced = yield* encodeSnapshot({ ...snapshot, graceEndsAt: graceEnd });
+            yield* sql`UPDATE kin_deferral_runs SET snapshot_json = ${graced}
+              WHERE org_id = ${orgId} AND item_id = ${itemId} AND due_at = ${dueAt}`;
             yield* setState("grace");
           } else {
             const started = yield* start({
@@ -298,17 +302,20 @@ const make = Effect.gen(function* () {
               dueAt,
               card: card("started", ""),
               provenance: { _tag: "system" },
+              at: Date.parse(fire.firedAt),
               now,
             });
             if (!started) yield* ask(["there is no active lead"]);
           }
         } else if (onDue === "ask") yield* ask([]);
         else if (onDue === "chase") {
-          if (chaseFailure !== null) yield* ask([chaseFailure]);
-          else {
-            yield* setState("chased");
-            chased = true;
-          }
+          // Inside the transaction, so a chased run always has its ping row.
+          const failure =
+            item === undefined
+              ? "the item is gone"
+              : yield* prepareChase(orgId, item, dueAt, timeZone);
+          if (failure !== null) yield* ask([failure]);
+          else yield* setState("chased");
         } else {
           const chatId = yield* cardChat(orgId, item);
           if (chatId !== null)
@@ -323,18 +330,31 @@ const make = Effect.gen(function* () {
         yield* inbox.markConsumed(orgId, [fire.fireId]);
       }),
     );
-    if (chased)
-      yield* pings
-        .sweep(orgId)
-        .pipe(
-          Effect.catch((cause) =>
-            Effect.logWarning("Kin deferral chase sweep failed", { orgId, cause }),
-          ),
-        );
   });
 
-  const drain = Effect.fn("KinDeferralFlow.drain")((orgId: KinOrgId) =>
-    Effect.gen(function* () {
+  // Best effort: the owner hears about a deferral Kin gave up on.
+  const noticeFailure = Effect.fn("KinDeferralFlow.noticeFailure")(function* (
+    orgId: KinOrgId,
+    fire: KinTriggerFired,
+    itemId: KinMemoryItemId,
+    timeZone: string,
+  ) {
+    const run = yield* readRun(orgId, itemId);
+    if (run === undefined || !["start", "ask", "chase"].includes(run.onDue)) return;
+    const chatId = yield* cardChat(orgId, undefined);
+    if (chatId === null) return;
+    const title = (yield* readItem(orgId, itemId))?.title ?? itemId;
+    const dueAt = run.dueAt ?? Date.parse(fire.dueAt);
+    yield* chat.notice({
+      orgId,
+      chatId,
+      messageId: KinMessageId.make(`deferral-failed:${orgId}:${fire.fireId}`),
+      body: `I couldn't handle the deferral ${title} due ${ownerDateTime(dueAt, timeZone)}.`,
+    });
+  });
+
+  const drain = Effect.fn("KinDeferralFlow.drain")(
+    function* (orgId: KinOrgId) {
       const now = yield* Clock.currentTimeMillis;
       const timeZone = yield* cache.ownerTimeZone(orgId);
       const fires = yield* inbox.listPending(orgId, 100, "deferral");
@@ -358,12 +378,30 @@ const make = Effect.gen(function* () {
                 "Kin deferral fire processing failed",
                 { orgId, fireId: fire.fireId, cause, disposition: consume ? "consumed" : "retry" },
               );
-              if (consume) yield* inbox.markConsumed(orgId, [fire.fireId]);
+              if (!consume) return;
+              yield* noticeFailure(orgId, fire, itemId, timeZone).pipe(
+                Effect.catch((cause) =>
+                  Effect.logWarning("Kin deferral failure notice failed", {
+                    orgId,
+                    fireId: fire.fireId,
+                    cause,
+                  }),
+                ),
+              );
+              yield* inbox.markConsumed(orgId, [fire.fireId]);
             }),
           ),
         );
       }
-    }).pipe(Effect.mapError((cause) => new KinDeferralFlowError({ orgId, cause }))),
+      // The only pings sweeper: chases and their day-two escalations deliver from here.
+      yield* pings
+        .sweep(orgId)
+        .pipe(
+          Effect.catch((cause) => Effect.logWarning("Kin pings sweep failed", { orgId, cause })),
+        );
+    },
+    (effect, orgId) =>
+      effect.pipe(Effect.mapError((cause) => new KinDeferralFlowError({ orgId, cause }))),
   );
 
   yield* ticks.register(
