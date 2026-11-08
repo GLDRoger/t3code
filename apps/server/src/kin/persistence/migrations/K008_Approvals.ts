@@ -35,6 +35,10 @@ export default Effect.gen(function* () {
     WHERE state = 'awaiting_approval'
   `;
   yield* sql`
+    CREATE INDEX idx_kin_pending_actions_approved ON kin_pending_actions(state)
+    WHERE state = 'approved'
+  `;
+  yield* sql`
     CREATE TABLE kin_grants (
       grant_id TEXT NOT NULL PRIMARY KEY,
       org_id TEXT NOT NULL REFERENCES kin_orgs(org_id),
@@ -44,8 +48,8 @@ export default Effect.gen(function* () {
       approver_human_id TEXT NOT NULL,
       key_thumbprint TEXT NOT NULL,
       compact TEXT NOT NULL,
-      iat INTEGER NOT NULL,
-      exp INTEGER NOT NULL,
+      iat_s INTEGER NOT NULL,
+      exp_s INTEGER NOT NULL,
       accepted_at INTEGER NOT NULL,
       consumed_at INTEGER,
       UNIQUE (action_id, approver_human_id)

@@ -157,6 +157,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_events_dedupe" },
           { name: "idx_kin_events_queue" },
           { name: "idx_kin_events_wakeup" },
+          { name: "idx_kin_pending_actions_approved" },
           { name: "idx_kin_pending_actions_expiry" },
           { name: "idx_kin_pending_actions_org_state" },
           { name: "idx_kin_people_org_person" },
@@ -258,6 +259,21 @@ describe("Kin migrations", () => {
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT org_id FROM kin_orgs`, [{ org_id: "org" }]);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("refuses to start when a registered migration sits below the latest applied one", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      // What a database looks like when K008 merged before a lower-numbered migration.
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 5`;
+      const history = yield* kinHistory;
+      const exit = yield* Effect.exit(runKinMigrations());
+      assert.isTrue(Exit.isFailure(exit));
+      assert.include(String(exit), "5_OneChatOwner");
+      assert.include(String(exit), "below the latest applied migration 8");
+      assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
