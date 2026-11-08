@@ -343,6 +343,36 @@ describe("KinGithubEvents", () => {
     ),
   );
 
+  it.effect("consumes a fire at once when its delivery id is queued as another event", () =>
+    run(({ deliver, drain }) =>
+      Effect.gen(function* () {
+        const queue = yield* KinEventQueue.KinEventQueue;
+        yield* queue.enqueue(
+          decodeEvent(
+            JSON.stringify({
+              _tag: "watchdog",
+              orgId,
+              eventId: "event-taken",
+              agentId: "lead",
+              receivedAt: "2026-11-09T00:00:00.000Z",
+              dedupeKey: "gh-9",
+              provenance: { _tag: "system" },
+              finding: "Taken",
+              itemIds: [],
+            }),
+          ),
+        );
+        yield* deliver("gh-9", pullRequest());
+        yield* drain;
+        assert.strictEqual((yield* pending("github")).length, 0);
+        assert.deepStrictEqual(
+          (yield* events).map((event) => event.eventId),
+          ["event-taken"],
+        );
+      }),
+    ),
+  );
+
   it.effect("turns a fire still failing after 24 hours into a stale recheck", () =>
     run(({ deliver, drain }) =>
       Effect.gen(function* () {

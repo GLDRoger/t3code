@@ -462,7 +462,6 @@ const make = Effect.gen(function* () {
               orgRetries.set(fire.fireId, { notBefore: now + delay, failures });
               return;
             }
-            orgRetries.delete(fire.fireId);
             yield* (
               permanent
                 ? inbox.markConsumed(orgId, [fire.fireId])
@@ -472,6 +471,12 @@ const make = Effect.gen(function* () {
                     ),
                   )
             ).pipe(
+              Effect.tap(() => Effect.sync(() => orgRetries.delete(fire.fireId))),
+              Effect.tapError(() =>
+                Effect.sync(() =>
+                  orgRetries.set(fire.fireId, { notBefore: now + RETRY_MAX_MS, failures }),
+                ),
+              ),
               Effect.catch((cause) =>
                 Effect.logWarning("Kin GitHub fire could not be consumed", {
                   orgId,

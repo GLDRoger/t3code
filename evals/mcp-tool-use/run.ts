@@ -1037,7 +1037,7 @@ export const buildMessages = (sample: Sample) => {
       : projectComposerContextForProvider({ text: testCase.prompt, ...testCase.promptContext });
   const inline =
     sideChatContext === undefined ? userText : withInlineContext(sideChatContext, userText);
-  // A Kin lead's wake-up prompt opens with its instructions, as LeadPrompt builds it.
+  // A Kin lead's wake-up prompt opens with its instructions, as LeadPrompt's does.
   const prompt =
     testCase.setup.world?.kinLead === true ? `${kinLeadInstructions}\n\n${inline}` : inline;
   const childPrompt = () => taskPrompt({ task: prompt, role: delegateRole });
