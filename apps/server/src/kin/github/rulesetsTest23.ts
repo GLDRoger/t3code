@@ -12,6 +12,7 @@ import { HttpClient } from "effect/http";
 import {
   gitHubAnswer,
   gitHubJson,
+  isGitHubRateLimit,
   repoPath,
   type GitHubAnswer,
   type KinGitHubRequestError,
@@ -29,8 +30,15 @@ export type KinBlock =
   /** 405 naming a missing review: the merge was stopped by the pull request rule. */
   | "review_required";
 
-/** Whether `answer` is the refusal `block` expects. Status alone can't tell a rule from a typo. */
-export function isKinBlock(answer: Pick<GitHubAnswer, "status" | "message">, block: KinBlock) {
+/**
+ * Whether `answer` is the refusal `block` expects. Status alone can't tell a rule from a typo, and
+ * a rate limit is never a block: it says nothing about the token or the rules.
+ */
+export function isKinBlock(
+  answer: Pick<GitHubAnswer, "status" | "headers" | "message">,
+  block: KinBlock,
+) {
+  if (isGitHubRateLimit(answer)) return false;
   switch (block) {
     case "forbidden":
       return answer.status === 403;
@@ -113,6 +121,8 @@ const poll = Effect.fn("kinRulesets.test23.poll")(function* <A, E, R>(
 interface Step {
   readonly pass: boolean;
   readonly line: string;
+  /** GitHub rate-limited the call, so the step proves nothing either way. */
+  readonly rateLimited?: boolean;
 }
 
 /** Ref paths keep their slashes: `tags/v1/rc`, not `tags%2Fv1%2Frc`. */
@@ -167,6 +177,7 @@ export const runTest23Probes = Effect.fn("kinRulesets.test23")(function* (input:
   if (releaseTag === undefined) {
     return {
       ok: false,
+      rateLimited: false,
       lines: [
         `Test 23 not run: ${input.repo} has no v* tag to try moving. Set kin-release to disabled, push a tag such as v0.0.0, then apply again.`,
       ],
@@ -187,6 +198,7 @@ export const runTest23Probes = Effect.fn("kinRulesets.test23")(function* (input:
   if (created.status !== 201) {
     return {
       ok: false,
+      rateLimited: false,
       lines: [`Test 23 not run: the bot couldn't create ${branch} (${describe(created)}).`],
     };
   }
@@ -215,7 +227,12 @@ export const runTest23Probes = Effect.fn("kinRulesets.test23")(function* (input:
 
   const run = Effect.gen(function* () {
     const h1 = yield* botCommit(`${stamp}.md`);
-    if (h1 === null) return { ok: false, lines: ["FAIL the bot couldn't commit to its branch."] };
+    if (h1 === null)
+      return {
+        ok: false,
+        rateLimited: false,
+        lines: ["FAIL the bot couldn't commit to its branch."],
+      };
     const opened = yield* call("pulls.create", "POST", "/pulls", input.botToken, {
       title: "Kin security test 23",
       head: branch,
@@ -223,7 +240,11 @@ export const runTest23Probes = Effect.fn("kinRulesets.test23")(function* (input:
     });
     const pull = decodePull(opened.body);
     if (opened.status !== 201 || pull._tag === "None") {
-      return { ok: false, lines: [`FAIL the bot couldn't open a PR (${describe(opened)}).`] };
+      return {
+        ok: false,
+        rateLimited: false,
+        lines: [`FAIL the bot couldn't open a PR (${describe(opened)}).`],
+      };
     }
     const number = pull.value.number;
     state.pull = number;
@@ -283,6 +304,7 @@ export const runTest23Probes = Effect.fn("kinRulesets.test23")(function* (input:
       return {
         pass: blocked && problem === null,
         line: `${name} (${describe(answer)})${problem === null ? "" : `; ${problem}`}`,
+        rateLimited: isGitHubRateLimit(answer),
       } satisfies Step;
     });
     const approve = (sha: string): Effect.Effect<Step, KinGitHubRequestError> =>
@@ -293,6 +315,7 @@ export const runTest23Probes = Effect.fn("kinRulesets.test23")(function* (input:
         Effect.map((answer) => ({
           pass: answer.status === 200,
           line: `${input.owner} approves at ${sha.slice(0, 7)} (${describe(answer)})`,
+          rateLimited: isGitHubRateLimit(answer),
         })),
       );
     const mergeAs = (token: Redacted.Redacted<string>, sha: string) =>
@@ -367,6 +390,7 @@ export const runTest23Probes = Effect.fn("kinRulesets.test23")(function* (input:
               return {
                 pass,
                 line: `${who} can't bypass ${desired.name} (HTTP ${answer.status}, current_user_can_bypass ${canBypass})`,
+                rateLimited: isGitHubRateLimit(answer),
               };
             }),
           ),
@@ -387,17 +411,30 @@ export const runTest23Probes = Effect.fn("kinRulesets.test23")(function* (input:
       reportedAs(h1, "clean"),
     ];
 
+    let limited = false;
     const runSteps = Effect.fn("kinRulesets.test23.steps")(function* (
       list: ReadonlyArray<Effect.Effect<Step, KinGitHubRequestError>>,
     ) {
       for (const step of list) {
-        const { pass, line } = yield* step;
+        const { pass, line, rateLimited } = yield* step;
+        if (rateLimited) {
+          lines.push(`  WAIT ${line}: GitHub rate-limited this call, so it proves nothing`);
+          limited = true;
+          return false;
+        }
         lines.push(`  ${pass ? "PASS" : "FAIL"} ${line}`);
         if (!pass) return false;
       }
       return true;
     });
-    const stopped = () => ({ ok: false, lines: [...lines, "FAIL: stopped at the first failure."] });
+    const stopped = () => ({
+      ok: false,
+      rateLimited: limited,
+      lines: [
+        ...lines,
+        limited ? "Stopped at the rate limit." : "FAIL: stopped at the first failure.",
+      ],
+    });
     if (!(yield* runSteps(steps))) return stopped();
 
     // Bait and switch: a push after the owner's approval must dismiss it.
@@ -428,6 +465,7 @@ export const runTest23Probes = Effect.fn("kinRulesets.test23")(function* (input:
         return {
           pass: state.merged,
           line: `after ${input.owner} approves the new head the merge token merges (${describe(answer)}), so the blocks came from the rules`,
+          rateLimited: isGitHubRateLimit(answer),
         };
       }),
     );
@@ -448,7 +486,7 @@ export const runTest23Probes = Effect.fn("kinRulesets.test23")(function* (input:
     ) {
       return stopped();
     }
-    return { ok: true, lines };
+    return { ok: true, rateLimited: false, lines };
   });
 
   const cleanupLines: Array<string> = [];
@@ -500,5 +538,9 @@ export const runTest23Probes = Effect.fn("kinRulesets.test23")(function* (input:
     Effect.ensuring(cleanup),
     Effect.tapError(() => Effect.logWarning("Test 23 cleanup", { lines: cleanupLines })),
   );
-  return { ok: result.ok, lines: [...result.lines, ...cleanupLines] };
+  return {
+    ok: result.ok,
+    rateLimited: result.rateLimited,
+    lines: [...result.lines, ...cleanupLines],
+  };
 });

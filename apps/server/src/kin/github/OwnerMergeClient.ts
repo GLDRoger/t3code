@@ -14,6 +14,7 @@ import { CredentialHygienePass } from "../approvals/CredentialHygiene.ts";
 import {
   gitHubJson,
   gitHubStatus,
+  isGitHubRateLimit,
   type GitHubStatusResponse,
   type KinGitHubRequestError,
 } from "./githubRest.ts";
@@ -62,15 +63,9 @@ const RepoInfo = Schema.Struct({
 function classifyProbe(
   answer: GitHubStatusResponse,
 ): "denied" | "rate_limited" | "inconclusive" | "allowed" {
-  if (answer.status === 429) return "rate_limited";
+  if (isGitHubRateLimit(answer)) return "rate_limited";
   if (answer.status === 404) return "inconclusive";
   if (answer.status !== 403) return "allowed";
-  if (
-    answer.headers["x-ratelimit-remaining"] === "0" ||
-    answer.headers["retry-after"] !== undefined
-  ) {
-    return "rate_limited";
-  }
   return answer.message?.trim() === NOT_ACCESSIBLE_MESSAGE ? "denied" : "allowed";
 }
 

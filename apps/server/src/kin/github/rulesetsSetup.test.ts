@@ -432,6 +432,9 @@ const ruleViolation = (rule: string) => ({
   status: "422",
 });
 
+const NOT_ACCESSIBLE = { message: "Resource not accessible by personal access token" };
+const RETRY = { "retry-after": "60" };
+
 describe("test 23 refusal matching", () => {
   it.each([
     [422, ruleViolation("Changes must be made through a pull request."), "rule_violation", true],
@@ -462,7 +465,19 @@ describe("test 23 refusal matching", () => {
     [404, { message: "Not Found" }, "refused", true],
     [200, { message: "" }, "refused", false],
   ] as const)("HTTP %i %j as %s is %s", (status, body, block, expected) => {
-    assert.strictEqual(isKinBlock({ status, message: body.message }, block as KinBlock), expected);
+    assert.strictEqual(
+      isKinBlock({ status, headers: {}, message: body.message }, block as KinBlock),
+      expected,
+    );
+  });
+
+  // A rate limit means "try again later", whatever the body says.
+  it.each([
+    [403, NOT_ACCESSIBLE, { "x-ratelimit-remaining": "0" }, "forbidden"],
+    [403, { message: "You have exceeded a secondary rate limit." }, RETRY, "refused"],
+    [429, { message: "" }, {}, "refused"],
+  ] as const)("HTTP %i %j with %j is never %s", (status, body, headers, block) => {
+    assert.isFalse(isKinBlock({ status, headers, message: body.message }, block as KinBlock));
   });
 });
 
@@ -475,6 +490,8 @@ const sha = (char: string) => char.repeat(40);
 const scratchRepo = (
   broken: {
     readonly mergeTokenCanReview?: boolean;
+    /** GitHub rate-limits the merge token's review attempt with a 403 it would also use to refuse. */
+    readonly rateLimitReview?: boolean;
     readonly botCanMerge?: boolean;
     readonly pushAllowed?: boolean;
     readonly tagMovable?: boolean;
@@ -580,6 +597,9 @@ const scratchRepo = (
             },
           };
         case `POST ${base}/pulls/7/reviews`:
+          if (token === MERGE_TOKEN && broken.rateLimitReview) {
+            return { status: 403, body: NOT_ACCESSIBLE, headers: { "x-ratelimit-remaining": "0" } };
+          }
           if (token === OWNER_TOKEN || broken.mergeTokenCanReview) {
             reviews.push({
               state: "APPROVED",
@@ -686,6 +706,23 @@ describe("security test 23 (kin-rulesets --test-23)", () => {
       assert.isFalse(github.refs.has("tags/v0.0.0-kin-test-23-0"));
       assert.strictEqual(github.refs.get("tags/v1.0.0"), sha("7"));
       if (!github.state.merged) assert.isTrue(github.state.closed);
+    }).pipe(Effect.provide(github.layer));
+  });
+
+  it.effect("stops on a rate limit without counting it as a block, and cleans up", () => {
+    const github = scratchRepo({ rateLimitReview: true });
+    return Effect.gen(function* () {
+      const result = yield* test23();
+      assert.isFalse(result.ok);
+      assert.include(
+        result.lines,
+        "  WAIT the merge token can't submit a review (HTTP 403: Resource not accessible by personal access token): GitHub rate-limited this call, so it proves nothing",
+      );
+      assert.include(result.lines.at(-1), "try again later");
+      assert.isFalse(result.lines.some((line) => line.startsWith("  FAIL")));
+      assert.isTrue(github.state.closed);
+      assert.isTrue(github.state.revoked);
+      assert.isFalse(github.refs.has("heads/kin-test-23-0"));
     }).pipe(Effect.provide(github.layer));
   });
 

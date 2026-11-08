@@ -432,7 +432,11 @@ export const runTest23 = Effect.fn("kinRulesets.test23Run")(function* <E, R>(inp
       ...revokeLines,
       after.ok ? "  PASS the rulesets show no drift afterwards" : "  FAIL the rulesets drifted:",
       ...(after.ok ? [] : after.lines),
-      ok ? "PASS: security test 23." : "FAIL: see above.",
+      ok
+        ? "PASS: security test 23."
+        : probes.rateLimited
+          ? "NOT DONE: GitHub rate-limited test 23, which proves nothing either way; try again later."
+          : "FAIL: see above.",
     ],
   } satisfies RulesetsResult;
 });
@@ -507,6 +511,12 @@ export const kinRulesetsCommand = Command.make(
       Flag.withDescription("For --test-23: the bot App id; defaults to KIN_GITHUB_APP_ID."),
       Flag.optional,
     ),
+    probePr: Flag.Int("probe-pr").pipe(
+      Flag.withDescription(
+        "For --test-23: an existing PR on the scratch repo for the merge token's review probe; defaults to #1.",
+      ),
+      Flag.optional,
+    ),
   },
   (input) => {
     const program = Effect.gen(function* () {
@@ -555,6 +565,7 @@ export const kinRulesetsCommand = Command.make(
         yield* (yield* OwnerMergeClient.OwnerMergeClient).save({
           orgId: TEST_23_ORG,
           token: mergeToken,
+          probePr: Option.getOrUndefined(input.probePr),
         });
         const bot = yield* (yield* KinGitHubApp.KinGitHubApp).installationToken({
           repo,

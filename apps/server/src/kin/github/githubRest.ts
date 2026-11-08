@@ -127,6 +127,16 @@ export const gitHubStatus = Effect.fn("KinGitHub.status")(function* (input: {
   } satisfies GitHubStatusResponse;
 });
 
+/**
+ * GitHub's rate limits: 429, or a 403 that says so in its headers. A rate-limited refusal says
+ * nothing about the token's permissions.
+ */
+export const isGitHubRateLimit = (answer: Pick<GitHubStatusResponse, "status" | "headers">) =>
+  answer.status === 429 ||
+  (answer.status === 403 &&
+    (answer.headers["x-ratelimit-remaining"] === "0" ||
+      answer.headers["retry-after"] !== undefined));
+
 /** `/repos/{owner}/{name}` for an `owner/name` slug. */
 export const repoPath = (repo: string) => {
   const [owner = "", name = ""] = repo.split("/");
@@ -135,6 +145,7 @@ export const repoPath = (repo: string) => {
 
 export interface GitHubAnswer {
   readonly status: number;
+  readonly headers: Readonly<Record<string, string | undefined>>;
   /** GitHub's `message`, or "" when the body has none. Error messages carry no credential. */
   readonly message: string;
   readonly body: unknown;
@@ -164,5 +175,10 @@ export const gitHubAnswer = Effect.fn("KinGitHub.answer")(function* (input: {
     typeof body.message === "string"
       ? body.message
       : "";
-  return { status: response.status, message, body } satisfies GitHubAnswer;
+  return {
+    status: response.status,
+    headers: response.headers,
+    message,
+    body,
+  } satisfies GitHubAnswer;
 });
