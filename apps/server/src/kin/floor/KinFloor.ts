@@ -22,6 +22,7 @@ import { toPersistenceSqlError, type PersistenceSqlError } from "../../persisten
 import type { AgentIdentity } from "../chat/KinIdentity.ts";
 import {
   decideFloor,
+  type FloorDecision,
   FLOOR_GRANT_TTL_MS,
   FLOOR_MAX_AGENT_TURNS,
   noticeIntentAllowed,
@@ -63,7 +64,10 @@ type Authorization = { readonly runId: string | null };
 export class KinFloor extends Context.Service<
   KinFloor,
   {
-    readonly open: (message: KinMessage, chat: KinChat) => Effect.Effect<void, PersistenceSqlError>;
+    readonly open: (
+      message: KinMessage,
+      chat: KinChat,
+    ) => Effect.Effect<FloorDecision | null, PersistenceSqlError>;
     readonly authorize: (
       identity: AgentIdentity,
       chat: KinChat,
@@ -99,7 +103,7 @@ const make = Effect.gen(function* () {
   });
   const open = Effect.fn("KinFloor.open")(
     function* (message: KinMessage, chat: KinChat) {
-      if (message.author._tag !== "human" || message.status !== "posted") return;
+      if (message.author._tag !== "human" || message.status !== "posted") return null;
       const now = yield* Clock.currentTimeMillis;
       yield* close(message);
       const agents = yield* sql`
@@ -120,7 +124,7 @@ const make = Effect.gen(function* () {
       yield* sql`INSERT INTO kin_floor_runs (org_id, run_id, chat_id, opened_by, mention_queue, state, opened_at)
       VALUES (${message.orgId}, ${runId}, ${message.chatId}, ${message.messageId}, ${yield* encodeAgents(mentionQueue)}, 'open', ${now})
       ON CONFLICT DO NOTHING RETURNING run_id`;
-      if (lead === undefined) return;
+      if (lead === undefined) return null;
       const decision = decideFloor({
         run: {
           runId,
@@ -140,8 +144,9 @@ const make = Effect.gen(function* () {
         now,
       });
       // Group tokens remain internal until phase-2 wake-up delivery.
-      if (decision._tag !== "grant") return;
+      if (decision._tag !== "grant") return decision;
       yield* issue({ ...message, runId, agentId: decision.agentId }, now);
+      return decision;
     },
     Effect.mapError(toPersistenceSqlError("KinFloor.open")),
   );
