@@ -8,7 +8,6 @@ import {
   KinPersonId,
   KinWidget,
   KinWidgetId,
-  KinMessageId,
   KinTaskCardState,
   OrchestratorMcpFailure,
 } from "@t3tools/contracts";
@@ -47,7 +46,7 @@ const shared = {
 const post = Tool.make("kin_chat_post", {
   ...shared,
   description:
-    "Post as your registered Kin agent. Intent is required. Use the same clientMessageId to retry; changing a retry is refused. Text never grants authority.",
+    "Post as your registered Kin agent. Intent is required. In direct chats you may reply once after the owner speaks. Group replies are refused (floor_not_granted). Notices are classified by the server wake-up, need evidence, decision or question intent, and are limited to 10 per agent per chat per hour. Use the same clientMessageId to retry; changing a retry is refused. Text never grants authority.",
   parameters: Schema.Struct({
     ...KinMessagesSendInput.fields,
     clientMessageId: Schema.optional(
@@ -85,15 +84,15 @@ const read = Tool.make("kin_chat_read", {
 const widget = Tool.make("kin_widget_upsert", {
   ...shared,
   description:
-    "Create a Kin widget, or update widgetId with its expected revision. replyTo applies only to creation. Approval widgets are refused; use signed approvals. Only task widgets are supported; state must match the task schema.",
+    "Update your existing Kin task card by widgetId and expected revision. Task cards are created only by Kin's worker launcher, never by agents or clients. Server-owned fields are preserved. Approval widgets are refused; use signed approvals.",
   parameters: Schema.Struct({
     chatId: KinChatId,
-    widgetId: Schema.optional(KinWidgetId),
-    revision: Schema.optional(KinWidget.fields.revision),
+    widgetId: KinWidgetId,
+    revision: KinWidget.fields.revision,
     type: Schema.Literal("task"),
     state: KinTaskCardState,
     awaiting: Schema.optional(Schema.Array(KinPersonId).check(Schema.isMaxLength(100))),
-    replyTo: Schema.optional(KinMessageId),
+    closed: Schema.optional(Schema.Boolean),
   }),
   success: KinWidget,
 }).annotate(McpSchema.EnabledWhen, enabled);
@@ -102,7 +101,10 @@ export const KinChatToolkit = Toolkit.make(post, read, widget);
 export const agentServices = Effect.gen(function* () {
   const kin = yield* KinServer;
   if (Option.isNone(kin.services))
-    return yield* new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
+    return yield* new KinChatError({
+      reason: "disabled",
+      message: "Kin is not running on this host.",
+    });
   const identity = Context.get(kin.services.value, KinIdentity);
   const agent = yield* identity.resolveAgent(yield* McpInvocationContext);
   // Only chat operations cross this boundary; trusted waiting and streaming paths stay private.

@@ -1,3 +1,4 @@
+import * as JudgeShadow from "../floor/JudgeShadow.ts";
 import { dormantLeadDependencies } from "../lead/layer.testkit.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -8,16 +9,18 @@ import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import {
   AuthSessionId,
   AuthSettingsWriteScope,
+  AuthOrchestrationReadScope,
   KinChatError,
   KinMemberId,
   KinPersonId,
   KinTaskCardState,
+  KinWidgetId,
   KinWaitingId,
   AuthStandardClientScopes,
   KinAgentId,
   KinChatId,
   KinMessageId,
-  KinChatRpcs,
+  KinRpcs,
   KinOrgId,
   ThreadId,
   RpcScopeAuthorization,
@@ -49,7 +52,7 @@ import * as Chat from "./layer.ts";
 import { KinIdentity } from "./KinIdentity.ts";
 import { KinChatService } from "./KinChatService.ts";
 import * as Repository from "./KinChatRepository.ts";
-import { makeKinChatHandlers } from "./rpcHandlers.ts";
+import { makeKinHandlers } from "../rpcHandlers.ts";
 
 const decodeTaskState = Schema.decodeEffect(KinTaskCardState);
 
@@ -73,7 +76,7 @@ const probe = WsRpcGroup.omit(
       tag !== WS_METHODS.serverProbe,
   ),
 );
-const group = RpcGroup.make(...KinChatRpcs, ...probe.requests.values()).middleware(
+const group = RpcGroup.make(...KinRpcs, ...probe.requests.values()).middleware(
   RpcScopeAuthorization,
 );
 const seed = Effect.gen(function* () {
@@ -113,7 +116,7 @@ it.effect("serves real WS sends, subscriptions and afterSeq resume with org isol
     assert.isFalse(toolConsumer(threadId));
     yield* runnerConsumer({ ...person, agentId: KinAgentId.make("lead"), threadId });
     assert.isTrue(toolConsumer(threadId));
-    const handlers = yield* makeKinChatHandlers(session);
+    const handlers = yield* makeKinHandlers(session);
     const serverHandlers = group.toLayer({ ...handlers, "server.probe": () => Effect.succeed({}) });
     const route = Layer.effectDiscard(
       Effect.gen(function* () {
@@ -148,6 +151,7 @@ it.effect("serves real WS sends, subscriptions and afterSeq resume with org isol
       author: { _tag: "system" },
     };
     const first = yield* client["kin.messages.send"](forged);
+    assert.strictEqual(first.clientMessageId, "first");
     assert.include(first.author, { _tag: "human", personId: person.personId });
     const events = yield* Stream.toQueue(
       client["kin.chat.subscribe"]({ chatId: direct.chatId, afterSeq: 0 }),
@@ -218,9 +222,20 @@ it.effect("serves real WS sends, subscriptions and afterSeq resume with org isol
       clientMessageId: "foreign-message",
       body: "Private",
     });
-    const foreignWidget = yield* chat.upsertWidget(foreignPerson, {
+    const foreignWidget = {
+      ...foreignPerson,
+      widgetId: KinWidgetId.make("foreign-widget"),
+      messageId: foreignMessage.messageId,
+      widgetClass: "native" as const,
+      revision: 1,
+      source: null,
+      feed: null,
+      awaiting: [],
+      pinnedAt: null,
+      closedAt: null,
+      updatedAt: direct.createdAt,
       chatId: foreignChat,
-      type: "task",
+      type: "task" as const,
       state: yield* decodeTaskState({
         taskId: "task",
         environmentId: "environment",
@@ -233,7 +248,8 @@ it.effect("serves real WS sends, subscriptions and afterSeq resume with org isol
         lastError: null,
         updatedAt: direct.createdAt,
       }),
-    });
+    };
+    yield* repo.insertWidget(foreignWidget);
     const orgs = yield* client["kin.orgs.list"]({});
     assert.deepStrictEqual(
       orgs.orgs.map(({ orgId }) => orgId),
@@ -315,6 +331,7 @@ it.effect(
       const service = yield* KinChatService.pipe(
         Effect.provide(
           Layer.fresh(Service.layer).pipe(
+            Layer.provide(JudgeShadow.layerOff),
             Layer.provide(Layer.succeed(Repository.KinChatRepository, interceptedRepo)),
             Layer.provide(
               Layer.succeed(Hub.KinChatHub, {
@@ -361,6 +378,7 @@ it.effect(
         clientMessageId: { kind: "send", id: "later" },
       });
       yield* hub.publish({ type: "message.posted", orgId: person.orgId, message: later });
+      yield* hub.publish({ type: "message.posted", orgId: person.orgId, message: later });
       yield* hub.publish({ type: "message.posted", orgId: person.orgId, message: delayed });
       assert.deepStrictEqual(yield* Queue.take(events), { _tag: "message", message: later });
       assert.deepStrictEqual(yield* Queue.take(events), { _tag: "message", message: delayed });
@@ -377,7 +395,7 @@ it.effect("keeps transport handlers out of persistence", () =>
 
 it.effect("resets large backlogs and bounds a resume to the current snapshot", () =>
   Effect.gen(function* () {
-    const { chat, person, direct } = yield* seed;
+    const { chat, person, direct, repo, context } = yield* seed;
     for (let i = 0; i < 201; i++)
       yield* chat.send(person, {
         chatId: direct.chatId,
@@ -388,7 +406,7 @@ it.effect("resets large backlogs and bounds a resume to the current snapshot", (
       Option.getOrThrow(
         yield* Stream.runHead(chat.subscribe(person, { chatId: direct.chatId, afterSeq: 0 })),
       ),
-      { _tag: "reset", lastSeq: 201 },
+      { _tag: "reset", lastSeq: 201, lastChangeSeq: 201 },
     );
     const resume = Option.getOrThrow(
       yield* Stream.runHead(chat.subscribe(person, { chatId: direct.chatId, afterSeq: 1 })),
@@ -399,6 +417,139 @@ it.effect("resets large backlogs and bounds a resume to the current snapshot", (
       assert.strictEqual(resume.messages[0]?.seq, 2);
       assert.strictEqual(resume.lastSeq, 201);
     }
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_messages SET body = 'Offline edit' WHERE org_id = ${person.orgId} AND chat_id = ${direct.chatId}`;
+    assert.deepStrictEqual(
+      Option.getOrThrow(
+        yield* Stream.runHead(
+          chat.subscribe(person, {
+            chatId: direct.chatId,
+            afterSeq: 201,
+            afterChangeSeq: 201,
+          }),
+        ),
+      ),
+      { _tag: "reset", lastSeq: 201, lastChangeSeq: 402 },
+    );
+    // A client keeps its change cursor frozen while live, so the stream must refresh it.
+    const events = yield* Stream.toQueue(
+      chat.subscribe(person, { chatId: direct.chatId, afterSeq: 201, afterChangeSeq: 402 }),
+      { capacity: "unbounded" },
+    );
+    let cursor = yield* Queue.take(events);
+    assert.strictEqual(cursor._tag, "backlog");
+    for (let i = 0; i < 201; i++)
+      yield* chat.send(person, {
+        chatId: direct.chatId,
+        body: `Live ${i}`,
+        clientMessageId: `live-${i}`,
+      });
+    const held = new Set<string>();
+    let afterSeq = 201;
+    for (let i = 0; i < 201; i++) {
+      const event = yield* Queue.take(events);
+      if (event._tag === "message") {
+        held.add(event.message.messageId);
+        afterSeq = Math.max(afterSeq, event.message.seq);
+      } else if (event._tag === "backlog") {
+        assert.isFalse(event.messages.some((m) => held.has(m.messageId)));
+        cursor = event;
+      }
+    }
+    assert.strictEqual(cursor._tag, "backlog");
+    if (cursor._tag !== "backlog") return;
+    const reconnect = Option.getOrThrow(
+      yield* Stream.runHead(
+        chat.subscribe(person, {
+          chatId: direct.chatId,
+          afterSeq,
+          afterChangeSeq: cursor.lastChangeSeq,
+        }),
+      ),
+    );
+    assert.strictEqual(reconnect._tag, "backlog");
+
+    // Widget writes bump their anchor's change_seq too, so widget-only activity must refresh it.
+    const hub = Context.get(context, Hub.KinChatHub);
+    const anchors = yield* sql<{
+      messageId: string;
+      seq: number;
+    }>`SELECT message_id AS "messageId", seq
+      FROM kin_messages WHERE org_id = ${person.orgId} AND chat_id = ${direct.chatId} ORDER BY seq LIMIT 201`;
+    const widgets = [];
+    for (const [i, anchor] of anchors.entries()) {
+      const widget = {
+        orgId: person.orgId,
+        chatId: direct.chatId,
+        widgetId: KinWidgetId.make(`live-widget-${i}`),
+        messageId: KinMessageId.make(anchor.messageId),
+        widgetClass: "native" as const,
+        revision: 1,
+        source: null,
+        feed: null,
+        awaiting: [],
+        pinnedAt: null,
+        closedAt: null,
+        updatedAt: direct.createdAt,
+        type: "task" as const,
+        state: yield* decodeTaskState({
+          taskId: `task-${i}`,
+          environmentId: "environment",
+          threadId: ThreadId.make(`thread-${i}`),
+          remoteEnvironmentId: null,
+          title: "Task",
+          model: null,
+          status: "working",
+          pullRequests: [],
+          lastError: null,
+          updatedAt: direct.createdAt,
+        }),
+      };
+      yield* repo.insertWidget(widget);
+      widgets.push(widget);
+    }
+    const [frozen] = yield* sql<{ seq: number; change: number }>`SELECT MAX(seq) AS seq,
+      MAX(change_seq) AS change FROM kin_messages WHERE org_id = ${person.orgId} AND chat_id = ${direct.chatId}`;
+    const widgetEvents = yield* Stream.toQueue(
+      chat.subscribe(person, {
+        chatId: direct.chatId,
+        afterSeq: frozen!.seq,
+        afterChangeSeq: frozen!.change,
+      }),
+      { capacity: "unbounded" },
+    );
+    let widgetCursor = yield* Queue.take(widgetEvents);
+    assert.strictEqual(widgetCursor._tag, "backlog");
+    for (const widget of widgets) {
+      yield* sql`UPDATE kin_widgets SET revision = 2 WHERE org_id = ${person.orgId} AND widget_id = ${widget.widgetId}`;
+      yield* hub.publish({
+        type: "widget.updated",
+        orgId: person.orgId,
+        widget: { ...widget, revision: 2 },
+      });
+    }
+    // Updates the checkpoint already carried arrive in its backlog, not again live.
+    const seen = new Set<string>();
+    while (seen.size < widgets.length) {
+      const event = yield* Queue.take(widgetEvents);
+      if (event._tag === "widget") seen.add(event.widget.widgetId);
+      else if (event._tag === "backlog") {
+        widgetCursor = event;
+        for (const widget of event.widgets) seen.add(widget.widgetId);
+      }
+    }
+    assert.strictEqual(widgetCursor._tag, "backlog");
+    if (widgetCursor._tag !== "backlog") return;
+    const widgetReconnect = Option.getOrThrow(
+      yield* Stream.runHead(
+        chat.subscribe(person, {
+          chatId: direct.chatId,
+          afterSeq: frozen!.seq,
+          afterChangeSeq: widgetCursor.lastChangeSeq,
+        }),
+      ),
+    );
+    assert.strictEqual(widgetReconnect._tag, "backlog");
   }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 
@@ -409,6 +560,7 @@ it.effect("subscribes before the list snapshot and drops buffered state already 
     const service = yield* KinChatService.pipe(
       Effect.provide(
         Layer.fresh(Service.layer).pipe(
+          Layer.provide(JudgeShadow.layerOff),
           Layer.provide(
             Layer.succeed(
               Repository.KinChatRepository,
@@ -454,7 +606,7 @@ it.effect("subscribes before the list snapshot and drops buffered state already 
 
 it.effect("denies settings-only sessions before Kin handlers execute", () =>
   Effect.gen(function* () {
-    const handlers = yield* makeKinChatHandlers({ ...session, scopes: [AuthSettingsWriteScope] });
+    const handlers = yield* makeKinHandlers({ ...session, scopes: [AuthSettingsWriteScope] });
     const client = yield* RpcTest.makeClient(group).pipe(
       Effect.provide(
         Layer.merge(
@@ -477,6 +629,7 @@ it.effect("drops a failed waiting read without ending the chat list stream", () 
     const service = yield* KinChatService.pipe(
       Effect.provide(
         Layer.fresh(Service.layer).pipe(
+          Layer.provide(JudgeShadow.layerOff),
           Layer.provide(
             Layer.succeed(Repository.KinChatRepository, {
               ...repo,
@@ -516,5 +669,300 @@ it.effect("drops a failed waiting read without ending the chat list stream", () 
     const next = yield* Queue.take(events);
     assert.strictEqual(next._tag, "chat");
     if (next._tag === "chat") assert.strictEqual(next.chat.lastSeq, 1);
+  }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
+);
+
+it.effect(
+  "serves budget settings to the owner and refuses non-owner and foreign organizations",
+  () =>
+    Effect.gen(function* () {
+      const { person, repo } = yield* seed;
+      const handlers = yield* makeKinHandlers(session);
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.merge(
+            group.toLayer({ ...handlers, "server.probe": () => Effect.succeed({}) }),
+            RpcAuthorization.layer(AuthStandardClientScopes),
+          ),
+        ),
+      );
+      const input = { orgId: person.orgId, limits: { leadUnits: 300, workerUnits: 600 } };
+      assert.deepStrictEqual((yield* client["kin.budget.set"](input)).limits, input.limits);
+      assert.deepStrictEqual(
+        (yield* client["kin.budget.get"]({ orgId: person.orgId })).limits,
+        input.limits,
+      );
+      assert.include(
+        yield* client["kin.budget.set"]({ ...input, orgId: KinOrgId.make("foreign") }).pipe(
+          Effect.flip,
+        ),
+        { reason: "not_found" },
+      );
+      const memberId = KinPersonId.make("non-owner");
+      yield* repo.insertPerson({
+        orgId: person.orgId,
+        personId: memberId,
+        handle: "member",
+        displayName: "Member",
+        githubLogin: null,
+        createdAt: "1970-01-01T00:00:00.000Z",
+      });
+      const kin = yield* Kin.KinServer;
+      const services = Option.getOrThrow(kin.services);
+      const identity = Context.get(services, KinIdentity);
+      const memberHandlers = yield* makeKinHandlers(session).pipe(
+        Effect.provideService(Kin.KinServer, {
+          ...kin,
+          services: Option.some(
+            Context.add(services, KinIdentity, {
+              ...identity,
+              resolve: () =>
+                Effect.succeed([{ _tag: "person", orgId: person.orgId, personId: memberId }]),
+            }),
+          ),
+        }),
+      );
+      const memberClient = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.merge(
+            group.toLayer({ ...memberHandlers, "server.probe": () => Effect.succeed({}) }),
+            RpcAuthorization.layer(AuthStandardClientScopes),
+          ),
+        ),
+      );
+      assert.include(yield* memberClient["kin.budget.set"](input).pipe(Effect.flip), {
+        reason: "not_allowed",
+      });
+      const readOnly = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.merge(
+            group.toLayer({ ...handlers, "server.probe": () => Effect.succeed({}) }),
+            RpcAuthorization.layer([AuthOrchestrationReadScope]),
+          ),
+        ),
+      );
+      assert.strictEqual(
+        (yield* readOnly["kin.budget.set"](input).pipe(Effect.flip))._tag,
+        "EnvironmentAuthorizationError",
+      );
+    }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
+);
+
+it.effect("replays offline edits, deletions and widget revisions once with afterChangeSeq", () =>
+  Effect.gen(function* () {
+    const { chat, repo, person, direct } = yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    const old = yield* chat.send(person, {
+      chatId: direct.chatId,
+      body: "Old",
+      clientMessageId: "old",
+    });
+    const removed = yield* chat.send(person, {
+      chatId: direct.chatId,
+      body: "Remove",
+      clientMessageId: "remove",
+    });
+    const latest = yield* chat.send(person, {
+      chatId: direct.chatId,
+      body: "Latest",
+      clientMessageId: "latest",
+    });
+    const widgetId = KinWidgetId.make("offline-widget");
+    yield* repo.insertWidget({
+      ...person,
+      chatId: direct.chatId,
+      messageId: old.messageId,
+      widgetId,
+      widgetClass: "native",
+      type: "task",
+      state: {},
+      source: null,
+      feed: null,
+      awaiting: [],
+      pinnedAt: null,
+      closedAt: null,
+      updatedAt: direct.createdAt,
+    });
+    const baseline = Option.getOrThrow(
+      yield* Stream.runHead(
+        chat.subscribe(person, { chatId: direct.chatId, afterSeq: latest.seq }),
+      ),
+    );
+    assert.strictEqual(baseline._tag, "backlog");
+    if (baseline._tag !== "backlog") return;
+    yield* sql`UPDATE kin_messages SET body = 'Edited', edited_at = '1970-01-01T00:00:01.000Z' WHERE org_id = ${person.orgId} AND message_id = ${old.messageId}`;
+    yield* sql`UPDATE kin_messages SET body = '', status = 'deleted' WHERE org_id = ${person.orgId} AND message_id = ${removed.messageId}`;
+    yield* sql`UPDATE kin_widgets SET revision = 2 WHERE org_id = ${person.orgId} AND widget_id = ${widgetId}`;
+    const event = Option.getOrThrow(
+      yield* Stream.runHead(
+        chat.subscribe(person, {
+          chatId: direct.chatId,
+          afterSeq: latest.seq,
+          afterChangeSeq: baseline.lastChangeSeq,
+        }),
+      ),
+    );
+    const legacy = Option.getOrThrow(
+      yield* Stream.runHead(
+        chat.subscribe(person, { chatId: direct.chatId, afterSeq: latest.seq }),
+      ),
+    );
+    assert.include(legacy, { _tag: "backlog" });
+    if (legacy._tag === "backlog")
+      assert.deepStrictEqual([legacy.messages, legacy.widgets], [[], []]);
+    assert.strictEqual(event._tag, "backlog");
+    if (event._tag !== "backlog") return;
+    assert.deepStrictEqual(
+      event.messages.map((m) => [m.messageId, m.body, m.status]),
+      [
+        [old.messageId, "Edited", "posted"],
+        [removed.messageId, "", "deleted"],
+      ],
+    );
+    assert.deepStrictEqual(
+      event.widgets.map((w) => [w.widgetId, w.revision]),
+      [[widgetId, 2]],
+    );
+    assert.strictEqual(new Set(event.messages.map((m) => m.messageId)).size, event.messages.length);
+    assert.isDefined(event.lastChangeSeq);
+    const cursor = {
+      chatId: direct.chatId,
+      afterSeq: event.lastSeq,
+      afterChangeSeq: event.lastChangeSeq,
+    };
+    const unchanged = Option.getOrThrow(yield* Stream.runHead(chat.subscribe(person, cursor)));
+    assert.include(unchanged, { _tag: "backlog" });
+    if (unchanged._tag === "backlog")
+      assert.deepStrictEqual([unchanged.messages, unchanged.widgets], [[], []]);
+    yield* sql`UPDATE kin_widgets SET revision = 3 WHERE org_id = ${person.orgId} AND widget_id = ${widgetId}`;
+    const changed = Option.getOrThrow(yield* Stream.runHead(chat.subscribe(person, cursor)));
+    assert.strictEqual(changed._tag, "backlog");
+    if (changed._tag === "backlog") {
+      assert.deepStrictEqual(
+        changed.messages.map((m) => m.messageId),
+        [old.messageId],
+      );
+      assert.deepStrictEqual(
+        changed.widgets.map((w) => w.revision),
+        [3],
+      );
+    }
+  }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
+);
+
+it.effect("maps a real persistence failure to retryable unavailable and preserves refusals", () =>
+  Effect.gen(function* () {
+    const { direct } = yield* seed;
+    const handlers = yield* makeKinHandlers(session);
+    assert.include(
+      yield* handlers["kin.chat.history"]({
+        chatId: KinChatId.make("missing"),
+        beforeSeq: 100,
+        limit: 10,
+      }).pipe(Effect.flip),
+      { reason: "not_found" },
+    );
+    const kin = yield* Kin.KinServer;
+    const services = Option.getOrThrow(kin.services);
+    const identity = Context.get(services, KinIdentity);
+    const broken = yield* makeKinHandlers(session).pipe(
+      Effect.provideService(Kin.KinServer, {
+        ...kin,
+        services: Option.some(
+          Context.add(services, KinIdentity, {
+            ...identity,
+            resolve: () => Effect.die("identity defect"),
+          }),
+        ),
+      }),
+    );
+    assert.include(yield* broken["kin.orgs.list"]().pipe(Effect.flip), { reason: "unavailable" });
+    assert.include(
+      yield* Stream.runHead(broken["kin.chat.subscribe"]({ chatId: direct.chatId })).pipe(
+        Effect.flip,
+      ),
+      { reason: "unavailable" },
+    );
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`DROP TABLE kin_widgets`;
+    yield* sql`DROP TABLE kin_messages`;
+    assert.include(
+      yield* handlers["kin.chat.history"]({
+        chatId: direct.chatId,
+        beforeSeq: 100,
+        limit: 10,
+      }).pipe(Effect.flip),
+      { reason: "unavailable" },
+    );
+  }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
+);
+
+it.effect("exposes a send id only to its author in live, backlog, history and summaries", () =>
+  Effect.gen(function* () {
+    const { chat, repo, person, direct } = yield* seed;
+    const other = { ...person, personId: KinPersonId.make("second-viewer") };
+    yield* repo.insertPerson({
+      ...other,
+      handle: "second",
+      displayName: "Second",
+      githubLogin: null,
+      createdAt: direct.createdAt,
+    });
+    yield* repo.addMember({
+      ...direct,
+      memberId: KinMemberId.make("second-member"),
+      principal: other,
+      role: "member",
+      joinedAt: direct.createdAt,
+      leftAt: null,
+      mutedUntil: null,
+    });
+    const ownEvents = yield* Stream.toQueue(chat.subscribe(person, { chatId: direct.chatId }), {
+      capacity: "unbounded",
+    });
+    const otherEvents = yield* Stream.toQueue(chat.subscribe(other, { chatId: direct.chatId }), {
+      capacity: "unbounded",
+    });
+    yield* Queue.take(ownEvents);
+    yield* Queue.take(otherEvents);
+    const sent = yield* chat.send(person, {
+      chatId: direct.chatId,
+      body: "Hello",
+      clientMessageId: "pending-bubble",
+    });
+    assert.strictEqual(sent.clientMessageId, "pending-bubble");
+    for (const [viewer, events, expected] of [
+      [person, ownEvents, "pending-bubble"],
+      [other, otherEvents, undefined],
+    ] as const) {
+      const live = yield* Queue.take(events);
+      assert.strictEqual(live._tag, "message");
+      if (live._tag === "message") {
+        assert.strictEqual(live.message.clientMessageId, expected);
+        assert.strictEqual(Object.hasOwn(live.message, "clientMessageId"), expected !== undefined);
+      }
+      const history = yield* chat.history(viewer, {
+        chatId: direct.chatId,
+        beforeSeq: 100,
+        limit: 10,
+      });
+      assert.strictEqual(history.messages[0]?.clientMessageId, expected);
+      const backlog = Option.getOrThrow(
+        yield* Stream.runHead(chat.subscribe(viewer, { chatId: direct.chatId, afterSeq: 0 })),
+      );
+      if (backlog._tag !== "backlog") return assert.fail("Expected backlog");
+      assert.strictEqual(backlog.messages[0]?.clientMessageId, expected);
+      const list = Option.getOrThrow(yield* Stream.runHead(chat.subscribeChats([viewer], {})));
+      if (list._tag !== "snapshot") return assert.fail("Expected snapshot");
+      assert.strictEqual(list.chats[0]?.lastMessage?.clientMessageId, expected);
+    }
+    assert.strictEqual(
+      (yield* chat.send(person, {
+        chatId: direct.chatId,
+        body: "Hello",
+        clientMessageId: "pending-bubble",
+      })).clientMessageId,
+      "pending-bubble",
+    );
   }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );

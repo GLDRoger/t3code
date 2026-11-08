@@ -41,11 +41,11 @@ const isNonBlankBody = Schema.makeFilter((value: string) => value.trim().length 
 });
 
 // node:sqlite truncates TEXT results at NUL, even when the full value was stored.
-const MessageBody = Schema.String.check(
-  Schema.makeFilter((value) => !value.includes("\u0000"), {
-    expected: "a message body without NUL characters",
-  }),
-);
+const isNulFree = Schema.makeFilter((value: string) => !value.includes("\u0000"), {
+  expected: "text without NUL characters",
+});
+export const KinText = Schema.String.check(isNulFree);
+export const KinTrimmedText = TrimmedNonEmptyString.check(isNulFree);
 
 export const KinChatKind = Schema.Literals(["direct", "team_group", "project_group", "router"]);
 export type KinChatKind = typeof KinChatKind.Type;
@@ -66,7 +66,7 @@ export const KinChat = Schema.Struct({
   orgId: KinOrgId,
   chatId: KinChatId,
   kind: KinChatKind,
-  title: Schema.NullOr(TrimmedNonEmptyString),
+  title: Schema.NullOr(KinTrimmedText),
   teamId: Schema.NullOr(TrimmedNonEmptyString),
   lastSeq: NonNegativeInt,
   lastMessageAt: Schema.NullOr(IsoDateTime),
@@ -95,22 +95,22 @@ export type KinChatMember = typeof KinChatMember.Type;
 
 export const KinOrg = Schema.Struct({
   orgId: KinOrgId,
-  name: TrimmedNonEmptyString,
+  name: KinTrimmedText,
   createdAt: IsoDateTime,
 });
 export type KinOrg = typeof KinOrg.Type;
 export const KinPerson = Schema.Struct({
   personId: KinPersonId,
   orgId: KinOrgId,
-  handle: TrimmedNonEmptyString,
-  displayName: TrimmedNonEmptyString,
-  githubLogin: Schema.NullOr(TrimmedNonEmptyString),
+  handle: KinTrimmedText,
+  displayName: KinTrimmedText,
+  githubLogin: Schema.NullOr(KinTrimmedText),
 });
 export type KinPerson = typeof KinPerson.Type;
 export const KinAgent = Schema.Struct({
   agentId: KinAgentId,
   orgId: KinOrgId,
-  displayName: TrimmedNonEmptyString,
+  displayName: KinTrimmedText,
   role: KinAgentRole,
   ownerPersonId: KinPersonId,
 });
@@ -146,10 +146,12 @@ export const KinMessage = Schema.Struct({
   chatId: KinChatId,
   messageId: KinMessageId,
   seq: PositiveInt,
+  changeSeq: Schema.optional(NonNegativeInt),
+  clientMessageId: Schema.optional(TrimmedNonEmptyString),
   author: KinAuthor,
   authorRole: KinRole,
   kind: KinMessageKind,
-  body: MessageBody,
+  body: KinText,
   intent: Schema.NullOr(KinAgentIntent),
   mentions: Schema.Array(KinMemberId),
   replyTo: Schema.NullOr(KinMessageId),
@@ -182,11 +184,11 @@ export const KinWidget = Schema.Struct({
   widgetId: KinWidgetId,
   messageId: KinMessageId,
   widgetClass: KinWidgetClass,
-  type: TrimmedNonEmptyString,
+  type: KinTrimmedText,
   revision: PositiveInt,
   state: Schema.Unknown,
   source: Schema.NullOr(Schema.Struct({ threadId: ThreadId, itemId: TurnItemId })),
-  feed: Schema.NullOr(Schema.Struct({ kind: TrimmedNonEmptyString, key: TrimmedNonEmptyString })),
+  feed: Schema.NullOr(Schema.Struct({ kind: KinTrimmedText, key: KinTrimmedText })),
   awaiting: Schema.Array(KinPersonId),
   pinnedAt: Schema.NullOr(IsoDateTime),
   closedAt: Schema.NullOr(IsoDateTime),
@@ -199,8 +201,8 @@ export const KinTaskCardState = Schema.Struct({
   environmentId: EnvironmentId,
   threadId: Schema.NullOr(ThreadId),
   remoteEnvironmentId: Schema.NullOr(EnvironmentId),
-  title: TrimmedNonEmptyString,
-  model: Schema.NullOr(Schema.String),
+  title: KinTrimmedText,
+  model: Schema.NullOr(KinText),
   status: Schema.Literals([
     "working",
     "waiting",
@@ -211,7 +213,7 @@ export const KinTaskCardState = Schema.Struct({
     "cancelled",
   ]),
   pullRequests: Schema.Array(Schema.Struct({ url: Schema.String, number: Schema.Int })),
-  lastError: Schema.NullOr(Schema.String),
+  lastError: Schema.NullOr(KinText),
   updatedAt: IsoDateTime,
 });
 export type KinTaskCardState = typeof KinTaskCardState.Type;
@@ -234,7 +236,7 @@ export const KinWaitingItem = Schema.Struct({
   reason: KinWaitingReason,
   createdAt: IsoDateTime,
   resolvedAt: Schema.NullOr(IsoDateTime),
-  resolution: Schema.NullOr(TrimmedNonEmptyString),
+  resolution: Schema.NullOr(KinTrimmedText),
 });
 export type KinWaitingItem = typeof KinWaitingItem.Type;
 export const KinChatSummary = Schema.Struct({
@@ -260,8 +262,12 @@ export const KinChatStreamEvent = Schema.Union([
     messages: Schema.Array(KinMessage),
     widgets: Schema.Array(KinWidget),
     lastSeq: NonNegativeInt,
+    lastChangeSeq: Schema.optional(NonNegativeInt),
   }),
-  Schema.TaggedStruct("reset", { lastSeq: NonNegativeInt }),
+  Schema.TaggedStruct("reset", {
+    lastSeq: NonNegativeInt,
+    lastChangeSeq: Schema.optional(NonNegativeInt),
+  }),
   Schema.TaggedStruct("message", { message: KinMessage }),
   Schema.TaggedStruct("widget", { widget: KinWidget }),
   Schema.TaggedStruct("member", { member: KinChatMember }),
@@ -294,6 +300,7 @@ export type KinChatsCreateDirectInput = typeof KinChatsCreateDirectInput.Type;
 export const KinChatSubscribeInput = Schema.Struct({
   chatId: KinChatId,
   afterSeq: Schema.optional(NonNegativeInt),
+  afterChangeSeq: Schema.optional(NonNegativeInt),
 });
 export type KinChatSubscribeInput = typeof KinChatSubscribeInput.Type;
 export const KinChatHistoryInput = Schema.Struct({
@@ -312,7 +319,7 @@ export const KIN_MESSAGE_BODY_MAX_LENGTH = 16_000;
 export const KinMessagesSendInput = Schema.Struct({
   chatId: KinChatId,
   clientMessageId: TrimmedNonEmptyString,
-  body: MessageBody.check(isNonBlankBody, Schema.isMaxLength(KIN_MESSAGE_BODY_MAX_LENGTH)),
+  body: KinText.check(isNonBlankBody, Schema.isMaxLength(KIN_MESSAGE_BODY_MAX_LENGTH)),
   mentions: Schema.optional(Schema.Array(KinMemberId)),
   replyTo: Schema.optional(KinMessageId),
 });
@@ -335,6 +342,7 @@ export class KinChatError extends Schema.TaggedError<KinChatError>()("KinChatErr
     "not_found",
     "not_allowed",
     "unavailable",
+    "disabled",
     "widget_changed",
     "use_approvals",
     "invalid_state",

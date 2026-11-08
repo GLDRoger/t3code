@@ -16,6 +16,9 @@ import {
   ProviderDriverKind,
   ProviderThreadId,
   ProviderTurnId,
+  RuntimeRequestId,
+  type ProviderApprovalDecision,
+  type RuntimeMode,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -32,10 +35,15 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import * as KinIdentity from "../chat/KinIdentity.ts";
+import * as Writer from "../memory/MemoryWriter.ts";
 import * as Memory from "../memory/Memory.ts";
+import * as Budget from "./KinBudget.ts";
+import * as MemoryCache from "../memory/MemoryCache.ts";
+import * as Hub from "../chat/KinChatHub.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
+import * as KinIssuedTokens from "../mcp/KinIssuedTokens.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
@@ -84,7 +92,7 @@ export const seed = Effect.gen(function* () {
   yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at) VALUES ('owner-chat', 'org', 'team_group', 0, ${timestamp})`;
   const models = yield* encodeJson({
     strong: selection,
-    cheap: selection,
+    cheap: { ...selection, model: "gpt-5.1-codex-mini" },
   });
   yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id) VALUES ('lead', 'org', 'Lead', 0, ${models}, '[]', 'owner-chat')`;
 });
@@ -100,21 +108,38 @@ export const event = (id: string) =>
     routine: "owner_check",
   });
 
-export function harness(
-  options: {
-    readonly sharedWith?: ReadonlyArray<ThreadId>;
-    readonly releaseEntered?: Deferred.Deferred<void>;
-    readonly releaseHold?: Deferred.Deferred<void>;
-    readonly releaseDone?: Deferred.Deferred<void>;
-    readonly hold?: Deferred.Deferred<void>;
-    readonly entered?: Deferred.Deferred<void>;
-    readonly prepare?: Memory.Memory["Service"]["prepareWakeup"];
-  } = {},
-) {
+type HarnessOptions = {
+  readonly sharedWith?: ReadonlyArray<ThreadId>;
+  readonly releaseEntered?: Deferred.Deferred<void>;
+  readonly releaseHold?: Deferred.Deferred<void>;
+  readonly releaseDone?: Deferred.Deferred<void>;
+  readonly hold?: Deferred.Deferred<void>;
+  readonly entered?: Deferred.Deferred<void>;
+  readonly failed?: boolean;
+  readonly writer?: Layer.Layer<Writer.MemoryWriter, never, SqlClient.SqlClient>;
+  readonly piUsage?: boolean;
+  readonly prepare?: Memory.Memory["Service"]["prepareWakeup"];
+  /** Each turn opens a command approval and ends only once it is answered. */
+  readonly approval?: Deferred.Deferred<ProviderApprovalDecision | undefined>;
+  readonly runtimeModes?: Array<RuntimeMode>;
+  /** The fake provider registers as the default Claude instance instead of Codex. */
+  readonly claude?: boolean;
+  readonly settings?: Parameters<typeof ServerSettings.layerTest>[0];
+  /** Runtime requests are opened with this capability instead of `live`. */
+  readonly requestCapability?: "not_resumable";
+};
+
+export function harness(options: HarnessOptions = {}) {
+  return WakeupRunner.layer.pipe(Layer.provideMerge(orchestrationHarness(options)));
+}
+
+/** The fake-provider orchestration stack without the wake-up runner. */
+export function orchestrationHarness(options: HarnessOptions = {}) {
   let nativeOrdinal = 0;
-  const driver = ProviderDriverKind.make("codex");
+  const driver = ProviderDriverKind.make(options.claude ? "claudeAgent" : "codex");
+  const instanceId = options.claude ? ProviderInstanceId.make("claudeAgent") : selection.instanceId;
   const adapter: ProviderAdapter.ProviderAdapterV2["Service"] = {
-    instanceId: selection.instanceId,
+    instanceId,
     driver,
     getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
     planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
@@ -123,13 +148,13 @@ export function harness(
         const now = yield* DateTime.now;
         const events = yield* PubSub.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
         const runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
-          instanceId: selection.instanceId,
+          instanceId,
           driver,
           providerSessionId: session.providerSessionId,
           providerSession: {
             id: session.providerSessionId,
             driver,
-            providerInstanceId: selection.instanceId,
+            providerInstanceId: instanceId,
             status: "ready",
             cwd: "/private/tmp",
             model: selection.model,
@@ -143,7 +168,7 @@ export function harness(
             Effect.sync(() => ({
               id: ProviderThreadId.make(`native-${++nativeOrdinal}`),
               driver,
-              providerInstanceId: selection.instanceId,
+              providerInstanceId: instanceId,
               providerSessionId: session.providerSessionId,
               appThreadId: input.threadId,
               ownerNodeId: null,
@@ -160,47 +185,128 @@ export function harness(
             })),
           resumeThread: ({ providerThread }) => Effect.succeed(providerThread),
           startTurn: Effect.fn("test.startTurn")(function* (input) {
+            options.runtimeModes?.push(input.runtimePolicy.runtimeMode);
             if (options.entered !== undefined) yield* Deferred.succeed(options.entered, undefined);
             if (options.hold !== undefined) yield* Deferred.await(options.hold);
             const time = yield* DateTime.now;
             const id = ProviderTurnId.make(`turn-${input.runOrdinal}`);
-            yield* PubSub.publish(events, {
-              type: "provider_turn.updated",
-              driver,
-              providerTurn: {
-                id,
-                providerThreadId: input.providerThread.id,
-                nodeId: input.rootNodeId,
-                runAttemptId: input.attemptId,
-                nativeTurnRef: null,
-                ordinal: input.runOrdinal,
-                status: "completed",
-                startedAt: time,
-                completedAt: time,
-                tokenUsage: {
-                  usedTokens: 30,
-                  inputTokens: 20,
-                  cachedInputTokens: 5,
-                  outputTokens: 10,
-                  updatedAt: DateTime.formatIso(time),
+            if (!options.piUsage)
+              yield* PubSub.publish(events, {
+                type: "provider_turn.updated",
+                driver,
+                providerTurn: {
+                  id,
+                  providerThreadId: input.providerThread.id,
+                  nodeId: input.rootNodeId,
+                  runAttemptId: input.attemptId,
+                  nativeTurnRef: null,
+                  ordinal: input.runOrdinal,
+                  status: "running",
+                  startedAt: time,
+                  completedAt: null,
+                  tokenUsage: {
+                    usedTokens: 22,
+                    inputTokens: 18,
+                    cachedInputTokens: 4,
+                    outputTokens: 4,
+                    updatedAt: DateTime.formatIso(time),
+                  },
+                  turnTokenUsage: {
+                    usageScope: "main_agent",
+                    usageStatus: "partial",
+                    hasSubagents: false,
+                    inputTokens: 18,
+                    cachedInputTokens: 4,
+                    outputTokens: 4,
+                  },
                 },
-              },
+              });
+            if (options.approval !== undefined)
+              yield* PubSub.publish(events, {
+                type: "runtime_request.updated",
+                driver,
+                threadId: input.threadId,
+                runtimeRequest: {
+                  id: RuntimeRequestId.make(`request-${input.runOrdinal}`),
+                  nodeId: input.rootNodeId,
+                  providerTurnId: null,
+                  nativeRequestRef: null,
+                  kind: "command",
+                  status: "pending",
+                  responseCapability:
+                    options.requestCapability === "not_resumable"
+                      ? { type: "not_resumable", reason: "Fixture process stopped" }
+                      : { type: "live", providerSessionId: session.providerSessionId },
+                  createdAt: time,
+                  resolvedAt: null,
+                },
+              });
+            const finish = Effect.gen(function* () {
+              yield* PubSub.publish(events, {
+                type: "provider_turn.updated",
+                driver,
+                providerTurn: {
+                  id,
+                  providerThreadId: input.providerThread.id,
+                  nodeId: input.rootNodeId,
+                  runAttemptId: input.attemptId,
+                  nativeTurnRef: null,
+                  ordinal: input.runOrdinal,
+                  status: options.failed ? "failed" : "completed",
+                  startedAt: time,
+                  completedAt: time,
+                  ...(options.piUsage
+                    ? {}
+                    : {
+                        turnTokenUsage: {
+                          usageScope: "main_agent",
+                          usageStatus: "complete",
+                          hasSubagents: false,
+                          inputTokens: 20,
+                          cachedInputTokens: 5,
+                          outputTokens: 10,
+                        },
+                      }),
+                  tokenUsage: {
+                    usedTokens: 30,
+                    inputTokens: 2,
+                    cachedInputTokens: options.piUsage ? 100 : 1,
+                    outputTokens: 6,
+                    updatedAt: DateTime.formatIso(time),
+                  },
+                },
+              });
+              yield* PubSub.publish(events, {
+                type: "turn.terminal",
+                driver,
+                providerThreadId: input.providerThread.id,
+                providerTurnId: id,
+                runOrdinal: input.runOrdinal,
+                ...(options.failed
+                  ? {
+                      status: "failed" as const,
+                      failureItemOrdinal: 1,
+                      failure: {
+                        class: "provider_error" as const,
+                        message: "Fixture provider failure",
+                        code: null,
+                        retryable: false,
+                      },
+                    }
+                  : { status: "completed" as const, failure: null }),
+                threadDisposition: "reusable",
+              });
             });
-            yield* PubSub.publish(events, {
-              type: "turn.terminal",
-              driver,
-              providerThreadId: input.providerThread.id,
-              providerTurnId: id,
-              runOrdinal: input.runOrdinal,
-              status: "completed",
-              failure: null,
-              threadDisposition: "reusable",
-            });
+            if (options.approval === undefined) return yield* finish;
+            yield* Deferred.await(options.approval).pipe(Effect.andThen(finish), Effect.forkDetach);
           }),
           compactThread: (input) => runtime.startTurn(input),
           steerTurn: () => Effect.void,
           interruptTurn: () => Effect.void,
-          respondToRuntimeRequest: () => Effect.void,
+          respondToRuntimeRequest: (response) =>
+            options.approval === undefined
+              ? Effect.void
+              : Deferred.succeed(options.approval, response.decision).pipe(Effect.asVoid),
           readThreadSnapshot: () => Effect.die("unused snapshot"),
           rollbackThread: () => Effect.die("unused rollback"),
           forkThread: () => Effect.die("unused fork"),
@@ -213,7 +319,7 @@ export function harness(
     ProviderAdapterRegistry.layerFromAdapters([adapter]),
     { databaseLayer: database },
   );
-  const settings = ServerSettings.layerTest();
+  const settings = ServerSettings.layerTest(options.settings);
   const receipts = CommandReceiptStore.layer.pipe(Layer.provide(database));
   const sharedWith = options.sharedWith;
   const management = ThreadManagement.layer.pipe(
@@ -261,6 +367,15 @@ export function harness(
   );
   const kin = Layer.mergeAll(
     KinEventQueue.layer,
+    Budget.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          MemoryCache.layer,
+          KinEventQueue.layer,
+          Hub.layer.pipe(Layer.provideMerge(KinChatRepository.layer)),
+        ),
+      ),
+    ),
     KinLeadRegistry.layer,
     KinIdentity.KinIdentity.layer.pipe(
       Layer.provide(KinChatRepository.layer),
@@ -286,6 +401,11 @@ export function harness(
     management,
     projectLayer,
     orchestration,
+    settings,
+    Layer.effect(
+      KinIssuedTokens.KinIssuedTokens,
+      Effect.map(KinIssuedTokens.make, (tokens) => tokens.service),
+    ),
     McpSessionRegistry.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
@@ -301,5 +421,5 @@ export function harness(
       ),
     ),
   ).pipe(Layer.provideMerge(database));
-  return WakeupRunner.layer.pipe(Layer.provideMerge(services));
+  return Layer.merge(services, (options.writer ?? Layer.empty).pipe(Layer.provide(database)));
 }

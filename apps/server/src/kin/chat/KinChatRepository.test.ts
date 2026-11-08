@@ -107,7 +107,7 @@ const message = (id: string, overrides: Partial<Omit<KinMessage, "seq">> = {}) =
     editedAt: null,
     ...overrides,
     clientMessageId: { kind: "send", id },
-  }) satisfies Omit<KinMessage, "seq"> & {
+  }) satisfies Omit<KinMessage, "seq" | "clientMessageId"> & {
     caller: McpThreadCaller;
     clientMessageId: { kind: "send" | "act"; id: string };
   };
@@ -346,6 +346,20 @@ describe("KinChatRepository", () => {
         assert.strictEqual(Option.getOrThrow(yield* repo.getMember(scope)).leftAt, later);
         const rejoined = yield* repo.addMember({ ...owner, joinedAt: later });
         assert.deepStrictEqual(rejoined, { ...owner, joinedAt: later });
+        for (const title of ["a\u0000b", "\u0000ab", "ab\u0000"]) {
+          const nulChatId = decodeChatId("nul-title");
+          const failure = yield* Effect.flip(
+            repo.createChat({
+              ...chat,
+              chatId: nulChatId,
+              kind: "team_group",
+              directKey: null,
+              title,
+            }),
+          );
+          assert.strictEqual(failure._tag, "PersistenceDecodeError");
+          assert.isTrue(Option.isNone(yield* repo.getChat({ orgId, chatId: nulChatId })));
+        }
         for (const body of ["a\u0000b", "\u0000ab", "ab\u0000"]) {
           const failure = yield* Effect.flip(repo.insertMessage(message("nul", { body })));
           assert.strictEqual(failure._tag, "PersistenceDecodeError");
@@ -355,7 +369,10 @@ describe("KinChatRepository", () => {
           );
         }
         const first = yield* repo.insertMessage(message("first"));
-        assert.deepStrictEqual(first, decodeMessage({ ...message("first"), seq: 1 }));
+        assert.deepStrictEqual(
+          first,
+          decodeMessage({ ...message("first"), clientMessageId: "first", seq: 1, changeSeq: 1 }),
+        );
         const repeated = yield* Effect.all(
           Array.from({ length: 5 }, (_, i) =>
             repo.insertMessage({
@@ -1345,7 +1362,31 @@ describe("KinChatRepository", () => {
     Effect.gen(function* () {
       const repo = yield* seed;
       yield* repo.insertMessage(message("first"));
+      for (const fields of [
+        { type: "ta\u0000sk" },
+        { feed: { kind: "bu\u0000ild", key: "build-1" } },
+        { feed: { kind: "build", key: "bu\u0000ild-1" } },
+      ]) {
+        assert.strictEqual(
+          (yield* Effect.flip(repo.insertWidget({ ...widget, ...fields })))._tag,
+          "PersistenceDecodeError",
+        );
+        assert.isTrue(Option.isNone(yield* repo.getWidget({ orgId, widgetId })));
+      }
       yield* repo.insertWidget(widget);
+      for (const feed of [
+        { kind: "bu\u0000ild", key: "build-1" },
+        { kind: "build", key: "bu\u0000ild-1" },
+      ]) {
+        assert.strictEqual(
+          (yield* Effect.flip(repo.updateWidget({ ...widget, feed, expectedRevision: 1 })))._tag,
+          "PersistenceDecodeError",
+        );
+        assert.strictEqual(
+          Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId })).revision,
+          1,
+        );
+      }
       const updated = {
         ...widget,
         revision: 2,

@@ -7,6 +7,20 @@ import Triggers from "./migrations/K003_Triggers.ts";
 import MemoryReads from "./migrations/K004_MemoryReads.ts";
 import OneChatOwner from "./migrations/K005_OneChatOwner.ts";
 import Pings from "./migrations/K006_Pings.ts";
+import Budget from "./migrations/K007_Budget.ts";
+import Floor from "./migrations/K008_Floor.ts";
+
+import JudgeLog from "./migrations/K009_JudgeLog.ts";
+
+import ChatChanges from "./migrations/K010_ChatChanges.ts";
+import MemoryHeads from "./migrations/K011_MemoryHeads.ts";
+import SecretAllow from "./migrations/K012_SecretAllow.ts";
+import Routines from "./migrations/K013_Routines.ts";
+import LeadToolCalls from "./migrations/K014_LeadToolCalls.ts";
+import AuthSessionKeys from "./migrations/K015_AuthSessionKeys.ts";
+import DeferralRuns from "./migrations/K016_DeferralRuns.ts";
+import Workers from "./migrations/K017_Workers.ts";
+import Dreams from "./migrations/K018_Dreams.ts";
 
 const run = Migrator.make({});
 const loader = Migrator.fromRecord({
@@ -16,6 +30,18 @@ const loader = Migrator.fromRecord({
   "4_MemoryReads": MemoryReads,
   "5_OneChatOwner": OneChatOwner,
   "6_Pings": Pings,
+  "7_Budget": Budget,
+  "8_Floor": Floor,
+  "9_JudgeLog": JudgeLog,
+  "10_ChatChanges": ChatChanges,
+  "11_MemoryHeads": MemoryHeads,
+  "12_SecretAllow": SecretAllow,
+  "13_Routines": Routines,
+  "14_LeadToolCalls": LeadToolCalls,
+  "15_AuthSessionKeys": AuthSessionKeys,
+  "16_DeferralRuns": DeferralRuns,
+  "17_Workers": Workers,
+  "18_Dreams": Dreams,
 });
 
 export const runKinMigrations = Effect.fn("KinMigrations.run")(function* () {

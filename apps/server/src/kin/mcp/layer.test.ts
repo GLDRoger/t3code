@@ -1,4 +1,5 @@
-import { authorityLayerWithDatabase, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
+import { ProviderInstanceRegistry } from "../../provider/ProviderInstanceRegistry.ts";
+import { authorityLayerWithDatabase, startAgentWakeup } from "../chat/WakeupAuthority.testkit.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { McpProviderSessions } from "@t3tools/provider-core/server/McpProviderSessions";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -14,6 +15,8 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { McpServer } from "effect/ai";
+import { KinAgentSessions } from "./layer.ts";
+import * as KinIssuedTokens from "./KinIssuedTokens.ts";
 import { KinChatToolkit, handlers } from "./KinChatToolkit.ts";
 import budget from "./agentContextBudget.json" with { type: "json" };
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -48,6 +51,7 @@ import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { PreviewAutomationBroker } from "../../mcp/PreviewAutomationBroker.ts";
 import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
+import { OrchestrationEventStore } from "../../persistence/OrchestrationEventStore.ts";
 import { ProviderAdapterRegistryV2 } from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import { ThreadLaunchService } from "../../orchestration-v2/ThreadLaunchService.ts";
 import { ThreadManagementService } from "../../orchestration-v2/ThreadManagementService.ts";
@@ -81,7 +85,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(GitWorkflowService)({}),
   Layer.mock(ManagedProjectFolders)({ namedProjectsRoot: "" }),
   Layer.mock(McpProviderSessions)({}),
-  Layer.mock(OrchestratorV2)({}),
+  Layer.mock(OrchestrationEventStore)({}),
   Layer.mock(PeerForwarding)({}),
   Layer.mock(PeerLinkRequests)({}),
   Layer.mock(PeerLinks)({}),
@@ -92,6 +96,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(ProjectService)({}),
   Layer.mock(ProjectSetupScriptRunner)({}),
   Layer.mock(ProviderAdapterRegistryV2)({}),
+  Layer.mock(ProviderInstanceRegistry)({}),
   Layer.mock(ProviderRegistry)({}),
   Layer.mock(PullRequestReviewGuideService)({}),
   Layer.mock(RemoteDelegation)({}),
@@ -121,14 +126,24 @@ it.effect.each([true, false])(
         const ready =
           yield* Deferred.make<
             Context.Context<
-              Kin.KinServer | McpSessions.McpSessionRegistry | SqlClient.SqlClient | OrchestratorV2
+              | Kin.KinServer
+              | KinAgentSessions
+              | KinIssuedTokens.KinIssuedTokens
+              | McpSessions.McpSessionRegistry
+              | SqlClient.SqlClient
+              | OrchestratorV2
             >
           >();
         const routes = Layer.merge(
           Kin.mcpLayer(McpHttpServer.layer),
           Layer.effectDiscard(
             Effect.context<
-              Kin.KinServer | McpSessions.McpSessionRegistry | SqlClient.SqlClient | OrchestratorV2
+              | Kin.KinServer
+              | KinAgentSessions
+              | KinIssuedTokens.KinIssuedTokens
+              | McpSessions.McpSessionRegistry
+              | SqlClient.SqlClient
+              | OrchestratorV2
             >().pipe(Effect.flatMap((context) => Deferred.succeed(ready, context))),
           ),
         ).pipe(
@@ -168,7 +183,8 @@ it.effect.each([true, false])(
           ),
         );
         const http = yield* HttpRouter.toHttpEffect(routes);
-        assert.strictEqual(runnerStarts, enabled ? 1 : 0);
+        // The wake-up runner and the worker tracker.
+        assert.strictEqual(runnerStarts, enabled ? 2 : 0);
         const services = yield* Deferred.await(ready);
         const kin = Context.get(services, Kin.KinServer);
         const registry = Context.get(services, McpSessions.McpSessionRegistry);
@@ -259,11 +275,9 @@ it.effect.each([true, false])(
         );
         yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
           VALUES (${agentId}, ${person.orgId}, 'Lead', 0, '{}', '[]', ${chat.chatId})`;
-        const run = yield* startWakeupRun(threadId, "composition-wakeup").pipe(
+        yield* startAgentWakeup({ orgId: person.orgId, agentId, threadId }).pipe(
           Effect.provide(services),
         );
-        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids)
-          VALUES ('composition-wakeup', ${person.orgId}, ${agentId}, ${threadId}, ${run.id}, 'test', 0, 'running', '[]')`;
         const initialized = yield* request(
           "/kin/mcp",
           issued.config.authorizationHeader,
@@ -271,6 +285,57 @@ it.effect.each([true, false])(
           initialize,
         );
         assert.strictEqual(initialized.status, 200);
+        const toolList = yield* request(
+          "/kin/mcp",
+          issued.config.authorizationHeader,
+          "tools/list",
+          {},
+          initialized.headers["mcp-session-id"],
+        );
+        const toolListText = yield* Effect.promise(() => HttpServerResponse.toWeb(toolList).text());
+        assert.include(toolListText, "kin_chat_read");
+        assert.notInclude(toolListText, "schedule_task");
+        assert.notInclude(toolListText, "t3_thread_launch");
+        assert.notInclude(toolListText, "create_threads");
+        assert.strictEqual(
+          (yield* request("/mcp", issued.config.authorizationHeader, "initialize", initialize))
+            .status,
+          401,
+        );
+        const ordinary = yield* registry.issue({
+          threadId: ThreadId.make("ordinary-thread"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        });
+        assert.strictEqual(
+          (yield* request("/mcp", ordinary.config.authorizationHeader, "initialize", initialize))
+            .status,
+          200,
+        );
+        assert.strictEqual(
+          (yield* request(
+            "/kin/mcp",
+            ordinary.config.authorizationHeader,
+            "initialize",
+            initialize,
+          )).status,
+          401,
+        );
+        const dream = yield* registry.issue({
+          threadId: ThreadId.make("kin-dream:dream_20260101_abc:extract"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        });
+        for (const path of ["/mcp", "/kin/mcp"])
+          assert.strictEqual(
+            (yield* request(path, dream.config.authorizationHeader, "initialize", initialize))
+              .status,
+            401,
+          );
+        const tokens = Context.get(services, KinIssuedTokens.KinIssuedTokens);
+        const leak = (header: string) => tokens.containsIssuedToken(`argv: "${header}"`);
+        assert.isTrue(yield* leak(ordinary.config.authorizationHeader));
+        assert.isFalse(yield* leak(dream.config.authorizationHeader));
+        yield* registry.revokeThread(ThreadId.make("ordinary-thread"));
+        assert.isFalse(yield* leak(ordinary.config.authorizationHeader));
         const result = yield* request(
           "/kin/mcp",
           issued.config.authorizationHeader,
@@ -290,14 +355,20 @@ it.effect.each([true, false])(
         const text = yield* Effect.promise(() => HttpServerResponse.toWeb(result).text());
         assert.include(text, "Production composition");
         assert.notInclude(text, '"isError":true');
-        const caller = yield* registry.resolve(issued.config.authorizationHeader.slice(7));
+        const agentSessions = Context.get(services, KinAgentSessions);
+        assert.isUndefined(yield* registry.resolve(issued.config.authorizationHeader.slice(7)));
+        const caller = yield* agentSessions.resolveAgent(
+          issued.config.authorizationHeader.slice(7),
+        );
         assert.isDefined(caller);
         const agent = yield* identity.resolveAgent(caller);
         const rows = yield* chatService.read(agent, { chatId: chat.chatId });
         assert.lengthOf(rows, 1);
         assert.strictEqual(rows[0]?.author._tag, "agent");
         yield* identity.endAgentThread({ orgId: person.orgId, threadId });
-        assert.isUndefined(yield* registry.resolve(issued.config.authorizationHeader.slice(7)));
+        assert.isUndefined(
+          yield* agentSessions.resolveAgent(issued.config.authorizationHeader.slice(7)),
+        );
       }),
     ),
 );
@@ -330,6 +401,7 @@ it.effect("measures the combined agent tool list separately from ordinary thread
         Layer.provide(Sqlite.layerConfig),
         Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: false }))),
         Layer.provide(toolHandlerServices),
+        Layer.provide(Layer.mock(OrchestratorV2)({})),
       ),
     ),
   ),

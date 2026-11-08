@@ -1,3 +1,4 @@
+import { SessionHooks } from "../kin/auth/sessionHooks.ts";
 import {
   AuthSessionId,
   AuthStandardClientScopes,
@@ -415,6 +416,7 @@ export class SessionStore extends Context.Service<
     ) => Effect.Effect<void, SessionCredentialVerificationError>;
     readonly revoke: (
       sessionId: AuthSessionId,
+      callerSessionId?: AuthSessionId,
     ) => Effect.Effect<boolean, SessionCredentialInternalError>;
     readonly revokeAllExcept: (
       sessionId: AuthSessionId,
@@ -1098,7 +1100,7 @@ const make = Effect.gen(function* () {
     );
   });
 
-  return SessionStore.of({
+  return (yield* SessionHooks).wrap({ connectedSessionsRef, emitRemoved })({
     cookieName,
     legacyCookieName,
     issue,

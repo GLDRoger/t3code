@@ -78,6 +78,9 @@ export const MemoryItemFrontMatter = Schema.Struct({
   title: Schema.String,
   status: Schema.Literals(["open", "done", "cancelled", "superseded"]),
   due: Schema.NullOr(Schema.String),
+  what: Schema.optional(Schema.String),
+  chat: Schema.optional(KinChatId),
+  source_event: Schema.optional(KinEventId),
   on_due: Schema.optional(Schema.Literals(["remind", "start", "ask", "chase"])),
   owner: Schema.optional(TrimmedNonEmptyString),
   tz: Schema.optional(
@@ -139,6 +142,15 @@ export const WorkerReport = Schema.Struct({
 });
 export type WorkerReport = typeof WorkerReport.Type;
 
+export const KinDeferralCard = Schema.Struct({
+  itemId: KinMemoryItemId,
+  title: Schema.String,
+  dueAt: Schema.toEncoded(CanonicalUtcTimestamp),
+  onDue: Schema.Literals(["remind", "start", "ask", "chase"]),
+  text: Schema.String,
+});
+export type KinDeferralCard = typeof KinDeferralCard.Type;
+
 const EventBase = {
   orgId: KinOrgId,
   eventId: KinEventId,
@@ -147,6 +159,18 @@ const EventBase = {
   dedupeKey: Schema.NullOr(TrimmedNonEmptyString),
   provenance: KinAuthor,
 };
+export const KinOwnerCheckCard = Schema.Struct({
+  items: Schema.Array(
+    Schema.Struct({
+      itemId: KinMemoryItemId,
+      reason: Schema.Literals(["past_review", "misleading", "old_low_trust", "no_evidence"]),
+      handled: Schema.optional(Schema.Literals(["keep", "update", "drop"])),
+      title: Schema.String,
+      path: Schema.String,
+    }),
+  ),
+});
+
 export const KinEvent = Schema.Union([
   Schema.TaggedStruct("chat.message", { ...EventBase, chatId: KinChatId, messageId: KinMessageId }),
   Schema.TaggedStruct("widget.action", {
@@ -184,6 +208,24 @@ export const KinEvent = Schema.Union([
   Schema.TaggedStruct("routine", {
     ...EventBase,
     routine: KinLeadRoutine,
+    dueAt: Schema.optional(CanonicalUtcTimestamp),
+    lateByMs: Schema.optional(NonNegativeInt),
+    foldedRoutines: Schema.optional(
+      Schema.Array(
+        Schema.Struct({
+          routine: KinLeadRoutine,
+          dueAt: CanonicalUtcTimestamp,
+        }),
+      ),
+    ),
+    ownerCheckItems: Schema.optional(
+      Schema.Array(
+        Schema.Struct({
+          itemId: KinMemoryItemId,
+          reason: Schema.Literals(["past_review", "misleading", "old_low_trust", "no_evidence"]),
+        }),
+      ),
+    ),
   }),
   Schema.TaggedStruct("watchdog", {
     ...EventBase,
@@ -211,7 +253,17 @@ export const KinBudgetLimits = Schema.Struct({
 export type KinBudgetLimits = typeof KinBudgetLimits.Type;
 export const KinBudget = Schema.Struct({
   orgId: KinOrgId,
-  day: Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/)),
+  day: Schema.String.check(
+    Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/),
+    Schema.makeFilter(
+      (value) =>
+        Option.exists(
+          DateTime.make(`${value}T00:00:00.000Z`),
+          (dateTime) => DateTime.formatIsoDate(dateTime) === value,
+        ),
+      { expected: "a real YYYY-MM-DD calendar date" },
+    ),
+  ),
   leadUnits: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
   workerUnits: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
   limits: KinBudgetLimits,

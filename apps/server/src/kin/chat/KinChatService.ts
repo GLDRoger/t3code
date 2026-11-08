@@ -1,3 +1,8 @@
+import { JudgeShadow } from "../floor/JudgeShadow.ts";
+import * as Floor from "../floor/KinFloor.ts";
+import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
+import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
+import * as TaskCard from "../widgets/taskCard.ts";
 import {
   KinChatError,
   KinChatId,
@@ -5,10 +10,13 @@ import {
   KinMessageId,
   KinWaitingId,
   KinWidgetId,
+  KinOwnerCheckCard,
   KinMessagesSendInput,
   KinWidgetsActInput,
   KinAgentIntent,
   type KinAuthor,
+  type KinAgentId,
+  type ThreadId,
   type KinChat,
   type KinChatListEvent,
   type KinChatStreamEvent,
@@ -41,6 +49,7 @@ import * as SqlError from "effect/sql/SqlError";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { validateState } from "../widgets/registry.ts";
+import { deferralCardActions, deferralCardActionsReady } from "../widgets/deferralCard.ts";
 import * as Hub from "./KinChatHub.ts";
 import * as Repository from "./KinChatRepository.ts";
 import type { AgentIdentity, PersonIdentity } from "./KinIdentity.ts";
@@ -50,7 +59,10 @@ type Viewers = ReadonlyArray<PersonIdentity>;
 type Caller = Identity | Viewers;
 type PersonCaller = PersonIdentity | Viewers;
 type ServiceError = Repository.RepositoryError;
-type SendInput = KinMessagesSendInput & { readonly intent?: KinAgentIntent };
+type SendInput = KinMessagesSendInput & {
+  readonly intent?: KinAgentIntent;
+  readonly floorGrant?: string | undefined;
+};
 type WidgetUpsertInput = {
   readonly chatId: KinChatId;
   readonly widgetId?: KinWidgetId | undefined;
@@ -59,7 +71,7 @@ type WidgetUpsertInput = {
   readonly type: string;
   readonly state: unknown;
   readonly awaiting?: ReadonlyArray<KinPersonId> | undefined;
-  readonly closed?: boolean;
+  readonly closed?: boolean | undefined;
 };
 type WaitingInput = Pick<
   KinWaitingItem,
@@ -124,6 +136,21 @@ export class KinChatService extends Context.Service<
       identity: Identity,
       input: WidgetUpsertInput,
     ) => Effect.Effect<KinWidget, ServiceError>;
+    readonly createTaskCard: (input: {
+      readonly orgId: KinOrgId;
+      readonly chatId: KinChatId;
+      readonly authorAgentId: KinAgentId;
+      readonly threadId: ThreadId;
+      readonly title: string;
+      readonly model: string | null;
+    }) => Effect.Effect<KinWidget, ServiceError, OrchestratorV2 | ServerEnvironment>;
+    /** Server-only, like createTaskCard: Kin's worker launcher closes and reopens worker cards. */
+    readonly setTaskCardClosed: (input: {
+      readonly orgId: KinOrgId;
+      readonly chatId: KinChatId;
+      readonly threadId: ThreadId;
+      readonly closed: boolean;
+    }) => Effect.Effect<KinWidget, ServiceError>;
     readonly act: (
       identity: PersonCaller,
       input: KinWidgetsActInput,
@@ -161,10 +188,15 @@ const decodeWidgetId = Schema.decodeEffect(KinWidgetId);
 const decodeWaitingId = Schema.decodeEffect(KinWaitingId);
 const decodeSend = Schema.decodeEffect(KinMessagesSendInput);
 const decodeIntent = Schema.decodeEffect(KinAgentIntent);
+const decodeOwnerCheckCard = Schema.decodeUnknownEffect(KinOwnerCheckCard);
 const decodeAct = Schema.decodeEffect(KinWidgetsActInput);
 const encodeAction = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const invalidState = new KinChatError({ reason: "invalid_state", message: "Invalid chat input." });
 const notFound = new KinChatError({ reason: "not_found", message: "Kin record not found." });
+const isKinChatError = Schema.is(KinChatError);
+// Live inserts also advance change_seq, so refresh the client's frozen change cursor well under
+// resume's 200-message reset cap.
+const checkpointEvery = 100;
 const notAllowed = new KinChatError({
   reason: "not_allowed",
   message: "Chat operation not allowed.",
@@ -176,7 +208,16 @@ const requireRecord = Effect.fn("KinChatService.requireRecord")(function* <A, E,
   return Option.isSome(value) ? value.value : yield* notFound;
 });
 
+const taskCardWidgetId = (input: { readonly chatId: KinChatId; readonly threadId: ThreadId }) =>
+  encodeAction([input.chatId, input.threadId]).pipe(
+    Effect.orDie,
+    Effect.map((key) => KinWidgetId.make(`task:${key}`)),
+  );
+
 const make = Effect.gen(function* () {
+  const floor = yield* Floor.KinFloor;
+  const shadow = yield* JudgeShadow;
+  const cards = yield* TaskCard.TaskCardIndex;
   const repo = yield* Repository.KinChatRepository;
   const hub = yield* Hub.KinChatHub;
   const sql = yield* SqlClient.SqlClient;
@@ -321,6 +362,7 @@ const make = Effect.gen(function* () {
       readonly widgetId: KinWidgetId | null;
       readonly kind: "text" | "widget_action";
       readonly publish?: boolean;
+      readonly floorRunId?: string | null;
       readonly clientId: { readonly kind: "send" | "act"; readonly id: string } | null;
     },
   ) {
@@ -337,14 +379,19 @@ const make = Effect.gen(function* () {
       mentions: input.mentions,
       replyTo: input.replyTo,
       widgetId: input.widgetId,
-      floorRunId: null,
+      floorRunId: input.floorRunId ?? null,
       status: "posted",
       sentBy: null,
       clientMessageId: input.clientId,
       createdAt: yield* now,
       editedAt: null,
     });
-    if (message.messageId !== messageId || input.publish === false) return message;
+    if (message.messageId !== messageId) return message;
+    if (message.author._tag === "human") {
+      const decision = yield* floor.open(message, yield* requireRecord(repo.getChat(member)));
+      yield* shadow.observe(message, decision);
+    }
+    if (input.publish === false) return message;
     yield* hub.publish({ type: "message.posted", orgId: identity.orgId, message });
     if (message.author._tag === "agent" && message.intent === "question") {
       const chat = yield* requireRecord(repo.getChat(member));
@@ -537,30 +584,60 @@ const make = Effect.gen(function* () {
           const identity = yield* personFor(caller, input);
           const live = yield* hub.subscribeForViewer(identity);
           const member = yield* memberFor(identity, input.chatId);
-          const resumed = yield* repo.resume({ ...member, afterSeq: input.afterSeq ?? 0 });
+          const resumed = yield* repo.resume({
+            ...member,
+            afterSeq: input.afterSeq ?? 0,
+            afterChangeSeq: input.afterChangeSeq,
+          });
           const backlog: KinChatStreamEvent = resumed.reset
-            ? { _tag: "reset", lastSeq: resumed.lastSeq }
+            ? { _tag: "reset", lastSeq: resumed.lastSeq, lastChangeSeq: resumed.lastChangeSeq }
             : {
                 _tag: "backlog",
                 lastSeq: resumed.lastSeq,
+                lastChangeSeq: resumed.lastChangeSeq,
                 messages: resumed.messages,
                 widgets: resumed.widgets,
               };
-          const lastHistorySeq = backlog.lastSeq;
+          const messageChanges = new Map<string, number>();
           const revisions = new Map(
             backlog._tag === "backlog" ? backlog.widgets.map((w) => [w.widgetId, w.revision]) : [],
           );
+          let cursor = { lastSeq: resumed.lastSeq, lastChangeSeq: resumed.lastChangeSeq };
+          let delivered = 0;
+          const checkpoint = Effect.fn("KinChatService.subscribeCheckpoint")(function* () {
+            const next = yield* repo.resume({
+              ...member,
+              afterSeq: cursor.lastSeq,
+              afterChangeSeq: cursor.lastChangeSeq,
+            });
+            cursor = { lastSeq: next.lastSeq, lastChangeSeq: next.lastChangeSeq };
+            delivered = 0;
+            if (next.reset) return { _tag: "reset", ...cursor } satisfies KinChatStreamEvent;
+            // The client already holds rows and widgets at the versions this stream delivered.
+            const messages = next.messages.filter(
+              (m) => (m.changeSeq ?? m.seq) !== messageChanges.get(m.messageId),
+            );
+            const widgets = next.widgets.filter(
+              (w) => w.revision > (revisions.get(w.widgetId) ?? 0),
+            );
+            for (const m of messages) messageChanges.set(m.messageId, m.changeSeq ?? m.seq);
+            for (const w of widgets) revisions.set(w.widgetId, w.revision);
+            return { _tag: "backlog", ...cursor, messages, widgets } satisfies KinChatStreamEvent;
+          });
           return Stream.concat(
             Stream.succeed(backlog),
             live.pipe(
               Stream.map((event) => {
                 switch (event.type) {
                   case "message.posted": {
+                    const change = event.message.changeSeq ?? event.message.seq;
                     if (
                       event.message.chatId !== input.chatId ||
-                      event.message.seq <= lastHistorySeq
+                      change <= cursor.lastChangeSeq ||
+                      change <= (messageChanges.get(event.message.messageId) ?? 0)
                     )
                       return Option.none();
+                    messageChanges.set(event.message.messageId, change);
                     return Option.some<KinChatStreamEvent>({
                       _tag: "message",
                       message: event.message,
@@ -596,6 +673,22 @@ const make = Effect.gen(function* () {
               }),
               Stream.filter(Option.isSome),
               Stream.map((event) => event.value),
+              // Widget writes bump their anchor's change_seq, so they count toward the refresh too.
+              // The dedupe state above is updated per event; the hub delivers one event per chunk.
+              Stream.mapEffect((event) =>
+                (event._tag === "message" || event._tag === "widget") &&
+                ++delivered >= checkpointEvery
+                  ? checkpoint().pipe(
+                      Effect.map((next) => [event, next]),
+                      // A member who just left gets not_found; the member event that follows ends the stream.
+                      Effect.catchIf(
+                        (error) => isKinChatError(error) && error.reason === "not_found",
+                        () => Effect.succeed([event]),
+                      ),
+                    )
+                  : Effect.succeed([event]),
+              ),
+              Stream.flattenIterable,
               Stream.takeUntil((event) => event._tag === "member" && event.member.leftAt !== null),
             ),
           );
@@ -733,15 +826,31 @@ const make = Effect.gen(function* () {
         input.intent === undefined
           ? null
           : yield* decodeIntent(input.intent).pipe(Effect.mapError(() => invalidState));
-      return yield* post(identity, member, {
+      const existing = yield* repo.findClientMessage({
+        orgId: identity.orgId,
+        chatId: request.chatId,
+        memberId: member.memberId,
+        kind: "send",
+        clientId: request.clientMessageId,
+      });
+      const chat = yield* requireRecord(repo.getChat(member));
+      const authorization =
+        identity._tag === "agent" && Option.isNone(existing)
+          ? yield* floor.authorize(identity, chat, intent ?? "answer", input.floorGrant)
+          : { runId: null };
+      const message = yield* post(identity, member, {
         ...request,
         kind: "text",
         intent,
+        floorRunId: authorization.runId,
         mentions: request.mentions ?? [],
         replyTo: request.replyTo ?? null,
         widgetId: null,
         clientId: { kind: "send", id: request.clientMessageId },
       });
+      if (Option.isNone(existing) && identity._tag === "agent" && authorization.runId === null)
+        yield* floor.recordNotice(identity, message);
+      return message;
     }, transaction),
     read: Effect.fn("KinChatService.read")(function* (identity, input) {
       const request = yield* decodeRead(input).pipe(Effect.mapError(() => invalidState));
@@ -781,6 +890,130 @@ const make = Effect.gen(function* () {
           seq: updated.lastReadSeq,
         });
     }, transaction),
+    createTaskCard: Effect.fn("KinChatService.createTaskCard")(function* (input) {
+      if (input.orgId !== "kin-default") return yield* notFound;
+      const environment = yield* ServerEnvironment;
+      const orchestrator = yield* OrchestratorV2;
+      const shell = yield* orchestrator
+        .getThreadShell(input.threadId)
+        .pipe(Effect.orElseSucceed(() => null));
+      if (shell === null) return yield* notFound;
+      const agent = yield* requireRecord(
+        repo.getAgent({ orgId: input.orgId, agentId: input.authorAgentId }),
+      );
+      if (agent.role !== "lead" || agent.retiredAt !== null) return yield* notFound;
+      yield* requireRecord(repo.getChat(input));
+      const member = (yield* repo.listMembers(input)).find(
+        (member) =>
+          member.leftAt === null &&
+          member.principal._tag === "agent" &&
+          member.principal.agentId === agent.agentId,
+      );
+      const thread = (yield* repo.listActiveAgentThreads()).find(
+        (thread) => thread.orgId === input.orgId && thread.agentId === agent.agentId,
+      );
+      if (member === undefined || thread === undefined) return yield* notFound;
+      const widgetId = yield* taskCardWidgetId(input);
+      const clientId = yield* encodeAction([
+        input.threadId,
+        input.authorAgentId,
+        input.title,
+        input.model,
+      ]).pipe(Effect.orDie);
+      const existing = yield* repo.getWidget({ ...input, widgetId });
+      if (Option.isSome(existing)) {
+        const original = yield* repo.findClientMessage({
+          ...input,
+          memberId: member.memberId,
+          kind: "task-card",
+          clientId,
+        });
+        if (Option.isNone(original) || original.value.messageId !== existing.value.messageId)
+          return yield* notAllowed;
+        return existing.value;
+      }
+      const updatedAt = yield* now;
+      const state = yield* TaskCard.decodeTaskCardEffect({
+        taskId: input.threadId,
+        environmentId: yield* environment.getEnvironmentId,
+        threadId: input.threadId,
+        remoteEnvironmentId: null,
+        title: input.title,
+        model: input.model,
+        status: "waiting",
+        pullRequests: [],
+        lastError: null,
+        updatedAt,
+      }).pipe(Effect.mapError(() => invalidState));
+      const message = yield* repo.insertMessage({
+        orgId: input.orgId,
+        chatId: input.chatId,
+        messageId: KinMessageId.make(SecureRandom.uuidV4Unsafe()),
+        author: {
+          _tag: "agent",
+          agentId: agent.agentId,
+          ownerPersonId: agent.ownerPersonId,
+          threadId: thread.threadId,
+          memberId: member.memberId,
+        },
+        serverTaskCard: true,
+        body: "",
+        intent: "answer",
+        kind: "text",
+        mentions: [],
+        replyTo: null,
+        widgetId: null,
+        floorRunId: null,
+        status: "posted",
+        sentBy: null,
+        clientMessageId: { kind: "task-card", id: clientId },
+        createdAt: updatedAt,
+        editedAt: null,
+      });
+      const widget: KinWidget = {
+        orgId: input.orgId,
+        chatId: input.chatId,
+        widgetId,
+        messageId: message.messageId,
+        widgetClass: "native",
+        type: "task",
+        revision: 1,
+        state: TaskCard.taskCardState(state, shell, updatedAt),
+        source: null,
+        feed: null,
+        awaiting: [],
+        pinnedAt: null,
+        closedAt: null,
+        updatedAt,
+      };
+      yield* repo.insertWidget(widget);
+      const anchor = yield* requireRecord(
+        repo.getMessage({ ...input, messageId: message.messageId }),
+      );
+      yield* hub.publish({ type: "message.posted", orgId: input.orgId, message: anchor });
+      yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
+      yield* sql.afterCommit(cards.track(widget));
+      return widget;
+    }, transaction),
+    setTaskCardClosed: Effect.fn("KinChatService.setTaskCardClosed")(function* (input) {
+      const existing = yield* requireRecord(
+        repo.getWidget({ orgId: input.orgId, widgetId: yield* taskCardWidgetId(input) }),
+      );
+      if (existing.type !== "task" || existing.chatId !== input.chatId) return yield* notFound;
+      if ((existing.closedAt !== null) === input.closed) return existing;
+      const widget = yield* repo.updateWidget({
+        ...existing,
+        awaiting: input.closed ? [] : existing.awaiting,
+        expectedRevision: existing.revision,
+        closedAt: input.closed ? yield* now : null,
+        updatedAt: yield* now,
+      });
+      if (input.closed)
+        for (const item of yield* repo.waitingForWidget(widget)) yield* resolve(item, "closed");
+      yield* sql.afterCommit(cards.track(widget));
+      yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
+      return widget;
+    }, transaction),
     upsertWidget: Effect.fn("KinChatService.upsertWidget")(function* (identity, input) {
       const member = yield* memberFor(identity, input.chatId);
       yield* canWrite(identity, member);
@@ -789,7 +1022,13 @@ const make = Effect.gen(function* () {
           reason: "use_approvals",
           message: "Use the signed approvals service.",
         });
-      const state = yield* validateState(input.type, input.state);
+      if (
+        input.type === "owner_check" ||
+        input.type === "deferral" ||
+        (input.type === "task" && input.widgetId === undefined)
+      )
+        return yield* notAllowed;
+      let state = yield* validateState(input.type, input.state);
       let widget: KinWidget;
       if (input.widgetId === undefined) {
         if (input.revision !== undefined) return yield* invalidState;
@@ -843,13 +1082,42 @@ const make = Effect.gen(function* () {
           input.replyTo !== undefined
         )
           return yield* invalidState;
+        const awaiting =
+          input.closed === true || (input.closed === undefined && existing.closedAt !== null)
+            ? []
+            : (input.awaiting ?? existing.awaiting);
+        if (existing.type === "task") {
+          const previous = yield* TaskCard.decodeTaskCardEffect(existing.state).pipe(
+            Effect.mapError(() => invalidState),
+          );
+          const next = TaskCard.decodeTaskCard(state);
+          if (
+            previous.threadId !== next.threadId ||
+            previous.taskId !== next.taskId ||
+            previous.environmentId !== next.environmentId ||
+            previous.remoteEnvironmentId !== next.remoteEnvironmentId
+          )
+            return yield* invalidState;
+          state = {
+            ...next,
+            status: previous.status,
+            pullRequests: previous.pullRequests,
+            lastError: previous.lastError,
+            updatedAt: previous.updatedAt,
+          };
+          if (
+            existing.revision === input.revision + 1 &&
+            TaskCard.taskCardEquivalent(TaskCard.decodeTaskCard(state), previous) &&
+            awaiting.length === existing.awaiting.length &&
+            awaiting.every((personId, index) => personId === existing.awaiting[index]) &&
+            (input.closed === undefined || input.closed === (existing.closedAt !== null))
+          )
+            return existing;
+        }
         widget = yield* repo.updateWidget({
           ...existing,
           state,
-          awaiting:
-            input.closed === true || (input.closed === undefined && existing.closedAt !== null)
-              ? []
-              : (input.awaiting ?? existing.awaiting),
+          awaiting,
           expectedRevision: input.revision,
           closedAt:
             input.closed === undefined ? existing.closedAt : input.closed ? yield* now : null,
@@ -869,6 +1137,7 @@ const make = Effect.gen(function* () {
             widgetId: widget.widgetId,
             reason: "decision",
           });
+      yield* sql.afterCommit(cards.track(widget));
       yield* hub.publish({ type: "widget.updated", orgId: identity.orgId, widget });
       return widget;
     }, transaction),
@@ -885,6 +1154,25 @@ const make = Effect.gen(function* () {
           reason: "use_approvals",
           message: "Use the signed approvals service.",
         });
+      if (widget.type === "owner_check") {
+        if (member.role !== "owner") return yield* notAllowed;
+        const card = yield* decodeOwnerCheckCard(widget.state).pipe(
+          Effect.mapError(() => invalidState),
+        );
+        if (
+          !["keep", "update", "drop"].includes(request.actionId) ||
+          !card.items.some((item) => item.itemId === request.value)
+        )
+          return yield* invalidState;
+      }
+      if (widget.type === "deferral") {
+        if (member.role !== "owner") return yield* notAllowed;
+        if (
+          !deferralCardActionsReady ||
+          !deferralCardActions.some((action) => action === request.actionId)
+        )
+          return yield* notAllowed;
+      }
       const body = yield* encodeAction({
         widgetId: request.widgetId,
         revision: request.revision,
@@ -978,4 +1266,7 @@ const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(KinChatService, make);
+export const layer = Layer.effect(KinChatService, make).pipe(
+  Layer.provideMerge(TaskCard.layer),
+  Layer.provide(Floor.layer),
+);

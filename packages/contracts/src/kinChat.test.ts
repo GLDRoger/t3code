@@ -122,6 +122,8 @@ type SchemaName = {
 }[keyof typeof Kin];
 
 const samples = {
+  KinText: ["", "Hello\nworld", "  Markdown  "],
+  KinTrimmedText: ["Kin", "Owner name"],
   KinOrgId: ["org-1"],
   KinPersonId: ["person-1"],
   KinAgentId: ["agent-1"],
@@ -146,7 +148,10 @@ const samples = {
   KinPrincipal: principals,
   KinChatMember: [member],
   KinAuthor: authors,
-  KinMessage: authors.map((author) => ({ ...message, author })),
+  KinMessage: [
+    ...authors.map((author) => ({ ...message, author })),
+    { ...message, changeSeq: 2, clientMessageId: "pending" },
+  ],
   KinWidget: [
     widget,
     { ...widget, widgetClass: "generated", source: { threadId: "thread-1", itemId: "item-1" } },
@@ -166,6 +171,8 @@ const samples = {
   KinChatStreamEvent: [
     { _tag: "backlog", messages: [message], widgets: [widget], lastSeq: 1 },
     { _tag: "reset", lastSeq: 1 },
+    { _tag: "backlog", messages: [message], widgets: [widget], lastSeq: 1, lastChangeSeq: 2 },
+    { _tag: "reset", lastSeq: 1, lastChangeSeq: 2 },
     { _tag: "message", message },
     { _tag: "widget", widget },
     { _tag: "member", member },
@@ -189,7 +196,11 @@ const samples = {
   ],
   KinChatsSubscribeInput: [{}, { orgId: "org-1" }],
   KinChatsCreateDirectInput: [{ orgId: "org-1", agentId: "agent-1" }],
-  KinChatSubscribeInput: [{ chatId: "chat-1" }, { chatId: "chat-1", afterSeq: 0 }],
+  KinChatSubscribeInput: [
+    { chatId: "chat-1" },
+    { chatId: "chat-1", afterSeq: 0 },
+    { chatId: "chat-1", afterSeq: 1, afterChangeSeq: 2 },
+  ],
   KinChatHistoryInput: [{ chatId: "chat-1", beforeSeq: 2, limit: 100 }],
   KinChatHistoryResult: [{ messages: [message], widgets: [widget], hasMore: false }],
   KinMessagesSendInput: [send, { ...send, mentions: ["member-2"], replyTo: "message-1" }],
@@ -240,6 +251,24 @@ describe("Kin chat contracts", () => {
 
   it.each(["", "  \n ", "x".repeat(16_001), "a\u0000b"])("rejects send body %j", (body) => {
     expect(() => decodeSend({ ...send, body })).toThrow();
+  });
+
+  it.each([
+    { schema: Kin.KinChat, value: { ...chat, title: "a\u0000b" } },
+    { schema: Kin.KinOrg, value: { ...org, name: "a\u0000b" } },
+    { schema: Kin.KinPerson, value: { ...person, displayName: "a\u0000b" } },
+    { schema: Kin.KinPerson, value: { ...person, githubLogin: "a\u0000b" } },
+    { schema: Kin.KinAgent, value: { ...agent, displayName: "a\u0000b" } },
+    { schema: Kin.KinWidget, value: { ...widget, type: "a\u0000b" } },
+    { schema: Kin.KinWidget, value: { ...widget, feed: { kind: "a\u0000b", key: "key" } } },
+    { schema: Kin.KinWidget, value: { ...widget, feed: { kind: "kind", key: "a\u0000b" } } },
+    ...["title", "model", "lastError"].map((field) => ({
+      schema: Kin.KinTaskCardState,
+      value: { ...task, [field]: "a\u0000b" },
+    })),
+  ])("rejects NUL text %#", ({ schema, value }) => {
+    const codec: Schema.Codec<unknown> = schema;
+    expect(() => Schema.decodeSync(codec)(value)).toThrow();
   });
 
   it.each([0, 101, 1.5])("rejects history limit %s", (limit) => {
