@@ -69,10 +69,14 @@ export function decodeKinGrant(compact: string): DecodedKinGrant | null {
   const payload = decodePayload(canonicalJson(payloadPart));
   const signature = strictBase64Url(signaturePart);
   if (Exit.isFailure(header) || Exit.isFailure(payload) || signature?.length !== 64) return null;
+  const signingInput = `${headerPart}.${payloadPart}`;
+  // A schema that trims or otherwise transforms a value would make the decoded grant differ from
+  // the signed bytes; one signed string must have exactly one meaning.
+  if (encodeGrantSigningInput(header.value, payload.value) !== signingInput) return null;
   return {
     header: header.value,
     payload: payload.value,
-    signingInput: `${headerPart}.${payloadPart}`,
+    signingInput,
     signature,
   };
 }
@@ -133,6 +137,7 @@ export function verifyKinGrant(input: {
   if (!verified) return { ok: false, reason: "bad_signature" };
   const now = input.nowEpochSeconds;
   if (
+    !Number.isFinite(now) ||
     Math.abs(now - payload.iat) > KIN_GRANT_MAX_CLOCK_SKEW_SECONDS ||
     payload.exp <= payload.iat ||
     payload.exp - payload.iat > KIN_GRANT_MAX_LIFETIME_SECONDS ||
