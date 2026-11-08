@@ -142,6 +142,15 @@ export const WorkerReport = Schema.Struct({
 });
 export type WorkerReport = typeof WorkerReport.Type;
 
+export const KinDeferralCard = Schema.Struct({
+  itemId: KinMemoryItemId,
+  title: Schema.String,
+  dueAt: Schema.toEncoded(CanonicalUtcTimestamp),
+  onDue: Schema.Literals(["remind", "start", "ask", "chase"]),
+  text: Schema.String,
+});
+export type KinDeferralCard = typeof KinDeferralCard.Type;
+
 const EventBase = {
   orgId: KinOrgId,
   eventId: KinEventId,
@@ -205,7 +214,7 @@ export const KinEvent = Schema.Union([
       Schema.Array(
         Schema.Struct({
           routine: KinLeadRoutine,
-          dueAt: CanonicalUtcTimestamp,
+          dueAt: Schema.toEncoded(CanonicalUtcTimestamp),
         }),
       ),
     ),

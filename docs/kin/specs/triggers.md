@@ -203,9 +203,20 @@ Arming comes from memory. When the front-matter cache (LEAD) sees a `deferrals/*
 | `ask`    | `due` only                               | post a decision card           |
 | `chase`  | `due` only                               | ping the promiser (ping rules) |
 
-Item edits move or disarm the triggers: a new `due` re-arms; `status` other than `open` or a set `invalid_at` disables them. A due time already past at save fires at once, marked late; no "pick a future time" error.
+Item edits move or disarm the triggers: a new `due` re-arms; `status` other than `open` or a set `invalid_at` disables them. A due time already past at save fires at once, marked late; no "pick a future time" error. A missing `on_due` means `remind`, so silence never starts work.
 
-**Confirm.** When the lead calls `kin_defer` (LEAD), Kin writes the item, arms the triggers, and the lead posts a `KinDeferralCard` widget (CHAT envelope): "Deferred to Fri 13 Nov, 9:00. I'll start then." [Change] [Just remind me]. [Just remind me] sets `on_due: remind`, and the triggers re-arm.
+The cache hook is `MemorySyncHooks` in [`Memory.ts`](../../../apps/server/src/kin/memory/Memory.ts): every newly loaded snapshot goes to `KinTriggerService.syncOrg`, which also disarms armed deferrals missing from the snapshot or sharing a duplicate id. A failed sync retries on the next load, and `trigger_reconcile` remains the backstop. A commit to the default branch moves the cache to the new head and reloads it, so a `kin_defer` item arms when its wake-up commits, not at the next wake-up; shadow (L0) commits never arm. Trigger ids are `deferral:<itemId>:heads_up|due`. Re-syncing an unchanged `due` writes nothing, so a fired `once` is never re-armed. The run row in `kin_deferral_runs` (provisional migration K017) holds the snapshot and an `armed`/`disarmed` state; TRIG-8 owns the due-flow states. The snapshot holds the item half only (`recorded_at`, `superseded_by`, links). There is no GitHub reader in Kin yet, so TRIG-8 must add the GitHub half (issue/PR state, assignees, linked PRs) at arm time before the due flow ships.
+
+**Confirm.** When the lead calls `kin_defer` (LEAD), Kin writes the item, arms the triggers, and the lead posts a `KinDeferralCard` widget (CHAT envelope): "Deferred to Fri 13 Nov, 9:00. I'll start then." [Change] [Just remind me]. [Just remind me] sets `on_due: remind`, and the triggers re-arm. [Change] writes nothing: it hands the item to the lead, which asks the owner what to change, marks the old item `cancelled` and calls `kin_defer` for the new one.
+
+Code posts the card, never the model. It goes to the item's `chat` when that chat belongs to the item's org; deferrals without a chat arm without a card. Times use the owner's zone. A re-arm updates the card text in place, a disarm closes the card, and reopening the item reopens it. The card awaits nobody.
+
+**Deferral card release gate (TRIG-7):** cards post live, but `KinChatService.act` refuses deferral-card taps (`deferralCardActionsReady = false`) until the owner-tap dispatcher from the owner-check gate exists. `Deferrals.act` already verifies the tap with the same `verifyOwnerTap` as the owner check. Before enabling taps:
+
+- the owner-check gate's dispatcher steps must land (chat act enqueues `widget.action`; `WakeupRunner` intercepts card actions without showing them to the model);
+- `WakeupRunner` must run `Deferrals.act` for `deferral` actions, then `MemoryWriter.commitWakeup` (the commit re-arms through the cache hook), then queue `finish`. [Change] goes to the lead as an owner message about the item;
+- production `MemoryWriterAuthority.resolve` must grant `kind: "deferral_card"` (item id, action `remind`) only after verifying the claimed owner tap. With that grant, the writer lets `on_due` change, and only to `remind`;
+- web and mobile must render the native card and its closed state.
 
 **Flow for `start`** (`kin_deferral_runs.state`):
 

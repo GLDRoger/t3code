@@ -49,6 +49,7 @@ import * as SqlError from "effect/sql/SqlError";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { validateState } from "../widgets/registry.ts";
+import { deferralCardActions, deferralCardActionsReady } from "../widgets/deferralCard.ts";
 import * as Hub from "./KinChatHub.ts";
 import * as Repository from "./KinChatRepository.ts";
 import type { AgentIdentity, PersonIdentity } from "./KinIdentity.ts";
@@ -1087,6 +1088,14 @@ const make = Effect.gen(function* () {
           !card.items.some((item) => item.itemId === request.value)
         )
           return yield* invalidState;
+      }
+      if (widget.type === "deferral") {
+        if (member.role !== "owner") return yield* notAllowed;
+        if (
+          !deferralCardActionsReady ||
+          !deferralCardActions.some((action) => action === request.actionId)
+        )
+          return yield* notAllowed;
       }
       const body = yield* encodeAction({
         widgetId: request.widgetId,

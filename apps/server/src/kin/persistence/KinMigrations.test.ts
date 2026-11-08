@@ -21,6 +21,7 @@ const tableNames = [
   "kin_chat_members",
   "kin_chats",
   "kin_cursor",
+  "kin_deferral_runs",
   "kin_events",
   "kin_floor_grants",
   "kin_floor_notices",
@@ -108,6 +109,7 @@ describe("Kin migrations", () => {
           { migration_id: 13, name: "Routines" },
           { migration_id: 14, name: "LeadToolCalls" },
           { migration_id: 15, name: "AuthSessionKeys" },
+          { migration_id: 17, name: "DeferralRuns" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
@@ -169,6 +171,7 @@ describe("Kin migrations", () => {
           { migration_id: 13, name: "Routines" },
           { migration_id: 14, name: "LeadToolCalls" },
           { migration_id: 15, name: "AuthSessionKeys" },
+          { migration_id: 17, name: "DeferralRuns" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -255,6 +258,7 @@ describe("Kin migrations", () => {
         [13, "Routines"],
         [14, "LeadToolCalls"],
         [15, "AuthSessionKeys"],
+        [17, "DeferralRuns"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -283,6 +287,7 @@ describe("Kin migrations", () => {
       yield* sql`DROP INDEX idx_kin_messages_changes`;
       yield* sql`ALTER TABLE kin_messages DROP COLUMN change_seq`;
       yield* sql`ALTER TABLE kin_chats DROP COLUMN change_seq`;
+      yield* sql`DROP TABLE kin_deferral_runs`;
       yield* sql`DROP TABLE kin_auth_key_repairs`;
       yield* sql`DROP TABLE kin_auth_session_keys`;
       yield* sql`DROP TABLE kin_judge_log`;
@@ -317,6 +322,7 @@ describe("Kin migrations", () => {
         [13, "Routines"],
         [14, "LeadToolCalls"],
         [15, "AuthSessionKeys"],
+        [17, "DeferralRuns"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,
@@ -357,6 +363,7 @@ describe("Kin migrations", () => {
         { migration_id: 13, name: "Routines" },
         { migration_id: 14, name: "LeadToolCalls" },
         { migration_id: 15, name: "AuthSessionKeys" },
+        { migration_id: 17, name: "DeferralRuns" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);

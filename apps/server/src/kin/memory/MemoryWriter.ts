@@ -47,6 +47,7 @@ export interface WakeupContext extends JournalContext {
           readonly itemId: string;
           readonly action: "keep" | "update" | "drop";
         }
+      | { readonly kind: "deferral_card"; readonly itemId: string; readonly action: "remind" }
     )
   >;
 }
@@ -532,6 +533,13 @@ const make = Effect.gen(function* () {
                   )
                     mutable.add("review_by");
                   if (
+                    source.kind === "deferral_card" &&
+                    source.itemId === item.id &&
+                    item.kind === "deferral" &&
+                    fm.on_due === "remind"
+                  )
+                    mutable.add("on_due");
+                  if (
                     Object.entries(item).some(
                       ([key, value]) =>
                         !mutable.has(key) &&
@@ -804,6 +812,16 @@ const make = Effect.gen(function* () {
                     recorded,
                   ]);
                   yield* memory.record(orgId, branch, recorded, commit);
+                  // Arms deferrals from the commit now, not at the next wake-up.
+                  if (branch === (config.defaultBranch ?? "main"))
+                    yield* memory.rebuildCache(orgId).pipe(
+                      Effect.catch((error) =>
+                        Effect.logWarning("Could not refresh memory cache after commit", {
+                          orgId,
+                          errorTag: error._tag,
+                        }),
+                      ),
+                    );
                   yield* push(commit);
                   return { commit };
                 }),

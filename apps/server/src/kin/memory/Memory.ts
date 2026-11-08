@@ -21,6 +21,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
@@ -129,6 +130,22 @@ export class MemoryRecoveryHooks extends Context.Service<
   }
 >()("t3/kin/memory/Memory/MemoryRecoveryHooks") {}
 
+export class MemorySyncHookError extends Schema.TaggedError<MemorySyncHookError>()(
+  "MemorySyncHookError",
+  { orgId: Schema.String, cause: Schema.Defect() },
+) {}
+
+/** Receives every newly loaded snapshot; must be idempotent, since a failure retries on the next load. */
+export class MemorySyncHooks extends Context.Service<
+  MemorySyncHooks,
+  {
+    readonly syncItems: (
+      orgId: KinOrgId,
+      items: ReadonlyArray<MemoryItemHead & { readonly duplicate: boolean }>,
+    ) => Effect.Effect<void, MemorySyncHookError>;
+  }
+>()("t3/kin/memory/Memory/MemorySyncHooks") {}
+
 export class Memory extends Context.Service<
   Memory,
   {
@@ -218,6 +235,9 @@ const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const sql = yield* SqlClient.SqlClient;
   const writerLocks = new Map<KinOrgId, Semaphore.Semaphore>();
+  const pinnedHeads = new Map<KinOrgId, string>();
+  const syncedHeads = new Map<KinOrgId, string>();
+  const syncHooks = yield* Effect.serviceOption(MemorySyncHooks);
   const withWriterLock = <A, E>(orgId: KinOrgId, effect: Effect.Effect<A, E>) => {
     let lock = writerLocks.get(orgId);
     if (!lock) {
@@ -281,6 +301,9 @@ const make = Effect.gen(function* () {
               operation: "record",
               reason: "Anchor changed",
             });
+          // The front-matter cache follows commits to the default branch.
+          if (branch === (config.defaultBranch ?? "main") && pinnedHeads.get(orgId) === previous)
+            pinnedHeads.set(orgId, head);
         }),
       )
       .pipe(
@@ -297,7 +320,6 @@ const make = Effect.gen(function* () {
   });
   const cache = yield* MemoryCache.MemoryCache;
   const locks = new Map<KinOrgId, Semaphore.Semaphore>();
-  const pinnedHeads = new Map<KinOrgId, string>();
   const initializedCheckouts = new Set<KinOrgId>();
   const duplicateWarnings = new Map<KinOrgId, ReadonlySet<string>>();
   const snapshots = new Map<KinOrgId, Snapshot>();
@@ -530,7 +552,10 @@ const make = Effect.gen(function* () {
     return { writer: paths.writer, read: paths.read };
   });
 
-  const load = Effect.fn("Memory.load")(function* (orgId: KinOrgId, force = false) {
+  const loadSnapshot = Effect.fn("Memory.loadSnapshot")(function* (
+    orgId: KinOrgId,
+    force: boolean,
+  ) {
     const paths = yield* pathsFor(orgId);
     const pinned = pinnedHeads.get(orgId);
     if (pinned === undefined) yield* validateWriter(orgId, paths, false);
@@ -699,6 +724,31 @@ const make = Effect.gen(function* () {
     const reachable = new Set(entries.map((entry) => entry.sha));
     for (const cache of [blobs, parsedBlobs, mismatchWarnings]) {
       for (const sha of cache.keys()) if (!reachable.has(sha)) cache.delete(sha);
+    }
+    return snapshot;
+  });
+  const load = Effect.fn("Memory.load")(function* (orgId: KinOrgId, force = false) {
+    const snapshot = yield* loadSnapshot(orgId, force);
+    if (Option.isSome(syncHooks) && syncedHeads.get(orgId) !== snapshot.head) {
+      const counts = new Map<string, number>();
+      for (const { head } of snapshot.items) counts.set(head.id, (counts.get(head.id) ?? 0) + 1);
+      yield* syncHooks.value
+        .syncItems(
+          orgId,
+          snapshot.items.map(({ head }) => ({
+            ...head,
+            duplicate: (counts.get(head.id) ?? 0) > 1,
+          })),
+        )
+        .pipe(
+          Effect.tap(() => Effect.sync(() => syncedHeads.set(orgId, snapshot.head))),
+          Effect.catch((error) =>
+            Effect.logWarning("Could not sync memory triggers; retrying on next load", {
+              orgId,
+              errorTag: error._tag,
+            }),
+          ),
+        );
     }
     return snapshot;
   });
