@@ -552,56 +552,117 @@ describe("WakeupRunner", () => {
       }).pipe(provideDeterministicTestRuntime),
   );
 
-  it.effect("expires retired leads' queued events and ends their durable thread registration", () =>
-    Effect.gen(function* () {
-      const entered = yield* Deferred.make<void>();
-      const hold = yield* Deferred.make<void>();
-      yield* Effect.gen(function* () {
-        yield* seed;
-        const queue = yield* KinEventQueue.KinEventQueue;
-        const sql = yield* SqlClient.SqlClient;
-        yield* queue.enqueue(event("first"));
-        const active = yield* run();
-        yield* Deferred.await(entered);
-        yield* queue.enqueue(event("retired"));
-        yield* sql`UPDATE kin_agents SET retired_at = '2026-11-08T00:00:00.000Z' WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
-        const identity = yield* KinIdentity.KinIdentity;
-        const threads = yield* ThreadManagement.ThreadManagementService;
-        const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
-        const retiringRunner = yield* WakeupRunner.WakeupRunner.pipe(
-          Effect.provide(Layer.fresh(WakeupRunner.layer)),
-          Effect.provideService(KinIdentity.KinIdentity, {
-            ...identity,
-            endAgentThread: Effect.fn("test.endAgentThread")(function* (
-              input: Parameters<typeof identity.endAgentThread>[0],
-            ) {
-              const projection = yield* threads
-                .getThreadProjection(input.threadId)
-                .pipe(Effect.orDie);
-              assert.isTrue(identity.isAgentThread(input.threadId));
-              for (const providerThread of projection.providerThreads)
-                if (providerThread.providerSessionId !== null)
-                  assert.isFalse(yield* sessions.isLive(providerThread.providerSessionId));
-              return yield* identity.endAgentThread(input);
+  it.effect.each(["released", "shared", "releasing"] as const)(
+    "expires retired leads' queued events and ends their durable thread registration (%s)",
+    (outcome) =>
+      Effect.gen(function* () {
+        const entered = yield* Deferred.make<void>();
+        const hold = yield* Deferred.make<void>();
+        const releaseEntered = yield* Deferred.make<void>();
+        const releaseHold = yield* Deferred.make<void>();
+        const releaseDone = yield* Deferred.make<void>();
+        yield* Effect.gen(function* () {
+          yield* seed;
+          const queue = yield* KinEventQueue.KinEventQueue;
+          const sql = yield* SqlClient.SqlClient;
+          yield* queue.enqueue(event("first"));
+          const active = yield* run();
+          yield* Deferred.await(entered);
+          yield* queue.enqueue(event("retired"));
+          const identity = yield* KinIdentity.KinIdentity;
+          const threads = yield* ThreadManagement.ThreadManagementService;
+          const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+          const [lead] = yield* sql<{ thread_id: string }>`SELECT thread_id FROM kin_leads`;
+          const threadId = ThreadId.make(lead!.thread_id);
+          const projection = yield* threads.getThreadProjection(threadId);
+          const credentials = yield* McpSessionRegistry.McpSessionRegistry;
+          const issued = yield* credentials.issue({
+            threadId,
+            providerInstanceId: ProviderInstanceId.make("codex"),
+          });
+          const token = issued.config.authorizationHeader.slice(7);
+          const caller = yield* credentials.resolve(token);
+          assert.isDefined(caller);
+          yield* identity.resolveAgent(caller!);
+          yield* sql`UPDATE kin_agents SET retired_at = '2026-11-08T00:00:00.000Z' WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+          let stops = 0;
+          const retiringRunner = yield* WakeupRunner.WakeupRunner.pipe(
+            Effect.provide(Layer.fresh(WakeupRunner.layer)),
+            Effect.provideService(ThreadManagement.ThreadManagementService, {
+              ...threads,
+              forceStopThread: Effect.fn("test.forceStopThread")(function* (input) {
+                stops++;
+                const result = yield* threads.forceStopThread(input);
+                assert.strictEqual(result.outcome, stops === 1 ? outcome : "released");
+                return result;
+              }),
             }),
-          }),
+            Effect.provideService(KinIdentity.KinIdentity, {
+              ...identity,
+              endAgentThread: Effect.fn("test.endAgentThread")(function* (
+                input: Parameters<typeof identity.endAgentThread>[0],
+              ) {
+                const projection = yield* threads
+                  .getThreadProjection(input.threadId)
+                  .pipe(Effect.orDie);
+                assert.isTrue(identity.isAgentThread(input.threadId));
+                for (const providerThread of projection.providerThreads)
+                  if (providerThread.providerSessionId !== null)
+                    assert.strictEqual(
+                      yield* sessions.isLive(providerThread.providerSessionId),
+                      outcome === "shared",
+                    );
+                return yield* identity.endAgentThread(input);
+              }),
+            }),
+          );
+          const firstPass = yield* retiringRunner.runOnce(orgId, agentId).pipe(Effect.forkChild);
+          if (outcome === "releasing") {
+            yield* Deferred.await(releaseEntered);
+            yield* TestClock.adjust("10 seconds");
+          }
+          yield* Fiber.join(firstPass);
+          assert.strictEqual(identity.isAgentThread(threadId), outcome === "releasing");
+          if (outcome === "releasing") {
+            assert.isTrue(identity.isAgentThread(threadId));
+            assert.lengthOf(yield* sql`SELECT 1 FROM kin_agent_threads WHERE ended_at IS NULL`, 1);
+            yield* Deferred.succeed(releaseHold, undefined);
+            yield* Deferred.await(releaseDone);
+          }
+          yield* retiringRunner.runOnce(orgId, agentId);
+          assert.strictEqual(stops, outcome === "releasing" ? 2 : 1);
+          if (outcome === "shared") {
+            assert.isTrue(
+              yield* sessions.isLive(projection.providerThreads[0]!.providerSessionId!),
+            );
+            assert.isDefined(yield* credentials.resolve(token));
+            const denied = yield* identity.resolveAgent(caller!).pipe(Effect.flip);
+            assert.propertyVal(denied, "reason", "not_allowed");
+            assert.strictEqual(denied.message, "Kin agent thread is not active.");
+          }
+          yield* Deferred.succeed(hold, undefined);
+          yield* Fiber.join(active);
+          assert.deepStrictEqual(
+            yield* sql`SELECT state FROM kin_events WHERE event_id = 'retired'`,
+            [{ state: "expired" }],
+          );
+          assert.strictEqual(
+            (yield* sql`SELECT 1 FROM kin_agent_threads WHERE ended_at IS NULL AND org_id = ${orgId}`)
+              .length,
+            0,
+          );
+          assert.strictEqual((yield* sql`SELECT 1 FROM kin_wakeups`).length, 1);
+        }).pipe(
+          Effect.provide(
+            harness({
+              entered,
+              hold,
+              ...(outcome === "shared" ? { sharedWith: [ThreadId.make("sibling")] } : {}),
+              ...(outcome === "releasing" ? { releaseEntered, releaseHold, releaseDone } : {}),
+            }),
+          ),
         );
-        yield* retiringRunner
-          .runOnce(orgId, agentId)
-          .pipe(Effect.ensuring(Deferred.succeed(hold, undefined)));
-        yield* Fiber.join(active);
-        assert.deepStrictEqual(
-          yield* sql`SELECT state FROM kin_events WHERE event_id = 'retired'`,
-          [{ state: "expired" }],
-        );
-        assert.strictEqual(
-          (yield* sql`SELECT 1 FROM kin_agent_threads WHERE ended_at IS NULL AND org_id = ${orgId}`)
-            .length,
-          0,
-        );
-        assert.strictEqual((yield* sql`SELECT 1 FROM kin_wakeups`).length, 1);
-      }).pipe(Effect.provide(harness({ entered, hold })));
-    }).pipe(provideDeterministicTestRuntime),
+      }).pipe(provideDeterministicTestRuntime),
   );
 
   it.effect(

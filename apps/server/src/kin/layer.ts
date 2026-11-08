@@ -12,6 +12,7 @@ export { KinServer } from "./KinServer.ts";
 import type * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as KinMcp from "./mcp/layer.ts";
+import * as KinLead from "./lead/layer.ts";
 
 const enabled = Layer.effect(
   KinServer,
@@ -66,7 +67,20 @@ const middleware = HttpRouter.middleware<{ provides: KinServer }>()(
 
 export const layer = middleware.pipe(Layer.provideMerge(runtime));
 
-export const mcpLayer = (base: Parameters<typeof KinMcp.transport>[0]) => KinMcp.transport(base);
+const leadRuntime = Layer.unwrap(
+  Effect.gen(function* () {
+    const kin = yield* KinServer;
+    return Option.isSome(kin.services)
+      ? KinLead.layerServer.pipe(
+          Layer.provide(Layer.succeedContext(kin.services.value)),
+          Layer.provide(SqlitePersistence.layerConfig),
+        )
+      : Layer.empty;
+  }),
+);
+
+export const mcpLayer = (base: Parameters<typeof KinMcp.transport>[0]) =>
+  Layer.merge(KinMcp.transport(base), leadRuntime);
 export const mcpRegistryLayer = <E, R>(
   base: Layer.Layer<McpSessionRegistry.McpSessionRegistry, E, R>,
 ) =>

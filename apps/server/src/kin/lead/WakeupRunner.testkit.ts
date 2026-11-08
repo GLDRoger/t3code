@@ -1,3 +1,5 @@
+import * as ProviderSessionManager from "../../orchestration-v2/ProviderSessionManager.ts";
+import type { ThreadId } from "@t3tools/contracts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -100,6 +102,10 @@ export const event = (id: string) =>
 
 export function harness(
   options: {
+    readonly sharedWith?: ReadonlyArray<ThreadId>;
+    readonly releaseEntered?: Deferred.Deferred<void>;
+    readonly releaseHold?: Deferred.Deferred<void>;
+    readonly releaseDone?: Deferred.Deferred<void>;
     readonly hold?: Deferred.Deferred<void>;
     readonly entered?: Deferred.Deferred<void>;
     readonly prepare?: Memory.Memory["Service"]["prepareWakeup"];
@@ -209,7 +215,22 @@ export function harness(
   );
   const settings = ServerSettings.layerTest();
   const receipts = CommandReceiptStore.layer.pipe(Layer.provide(database));
+  const sharedWith = options.sharedWith;
   const management = ThreadManagement.layer.pipe(
+    Layer.updateService(ProviderSessionManager.ProviderSessionManagerV2, (sessions) => ({
+      ...sessions,
+      otherWorkingThreads:
+        sharedWith === undefined ? sessions.otherWorkingThreads : () => Effect.succeed(sharedWith),
+      releaseUnlessBusy: Effect.fn("test.releaseUnlessBusy")(function* (input) {
+        if (options.releaseEntered !== undefined)
+          yield* Deferred.succeed(options.releaseEntered, undefined);
+        if (options.releaseHold !== undefined) yield* Deferred.await(options.releaseHold);
+        const released = yield* sessions.releaseUnlessBusy(input);
+        if (options.releaseDone !== undefined)
+          yield* Deferred.succeed(options.releaseDone, undefined);
+        return released;
+      }),
+    })),
     Layer.provide(Layer.mergeAll(orchestration, settings, receipts)),
   );
   const projectLayer = Layer.mock(ProjectService.ProjectService)({

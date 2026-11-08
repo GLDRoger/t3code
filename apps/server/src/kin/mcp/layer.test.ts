@@ -9,6 +9,7 @@ import {
   AuthStandardClientScopes,
   EnvironmentId,
   KinAgentId,
+  KinOrgId,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -35,6 +36,7 @@ import * as McpSessions from "../../mcp/McpSessionRegistry.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import * as Kin from "../layer.ts";
+import { ServerActivation } from "../../serverActivation.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { AssetSigner } from "../../assets/AssetSigner.ts";
@@ -115,6 +117,7 @@ it.effect.each([true, false])(
   (enabled) =>
     Effect.scoped(
       Effect.gen(function* () {
+        let runnerStarts = 0;
         const ready =
           yield* Deferred.make<
             Context.Context<
@@ -145,9 +148,27 @@ it.effect.each([true, false])(
               address: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 43123),
             }),
           ),
-          Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: enabled }))),
+          Layer.provide(
+            Layer.succeed(
+              ServerActivation,
+              Effect.sync(() => {
+                runnerStarts++;
+              }).pipe(Effect.andThen(Effect.never)),
+            ),
+          ),
+          Layer.provide(
+            ConfigProvider.layer(
+              ConfigProvider.fromUnknown({
+                KIN_ENABLED: enabled,
+                KIN_MEMORY_REPOSITORIES: JSON.stringify([
+                  { orgId: KinOrgId.make("fixture"), repoUrl: "fixture" },
+                ]),
+              }),
+            ),
+          ),
         );
         const http = yield* HttpRouter.toHttpEffect(routes);
+        assert.strictEqual(runnerStarts, enabled ? 1 : 0);
         const services = yield* Deferred.await(ready);
         const kin = Context.get(services, Kin.KinServer);
         const registry = Context.get(services, McpSessions.McpSessionRegistry);

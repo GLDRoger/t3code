@@ -132,7 +132,7 @@ const make = Effect.gen(function* () {
     yield* queue.expireAgent(record.orgId, record.agentId);
     if (record.threadId !== null) {
       const stopped = yield* threads.forceStopThread({ threadId: record.threadId });
-      if (stopped.outcome === "releasing" || stopped.outcome === "shared") return;
+      if (stopped.outcome === "releasing") return;
       yield* identity.endAgentThread({ orgId: record.orgId, threadId: record.threadId });
     }
     retired.add(record.agentId);
