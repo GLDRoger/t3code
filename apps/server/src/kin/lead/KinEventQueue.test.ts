@@ -71,6 +71,7 @@ const event = Effect.fn("test.event")(function* (
     itemIds: [],
     routine: "owner_check",
     pausedAt: DateTime.formatIso(DateTime.makeUnsafe(now)),
+    expired: { count: 0, events: [] },
     subject: { type: "reminder", itemId: "reminder" },
     lateByMs: 0,
     workerId: id,

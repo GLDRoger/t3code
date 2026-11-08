@@ -259,7 +259,21 @@ export const KinEvent = Schema.Union([
     pendingActionId: TrimmedNonEmptyString,
     outcome: Schema.Literals(["executed", "rejected", "expired", "failed"]),
   }),
-  Schema.TaggedStruct("resume", { ...EventBase, pausedAt: CanonicalUtcTimestamp }),
+  Schema.TaggedStruct("resume", {
+    ...EventBase,
+    pausedAt: CanonicalUtcTimestamp,
+    // Events queued more than 24 hours before the resume are expired, not replayed.
+    expired: Schema.Struct({
+      count: NonNegativeInt,
+      events: Schema.Array(
+        Schema.Struct({
+          eventId: KinEventId,
+          tag: TrimmedNonEmptyString,
+          receivedAt: CanonicalUtcTimestamp,
+        }),
+      ).check(Schema.isMaxLength(50)),
+    }),
+  }),
 ]);
 export type KinEvent = typeof KinEvent.Type;
 
@@ -315,3 +329,5 @@ export const KinOrgPauseInput = Schema.Struct({
 export type KinOrgPauseInput = typeof KinOrgPauseInput.Type;
 export const KinOrgResumeInput = Schema.Struct({ orgId: KinOrgId });
 export type KinOrgResumeInput = typeof KinOrgResumeInput.Type;
+export const KinOrgGetInput = Schema.Struct({ orgId: KinOrgId });
+export type KinOrgGetInput = typeof KinOrgGetInput.Type;
