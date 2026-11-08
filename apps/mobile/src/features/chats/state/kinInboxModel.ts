@@ -120,6 +120,7 @@ export const KinChatState = Schema.Struct({
     Schema.Literals([
       "not_found",
       "not_allowed",
+      "disabled",
       "widget_changed",
       "use_approvals",
       "invalid_state",
