@@ -64,6 +64,36 @@ const encodeSubject = Schema.encodeEffect(Schema.fromJsonString(KinTriggerSubjec
 const encodeSnapshot = Schema.encodeEffect(Schema.fromJsonString(DeferralSnapshot));
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
+interface StoredTrigger {
+  readonly runAt: number | undefined;
+  readonly enabled: boolean;
+  readonly nextRunAt: number | null;
+}
+interface Stored {
+  readonly run: { readonly state: string; readonly dueAt: number | null; readonly onDue: string };
+  readonly triggers: Map<DeferralPhase, StoredTrigger>;
+}
+
+// A fired `once` keeps its runAt with next_run_at cleared; re-syncing must not refire it.
+const triggerCurrent = (runAt: number | undefined, row: StoredTrigger | undefined) =>
+  runAt === undefined
+    ? row === undefined || (!row.enabled && row.nextRunAt === null)
+    : row?.enabled === true && row.runAt === runAt;
+
+const isCurrent = (plan: DeferralPlan, stored: Stored | undefined) =>
+  phases.every((phase) =>
+    triggerCurrent(
+      plan.phases.find((entry) => entry.phase === phase)?.runAt,
+      stored?.triggers.get(phase),
+    ),
+  ) &&
+  (plan.armed
+    ? stored !== undefined &&
+      stored.run.state !== "disarmed" &&
+      stored.run.dueAt === plan.dueAt &&
+      stored.run.onDue === plan.onDue
+    : stored === undefined || stored.run.state === "disarmed");
+
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const cache = yield* MemoryCache.MemoryCache;
@@ -72,7 +102,53 @@ const make = Effect.gen(function* () {
   const publish = (event: Parameters<KinChatHub["Service"]["publish"]>[0]) =>
     Option.isSome(hub) ? sql.afterCommit(hub.value.publish(event)) : Effect.void;
 
-  const syncTrigger = Effect.fn("KinTriggerService.syncTrigger")(function* (
+  // Trigger rows are only written in the same transaction as their run row.
+  const readStored = Effect.fn("KinTriggerService.readStored")(function* (
+    orgId: KinOrgId,
+    itemId?: KinMemoryItemId,
+  ) {
+    const rows = yield* sql<{
+      itemId: string;
+      state: string;
+      dueAt: number | null;
+      onDue: string;
+      triggerId: string | null;
+      schedule: string | null;
+      enabled: number | null;
+      nextRunAt: number | null;
+    }>`
+      SELECT r.item_id AS "itemId", r.state, r.due_at AS "dueAt", r.on_due AS "onDue",
+        t.trigger_id AS "triggerId", t.schedule_json AS schedule,
+        t.enabled, t.next_run_at AS "nextRunAt"
+      FROM kin_deferral_runs r
+      LEFT JOIN kin_triggers t ON t.org_id = r.org_id
+        AND t.trigger_id IN ('deferral:' || r.item_id || ':heads_up', 'deferral:' || r.item_id || ':due')
+      WHERE r.org_id = ${orgId} ${itemId === undefined ? sql`` : sql`AND r.item_id = ${itemId}`}
+      ORDER BY r.item_id, t.trigger_id
+    `;
+    const stored = new Map<string, Stored>();
+    for (const row of rows) {
+      let entry = stored.get(row.itemId);
+      if (entry === undefined) {
+        entry = {
+          run: { state: row.state, dueAt: row.dueAt, onDue: row.onDue },
+          triggers: new Map(),
+        };
+        stored.set(row.itemId, entry);
+      }
+      const phase = phases.find((each) => deferralTriggerId(row.itemId, each) === row.triggerId);
+      if (phase === undefined || row.schedule === null) continue;
+      const schedule = yield* decodeSchedule(row.schedule);
+      entry.triggers.set(phase, {
+        runAt: schedule.type === "once" ? Date.parse(schedule.runAt) : undefined,
+        enabled: row.enabled === 1,
+        nextRunAt: row.nextRunAt,
+      });
+    }
+    return stored;
+  });
+
+  const writeTrigger = Effect.fn("KinTriggerService.writeTrigger")(function* (
     orgId: KinOrgId,
     itemId: KinMemoryItemId,
     phase: DeferralPhase,
@@ -81,21 +157,9 @@ const make = Effect.gen(function* () {
     now: number,
   ) {
     const id = deferralTriggerId(itemId, phase);
-    const [row] = yield* sql<{ schedule: string; enabled: number; nextRunAt: number | null }>`
-      SELECT schedule_json AS schedule, enabled, next_run_at AS "nextRunAt" FROM kin_triggers
-      WHERE org_id = ${orgId} AND trigger_id = ${id} ORDER BY trigger_id
-    `;
-    if (runAt === undefined) {
-      if (row === undefined || (row.enabled === 0 && row.nextRunAt === null)) return false;
-      yield* sql`UPDATE kin_triggers SET enabled = 0, next_run_at = NULL,
+    if (runAt === undefined)
+      return yield* sql`UPDATE kin_triggers SET enabled = 0, next_run_at = NULL,
         updated_at = max(updated_at, ${now}) WHERE org_id = ${orgId} AND trigger_id = ${id}`;
-      return true;
-    }
-    if (row !== undefined && row.enabled === 1) {
-      const stored = yield* decodeSchedule(row.schedule);
-      // A fired `once` keeps its runAt with next_run_at cleared; re-syncing must not refire it.
-      if (stored.type === "once" && Date.parse(stored.runAt) === runAt) return false;
-    }
     const schedule = yield* encodeSchedule({ type: "once", runAt: iso(runAt) });
     const subject = yield* encodeSubject({ type: "deferral", itemId, phase });
     const inserted = yield* sql`
@@ -109,7 +173,6 @@ const make = Effect.gen(function* () {
         time_zone = ${timeZone}, enabled = 1, next_run_at = ${runAt},
         updated_at = max(updated_at, ${now})
         WHERE org_id = ${orgId} AND trigger_id = ${id}`;
-    return true;
   });
 
   const syncCard = Effect.fn("KinTriggerService.syncCard")(function* (
@@ -202,24 +265,21 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     itemId: KinMemoryItemId,
     item: SyncItem | undefined,
+    plan: DeferralPlan,
+    timeZone: string,
+    now: number,
   ) {
-    const plan = item === undefined ? disarmedPlan : planDeferral(item);
-    const timeZone = yield* cache.ownerTimeZone(orgId);
-    const now = yield* Clock.currentTimeMillis;
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         const [org] = yield* sql`SELECT 1 FROM kin_orgs WHERE org_id = ${orgId} ORDER BY org_id`;
         if (org === undefined) return yield* Effect.fail("unknown_org" as const);
-        let changed = false;
+        const stored = (yield* readStored(orgId, itemId)).get(itemId);
+        if (isCurrent(plan, stored)) return "unchanged" as const;
         for (const phase of phases) {
           const runAt = plan.phases.find((entry) => entry.phase === phase)?.runAt;
-          if (yield* syncTrigger(orgId, itemId, phase, runAt, timeZone, now)) changed = true;
+          if (!triggerCurrent(runAt, stored?.triggers.get(phase)))
+            yield* writeTrigger(orgId, itemId, phase, runAt, timeZone, now);
         }
-        const [run] = yield* sql<{ state: string; dueAt: number | null; onDue: string }>`
-          SELECT state, due_at AS "dueAt", on_due AS "onDue" FROM kin_deferral_runs
-          WHERE org_id = ${orgId} AND item_id = ${itemId} ORDER BY item_id
-        `;
-        let result: SyncResult = "unchanged";
         if (plan.armed && item !== undefined) {
           const snapshot = yield* encodeSnapshot(deferralSnapshot(item));
           const inserted = yield* sql`
@@ -227,25 +287,15 @@ const make = Effect.gen(function* () {
             VALUES (${orgId}, ${itemId}, 'armed', ${plan.dueAt}, ${plan.onDue}, ${snapshot}, ${now})
             ON CONFLICT DO NOTHING RETURNING item_id
           `;
-          if (inserted.length === 1) result = "armed";
-          else if (
-            changed ||
-            run?.state === "disarmed" ||
-            run?.dueAt !== plan.dueAt ||
-            run?.onDue !== plan.onDue
-          ) {
+          if (inserted.length === 0)
             yield* sql`UPDATE kin_deferral_runs SET state = 'armed', due_at = ${plan.dueAt},
               on_due = ${plan.onDue}, snapshot_json = ${snapshot}, updated_at = ${now}
               WHERE org_id = ${orgId} AND item_id = ${itemId}`;
-            result = "armed";
-          }
-        } else if (changed || (run !== undefined && run.state !== "disarmed")) {
+        } else
           yield* sql`UPDATE kin_deferral_runs SET state = 'disarmed', updated_at = ${now}
             WHERE org_id = ${orgId} AND item_id = ${itemId} AND state <> 'disarmed'`;
-          result = "disarmed";
-        }
-        if (result !== "unchanged") yield* syncCard(orgId, itemId, item, plan, timeZone, now);
-        return result;
+        yield* syncCard(orgId, itemId, item, plan, timeZone, now);
+        return plan.armed ? ("armed" as const) : ("disarmed" as const);
       }),
     );
   });
@@ -259,43 +309,74 @@ const make = Effect.gen(function* () {
         }),
     );
 
-  const syncItem = Effect.fn("KinTriggerService.syncItem")(function* (item: SyncItem) {
-    if (item.kind !== "deferral") return "unchanged" as const;
-    return yield* apply(item.orgId, item.id, item).pipe(wrap(item.orgId));
-  });
-
   return KinTriggerService.of({
-    syncItem,
+    syncItem: Effect.fn("KinTriggerService.syncItem")(function* (item) {
+      if (item.kind !== "deferral") return "unchanged" as const;
+      const timeZone = yield* cache.ownerTimeZone(item.orgId);
+      const now = yield* Clock.currentTimeMillis;
+      return yield* apply(item.orgId, item.id, item, planDeferral(item), timeZone, now).pipe(
+        wrap(item.orgId),
+      );
+    }),
     syncOrg: Effect.fn("KinTriggerService.syncOrg")(function* (orgId, items) {
+      const stored = yield* readStored(orgId).pipe(wrap(orgId));
       const present = new Set<string>();
+      const pending: Array<readonly [KinMemoryItemId, SyncItem | undefined, DeferralPlan]> = [];
       for (const item of items) {
         if (item.orgId !== orgId || item.kind !== "deferral") continue;
         present.add(item.id);
-        yield* syncItem(item);
+        const plan = planDeferral(item);
+        if (!isCurrent(plan, stored.get(item.id))) pending.push([item.id, item, plan]);
       }
-      const runs = yield* sql<{ itemId: KinMemoryItemId }>`
-        SELECT item_id AS "itemId" FROM kin_deferral_runs
-        WHERE org_id = ${orgId} AND state <> 'disarmed' ORDER BY item_id
-      `.pipe(wrap(orgId));
-      for (const run of runs)
-        if (!present.has(run.itemId)) yield* apply(orgId, run.itemId, undefined).pipe(wrap(orgId));
+      for (const [itemId, entry] of stored)
+        if (!present.has(itemId) && entry.run.state !== "disarmed")
+          pending.push([KinMemoryItemId.make(itemId), undefined, disarmedPlan]);
+      if (pending.length === 0) return;
+      const timeZone = yield* cache.ownerTimeZone(orgId);
+      const now = yield* Clock.currentTimeMillis;
+      const failures: Array<KinTriggerSyncError> = [];
+      for (const [itemId, item, plan] of pending)
+        yield* apply(orgId, itemId, item, plan, timeZone, now).pipe(
+          wrap(orgId),
+          Effect.catch((error) => {
+            failures.push(error);
+            return Effect.logWarning("Could not sync deferral", { orgId, itemId, cause: error });
+          }),
+        );
+      if (failures.length > 0) return yield* failures[0]!;
     }),
   });
 });
 
 export const layer = Layer.effect(KinTriggerService, make).pipe(Layer.provide(MemoryCache.layer));
 
-/** Feeds each front-matter cache snapshot into deferral arming. */
+/** Arms deferrals from each new memory head; a failed sync retries on the next load. */
 export const syncHooksLayer = Layer.effect(
   Memory.MemorySyncHooks,
   Effect.gen(function* () {
     const service = yield* KinTriggerService;
-    return Memory.MemorySyncHooks.of({
-      syncItems: Effect.fn("KinTriggerService.syncItems")(function* (orgId, items) {
+    const syncedHeads = new Map<KinOrgId, string>();
+    return {
+      syncItems: Effect.fn("KinTriggerService.syncItems")(function* (orgId, snapshot) {
+        if (syncedHeads.get(orgId) === snapshot.head) return;
         yield* service
-          .syncOrg(orgId, items)
-          .pipe(Effect.mapError((cause) => new Memory.MemorySyncHookError({ orgId, cause })));
+          .syncOrg(
+            orgId,
+            snapshot.items.map(({ head }) => ({
+              ...head,
+              duplicate: snapshot.duplicateIds.has(head.id),
+            })),
+          )
+          .pipe(
+            Effect.tap(() => Effect.sync(() => syncedHeads.set(orgId, snapshot.head))),
+            Effect.catch((error) =>
+              Effect.logWarning("Could not sync deferral triggers; retrying on next load", {
+                orgId,
+                cause: error,
+              }),
+            ),
+          );
       }),
-    });
+    };
   }),
 );

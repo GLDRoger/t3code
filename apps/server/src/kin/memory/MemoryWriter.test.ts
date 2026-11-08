@@ -64,6 +64,8 @@ it.live.each([
   "credentials",
   "read-during-record",
   "deferral-card-remind",
+  "deferral-plain-remind",
+  "deferral-card-other-item",
   "H3-packed-ref",
   "M1-unanchored",
   "M2-nondescendant",
@@ -126,7 +128,7 @@ it.live.each([
             }),
       );
     }
-    if (scenario === "deferral-card-remind") {
+    if (scenario.startsWith("deferral-")) {
       yield* fs.makeDirectory(`${source}/deferrals`);
       yield* fs.writeFileString(`${source}/deferrals/def-001.md`, fixtureItem());
     }
@@ -223,9 +225,9 @@ it.live.each([
       Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
       Layer.provide(
         Layer.succeed(Memory.MemorySyncHooks, {
-          syncItems: (_org, items) =>
+          syncItems: (_org, snapshot) =>
             Effect.sync(() => {
-              synced.push(items);
+              synced.push(snapshot.items.map(({ head }) => head));
             }),
         }),
       ),
@@ -253,7 +255,7 @@ it.live.each([
                   scenario === "conflict" ||
                   scenario === "B5-journal" ||
                   scenario === "read-during-record" ||
-                  scenario === "deferral-card-remind"
+                  scenario.startsWith("deferral-")
                     ? "L1"
                     : "L0",
                 timeZone: "Asia/Kolkata",
@@ -278,13 +280,15 @@ it.live.each([
                           itemId: scenario === "owner-other-item-keep" ? "other-item" : "def-001",
                           action: scenario === "owner-drop-keep" ? "drop" : "keep",
                         }
-                      : scenario === "deferral-card-remind"
+                      : scenario === "deferral-card-remind" ||
+                          scenario === "deferral-card-other-item"
                         ? {
                             saidBy: "fixture-owner",
                             trust: "owner",
                             source: "fixture-owner-message",
                             kind: "deferral_card",
-                            itemId: "def-001",
+                            itemId:
+                              scenario === "deferral-card-other-item" ? "other-item" : "def-001",
                             action: "remind",
                           }
                         : {
@@ -636,6 +640,17 @@ it.live.each([
         expect(
           (yield* writer.commitWakeup(orgId, "wake1", "completed").pipe(Effect.result))._tag,
         ).toBe("Success");
+        return;
+      }
+      if (scenario === "deferral-plain-remind" || scenario === "deferral-card-other-item") {
+        const result = yield* writer
+          .stage(orgId, "wake1", {
+            path: "deferrals/def-001.md",
+            content: fixtureItem({ on_due: "remind" }),
+            sourceEventId: "owner",
+          })
+          .pipe(Effect.result);
+        expect(result._tag === "Failure" && result.failure._tag).toBe("MemoryConflict");
         return;
       }
       if (scenario === "deferral-card-remind") {

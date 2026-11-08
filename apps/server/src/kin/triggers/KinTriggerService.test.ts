@@ -19,6 +19,7 @@ import * as Chat from "../chat/KinChatService.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as JudgeShadow from "../floor/JudgeShadow.ts";
+import * as Memory from "../memory/Memory.ts";
 import * as Persistence from "../persistence/KinPersistence.ts";
 import * as TriggerService from "./KinTriggerService.ts";
 import { item, orgId, otherOrg, seed } from "./routines.testkit.ts";
@@ -28,7 +29,8 @@ const now = Date.parse("2026-11-09T09:00:00.000Z");
 const due = "2026-11-13T09:00+05:30";
 const dueAt = Date.parse("2026-11-13T03:30:00.000Z");
 
-const layer = TriggerService.layer.pipe(
+const layer = TriggerService.syncHooksLayer.pipe(
+  Layer.provideMerge(TriggerService.layer),
   Layer.provideMerge(
     Chat.layer.pipe(Layer.provide(JudgeShadow.layerOff), Layer.provideMerge(Hub.layer)),
   ),
@@ -135,6 +137,8 @@ it.effect.each([
   ["done", { status: "done" }],
   ["cancelled", { status: "cancelled" }],
   ["invalid_at", { invalid_at: "2026-11-09T09:00:00.000Z" }],
+  ["pre-1970", { due: "1969-12-31" }],
+  ["year-0", { due: "0000-01-01" }],
   ["missing", undefined],
 ] as const)("disarms on %s and re-arms when reopened", ([, overrides]) =>
   Effect.gen(function* () {
@@ -205,11 +209,69 @@ it.effect("keeps organizations apart", () =>
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect("refuses deferral card taps until the owner-tap dispatcher lands", () =>
+it.effect("syncs each head once, retries failures, and isolates failing items", () =>
+  Effect.gen(function* () {
+    const { sql } = yield* setup();
+    const hooks = yield* Memory.MemorySyncHooks;
+    const other = deferral({ id: KinMemoryItemId.make("def-2"), path: "deferrals/def-2.md" });
+    const snapshot = (
+      head: string,
+      items: ReadonlyArray<MemoryItemHead>,
+      duplicateIds: ReadonlyArray<string> = [],
+    ) => ({
+      head,
+      items: items.map((head) => ({ head, body: "" })),
+      duplicateIds: new Set(duplicateIds),
+    });
+    const runs = () =>
+      sql<{ itemId: string; state: string }>`SELECT item_id AS "itemId", state
+        FROM kin_deferral_runs WHERE org_id = ${orgId} ORDER BY item_id`;
+    yield* sql`CREATE TRIGGER fail_def_1 BEFORE INSERT ON kin_deferral_runs
+      WHEN NEW.item_id = 'def-1' BEGIN SELECT RAISE(ABORT, 'fixture'); END`;
+    yield* hooks.syncItems(orgId, snapshot("h1", [deferral(), other]));
+    assert.deepEqual(yield* runs(), [{ itemId: "def-2", state: "armed" }]);
+
+    yield* sql`DROP TRIGGER fail_def_1`;
+    yield* hooks.syncItems(orgId, snapshot("h1", [deferral(), other]));
+    assert.deepEqual(yield* runs(), [
+      { itemId: "def-1", state: "armed" },
+      { itemId: "def-2", state: "armed" },
+    ]);
+    yield* sql`UPDATE kin_deferral_runs SET state = 'disarmed' WHERE org_id = ${orgId} AND item_id = 'def-2'`;
+    yield* hooks.syncItems(orgId, snapshot("h1", [deferral(), other]));
+    assert.equal((yield* runs())[1]?.state, "disarmed");
+
+    const copy = deferral({ path: "deferrals/def-1-copy.md" });
+    yield* hooks.syncItems(orgId, snapshot("h2", [deferral(), copy, other], ["def-1"]));
+    assert.deepEqual(yield* runs(), [
+      { itemId: "def-1", state: "disarmed" },
+      { itemId: "def-2", state: "armed" },
+    ]);
+    assert.deepEqual(
+      (yield* triggers(orgId)).map(({ id, enabled }) => [id, enabled]),
+      [
+        ["deferral:def-1:due", 0],
+        ["deferral:def-1:heads_up", 0],
+        ["deferral:def-2:due", 1],
+        ["deferral:def-2:heads_up", 1],
+      ],
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("refuses deferral cards from the model and taps until the dispatcher lands", () =>
   Effect.gen(function* () {
     const { service } = yield* setup();
     yield* service.syncItem(deferral());
     const chat = yield* Chat.KinChatService;
+    const [posted] = yield* card(orgId);
+    const upsert = yield* chat
+      .upsertWidget(
+        { _tag: "person", orgId, personId: KinPersonId.make(`owner-${orgId}`) },
+        { chatId: KinChatId.make(`chat-${orgId}`), type: "deferral", state: posted!.state },
+      )
+      .pipe(Effect.flip);
+    assert.equal(upsert._tag === "KinChatError" && upsert.reason, "not_allowed");
     const failure = yield* chat
       .act(
         { _tag: "person", orgId, personId: KinPersonId.make(`owner-${orgId}`) },

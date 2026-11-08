@@ -21,7 +21,6 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
@@ -130,21 +129,18 @@ export class MemoryRecoveryHooks extends Context.Service<
   }
 >()("t3/kin/memory/Memory/MemoryRecoveryHooks") {}
 
-export class MemorySyncHookError extends Schema.TaggedError<MemorySyncHookError>()(
-  "MemorySyncHookError",
-  { orgId: Schema.String, cause: Schema.Defect() },
-) {}
+export interface MemorySyncSnapshot {
+  readonly head: string;
+  readonly items: ReadonlyArray<MemoryCache.MemoryItem>;
+  readonly duplicateIds: ReadonlySet<string>;
+}
 
-/** Receives every newly loaded snapshot; must be idempotent, since a failure retries on the next load. */
-export class MemorySyncHooks extends Context.Service<
-  MemorySyncHooks,
-  {
-    readonly syncItems: (
-      orgId: KinOrgId,
-      items: ReadonlyArray<MemoryItemHead & { readonly duplicate: boolean }>,
-    ) => Effect.Effect<void, MemorySyncHookError>;
-  }
->()("t3/kin/memory/Memory/MemorySyncHooks") {}
+/** Sees every loaded snapshot and owns its own once-per-head, retry and failure handling. */
+export class MemorySyncHooks extends Context.Reference<{
+  readonly syncItems: (orgId: KinOrgId, snapshot: MemorySyncSnapshot) => Effect.Effect<void>;
+}>("t3/kin/memory/Memory/MemorySyncHooks", {
+  defaultValue: () => ({ syncItems: () => Effect.void }),
+}) {}
 
 export class Memory extends Context.Service<
   Memory,
@@ -202,9 +198,7 @@ const folders = ["objectives", "commitments", "deferrals", "decisions", "people"
 
 const maxBlobBytes = 256 * 1024;
 
-interface Snapshot {
-  readonly head: string;
-  readonly items: ReadonlyArray<MemoryCache.MemoryItem>;
+interface Snapshot extends MemorySyncSnapshot {
   readonly files: ReadonlyMap<string, string>;
   index?: string;
 }
@@ -236,8 +230,7 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const writerLocks = new Map<KinOrgId, Semaphore.Semaphore>();
   const pinnedHeads = new Map<KinOrgId, string>();
-  const syncedHeads = new Map<KinOrgId, string>();
-  const syncHooks = yield* Effect.serviceOption(MemorySyncHooks);
+  const hooks = yield* MemorySyncHooks;
   const withWriterLock = <A, E>(orgId: KinOrgId, effect: Effect.Effect<A, E>) => {
     let lock = writerLocks.get(orgId);
     if (!lock) {
@@ -718,6 +711,7 @@ const make = Effect.gen(function* () {
       head,
       items,
       files,
+      duplicateIds,
       ...(previous?.head === head && previous.index !== undefined ? { index: previous.index } : {}),
     };
     snapshots.set(orgId, snapshot);
@@ -729,27 +723,7 @@ const make = Effect.gen(function* () {
   });
   const load = Effect.fn("Memory.load")(function* (orgId: KinOrgId, force = false) {
     const snapshot = yield* loadSnapshot(orgId, force);
-    if (Option.isSome(syncHooks) && syncedHeads.get(orgId) !== snapshot.head) {
-      const counts = new Map<string, number>();
-      for (const { head } of snapshot.items) counts.set(head.id, (counts.get(head.id) ?? 0) + 1);
-      yield* syncHooks.value
-        .syncItems(
-          orgId,
-          snapshot.items.map(({ head }) => ({
-            ...head,
-            duplicate: (counts.get(head.id) ?? 0) > 1,
-          })),
-        )
-        .pipe(
-          Effect.tap(() => Effect.sync(() => syncedHeads.set(orgId, snapshot.head))),
-          Effect.catch((error) =>
-            Effect.logWarning("Could not sync memory triggers; retrying on next load", {
-              orgId,
-              errorTag: error._tag,
-            }),
-          ),
-        );
-    }
+    yield* hooks.syncItems(orgId, snapshot);
     return snapshot;
   });
 

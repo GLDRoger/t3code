@@ -214,7 +214,7 @@ export const KinEvent = Schema.Union([
       Schema.Array(
         Schema.Struct({
           routine: KinLeadRoutine,
-          dueAt: Schema.toEncoded(CanonicalUtcTimestamp),
+          dueAt: CanonicalUtcTimestamp,
         }),
       ),
     ),

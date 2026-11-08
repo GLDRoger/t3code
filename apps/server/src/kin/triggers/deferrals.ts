@@ -36,7 +36,8 @@ export const deferralTriggerId = (itemId: string, phase: DeferralPhase) =>
   KinTriggerId.make(`deferral:${itemId}:${phase}`);
 export const deferralWidgetId = (orgId: string, itemId: string) => `deferral:${orgId}:${itemId}`;
 
-// A deferral without on_due only reminds: silence never starts work.
+// A deferral without on_due only reminds: silence never starts work. Pre-epoch run
+// times would fail every scheduler tick, so they leave the item unarmed.
 export function planDeferral(
   item: MemoryItemHead & { readonly duplicate?: boolean },
 ): DeferralPlan {
@@ -52,13 +53,10 @@ export function planDeferral(
     dueAt !== null;
   if (!armed || dueAt === null) return { armed: false, dueAt, onDue, phases: [] };
   const dueFire = { phase: "due" as const, runAt: dueAt };
-  return {
-    armed,
-    dueAt,
-    onDue,
-    phases:
-      onDue === "start" ? [{ phase: "heads_up", runAt: dueAt - HEADS_UP_MS }, dueFire] : [dueFire],
-  };
+  const phases: DeferralPlan["phases"] =
+    onDue === "start" ? [{ phase: "heads_up", runAt: dueAt - HEADS_UP_MS }, dueFire] : [dueFire];
+  if (phases.some(({ runAt }) => runAt < 0)) return { armed: false, dueAt, onDue, phases: [] };
+  return { armed, dueAt, onDue, phases };
 }
 
 /** The item half of the recheck baseline; TRIG-8 adds the GitHub half. */
@@ -141,7 +139,11 @@ const make = Effect.gen(function* () {
         );
         const action = yield* decodeAction(tap.action);
         const card = yield* decodeCard(tap.widget.state);
-        if (card.itemId !== action.value) return yield* Effect.fail("unknown_item" as const);
+        if (
+          card.itemId !== action.value ||
+          tap.widget.widgetId !== deferralWidgetId(orgId, card.itemId)
+        )
+          return yield* Effect.fail("unknown_item" as const);
         if (action.actionId === "remind") {
           const item = yield* memory.readItemQuietly(orgId, card.itemId);
           if (item.head.kind !== "deferral" || item.head.status !== "open")

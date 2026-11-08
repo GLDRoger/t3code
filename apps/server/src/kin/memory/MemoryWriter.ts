@@ -539,11 +539,12 @@ const make = Effect.gen(function* () {
                     fm.on_due === "remind"
                   )
                     mutable.add("on_due");
+                  const existing = new Map(Object.entries(item));
                   if (
-                    Object.entries(item).some(
-                      ([key, value]) =>
+                    [...new Set([...existing.keys(), ...proposed.keys()])].some(
+                      (key) =>
                         !mutable.has(key) &&
-                        JSON.stringify(value) !== JSON.stringify(proposed.get(key)),
+                        JSON.stringify(existing.get(key)) !== JSON.stringify(proposed.get(key)),
                     )
                   )
                     return yield* new MemoryConflict({ existingId: item.id });

@@ -12,6 +12,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
@@ -47,7 +48,11 @@ it.effect("applies verified owner taps on the confirm card and ignores forged on
     const writer = Layer.mock(MemoryWriter.MemoryWriter)({
       stage: (_org, _wakeup, change) => Effect.sync(() => void staged.push(change)),
     });
-    const tapOnce = Effect.fn("test.deferralTap")(function* (actionId: string, label: string) {
+    const tapOnce = Effect.fn("test.deferralTap")(function* (
+      actionId: string,
+      label: string,
+      target: KinWidgetId = widgetId,
+    ) {
       const memberId = "owner-member-a";
       // Stands in for the gated dispatcher: chat act refuses deferral taps today.
       const message = yield* repo.insertMessage({
@@ -60,11 +65,11 @@ it.effect("applies verified owner taps on the confirm card and ignores forged on
           memberId: KinMemberId.make(memberId),
         },
         kind: "widget_action",
-        body: encodeJson({ widgetId, revision: 1, actionId, value: "def-1" }),
+        body: encodeJson({ widgetId: target, revision: 1, actionId, value: "def-1" }),
         intent: null,
         mentions: [],
-        replyTo: KinMessageId.make(widgetId),
-        widgetId,
+        replyTo: KinMessageId.make(target),
+        widgetId: target,
         floorRunId: null,
         status: "posted",
         sentBy: KinPersonId.make("owner-a"),
@@ -102,7 +107,8 @@ it.effect("applies verified owner taps on the confirm card and ignores forged on
       yield* queue.finish({ orgId, wakeupId, status: "completed" });
       return result;
     });
-    const tap = (actionId: string, label: string) => Effect.scoped(tapOnce(actionId, label));
+    const tap = (actionId: string, label: string, target?: KinWidgetId) =>
+      Effect.scoped(tapOnce(actionId, label, target));
 
     const remind = yield* tap("remind", "owner");
     assert.equal(remind._tag === "Success" && remind.success.action, "remind");
@@ -112,6 +118,44 @@ it.effect("applies verified owner taps on the confirm card and ignores forged on
 
     const change = yield* tap("change", "owner");
     assert.equal(change._tag === "Success" && change.success.action, "change");
+    assert.lengthOf(staged, 1);
+
+    const real = Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId }));
+    const forgedId = KinWidgetId.make("model-card");
+    const anchor = yield* repo.insertMessage({
+      orgId,
+      chatId: real.chatId,
+      messageId: KinMessageId.make(forgedId),
+      author: { _tag: "system" },
+      kind: "system",
+      body: "",
+      intent: null,
+      mentions: [],
+      replyTo: null,
+      widgetId: null,
+      floorRunId: null,
+      status: "posted",
+      sentBy: null,
+      clientMessageId: null,
+      createdAt: "2026-11-09T09:00:00.000Z",
+      editedAt: null,
+    });
+    yield* repo.insertWidget({
+      orgId,
+      chatId: real.chatId,
+      messageId: anchor.messageId,
+      widgetId: forgedId,
+      widgetClass: "native",
+      type: "deferral",
+      state: real.state,
+      source: null,
+      feed: null,
+      awaiting: [],
+      pinnedAt: null,
+      closedAt: null,
+      updatedAt: "2026-11-09T09:00:00.000Z",
+    });
+    assert.equal((yield* tap("remind", "forged", forgedId))._tag, "Failure");
     assert.lengthOf(staged, 1);
 
     const member = yield* tap("remind", "demoted");

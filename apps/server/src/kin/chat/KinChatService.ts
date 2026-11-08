@@ -950,7 +950,11 @@ const make = Effect.gen(function* () {
           reason: "use_approvals",
           message: "Use the signed approvals service.",
         });
-      if (input.type === "owner_check" || (input.type === "task" && input.widgetId === undefined))
+      if (
+        input.type === "owner_check" ||
+        input.type === "deferral" ||
+        (input.type === "task" && input.widgetId === undefined)
+      )
         return yield* notAllowed;
       let state = yield* validateState(input.type, input.state);
       let widget: KinWidget;
