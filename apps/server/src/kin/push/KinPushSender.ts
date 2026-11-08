@@ -19,6 +19,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import { ApproverKeys } from "../approvals/ApproverKeys.ts";
 import { KinPendingActions } from "../approvals/PendingActions.ts";
 import { KinApnsTransport } from "./Apns.ts";
@@ -106,6 +107,10 @@ const make = Effect.gen(function* () {
   const presence = yield* KinPushPresence;
   const keys = yield* ApproverKeys;
   const actions = yield* KinPendingActions;
+  // Every Kin host shares org id `kin-default`, so links name the host too (mobile spec, routes).
+  const host = segment(yield* (yield* ServerEnvironment.ServerEnvironment).getEnvironmentId);
+  const chatLink = (orgId: KinOrgId, chatId: KinChatId) =>
+    `/kin/${host}/${segment(orgId)}/chats/${segment(chatId)}`;
 
   /** People in the chat now. Muting silences messages, not things waiting on you. */
   const chatPeople = Effect.fn("KinPushSender.chatPeople")(function* (
@@ -132,7 +137,7 @@ const make = Effect.gen(function* () {
   ) {
     const action = yield* actions.get({ orgId, actionId });
     if (Option.isNone(action) || action.value.state !== "awaiting_approval") return undefined;
-    const deepLink = `/kin/${segment(orgId)}/actions/${segment(actionId)}`;
+    const deepLink = `/kin/${host}/${segment(orgId)}/actions/${segment(actionId)}`;
     return {
       category: "kin.approval",
       title: "Approval needed",
@@ -163,7 +168,7 @@ const make = Effect.gen(function* () {
         kin: 1,
         orgId,
         chatId: row.chat_id,
-        deepLink: `/kin/${segment(orgId)}/chats/${segment(row.chat_id)}`,
+        deepLink: chatLink(orgId, row.chat_id),
       },
       recipients: people.filter((person) => person !== row.author_person_id),
     } satisfies Push;
@@ -216,7 +221,7 @@ const make = Effect.gen(function* () {
         chatId: row.chat_id,
         widgetId,
         revision: row.revision,
-        deepLink: `/kin/${segment(orgId)}/chats/${segment(row.chat_id)}`,
+        deepLink: chatLink(orgId, row.chat_id),
       },
       recipients: people.filter((person) => awaiting.has(person)),
     } satisfies Push;

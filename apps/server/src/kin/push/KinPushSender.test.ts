@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
   AuthSessionId,
+  EnvironmentId,
   KinChatId,
   KinEventId,
   KinMessageId,
@@ -22,6 +23,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as SessionStore from "../../auth/SessionStore.ts";
+import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ApproverKeys from "../approvals/ApproverKeys.ts";
 import { KinAttestationTrust } from "../approvals/attestation/AttestationTrust.ts";
@@ -86,6 +88,11 @@ const buildOn = <A, E, R>(apns: ReturnType<typeof makeApns>, database: Layer.Lay
     Layer.provideMerge(ApproverKeys.layer),
     Layer.provideMerge(PendingActions.layer),
     Layer.provide(Layer.succeed(KinAttestationTrust, { load: () => Effect.die("unused") })),
+    Layer.provide(
+      Layer.mock(ServerEnvironment.ServerEnvironment)({
+        getEnvironmentId: Effect.succeed(EnvironmentId.make("env_kin")),
+      }),
+    ),
     Layer.provideMerge(Layer.provideMerge(KinPersistence.layer, database)),
   );
 const build = (apns: ReturnType<typeof makeApns>) => buildOn(apns, Sqlite.layerMemory);
@@ -254,7 +261,7 @@ describe("KinPushSender", () => {
           kin: 1,
           orgId,
           pendingActionId: action.id,
-          deepLink: `/kin/org_01/actions/${encodeURIComponent(action.id)}`,
+          deepLink: `/kin/env_kin/org_01/actions/${encodeURIComponent(action.id)}`,
         },
       });
       const wire = JSON.stringify(apns.sent.map((push) => push.payload));
@@ -325,7 +332,7 @@ describe("KinPushSender", () => {
           chatId: "chat_team",
           widgetId,
           revision: 3,
-          deepLink: "/kin/org_01/chats/chat_team",
+          deepLink: "/kin/env_kin/org_01/chats/chat_team",
         },
       });
       assert.isUndefined(apns.sent[0]?.collapseId);
@@ -339,6 +346,10 @@ describe("KinPushSender", () => {
         [memberPhone],
       );
       assert.deepStrictEqual(categories(apns.sent), ["kin.message"]);
+      assert.include(
+        JSON.stringify(apns.sent[0]?.payload),
+        '"deepLink":"/kin/env_kin/org_01/chats/',
+      );
       assert.notInclude(JSON.stringify(apns.sent), "hunter2");
       // Messages collapse per chat; cards don't, since each one waits on something different.
       assert.match(apns.sent[0]?.collapseId ?? "", /^kin:[0-9a-f]{12}$/);
