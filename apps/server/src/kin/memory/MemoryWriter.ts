@@ -406,7 +406,8 @@ const make = Effect.gen(function* () {
                 (item.id === fm.id || item.links.some((link) => fm.links.includes(link))) &&
                 item.id !== change.supersedes
               ) {
-                const body = bodies.get(item.path) ?? (yield* memory.readItem(orgId, item.id)).body;
+                const body =
+                  bodies.get(item.path) ?? (yield* memory.readItemQuietly(orgId, item.id)).body;
                 const rank = (trust: string) =>
                   ["external", "agent", "member", "owner"].indexOf(trust);
                 if (
@@ -476,7 +477,8 @@ const make = Effect.gen(function* () {
             yield* parseFrontMatter(orgId, change.path, text);
             if (superseded) {
               const oldBody =
-                bodies.get(superseded.path) ?? (yield* memory.readItem(orgId, superseded.id)).body;
+                bodies.get(superseded.path) ??
+                (yield* memory.readItemQuietly(orgId, superseded.id)).body;
               const {
                 orgId: _org,
                 path: oldPath,

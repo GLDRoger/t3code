@@ -40,6 +40,7 @@ it.live.each([
   "P7-crash",
   "P8-lost-writer",
   "P9-shadow",
+  "P10-lost-git-dir",
   "sha256",
   "owner-keep",
   "agent-keep",
@@ -361,6 +362,20 @@ it.live.each([
         expect(yield* git(paths.writer, ["rev-list", "--count", `${original}..${commit}`])).toBe(
           "1",
         );
+        return;
+      }
+      if (scenario === "P10-lost-git-dir") {
+        yield* git(root, ["init", "--quiet"]);
+        yield* fs.remove(`${paths.writer}/.git`, { recursive: true });
+        const result = yield* writer
+          .stage(orgId, "wake1", { path: "claims/new.md", content: fixtureItem({ kind: "claim" }) })
+          .pipe(Effect.result);
+        expect(result._tag).toBe("Failure");
+        if (result._tag === "Failure")
+          expect(result.failure).toMatchObject({
+            _tag: "MemoryCheckoutInvalid",
+            operation: "validate",
+          });
         return;
       }
       if (scenario === "P8-lost-writer" || scenario === "P9-shadow") {
