@@ -1,6 +1,8 @@
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as Routines from "../triggers/routines.ts";
 import * as DeferralFlow from "../triggers/deferralFlow.ts";
+import * as GithubEvents from "../triggers/githubEvents.ts";
+import * as Watchdogs from "../triggers/watchdogs.ts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as TriggerScheduler from "../triggers/KinTriggerScheduler.ts";
 import * as TriggerStore from "../triggers/KinTriggerStore.ts";
@@ -59,7 +61,12 @@ export function containStartup<A, E, R>(layer: Layer.Layer<A, E, R>) {
   );
 }
 
-const routineRuntime = Layer.merge(Routines.layer, DeferralFlow.layer).pipe(
+const routineRuntime = Layer.mergeAll(
+  Routines.layer,
+  DeferralFlow.layer,
+  GithubEvents.consumerLayer,
+  Watchdogs.runtimeLayer,
+).pipe(
   Layer.provideMerge(TriggerScheduler.layer),
   Layer.provideMerge(Layer.mergeAll(TriggerStore.layer, TriggerInbox.layer)),
   // Kin builds in its contained startup scope; orchestration runtime does not expose its scheduler.

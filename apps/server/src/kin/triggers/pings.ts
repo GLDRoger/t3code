@@ -103,7 +103,7 @@ function isQuiet(now: number, zone: string, hours: { readonly from: string; read
     : hours.from > hours.to && (time >= hours.from || time < hours.to);
 }
 
-function quoted(value: string) {
+export function quoted(value: string) {
   const content = Array.from(value.replace(/[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/gu, " "))
     .slice(0, 500)
     .join("");
