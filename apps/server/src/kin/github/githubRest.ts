@@ -1,4 +1,5 @@
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientRequest } from "effect/http";
@@ -89,7 +90,17 @@ export const gitHubJson = Effect.fn("KinGitHub.request")(function* <S extends Sc
   >;
 });
 
-/** One GitHub REST call where only the status matters; the body is never read. */
+export interface GitHubStatusResponse {
+  readonly status: number;
+  readonly headers: Readonly<Record<string, string | undefined>>;
+  /** GitHub's error `message`, when the body is JSON with one. The rest of the body is dropped. */
+  readonly message: string | undefined;
+}
+
+const ErrorBody = Schema.Struct({ message: Schema.optional(Schema.String) });
+const decodeErrorBody = Schema.decodeUnknownOption(Schema.fromJsonString(ErrorBody));
+
+/** One GitHub REST call where only the status, headers and error message matter. */
 export const gitHubStatus = Effect.fn("KinGitHub.status")(function* (input: {
   readonly client: HttpClient.HttpClient;
   readonly operation: string;
@@ -105,5 +116,13 @@ export const gitHubStatus = Effect.fn("KinGitHub.status")(function* (input: {
     request = yield* HttpClientRequest.bodyJson(request, input.body).pipe(Effect.mapError(fail));
   }
   const response = yield* input.client.execute(request).pipe(Effect.mapError(fail));
-  return response.status;
+  const text = yield* response.text.pipe(Effect.orElseSucceed(() => ""));
+  return {
+    status: response.status,
+    headers: response.headers,
+    message: decodeErrorBody(text).pipe(
+      Option.flatMap((body) => Option.fromNullishOr(body.message)),
+      Option.getOrUndefined,
+    ),
+  } satisfies GitHubStatusResponse;
 });
