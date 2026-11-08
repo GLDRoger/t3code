@@ -9,7 +9,7 @@ import { MemoryCheckoutInvalid } from "./Memory.ts";
 export const readObjects = Effect.fnUntraced(function* (
   orgId: KinOrgId,
   cwd: string,
-  requests: ReadonlyArray<{ sha: string; type: "blob" | "tree" | "commit" }>,
+  requests: ReadonlyArray<{ sha: string; type: "blob" | "tree" | "commit" | "tag" }>,
 ) {
   const invalid = () =>
     new MemoryCheckoutInvalid({
@@ -34,7 +34,7 @@ export const readObjects = Effect.fnUntraced(function* (
   for (const { sha, type } of requests) {
     const end = buffer.indexOf(10, offset);
     const header = buffer.subarray(offset, end).toString("ascii");
-    const match = /^(\w+) (blob|tree|commit) (\d+)$/.exec(header);
+    const match = /^(\w+) (blob|tree|commit|tag) (\d+)$/.exec(header);
     if (end < 0 || !match || match[1] !== sha || match[2] !== type) return yield* invalid();
     const length = Number(match[3]);
     offset = end + 1;

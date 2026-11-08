@@ -31,7 +31,7 @@ import { memoryGit as runMemoryGit } from "./git.ts";
 import { VcsProcess } from "../../vcs/VcsProcess.ts";
 import * as MemoryCache from "./MemoryCache.ts";
 import { mergeMemoryFiles, uniqueMergeBase } from "./merge.ts";
-import { buildIndex } from "./buildIndex.ts";
+import { buildIndex, indexIsStale } from "./buildIndex.ts";
 import { MemoryConfig } from "./MemoryConfig.ts";
 import {
   MemoryItemError,
@@ -142,6 +142,13 @@ export class MemorySyncHooks extends Context.Reference<{
   defaultValue: () => ({ syncItems: () => Effect.void }),
 }) {}
 
+export interface MemoryHistoryRewrite {
+  /** Writes the durable marker, then deletes the writer and read checkouts that hold the old history. */
+  readonly quarantine: (marker: string) => Effect.Effect<void, MemoryFailure>;
+  /** Clones fresh, records the remote heads without preserving old anchors, rebuilds, then clears the marker. */
+  readonly reclone: () => Effect.Effect<void, MemoryFailure>;
+}
+
 export class Memory extends Context.Service<
   Memory,
   {
@@ -162,6 +169,15 @@ export class Memory extends Context.Service<
       head: string,
     ) => Effect.Effect<void, MemoryFailure>;
     readonly recover: (orgId: KinOrgId) => Effect.Effect<void, MemoryFailure>;
+    /** Server-only, for `KinPurge`: runs `body` under the writer lock with the checkout operations a history rewrite needs. */
+    readonly withHistoryRewrite: <A, E>(
+      orgId: KinOrgId,
+      body: (rewrite: MemoryHistoryRewrite) => Effect.Effect<A, E>,
+    ) => Effect.Effect<A, E>;
+    /** The durable marker of an unfinished history rewrite; while present, nothing pushes old anchors. */
+    readonly purgeInFlight: (orgId: KinOrgId) => Effect.Effect<string | undefined, MemoryFailure>;
+    /** Bumped whenever a history rewrite drops the checkouts; work staged under an older value is stale. */
+    readonly historyGeneration: (orgId: KinOrgId) => Effect.Effect<number>;
     readonly ensureCheckouts: (orgId: KinOrgId) => Effect.Effect<MemoryPaths, MemoryFailure>;
     readonly prepareWakeup: (
       orgId: KinOrgId,
@@ -314,6 +330,7 @@ const make = Effect.gen(function* () {
   const cache = yield* MemoryCache.MemoryCache;
   const locks = new Map<KinOrgId, Semaphore.Semaphore>();
   const initializedCheckouts = new Set<KinOrgId>();
+  const historyGenerations = new Map<KinOrgId, number>();
   const duplicateWarnings = new Map<KinOrgId, ReadonlySet<string>>();
   const snapshots = new Map<KinOrgId, Snapshot>();
   const blobCaches = new Map<KinOrgId, BlobCache>();
@@ -438,6 +455,37 @@ const make = Effect.gen(function* () {
     return { repo, root, writer, read };
   });
 
+  const markerPath = (root: string) => path.join(root, "purge-in-flight");
+  /** Half-finished clones from a crash; after a purge they can hold the old history. */
+  const removeStaleClones = Effect.fn("Memory.removeStaleClones")(function* (
+    orgId: KinOrgId,
+    root: string,
+  ) {
+    for (const entry of yield* io(orgId, "clones", fs.readDirectory(root)))
+      if (/^memory\.clone-[A-Za-z0-9]+$/.test(entry))
+        yield* io(
+          orgId,
+          "recoverClone",
+          fs.remove(path.join(root, entry), { recursive: true, force: true }),
+        );
+  });
+  const purgeInFlight = Effect.fn("Memory.purgeInFlight")(function* (orgId: KinOrgId) {
+    const { root } = yield* pathsFor(orgId);
+    if (!(yield* io(orgId, "purgeMarker", fs.exists(markerPath(root))))) return undefined;
+    return yield* io(orgId, "purgeMarker", fs.readFileString(markerPath(root)));
+  });
+  const refuseDuringPurge = Effect.fn("Memory.refuseDuringPurge")(function* (
+    orgId: KinOrgId,
+    operation: string,
+  ) {
+    if ((yield* purgeInFlight(orgId)) !== undefined)
+      return yield* new MemorySyncConflict({
+        orgId,
+        operation,
+        reason: "A memory purge is in flight; old history must not be pushed",
+      });
+  });
+
   const walkAncestors = (...args: Parameters<typeof ancestors>) =>
     ancestors(...args).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
@@ -504,14 +552,9 @@ const make = Effect.gen(function* () {
     if (yield* io(orgId, "exists", fs.exists(paths.writer))) {
       yield* validateWriter(orgId, paths, false);
     } else {
-      for (const entry of yield* io(orgId, "clones", fs.readDirectory(paths.root))) {
-        if (/^memory\.clone-[A-Za-z0-9]+$/.test(entry))
-          yield* io(
-            orgId,
-            "recoverClone",
-            fs.remove(path.join(paths.root, entry), { recursive: true, force: true }),
-          );
-      }
+      // The remote can still hold the old history until the purge's push lands.
+      yield* refuseDuringPurge(orgId, "clone");
+      yield* removeStaleClones(orgId, paths.root);
       yield* io(
         orgId,
         "clone",
@@ -845,6 +888,7 @@ const make = Effect.gen(function* () {
     head: string,
     wakeupId?: string,
   ) {
+    yield* refuseDuringPurge(orgId, "preserve");
     const now = yield* Clock.currentTimeMillis;
     const id = wakeupId ?? `recovery-${now}-${head.slice(0, 12)}`;
     if (!/^[a-zA-Z0-9_-]+$/.test(id) || !/^[a-zA-Z0-9_-]+$/.test(orgId))
@@ -883,10 +927,11 @@ const make = Effect.gen(function* () {
     return branch;
   });
 
-  const recover = Effect.fn("Memory.recover")(function* (orgId: KinOrgId) {
+  const recover = Effect.fn("Memory.recover")(function* (orgId: KinOrgId, reclone = false) {
     const paths = yield* pathsFor(orgId);
     yield* io(orgId, "mkdir", fs.makeDirectory(paths.root, { recursive: true }));
     const exists = yield* io(orgId, "exists", fs.exists(paths.writer));
+    if (!exists && !reclone) yield* refuseDuringPurge(orgId, "clone");
     if (!exists)
       yield* git(orgId, paths.root, [
         "clone",
@@ -1242,13 +1287,15 @@ const make = Effect.gen(function* () {
           }
         }
         if (next !== head) {
-          if (next !== remote)
+          if (next !== remote) {
+            yield* refuseDuringPurge(orgId, "merge");
             yield* git(orgId, paths.writer, [
               "push",
               "--",
               repo.repoUrl,
               `${next}:refs/heads/${branch}`,
             ]);
+          }
           yield* git(orgId, paths.writer, ["update-ref", `refs/heads/${branch}`, next, head]);
           yield* record(orgId, branch, head, next);
           head = next;
@@ -1272,16 +1319,7 @@ const make = Effect.gen(function* () {
     const index = yield* readFile(orgId, "INDEX.md").pipe(
       Effect.catchTags({ MemoryError: () => Effect.succeed("") }),
     );
-    const asOf = /^As of ([^\r\n]+)(?:\r?\n|$)/.exec(index)?.[1];
-    const now = yield* Clock.currentTimeMillis;
-    if (
-      !asOf ||
-      !Number.isFinite(dateMillis(asOf)) ||
-      !/(?:Z|[+-]\d{2}:\d{2})$/.test(asOf) ||
-      now - dateMillis(asOf) >= 36 * 60 * 60 * 1000 ||
-      dateMillis(asOf) > now
-    )
-      yield* rebuildIndex(orgId);
+    if (indexIsStale(index, yield* Clock.currentTimeMillis)) yield* rebuildIndex(orgId);
     const rebuilt = yield* readFile(orgId, "INDEX.md");
     const indexAsOf = yield* Effect.fromOption(
       DateTime.make(/^As of ([^\r\n]+)(?:\r?\n|$)/.exec(rebuilt)?.[1] ?? ""),
@@ -1289,8 +1327,62 @@ const make = Effect.gen(function* () {
     return { head, indexAsOf: DateTime.toUtc(indexAsOf) };
   });
 
+  const dropCheckouts = Effect.fn("Memory.dropCheckouts")(function* (orgId: KinOrgId) {
+    const paths = yield* pathsFor(orgId);
+    historyGenerations.set(orgId, (historyGenerations.get(orgId) ?? 0) + 1);
+    // `dreams/` holds plain copies of memory files for a running dream.
+    for (const directory of [paths.writer, paths.read, path.join(paths.root, "dreams")])
+      yield* io(orgId, "quarantine", fs.remove(directory, { recursive: true, force: true }));
+    if (yield* io(orgId, "exists", fs.exists(paths.root)))
+      yield* removeStaleClones(orgId, paths.root);
+    initializedCheckouts.delete(orgId);
+    pinnedHeads.delete(orgId);
+    snapshots.delete(orgId);
+    blobCaches.delete(orgId);
+    return paths;
+  });
+  const historyRewrite = (orgId: KinOrgId): MemoryHistoryRewrite => ({
+    quarantine: Effect.fn("Memory.quarantine")((marker: string) =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const { root } = yield* pathsFor(orgId);
+          yield* io(orgId, "mkdir", fs.makeDirectory(root, { recursive: true }));
+          yield* io(orgId, "purgeMarker", fs.writeFileString(`${markerPath(root)}.tmp`, marker));
+          yield* io(orgId, "purgeMarker", fs.rename(`${markerPath(root)}.tmp`, markerPath(root)));
+          yield* dropCheckouts(orgId);
+        }),
+      ),
+    ),
+    reclone: Effect.fn("Memory.reclone")(() =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const { root } = yield* dropCheckouts(orgId);
+          // With no writer checkout, recover clones fresh and records the rewritten heads.
+          yield* recover(orgId, true);
+          yield* prepare(orgId);
+          yield* rebuildIndex(orgId);
+          yield* io(orgId, "purgeMarker", fs.remove(markerPath(root), { force: true }));
+        }),
+      ),
+    ),
+  });
+
+  const withHistoryRewrite = <A, E>(
+    orgId: KinOrgId,
+    body: (rewrite: MemoryHistoryRewrite) => Effect.Effect<A, E>,
+  ) => withWriterLock(orgId, body(historyRewrite(orgId)));
+
   return Memory.of({
     withWriterLock,
+    withHistoryRewrite,
+    purgeInFlight: Effect.fn("Memory.purgeInFlightLocked")((orgId) =>
+      locked(orgId, purgeInFlight(orgId)),
+    ),
+    historyGeneration: Effect.fn("Memory.historyGeneration")((orgId) =>
+      Effect.sync(() => historyGenerations.get(orgId) ?? 0),
+    ),
     recover: Effect.fn("Memory.recoverLocked")((orgId) =>
       withWriterLock(orgId, locked(orgId, recover(orgId))),
     ),

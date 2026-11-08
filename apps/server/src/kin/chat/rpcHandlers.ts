@@ -1,4 +1,4 @@
-import { KinChatError, KinRpcs } from "@t3tools/contracts";
+import { KinChatAndBudgetRpcs, KinChatError } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -12,7 +12,7 @@ import { KinStop } from "../lead/KinStop.ts";
 import { KinIdentity } from "./KinIdentity.ts";
 import { KinChatService } from "./KinChatService.ts";
 
-const group = RpcGroup.make(...KinRpcs);
+const group = RpcGroup.make(...KinChatAndBudgetRpcs);
 const unavailable = new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
 const disabled = new KinChatError({
   reason: "disabled",

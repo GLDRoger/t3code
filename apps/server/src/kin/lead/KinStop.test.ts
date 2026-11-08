@@ -245,6 +245,14 @@ describe("KinStop", () => {
           yield* queue.enqueue(event("work"));
           const wakeup = yield* runner.runOnce(orgId, agentId).pipe(Effect.forkChild);
           yield* TestClock.adjust("20 seconds");
+          // The recheck's interrupt is what ends the turn; assert it before waiting on the run.
+          yield* (yield* EffectWorker.OrchestrationEffectWorkerV2).drain();
+          const [launched] = yield* sql<{ threadId: string }>`SELECT thread_id AS "threadId"
+            FROM kin_wakeups WHERE org_id = ${orgId} ORDER BY wakeup_id`;
+          assert.strictEqual(
+            yield* lastRunStatus(ThreadId.make(launched!.threadId)),
+            "interrupted",
+          );
           yield* Fiber.join(wakeup);
           const [row] = yield* sql<{
             status: string;

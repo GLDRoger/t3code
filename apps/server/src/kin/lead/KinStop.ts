@@ -341,6 +341,7 @@ const make = Effect.gen(function* () {
       // resume that ran detached or failed its resumeAll still owes the routines theirs.
       const orgs = yield* sql<{
         orgId: KinOrgId;
+        // Startup scan across orgs on purpose; each org is then handled under its own lock.
       }>`SELECT org_id AS "orgId" FROM kin_org_state ORDER BY org_id`.pipe(
         Effect.catchCause((cause) =>
           Effect.logError("Kin stop catch-up unavailable", { cause }).pipe(Effect.as([])),
@@ -367,6 +368,12 @@ const make = Effect.gen(function* () {
 export const layer = Layer.effect(KinStop, make);
 
 /** The lead runtime's fan-out: lead, worker and dream runs and their delegated tasks, then routines. */
+const isMissingThread = (error: { readonly _tag: string; readonly cause?: unknown }) =>
+  error._tag === "OrchestratorProjectionError" &&
+  typeof error.cause === "object" &&
+  error.cause !== null &&
+  (error.cause as { readonly _tag?: unknown })._tag === "ProjectionStoreThreadNotFoundError";
+
 export const makeFanOut = Effect.fn("KinStop.makeFanOut")(function* (
   routines: Option.Option<Routines.KinRoutines["Service"]>,
 ) {
@@ -382,13 +389,17 @@ export const makeFanOut = Effect.fn("KinStop.makeFanOut")(function* (
         UNION SELECT thread_id FROM kin_workers WHERE org_id = ${orgId} AND ended_at IS NULL
         UNION SELECT thread_id FROM kin_dream_runs
           WHERE org_id = ${orgId} AND status = 'running' AND thread_id IS NOT NULL
-        ORDER BY 1`.pipe(Effect.mapError(failed));
+        ORDER BY 1`.pipe(Effect.mapError(failed), Effect.exit);
       const exits = yield* Effect.forEach(
-        rows,
+        Exit.isSuccess(rows) ? rows.value : [],
         (row) =>
           Effect.gen(function* () {
             const threadId = ThreadId.make(row.threadId);
-            const projection = yield* threads.getThreadProjection(threadId).pipe(Effect.option);
+            // A thread that doesn't exist yet has nothing to stop; any other failure counts.
+            const projection = yield* threads.getThreadProjection(threadId).pipe(
+              Effect.asSome,
+              Effect.catchIf(isMissingThread, () => Effect.succeedNone),
+            );
             if (Option.isNone(projection)) return;
             const run = projection.value.runs.at(-1)?.id ?? "idle";
             yield* stopThreadTree(threads, {
@@ -404,6 +415,7 @@ export const makeFanOut = Effect.fn("KinStop.makeFanOut")(function* (
         ? yield* Effect.exit(routines.value.pauseAll(orgId))
         : Exit.void;
       const failures: Array<Cause.Cause<unknown>> = [];
+      if (Exit.isFailure(rows)) failures.push(rows.cause);
       for (const exit of exits) if (Exit.isFailure(exit)) failures.push(exit.cause);
       if (Exit.isFailure(routineExit)) failures.push(routineExit.cause);
       if (failures.length > 0)
