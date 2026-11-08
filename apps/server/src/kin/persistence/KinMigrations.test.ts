@@ -24,6 +24,7 @@ const tableNames = [
   "kin_floor_notices",
   "kin_floor_runs",
   "kin_judge_log",
+  "kin_lead_tool_calls",
   "kin_leads",
   "kin_memory_heads",
   "kin_memory_reads",
@@ -103,6 +104,7 @@ describe("Kin migrations", () => {
           { migration_id: 11, name: "MemoryHeads" },
           { migration_id: 12, name: "SecretAllow" },
           { migration_id: 13, name: "Routines" },
+          { migration_id: 14, name: "LeadToolCalls" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
@@ -158,6 +160,7 @@ describe("Kin migrations", () => {
           { migration_id: 11, name: "MemoryHeads" },
           { migration_id: 12, name: "SecretAllow" },
           { migration_id: 13, name: "Routines" },
+          { migration_id: 14, name: "LeadToolCalls" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -242,6 +245,7 @@ describe("Kin migrations", () => {
         [11, "MemoryHeads"],
         [12, "SecretAllow"],
         [13, "Routines"],
+        [14, "LeadToolCalls"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -278,6 +282,7 @@ describe("Kin migrations", () => {
       yield* sql`DROP TABLE kin_ping_escalations`;
       yield* sql`DROP TABLE kin_ping_items`;
       yield* sql`DROP INDEX kin_chat_members_one_owner`;
+      yield* sql`DROP TABLE kin_lead_tool_calls`;
       yield* sql`DROP TABLE kin_memory_heads`;
       yield* sql`DROP TABLE kin_secret_allow`;
       yield* sql`DROP INDEX kin_workers_owner_review`;
@@ -299,6 +304,7 @@ describe("Kin migrations", () => {
         [11, "MemoryHeads"],
         [12, "SecretAllow"],
         [13, "Routines"],
+        [14, "LeadToolCalls"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,
@@ -337,6 +343,7 @@ describe("Kin migrations", () => {
         { migration_id: 11, name: "MemoryHeads" },
         { migration_id: 12, name: "SecretAllow" },
         { migration_id: 13, name: "Routines" },
+        { migration_id: 14, name: "LeadToolCalls" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);

@@ -1,3 +1,6 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Supersession fingerprints compare in-process strings synchronously.
+import * as NodeCrypto from "node:crypto";
+import type { PersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Clock from "effect/Clock";
 import { readFiles, readCommit, readTree, objectHash, verifyTree } from "./objects.ts";
 import { buildIndex } from "./buildIndex.ts";
@@ -28,10 +31,13 @@ import { parseFrontMatter, MemoryItemError } from "./frontMatter.ts";
 import { journalEntry, MemoryJournalError, type JournalContext } from "./journal.ts";
 import { KinSecretScan, KinSecretScanError } from "./secretScan.ts";
 
+export const LEAD_ENDED_WITHOUT_KIN_END = "Lead ended without calling kin_end.";
+
 export interface WakeupContext extends JournalContext {
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;
   readonly level: "L0" | "L1" | "L2" | "L3";
+  readonly stagedReceipts?: boolean;
   readonly sources: ReadonlyMap<
     string,
     { readonly saidBy: string; readonly trust: MemoryTrust; readonly source: string } & (
@@ -51,7 +57,7 @@ export class MemoryWriterAuthority extends Context.Service<
     readonly resolve: (
       orgId: KinOrgId,
       wakeupId: string,
-    ) => Effect.Effect<WakeupContext, MemoryWriteRejected>;
+    ) => Effect.Effect<WakeupContext, MemoryWriteRejected | PersistenceSqlError>;
   }
 >()("t3/kin/memory/MemoryWriter/MemoryWriterAuthority") {}
 export class MemoryWriteRejected extends Schema.TaggedError<MemoryWriteRejected>()(
@@ -100,6 +106,7 @@ export interface MemoryChange {
   readonly supersedes?: string;
 }
 type Failure =
+  | PersistenceSqlError
   | MemoryJournalError
   | MemoryConfigError
   | MemoryQueryDecodeError
@@ -165,7 +172,12 @@ const make = Effect.gen(function* () {
   const locked = memory.withWriterLock;
   const sessions = new Map<
     KinOrgId,
-    { wakeupId: string; files: Map<string, string>; lines: string[] }
+    {
+      wakeupId: string;
+      files: Map<string, string>;
+      lines: string[];
+      supersessions: Map<string, string>;
+    }
   >();
   const io = <A, E, R>(orgId: KinOrgId, effect: Effect.Effect<A, E, R>) =>
     effect.pipe(Effect.mapError((cause) => new MemoryError({ orgId, operation: "writer", cause })));
@@ -273,7 +285,25 @@ const make = Effect.gen(function* () {
     const previous = sessions.get(orgId);
     if (previous && previous.wakeupId !== wakeupId)
       return yield* new MemoryWriteRejected({ reason: "Another wake-up owns the writer" });
-    const state = previous ?? { wakeupId, files: new Map<string, string>(), lines: [] };
+    const state = previous ?? {
+      wakeupId,
+      files: new Map<string, string>(),
+      lines: [],
+      supersessions: new Map<string, string>(),
+    };
+    if (!previous && ctx.stagedReceipts) {
+      const { writer } = yield* validate(orgId);
+      const branch =
+        ctx.level === "L0" ? `kin/shadow/${ctx.agentId}` : (config.defaultBranch ?? "main");
+      const head = yield* branchHead(orgId, writer, branch);
+      const { message } = yield* commitAt(orgId, writer, head);
+      if (message.split("\n")[0] !== `kin(${ctx.agentId}): wake-up ${wakeupId}`) {
+        const reason =
+          "Staged changes and kin_end summary were lost on restart; tool receipts do not prove those changes were committed.";
+        state.lines.push(reason);
+        yield* recovery.notify({ orgId, branch: `wakeup:${wakeupId}`, reason });
+      }
+    }
     sessions.set(orgId, state);
     return { ctx, state };
   });
@@ -440,6 +470,16 @@ const make = Effect.gen(function* () {
               change.supersedes === undefined
                 ? undefined
                 : items.find((item) => item.id === change.supersedes);
+            const supersessionHash =
+              change.supersedes === undefined
+                ? undefined
+                : NodeCrypto.createHash("sha256").update(stringify(change)).digest("hex");
+            if (
+              superseded?.status === "superseded" &&
+              superseded.superseded_by === fm.id &&
+              state.supersessions.get(change.path) === supersessionHash
+            )
+              return;
             if (
               change.supersedes !== undefined &&
               (!superseded ||
@@ -483,6 +523,7 @@ const make = Effect.gen(function* () {
                     "trust",
                     "said_by",
                     "source",
+                    "source_event",
                   ]);
                   if (
                     source.kind === "owner_check" &&
@@ -512,6 +553,7 @@ const make = Effect.gen(function* () {
               ...fm,
               said_by: source.saidBy,
               source: source.source,
+              source_event: change.sourceEventId,
               trust:
                 fm.trust === "external" ||
                 (fm.trust === "agent" && source.trust !== "external") ||
@@ -528,6 +570,7 @@ const make = Effect.gen(function* () {
                     trust: existing.trust,
                     said_by: existing.said_by,
                     source: existing.source,
+                    source_event: existing.source_event,
                   }
                 : fields,
               parsed.body,
@@ -550,6 +593,8 @@ const make = Effect.gen(function* () {
               state.files.set(oldPath, oldText);
             }
             state.files.set(change.path, text);
+            if (supersessionHash !== undefined)
+              state.supersessions.set(change.path, supersessionHash);
           }),
         ),
       ),
@@ -558,7 +603,15 @@ const make = Effect.gen(function* () {
       locked(
         orgId,
         Effect.gen(function* () {
-          const { state } = yield* session(orgId, wakeupId);
+          const { ctx, state } = yield* session(orgId, wakeupId);
+          if (lines.length === 1 && lines[0] === LEAD_ENDED_WITHOUT_KIN_END) {
+            const { writer } = yield* validate(orgId);
+            const branch =
+              ctx.level === "L0" ? `kin/shadow/${ctx.agentId}` : (config.defaultBranch ?? "main");
+            const head = yield* branchHead(orgId, writer, branch);
+            const { message } = yield* commitAt(orgId, writer, head);
+            if (message.split("\n")[0] === `kin(${ctx.agentId}): wake-up ${wakeupId}`) return;
+          }
           state.lines.push(...lines);
         }),
       ),

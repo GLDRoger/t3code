@@ -36,6 +36,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Budget from "./KinBudget.ts";
 import * as KinIdentity from "../chat/KinIdentity.ts";
+import * as Writer from "../memory/MemoryWriter.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryConfig from "../memory/MemoryConfig.ts";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
@@ -117,6 +118,62 @@ describe("WakeupRunner", () => {
       provideDeterministicTestRuntime,
     ),
   );
+  it.effect("discards a failed commit session so the next wake-up can stage", () =>
+    Effect.gen(function* () {
+      let owner: string | undefined;
+      let commits = 0;
+      const writer = Layer.succeed(
+        Writer.MemoryWriter,
+        Writer.MemoryWriter.of({
+          stage: (_org, wakeup) =>
+            Effect.sync(() => {
+              assert.isTrue(owner === undefined || owner === wakeup);
+              owner = wakeup;
+            }),
+          appendJournal: (_org, wakeup) =>
+            Effect.sync(() => {
+              assert.isTrue(owner === undefined || owner === wakeup);
+              owner = wakeup;
+            }),
+          discard: (_org, wakeup) =>
+            Effect.sync(() => {
+              if (owner === wakeup) owner = undefined;
+            }),
+          commitWakeup: () =>
+            Effect.suspend(() =>
+              ++commits === 1
+                ? Effect.fail(
+                    new Writer.MemoryWriteRejected({ reason: "fixture validation failure" }),
+                  )
+                : Effect.succeed({ commit: "fixture" }),
+            ),
+        }),
+      );
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const queue = yield* KinEventQueue.KinEventQueue;
+        yield* queue.enqueue(event("first"));
+        const first = yield* run();
+        assert.strictEqual((yield* Fiber.await(first))._tag, "Failure");
+        assert.isUndefined(owner);
+        yield* Context.get(yield* Layer.build(writer), Writer.MemoryWriter).stage(
+          orgId,
+          "next-wakeup",
+          {
+            path: "claims/test.md",
+            content: "fixture",
+          },
+        );
+        yield* Context.get(yield* Layer.build(writer), Writer.MemoryWriter).discard(
+          orgId,
+          "next-wakeup",
+        );
+        yield* queue.enqueue(event("second"));
+        yield* Fiber.join(yield* run());
+        assert.strictEqual(commits, 2);
+      }).pipe(Effect.provide(harness({ writer })));
+    }).pipe(provideDeterministicTestRuntime),
+  );
   it.effect("uses the cheap model for exhausted P0 even when a routine is in the batch", () =>
     Effect.gen(function* () {
       yield* seed;
@@ -145,7 +202,39 @@ describe("WakeupRunner", () => {
           { event_id: "urgent", state: "done", attempts: 0 },
         ],
       );
-    }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
+    }).pipe(
+      Effect.provide(
+        harness({
+          writer: Layer.effect(
+            Writer.MemoryWriter,
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient;
+              return Writer.MemoryWriter.of({
+                stage: () => Effect.die("unused"),
+                discard: () => Effect.void,
+                appendJournal: (_org, _wakeup, lines) =>
+                  Effect.sync(() =>
+                    assert.deepStrictEqual(lines, ["Lead ended without calling kin_end."]),
+                  ),
+                commitWakeup: Effect.fn("test.commitWakeup")(function* (org, wakeupId, outcome) {
+                  assert.strictEqual(org, orgId);
+                  assert.strictEqual(outcome, "completed");
+                  const [row] = yield* sql<{
+                    status: string;
+                    runStatus: string;
+                  }>`SELECT w.status, r.status AS "runStatus" FROM kin_wakeups w JOIN orchestration_v2_projection_runs r ON r.run_id = w.run_id WHERE w.wakeup_id = ${wakeupId}`.pipe(
+                    Effect.orDie,
+                  );
+                  assert.deepStrictEqual(row, { status: "running", runStatus: "completed" });
+                  return { commit: "fixture-commit" };
+                }),
+              });
+            }),
+          ),
+        }),
+      ),
+      provideDeterministicTestRuntime,
+    ),
   );
   it.effect(
     "defers P3 until the owner-local reset without attempts and re-admits it after limits rise",
@@ -440,7 +529,6 @@ describe("WakeupRunner", () => {
       Effect.gen(function* () {
         yield* seed;
         const queue = yield* KinEventQueue.KinEventQueue;
-        const runner = yield* WakeupRunner.WakeupRunner;
         const sql = yield* SqlClient.SqlClient;
         yield* queue.enqueue(event("abandoned"));
         yield* TestClock.adjust("20 seconds");
@@ -455,7 +543,19 @@ describe("WakeupRunner", () => {
         });
         yield* sql`UPDATE kin_leads SET thread_id = ${missingThread} WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
         yield* sql`UPDATE kin_wakeups SET thread_id = ${missingThread} WHERE org_id = ${orgId} AND wakeup_id = 'abandoned'`;
-        yield* runner.recover;
+        yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash) VALUES (${orgId}, 'abandoned', 'item:test', 'hash')`;
+        const recoveryWriter = Layer.mock(Writer.MemoryWriter)({
+          commitWakeup: () =>
+            Effect.fail(new Writer.MemoryWriteRejected({ reason: "fixture commit failure" })),
+          discard: () => Effect.void,
+        });
+        yield* WakeupRunner.WakeupRunner.pipe(
+          Effect.flatMap((recovery) => recovery.recover),
+          Effect.provide(Layer.fresh(WakeupRunner.layer).pipe(Layer.provide(recoveryWriter))),
+        );
+        assert.deepStrictEqual(yield* sql`SELECT attempts, not_before FROM kin_events`, [
+          { attempts: 0, not_before: null },
+        ]);
         assert.deepStrictEqual(yield* sql`SELECT thread_id FROM kin_leads`, [{ thread_id: null }]);
         assert.deepStrictEqual(yield* sql`SELECT status FROM kin_wakeups`, [
           { status: "interrupted" },

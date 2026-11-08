@@ -29,6 +29,7 @@ import * as ThreadManagementService from "../../orchestration-v2/ThreadManagemen
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import * as KinIdentity from "../chat/KinIdentity.ts";
+import * as Writer from "../memory/MemoryWriter.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as Routines from "../triggers/routines.ts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
@@ -102,6 +103,7 @@ const make = Effect.gen(function* () {
   const queue = yield* KinEventQueue.KinEventQueue;
   const budget = yield* KinBudget.KinBudget;
   const memory = yield* Memory.Memory;
+  const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
   const hooks = yield* Effect.serviceOption(KinWakeupHooks);
   const prompt = yield* KinLeadPrompt;
   const identity = yield* KinIdentity.KinIdentity;
@@ -172,64 +174,84 @@ const make = Effect.gen(function* () {
     }));
     yield* budget.charge({ orgId: row.orgId, wakeupId: row.wakeupId, usage });
   });
-  const wait = Effect.fn("WakeupRunner.wait")(function* (
-    row: typeof RunningRow.Type,
-    projectId: ProjectId,
-  ) {
-    if (row.threadId === null || row.runId === null) return;
-    const threadId = row.threadId;
-    const runId = row.runId;
-    const remaining = Math.max(0, row.startedAt + 900_000 - (yield* Clock.currentTimeMillis));
-    const result = yield* threads.waitForThread({
-      projectId,
-      threadId: row.threadId,
-      runId: row.runId,
-      timeoutMs: remaining,
-    });
-    const status = result.timedOut
-      ? "timed_out"
-      : result.run?.status === "completed"
-        ? "completed"
-        : "failed";
-    yield* Effect.gen(function* () {
-      if (result.timedOut) {
-        yield* threads.interruptThread({
-          projectId,
-          threadId,
-          runId: result.run?.id ?? runId,
-          commandId: CommandId.make(`kin-timeout:${row.wakeupId}`),
-        });
-        const settled = yield* threads.waitForThread({
-          projectId,
-          threadId,
-          runId,
-          timeoutMs: 30_000,
-        });
-        if (settled.timedOut)
-          yield* Effect.logWarning("Kin timed-out run may continue after interrupt", {
-            orgId: row.orgId,
-            wakeupId: row.wakeupId,
-            runId,
-          });
-      }
-      yield* capture(row);
-      yield* queue.finish({ orgId: row.orgId, wakeupId: row.wakeupId, status });
-    }).pipe(
-      Effect.onExit((exit) =>
-        result.timedOut && Exit.isFailure(exit)
-          ? queue
-              .finish({ orgId: row.orgId, wakeupId: row.wakeupId, status: "timed_out" })
-              .pipe(Effect.ignore)
-          : Effect.void,
-      ),
-    );
-    if (status === "completed")
-      yield* threads.settleThread({
+  const wait = Effect.fn("WakeupRunner.wait")(
+    function* (row: typeof RunningRow.Type, projectId: ProjectId) {
+      if (row.threadId === null || row.runId === null) return;
+      const threadId = row.threadId;
+      const runId = row.runId;
+      const remaining = Math.max(0, row.startedAt + 900_000 - (yield* Clock.currentTimeMillis));
+      const result = yield* threads.waitForThread({
+        projectId,
         threadId: row.threadId,
-        commandId: CommandId.make(`kin-settle:${row.wakeupId}`),
-        byOwnAgent: true,
+        runId: row.runId,
+        timeoutMs: remaining,
       });
-  });
+      const status = result.timedOut
+        ? "timed_out"
+        : result.run?.status === "completed"
+          ? "completed"
+          : "failed";
+      yield* Effect.gen(function* () {
+        if (result.timedOut) {
+          yield* threads.interruptThread({
+            projectId,
+            threadId,
+            runId: result.run?.id ?? runId,
+            commandId: CommandId.make(`kin-timeout:${row.wakeupId}`),
+          });
+          const settled = yield* threads.waitForThread({
+            projectId,
+            threadId,
+            runId,
+            timeoutMs: 30_000,
+          });
+          if (settled.timedOut)
+            yield* Effect.logWarning("Kin timed-out run may continue after interrupt", {
+              orgId: row.orgId,
+              wakeupId: row.wakeupId,
+              runId,
+            });
+        }
+        if (Option.isSome(writer)) {
+          const ended =
+            yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId} AND call_key = 'end'`;
+          if (ended.length === 0)
+            yield* writer.value.appendJournal(row.orgId, row.wakeupId, [
+              Writer.LEAD_ENDED_WITHOUT_KIN_END,
+            ]);
+          yield* writer.value.commitWakeup(
+            row.orgId,
+            row.wakeupId,
+            status === "completed" ? "completed" : "failed",
+          );
+        }
+        yield* capture(row);
+        yield* queue.finish({ orgId: row.orgId, wakeupId: row.wakeupId, status });
+      }).pipe(
+        Effect.onExit((exit) =>
+          result.timedOut && Exit.isFailure(exit)
+            ? queue
+                .finish({ orgId: row.orgId, wakeupId: row.wakeupId, status: "timed_out" })
+                .pipe(Effect.ignore)
+            : Effect.void,
+        ),
+      );
+      if (status === "completed")
+        yield* threads.settleThread({
+          threadId: row.threadId,
+          commandId: CommandId.make(`kin-settle:${row.wakeupId}`),
+          byOwnAgent: true,
+        });
+    },
+    (effect, row) =>
+      effect.pipe(
+        Effect.onExit((exit) =>
+          Exit.isFailure(exit) && Option.isSome(writer)
+            ? writer.value.discard(row.orgId, row.wakeupId).pipe(Effect.ignore)
+            : Effect.void,
+        ),
+      ),
+  );
   const clearMissingThread = Effect.fn("WakeupRunner.clearMissingThread")(function* (
     row: typeof RunningRow.Type,
   ) {
@@ -251,6 +273,8 @@ const make = Effect.gen(function* () {
     row: typeof RunningRow.Type,
     interrupted = false,
   ) {
+    if (Option.isSome(writer))
+      yield* writer.value.discard(row.orgId, row.wakeupId).pipe(Effect.ignore);
     const [running] =
       yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId} AND status = 'running'`;
     if (running === undefined) return;
@@ -528,6 +552,20 @@ const make = Effect.gen(function* () {
                 : run.id === row.runId,
             );
             if (projection === undefined || run === undefined) {
+              const receipts =
+                yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId} LIMIT 1`;
+              if (receipts.length > 0 && Option.isSome(writer)) {
+                yield* writer.value
+                  .commitWakeup(row.orgId, row.wakeupId, "failed")
+                  .pipe(
+                    Effect.catchCause((cause) =>
+                      Effect.logError(
+                        "Kin recovery commit failed; requeueing unfinished wake-up",
+                        cause,
+                      ),
+                    ),
+                  );
+              }
               if (projection === undefined) yield* clearMissingThread(row);
               yield* queue.requeueUnfinished(row.orgId, row.wakeupId);
               return;
