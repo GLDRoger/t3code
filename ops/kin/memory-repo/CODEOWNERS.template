@@ -1,0 +1,7 @@
+# Install as .github/CODEOWNERS in the memory repo and replace @OWNER with the owner's GitHub login.
+# /.github/ keeps this file and memory-check.yml under owner review too.
+/rules.md @OWNER
+/decisions/ @OWNER
+/people/ @OWNER
+/objectives/ @OWNER
+/.github/ @OWNER

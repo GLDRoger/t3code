@@ -210,9 +210,9 @@ export class Memory extends Context.Service<
 >()("t3/kin/memory/Memory") {}
 
 const decodeHead = Schema.decodeEffect(MemoryItemHead);
-const folders = ["objectives", "commitments", "deferrals", "decisions", "people", "claims"];
+export const folders = ["objectives", "commitments", "deferrals", "decisions", "people", "claims"];
 
-const maxBlobBytes = 256 * 1024;
+export const maxBlobBytes = 256 * 1024;
 
 interface Snapshot extends MemorySyncSnapshot {
   readonly files: ReadonlyMap<string, string>;

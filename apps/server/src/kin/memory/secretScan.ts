@@ -32,7 +32,7 @@ export class KinSecretScan extends Context.Service<
   }
 >()("t3/kin/memory/secretScan/KinSecretScan") {}
 
-const rules = [
+export const secretRules = [
   ["github-token", /(?:gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82})/],
   ["anthropic-key", /sk-ant-[A-Za-z0-9_-]{40,200}/],
   [
@@ -51,19 +51,45 @@ const rules = [
     /\b[A-Za-z0-9_]{0,64}(?:password|secret|token|api[_-]?key|access[_-]?key)[A-Za-z0-9_]{0,64}["']?\s{0,32}[:=]\s{0,32}["']?([^\s"';#]{20,512})/i,
   ],
 ] as const;
-const compiledRules = rules.map(([id, pattern]) => {
-  const alphabet =
-    id === "github-token" || id === "aws-access-key" || id === "stripe-key" || id === "google-key"
+export const leftBoundary = "A-Za-z0-9";
+/** Matches each rule drops, as `memory-check`'s gitleaks allowlists do. Patterns must stay RE2-compatible. */
+export const secretExceptions: Partial<
+  Record<
+    (typeof secretRules)[number][0],
+    {
+      readonly minEntropy?: number;
+      readonly secret?: ReadonlyArray<RegExp>;
+      readonly match?: ReadonlyArray<RegExp>;
+    }
+  >
+> = {
+  "openai-key": { secret: [/^[^A-Z]*$/] },
+  "url-password": { secret: [/^\$\{[^}]+\}$/] },
+  "secret-assignment": {
+    minEntropy: 3.5,
+    secret: [
+      /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/i,
+      /^https?:\/\//i,
+      /^projects\/[^/]+\/(?:locations\/[^/]+\/)?secrets\//,
+    ],
+    match: [/^[^:=]*token_scopes\s*[:=]/i],
+  },
+};
+/** The characters a match may not be followed by, or undefined when the rule has no right boundary. */
+export const rightBoundary = (id: (typeof secretRules)[number][0]) =>
+  id === "url-password" || id === "secret-assignment" || id === "jwt"
+    ? undefined
+    : id === "github-token" || id === "aws-access-key" || id === "stripe-key" || id === "google-key"
       ? "A-Za-z0-9"
       : id === "slack-token"
         ? "A-Za-z0-9-"
         : "A-Za-z0-9_-";
-  const right = ["url-password", "secret-assignment", "jwt"].includes(id)
-    ? ""
-    : `(?![${alphabet}])`;
+const compiledRules = secretRules.map(([id, pattern]) => {
+  const alphabet = rightBoundary(id);
+  const right = alphabet === undefined ? "" : `(?![${alphabet}])`;
   return [
     id,
-    new RegExp(`(?<![A-Za-z0-9])(?:${pattern.source})${right}`, `${pattern.flags}g`),
+    new RegExp(`(?<![${leftBoundary}])(?:${pattern.source})${right}`, `${pattern.flags}g`),
   ] as const;
 });
 const anchors = /gh[pousr]_|github_pat_|sk-|AKIA|ASIA|xox|_live_|AIza|-----BEGIN|eyJ|:\/\/|[:=]/i;
@@ -187,15 +213,13 @@ const make = Effect.gen(function* () {
                 continue;
               const index = window.offset + match.index;
               const secret = match[1] ?? match[0];
-              if (ruleId === "openai-key" && !/[A-Z]/.test(secret)) continue;
-              if (ruleId === "url-password" && /^\$\{[^}]+\}$/.test(secret)) continue;
+              const matched = match[0];
+              const exception = secretExceptions[ruleId];
               if (
-                ruleId === "secret-assignment" &&
-                (entropy(secret) < 3.5 ||
-                  /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/i.test(secret) ||
-                  /^https?:\/\//i.test(secret) ||
-                  /^projects\/[^/]+\/(?:locations\/[^/]+\/)?secrets\//.test(secret) ||
-                  /^[^:=]*token_scopes\s*[:=]/i.test(match[0]))
+                exception !== undefined &&
+                ((exception.minEntropy !== undefined && entropy(secret) < exception.minEntropy) ||
+                  exception.secret?.some((pattern) => pattern.test(secret)) ||
+                  exception.match?.some((pattern) => pattern.test(matched)))
               )
                 continue;
               if (allow.has(JSON.stringify([file.path, ruleId, fingerprint(ruleId, secret)])))

@@ -390,13 +390,15 @@ The builder takes item heads (optionally marked `misleading` by the caller), las
 
 **Consumer (TRIG-13).** `DreamRunner` registers on the Kin scheduler: it creates the `routine:dream` and `routine:dream_full` triggers and drains their fires. A fire is skipped (consumed) past 08:00 owner time or when suppressed by `fullRebuildWeekday`; it waits while the org is paused, `KinBudget.admit(orgId, "P4")` refuses, or a dream is already running. The dream turn is an ordinary thread in a per-dream scratch repo (its own `git init`) and gets no MCP credential on `/mcp` or `/kin/mcp`, because its material holds untrusted text. The checkout holds only item files, `journal/`, `rules.md` and `INDEX.md`, so a `.mcp.json`, `.claude/` or `CLAUDE.md` committed to the memory repo never reaches the provider. Dreams run only on Claude: a turn on any other driver, or on a Claude instance whose launch arguments set a permission or skip-permissions flag, fails before it starts. For `kin-dream:` threads, [`DreamIsolation.ts`](../../../apps/server/src/kin/dreaming/DreamIsolation.ts) wraps the Claude query runner so the query loads no settings sources or flag settings beyond model selection, uses a strict empty MCP config, adds no directories, forces `acceptEdits`, and offers only Read, Edit, Write, Glob and Grep. `DreamSession` declines every approval, and a request it cannot decline ends the run. Codex is refused: its shell sandbox still reads files outside the checkout, and no per-thread option removes the shell or the user's MCP servers. Material is bounded by INTEGER ms in `(materialFrom, materialUntil]`. Dream provider usage is not yet charged to the budget (charges key on wake-ups). The rejections list joins the material with `kin_dream_rejections` (TRIG-14). Step 5's evidence recheck and steps 6 and 7 are TRIG-14 or later; TRIG-13 rebuilds `INDEX.md` in the dream commit.
 
-**Memory repo guard rails** (in `kin-memory`, outside this fork):
+**Memory repo guard rails** (in `kin-memory`, outside this fork; templates in [`ops/kin/memory-repo/`](../../../ops/kin/memory-repo/README.md)):
 
-- A `CODEOWNERS` file with `/rules.md /decisions/ /people/ /objectives/ @<owner>`.
-- A ruleset on `main` that requires code-owner review.
-- A required check `.github/workflows/memory-check.yml` that runs schema lint and gitleaks.
+- A `CODEOWNERS` file that gives `/rules.md`, `/decisions/`, `/people/`, `/objectives/` and `/.github/` to `@<owner>`, one path per line. `/.github/` stops a PR from dropping the owner rule or the check itself.
+- A ruleset on `main` that requires PRs and code-owner review, with no bypass for Kin's bot.
+- A required check `.github/workflows/memory-check.yml` that runs schema lint and gitleaks. The lint is `apps/server/src/kin/memory/lintCli.ts`, which uses the server's own front-matter parser; the gitleaks config is generated from `KinSecretScan`'s rules. Both come from a pinned commit of this repo, never from the PR.
 
-GitHub then blocks a bad auto-merge even if Kin's classifier is wrong. This forces daytime lead writes onto PRs as well; see Open questions.
+GitHub then blocks a bad auto-merge even if Kin's classifier is wrong.
+
+**Daytime lead writes (decided).** Because `main` requires PRs, LEAD's daytime memory writes land as PRs that Kin auto-merges once `memory-check` passes; a write touching an owner path waits for the owner's review like any other PR. The `MemoryWriter` change and applying the ruleset wait on APPR-8's GitHub client (lane A and lane C coordinate on #12).
 
 ### Secret scan before memory commits (gap 5)
 
@@ -618,7 +620,6 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
 
 ## Open questions
 
-- **Daytime lead writes.** With the memory repo's `main` requiring PRs (needed for the CODEOWNERS guard), LEAD's daytime writes must land as auto-merged PRs too. Otherwise drop the ruleset and rely on Kin's checks only.
 - **Fencing T3's scheduling tools.** Can `McpToolAccess` remove `schedule_task` for specific threads, or does Kin need a check on `creationSource: "mcp"` in Kin projects? Decide with LEAD.
 - **Owner-check day.** Should the weekly owner check move to the owner's quietest weekday, learned from activity?
 - **Dream schedule per org.** Should one Kin host serving several orgs space their dreams, for example 15 minutes apart, so they don't compete for plan headroom?

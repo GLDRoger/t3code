@@ -1,0 +1,90 @@
+# Generated from apps/server/src/kin/memory/secretScan.ts; do not edit.
+# Regenerate: node apps/server/src/kin/memory/gitleaksConfig.ts > ops/kin/memory-repo/gitleaks.toml
+title = "kin-memory"
+
+[[rules]]
+id = "github-token"
+description = "KinSecretScan github-token"
+regex = '''(?:^|[^A-Za-z0-9])((?:gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}))(?:[^A-Za-z0-9]|$)'''
+secretGroup = 1
+
+[[rules]]
+id = "anthropic-key"
+description = "KinSecretScan anthropic-key"
+regex = '''(?:^|[^A-Za-z0-9])(sk-ant-[A-Za-z0-9_-]{40,200})(?:[^A-Za-z0-9_-]|$)'''
+secretGroup = 1
+
+[[rules]]
+id = "openai-key"
+description = "KinSecretScan openai-key"
+regex = '''(?:^|[^A-Za-z0-9])(sk-(?:(?:proj|svcacct|admin)-[A-Za-z0-9_-]{32,200}|[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}))(?:[^A-Za-z0-9_-]|$)'''
+secretGroup = 1
+
+[[rules.allowlists]]
+regexTarget = "secret"
+regexes = ['''^[^A-Z]*$''']
+
+[[rules]]
+id = "aws-access-key"
+description = "KinSecretScan aws-access-key"
+regex = '''(?:^|[^A-Za-z0-9])((?:AKIA|ASIA)[A-Z0-9]{16})(?:[^A-Za-z0-9]|$)'''
+secretGroup = 1
+
+[[rules]]
+id = "slack-token"
+description = "KinSecretScan slack-token"
+regex = '''(?:^|[^A-Za-z0-9])(xox[abposr]-[A-Za-z0-9-]{20,200})(?:[^A-Za-z0-9-]|$)'''
+secretGroup = 1
+
+[[rules]]
+id = "stripe-key"
+description = "KinSecretScan stripe-key"
+regex = '''(?:^|[^A-Za-z0-9])([rs]k_live_[A-Za-z0-9]{24,200})(?:[^A-Za-z0-9]|$)'''
+secretGroup = 1
+
+[[rules]]
+id = "google-key"
+description = "KinSecretScan google-key"
+regex = '''(?:^|[^A-Za-z0-9])(AIza[A-Za-z0-9_-]{35})(?:[^A-Za-z0-9]|$)'''
+secretGroup = 1
+
+[[rules]]
+id = "pem-private-key"
+description = "KinSecretScan pem-private-key"
+regex = '''(?:^|[^A-Za-z0-9])(-----BEGIN (?:[A-Z0-9]+ ){0,8}PRIVATE KEY(?: BLOCK)?-----)(?:[^A-Za-z0-9_-]|$)'''
+secretGroup = 1
+
+[[rules]]
+id = "jwt"
+description = "KinSecretScan jwt"
+regex = '''(?:^|[^A-Za-z0-9])(eyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{8,})'''
+secretGroup = 1
+
+[[rules]]
+id = "url-password"
+description = "KinSecretScan url-password"
+regex = '''(?:^|[^A-Za-z0-9])((?i:\b[a-z][a-z0-9+.-]{0,31}:\/\/[^\s/:@]{1,512}:([^\s/@]{1,512})@))'''
+secretGroup = 2
+
+[[rules.allowlists]]
+regexTarget = "secret"
+regexes = ['''^\$\{[^}]+\}$''']
+
+[[rules]]
+id = "secret-assignment"
+description = "KinSecretScan secret-assignment"
+regex = '''(?:^|[^A-Za-z0-9])((?i:\b[A-Za-z0-9_]{0,64}(?:password|secret|token|api[_-]?key|access[_-]?key)[A-Za-z0-9_]{0,64}["']?\s{0,32}[:=]\s{0,32}["']?([^\s"';#]{20,512})))'''
+secretGroup = 2
+entropy = 3.5
+
+[[rules.allowlists]]
+regexTarget = "secret"
+regexes = [
+  '''(?i:^[a-f0-9]{40}(?:[a-f0-9]{24})?$)''',
+  '''(?i:^https?:\/\/)''',
+  '''^projects\/[^/]+\/(?:locations\/[^/]+\/)?secrets\/''',
+]
+
+[[rules.allowlists]]
+regexTarget = "match"
+regexes = ['''(?i:^[^:=]*token_scopes\s*[:=])''']

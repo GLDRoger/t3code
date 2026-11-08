@@ -1,0 +1,94 @@
+# Install as .github/workflows/memory-check.yml in the memory repo; see README.md beside this file.
+# Memory files are only ever read as data. The lint code and gitleaks config come from a pinned
+# GLDRoger/t3code commit, so a pull request cannot change what checks it.
+name: memory-check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: memory-check-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  memory-check:
+    name: memory-check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      # A GLDRoger/t3code commit that contains ops/kin/memory-repo. Bump it deliberately.
+      T3CODE_REF: "<t3code commit SHA>"
+      GITLEAKS_VERSION: "8.30.1"
+      GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+    steps:
+      - name: Check pins
+        run: |
+          [[ "$T3CODE_REF" =~ ^[0-9a-f]{40}$ ]] || { echo "T3CODE_REF must be a full commit SHA"; exit 1; }
+
+      - name: Checkout memory
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          path: memory
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout t3code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: GLDRoger/t3code
+          ref: ${{ env.T3CODE_REF }}
+          path: t3code
+          persist-credentials: false
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          working-directory: t3code
+          version-file: pnpm-workspace.yaml
+          node-version-file: package.json
+          cache: false
+          run-install: false
+
+      - name: Install lint dependencies
+        working-directory: t3code
+        run: vp install --frozen-lockfile --ignore-scripts --filter=t3...
+
+      - name: Schema lint
+        run: node t3code/apps/server/src/kin/memory/lintCli.ts memory
+
+      - name: Gitleaks
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          # gitleaks honours a .gitleaksignore in the scanned tree whatever --gitleaks-ignore-path says.
+          if [[ -n "$(find memory -name .gitleaksignore -not -path 'memory/.git/*')" ]]; then
+            echo ".gitleaksignore is not allowed in the memory repo"; exit 1
+          fi
+          bin="$RUNNER_TEMP/gitleaks"
+          mkdir -p "$bin"
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL --retry 3 -o "$bin/$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          echo "${GITLEAKS_SHA256}  $bin/$archive" | sha256sum --check --strict
+          tar -xzf "$bin/$archive" -C "$bin" gitleaks
+          : > "$bin/no-ignores"
+          flags=(--config t3code/ops/kin/memory-repo/gitleaks.toml --gitleaks-ignore-path "$bin/no-ignores"
+            --ignore-gitleaks-allow --redact --no-banner --exit-code 1)
+          "$bin/gitleaks" dir "${flags[@]}" memory
+          # New commits only; a missing or zero base (first push, rewritten history) scans everything.
+          if [[ "$BASE" =~ ^[0-9a-f]{40}$ && ! "$BASE" =~ ^0+$ ]] && git -C memory cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            "$bin/gitleaks" git "${flags[@]}" --log-opts="$BASE..$HEAD" memory
+          else
+            "$bin/gitleaks" git "${flags[@]}" memory
+          fi
