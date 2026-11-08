@@ -53,7 +53,7 @@ Connection state per environment is an `EnvironmentConnectionPhase`: `available 
 
 **Widgets for later.**
 
-- `features/threads/McpAppWebView.tsx` exports `ThreadMcpApp`, bound to a thread turn item (`threadId`, `itemId`, `enqueueThreadOutboxMessage`). Its `outerDocument` (exported for the contract test) marks whether a real person tapped, which upstream uses only to allow full screen (Design correction 9). The reusable host is `makeMcpAppHost` in `packages/client-runtime/src/mcpApps/host.ts` (`@t3tools/client-runtime/mcp-apps`).
+- `features/threads/McpAppWebView.tsx` exports `ThreadMcpApp`, bound to a thread turn item (`threadId`, `itemId`, `enqueueThreadOutboxMessage`). Its `outerDocument` and `relayedMessage` (exported for the contract test) mark whether a real person tapped, which upstream uses only to allow full screen (Design correction 9). The reusable host is `makeMcpAppHost` in `packages/client-runtime/src/mcpApps/host.ts` (`@t3tools/client-runtime/mcp-apps`).
 - `features/threads/HtmlRenderWebView.tsx` exports `HtmlRenderWebView({ uri, title, nested })`, which is reusable as is.
 - `widgets/` holds `expo-widgets` Live Activities (`AgentActivity.tsx`) and the usage widget. Phase 3 adds the agenda widget and Live Activities there.
 
@@ -306,14 +306,14 @@ New, all under `apps/mobile/src/features/chats/` unless noted:
 
 Upstream files touched, one hook each:
 
-| File                                                 | Hook                                                                                                            |
-| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `apps/mobile/src/Stack.tsx`                          | `import { KIN_SCREENS } from "./features/chats/routes";` and `...KIN_SCREENS,` in `screens`                     |
-| `apps/mobile/src/features/home/HomeScreen.tsx`       | `import { KinHomeEntry } ...` and `<KinHomeEntry />` first in `v2ListHeader`                                    |
-| `apps/mobile/src/App.tsx`                            | `import { installKinNotifications } ...` and `installKinNotifications(linkToAppPath),` in `appServiceDisposers` |
-| `packages/client-runtime/src/rpc/client.ts`          | add Kin stream tags to `EnvironmentSubscriptionRpcTag` (one line per tag; may be done by the chat spec)         |
-| `apps/mobile/vite.config.ts`                         | `"src/features/chats/**/*.test.tsx",` in `reactTests` (only if Kin adds component tests)                        |
-| `apps/mobile/src/features/threads/McpAppWebView.tsx` | `export` on `function outerDocument` (TRIG-19)                                                                  |
+| File                                                 | Hook                                                                                                                       |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `apps/mobile/src/Stack.tsx`                          | `import { KIN_SCREENS } from "./features/chats/routes";` and `...KIN_SCREENS,` in `screens`                                |
+| `apps/mobile/src/features/home/HomeScreen.tsx`       | `import { KinHomeEntry } ...` and `<KinHomeEntry />` first in `v2ListHeader`                                               |
+| `apps/mobile/src/App.tsx`                            | `import { installKinNotifications } ...` and `installKinNotifications(linkToAppPath),` in `appServiceDisposers`            |
+| `packages/client-runtime/src/rpc/client.ts`          | add Kin stream tags to `EnvironmentSubscriptionRpcTag` (one line per tag; may be done by the chat spec)                    |
+| `apps/mobile/vite.config.ts`                         | `"src/features/chats/**/*.test.tsx",` in `reactTests` (only if Kin adds component tests)                                   |
+| `apps/mobile/src/features/threads/McpAppWebView.tsx` | `export` on `function outerDocument`, and the WebView `onMessage` secret check exported as pure `relayedMessage` (TRIG-19) |
 
 ## Interfaces to other specs
 

@@ -436,7 +436,7 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
 
 - `apps/server/src/orchestration-v2/runtimeLayer.ts`, inside `layerScheduledTaskProvided`'s `Layer.mergeAll(...)`: replace the `layerThreadLaunchProvided,` and `layerThreadManagementProvided,` entries with `KinTriggerSink.wrapTaskDispatch(layerThreadLaunchProvided, layerThreadManagementProvided),`. Add the `KinTriggerSink` namespace import in the same file: one import plus one replacement call for the two dependency entries. Only `ScheduledTaskService` sees the wrapper. Effect memoises `layerThreadLaunchProvided` by reference, so the rest of the server keeps the same instance.
 - Kin's server layer and migration list: added by CHAT-2 and CHAT-6. This spec adds no new upstream hook for them.
-- `apps/mobile/src/features/threads/McpAppWebView.tsx`: `export` on `function outerDocument`, so the TRIG-19 contract test can run the outer document's script.
+- `apps/mobile/src/features/threads/McpAppWebView.tsx`: `export` on `function outerDocument`, so the TRIG-19 contract test can run the outer document's script, and `relayedMessage`, the secret check from the WebView's `onMessage` pulled into an exported pure function, so the test drives the real native relay.
 - `KIN.md` sync steps (Kin's own file): add the two `kin-contract` commands after `vp run check:changed`.
 
 ## Interfaces to other specs

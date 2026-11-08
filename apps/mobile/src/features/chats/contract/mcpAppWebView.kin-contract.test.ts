@@ -1,7 +1,19 @@
 import { makeMcpAppHost, McpAppHostRefusal } from "@t3tools/client-runtime/mcp-apps";
+import {
+  EnvironmentId,
+  McpAppCallToolInput,
+  McpAppReadResourceInput,
+  McpAppToolInfoInput,
+  McpAppUpdateModelContextInput,
+  ThreadId,
+  TurnItemId,
+} from "@t3tools/contracts";
+import type { McpAppReference } from "@t3tools/shared/mcpApp";
+import * as Schema from "effect/Schema";
+import type { ComponentProps } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { outerDocument } from "../../threads/McpAppWebView";
+import { outerDocument, relayedMessage, ThreadMcpApp } from "../../threads/McpAppWebView";
 
 // Stubs only what keeps McpAppWebView.tsx from loading in Node; a new native import upstream needs one here.
 vi.mock("react-native", () => ({}));
@@ -21,6 +33,29 @@ vi.mock("../../settings/appearance/AppearancePreferencesProvider", () => ({}));
 
 const SECRET = "kin-secret";
 
+const app = {
+  attachmentId: "a",
+  server: "kin",
+  tool: "widget",
+  resourceUri: "ui://kin/widget",
+} satisfies McpAppReference;
+
+// Exactly what Kin passes to render a widget inline; typecheck fails when upstream renames a prop.
+const kinProps = {
+  environmentId: EnvironmentId.make("env-kin"),
+  threadId: ThreadId.make("thread-lead"),
+  conversationThreadId: ThreadId.make("thread-chat"),
+  itemId: TurnItemId.make("item-widget"),
+  revision: "r1",
+  app,
+  width: 320,
+} satisfies ComponentProps<typeof ThreadMcpApp>;
+
+const decodeCallTool = Schema.decodeSync(McpAppCallToolInput);
+const decodeToolInfo = Schema.decodeSync(McpAppToolInfoInput);
+const decodeReadResource = Schema.decodeSync(McpAppReadResourceInput);
+const decodeUpdateModelContext = Schema.decodeSync(McpAppUpdateModelContextInput);
+
 interface Envelope {
   readonly secret: string;
   readonly active: boolean;
@@ -28,14 +63,22 @@ interface Envelope {
 }
 
 /** Runs the outer document's script against a minimal WebView DOM. */
-function mountOuterDocument() {
+function mountOuterDocument(toReactNative: (data: string) => void = () => {}) {
   const html = outerDocument("https://app.test/widget.html", "", SECRET);
   const script = html.match(/<script>([\s\S]*)<\/script>/)?.[1];
   if (script === undefined) throw new Error("outer document has no script");
 
   const toNative: Array<Envelope> = [];
   const toFrame: Array<unknown> = [];
-  const contentWindow = { postMessage: (message: unknown) => toFrame.push(message) };
+  let awaitingFrame: ((message: unknown) => void) | undefined;
+  const contentWindow = {
+    postMessage: (message: unknown) => {
+      const resolve = awaitingFrame;
+      awaitingFrame = undefined;
+      if (resolve === undefined) toFrame.push(message);
+      else resolve(message);
+    },
+  };
   const frame = { contentWindow, src: "", addEventListener: () => {} };
   const userActivation = { isActive: false };
   const document = {
@@ -45,7 +88,10 @@ function mountOuterDocument() {
   const listeners: Array<(event: { source: unknown; data: unknown }) => void> = [];
   const window: Record<string, unknown> = {
     ReactNativeWebView: {
-      postMessage: (data: string) => toNative.push(JSON.parse(data) as Envelope),
+      postMessage: (data: string) => {
+        toNative.push(JSON.parse(data) as Envelope);
+        toReactNative(data);
+      },
     },
     addEventListener: (type: string, listener: (typeof listeners)[number]) => {
       if (type === "message") listeners.push(listener);
@@ -67,22 +113,31 @@ function mountOuterDocument() {
     },
     /** What React Native's `post` injects: `window.__t3McpAppReceive(message)`. */
     hostPosts: (message: unknown) => (window.__t3McpAppReceive as (m: unknown) => void)(message),
-    // A host that stops answering fails here with a readable diff, not at the suite timeout.
-    nextFrameMessage: async () => {
-      await vi.waitFor(() => expect(toFrame).toHaveLength(1));
-      return toFrame.shift();
-    },
+    /** Resolves with the next message the host posts into the app frame. */
+    nextFrameMessage: () =>
+      toFrame.length > 0
+        ? Promise.resolve(toFrame.shift())
+        : new Promise<unknown>((resolve) => {
+            awaitingFrame = resolve;
+          }),
   };
 }
-
-const app = { attachmentId: "a", server: "kin", tool: "widget", resourceUri: "ui://kin/widget" };
 
 function mountBridge(
   overrides: Pick<Partial<Parameters<typeof makeMcpAppHost>[0]>, "callTool" | "sendMessage">,
 ) {
-  const outer = mountOuterDocument();
+  // Mirrors ThreadMcpApp's onMessage: `active` is set only around the synchronous host.receive.
+  const activity = { active: false };
+  let host: ReturnType<typeof makeMcpAppHost> | undefined;
+  const outer = mountOuterDocument((data) => {
+    const relayed = relayedMessage(SECRET, data);
+    if (relayed === undefined) return;
+    activity.active = relayed.active;
+    host?.receive(relayed.message);
+    activity.active = false;
+  });
   const unused = () => Promise.reject(new Error("unused"));
-  const host = makeMcpAppHost({
+  host = makeMcpAppHost({
     app,
     hostVersion: "0.0.0",
     post: outer.hostPosts,
@@ -91,7 +146,7 @@ function mountBridge(
       styles: { variables: {} },
       displayMode: "inline",
       availableDisplayModes: ["inline"],
-      containerDimensions: { width: 320, maxHeight: 600 },
+      containerDimensions: { width: kinProps.width, maxHeight: 600 },
       platform: "mobile",
     }),
     callTool: unused,
@@ -105,18 +160,13 @@ function mountBridge(
     onSizeChanged: () => {},
     ...overrides,
   });
-  // React Native's onMessage: only envelopes carrying the secret reach the host.
-  const relay = () => {
-    for (const envelope of outer.toNative.splice(0)) {
-      if (envelope.secret === SECRET) host.receive(envelope.message);
-    }
-  };
   return {
     ...outer,
-    request: (message: unknown) => {
-      outer.appPosts(message);
-      relay();
-      return outer.nextFrameMessage();
+    activity,
+    request: (message: unknown, options?: Parameters<typeof outer.appPosts>[1]) => {
+      const response = outer.nextFrameMessage();
+      outer.appPosts(message, options);
+      return response;
     },
   };
 }
@@ -158,6 +208,46 @@ describe("McpAppWebView bridge (Kin contract)", () => {
     });
   });
 
+  describe("React Native's message handler", () => {
+    const message = { jsonrpc: "2.0", id: 1, method: "ui/request-display-mode" };
+
+    it("drops envelopes without the outer document's secret", () => {
+      for (const data of [
+        JSON.stringify({ secret: "forged", active: true, message }),
+        JSON.stringify({ active: true, message }),
+        JSON.stringify(message),
+        "not json",
+      ]) {
+        expect(relayedMessage(SECRET, data)).toBeUndefined();
+      }
+    });
+
+    it("passes the message on with the attested tap, which must be exactly true", () => {
+      expect(
+        relayedMessage(SECRET, JSON.stringify({ secret: SECRET, active: true, message })),
+      ).toEqual({ message, active: true });
+      expect(
+        relayedMessage(SECRET, JSON.stringify({ secret: SECRET, active: "yes", message })),
+      ).toEqual({ message, active: false });
+    });
+  });
+
+  describe("RPC inputs Kin builds from ThreadMcpApp's target", () => {
+    it("decodes with the thread and item Kin passes", () => {
+      const target = { threadId: kinProps.threadId, itemId: kinProps.itemId };
+      const decoded = [
+        decodeCallTool({ ...target, name: "save_note", arguments: { text: "hi" } }),
+        decodeToolInfo({ ...target, name: "save_note" }),
+        decodeReadResource({ ...target, uri: app.resourceUri }),
+        decodeUpdateModelContext({
+          ...target,
+          conversationThreadId: kinProps.conversationThreadId,
+        }),
+      ];
+      for (const input of decoded) expect(input).toMatchObject(target);
+    });
+  });
+
   describe("tools/call reaches callTool", () => {
     it("answers with the tool result", async () => {
       const callTool = vi.fn(async () => ({ content: [{ type: "text", text: "ok" }] }));
@@ -170,13 +260,33 @@ describe("McpAppWebView bridge (Kin contract)", () => {
         params: { name: "save_note", arguments: { text: "hi" } },
       });
 
-      // Dispatch is synchronous, so a gate can read `active` before any await.
       expect(callTool).toHaveBeenCalledWith({ name: "save_note", arguments: { text: "hi" } });
       expect(await pending).toEqual({
         jsonrpc: "2.0",
         id: 7,
         result: { content: [{ type: "text", text: "ok" }] },
       });
+    });
+
+    it("sees a real tap synchronously, before any await", async () => {
+      const taps: Array<boolean> = [];
+      const bridge = mountBridge({
+        callTool: async () => {
+          taps.push(bridge.activity.active);
+          return { content: [] };
+        },
+      });
+      const call = (id: number) => ({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name: "save_note", arguments: {} },
+      });
+
+      await bridge.request(call(1), { activation: true, focus: "frame" });
+      await bridge.request(call(2));
+
+      expect(taps).toEqual([true, false]);
     });
 
     it("answers a refusal with its message", async () => {
