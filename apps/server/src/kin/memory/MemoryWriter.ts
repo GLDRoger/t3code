@@ -196,6 +196,7 @@ const make = Effect.gen(function* () {
     KinOrgId,
     {
       wakeupId: string;
+      generation: number;
       files: Map<string, string>;
       lines: string[];
       supersessions: Map<string, string>;
@@ -307,8 +308,19 @@ const make = Effect.gen(function* () {
     const previous = sessions.get(orgId);
     if (previous && previous.wakeupId !== wakeupId)
       return yield* new MemoryWriteRejected({ reason: "Another wake-up owns the writer" });
+    const generation = yield* memory.historyGeneration(orgId);
+    // A purge rewrote history after this wake-up staged; committing it could restore purged content.
+    if (previous && previous.generation !== generation) {
+      sessions.delete(orgId);
+      return yield* new MemorySyncConflict({
+        orgId,
+        operation: "push",
+        reason: "Memory history was rewritten during this wake-up; its staged changes were dropped",
+      });
+    }
     const state = previous ?? {
       wakeupId,
+      generation,
       files: new Map<string, string>(),
       lines: [],
       supersessions: new Map<string, string>(),

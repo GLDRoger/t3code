@@ -38,6 +38,11 @@ export class KinPurgePush extends Context.Service<
       readonly gitDir: string;
       readonly updates: ReadonlyArray<PurgeRefUpdate>;
     }) => Effect.Effect<void, KinPurgePushError>;
+    /** Every ref the remote advertises, read with the same owner credential as `push`. */
+    readonly listRefs: (input: {
+      readonly orgId: KinOrgId;
+      readonly repoUrl: string;
+    }) => Effect.Effect<ReadonlyArray<string>, KinPurgePushError>;
   }
 >()("t3/kin/memory/purgePush/KinPurgePush") {}
 
@@ -91,7 +96,7 @@ const remoteKind = (url: string) =>
         : undefined;
 
 /**
- * Pushes with a reference to the owner's credential: a git credential helper or an SSH command naming
+ * Pushes and lists refs with a reference to the owner's credential: a git credential helper or an SSH command naming
  * its key file. The secret never enters argv or env, and with neither configured the push fails closed.
  */
 export const gitPushLayer = (owner: {
@@ -103,85 +108,108 @@ export const gitPushLayer = (owner: {
     Effect.gen(function* () {
       const vcs = yield* VcsProcess;
       const fs = yield* FileSystem.FileSystem;
+      /** Runs git against the remote with only the owner's credential reference, in a scratch HOME. */
+      const run = Effect.fn("KinPurgePush.run")(function* (
+        repoUrl: string,
+        args: ReadonlyArray<string>,
+        cwd?: string,
+      ) {
+        const { credentialHelper, sshCommand } = owner;
+        if (
+          (credentialHelper === undefined && sshCommand === undefined) ||
+          (credentialHelper !== undefined && !isCredentialHelperReference(credentialHelper)) ||
+          (sshCommand !== undefined && !isSshCommandReference(sshCommand))
+        )
+          return yield* new KinPurgePushError({ reason: "credential_unavailable" });
+        const kind = remoteKind(repoUrl);
+        if (kind === undefined)
+          return yield* new KinPurgePushError({ reason: "unsupported_remote" });
+        if (
+          (kind === "https" && credentialHelper === undefined) ||
+          (kind === "ssh" && sshCommand === undefined)
+        )
+          return yield* new KinPurgePushError({ reason: "credential_unavailable" });
+        // An empty HOME keeps curl's `.netrc` out; `-F none` keeps `~/.ssh/config` out.
+        const home = yield* fs
+          .makeTempDirectoryScoped({ prefix: "kin-push-home-" })
+          .pipe(Effect.mapError(() => new KinPurgePushError({ reason: "unknown" })));
+        const result = yield* vcs
+          .run({
+            operation: "KinPurgePush.git",
+            command: "git",
+            cwd: cwd ?? home,
+            args: [
+              "--no-replace-objects",
+              ...(cwd ? [`--git-dir=${cwd}/.git`] : []),
+              "-c",
+              "core.hooksPath=/dev/null",
+              "-c",
+              "core.fsmonitor=false",
+              "-c",
+              "core.attributesFile=/dev/null",
+              "-c",
+              "protocol.file.allow=user",
+              "-c",
+              "credential.helper=",
+              ...(credentialHelper ? ["-c", `credential.helper=${credentialHelper}`] : []),
+              ...args,
+            ],
+            env: {
+              ...scrubbedGitEnv(),
+              ...hardenedGitEnv,
+              HOME: home,
+              XDG_CONFIG_HOME: home,
+              GIT_ASKPASS: "false",
+              SSH_ASKPASS: "false",
+              SSH_ASKPASS_REQUIRE: "never",
+              SSH_AUTH_SOCK: undefined,
+              GCM_INTERACTIVE: "never",
+              // Without an owner SSH command, refuse SSH instead of using the host's keys or agent.
+              GIT_SSH_COMMAND: sshCommand
+                ? `${sshCommand} -F none -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none`
+                : "false",
+            },
+            allowNonZeroExit: true,
+            maxOutputBytes: 16 * 1024 * 1024,
+            timeoutMs: 600_000,
+          })
+          .pipe(
+            // The cause can echo the remote URL or helper output; keep both out of errors and logs.
+            Effect.mapError(
+              (error) =>
+                new KinPurgePushError({
+                  reason: error._tag === "VcsProcessTimeoutError" ? "timeout" : "unknown",
+                }),
+            ),
+          );
+        if (Number(result.exitCode) !== 0)
+          return yield* new KinPurgePushError({
+            reason: pushFailure(result.stdout, result.stderr),
+          });
+        return result.stdout;
+      });
       return KinPurgePush.of({
         push: Effect.fn("KinPurgePush.git")(function* ({ repoUrl, gitDir, updates }) {
-          const { credentialHelper, sshCommand } = owner;
-          if (
-            (credentialHelper === undefined && sshCommand === undefined) ||
-            (credentialHelper !== undefined && !isCredentialHelperReference(credentialHelper)) ||
-            (sshCommand !== undefined && !isSshCommandReference(sshCommand))
-          )
-            return yield* new KinPurgePushError({ reason: "credential_unavailable" });
-          const kind = remoteKind(repoUrl);
-          if (kind === undefined)
-            return yield* new KinPurgePushError({ reason: "unsupported_remote" });
-          if (
-            (kind === "https" && credentialHelper === undefined) ||
-            (kind === "ssh" && sshCommand === undefined)
-          )
-            return yield* new KinPurgePushError({ reason: "credential_unavailable" });
-          // An empty HOME keeps curl's `.netrc` out; `-F none` keeps `~/.ssh/config` out.
-          const home = yield* fs
-            .makeTempDirectoryScoped({ prefix: "kin-push-home-" })
-            .pipe(Effect.mapError(() => new KinPurgePushError({ reason: "unknown" })));
-          const result = yield* vcs
-            .run({
-              operation: "KinPurgePush.git",
-              command: "git",
-              cwd: gitDir,
-              args: [
-                "--no-replace-objects",
-                `--git-dir=${gitDir}/.git`,
-                "-c",
-                "core.hooksPath=/dev/null",
-                "-c",
-                "core.fsmonitor=false",
-                "-c",
-                "core.attributesFile=/dev/null",
-                "-c",
-                "protocol.file.allow=user",
-                "-c",
-                "credential.helper=",
-                ...(credentialHelper ? ["-c", `credential.helper=${credentialHelper}`] : []),
-                "push",
-                "--atomic",
-                "--porcelain",
-                ...updates.map((update) => `--force-with-lease=${update.ref}:${update.old}`),
-                "--",
-                repoUrl,
-                ...updates.map((update) => `${update.new ?? ""}:${update.ref}`),
-              ],
-              env: {
-                ...scrubbedGitEnv(),
-                ...hardenedGitEnv,
-                HOME: home,
-                XDG_CONFIG_HOME: home,
-                GIT_ASKPASS: "false",
-                SSH_ASKPASS: "false",
-                SSH_ASKPASS_REQUIRE: "never",
-                SSH_AUTH_SOCK: undefined,
-                GCM_INTERACTIVE: "never",
-                // Without an owner SSH command, refuse SSH instead of using the host's keys or agent.
-                GIT_SSH_COMMAND: sshCommand
-                  ? `${sshCommand} -F none -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none`
-                  : "false",
-              },
-              allowNonZeroExit: true,
-              timeoutMs: 600_000,
-            })
-            .pipe(
-              // The cause can echo the remote URL or helper output; keep both out of errors and logs.
-              Effect.mapError(
-                (error) =>
-                  new KinPurgePushError({
-                    reason: error._tag === "VcsProcessTimeoutError" ? "timeout" : "unknown",
-                  }),
-              ),
-            );
-          if (Number(result.exitCode) !== 0)
-            return yield* new KinPurgePushError({
-              reason: pushFailure(result.stdout, result.stderr),
-            });
+          yield* run(
+            repoUrl,
+            [
+              "push",
+              "--atomic",
+              "--porcelain",
+              ...updates.map((update) => `--force-with-lease=${update.ref}:${update.old}`),
+              "--",
+              repoUrl,
+              ...updates.map((update) => `${update.new ?? ""}:${update.ref}`),
+            ],
+            gitDir,
+          );
+        }, Effect.scoped),
+        listRefs: Effect.fn("KinPurgePush.listRefs")(function* ({ repoUrl }) {
+          const stdout = yield* run(repoUrl, ["ls-remote", "--", repoUrl]);
+          return stdout.split("\n").flatMap((line) => {
+            const ref = line.split("\t")[1];
+            return ref ? [ref] : [];
+          });
         }, Effect.scoped),
       });
     }),

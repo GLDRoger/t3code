@@ -65,6 +65,7 @@ const memory = Layer.succeed(
     recover: () => Effect.void,
     withHistoryRewrite: () => Effect.die("Unused"),
     purgeInFlight: () => Effect.die("Unused"),
+    historyGeneration: () => Effect.die("Unused"),
     readPromptSnapshot: (org, head) =>
       org !== orgId || !["head-one", "head-two"].includes(head)
         ? Effect.fail(new Memory.MemoryError({ orgId: org, operation: "promptSnapshot" }))
