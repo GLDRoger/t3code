@@ -94,7 +94,7 @@ const start = Effect.gen(function* () {
       );
       workers.set(threadId, { queue, fiber });
     }
-    yield* safeRefresh(threadId);
+    yield* Queue.offer(workers.get(threadId)!.queue, undefined);
   });
   const changes = yield* PubSub.subscribe(index.changes);
   yield* Effect.gen(function* () {
@@ -111,7 +111,12 @@ const start = Effect.gen(function* () {
     const worker = workers.get(threadId);
     if (worker !== undefined) yield* Queue.offer(worker.queue, undefined);
   });
-  yield* orchestrator.streamDomainEvents.pipe(
+  yield* Stream.unwrap(
+    Effect.gen(function* () {
+      for (const worker of workers.values()) yield* Queue.offer(worker.queue, undefined);
+      return orchestrator.streamDomainEvents;
+    }),
+  ).pipe(
     Stream.runForEach((event) => onEvent(event.threadId)),
     Effect.tapCause(() => Effect.logWarning("Kin task card event stream failed; reconnecting.")),
     Effect.retry(Schedule.min([Schedule.exponential("1 second"), Schedule.spaced("30 seconds")])),

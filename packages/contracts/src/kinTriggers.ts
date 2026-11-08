@@ -5,20 +5,10 @@ import { KinOrgId, KinPersonId } from "./kinChat.ts";
 import { CanonicalUtcTimestamp, KinMemoryItemId } from "./kinLead.ts";
 import { ScheduledTaskUpsertSchedule, ScheduledTaskWebhookDeliveryId } from "./scheduledTask.ts";
 
-const [interval, fixedTime, once] = ScheduledTaskUpsertSchedule.members;
-const TimeOfDay = fixedTime.fields.timeOfDay;
-const Weekday = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 6 }));
+import { TimeOfDay, TimeZone } from "./kinTime.ts";
 
-const TimeZone = TrimmedNonEmptyString.check(
-  Schema.makeFilter((timeZone) => {
-    try {
-      const resolved = new Intl.DateTimeFormat("en", { timeZone }).resolvedOptions().timeZone;
-      return !/^[+-]/.test(resolved) || "Expected an IANA time zone.";
-    } catch {
-      return "Expected an IANA time zone.";
-    }
-  }),
-);
+const [interval, fixedTime, once] = ScheduledTaskUpsertSchedule.members;
+const Weekday = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 6 }));
 
 export const KinTriggerFireId = TrimmedNonEmptyString.pipe(Schema.brand("KinTriggerFireId"));
 export type KinTriggerFireId = typeof KinTriggerFireId.Type;

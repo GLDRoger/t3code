@@ -16,9 +16,8 @@ export { KinServer } from "./KinServer.ts";
 import type * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as KinMcp from "./mcp/layer.ts";
+import * as KinLead from "./lead/layer.ts";
 
-// LEAD-5 supplies its runner here, using this root's identity rather than building another.
-const lead: Layer.Layer<never, never, Services | KinChatHub> = Layer.empty;
 const enabled = Layer.effect(
   KinServer,
   Effect.gen(function* () {
@@ -35,7 +34,7 @@ const enabled = Layer.effect(
       subscribeForViewer: Option.some(hub.subscribeForViewer),
     };
   }),
-).pipe(Layer.provide(lead.pipe(Layer.provideMerge(KinChat.layer))));
+).pipe(Layer.provide(KinChat.layer));
 const disabled = Layer.succeed(KinServer, {
   taskCardUpdater: Layer.empty,
   services: Option.none(),
@@ -87,23 +86,34 @@ const middleware = HttpRouter.middleware<{ provides: KinServer }>()(
 
 export const layer = middleware.pipe(Layer.provideMerge(runtime));
 
-// The credential registry precedes orchestration; start its consumer with the transport instead.
+const leadRuntime = Layer.unwrap(
+  Effect.gen(function* () {
+    const kin = yield* KinServer;
+    return Option.isSome(kin.services)
+      ? KinLead.layerServer.pipe(
+          Layer.provide(Layer.succeedContext(kin.services.value)),
+          Layer.provide(SqlitePersistence.layerConfig),
+        )
+      : Layer.empty;
+  }),
+);
+
+const taskCardUpdater = Layer.unwrap(
+  Effect.gen(function* () {
+    const kin = yield* KinServer;
+    return Option.isSome(kin.services)
+      ? kin.taskCardUpdater.pipe(
+          Layer.catchCause(() =>
+            Layer.effectDiscard(Effect.logWarning("Kin task card updater disabled.")),
+          ),
+        )
+      : Layer.empty;
+  }),
+);
+
 export const mcpLayer = (base: Parameters<typeof KinMcp.transport>[0]) =>
-  Layer.merge(
-    KinMcp.transport(base),
-    Layer.unwrap(
-      Effect.gen(function* () {
-        const kin = yield* KinServer;
-        return Option.isSome(kin.services)
-          ? kin.taskCardUpdater.pipe(
-              Layer.catchCause(() =>
-                Layer.effectDiscard(Effect.logWarning("Kin task card updater disabled.")),
-              ),
-            )
-          : Layer.empty;
-      }),
-    ),
-  );
+  Layer.mergeAll(KinMcp.transport(base), leadRuntime, taskCardUpdater);
+
 export const mcpRegistryLayer = <E, R>(
   base: Layer.Layer<McpSessionRegistry.McpSessionRegistry, E, R>,
 ) =>

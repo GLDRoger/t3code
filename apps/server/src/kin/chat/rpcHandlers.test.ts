@@ -1,4 +1,4 @@
-import { orchestration } from "./TaskCard.testkit.ts";
+import { dormantLeadDependencies } from "../lead/layer.testkit.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Hub from "./KinChatHub.ts";
@@ -62,9 +62,9 @@ const session = {
 };
 const configured = ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }));
 const root = Kin.layer.pipe(
+  Layer.provide(dormantLeadDependencies),
   Layer.provideMerge(Chat.layer),
   Layer.provide(configured),
-  Layer.provideMerge(orchestration),
 );
 const probe = WsRpcGroup.omit(
   ...[...WsRpcGroup.requests.keys()].filter(

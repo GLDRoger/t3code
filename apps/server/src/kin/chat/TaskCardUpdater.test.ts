@@ -1,3 +1,5 @@
+import { authorityLayer, startWakeupRun } from "./WakeupAuthority.testkit.ts";
+import * as SqlClient from "effect/sql/SqlClient";
 import { environment } from "./TaskCard.testkit.ts";
 import { SecretRequests } from "../../secrets/SecretRequests.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -58,11 +60,12 @@ import { KinChatRepository } from "./KinChatRepository.ts";
 import * as TaskCard from "../widgets/taskCard.ts";
 import * as Updater from "./TaskCardUpdater.ts";
 
+const agentIdForCards = KinAgentId.make("lead");
 const instanceId = ProviderInstanceId.make("codex");
 const threadId = ThreadId.make("child");
 const timestamp = "1970-01-01T00:00:00.000Z";
 const state = {
-  taskId: "task",
+  taskId: "child",
   environmentId: "environment",
   threadId,
   remoteEnvironmentId: null,
@@ -73,10 +76,17 @@ const state = {
   lastError: "invented",
   updatedAt: timestamp,
 };
-const base = Chat.layer.pipe(
-  Layer.provideMerge(Sqlite.layerMemory),
-  Layer.provideMerge(environment),
-);
+const shellOrchestration = (
+  overrides: Pick<OrchestratorV2["Service"], "getThreadShell" | "streamDomainEvents">,
+) =>
+  Layer.effect(
+    OrchestratorV2,
+    Effect.gen(function* () {
+      const real = yield* OrchestratorV2;
+      return { ...real, ...overrides };
+    }),
+  ).pipe(Layer.provideMerge(authorityLayer));
+const base = Chat.layer.pipe(Layer.provideMerge(environment));
 const seed = Effect.gen(function* () {
   const repo = yield* KinChatRepository;
   const identity = yield* KinIdentity;
@@ -102,6 +112,11 @@ const seed = Effect.gen(function* () {
     agentId,
     threadId: ThreadId.make("lead-thread"),
   });
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id) VALUES (${agentId}, ${person.orgId}, 'Lead', 0, '{}', '[]', ${chat.chatId})`;
+  const leadThread = ThreadId.make("lead-thread");
+  const run = yield* startWakeupRun(leadThread, "updater-wakeup");
+  yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids) VALUES ('updater-wakeup', ${person.orgId}, ${agentId}, ${leadThread}, ${run.id}, 'test', 0, 'running', '[]')`;
   const agent = yield* identity.resolveAgent({
     environmentId: TaskCard.decodeTaskCard(state).environmentId,
     issuedAt: 0,
@@ -173,17 +188,20 @@ it.effect("maps authoritative thread state, including pending decisions", () =>
 it.effect("does not revise or publish an unchanged shell", () =>
   Effect.gen(function* () {
     const reads = yield* Queue.unbounded<void>();
-    const orchestration = Layer.mock(OrchestratorV2)({
+    const orchestration = shellOrchestration({
       getThreadShell: () =>
         Queue.offer(reads, undefined).pipe(Effect.as(liveThreadShell(threadId))),
       streamDomainEvents: Stream.never,
     });
     yield* Effect.gen(function* () {
       const { service, person, chat, repo } = yield* seed;
-      const widget = yield* service.upsertWidget(person, {
+      const widget = yield* service.createTaskCard({
+        orgId: person.orgId,
         chatId: chat.chatId,
-        type: "task",
-        state,
+        authorAgentId: agentIdForCards,
+        threadId,
+        title: state.title,
+        model: state.model,
       });
       yield* Queue.take(reads);
       const stream = yield* Stream.toQueue(service.subscribe([person], { chatId: chat.chatId }), {
@@ -216,7 +234,7 @@ it.effect.each(["completed", "missing"] as const)(
         },
       };
       let reads = 0;
-      const orchestration = Layer.mock(OrchestratorV2)({
+      const orchestration = shellOrchestration({
         getThreadShell: () =>
           Effect.sync(() => {
             reads++;
@@ -236,12 +254,15 @@ it.effect.each(["completed", "missing"] as const)(
               state: { ...state, threadId: null },
             })
             .pipe(Effect.flip),
-          { reason: "not_found" },
+          { reason: "not_allowed" },
         );
-        const widget = yield* service.upsertWidget(agent, {
+        const widget = yield* service.createTaskCard({
+          orgId: person.orgId,
           chatId: chat.chatId,
-          type: "task",
-          state,
+          authorAgentId: agentIdForCards,
+          threadId,
+          title: state.title,
+          model: state.model,
         });
         assert.strictEqual(TaskCard.decodeTaskCard(widget.state).status, "working");
         assert.deepEqual(TaskCard.decodeTaskCard(widget.state).pullRequests, []);
@@ -280,7 +301,7 @@ it.effect.each(["completed", "missing"] as const)(
               state,
             })
             .pipe(Effect.flip),
-          { reason: "not_found" },
+          { reason: "not_allowed" },
         );
         const stream = yield* Stream.toQueue(service.subscribe([person], { chatId: chat.chatId }), {
           capacity: "unbounded",
@@ -397,14 +418,8 @@ it.effect.each(["completed", "missing"] as const)(
           yield* service
             .upsertWidget(agent, { chatId: chat.chatId, type: "task", state })
             .pipe(Effect.flip),
-          { reason: "not_found" },
+          { reason: "not_allowed" },
         );
-        const remote = yield* service.upsertWidget(agent, {
-          chatId: chat.chatId,
-          type: "task",
-          state: { ...state, remoteEnvironmentId: "remote" },
-        });
-        assert.strictEqual(TaskCard.decodeTaskCard(remote.state).status, "waiting");
         assert.isFalse(index.has(threadId));
       }).pipe(Effect.provide(base.pipe(Layer.provideMerge(orchestration))));
     }),
@@ -419,13 +434,14 @@ it.effect("streams a real delegated child state change through kin.chat.subscrib
         getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
       }),
     );
+    const database = Sqlite.layerMemory;
     const runtime = ProviderReplayHarness.layerWithRegistry(
       { name: "kin-task-card" },
       ProviderAdapterRegistry.layerSingle(
         Context.get(adapterContext, ProviderAdapter.ProviderAdapterV2),
       ),
-      { runEffectWorker: false },
-    );
+      { runEffectWorker: false, databaseLayer: database },
+    ).pipe(Layer.provideMerge(database));
     yield* Effect.gen(function* () {
       const orchestrator = yield* OrchestratorV2;
       const { service, agent, person, chat } = yield* seed;
@@ -515,14 +531,14 @@ it.effect("streams a real delegated child state change through kin.chat.subscrib
         { task: "Work", clientRequestId: "delegate", mode: "async" },
       );
       const child = task.childThreadId!;
-      const widget = yield* service.upsertWidget(
-        { ...agent, threadId: parent },
-        {
-          chatId: chat.chatId,
-          type: "task",
-          state: { ...state, taskId: task.taskId, threadId: child },
-        },
-      );
+      const widget = yield* service.createTaskCard({
+        orgId: person.orgId,
+        chatId: chat.chatId,
+        authorAgentId: agent.agentId,
+        threadId: child,
+        title: state.title,
+        model: state.model,
+      });
       assert.strictEqual(TaskCard.decodeTaskCard(widget.state).status, "working");
       const stream = yield* Stream.toQueue(service.subscribe([person], { chatId: chat.chatId }), {
         capacity: "unbounded",
@@ -556,7 +572,7 @@ it.effect("refreshes during continuous events and resumes when a closed card reo
     const received = yield* Queue.unbounded<void>();
     const reads = yield* Queue.unbounded<void>();
     let shell = liveThreadShell(threadId);
-    const orchestration = Layer.mock(OrchestratorV2)({
+    const orchestration = shellOrchestration({
       getThreadShell: () => Queue.offer(reads, undefined).pipe(Effect.map(() => shell)),
       streamDomainEvents: Stream.fromQueue(events).pipe(
         Stream.tap(() => Queue.offer(received, undefined)),
@@ -564,10 +580,13 @@ it.effect("refreshes during continuous events and resumes when a closed card reo
     });
     yield* Effect.gen(function* () {
       const { service, person, chat, repo } = yield* seed;
-      const widget = yield* service.upsertWidget(person, {
+      const widget = yield* service.createTaskCard({
+        orgId: person.orgId,
         chatId: chat.chatId,
-        type: "task",
-        state,
+        authorAgentId: agentIdForCards,
+        threadId,
+        title: state.title,
+        model: state.model,
       });
       yield* Queue.take(reads);
       const stream = yield* Stream.toQueue(service.subscribe([person], { chatId: chat.chatId }), {
@@ -586,12 +605,15 @@ it.effect("refreshes during continuous events and resumes when a closed card reo
       shell = { ...shell, status: "completed" };
       yield* Queue.offer(events, event);
       yield* Queue.take(received);
+      yield* TestClock.adjust("1 second");
       const leading = yield* Queue.take(stream);
       assert.strictEqual(leading._tag, "widget");
       if (leading._tag !== "widget") return;
       assert.strictEqual(TaskCard.decodeTaskCard(leading.widget.state).status, "done");
+      const index = yield* TaskCard.TaskCardIndex;
       for (const lastError of ["one", "two", "three", "four"]) {
         shell = { ...shell, status: "running", lastError };
+        yield* index.track(widget);
         yield* Queue.offer(events, event);
         yield* Queue.take(received);
         yield* TestClock.adjust("250 millis");
@@ -624,6 +646,7 @@ it.effect("refreshes during continuous events and resumes when a closed card reo
         state,
         closed: false,
       });
+      yield* TestClock.adjust("1 second");
       const reopenedEvent = yield* Queue.take(stream);
       const resumed =
         reopenedEvent._tag === "widget" && reopenedEvent.widget.revision === reopened.revision
@@ -642,7 +665,7 @@ it.effect("builds without awaiting shell reads and skips malformed stored cards"
     const started = yield* Deferred.make<void>();
     const release = yield* Deferred.make<void>();
     let blocked = false;
-    const orchestration = Layer.mock(OrchestratorV2)({
+    const orchestration = shellOrchestration({
       getThreadShell: () =>
         Effect.gen(function* () {
           if (blocked) {
@@ -658,7 +681,14 @@ it.effect("builds without awaiting shell reads and skips malformed stored cards"
     });
     yield* Effect.gen(function* () {
       const { service, repo, person, chat } = yield* seed;
-      const bad = yield* service.upsertWidget(person, { chatId: chat.chatId, type: "task", state });
+      const bad = yield* service.createTaskCard({
+        orgId: person.orgId,
+        chatId: chat.chatId,
+        authorAgentId: agentIdForCards,
+        threadId: ThreadId.make("bad"),
+        title: state.title,
+        model: state.model,
+      });
       const malformed = yield* repo.updateWidget({
         ...bad,
         expectedRevision: bad.revision,
@@ -676,10 +706,13 @@ it.effect("builds without awaiting shell reads and skips malformed stored cards"
           .pipe(Effect.flip),
         { reason: "invalid_state" },
       );
-      const good = yield* service.upsertWidget(person, {
+      const good = yield* service.createTaskCard({
+        orgId: person.orgId,
         chatId: chat.chatId,
-        type: "task",
-        state,
+        authorAgentId: agentIdForCards,
+        threadId,
+        title: state.title,
+        model: state.model,
       });
       const stream = yield* Stream.toQueue(service.subscribe([person], { chatId: chat.chatId }), {
         capacity: "unbounded",
@@ -706,7 +739,7 @@ it.effect("reconnects the domain stream after a failure", () =>
     const reads = yield* Queue.unbounded<void>();
     let subscriptions = 0;
     let shell = liveThreadShell(threadId);
-    const orchestration = Layer.mock(OrchestratorV2)({
+    const orchestration = shellOrchestration({
       getThreadShell: () => Queue.offer(reads, undefined).pipe(Effect.map(() => shell)),
       streamDomainEvents: Stream.unwrap(
         Effect.gen(function* () {
@@ -720,7 +753,14 @@ it.effect("reconnects the domain stream after a failure", () =>
     });
     yield* Effect.gen(function* () {
       const { service, person, chat } = yield* seed;
-      yield* service.upsertWidget(person, { chatId: chat.chatId, type: "task", state });
+      yield* service.createTaskCard({
+        orgId: person.orgId,
+        chatId: chat.chatId,
+        authorAgentId: agentIdForCards,
+        threadId,
+        title: state.title,
+        model: state.model,
+      });
       yield* Queue.take(reads);
       const stream = yield* Stream.toQueue(service.subscribe([person], { chatId: chat.chatId }), {
         capacity: "unbounded",
@@ -729,16 +769,10 @@ it.effect("reconnects the domain stream after a failure", () =>
       yield* Layer.build(Updater.layer);
       yield* Queue.take(reads);
       assert.strictEqual(yield* Queue.take(attempts), 1);
+      shell = { ...shell, status: "completed" };
       yield* TestClock.adjust("1 second");
       assert.strictEqual(yield* Queue.take(attempts), 2);
-      shell = { ...shell, status: "completed" };
-      yield* Queue.offer(events, {
-        id: EventId.make("reconnected"),
-        threadId,
-        type: "thread.deleted",
-        occurredAt: DateTime.makeUnsafe(timestamp),
-        payload: idleThreadProjection(shell).thread,
-      });
+      assert.strictEqual(yield* Queue.size(stream), 1);
       const updated = yield* Queue.take(stream);
       assert.strictEqual(updated._tag, "widget");
       if (updated._tag !== "widget") return;
@@ -749,16 +783,19 @@ it.effect("reconnects the domain stream after a failure", () =>
 
 it.effect("removes a stale index entry whose row closed before tracking", () =>
   Effect.gen(function* () {
-    const orchestration = Layer.mock(OrchestratorV2)({
+    const orchestration = shellOrchestration({
       getThreadShell: () => Effect.succeed(liveThreadShell(threadId)),
       streamDomainEvents: Stream.never,
     });
     yield* Effect.gen(function* () {
       const { service, person, chat, repo } = yield* seed;
-      const widget = yield* service.upsertWidget(person, {
+      const widget = yield* service.createTaskCard({
+        orgId: person.orgId,
         chatId: chat.chatId,
-        type: "task",
-        state,
+        authorAgentId: agentIdForCards,
+        threadId,
+        title: state.title,
+        model: state.model,
       });
       yield* service.upsertWidget(person, {
         chatId: chat.chatId,
