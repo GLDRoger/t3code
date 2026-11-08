@@ -201,10 +201,16 @@ it.live(
         "other",
       ]);
       yield* git(root, ["clone", "--bare", seed, remoteB]);
-      const recovery = Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void });
+      const notices: string[] = [];
+      const recovery = Layer.succeed(Memory.MemoryRecoveryHooks, {
+        notify: (notice) =>
+          Effect.sync(() => {
+            notices.push(notice.reason);
+          }),
+      });
       const memoryLayer = Memory.layer.pipe(Layer.provide(recovery));
       const writer = Writer.layer.pipe(
-        Layer.provide(Lead.authority),
+        Layer.provideMerge(Lead.authority),
         Layer.provide(Cache.layer),
         Layer.provide(Scan.testLayer([])),
         Layer.provide(Layer.succeed(Writer.MemoryWriterHooks, { notify: () => Effect.void })),
@@ -264,6 +270,22 @@ it.live(
             "not_allowed",
           );
         }
+        const workerThread = ThreadId.make("registered-worker");
+        yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at) VALUES ('worker', ${orgId}, 'Worker', 'builder', ${person!.personId}, '2026-11-08T00:00:00.000Z')`;
+        yield* identity.registerAgentThread({
+          orgId,
+          agentId: KinAgentId.make("worker"),
+          threadId: workerThread,
+        });
+        assert.deepStrictEqual(
+          yield* visible.pipe(
+            Effect.provideService(McpInvocationContext, {
+              ...scope,
+              thread: { ...scope.thread!, threadId: workerThread },
+            }),
+          ),
+          [],
+        );
         const memory = yield* Memory.Memory;
         yield* memory.prepareWakeup(orgId, "fixture-wakeup");
         yield* memory.prepareWakeup(other, "other-wakeup");
@@ -315,6 +337,25 @@ it.live(
           },
           sourceEventId: "fixture-event",
         });
+        const forged = yield* decodeWrite({
+          ...input,
+          item: { ...input.item, chat: "other-chat", source_event: "forged-event" },
+        });
+        assert.notProperty(forged.item, "chat");
+        assert.notProperty(forged.item, "source_event");
+        assert.strictEqual(
+          (yield* service
+            .write(scope, {
+              ...input,
+              item: {
+                ...input.item,
+                id: KinMemoryItemId.make("forged-deferral"),
+                kind: "deferral",
+              },
+            })
+            .pipe(Effect.flip)).message,
+          "Use kin_defer to write deferrals.",
+        );
         assert.deepStrictEqual(yield* service.write(scope, input), { itemId: "new-claim" });
         assert.deepStrictEqual(yield* service.write(scope, input), { itemId: "new-claim" });
         assert.strictEqual(
@@ -339,6 +380,10 @@ it.live(
             .pipe(Effect.flip)).reason,
           "not_found",
         );
+        assert.strictEqual(
+          (yield* service.write(scope, { ...input, op: "update" }).pipe(Effect.flip)).reason,
+          "not_found",
+        );
         const { body, ...fields } = input.item;
         assert.deepStrictEqual(
           yield* service.write(scope, {
@@ -359,6 +404,11 @@ it.live(
           onDue: "ask",
           chatId: chat.chatId,
           sourceEventId: "fixture-event",
+        });
+        const memberDeferral = yield* service.defer(scope, {
+          ...deferred,
+          what: "Member maintenance",
+          sourceEventId: "member-event",
         });
         const first = yield* service.defer(scope, deferred);
         assert.deepStrictEqual(yield* service.defer(scope, deferred), first);
@@ -411,6 +461,10 @@ it.live(
           "show",
           `${committed.commit}:deferrals/${first.itemId}.md`,
         ]);
+        assert.include(
+          yield* git(remote, ["show", `${committed.commit}:deferrals/${memberDeferral.itemId}.md`]),
+          "trust: member",
+        );
         assert.include(content, "what: Invented maintenance");
         assert.include(content, "trust: owner");
         assert.include(content, `chat: ${chat.chatId}`);
@@ -419,6 +473,7 @@ it.live(
           "show",
           `${committed.commit}:claims/member-claim.md`,
         ]);
+        assert.include(memberClaim, "source_event: member-event");
         assert.include(memberClaim, "trust: member");
         assert.include(memberClaim, "said_by: fixture-member");
         assert.notInclude(memberClaim, "forged");
@@ -426,9 +481,42 @@ it.live(
         assert.include(journal, "Saw: Invented request");
         assert.include(journal, "Summary: Finished fixture");
         assert.strictEqual(journal.split("Summary: Finished fixture").length, 2);
+        const writerService = yield* Writer.MemoryWriter;
+        yield* writerService.discard(orgId, "fixture-wakeup");
+        yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'fixture-wakeup'`;
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids) SELECT 'restart-wakeup', org_id, agent_id, thread_id, run_id, model, started_at, 'running', event_ids FROM kin_wakeups WHERE wakeup_id = 'fixture-wakeup'`;
+        yield* sql`UPDATE kin_events SET wakeup_id = 'restart-wakeup' WHERE wakeup_id = 'fixture-wakeup'`;
+        yield* writerService.stage(orgId, "restart-wakeup", {
+          path: "claims/lost-claim.md",
+          content: fixtureItem({ id: "lost-claim", kind: "claim", due: null }),
+          sourceEventId: "fixture-event",
+        });
+        yield* writerService.appendJournal(orgId, "restart-wakeup", ["Summary: Lost summary"]);
+        yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash) VALUES (${orgId}, 'restart-wakeup', 'end', 'fixture-hash')`;
+        yield* writerService.discard(orgId, "restart-wakeup");
+        const recovered = yield* writerService.commitWakeup(orgId, "restart-wakeup", "failed");
+        assert.notInclude(
+          yield* git(remote, ["ls-tree", "-r", "--name-only", recovered.commit]),
+          "lost-claim",
+        );
+        assert.isTrue(notices.some((notice) => notice.includes("lost on restart")));
+        assert.include(
+          yield* git(remote, ["show", `${recovered.commit}:journal/2026/11-08.md`]),
+          "lost on restart",
+        );
         assert.notInclude(
           yield* git(remoteB, ["ls-tree", "-r", "--name-only", "main"]),
           "new-claim",
+        );
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`ALTER TABLE kin_events RENAME TO kin_events_saved`;
+            const unavailable = yield* (yield* Writer.MemoryWriterAuthority)
+              .resolve(orgId, "restart-wakeup")
+              .pipe(Effect.flip);
+            assert.strictEqual(unavailable._tag, "PersistenceSqlError");
+            yield* sql`ALTER TABLE kin_events_saved RENAME TO kin_events`;
+          }),
         );
       }).pipe(Effect.provide(toolkit));
     }).pipe(

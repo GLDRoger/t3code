@@ -1,5 +1,10 @@
 import { forkParked } from "../../serverActivation.ts";
-import { KinOrgId } from "@t3tools/contracts";
+import { KinOrgId, KinChatId, KinMessageId } from "@t3tools/contracts";
+import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as DateTime from "effect/DateTime";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as Option from "effect/Option";
+import { KinChatHub } from "../chat/KinChatHub.ts";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -57,11 +62,53 @@ const withServices = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
       ),
     ),
     Layer.provide(
-      Layer.succeed(Memory.MemoryRecoveryHooks, {
-        notify: Effect.fn("KinMemoryRecovery.notify")((notice) =>
-          Effect.logWarning("Kin memory recovery requires operator attention", notice),
-        ),
-      }),
+      Layer.effect(
+        Memory.MemoryRecoveryHooks,
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const chat = yield* KinChatRepository.KinChatRepository;
+          const hub = yield* Effect.serviceOption(KinChatHub);
+          return Memory.MemoryRecoveryHooks.of({
+            notify: Effect.fn("KinMemoryRecovery.notify")(
+              function* (notice) {
+                yield* Effect.logWarning("Kin memory recovery requires operator attention", notice);
+                const leads = yield* sql<{
+                  chatId: string;
+                }>`SELECT DISTINCT owner_chat_id AS "chatId" FROM kin_leads WHERE org_id = ${notice.orgId}`;
+                for (const lead of leads) {
+                  const message = yield* chat.insertMessage({
+                    orgId: notice.orgId,
+                    chatId: KinChatId.make(lead.chatId),
+                    messageId: KinMessageId.make(`kin-memory:${SecureRandom.uuidV4Unsafe()}`),
+                    author: { _tag: "system" },
+                    kind: "text",
+                    body: notice.reason,
+                    intent: null,
+                    mentions: [],
+                    replyTo: null,
+                    widgetId: null,
+                    floorRunId: null,
+                    status: "posted",
+                    sentBy: null,
+                    clientMessageId: null,
+                    createdAt: DateTime.formatIso(yield* DateTime.now),
+                    editedAt: null,
+                  });
+                  if (Option.isSome(hub))
+                    yield* hub.value.publish({
+                      type: "message.posted",
+                      orgId: notice.orgId,
+                      message,
+                    });
+                }
+              },
+              Effect.catchCause((cause) =>
+                Effect.logError("Kin memory owner notice failed", cause),
+              ),
+            ),
+          });
+        }),
+      ).pipe(Layer.provide(KinChatRepository.layer)),
     ),
     Layer.provide(KinPersistence.layer),
   );

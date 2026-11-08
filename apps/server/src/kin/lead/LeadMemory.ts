@@ -19,6 +19,8 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 import { stringify } from "yaml";
+import { isSqlError } from "effect/sql/SqlError";
+import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as Memory from "../memory/Memory.ts";
@@ -47,10 +49,11 @@ export const SearchInput = Schema.Struct({
   ),
 });
 export const ReadInput = Schema.Struct({ id: KinMemoryItemId });
+const { chat: _chat, source_event: _sourceEvent, ...writableFields } = MemoryItemFrontMatter.fields;
 export const WriteInput = Schema.Struct({
   op: Schema.Literals(["create", "update", "supersede", "invalidate"]),
   item: Schema.Struct({
-    ...MemoryItemFrontMatter.fields,
+    ...writableFields,
     id: itemId,
     review_by: Schema.optional(MemoryItemFrontMatter.fields.review_by),
     body: text,
@@ -187,10 +190,15 @@ export const authority = Layer.effect(
             timeZone: yield* cache.ownerTimeZone(orgId),
             eventIds: [...sources.keys()],
             sources,
+            stagedReceipts:
+              (yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} LIMIT 1`)
+                .length > 0,
           };
         },
-        Effect.mapError(
-          () => new Writer.MemoryWriteRejected({ reason: "Invalid writer authority" }),
+        Effect.mapError((error) =>
+          isSqlError(error)
+            ? toPersistenceSqlError("LeadMemory.writerAuthority")(error)
+            : new Writer.MemoryWriteRejected({ reason: "Invalid writer authority" }),
         ),
       ),
     });
@@ -207,9 +215,21 @@ const make = Effect.gen(function* () {
   const identity = yield* KinIdentity;
   const memory = yield* Memory.Memory;
   const writer = yield* Writer.MemoryWriter;
+  const writerAuthority = yield* Writer.MemoryWriterAuthority;
   const sql = yield* SqlClient.SqlClient;
   const registry = yield* KinLeadRegistry;
-  const lock = yield* Semaphore.make(1);
+  const locks = new Map<KinOrgId, Semaphore.Semaphore>();
+  const locked = Effect.fn("LeadMemory.locked")(function* <A, E, R>(
+    orgId: KinOrgId,
+    operation: Effect.Effect<A, E, R>,
+  ) {
+    let lock = locks.get(orgId);
+    if (!lock) {
+      lock = Semaphore.makeUnsafe(1);
+      locks.set(orgId, lock);
+    }
+    return yield* lock.withPermits(1)(operation);
+  });
   const ended = new Map<KinOrgId, string>();
   const resolve = Effect.fn("LeadMemory.resolve")(function* (
     scope: McpInvocationScope,
@@ -250,14 +270,26 @@ const make = Effect.gen(function* () {
       request_hash: string;
     }>`SELECT request_hash FROM kin_lead_tool_calls WHERE org_id = ${ctx.orgId} AND wakeup_id = ${ctx.wakeupId} AND call_key = ${key}`;
     if (prior && prior.request_hash !== digest) return yield* denied();
-    // Re-stage identical writes after recovery; staged bytes deliberately never live in SQLite.
+    // Identical retries may re-stage; the writer reports lost sessions after restart.
     yield* operation;
-    yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash) VALUES (${ctx.orgId}, ${ctx.wakeupId}, ${key}, ${digest}) ON CONFLICT DO NOTHING`;
+    const inserted =
+      yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash) VALUES (${ctx.orgId}, ${ctx.wakeupId}, ${key}, ${digest}) ON CONFLICT DO NOTHING RETURNING request_hash`;
+    if (inserted.length === 0) {
+      const [stored] = yield* sql<{
+        request_hash: string;
+      }>`SELECT request_hash FROM kin_lead_tool_calls WHERE org_id = ${ctx.orgId} AND wakeup_id = ${ctx.wakeupId} AND call_key = ${key}`;
+      if (stored?.request_hash !== digest) return yield* denied();
+    }
   });
   const stage = Effect.fn("LeadMemory.stage")(function* (
     ctx: Effect.Success<ReturnType<typeof resolve>>,
     input: typeof WriteInput.Type,
   ) {
+    if (input.item.kind === "deferral")
+      return yield* new KinChatError({
+        reason: "not_allowed",
+        message: "Use kin_defer to write deferrals.",
+      });
     yield* checkSource(ctx, input.sourceEventId);
     const { body, ...fields } = input.item;
     if (input.op === "supersede" && (!input.supersedes || input.supersedes === fields.id))
@@ -309,60 +341,68 @@ const make = Effect.gen(function* () {
         misleading: item.head.invalid_at !== null,
       };
     }, Effect.mapError(failure)),
-    write: Effect.fn("LeadMemory.write")(
-      function* (scope, input) {
-        return yield* stage(yield* resolve(scope), input);
-      },
-      lock.withPermits(1),
-      Effect.mapError(failure),
-    ),
-    defer: Effect.fn("LeadMemory.defer")(
-      function* (scope, input) {
-        const ctx = yield* resolve(scope);
-        yield* checkSource(ctx, input.sourceEventId);
-        const [chat] =
-          yield* sql`SELECT 1 FROM kin_chats WHERE org_id = ${ctx.orgId} AND chat_id = ${input.chatId}`;
-        if (!chat) return yield* missing();
-        const id =
-          input.itemId ??
-          KinMemoryItemId.make(
-            `def-${(yield* hash({ wakeup: ctx.wakeupId, input })).slice(0, 32)}`,
+    write: Effect.fn("LeadMemory.write")(function* (scope, input) {
+      const ctx = yield* resolve(scope);
+      return yield* locked(
+        ctx.orgId,
+        Effect.gen(function* () {
+          return yield* stage(yield* resolve(scope), input);
+        }),
+      );
+    }, Effect.mapError(failure)),
+    defer: Effect.fn("LeadMemory.defer")(function* (scope, input) {
+      const ctx = yield* resolve(scope);
+      return yield* locked(
+        ctx.orgId,
+        Effect.gen(function* () {
+          const ctx = yield* resolve(scope);
+          yield* checkSource(ctx, input.sourceEventId);
+          const source = (yield* writerAuthority.resolve(ctx.orgId, ctx.wakeupId)).sources.get(
+            input.sourceEventId,
           );
-        const recorded = DateTime.formatIso(DateTime.makeUnsafe(ctx.startedAt));
-        const fields = {
-          id,
-          kind: "deferral" as const,
-          title: input.what,
-          status: "open" as const,
-          due: input.due,
-          on_due: input.onDue,
-          recorded_at: recorded,
-          valid_from: recorded,
-          invalid_at: null,
-          superseded_by: null,
-          source: "",
-          said_by: ctx.agentId,
-          trust: "owner" as const,
-          links: [],
-          what: input.what,
-          chat: input.chatId,
-          source_event: input.sourceEventId,
-        };
-        yield* receipt(
-          ctx,
-          `item:${id}`,
-          { ...input, itemId: id },
-          writer.stage(ctx.orgId, ctx.wakeupId, {
-            path: `deferrals/${id}.md`,
-            content: `---\n${stringify(fields)}---\n${input.what}\n`,
-            sourceEventId: input.sourceEventId,
-          }),
-        );
-        return { itemId: id };
-      },
-      lock.withPermits(1),
-      Effect.mapError(failure),
-    ),
+          if (!source) return yield* missing();
+          const [chat] =
+            yield* sql`SELECT 1 FROM kin_chats WHERE org_id = ${ctx.orgId} AND chat_id = ${input.chatId}`;
+          if (!chat) return yield* missing();
+          const id =
+            input.itemId ??
+            KinMemoryItemId.make(
+              `def-${(yield* hash({ wakeup: ctx.wakeupId, input })).slice(0, 32)}`,
+            );
+          const recorded = DateTime.formatIso(DateTime.makeUnsafe(ctx.startedAt));
+          const fields = {
+            id,
+            kind: "deferral" as const,
+            title: input.what,
+            status: "open" as const,
+            due: input.due,
+            on_due: input.onDue,
+            recorded_at: recorded,
+            valid_from: recorded,
+            invalid_at: null,
+            superseded_by: null,
+            source: source.source,
+            said_by: source.saidBy,
+            trust: source.trust,
+            links: [],
+            what: input.what,
+            chat: input.chatId,
+            source_event: input.sourceEventId,
+          };
+          yield* receipt(
+            ctx,
+            `item:${id}`,
+            { ...input, itemId: id },
+            writer.stage(ctx.orgId, ctx.wakeupId, {
+              path: `deferrals/${id}.md`,
+              content: `---\n${stringify(fields)}---\n${input.what}\n`,
+              sourceEventId: input.sourceEventId,
+            }),
+          );
+          return { itemId: id };
+        }),
+      );
+    }, Effect.mapError(failure)),
     journal: Effect.fn("LeadMemory.journal")(function* (scope, input) {
       const ctx = yield* resolve(scope);
       yield* writer.appendJournal(ctx.orgId, ctx.wakeupId, [
@@ -371,22 +411,24 @@ const make = Effect.gen(function* () {
         ...(input.skipped ?? []).map((x) => `Skipped: ${x}`),
       ]);
     }, Effect.mapError(failure)),
-    end: Effect.fn("LeadMemory.end")(
-      function* (scope, input) {
-        const ctx = yield* resolve(scope, true);
-        yield* receipt(
-          ctx,
-          "end",
-          input,
-          ended.get(ctx.orgId) === ctx.wakeupId
-            ? Effect.void
-            : writer.appendJournal(ctx.orgId, ctx.wakeupId, [`Summary: ${input.summary}`]),
-        );
-        ended.set(ctx.orgId, ctx.wakeupId);
-      },
-      lock.withPermits(1),
-      Effect.mapError(failure),
-    ),
+    end: Effect.fn("LeadMemory.end")(function* (scope, input) {
+      const ctx = yield* resolve(scope, true);
+      yield* locked(
+        ctx.orgId,
+        Effect.gen(function* () {
+          const ctx = yield* resolve(scope, true);
+          yield* receipt(
+            ctx,
+            "end",
+            input,
+            ended.get(ctx.orgId) === ctx.wakeupId
+              ? Effect.void
+              : writer.appendJournal(ctx.orgId, ctx.wakeupId, [`Summary: ${input.summary}`]),
+          );
+          ended.set(ctx.orgId, ctx.wakeupId);
+        }),
+      );
+    }, Effect.mapError(failure)),
   });
 });
 export const layer = Layer.effect(LeadMemory, make);

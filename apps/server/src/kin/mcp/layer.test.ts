@@ -279,6 +279,7 @@ it.effect.each([true, false])(
         assert.include(toolListText, "kin_chat_read");
         assert.notInclude(toolListText, "schedule_task");
         assert.notInclude(toolListText, "t3_thread_launch");
+        assert.notInclude(toolListText, "create_threads");
         const result = yield* request(
           "/kin/mcp",
           issued.config.authorizationHeader,

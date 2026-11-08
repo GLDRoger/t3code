@@ -41,7 +41,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("memory_write", {
     ...shared,
     description:
-      "Stage a memory create, update, supersession or invalidation for this wake-up. Source must be an event in the current batch; the server sets provenance. Never delete or write rules. Retry an item with exactly the same payload; changed retries are refused. The runner commits after the run ends.",
+      "Stage a memory create, update, supersession or invalidation for this wake-up. Source must be an event in the current batch; the server sets provenance. Never delete or write rules. Retry an item with exactly the same payload; changed retries, including create followed by update of the same item in one wake-up, are refused. Deferrals must use kin_defer. The runner commits after the run ends.",
     parameters: Lead.WriteInput,
     success: Lead.ItemResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

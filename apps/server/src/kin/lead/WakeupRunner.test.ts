@@ -87,6 +87,62 @@ const run = Effect.fn("test.run")(function* () {
 });
 
 describe("WakeupRunner", () => {
+  it.effect("discards a failed commit session so the next wake-up can stage", () =>
+    Effect.gen(function* () {
+      let owner: string | undefined;
+      let commits = 0;
+      const writer = Layer.succeed(
+        Writer.MemoryWriter,
+        Writer.MemoryWriter.of({
+          stage: (_org, wakeup) =>
+            Effect.sync(() => {
+              assert.isTrue(owner === undefined || owner === wakeup);
+              owner = wakeup;
+            }),
+          appendJournal: (_org, wakeup) =>
+            Effect.sync(() => {
+              assert.isTrue(owner === undefined || owner === wakeup);
+              owner = wakeup;
+            }),
+          discard: (_org, wakeup) =>
+            Effect.sync(() => {
+              if (owner === wakeup) owner = undefined;
+            }),
+          commitWakeup: () =>
+            Effect.suspend(() =>
+              ++commits === 1
+                ? Effect.fail(
+                    new Writer.MemoryWriteRejected({ reason: "fixture validation failure" }),
+                  )
+                : Effect.succeed({ commit: "fixture" }),
+            ),
+        }),
+      );
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const queue = yield* KinEventQueue.KinEventQueue;
+        yield* queue.enqueue(event("first"));
+        const first = yield* run();
+        assert.strictEqual((yield* Fiber.await(first))._tag, "Failure");
+        assert.isUndefined(owner);
+        yield* Context.get(yield* Layer.build(writer), Writer.MemoryWriter).stage(
+          orgId,
+          "next-wakeup",
+          {
+            path: "claims/test.md",
+            content: "fixture",
+          },
+        );
+        yield* Context.get(yield* Layer.build(writer), Writer.MemoryWriter).discard(
+          orgId,
+          "next-wakeup",
+        );
+        yield* queue.enqueue(event("second"));
+        yield* Fiber.join(yield* run());
+        assert.strictEqual(commits, 2);
+      }).pipe(Effect.provide(harness({ writer })));
+    }).pipe(provideDeterministicTestRuntime),
+  );
   it.effect("uses the cheap model for exhausted P0 even when a routine is in the batch", () =>
     Effect.gen(function* () {
       yield* seed;
@@ -124,7 +180,7 @@ describe("WakeupRunner", () => {
               const sql = yield* SqlClient.SqlClient;
               return Writer.MemoryWriter.of({
                 stage: () => Effect.die("unused"),
-                discard: () => Effect.die("unused"),
+                discard: () => Effect.void,
                 appendJournal: (_org, _wakeup, lines) =>
                   Effect.sync(() =>
                     assert.deepStrictEqual(lines, ["Lead ended without calling kin_end."]),
