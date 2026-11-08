@@ -120,15 +120,22 @@ export const KinGithubWebhookSetupInput = Schema.Struct({ orgId: KinOrgId, proje
 export type KinGithubWebhookSetupInput = typeof KinGithubWebhookSetupInput.Type;
 export const KinGithubWebhookOrgInput = Schema.Struct({ orgId: KinOrgId });
 export type KinGithubWebhookOrgInput = typeof KinGithubWebhookOrgInput.Type;
+// The message names only length and character class: RpcServer returns it to the client verbatim.
+const WebhookSecret = Schema.String.check(
+  Schema.makeFilter((value: string) => value.length >= 16 && !/\s/.test(value), {
+    message: "A webhook secret needs at least 16 characters and no whitespace.",
+  }),
+);
 export const KinGithubWebhookSecretInput = Schema.Struct({
   orgId: KinOrgId,
-  secret: Schema.RedactedFromValue(TrimmedNonEmptyString.check(Schema.isMinLength(16))),
+  secret: Schema.RedactedFromValue(WebhookSecret),
 });
 export type KinGithubWebhookSecretInput = typeof KinGithubWebhookSecretInput.Type;
 
 /**
  * `configured`: GitHub and T3 share the secret. `needs_secret`: set this URL and a new secret in
- * the GitHub App's webhook settings, then send the secret. `needs_url`: update only the URL there.
+ * the GitHub App's webhook settings, then send the secret. `needs_url`: update only the URL there;
+ * a rotate has already retired the old URL, so deliveries fail until GitHub has the new one.
  */
 export const KinGithubWebhookSetup = Schema.Union([
   Schema.Struct({ status: Schema.Literal("needs_connect") }),

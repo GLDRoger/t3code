@@ -154,6 +154,14 @@ const samples = {
   ],
 } satisfies Record<SchemaName, readonly [Schema.Codec<unknown>, ReadonlyArray<unknown>]>;
 
+const secretRejections = [
+  "too-short",
+  " 0123456789abcdef",
+  "0123456789abcdef\n",
+  "01234567 89abcdef",
+  "0123456789\tabcdef",
+];
+
 const rejections = [
   ...[
     "1",
@@ -175,7 +183,10 @@ const rejections = [
     { schema: Kin.KinGithubEvent, value: { ...githubEvent, receivedAt: invalid } },
   ]),
   ...["", "  \n "].map((value) => ({ schema: Kin.KinTriggerId, value })),
-  { schema: Kin.KinGithubWebhookSecretInput, value: { orgId: "org-1", secret: "too-short" } },
+  ...secretRejections.map((secret) => ({
+    schema: Kin.KinGithubWebhookSecretInput,
+    value: { orgId: "org-1", secret },
+  })),
   ...[0, 59_999, 60_000.5].map((everyMs) => ({
     schema: Kin.KinTriggerSchedule,
     value: { type: "interval", everyMs },
@@ -262,5 +273,13 @@ describe("Kin trigger contracts", () => {
 
   it.each(rejections)("rejects invalid trigger data %#", ({ schema, value }) => {
     expect(() => Schema.decodeUnknownSync(schema)(value)).toThrow();
+  });
+
+  it.each(secretRejections)("never echoes a rejected webhook secret %#", (secret) => {
+    const decode = Schema.decodeUnknownSync(Kin.KinGithubWebhookSecretInput);
+    expect(() => decode({ orgId: "org-1", secret })).toThrow(
+      "A webhook secret needs at least 16 characters and no whitespace.",
+    );
+    expect(() => decode({ orgId: "org-1", secret })).not.toThrow(secret.trim());
   });
 });
