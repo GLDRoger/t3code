@@ -22,6 +22,8 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
+import * as NodeCrypto from "node:crypto";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
@@ -60,9 +62,6 @@ const WATCHDOG_EVERY_MS: Readonly<Record<KinWatchdog, number>> = {
 const READ_TIMEOUT = "30 seconds";
 const PAGE = 100;
 const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
-const decodePing = Schema.decodeOption(
-  Schema.fromJsonString(Schema.Struct({ nextStep: Schema.String })),
-);
 
 /** One issue or pull request as GitHub has it now. */
 export interface GithubItemState {
@@ -119,10 +118,8 @@ const githubUrl = (repo: string, state: GithubItemState) =>
   `https://github.com/${repo}/${state.kind === "issue" ? "issues" : "pull"}/${state.number}`;
 const isDone = (state: GithubItemState) =>
   state.state === (state.kind === "issue" ? "closed" : "merged");
-const clip = (text: string, max: number) =>
-  text.length <= max ? text : `${text.slice(0, max - 1)}…`;
-const hex = (text: string) =>
-  Array.from(new TextEncoder().encode(text), (byte) => byte.toString(16).padStart(2, "0")).join("");
+const shortHash = (text: string) =>
+  NodeCrypto.createHash("sha256").update(text).digest("hex").slice(0, 32);
 
 /** What a condition can test, from an issue or PR's current state rather than an event. */
 function conditionFactsFromState(repo: string, state: GithubItemState): GithubConditionFacts {
@@ -194,6 +191,10 @@ const make = Effect.gen(function* () {
   const ticks = yield* Scheduler.Scheduler;
   // Optional, as in githubEvents: lead-only test runtimes have no T3 scheduling.
   const tasks = yield* Effect.serviceOption(ScheduledTaskService.ScheduledTaskService);
+  if (Option.isNone(tasks))
+    yield* Effect.logWarning(
+      "Kin watchdogs started without T3 scheduled tasks: webhook sources go unreconciled",
+    );
   // The RPC handlers own this lock; without it a re-key can briefly read as a foreign secret.
   const lock = yield* Effect.serviceOption(KinGithubWebhookLock);
 
@@ -288,9 +289,7 @@ const make = Effect.gen(function* () {
         yield* decodeEvent({
           _tag: "watchdog",
           orgId,
-          eventId: KinEventId.make(
-            `watchdog_${hex(`${orgId.length}:${orgId}${dedupeKey}`)}_${now}`,
-          ),
+          eventId: KinEventId.make(`watchdog-${shortHash(`${orgId}\0${dedupeKey}`)}`),
           agentId: lead.agentId,
           receivedAt: DateTime.formatIso(DateTime.makeUnsafe(now)),
           dedupeKey,
@@ -370,26 +369,29 @@ const make = Effect.gen(function* () {
     );
   });
 
-  /** Puts a chase unless this person already has one for the item with the same next step. */
+  /** Puts a chase unless this person has one for the item that is active or was stopped after `changedAt`. */
   const chase = Effect.fn("KinWatchdogs.chase")(function* (
     orgId: KinOrgId,
     lead: Lead,
     item: MemoryItemHead,
     person: KinPersonId,
     nextStep: string,
+    changedAt: number,
   ) {
     if (item.chat === undefined)
       return yield* Effect.logDebug("Kin watchdog chase skipped: item has no chat", {
         orgId,
         itemId: item.id,
       });
-    const [existing] = yield* sql<{ request: string }>`SELECT request_json AS request
+    const [existing] = yield* sql<{ stoppedAt: number | null }>`SELECT stopped_at AS "stoppedAt"
       FROM kin_ping_items WHERE org_id = ${orgId} AND person = ${person} AND item_id = ${item.id}
       ORDER BY item_id`.pipe(NodeSqliteClient.readOnly);
-    if (existing !== undefined) {
-      const stored = Option.getOrUndefined(decodePing(existing.request));
-      if (stored === undefined || stored.nextStep === nextStep) return;
-    }
+    // An answered chase stays answered until what prompted it (a due date, a review request) moves.
+    if (
+      existing !== undefined &&
+      (existing.stoppedAt === null || !(changedAt > existing.stoppedAt))
+    )
+      return;
     yield* pings
       .put(
         {
@@ -437,7 +439,8 @@ const make = Effect.gen(function* () {
         lead,
         item,
         KinPersonId.make(person.personId),
-        `${clip(item.title, 400)} was due ${item.due}. What's the status?`,
+        `Was due ${item.due}. What's the status? ${Pings.quoted(item.title)}`,
+        memoryDateMillis(item.due),
       );
     }
   });
@@ -469,7 +472,8 @@ const make = Effect.gen(function* () {
             lead,
             item,
             KinPersonId.make(person.personId),
-            `Your review is requested on ${githubUrl(link.repo, state)} for ${clip(item.title, 400)}. Can you review it?`,
+            `Your review is requested on ${githubUrl(link.repo, state)}. Can you review it? ${Pings.quoted(item.title)}`,
+            request.requestedAt,
           );
         }
       }
@@ -515,7 +519,7 @@ const make = Effect.gen(function* () {
         orgId,
         chatId: lead.chatId,
         messageId,
-        body: `${clip(item.title, 400)} is due ${item.due} and still has open GitHub work: ${open.slice(0, 20).join(", ")}${open.length > 20 ? ` and ${open.length - 20} more` : ""}.`,
+        body: `An objective due ${item.due} still has open GitHub work: ${open.slice(0, 20).join(", ")}${open.length > 20 ? ` and ${open.length - 20} more` : ""}.\n${Pings.quoted(item.title)}`,
       });
     }
   });
@@ -563,12 +567,21 @@ const make = Effect.gen(function* () {
   });
 
   const triggerReconcile = Effect.fn("KinWatchdogs.triggerReconcile")(function* (orgId: KinOrgId) {
-    yield* Option.isSome(lock)
-      ? lock.value.withPermits(1)(reconcileSources(orgId))
-      : reconcileSources(orgId);
+    // Independent halves: a failure in one is logged and the other still runs.
+    yield* (
+      Option.isSome(lock)
+        ? lock.value.withPermits(1)(reconcileSources(orgId))
+        : reconcileSources(orgId)
+    ).pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("Kin webhook source reconcile failed", { orgId, cause }),
+      ),
+    );
     // Re-arms open deferrals the cache hook missed; a failed read must not disarm everything.
-    const items = yield* memory.query(orgId, {});
-    yield* triggers.syncOrg(orgId, items);
+    yield* memory.query(orgId, {}).pipe(
+      Effect.flatMap((items) => triggers.syncOrg(orgId, items)),
+      Effect.catch((cause) => Effect.logWarning("Kin trigger re-arm failed", { orgId, cause })),
+    );
   });
 
   const run = Effect.fn("KinWatchdogs.run")(

@@ -301,43 +301,45 @@ describe("github_recheck", () => {
   });
   const states = [issue(7, "closed"), issue(8, "open"), pull(9, "merged"), pull(212, "merged")];
 
-  it.effect("marks a commitment done when its linked issue closes, with the evidence link", () =>
-    run([closesIssue, mergesPr, halfDone, outOfScope, condition], () =>
-      Effect.gen(function* () {
-        const service = yield* build;
-        yield* putRecheck("1");
-        const reads: Array<string> = [];
-        yield* service.run("github_recheck", orgId).pipe(withGithub(fakeGithub(states, reads)));
+  it.effect(
+    "queues a code-only watchdog event naming the commitment and the closed issue as evidence",
+    () =>
+      run([closesIssue, mergesPr, halfDone, outOfScope, condition], () =>
+        Effect.gen(function* () {
+          const service = yield* build;
+          yield* putRecheck("1");
+          const reads: Array<string> = [];
+          yield* service.run("github_recheck", orgId).pipe(withGithub(fakeGithub(states, reads)));
 
-        // One batched read for the scoped repo; the out-of-scope link is never read.
-        assert.deepEqual(reads, ["owner/repo:7,8,9,212"]);
-        assert.deepEqual(yield* watchdogEvents, [
-          {
-            finding:
-              "GitHub state shows condition met (read from GitHub by code): https://github.com/Owner/Repo/pull/212 is merged.",
-            itemIds: ["when-212-merges"],
-          },
-          {
-            finding:
-              "Verified on GitHub by code: https://github.com/owner/repo/pull/9 is merged. Mark deferral rate-limit done and record that link as its evidence.",
-            itemIds: ["rate-limit"],
-          },
-          {
-            finding:
-              "Verified on GitHub by code: https://github.com/owner/repo/issues/7 is closed. Mark commitment ship-login done and record that link as its evidence.",
-            itemIds: ["ship-login"],
-          },
-        ]);
-        assert.equal(yield* pendingRechecks, 0);
+          // One batched read for the scoped repo; the out-of-scope link is never read.
+          assert.deepEqual(reads, ["owner/repo:7,8,9,212"]);
+          assert.deepEqual(yield* watchdogEvents, [
+            {
+              finding:
+                "GitHub state shows condition met (read from GitHub by code): https://github.com/Owner/Repo/pull/212 is merged.",
+              itemIds: ["when-212-merges"],
+            },
+            {
+              finding:
+                "Verified on GitHub by code: https://github.com/owner/repo/pull/9 is merged. Mark deferral rate-limit done and record that link as its evidence.",
+              itemIds: ["rate-limit"],
+            },
+            {
+              finding:
+                "Verified on GitHub by code: https://github.com/owner/repo/issues/7 is closed. Mark commitment ship-login done and record that link as its evidence.",
+              itemIds: ["ship-login"],
+            },
+          ]);
+          assert.equal(yield* pendingRechecks, 0);
 
-        // A later sweep reads again but queues nothing new for the same findings.
-        yield* putRecheck("2");
-        yield* service.run("github_recheck", orgId).pipe(withGithub(fakeGithub(states, reads)));
-        assert.equal(reads.length, 2);
-        assert.equal((yield* watchdogEvents).length, 3);
-        assert.equal(yield* pendingRechecks, 0);
-      }),
-    ),
+          // A later sweep reads again but queues nothing new for the same findings.
+          yield* putRecheck("2");
+          yield* service.run("github_recheck", orgId).pipe(withGithub(fakeGithub(states, reads)));
+          assert.equal(reads.length, 2);
+          assert.equal((yield* watchdogEvents).length, 3);
+          assert.equal(yield* pendingRechecks, 0);
+        }),
+      ),
   );
 
   it.effect("leaves recheck requests pending until a reader reads every repo", () =>
@@ -410,6 +412,51 @@ describe("chases", () => {
     ),
   );
 
+  it.effect("an answered chase stays answered until its due date moves", () =>
+    run(
+      [
+        item("both", {
+          owner: "alice",
+          due: iso(NOW - HOUR),
+          links: ["owner/repo#5", "owner/repo#6"],
+        }),
+      ],
+      ({ items }) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const service = yield* build;
+          const stale = { login: "alice-gh", requestedAt: NOW - 25 * HOUR };
+          const github = withGithub(
+            fakeGithub([pull(5, "open", [stale]), pull(6, "open", [stale])], []),
+          );
+          const sweep = Effect.gen(function* () {
+            yield* service.run("promise_overdue", orgId);
+            yield* service.run("stale_review", orgId).pipe(github);
+          });
+          const ping = Effect.gen(function* () {
+            const [row] = yield* sql<{ request: string; stoppedAt: number | null }>`SELECT
+              request_json AS request, stopped_at AS "stoppedAt" FROM kin_ping_items
+              WHERE org_id = ${orgId} AND person = 'alice' AND item_id = 'both' ORDER BY item_id`;
+            return row;
+          });
+          yield* sweep;
+          const armed = yield* ping;
+          assert.isNull(armed?.stoppedAt);
+
+          // Answered: neither the overdue chase nor either stale review re-arms it.
+          yield* sql`UPDATE kin_ping_items SET stopped_at = ${NOW} WHERE org_id = ${orgId}`;
+          yield* sweep;
+          yield* sweep;
+          assert.deepEqual(yield* ping, { request: armed?.request ?? "", stoppedAt: NOW });
+
+          yield* Ref.set(items, [item("both", { owner: "alice", due: iso(NOW + HOUR) })]);
+          yield* TestClock.adjust(2 * HOUR);
+          yield* service.run("promise_overdue", orgId);
+          assert.isNull((yield* ping)?.stoppedAt);
+        }),
+    ),
+  );
+
   it.effect("objective_at_risk flags an objective due within 3 days with open issues", () =>
     run(
       [
@@ -433,7 +480,7 @@ describe("chases", () => {
           yield* service.run("objective_at_risk", orgId).pipe(github);
           yield* service.run("objective_at_risk", orgId).pipe(github);
           assert.deepEqual(yield* notices, [
-            `launch is due ${iso(NOW + 2 * DAY)} and still has open GitHub work: https://github.com/owner/repo/issues/3.`,
+            `An objective due ${iso(NOW + 2 * DAY)} still has open GitHub work: https://github.com/owner/repo/issues/3.\n> \` launch \``,
           ]);
         }),
     ),
