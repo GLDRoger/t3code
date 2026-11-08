@@ -218,8 +218,6 @@ describe("APPR-6 grant vectors", () => {
     "exp not after iat",
     "iat 301 s ahead of the device clock",
   ]);
-  // These predate LEAD-1: the level target is keyed by agentId, not leadId (approvals.md §2).
-  const STALE_LEVEL_TARGET = new Set(["set a level in one chat", "set a level everywhere"]);
 
   it("encodes every accepted grant to the exact bytes the device signs", () => {
     for (const vector of vectors.cases.filter((c) => !c.error)) {
@@ -235,9 +233,7 @@ describe("APPR-6 grant vectors", () => {
     for (const vector of vectors.cases) {
       const input = vector.signingInput ?? `${b64(vector.header!)}.${b64(vector.payload!)}`;
       const decoded = decodeKinGrant(`${input}.${zeroSignature}`) !== null;
-      const expected = STALE_LEVEL_TARGET.has(vector.name)
-        ? false
-        : DEVICE_ONLY.has(vector.name) || !vector.error;
+      const expected = DEVICE_ONLY.has(vector.name) || !vector.error;
       assert.strictEqual(decoded, expected, vector.name);
     }
   });

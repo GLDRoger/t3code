@@ -92,7 +92,11 @@ export const KinActionTarget = Schema.Union([
     chatId: Schema.optional(KinChatId),
     level: KinLevel,
   }),
-  Schema.TaggedStruct("device_key", { thumbprint: Schema.String }),
+  Schema.TaggedStruct("device_key", {
+    thumbprint: Schema.String,
+    hardware: Schema.Literals(["secure_enclave", "strongbox", "tee"]), // the server's record
+    attested: Schema.Literal(true), // only an attested key can be proposed
+  }),
 ]);
 ```
 
