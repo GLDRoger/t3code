@@ -3,6 +3,7 @@ import type { KinOrgId } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
@@ -28,6 +29,16 @@ const expiration = (at: number) =>
   `${DateTime.formatIso(DateTime.makeUnsafe(at)).slice(0, 19).replace("T", " ")} UTC`;
 const inThirtyDays = { "github-authentication-token-expiration": expiration(NOW + 30 * DAY) };
 
+const NOT_ACCESSIBLE: FakeAnswer = {
+  status: 403,
+  body: { message: "Resource not accessible by personal access token" },
+};
+const repoBody = (repo: string, type = "Organization") => ({
+  full_name: repo,
+  owner: { login: repo.split("/")[0], type },
+  permissions: { admin: false, push: true, pull: true },
+});
+
 /** A token with exactly Contents: write and Metadata: read on REPOS, as GitHub should answer. */
 const narrowToken =
   (headers: Record<string, string>) =>
@@ -36,10 +47,11 @@ const narrowToken =
     if (request.path === "/user/repos?per_page=100") {
       return { status: 200, body: REPOS.map((full_name) => ({ full_name })) };
     }
+    if (request.path === "/orgs/GLDRoger/rulesets") return NOT_ACCESSIBLE;
     const repo = REPOS.find((slug) => request.path.startsWith(`/repos/${slug}`));
     if (repo === undefined) return { status: 404 };
-    if (request.path === `/repos/${repo}`) return { status: 200, body: { full_name: repo } };
-    return { status: 403, body: { message: "Resource not accessible by personal access token" } };
+    if (request.path === `/repos/${repo}`) return { status: 200, body: repoBody(repo) };
+    return NOT_ACCESSIBLE;
   };
 
 const setup = (route: (request: RecordedRequest) => FakeAnswer) => {
@@ -53,11 +65,11 @@ const setup = (route: (request: RecordedRequest) => FakeAnswer) => {
   return { keychain, requests: github.requests, layer };
 };
 
-const save = (token = TOKEN) =>
+const save = (token = TOKEN, probePr?: number) =>
   Effect.gen(function* () {
     yield* TestClock.setTime(NOW);
     const client = yield* OwnerMergeClient.OwnerMergeClient;
-    return yield* client.save({ orgId: ORG, token });
+    return yield* client.save({ orgId: ORG, token, probePr });
   });
 
 /** A pass from a real hygiene check, which is the only way to get one. */
@@ -72,6 +84,7 @@ const withHygiene = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
               t3: Option.none(),
               ghAccounts: [],
               gitCredential: Option.none(),
+              ssh: ["git@github.com: Permission denied (publickey)."],
             }),
           }),
         ),
@@ -93,11 +106,14 @@ describe("OwnerMergeClient", () => {
         requests.map((request) => `${request.method} ${request.path}`),
         [
           "GET /user",
-          ...REPOS.flatMap((repo) => [
+          ...REPOS.flatMap((repo, index) => [
             `GET /repos/${repo}`,
             `GET /repos/${repo}/actions/permissions`,
             `GET /repos/${repo}/hooks`,
+            `GET /repos/${repo}/actions/secrets`,
             `POST /repos/${repo}/pulls/1/reviews`,
+            // Both repositories belong to one organization, probed once.
+            ...(index === 0 ? ["GET /orgs/GLDRoger/rulesets"] : []),
           ]),
           "GET /user/repos?per_page=100",
         ],
@@ -118,7 +134,8 @@ describe("OwnerMergeClient", () => {
         Redacted.value(TOKEN),
       );
 
-      // A pass from an earlier check doesn't outlive the token.
+      // A pass made just before the token expires doesn't outlive it.
+      yield* TestClock.setTime(NOW + 30 * DAY - 30_000);
       const earlier = yield* withHygiene(pass);
       yield* TestClock.setTime(NOW + 30 * DAY);
       assert.deepInclude(yield* client.status(ORG), { _tag: "expired", login: "Nishchay" });
@@ -127,14 +144,49 @@ describe("OwnerMergeClient", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("refuses a stale hygiene pass", () => {
+    const { layer } = setup(narrowToken(inThirtyDays));
+    return Effect.gen(function* () {
+      yield* save();
+      const client = yield* OwnerMergeClient.OwnerMergeClient;
+      const fresh = yield* withHygiene(pass);
+      yield* TestClock.adjust("60 seconds");
+      assert.isTrue(Exit.isSuccess(yield* client.token(fresh).pipe(Effect.exit)));
+      yield* TestClock.adjust("1 millis");
+      assert.isTrue(Exit.hasDies(yield* client.token(fresh).pipe(Effect.exit)));
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("refuses a forged hygiene pass", () => {
     const { layer } = setup(narrowToken(inThirtyDays));
     return Effect.gen(function* () {
       yield* save();
       const client = yield* OwnerMergeClient.OwnerMergeClient;
-      const forged = { orgId: ORG } as unknown as CredentialHygiene.CredentialHygienePass;
-      const exit = yield* client.token(forged).pipe(Effect.exit);
-      assert.isTrue(exit._tag === "Failure");
+      const report = (yield* withHygiene(pass)).report;
+      const Pass = CredentialHygiene.CredentialHygienePass as any;
+      assert.throws(() => new Pass(ORG, report));
+      assert.throws(() => new Pass(Symbol("CredentialHygienePass.issue"), ORG, report));
+      const forgeries = [
+        { orgId: ORG, report },
+        Object.create(CredentialHygiene.CredentialHygienePass.prototype),
+      ] as Array<CredentialHygiene.CredentialHygienePass>;
+      for (const forged of forgeries) {
+        assert.isTrue(Exit.hasDies(yield* client.token(forged).pipe(Effect.exit)));
+      }
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("probes the PR it's given, and skips the organization probe for a user's repo", () => {
+    const { requests, layer } = setup((request) =>
+      request.path === "/repos/GLDRoger/t3code" || request.path === "/repos/GLDRoger/kin-memory"
+        ? { status: 200, body: repoBody(request.path.slice("/repos/".length), "User") }
+        : narrowToken(inThirtyDays)(request),
+    );
+    return Effect.gen(function* () {
+      yield* save(TOKEN, 42);
+      const paths = requests.map((request) => request.path);
+      assert.include(paths, "/repos/GLDRoger/t3code/pulls/42/reviews");
+      assert.isFalse(paths.some((path) => path.startsWith("/orgs/")));
     }).pipe(Effect.provide(layer));
   });
 
@@ -182,6 +234,15 @@ describe("OwnerMergeClient", () => {
       "GLDRoger/kin-memory: HTTP 404",
     ],
     [
+      "a token that can't push",
+      answering("/repos/GLDRoger/t3code", {
+        status: 200,
+        body: { ...repoBody("GLDRoger/t3code"), permissions: { push: false } },
+      }),
+      "cannot_push",
+      "GLDRoger/t3code",
+    ],
+    [
       "a token with Administration",
       answering("/repos/GLDRoger/t3code/actions/permissions", { status: 200, body: {} }),
       "too_broad",
@@ -194,10 +255,62 @@ describe("OwnerMergeClient", () => {
       "Webhooks on GLDRoger/kin-memory: HTTP 200",
     ],
     [
+      "a token with Secrets",
+      answering("/repos/GLDRoger/t3code/actions/secrets", { status: 200, body: {} }),
+      "too_broad",
+      "Secrets on GLDRoger/t3code: HTTP 200",
+    ],
+    [
+      "a token with organization Administration",
+      answering("/orgs/GLDRoger/rulesets", { status: 200, body: [] }),
+      "too_broad",
+      "Organization administration on GLDRoger: HTTP 200",
+    ],
+    [
       "a token that can review",
       answering("/repos/GLDRoger/t3code/pulls/1/reviews", { status: 422 }),
       "too_broad",
-      "Pull requests on GLDRoger/t3code: HTTP 422",
+      "Pull requests on GLDRoger/t3code (PR #1): HTTP 422",
+    ],
+    [
+      "a 403 that isn't GitHub's missing-permission answer",
+      answering("/repos/GLDRoger/t3code/hooks", {
+        status: 403,
+        body: { message: "Must have admin rights to Repository." },
+      }),
+      "too_broad",
+      "Webhooks on GLDRoger/t3code: HTTP 403",
+    ],
+    [
+      "a review probe on a PR GitHub can't find",
+      answering("/repos/GLDRoger/t3code/pulls/1/reviews", { status: 404 }),
+      "probe_inconclusive",
+      "Pull requests on GLDRoger/t3code (PR #1): HTTP 404",
+    ],
+    [
+      "a broad token behind a rate-limit 403",
+      answering("/repos/GLDRoger/t3code/hooks", {
+        ...NOT_ACCESSIBLE,
+        headers: { "x-ratelimit-remaining": "0" },
+      }),
+      "rate_limited",
+      "Webhooks on GLDRoger/t3code: HTTP 403",
+    ],
+    [
+      "a broad token behind a secondary rate limit",
+      answering("/repos/GLDRoger/t3code/actions/permissions", {
+        status: 403,
+        body: { message: "You have exceeded a secondary rate limit." },
+        headers: { "retry-after": "60" },
+      }),
+      "rate_limited",
+      "Administration on GLDRoger/t3code: HTTP 403",
+    ],
+    [
+      "a 429",
+      answering("/repos/GLDRoger/t3code/actions/secrets", { status: 429 }),
+      "rate_limited",
+      "Secrets on GLDRoger/t3code: HTTP 429",
     ],
     [
       "a probe GitHub can't answer",

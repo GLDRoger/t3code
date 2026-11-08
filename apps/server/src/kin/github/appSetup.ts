@@ -233,18 +233,22 @@ const createApp = Effect.fn("kinGitHubApp.create")(function* (input: {
   });
 });
 
-const storeMergeToken = Effect.fn("kinGitHubApp.storeMergeToken")(function* (orgId: KinOrgId) {
+const storeMergeToken = Effect.fn("kinGitHubApp.storeMergeToken")(function* (
+  orgId: KinOrgId,
+  probePr: number | undefined,
+) {
   yield* (yield* Keychain.KinKeychain).ready("kin-owner-merge");
   yield* Console.log(
     "Make a fine-grained token at https://github.com/settings/personal-access-tokens/new\n" +
       "  Resource owner: the account that owns the Kin repositories.\n" +
       "  Repository access: Only select repositories, exactly KIN_GITHUB_REPOS. Expiration: 90 days.\n" +
       "  Permissions: Contents: Read and write, Metadata: Read. Nothing else, so it can't review.\n" +
-      "Kin probes the token before storing it and refuses one that can do more.",
+      "Kin checks that GitHub refuses the token administration, webhooks, secrets and reviews\n" +
+      "before storing it. The review check uses PR #1 unless --probe-pr names an existing PR.",
   );
   const token = yield* Prompt.run(Prompt.Hidden({ message: "Paste the token (hidden)" }));
   const merge = yield* OwnerMergeClient.OwnerMergeClient;
-  const saved = yield* merge.save({ orgId, token });
+  const saved = yield* merge.save({ orgId, token, probePr });
   return {
     ok: true,
     lines: [
@@ -268,6 +272,12 @@ export const kinGitHubAppCommand = Command.make(
     mergeToken: Flag.Boolean("merge-token").pipe(
       Flag.withDescription("Store the owner's fine-grained merge token in the OS keychain."),
       Flag.withDefault(false),
+    ),
+    probePr: Flag.Int("probe-pr").pipe(
+      Flag.withDescription(
+        "An existing PR number in every Kin repo for --merge-token's review check.",
+      ),
+      Flag.optional,
     ),
     appId: Flag.String("app-id").pipe(
       Flag.withDescription("The App id for --check; defaults to KIN_GITHUB_APP_ID."),
@@ -311,7 +321,9 @@ export const kinGitHubAppCommand = Command.make(
             onNone: () => failed({ message: "--merge-token needs --kin-org <org-id>." }),
             onSome: (org) =>
               decodeOrgId(org).pipe(
-                Effect.flatMap(storeMergeToken),
+                Effect.flatMap((orgId) =>
+                  storeMergeToken(orgId, Option.getOrUndefined(input.probePr)),
+                ),
                 Effect.provide(OwnerMergeClient.layer.pipe(Layer.provide(KinGitHubScope.layer))),
                 Effect.catch(failed),
               ),

@@ -11,7 +11,12 @@ import { HttpClient } from "effect/http";
 // A value import back into CredentialHygiene, which imports this file; both only use the other
 // inside effects, after both modules have loaded.
 import { CredentialHygienePass } from "../approvals/CredentialHygiene.ts";
-import { gitHubJson, gitHubStatus, type KinGitHubRequestError } from "./githubRest.ts";
+import {
+  gitHubJson,
+  gitHubStatus,
+  type GitHubStatusResponse,
+  type KinGitHubRequestError,
+} from "./githubRest.ts";
 import * as Keychain from "./Keychain.ts";
 import { isScopedRepo, KinGitHubScope } from "./KinGitHubScope.ts";
 
@@ -19,12 +24,17 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** Spec section 6: the token is made with a 90-day expiry; one day of slack for time zones. */
 const MAX_LIFETIME_MS = 91 * DAY_MS;
 const OWNER_MERGE_TOKEN_WARN_MS = 7 * DAY_MS;
+/** A hygiene pass is proof of a check this recent; the executor checks right before it merges. */
+const PASS_MAX_AGE_MS = 60 * 1000;
 /**
  * Any PR number works if GitHub checks the token's permissions before it looks the PR up (to be
- * confirmed on a scratch repo, spec section 10). The invalid `event` and `commit_id` make GitHub
- * refuse with 422 even when the token could review, so the probe can never create a review.
+ * confirmed on a scratch repo, spec section 10); otherwise a missing PR answers 404, which is
+ * refused as inconclusive. The invalid `event` and `commit_id` make GitHub refuse with 422 even
+ * when the token could review, so the probe can never create a review.
  */
-const REVIEW_PROBE_PR = 1;
+const DEFAULT_REVIEW_PROBE_PR = 1;
+/** What GitHub says when a fine-grained token lacks the permission an endpoint needs. */
+const NOT_ACCESSIBLE_MESSAGE = "Resource not accessible by personal access token";
 const REVIEW_PROBE_BODY = {
   event: "KIN_PERMISSION_PROBE",
   commit_id: "0000000000000000000000000000000000000000",
@@ -40,6 +50,30 @@ const StoredMergeToken = Schema.Struct({
 const decodeStored = Schema.decodeUnknownOption(Schema.fromJsonString(StoredMergeToken));
 const encodeStored = Schema.encodeSync(Schema.fromJsonString(StoredMergeToken));
 
+const RepoInfo = Schema.Struct({
+  owner: Schema.Struct({ login: Schema.String, type: Schema.String }),
+  permissions: Schema.optional(Schema.Struct({ push: Schema.optional(Schema.Boolean) })),
+});
+
+/**
+ * A permission probe must be GitHub refusing the token for lacking the permission. A rate limit
+ * looks like a 403 too, and 404 can mean the token can't see the repo or the probe's PR is missing.
+ */
+function classifyProbe(
+  answer: GitHubStatusResponse,
+): "denied" | "rate_limited" | "inconclusive" | "allowed" {
+  if (answer.status === 429) return "rate_limited";
+  if (answer.status === 404) return "inconclusive";
+  if (answer.status !== 403) return "allowed";
+  if (
+    answer.headers["x-ratelimit-remaining"] === "0" ||
+    answer.headers["retry-after"] !== undefined
+  ) {
+    return "rate_limited";
+  }
+  return answer.message?.trim() === NOT_ACCESSIBLE_MESSAGE ? "denied" : "allowed";
+}
+
 export class OwnerMergeTokenRefusedError extends Schema.TaggedError<OwnerMergeTokenRefusedError>()(
   "OwnerMergeTokenRefusedError",
   {
@@ -51,7 +85,10 @@ export class OwnerMergeTokenRefusedError extends Schema.TaggedError<OwnerMergeTo
       "wrong_owner",
       "no_repos",
       "repo_unreachable",
+      "cannot_push",
       "too_broad",
+      "probe_inconclusive",
+      "rate_limited",
       "other_repos",
     ]),
     // A login, repository or permission name with the probe's HTTP status; never the token.
@@ -75,8 +112,14 @@ export class OwnerMergeTokenRefusedError extends Schema.TaggedError<OwnerMergeTo
         return "KIN_GITHUB_REPOS names no repository, so the token can't be checked.";
       case "repo_unreachable":
         return `The token can't read ${detail}. Give it access to every repository in KIN_GITHUB_REPOS.`;
+      case "cannot_push":
+        return `The token can't push to ${detail}. Give it Contents: Read and write.`;
       case "too_broad":
-        return `The token has more than Contents and Metadata (${detail}). Make one with Contents: Read and write and Metadata: Read only.`;
+        return `GitHub didn't refuse the token where it should (${detail}). Kin only stores a token that can't administer the repository or organization, see webhooks or secrets, or review. Make one with Contents: Read and write and Metadata: Read only.`;
+      case "probe_inconclusive":
+        return `Kin can't tell what the token can do (${detail}). A 404 means the token may lack access to the repository, or the PR the review check uses doesn't exist; rerun with --probe-pr <number of an existing PR>.`;
+      case "rate_limited":
+        return `GitHub rate-limited a check (${detail}). Nothing was stored; try again later.`;
       case "other_repos":
         return `The token reaches repositories outside KIN_GITHUB_REPOS (${detail}). Choose Only select repositories.`;
     }
@@ -126,12 +169,15 @@ export class OwnerMergeClient extends Context.Service<
   OwnerMergeClient,
   {
     /**
-     * Checks the token's login and expiry, then probes that it holds only Contents and Metadata on
-     * the scoped repositories and reaches no others (spec section 6), and stores it.
+     * Checks the token's login and expiry, that it can push to every scoped repository, that GitHub
+     * refuses it administration, webhooks, secrets and reviews there, and that it reaches no other
+     * repositories (spec sections 6 and 10), then stores it. `probePr` is the PR the review probe
+     * targets on every repository, 1 by default.
      */
     readonly save: (input: {
       readonly orgId: KinOrgId;
       readonly token: Redacted.Redacted<string>;
+      readonly probePr?: number | undefined;
     }) => Effect.Effect<
       { readonly login: string; readonly expiresAt: number },
       OwnerMergeTokenRefusedError | KinGitHubRequestError | Keychain.KinKeychainError
@@ -139,7 +185,10 @@ export class OwnerMergeClient extends Context.Service<
     readonly status: (
       orgId: KinOrgId,
     ) => Effect.Effect<OwnerMergeTokenStatus, Keychain.KinKeychainError>;
-    /** Only `CredentialHygiene.requirePassing` makes a pass, so the token needs a passing check. */
+    /**
+     * Only `CredentialHygiene.requirePassing` makes a pass, so the token needs a passing check, made
+     * in the last 60 seconds. A forged or stale pass is a defect.
+     */
     readonly token: (
       pass: CredentialHygienePass,
     ) => Effect.Effect<
@@ -162,6 +211,7 @@ const make = Effect.gen(function* () {
   const save = Effect.fn("OwnerMergeClient.save")(function* (input: {
     readonly orgId: KinOrgId;
     readonly token: Redacted.Redacted<string>;
+    readonly probePr?: number | undefined;
   }) {
     // Classic tokens carry scopes, not per-repository permissions, so the probes below can't bound them.
     if (!Redacted.value(input.token).startsWith("github_pat_")) {
@@ -189,37 +239,83 @@ const make = Effect.gen(function* () {
     if (scope.repos.length === 0) {
       return yield* new OwnerMergeTokenRefusedError({ reason: "no_repos" });
     }
-    const status = (operation: string, method: "GET" | "POST", path: string, body?: unknown) =>
-      gitHubStatus({ client, operation, method, path, token: input.token, body });
+    const reviewPr = input.probePr ?? DEFAULT_REVIEW_PROBE_PR;
+    // Each probe must be GitHub refusing the permission; see `classifyProbe`.
+    const probe = Effect.fnUntraced(function* (
+      permission: string,
+      operation: string,
+      method: "GET" | "POST",
+      path: string,
+    ) {
+      const answer = yield* gitHubStatus({
+        client,
+        operation,
+        method,
+        path,
+        token: input.token,
+        body: method === "POST" ? REVIEW_PROBE_BODY : undefined,
+      });
+      const verdict = classifyProbe(answer);
+      if (verdict === "denied") return;
+      return yield* new OwnerMergeTokenRefusedError({
+        reason:
+          verdict === "rate_limited"
+            ? "rate_limited"
+            : verdict === "inconclusive"
+              ? "probe_inconclusive"
+              : "too_broad",
+        detail: `${permission}: HTTP ${answer.status}`,
+      });
+    });
+    const probedOrgs = new Set<string>();
     for (const repo of scope.repos) {
       const [owner, name] = repo.split("/") as [string, string];
       const base = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
-      const readable = yield* status("repos.get", "GET", base);
-      if (readable !== 200) {
-        return yield* new OwnerMergeTokenRefusedError({
-          reason: "repo_unreachable",
-          detail: `${repo}: HTTP ${readable}`,
-        });
+      const info = yield* gitHubJson({
+        client,
+        operation: "repos.get",
+        method: "GET",
+        path: base,
+        token: input.token,
+        schema: RepoInfo,
+      }).pipe(
+        Effect.catchIf(
+          (error) => error.stage === "status",
+          (error) =>
+            Effect.fail(
+              new OwnerMergeTokenRefusedError({
+                reason: "repo_unreachable",
+                detail: `${repo}: HTTP ${error.status ?? "?"}`,
+              }),
+            ),
+        ),
+      );
+      if (info.body.permissions?.push !== true) {
+        return yield* new OwnerMergeTokenRefusedError({ reason: "cannot_push", detail: repo });
       }
-      // Each must be 403: anything else means the token holds that permission, or GitHub can't say.
-      const probes = [
-        ["Administration", "repos.actionsPermissions", "GET", `${base}/actions/permissions`],
-        ["Webhooks", "repos.hooks", "GET", `${base}/hooks`],
-        ["Pull requests", "pulls.createReview", "POST", `${base}/pulls/${REVIEW_PROBE_PR}/reviews`],
-      ] as const;
-      for (const [permission, operation, method, path] of probes) {
-        const answer = yield* status(
-          operation,
-          method,
-          path,
-          method === "POST" ? REVIEW_PROBE_BODY : undefined,
+      yield* probe(
+        `Administration on ${repo}`,
+        "repos.actionsPermissions",
+        "GET",
+        `${base}/actions/permissions`,
+      );
+      yield* probe(`Webhooks on ${repo}`, "repos.hooks", "GET", `${base}/hooks`);
+      yield* probe(`Secrets on ${repo}`, "repos.actionsSecrets", "GET", `${base}/actions/secrets`);
+      yield* probe(
+        `Pull requests on ${repo} (PR #${reviewPr})`,
+        "pulls.createReview",
+        "POST",
+        `${base}/pulls/${reviewPr}/reviews`,
+      );
+      const org = info.body.owner.login;
+      if (info.body.owner.type === "Organization" && !probedOrgs.has(org.toLowerCase())) {
+        probedOrgs.add(org.toLowerCase());
+        yield* probe(
+          `Organization administration on ${org}`,
+          "orgs.rulesets",
+          "GET",
+          `/orgs/${encodeURIComponent(org)}/rulesets`,
         );
-        if (answer !== 403) {
-          return yield* new OwnerMergeTokenRefusedError({
-            reason: "too_broad",
-            detail: `${permission} on ${repo}: HTTP ${answer}`,
-          });
-        }
       }
     }
     // Fine-grained tokens list only the repositories they were granted. Public repositories stay
@@ -268,8 +364,12 @@ const make = Effect.gen(function* () {
 
   const token = Effect.fn("OwnerMergeClient.token")(function* (pass: CredentialHygienePass) {
     const orgId = CredentialHygienePass.orgIdOf(pass);
-    if (orgId === null)
+    if (orgId === null) {
       return yield* Effect.die("OwnerMergeClient.token needs a real hygiene pass");
+    }
+    if ((yield* Clock.currentTimeMillis) - pass.report.checkedAt > PASS_MAX_AGE_MS) {
+      return yield* Effect.die("OwnerMergeClient.token needs a hygiene pass from the last minute");
+    }
     const item = yield* stored(orgId);
     if (Option.isNone(item)) {
       return yield* new OwnerMergeTokenMissingError({ orgId, expired: false });

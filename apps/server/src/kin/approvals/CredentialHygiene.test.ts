@@ -14,12 +14,16 @@ import * as CredentialHygiene from "./CredentialHygiene.ts";
 const ORG = "org_kin" as KinOrgId;
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.UTC(2026, 10, 8);
+const sshHi = (login: string) =>
+  `Hi ${login}! You've successfully authenticated, but GitHub does not provide shell access.`;
+const SSH_DENIED = "git@github.com: Permission denied (publickey).";
 
 type Identity =
   | {
       readonly t3?: Option.Option<{ readonly login: string; readonly source: string }>;
       readonly gh?: ReadonlyArray<string>;
       readonly git?: Option.Option<string>;
+      readonly ssh?: ReadonlyArray<string>;
     }
   | "unreachable";
 
@@ -54,6 +58,7 @@ const setup = (input: {
               t3: state.identity.t3 ?? Option.none(),
               ghAccounts: state.identity.gh ?? [],
               gitCredential: state.identity.git ?? Option.none(),
+              ssh: state.identity.ssh ?? [SSH_DENIED],
             }),
       ),
     }),
@@ -73,6 +78,7 @@ const bot: Identity = {
   t3: Option.some({ login: "kin-bot", source: "gh" }),
   gh: ["kin-bot"],
   git: Option.some("Kin-Bot"),
+  ssh: [sshHi("kin-bot"), SSH_DENIED],
 };
 
 const check = Effect.gen(function* () {
@@ -129,6 +135,27 @@ describe("CredentialHygiene", () => {
       "the configured owner with no merge token to compare",
       { identity: { gh: ["Nishchay"] }, mergeToken: null },
       ["merge_token_missing", "owner_identity"],
+    ],
+    [
+      "an SSH key that signs in as the owner",
+      { identity: { ...bot, ssh: [sshHi("kin-bot"), sshHi("Nishchay")] } },
+      ["owner_identity"],
+    ],
+    [
+      "an SSH key that isn't the bot's",
+      { identity: { ...bot, ssh: [sshHi("GLDRoger/t3code")] } },
+      ["non_bot_identity"],
+    ],
+    [
+      "an SSH answer that can't be read",
+      { identity: { ...bot, ssh: ["Host key verification failed."] } },
+      ["identity_unknown"],
+    ],
+    ["no SSH answer at all", { identity: { ...bot, ssh: [] } }, ["identity_unknown"]],
+    [
+      "an SSH agent in the environment",
+      { identity: bot, env: { SSH_AUTH_SOCK: "/tmp/agent.sock" } },
+      ["env_token"],
     ],
     [
       "a gh account that isn't the bot",
@@ -191,6 +218,7 @@ describe("CredentialHygiene", () => {
         { source: "t3", login: "kin-bot" },
         { source: "gh", login: "kin-bot" },
         { source: "git_credential", login: "Kin-Bot" },
+        { source: "ssh", login: "kin-bot" },
       ]);
 
       const expiring = yield* check.pipe(

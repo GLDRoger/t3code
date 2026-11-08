@@ -1,4 +1,4 @@
-import { KinChatError, KinChatRpcs } from "@t3tools/contracts";
+import { KinChatAndBudgetRpcs, KinChatError } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -7,10 +7,11 @@ import * as Stream from "effect/Stream";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { KinServer } from "../layer.ts";
+import { KinBudget } from "../lead/KinBudget.ts";
 import { KinIdentity } from "./KinIdentity.ts";
 import { KinChatService } from "./KinChatService.ts";
 
-const group = RpcGroup.make(...KinChatRpcs);
+const group = RpcGroup.make(...KinChatAndBudgetRpcs);
 const unavailable = new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
 const isKinChatError = Schema.is(KinChatError);
 const mapError = (error: { readonly _tag: string }) =>
@@ -26,6 +27,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
     if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
     return {
       identity: Context.get(kin.value.services.value, KinIdentity),
+      budget: Context.get(kin.value.services.value, KinBudget),
       chat: Context.get(kin.value.services.value, KinChatService),
     };
   });
@@ -34,6 +36,22 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
     return { chat, people: yield* identity.resolve(session) };
   });
   return group.of({
+    "kin.budget.get": (input) =>
+      services.pipe(
+        Effect.flatMap(({ identity, budget }) =>
+          identity
+            .resolve(session)
+            .pipe(Effect.flatMap((people) => budget.view(people, input.orgId))),
+        ),
+        Effect.mapError(mapError),
+      ),
+    "kin.budget.set": (input) =>
+      services.pipe(
+        Effect.flatMap(({ identity, budget }) =>
+          identity.resolve(session).pipe(Effect.flatMap((people) => budget.set(people, input))),
+        ),
+        Effect.mapError(mapError),
+      ),
     "kin.orgs.list": () =>
       services.pipe(
         Effect.flatMap(({ identity, chat }) =>

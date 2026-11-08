@@ -1,3 +1,6 @@
+import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
+import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
+import * as TaskCard from "../widgets/taskCard.ts";
 import {
   KinChatError,
   KinChatId,
@@ -9,6 +12,8 @@ import {
   KinWidgetsActInput,
   KinAgentIntent,
   type KinAuthor,
+  type KinAgentId,
+  type ThreadId,
   type KinChat,
   type KinChatListEvent,
   type KinChatStreamEvent,
@@ -59,7 +64,7 @@ type WidgetUpsertInput = {
   readonly type: string;
   readonly state: unknown;
   readonly awaiting?: ReadonlyArray<KinPersonId> | undefined;
-  readonly closed?: boolean;
+  readonly closed?: boolean | undefined;
 };
 type WaitingInput = Pick<
   KinWaitingItem,
@@ -69,6 +74,21 @@ type WaitingInput = Pick<
 export class KinChatService extends Context.Service<
   KinChatService,
   {
+    readonly notice: (input: {
+      readonly messageId: KinMessageId;
+      readonly orgId: KinOrgId;
+      readonly chatId: KinChatId;
+      readonly body: string;
+      readonly waitingFor?: KinPersonId;
+    }) => Effect.Effect<
+      { readonly message: KinMessage; readonly waiting: KinWaitingItem | null },
+      ServiceError
+    >;
+    readonly resolveNotice: (input: {
+      readonly orgId: KinOrgId;
+      readonly waitingId: KinWaitingId;
+      readonly resolution: "answered" | "closed";
+    }) => Effect.Effect<void, ServiceError>;
     readonly orgs: (
       identities: ReadonlyArray<PersonIdentity>,
     ) => Effect.Effect<KinOrgsListResult, ServiceError>;
@@ -109,6 +129,14 @@ export class KinChatService extends Context.Service<
       identity: Identity,
       input: WidgetUpsertInput,
     ) => Effect.Effect<KinWidget, ServiceError>;
+    readonly createTaskCard: (input: {
+      readonly orgId: KinOrgId;
+      readonly chatId: KinChatId;
+      readonly authorAgentId: KinAgentId;
+      readonly threadId: ThreadId;
+      readonly title: string;
+      readonly model: string | null;
+    }) => Effect.Effect<KinWidget, ServiceError, OrchestratorV2 | ServerEnvironment>;
     readonly act: (
       identity: PersonCaller,
       input: KinWidgetsActInput,
@@ -162,6 +190,7 @@ const requireRecord = Effect.fn("KinChatService.requireRecord")(function* <A, E,
 });
 
 const make = Effect.gen(function* () {
+  const cards = yield* TaskCard.TaskCardIndex;
   const repo = yield* Repository.KinChatRepository;
   const hub = yield* Hub.KinChatHub;
   const sql = yield* SqlClient.SqlClient;
@@ -229,7 +258,8 @@ const make = Effect.gen(function* () {
         agent.retiredAt !== null ||
         thread.endedAt !== null ||
         thread.agentId !== agent.agentId ||
-        agent.ownerPersonId !== identity.ownerPersonId
+        agent.ownerPersonId !== identity.ownerPersonId ||
+        !(yield* repo.hasRunningWakeup(identity))
       )
         return yield* notAllowed;
     }
@@ -263,7 +293,9 @@ const make = Effect.gen(function* () {
   ) {
     if (yield* repo.resolveWaiting({ ...item, resolution, resolvedAt: yield* now })) {
       const updated = yield* requireRecord(repo.getWaiting(item));
-      yield* hub.publish({ type: "waiting.updated", orgId: item.orgId, item: updated });
+      yield* sql.afterCommit(
+        hub.publish({ type: "waiting.updated", orgId: item.orgId, item: updated }),
+      );
       return updated;
     }
     return item;
@@ -309,6 +341,7 @@ const make = Effect.gen(function* () {
     const messageId = yield* decodeMessageId(SecureRandom.uuidV4Unsafe()).pipe(Effect.orDie);
     const message = yield* repo.insertMessage({
       orgId: identity.orgId,
+      caller: identity._tag === "agent" ? identity.caller : undefined,
       chatId: input.chatId,
       messageId,
       author: authorFor(identity, member),
@@ -392,6 +425,95 @@ const make = Effect.gen(function* () {
     (effect) => transaction(effect).pipe(NodeSqliteClient.readOnly),
   );
   return KinChatService.of({
+    // Trusted server callers only; deliberately absent from RPC and MCP.
+    notice: Effect.fn("KinChatService.notice")(function* (input) {
+      yield* requireRecord(repo.getChat(input));
+      if (input.waitingFor !== undefined)
+        yield* requireRecord(
+          repo.activeMember({
+            ...input,
+            principal: { _tag: "person", personId: input.waitingFor },
+          }),
+        );
+      const messageId = yield* decodeMessageId(input.messageId).pipe(
+        Effect.mapError(() => invalidState),
+      );
+      const previous = yield* repo.getMessage({ orgId: input.orgId, messageId });
+      if (Option.isSome(previous)) {
+        const message = previous.value;
+        const rows = yield* sql<{ waiting_id: string }>`SELECT waiting_id FROM kin_waiting
+          WHERE org_id = ${input.orgId} AND message_id = ${messageId} ORDER BY waiting_id`.pipe(
+          Effect.mapError(toPersistenceSqlError("KinChatService.notice")),
+        );
+        const waiting =
+          rows[0] === undefined
+            ? null
+            : yield* requireRecord(
+                repo.getWaiting({
+                  orgId: input.orgId,
+                  waitingId: yield* decodeWaitingId(rows[0].waiting_id).pipe(
+                    Effect.mapError(() => invalidState),
+                  ),
+                }),
+              );
+        if (
+          message.author._tag !== "system" ||
+          message.chatId !== input.chatId ||
+          message.body !== input.body ||
+          (waiting?.personId ?? undefined) !== input.waitingFor
+        )
+          return yield* notAllowed;
+        return { message, waiting };
+      }
+      const message = yield* repo.insertMessage({
+        orgId: input.orgId,
+        chatId: input.chatId,
+        messageId,
+        author: { _tag: "system" },
+        kind: "system",
+        body: input.body,
+        intent: null,
+        mentions: [],
+        replyTo: null,
+        widgetId: null,
+        floorRunId: null,
+        status: "posted",
+        sentBy: null,
+        clientMessageId: null,
+        createdAt: yield* now,
+        editedAt: null,
+      });
+      yield* sql.afterCommit(hub.publish({ type: "message.posted", orgId: input.orgId, message }));
+      let waiting: KinWaitingItem | null = null;
+      if (input.waitingFor !== undefined) {
+        waiting = {
+          orgId: input.orgId,
+          chatId: input.chatId,
+          waitingId: yield* decodeWaitingId(SecureRandom.uuidV4Unsafe()).pipe(Effect.orDie),
+          personId: input.waitingFor,
+          messageId: message.messageId,
+          widgetId: null,
+          reason: "question",
+          createdAt: yield* now,
+          resolvedAt: null,
+          resolution: null,
+        };
+        yield* repo.addWaiting(waiting);
+        yield* sql.afterCommit(
+          hub.publish({ type: "waiting.updated", orgId: input.orgId, item: waiting }),
+        );
+      }
+      return { message, waiting };
+    }, transaction),
+    resolveNotice: Effect.fn("KinChatService.resolveNotice")(function* (input) {
+      const item = yield* requireRecord(repo.getWaiting(input));
+      if (item.reason !== "question" || item.messageId === null) return yield* notAllowed;
+      const message = yield* requireRecord(
+        repo.getMessage({ orgId: input.orgId, messageId: item.messageId }),
+      );
+      if (message.author._tag !== "system") return yield* notAllowed;
+      yield* resolve(item, input.resolution);
+    }, transaction),
     orgs: Effect.fn("KinChatService.orgs")(function* (identities) {
       const orgs = yield* Effect.forEach(
         identities,
@@ -673,6 +795,113 @@ const make = Effect.gen(function* () {
           seq: updated.lastReadSeq,
         });
     }, transaction),
+    createTaskCard: Effect.fn("KinChatService.createTaskCard")(function* (input) {
+      if (input.orgId !== "kin-default") return yield* notFound;
+      const environment = yield* ServerEnvironment;
+      const orchestrator = yield* OrchestratorV2;
+      const shell = yield* orchestrator
+        .getThreadShell(input.threadId)
+        .pipe(Effect.orElseSucceed(() => null));
+      if (shell === null) return yield* notFound;
+      const agent = yield* requireRecord(
+        repo.getAgent({ orgId: input.orgId, agentId: input.authorAgentId }),
+      );
+      if (agent.role !== "lead" || agent.retiredAt !== null) return yield* notFound;
+      yield* requireRecord(repo.getChat(input));
+      const member = (yield* repo.listMembers(input)).find(
+        (member) =>
+          member.leftAt === null &&
+          member.principal._tag === "agent" &&
+          member.principal.agentId === agent.agentId,
+      );
+      const thread = (yield* repo.listActiveAgentThreads()).find(
+        (thread) => thread.orgId === input.orgId && thread.agentId === agent.agentId,
+      );
+      if (member === undefined || thread === undefined) return yield* notFound;
+      const widgetId = KinWidgetId.make(
+        `task:${yield* encodeAction([input.chatId, input.threadId]).pipe(Effect.orDie)}`,
+      );
+      const clientId = yield* encodeAction([
+        input.threadId,
+        input.authorAgentId,
+        input.title,
+        input.model,
+      ]).pipe(Effect.orDie);
+      const existing = yield* repo.getWidget({ ...input, widgetId });
+      if (Option.isSome(existing)) {
+        const original = yield* repo.findClientMessage({
+          ...input,
+          memberId: member.memberId,
+          kind: "task-card",
+          clientId,
+        });
+        if (Option.isNone(original) || original.value.messageId !== existing.value.messageId)
+          return yield* notAllowed;
+        return existing.value;
+      }
+      const updatedAt = yield* now;
+      const state = yield* TaskCard.decodeTaskCardEffect({
+        taskId: input.threadId,
+        environmentId: yield* environment.getEnvironmentId,
+        threadId: input.threadId,
+        remoteEnvironmentId: null,
+        title: input.title,
+        model: input.model,
+        status: "waiting",
+        pullRequests: [],
+        lastError: null,
+        updatedAt,
+      }).pipe(Effect.mapError(() => invalidState));
+      const message = yield* repo.insertMessage({
+        orgId: input.orgId,
+        chatId: input.chatId,
+        messageId: KinMessageId.make(SecureRandom.uuidV4Unsafe()),
+        author: {
+          _tag: "agent",
+          agentId: agent.agentId,
+          ownerPersonId: agent.ownerPersonId,
+          threadId: thread.threadId,
+          memberId: member.memberId,
+        },
+        serverTaskCard: true,
+        body: "",
+        intent: "answer",
+        kind: "text",
+        mentions: [],
+        replyTo: null,
+        widgetId: null,
+        floorRunId: null,
+        status: "posted",
+        sentBy: null,
+        clientMessageId: { kind: "task-card", id: clientId },
+        createdAt: updatedAt,
+        editedAt: null,
+      });
+      const widget: KinWidget = {
+        orgId: input.orgId,
+        chatId: input.chatId,
+        widgetId,
+        messageId: message.messageId,
+        widgetClass: "native",
+        type: "task",
+        revision: 1,
+        state: TaskCard.taskCardState(state, shell, updatedAt),
+        source: null,
+        feed: null,
+        awaiting: [],
+        pinnedAt: null,
+        closedAt: null,
+        updatedAt,
+      };
+      yield* repo.insertWidget(widget);
+      const anchor = yield* requireRecord(
+        repo.getMessage({ ...input, messageId: message.messageId }),
+      );
+      yield* hub.publish({ type: "message.posted", orgId: input.orgId, message: anchor });
+      yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
+      yield* sql.afterCommit(cards.track(widget));
+      return widget;
+    }, transaction),
     upsertWidget: Effect.fn("KinChatService.upsertWidget")(function* (identity, input) {
       const member = yield* memberFor(identity, input.chatId);
       yield* canWrite(identity, member);
@@ -681,7 +910,8 @@ const make = Effect.gen(function* () {
           reason: "use_approvals",
           message: "Use the signed approvals service.",
         });
-      const state = yield* validateState(input.type, input.state);
+      if (input.type === "task" && input.widgetId === undefined) return yield* notAllowed;
+      let state = yield* validateState(input.type, input.state);
       let widget: KinWidget;
       if (input.widgetId === undefined) {
         if (input.revision !== undefined) return yield* invalidState;
@@ -735,13 +965,42 @@ const make = Effect.gen(function* () {
           input.replyTo !== undefined
         )
           return yield* invalidState;
+        const awaiting =
+          input.closed === true || (input.closed === undefined && existing.closedAt !== null)
+            ? []
+            : (input.awaiting ?? existing.awaiting);
+        if (existing.type === "task") {
+          const previous = yield* TaskCard.decodeTaskCardEffect(existing.state).pipe(
+            Effect.mapError(() => invalidState),
+          );
+          const next = TaskCard.decodeTaskCard(state);
+          if (
+            previous.threadId !== next.threadId ||
+            previous.taskId !== next.taskId ||
+            previous.environmentId !== next.environmentId ||
+            previous.remoteEnvironmentId !== next.remoteEnvironmentId
+          )
+            return yield* invalidState;
+          state = {
+            ...next,
+            status: previous.status,
+            pullRequests: previous.pullRequests,
+            lastError: previous.lastError,
+            updatedAt: previous.updatedAt,
+          };
+          if (
+            existing.revision === input.revision + 1 &&
+            TaskCard.taskCardEquivalent(TaskCard.decodeTaskCard(state), previous) &&
+            awaiting.length === existing.awaiting.length &&
+            awaiting.every((personId, index) => personId === existing.awaiting[index]) &&
+            (input.closed === undefined || input.closed === (existing.closedAt !== null))
+          )
+            return existing;
+        }
         widget = yield* repo.updateWidget({
           ...existing,
           state,
-          awaiting:
-            input.closed === true || (input.closed === undefined && existing.closedAt !== null)
-              ? []
-              : (input.awaiting ?? existing.awaiting),
+          awaiting,
           expectedRevision: input.revision,
           closedAt:
             input.closed === undefined ? existing.closedAt : input.closed ? yield* now : null,
@@ -761,6 +1020,7 @@ const make = Effect.gen(function* () {
             widgetId: widget.widgetId,
             reason: "decision",
           });
+      yield* sql.afterCommit(cards.track(widget));
       yield* hub.publish({ type: "widget.updated", orgId: identity.orgId, widget });
       return widget;
     }, transaction),
@@ -870,4 +1130,4 @@ const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(KinChatService, make);
+export const layer = Layer.effect(KinChatService, make).pipe(Layer.provideMerge(TaskCard.layer));

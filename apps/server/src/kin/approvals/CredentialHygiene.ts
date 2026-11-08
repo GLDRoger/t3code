@@ -11,13 +11,48 @@ import * as Schema from "effect/Schema";
 import { KinGitHubScope } from "../github/KinGitHubScope.ts";
 import * as OwnerMergeClient from "../github/OwnerMergeClient.ts";
 
-/** Agent CLIs inherit the server's environment, so any of these hands them a GitHub token. */
+/**
+ * Agent CLIs inherit the server's environment, so any of these hands them a GitHub credential.
+ * `SSH_AUTH_SOCK` reaches every key the SSH agent holds, and the SSH probe sees only the first one
+ * GitHub accepts.
+ */
 const ENV_TOKEN_NAMES = [
   "GH_TOKEN",
   "GITHUB_TOKEN",
   "GH_ENTERPRISE_TOKEN",
   "GITHUB_ENTERPRISE_TOKEN",
+  "SSH_AUTH_SOCK",
 ];
+
+/** @public The probe APPR-9's live layer runs for `T3GitHubIdentities.ssh`, without `SSH_AUTH_SOCK`. */
+export const GITHUB_SSH_PROBE = [
+  "ssh",
+  "-T",
+  "-o",
+  "BatchMode=yes",
+  "-o",
+  "StrictHostKeyChecking=yes",
+  "git@github.com",
+] as const;
+
+/**
+ * Reads one answer to `GITHUB_SSH_PROBE`. GitHub greets an accepted key with `Hi <login>!` (a
+ * deploy key's login is `owner/repo`); `Permission denied (publickey)` means no key it accepts.
+ * Anything else, such as an unknown host key or a timeout, can't be read.
+ */
+function parseGitHubSshAnswer(
+  output: string,
+):
+  | { readonly _tag: "login"; readonly login: string }
+  | { readonly _tag: "none" }
+  | { readonly _tag: "unknown" } {
+  const greeting = /^Hi ([^\s!]+)! You've successfully authenticated/m.exec(output);
+  if (greeting !== null) return { _tag: "login", login: greeting[1] as string };
+  if (/^git@github\.com: Permission denied \(publickey\)\.?$/m.test(output.trim())) {
+    return { _tag: "none" };
+  }
+  return { _tag: "unknown" };
+}
 
 export class T3GitHubIdentityError extends Schema.TaggedError<T3GitHubIdentityError>()(
   "T3GitHubIdentityError",
@@ -46,6 +81,12 @@ export interface T3GitHubIdentities {
    * helper's password, never logged). None when no helper answers.
    */
   readonly gitCredential: Option.Option<string>;
+  /**
+   * The combined stdout and stderr of each SSH probe: `GITHUB_SSH_PROBE` as is, then once per
+   * private key in `~/.ssh` with `-o IdentitiesOnly=yes -i <key>` added, since GitHub greets only
+   * the first key it accepts. The check parses them; any answer it can't read fails it.
+   */
+  readonly ssh: ReadonlyArray<string>;
 }
 
 export class T3GitHubIdentity extends Context.Service<
@@ -67,27 +108,31 @@ export interface CredentialHygieneReport {
   readonly passed: boolean;
   readonly failures: ReadonlyArray<CredentialHygieneFailure>;
   readonly warnings: ReadonlyArray<"merge_token_expiring">;
-  /** Names only, never values. */
+  /** Credential variables set in the server's environment. Names only, never values. */
   readonly envTokenNames: ReadonlyArray<string>;
   readonly t3Login: string | null;
   /** Every login found, with where it came from. Logins only; no credential leaves the probe. */
   readonly identities: ReadonlyArray<{
-    readonly source: "t3" | "gh" | "git_credential";
+    readonly source: "t3" | "gh" | "git_credential" | "ssh";
     readonly login: string;
   }>;
   readonly checkedAt: number;
 }
 
+const ISSUE_PASS: unique symbol = Symbol("CredentialHygienePass.issue");
 let issuePass: (orgId: KinOrgId, report: CredentialHygieneReport) => CredentialHygienePass;
 
 /**
- * Proof that `requirePassing` passed. Only this module can make one (private constructor, and
- * private fields that throw on a forged object), and `OwnerMergeClient.token` requires it.
+ * Proof that `requirePassing` passed. Only this module can make one: the constructor needs a
+ * module-private symbol, and a forged object lacks the private fields. `OwnerMergeClient.token`
+ * requires it.
  */
 export class CredentialHygienePass {
   readonly #orgId: KinOrgId;
   readonly #report: CredentialHygieneReport;
-  private constructor(orgId: KinOrgId, report: CredentialHygieneReport) {
+  private constructor(issue: typeof ISSUE_PASS, orgId: KinOrgId, report: CredentialHygieneReport) {
+    if (issue !== ISSUE_PASS)
+      throw new Error("Only CredentialHygiene.requirePassing makes a pass.");
     this.#orgId = orgId;
     this.#report = report;
   }
@@ -104,7 +149,7 @@ export class CredentialHygienePass {
       : null;
   }
   static {
-    issuePass = (orgId, report) => new CredentialHygienePass(orgId, report);
+    issuePass = (orgId, report) => new CredentialHygienePass(ISSUE_PASS, orgId, report);
   }
 }
 
@@ -173,7 +218,7 @@ const make = Effect.gen(function* () {
     if (Option.isNone(probed)) {
       failures.add("identity_unknown");
     } else {
-      const { t3, ghAccounts, gitCredential } = probed.value;
+      const { t3, ghAccounts, gitCredential, ssh } = probed.value;
       if (Option.isSome(t3)) {
         t3Login = t3.value.login;
         if (t3.value.source === "env") failures.add("env_token");
@@ -182,6 +227,18 @@ const make = Effect.gen(function* () {
       for (const login of ghAccounts) found.push({ source: "gh", login });
       if (Option.isSome(gitCredential)) {
         found.push({ source: "git_credential", login: gitCredential.value });
+      }
+      // The probe as is always runs, so no answer means the live layer skipped SSH.
+      if (ssh.length === 0) failures.add("identity_unknown");
+      for (const output of ssh) {
+        const answer = parseGitHubSshAnswer(output);
+        if (answer._tag === "unknown") failures.add("identity_unknown");
+        if (
+          answer._tag === "login" &&
+          !found.some((item) => item.source === "ssh" && item.login === answer.login)
+        ) {
+          found.push({ source: "ssh", login: answer.login });
+        }
       }
     }
     const bot = scope.botLogin.toLowerCase();
