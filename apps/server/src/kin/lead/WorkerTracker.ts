@@ -32,7 +32,7 @@ import * as Writer from "../memory/MemoryWriter.ts";
 import { KinBudget } from "./KinBudget.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import { KinLeadRegistry } from "./KinLeadRegistry.ts";
-import { parseReport } from "./Workers.ts";
+import { parseReport } from "./workerBrief.ts";
 
 const consumer = "worker-tracker";
 const ended = new Set<OrchestrationV2Run["status"]>([
