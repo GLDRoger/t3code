@@ -173,6 +173,8 @@ export type KeyDescriptionSpec = {
   readonly userAuthType?: number;
   readonly authTimeout?: number;
   readonly noAuthRequiredInSoftware?: boolean;
+  readonly allApplications?: boolean;
+  readonly omitKeySize?: boolean;
   readonly origin?: number;
   readonly deviceLocked?: boolean;
   readonly bootState?: number;
@@ -200,11 +202,12 @@ function keyDescription(spec: KeyDescriptionSpec): Uint8Array {
   const hardware = der.seq(
     der.explicit(1, der.set(...(spec.purposes ?? [2]).map(der.int))),
     der.explicit(2, der.int(spec.algorithm ?? 3)),
-    der.explicit(3, der.int(256)),
+    ...(spec.omitKeySize ? [] : [der.explicit(3, der.int(256))]),
     der.explicit(5, der.set(...(spec.digests ?? [4]).map(der.int))),
     der.explicit(10, der.int(spec.ecCurve ?? 1)),
     der.explicit(504, der.int(spec.userAuthType ?? 2)),
     ...(spec.authTimeout === undefined ? [] : [der.explicit(505, der.int(spec.authTimeout))]),
+    ...(spec.allApplications ? [der.explicit(600, der.null())] : []),
     der.explicit(702, der.int(spec.origin ?? 0)),
     der.explicit(
       704,

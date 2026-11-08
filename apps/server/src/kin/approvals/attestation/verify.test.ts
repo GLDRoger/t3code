@@ -47,6 +47,8 @@ describe("Android key attestation", () => {
     ["an encrypting key", { purposes: [0, 2] }, "SIGN only"],
     ["an RSA key", { algorithm: 1 }, "algorithm"],
     ["another curve", { ecCurve: 2 }, "P-256"],
+    ["no key size", { omitKeySize: true }, "missing element"],
+    ["a key for every app", { allApplications: true }, "every app"],
     ["a SHA-1 digest", { digests: [2] }, "SHA-256"],
     ["a PIN-gated key", { userAuthType: 1 }, "biometric only"],
     ["an auth timeout", { authTimeout: 30 }, "auth timeout"],
@@ -56,7 +58,8 @@ describe("Android key attestation", () => {
     ["unverified boot", { bootState: 2 }, "Verified"],
     ["another app", { packages: ["com.evil.app"] }, "package"],
     ["two apps", { packages: ["com.gldroger.kin", "com.evil.app"] }, "more than one package"],
-    ["another signer", { signers: ["cd".repeat(32)] }, "signing certificate"],
+    ["another signer", { signers: ["cd".repeat(32)] }, "signing certificates"],
+    ["an extra signer", { signers: ["ab".repeat(32), "cd".repeat(32)] }, "signing certificates"],
     ["a key description above the leaf", { descriptionInIntermediate: true }, "outside the leaf"],
   ];
   it.each(rejections)("refuses %s", (_name, spec, reason) => {

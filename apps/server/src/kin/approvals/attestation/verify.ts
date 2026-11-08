@@ -107,6 +107,7 @@ const TAG = {
   noAuthRequired: 503,
   userAuthType: 504,
   authTimeout: 505,
+  allApplications: 600,
   origin: 702,
   rootOfTrust: 704,
   attestationApplicationId: 709,
@@ -193,8 +194,7 @@ export function verifyAndroidKeyAttestation(input: {
     check(exactly(integerSet(hardware.get(TAG.purpose)), PURPOSE_SIGN), "purpose isn't SIGN only");
     check(Der.integer(hardware.get(TAG.algorithm)) === ALGORITHM_EC, "algorithm isn't EC");
     check(Der.integer(hardware.get(TAG.ecCurve)) === EC_CURVE_P_256, "curve isn't P-256");
-    const keySize = hardware.get(TAG.keySize);
-    check(keySize === undefined || Der.integer(keySize) === 256, "key size isn't 256");
+    check(Der.integer(hardware.get(TAG.keySize)) === 256, "key size isn't 256");
     check(exactly(integerSet(hardware.get(TAG.digest)), DIGEST_SHA_2_256), "digest isn't SHA-256");
     check(
       Der.integer(hardware.get(TAG.userAuthType)) === AUTH_FINGERPRINT,
@@ -203,6 +203,7 @@ export function verifyAndroidKeyAttestation(input: {
     for (const list of [software, hardware]) {
       check(!list.has(TAG.authTimeout), "key has an auth timeout");
       check(!list.has(TAG.noAuthRequired), "key needs no auth");
+      check(!list.has(TAG.allApplications), "key is usable by every app");
     }
     check(
       Der.integer(hardware.get(TAG.origin)) === ORIGIN_GENERATED,
@@ -225,9 +226,12 @@ export function verifyAndroidKeyAttestation(input: {
     const signers = Der.children(Der.expect(digests, Der.T_SET)).map((digest) =>
       Buffer.from(Der.octets(digest)).toString("hex"),
     );
+    const allowed = new Set(app!.signingCertSha256);
     check(
-      signers.length > 0 && signers.every((digest) => app!.signingCertSha256.includes(digest)),
-      "signing certificate isn't on the allowlist",
+      allowed.size > 0 &&
+        signers.length === allowed.size &&
+        signers.every((digest) => allowed.has(digest)),
+      "signing certificates don't match the allowlist",
     );
 
     return {
