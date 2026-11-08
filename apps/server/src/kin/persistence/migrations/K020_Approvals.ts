@@ -79,6 +79,7 @@ export default Effect.gen(function* () {
       hardware TEXT NOT NULL CHECK (hardware IN ('secure_enclave', 'strongbox', 'tee', 'software')),
       attested INTEGER NOT NULL CHECK (attested IN (0, 1)),
       session_id TEXT,
+      proof_key_thumbprint TEXT,
       state TEXT NOT NULL CHECK (state IN ('pending', 'active', 'revoked')),
       created_at INTEGER NOT NULL,
       confirmed_at INTEGER,
@@ -98,6 +99,15 @@ export default Effect.gen(function* () {
       hash TEXT NOT NULL,
       UNIQUE (org_id, seq)
     )
+  `;
+  // The hash chain detects edits; these refuse them outright.
+  yield* sql`
+    CREATE TRIGGER kin_audit_no_update BEFORE UPDATE ON kin_audit
+    BEGIN SELECT RAISE(ABORT, 'kin_audit is append-only'); END
+  `;
+  yield* sql`
+    CREATE TRIGGER kin_audit_no_delete BEFORE DELETE ON kin_audit
+    BEGIN SELECT RAISE(ABORT, 'kin_audit is append-only'); END
   `;
   // Approver keys and push devices check revocation by proof key on every read; K015's index
   // covers every renewal row, this one only the revoked ones.

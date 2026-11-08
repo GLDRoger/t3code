@@ -50,6 +50,7 @@ import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import { buildCodexAdditionalContext } from "../../apps/server/src/provider/CodexDeveloperInstructions.ts";
 import { makeSideChatContext } from "../../apps/server/src/orchestration-v2/ContextHandoffService.ts";
 import { withInlineContext } from "../../apps/server/src/orchestration-v2/ContextHandoffDelivery.ts";
+import { instructions as kinLeadInstructions } from "../../apps/server/src/kin/lead/instructions.ts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
 import { KinChatToolkit } from "../../apps/server/src/kin/mcp/KinChatToolkit.ts";
 import { KinApprovalsToolkit } from "../../apps/server/src/kin/approvals/mcp.ts";
@@ -1040,8 +1041,11 @@ export const buildMessages = (sample: Sample) => {
     testCase.promptContext === undefined
       ? testCase.prompt
       : projectComposerContextForProvider({ text: testCase.prompt, ...testCase.promptContext });
-  const prompt =
+  const inline =
     sideChatContext === undefined ? userText : withInlineContext(sideChatContext, userText);
+  // A Kin lead's wake-up prompt opens with its instructions, as LeadPrompt's does.
+  const prompt =
+    testCase.setup.world?.kinLead === true ? `${kinLeadInstructions}\n\n${inline}` : inline;
   const childPrompt = () => taskPrompt({ task: prompt, role: delegateRole });
   if (testCase.prompt !== "")
     push("user", text(role === "delegated-child" ? childPrompt() : prompt));

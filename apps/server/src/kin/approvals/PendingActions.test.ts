@@ -207,6 +207,10 @@ describe("KinPendingActions", () => {
       );
       assert.strictEqual(voided.state, "voided");
       assert.strictEqual(voided.stateReason, "key_revoked");
+      // A voided action whose grant is still live never runs.
+      if (approved._tag === "approved")
+        assert.isFalse(yield* actions.claim({ ...ref, grantId: approved.grant.id }));
+      assert.strictEqual(yield* count("kin_executions"), 0);
 
       const other = (yield* actions.create(request("delivery-2"))).action;
       const otherRef = { orgId: other.orgId, actionId: other.id, revision: 0 };

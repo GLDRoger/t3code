@@ -450,7 +450,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
       Effect.gen(function* () {
         const sessions = yield* SessionStore.SessionStore;
         const sql = yield* SqlClient.SqlClient;
-        // TEMP shadows the real kin_approver_keys that K019_Approvals creates.
+        // TEMP shadows the real kin_approver_keys that K020_Approvals creates.
         yield* sql`CREATE TEMP TABLE kin_approver_keys (org_id TEXT, thumbprint TEXT, proof_key_thumbprint TEXT, state TEXT)`;
         yield* sql`INSERT INTO kin_approver_keys VALUES ('org', 'signing-key', 'device', 'active'), ('org', 'other-signing-key', 'other', 'active')`;
         const original = yield* sessions.issue({

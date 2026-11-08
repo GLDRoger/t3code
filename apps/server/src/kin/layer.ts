@@ -16,6 +16,7 @@ export { KinServer } from "./KinServer.ts";
 import type * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as KinMcp from "./mcp/layer.ts";
+import * as GithubWebhooks from "./triggers/githubWebhooks.ts";
 
 const enabled = Layer.effect(
   KinServer,
@@ -33,7 +34,7 @@ const enabled = Layer.effect(
       subscribeForViewer: Option.some(hub.subscribeForViewer),
     };
   }),
-).pipe(Layer.provide(KinChat.layer));
+).pipe(Layer.provide(Layer.merge(KinChat.layer, GithubWebhooks.lockLayer)));
 const disabled = Layer.succeed(KinServer, {
   taskCardUpdater: Layer.empty,
   services: Option.none(),

@@ -349,6 +349,7 @@ export class KinChatError extends Schema.TaggedError<KinChatError>()("KinChatErr
     "limit",
     "floor_not_granted",
     "floor_closed",
+    "conflict",
   ]),
   message: Schema.String,
 }) {}
