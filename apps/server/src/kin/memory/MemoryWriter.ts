@@ -47,6 +47,7 @@ export interface WakeupContext extends JournalContext {
           readonly itemId: string;
           readonly action: "keep" | "update" | "drop";
         }
+      | { readonly kind: "deferral_card"; readonly itemId: string; readonly action: "remind" }
     )
   >;
 }
@@ -642,10 +643,18 @@ const make = Effect.gen(function* () {
                   )
                     mutable.add("review_by");
                   if (
-                    Object.entries(item).some(
-                      ([key, value]) =>
+                    source.kind === "deferral_card" &&
+                    source.itemId === item.id &&
+                    item.kind === "deferral" &&
+                    fm.on_due === "remind"
+                  )
+                    mutable.add("on_due");
+                  const existing = new Map(Object.entries(item));
+                  if (
+                    [...new Set([...existing.keys(), ...proposed.keys()])].some(
+                      (key) =>
                         !mutable.has(key) &&
-                        JSON.stringify(value) !== JSON.stringify(proposed.get(key)),
+                        JSON.stringify(existing.get(key)) !== JSON.stringify(proposed.get(key)),
                     )
                   )
                     return yield* new MemoryConflict({ existingId: item.id });
@@ -834,6 +843,16 @@ const make = Effect.gen(function* () {
               );
               yield* git(orgId, writer, ["update-ref", `refs/heads/${branch}`, commit, recorded]);
               yield* memory.record(orgId, branch, recorded, commit);
+              // Arms deferrals from the commit now, not at the next wake-up.
+              if (branch === (config.defaultBranch ?? "main"))
+                yield* memory.rebuildCache(orgId).pipe(
+                  Effect.catch((error) =>
+                    Effect.logWarning("Could not refresh memory cache after commit", {
+                      orgId,
+                      errorTag: error._tag,
+                    }),
+                  ),
+                );
               yield* push(commit);
               return { commit };
             }).pipe(Effect.ensuring(Effect.sync(() => sessions.delete(orgId))));

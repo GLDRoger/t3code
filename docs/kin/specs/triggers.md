@@ -113,7 +113,7 @@ Defaults: brief 08:30 daily, summary 18:30 Mon–Fri, dream 03:00 daily, full re
 | Kind                | Late policy (decided by the consumer, using `lateByMs` and owner time)                                                              |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | Deferral `heads_up` | If `due` has also passed, skip the heads-up and handle `due` as late.                                                               |
-| Deferral `due`      | Run the due flow with "This was due at 9:00"; the grace starts from now.                                                            |
+| Deferral `due`      | Within the 30-minute grace, run the due flow with "This was due at 9:00"; the grace starts from now. Older fires ask, never start.  |
 | Reminder, follow-up | Deliver with "This was due at …". Pings respect quiet hours.                                                                        |
 | Morning brief       | Post if before the evening summary time; otherwise fold into the evening summary.                                                   |
 | Evening summary     | Post if before the next dream; otherwise fold into the next morning brief.                                                          |
@@ -203,9 +203,20 @@ Arming comes from memory. When the front-matter cache (LEAD) sees a `deferrals/*
 | `ask`    | `due` only                               | post a decision card           |
 | `chase`  | `due` only                               | ping the promiser (ping rules) |
 
-Item edits move or disarm the triggers: a new `due` re-arms; `status` other than `open` or a set `invalid_at` disables them. A due time already past at save fires at once, marked late; no "pick a future time" error.
+Item edits move or disarm the triggers: a new `due` re-arms; `status` other than `open` or a set `invalid_at` disables them. A due time already past at save fires at once, marked late; no "pick a future time" error. A missing `on_due` means `remind`, so silence never starts work.
 
-**Confirm.** When the lead calls `kin_defer` (LEAD), Kin writes the item, arms the triggers, and the lead posts a `KinDeferralCard` widget (CHAT envelope): "Deferred to Fri 13 Nov, 9:00. I'll start then." [Change] [Just remind me]. [Just remind me] sets `on_due: remind`, and the triggers re-arm.
+The cache hook is `MemorySyncHooks` in [`Memory.ts`](../../../apps/server/src/kin/memory/Memory.ts): each new head goes once to `KinTriggerService.syncOrg`, which also disarms armed deferrals missing from the snapshot or sharing a duplicate id. A failing item is logged without blocking the others, and the head retries on the next two loads, then waits for the next head. The deferral `trigger_reconcile` described below is not built yet, so until it is, a new head is the only recovery. A due time whose fires would land before 1970 never arms; `kin_defer` accepts only years 2000–2099. A commit to the default branch moves the cache to the new head and reloads it, so a `kin_defer` item arms when its wake-up commits, not at the next wake-up; shadow (L0) commits never arm. Trigger ids are `deferral:<itemId>:heads_up|due`. Re-syncing an unchanged `due` writes nothing, so a fired `once` is never re-armed. The run row in `kin_deferral_runs` (migration K016) holds the snapshot and an `armed`/`disarmed` state; TRIG-8 owns the due-flow states. The snapshot holds the item half only (`recorded_at`, `superseded_by`, links). There is no GitHub reader in Kin yet, so TRIG-8 must add the GitHub half (issue/PR state, assignees, linked PRs) at arm time before the due flow ships.
+
+**Confirm.** When the lead calls `kin_defer` (LEAD), Kin writes the item, arms the triggers, and the lead posts a `KinDeferralCard` widget (CHAT envelope): "Deferred to Fri 13 Nov, 9:00. I'll start then." [Change] [Just remind me]. [Just remind me] sets `on_due: remind`, and the triggers re-arm. [Change] writes nothing: it hands the item to the lead, which asks the owner what to change, marks the old item `cancelled` and calls `kin_defer` for the new one.
+
+Code posts the card, never the model. It goes to the item's `chat` when that chat belongs to the item's org; deferrals without a chat arm without a card. Times use the owner's zone. A re-arm updates the card text in place, a disarm closes the card, and reopening the item reopens it. The card awaits nobody.
+
+**Deferral card release gate (TRIG-7):** cards post live, but `KinChatService.act` refuses deferral-card taps (`deferralCardActionsReady = false`) until the owner-tap dispatcher from the owner-check gate exists. `Deferrals.act` already verifies the tap with the same `verifyOwnerTap` as the owner check. Before enabling taps:
+
+- the owner-check gate's dispatcher steps must land (chat act enqueues `widget.action`; `WakeupRunner` intercepts card actions without showing them to the model);
+- `WakeupRunner` must run `Deferrals.act` for `deferral` actions, then `MemoryWriter.commitWakeup` (the commit re-arms through the cache hook), then queue `finish`. [Change] goes to the lead as an owner message about the item;
+- production `MemoryWriterAuthority.resolve` must grant `kind: "deferral_card"` (item id, action `remind`) only after verifying the claimed owner tap. With that grant, the writer lets `on_due` change, and only to `remind`;
+- web and mobile must render the native card and its closed state.
 
 **Flow for `start`** (`kin_deferral_runs.state`):
 
@@ -223,7 +234,8 @@ armed ──heads_up fire──▶ recheck ──changed──▶ asked   (decis
 ```
 
 - **The recheck is code.** It runs `gh api` reads for every GitHub link plus a read of the memory item. Any difference from the snapshot means "changed": an issue closed, an assignee added, another linked PR, or the item superseded. The ask then names what changed.
-- **Late.** If the machine woke after `due`, the `heads_up` fire is skipped. The `due` fire posts the same card with "This was due at 9:00" and a 30-minute grace from now; silence still means go.
+- **Late.** If the machine woke after `due`, the `heads_up` fire is skipped. A `due` fire within the 30-minute grace window posts the same card with "This was due at 9:00" and a grace from now; silence still means go. An older fire asks instead of starting.
+- **Stale fires.** Fires wait in the inbox until TRIG-8 consumes them. TRIG-8 drops a fire whose run row is `disarmed` or whose `due_at` no longer equals the fire's due instant.
 - **Level and stop switch.** Below L2, or with the org's stop switch on, `start` becomes `ask`. Silence never starts work then.
 - **Idempotent start.** Starting is a Work-class action keyed by `fireId`, so a replay can't start two workers.
 - **Bring it up early.** When a message touches the topic before the due time, the lead mentions it (LEAD, using the cache). The Monday morning brief lists deferrals due this week.
@@ -508,7 +520,7 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
 - **Scheduler:** a deferral due 09:00 +05:30 fires once at 09:00. Two ticks at the same instant give one inbox row. Advancing the clock 10 h with the scheduler stopped, then starting it, gives one inbox fire with `lateByMs = 10 h`; the deferral consumer (TRIG-8) posts the "This was due at 9:00" card. Recurring downtime emits one stored slot, not every missed occurrence.
 - **Timezone:** with the server zone `UTC` and the org zone `Asia/Kolkata`, the dream fires at 21:30 UTC. A 09:00 routine in `America/New_York` stays at 09:00 across both DST transitions; weekdays are owner-local. Two orgs with different zones fire independently; changing one org's zone or routine times recomputes only its schedules.
 - **Sink:** a signed GitHub `pull_request` request through the real `ScheduledTaskService` gives exactly one inbox row and no thread launch. A replay gives `duplicate` and no new row. A bot-sender request gives `filtered`. A non-Kin task still launches normally.
-- **Deferral:** unchanged recheck, then heads-up, then silence, then `started` at due. A linked issue closed before due leads to `asked`, and nothing starts. With the stop switch on, it asks. [Monday] re-arms to next Monday 09:00.
+- **Deferral:** unchanged recheck, then heads-up, then silence, then `started` at due. A linked issue closed before due leads to `asked`, and nothing starts. With the stop switch on, it asks. [Monday] re-arms to next Monday 09:00. A `due` fire consumed two hours late asks; a queued fire for a disarmed or moved deferral is dropped.
 - **Dream:** a dream touching `rules.md` fails, and `main` is unchanged. A dream with one journal fold and one `decisions/` change opens two PRs, and only the auto one merges.
 - **Secret scan:** a journal line holding `ghp_` plus 36 characters blocks the entire commit, and the owner gets one typed notification without the value.
 - **Purge:** on a fixture repo, the file is gone from `git log --all -p`, a tombstone exists, and an audit row exists.
