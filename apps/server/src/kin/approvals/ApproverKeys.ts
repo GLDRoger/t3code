@@ -84,6 +84,7 @@ type KeyRow = {
   readonly hardware: string;
   readonly attested: number;
   readonly session_id: string | null;
+  readonly proof_key_thumbprint: string | null;
   readonly state: string;
   readonly created_at: number;
   readonly confirmed_at: number | null;
@@ -331,6 +332,8 @@ const make = Effect.gen(function* () {
         hardware: result.attested ? result.hardware : "software",
         attested: result.attested ? 1 : 0,
         session_id: caller.session.sessionId,
+        // Relay sessions renew hourly under a new id; this DPoP key stays (spec section 4).
+        proof_key_thumbprint: caller.session.proofKeyThumbprint ?? null,
         state: "pending",
         created_at: now,
         confirmed_at: null,
@@ -342,7 +345,10 @@ const make = Effect.gen(function* () {
       const inserted = yield* sql`INSERT INTO kin_approver_keys ${sql.insert(row)}
         ON CONFLICT (org_id, thumbprint) DO NOTHING RETURNING thumbprint`;
       if (inserted.length === 0)
-        return yield* fail("invalid_state", "This key is already registered; make a new one.");
+        return yield* fail(
+          "invalid_state",
+          "This key is already registered; make a new key on the phone.",
+        );
       const code = kinKeyConfirmationCode(thumbprint, challenge);
       if (!result.attested) return { key, code };
 
@@ -365,6 +371,7 @@ const make = Effect.gen(function* () {
           requestedBy: SERVER_REQUESTER,
           provenance: {
             startedBy: { humanId: person.personId },
+            // `KinIdentity.resolve` yields only the org owner until CHAT-11 adds roles (spec, Interfaces).
             startedByRole: "owner",
             chain: [{ kind: "approver_key", id: thumbprint, authorRole: "owner" }],
           },
@@ -415,7 +422,7 @@ const make = Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
       const pending = confirmations.get(slot(ref));
       if (pending === undefined || pending.expiresAt <= now)
-        return yield* fail("bad_code", "The code expired; register the key again.");
+        return yield* fail("bad_code", "The code expired; make a new key on the phone.");
       if (!sameBytes(pending.code, input.code)) {
         pending.attempts += 1;
         if (pending.attempts >= MAX_CODE_ATTEMPTS) confirmations.delete(slot(ref));
