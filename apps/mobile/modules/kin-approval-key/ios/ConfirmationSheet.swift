@@ -1,4 +1,5 @@
 import UIKit
+import WebKit
 
 /// The Face ID confirmation sheet, in a window the module owns above the app's own window, so the
 /// app's JS can't draw over the grant text and leave the real Approve button exposed.
@@ -16,8 +17,8 @@ final class ConfirmationSheet {
     case covered
   }
 
-  /// How long the sheet must stay key and uncovered before Approve takes a tap, so a tap aimed at
-  /// something JS drew (or the second tap of a double tap) can't land on it.
+  /// How long the sheet must stay key and uncovered, sampled every frame, before Approve takes a
+  /// tap, so a tap aimed at something JS drew (or the second tap of a double tap) can't land on it.
   private static let armDelay: CFTimeInterval = 0.7
 
   private let window: UIWindow
@@ -25,7 +26,10 @@ final class ConfirmationSheet {
   private weak var previousKeyWindow: UIWindow?
   private var observers: [NSObjectProtocol] = []
   private var onOutcome: ((Outcome) -> Void)?
-  private var armedAt = CFTimeInterval.infinity
+  private var armed = false
+  private var arming: CADisplayLink?
+  private var clearSince: CFTimeInterval?
+  private var tookKey = false
   private var keyboardVisible = false
 
   /// Shows the sheet at once. `onOutcome` is called exactly once, after the sheet is gone.
@@ -67,12 +71,15 @@ final class ConfirmationSheet {
     }
     // An input accessory view lives in the keyboard's window, above every app window.
     for window in scene.windows { window.endEditing(true) }
+    // The browser preview can stream JS-drawn frames into system picture in picture, over the sheet.
+    for window in scene.windows { Self.closeMediaPresentations(in: window) }
     window.makeKeyAndVisible()
   }
 
   /// Removes the sheet without an outcome; safe to call more than once.
   func close() {
     onOutcome = nil
+    stopArming()
     for observer in observers { NotificationCenter.default.removeObserver(observer) }
     observers = []
     window.isHidden = true
@@ -92,32 +99,51 @@ final class ConfirmationSheet {
     onOutcome(outcome)
   }
 
-  /// Disables Approve and starts the arming delay again. Approve enables only if the sheet is
-  /// still clear when the delay ends; a check that fails starts it over.
+  /// Disables Approve and samples coverage every frame until the sheet has been key and clear for
+  /// `armDelay` in a row. Any sample that isn't clear starts the delay over.
   private func rearm() {
     guard onOutcome != nil else { return }
-    let deadline = CACurrentMediaTime() + Self.armDelay
-    armedAt = deadline
+    armed = false
+    clearSince = nil
+    tookKey = false
     controller.approve.isEnabled = false
-    DispatchQueue.main.asyncAfter(deadline: .now() + Self.armDelay) { [weak self] in
-      // A later rearm owns the timer.
-      guard let self, onOutcome != nil, armedAt == deadline else { return }
-      switch coverage {
-      case .clear:
-        controller.approve.isEnabled = true
-      case .notKey:
-        // RN's Alert.hide() leaves no key window. Take key back once; the delay starts over.
+    guard arming == nil else { return }
+    let link = CADisplayLink(target: ArmingTarget(self), selector: #selector(ArmingTarget.sample))
+    link.add(to: .main, forMode: .common)
+    arming = link
+  }
+
+  fileprivate func sampleCoverage() {
+    guard onOutcome != nil else { return stopArming() }
+    let now = CACurrentMediaTime()
+    switch coverage {
+    case .clear:
+      let since = clearSince ?? now
+      clearSince = since
+      guard now - since >= Self.armDelay else { return }
+      stopArming()
+      armed = true
+      controller.approve.isEnabled = true
+    case .notKey:
+      clearSince = nil
+      // RN's Alert.hide() leaves no key window. Take key back once per arming.
+      if !tookKey {
+        tookKey = true
         window.makeKey()
-        rearm()
-      case .covered:
-        rearm()
       }
+    case .covered:
+      clearSince = nil
     }
+  }
+
+  private func stopArming() {
+    arming?.invalidate()
+    arming = nil
   }
 
   private func approveTapped() {
     // A disabled button gets no taps; this guards a tap already in flight when Approve disabled.
-    guard controller.approve.isEnabled, CACurrentMediaTime() >= armedAt else { return }
+    guard armed, controller.approve.isEnabled else { return }
     switch coverage {
     case .clear:
       finish(.approved)
@@ -171,6 +197,25 @@ final class ConfirmationSheet {
   }
 
   private static let appBundlePath = Bundle.main.bundleURL.path
+
+  /// Ends picture in picture and fullscreen video started from any web view in this tree.
+  private static func closeMediaPresentations(in view: UIView) {
+    if let webView = view as? WKWebView { webView.closeAllMediaPresentations(completionHandler: nil) }
+    for subview in view.subviews { closeMediaPresentations(in: subview) }
+  }
+}
+
+/// Holds the sheet weakly, so the display link's strong reference to its target can't keep it alive.
+@MainActor
+private final class ArmingTarget: NSObject {
+  private weak var sheet: ConfirmationSheet?
+
+  init(_ sheet: ConfirmationSheet) { self.sheet = sheet }
+
+  @objc func sample(_ link: CADisplayLink) {
+    guard let sheet else { return link.invalidate() }
+    sheet.sampleCoverage()
+  }
 }
 
 private final class ConfirmationController: UIViewController {
