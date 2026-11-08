@@ -37,6 +37,8 @@ import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinBudget from "./KinBudget.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
+import { PAUSE_POLL_INTERVAL_MS } from "./KinStop.ts";
+import { isOrgPaused } from "./orgState.ts";
 
 const ownerCheckDispatcherReady = false;
 
@@ -111,6 +113,8 @@ const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
   const launch = yield* ThreadLaunchService.ThreadLaunchService;
   const threads = yield* ThreadManagementService.ThreadManagementService;
+  const paused = (orgId: KinOrgId) =>
+    isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
   const threadActivity = Effect.fn("WakeupRunner.threadActivity")(function* (orgId: KinOrgId) {
     const rows = yield* sql<{
       threadId: string;
@@ -191,6 +195,8 @@ const make = Effect.gen(function* () {
         : result.run?.status === "completed"
           ? "completed"
           : "failed";
+      // The stop switch interrupted this run: hand its events back without spending an attempt.
+      const stopped = status === "failed" && (yield* paused(row.orgId));
       yield* Effect.gen(function* () {
         if (result.timedOut) {
           yield* threads.interruptThread({
@@ -226,7 +232,14 @@ const make = Effect.gen(function* () {
           );
         }
         yield* capture(row);
-        yield* queue.finish({ orgId: row.orgId, wakeupId: row.wakeupId, status });
+        if (stopped)
+          yield* queue.release({
+            orgId: row.orgId,
+            wakeupId: row.wakeupId,
+            countAttempt: false,
+            notBefore: (yield* Clock.currentTimeMillis) + PAUSE_POLL_INTERVAL_MS,
+          });
+        else yield* queue.finish({ orgId: row.orgId, wakeupId: row.wakeupId, status });
       }).pipe(
         Effect.onExit((exit) =>
           result.timedOut && Exit.isFailure(exit)
@@ -299,8 +312,7 @@ const make = Effect.gen(function* () {
     function* (orgId: KinOrgId, agentId: KinAgentId) {
       const record = yield* lead(orgId, agentId);
       if (record.retiredAt !== null) return yield* retire(record);
-      const paused = yield* sql`SELECT 1 FROM kin_org_state WHERE org_id = ${orgId} AND paused = 1`;
-      if (paused.length > 0) return;
+      if (yield* paused(orgId)) return;
       if (record.threadId !== null) {
         const unfinished = yield* sql`SELECT 1 FROM orchestration_v2_projection_provider_turns
           WHERE thread_id = ${record.threadId} AND completed_at IS NULL LIMIT 1`;
@@ -341,14 +353,12 @@ const make = Effect.gen(function* () {
           );
           row = { ...row, startedAt: yield* Clock.currentTimeMillis };
           yield* Effect.gen(function* () {
-            const paused =
-              yield* sql`SELECT 1 FROM kin_org_state WHERE org_id = ${orgId} AND paused = 1`;
-            if (paused.length > 0) {
+            if (yield* paused(orgId)) {
               yield* queue.release({
                 orgId,
                 wakeupId,
                 countAttempt: false,
-                notBefore: (yield* Clock.currentTimeMillis) + 5_000,
+                notBefore: (yield* Clock.currentTimeMillis) + PAUSE_POLL_INTERVAL_MS,
               });
               return;
             }
@@ -490,6 +500,14 @@ const make = Effect.gen(function* () {
               return yield* new KinWakeupError({ orgId, agentId, cause: "missing_run" });
             row = { ...row, runId: run.id };
             yield* sql`UPDATE kin_wakeups SET run_id = ${run.id} WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND agent_id = ${agentId} AND status = 'running'`;
+            // A pause that landed during launch found no run to stop; stop it here instead.
+            if (yield* paused(orgId))
+              yield* threads.interruptThread({
+                projectId: project.id,
+                threadId,
+                runId: run.id,
+                commandId: CommandId.make(`kin-stop-launch:${wakeupId}`),
+              });
             yield* wait(row, project.id);
           }).pipe(
             Effect.onExit((exit) =>
@@ -668,9 +686,7 @@ const make = Effect.gen(function* () {
               JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
               WHERE l.org_id = ${orgId} AND a.retired_at IS NOT NULL ORDER BY l.agent_id`;
           for (const row of rows) yield* retire(yield* lead(orgId, KinAgentId.make(row.agentId)));
-          const paused =
-            yield* sql`SELECT 1 FROM kin_org_state WHERE org_id = ${orgId} AND paused = 1`;
-          const next = paused.length === 0 ? yield* queue.nextReady(orgId) : undefined;
+          const next = (yield* paused(orgId)) ? undefined : yield* queue.nextReady(orgId);
           const now = yield* Clock.currentTimeMillis;
           if (next !== undefined && next.readyAt <= now) {
             yield* runOnce(orgId, next.agentId);

@@ -119,6 +119,18 @@ describe("KinGitHubApp.installationToken", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("mints contents: write only for Kin's own server holder", () => {
+    const { layer } = setup((request) =>
+      request.method === "POST" && request.path === "/app/installations/77/access_tokens"
+        ? granted({ contents: "write", metadata: "read" })
+        : undefined,
+    );
+    return Effect.gen(function* () {
+      const token = yield* mint({ contents: "write" }, { holder: "server" });
+      assert.deepStrictEqual(token.permissions, { contents: "write", metadata: "read" });
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect.each([
     [{}, "a token must name the permissions it needs"],
     [{ administration: "write" }, "administration is not a Kin App permission"],
