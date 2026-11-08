@@ -138,6 +138,16 @@ describe("kin-brand", () => {
         rules: RULES.replace("allow: []", "allow:\n    - reason: test\n      files: [app/**]"),
       });
       yield* brand(allowed.repo, path.join(allowed.root, "kin"));
+
+      // A whole-file ignore skips rules and drift, not the leak scan.
+      const ignored = yield* makeRepo({
+        files: { "app/tool.ts": 'export const site = "https://t3.codes";\n' },
+        rules: RULES.replace("ignore: []", "ignore:\n  - reason: test\n    files: [app/tool.ts]"),
+      });
+      assert.include(
+        yield* failure(brand(ignored.repo, path.join(ignored.root, "kin"))),
+        'app/tool.ts:1 [t3-domain] "https://t3.codes"',
+      );
     }).pipe(Effect.scoped, Effect.provide(TestLayer)),
   );
 
@@ -275,6 +285,20 @@ describe("kin-brand", () => {
       assert.include(
         yield* failure(brand(stale.repo, path.join(stale.root, "kin"))),
         "upstream changed app/mark.tsx since branding/assets copied it",
+      );
+
+      // Other assets are pinned only when sourceAssets names them.
+      const xml = yield* makeRepo({
+        rules: RULES.replace(
+          "leaks:",
+          `sourceAssets:\n  app/info.xml: ${yield* sha256("old")}\nleaks:`,
+        ),
+        files: { "app/info.xml": "<id>t3</id>\n" },
+        assets: { "app/info.xml": "<id>kin</id>\n" },
+      });
+      assert.include(
+        yield* failure(brand(xml.repo, path.join(xml.root, "kin"))),
+        "upstream changed app/info.xml since branding/assets copied it",
       );
 
       const missing = yield* makeRepo(options(RULES));

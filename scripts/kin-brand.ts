@@ -215,7 +215,7 @@ const copyAssets = Effect.fn("kinBrand.copyAssets")(function* (
       problems.push(`asset replaces nothing: ${file} (the copy has no such file)`);
       continue;
     }
-    if (sourceKind(file) === "script") {
+    if (sourceKind(file) === "script" || file in hashes) {
       const expected = hashes[file];
       const actual = yield* sha256(yield* fs.readFile(destination));
       if (expected === undefined) {
@@ -349,7 +349,9 @@ export const kinBrand = Effect.fn("kinBrand")(function* (options: {
     }
   };
 
-  const scanned = files.filter((file) => !isTestPath(file) && !isIgnoredFile(rules, file));
+  // Ignored files take no rules and add no drift, but still get guards and the leak scan.
+  const unbranded: BrandRules = { ...rules, text: [] };
+  const scanned = files.filter((file) => !isTestPath(file));
   yield* Effect.forEach(
     scanned,
     // Runs once per file, thousands of times; a span each would swamp the run's trace.
@@ -357,8 +359,10 @@ export const kinBrand = Effect.fn("kinBrand")(function* (options: {
       const destination = path.join(target, file);
       const info = yield* fs.lstat(destination).pipe(Effect.option);
       if (Option.isNone(info) || info.value.type !== "File") return;
+      const ignored = isIgnoredFile(rules, file);
+      const fileRules = ignored ? unbranded : rules;
       const named =
-        rules.text.some((rule) => matchesAny(file, rule.files)) ||
+        fileRules.text.some((rule) => matchesAny(file, rule.files)) ||
         guards.some((guard) => guard.file === file);
       if (!sourceKind(file)) {
         if (file.endsWith(".md") || BINARY_EXTENSION.test(file)) return;
@@ -369,7 +373,7 @@ export const kinBrand = Effect.fn("kinBrand")(function* (options: {
       const source = yield* fs.readFileString(destination);
       if (!named && !mightNeedScan(source)) return;
       const parsed = yield* Effect.try({
-        try: () => brandSource(rules, file, source),
+        try: () => brandSource(fileRules, file, source),
         catch: (cause) => new KinBrandError({ message: String(cause) }),
       }).pipe(Effect.option);
       if (Option.isNone(parsed)) {
@@ -382,7 +386,7 @@ export const kinBrand = Effect.fn("kinBrand")(function* (options: {
       for (const [index, count] of parsed.value.matches) {
         matches.set(index, (matches.get(index) ?? 0) + count);
       }
-      let result = parsed.value;
+      let result = ignored ? { ...parsed.value, uncovered: [] } : parsed.value;
       const guard = applyGuards(file, result.output, guards);
       problems.push(...guard.problems);
       if (guard.applied > 0) {

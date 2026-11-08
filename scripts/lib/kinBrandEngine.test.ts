@@ -266,7 +266,11 @@ describe("leaks", () => {
     ['"ARK85ZXQ4Z"', "apple-team"],
     ['"https://u.expo.dev/d763fcb8-d37c-41ea-a773-b54a0ab4a454"', "eas-project"],
     ['"applinks:clerk.t3.codes"', "clerk-domain"],
-    ['"https://app.t3.codes"', "hosted-app"],
+    ['"https://app.t3.codes"', "t3-domain"],
+    ['"noreply@t3.codes"', "t3-domain"],
+    ['"phc_XOWci4oZP4VvLiEyrFqkFjP4CZn55mjYYBMREK5Wd6m"', "posthog-key"],
+    // Strings that are code are scanned, though never rewritten.
+    ['{ "com.t3tools.t3code": 1 }', "bundle-id"],
   ])("finds %s as %s", (literal, leak) => {
     const { leaks } = brandSource(rules([]), "a.ts", `f(${literal});`);
     assert.include(

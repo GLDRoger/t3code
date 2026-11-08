@@ -5,6 +5,10 @@
 import { Lang, parse, type Edit, type SgNode } from "@ast-grep/napi";
 
 const NO_RELEASES = "Kin doesn't publish releases yet; run Kin from source.";
+const NO_TRIAGE =
+  "Kin has no triage yet: this flow files issues into T3 Code's repository. Report Kin problems to Kin's maintainers.";
+const NO_MOBILE_DEV_CLIENT =
+  "Kin has no prebuilt mobile dev client yet; this installs T3 Code's. Build Kin's with Expo prebuild (apps/mobile).";
 
 export type Guard = {
   readonly file: string;
@@ -41,6 +45,31 @@ export const GUARDS: ReadonlyArray<Guard> = [
       "usage, including install owners, to T3's account. Off unless T3CODE_TELEMETRY_ENABLED=true.",
     pattern: 'Config.Boolean("T3CODE_TELEMETRY_ENABLED").pipe(Config.withDefault(true))',
     replace: 'Config.Boolean("T3CODE_TELEMETRY_ENABLED").pipe(Config.withDefault(false))',
+  },
+  {
+    file: "apps/server/src/cli/triage.ts",
+    reason:
+      "`t3 triage` investigates T3 Code's source and helps file the issue in pingdotgg/t3code, " +
+      "which is the wrong tracker for Kin.",
+    pattern: "const explicitBaseDir = Option.getOrUndefined(flags.baseDir);",
+    // Stops the handler while its success type stays intact, so the rest keeps its types.
+    replace:
+      `const explicitBaseDir = yield* Effect.die(new Error(${JSON.stringify(NO_TRIAGE)})).pipe(` +
+      "Effect.as(Option.getOrUndefined(flags.baseDir)));",
+  },
+  {
+    file: "apps/server/src/triage/TriageService.ts",
+    reason: "The app's Report issue flow: the same triage, aimed at T3 Code's repository.",
+    span: "TriageService.prepare",
+    error: `new ServerPrepareTriageError({ cause: new Error(${JSON.stringify(NO_TRIAGE)}) })`,
+  },
+  {
+    file: "scripts/mobile-native-client.ts",
+    reason:
+      "`vp run mobile:install` installs T3's prebuilt dev client (com.t3tools.t3code.dev) from " +
+      "T3's shared build cache and opens it with t3code-dev://, so it would run T3 Code's app.",
+    span: "nativeClient.main",
+    error: `new NativeClientError({ message: ${JSON.stringify(NO_MOBILE_DEV_CLIENT)} })`,
   },
   {
     file: "apps/web/src/components/settings/MobileAppSettingsRow.tsx",

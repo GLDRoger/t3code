@@ -7,20 +7,22 @@
 #   `from` (never part of a template with substitutions); otherwise every occurrence is replaced.
 #   A rule that matches nothing fails the run.
 # ignore: literals and files that keep upstream's text.
-#   `files` alone takes whole files out of branding and every scan.
+#   `files` alone takes whole files out of branding and the drift list; the leak scan and guards
+#   still read them, so what they keep needs a leaks.allow entry.
 #   `text` (a regex on the literal) protects matching literals from every rule and the drift list.
 #   Files the engine can't parse (Kotlin, Swift, shell, XML) take rules too: each quoted string
 #   on a line is a literal there.
 # leaks.allow: upstream identity (schemes, bundle ids, the ~/.t3 home, T3's Apple, Expo and Clerk
-#   accounts, its hosted app) that may stay in the copy, each with its reason. Any other hit fails
-#   the run.
+#   accounts, any t3.codes domain, its PostHog key) that may stay in the copy, each with its
+#   reason. Any other hit fails the run. Strings that are code (import paths, keys) are scanned too.
 # remove: files the copy doesn't have at all, each with its reason. An entry that matches nothing
 #   fails the run.
 # apps/mobile/app.config.ts also gets a structural edit; see scripts/lib/kinBrandMobileConfig.ts.
 # A few functions get a guard statement put first; see scripts/lib/kinBrandGuards.ts.
 # Assets: every file under assets/ next to this file replaces the same path in the copy.
-# sourceAssets: the upstream sha256 of each source file (.ts, .tsx) an asset replaces. The run
-#   fails when upstream's file changes, so the copied asset gets reviewed against the change.
+# sourceAssets: the upstream sha256 of each file an asset replaces, required for source files (.ts,
+#   .tsx) and optional for others. The run fails when upstream's file changes, so the copied asset
+#   gets reviewed against the change.
 # Drift: drift-baseline.txt next to this file lists upstream text the copy keeps; --check fails on
 #   new entries.
 
@@ -190,6 +192,60 @@ text:
   - files: [packages/ssh/src/tunnel.ts]
     from: "$HOME/.t3"
     to: "$HOME/.kin"
+  # The remote `t3` is T3's published release, whose telemetry defaults on and reports to T3's
+  # PostHog project; both remote invocations turn it off.
+  - files: [packages/ssh/src/tunnel.ts]
+    from: 'nohup env T3CODE_NO_BROWSER=1 "$RUNNER_FILE" serve'
+    to: 'nohup env T3CODE_NO_BROWSER=1 T3CODE_TELEMETRY_ENABLED=false "$RUNNER_FILE" serve'
+  - files: [packages/ssh/src/tunnel.ts]
+    from: '"$RUNNER_FILE" auth pairing create'
+    to: 'T3CODE_TELEMETRY_ENABLED=false "$RUNNER_FILE" auth pairing create'
+  # Telemetry is off by default (kinBrandGuards.ts); with no default key or host, turning it on
+  # needs Kin's own T3CODE_POSTHOG_KEY and T3CODE_POSTHOG_HOST, so nothing reaches T3's project.
+  - files: [apps/server/src/telemetry/AnalyticsService.ts]
+    from: phc_XOWci4oZP4VvLiEyrFqkFjP4CZn55mjYYBMREK5Wd6m
+    to: ""
+    exact: true
+  - files: [apps/server/src/telemetry/AnalyticsService.ts]
+    from: "https://ingest.t3.codes"
+    to: ""
+    exact: true
+  # Commits Kin makes (stack rebases, checkpoints) carry Kin's name, not T3 Code's.
+  - files:
+      [
+        packages/source-control-github/src/server/githubStackRebase.ts,
+        apps/server/src/vcs/GitVcsDriver.ts,
+      ]
+    from: T3 Code
+    to: Kin
+    exact: true
+  - files: [packages/source-control-github/src/server/githubStackRebase.ts]
+    from: noreply@t3.codes
+    to: noreply@kin.invalid
+    exact: true
+  - files: [apps/server/src/vcs/GitVcsDriver.ts]
+    from: t3code@users.noreply.github.com
+    to: noreply@kin.invalid
+    exact: true
+  # Its own systemd slices for agent processes, so memory pressure in one app never throttles the
+  # other's agents.
+  - files: [apps/server/src/process/agentScope.ts]
+    from: app-t3code.slice
+    to: app-kin.slice
+    exact: true
+  - files: [apps/server/src/process/agentScope.ts]
+    from: app-t3code-agents
+    to: app-kin-agents
+  # Its own backup ref when refreshing a checked-out branch, so it never overwrites T3 Code's.
+  - files: [apps/server/src/vcs/GitVcsDriverCore.ts]
+    from: refs/t3code/pre-refresh
+    to: refs/kin/pre-refresh
+    exact: true
+  # The README it writes into new project folders.
+  - files: [apps/server/src/project/ManagedProjectFolders.ts]
+    from: "Created in [T3 Code](https://t3.codes)."
+    to: Created in Kin.
+    exact: true
   # The device hub it installs on SSH device hosts.
   - files: [apps/server/src/device/SshDeviceHost.ts]
     from: "$HOME/.t3/device"
@@ -241,6 +297,54 @@ text:
   - files: [apps/desktop/src/wsl/DesktopWslEnvironment.ts]
     from: "$HOME/.t3/wsl-runtime"
     to: "$HOME/.kin/wsl-runtime"
+  # The terminal command is `kin`, with Kin's marker, so neither app treats the other's link on
+  # PATH as its own and removes or replaces it.
+  - files: [apps/desktop/src/app/DesktopCliShim.ts]
+    from: T3 Code
+    to: Kin
+  - files: [apps/desktop/src/app/DesktopCliShim.ts]
+    from: t3.cmd
+    to: kin.cmd
+    exact: true
+  - files: [apps/desktop/src/app/DesktopCliShim.ts, apps/desktop/src/app/DesktopCliCommand.ts]
+    from: t3
+    to: kin
+    exact: true
+  - files: [apps/desktop/src/app/DesktopCliShim.ts, apps/desktop/src/app/DesktopCliCommand.ts]
+    from: t3 launcher
+    to: kin launcher
+  - files: [apps/desktop/src/app/DesktopCliCommand.ts, apps/web/src/state/desktopCliCommand.ts]
+    from: The t3 command
+    to: The kin command
+  - files: [apps/desktop/src/app/DesktopCliCommand.ts]
+    from: Added t3 to
+    to: Added kin to
+  - files:
+      [
+        apps/desktop/src/app/DesktopCliCommand.ts,
+        apps/web/src/components/settings/CliCommandSettingsRow.tsx,
+      ]
+    from: "Another t3 "
+    to: "Another kin "
+  - files: [apps/web/src/state/desktopCliCommand.ts]
+    from: the t3 command
+    to: the kin command
+  - files: [apps/web/src/components/settings/CliCommandSettingsRow.tsx]
+    from: T3 Code's
+    to: Kin's
+  - files: [apps/web/src/components/settings/CliCommandSettingsRow.tsx]
+    from: "`t3"
+    to: "`kin"
+  - files: [apps/web/src/components/settings/CliCommandSettingsRow.tsx]
+    from: install t3
+    to: install kin
+  - files: [apps/web/src/components/settings/CliCommandSettingsRow.tsx]
+    from: remove t3
+    to: remove kin
+  - files: [apps/web/src/components/settings/settingsSearch.ts]
+    from: t3 command
+    to: kin command
+    exact: true
   # Linux: the desktop entry and capture helpers it writes into the user's data folders.
   - files: [apps/desktop/src/app/DesktopEarlyElectronStartup.ts]
     from: com.t3tools.T3Code
@@ -335,7 +439,9 @@ ignore:
       - apps/server/src/provider/acp/AntigravityAcpSupport.ts
       - packages/provider-muse/src/server/sdk.ts
     text: "^T3 Code$"
-  - reason: MCP server and OAuth resource ids that agents and MCP clients already registered.
+  - reason: >-
+      MCP server and OAuth resource ids. Agent instructions and tool text name the server this way,
+      and they change only with an eval run (evals/), so the ids stay consistent with them.
     files:
       - apps/server/src/mcp/McpHttpServer.ts
       - apps/server/src/auth/McpOAuth.ts
@@ -349,6 +455,27 @@ ignore:
       - apps/server/src/mcp/toolkits/**
       - apps/server/src/mcp/McpInvocationContext.ts
       - apps/server/src/mcp/WorktreeMcpService.ts
+
+  # Shared state kept on purpose; each is a name in the user's repos or the build, not an app's own data.
+  - reason: >-
+      Local branch prefix for checked-out PRs. Both apps checking out PR 12 use one `t3code/pr-12`
+      branch at the same head, and git refuses to move a branch another worktree has checked out.
+    files:
+      [
+        apps/server/src/git/GitManager.ts,
+        packages/source-control-bitbucket/src/server/BitbucketApi.ts,
+      ]
+    text: "^t3code/pr-$"
+  - reason: >-
+      Per-project config teams commit into their repository; Kin reads the same file so a project
+      configured for T3 Code works in Kin.
+    files: [apps/server/src/vcs/VcsProjectConfig.ts]
+    text: "^\\.t3code$"
+  - reason: >-
+      Contributors' remote build cache. It is used only with credentials T3 issues for that
+      endpoint; without them the copy builds locally.
+    files: [.task-cache.json]
+    text: "pinglabs\\.workers\\.dev/projects/t3code$"
 
   # Whole areas Kin doesn't ship or brand.
   - reason: Upstream's marketing site, relay and CI, docs, evals, packaging and vendored references.
@@ -405,6 +532,7 @@ remove:
 sourceAssets:
   apps/web/src/components/T3Wordmark.tsx: ba20ddca13c7436ca7ad1f25fbc1acc67b95b9242573fd6e70611f389deabf4d
   apps/mobile/src/components/T3Wordmark.tsx: 5e0de210d6645f158ff338c0137153d6ee2bec130a42810d0f5d628ee82a6592
+  apps/desktop/resources/linux/com.t3tools.t3code.metainfo.xml: d9c73f2b6a0732f55413a9800c6c4cbdfc56441d8604c26acafe96485cf059df
 
 leaks:
   allow:
@@ -442,7 +570,9 @@ leaks:
       leak: scheme-name
       text: "^t3code$"
       files: [apps/mobile/src/features/showcase/**]
-    - reason: MCP server name agents already registered.
+    - reason: >-
+        MCP server name, kept consistent with the agent instructions and tool text that name it,
+        which change only with an eval run (evals/).
       leak: scheme-name
       text: "^t3code$"
       files: [packages/shared/src/t3McpToolPresentation.ts]
@@ -491,17 +621,19 @@ leaks:
       files: [apps/web/src/components/settings/MobileAppSettingsRow.tsx]
     - reason: >-
         Kin has no hosted web app, so links that need one (copied thread links, hosted pairing,
-        prompt links, MCP thread links) use upstream's app.t3.codes, a static client that talks
-        to the Kin server straight from the browser. T3CODE_HOSTED_APP_URL and
-        VITE_HOSTED_APP_URL point them at Kin's own once it has one. Provider sign-in no longer
-        returns to it (see the providerAuthReturnUrl.ts rule).
-      leak: hosted-app
+        prompt links, MCP thread links) use upstream's app.t3.codes. An empty default would break
+        them: prompt links build `new URL("/new", origin)`, which throws on "". These links work
+        only in a browser already paired with the Kin server; phones open them in T3 Code's app,
+        not Kin's; and hosted pairing runs JavaScript T3 controls against the Kin server.
+        T3CODE_HOSTED_APP_URL and VITE_HOSTED_APP_URL point them at Kin's own once it has one.
+        Provider sign-in never returns to it (see the providerAuthReturnUrl.ts rule).
+      leak: t3-domain
       text: "^https://app\\.t3\\.codes$"
       files: [packages/shared/src/connectAuth.ts]
     - reason: >-
         Text that names the hosted app those links use: a log line, a policy label, triage's
         surface label and a comment in the example env file.
-      leak: hosted-app
+      leak: t3-domain
       files:
         - apps/server/src/auth/McpOAuth.ts
         - apps/server/src/policy/policyTemplates.ts
@@ -510,7 +642,7 @@ leaks:
     - reason: >-
         The composer recognizes pasted hosted thread links, which Kin emits too (see the
         connectAuth.ts entry).
-      leak: hosted-app
+      leak: t3-domain
       text: "^https://app\\.t3\\.codes/threads/$"
       files:
         - apps/mobile/modules/t3-composer-editor/android/src/main/java/expo/modules/t3composereditor/T3ComposerEditorModule.kt
@@ -518,7 +650,7 @@ leaks:
     - reason: >-
         Unused in the branded config, which drops the universal links (associatedDomains) and
         Android app links (intentFilters) it built.
-      leak: hosted-app
+      leak: t3-domain
       text: "^app\\.t3\\.codes$"
       files: [apps/mobile/app.config.ts]
     - reason: >-
@@ -540,3 +672,94 @@ leaks:
       files:
         - apps/web/src/components/GitHubStarPrompt.tsx
         - apps/web/src/components/desktopUpdate.logic.ts
+    # Ignored files are still leak-scanned; these are what they keep, and why.
+    - reason: >-
+        Upstream's marketing site, relay, CI, devcontainer, docs, evals, packaging, vendored
+        references and hosted web deployment. No Kin build or Kin server runs them.
+      files:
+        [
+          apps/marketing/**,
+          infra/**,
+          .github/**,
+          .devcontainer/**,
+          docs/**,
+          evals/**,
+          .repos/**,
+          packaging/**,
+          apps/web/vercel.ts,
+        ]
+    - reason: >-
+        Upstream's release, install and npm launcher tooling. Kin publishes no releases, and the
+        copy's `t3 update` and service install refuse them (kinBrandGuards.ts).
+      files:
+        - scripts/generate-release-notes.ts
+        - scripts/notify-discord-release.ts
+        - scripts/release-smoke.ts
+        - scripts/resolve-nightly-release.ts
+        - scripts/build-npm-launcher.ts
+        - scripts/npm-launcher/**
+        - scripts/install.sh
+        - scripts/install.ps1
+    - reason: >-
+        Contributor tooling for developing T3 Code itself (agent skills, lint plugin, issue repro
+        seeds); not part of any build.
+      files: [.agents/**, .claude/**, oxlint-plugin-t3code/**, scripts/seed-issue-*]
+    - reason: >-
+        Mobile e2e and behavior runs get their dev client from scripts/mobile-native-client.ts,
+        which the copy refuses to run (kinBrandGuards.ts), so they stop before touching a device.
+        The showcase and render tools target T3 Code's installed app by id, so a device with
+        only Kin gives them nothing to drive.
+      files:
+        - scripts/mobile-native-client.ts
+        - scripts/mobile-e2e.ts
+        - scripts/mobile-e2e/**
+        - scripts/mobile-behavior.ts
+        - scripts/mobile-behavior/**
+        - scripts/mobile-showcase*.ts
+        - apps/mobile/scripts/measure-renders.mts
+    - reason: The branding script, its rules and its drift list name the upstream text they look for.
+      files: [scripts/kin-brand.ts, scripts/kin-brand.test.ts, scripts/lib/kinBrand*, branding/**]
+    - reason: >-
+        Agent instructions and triage prompts (ignored above; they change only with an eval run).
+        Triage itself is off in the copy (kinBrandGuards.ts).
+      leak: t3-domain
+      files: [apps/server/src/triage/triagePrompt.ts]
+
+    # T3 domains that stay in shipped code.
+    - reason: >-
+        The GNOME Shell SnapShots extension uuid; Kin and T3 Code share the extension (see the
+        GnomeCaptureSetup.ts entry and KIN.md).
+      leak: t3-domain
+      text: "^snap-shot@t3\\.codes$"
+      files: [apps/desktop/gnome-extension/bundle.json, apps/desktop/gnome-extension/metadata.json]
+    - reason: >-
+        T3 Code's privacy policy and terms. Kin has no legal pages of its own yet; these describe
+        the software Kin is built on, and the owner should replace them before Kin ships.
+      leak: t3-domain
+      files:
+        [apps/web/src/legalLinks.ts, apps/mobile/src/features/settings/lib/legal-document-url.ts]
+    - reason: >-
+        "Download the desktop app" links. Kin publishes no desktop build, so they open T3 Code's
+        download page; replace once Kin ships one.
+      leak: t3-domain
+      text: "^https://t3\\.codes/download$"
+      files: [apps/web/src/branding.ts, apps/web/src/lib/bootError.ts]
+    - reason: >-
+        The schema URL and description of t3.json, the project file teams commit; Kin reads the
+        same file (like .t3code), so editors keep validating it.
+      leak: t3-domain
+      files: [packages/contracts/src/t3ProjectFile.ts, t3.json]
+    - reason: >-
+        The Linux package's homepage field. Kin has no site; T3 Code's describes what Kin is
+        built on.
+      leak: t3-domain
+      text: "^https://t3\\.codes$"
+      files: [scripts/build-desktop-artifact.ts]
+    - reason: >-
+        A stale-service message naming T3's installer. It needs an installed service launcher,
+        and the copy's `t3 service install` refuses to install one (kinBrandGuards.ts).
+      leak: t3-domain
+      files: [apps/server/src/cloud/servicePreflight.ts]
+    - reason: The dev-only mock ACP agent's fixture URLs; no build ships it.
+      leak: t3-domain
+      files: [apps/server/scripts/acp-mock-agent.ts]

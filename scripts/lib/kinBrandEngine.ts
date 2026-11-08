@@ -75,7 +75,9 @@ export const LEAK_PATTERNS = [
   { id: "apple-team", pattern: /ARK85ZXQ4Z/ },
   { id: "eas-project", pattern: /d763fcb8-d37c-41ea-a773-b54a0ab4a454|u\.expo\.dev\/d763fcb8/ },
   { id: "clerk-domain", pattern: /clerk\.t3\.codes/ },
-  { id: "hosted-app", pattern: /\bapp\.t3\.codes\b/ },
+  // Any T3 domain: its hosted app, site, relay, telemetry ingest and mail.
+  { id: "t3-domain", pattern: /\bt3\.codes\b/ },
+  { id: "posthog-key", pattern: /\bphc_[A-Za-z0-9]{20,}/ },
 ] as const;
 
 /** Upstream identity left in literals; new hits since the baseline fail `--check`. */
@@ -152,6 +154,8 @@ interface Literal {
   readonly line: number;
   /** False for a piece of a template with substitutions, which exact rules never match. */
   readonly whole: boolean;
+  /** A string that is code (an import path, a key): only the leak scan reads it. */
+  readonly code?: boolean;
   readonly replace: (text: string) => void;
 }
 
@@ -253,6 +257,10 @@ function removableJsxElement(text: SgNode): SgNode {
   return element;
 }
 
+const neverRewrite = () => {
+  throw new Error("a code string is never rewritten");
+};
+
 function scriptLiterals(root: SgNode, edits: Array<Edit>): ReadonlyArray<Literal> {
   const literals: Array<Literal> = [];
   const nodes = root.findAll({
@@ -268,8 +276,17 @@ function scriptLiterals(root: SgNode, edits: Array<Edit>): ReadonlyArray<Literal
   for (const node of nodes) {
     const line = node.range().start.line + 1;
     const kind = node.kind();
+    if ((kind === "string" || kind === "template_string") && isCodeString(node)) {
+      literals.push({
+        text: node.text().slice(1, -1),
+        line,
+        whole: true,
+        code: true,
+        replace: neverRewrite,
+      });
+      continue;
+    }
     if (kind === "string") {
-      if (isCodeString(node)) continue;
       const raw = node.text();
       const quote = raw[0]!;
       literals.push({
@@ -279,7 +296,6 @@ function scriptLiterals(root: SgNode, edits: Array<Edit>): ReadonlyArray<Literal
         replace: (text) => edits.push(node.replace(quoted(quote, text))),
       });
     } else if (kind === "template_string") {
-      if (isCodeString(node)) continue;
       const substituted = node.children().some((child) => child.kind() === "template_substitution");
       if (!substituted) {
         literals.push({
@@ -466,7 +482,7 @@ export function brandSource(rules: BrandRules, file: string, source: string): Fi
   const leaks: Array<Finding & { leak: string }> = [];
   let changed = false;
   for (const literal of literals) {
-    const isProtected = isProtectedText(rules, file, literal.text);
+    const isProtected = literal.code || isProtectedText(rules, file, literal.text);
     let text = literal.text;
     if (!isProtected) {
       for (const { rule, index } of applicable) {
