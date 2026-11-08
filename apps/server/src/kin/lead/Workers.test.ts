@@ -565,7 +565,7 @@ it.effect(
 );
 
 it.effect(
-  "kin_delegate refuses at 0 worker units, below L2, foreign ids and non-lead callers",
+  "kin_delegate refuses at 0 worker units, while paused, below L2, foreign ids and non-lead callers",
   () =>
     run(({ ctx, fakes, workers }) =>
       Effect.gen(function* () {
@@ -576,6 +576,13 @@ it.effect(
         assert.strictEqual(refused.reason, "limit");
         assert.lengthOf(fakes.launches, 0);
         yield* ctx.sql`UPDATE kin_budget_limits SET limits_json = '{"leadUnits":10,"workerUnits":10}' WHERE org_id = ${ctx.orgId}`;
+        yield* ctx.sql`INSERT INTO kin_org_state (org_id, paused, paused_at, paused_by) SELECT ${ctx.orgId}, 1, 0, person_id FROM kin_people WHERE org_id = ${ctx.orgId} ORDER BY person_id LIMIT 1`;
+        assert.include(yield* Effect.flip(workers.delegate(scope, delegateInput)), {
+          reason: "not_allowed",
+          message: "Kin is paused by the owner. Nothing new starts until they resume.",
+        });
+        assert.lengthOf(fakes.launches, 0);
+        yield* ctx.sql`DELETE FROM kin_org_state WHERE org_id = ${ctx.orgId}`;
 
         const foreign: ReadonlyArray<Effect.Effect<object, KinChatError>> = [
           workers.delegate(scope, {

@@ -133,7 +133,21 @@ export const KinEvent = Schema.Union([
     pendingActionId: TrimmedNonEmptyString,
     outcome: Schema.Literals(["executed", "rejected", "expired", "failed"]),
   }),
-  Schema.TaggedStruct("resume", { ...EventBase, pausedAt: CanonicalUtcTimestamp }),
+  Schema.TaggedStruct("resume", {
+    ...EventBase,
+    pausedAt: CanonicalUtcTimestamp,
+    // The events expired at resume: the total and the first 50 by receipt.
+    expired: Schema.Struct({
+      count: NonNegativeInt,
+      events: Schema.Array(
+        Schema.Struct({
+          eventId: KinEventId,
+          tag: TrimmedNonEmptyString,
+          receivedAt: CanonicalUtcTimestamp,
+        }),
+      ),
+    }),
+  }),
 ]);
 ```
 
@@ -179,7 +193,7 @@ Coalescing:
 - Events that arrive while a wake-up runs wait for the next one. The runner never starts a second session for the same organization. This is the one-writer rule: memory is written only inside a wake-up, and wake-ups are serial.
 - Implementation: an organization permit is held for the whole wake-up, but never while waiting for that lead’s quiet window. `claim({ orgId, agentId, wakeupId, model })` waits interruptibly, takes the permit, rechecks readiness in the transaction and atomically claims up to 50 events, recording their ordered ids without incrementing `attempts`. A stale claim rolls back and waits again; an empty wake-up is never committed. The caller keeps its Effect scope open through the provider run and terminal database write; scope closure releases only the permit. LEAD-5 calls `finish(timed_out | failed)` for real failures and timeouts; graceful scope interruption uses `requeueUnfinished` without consuming an attempt. Organization signal entries stay available for idle runner subscriptions. Cross-process exclusion rests on SQLite’s running-wake-up unique index; a loser receives `KinEventQueueBusy`.
 
-The runner owns stop/budget admission and provider execution; all event transitions go through the queue. `release({ orgId, wakeupId, eventIds?, notBefore?, countAttempt })` returns the selected events (all by default) to the queue. Pause and budget deferrals use `countAttempt: false`, which requires `notBefore`; LEAD-11 pause handling must supply `notBefore = now + pause poll interval`, so a paused organization waits instead of repeatedly claiming and releasing. Once all claimed events are released, the wake-up closes as `released` (or `failed` for a counted failure). A partial release leaves it `running` for the admitted events. `finish({ orgId, wakeupId, status })` closes the wake-up as `completed`, `failed` or `timed_out`. Completion marks the remaining events `done`; failure increments attempts and requeues them for five minutes, marking them `failed` at three attempts. `release` with `countAttempt: true` applies the same failure limit and defaults to the same five-minute delay. `release` returns `{ released, failedEventIds }` and `finish` returns `{ failedEventIds }`; the ids are the events that transitioned to terminal `failed` in that call, ordered by id. Unknown or foreign lead ids fail with `KinEventQueueUnknownAgent`, and reused wake-up ids fail with `KinEventQueueWakeupConflict`, not SQL constraint errors. Enqueue validates the lead and computes owner priority inside the insert transaction. Identical enqueue retries return `{ event, duplicate: true }` with the stored event; conflicting retries fail with `KinEventQueueConflict`.
+The runner owns stop/budget admission and provider execution; all event transitions go through the queue. `release({ orgId, wakeupId, eventIds?, notBefore?, countAttempt })` returns the selected events (all by default) to the queue. Pause and budget deferrals use `countAttempt: false`, which requires `notBefore`; LEAD-11 pause handling must supply `notBefore = now + pause poll interval` (`PAUSE_POLL_INTERVAL_MS`, 5 s), so a paused organization waits instead of repeatedly claiming and releasing. Once all claimed events are released, the wake-up closes as `released` (or `failed` for a counted failure). A partial release leaves it `running` for the admitted events. `finish({ orgId, wakeupId, status })` closes the wake-up as `completed`, `failed` or `timed_out`. Completion marks the remaining events `done`; failure increments attempts and requeues them for five minutes, marking them `failed` at three attempts. `release` with `countAttempt: true` applies the same failure limit and defaults to the same five-minute delay. `release` returns `{ released, failedEventIds }` and `finish` returns `{ failedEventIds }`; the ids are the events that transitioned to terminal `failed` in that call, ordered by id. Unknown or foreign lead ids fail with `KinEventQueueUnknownAgent`, and reused wake-up ids fail with `KinEventQueueWakeupConflict`, not SQL constraint errors. Enqueue validates the lead and computes owner priority inside the insert transaction. Identical enqueue retries return `{ event, duplicate: true }` with the stored event; conflicting retries fail with `KinEventQueueConflict`.
 
 Ownership: T3's `serverOwnership.ts` takes `server-owner.sqlite` before opening the application database, guaranteeing one server per T3 home. Kin relies on that ownership and has no sidecar lock.
 
@@ -490,16 +504,18 @@ Budget RPC payloads (wiring in LEAD-10 through `kinRpcs.ts`): `kin.budget.get` u
 
 `KinStop.pause(orgId, by)`:
 
-1. Sets `paused` first, so nothing new starts.
-2. Interrupts the running lead turn (`interruptThread`) and every `kin_workers` thread with an active run, plus `stopDelegatedTasks` on each.
+1. Sets `paused` first, so nothing new starts: the runner claims nothing, `kin_delegate` and `kin_follow_up` refuse with `not_allowed`, and dreams wait.
+2. Interrupts the active run on every lead thread and on every `kin_workers` thread whose `ended_at` is null, plus `stopDelegatedTasks` on each. A wake-up whose run ends this way returns its events with `release({ countAttempt: false, notBefore: now + pause poll interval })`, so no attempt is spent; a pause that lands while the runner is launching is caught by a recheck right after launch.
 3. Tells the triggers spec (`KinRoutines.pauseAll(orgId)`) and the approvals spec (the executor checks `KinStop.isPaused` before every run and refuses).
 4. Posts "Kin is paused. Nothing runs until you resume." to the owner's direct chat.
 
-While paused, `enqueue` still records events, so nothing is lost. `KinStop.resume(orgId)` clears the flag and enqueues one `resume` event. That wake-up sees what arrived during the pause. Events older than 24 hours are marked `expired` and listed, not acted on. A deferral that came due during the pause is treated as `on_due: ask`, never `start`.
+`KinStop` lives with the chat and budget services the WebSocket handlers use; those are built outside the orchestration runtime, so the lead runtime attaches steps 2 and 3 to it (`KinStop.attach`) and replays them for orgs already paused at startup. Pausing a paused org keeps the original `paused_at`, `paused_by` and reason and posts nothing, but runs steps 2 and 3 again, so a retry reaches work a failed fan-out missed. A fan-out failure returns `unavailable` with the org still paused.
 
-Payloads: `KinOrgPauseInput { orgId, reason? }`, `KinOrgResumeInput { orgId }`; both return `KinOrgState { orgId, paused, pausedAt, pausedBy, reason }`.
+While paused, `enqueue` still records events, so nothing is lost. `KinStop.resume(orgId)` clears the flag, calls `KinRoutines.resumeAll(orgId)` and enqueues one `resume` event per active lead (dedupe key `resume:<pausedAtMs>:<agentId>`). That wake-up sees what arrived during the pause. Events queued (`queued_at`, server receipt) more than 24 hours before the resume are marked `expired` in the same transaction and listed in the resume event, not acted on. Resuming an org that is not paused changes nothing. A deferral that came due during the pause is treated as `on_due: ask`, never `start`.
 
-RPC (**new**, through the chat spec's `kinRpcs.ts`): `kin.org.pause` and `kin.org.resume`, owner role only (checked in `RpcAuthorization`). Pausing needs no signature because it only stops things. Resuming needs an owner session. The mobile spec draws the switch in settings and as a lock screen and notification action that calls `kin.org.pause`.
+Payloads: `KinOrgGetInput { orgId }`, `KinOrgPauseInput { orgId, reason? }`, `KinOrgResumeInput { orgId }`; all return `KinOrgState { orgId, paused, pausedAt, pausedBy, reason }`.
+
+RPC (**new**, through the chat spec's `kinRpcs.ts`): `kin.org.get` for any person in the organization (`orchestration:read`), and `kin.org.pause` and `kin.org.resume`, owner role only (`orchestration:operate`, then the same owner check as `kin.budget.set`). Pausing needs no signature because it only stops things. Resuming needs an owner session. No MCP tool pauses or resumes. The mobile spec draws the switch in settings and as a lock screen and notification action that calls `kin.org.pause`.
 
 ### Morning and evening routines: content
 
@@ -559,14 +575,14 @@ Upstream files touched, one line each:
 
 ## Interfaces to other specs
 
-| This spec provides                                            | Used by                                                            |
-| ------------------------------------------------------------- | ------------------------------------------------------------------ |
-| `KinEventQueue.enqueue(event)`                                | chat, triggers, approvals                                          |
-| `KinStop.isPaused(orgId)`, `kin.org.pause` / `kin.org.resume` | approvals (executor), triggers (routines, dreams), mobile (switch) |
-| `KinBudget.admit(orgId, priority)`                            | triggers (dreaming at P4)                                          |
-| `Memory.query`, cache change stream, per-org write semaphore  | triggers (watchdogs, deferral scheduling, dreaming, secret scan)   |
-| `KinLevels.effectiveLevel(orgId, agentId, chatId?)`           | approvals (refuse actions above level), chat (badge)               |
-| `kin_workers.provenance_json`                                 | approvals (provenance ceiling)                                     |
+| This spec provides                                                            | Used by                                                            |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `KinEventQueue.enqueue(event)`                                                | chat, triggers, approvals                                          |
+| `KinStop.isPaused(orgId)`, `kin.org.get` / `kin.org.pause` / `kin.org.resume` | approvals (executor), triggers (routines, dreams), mobile (switch) |
+| `KinBudget.admit(orgId, priority)`                                            | triggers (dreaming at P4)                                          |
+| `Memory.query`, cache change stream, per-org write semaphore                  | triggers (watchdogs, deferral scheduling, dreaming, secret scan)   |
+| `KinLevels.effectiveLevel(orgId, agentId, chatId?)`                           | approvals (refuse actions above level), chat (badge)               |
+| `kin_workers.provenance_json`                                                 | approvals (provenance ceiling)                                     |
 
 | This spec needs                                                                                                          | From      |
 | ------------------------------------------------------------------------------------------------------------------------ | --------- |

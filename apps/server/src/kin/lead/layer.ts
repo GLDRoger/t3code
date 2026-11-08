@@ -13,6 +13,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Option from "effect/Option";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import * as Config from "effect/Config";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -31,6 +32,7 @@ import { handlers } from "./mcp/handlers.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
+import * as KinStop from "./KinStop.ts";
 import * as DreamRunner from "../dreaming/DreamRunner.ts";
 import * as DreamSession from "../dreaming/DreamSession.ts";
 import * as Workers from "./Workers.ts";
@@ -73,10 +75,14 @@ const dreamRuntime = DreamRunner.layer.pipe(
 const runner = Layer.effectDiscard(
   Effect.gen(function* () {
     const runner = yield* WakeupRunner.WakeupRunner;
+    const stop = yield* KinStop.KinStop;
     yield* Effect.gen(function* () {
       const context = yield* Layer.build(routineRuntime);
       yield* Layer.build(dreamRuntime.pipe(Layer.provide(Layer.succeedContext(context)))).pipe(
         Effect.catchCause((cause) => Effect.logError("Kin dreams unavailable", { cause })),
+      );
+      yield* stop.attach(
+        yield* KinStop.makeFanOut(Context.getOption(context, Routines.KinRoutines)),
       );
       yield* runner.start.pipe(Effect.provideContext(context));
     }).pipe(forkParked);
