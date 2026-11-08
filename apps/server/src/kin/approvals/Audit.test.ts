@@ -563,12 +563,14 @@ describe("kin.audit RPCs", () => {
         ),
       };
       const memberHandlers = yield* handlersFor(AuthStandardClientScopes, asMember);
-      for (const call of [
-        memberHandlers["kin.audit.verify"]({ orgId: defaultOrg }),
-        memberHandlers["kin.audit.list"]({ orgId: defaultOrg, limit: 10 }),
-      ]) {
-        assert.include(yield* Effect.flip(call), { reason: "not_owner" });
-      }
+      assert.include(
+        yield* memberHandlers["kin.audit.verify"]({ orgId: defaultOrg }).pipe(Effect.flip),
+        { reason: "not_owner" },
+      );
+      assert.include(
+        yield* memberHandlers["kin.audit.list"]({ orgId: defaultOrg, limit: 10 }).pipe(Effect.flip),
+        { reason: "not_owner" },
+      );
     }).pipe(Effect.provide(Sqlite.layerMemory)),
   );
 });
