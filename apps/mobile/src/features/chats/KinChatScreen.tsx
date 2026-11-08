@@ -322,6 +322,7 @@ function KinChatFeed(props: {
 
   const feed = mergeKinFeed(props.chat.value, paging.earlier);
   const { messages } = feed;
+  const widgets = new Map(feed.widgets.map((widget) => [widget.widgetId, widget]));
   const rows = buildKinFeedRows(messages, props.viewer, expandedRuns);
   const unseen = atEnd ? 0 : kinUnseenCount(messages, seenSeq, props.viewer.personId);
   const followsEnd = atEnd && !holdPosition;
@@ -372,6 +373,8 @@ function KinChatFeed(props: {
     });
   };
 
+  const onLinkPress = (href: string) => void openLink(href);
+
   const renderItem = ({ item }: { readonly item: KinFeedRow }) => {
     switch (item.type) {
       case "message":
@@ -379,7 +382,8 @@ function KinChatFeed(props: {
           <KinMessageBubble
             row={item}
             markdownStyle={markdownStyle}
-            onLinkPress={(href) => void openLink(href)}
+            onLinkPress={onLinkPress}
+            widget={item.message.widgetId === null ? undefined : widgets.get(item.message.widgetId)}
           />
         );
       case "system":
@@ -437,6 +441,7 @@ function KinChatFeed(props: {
         keyExtractor={(row) => row.key}
         getItemType={(row) => (row.type === "message" ? (row.own ? "own" : "other") : row.type)}
         renderItem={renderItem}
+        extraData={feed.widgets}
         estimatedItemSize={72}
         drawDistance={500}
         alignItemsAtEnd

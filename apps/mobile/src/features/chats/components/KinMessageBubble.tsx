@@ -1,3 +1,4 @@
+import type { KinWidget } from "@t3tools/contracts";
 import { View } from "react-native";
 
 import { AppText as Text } from "../../../components/ui/AppText";
@@ -7,6 +8,7 @@ import {
   type NativeMarkdownTextStyle,
 } from "../../../native/SelectableMarkdownText";
 import type { KinFeedRow } from "../state/kinChatFeed";
+import { KinWidgetView } from "../widgets/KinWidgetView";
 
 type MessageRow = Extract<KinFeedRow, { readonly type: "message" }>;
 type SystemRow = Extract<KinFeedRow, { readonly type: "system" }>;
@@ -26,6 +28,8 @@ export function KinMessageBubble(props: {
   /** `useMarkdownPreviewStyles().nativeTextStyle`, read once by the screen. */
   readonly markdownStyle: NativeMarkdownTextStyle;
   readonly onLinkPress: (href: string) => void;
+  /** The widget `row.message.widgetId` points at, if the feed holds it. */
+  readonly widget: KinWidget | undefined;
 }) {
   const { row } = props;
   const { message } = row;
@@ -33,6 +37,8 @@ export function KinMessageBubble(props: {
   const suggested = message.status === "suggested";
   const hasBody = !deleted && message.body.trim().length > 0;
   const plain = deleted ? "Message deleted" : message.body;
+  const hasCard = !deleted && message.widgetId !== null;
+  const hasBubble = !hasCard || hasBody || suggested || message.editedAt !== null;
 
   return (
     <View className={cn("gap-1 px-4 pb-1.5", row.own ? "items-end" : "items-start")}>
@@ -46,42 +52,43 @@ export function KinMessageBubble(props: {
           {row.authorLabel} · {formatTime(message.createdAt)}
         </Text>
       ) : null}
-      <View
-        accessible
-        accessibilityLabel={bubbleLabel(row, plain)}
-        className={cn(
-          "max-w-[85%] gap-1 rounded-[20px] px-3.5 py-2.5",
-          row.own ? "bg-user-bubble" : "bg-card-alt",
-          suggested && "border border-dashed border-border",
-        )}
-      >
-        {hasBody ? (
-          <SelectableMarkdownText
-            markdown={message.body}
-            textStyle={props.markdownStyle}
-            preserveSoftBreaks
-            onLinkPress={props.onLinkPress}
-          />
-        ) : deleted ? (
-          <Text textRole="body" className="italic text-foreground-muted">
-            Message deleted
-          </Text>
-        ) : null}
-        {message.widgetId !== null ? (
-          // MOB-6 replaces this with the native card for the widget.
-          <Text textRole="footnote" className="text-foreground-muted">
-            This card needs a newer version of Kin.
-          </Text>
-        ) : null}
-        {suggested || message.editedAt !== null ? (
-          <Text
-            textRole="caption"
-            className={row.own ? "text-user-bubble-foreground-muted" : "text-foreground-muted"}
-          >
-            {suggested ? "Suggestion, not sent yet" : "Edited"}
-          </Text>
-        ) : null}
-      </View>
+      {hasBubble ? (
+        <View
+          accessible
+          accessibilityLabel={bubbleLabel(row, plain)}
+          className={cn(
+            "max-w-[85%] gap-1 rounded-[20px] px-3.5 py-2.5",
+            row.own ? "bg-user-bubble" : "bg-card-alt",
+            suggested && "border border-dashed border-border",
+          )}
+        >
+          {hasBody ? (
+            <SelectableMarkdownText
+              markdown={message.body}
+              textStyle={props.markdownStyle}
+              preserveSoftBreaks
+              onLinkPress={props.onLinkPress}
+            />
+          ) : deleted ? (
+            <Text textRole="body" className="italic text-foreground-muted">
+              Message deleted
+            </Text>
+          ) : null}
+          {suggested || message.editedAt !== null ? (
+            <Text
+              textRole="caption"
+              className={row.own ? "text-user-bubble-foreground-muted" : "text-foreground-muted"}
+            >
+              {suggested ? "Suggestion, not sent yet" : "Edited"}
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
+      {hasCard ? (
+        <View className="w-[85%]">
+          <KinWidgetView widget={props.widget} onOpenLink={props.onLinkPress} />
+        </View>
+      ) : null}
     </View>
   );
 }
