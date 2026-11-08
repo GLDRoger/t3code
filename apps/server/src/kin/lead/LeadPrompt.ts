@@ -175,7 +175,7 @@ function encoded(value: unknown, capText = false): string {
   );
 }
 
-function quote(label: string, value: unknown, capText = false): string {
+export function quote(label: string, value: unknown, capText = false): string {
   return `> BEGIN QUOTE: ${label}\n> ${encoded(value, capText)}\n> END QUOTE`;
 }
 
