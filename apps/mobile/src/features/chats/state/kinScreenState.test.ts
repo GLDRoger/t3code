@@ -193,6 +193,13 @@ describe("kinChatTitle", () => {
       "Direct chat",
     ],
     ["an untitled group", { title: null, kind: "team_group", members: [owner] }, "Chat"],
+    [
+      "an untitled group with an agent",
+      { title: null, kind: "team_group", members: [atlas] },
+      "Chat",
+    ],
+    ["an untitled project group", { title: null, kind: "project_group", members: [atlas] }, "Chat"],
+    ["an untitled router chat", { title: null, kind: "router", members: [owner, atlas] }, "Chat"],
   ] as const)("names %s", (_name, chat, title) => {
     expect(kinChatTitle(chat as never, agentNames)).toBe(title);
   });

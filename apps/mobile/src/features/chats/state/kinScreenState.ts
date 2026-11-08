@@ -162,12 +162,13 @@ export function kinChatTitle(
   agentNames: ReadonlyMap<string, string>,
 ): string {
   if (chat.title !== null) return chat.title;
+  if (chat.kind !== "direct") return "Chat";
   for (const member of chat.members) {
     if (member.leftAt !== null || member.principal._tag !== "agent") continue;
     const name = agentNames.get(member.principal.agentId);
     if (name !== undefined) return name;
   }
-  return chat.kind === "direct" ? "Direct chat" : "Chat";
+  return "Direct chat";
 }
 
 const WAITING_REASON_LABELS: Record<KinWaitingReason, string> = {
