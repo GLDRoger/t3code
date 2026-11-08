@@ -195,11 +195,16 @@ export const KinPendingAction = Schema.Struct({
 });
 export type KinPendingAction = typeof KinPendingAction.Type;
 
+// 43 characters carry 258 bits; the last two must be zero, so a key has one spelling and one thumbprint.
+const P256Coordinate = pattern(
+  /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/,
+  "a canonical base64url P-256 coordinate",
+);
 export const KinApproverPublicJwk = Schema.Struct({
   kty: Schema.Literal("EC"),
   crv: Schema.Literal("P-256"),
-  x: pattern(/^[A-Za-z0-9_-]{43}$/, "a base64url P-256 coordinate"),
-  y: pattern(/^[A-Za-z0-9_-]{43}$/, "a base64url P-256 coordinate"),
+  x: P256Coordinate,
+  y: P256Coordinate,
 });
 export type KinApproverPublicJwk = typeof KinApproverPublicJwk.Type;
 
