@@ -4,6 +4,7 @@ import { View } from "react-native";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
+import { ListSection } from "../../components/ui/ListSection";
 import { KinInboxPage } from "./components/KinScreenState";
 import { selectKinInboxView } from "./state/kinInboxModel";
 import { useKinInbox } from "./state/useKinInbox";
@@ -27,16 +28,16 @@ export function KinChatsScreen() {
         return (
           <>
             {view.waitingCount > 0 ? (
-              <View className="overflow-hidden rounded-[20px]">
+              <ListSection>
                 <ListRow
                   icon="exclamationmark.circle"
                   label="Waiting on you"
                   detail={String(view.waitingCount)}
                   onPress={() => navigation.navigate("KinWaiting")}
                 />
-              </View>
+              </ListSection>
             ) : null}
-            <View className="overflow-hidden rounded-[20px] bg-grouped-card">
+            <ListSection>
               {view.rows.map((row) => (
                 <View
                   key={row.chat.chatId}
@@ -57,7 +58,7 @@ export function KinChatsScreen() {
                   />
                 </View>
               ))}
-            </View>
+            </ListSection>
           </>
         );
       }}

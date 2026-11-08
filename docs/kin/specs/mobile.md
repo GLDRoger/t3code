@@ -318,15 +318,14 @@ New, all under `apps/mobile/src/features/chats/` unless noted:
 
 Upstream files touched, one hook each:
 
-| File                                             | Hook                                                                                                                                                                      |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `apps/mobile/src/Stack.tsx`                      | `import { KIN_SCREENS } from "./features/chats/routes";` and `...KIN_SCREENS,` in `screens`                                                                               |
-| `apps/mobile/src/features/home/HomeScreen.tsx`   | `import { KinHomeEntry } ...` and `<KinHomeEntry />` after `{listHeader}` in `v2ListHeader`                                                                               |
-| `apps/mobile/src/App.tsx`                        | `import { installKinNotifications } ...` and `installKinNotifications(linkToAppPath),` in `appServiceDisposers`                                                           |
-| `packages/client-runtime/src/rpc/client.ts`      | add Kin stream tags to `EnvironmentSubscriptionRpcTag` (one line per tag; may be done by the chat spec)                                                                   |
-| `apps/mobile/index.ts`                           | `import "./src/features/chats/state/kinDevLogEntry";` (MOB-1, dev only: with `EXPO_PUBLIC_KIN_DEV_LOG=1` it logs the host and inbox). Remove it once MOB-2 lands screens. |
-| `apps/mobile/src/persistence/mobile-database.ts` | `"kin",` in `ClientCacheKind`                                                                                                                                             |
-| `apps/mobile/vite.config.ts`                     | `"src/features/chats/**/*.test.tsx",` in `reactTests` (only if Kin adds component tests)                                                                                  |
+| File                                             | Hook                                                                                                            |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| `apps/mobile/src/Stack.tsx`                      | `import { KIN_SCREENS } from "./features/chats/routes";` and `...KIN_SCREENS,` in `screens`                     |
+| `apps/mobile/src/features/home/HomeScreen.tsx`   | `import { KinHomeEntry } ...` and `<KinHomeEntry />` after `{listHeader}` in `v2ListHeader`                     |
+| `apps/mobile/src/App.tsx`                        | `import { installKinNotifications } ...` and `installKinNotifications(linkToAppPath),` in `appServiceDisposers` |
+| `packages/client-runtime/src/rpc/client.ts`      | add Kin stream tags to `EnvironmentSubscriptionRpcTag` (one line per tag; may be done by the chat spec)         |
+| `apps/mobile/src/persistence/mobile-database.ts` | `"kin",` in `ClientCacheKind`                                                                                   |
+| `apps/mobile/vite.config.ts`                     | `"src/features/chats/**/*.test.tsx",` in `reactTests` (only if Kin adds component tests)                        |
 
 ## Interfaces to other specs
 

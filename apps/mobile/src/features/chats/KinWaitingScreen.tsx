@@ -3,6 +3,7 @@ import { View } from "react-native";
 
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
+import { ListSection } from "../../components/ui/ListSection";
 import { KinInboxPage } from "./components/KinScreenState";
 import { selectKinInboxView } from "./state/kinInboxModel";
 import { useKinInbox } from "./state/useKinInbox";
@@ -33,7 +34,7 @@ export function KinWaitingScreen() {
         }
         const chatTitles = new Map(view.rows.map((row) => [row.chat.chatId, row.chat.title]));
         return (
-          <View className="overflow-hidden rounded-[20px] bg-grouped-card">
+          <ListSection>
             {view.waiting.map((item) => {
               const label = REASON_LABELS[item.reason];
               const chat = chatTitles.get(item.chatId) ?? "Direct chat";
@@ -43,7 +44,7 @@ export function KinWaitingScreen() {
                 </View>
               );
             })}
-          </View>
+          </ListSection>
         );
       }}
     </KinInboxPage>

@@ -10,7 +10,7 @@ import { ErrorBanner } from "../../../components/ui/ErrorBanner";
 import { Notice } from "../../../components/ui/Notice";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
-import type { KinInboxScreenState } from "../state/kinScreenState";
+import { kinInboxNotice, type KinInboxScreenState } from "../state/kinScreenState";
 
 type ReadyState = Extract<KinInboxScreenState, { readonly _tag: "ready" }>;
 
@@ -50,7 +50,12 @@ function KinInboxStateBody(props: {
   switch (state._tag) {
     case "loading":
       return (
-        <View className="items-center py-12" accessibilityLabel="Loading Kin">
+        <View
+          className="items-center py-12"
+          accessible
+          accessibilityRole="progressbar"
+          accessibilityLabel="Loading Kin"
+        >
           <AppActivityIndicator />
         </View>
       );
@@ -80,6 +85,14 @@ function KinInboxStateBody(props: {
           detail="Pair it again from the Mac."
         />
       );
+    case "noIdentity":
+      return (
+        <EmptyState
+          variant="plain"
+          title="Kin doesn't know who you are on this server yet"
+          detail="Ask whoever runs Kin here to add you, then come back."
+        />
+      );
     case "error":
       return (
         <View className="gap-3">
@@ -89,17 +102,19 @@ function KinInboxStateBody(props: {
           </View>
         </View>
       );
-    case "ready":
+    case "ready": {
+      const notice = kinInboxNotice(state, (date) => timeFormat.format(date));
       return (
         <>
-          {state.inbox.live || state.inbox.savedAt === null ? null : (
+          {notice === null ? null : (
             <Notice
-              {...(state.connected ? {} : { icon: "wifi.slash" as const })}
-              message={`${state.connected ? "Updating" : "Offline"}. Last updated ${timeFormat.format(new Date(state.inbox.savedAt))}.`}
+              {...(notice.offline ? { icon: "wifi.slash" as const } : {})}
+              message={notice.message}
             />
           )}
           {props.children(state)}
         </>
       );
+    }
   }
 }
