@@ -98,7 +98,7 @@ A task can start once everything it depends on has merged. These waves come from
 Where specs overlapped, this is who owns what:
 
 - **One Kin migration track.** CHAT-2 creates it (`kin_sql_migrations`, separate from upstream's numbered list). Every other spec adds its tables there.
-- **One Kin MCP endpoint, `/kin/mcp`.** CHAT-7 creates it. The chat tools (`kin_chat_post`, `kin_chat_read`, `kin_widget_upsert`, `kin_floor_bid`), the lead tools (LEAD-7, LEAD-8, including `kin_defer`) and `request_action` (APPR-3) all live there, and only lead threads are given it. Nothing Kin adds goes into upstream's `layerTools`.
+- **One Kin MCP endpoint, `/kin/mcp`.** CHAT-7 creates it. The chat tools (`kin_chat_post`, `kin_chat_read`, `kin_widget_upsert`, `kin_floor_bid`), the lead tools (LEAD-7, LEAD-8, including `kin_defer`) and `request_action` (APPR-3) all live there, and only registered lead/agent threads are given it; ordinary threads and subagents retain `/mcp`. CHAT-7 wraps transport construction and credential issuance with two one-line `server.ts` hooks, sharing CHAT-6's `KinIdentity`. The Kin transport also carries the existing T3 tools in an isolated registry. Nothing Kin adds goes into upstream's `layerTools`. `kin_floor_bid` and `floorGrant` remain phase 2.
 - **Workers start with `ThreadLaunchService.launch`, not `delegate_task`,** so a worker finishing doesn't wake the lead outside the queue (lead spec, correction 1).
 - **Scheduled triggers don't start agent threads.** They write to `kin_trigger_inbox`, and the lead's queue reads it (TRIG-4).
 - **The approval card is split.** MOB-8 draws the card. APPR-7 owns `approvePendingAction`: the challenge, the biometric signature and the submit.

@@ -88,7 +88,7 @@ export const KinActionTarget = Schema.Union([
   }),
   Schema.TaggedStruct("content", { path: Schema.String, sha256: Hex64 }), // rules.md, purge plan
   Schema.TaggedStruct("level", {
-    leadId: Schema.String,
+    agentId: KinAgentId,
     chatId: Schema.optional(KinChatId),
     level: KinLevel,
   }),
@@ -123,7 +123,7 @@ export const KinPendingAction = Schema.Struct({
   nonce: Schema.String, // 32 random bytes, base64url; rotated when `resolved` changes
   revision: Schema.Int, // bumps with each nonce rotation
   reason: Schema.String, // agent text, rendered as a quote
-  requestedBy: Schema.Struct({ leadId: Schema.String, threadId: ThreadId }),
+  requestedBy: Schema.Struct({ agentId: KinAgentId, threadId: ThreadId }),
   provenance: KinProvenance, // section 8
   requiredApprovers: Schema.Array(KinApproverRequirement), // phase 1: [{ role: "owner" }]
   state: KinPendingActionState,
@@ -182,7 +182,7 @@ export const KinApproverKey = Schema.Struct({
   orgId: KinOrgId,
   thumbprint: Schema.String, // computeDpopJwkThumbprint(publicJwk)
   publicJwk: DpopPublicJwk, // packages/shared/src/dpopCommon.ts
-  humanId: KinHumanId, // chat spec's KinAuthor human id
+  humanId: KinPersonId, // chat spec's KinAuthor human id
   deviceLabel: Schema.String,
   platform: Schema.Literals(["ios", "android"]),
   hardware: Schema.Literals(["secure_enclave", "strongbox", "tee", "software"]),
@@ -231,7 +231,7 @@ export const KinGrantPayload = Schema.Struct({
   headSha: Schema.optional(Sha40), // required for merge_pull_request and delete_branch
   base: Schema.optional(BranchName),
   mergeMethod: Schema.optional(PullRequestMergeMethod),
-  approver: Schema.Struct({ humanId: KinHumanId, kid: Schema.String }),
+  approver: Schema.Struct({ humanId: KinPersonId, kid: Schema.String }),
   decision: Schema.Literal("approve"),
   iat: Schema.Int, // device clock, seconds
   exp: Schema.Int, // iat + 900 at most
@@ -307,7 +307,7 @@ export const KinProvenance = Schema.Struct({
     Schema.Struct({ kind: Schema.String, id: Schema.String, authorRole: Schema.String }),
   ),
   afterNonOwnerMessage: Schema.optional(
-    Schema.Struct({ humanId: KinHumanId, messageId: KinMessageId }),
+    Schema.Struct({ humanId: KinPersonId, messageId: KinMessageId }),
   ),
 });
 ```
@@ -469,7 +469,7 @@ New (Kin-owned):
 Upstream hooks (one line each):
 
 - `apps/server/src/auth/RpcAuthorization.ts` — `...KIN_APPROVAL_RPC_SCOPES,` in `RPC_REQUIRED_SCOPES` (or folded into the chat spec's single Kin spread, if it adds one).
-- `packages/contracts/src/rpc.ts` — Kin approval RPCs merged into `WsRpcGroup` through the chat spec's Kin group hook.
+- `packages/contracts/src/kinRpcs.ts` (Kin-owned, created by CHAT-6) — add the approval RPCs and scopes to `KinRpcs` and `KIN_RPC_SCOPES`; `rpc.ts` and `RpcAuthorization.ts` already spread those.
 - `apps/server/src/server.ts` — Kin layer already added by the chat spec; approvals layers join `apps/server/src/kin/layer.ts`, not upstream.
 - HTTP route for `/kin/mcp` — the same router hook the chat spec uses for Kin routes.
 - `apps/mobile/app.config.ts` — `"./plugins/withKinApprovalKey.cjs",` in `plugins`.
@@ -478,7 +478,7 @@ RPCs and scopes: `kin.approvals.list` (stream) and `get` → `orchestration:read
 
 ## Interfaces to other specs
 
-- **Chat:** `KinOrgId`, `KinHumanId` (human `KinAuthor`), `KinChatMember` roles (owner lookup), `KinWidget` type `approval {actionId}` with the agent-field rejection, posting result messages, **Waiting on you** items. Chat spec owns the Kin migration runner and the Kin RPC/route hooks.
+- **Chat:** `KinOrgId`, `KinPersonId` (human `KinAuthor`), `KinChatMember` roles (owner lookup), `KinWidget` type `approval {actionId}` with the agent-field rejection, posting result messages, **Waiting on you** items. Chat spec owns the Kin migration runner and the Kin RPC/route hooks.
 - **Lead:** registry of lead threads (for `request_action`), `KinEvent.id` (idempotency) and provenance, the stop switch (executor checks it), levels (`set_level` handler, `ceilingAllows`), `change_rules` handler.
 - **Triggers:** `pull_request` synchronize/closed webhooks → `refreshAction(actionId)`; `pull_request_review` → enables a card waiting on a GitHub review; `memory_purge` handler; Kin host setup (bot `gh` login, keychain items, hygiene check passing); upstream contract test for `GitHubRequestPolicy.credential` and `verifyDpopProof`.
 - **Mobile:** renders `ApprovalCard` inside the chat screens; this spec ships the card, the native module and the signing hook.

@@ -21,6 +21,17 @@
   - It runs typecheck on the branded copy.
 - If upstream ever adds a central place for the app's name and assets, use it instead and shrink this script to a config file.
 
+## CI on the fork
+
+Upstream's CI runs on Blacksmith runners that only `pingdotgg` has, so on this fork those jobs would wait forever. Kin changes two things:
+
+- `ci.yml` and `mobile-fingerprint-check.yml` run on GitHub-hosted runners instead (`ubuntu-24.04`, `macos-26`). They're free for public repos. If a merge from upstream conflicts on a `runs-on:` line, keep the GitHub-hosted one; the `sed` in the sync steps below puts back any that upstream re-adds.
+- Workflows that only make sense for upstream (releases, deploys, preview builds, AUR, the contributor vouch list, issue triage, Windows tests) are turned off in the fork's Actions settings, not deleted, so the files still merge cleanly. Turn one back on with `gh workflow enable <file> --repo GLDRoger/t3code`.
+
+Test Web has a 20-minute timeout for slower GitHub-hosted runners; keep that headroom when syncing upstream.
+
+No upstream secrets exist here. CI's task cache token is optional, so CI runs without it, just slower.
+
 ## Syncing upstream
 
 Sync often; a few days of upstream merges in minutes.
@@ -30,7 +41,9 @@ git switch kin
 git fetch upstream
 git branch -f main upstream/main
 git merge upstream/main
+sed -i.bak -E 's/runs-on: blacksmith-[0-9]+vcpu-ubuntu-2404/runs-on: ubuntu-24.04/; s/runs-on: blacksmith-[0-9]+vcpu-macos-26/runs-on: macos-26/' .github/workflows/ci.yml .github/workflows/mobile-fingerprint-check.yml && rm .github/workflows/*.bak
 vp i
 vp run check:changed upstream/main
+(cd apps/server && vp test run kin-contract)
 git push origin main kin
 ```

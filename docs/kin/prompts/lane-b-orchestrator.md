@@ -4,15 +4,18 @@ For Suraj (`Surajsm60720`). First do the one-time setup below, then paste the pr
 
 ## One-time setup
 
+First accept the invite to `GLDRoger/t3code` (write access) at https://github.com/GLDRoger/t3code/invitations. Then:
+
 ```sh
-gh repo fork GLDRoger/t3code --clone=false
-git clone https://github.com/Surajsm60720/t3code.git kin && cd kin
-git remote add kin https://github.com/GLDRoger/t3code.git
+git clone https://github.com/GLDRoger/t3code.git kin && cd kin
 git remote add upstream https://github.com/pingdotgg/t3code.git
-git fetch kin && git fetch upstream main
-git switch -c kin kin/kin
+git fetch upstream main
+git switch kin
+gh repo set-default GLDRoger/t3code   # so gh targets this repo, not pingdotgg/t3code
 vp i   # needs Node 26 and the vite-plus `vp` CLI
 ```
+
+`kin` and `main` are protected: pushes to them are refused, so all work lands through PRs.
 
 APPR-6 and the mobile tasks need a Mac with Xcode and an iOS Simulator, plus Android Studio for the Android half. Upstream's [development runbook](../../operations/development.md#first-checkout) has the rest.
 
@@ -31,12 +34,9 @@ You are the orchestrator for **lane B of Kin phase 1**. I'm Suraj (GitHub `Suraj
 
 ## The repo
 
-- This checkout is my fork. Remotes:
-  - `origin`: my fork, `Surajsm60720/t3code`
-  - `kin`: Nishchay's fork, `GLDRoger/t3code`, the shared trunk, branch `kin`
-  - `upstream`: `pingdotgg/t3code`
-- I can't push to `GLDRoger/t3code`. Push task branches to `origin`, and open PRs into `GLDRoger/t3code`'s `kin` branch. Never open a PR against `pingdotgg/t3code`.
-- Before each task, update: `git fetch kin && git switch kin && git merge --ff-only kin/kin`.
+- This checkout is `GLDRoger/t3code`, the shared trunk; I have write access. Remotes: `origin` (`GLDRoger/t3code`) and `upstream` (`pingdotgg/t3code`).
+- Push task branches to `origin` and open PRs into `kin`. Never push to `kin` or `main` (they refuse it anyway), and never open a PR against `pingdotgg/t3code`.
+- Before each task, update: `git fetch origin && git switch kin && git merge --ff-only origin/kin`.
 
 ## My lane
 
@@ -58,7 +58,7 @@ You are the orchestrator for **lane B of Kin phase 1**. I'm Suraj (GitHub `Suraj
    - says exactly what to build, from the task's "What" and "Files"
    - names the checks to run: the task's "Done when", plus `vp run check:changed upstream/main`, and no repo-wide checks
    - names the branch, `kin-<id>-<slug>`, pushed to `origin`
-   - says to open the PR with `gh pr create --repo GLDRoger/t3code --base kin --head Surajsm60720:kin-<id>-<slug>`. The title is `<ID>: <title>`. The body has **Why** (1–2 bullets), **How** (1–3) and **Tests** (each command and its result).
+   - says to open the PR with `gh pr create --repo GLDRoger/t3code --base kin --head kin-<id>-<slug>`. The title is `<ID>: <title>`. The body has **Why** (1–2 bullets), **How** (1–3) and **Tests** (each command and its result).
    - says to fix the spec in the same PR if the spec turns out to be wrong
    - asks for a reply with the PR URL, the head SHA and the check results
 3. Open the PR as a draft as soon as the task starts. That claims the task.
