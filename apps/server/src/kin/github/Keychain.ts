@@ -19,7 +19,7 @@ export class KinKeychainError extends Schema.TaggedError<KinKeychainError>()("Ki
 }) {
   override get message(): string {
     return this.operation === "secret_service"
-      ? `No Secret Service (org.freedesktop.secrets) answers on this user's D-Bus session, so Kin won't store or read the ${this.service} item: the keyring library would fall back to kernel keyutils, which loses it at logout or reboot. Start one for this user, such as gnome-keyring-daemon.`
+      ? `No Secret Service (org.freedesktop.secrets) answers on this user's D-Bus session, so Kin won't store or read the ${this.service} item: the keyring library would fall back to kernel keyutils, which loses it on reboot. Start one for this user, such as gnome-keyring-daemon.`
       : `The OS keychain refused to ${this.operation} the ${this.service} item.`;
   }
 }

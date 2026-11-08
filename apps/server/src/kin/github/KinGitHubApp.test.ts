@@ -227,8 +227,7 @@ describe("KinGitHubApp.installationToken", () => {
         assert.include(JSON.stringify(logged), "Could not revoke a Kin App token");
         assert.notInclude(JSON.stringify(logged), "ghs_");
       }).pipe(
-        Effect.provide(layer),
-        Effect.provide(Logger.layer([logger], { mergeWithExisting: false })),
+        Effect.provide(Layer.merge(layer, Logger.layer([logger], { mergeWithExisting: false }))),
       );
     },
   );
