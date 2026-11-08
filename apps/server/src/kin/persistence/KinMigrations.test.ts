@@ -241,7 +241,7 @@ describe("Kin migrations", () => {
         [10, "ChatChanges"],
         [11, "MemoryHeads"],
         [13, "Routines"],
-        [13, "LeadToolCalls"],
+        [14, "LeadToolCalls"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -298,7 +298,7 @@ describe("Kin migrations", () => {
         [10, "ChatChanges"],
         [11, "MemoryHeads"],
         [13, "Routines"],
-        [13, "LeadToolCalls"],
+        [14, "LeadToolCalls"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,

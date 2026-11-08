@@ -266,6 +266,8 @@ The `/kin/mcp` endpoint deliberately exposes only Kin tools, never T3 tools (inc
 | `kin_journal`    | `{ saw: string[], did: string[], skipped?: string[] }`                                                                                                                                                      | Adds the lead's lines to this wake-up's journal entry.                                                                                                       |
 | `kin_end`        | `{ summary }`                                                                                                                                                                                               | Marks the wake-up done. The runner commits after the run ends.                                                                                               |
 
+Create deferrals only with `kin_defer`. Use `memory_write` update/invalidate on a stored deferral to change only `status` (`done`/`cancelled`) and `invalid_at`. The server preserves `chat`, `source_event`, `what` and `on_due`; attempts to change them are refused. Closing or cancelling disarms the deferral.
+
 ### Workers and WorkerReport
 
 Design correction: workers are not started with `delegate_task`. See "Design corrections" for why. `kin_delegate` launches them through the same machinery:

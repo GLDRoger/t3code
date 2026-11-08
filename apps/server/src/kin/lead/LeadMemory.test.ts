@@ -122,6 +122,18 @@ it.live(
           invalid_at: "2000-01-01",
         }),
       );
+      yield* fs.makeDirectory(`${seed}/deferrals`);
+      for (const id of ["close-me", "cancel-me", "invalidate-me"]) {
+        yield* fs.writeFileString(
+          `${seed}/deferrals/${id}.md`,
+          fixtureItem({
+            id,
+            chat: "stored-chat",
+            what: "Original task",
+            source_event: "original-event",
+          }),
+        );
+      }
       yield* git(seed, ["add", "--", "."]);
       yield* git(seed, [
         "-c",
@@ -290,7 +302,7 @@ it.live(
         yield* memory.prepareWakeup(orgId, "fixture-wakeup");
         yield* memory.prepareWakeup(other, "other-wakeup");
         assert.deepStrictEqual(
-          (yield* service.search(scope, {})).map((item) => item.id),
+          (yield* service.search(scope, { kind: "claim" })).map((item) => item.id),
           ["a-item"],
         );
         assert.strictEqual(
@@ -317,6 +329,42 @@ it.live(
           yield* sql`SELECT 1 FROM kin_memory_reads WHERE org_id = ${orgId} AND item_id = 'b-item'`,
           0,
         );
+        const closable = yield* service.read(scope, { id: KinMemoryItemId.make("close-me") });
+        const closeInput = yield* decodeWrite({
+          op: "update",
+          sourceEventId: "fixture-event",
+          item: { ...closable.head, body: closable.body, status: "done" },
+        });
+        for (const changed of [
+          { what: "Forged task" },
+          { on_due: "ask" as const },
+          { chat: KinChatId.make("foreign-chat") },
+        ]) {
+          assert.strictEqual(
+            (yield* service
+              .write(scope, {
+                ...closeInput,
+                item: { ...closeInput.item, ...changed },
+              })
+              .pipe(Effect.flip)).reason,
+            "not_allowed",
+          );
+        }
+        yield* service.write(scope, closeInput);
+        for (const [id, op, status, invalid_at] of [
+          ["cancel-me", "update", "cancelled", null],
+          ["invalidate-me", "invalidate", "open", "2026-11-08T00:00:00.000Z"],
+        ] as const) {
+          const item = yield* service.read(scope, { id: KinMemoryItemId.make(id) });
+          yield* service.write(
+            scope,
+            yield* decodeWrite({
+              op,
+              sourceEventId: "fixture-event",
+              item: { ...item.head, body: item.body, status, invalid_at },
+            }),
+          );
+        }
         const input = yield* decodeWrite({
           op: "create",
           item: {
@@ -341,7 +389,10 @@ it.live(
           ...input,
           item: { ...input.item, chat: "other-chat", source_event: "forged-event" },
         });
-        assert.notProperty(forged.item, "chat");
+        assert.strictEqual(
+          (yield* service.write(scope, forged).pipe(Effect.flip)).reason,
+          "not_allowed",
+        );
         assert.notProperty(forged.item, "source_event");
         assert.strictEqual(
           (yield* service
@@ -454,6 +505,19 @@ it.live(
           orgId,
           "fixture-wakeup",
           "completed",
+        );
+        const closed = yield* git(remote, ["show", `${committed.commit}:deferrals/close-me.md`]);
+        assert.include(closed, "status: done");
+        assert.include(closed, "source_event: original-event");
+        assert.include(closed, "chat: stored-chat");
+        assert.include(closed, "what: Original task");
+        assert.include(
+          yield* git(remote, ["show", `${committed.commit}:deferrals/cancel-me.md`]),
+          "status: cancelled",
+        );
+        assert.include(
+          yield* git(remote, ["show", `${committed.commit}:deferrals/invalidate-me.md`]),
+          "invalid_at: 2026-11-08T00:00:00.000Z",
         );
         const files = yield* git(remote, ["ls-tree", "-r", "--name-only", committed.commit]);
         assert.include(files, `deferrals/${first.itemId}.md`);

@@ -158,7 +158,12 @@ const make = Effect.gen(function* () {
   const locked = memory.withWriterLock;
   const sessions = new Map<
     KinOrgId,
-    { wakeupId: string; files: Map<string, string>; lines: string[] }
+    {
+      wakeupId: string;
+      files: Map<string, string>;
+      lines: string[];
+      supersessions: Map<string, string>;
+    }
   >();
   const io = <A, E, R>(orgId: KinOrgId, effect: Effect.Effect<A, E, R>) =>
     effect.pipe(Effect.mapError((cause) => new MemoryError({ orgId, operation: "writer", cause })));
@@ -266,8 +271,12 @@ const make = Effect.gen(function* () {
     const previous = sessions.get(orgId);
     if (previous && previous.wakeupId !== wakeupId)
       return yield* new MemoryWriteRejected({ reason: "Another wake-up owns the writer" });
-    const state = previous ?? { wakeupId, files: new Map<string, string>(), lines: [] };
-    sessions.set(orgId, state);
+    const state = previous ?? {
+      wakeupId,
+      files: new Map<string, string>(),
+      lines: [],
+      supersessions: new Map<string, string>(),
+    };
     if (!previous && ctx.stagedReceipts) {
       const { writer } = yield* validate(orgId);
       const branch =
@@ -281,6 +290,7 @@ const make = Effect.gen(function* () {
         yield* recovery.notify({ orgId, branch: `wakeup:${wakeupId}`, reason });
       }
     }
+    sessions.set(orgId, state);
     return { ctx, state };
   });
   const safePath = Effect.fn("MemoryWriter.safePath")(function* (
@@ -427,6 +437,22 @@ const make = Effect.gen(function* () {
               change.supersedes === undefined
                 ? undefined
                 : items.find((item) => item.id === change.supersedes);
+            const supersessionHash =
+              change.supersedes === undefined
+                ? undefined
+                : yield* git(
+                    orgId,
+                    writer,
+                    ["hash-object", "--no-filters", "--stdin"],
+                    {},
+                    stringify(change),
+                  );
+            if (
+              superseded?.status === "superseded" &&
+              superseded.superseded_by === fm.id &&
+              state.supersessions.get(change.path) === supersessionHash
+            )
+              return;
             if (
               change.supersedes !== undefined &&
               (!superseded ||
@@ -517,6 +543,7 @@ const make = Effect.gen(function* () {
                     trust: existing.trust,
                     said_by: existing.said_by,
                     source: existing.source,
+                    source_event: existing.source_event,
                   }
                 : fields,
               parsed.body,
@@ -539,6 +566,8 @@ const make = Effect.gen(function* () {
               state.files.set(oldPath, oldText);
             }
             state.files.set(change.path, text);
+            if (supersessionHash !== undefined)
+              state.supersessions.set(change.path, supersessionHash);
           }),
         ),
       ),
@@ -547,7 +576,15 @@ const make = Effect.gen(function* () {
       locked(
         orgId,
         Effect.gen(function* () {
-          const { state } = yield* session(orgId, wakeupId);
+          const { ctx, state } = yield* session(orgId, wakeupId);
+          if (lines.length === 1 && lines[0] === "Lead ended without calling kin_end.") {
+            const { writer } = yield* validate(orgId);
+            const branch =
+              ctx.level === "L0" ? `kin/shadow/${ctx.agentId}` : (config.defaultBranch ?? "main");
+            const head = yield* branchHead(orgId, writer, branch);
+            const { message } = yield* commitAt(orgId, writer, head);
+            if (message.split("\n")[0] === `kin(${ctx.agentId}): wake-up ${wakeupId}`) return;
+          }
           state.lines.push(...lines);
         }),
       ),

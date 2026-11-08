@@ -62,14 +62,7 @@ const routineRuntime = Routines.layer.pipe(
 
 const runner = Layer.effectDiscard(
   Effect.gen(function* () {
-    const routineRuntime = Routines.layer.pipe(
-  Layer.provideMerge(TriggerScheduler.layer),
-  Layer.provide(Layer.mergeAll(TriggerStore.layer, TriggerInbox.layer)),
-  // Kin builds in its contained startup scope; orchestration runtime does not expose its scheduler.
-  Layer.provide(Scheduler.layer),
-);
-
-const runner = yield* WakeupRunner.WakeupRunner;
+    const runner = yield* WakeupRunner.WakeupRunner;
     yield* Effect.gen(function* () {
       const context = yield* Layer.build(routineRuntime);
       yield* runner.start.pipe(Effect.provideContext(context));

@@ -529,7 +529,6 @@ describe("WakeupRunner", () => {
       Effect.gen(function* () {
         yield* seed;
         const queue = yield* KinEventQueue.KinEventQueue;
-        const runner = yield* WakeupRunner.WakeupRunner;
         const sql = yield* SqlClient.SqlClient;
         yield* queue.enqueue(event("abandoned"));
         yield* TestClock.adjust("20 seconds");
@@ -544,7 +543,19 @@ describe("WakeupRunner", () => {
         });
         yield* sql`UPDATE kin_leads SET thread_id = ${missingThread} WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
         yield* sql`UPDATE kin_wakeups SET thread_id = ${missingThread} WHERE org_id = ${orgId} AND wakeup_id = 'abandoned'`;
-        yield* runner.recover;
+        yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash) VALUES (${orgId}, 'abandoned', 'item:test', 'hash')`;
+        const recoveryWriter = Layer.mock(Writer.MemoryWriter)({
+          commitWakeup: () =>
+            Effect.fail(new Writer.MemoryWriteRejected({ reason: "fixture commit failure" })),
+          discard: () => Effect.void,
+        });
+        yield* WakeupRunner.WakeupRunner.pipe(
+          Effect.flatMap((recovery) => recovery.recover),
+          Effect.provide(Layer.fresh(WakeupRunner.layer).pipe(Layer.provide(recoveryWriter))),
+        );
+        assert.deepStrictEqual(yield* sql`SELECT attempts, not_before FROM kin_events`, [
+          { attempts: 0, not_before: null },
+        ]);
         assert.deepStrictEqual(yield* sql`SELECT thread_id FROM kin_leads`, [{ thread_id: null }]);
         assert.deepStrictEqual(yield* sql`SELECT status FROM kin_wakeups`, [
           { status: "interrupted" },

@@ -555,7 +555,16 @@ const make = Effect.gen(function* () {
               const receipts =
                 yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId} LIMIT 1`;
               if (receipts.length > 0 && Option.isSome(writer)) {
-                yield* writer.value.commitWakeup(row.orgId, row.wakeupId, "failed");
+                yield* writer.value
+                  .commitWakeup(row.orgId, row.wakeupId, "failed")
+                  .pipe(
+                    Effect.catchCause((cause) =>
+                      Effect.logError(
+                        "Kin recovery commit failed; requeueing unfinished wake-up",
+                        cause,
+                      ),
+                    ),
+                  );
               }
               if (projection === undefined) yield* clearMissingThread(row);
               yield* queue.requeueUnfinished(row.orgId, row.wakeupId);

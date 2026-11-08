@@ -2,7 +2,7 @@ import { memoryGit } from "./git.ts";
 import * as NodeZlib from "node:zlib";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
-import { KinAgentId, KinOrgId } from "@t3tools/contracts";
+import { KinAgentId, KinOrgId, VcsProcessSpawnError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -20,6 +20,10 @@ const orgId = KinOrgId.make("fixture-org");
 const agentId = KinAgentId.make("fixture-lead");
 const gitLayer = Vcs.layer.pipe(Layer.provide(NodeServices.layer));
 it.live.each([
+  "supersede-retry",
+  "update-provenance",
+  "recovered-no-end",
+  "lost-session-retry",
   "completed",
   "failed",
   "blocked",
@@ -92,6 +96,8 @@ it.live.each([
       scenario.startsWith("B6") ||
       scenario.endsWith("-keep") ||
       scenario === "P3-object" ||
+      scenario === "supersede-retry" ||
+      scenario === "update-provenance" ||
       scenario === "P6-malformed"
     ) {
       yield* fs.makeDirectory(`${source}/claims`);
@@ -101,7 +107,11 @@ it.live.each([
           ? "---\nid: [\n---\n"
           : fixtureItem({
               kind: "claim",
-              status: scenario === "B6-owner-open" ? "open" : "done",
+              status: ["B6-owner-open", "supersede-retry", "update-provenance"].includes(scenario)
+                ? "open"
+                : "done",
+              source: scenario === "supersede-retry" ? "fixture-owner-message" : "original-source",
+              source_event: "original-event",
               trust: scenario === "B6-agent-own" || scenario === "agent-keep" ? "agent" : "owner",
               said_by: scenario === "B6-agent-own" ? agentId : "fixture-owner",
             }),
@@ -152,6 +162,7 @@ it.live.each([
           | Memory.MemoryQueryDecodeError
         >)
       | undefined;
+    let failBranch = false;
     const interceptedGit = Layer.succeed(
       Vcs.VcsProcess,
       Vcs.VcsProcess.of({
@@ -165,6 +176,15 @@ it.live.each([
             yield* fs.writeFile(attack.objectPath, attack.bytes).pipe(Effect.orDie);
             attack = undefined;
             swapped = true;
+          }
+          if (failBranch && input.args.includes("rev-parse")) {
+            failBranch = false;
+            return yield* new VcsProcessSpawnError({
+              operation: "test.writer",
+              command: "git",
+              cwd: input.cwd,
+              cause: "fixture branch failure",
+            });
           }
           const result = yield* vcs.run(input);
           if (substituteTree && input.args.includes("write-tree"))
@@ -216,6 +236,8 @@ it.live.each([
                 timeZone: "Asia/Kolkata",
                 startedAt: "2026-11-08T00:00:00.000Z",
                 eventIds: [],
+                stagedReceipts:
+                  scenario === "lost-session-retry" || scenario === "recovered-no-end",
                 sources: new Map<
                   string,
                   Writer.WakeupContext["sources"] extends ReadonlyMap<string, infer S> ? S : never
@@ -271,6 +293,63 @@ it.live.each([
       yield* git(paths.writer, ["config", "user.name", "Fixture Bot"]);
       yield* git(paths.writer, ["config", "user.email", "fixture@example.invalid"]);
       const original = yield* git(paths.writer, ["rev-parse", "HEAD"]);
+      if (scenario === "lost-session-retry") {
+        failBranch = true;
+        expect((yield* writer.appendJournal(orgId, "wake1", []).pipe(Effect.result))._tag).toBe(
+          "Failure",
+        );
+        yield* writer.appendJournal(orgId, "wake1", []);
+        const committed = yield* writer.commitWakeup(orgId, "wake1", "completed");
+        expect(
+          yield* git(paths.writer, ["show", `${committed.commit}:journal/2026/11-08.md`]),
+        ).toContain("lost on restart");
+        return;
+      }
+      if (scenario === "recovered-no-end") {
+        const committed = yield* writer.commitWakeup(orgId, "wake1", "completed");
+        yield* writer.discard(orgId, "wake1");
+        yield* writer.appendJournal(orgId, "wake1", ["Lead ended without calling kin_end."]);
+        expect(yield* writer.commitWakeup(orgId, "wake1", "completed")).toEqual(committed);
+        return;
+      }
+      if (scenario === "supersede-retry" || scenario === "update-provenance") {
+        const change =
+          scenario === "supersede-retry"
+            ? {
+                path: "claims/replacement.md",
+                supersedes: "def-001",
+                sourceEventId: "owner",
+                content: fixtureItem({
+                  id: "replacement",
+                  kind: "claim",
+                  recorded_at: "2026-11-08T00:00:00.000Z",
+                }),
+              }
+            : {
+                path: "claims/existing.md",
+                sourceEventId: "owner",
+                content: fixtureItem({ kind: "claim", status: "done" }),
+              };
+        yield* writer.stage(orgId, "wake1", change);
+        yield* writer.stage(orgId, "wake1", change);
+        if (scenario === "supersede-retry") {
+          expect(
+            (yield* writer
+              .stage(orgId, "wake1", { ...change, content: change.content + "changed" })
+              .pipe(Effect.result))._tag,
+          ).toBe("Failure");
+        }
+        const committed = yield* writer.commitWakeup(orgId, "wake1", "completed");
+        const existing = yield* git(paths.writer, [
+          "show",
+          `${committed.commit}:claims/existing.md`,
+        ]);
+        expect(existing).toContain("source_event: original-event");
+        expect(existing).toContain(
+          scenario === "supersede-retry" ? "status: superseded" : "status: done",
+        );
+        return;
+      }
       if (scenario === "M4-modes") {
         const before = yield* git(paths.writer, [
           "ls-tree",

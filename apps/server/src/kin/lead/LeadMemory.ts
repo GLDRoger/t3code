@@ -55,6 +55,7 @@ export const WriteInput = Schema.Struct({
   item: Schema.Struct({
     ...writableFields,
     id: itemId,
+    chat: Schema.optional(KinChatId),
     review_by: Schema.optional(MemoryItemFrontMatter.fields.review_by),
     body: text,
   }),
@@ -285,7 +286,7 @@ const make = Effect.gen(function* () {
     ctx: Effect.Success<ReturnType<typeof resolve>>,
     input: typeof WriteInput.Type,
   ) {
-    if (input.item.kind === "deferral")
+    if (input.item.kind === "deferral" && input.op !== "update" && input.op !== "invalidate")
       return yield* new KinChatError({
         reason: "not_allowed",
         message: "Use kin_defer to write deferrals.",
@@ -301,6 +302,22 @@ const make = Effect.gen(function* () {
     if (input.op === "update" || input.op === "invalidate") {
       if (current._tag === "None") return yield* missing();
     }
+    if (fields.kind === "deferral") {
+      if (current._tag === "None" || current.value.head.kind !== "deferral") return yield* denied();
+      const { orgId: _org, path: _path, ...stored } = current.value.head;
+      if (
+        (fields.status !== current.value.head.status &&
+          !["done", "cancelled"].includes(fields.status)) ||
+        body !== current.value.body ||
+        Object.entries(fields).some(
+          ([key, value]) =>
+            key !== "status" &&
+            key !== "invalid_at" &&
+            JSON.stringify(value) !== JSON.stringify(stored[key as keyof typeof stored]),
+        )
+      )
+        return yield* denied();
+    } else if (fields.chat !== undefined) return yield* denied();
     if (input.op === "invalidate" && fields.invalid_at === null) return yield* denied();
     const folder = fields.kind === "person" ? "people" : `${fields.kind}s`;
     yield* receipt(
@@ -309,7 +326,17 @@ const make = Effect.gen(function* () {
       input,
       writer.stage(ctx.orgId, ctx.wakeupId, {
         path: current._tag === "Some" ? current.value.head.path : `${folder}/${fields.id}.md`,
-        content: `---\n${stringify(fields)}---\n${body}`,
+        content: `---\n${stringify(
+          current._tag === "Some" && fields.kind === "deferral"
+            ? {
+                ...fields,
+                chat: current.value.head.chat,
+                source_event: current.value.head.source_event,
+                what: current.value.head.what,
+                on_due: current.value.head.on_due,
+              }
+            : fields,
+        )}---\n${body}`,
         sourceEventId: input.sourceEventId,
         ...(input.supersedes === undefined ? {} : { supersedes: input.supersedes }),
       }),
