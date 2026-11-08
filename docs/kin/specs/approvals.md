@@ -62,12 +62,15 @@ request_action({
   kind: KinActionKind,
   target: KinActionTarget,     // tagged by kind, below
   reason: string,              // ≤ 500 chars, shown quoted on the card, never trusted
+  sourceEventId: KinEventId,   // the event in the current wake-up that led here
 }) -> { actionId, state: "awaiting_approval" | <existing state>, waitingOn: "owner" }
 ```
 
-- Served by a **Kin-only MCP server** at `/kin/mcp` (new, `apps/server/src/kin/approvals/mcp.ts`), built with `McpServer.layerHttp` the same way as `layerMcpTransport` in `McpHttpServer.ts`. It is not added to upstream `layerTools`, so ordinary T3 threads never see it and `AgentContextBudget.test.ts` doesn't change.
-- The handler accepts only an `McpThreadCaller` whose `threadId` is a registered lead session (lead spec's registry). `McpClientCaller` (outside OAuth clients) and worker threads (`subagent: true`, or any thread not in the registry) get `not_a_lead`.
-- The server, not the agent, fills everything else: `orgId` and `provenance` from the lead's current `KinEvent`, the PR's head SHA, base, diff size and checks from GitHub. The agent names a PR; it can't name a SHA.
+- Served on the Kin-only `/kin/mcp` endpoint (chat spec, CHAT-7) by its own toolkit in `apps/server/src/kin/approvals/mcp.ts`, next to the chat toolkit. It is not added to upstream `layerTools`, so ordinary T3 threads never see it and `AgentContextBudget.test.ts` doesn't change. A lead's thread lists the chat tools plus exactly one approvals tool, `request_action`.
+- The tool is listed only for registered Kin agent threads, so `McpClientCaller` (outside OAuth clients), subagents and worker or ordinary threads never reach the handler. The handler takes the caller only from `KinIdentity.resolveAgent` and refuses with `not_a_lead` unless that agent has the `lead` role and a `kin_leads` row and is in a running wake-up.
+- The server, not the agent, fills everything else: `orgId` from the caller, `provenance` from the claimed events of the caller's running wake-up (`sourceEventId` must be one of them, else `invalid_state`), and the PR's head SHA, base, title, diff size and checks from GitHub. The agent names a PR; it can't name a SHA, and undeclared input fields are dropped.
+- The named repo must match one of the lead's worker projects' repositories, case-insensitively, and is stored in that project's spelling, so `ACME/app` and `acme/app` are one action. T3's GitHub credential can read more than the lead's repos, so this is the boundary. An unlisted repo and a missing PR get the same `not_found`, so the tool can't probe for private repos.
+- Until the executor's handler registry (APPR-9) lands, only `merge_pull_request` is accepted; every other kind fails `unsupported_kind` (after the owner-only check in section 8).
 - It returns immediately. It never waits for the approval and never returns a token.
 
 Targets:
@@ -332,6 +335,7 @@ export const KinProvenance = Schema.Struct({
   chain: Schema.Array(
     Schema.Struct({ kind: Schema.String, id: Schema.String, authorRole: Schema.String }),
   ),
+  ceilingBelowOwner: Schema.Boolean,
   afterNonOwnerMessage: Schema.optional(
     Schema.Struct({ humanId: KinPersonId, messageId: KinMessageId }),
   ),
@@ -340,8 +344,9 @@ export const KinProvenance = Schema.Struct({
 
 - The lead spec computes it from the `KinEvent` and passes it down to workers; the ceiling is the lowest role in the chain. Webhook content (PR bodies, comments) counts as `none`.
 - **Work** runs only if the ceiling and the chat's level allow it (`ceilingAllows`).
-- **Privileged** is proposed under any ceiling but runs only with the owner's grant, which is the owner's own authority for that one action. When `startedByRole != "owner"` or `afterNonOwnerMessage` is set, the card shows "Asked for after Priya's message" above the buttons.
-- `change_rules`, `set_level`, `register_approver_key`, and (later) `set_delegation` and `set_next_of_kin` are refused at `request_action` unless `startedByRole == "owner"`. A member can't even get those cards in front of the owner.
+- **Privileged** is proposed under any ceiling but runs only with the owner's grant, which is the owner's own authority for that one action. `request_action` stores `ceilingBelowOwner` from the whole batch, not the cited event: the lead can cite the owner's message while a PR comment in the same batch drove the request. When it is set, the card warns above the buttons that the request didn't come from the owner alone. `afterNonOwnerMessage` only supplies the name ("Asked for after Priya's message"); without one the card names the source kind, such as a GitHub event.
+- `change_rules`, `set_level`, `register_approver_key`, and (later) `set_delegation` and `set_next_of_kin` are refused at `request_action` (`not_owner`) unless every event in the wake-up's chain is the owner's, which implies `startedByRole == "owner"`. The lead picks `sourceEventId`, so checking only the cited event would let it cite an owner's message while acting on a member's in the same batch. A member can't even get those cards in front of the owner.
+- Roles come from stored rows, never event text: a chat message's stored `author_role` (human, posted), or for other human events the actor's current chat membership. Only the lead's own owner counts as `owner`; another human holding an owner row counts as `member`. Agent, system, schedule and webhook events count as `none`. `afterNonOwnerMessage` names the first non-owner human message in the batch.
 
 ### 9. Approval cards
 
@@ -591,7 +596,7 @@ RPCs and scopes: `kin.approvals.list` (stream) and `get` → `orchestration:read
 11. `two executors racing on one action run it once` — concurrent claims, one `kin_executions` row.
 12. `a restart mid-merge reconciles to succeeded when GitHub shows it merged`, and `… to interrupted when it is still open`, with no second merge call.
 13. `a replayed webhook and a deferral firing twice create one pending action`.
-14. `request_action from a worker thread or an outside MCP client is refused` → `not_a_lead`.
+14. `request_action from a worker thread or an outside MCP client is refused` — not listed for them, so the call fails before the handler; a registered agent that isn't a lead in a running wake-up → `not_a_lead`.
 15. `an agent-authored approval widget with extra fields is rejected by the chat service` (chat spec test, listed here).
 16. `non-owners get the redacted card and no challenge`.
 17. `change_rules requested under member provenance is refused at request_action`.
@@ -610,7 +615,7 @@ Acceptance for phase 1: on `GLDRoger/t3code`, the lead requests a merge of a bot
 
 **APPR-2 Storage and state machine.** Tables, Kin migrations, `PendingActions.ts` with CAS transitions, idempotency key, nonce rotation, expiry sweep. Depends on: APPR-1, CHAT-2. Done when: transition tests (including 11 and 13) pass. Owner: backend.
 
-**APPR-3 `request_action` tool.** `/kin/mcp` server, lead-only gate, server-side resolution of the PR, provenance capture, owner-only kinds. Depends on: APPR-2, LEAD-1, LEAD-5. Done when: tests 14 and 17 pass and a lead thread sees exactly one Kin tool. Owner: backend.
+**APPR-3 `request_action` tool.** `/kin/mcp` server, lead-only gate, server-side resolution of the PR, provenance capture, owner-only kinds. Depends on: APPR-2, LEAD-1, LEAD-5. Done when: tests 14 and 17 pass and a lead thread sees exactly one approvals tool (`request_action`) beside the chat tools. Owner: backend.
 
 **APPR-4 Grant verification.** `GrantVerifier.ts` implementing checks 1–10, `challenge`, `submitGrant`, `reject` RPCs, audit on every rejection. Depends on: APPR-2, APPR-5. Done when: tests 1–9 pass. Owner: backend.
 

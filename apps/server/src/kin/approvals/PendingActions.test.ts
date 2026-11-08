@@ -63,7 +63,7 @@ const request = (source: string, number = 212) =>
     targetDigest: digest("1"),
     reason: "CI is green.",
     requestedBy: { agentId: "lead", threadId: "thread-lead" },
-    provenance: { startedBy: "github", startedByRole: "none", chain: [] },
+    provenance: { startedBy: "github", startedByRole: "none", chain: [], ceilingBelowOwner: true },
     source: decodeEventId(source),
   }) as unknown as KinPendingActionCreateInput;
 
