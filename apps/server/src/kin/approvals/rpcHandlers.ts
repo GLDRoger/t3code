@@ -8,7 +8,6 @@ import * as RpcGroup from "effect/rpc/RpcGroup";
 
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
-import { KinServer } from "../KinServer.ts";
 import { ApproverKeys, type KinKeyCaller } from "./ApproverKeys.ts";
 import { GrantVerifier } from "./GrantVerifier.ts";
 
@@ -32,12 +31,13 @@ export const connectionOf = Effect.serviceOption(HttpServerRequest.HttpServerReq
 
 export const makeKinApprovalHandlers = Effect.fn("makeKinApprovalHandlers")(function* (
   session: AuthenticatedSession,
+  // Passed in rather than read from `KinServer`, whose service union reaches the judge.
+  kin: Option.Option<Context.Context<KinIdentity | ApproverKeys>>,
 ) {
-  const kin = yield* Effect.serviceOption(KinServer);
   const connection = yield* connectionOf;
   const keys = Effect.gen(function* () {
-    if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
-    const services = kin.value.services.value;
+    if (Option.isNone(kin)) return yield* unavailable;
+    const services = kin.value;
     const people = yield* Context.get(services, KinIdentity).resolve(session);
     const caller: KinKeyCaller = { session, people, connection };
     return {
