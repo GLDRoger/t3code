@@ -193,6 +193,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
     "individual-connected-expired",
     "individual-connected-expired-original",
     "individual-connected-expired-alone",
+    "same-key-caller",
+    "same-key-caller-connected-expired",
+    "same-key-caller-expired",
+    "other-key-caller",
     "insert-race",
   ] as const)("%s", (action) =>
     Effect.gen(function* () {
@@ -264,6 +268,32 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
             })
             .pipe(Effect.flip))._tag,
         ).toBe("ServerAuthInvalidCredentialError");
+      } else if (action.startsWith("same-key-caller") || action === "other-key-caller") {
+        if (action === "same-key-caller-connected-expired")
+          yield* sessions.markConnected(original.sessionId);
+        if (action.endsWith("expired")) yield* TestClock.adjust(Duration.minutes(61));
+        const callerToken =
+          action === "other-key-caller"
+            ? (yield* sessions.issue({ proofKeyThumbprint: "desktop" })).token
+            : (yield* exchange()).access_token;
+        const caller = yield* sessions.verify(callerToken);
+        expect(yield* auth.revokeClientSession(caller.sessionId, original.sessionId)).toBe(true);
+        const sql = yield* SqlClient.SqlClient;
+        expect(
+          yield* sql`SELECT revoked_at FROM auth_sessions WHERE session_id = ${original.sessionId}`,
+        ).toEqual([{ revoked_at: expect.any(String) }]);
+        const link = yield* auth.createPairingLink({
+          subject: "cloud-connect",
+          proofKeyThumbprint: "device",
+        });
+        const mint = yield* auth
+          .exchangeBootstrapCredentialForAccessToken(link.credential, undefined, metadata, {
+            proofKeyThumbprint: "device",
+          })
+          .pipe(Effect.exit);
+        expect(Exit.isSuccess(mint)).toBe(action !== "other-key-caller");
+        if (action !== "other-key-caller")
+          expect((yield* sessions.verify(callerToken)).sessionId).toBe(caller.sessionId);
       } else if (action === "individual") {
         const sibling = yield* exchange();
         yield* sessions.revoke(original.sessionId);
@@ -326,6 +356,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
     "spent",
     "bulk-after-repair",
     "issued-before-revoke",
+    "issued-before-revoke-at-expiry",
     "issued-before-bulk",
   ] as const)("repair guard: %s", (guard) =>
     Effect.gen(function* () {
@@ -346,9 +377,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
       const bulkFromDesktop = sessions
         .issue({ proofKeyThumbprint: "desktop" })
         .pipe(Effect.flatMap((desktop) => sessions.revokeAllExcept(desktop.sessionId)));
-      const first = yield* sessions.issue({ proofKeyThumbprint: "device" });
-      const issuedBefore = guard === "issued-before-revoke" || guard === "issued-before-bulk";
+      const first = yield* sessions.issue({ proofKeyThumbprint: "device", ttl: Duration.hours(1) });
+      const issuedBefore = guard.startsWith("issued-before");
       if (issuedBefore) yield* hooks.recordRepair("device", "A");
+      if (guard === "issued-before-revoke-at-expiry") yield* TestClock.adjust(Duration.hours(1));
       if (guard === "issued-before-bulk") yield* bulkFromDesktop;
       else yield* sessions.revoke(first.sessionId);
       if (!issuedBefore) yield* hooks.recordRepair("device", "A");

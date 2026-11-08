@@ -117,7 +117,7 @@ const enabled = Layer.effect(
             next.delete(sessionId);
             return next;
           }).pipe(Effect.andThen(notifications.emitRemoved(sessionId)));
-        const revoke = (sessionId: AuthSessionId, bulk: boolean) =>
+        const revoke = (sessionId: AuthSessionId, bulk: boolean, callerSessionId?: AuthSessionId) =>
           sql
             .withTransaction(
               Effect.gen(function* () {
@@ -126,8 +126,12 @@ const enabled = Layer.effect(
                 const connected = sql.in([
                   ...(yield* Ref.get(notifications.connectedSessionsRef)).keys(),
                 ]);
-                const active = sql`SELECT session_id FROM auth_sessions WHERE expires_at > ${DateTime.formatIso(now)} OR session_id IN ${connected}`;
-                const callerKey = sql`SELECT proof_key_thumbprint FROM kin_auth_session_keys WHERE session_id = ${sessionId}`;
+                const active = sql`SELECT session_id FROM auth_sessions WHERE expires_at >= ${DateTime.formatIso(now)} OR session_id IN ${connected}`;
+                const keyOf = (id: AuthSessionId | null) =>
+                  sql`SELECT proof_key_thumbprint FROM kin_auth_session_keys WHERE session_id = ${id}`;
+                const caller = bulk ? sessionId : (callerSessionId ?? null);
+                // A caller never signs itself out or blocks the key it is signed in with.
+                const notCallerKey = sql`proof_key_thumbprint IS NOT (${keyOf(caller)})`;
                 const selected = bulk
                   ? sql<{
                       session_id: AuthSessionId;
@@ -135,20 +139,20 @@ const enabled = Layer.effect(
                   : sql<{
                       session_id: AuthSessionId;
                     }>`SELECT s.session_id FROM auth_sessions s LEFT JOIN kin_auth_session_keys m ON m.session_id = s.session_id
-              WHERE s.revoked_at IS NULL AND (s.session_id = ${sessionId} OR (m.proof_key_thumbprint = (${callerKey})
-                AND s.session_id IN (${active})))`;
+              WHERE s.revoked_at IS NULL AND s.session_id IS NOT ${caller} AND (s.session_id = ${sessionId}
+                OR (m.proof_key_thumbprint = (${keyOf(sessionId)}) AND s.session_id IN (${active})))`;
                 const blockedKeys = bulk
                   ? sql`SELECT proof_key_thumbprint FROM kin_auth_session_keys
-              WHERE session_id != ${sessionId} AND proof_key_thumbprint != COALESCE((${callerKey}), '')`
+              WHERE session_id != ${sessionId} AND ${notCallerKey}`
                   : sql`SELECT proof_key_thumbprint FROM kin_auth_session_keys
-              WHERE session_id IN (${selected}) AND individually_revoked = ${UNCONDITIONAL_BLOCK}`;
+              WHERE session_id IN (${selected}) AND individually_revoked = ${UNCONDITIONAL_BLOCK} AND ${notCallerKey}`;
                 if (bulk) {
                   yield* sql`UPDATE kin_auth_session_keys SET individually_revoked = ${UNCONDITIONAL_BLOCK}, repaired_at = NULL
               WHERE proof_key_thumbprint IN (${blockedKeys})`;
                 } else {
                   yield* sql`UPDATE kin_auth_session_keys SET individually_revoked =
                 CASE WHEN session_id IN (${active}) THEN ${UNCONDITIONAL_BLOCK} ELSE ${GUARDED_BLOCK} END
-              WHERE session_id IN (${selected})`;
+              WHERE session_id IN (${selected}) AND ${notCallerKey}`;
                 }
                 // A repair link issued before this block must not lift it.
                 yield* sql`UPDATE kin_auth_key_repairs SET consumed_at = ${now.epochMilliseconds}
@@ -203,8 +207,8 @@ const enabled = Layer.effect(
                 ),
               );
           }),
-          revoke: Effect.fn("ProofKeySessions.revoke")((sessionId) =>
-            revoke(sessionId, false).pipe(
+          revoke: Effect.fn("ProofKeySessions.revoke")((sessionId, callerSessionId) =>
+            revoke(sessionId, false, callerSessionId).pipe(
               Effect.map((ids) => ids.some((row) => row.session_id === sessionId)),
               Effect.mapError(
                 (cause) =>
