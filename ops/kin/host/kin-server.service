@@ -1,0 +1,32 @@
+# Kin server: a source build of GLDRoger/t3code (branch `kin`), run as the `kin` user.
+# Installed by setup.sh into ~kin/.config/systemd/user/. See ops/kin/host/README.md.
+[Unit]
+Description=Kin server (T3 Code source build)
+Documentation=https://github.com/GLDRoger/t3code/tree/kin/ops/kin/host
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+# mise and the provider CLIs (Claude Code, Codex) live in ~/.local/bin; mise shims expose
+# npm-installed CLIs. The server spawns providers with this PATH.
+Environment=PATH=%h/.local/bin:%h/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
+Environment=KIN_ENABLED=true
+Environment=KIN_CHECKOUT=%h/t3code
+Environment=KIN_NODE_VERSION=26
+# Written by setup.sh and update.sh: KIN_CHECKOUT and KIN_NODE_VERSION (the checkout's engines.node).
+EnvironmentFile=-%h/.config/kin/kin-server.env
+# Owner overrides, such as T3CODE_LAN=true. Backed up with the database.
+EnvironmentFile=-%h/.t3/service.env
+# systemd does not expand variables in the executable, so env finds mise on PATH.
+ExecStart=/usr/bin/env mise exec node@${KIN_NODE_VERSION} -- node ${KIN_CHECKOUT}/apps/server/dist/bin.mjs serve --base-dir %h/.t3
+Restart=always
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,14 @@
+# Nightly backup of the Kin server's state. Installed by setup.sh for the `kin` user.
+# Set KIN_BACKUP_DEST (and, if the volume check can't see the encryption,
+# KIN_BACKUP_FLAGS=--i-know-dest-is-encrypted) in ~/.config/kin/backup.env.
+[Unit]
+Description=Back up Kin server state
+ConditionPathExists=%h/.config/kin/backup.env
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+Environment=KIN_CHECKOUT=%h/t3code
+EnvironmentFile=-%h/.config/kin/kin-server.env
+EnvironmentFile=%h/.config/kin/backup.env
+ExecStart=/usr/bin/env bash ${KIN_CHECKOUT}/ops/kin/host/backup.sh --dest ${KIN_BACKUP_DEST} $KIN_BACKUP_FLAGS

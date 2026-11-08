@@ -431,17 +431,18 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
 - Node 26 (the repo's `engines`) through `mise`, which the host already uses, and `vp`.
 - A dedicated `kin` user (`sudo useradd -m kin`). The Kin server runs as this user, never as the owner's account. Its only GitHub credential is the GitHub App's, so agents never see the owner's `gh` login (lead spec, security notes).
 - The providers' CLIs (Claude Code, Codex) installed for the `kin` user and signed in to the owner's plans.
-- As `kin`: clone `GLDRoger/t3code`, `git switch kin`, `cp .env.example .env` (it holds the production relay URL), then `vp i && vp run build:desktop`.
+- As `kin`: clone `GLDRoger/t3code` to `~/t3code`, `git switch kin`, `cp .env.example .env` (it holds the production relay URL), then `vp i && vp run build:desktop`.
+- `sudo ops/kin/host/setup.sh` creates the user, turns on linger, masks sleep, installs and enables the units, and prints a pass/fail checklist of everything above. It is safe to re-run, and `--dry-run` shows every action. Steps: [`ops/kin/host/README.md`](../../../ops/kin/host/README.md).
 
 **Run:**
 
-- The upstream background service installs upstream releases and does not apply to source builds (`docs/user/install.md`). Kin ships its own systemd user unit, `ops/kin/host/kin-server.service`: `ExecStart=node <checkout>/apps/server/dist/bin.mjs serve`, `Restart=always`, `WantedBy=default.target`.
-- `sudo loginctl enable-linger kin` makes the unit start at boot without anyone logging in. Then, as `kin`, `systemctl --user enable --now kin-server`.
-- Update with `git pull && vp i && vp run build:desktop && systemctl --user restart kin-server`, after the contract tests pass.
+- The upstream background service installs upstream releases and does not apply to source builds (`docs/user/install.md`). Kin ships its own systemd user unit, `ops/kin/host/kin-server.service`: `ExecStart=/usr/bin/env mise exec node@${KIN_NODE_VERSION} -- node ${KIN_CHECKOUT}/apps/server/dist/bin.mjs serve --base-dir %h/.t3`, with `KIN_ENABLED=true`, `Restart=always` and `WantedBy=default.target`. `env` finds `mise` on the unit's `PATH`, because systemd doesn't expand variables in the executable. `setup.sh` and `update.sh` write `KIN_NODE_VERSION` from the checkout's `engines.node`. Owner overrides go in `~/.t3/service.env`, which the unit reads.
+- `loginctl enable-linger kin` makes the unit start at boot without anyone logging in.
+- Update with `ops/kin/host/update.sh` as `kin`: `git pull --ff-only && vp i`, then the server's contract tests, then `vp run build:desktop && systemctl --user restart kin-server`. A failed step leaves the old build running.
 
 **Link the laptop and phone:**
 
-- On the host, run `node apps/server/dist/bin.mjs up --connect`; TRIG-20 verifies it doesn't try to install the upstream service. Sign in to T3 Connect; approve the code from any device.
+- On the host, as `kin`, run `node apps/server/dist/bin.mjs connect link --base-dir ~/.t3 --headless`, approve the code from any device, then `systemctl --user restart kin-server`. Don't use `up --connect`: on Linux with systemd it installs the upstream background service (it downloads the matching upstream release and writes `t3.service`), which would be a second server on kin's state. `connect link` only authorizes the environment.
 - Turn on **Hold webhooks while offline**.
 - On the laptop (T3 desktop) and phone (Kin mobile), sign in to the same T3 Connect account and pick the host.
 - On the home network or tailnet, `up --lan` plus `pair` gives a direct route. Clients learn LAN and tailnet routes and prefer them (`docs/internals/remote.md`). The account allows 3 machines.
@@ -458,10 +459,10 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
 **Backups:**
 
 - Memory is in GitHub, the source of truth.
-- Kin's own DB: a nightly `sqlite3 ~/.t3/userdata/statev2.sqlite ".backup <encrypted volume>/kin-$(date +%F).sqlite"`, keeping 14 days. It holds the trigger tables, chats, and T3's `webhook_secret` column in plain text.
-- Also back up `~/.t3/userdata/secrets/` and `~/.t3/service.env` to the same encrypted volume.
+- Kin's own DB: `ops/kin/host/backup.sh`, run nightly by `kin-backup.timer` as `kin`, does `sqlite3 ~kin/.t3/userdata/statev2.sqlite ".backup <dest>/kin-$(date +%F).sqlite"` and keeps 14 days. It holds the trigger tables, chats, and T3's `webhook_secret` column in plain text, so the script refuses a destination that isn't on LUKS/dm-crypt unless passed `--i-know-dest-is-encrypted`.
+- It also copies `~kin/.t3/userdata/secrets/` and `~kin/.t3/service.env` to the same destination.
 - Time Machine to an encrypted disk, excluding `~/.t3/worktrees`.
-- After a restore, `trigger_reconcile` rebuilds triggers from memory.
+- After a restore ([`ops/kin/host/restore.md`](../../../ops/kin/host/restore.md)), `trigger_reconcile` rebuilds triggers from memory.
 
 ## Files
 
@@ -473,7 +474,7 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
 - `apps/server/src/kin/memory/freshness.ts`, `buildIndex.ts`, `secretScan.ts`, `purge.ts`
 - `apps/server/src/kin/dreaming/DreamRunner.ts`, `classifyDream.ts`
 - `apps/server/src/kin/contract/*.kin-contract.test.ts`, `apps/mobile/src/features/chats/contract/mcpAppWebView.kin-contract.test.ts`
-- `ops/kin/host/kin-server.service`, `ops/kin/host/setup.sh` (user, linger, suspend off, and checks), `ops/kin/host/backup.sh`
+- `ops/kin/host/kin-server.service`, `ops/kin/host/setup.sh` (user, linger, suspend off, and checks), `ops/kin/host/backup.sh` with `kin-backup.service`/`.timer`, `ops/kin/host/update.sh`, `ops/kin/host/restore.md`, `ops/kin/host/README.md`
 - In `GLDRoger/kin-memory`: `CODEOWNERS`, `.github/workflows/memory-check.yml`
 
 **Upstream files touched:**
