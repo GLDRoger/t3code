@@ -8,6 +8,7 @@ import {
   type KinApprovalsRegisterKeyInput,
   type KinPendingAction,
 } from "@t3tools/contracts";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -16,7 +17,9 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as SessionStore from "../../auth/SessionStore.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
+import { layerKinAuthTest, repairProofKey } from "../auth/ProofKeySessions.testkit.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import {
   ApproverKeys,
@@ -44,6 +47,14 @@ const layer = approverKeysLayer.pipe(
   Layer.provideMerge(pendingActionsLayer),
   Layer.provide(trustLayer),
   Layer.provideMerge(database),
+);
+
+// Real T3 auth with Kin's proof key hooks, so revocations write what #54 writes.
+const relayLayer = approverKeysLayer.pipe(
+  Layer.provideMerge(pendingActionsLayer),
+  Layer.provide(trustLayer),
+  Layer.provideMerge(KinPersistence.layer),
+  Layer.provideMerge(layerKinAuthTest("kin-approver-keys-")),
 );
 
 const orgId = Schema.decodeSync(KinOrgId)("org_01");
@@ -78,6 +89,32 @@ const seed = Effect.gen(function* () {
         '2026-11-07T00:00:00.000Z', '2026-12-07T00:00:00.000Z')`;
   }
   return { keys: yield* ApproverKeys, actions: yield* KinPendingActions, sql };
+});
+
+/** A relay phone: a DPoP session that renews hourly under a new id with the same proof key. */
+const relayPhone = (id: AuthSessionId, proofKeyThumbprint: string): KinKeyCaller => ({
+  session: {
+    sessionId: id,
+    subject: "phone",
+    method: "dpop-access-token",
+    scopes: [],
+    proofKeyThumbprint,
+  },
+  people: [{ _tag: "person", orgId, personId: owner }],
+  connection: Option.some({ remoteAddress: "100.64.0.9", headers: {} }),
+});
+
+const seedRelay = Effect.gen(function* () {
+  yield* TestClock.setTime(NOW);
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_orgs (org_id, name, created_at)
+    VALUES ('org_01', 'Kin', '2026-11-07T00:00:00.000Z')`;
+  const sessions = yield* SessionStore.SessionStore;
+  const relay = (proofKey: string) =>
+    sessions
+      .issue({ proofKeyThumbprint: proofKey, ttl: Duration.hours(1) })
+      .pipe(Effect.map((issued) => relayPhone(issued.sessionId, proofKey)));
+  return { keys: yield* ApproverKeys, sessions, relay };
 });
 
 const registerAndroid = (
@@ -248,6 +285,59 @@ describe("ApproverKeys", () => {
       const voided = Option.getOrThrow(yield* actions.get({ orgId, actionId: signed.id }));
       assert.strictEqual(voided.stateReason, "session_revoked");
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "revoking a renewed relay session revokes the key registered under an earlier one",
+    () =>
+      Effect.gen(function* () {
+        const { keys, sessions, relay } = yield* seedRelay;
+        const { key } = yield* registerAndroid(keys, yield* relay("phone-a"));
+        yield* TestClock.adjust(Duration.minutes(61));
+        const renewed = yield* relay("phone-a");
+        yield* sessions.revoke(renewed.session.sessionId);
+        assert.strictEqual(Option.getOrThrow(yield* keys.get(key)).state, "revoked");
+      }).pipe(Effect.provide(relayLayer)),
+  );
+
+  it.effect("signing out other devices from a phone keeps its own key and revokes the others", () =>
+    Effect.gen(function* () {
+      const { keys, sessions, relay } = yield* seedRelay;
+      const own = yield* registerAndroid(keys, yield* relay("phone-a"));
+      const other = yield* registerAndroid(keys, yield* relay("phone-b"));
+      yield* TestClock.adjust(Duration.minutes(30));
+      // Both renew early; the phone's first session is still live when it signs the others out.
+      const current = yield* relay("phone-a");
+      yield* relay("phone-b");
+      yield* sessions.revokeAllExcept(current.session.sessionId);
+      assert.strictEqual(Option.getOrThrow(yield* keys.get(own.key)).state, "pending");
+      assert.strictEqual(Option.getOrThrow(yield* keys.get(other.key)).state, "revoked");
+    }).pipe(Effect.provide(relayLayer)),
+  );
+
+  it.effect("revoking a session after it expired leaves its key alone", () =>
+    Effect.gen(function* () {
+      const { keys, sessions, relay } = yield* seedRelay;
+      const phoneA = yield* relay("phone-a");
+      const { key } = yield* registerAndroid(keys, phoneA);
+      yield* TestClock.adjust(Duration.minutes(61));
+      yield* sessions.revoke(phoneA.session.sessionId);
+      assert.strictEqual(Option.getOrThrow(yield* keys.get(key)).state, "pending");
+    }).pipe(Effect.provide(relayLayer)),
+  );
+
+  it.effect("a proof key revoked before can't register an approver key, even repaired", () =>
+    Effect.gen(function* () {
+      const { keys, sessions, relay } = yield* seedRelay;
+      yield* sessions.revoke((yield* relay("phone-a")).session.sessionId);
+      const repaired = yield* repairProofKey("phone-a");
+      const exit = yield* Effect.exit(
+        registerAndroid(keys, relayPhone(repaired.sessionId, "phone-a")),
+      );
+      assert.strictEqual(reasonOf(exit), "invalid_state");
+      const fresh = yield* registerAndroid(keys, yield* relay("phone-a-fresh"));
+      assert.strictEqual(fresh.key.state, "pending");
+    }).pipe(Effect.provide(relayLayer)),
   );
 
   it.effect("the server never activates an unattested key", () =>
