@@ -8,6 +8,7 @@ import {
   MemoryItemHead,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -45,7 +46,7 @@ import {
 const NOW = 1794009600000;
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
-const iso = (ms: number) => new Date(ms).toISOString();
+const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 const orgId = KinOrgId.make("org-a");
 const decodeHead = Schema.decodeUnknownSync(MemoryItemHead);
 const decodeEvent = Schema.decodeSync(Schema.fromJsonString(KinEvent));
@@ -153,7 +154,9 @@ const watchdogEvents = Effect.gen(function* () {
     WHERE org_id = ${orgId} AND tag = 'watchdog' ORDER BY dedupe_key`;
   return rows.flatMap((row) => {
     const event = decodeEvent(row.json);
-    return event._tag === "watchdog" ? [{ finding: event.finding, itemIds: event.itemIds }] : [];
+    return event._tag === "watchdog"
+      ? [{ finding: event.finding, itemIds: event.itemIds.map((id): string => id) }]
+      : [];
   });
 });
 

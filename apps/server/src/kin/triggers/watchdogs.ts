@@ -321,15 +321,19 @@ const make = Effect.gen(function* () {
     const findings: Array<Finding> = [];
     for (const item of tracked) {
       const links = linksOf(item, scope.repos);
-      const states = links.map(github.state);
       if (links.length === 0 || links.some(github.failed)) continue;
-      const done = states.filter((state) => state !== undefined && isDone(state));
+      const done = links.flatMap((link) => {
+        const state = github.state(link);
+        return state !== undefined && isDone(state)
+          ? [{ url: githubUrl(link.repo, state), state: state.state }]
+          : [];
+      });
       if (done.length !== links.length) continue;
-      const evidence = links.map((link, index) => githubUrl(link.repo, states[index]!));
+      const evidence = done.map(({ url }) => url);
       findings.push({
         item,
         dedupeKey: `watchdog:github_recheck:done:${item.id}:${evidence.join(",")}`,
-        finding: `Verified on GitHub by code: ${evidence.join(", ")} ${evidence.length === 1 ? "is" : "are"} ${item.kind === "commitment" ? "closed" : "merged"}. Mark ${item.kind} ${item.id} done and record ${evidence.length === 1 ? "that link" : "those links"} as its evidence.`,
+        finding: `Verified on GitHub by code: ${done.map(({ url, state }) => `${url} is ${state}`).join(", ")}. Mark ${item.kind} ${item.id} done and record ${evidence.length === 1 ? "that link" : "those links"} as its evidence.`,
       });
     }
     for (const item of conditions)
@@ -401,7 +405,7 @@ const make = Effect.gen(function* () {
       )
       .pipe(
         Effect.catch((cause) =>
-          Effect.logWarning("Kin watchdog chase failed", {
+          Effect.logDebug("Kin watchdog chase failed", {
             orgId,
             itemId: item.id,
             errorTag: cause._tag,
