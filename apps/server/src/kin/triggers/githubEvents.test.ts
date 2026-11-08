@@ -5,6 +5,9 @@ import {
   KinOrgId,
   KinWebhookSource,
   MemoryItemHead,
+  KinTriggerFireId,
+  ScheduledTaskError,
+  ScheduledTaskWebhookDeliveryId,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
@@ -36,7 +39,7 @@ import {
 const orgId = KinOrgId.make("org-a");
 const decodeHead = Schema.decodeUnknownSync(MemoryItemHead);
 const decodeEvent = Schema.decodeUnknownSync(Schema.fromJsonString(KinEvent));
-const source = Schema.decodeUnknownSync(KinWebhookSource)({
+const source = Schema.decodeSync(KinWebhookSource)({
   id: KIN_GITHUB_APP_SOURCE,
   orgId,
   repo: KIN_GITHUB_APP_SOURCE,
@@ -130,9 +133,15 @@ function services(memoryDown: Ref.Ref<boolean>) {
 
 const run = <A, E, R>(
   body: (tools: {
-    deliver: (githubDelivery: string, payload: unknown) => Effect.Effect<string, unknown>;
-    redeliver: (githubDelivery: string, payload: unknown) => Effect.Effect<string, unknown>;
-    drain: Effect.Effect<void, unknown>;
+    deliver: (
+      githubDelivery: string,
+      payload: unknown,
+    ) => Effect.Effect<ScheduledTaskWebhookDeliveryId, ScheduledTaskError>;
+    redeliver: (
+      githubDelivery: string,
+      payload: unknown,
+    ) => Effect.Effect<string, ScheduledTaskError>;
+    drain: Effect.Effect<void, GithubEvents.KinGithubEventsError>;
     memoryDown: Ref.Ref<boolean>;
   }) => Effect.Effect<A, E, R>,
 ) =>
@@ -147,16 +156,20 @@ const run = <A, E, R>(
           );
           yield* (yield* KinTriggerStore.KinTriggerStore).registerSource(source);
           const consumer = yield* Effect.provide(
-            Effect.gen(function* () {
-              return yield* GithubEvents.KinGithubEvents;
-            }),
+            Effect.service(GithubEvents.KinGithubEvents),
             GithubEvents.layer,
           );
           return yield* body({
             deliver: (githubDelivery, payload) =>
               waitForDispatch(
                 tasks.triggerWebhook(signedRequest(task, githubDelivery, payload)),
-              ).pipe(Effect.map((result) => (result._tag === "accepted" ? result.deliveryId : ""))),
+              ).pipe(
+                Effect.map((result) =>
+                  result._tag === "accepted"
+                    ? result.deliveryId
+                    : ScheduledTaskWebhookDeliveryId.make("rejected"),
+                ),
+              ),
             redeliver: (githubDelivery, payload) =>
               tasks
                 .triggerWebhook(signedRequest(task, githubDelivery, payload))
@@ -239,7 +252,7 @@ describe("KinGithubEvents", () => {
           kind: "github_recheck",
           repo: null,
           reason: remove ? "delivery_missing" : "body_unparseable",
-          sourceFireId: `gh:${orgId}:${deliveryId}`,
+          sourceFireId: KinTriggerFireId.make(`gh:${orgId}:${deliveryId}`),
         });
         assert.strictEqual((yield* events).length, 0);
       }),
