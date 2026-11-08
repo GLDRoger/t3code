@@ -430,6 +430,7 @@ const make = Effect.gen(function* () {
                     "said_by",
                     "source",
                   ]);
+                  if (source.trust === "owner") mutable.add("review_by");
                   if (
                     Object.entries(item).some(
                       ([key, value]) =>

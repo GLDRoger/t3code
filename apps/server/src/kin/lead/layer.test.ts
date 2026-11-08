@@ -14,11 +14,15 @@ import * as ServerConfig from "../../config.ts";
 import * as EffectWorker from "../../orchestration-v2/EffectWorker.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { provideDeterministicTestRuntime } from "../../orchestration-v2/testkit/DeterministicRuntime.ts";
+import * as ChatService from "../chat/KinChatService.ts";
+import * as ChatHub from "../chat/KinChatHub.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinLead from "./layer.ts";
 import { event, harness, seed, orgId } from "./WakeupRunner.testkit.ts";
 
 const external = Layer.mergeAll(
+  Layer.mock(ChatService.KinChatService)({}),
+  Layer.mock(ChatHub.KinChatHub)({}),
   ServerConfig.layerTest(process.cwd(), { prefix: "kin-lead-layer-" }),
   Layer.mock(VcsProcess.VcsProcess)({}),
 ).pipe(Layer.provideMerge(NodeServices.layer));
@@ -33,6 +37,10 @@ vi.mock("../memory/Memory.ts", async (importOriginal) => {
     layer: Layer.sync(original.Memory, () => {
       let prepared = false;
       return original.Memory.of({
+        withWriterLock: (_org, effect) => effect,
+        anchor: () => Effect.die("unused"),
+        record: () => Effect.die("unused"),
+        recover: () => Effect.die("unused"),
         ensureCheckouts: () => Effect.succeed({ writer: "/private/tmp", read: "/private/tmp" }),
         prepareWakeup: () =>
           Effect.sync(() => {
@@ -45,7 +53,7 @@ vi.mock("../memory/Memory.ts", async (importOriginal) => {
             : Effect.die("Prompt and runner must share pinned memory"),
         readIndex: () => Effect.die("unused"),
         readRules: () => Effect.die("unused"),
-        query: () => Effect.die("unused"),
+        query: () => Effect.succeed([]),
         readItem: () => Effect.die("unused"),
         readItemQuietly: () => Effect.die("unused"),
         rebuildIndex: () => Effect.die("unused"),
@@ -61,7 +69,11 @@ it.effect("starts configured Kin with the real prompt and the runner's pinned me
     const hold = yield* Deferred.make<void>();
     yield* Effect.gen(function* () {
       yield* seed;
-      yield* (yield* KinEventQueue.KinEventQueue).enqueue(event("real-prompt"));
+      yield* (yield* KinEventQueue.KinEventQueue).enqueue({
+        ...event("real-prompt"),
+        _tag: "routine",
+        routine: "morning_brief",
+      });
       yield* Layer.build(
         Layer.fresh(KinLead.layerServer).pipe(
           Layer.provide(external),
@@ -106,5 +118,5 @@ it.effect("leaves unconfigured Kin silent and inert without building its depende
       ),
     );
     assert.deepStrictEqual(entries, []);
-  }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
+  }).pipe(Effect.provide(external), Effect.provide(harness()), provideDeterministicTestRuntime),
 );

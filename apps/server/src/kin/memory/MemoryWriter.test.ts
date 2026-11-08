@@ -41,6 +41,8 @@ it.live.each([
   "P8-lost-writer",
   "P9-shadow",
   "sha256",
+  "owner-keep",
+  "agent-keep",
   "review-default",
   "review-null",
   "credentials",
@@ -82,7 +84,12 @@ it.live.each([
     ]);
     yield* fs.writeFileString(`${source}/rules.md`, "Invented rules\n");
     yield* fs.writeFileString(`${source}/INDEX.md`, "As of 2026-11-08T00:00:00.000Z\n");
-    if (scenario.startsWith("B6") || scenario === "P3-object" || scenario === "P6-malformed") {
+    if (
+      scenario.startsWith("B6") ||
+      scenario.endsWith("-keep") ||
+      scenario === "P3-object" ||
+      scenario === "P6-malformed"
+    ) {
       yield* fs.makeDirectory(`${source}/claims`);
       yield* fs.writeFileString(
         `${source}/claims/existing.md`,
@@ -91,7 +98,7 @@ it.live.each([
           : fixtureItem({
               kind: "claim",
               status: scenario === "B6-owner-open" ? "open" : "done",
-              trust: scenario === "B6-agent-own" ? "agent" : "owner",
+              trust: scenario === "B6-agent-own" || scenario === "agent-keep" ? "agent" : "owner",
               said_by: scenario === "B6-agent-own" ? agentId : "fixture-owner",
             }),
       );
@@ -485,6 +492,30 @@ it.live.each([
         expect(
           (yield* writer.commitWakeup(orgId, "wake1", "completed").pipe(Effect.result))._tag,
         ).toBe("Success");
+        return;
+      }
+      if (scenario.endsWith("-keep")) {
+        const content = fixtureItem({
+          kind: "claim",
+          status: "done",
+          trust: scenario === "agent-keep" ? "agent" : "owner",
+          said_by: "fixture-owner",
+          review_by: "2026-12-13",
+        });
+        const result = yield* writer
+          .stage(orgId, "wake1", {
+            path: "claims/existing.md",
+            content,
+            ...(scenario === "owner-keep" ? { sourceEventId: "owner" } : {}),
+          })
+          .pipe(Effect.result);
+        expect(result._tag).toBe(scenario === "owner-keep" ? "Success" : "Failure");
+        if (result._tag === "Success") {
+          const committed = yield* writer.commitWakeup(orgId, "wake1", "completed");
+          expect(
+            yield* git(paths.writer, ["show", `${committed.commit}:claims/existing.md`]),
+          ).toContain("review_by: 2026-12-13");
+        }
         return;
       }
       if (scenario.startsWith("B6")) {

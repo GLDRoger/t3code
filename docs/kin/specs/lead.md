@@ -494,7 +494,7 @@ RPC (**new**, through the chat spec's `kinRpcs.ts`): `kin.org.pause` and `kin.or
 
 ### Morning and evening routines: content
 
-Scheduling is the triggers spec's. Each fires a `routine` event, and the lead writes the message. `routines.ts` holds these templates. Each is one message of at most 12 lines, plus widgets, posted to the owner's direct chat (shadow summary at L0).
+Scheduling is the triggers spec's. Each fires a `routine` event, and the lead writes the message. A request carries its original due time, lateness and any folded routine dates; content must acknowledge those dates rather than imply an on-time run. The owner check selects memory-review items in code and posts its native card after budget admission; its taps use owner-authored writer sources, not model authority. `routines.ts` holds these templates. Each is one message of at most 12 lines, plus widgets, posted to the owner's direct chat (shadow summary at L0).
 
 Morning brief, from the dream's prepared brief plus a live recheck:
 
@@ -649,7 +649,7 @@ LEAD-14. **End-to-end shadow week dry run.** Script that replays a day of record
 
 `KinSecretScan` is deliberately supplied separately. `noFindingsStubLayer` returns no findings until TRIG-16 replaces it; it is not a production secret detector. Any finding or scanner failure blocks the whole commit. TRIG-16 must preserve this fail-closed interface: `scan({ orgId, files: ReadonlyArray<{ path: string; content: Uint8Array }> })` returns `{ path, ruleId, line }[]`, with typed `KinSecretScanError`.
 
-`commitWakeup` builds TRIG-12's sectioned `INDEX.md` from the hash-verified recorded tree plus staged files, read history, the server clock and the owner's time zone, in the same wake-up commit. The read-side rebuild is display-only; no read-checkout text is trusted. K006 adds the SQLite branch anchors required by the writer. The runner serializes prepare/stage/commit and dreaming per organization. Identical commit retries find the existing wake-up commit; failed pushes retain local commits, and failures discard uncommitted files. Journal additions use `appendJournal`, never replacement through `stage`.
+`commitWakeup` builds TRIG-12's sectioned `INDEX.md` from the hash-verified recorded tree plus staged files, read history, the server clock and the owner's time zone, in the same wake-up commit. The read-side rebuild is display-only; no read-checkout text is trusted. K011 adds the SQLite branch anchors required by the writer. The runner serializes prepare/stage/commit and dreaming per organization. Identical commit retries find the existing wake-up commit; failed pushes retain local commits, and failures discard uncommitted files. Journal additions use `appendJournal`, never replacement through `stage`.
 
 ### Memory writer operations
 
@@ -657,7 +657,7 @@ LEAD-14. **End-to-end shadow week dry run.** Script that replays a day of record
 
 `prepareWakeup` checks git integrity once. Every application object read independently checks its hash. Three-way merging walks verified commit parents to find a common ancestor, then reads base, local and remote bytes with hash verification. Paths changed on both sides conflict except append-only journals and the regenerated INDEX.md. Journal append conflicts retain remote bytes followed by local entries in order. Original modes, symlinks and gitlinks are preserved; writer changes create only regular files. Other conflicts preserve the unpushed tip under `kin/conflict/<orgId>/<wakeupId>-<unique-suffix>` (or a server-generated recovery id when no wake-up id is supplied), then compare-and-swap the writer and anchor to the remote head and notify via `MemoryRecoveryHooks`. The next wake-up proceeds; the owner can inspect and cherry-pick the conflict branch. Existing conflict branches are never intentionally overwritten.
 
-Operators or owners can call server-only `Memory.recover(orgId)` after losing a writer or to reconcile its anchors. It fetches remote main and shadow heads, preserves surviving unpushed anchored work on a conflict branch, recreates a missing writer, records remote anchors and notifies. This method must never be registered as an agent tool. For writers predating K006 anchors, stop the runner and delete only that organization's writer directory, then bootstrap again. Do not delete anchored writers to recover unpushed work; call `recover` first. Recovery cannot restore commits lost with a deleted writer before they reached any remote.
+Operators or owners can call server-only `Memory.recover(orgId)` after losing a writer or to reconcile its anchors. It fetches remote main and shadow heads, preserves surviving unpushed anchored work on a conflict branch, recreates a missing writer, records remote anchors and notifies. This method must never be registered as an agent tool. For writers predating K011 anchors, stop the runner and delete only that organization's writer directory, then bootstrap again. Do not delete anchored writers to recover unpushed work; call `recover` first. Recovery cannot restore commits lost with a deleted writer before they reached any remote.
 
 Each wake-up must start a fresh provider process with cwd set to the newly replaced read clone; LEAD-5 creates a fresh provider session for every wake-up.
 
