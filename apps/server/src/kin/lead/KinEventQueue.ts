@@ -1,3 +1,4 @@
+import { ACTIVE_RUN_STATUSES } from "../../orchestration-v2/ThreadManagementService.ts";
 import {
   KinEvent,
   KinEventId,
@@ -40,6 +41,7 @@ const ClaimInput = Schema.Struct({
 });
 type ClaimInput = typeof ClaimInput.Type;
 const ReleaseFields = {
+  budgetDeferred: Schema.optional(Schema.Boolean),
   orgId: KinOrgId,
   wakeupId: KinWakeupId,
   eventIds: Schema.optional(Schema.Array(KinEventId)),
@@ -74,10 +76,25 @@ export class KinEventQueueUnknownEvent extends Schema.TaggedError<KinEventQueueU
   "KinEventQueueUnknownEvent",
   { orgId: KinOrgId, eventId: KinEventId },
 ) {}
+export class KinEventQueueUnknownAgent extends Schema.TaggedError<KinEventQueueUnknownAgent>()(
+  "KinEventQueueUnknownAgent",
+  { orgId: KinOrgId, agentId: KinAgentId },
+) {}
+export class KinEventQueueRetiredAgent extends Schema.TaggedError<KinEventQueueRetiredAgent>()(
+  "KinEventQueueRetiredAgent",
+  { orgId: KinOrgId, agentId: KinAgentId },
+) {}
+const isRetiredAgent = Schema.is(KinEventQueueRetiredAgent);
+export class KinEventQueueWakeupConflict extends Schema.TaggedError<KinEventQueueWakeupConflict>()(
+  "KinEventQueueWakeupConflict",
+  { orgId: KinOrgId, wakeupId: KinWakeupId },
+) {}
 export class KinEventQueueBusy extends Schema.TaggedError<KinEventQueueBusy>()(
   "KinEventQueueBusy",
   { orgId: KinOrgId },
 ) {}
+const isUnknownAgent = Schema.is(KinEventQueueUnknownAgent);
+const isWakeupConflict = Schema.is(KinEventQueueWakeupConflict);
 const isConflict = Schema.is(KinEventQueueConflict);
 const isUnknownEvent = Schema.is(KinEventQueueUnknownEvent);
 const isBusy = Schema.is(KinEventQueueBusy);
@@ -101,21 +118,47 @@ export class KinEventQueue extends Context.Service<
       | PersistenceDecodeError
       | KinEventQueueConflict
       | KinEventQueueUnknownEvent
+      | KinEventQueueUnknownAgent
+      | KinEventQueueRetiredAgent
     >;
-    // Scope closure releases only the permit; LEAD-5 must finish(timed_out | failed) in its own onExit.
+    readonly reconsiderBudget: (orgId: KinOrgId) => Effect.Effect<void, PersistenceSqlError>;
+    readonly changes: (orgId: KinOrgId) => Effect.Effect<Effect.Effect<void>>;
+    readonly nextReady: (
+      orgId: KinOrgId,
+    ) => Effect.Effect<
+      { readonly agentId: KinAgentId; readonly readyAt: number } | undefined,
+      PersistenceSqlError | PersistenceDecodeError
+    >;
+    readonly expireAgent: (
+      orgId: KinOrgId,
+      agentId: KinAgentId,
+    ) => Effect.Effect<
+      void,
+      PersistenceSqlError | PersistenceDecodeError | KinEventQueueUnknownAgent
+    >;
+    // Scope closure releases only the permit; the runner owns wake-up finalization.
     readonly claim: (
       input: ClaimInput,
     ) => Effect.Effect<
-      ReadonlyArray<KinEvent>,
-      PersistenceSqlError | PersistenceDecodeError | KinEventQueueBusy,
+      ReadonlyArray<KinEvent & { readonly priority: "P0" | "P1" | "P2" | "P3" }>,
+      | PersistenceSqlError
+      | PersistenceDecodeError
+      | KinEventQueueBusy
+      | KinEventQueueWakeupConflict,
       Scope.Scope
     >;
     readonly release: (
       input: typeof ReleaseInput.Type,
-    ) => Effect.Effect<number, PersistenceSqlError | PersistenceDecodeError>;
+    ) => Effect.Effect<
+      { readonly released: number; readonly failedEventIds: ReadonlyArray<KinEventId> },
+      PersistenceSqlError | PersistenceDecodeError
+    >;
     readonly finish: (
       input: typeof FinishInput.Type,
-    ) => Effect.Effect<void, PersistenceSqlError | PersistenceDecodeError>;
+    ) => Effect.Effect<
+      { readonly failedEventIds: ReadonlyArray<KinEventId> },
+      PersistenceSqlError | PersistenceDecodeError
+    >;
     // LEAD-5 startup recovery calls this only after confirming the provider run stopped.
     readonly requeueUnfinished: (
       orgId: KinOrgId,
@@ -128,13 +171,13 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const organizations = new Map<
     KinOrgId,
-    { gate: Semaphore.Semaphore; changed: Deferred.Deferred<void>; users: number }
+    { gate: Semaphore.Semaphore; changed: Deferred.Deferred<void> }
   >();
 
   const organization = (orgId: KinOrgId) => {
     const existing = organizations.get(orgId);
     if (existing !== undefined) return existing;
-    const entry = { gate: Semaphore.makeUnsafe(1), changed: Deferred.makeUnsafe<void>(), users: 0 };
+    const entry = { gate: Semaphore.makeUnsafe(1), changed: Deferred.makeUnsafe<void>() };
     organizations.set(orgId, entry);
     return entry;
   };
@@ -157,24 +200,41 @@ const make = Effect.gen(function* () {
       ) {
         return yield* new KinEventQueueConflict({ orgId: input.orgId, eventId: input.eventId });
       }
-      const event = input._tag === "github" ? { ...input, dedupeKey: input.deliveryId } : input;
-      let priority: "P0" | "P1" | "P2" | "P3" = "P2";
-      switch (event._tag) {
-        case "resume":
-          priority = "P0";
-          break;
-        case "deferral.due":
-        case "action.resolved":
-        case "worker.report":
-          priority = "P1";
-          break;
-        case "watchdog":
-          priority = "P3";
-          break;
-        case "chat.message":
-        case "widget.action":
-          if (event.provenance._tag === "human") {
-            const owners = yield* sql`
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const agents = yield* sql<{
+            retired_at: string | null;
+          }>`SELECT a.retired_at FROM kin_leads l
+            JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+            WHERE l.org_id = ${input.orgId} AND l.agent_id = ${input.agentId}`;
+          if (agents.length === 0)
+            return yield* new KinEventQueueUnknownAgent({
+              orgId: input.orgId,
+              agentId: input.agentId,
+            });
+          if (agents[0]?.retired_at !== null)
+            return yield* new KinEventQueueRetiredAgent({
+              orgId: input.orgId,
+              agentId: input.agentId,
+            });
+          const event = input._tag === "github" ? { ...input, dedupeKey: input.deliveryId } : input;
+          let priority: "P0" | "P1" | "P2" | "P3" = "P2";
+          switch (event._tag) {
+            case "resume":
+              priority = "P0";
+              break;
+            case "deferral.due":
+            case "action.resolved":
+            case "worker.report":
+              priority = "P1";
+              break;
+            case "watchdog":
+              priority = "P3";
+              break;
+            case "chat.message":
+            case "widget.action":
+              if (event.provenance._tag === "human") {
+                const owners = yield* sql`
             SELECT 1 FROM kin_chat_members
             WHERE org_id = ${event.orgId} AND chat_id = ${event.chatId}
               AND member_id = ${event.provenance.memberId} AND person_id = ${event.provenance.personId}
@@ -186,46 +246,54 @@ const make = Effect.gen(function* () {
                 WHERE org_id = ${event.orgId} AND chat_id = ${event.chatId}
                   AND principal_kind = 'agent' AND agent_id = ${event.agentId} AND left_at IS NULL)
           `;
-            if (owners.length > 0) priority = "P0";
+                if (owners.length > 0) priority = "P0";
+              }
+              break;
           }
-          break;
-      }
-      const json = yield* encodeEvent(event);
-      const now = yield* Clock.currentTimeMillis;
-      const inserted = yield* sql`
+          const json = yield* encodeEvent(event);
+          const now = yield* Clock.currentTimeMillis;
+          const inserted = yield* sql`
       INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, dedupe_key, received_at, queued_at)
       VALUES (${event.eventId}, ${event.orgId}, ${event.agentId}, ${event._tag}, ${priority},
         ${json}, ${event.dedupeKey}, ${DateTime.toEpochMillis(event.receivedAt)}, ${now})
       ON CONFLICT DO NOTHING
       RETURNING event_id
     `;
-      if (inserted.length > 0) {
-        yield* notify(event.orgId);
-        return { event, duplicate: false };
-      }
-      const rows = yield* sql<{ json: string }>`SELECT json FROM kin_events
+          if (inserted.length > 0) {
+            yield* sql.afterCommit(notify(event.orgId));
+            return { event, duplicate: false };
+          }
+          const rows = yield* sql<{ json: string }>`SELECT json FROM kin_events
         WHERE org_id = ${event.orgId} AND (event_id = ${event.eventId}
           OR (dedupe_key IS NOT NULL AND dedupe_key = ${event.dedupeKey}))
         ORDER BY event_id`;
-      let stored: KinEvent | undefined;
-      for (const row of rows) {
-        const candidate = yield* decodeEvent(row.json);
-        if (
-          candidate.eventId === event.eventId
-            ? (yield* encodeEvent(candidate)) !== json
-            : candidate.agentId !== event.agentId || candidate._tag !== event._tag
-        ) {
-          return yield* new KinEventQueueConflict({ orgId: event.orgId, eventId: event.eventId });
-        }
-        stored = candidate;
-      }
-      if (stored === undefined) {
-        return yield* new KinEventQueueUnknownEvent({ orgId: event.orgId, eventId: event.eventId });
-      }
-      return { event: stored, duplicate: true };
+          let stored: KinEvent | undefined;
+          for (const row of rows) {
+            const candidate = yield* decodeEvent(row.json);
+            if (
+              candidate.eventId === event.eventId
+                ? (yield* encodeEvent(candidate)) !== json
+                : candidate.agentId !== event.agentId || candidate._tag !== event._tag
+            ) {
+              return yield* new KinEventQueueConflict({
+                orgId: event.orgId,
+                eventId: event.eventId,
+              });
+            }
+            stored = candidate;
+          }
+          if (stored === undefined) {
+            return yield* new KinEventQueueUnknownEvent({
+              orgId: event.orgId,
+              eventId: event.eventId,
+            });
+          }
+          return { event: stored, duplicate: true };
+        }),
+      );
     },
     Effect.mapError((cause) =>
-      isConflict(cause) || isUnknownEvent(cause)
+      isConflict(cause) || isUnknownEvent(cause) || isUnknownAgent(cause) || isRetiredAgent(cause)
         ? cause
         : toQueuePersistenceError("KinEventQueue.enqueue")(cause),
     ),
@@ -233,7 +301,7 @@ const make = Effect.gen(function* () {
   );
 
   const readiness = Effect.fn("KinEventQueue.readiness")(function* (
-    input: ClaimInput,
+    input: Pick<ClaimInput, "orgId" | "agentId">,
     now: number,
   ) {
     const [window] = yield* sql<{
@@ -265,17 +333,7 @@ const make = Effect.gen(function* () {
   const claim = Effect.fn("KinEventQueue.claim")(
     function* (input: ClaimInput) {
       yield* decodeClaimInput(input);
-      const entry = yield* Effect.acquireRelease(
-        Effect.sync(() => {
-          const entry = organization(input.orgId);
-          entry.users++;
-          return entry;
-        }),
-        (entry) =>
-          Effect.sync(() => {
-            if (--entry.users === 0) organizations.delete(input.orgId);
-          }),
-      );
+      const entry = organization(input.orgId);
       return yield* Effect.acquireRelease(
         Effect.interruptible(
           Effect.uninterruptibleMask((restore) =>
@@ -301,6 +359,13 @@ const make = Effect.gen(function* () {
                       const now = yield* Clock.currentTimeMillis;
                       if ((yield* readiness(input, now)).readyAt > now)
                         return yield* new NoClaimableEvents({});
+                      const collision =
+                        yield* sql`SELECT 1 FROM kin_wakeups WHERE wakeup_id = ${input.wakeupId}`;
+                      if (collision.length > 0)
+                        return yield* new KinEventQueueWakeupConflict({
+                          orgId: input.orgId,
+                          wakeupId: input.wakeupId,
+                        });
                       // Cross-process exclusion rests on idx_kin_wakeups_running_org.
                       const started = yield* sql`
                 INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids)
@@ -310,11 +375,11 @@ const make = Effect.gen(function* () {
                         return yield* new KinEventQueueBusy({ orgId: input.orgId });
                       const rows = yield* sql<{
                         json: string;
-                        priority: string;
+                        priority: "P0" | "P1" | "P2" | "P3";
                         received_at: number;
                         event_id: string;
                       }>`
-                UPDATE kin_events SET state = 'claimed', wakeup_id = ${input.wakeupId}
+                UPDATE kin_events SET state = 'claimed', wakeup_id = ${input.wakeupId}, budget_deferred = 0
                 WHERE org_id = ${input.orgId} AND event_id IN (
                   SELECT event_id FROM kin_events
                   WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND state = 'queued'
@@ -329,7 +394,11 @@ const make = Effect.gen(function* () {
                           a.received_at - b.received_at ||
                           compare(a.event_id, b.event_id),
                       );
-                      const events = yield* Effect.forEach(ordered, (row) => decodeEvent(row.json));
+                      const events = yield* Effect.forEach(ordered, (row) =>
+                        decodeEvent(row.json).pipe(
+                          Effect.map((event) => ({ ...event, priority: row.priority })),
+                        ),
+                      );
                       const eventIds = yield* encodeEventIds(events.map((event) => event.eventId));
                       yield* sql`UPDATE kin_wakeups SET event_ids = ${eventIds}
                 WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId}`;
@@ -349,37 +418,45 @@ const make = Effect.gen(function* () {
       );
     },
     Effect.mapError((cause) =>
-      isBusy(cause) ? cause : toQueuePersistenceError("KinEventQueue.claim")(cause),
+      isBusy(cause) || isWakeupConflict(cause)
+        ? cause
+        : toQueuePersistenceError("KinEventQueue.claim")(cause),
     ),
   );
 
   const release = Effect.fn("KinEventQueue.release")(
     function* (input: typeof ReleaseInput.Type) {
       yield* decodeReleaseInput(input);
-      const count = yield* sql.withTransaction(
+      const result = yield* sql.withTransaction(
         Effect.gen(function* () {
           const now = yield* Clock.currentTimeMillis;
           const notBefore = input.notBefore ?? now + 300_000;
           const ids =
             input.eventIds === undefined ? undefined : yield* encodeEventIds(input.eventIds);
-          const rows = yield* sql`
+          const rows = yield* sql<{ event_id: string; state: string }>`
           UPDATE kin_events SET attempts = attempts + ${input.countAttempt ? 1 : 0},
             state = CASE WHEN attempts + ${input.countAttempt ? 1 : 0} >= 3 THEN 'failed' ELSE 'queued' END,
-            wakeup_id = NULL, not_before = ${notBefore}
+            wakeup_id = NULL, not_before = ${notBefore}, budget_deferred = ${input.budgetDeferred === true ? 1 : 0}
           WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed'
             AND (${ids ?? null} IS NULL OR event_id IN (SELECT value FROM json_each(${ids ?? null})))
             AND EXISTS (SELECT 1 FROM kin_wakeups WHERE org_id = ${input.orgId}
               AND wakeup_id = ${input.wakeupId} AND status = 'running')
-          RETURNING event_id`;
+          RETURNING event_id, state`;
           yield* sql`UPDATE kin_wakeups SET status = ${input.countAttempt ? "failed" : "released"}, ended_at = ${now}
           WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND status = 'running'
             AND NOT EXISTS (SELECT 1 FROM kin_events WHERE org_id = ${input.orgId}
               AND wakeup_id = ${input.wakeupId} AND state = 'claimed')`;
-          return rows.length;
+          return {
+            released: rows.length,
+            failedEventIds: rows
+              .filter((row) => row.state === "failed")
+              .map((row) => KinEventId.make(row.event_id))
+              .sort(),
+          };
         }),
       );
-      if (count > 0) yield* notify(input.orgId);
-      return count;
+      if (result.released > 0) yield* notify(input.orgId);
+      return result;
     },
     Effect.mapError(toQueuePersistenceError("KinEventQueue.release")),
     Effect.uninterruptible,
@@ -388,26 +465,35 @@ const make = Effect.gen(function* () {
   const finish = Effect.fn("KinEventQueue.finish")(
     function* (input: typeof FinishInput.Type) {
       yield* decodeFinishInput(input);
-      yield* sql.withTransaction(
+      const failedEventIds = yield* sql.withTransaction(
         Effect.gen(function* () {
           const now = yield* Clock.currentTimeMillis;
           const closed =
             yield* sql`UPDATE kin_wakeups SET status = ${input.status}, ended_at = ${now}
           WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND status = 'running'
           RETURNING wakeup_id`;
-          if (closed.length === 0) return;
+          if (closed.length === 0) return [];
           if (input.status === "completed") {
             yield* sql`UPDATE kin_events SET state = 'done'
             WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed'`;
           } else {
-            yield* sql`UPDATE kin_events SET attempts = attempts + 1,
+            const rows = yield* sql<{
+              event_id: string;
+              state: string;
+            }>`UPDATE kin_events SET attempts = attempts + 1,
             state = CASE WHEN attempts + 1 >= 3 THEN 'failed' ELSE 'queued' END,
             wakeup_id = NULL, not_before = ${now + 300_000}
-            WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed'`;
+            WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed' RETURNING event_id, state`;
+            return rows
+              .filter((row) => row.state === "failed")
+              .map((row) => KinEventId.make(row.event_id))
+              .sort();
           }
+          return [];
         }),
       );
       yield* notify(input.orgId);
+      return { failedEventIds };
     },
     Effect.mapError(toQueuePersistenceError("KinEventQueue.finish")),
     Effect.uninterruptible,
@@ -440,7 +526,77 @@ const make = Effect.gen(function* () {
     Effect.mapError(toQueuePersistenceError("KinEventQueue.requeueUnfinished")),
   );
 
-  return KinEventQueue.of({ enqueue, claim, release, finish, requeueUnfinished });
+  const changes = Effect.fn("KinEventQueue.changes")((orgId: KinOrgId) =>
+    Effect.sync(() => Deferred.await(organization(orgId).changed)),
+  );
+  const expireAgent = Effect.fn("KinEventQueue.expireAgent")(
+    function* (orgId: KinOrgId, agentId: KinAgentId) {
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const leads =
+            yield* sql`SELECT 1 FROM kin_leads WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+          if (leads.length === 0) return yield* new KinEventQueueUnknownAgent({ orgId, agentId });
+          yield* sql`UPDATE kin_events SET state = 'expired' WHERE org_id = ${orgId} AND agent_id = ${agentId} AND state = 'queued'`;
+        }),
+      );
+      yield* notify(orgId);
+    },
+    Effect.mapError((cause) =>
+      isUnknownAgent(cause) ? cause : toQueuePersistenceError("KinEventQueue.expireAgent")(cause),
+    ),
+  );
+  const nextReady = Effect.fn("KinEventQueue.nextReady")(
+    function* (orgId: KinOrgId) {
+      const now = yield* Clock.currentTimeMillis;
+      const rows = yield* sql<{ agent_id: string }>`SELECT e.agent_id
+        FROM kin_events e JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
+        WHERE e.org_id = ${orgId} AND e.state = 'queued' AND a.retired_at IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM kin_leads l
+            WHERE l.org_id = e.org_id AND l.agent_id = e.agent_id AND (
+              EXISTS (SELECT 1 FROM orchestration_v2_projection_runs r
+                WHERE r.thread_id = l.thread_id AND r.status IN ${sql.in(["queued", ...ACTIVE_RUN_STATUSES])})
+              OR EXISTS (SELECT 1 FROM orchestration_v2_projection_provider_turns t
+                WHERE t.thread_id = l.thread_id AND t.completed_at IS NULL)
+            )
+          )
+        GROUP BY e.agent_id ORDER BY e.agent_id`;
+      const candidates = yield* Effect.forEach(rows, (row) =>
+        Effect.gen(function* () {
+          const input = {
+            orgId,
+            agentId: KinAgentId.make(row.agent_id),
+          };
+          const window = yield* readiness(input, now);
+          return {
+            agentId: input.agentId,
+            readyAt: Math.min(window.readyAt, window.next > now ? window.next : Infinity),
+          };
+        }),
+      );
+      return candidates.toSorted(
+        (a, b) => a.readyAt - b.readyAt || a.agentId.localeCompare(b.agentId),
+      )[0];
+    },
+    Effect.mapError(toQueuePersistenceError("KinEventQueue.nextReady")),
+  );
+  return KinEventQueue.of({
+    reconsiderBudget: Effect.fn("KinEventQueue.reconsiderBudget")(function* (orgId) {
+      yield* sql`UPDATE kin_events SET not_before = NULL, budget_deferred = 0
+        WHERE org_id = ${orgId} AND state = 'queued' AND budget_deferred = 1`.pipe(
+        Effect.mapError(toPersistenceSqlError("KinEventQueue.reconsiderBudget")),
+      );
+      yield* sql.afterCommit(notify(orgId));
+    }),
+    enqueue,
+    claim,
+    release,
+    finish,
+    requeueUnfinished,
+    changes,
+    expireAgent,
+    nextReady,
+  });
 });
 
 export const layer = Layer.effect(KinEventQueue, make);

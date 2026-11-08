@@ -1,3 +1,5 @@
+import { ACTIVE_RUN_STATUSES } from "../../orchestration-v2/ThreadManagementService.ts";
+import type { McpThreadCaller } from "../../mcp/McpInvocationContext.ts";
 import {
   KinOrg,
   KinOrgId,
@@ -29,6 +31,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
+import { messageForViewer } from "./messageView.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlSchema from "effect/sql/SqlSchema";
 import {
@@ -57,9 +61,12 @@ export type RepositoryError = PersistenceSqlError | PersistenceDecodeError | Kin
 type Scope = { readonly orgId: KinOrgId };
 type ChatScope = Scope & { readonly chatId: KinChatId };
 type MemberScope = ChatScope & { readonly memberId: KinMemberId };
-type InsertMessage = Omit<KinMessage, "seq" | "authorRole"> & {
+type InsertMessage = Omit<KinMessage, "seq" | "authorRole" | "clientMessageId"> & {
+  readonly caller?: McpThreadCaller | undefined;
+  // Only the server-only task card creator may attribute a message outside an agent wake-up.
+  readonly serverTaskCard?: true;
   readonly clientMessageId: {
-    readonly kind: "send" | "act";
+    readonly kind: "send" | "act" | "task-card";
     readonly id: typeof TrimmedNonEmptyString.Type;
   } | null;
 };
@@ -114,10 +121,28 @@ const memberColumns = `org_id AS "orgId", chat_id AS "chatId", member_id AS "mem
  ELSE json_object('_tag', principal_kind, 'agentId', agent_id) END AS principal`;
 const MessageRow = Schema.Struct({
   ...KinMessage.fields,
+  storedClientMessageId: Schema.NullOr(Schema.String),
   author: Schema.fromJsonString(KinMessage.fields.author),
   mentions: Schema.fromJsonString(KinMessage.fields.mentions),
-});
-const messageColumns = `org_id AS "orgId", chat_id AS "chatId", message_id AS "messageId", seq AS "seq", author_role AS "authorRole", kind AS "kind", body AS "body", intent AS "intent", mentions_json AS "mentions", reply_to AS "replyTo", widget_id AS "widgetId", floor_run_id AS "floorRunId", status AS "status", sent_by AS "sentBy", created_at AS "createdAt", edited_at AS "editedAt", CASE author_kind WHEN 'human' THEN json_object('_tag', 'human', 'personId', author_person_id, 'memberId', author_member_id)
+}).pipe(
+  Schema.decodeTo(
+    Schema.toType(KinMessage),
+    SchemaTransformation.transform({
+      decode: ({ storedClientMessageId, ...message }) => ({
+        ...message,
+        ...(storedClientMessageId?.startsWith("send:")
+          ? { clientMessageId: storedClientMessageId.slice(5) }
+          : {}),
+      }),
+      encode: (message) => ({
+        ...message,
+        storedClientMessageId:
+          message.clientMessageId === undefined ? null : `send:${message.clientMessageId}`,
+      }),
+    }),
+  ),
+);
+const messageColumns = `org_id AS "orgId", chat_id AS "chatId", message_id AS "messageId", seq AS "seq", change_seq AS "changeSeq", client_message_id AS "storedClientMessageId", author_role AS "authorRole", kind AS "kind", body AS "body", intent AS "intent", mentions_json AS "mentions", reply_to AS "replyTo", widget_id AS "widgetId", floor_run_id AS "floorRunId", status AS "status", sent_by AS "sentBy", created_at AS "createdAt", edited_at AS "editedAt", CASE author_kind WHEN 'human' THEN json_object('_tag', 'human', 'personId', author_person_id, 'memberId', author_member_id)
  WHEN 'agent' THEN json_object('_tag', 'agent', 'agentId', author_agent_id, 'memberId', author_member_id,
  'ownerPersonId', author_owner_person_id, 'threadId', author_thread_id)
  ELSE json_object('_tag', author_kind) END AS author`;
@@ -166,6 +191,9 @@ export class KinChatRepository extends Context.Service<
     readonly getMessage: (
       input: Scope & { readonly messageId: KinMessageId },
     ) => Effect.Effect<Option.Option<KinMessage>, RepositoryError>;
+    readonly openTaskCards: (
+      input: Scope,
+    ) => Effect.Effect<ReadonlyArray<KinWidget>, RepositoryError>;
     readonly getWidget: (
       input: Scope & { readonly widgetId: KinWidgetId },
     ) => Effect.Effect<Option.Option<KinWidget>, RepositoryError>;
@@ -181,6 +209,13 @@ export class KinChatRepository extends Context.Service<
       readonly ownerDisplayName: string;
       readonly createdAt: IsoDateTime;
     }) => Effect.Effect<KinPerson, RepositoryError | KinIdentityBootstrapError>;
+    readonly hasRunningWakeup: (
+      input: Scope & {
+        readonly agentId: KinAgentId;
+        readonly threadId: ThreadId;
+        readonly caller: McpThreadCaller;
+      },
+    ) => Effect.Effect<boolean, RepositoryError>;
     readonly findAgentThread: (
       threadId: ThreadId,
     ) => Effect.Effect<Option.Option<KinAgentThread>, RepositoryError>;
@@ -216,11 +251,16 @@ export class KinChatRepository extends Context.Service<
       input: ChatScope & { readonly messageId: KinMessageId },
     ) => Effect.Effect<boolean, RepositoryError>;
     readonly resume: (
-      input: ChatScope & { readonly memberId: KinMemberId; readonly afterSeq: number },
+      input: ChatScope & {
+        readonly memberId: KinMemberId;
+        readonly afterSeq: number;
+        readonly afterChangeSeq?: number | undefined;
+      },
     ) => Effect.Effect<
       {
         readonly reset: boolean;
         readonly lastSeq: number;
+        readonly lastChangeSeq: number;
         readonly messages: ReadonlyArray<KinMessage>;
         readonly widgets: ReadonlyArray<KinWidget>;
       },
@@ -253,14 +293,21 @@ export class KinChatRepository extends Context.Service<
       },
     ) => Effect.Effect<KinChat, RepositoryError>;
     readonly findClientMessage: (
-      input: MemberScope & { readonly kind: "send" | "act"; readonly clientId: string },
+      input: MemberScope & {
+        readonly kind: "send" | "act" | "task-card";
+        readonly clientId: string;
+      },
     ) => Effect.Effect<Option.Option<KinMessage>, RepositoryError>;
     readonly insertMessage: (input: InsertMessage) => Effect.Effect<KinMessage, RepositoryError>;
     readonly history: (
       input: Scope & KinChatHistoryInput & { readonly viewerMemberId?: KinMemberId },
     ) => Effect.Effect<KinChatHistoryResult, RepositoryError>;
     readonly messagesAfter: (
-      input: ChatScope & { readonly afterSeq: typeof NonNegativeInt.Type; readonly limit: number },
+      input: ChatScope & {
+        readonly afterSeq: typeof NonNegativeInt.Type;
+        readonly limit: number;
+        readonly viewerMemberId?: KinMemberId;
+      },
     ) => Effect.Effect<ReadonlyArray<KinMessage>, RepositoryError>;
     readonly insertWidget: (
       input: Omit<KinWidget, "revision">,
@@ -403,6 +450,52 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(toRepositoryError("KinChatRepository.getAgentThread")),
   );
+  const hasRunningWakeup = Effect.fn("KinChatRepository.hasRunningWakeup")(
+    function* (
+      input: Scope & {
+        readonly agentId: KinAgentId;
+        readonly threadId: ThreadId;
+        readonly caller: McpThreadCaller;
+      },
+    ) {
+      if (input.caller.subagent === true || input.caller.threadId !== input.threadId) return false;
+      const rows =
+        yield* sql`WITH RECURSIVE ancestors(run_id, thread_id, ordinal, payload_json) AS (
+        SELECT run_id, thread_id, ordinal, payload_json
+        FROM orchestration_v2_projection_runs INDEXED BY orchestration_v2_projection_runs_thread_status_idx
+        WHERE thread_id = ${input.threadId} AND status IN ${sql.in(ACTIVE_RUN_STATUSES)}
+        UNION
+        SELECT p.run_id, p.thread_id, p.ordinal, p.payload_json
+        FROM ancestors child JOIN orchestration_v2_projection_runs p
+          ON p.thread_id = child.thread_id
+          AND (p.run_id = json_extract(child.payload_json, '$.restartContinuationOfRunId')
+            OR p.run_id = json_extract(child.payload_json, '$.usageLimitContinuationOfRunId'))
+        -- Continuation links plus agent/server provenance come only from the restart and usage-limit workers.
+        JOIN orchestration_v2_projection_messages cm
+          ON cm.message_id = json_extract(child.payload_json, '$.userMessageId')
+          AND cm.thread_id = child.thread_id AND cm.run_id = child.run_id
+          AND json_extract(cm.payload_json, '$.createdBy') = 'agent'
+          AND json_extract(cm.payload_json, '$.creationSource') = 'server'
+      )
+      SELECT 1 FROM kin_wakeups w JOIN ancestors root ON root.thread_id = w.thread_id
+      JOIN orchestration_v2_projection_messages m
+        ON m.message_id = json_extract(root.payload_json, '$.userMessageId')
+        AND m.thread_id = root.thread_id AND m.run_id = root.run_id
+      WHERE w.org_id = ${input.orgId} AND w.agent_id = ${input.agentId}
+        AND w.thread_id = ${input.threadId} AND w.status = 'running'
+        AND json_extract(root.payload_json, '$.userMessageId') = 'kin-wakeup-msg:' || w.wakeup_id
+        AND json_extract(m.payload_json, '$.createdBy') = 'system'
+        AND json_extract(m.payload_json, '$.creationSource') = 'server'
+        AND root.run_id = COALESCE(w.run_id, (
+          SELECT first.run_id FROM orchestration_v2_projection_runs first
+          WHERE first.thread_id = w.thread_id
+            AND json_extract(first.payload_json, '$.userMessageId') = 'kin-wakeup-msg:' || w.wakeup_id
+          ORDER BY first.ordinal LIMIT 1
+        )) LIMIT 1`;
+      return rows.length > 0;
+    },
+    Effect.mapError(toRepositoryError("KinChatRepository.hasRunningWakeup")),
+  );
   const validateWidgetReferences = Effect.fn("KinChatRepository.validateWidgetReferences")(
     function* (input: Pick<KinWidget, "orgId" | "chatId" | "awaiting" | "source">) {
       for (const personId of input.awaiting) {
@@ -524,12 +617,23 @@ const make = Effect.gen(function* () {
     Effect.mapError(toRepositoryError("KinChatRepository.addWaiting")),
   );
   return KinChatRepository.of({
+    hasRunningWakeup,
     getOrg: orgOne,
     getPerson: personOne,
     getAgent: agentOne,
     getChat: chatOne,
     getMember: memberOne,
     getMessage: messageOne,
+    openTaskCards: Effect.fn("KinChatRepository.openTaskCards")(
+      (input) =>
+        SqlSchema.findAll({
+          Request: Schema.Unknown,
+          Result: WidgetRow,
+          execute: () =>
+            sql`SELECT ${sql.literal(widgetColumns)} FROM kin_widgets WHERE org_id = ${input.orgId} AND type = 'task' AND closed_at IS NULL ORDER BY widget_id`,
+        })(input),
+      Effect.mapError(toRepositoryError("KinChatRepository.openTaskCards")),
+    ),
     getWidget: widgetOne,
     getWaiting: waitingOne,
     getAgentThread: agentThreadOne,
@@ -709,14 +813,30 @@ const make = Effect.gen(function* () {
         if (member.chatId !== input.chatId || member.leftAt !== null)
           return yield* new KinChatError({ reason: "not_found", message: "Kin record not found." });
         const chat = yield* requireRecord(chatOne(input));
+        const counters = yield* sql<{
+          change_seq: number;
+        }>`SELECT change_seq FROM kin_chats WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
+        const lastChangeSeq = counters[0]!.change_seq;
+        // Without a change cursor, replay only new messages; change_seq runs ahead of seq.
+        const afterChangeSeq = input.afterChangeSeq ?? lastChangeSeq;
+        const visible = sql`(${member.role === "owner" ? 1 : 0} = 1 OR status NOT IN ('suggested', 'dismissed') OR author_member_id = ${member.memberId})`;
         const messages = yield* SqlSchema.findAll({
           Request: Schema.Unknown,
           Result: MessageRow,
           execute: () =>
-            sql`SELECT ${sql.literal(messageColumns)} FROM kin_messages WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND seq > ${input.afterSeq} AND seq <= ${chat.lastSeq} AND (${member.role === "owner" ? 1 : 0} = 1 OR status NOT IN ('suggested', 'dismissed') OR author_member_id = ${member.memberId}) ORDER BY seq LIMIT 201`,
+            sql`SELECT ${sql.literal(messageColumns)} FROM kin_messages
+              WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND message_id IN (
+                SELECT message_id FROM (SELECT message_id FROM kin_messages
+                  WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND seq > ${input.afterSeq} AND ${visible}
+                  ORDER BY seq LIMIT 201)
+                UNION
+                SELECT message_id FROM (SELECT message_id FROM kin_messages
+                  WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND change_seq > ${afterChangeSeq} AND ${visible}
+                  ORDER BY change_seq, seq LIMIT 201)
+              ) ORDER BY seq LIMIT 201`,
         })(input);
         if (messages.length > 200)
-          return { reset: true, lastSeq: chat.lastSeq, messages: [], widgets: [] };
+          return { reset: true, lastSeq: chat.lastSeq, lastChangeSeq, messages: [], widgets: [] };
         const widgets =
           messages.length === 0
             ? []
@@ -726,7 +846,13 @@ const make = Effect.gen(function* () {
                 execute: () =>
                   sql`SELECT ${sql.literal(widgetColumns)} FROM kin_widgets WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND (message_id IN ${sql.in(messages.map((m) => m.messageId))} OR widget_id IN ${sql.in(messages.flatMap((m) => (m.widgetId === null ? [] : [m.widgetId])))}) ORDER BY message_id, widget_id`,
               })(input);
-        return { reset: false, messages, widgets, lastSeq: chat.lastSeq };
+        return {
+          reset: false,
+          messages: messages.map((m) => messageForViewer(m, member.principal)),
+          widgets,
+          lastSeq: chat.lastSeq,
+          lastChangeSeq,
+        };
       },
       (effect) => sql.withTransaction(effect).pipe(NodeSqliteClient.readOnly),
       Effect.mapError(toRepositoryError("KinChatRepository.resume")),
@@ -896,6 +1022,13 @@ const make = Effect.gen(function* () {
                 reason: "not_allowed",
                 message: "Retired Kin agents cannot register threads.",
               });
+            const inbox =
+              yield* sql`SELECT 1 FROM kin_webhook_sources WHERE inbox_thread_id = ${input.threadId}`;
+            if (inbox.length > 0)
+              return yield* new KinChatError({
+                reason: "not_allowed",
+                message: "Webhook inbox threads cannot be Kin agents.",
+              });
             const existing = yield* SqlSchema.findOneOption({
               Request: Schema.Unknown,
               Result: AgentThreadRow,
@@ -1057,6 +1190,21 @@ const make = Effect.gen(function* () {
                   message: "Kin record not found.",
                 });
             }
+            if (
+              author._tag === "agent" &&
+              input.serverTaskCard !== true &&
+              (input.caller === undefined ||
+                !(yield* hasRunningWakeup({
+                  ...input,
+                  agentId: author.agentId,
+                  threadId: author.threadId,
+                  caller: input.caller,
+                })))
+            )
+              return yield* new KinChatError({
+                reason: "not_allowed",
+                message: "Kin wake-up is not running.",
+              });
             if (input.replyTo !== null) {
               const reply = yield* requireRecord(
                 messageOne({ orgId: input.orgId, messageId: input.replyTo }),
@@ -1155,7 +1303,10 @@ const make = Effect.gen(function* () {
  AND (${viewer === null || viewer.role === "owner" ? 1 : 0} = 1 OR status NOT IN ('suggested', 'dismissed') OR author_member_id = ${viewer?.memberId ?? null})
  ORDER BY seq DESC LIMIT ${request.limit + 1}`,
               })(input);
-              const messages = rows.slice(0, request.limit).reverse();
+              const messages = rows
+                .slice(0, request.limit)
+                .reverse()
+                .map((m) => messageForViewer(m, viewer?.principal));
               const widgets =
                 messages.length === 0
                   ? []
@@ -1176,13 +1327,23 @@ const make = Effect.gen(function* () {
     messagesAfter: Effect.fn("KinChatRepository.messagesAfter")(
       function* (input) {
         const request = yield* decodeResume(input);
+        const viewer =
+          input.viewerMemberId === undefined
+            ? undefined
+            : yield* requireRecord(
+                memberOne({ orgId: input.orgId, memberId: input.viewerMemberId }),
+              );
         return yield* SqlSchema.findAll({
           Request: Schema.Unknown,
           Result: MessageRow,
           execute:
             () => sql`SELECT ${sql.literal(messageColumns)} FROM kin_messages WHERE org_id = ${input.orgId}
- AND chat_id = ${input.chatId} AND seq > ${request.afterSeq} ORDER BY seq LIMIT ${request.limit}`,
-        })(input).pipe(NodeSqliteClient.readOnly);
+ AND chat_id = ${input.chatId} AND seq > ${request.afterSeq}
+ AND (${input.viewerMemberId ?? null} IS NULL OR status NOT IN ('suggested', 'dismissed') OR author_member_id = ${input.viewerMemberId ?? null} OR EXISTS (SELECT 1 FROM kin_chat_members WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND member_id = ${input.viewerMemberId ?? null} AND role = 'owner')) ORDER BY seq LIMIT ${request.limit}`,
+        })(input).pipe(
+          NodeSqliteClient.readOnly,
+          Effect.map((messages) => messages.map((m) => messageForViewer(m, viewer?.principal))),
+        );
       },
       Effect.mapError(toRepositoryError("KinChatRepository.messagesAfter")),
     ),

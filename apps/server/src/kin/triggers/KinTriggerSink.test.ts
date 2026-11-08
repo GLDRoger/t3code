@@ -11,6 +11,9 @@ import {
   KinWebhookSource,
   OrchestrationV2ThreadProjectionJson,
   ScheduledTaskUpsertInput,
+  ProjectId,
+  ProviderInstanceId,
+  ScheduledTaskId,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Deferred from "effect/Deferred";
@@ -488,6 +491,14 @@ describe("KinTriggerSink", () => {
           Effect.gen(function* () {
             yield* service.upsert(yield* upsert("task-org-a"));
             const a = source(orgA);
+            const sql = yield* SqlClient.SqlClient;
+            yield* sql`INSERT INTO kin_agent_threads (org_id, agent_id, thread_id, started_at)
+              VALUES (${orgA}, ${`agent-${orgA}`}, ${a.inboxThreadId}, ${timestamp})`;
+            assert.strictEqual(
+              (yield* store.registerSource(a).pipe(Effect.flip))._tag,
+              "KinWebhookSourceConflict",
+            );
+            yield* sql`DELETE FROM kin_agent_threads WHERE thread_id = ${a.inboxThreadId}`;
             yield* store.registerSource(a);
             for (const candidate of [
               { ...a, orgId: orgB },
@@ -554,3 +565,129 @@ describe("KinTriggerSink", () => {
       }).pipe(Effect.provide(services.pipe(Layer.provideMerge(database)))),
   );
 });
+
+it.effect("builds the runtime after a Kin migration failure and refuses only webhook turns", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`CREATE TABLE kin_orgs (broken TEXT)`;
+    for (const [id, type] of [
+      ["task", "webhook"],
+      ["interval", "interval"],
+    ]) {
+      yield* sql`INSERT INTO scheduled_tasks (task_id, title, prompt, enabled, schedule_json, project_id,
+          workspace_strategy_json, model_selection_json, runtime_mode, interaction_mode, created_by,
+          creation_source, created_at, updated_at, last_run_status, run_count)
+          VALUES (${id}, 'Task', 'Prompt', 1, ${JSON.stringify({ type })}, 'project', '{}', '{}',
+          'full-access', 'default', 'system', 'server', ${timestamp}, ${timestamp}, 'never', 0)`;
+    }
+    const sends: string[] = [];
+    const managementLayer = Layer.mock(ThreadManagementService.ThreadManagementService)({
+      sendToThread: (input) =>
+        Effect.gen(function* () {
+          sends.push(input.scheduledTaskId ?? "ordinary");
+          return yield* new OrchestratorCommandRejectedError({
+            commandId: input.commandId,
+            commandType: "test.inner_send",
+          });
+        }),
+    });
+    const launches: ThreadLaunchService.ThreadLaunchInput[] = [];
+    const inner = Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+      launch: (input) =>
+        Effect.sync(() => {
+          launches.push(input);
+          return {
+            threadId: projection(orgA).thread.id,
+            projection: projection(orgA),
+            resumed: false,
+          };
+        }),
+    });
+    yield* Effect.gen(function* () {
+      const launch = yield* ThreadLaunchService.ThreadLaunchService;
+      const input: ThreadLaunchService.ThreadLaunchInput = {
+        commandId: CommandId.make("ordinary"),
+        projectId: ProjectId.make("project"),
+        title: "Ordinary",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "test" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        workspaceStrategy: { type: "root" },
+        createdBy: "system",
+        creationSource: "server",
+      };
+      yield* launch.launch(input);
+      yield* launch.launch({
+        ...input,
+        commandId: CommandId.make("scheduled-task:interval:interval:1"),
+        initialMessage: {
+          text: "Interval",
+          attachments: [],
+          scheduledTaskId: ScheduledTaskId.make("interval"),
+        },
+      });
+      const blocked = yield* launch
+        .launch({
+          ...input,
+          commandId: CommandId.make("scheduled-task:task:webhook:delivery"),
+          initialMessage: {
+            text: "Scheduled",
+            attachments: [],
+            scheduledTaskId: ScheduledTaskId.make("task"),
+          },
+        })
+        .pipe(Effect.flip);
+      assert.strictEqual(blocked._tag, "ThreadLaunchError");
+      const management = yield* ThreadManagementService.ThreadManagementService;
+      const passed = yield* management
+        .sendToThread({
+          projectId: input.projectId,
+          commandId: input.commandId,
+          threadId: projection(orgA).thread.id,
+          messageId: MessageId.make("interval-message"),
+          text: "Interval",
+          attachments: [],
+          scheduledTaskId: ScheduledTaskId.make("interval"),
+          mode: "queue",
+          createdBy: "system",
+          creationSource: "server",
+        })
+        .pipe(Effect.flip);
+      assert.include(passed, { commandType: "test.inner_send" });
+      assert.deepStrictEqual(sends, ["interval"]);
+      const bound = yield* management
+        .sendToThread({
+          projectId: input.projectId,
+          commandId: input.commandId,
+          threadId: projection(orgA).thread.id,
+          messageId: MessageId.make("message"),
+          text: "Bound",
+          attachments: [],
+          scheduledTaskId: ScheduledTaskId.make("task"),
+          mode: "queue",
+          createdBy: "system",
+          creationSource: "server",
+        })
+        .pipe(Effect.flip);
+      assert.strictEqual(bound._tag, "OrchestratorCommandRejectedError");
+      assert.strictEqual(launches.length, 2);
+    }).pipe(
+      Effect.provide(
+        KinTriggerSink.wrapTaskDispatch(inner, managementLayer).pipe(
+          Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+        ),
+      ),
+    );
+  }).pipe(Effect.provide(Sqlite.layerMemory)),
+);
+
+it.effect("does not relabel a core dispatch layer failure as a Kin startup failure", () =>
+  Effect.gen(function* () {
+    const failure = new Error("core dispatch unavailable");
+    const inner = Layer.effect(ThreadLaunchService.ThreadLaunchService, Effect.fail(failure));
+    const result = yield* Layer.build(KinTriggerSink.wrapTaskDispatch(inner, threads)).pipe(
+      Effect.flip,
+    );
+    assert.strictEqual(result, failure);
+  }).pipe(Effect.provide(Sqlite.layerMemory)),
+);

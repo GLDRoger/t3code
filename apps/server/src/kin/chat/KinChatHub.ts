@@ -13,6 +13,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
+import { messageForViewer } from "./messageView.ts";
 import * as Repository from "./KinChatRepository.ts";
 import type { AgentIdentity, PersonIdentity } from "./KinIdentity.ts";
 import * as PubSub from "effect/PubSub";
@@ -127,6 +128,11 @@ const make = Effect.gen(function* () {
                 message.value.author.memberId === member.memberId)
             );
           }),
+        ),
+        Stream.map((event) =>
+          event.type === "message.posted"
+            ? { ...event, message: messageForViewer(event.message, identity) }
+            : event,
         ),
       );
     }),
