@@ -20,10 +20,11 @@ The ruleset on `main` (PRs required, code-owner review, `memory-check` required,
 
 ## Cost
 
-Each run checks out `t3code` at the pinned commit without `.repos/`, installs the server's dependencies with `vp install --frozen-lockfile --ignore-scripts --filter=t3...` and runs the lint with Node. The install dominates: about INSTALL_COST on a cold runner. Gitleaks is a 7 MB release binary, checked against its sha256 before it runs, and scans the tree plus the new commits in seconds.
+Each run checks out `t3code` at the pinned commit without `.repos/`, installs the server's dependencies with `vp install --frozen-lockfile --ignore-scripts --filter=t3...` and runs the lint with Node. The install dominates: 881 packages, which took 19 s from an empty store on a fast connection, so budget about a minute per run on a hosted runner, plus Vite+ and Node setup. Nothing is cached between runs, so a PR can't seed a cache the check later trusts. Gitleaks is a 7 MB release binary, checked against its sha256 before it runs, and scans the tree plus the new commits in seconds.
 
 ## Things to know
 
+- GitHub runs a PR's own copy of this workflow, so a PR could rewrite the check. The `/.github/` line in `CODEOWNERS` is what stops that: such a PR needs the owner's review. An org ruleset that requires this workflow from a pinned ref would remove the gap; consider it with the ruleset.
 - A `.gitleaksignore` anywhere in the memory repo fails the check, because gitleaks would honour it. `gitleaks:allow` comments are ignored.
 - A false positive the owner allowed in `kin_secret_allow` still fails gitleaks, which has no allowlist. Reword the text; whether the owner may merge past the check is settled with the ruleset.
 - Gitleaks matches the scanner's patterns but not its Unicode folding or wrapped-token joining; it adds its own decoding and covers every commit in the PR.

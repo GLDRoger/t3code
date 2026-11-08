@@ -25,15 +25,18 @@ const rule = ([id, pattern]: (typeof secretRules)[number]) => {
     `secretGroup = ${groups > 0 ? 2 : 1}`,
     ...(exception?.minEntropy === undefined ? [] : [`entropy = ${exception.minEntropy}`]),
     ...(["secret", "match"] as const).flatMap((target) => {
-      const patterns = exception?.[target];
-      return patterns === undefined
-        ? []
-        : [
-            "",
-            "[[rules.allowlists]]",
-            `regexTarget = "${target}"`,
-            `regexes = [${patterns.map((p) => literal(re2(p))).join(", ")}]`,
-          ];
+      const patterns = exception?.[target]?.map((p) => literal(re2(p)));
+      if (patterns === undefined) return [];
+      // Wrapped the way the repo formatter wraps TOML arrays past 100 columns.
+      const inline = `regexes = [${patterns.join(", ")}]`;
+      return [
+        "",
+        "[[rules.allowlists]]",
+        `regexTarget = "${target}"`,
+        ...(inline.length <= 100
+          ? [inline]
+          : ["regexes = [", ...patterns.map((p) => `  ${p},`), "]"]),
+      ];
     }),
   ].join("\n");
 };
