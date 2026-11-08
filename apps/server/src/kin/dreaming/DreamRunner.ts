@@ -25,6 +25,7 @@ import { nextScheduledRunAt } from "../../scheduledTasks/Schedule.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { VcsProcess } from "../../vcs/VcsProcess.ts";
 import * as KinBudget from "../lead/KinBudget.ts";
+import { isOrgPaused } from "../lead/orgState.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
@@ -308,6 +309,8 @@ const make = Effect.gen(function* () {
       branch,
       failures,
     });
+    const paused = isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    const pausedFailure = "Kin was paused during the dream";
     if (Option.isNone(writer)) return failed(["The memory writer is not available"]);
     const base = yield* writer.value.dreamBase(orgId);
     yield* sql`UPDATE kin_dream_runs SET base_head = ${base.head}
@@ -329,6 +332,10 @@ const make = Effect.gen(function* () {
         model: ModelSelection,
         text: string,
       ) {
+        if (yield* paused) return "paused";
+        // Recorded before the turn starts, so the stop switch's fan-out can interrupt it.
+        yield* sql`UPDATE kin_dream_runs SET thread_id = ${DreamSession.dreamThreadId(dreamId, name)}
+          WHERE org_id = ${orgId} AND dream_id = ${dreamId} AND status = 'running' RETURNING dream_id`;
         const result = yield* session.run({
           orgId,
           dreamId,
@@ -337,15 +344,14 @@ const make = Effect.gen(function* () {
           model,
           text,
         });
-        yield* sql`UPDATE kin_dream_runs SET thread_id = ${result.threadId}
-          WHERE org_id = ${orgId} AND dream_id = ${dreamId} AND status = 'running' RETURNING dream_id`;
-        return result.status;
+        return (yield* paused) ? "paused" : result.status;
       });
       const extracted = yield* turn(
         "extract",
         claimed.models.cheap,
         extractPrompt({ orgId, head: base.head, full }),
       );
+      if (extracted === "paused") return failed([pausedFailure]);
       if (extracted !== "completed") return failed([`The dream session ${extracted}`]);
       let checkout = yield* readCheckout(root);
       const draft =
@@ -357,6 +363,7 @@ const make = Effect.gen(function* () {
         draft.value.contradictions.some((entry) => !entry.resolution && !entry.question)
       ) {
         const resolved = yield* turn("resolve", claimed.models.strong, resolvePrompt);
+        if (resolved === "paused") return failed([pausedFailure]);
         if (resolved !== "completed") return failed([`The contradiction session ${resolved}`]);
         checkout = yield* readCheckout(root);
       }
@@ -401,6 +408,8 @@ const make = Effect.gen(function* () {
         files: checked.changes,
         message: `kin(dream): ${ownerDate}\n\nKin-Dream: ${dreamId}\nMaterial-Until: ${iso(claimed.until)}\n`,
       });
+      // A pause during the checks or the push fails the dream, and settling deletes its branch.
+      if (yield* paused) return failed([pausedFailure]);
       return {
         _tag: "succeeded",
         dreamId,

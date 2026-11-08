@@ -65,6 +65,8 @@ type AgentThreadInput = {
 export class KinIdentity extends Context.Service<
   KinIdentity,
   {
+    /** The org owner bootstrapped at startup; the only person allowed owner-only actions. */
+    readonly owner: PersonIdentity;
     readonly resolve: (
       session: AuthenticatedSession,
     ) => Effect.Effect<ReadonlyArray<PersonIdentity>>;
@@ -94,6 +96,7 @@ export class KinIdentity extends Context.Service<
       );
       const lock = yield* Semaphore.make(1);
       return KinIdentity.of({
+        owner: { _tag: "person", orgId: owner.orgId, personId: owner.personId },
         resolve: Effect.fn("KinIdentity.resolve")(function (session) {
           return Effect.succeed(
             AuthStandardClientScopes.every((scope) => session.scopes.includes(scope))

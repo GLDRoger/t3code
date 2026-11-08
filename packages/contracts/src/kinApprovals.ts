@@ -363,6 +363,8 @@ export const KinAuditEvent = Schema.Literals([
   "grant_accepted",
   "grant_rejected",
   "action_rejected",
+  "action_cancelled",
+  "action_expired",
   "action_voided",
   "execution_started",
   "execution_finished",
@@ -494,8 +496,14 @@ export const KinAuditListInput = Schema.Struct({
   limit: PositiveInt.check(Schema.isLessThanOrEqualTo(200)),
 });
 export type KinAuditListInput = typeof KinAuditListInput.Type;
+/** A stored row that no longer decodes; `kin.audit.verify` reports where the chain breaks. */
+export const KinAuditCorruptEntry = Schema.Struct({
+  seq: PositiveInt,
+  corrupt: Schema.Literal(true),
+});
+export type KinAuditCorruptEntry = typeof KinAuditCorruptEntry.Type;
 export const KinAuditListResult = Schema.Struct({
-  entries: Schema.Array(KinAuditEntry),
+  entries: Schema.Array(Schema.Union([KinAuditEntry, KinAuditCorruptEntry])),
   hasMore: Schema.Boolean,
 });
 export type KinAuditListResult = typeof KinAuditListResult.Type;
