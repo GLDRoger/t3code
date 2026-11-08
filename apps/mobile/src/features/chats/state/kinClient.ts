@@ -5,7 +5,13 @@ import {
   createEnvironmentSubscriptionAtomFamily,
   environmentSessionGenerationAtom,
 } from "@t3tools/client-runtime/state/runtime";
-import { KIN_CHAT_WS_METHODS, type EnvironmentId, type KinOrgsListInput } from "@t3tools/contracts";
+import {
+  KIN_CHAT_WS_METHODS,
+  type EnvironmentId,
+  type KinChatHistoryInput,
+  type KinOrgsListInput,
+} from "@t3tools/contracts";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import { AsyncResult, AtomRegistry } from "effect/reactivity";
 
@@ -54,6 +60,9 @@ function guardedRead<Input, A, E>(command: {
 const readOrgs = guardedRead(orgsRead);
 const readHistory = guardedRead(historyRead);
 
+/** A dropped connection can leave a read pending; "Load earlier" fails after this and offers Retry. */
+export const KIN_HISTORY_PAGE_TIMEOUT = Duration.seconds(20);
+
 export const kinClient = {
   /** Orgs, their agents, and the viewer's person per org. An empty `me` means no identity. */
   orgs: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
@@ -83,11 +92,16 @@ export const kinClient = {
       readHistory(input).pipe(Effect.provideService(AtomRegistry.AtomRegistry, appAtomRegistry)),
     ),
   }),
-  history: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
-    label: "kin:history",
-    execute: readHistory,
-    staleTimeMs: Number.POSITIVE_INFINITY,
-  }),
+  /** One "Load earlier" page, read fresh every time so a retry after a failure refetches. */
+  readHistoryPage: (environmentId: EnvironmentId, input: KinChatHistoryInput) =>
+    Effect.runPromiseExit(
+      Effect.promise(() => historyRead.run(appAtomRegistry, { environmentId, input })).pipe(
+        Effect.flatMap((result) =>
+          result._tag === "Success" ? Effect.succeed(result.value) : Effect.failCause(result.cause),
+        ),
+        Effect.timeout(KIN_HISTORY_PAGE_TIMEOUT),
+      ),
+    ),
   createDirect: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:create-direct",
     tag: KIN_CHAT_WS_METHODS.chatsCreateDirect,
