@@ -356,7 +356,7 @@ it.effect.each([{}, { KIN_ENABLED: false }, { KIN_ENABLED: "maybe" }])(
       );
       assert.include(
         yield* agentServices.pipe(Effect.provideService(McpInvocationContext, scope), Effect.flip),
-        { reason: "unavailable" },
+        { reason: "disabled" },
       );
     }).pipe(
       Effect.provide(

@@ -112,6 +112,6 @@ export default Effect.gen(function* () {
   // covers every renewal row, this one only the revoked ones.
   yield* sql`
     CREATE INDEX IF NOT EXISTS idx_kin_auth_session_keys_revoked
-    ON kin_auth_session_keys(proof_key_thumbprint) WHERE individually_revoked = 1
+    ON kin_auth_session_keys(proof_key_thumbprint) WHERE individually_revoked != 0
   `;
 });

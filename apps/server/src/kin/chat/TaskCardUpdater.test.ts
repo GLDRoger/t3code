@@ -182,6 +182,38 @@ it.effect("maps authoritative thread state, including pending decisions", () =>
           .status,
         expected,
       );
+    const link = (number: number, source: "manual" | "stack-dismissed" = "manual") => ({
+      host: "github.com",
+      repository: "GLDRoger/t3code",
+      number,
+      url: `https://github.com/GLDRoger/t3code/pull/${number}`,
+      source,
+      linkedAt: timestamp,
+      snapshot: null,
+      stack: null,
+    });
+    const branchPullRequest = {
+      projectId: shell.projectId,
+      repository: "GLDRoger/t3code",
+      number: 7,
+      url: "https://github.com/GLDRoger/t3code/pull/7",
+    };
+    // The card shows the PRs the thread shows: visible links, else the branch's PR.
+    const prRows: ReadonlyArray<[Partial<OrchestrationV2ThreadShell>, ReadonlyArray<number>]> = [
+      [{ status: "idle", pullRequests: [], branchPullRequest }, [7]],
+      [{ status: "idle", branchPullRequest }, [7]],
+      [{ pullRequests: [link(1), link(2, "stack-dismissed")], branchPullRequest }, [1]],
+      [{ pullRequests: [link(2, "stack-dismissed")], branchPullRequest: null }, []],
+    ];
+    for (const [patch, expected] of prRows)
+      assert.deepStrictEqual(
+        TaskCard.taskCardState(
+          TaskCard.decodeTaskCard(state),
+          { ...shell, ...patch },
+          timestamp,
+        ).pullRequests.map((pr) => pr.number),
+        expected,
+      );
   }),
 );
 

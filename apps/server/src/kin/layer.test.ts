@@ -102,8 +102,8 @@ it.effect.each(["identity", "defect", "unconfigured"] as const)(
       );
       assert.deepStrictEqual(yield* client["server.probe"]({}), {});
       assert.include(yield* client["kin.orgs.list"]({}).pipe(Effect.flip), {
-        reason: "unavailable",
-        message: "Kin is unavailable.",
+        reason: "disabled",
+        message: "Kin is not running on this host.",
       });
     }).pipe(Effect.provide(Sqlite.layerMemory)),
 );
