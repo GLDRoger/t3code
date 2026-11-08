@@ -308,10 +308,11 @@ export const KinChatHistoryResult = Schema.Struct({
   hasMore: Schema.Boolean,
 });
 export type KinChatHistoryResult = typeof KinChatHistoryResult.Type;
+export const KIN_MESSAGE_BODY_MAX_LENGTH = 16_000;
 export const KinMessagesSendInput = Schema.Struct({
   chatId: KinChatId,
   clientMessageId: TrimmedNonEmptyString,
-  body: MessageBody.check(isNonBlankBody, Schema.isMaxLength(16_000)),
+  body: MessageBody.check(isNonBlankBody, Schema.isMaxLength(KIN_MESSAGE_BODY_MAX_LENGTH)),
   mentions: Schema.optional(Schema.Array(KinMemberId)),
   replyTo: Schema.optional(KinMessageId),
 });
