@@ -521,7 +521,7 @@ function KinChatFeed(props: {
             connected={props.connected}
             onEdit={() =>
               void editKinOutboxEntry(
-                kinDraftKey(props.orgId, props.chatId),
+                kinDraftKey(props.environmentId, props.orgId, props.chatId),
                 item.entry.clientMessageId,
               )
             }

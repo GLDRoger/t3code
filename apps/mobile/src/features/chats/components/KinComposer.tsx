@@ -15,7 +15,14 @@ import {
 import { KIN_MESSAGE_MAX_LENGTH } from "../state/kinOutbox";
 import { deliverKinOutbox, kinOutbox } from "../state/kinOutboxDelivery";
 
-export const kinDraftKey = (orgId: string, chatId: string) => `kin:${orgId}:${chatId}`;
+/** Every Kin host uses the same org id, so the environment keeps two hosts' drafts apart. */
+export const kinDraftKey = (environmentId: EnvironmentId, orgId: string, chatId: string) =>
+  `kin:${environmentId}:${orgId}:${chatId}`;
+
+// The native editor has no intrinsic height: it grows with its text from one line to this cap.
+const EDITOR_MIN_HEIGHT = 36;
+const EDITOR_MAX_HEIGHT = 140;
+const EDITOR_INSET = 6;
 
 const lengthFormat = new Intl.NumberFormat();
 
@@ -44,10 +51,15 @@ export function KinComposer(props: {
   /** Called once the message is in the outbox, so the feed can show the end. */
   readonly onSend: () => void;
 }) {
-  const draftKey = kinDraftKey(props.orgId, props.chatId);
+  const draftKey = kinDraftKey(props.environmentId, props.orgId, props.chatId);
   const draft = useComposerDraft(draftKey);
   const editorRef = useRef<ComposerEditorHandle>(null);
   const [full, setFull] = useState(false);
+  const [contentHeight, setContentHeight] = useState(0);
+  const editorHeight = Math.min(
+    EDITOR_MAX_HEIGHT,
+    Math.max(EDITOR_MIN_HEIGHT, Math.ceil(contentHeight) + 2 * EDITOR_INSET),
+  );
   const length = draft.text.trim().length;
   const tooLong = length > KIN_MESSAGE_MAX_LENGTH;
   const canSend = length > 0 && !tooLong;
@@ -88,7 +100,7 @@ export function KinComposer(props: {
         </Text>
       )}
       <View className="flex-row items-end gap-2">
-        <View className="min-h-11 flex-1 justify-center rounded-[22px] bg-card-alt px-3.5 py-1.5">
+        <View className="min-h-11 flex-1 justify-center rounded-[22px] border border-composer-border bg-composer-surface px-3.5 py-1">
           <ComposerEditor
             ref={editorRef}
             draftKey={draftKey}
@@ -101,7 +113,11 @@ export function KinComposer(props: {
               if (full) setFull(false);
               setComposerDraftText(draftKey, text);
             }}
-            style={{ maxHeight: 140 }}
+            contentInsetVertical={EDITOR_INSET}
+            singleLineCentered={contentHeight <= EDITOR_MIN_HEIGHT - 2 * EDITOR_INSET}
+            scrollEnabled={editorHeight >= EDITOR_MAX_HEIGHT}
+            onContentSizeChange={(size) => setContentHeight(size.height)}
+            style={{ height: editorHeight }}
           />
         </View>
         <IconButton
