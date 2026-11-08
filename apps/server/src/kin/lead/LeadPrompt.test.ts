@@ -69,6 +69,7 @@ const memory = Layer.succeed(
     readRules: () => Effect.die("Unused"),
     query: () => Effect.die("Unused"),
     readItem: () => Effect.die("Unused"),
+    readItemQuietly: () => Effect.die("Unused"),
     rebuildIndex: () => Effect.die("Unused"),
     rebuildCache: () => Effect.die("Unused"),
   }),
@@ -122,10 +123,12 @@ it.effect(
       const second = yield* prompt.build({
         ...input,
         wakeupId: KinWakeupId.make("next"),
+        budgetContext: "62% of today left",
         events: [routine],
       });
       const prefix = (text: string) => text.split("--- KIN WAKE-UP ---")[0];
       expect(prefix(first)).toBe(prefix(second));
+      expect(second.split("--- KIN WAKE-UP ---")[1]).toContain("Budget: 62% of today left");
       expect(first).toContain("1970-01-01T00:00:00.000Z");
       expect(second).toContain("1970-01-01T01:00:00.000Z");
       const current = yield* prompt.build(input);
