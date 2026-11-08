@@ -766,9 +766,14 @@ it.effect(
           ],
         });
         yield* tracker.process(completedEvent);
-        // A replay later, after the clock moved, is still the same report and the same charge.
+        // A replay later, after the clock moved and the lead left the chat, is still the same
+        // report and the same charge.
         yield* TestClock.adjust("5 seconds");
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE kin_chat_members SET left_at = '2026-01-01T00:00:00.000Z'
+          WHERE agent_id IS NOT NULL`;
         yield* tracker.process(completedEvent);
+        yield* sql`UPDATE kin_chat_members SET left_at = NULL WHERE agent_id IS NOT NULL`;
         yield* tracker.process(yield* ended(fakes, cancelledThread, "cancelled"));
         // The worker's delegate_task child bills to the worker, once, and does not report.
         const orchestrator = yield* OrchestratorV2;

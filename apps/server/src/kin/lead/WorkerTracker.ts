@@ -178,7 +178,7 @@ const make = Effect.gen(function* () {
         if (child === undefined) continue;
         for (const turn of child.providerTurns) {
           const at = toMillis(turn.startedAt) ?? toMillis(turn.completedAt);
-          if (turn.runAttemptId === null && at !== undefined && at >= from && at <= until)
+          if (turn.runAttemptId === null && at !== undefined && at >= from && at < until)
             turns.push(turn);
         }
         pending.push(child);
@@ -215,8 +215,9 @@ const make = Effect.gen(function* () {
     worker: typeof WorkerRow.Type,
     run: OrchestrationV2Run,
     report: WorkerReport,
+    kind: "worker-report" | "worker-abandoned" = "worker-report",
   ) {
-    const eventId = KinEventId.make(`worker-report:${run.id}`);
+    const eventId = KinEventId.make(`${kind}:${run.id}`);
     yield* queue
       .enqueue({
         _tag: "worker.report",
@@ -231,7 +232,8 @@ const make = Effect.gen(function* () {
       })
       .pipe(
         Effect.catchTags({
-          // The same id already holds a report for this run; only its provenance can have drifted.
+          // The id is keyed on the answer run, so a conflict is this run's own report replayed with
+          // drifted provenance; the abandon report uses its own id and never collides with it.
           KinEventQueueConflict: (error) =>
             error.eventId === eventId ? Effect.void : Effect.fail(error),
           KinEventQueueRetiredAgent: () => Effect.void,
@@ -286,6 +288,9 @@ const make = Effect.gen(function* () {
       shell = yield* threads.getThreadShell(parentId);
       if (shell === null) return undefined;
     }
+    yield* Effect.logWarning("Kin worker lineage deeper than the cap; run not charged", {
+      runId: run.id,
+    });
     return undefined;
   });
 
@@ -345,13 +350,23 @@ const make = Effect.gen(function* () {
       const run = event.payload;
       const worker = yield* workerFor(run.threadId).pipe(Effect.orElseSucceed(() => undefined));
       if (worker === undefined) return false;
+      // A later or still-running run owns the worker's outcome; don't fail it over an old event.
+      const runs = yield* threads.getThreadProjection(worker.threadId).pipe(
+        Effect.map((projection) => projection.runs),
+        Effect.orElseSucceed(() => undefined),
+      );
+      if (
+        runs !== undefined &&
+        (runs.at(-1)?.id !== run.id || runs.some((item) => !ended.has(item.status)))
+      )
+        return true;
       const report = yield* blocked(worker, "Kin's tracker could not process the run.");
       const closed = yield* sql`UPDATE kin_workers SET status = 'failed',
       report_json = ${yield* encodeJson(report)}, ended_at = ${endedAtMillis(run)}
       WHERE org_id = ${worker.orgId} AND worker_id = ${worker.workerId}
         AND status NOT IN ${sql.in([...ended])} RETURNING worker_id`;
       if (closed.length === 0) return true;
-      yield* enqueueReport(worker, run, report).pipe(Effect.ignore);
+      yield* enqueueReport(worker, run, report, "worker-abandoned").pipe(Effect.ignore);
       if (worker.chatId !== null)
         yield* closeCard({
           orgId: worker.orgId,
