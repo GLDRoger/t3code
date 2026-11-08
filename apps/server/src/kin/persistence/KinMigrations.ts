@@ -11,8 +11,9 @@ import Pings from "./migrations/K006_Pings.ts";
 import Budget from "./migrations/K007_Budget.ts";
 import Floor from "./migrations/K008_Floor.ts";
 import JudgeLog from "./migrations/K009_JudgeLog.ts";
-import Approvals from "./migrations/K010_Approvals.ts";
-import PushDevices from "./migrations/K011_PushDevices.ts";
+import ChatChanges from "./migrations/K010_ChatChanges.ts";
+import Approvals from "./migrations/K011_Approvals.ts";
+import PushDevices from "./migrations/K012_PushDevices.ts";
 
 const table = "kin_sql_migrations";
 const run = Migrator.make({});
@@ -26,8 +27,9 @@ const loader = Migrator.fromRecord({
   "7_Budget": Budget,
   "8_Floor": Floor,
   "9_JudgeLog": JudgeLog,
-  "10_Approvals": Approvals,
-  "11_PushDevices": PushDevices,
+  "10_ChatChanges": ChatChanges,
+  "11_Approvals": Approvals,
+  "12_PushDevices": PushDevices,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that
