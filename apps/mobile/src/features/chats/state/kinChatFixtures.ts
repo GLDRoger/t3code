@@ -11,7 +11,7 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 
-/** Dev-only chat id that renders the fixture feed instead of a stream (`kin/dev/chats/dev-fixture`). */
+/** Dev-only chat id that renders the fixture feed instead of a stream (`kin/dev/dev/chats/dev-fixture`). */
 export const KIN_FIXTURE_CHAT_ID = "dev-fixture" as KinChatId;
 export const KIN_FIXTURE_OWNER = "fixture-owner" as KinPersonId;
 export const KIN_FIXTURE_AGENT = "fixture-lead" as KinAgentId;

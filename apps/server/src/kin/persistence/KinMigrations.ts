@@ -13,6 +13,12 @@ import Floor from "./migrations/K008_Floor.ts";
 import JudgeLog from "./migrations/K009_JudgeLog.ts";
 
 import ChatChanges from "./migrations/K010_ChatChanges.ts";
+import MemoryHeads from "./migrations/K011_MemoryHeads.ts";
+import SecretAllow from "./migrations/K012_SecretAllow.ts";
+import Routines from "./migrations/K013_Routines.ts";
+import LeadToolCalls from "./migrations/K014_LeadToolCalls.ts";
+import AuthSessionKeys from "./migrations/K015_AuthSessionKeys.ts";
+import DeferralRuns from "./migrations/K016_DeferralRuns.ts";
 
 const run = Migrator.make({});
 const loader = Migrator.fromRecord({
@@ -26,6 +32,12 @@ const loader = Migrator.fromRecord({
   "8_Floor": Floor,
   "9_JudgeLog": JudgeLog,
   "10_ChatChanges": ChatChanges,
+  "11_MemoryHeads": MemoryHeads,
+  "12_SecretAllow": SecretAllow,
+  "13_Routines": Routines,
+  "14_LeadToolCalls": LeadToolCalls,
+  "15_AuthSessionKeys": AuthSessionKeys,
+  "16_DeferralRuns": DeferralRuns,
 });
 
 export const runKinMigrations = Effect.fn("KinMigrations.run")(function* () {

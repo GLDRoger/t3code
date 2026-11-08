@@ -1,3 +1,4 @@
+import { SessionHooks } from "../kin/auth/sessionHooks.ts";
 import {
   AuthSessionId,
   AuthStandardClientScopes,
@@ -1098,7 +1099,7 @@ const make = Effect.gen(function* () {
     );
   });
 
-  return SessionStore.of({
+  return (yield* SessionHooks).wrap({ connectedSessionsRef, emitRemoved })({
     cookieName,
     legacyCookieName,
     issue,

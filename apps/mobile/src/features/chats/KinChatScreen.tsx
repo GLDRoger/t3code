@@ -64,7 +64,11 @@ import {
 } from "./state/kinInboxModel";
 import { useKinHost } from "./state/useKinHost";
 
-type KinChatParams = { readonly orgId: string; readonly chatId: string };
+type KinChatParams = {
+  readonly environmentId: string;
+  readonly orgId: string;
+  readonly chatId: string;
+};
 
 type KinFixtures = typeof import("./state/kinChatFixtures");
 
