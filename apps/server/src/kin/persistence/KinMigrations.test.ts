@@ -23,6 +23,9 @@ const tableNames = [
   "kin_cursor",
   "kin_events",
   "kin_executions",
+  "kin_floor_grants",
+  "kin_floor_notices",
+  "kin_floor_runs",
   "kin_grants",
   "kin_leads",
   "kin_memory_reads",
@@ -94,6 +97,7 @@ describe("Kin migrations", () => {
           { migration_id: 5, name: "OneChatOwner" },
           { migration_id: 6, name: "Pings" },
           { migration_id: 7, name: "Budget" },
+          { migration_id: 8, name: "Floor" },
           { migration_id: 9, name: "Approvals" },
         ]);
         assert.deepStrictEqual(
@@ -105,6 +109,9 @@ describe("Kin migrations", () => {
           ["kin_trigger_fires", ["fired_at"]],
           ["kin_trigger_inbox", ["received_at", "consumed_at"]],
           ["kin_ping_ledger", ["pinged_at", "escalated_at"]],
+          ["kin_floor_runs", ["opened_at"]],
+          ["kin_floor_grants", ["expires_at", "consumed_at"]],
+          ["kin_floor_notices", ["posted_at"]],
           ["kin_pending_actions", ["created_at", "updated_at", "expires_at"]],
           ["kin_grants", ["accepted_at", "consumed_at"]],
           ["kin_executions", ["started_at", "finished_at"]],
@@ -144,6 +151,7 @@ describe("Kin migrations", () => {
           { migration_id: 5, name: "OneChatOwner" },
           { migration_id: 6, name: "Pings" },
           { migration_id: 7, name: "Budget" },
+          { migration_id: 8, name: "Floor" },
           { migration_id: 9, name: "Approvals" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
@@ -165,6 +173,10 @@ describe("Kin migrations", () => {
           { name: "idx_kin_events_dedupe" },
           { name: "idx_kin_events_queue" },
           { name: "idx_kin_events_wakeup" },
+          { name: "idx_kin_floor_grant_scope" },
+          { name: "idx_kin_floor_latest" },
+          { name: "idx_kin_floor_notices_rate" },
+          { name: "idx_kin_floor_open" },
           { name: "idx_kin_pending_actions_approved" },
           { name: "idx_kin_pending_actions_expiry" },
           { name: "idx_kin_pending_actions_org_state" },
@@ -217,6 +229,7 @@ describe("Kin migrations", () => {
         [5, "OneChatOwner"],
         [6, "Pings"],
         [7, "Budget"],
+        [8, "Floor"],
         [9, "Approvals"],
       ]);
       const before = yield* kinSchema;
@@ -235,6 +248,9 @@ describe("Kin migrations", () => {
         VALUES ('existing-chat', 'org', 'project_group', 0, ${timestamp})`;
       yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
         VALUES ('existing-owner', 'org', 'existing-chat', 'person', 'owner', 'owner', ${timestamp})`;
+      yield* sql`DROP TABLE kin_floor_notices`;
+      yield* sql`DROP TABLE kin_floor_grants`;
+      yield* sql`DROP TABLE kin_floor_runs`;
       yield* sql`DROP TABLE kin_ping_deliveries`;
       yield* sql`DROP TABLE kin_ping_escalations`;
       yield* sql`DROP TABLE kin_ping_items`;
@@ -255,6 +271,7 @@ describe("Kin migrations", () => {
         [5, "OneChatOwner"],
         [6, "Pings"],
         [7, "Budget"],
+        [8, "Floor"],
         [9, "Approvals"],
       ]);
       assert.deepStrictEqual(
@@ -275,6 +292,7 @@ describe("Kin migrations", () => {
         { migration_id: 5, name: "OneChatOwner" },
         { migration_id: 6, name: "Pings" },
         { migration_id: 7, name: "Budget" },
+        { migration_id: 8, name: "Floor" },
         { migration_id: 9, name: "Approvals" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
