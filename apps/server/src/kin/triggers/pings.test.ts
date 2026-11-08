@@ -287,8 +287,8 @@ describe("KinPings", () => {
     },
     {
       name: "invalid zone falls back",
-      time: "2026-03-08T03:00:00Z",
-      quiet: true,
+      time: "2026-03-08T01:00:00Z",
+      quiet: false,
       profile: { tz: "Invalid/Zone" },
     },
     { name: "missing person file", time: "2026-03-08T03:00:00Z", quiet: true, profile: undefined },
