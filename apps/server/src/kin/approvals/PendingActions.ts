@@ -85,7 +85,8 @@ type GrantRef = ActionRef & { readonly jti: string; readonly approverHumanId: Ki
 export type KinApproveResult =
   | { readonly _tag: "approved"; readonly grant: KinGrant }
   | { readonly _tag: "replayed" }
-  | { readonly _tag: "stale" };
+  | { readonly _tag: "stale" }
+  | { readonly _tag: "revoked_key" };
 
 type Errors = PersistenceSqlError | PersistenceDecodeError;
 
@@ -172,6 +173,7 @@ const toAction = (row: ActionRow) =>
   });
 
 class Rollback extends Schema.TaggedError<Rollback>()("Rollback", {}) {}
+class KeyUnusable extends Schema.TaggedError<KeyUnusable>()("KeyUnusable", {}) {}
 
 export class KinPendingActions extends Context.Service<
   KinPendingActions,
@@ -322,6 +324,7 @@ const make = Effect.gen(function* () {
         WHERE org_id = ${input.orgId} AND action_id = ${input.actionId}
           AND state = ${from} AND revision = ${input.revision}
           AND (${input.to} != 'expired' OR expires_at <= ${now})
+          AND (${input.to} NOT IN ('rejected', 'cancelled') OR expires_at > ${now})
         RETURNING action_id`;
       return rows.length > 0;
     },
@@ -334,6 +337,17 @@ const make = Effect.gen(function* () {
         AND approver_human_id = ${ref.approverHumanId}))`.pipe(
       Effect.map((rows) => rows.length > 0),
     );
+
+  // A revoke can land while check 9 reads GitHub, so check 10 re-reads the key in its own write.
+  const signingKeyUsable = (input: {
+    readonly orgId: KinOrgId;
+    readonly keyThumbprint: KinKeyThumbprint;
+    readonly approverHumanId: KinPersonId;
+  }) => sql`EXISTS (SELECT 1 FROM kin_approver_keys k
+    WHERE k.org_id = ${input.orgId} AND k.thumbprint = ${input.keyThumbprint}
+      AND k.human_id = ${input.approverHumanId} AND k.state = 'active' AND k.attested = 1
+      AND NOT EXISTS (SELECT 1 FROM auth_sessions s
+        WHERE s.session_id = k.session_id AND s.revoked_at IS NOT NULL))`;
 
   const heldGrant = Effect.fn("KinPendingActions.heldGrant")(
     selectHeld,
@@ -376,8 +390,12 @@ const make = Effect.gen(function* () {
               WHERE org_id = ${input.orgId} AND action_id = ${input.actionId}
                 AND state = 'awaiting_approval' AND revision = ${input.revision}
                 AND nonce = ${input.nonce} AND expires_at > ${now} AND ${input.exp} * 1000 > ${now}
+                AND ${signingKeyUsable(input)}
               RETURNING action_id`;
-            if (won.length === 0) return yield* new Rollback();
+            if (won.length === 0) {
+              const [usable] = yield* sql`SELECT 1 WHERE ${signingKeyUsable(input)}`;
+              return yield* usable === undefined ? new KeyUnusable() : new Rollback();
+            }
             const grant = yield* decodeGrant({
               id: grantId,
               orgId: input.orgId,
@@ -395,7 +413,12 @@ const make = Effect.gen(function* () {
             return { _tag: "approved" as const, grant };
           }),
         )
-        .pipe(Effect.catchTags({ Rollback: () => Effect.succeed({ _tag: "stale" as const }) }));
+        .pipe(
+          Effect.catchTags({
+            Rollback: () => Effect.succeed({ _tag: "stale" as const }),
+            KeyUnusable: () => Effect.succeed({ _tag: "revoked_key" as const }),
+          }),
+        );
     },
     Effect.mapError(toError("KinPendingActions.approve")),
   );

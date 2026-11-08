@@ -68,6 +68,10 @@ const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_orgs (org_id, name, created_at)
     VALUES ('org_01', 'Kin', '2026-11-07T00:00:00.000Z')`;
+  // Check 10 approves only while the signing key is active.
+  yield* sql`INSERT INTO kin_approver_keys (thumbprint, org_id, public_jwk_json, human_id,
+      device_label, platform, hardware, attested, state, created_at)
+    VALUES (${kid}, 'org_01', '{}', ${owner}, 'Pixel 9', 'android', 'tee', 1, 'active', 0)`;
   return yield* KinPendingActions;
 });
 

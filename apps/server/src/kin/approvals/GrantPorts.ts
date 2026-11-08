@@ -44,7 +44,7 @@ export class KinOrgRoles extends Context.Service<
 
 // Phase 1 (chat spec, Identity): the org owner is the reserved person bootstrap creates.
 // Phase 2 replaces this with org membership.
-const BOOTSTRAP_OWNER = Schema.decodeSync(KinPersonId)("kin-default-owner");
+export const BOOTSTRAP_OWNER = Schema.decodeSync(KinPersonId)("kin-default-owner");
 
 export const orgRolesLayer = Layer.effect(
   KinOrgRoles,

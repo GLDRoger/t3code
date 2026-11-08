@@ -18,6 +18,7 @@ import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -33,10 +34,16 @@ import {
 } from "./GrantPorts.ts";
 import { KinPendingActions, kinTargetDigest } from "./PendingActions.ts";
 
-// Enough to see an attack in the audit; more only fills the chain. The rest are counted.
-const REJECTION_AUDITS_PER_WINDOW = 20;
-const REJECTION_WINDOW_MS = 60_000;
-const MAX_TRACKED_SESSIONS = 1024;
+// Junk that names no key: enough to see a flood, the rest only counted. Anything that
+// names a real key is always recorded.
+const JUNK_AUDITS_PER_WINDOW = 20;
+const JUNK_WINDOW = Duration.minutes(1);
+const isJunk = (reason: KinApprovalError["reason"]) =>
+  reason === "malformed" || reason === "unknown_key";
+
+// A jti is 16+ random bytes (spec section 5): 22 unpadded base64url characters. Kept out of the
+// shared decoder so it stays byte-for-byte with the device's parser.
+const MIN_JTI_CHARS = 22;
 
 const isKinApprovalError = Schema.is(KinApprovalError);
 const decodeUnsigned = Schema.decodeUnknownEffect(KinGrantUnsignedPayload);
@@ -94,9 +101,10 @@ const headOf = (action: KinPendingAction) => {
   });
 };
 
-/** What the rejection audit knows; the org is server state (the key's), else the caller's. */
+/** What the rejection audit knows. `orgId` is the key's, set only once its signature verified. */
 type Seen = {
   orgId?: KinOrgId;
+  claimedOrgId?: KinOrgId;
   claim?: Pick<KinAuditAppendInput, "actionId" | "kind" | "grantJti" | "keyThumbprint" | "headSha">;
 };
 
@@ -127,10 +135,8 @@ const make = Effect.gen(function* () {
   const roles = yield* KinOrgRoles;
   const live = yield* KinLiveTargets;
   const audit = yield* KinGrantAudit;
-  const budgets = new Map<
-    AuthSessionId,
-    { windowStart: number; used: number; suppressed: number }
-  >();
+  const scope = yield* Effect.scope;
+  const junkWindows = new Map<string, { used: number; skipped: number }>();
 
   const internal = (cause: unknown) =>
     isKinApprovalError(cause)
@@ -182,6 +188,7 @@ const make = Effect.gen(function* () {
     const decoded = decodeKinGrant(compact);
     if (decoded === null) return yield* reject("malformed");
     const { header, payload } = decoded;
+    seen.claimedOrgId = payload.orgId;
     seen.claim = {
       actionId: payload.actionId,
       kind: payload.kind,
@@ -189,10 +196,10 @@ const make = Effect.gen(function* () {
       keyThumbprint: header.kid,
       ...(payload.headSha === undefined ? {} : { headSha: payload.headSha }),
     };
+    if (payload.jti.length < MIN_JTI_CHARS) return yield* reject("malformed");
 
     // 2. An active key in the grant's org, after session revocations.
     const key = yield* keys.requireActive({ orgId: payload.orgId, thumbprint: header.kid });
-    seen.orgId = key.orgId;
     if (!key.attested) return yield* reject("unknown_key");
 
     // 2's kid binding, 3 and 8 are the shared pure check; its time_window waits for step 8.
@@ -203,6 +210,8 @@ const make = Effect.gen(function* () {
       nowEpochSeconds: now / 1000,
     });
     if (!verified.ok && verified.reason !== "time_window") return yield* reject(verified.reason);
+    // The key's holder signed this, so its rejections may go in the key's org.
+    seen.orgId = key.orgId;
 
     // 4. The signer is the key's person, who holds the owner role now.
     if (
@@ -271,26 +280,26 @@ const make = Effect.gen(function* () {
     return { action, grant: result.grant };
   });
 
-  /** At most REJECTION_AUDITS_PER_WINDOW per session per minute; returns how many were held back. */
-  const admitRejection = (sessionId: AuthSessionId, now: number) => {
-    let budget = budgets.get(sessionId);
-    let carried = 0;
-    if (budget === undefined || now - budget.windowStart >= REJECTION_WINDOW_MS) {
-      carried = budget?.suppressed ?? 0;
-      if (budget === undefined && budgets.size >= MAX_TRACKED_SESSIONS) {
-        for (const [id, entry] of budgets) {
-          if (now - entry.windowStart >= REJECTION_WINDOW_MS) budgets.delete(id);
-        }
-      }
-      budget = { windowStart: now, used: 0, suppressed: 0 };
-      budgets.set(sessionId, budget);
-    }
-    if (budget.used >= REJECTION_AUDITS_PER_WINDOW) {
-      budget.suppressed += 1;
-      return { admitted: false, carried };
-    }
-    budget.used += 1;
-    return { admitted: true, carried };
+  /** The window's skipped count is written when it ends, or when the server stops. */
+  const openJunkWindow = (slot: string, orgId: KinOrgId, sessionId: AuthSessionId) => {
+    const window = { used: 0, skipped: 0 };
+    junkWindows.set(slot, window);
+    const close = Effect.suspend(() => {
+      junkWindows.delete(slot);
+      return window.skipped === 0
+        ? Effect.void
+        : audit.append({
+            orgId,
+            event: "grant_rejected",
+            sessionId,
+            result: `${window.skipped} more not recorded`,
+          });
+    });
+    return Effect.sleep(JUNK_WINDOW).pipe(
+      Effect.ensuring(close),
+      Effect.forkIn(scope),
+      Effect.as(window),
+    );
   };
 
   const recordRejection = Effect.fn("GrantVerifier.recordRejection")(function* (
@@ -299,7 +308,11 @@ const make = Effect.gen(function* () {
     error: KinApprovalError,
   ) {
     const sessionId = caller.session.sessionId;
-    const orgId = seen.orgId ?? caller.people[0]?.orgId;
+    // Before a signature verifies, the org named in the grant is only a claim: use the caller's.
+    const orgId =
+      seen.orgId ??
+      (caller.people.find((person) => person.orgId === seen.claimedOrgId) ?? caller.people[0])
+        ?.orgId;
     if (orgId === undefined) {
       // No org to chain it in: a session that is no person in Kin. Logged, never silent.
       return yield* Effect.logWarning("Kin grant rejected from a session with no Kin person.", {
@@ -307,15 +320,22 @@ const make = Effect.gen(function* () {
         reason: error.reason,
       });
     }
-    const { admitted, carried } = admitRejection(sessionId, yield* Clock.currentTimeMillis);
-    if (!admitted) return;
-    yield* audit.append({
+    const entry = {
       orgId,
-      event: "grant_rejected",
+      event: "grant_rejected" as const,
       ...seen.claim,
       sessionId,
-      result: carried > 0 ? `${error.reason}; ${carried} more not recorded` : error.reason,
-    });
+      result: error.reason,
+    };
+    if (!isJunk(error.reason)) return yield* audit.append(entry);
+    const slot = `${orgId} ${sessionId}`;
+    const window = junkWindows.get(slot) ?? (yield* openJunkWindow(slot, orgId, sessionId));
+    if (window.used >= JUNK_AUDITS_PER_WINDOW) {
+      window.skipped += 1;
+      return;
+    }
+    window.used += 1;
+    yield* audit.append(entry);
   });
 
   const submitGrant = Effect.fn("GrantVerifier.submitGrant")(function* (
@@ -372,9 +392,11 @@ const make = Effect.gen(function* () {
     if (found.state !== "awaiting_approval" || DateTime.toEpochMillis(found.expiresAt) <= now)
       return yield* fail("invalid_state", "This action isn't waiting for approval.");
     let action = found;
+    let resolved = found.resolved;
     if (pinsHead(found.kind)) {
-      const resolved = yield* readLive(found);
-      if (stableStringify(resolved) !== stableStringify(found.resolved)) {
+      resolved = yield* readLive(found);
+      // Rotate only on what check 9 compares; checks or size moving would only void a good grant.
+      if (headOf({ ...found, resolved }) !== headOf(found)) {
         const refreshed = yield* refreshWith(found, resolved);
         if (Option.isNone(refreshed)) return yield* fail("stale", REJECTION_MESSAGES.stale);
         action = refreshed.value;
@@ -392,7 +414,7 @@ const make = Effect.gen(function* () {
       approver: { humanId: key.humanId, kid: key.thumbprint },
       decision: "approve",
     });
-    return { payload, resolved: action.resolved };
+    return { payload, resolved };
   }, Effect.mapError(internal));
 
   const rejectAction = Effect.fn("GrantVerifier.reject")(function* (
@@ -400,6 +422,19 @@ const make = Effect.gen(function* () {
     input: KinApprovalsRejectInput,
   ) {
     const { action } = yield* actionFor(caller, input.actionId);
+    if (
+      action.state === "awaiting_approval" &&
+      DateTime.toEpochMillis(action.expiresAt) <= (yield* Clock.currentTimeMillis)
+    ) {
+      yield* actions.transition({
+        orgId: action.orgId,
+        actionId: action.id,
+        revision: action.revision,
+        to: "expired",
+        reason: "expired",
+      });
+      return yield* fail("invalid_state", "This action expired.");
+    }
     const won = yield* actions.transition({
       orgId: action.orgId,
       actionId: action.id,

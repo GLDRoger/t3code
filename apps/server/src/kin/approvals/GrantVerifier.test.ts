@@ -33,6 +33,7 @@ import { ApproverKeys, layer as approverKeysLayer, type KinKeyCaller } from "./A
 import { KinAttestationTrust } from "./attestation/AttestationTrust.ts";
 import { androidChain, makeTrustFixture, newKey } from "./attestation/testFixtures.ts";
 import {
+  BOOTSTRAP_OWNER,
   KinGrantAudit,
   KinLiveTargets,
   KinOrgRoles,
@@ -473,6 +474,17 @@ describe("GrantVerifier", () => {
       const { grants, actions, ownerKey } = yield* enrol;
       const action = yield* requestMerge(actions, 212, h.github);
       const old = yield* signFor(grants, ownerPhone, action, signerOf(ownerKey));
+      // Checks alone moving isn't what check 9 compares, so the card shows them without a rotation.
+      const failing = {
+        ...prFacts(sha("a")),
+        checks: [{ name: "ci", required: true, status: "failed" as const }],
+      };
+      h.github.set(212, failing);
+      const reopened = yield* grants.challenge(ownerPhone, { actionId: action.id });
+      assert.deepStrictEqual(
+        [reopened.payload.revision, reopened.payload.nonce, reopened.resolved],
+        [0, action.nonce, failing],
+      );
       h.github.set(212, prFacts(sha("c")));
       // Opening the card again re-reads GitHub, bumps the revision and rotates the nonce.
       const { payload } = yield* grants.challenge(ownerPhone, { actionId: action.id });
@@ -578,6 +590,11 @@ describe("GrantVerifier", () => {
                   ),
                 ),
               ),
+        },
+        {
+          name: "1: a jti shorter than 16 bytes",
+          reason: "malformed",
+          build: edit((p) => ({ ...p, jti: Buffer.alloc(15, 1).toString("base64url") })),
         },
         {
           name: "2: a pending key",
@@ -745,10 +762,10 @@ describe("GrantVerifier", () => {
     }).pipe(Effect.provide(h.layer));
   });
 
-  it.effect("a grant that loses the race at check 10 is replayed or stale", () => {
+  it.effect("a grant that loses the race at check 10 is replayed, stale or revoked", () => {
     const h = harness();
     return Effect.gen(function* () {
-      const { grants, actions, ownerKey } = yield* enrol;
+      const { grants, actions, keys, ownerKey, sql } = yield* enrol;
       const raced = yield* requestMerge(actions, 212, h.github);
       const compact = yield* signFor(grants, ownerPhone, raced, signerOf(ownerKey));
       // Another grant from the same approver lands after this one passed check 6.
@@ -786,6 +803,40 @@ describe("GrantVerifier", () => {
         "stale",
       );
       assert.strictEqual((yield* stateOf(actions, rejected)).state, "rejected");
+
+      // The signing key's session is revoked, or the key itself, after check 2 passed.
+      const laptopKey = yield* register(keys, ownerLaptop);
+      assert.isTrue(yield* keys.activateByGrant(laptopKey.key));
+      const revocations = [
+        {
+          number: 214,
+          signer: signerOf(laptopKey),
+          from: ownerLaptop,
+          revoke: Effect.orDie(sql`UPDATE auth_sessions SET revoked_at = '2026-11-08T00:00:00.000Z'
+            WHERE session_id = 'sess-laptop'`),
+        },
+        {
+          number: 215,
+          signer: signerOf(ownerKey),
+          from: ownerPhone,
+          revoke: Effect.orDie(keys.revokeKey(ownerPhone, ownerKey.key)),
+        },
+      ];
+      for (const { number, signer, from, revoke } of revocations) {
+        const action = yield* requestMerge(actions, number, h.github);
+        const signed = yield* signFor(grants, from, action, signer);
+        h.race.during = revoke;
+        assert.strictEqual(
+          reasonOf(yield* Effect.exit(grants.submitGrant(from, { compact: signed }))),
+          "revoked_key",
+          `${number}`,
+        );
+        assert.strictEqual((yield* stateOf(actions, action)).state, "awaiting_approval");
+      }
+      delete h.race.during;
+      const held = yield* sql`SELECT 1 FROM kin_grants WHERE action_id IN (
+        SELECT action_id FROM kin_pending_actions WHERE state = 'awaiting_approval')`;
+      assert.strictEqual(held.length, 0);
     }).pipe(Effect.provide(h.layer));
   });
 
@@ -804,20 +855,53 @@ describe("GrantVerifier", () => {
     }).pipe(Effect.provide(h.layer));
   });
 
-  it.effect("rejection audits are bounded per session per minute", () => {
+  it.effect("junk rejections are bounded per session per minute; ones naming a key never", () => {
     const h = harness();
     return Effect.gen(function* () {
-      const { grants } = yield* enrol;
+      const { grants, actions, ownerKey, memberKey, sql } = yield* enrol;
       for (let attempt = 0; attempt < 25; attempt++) {
         yield* Effect.exit(grants.submitGrant(memberPhone, { compact: "not.a.grant" }));
       }
       assert.strictEqual(h.audit.length, 20);
+      // Past the junk budget, a forgery against the owner's real key is still recorded.
+      const action = yield* requestMerge(actions, 212, h.github);
+      const forger = { privateKey: memberKey.privateKey, kid: ownerKey.key.thumbprint };
+      const forged = yield* signFor(grants, ownerPhone, action, forger);
+      assert.strictEqual(
+        reasonOf(yield* Effect.exit(grants.submitGrant(memberPhone, { compact: forged }))),
+        "bad_signature",
+      );
+      assert.deepStrictEqual(
+        [h.audit.length, h.audit.at(-1)?.keyThumbprint, h.audit.at(-1)?.sessionId],
+        [21, ownerKey.key.thumbprint, "sess-member"],
+      );
       // Another session has its own budget.
       yield* Effect.exit(grants.submitGrant(ownerPhone, { compact: "not.a.grant" }));
-      assert.strictEqual(h.audit.length, 21);
+      assert.strictEqual(h.audit.length, 22);
+      // The skipped count is written when the window ends, not on a later rejection.
       yield* TestClock.adjust("1 minute");
-      yield* Effect.exit(grants.submitGrant(memberPhone, { compact: "not.a.grant" }));
-      assert.strictEqual(h.audit.at(-1)?.result, "malformed; 5 more not recorded");
+      assert.deepStrictEqual(
+        h.audit.slice(22).map((entry) => [entry.event, entry.sessionId, entry.result]),
+        [["grant_rejected", "sess-member", "5 more not recorded"]],
+      );
+
+      // Before its signature verifies, a grant naming another org's key is audited in the
+      // caller's org: an unproven claim can't write into a chain it doesn't belong to.
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at)
+        VALUES ('org_02', 'Other', '2026-11-07T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_approver_keys SELECT thumbprint, 'org_02', public_jwk_json,
+          human_id, device_label, platform, hardware, attested, NULL, NULL, state, created_at,
+          confirmed_at, revoked_at
+        FROM kin_approver_keys WHERE thumbprint = ${ownerKey.key.thumbprint}`;
+      const elsewhere = yield* signFor(grants, ownerPhone, action, forger, (p) => ({
+        ...p,
+        orgId: "org_02",
+      }));
+      assert.strictEqual(
+        reasonOf(yield* Effect.exit(grants.submitGrant(memberPhone, { compact: elsewhere }))),
+        "bad_signature",
+      );
+      assert.strictEqual(h.audit.length, 24);
       assert.isTrue(h.audit.every((entry) => entry.orgId === orgId));
     }).pipe(Effect.provide(h.layer));
   });
@@ -854,6 +938,17 @@ describe("GrantVerifier", () => {
         reasonOf(yield* Effect.exit(grants.challenge(ownerPhone, { actionId: action.id }))),
         "invalid_state",
       );
+
+      // Past `expiresAt` it is expired, not rejected, even before the sweep runs.
+      const lapsed = yield* requestMerge(actions, 213, h.github);
+      yield* TestClock.adjust("7 days");
+      assert.strictEqual(
+        reasonOf(
+          yield* Effect.exit(grants.reject(ownerPhone, { actionId: lapsed.id, revision: 0 })),
+        ),
+        "invalid_state",
+      );
+      assert.strictEqual((yield* stateOf(actions, lapsed)).state, "expired");
     }).pipe(Effect.provide(h.layer));
   });
 
@@ -878,7 +973,7 @@ describe("GrantVerifier", () => {
       yield* sql`INSERT INTO kin_orgs (org_id, name, created_at)
         VALUES ('kin-default', 'Kin', '2026-11-07T00:00:00.000Z')`;
       yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
-        VALUES ('kin-default-owner', 'kin-default', 'owner', 'Owner', '2026-11-07T00:00:00.000Z'),
+        VALUES (${BOOTSTRAP_OWNER}, 'kin-default', 'owner', 'Owner', '2026-11-07T00:00:00.000Z'),
           ('h_member', 'kin-default', 'priya', 'Priya', '2026-11-07T00:00:00.000Z')`;
       const roles = yield* KinOrgRoles;
       const ask = (org: string, person: string) =>
@@ -886,9 +981,9 @@ describe("GrantVerifier", () => {
           orgId: decodeOrgId(org),
           personId: decodePersonId(person),
         });
-      assert.isTrue(yield* ask("kin-default", "kin-default-owner"));
+      assert.isTrue(yield* ask("kin-default", BOOTSTRAP_OWNER));
       assert.isFalse(yield* ask("kin-default", "h_member"));
-      assert.isFalse(yield* ask("org_01", "kin-default-owner"));
+      assert.isFalse(yield* ask("org_01", BOOTSTRAP_OWNER));
     }).pipe(
       Effect.provide(
         orgRolesLayer.pipe(
@@ -904,22 +999,41 @@ describe("GrantVerifier", () => {
       .filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts"))
       .map((file) => file.split(NodePath.sep).join("/"))
       .toSorted();
-    const importers = (pattern: RegExp) =>
-      files.filter((file) => pattern.test(NodeFS.readFileSync(NodePath.join(root, file), "utf8")));
+    const source = (file: string) => NodeFS.readFileSync(NodePath.join(root, file), "utf8");
+    // Every relative specifier, static or dynamic, resolved from the importing file.
+    const imports = (file: string) =>
+      [...source(file).matchAll(/(?:from|import\s*\()\s*["'](\.{1,2}\/[^"']+)["']/g)].map((match) =>
+        NodePath.posix.normalize(NodePath.posix.join(NodePath.posix.dirname(file), match[1]!)),
+      );
+    const importers = (target: string) => files.filter((file) => imports(file).includes(target));
+    const modelFacing = (file: string) =>
+      file.startsWith("mcp/") || file.startsWith("kin/mcp/") || file.startsWith("kin/lead/");
+    const forbidden = (file: string) => modelFacing(file) || file === "kin/approvals/mcp.ts";
+
+    // Only check 10 moves an action to `approved`, and only the verifier runs it.
+    assert.deepStrictEqual(
+      files.filter(
+        (file) => /KinPendingActions/.test(source(file)) && /\.approve\(/.test(source(file)),
+      ),
+      ["kin/approvals/GrantVerifier.ts"],
+    );
     // The verifier is built in the approvals layer, exposed on KinServer and called by WS only.
-    assert.deepStrictEqual(importers(/from "[./]*(approvals\/)?GrantVerifier\.ts"/), [
+    const verifierImporters = importers("kin/approvals/GrantVerifier.ts");
+    assert.deepStrictEqual(verifierImporters, [
       "kin/KinServer.ts",
       "kin/approvals/layer.ts",
       "kin/approvals/rpcHandlers.ts",
     ]);
     // Those handlers are served only on the authenticated `/ws` session, never over MCP.
-    assert.deepStrictEqual(importers(/approvals\/rpcHandlers\.ts"/), ["ws.ts"]);
+    const handlerImporters = importers("kin/approvals/rpcHandlers.ts");
+    assert.deepStrictEqual(handlerImporters, ["ws.ts"]);
     assert.deepStrictEqual(
-      importers(/kin\/approvals\/|from "\.\.\/approvals\//).filter(
+      files.filter(
         (file) =>
-          file.startsWith("mcp/") || file.startsWith("kin/mcp/") || file.startsWith("kin/lead/"),
+          modelFacing(file) && imports(file).some((target) => target.startsWith("kin/approvals/")),
       ),
       [],
     );
+    assert.deepStrictEqual([...verifierImporters, ...handlerImporters].filter(forbidden), []);
   });
 });
