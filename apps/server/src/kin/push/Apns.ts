@@ -32,10 +32,19 @@ export type KinApnsPush = {
   readonly token: KinPushToken;
   readonly environment: KinApsEnvironment;
   readonly payload: unknown;
+  /** `apns-collapse-id`: a newer push with the same id replaces the shown one. At most 64 bytes. */
+  readonly collapseId?: string;
 };
 
-/** `status` 0 means APNs never answered (network, timeout); nothing was delivered. */
-export type KinApnsResult = { readonly status: number; readonly reason: string | undefined };
+/**
+ * `status` 0 means APNs never answered (network, timeout); nothing was delivered.
+ * `timestamp` is when APNs last knew the token was valid, sent with a 410.
+ */
+export type KinApnsResult = {
+  readonly status: number;
+  readonly reason: string | undefined;
+  readonly timestamp?: number;
+};
 
 export class KinApnsTransport extends Context.Service<
   KinApnsTransport,
@@ -71,6 +80,7 @@ export const apnsRequestHeaders = (
   "apns-push-type": "alert",
   "apns-priority": "10",
   "content-type": "application/json",
+  ...(push.collapseId === undefined ? {} : { "apns-collapse-id": push.collapseId }),
 });
 
 /**
@@ -128,15 +138,19 @@ const post = (
     request.on("data", (chunk: Buffer) => chunks.push(chunk));
     request.on("end", () => {
       const text = Buffer.concat(chunks).toString("utf8");
-      let reason: string | undefined;
+      let parsed: unknown;
       try {
-        const parsed: unknown = text.length > 0 ? JSON.parse(text) : undefined;
-        if (typeof parsed === "object" && parsed !== null && "reason" in parsed)
-          reason = String(parsed.reason);
+        parsed = text.length > 0 ? JSON.parse(text) : undefined;
       } catch {
-        reason = undefined;
+        parsed = undefined;
       }
-      resume(Effect.succeed({ status, reason }));
+      const fields = typeof parsed === "object" && parsed !== null ? parsed : {};
+      const reason = "reason" in fields ? String(fields.reason) : undefined;
+      const timestamp =
+        "timestamp" in fields && typeof fields.timestamp === "number"
+          ? fields.timestamp
+          : undefined;
+      resume(Effect.succeed({ status, reason, ...(timestamp === undefined ? {} : { timestamp }) }));
     });
     request.on("error", (error: Error) => resume(Effect.fail(error)));
     request.end(body);
@@ -157,10 +171,15 @@ const unconfigured = (reason: string) =>
     ),
   );
 
-const make = Effect.gen(function* () {
-  const loaded = yield* Effect.result(loadApnsCredentials());
-  if (loaded._tag === "Failure") return yield* unconfigured(loaded.failure);
-  const credentials = loaded.success;
+const unreachable: KinApnsResult = { status: 0, reason: "transport" };
+// APNs answers these with 403 when the cached provider token stopped working.
+const STALE_PROVIDER_TOKEN = new Set(["ExpiredProviderToken", "InvalidProviderToken"]);
+
+/** The ready transport. `origin` exists so tests can point it at a local HTTP/2 server. */
+export const makeApnsTransport = Effect.fn("KinApns.makeTransport")(function* (
+  credentials: KinApnsCredentials,
+  origin: (environment: KinApsEnvironment) => string = (environment) => ORIGINS[environment],
+) {
   const sessions = new Map<KinApsEnvironment, NodeHttp2.ClientHttp2Session>();
   let jwt: { readonly value: string; readonly at: number } | undefined;
   yield* Effect.addFinalizer(() =>
@@ -173,7 +192,7 @@ const make = Effect.gen(function* () {
   const sessionFor = (environment: KinApsEnvironment) => {
     const open = sessions.get(environment);
     if (open !== undefined && !open.closed && !open.destroyed) return open;
-    const session = NodeHttp2.connect(ORIGINS[environment]);
+    const session = NodeHttp2.connect(origin(environment));
     const drop = () => {
       if (sessions.get(environment) === session) sessions.delete(environment);
     };
@@ -185,6 +204,13 @@ const make = Effect.gen(function* () {
     return session;
   };
 
+  // A dead connection never errors on its own, so a timeout must end it or every push stalls.
+  const discard = (environment: KinApsEnvironment, session: NodeHttp2.ClientHttp2Session) =>
+    Effect.sync(() => {
+      if (sessions.get(environment) === session) sessions.delete(environment);
+      session.destroy();
+    });
+
   const providerToken = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     if (jwt === undefined || now - jwt.at >= JWT_TTL_MS)
@@ -192,22 +218,36 @@ const make = Effect.gen(function* () {
     return jwt.value;
   });
 
-  yield* Effect.logInfo("Kin push is on.", { topic: credentials.topic, keyId: credentials.keyId });
   return KinApnsTransport.of({
     status: "ready",
     send: Effect.fn("KinApnsTransport.send")(function* (push: KinApnsPush) {
       const headers = apnsRequestHeaders(credentials, push, yield* providerToken);
-      return yield* encodeJson(push.payload).pipe(
-        Effect.flatMap((body) => post(sessionFor(push.environment), headers, body)),
-        Effect.timeout(REQUEST_TIMEOUT),
+      const result = yield* encodeJson(push.payload).pipe(
+        Effect.flatMap((body) => {
+          const session = sessionFor(push.environment);
+          return post(session, headers, body).pipe(
+            Effect.timeout(REQUEST_TIMEOUT),
+            Effect.tapError(() => discard(push.environment, session)),
+          );
+        }),
         Effect.catch((error) =>
           Effect.logWarning("Kin push couldn't reach APNs.", { error: String(error) }).pipe(
-            Effect.as({ status: 0, reason: "transport" }),
+            Effect.as(unreachable),
           ),
         ),
       );
+      if (STALE_PROVIDER_TOKEN.has(result.reason ?? "")) jwt = undefined;
+      return result;
     }),
   });
+});
+
+const make = Effect.gen(function* () {
+  const loaded = yield* Effect.result(loadApnsCredentials());
+  if (loaded._tag === "Failure") return yield* unconfigured(loaded.failure);
+  const credentials = loaded.success;
+  yield* Effect.logInfo("Kin push is on.", { topic: credentials.topic, keyId: credentials.keyId });
+  return yield* makeApnsTransport(credentials);
 });
 
 export const layer = Layer.effect(KinApnsTransport, make);

@@ -11,7 +11,7 @@ import type {
   KinWidgetId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as DateTime from "effect/DateTime";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -21,7 +21,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { ApproverKeys } from "../approvals/ApproverKeys.ts";
 import { KinPendingActions } from "../approvals/PendingActions.ts";
 import { KinApnsTransport } from "./Apns.ts";
-import { KinPushDevices, kinPushDeviceId } from "./KinPushDevices.ts";
+import { KinPushDevices, kinPushDeviceId, type KinPushDevice } from "./KinPushDevices.ts";
 import { KinPushPresence } from "./KinPushPresence.ts";
 
 /**
@@ -46,14 +46,22 @@ type Push = {
   readonly title: string;
   readonly body: string;
   readonly chatId: KinChatId | undefined;
+  /** Message pushes collapse per chat, so a busy chat shows one banner. */
+  readonly collapseId?: string;
   readonly data: KinPushData;
   readonly recipients: ReadonlyArray<KinPersonId>;
 };
 
-// APNs answers these when a token will never work again (APNs docs, "Handling notification responses").
-const DEAD_TOKEN_REASONS = new Set(["BadDeviceToken", "DeviceTokenNotForTopic", "Unregistered"]);
+// APNs docs, "Handling notification responses". A 410 is handled by its timestamp instead.
+const DEAD_TOKEN_REASONS = new Set(["BadDeviceToken"]);
+// The token is fine; our `KIN_APNS_TOPIC` doesn't match the app that registered it.
+const CONFIG_REASONS = new Set(["DeviceTokenNotForTopic", "TopicDisallowed"]);
+const SEND_CONCURRENCY = 4;
 
 const segment = encodeURIComponent;
+/** Fits `apns-collapse-id`'s 64 bytes whatever the ids' length. */
+const kinPushCollapseId = (orgId: KinOrgId, chatId: KinChatId) =>
+  `kin:${kinPushDeviceId(`${orgId}\u0000${chatId}`)}`;
 const decodeAwaiting = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Array(Schema.String)),
 );
@@ -82,7 +90,10 @@ export class KinPushSender extends Context.Service<
   KinPushSender,
   {
     readonly status: KinPushSendingStatus;
-    /** Never fails: a push is best effort, and a failure is logged without the token. */
+    /**
+     * Never fails: a push is best effort, and a failure is logged without the token. Callers run
+     * it after their transaction commits and fork it off the request, since APNs can take seconds.
+     */
     readonly notify: (notification: KinPushNotification) => Effect.Effect<KinPushOutcome>;
   }
 >()("t3/kin/push/KinPushSender") {}
@@ -101,13 +112,16 @@ const make = Effect.gen(function* () {
     chatId: KinChatId,
     options: { readonly respectMute: boolean },
   ) {
-    const now = DateTime.formatIso(yield* DateTime.now);
+    const now = yield* Clock.currentTimeMillis;
     const rows = yield* sql<{ person_id: KinPersonId; muted_until: string | null }>`
       SELECT person_id, muted_until FROM kin_chat_members
       WHERE org_id = ${orgId} AND chat_id = ${chatId} AND principal_kind = 'person'
         AND left_at IS NULL`;
     return rows
-      .filter((row) => !options.respectMute || row.muted_until === null || row.muted_until <= now)
+      .filter(
+        (row) =>
+          !options.respectMute || row.muted_until === null || !(Date.parse(row.muted_until) > now),
+      )
       .map((row) => row.person_id);
   });
 
@@ -143,6 +157,7 @@ const make = Effect.gen(function* () {
       title: "Kin",
       body: "New message",
       chatId: row.chat_id,
+      collapseId: kinPushCollapseId(orgId, row.chat_id),
       data: {
         kin: 1,
         orgId,
@@ -206,48 +221,61 @@ const make = Effect.gen(function* () {
     } satisfies Push;
   });
 
+  const sendTo = Effect.fn("KinPushSender.sendTo")(function* (
+    orgId: KinOrgId,
+    push: Push,
+    device: KinPushDevice,
+  ) {
+    if (push.chatId !== undefined && (yield* presence.isWatching(device.sessionId, push.chatId)))
+      return "suppressed" as const;
+    const result = yield* apns.send({
+      token: device.token,
+      environment: device.apsEnvironment,
+      ...(push.collapseId === undefined ? {} : { collapseId: push.collapseId }),
+      payload: {
+        aps: {
+          alert: { title: push.title, body: push.body },
+          category: push.category,
+          sound: "default",
+          ...(push.chatId === undefined ? {} : { "thread-id": `kin:${orgId}:${push.chatId}` }),
+        },
+        // expo-notifications reads a remote push's `content.data` from `body`.
+        body: push.data,
+      },
+    });
+    if (result.status === 200) return "sent" as const;
+    const deviceId = kinPushDeviceId(device.token);
+    if (result.status === 410 || DEAD_TOKEN_REASONS.has(result.reason ?? "")) {
+      yield* devices.forget(
+        orgId,
+        device.token,
+        result.status === 410 ? result.timestamp : undefined,
+      );
+      yield* Effect.logInfo("Kin push device token is gone.", { deviceId, reason: result.reason });
+    } else if (CONFIG_REASONS.has(result.reason ?? "")) {
+      yield* Effect.logError("APNs refused a Kin push: check KIN_APNS_TOPIC.", {
+        deviceId,
+        reason: result.reason,
+      });
+    } else {
+      yield* Effect.logWarning("APNs refused a Kin push.", {
+        deviceId,
+        status: result.status,
+        reason: result.reason,
+      });
+    }
+    return "failed" as const;
+  });
+
   const deliver = Effect.fn("KinPushSender.deliver")(function* (orgId: KinOrgId, push: Push) {
     const targets = yield* devices.forPeople(orgId, push.recipients);
-    let sent = 0;
-    let suppressed = 0;
-    let failed = 0;
-    for (const device of targets) {
-      if (push.chatId !== undefined && presence.isWatching(device.sessionId, push.chatId)) {
-        suppressed += 1;
-        continue;
-      }
-      const result = yield* apns.send({
-        token: device.token,
-        environment: device.apsEnvironment,
-        payload: {
-          aps: {
-            alert: { title: push.title, body: push.body },
-            category: push.category,
-            sound: "default",
-            ...(push.chatId === undefined ? {} : { "thread-id": `kin:${orgId}:${push.chatId}` }),
-          },
-          // expo-notifications reads a remote push's `content.data` from `body`.
-          body: push.data,
-        },
-      });
-      if (result.status === 200) {
-        sent += 1;
-        continue;
-      }
-      failed += 1;
-      const deviceId = kinPushDeviceId(device.token);
-      if (result.status === 410 || DEAD_TOKEN_REASONS.has(result.reason ?? "")) {
-        yield* devices.forget(orgId, device.token);
-        yield* Effect.logInfo("Kin push device token is gone; removed it.", { deviceId });
-      } else {
-        yield* Effect.logWarning("APNs refused a Kin push.", {
-          deviceId,
-          status: result.status,
-          reason: result.reason,
-        });
-      }
-    }
-    return { sent, suppressed, failed };
+    // Bounded, so one slow device doesn't hold up the rest and a big org doesn't flood APNs.
+    const results = yield* Effect.forEach(targets, (device) => sendTo(orgId, push, device), {
+      concurrency: SEND_CONCURRENCY,
+    });
+    const count = (outcome: (typeof results)[number]) =>
+      results.filter((result) => result === outcome).length;
+    return { sent: count("sent"), suppressed: count("suppressed"), failed: count("failed") };
   });
 
   const nothing: KinPushOutcome = { status: apns.status, sent: 0, suppressed: 0, failed: 0 };

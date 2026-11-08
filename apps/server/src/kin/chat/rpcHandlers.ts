@@ -75,8 +75,9 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
       Stream.unwrap(
         viewer.pipe(
           // While this stream lives, pushes for the chat skip this session's device.
-          Effect.tap(({ presence }) => presence.watch(session.sessionId, input.chatId)),
-          Effect.map(({ chat, people }) => chat.subscribe(people, input)),
+          Effect.map(({ chat, people, presence }) =>
+            chat.subscribe(people, input).pipe(presence.watching(session.sessionId, input.chatId)),
+          ),
         ),
       ).pipe(Stream.mapError(mapError)),
     "kin.chats.createDirect": (input) =>

@@ -38,6 +38,9 @@ export type KinPushDevice = {
 export const kinPushDeviceId = (token: string) =>
   NodeCrypto.createHash("sha256").update(token).digest("hex").slice(0, 12);
 
+/** Past this, registering a token drops the person's least recently registered one. */
+export const KIN_PUSH_DEVICES_PER_PERSON = 10;
+
 const isKinPushError = Schema.is(KinPushError);
 const fail = (reason: KinPushError["reason"], message: string) =>
   Effect.fail(new KinPushError({ reason, message }));
@@ -58,8 +61,15 @@ export class KinPushDevices extends Context.Service<
       orgId: KinOrgId,
       people: ReadonlyArray<KinPersonId>,
     ) => Effect.Effect<ReadonlyArray<KinPushDevice>, KinPushError>;
-    /** APNs said the token is dead (410, BadDeviceToken). */
-    readonly forget: (orgId: KinOrgId, token: KinPushToken) => Effect.Effect<void, KinPushError>;
+    /**
+     * APNs said the token is dead. With `invalidSince` (a 410's timestamp), a row registered
+     * after it survives, because the phone has since handed it to us again.
+     */
+    readonly forget: (
+      orgId: KinOrgId,
+      token: KinPushToken,
+      invalidSince?: number,
+    ) => Effect.Effect<void, KinPushError>;
     /** Removes devices registered from a revoked T3 session. Returns how many. */
     readonly reconcileSessions: () => Effect.Effect<number, KinPushError>;
   }
@@ -81,7 +91,9 @@ const make = Effect.gen(function* () {
   };
 
   // T3 revokes sessions in SessionStore; reading its table keeps auth free of Kin hooks,
-  // as ApproverKeys does. Runs before every send.
+  // as ApproverKeys does. Runs before every send. Relay sessions renew under new ids, so this
+  // misses a revoked relay phone until #54 joins on proof_key_thumbprint (mobile spec).
+  // Expired sessions stay: a live socket outlives the session it registered under.
   const reconcileSessions = Effect.fn("KinPushDevices.reconcileSessions")(
     function* () {
       const removed = yield* sql`DELETE FROM kin_push_devices WHERE session_id IN (
@@ -105,6 +117,7 @@ const make = Effect.gen(function* () {
         aps_environment: input.apsEnvironment,
         device_label: input.deviceLabel ?? null,
         session_id: caller.session.sessionId,
+        proof_key_thumbprint: caller.session.proofKeyThumbprint ?? null,
         created_at: now,
         updated_at: now,
       })}
@@ -114,7 +127,15 @@ const make = Effect.gen(function* () {
           aps_environment = excluded.aps_environment,
           device_label = excluded.device_label,
           session_id = excluded.session_id,
+          proof_key_thumbprint = excluded.proof_key_thumbprint,
           updated_at = excluded.updated_at`;
+      yield* sql`DELETE FROM kin_push_devices
+        WHERE org_id = ${input.orgId} AND person_id = ${person.personId} AND token != ${input.token}
+          AND token NOT IN (
+            SELECT token FROM kin_push_devices
+            WHERE org_id = ${input.orgId} AND person_id = ${person.personId}
+              AND token != ${input.token}
+            ORDER BY updated_at DESC, token LIMIT ${KIN_PUSH_DEVICES_PER_PERSON - 1})`;
       return { deviceId: kinPushDeviceId(input.token) };
     },
     Effect.mapError(internal("KinPushDevices.register")),
@@ -155,8 +176,9 @@ const make = Effect.gen(function* () {
   );
 
   const forget = Effect.fn("KinPushDevices.forget")(
-    function* (orgId: KinOrgId, token: KinPushToken) {
-      yield* sql`DELETE FROM kin_push_devices WHERE org_id = ${orgId} AND token = ${token}`;
+    function* (orgId: KinOrgId, token: KinPushToken, invalidSince?: number) {
+      yield* sql`DELETE FROM kin_push_devices WHERE org_id = ${orgId} AND token = ${token}
+        ${invalidSince === undefined ? sql`` : sql`AND updated_at < ${invalidSince}`}`;
     },
     Effect.mapError(internal("KinPushDevices.forget")),
   );

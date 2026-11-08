@@ -13,6 +13,7 @@ export default Effect.gen(function* () {
       aps_environment TEXT NOT NULL CHECK (aps_environment IN ('development', 'production')),
       device_label TEXT,
       session_id TEXT NOT NULL,
+      proof_key_thumbprint TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       PRIMARY KEY (org_id, token)
