@@ -35,6 +35,9 @@ const date = Schema.String.check(
     expected: "a date or timestamp with explicit offset",
   }),
 );
+const deferDue = date.check(
+  Schema.makeFilter((value) => /^20\d\d-/.test(value), { expected: "a date in 2000-2099" }),
+);
 const itemId = KinMemoryItemId.check(Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,199}$/));
 export const SearchInput = Schema.Struct({
   kind: Schema.optional(MemoryItemFrontMatter.fields.kind),
@@ -65,7 +68,7 @@ export const WriteInput = Schema.Struct({
 export const DeferInput = Schema.Struct({
   itemId: Schema.optional(itemId),
   what: TrimmedNonEmptyString.check(Schema.isMaxLength(8000)),
-  due: date,
+  due: deferDue,
   onDue: Schema.Literals(["remind", "start", "ask", "chase"]),
   chatId: KinChatId,
   sourceEventId: TrimmedNonEmptyString,
