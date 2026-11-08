@@ -19,7 +19,8 @@ import LeadToolCalls from "./migrations/K014_LeadToolCalls.ts";
 import AuthSessionKeys from "./migrations/K015_AuthSessionKeys.ts";
 import DeferralRuns from "./migrations/K016_DeferralRuns.ts";
 import Workers from "./migrations/K017_Workers.ts";
-import Approvals from "./migrations/K018_Approvals.ts";
+import Dreams from "./migrations/K018_Dreams.ts";
+import Approvals from "./migrations/K019_Approvals.ts";
 
 const table = "kin_sql_migrations";
 const run = Migrator.make({});
@@ -41,7 +42,8 @@ const loader = Migrator.fromRecord({
   "15_AuthSessionKeys": AuthSessionKeys,
   "16_DeferralRuns": DeferralRuns,
   "17_Workers": Workers,
-  "18_Approvals": Approvals,
+  "18_Dreams": Dreams,
+  "19_Approvals": Approvals,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

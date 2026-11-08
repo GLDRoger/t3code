@@ -51,7 +51,7 @@ const ROW_BOTTOM_MARGIN = 8;
 // app could post to React Native directly. The outer page therefore wraps what
 // it relays with a secret only it holds, and React Native drops anything else.
 // The relay also attests activation; the sandboxed app cannot set that flag.
-function outerDocument(src: string, allow: string, secret: string) {
+export function outerDocument(src: string, allow: string, secret: string) {
   const attribute = (value: string) =>
     value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
   return `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">
