@@ -31,7 +31,7 @@ import { memoryGit as runMemoryGit } from "./git.ts";
 import { VcsProcess } from "../../vcs/VcsProcess.ts";
 import * as MemoryCache from "./MemoryCache.ts";
 import { mergeMemoryFiles, uniqueMergeBase } from "./merge.ts";
-import { buildIndex } from "./buildIndex.ts";
+import { buildIndex, indexIsStale } from "./buildIndex.ts";
 import { MemoryConfig } from "./MemoryConfig.ts";
 import {
   MemoryItemError,
@@ -1319,16 +1319,7 @@ const make = Effect.gen(function* () {
     const index = yield* readFile(orgId, "INDEX.md").pipe(
       Effect.catchTags({ MemoryError: () => Effect.succeed("") }),
     );
-    const asOf = /^As of ([^\r\n]+)(?:\r?\n|$)/.exec(index)?.[1];
-    const now = yield* Clock.currentTimeMillis;
-    if (
-      !asOf ||
-      !Number.isFinite(dateMillis(asOf)) ||
-      !/(?:Z|[+-]\d{2}:\d{2})$/.test(asOf) ||
-      now - dateMillis(asOf) >= 36 * 60 * 60 * 1000 ||
-      dateMillis(asOf) > now
-    )
-      yield* rebuildIndex(orgId);
+    if (indexIsStale(index, yield* Clock.currentTimeMillis)) yield* rebuildIndex(orgId);
     const rebuilt = yield* readFile(orgId, "INDEX.md");
     const indexAsOf = yield* Effect.fromOption(
       DateTime.make(/^As of ([^\r\n]+)(?:\r?\n|$)/.exec(rebuilt)?.[1] ?? ""),

@@ -130,6 +130,7 @@ export const withScheduledTasks = <A, E, R>(
     sends: ThreadManagementService.ThreadManagementSendInput[],
   ) => Effect.Effect<A, E, R>,
   workers?: Map<string, Effect.Effect<void>>,
+  policy?: Parameters<typeof ManagedPolicy.layerTest>[0],
 ) =>
   Effect.gen(function* () {
     const launches: ThreadLaunchService.ThreadLaunchInput[] = [];
@@ -169,7 +170,7 @@ export const withScheduledTasks = <A, E, R>(
                   workers.set(name, work.pipe(Effect.provideContext(context), Effect.orDie));
                 }),
               }),
-          ManagedPolicy.layerTest(),
+          ManagedPolicy.layerTest(policy),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
             namedProjectsRoot: "/projects",

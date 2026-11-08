@@ -98,7 +98,8 @@ const make = Effect.gen(function* () {
           return;
         }
         const prefix = `scheduled-task:${taskId}:webhook:`;
-        if (!input.commandId.startsWith(prefix) || source.status !== "active")
+        // `status` is what trigger_reconcile last saw; the task shape and secret below are the gate.
+        if (!input.commandId.startsWith(prefix))
           return yield* new KinTriggerInbox.KinTriggerInboxConflict({
             orgId: source.orgId,
             reason: "unknown_source",
