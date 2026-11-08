@@ -1,5 +1,4 @@
-import { makeKinApprovalHandlers } from "./kin/approvals/rpcHandlers.ts";
-import { makeKinChatHandlers } from "./kin/chat/rpcHandlers.ts";
+import { makeKinHandlers } from "./kin/rpcHandlers.ts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -2042,8 +2041,7 @@ export const layerWsRpc = (
       });
 
       const handlers = ServerWsRpcGroup.of({
-        ...(yield* makeKinChatHandlers(currentSession)),
-        ...(yield* makeKinApprovalHandlers(currentSession)),
+        ...(yield* makeKinHandlers(currentSession)),
         [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
           Effect.annotateCurrentSpan({
             "orchestration_v2.command_id": command.commandId,
