@@ -3,29 +3,25 @@
 [Unit]
 Description=Kin server (T3 Code source build)
 Documentation=https://github.com/GLDRoger/t3code/tree/kin/ops/kin/host
-Wants=network-online.target
-After=network-online.target
+# The user manager has no reliable network-online target; server networking retries itself.
 StartLimitIntervalSec=300
 StartLimitBurst=10
 
 [Service]
 Type=simple
 WorkingDirectory=%h
-# mise and the provider CLIs (Claude Code, Codex) live in ~/.local/bin; mise shims expose
-# npm-installed CLIs. The server spawns providers with this PATH.
-Environment=PATH=%h/.local/bin:%h/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
-Environment=KIN_ENABLED=true
-Environment=KIN_CHECKOUT=%h/t3code
-Environment=KIN_NODE_VERSION=26
-# Written by setup.sh and update.sh: KIN_CHECKOUT and KIN_NODE_VERSION (the checkout's engines.node).
-EnvironmentFile=-%h/.config/kin/kin-server.env
-# Owner overrides, such as T3CODE_LAN=true. Backed up with the database.
+# Owner overrides, such as T3CODE_LAN=true. Backed up with the state.
 EnvironmentFile=-%h/.t3/service.env
+# Read last so service.env can't override it. Written by setup.sh and update.sh:
+# KIN_ENABLED, PATH, KIN_REPO, KIN_CHECKOUT (~/kin-current) and KIN_NODE_VERSION.
+EnvironmentFile=%h/.config/kin/kin-server.env
 # systemd does not expand variables in the executable, so env finds mise on PATH.
 ExecStart=/usr/bin/env mise exec node@${KIN_NODE_VERSION} -- node ${KIN_CHECKOUT}/apps/server/dist/bin.mjs serve --base-dir %h/.t3
 Restart=always
 RestartSec=5
 KillMode=mixed
+# Provider CLIs share this cgroup; the default OOMPolicy=stop would stop the server if one is OOM-killed.
+OOMPolicy=continue
 TimeoutStopSec=30
 
 [Install]

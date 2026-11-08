@@ -7,8 +7,7 @@ ConditionPathExists=%h/.config/kin/backup.env
 
 [Service]
 Type=oneshot
-Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
-Environment=KIN_CHECKOUT=%h/t3code
-EnvironmentFile=-%h/.config/kin/kin-server.env
 EnvironmentFile=%h/.config/kin/backup.env
+# Read last: PATH and KIN_CHECKOUT (~/kin-current), written by setup.sh and update.sh.
+EnvironmentFile=%h/.config/kin/kin-server.env
 ExecStart=/usr/bin/env bash ${KIN_CHECKOUT}/ops/kin/host/backup.sh --dest ${KIN_BACKUP_DEST} $KIN_BACKUP_FLAGS
