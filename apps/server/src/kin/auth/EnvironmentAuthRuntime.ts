@@ -8,7 +8,7 @@ import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 
 export const layerRuntime = EnvironmentAuth.layer.pipe(
-  Layer.provideMerge(ProofKeySessions.layer),
+  Layer.provideMerge(ProofKeySessions.layerCli),
   Layer.provideMerge(ManagedPolicy.layer),
   Layer.provideMerge(Layer.mergeAll(ServerSecretStore.layer, SqlitePersistence.layerConfig)),
   Layer.provideMerge(ServerEnvironment.layerIdentity),

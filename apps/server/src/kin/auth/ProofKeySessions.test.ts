@@ -1,6 +1,9 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
+import * as Context from "effect/Context";
+import { layerAuth } from "../../server.ts";
+import * as CliAuth from "./EnvironmentAuthRuntime.ts";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as Option from "effect/Option";
@@ -14,18 +17,15 @@ import * as RepairPairing from "./repairPairing.ts";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as ServerConfig from "../../config.ts";
-import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as EnvironmentAuth from "../../auth/EnvironmentAuth.ts";
 import * as SessionStore from "../../auth/SessionStore.ts";
-import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ManagedPolicy from "../../policy/ManagedPolicy.ts";
 import { SessionHooks } from "./sessionHooks.ts";
 import * as ProofKeySessions from "./ProofKeySessions.ts";
 
 const makeLayer = (enabled: boolean) =>
-  EnvironmentAuth.layer.pipe(
-    Layer.provide(ProofKeySessions.layer),
+  layerAuth.pipe(
     Layer.provide(ManagedPolicy.layerTest()),
     Layer.provide(
       Layer.succeed(
@@ -33,9 +33,7 @@ const makeLayer = (enabled: boolean) =>
         ConfigProvider.fromEnv({ env: { KIN_ENABLED: String(enabled) } }),
       ),
     ),
-    Layer.provideMerge(Sqlite.layerMemory),
-    Layer.provide(ServerSecretStore.layer),
-    Layer.provide(ServerEnvironment.layerIdentity),
+    Layer.provideMerge(Sqlite.layerConfig),
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "kin-auth-keys-" })),
   );
 const layer = makeLayer(true);
@@ -98,32 +96,90 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
     }),
   );
 
-  it.effect("Kin disabled neither migrates nor blocks revoked keys", () =>
-    Effect.gen(function* () {
-      const auth = yield* EnvironmentAuth.EnvironmentAuth;
-      const sessions = yield* SessionStore.SessionStore;
-      const sql = yield* SqlClient.SqlClient;
-      const exchange = () =>
-        auth.createPairingLink({ proofKeyThumbprint: "device" }).pipe(
-          Effect.flatMap((link) =>
-            auth.exchangeBootstrapCredentialForAccessToken(link.credential, undefined, metadata, {
-              proofKeyThumbprint: "device",
-            }),
+  it.effect.each(["server", "cli"] as const)(
+    "Kin disabled %s neither migrates nor blocks revoked keys",
+    (runtime) =>
+      Effect.gen(function* () {
+        const auth = yield* EnvironmentAuth.EnvironmentAuth;
+        const sessions = yield* SessionStore.SessionStore;
+        const sql = yield* SqlClient.SqlClient;
+        const exchange = () =>
+          auth.createPairingLink({ proofKeyThumbprint: "device" }).pipe(
+            Effect.flatMap((link) =>
+              auth.exchangeBootstrapCredentialForAccessToken(link.credential, undefined, metadata, {
+                proofKeyThumbprint: "device",
+              }),
+            ),
+          );
+        expect(
+          Exit.isFailure(
+            yield* RepairPairing.create(auth, { repairProofKey: Option.some("device") }, {}).pipe(
+              Effect.exit,
+            ),
           ),
-        );
-      expect(
-        Exit.isFailure(
-          yield* RepairPairing.create(auth, { repairProofKey: Option.some("device") }, {}).pipe(
-            Effect.exit,
+        ).toBe(true);
+        expect(yield* auth.listPairingLinks()).toEqual([]);
+        const first = yield* exchange();
+        yield* sessions.revoke((yield* sessions.verify(first.access_token)).sessionId);
+        yield* exchange();
+        expect(yield* sql`SELECT name FROM sqlite_master WHERE name GLOB 'kin_*'`).toEqual([]);
+      }).pipe(
+        Effect.provide(
+          runtime === "server"
+            ? makeLayer(false)
+            : CliAuth.layerRuntime.pipe(
+                Layer.provide(
+                  Layer.succeed(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv({ env: {} })),
+                ),
+                Layer.provide(
+                  ServerConfig.layerTest(process.cwd(), { prefix: "kin-auth-cli-off-" }),
+                ),
+              ),
+        ),
+      ),
+  );
+
+  it.effect("Kin-off CLI revoke blocks exchanges on a Kin-on server sharing its database", () =>
+    Effect.gen(function* () {
+      const server = yield* Layer.build(
+        layerAuth.pipe(
+          Layer.provide(ManagedPolicy.layerTest()),
+          Layer.provide(
+            Layer.succeed(
+              ConfigProvider.ConfigProvider,
+              ConfigProvider.fromEnv({ env: { KIN_ENABLED: "true" } }),
+            ),
           ),
         ),
-      ).toBe(true);
-      expect(yield* auth.listPairingLinks()).toEqual([]);
-      const first = yield* exchange();
-      yield* sessions.revoke((yield* sessions.verify(first.access_token)).sessionId);
-      yield* exchange();
-      expect(yield* sql`SELECT name FROM sqlite_master WHERE name GLOB 'kin_*'`).toEqual([]);
-    }).pipe(Effect.provide(makeLayer(false))),
+      );
+      const auth = Context.get(server, EnvironmentAuth.EnvironmentAuth);
+      const sessions = Context.get(server, SessionStore.SessionStore);
+      const first = yield* sessions.issue({ proofKeyThumbprint: "device" });
+      const sql = Context.get(server, SqlClient.SqlClient);
+      yield* sql`DROP TABLE kin_sql_migrations`;
+      const cli = yield* Layer.build(
+        CliAuth.layerRuntime.pipe(
+          Layer.provide(
+            Layer.succeed(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv({ env: {} })),
+          ),
+        ),
+      );
+      yield* Context.get(cli, EnvironmentAuth.EnvironmentAuth).revokeSession(first.sessionId);
+      expect(yield* sql`SELECT name FROM sqlite_master WHERE name = 'kin_sql_migrations'`).toEqual(
+        [],
+      );
+      const link = yield* auth.createPairingLink({ proofKeyThumbprint: "device" });
+      expect(
+        (yield* auth
+          .exchangeBootstrapCredentialForAccessToken(link.credential, undefined, metadata, {
+            proofKeyThumbprint: "device",
+          })
+          .pipe(Effect.flip))._tag,
+      ).toBe("ServerAuthInvalidCredentialError");
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(ServerConfig.layerTest(process.cwd(), { prefix: "kin-auth-cli-" })),
+    ),
   );
 
   it.effect.each([
@@ -186,14 +242,19 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
           Stream.runForEach((change) => Queue.offer(changes, change)),
           Effect.forkScoped({ startImmediately: true }),
         );
-        const late = yield* sessions.issue({ proofKeyThumbprint: "device" });
+        const late = yield* sessions.issue({ proofKeyThumbprint: "device" }).pipe(Effect.flip);
+        expect(late._tag).toBe("SessionCredentialIssueError");
+        if (late._tag !== "SessionCredentialIssueError") return yield* Effect.die(late);
         yield* sessions.markConnected(control.sessionId);
         expect((yield* Queue.take(changes)).type).toBe("clientUpserted");
         expect(yield* Queue.take(changes)).toEqual({
           type: "clientRemoved",
           sessionId: late.sessionId,
         });
-        expect(Exit.isFailure(yield* sessions.verify(late.token).pipe(Effect.exit))).toBe(true);
+        const sql = yield* SqlClient.SqlClient;
+        expect(
+          yield* sql`SELECT revoked_at FROM auth_sessions WHERE session_id = ${late.sessionId}`,
+        ).toEqual([{ revoked_at: expect.any(String) }]);
       }
     }).pipe(Effect.scoped, Effect.provide(layer)),
   );

@@ -529,7 +529,7 @@ const layerProjectFaviconResolver = ProjectFaviconResolver.layer.pipe(
 
 const layerServerEnvironment = ServerEnvironment.layer.pipe(Layer.provide(ServerSecretStore.layer));
 
-const layerAuth = EnvironmentAuth.layer.pipe(
+export const layerAuth = EnvironmentAuth.layer.pipe(
   Layer.provide(ProofKeySessions.layer),
   Layer.provideMerge(layerPersistence),
   Layer.provide(layerServerEnvironment),

@@ -115,11 +115,11 @@ const enabled = Layer.effect(
             .withTransaction(
               Effect.gen(function* () {
                 const now = yield* DateTime.now;
-                const ids = bulk
-                  ? yield* sql<{
+                const selected = bulk
+                  ? sql<{
                       session_id: AuthSessionId;
                     }>`SELECT session_id FROM auth_sessions WHERE session_id != ${sessionId} AND revoked_at IS NULL`
-                  : yield* sql<{
+                  : sql<{
                       session_id: AuthSessionId;
                     }>`SELECT s.session_id FROM auth_sessions s LEFT JOIN kin_auth_session_keys m ON m.session_id = s.session_id
               WHERE s.revoked_at IS NULL AND (s.session_id = ${sessionId} OR (s.expires_at > ${DateTime.formatIso(now)} AND m.proof_key_thumbprint = (SELECT proof_key_thumbprint FROM kin_auth_session_keys WHERE session_id = ${sessionId})))`;
@@ -129,9 +129,9 @@ const enabled = Layer.effect(
                 } else {
                   yield* sql`UPDATE kin_auth_session_keys SET individually_revoked = 1 WHERE session_id = ${sessionId} AND EXISTS (SELECT 1 FROM auth_sessions WHERE session_id = ${sessionId} AND revoked_at IS NULL)`;
                 }
-                for (const row of ids)
-                  yield* sql`UPDATE auth_sessions SET revoked_at = ${DateTime.formatIso(now)} WHERE session_id = ${row.session_id} AND revoked_at IS NULL`;
-                return ids;
+                return yield* sql<{
+                  session_id: AuthSessionId;
+                }>`UPDATE auth_sessions SET revoked_at = ${DateTime.formatIso(now)} WHERE session_id IN (${selected}) AND revoked_at IS NULL RETURNING session_id`;
               }),
             )
             .pipe(
@@ -159,7 +159,16 @@ const enabled = Layer.effect(
                 Effect.tap(({ issued, revoked }) =>
                   revoked ? removed(issued.sessionId) : Effect.void,
                 ),
-                Effect.map(({ issued }) => issued),
+                Effect.flatMap(({ issued, revoked }) =>
+                  revoked
+                    ? Effect.fail(
+                        new SessionStore.SessionCredentialIssueError({
+                          sessionId: issued.sessionId,
+                          cause: new Error("Proof key is revoked"),
+                        }),
+                      )
+                    : Effect.succeed(issued),
+                ),
                 Effect.uninterruptible,
                 Effect.mapError((cause) =>
                   cause._tag === "SessionCredentialIssueError"
@@ -198,12 +207,23 @@ const enabled = Layer.effect(
       },
     });
   }),
-).pipe(Layer.provide(KinPersistence.layer));
+);
 
 export const layer = Layer.unwrap(
   Effect.gen(function* () {
     const config = yield* KinEnabled.KinEnabled;
     // A failed enabled store must fail layer construction, never select the no-op reference.
-    return config.enabled ? enabled : Layer.empty;
+    return config.enabled ? enabled.pipe(Layer.provide(KinPersistence.layer)) : Layer.empty;
+  }),
+).pipe(Layer.provide(KinEnabled.layer));
+
+export const layerCli = Layer.unwrap(
+  Effect.gen(function* () {
+    const config = yield* KinEnabled.KinEnabled;
+    if (config.enabled) return enabled.pipe(Layer.provide(KinPersistence.layer));
+    const sql = yield* SqlClient.SqlClient;
+    const tables =
+      yield* sql`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'kin_auth_session_keys' LIMIT 1`;
+    return tables.length > 0 ? enabled : Layer.empty;
   }),
 ).pipe(Layer.provide(KinEnabled.layer));
