@@ -400,6 +400,16 @@ describe("applyGuards", () => {
     const twice = applyGuards(file, `const a = ${config};\nconst b = ${config};`);
     assert.strictEqual(twice.problems.length, 1);
     assert.strictEqual(twice.applied, 0);
+
+    const capabilities = applyGuards(
+      "apps/server/src/environment/ServerEnvironment.ts",
+      "const c = { threadStop: true, triage: true, freshContext: true };",
+    );
+    assert.deepStrictEqual(capabilities.problems, []);
+    assert.strictEqual(
+      capabilities.output,
+      "const c = { threadStop: true, triage: false, freshContext: true };",
+    );
   });
 });
 

@@ -2,7 +2,7 @@
 // gets a last combinator that fails first (an early return would make the body unreachable and
 // break type narrowing); a plain function returns null first. A target found other than once
 // fails the run, so an upstream rename can't silently drop a guard.
-import { Lang, parse, type Edit, type SgNode } from "@ast-grep/napi";
+import { Lang, parse, type Edit, type NapiConfig, type SgNode } from "@ast-grep/napi";
 
 const NO_RELEASES = "Kin doesn't publish releases yet; run Kin from source.";
 const NO_TRIAGE =
@@ -18,8 +18,14 @@ export type Guard = {
     { readonly span: string; readonly error: string }
   /** `function <name>(…)`, which returns `null` first. */
   | { readonly function: string }
-  /** An ast-grep `pattern` (whitespace-insensitive) that is replaced with `replace`. */
-  | { readonly pattern: string; readonly replace: string }
+  /**
+   * An ast-grep `pattern` (whitespace-insensitive) that is replaced with `replace`. A fragment
+   * that isn't a statement, such as an object property, takes a `context` and a `selector`.
+   */
+  | {
+      readonly pattern: string | { readonly context: string; readonly selector: string };
+      readonly replace: string;
+    }
 );
 
 export const GUARDS: ReadonlyArray<Guard> = [
@@ -52,10 +58,57 @@ export const GUARDS: ReadonlyArray<Guard> = [
       "`t3 triage` investigates T3 Code's source and helps file the issue in pingdotgg/t3code, " +
       "which is the wrong tracker for Kin.",
     pattern: "const explicitBaseDir = Option.getOrUndefined(flags.baseDir);",
-    // Stops the handler while its success type stays intact, so the rest keeps its types.
+    // Stops the handler while its success type stays intact, so the rest keeps its types. A
+    // UserError prints as a plain message, not a stack trace.
     replace:
-      `const explicitBaseDir = yield* Effect.die(new Error(${JSON.stringify(NO_TRIAGE)})).pipe(` +
+      'const explicitBaseDir = yield* Effect.fail(new CliError.UserError({ cause: "triage", ' +
+      `userMessage: ${JSON.stringify(NO_TRIAGE)} })).pipe(` +
       "Effect.as(Option.getOrUndefined(flags.baseDir)));",
+  },
+  {
+    file: "apps/server/src/cli/triage.ts",
+    reason: "The `t3 triage` guard above fails with the CLI's own user error.",
+    pattern: 'import { Command, Flag } from "effect/cli";',
+    replace: 'import { CliError, Command, Flag } from "effect/cli";',
+  },
+  {
+    file: "apps/server/src/environment/ServerEnvironment.ts",
+    reason:
+      "Every Report issue entry point (the web and mobile command palettes) shows only for a " +
+      "server that reports triage, so a Kin server hides them; triage files into T3 Code's " +
+      "repository and its fallback suggests `npx t3 triage`, T3's published CLI on ~/.t3.",
+    pattern: { context: "({ triage: true })", selector: "pair" },
+    replace: "triage: false",
+  },
+  {
+    file: "apps/web/src/components/chat/TriageDraftHero.tsx",
+    reason: "The triage draft's hero suggests `npx t3 triage`; Kin opens no triage drafts.",
+    function: "TriageDraftHero",
+  },
+  {
+    file: "apps/web/src/lib/bootError.ts",
+    reason:
+      "The startup error page suggests `npx t3 triage` (or the desktop's `t3 triage`), which " +
+      "runs T3 Code's triage and files into its repository.",
+    pattern:
+      'element("div", {}, [element("p", { textContent: $TEXT }), ' +
+      'element("div", { id: "boot-error-command" }, [command, copyCommand])])',
+    replace: "...[]",
+  },
+  {
+    file: "apps/web/src/lib/bootError.ts",
+    reason:
+      "Nothing shows the triage command once its block is gone; don't ask the desktop for it.",
+    pattern: "void resolveTriageCommand(bridge).then((value) => (command.textContent = value));",
+    replace: "",
+  },
+  {
+    file: "apps/desktop/src/app/DesktopStartupRecovery.ts",
+    reason:
+      "Startup recovery's reinstall offer opens a release tag of T3 Code's; Kin publishes no " +
+      "releases, so it opens Kin's source instead (see the rules for its text).",
+    pattern: "electronShell.openExternal(`${RELEASES_URL}/tag/v${current.version}`)",
+    replace: "electronShell.openExternal(RELEASES_URL)",
   },
   {
     file: "apps/server/src/triage/TriageService.ts",
@@ -82,7 +135,7 @@ export const GUARDS: ReadonlyArray<Guard> = [
 /** Where the guard goes: after a function body's `{`, or after an Effect.fn's last argument. */
 const insertionPoints = (
   root: SgNode,
-  guard: Exclude<Guard, { readonly pattern: string }>,
+  guard: Exclude<Guard, { readonly replace: string }>,
 ): ReadonlyArray<number> => {
   if ("function" in guard) {
     return root
@@ -117,10 +170,10 @@ const label = (guard: Guard) =>
   "span" in guard
     ? `Effect.fn("${guard.span}")`
     : "pattern" in guard
-      ? `match for ${guard.pattern}`
+      ? `match for ${typeof guard.pattern === "string" ? guard.pattern : guard.pattern.context}`
       : `function ${guard.function}`;
 
-const insertion = (guard: Exclude<Guard, { readonly pattern: string }>) =>
+const insertion = (guard: Exclude<Guard, { readonly replace: string }>) =>
   // Failing ahead of the body keeps the function's success type, so callers still typecheck.
   "span" in guard
     ? `, (effect) => Effect.andThen(Effect.fail(${guard.error}), effect)`
@@ -139,7 +192,9 @@ export function applyGuards(
   const problems: Array<string> = [];
   for (const guard of guards) {
     if ("pattern" in guard) {
-      const matches = root.findAll(guard.pattern);
+      const matcher: string | NapiConfig =
+        typeof guard.pattern === "string" ? guard.pattern : { rule: { pattern: guard.pattern } };
+      const matches = root.findAll(matcher);
       if (matches.length !== 1) {
         problems.push(`guard expected one ${label(guard)} in ${file}, found ${matches.length}`);
         continue;

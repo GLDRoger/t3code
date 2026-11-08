@@ -341,6 +341,11 @@ text:
   - files: [apps/web/src/components/settings/CliCommandSettingsRow.tsx]
     from: remove t3
     to: remove kin
+  # `\`t3\`` in a template: the engine reads template text between escapes, so the command name
+  # is a piece of its own. Last of this file's rules, so it sees only what they left.
+  - files: [apps/web/src/components/settings/CliCommandSettingsRow.tsx]
+    from: t3
+    to: kin
   - files: [apps/web/src/components/settings/settingsSearch.ts]
     from: t3 command
     to: kin command
@@ -424,6 +429,32 @@ text:
     to: ""
     exact: true
 
+  # Startup recovery: Kin publishes no releases, so its recovery links open Kin's source, not
+  # T3 Code's releases (the reinstall link's tag path is dropped in kinBrandGuards.ts).
+  - files: [apps/desktop/src/app/DesktopStartupRecovery.ts]
+    from: https://github.com/pingdotgg/t3code/releases
+    to: https://github.com/GLDRoger/t3code
+    exact: true
+  - files: [apps/desktop/src/app/DesktopStartupRecovery.ts]
+    from: Get a different version from the releases page.
+    to: Kin doesn't publish releases yet. Build a different version from Kin's source.
+    exact: true
+  - files: [apps/desktop/src/app/DesktopStartupRecovery.ts]
+    from: Open releases
+    to: Open Kin's source
+    exact: true
+  - files: [apps/desktop/src/app/DesktopStartupRecovery.ts]
+    from: Download it and install it to go back.
+    to: Build it from Kin's source to go back.
+  - files: [apps/desktop/src/app/DesktopStartupRecovery.ts]
+    from: "Download "
+    to: "Build "
+  # The startup error page's bug report goes to Kin's tracker, not T3 Code's.
+  - files: [apps/web/src/lib/bootError.ts]
+    from: https://github.com/pingdotgg/t3code/issues/new
+    to: https://github.com/GLDRoger/t3code/issues/new
+    exact: true
+
 ignore:
   # Identifiers that cross a process or wire boundary. Renaming them breaks a peer or loses state.
   - reason: Environment variables keep upstream's names.
@@ -471,11 +502,6 @@ ignore:
       configured for T3 Code works in Kin.
     files: [apps/server/src/vcs/VcsProjectConfig.ts]
     text: "^\\.t3code$"
-  - reason: >-
-      Contributors' remote build cache. It is used only with credentials T3 issues for that
-      endpoint; without them the copy builds locally.
-    files: [.task-cache.json]
-    text: "pinglabs\\.workers\\.dev/projects/t3code$"
 
   # Whole areas Kin doesn't ship or brand.
   - reason: Upstream's marketing site, relay and CI, docs, evals, packaging and vendored references.
@@ -528,6 +554,10 @@ remove:
       Upstream's test that T3 Code's mobile config matches those app-link files; the copy has
       neither T3's config nor the files.
     files: [apps/mobile/app.config.test.ts]
+  - reason: >-
+      T3 Code's shared remote build cache endpoint. Without it remoteCacheUrl returns nothing,
+      so the copy always builds locally and never reads or writes T3's cache.
+    files: [.task-cache.json]
 
 sourceAssets:
   apps/web/src/components/T3Wordmark.tsx: ba20ddca13c7436ca7ad1f25fbc1acc67b95b9242573fd6e70611f389deabf4d
@@ -659,11 +689,28 @@ leaks:
       leak: bundle-id
       text: apps/desktop/resources/linux/com\.t3tools\.t3code\.metainfo\.xml
       files: [scripts/build-desktop-artifact.ts]
+    # Links to upstream's repository. Recovery and bug-report links point at Kin's (see the rules);
+    # these stay because they name what Kin is built on or read upstream's own content.
     - reason: >-
-        Links to upstream's GitHub repository, issues, docs, releases and model manifest. Kin is
-        built on T3 Code and has no repository of its own to point at yet.
+        Upstream's user docs (the multiple-accounts FAQ, T3 Connect troubleshooting). They
+        describe the same features in Kin, which has no docs of its own yet.
       leak: expo-owner
-      text: "github(usercontent)?\\.com/pingdotgg/t3code"
+      text: "^https://github\\.com/pingdotgg/t3code/blob/main/docs/user/"
+      files:
+        - apps/web/src/components/settings/MultipleAccountsNote.tsx
+        - packages/contracts/src/environmentHttp.ts
+    - reason: >-
+        The provider model manifest the server reads from upstream's main branch; Kin uses the
+        same providers and models.
+      leak: expo-owner
+      text: "^https://raw\\.githubusercontent\\.com/pingdotgg/t3code/main/"
+      files: [apps/server/src/provider/ModelManifest.ts]
+    - reason: >-
+        Attribution: the server package's repository field and the shared GNOME Shell extension's
+        homepage (Kin and T3 Code share that extension; see the GnomeCaptureSetup.ts entry).
+      leak: expo-owner
+      text: "^https://github\\.com/pingdotgg/t3code$"
+      files: [apps/server/package.json, apps/desktop/gnome-extension/metadata.json]
     - reason: >-
         Upstream's repository name, for the GitHub star prompt and the desktop update's release
         notes link; Kin has no repository of its own to point at yet.
@@ -722,8 +769,13 @@ leaks:
     - reason: >-
         Agent instructions and triage prompts (ignored above; they change only with an eval run).
         Triage itself is off in the copy (kinBrandGuards.ts).
-      leak: t3-domain
       files: [apps/server/src/triage/triagePrompt.ts]
+    - reason: >-
+        The source repository triage clones. Triage is off in the copy: the server reports no
+        triage and TriageService.prepare fails first (kinBrandGuards.ts).
+      leak: expo-owner
+      text: "^https://github\\.com/pingdotgg/t3code$"
+      files: [apps/server/src/triage/TriageService.ts]
 
     # T3 domains that stay in shipped code.
     - reason: >-
@@ -761,5 +813,4 @@ leaks:
       leak: t3-domain
       files: [apps/server/src/cloud/servicePreflight.ts]
     - reason: The dev-only mock ACP agent's fixture URLs; no build ships it.
-      leak: t3-domain
       files: [apps/server/scripts/acp-mock-agent.ts]
