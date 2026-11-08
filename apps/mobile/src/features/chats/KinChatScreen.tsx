@@ -280,9 +280,11 @@ function KinChatStateView(props: {
             variant="plain"
             title={state.reason === "left" ? "You left this chat" : "This chat isn't available"}
             detail={
-              state.reason === "unavailable"
-                ? "Kin is turned off on this server."
-                : "It may have been removed, or you're no longer a member."
+              state.reason === "left" ||
+              state.reason === "not_found" ||
+              state.reason === "not_allowed"
+                ? "It may have been removed, or you're no longer a member."
+                : "The server refused to open it."
             }
           />
         );

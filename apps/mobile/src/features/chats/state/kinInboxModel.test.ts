@@ -107,8 +107,12 @@ const member = (leftAt: string | null) =>
     mutedUntil: null,
   }) as KinChatMember;
 
-const backlog = (messages: ReadonlyArray<KinMessage>, lastSeq: number, widgets: KinWidget[] = []) =>
-  ({ _tag: "backlog", messages, widgets, lastSeq }) as const;
+const backlog = (
+  messages: ReadonlyArray<KinMessage>,
+  lastSeq: number,
+  widgets: KinWidget[] = [],
+  lastChangeSeq?: number,
+) => ({ _tag: "backlog", messages, widgets, lastSeq, lastChangeSeq }) as const;
 
 const chatIds = (rows: ReturnType<typeof selectKinInboxView>["rows"]) =>
   rows.map((row) => row.chat.chatId);
@@ -207,11 +211,36 @@ describe("kin chat feed", () => {
     expect(state.contiguousSeq).toBe(6);
   });
 
-  it("dedupes messages by seq, keeping the latest copy", () => {
-    let state = applyKinChatEvent(emptyKinChat, backlog([message(1), message(2)], 2));
-    state = applyKinChatEvent(state, backlog([message(2, { status: "deleted" }), message(3)], 3));
-    expect(seqs(state)).toEqual([1, 2, 3]);
-    expect(state.messages[1]!.status).toBe("deleted");
+  it("replaces messages and widgets a resumed backlog changed, and keeps its change cursor", () => {
+    let state = applyKinChatEvent(
+      emptyKinChat,
+      backlog([message(1), message(2), message(3)], 3, [widget("w", 1, "m1")], 5),
+    );
+    expect(state.changeSeq).toBe(5);
+    state = applyKinChatEvent(state, { _tag: "message", message: message(4) });
+    // Offline: 1 was edited, 2 deleted and the card on 1 moved on. They come back by id, below 4.
+    state = applyKinChatEvent(
+      state,
+      backlog(
+        [message(1, { body: "edited" }), message(2, { status: "deleted" })],
+        4,
+        [widget("w", 2, "m1")],
+        9,
+      ),
+    );
+    expect(seqs(state)).toEqual([1, 2, 3, 4]);
+    expect(state.messages.map((m) => [m.body, m.status])).toEqual([
+      ["edited", "posted"],
+      ["message 2", "deleted"],
+      ["message 3", "posted"],
+      ["message 4", "posted"],
+    ]);
+    expect(state.widgets.map((w) => w.revision)).toEqual([2]);
+    expect(state).toMatchObject({ contiguousSeq: 4, changeSeq: 9 });
+    // Live events never move the snapshot cursor.
+    state = applyKinChatEvent(state, { _tag: "message", message: message(5, { body: "live" }) });
+    state = applyKinChatEvent(state, { _tag: "widget", widget: widget("w", 3, "m1") });
+    expect(state.changeSeq).toBe(9);
   });
 
   it("keeps the highest widget revision", () => {
@@ -224,11 +253,12 @@ describe("kin chat feed", () => {
 
   it("asks for a history reload after a reset and clears it once a page lands", () => {
     let state = applyKinChatEvent(emptyKinChat, backlog([message(1)], 1, [widget("w", 1)]));
-    state = applyKinChatEvent(state, { _tag: "reset", lastSeq: 400 });
+    state = applyKinChatEvent(state, { _tag: "reset", lastSeq: 400, lastChangeSeq: 412 });
     expect(state).toMatchObject({
       messages: [],
       widgets: [],
       contiguousSeq: 400,
+      changeSeq: 412,
       needsHistoryReload: true,
     });
     state = applyKinChatHistory(state, {
