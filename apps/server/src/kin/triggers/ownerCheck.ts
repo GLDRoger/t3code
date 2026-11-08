@@ -37,12 +37,20 @@ type Selection = typeof Selection.Type;
 const decodeCard = Schema.decodeUnknownEffect(KinOwnerCheckCard);
 const decodeEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(KinEvent));
 const decodeAction = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    widgetId: KinWidgetId,
+    revision: Schema.Int,
+    actionId: Schema.Literals(["keep", "update", "drop"]),
+    value: KinMemoryItemId,
+  }),
+);
+const decodeTap = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
     Schema.Struct({
       widgetId: KinWidgetId,
       revision: Schema.Int,
-      actionId: Schema.Literals(["keep", "update", "drop"]),
-      value: KinMemoryItemId,
+      actionId: Schema.String,
+      value: Schema.optional(Schema.Unknown),
     }),
   ),
 );
@@ -94,6 +102,66 @@ export function pickOwnerCheckItems(
     .slice(0, 5)
     .map(({ item, rank }) => ({ itemId: item.id, reason: reasons[rank] ?? "no_evidence" }));
 }
+
+/** Verifies a claimed widget tap as the org owner's own action on an open card of `type`. */
+export const verifyOwnerTap = Effect.fn("OwnerCheck.verifyOwnerTap")(function* (
+  orgId: KinOrgId,
+  wakeupId: string,
+  eventId: KinEventId,
+  type: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const repo = yield* Repository.KinChatRepository;
+  return yield* sql
+    .withTransaction(
+      Effect.gen(function* () {
+        const [row] = yield* sql<{
+          json: string;
+        }>`SELECT e.json FROM kin_events e JOIN kin_wakeups w ON w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id WHERE e.org_id = ${orgId} AND e.event_id = ${eventId} AND e.wakeup_id = ${wakeupId} AND e.state = 'claimed' AND w.status = 'running' ORDER BY e.event_id`;
+        if (row === undefined) return yield* Effect.fail("unclaimed_action" as const);
+        const event = yield* decodeEvent(row.json);
+        if (
+          event.orgId !== orgId ||
+          event.eventId !== eventId ||
+          event._tag !== "widget.action" ||
+          event.provenance._tag !== "human"
+        )
+          return yield* Effect.fail("not_owner" as const);
+        const message = yield* repo.getMessage({ orgId, messageId: event.messageId });
+        if (
+          Option.isNone(message) ||
+          message.value.chatId !== event.chatId ||
+          message.value.kind !== "widget_action" ||
+          message.value.authorRole !== "owner" ||
+          message.value.author._tag !== "human" ||
+          message.value.author.personId !== event.provenance.personId ||
+          message.value.author.memberId !== event.provenance.memberId
+        )
+          return yield* Effect.fail("not_owner" as const);
+        const owners =
+          yield* sql`SELECT m.member_id FROM kin_chat_members m JOIN kin_agents a ON a.org_id = m.org_id AND a.owner_person_id = m.person_id WHERE m.org_id = ${orgId} AND m.member_id = ${event.provenance.memberId} AND m.chat_id = ${event.chatId} AND m.person_id = ${event.provenance.personId} AND m.role = 'owner' AND m.left_at IS NULL AND a.agent_id = ${event.agentId} AND a.retired_at IS NULL ORDER BY m.member_id`;
+        if (owners.length === 0) return yield* Effect.fail("not_owner" as const);
+        const action = yield* decodeTap(message.value.body);
+        const widget = yield* repo.getWidget({ orgId, widgetId: action.widgetId });
+        if (
+          Option.isNone(widget) ||
+          widget.value.type !== type ||
+          widget.value.chatId !== event.chatId ||
+          message.value.widgetId !== action.widgetId ||
+          widget.value.closedAt !== null ||
+          widget.value.revision !== action.revision ||
+          event.actionId !== action.actionId
+        )
+          return yield* Effect.fail("invalid_card" as const);
+        return { action, chatId: event.chatId, widget: widget.value };
+      }),
+    )
+    .pipe(
+      Effect.mapError((cause) =>
+        isSqlError(cause) ? toPersistenceSqlError("OwnerCheck.verifyOwnerTap")(cause) : cause,
+      ),
+    );
+});
 
 export class OwnerCheckError extends Schema.TaggedError<OwnerCheckError>()("OwnerCheckError", {
   orgId: KinOrgId,
@@ -233,62 +301,17 @@ const make = Effect.gen(function* () {
         orgId,
         Effect.gen(function* () {
           const writer = yield* MemoryWriter.MemoryWriter;
-          const verified = yield* sql
-            .withTransaction(
-              Effect.gen(function* () {
-                const [row] = yield* sql<{
-                  json: string;
-                }>`SELECT e.json FROM kin_events e JOIN kin_wakeups w ON w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id WHERE e.org_id = ${orgId} AND e.event_id = ${eventId} AND e.wakeup_id = ${wakeupId} AND e.state = 'claimed' AND w.status = 'running' ORDER BY e.event_id`;
-                if (row === undefined) return yield* Effect.fail("unclaimed_action");
-                const event = yield* decodeEvent(row.json);
-                if (
-                  event.orgId !== orgId ||
-                  event.eventId !== eventId ||
-                  event._tag !== "widget.action" ||
-                  event.provenance._tag !== "human"
-                )
-                  return yield* Effect.fail("not_owner");
-                const message = yield* repo.getMessage({ orgId, messageId: event.messageId });
-                if (
-                  Option.isNone(message) ||
-                  message.value.chatId !== event.chatId ||
-                  message.value.kind !== "widget_action" ||
-                  message.value.authorRole !== "owner" ||
-                  message.value.author._tag !== "human" ||
-                  message.value.author.personId !== event.provenance.personId ||
-                  message.value.author.memberId !== event.provenance.memberId
-                )
-                  return yield* Effect.fail("not_owner");
-                const owners =
-                  yield* sql`SELECT m.member_id FROM kin_chat_members m JOIN kin_agents a ON a.org_id = m.org_id AND a.owner_person_id = m.person_id WHERE m.org_id = ${orgId} AND m.member_id = ${event.provenance.memberId} AND m.chat_id = ${event.chatId} AND m.person_id = ${event.provenance.personId} AND m.role = 'owner' AND m.left_at IS NULL AND a.agent_id = ${event.agentId} AND a.retired_at IS NULL ORDER BY m.member_id`;
-                if (owners.length === 0) return yield* Effect.fail("not_owner");
-                const action = yield* decodeAction(message.value.body);
-                const widget = yield* repo.getWidget({ orgId, widgetId: action.widgetId });
-                if (
-                  Option.isNone(widget) ||
-                  widget.value.type !== "owner_check" ||
-                  widget.value.chatId !== event.chatId ||
-                  message.value.widgetId !== action.widgetId ||
-                  widget.value.closedAt !== null ||
-                  widget.value.revision !== action.revision ||
-                  event.actionId !== action.actionId
-                )
-                  return yield* Effect.fail("invalid_card");
-                const card = yield* decodeCard(widget.value.state);
-                if (
-                  !card.items.some(
-                    (item) => item.itemId === action.value && item.handled === undefined,
-                  )
-                )
-                  return yield* Effect.fail("unknown_item");
-                return { action, chatId: event.chatId, widget: widget.value, card };
-              }),
-            )
-            .pipe(
-              Effect.mapError((cause) =>
-                isSqlError(cause) ? toPersistenceSqlError("OwnerCheck.act")(cause) : cause,
-              ),
-            );
+          const tap = yield* verifyOwnerTap(orgId, wakeupId, eventId, "owner_check").pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.provideService(Repository.KinChatRepository, repo),
+          );
+          const action = yield* decodeAction(tap.action);
+          const card = yield* decodeCard(tap.widget.state);
+          if (
+            !card.items.some((item) => item.itemId === action.value && item.handled === undefined)
+          )
+            return yield* Effect.fail("unknown_item");
+          const verified = { action, chatId: tap.chatId, widget: tap.widget, card };
           const item = yield* memory.readItemQuietly(orgId, verified.action.value);
           if (verified.action.actionId !== "update") {
             const { orgId: _org, path, ...frontMatter } = item.head;

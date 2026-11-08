@@ -129,6 +129,19 @@ export class MemoryRecoveryHooks extends Context.Service<
   }
 >()("t3/kin/memory/Memory/MemoryRecoveryHooks") {}
 
+export interface MemorySyncSnapshot {
+  readonly head: string;
+  readonly items: ReadonlyArray<MemoryCache.MemoryItem>;
+  readonly duplicateIds: ReadonlySet<string>;
+}
+
+/** Sees every loaded snapshot and owns its own once-per-head, retry and failure handling. */
+export class MemorySyncHooks extends Context.Reference<{
+  readonly syncItems: (orgId: KinOrgId, snapshot: MemorySyncSnapshot) => Effect.Effect<void>;
+}>("t3/kin/memory/Memory/MemorySyncHooks", {
+  defaultValue: () => ({ syncItems: () => Effect.void }),
+}) {}
+
 export class Memory extends Context.Service<
   Memory,
   {
@@ -185,9 +198,7 @@ const folders = ["objectives", "commitments", "deferrals", "decisions", "people"
 
 const maxBlobBytes = 256 * 1024;
 
-interface Snapshot {
-  readonly head: string;
-  readonly items: ReadonlyArray<MemoryCache.MemoryItem>;
+interface Snapshot extends MemorySyncSnapshot {
   readonly files: ReadonlyMap<string, string>;
   index?: string;
 }
@@ -218,6 +229,8 @@ const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const sql = yield* SqlClient.SqlClient;
   const writerLocks = new Map<KinOrgId, Semaphore.Semaphore>();
+  const pinnedHeads = new Map<KinOrgId, string>();
+  const hooks = yield* MemorySyncHooks;
   const withWriterLock = <A, E>(orgId: KinOrgId, effect: Effect.Effect<A, E>) => {
     let lock = writerLocks.get(orgId);
     if (!lock) {
@@ -281,6 +294,9 @@ const make = Effect.gen(function* () {
               operation: "record",
               reason: "Anchor changed",
             });
+          // The front-matter cache follows commits to the default branch.
+          if (branch === (config.defaultBranch ?? "main") && pinnedHeads.get(orgId) === previous)
+            pinnedHeads.set(orgId, head);
         }),
       )
       .pipe(
@@ -297,7 +313,6 @@ const make = Effect.gen(function* () {
   });
   const cache = yield* MemoryCache.MemoryCache;
   const locks = new Map<KinOrgId, Semaphore.Semaphore>();
-  const pinnedHeads = new Map<KinOrgId, string>();
   const initializedCheckouts = new Set<KinOrgId>();
   const duplicateWarnings = new Map<KinOrgId, ReadonlySet<string>>();
   const snapshots = new Map<KinOrgId, Snapshot>();
@@ -530,7 +545,10 @@ const make = Effect.gen(function* () {
     return { writer: paths.writer, read: paths.read };
   });
 
-  const load = Effect.fn("Memory.load")(function* (orgId: KinOrgId, force = false) {
+  const loadSnapshot = Effect.fn("Memory.loadSnapshot")(function* (
+    orgId: KinOrgId,
+    force: boolean,
+  ) {
     const paths = yield* pathsFor(orgId);
     const pinned = pinnedHeads.get(orgId);
     if (pinned === undefined) yield* validateWriter(orgId, paths, false);
@@ -693,6 +711,7 @@ const make = Effect.gen(function* () {
       head,
       items,
       files,
+      duplicateIds,
       ...(previous?.head === head && previous.index !== undefined ? { index: previous.index } : {}),
     };
     snapshots.set(orgId, snapshot);
@@ -700,6 +719,11 @@ const make = Effect.gen(function* () {
     for (const cache of [blobs, parsedBlobs, mismatchWarnings]) {
       for (const sha of cache.keys()) if (!reachable.has(sha)) cache.delete(sha);
     }
+    return snapshot;
+  });
+  const load = Effect.fn("Memory.load")(function* (orgId: KinOrgId, force = false) {
+    const snapshot = yield* loadSnapshot(orgId, force);
+    yield* hooks.syncItems(orgId, snapshot);
     return snapshot;
   });
 
