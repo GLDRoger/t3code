@@ -1,16 +1,19 @@
 import {
+  AuthOrchestrationOperateScope,
+  EnvironmentAuthorizationError,
   KinChatError,
   type EnvironmentId,
   type KinMessage,
   type KinMessageId,
 } from "@t3tools/contracts";
 import { AtomRegistry } from "effect/reactivity";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import { KIN_FIXTURE_CHAT_ID, makeKinFixtureMessages } from "./kinChatFixtures";
 import {
   classifyKinSendFailure,
   createKinOutbox,
+  KIN_MESSAGE_MAX_LENGTH,
   splitKinOutbox,
   type KinOutboxRecord,
   type KinOutboxStorage,
@@ -55,8 +58,8 @@ function makeHost() {
   };
 }
 
-function makeStorage() {
-  let payload: string | null = null;
+function makeStorage(initial: string | null = null) {
+  let payload: string | null = initial;
   const storage: KinOutboxStorage = {
     load: async () => payload,
     save: async (next) => void (payload = next),
@@ -68,6 +71,7 @@ function setup(
   host = makeHost(),
   disk = makeStorage(),
   send: (record: KinOutboxRecord) => Promise<KinSendOutcome> = host.send,
+  extra: { readonly maxEntries?: number; readonly warn?: (message: string) => void } = {},
 ) {
   let id = 0;
   const registry = AtomRegistry.make();
@@ -77,6 +81,7 @@ function setup(
     send,
     makeId: () => `client-${++id}`,
     now: () => new Date("2026-11-08T09:00:00.000Z"),
+    ...extra,
   });
   const chat = () => registry.get(outbox.chatAtom(ENV, CHAT));
   return { host, disk, outbox, chat };
@@ -155,37 +160,114 @@ describe("kinOutbox", () => {
     expect(ack).toEqual(echoed[0]);
 
     // Settled entries are never sent again.
-    await outbox.retry("client-1");
     await outbox.deliver(ENV);
     expect(host.calls).toHaveLength(2);
 
-    expect(splitKinOutbox(chat(), [])).toEqual({ acked: [ack], pending: [] });
-    expect(splitKinOutbox(chat(), echoed)).toEqual({ acked: [], pending: [] });
+    expect(splitKinOutbox(chat(), [])).toEqual({ acked: [ack], pending: [], echoed: [] });
+    expect(splitKinOutbox(chat(), echoed)).toEqual({ acked: [], pending: [], echoed: ["m1"] });
   });
 
-  it("fails a refused send, keeps it failed across a restart, and sends it on retry", async () => {
+  it("fails a refused send for good: kept across a restart, never resent, editable", async () => {
     const host = makeHost();
     const disk = makeStorage();
     host.setOnline(true);
-    host.setRefuse("Message too long");
+    host.setRefuse("over the limit");
     const first = setup(host, disk);
     await first.outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: "Nope" });
     await first.outbox.deliver(ENV);
     expect(first.chat().map((entry) => [entry.state, entry.error])).toEqual([
-      ["failed", "Message too long"],
+      ["failed", "over the limit"],
     ]);
 
     const second = setup(host, disk);
     await second.outbox.load();
+    host.setRefuse(null);
     await second.outbox.deliver(ENV);
     expect(second.chat()[0]?.state).toBe("failed");
     expect(host.calls).toEqual(["client-1"]);
 
-    host.setRefuse(null);
-    await second.outbox.retry("client-1");
-    expect(second.chat()[0]?.state).toBe("sent");
-    expect(host.calls).toEqual(["client-1", "client-1"]);
-    expect(host.rows.size).toBe(1);
+    // Edit takes the body back and drops the entry, so the same id never goes out again.
+    expect(await second.outbox.discard("client-1")).toBe("Nope");
+    expect(second.chat()).toEqual([]);
+    expect(disk.saved()).toEqual([]);
+  });
+
+  it("waits, not fails, when a send gets no reply, then resends under the same id", async () => {
+    vi.useFakeTimers();
+    try {
+      const host = makeHost();
+      host.setOnline(true);
+      let hang = true;
+      const { outbox, chat } = setup(host, makeStorage(), (record) =>
+        hang ? new Promise(() => {}) : host.send(record),
+      );
+      await outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: "Hello?" });
+      const delivery = outbox.deliver(ENV);
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(chat()[0]?.state).toBe("sending");
+      await vi.advanceTimersByTimeAsync(1);
+      await delivery;
+      expect(chat()[0]?.state).toBe("waiting");
+
+      hang = false;
+      await outbox.deliver(ENV);
+      expect(chat()[0]?.state).toBe("sent");
+      expect(host.calls).toEqual(["client-1"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the readable entries of a damaged file and warns", async () => {
+    const good = {
+      environmentId: ENV,
+      chatId: CHAT,
+      clientMessageId: "client-7",
+      body: "Survivor",
+      createdAt: "2026-11-08T09:00:00.000Z",
+      error: null,
+    };
+    const warnings: string[] = [];
+    const disk = makeStorage(
+      JSON.stringify({ version: 1, entries: [{ clientMessageId: 3 }, good, "junk"] }),
+    );
+    const { outbox, chat } = setup(makeHost(), disk, undefined, {
+      warn: (message) => void warnings.push(message),
+    });
+    await outbox.load();
+    expect(chat().map((entry) => [entry.clientMessageId, entry.state])).toEqual([
+      ["client-7", "waiting"],
+    ]);
+    expect(warnings).toEqual(["[kin-outbox] skipped corrupt entries"]);
+  });
+
+  it("refuses a body over the limit and a send past the cap, queuing neither", async () => {
+    const { outbox, chat } = setup(makeHost(), makeStorage(), undefined, { maxEntries: 2 });
+    const long = "x".repeat(KIN_MESSAGE_MAX_LENGTH + 1);
+    expect(await outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: long })).toEqual({
+      _tag: "too_long",
+    });
+    await outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: "one" });
+    await outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: "two" });
+    expect(await outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: "three" })).toEqual({
+      _tag: "full",
+    });
+    expect(chat().map((entry) => entry.body)).toEqual(["one", "two"]);
+  });
+
+  it("forgets acked entries the stream holds, and a removed environment's entries", async () => {
+    const { host, disk, outbox, chat } = setup();
+    host.setOnline(true);
+    await outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: "acked" });
+    await outbox.deliver(ENV);
+    outbox.forgetEchoed(new Set(["m1"]));
+    expect(chat()).toEqual([]);
+
+    host.setOnline(false);
+    await outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: "unsent" });
+    await outbox.clearEnvironment(ENV);
+    expect(chat()).toEqual([]);
+    expect(disk.saved()).toEqual([]);
   });
 
   it("drops a discarded send from memory and disk", async () => {
@@ -211,11 +293,23 @@ describe("kinOutbox", () => {
 });
 
 describe("classifyKinSendFailure", () => {
-  it("waits on a dropped connection and fails a refusal", () => {
-    expect(classifyKinSendFailure({ _tag: "ConnectionTransientError" })._tag).toBe("offline");
+  it("fails only a typed refusal; Kin being off or any other error waits to resend", () => {
+    const refused = (reason: KinChatError["reason"]) =>
+      classifyKinSendFailure(new KinChatError({ reason, message: "Cannot do that" }));
+    expect(refused("limit")).toEqual({ _tag: "rejected", message: "over the limit" });
+    expect(refused("invalid_state")._tag).toBe("rejected");
+    expect(refused("not_allowed")._tag).toBe("rejected");
     expect(
-      classifyKinSendFailure(new KinChatError({ reason: "limit", message: "Too long" })),
-    ).toEqual({ _tag: "rejected", message: "Too long" });
-    expect(classifyKinSendFailure(new Error("boom"))._tag).toBe("rejected");
+      classifyKinSendFailure(
+        new EnvironmentAuthorizationError({
+          message: "no scope",
+          requiredScope: AuthOrchestrationOperateScope,
+        }),
+      )._tag,
+    ).toBe("rejected");
+    expect(refused("unavailable")._tag).toBe("offline");
+    expect(classifyKinSendFailure({ _tag: "ConnectionTransientError" })._tag).toBe("offline");
+    // A reply that fails to decode, or anything unknown, may hide a committed send.
+    expect(classifyKinSendFailure(new Error("Expected KinMessage"))._tag).toBe("offline");
   });
 });

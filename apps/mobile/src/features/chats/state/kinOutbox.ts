@@ -8,7 +8,12 @@ import {
 import * as Schema from "effect/Schema";
 import { Atom, type AtomRegistry } from "effect/reactivity";
 
-import { shouldRetryThreadOutboxDelivery } from "../../../state/thread-outbox-model";
+/** `KinMessagesSendInput.body`'s max length; longer bodies would be refused for good. */
+export const KIN_MESSAGE_MAX_LENGTH = 16_000;
+/** Unsent messages one environment may hold; past it, Send keeps the text in the draft. */
+export const KIN_OUTBOX_MAX_ENTRIES = 200;
+/** A send with no reply by then waits for the next attempt; dedupe makes the resend safe. */
+export const KIN_SEND_TIMEOUT_MS = 30_000;
 
 /**
  * Sends wait here, keyed by `clientMessageId`, until the host acks them. The host dedupes a
@@ -21,18 +26,20 @@ const KinOutboxRecord = Schema.Struct({
   clientMessageId: Schema.String,
   body: Schema.String,
   createdAt: Schema.String,
-  /** Null while it waits to go out; the host's reason once it refused the send. */
+  /** Null while it waits to go out; why the host refused it for good otherwise. */
   error: Schema.NullOr(Schema.String),
 });
 export type KinOutboxRecord = typeof KinOutboxRecord.Type;
 
-const KinOutboxFile = Schema.Struct({
-  version: Schema.Literal(1),
-  entries: Schema.Array(KinOutboxRecord),
-});
-const fileCodec = Schema.fromJsonString(Schema.toCodecJson(KinOutboxFile));
-const decodeFile = Schema.decodeUnknownOption(fileCodec);
-const encodeFile = Schema.encodeSync(fileCodec);
+const recordCodec = Schema.toCodecJson(KinOutboxRecord);
+const decodeRecord = Schema.decodeUnknownOption(recordCodec);
+const encodeRecord = Schema.encodeSync(recordCodec);
+// Entries decode one by one, so one corrupt record never costs the rest.
+const decodeFile = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({ version: Schema.Literal(1), entries: Schema.Array(Schema.Unknown) }),
+  ),
+);
 
 export type KinOutboxEntry = KinOutboxRecord & {
   readonly state: "waiting" | "sending" | "failed" | "sent";
@@ -42,8 +49,9 @@ export type KinOutboxEntry = KinOutboxRecord & {
 
 export type KinSendOutcome =
   | { readonly _tag: "sent"; readonly message: KinMessage }
-  /** Not reachable now; the entry waits for the next reconnect. */
+  /** Not reachable now, or no answer; the entry waits for the next attempt. */
   | { readonly _tag: "offline" }
+  /** Refused for good. Resending the same body can't succeed. */
   | { readonly _tag: "rejected"; readonly message: string };
 
 export interface KinOutboxStorage {
@@ -57,6 +65,8 @@ export interface KinOutboxOptions {
   readonly send: (record: KinOutboxRecord) => Promise<KinSendOutcome>;
   readonly makeId: () => string;
   readonly now?: () => Date;
+  readonly sendTimeoutMs?: number;
+  readonly maxEntries?: number;
   readonly warn?: (message: string, error: unknown) => void;
 }
 
@@ -67,20 +77,30 @@ const chatKey = (environmentId: EnvironmentId, chatId: KinChatId) =>
 const isChatError = Schema.is(KinChatError);
 const isAuthorizationError = Schema.is(EnvironmentAuthorizationError);
 
-/** A refused send fails the bubble; anything that looks like the connection waits to resend. */
+const refusalReasons: Partial<Record<KinChatError["reason"], string>> = {
+  not_found: "this chat is gone",
+  not_allowed: "you can't post here",
+  invalid_state: "the chat can't take it",
+  limit: "over the limit",
+};
+
+/**
+ * Only a typed refusal fails the bubble. Kin being off, a dropped connection, a lost or
+ * undecodable reply all wait and resend under the same id.
+ */
 export function classifyKinSendFailure(error: unknown): KinSendOutcome {
-  if (isChatError(error)) return { _tag: "rejected", message: error.message };
-  if (isAuthorizationError(error)) {
-    return { _tag: "rejected", message: "This device can't send in this chat." };
-  }
-  return shouldRetryThreadOutboxDelivery(error)
-    ? { _tag: "offline" }
-    : { _tag: "rejected", message: "Kin didn't accept the message." };
+  if (isAuthorizationError(error)) return { _tag: "rejected", message: "not allowed here" };
+  if (!isChatError(error) || error.reason === "unavailable") return { _tag: "offline" };
+  return { _tag: "rejected", message: refusalReasons[error.reason] ?? error.message };
 }
+
+const TIMED_OUT: KinSendOutcome = { _tag: "offline" };
 
 export function createKinOutbox(options: KinOutboxOptions) {
   const now = options.now ?? (() => new Date());
   const warn = options.warn ?? ((message, error) => console.warn(message, error));
+  const sendTimeoutMs = options.sendTimeoutMs ?? KIN_SEND_TIMEOUT_MS;
+  const maxEntries = options.maxEntries ?? KIN_OUTBOX_MAX_ENTRIES;
   // One atom per chat, so a send repaints only that chat's feed.
   const chatAtom = Atom.family((_key: string) =>
     Atom.make<ReadonlyArray<KinOutboxEntry>>(EMPTY).pipe(
@@ -109,12 +129,17 @@ export function createKinOutbox(options: KinOutboxOptions) {
     publish(entry.environmentId, entry.chatId);
   };
 
+  const remove = (entry: KinOutboxEntry) => {
+    entries.delete(entry.clientMessageId);
+    publish(entry.environmentId, entry.chatId);
+  };
+
   // Acked entries stay in memory only: the host holds them, so a restart must not resend them.
   const persist = (): Promise<void> => {
     const records = [...entries.values()]
       .filter((entry) => entry.state !== "sent")
-      .map(({ state: _state, sent: _sent, ...record }) => record);
-    const payload = encodeFile({ version: 1, entries: records });
+      .map(({ state: _state, sent: _sent, ...record }) => encodeRecord(record));
+    const payload = JSON.stringify({ version: 1, entries: records });
     writes = writes.then(
       () => options.storage.save(payload),
       () => options.storage.save(payload),
@@ -126,19 +151,43 @@ export function createKinOutbox(options: KinOutboxOptions) {
     (loaded ??= options.storage
       .load()
       .then((payload) => {
-        const file = payload === null ? null : decodeFile(payload);
-        if (file === null || file._tag === "None") return;
-        for (const record of file.value.entries) {
-          if (entries.has(record.clientMessageId)) continue;
-          // A send cut off by the restart goes out again under the same id.
-          set({ ...record, state: record.error === null ? "waiting" : "failed", sent: null });
+        if (payload === null) return;
+        const file = decodeFile(payload);
+        if (file._tag === "None") {
+          warn("[kin-outbox] unreadable outbox file, starting empty", payload.length);
+          return;
         }
+        let corrupt = 0;
+        for (const raw of file.value.entries) {
+          const record = decodeRecord(raw);
+          if (record._tag === "None") {
+            corrupt++;
+            continue;
+          }
+          if (entries.has(record.value.clientMessageId)) continue;
+          // A send cut off by the restart goes out again under the same id.
+          const state = record.value.error === null ? "waiting" : "failed";
+          set({ ...record.value, state, sent: null });
+        }
+        if (corrupt > 0) warn("[kin-outbox] skipped corrupt entries", corrupt);
       })
       .catch((error) => warn("[kin-outbox] load failed", error)));
 
+  const sendWithTimeout = (entry: KinOutboxEntry): Promise<KinSendOutcome> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<KinSendOutcome>((resolve) => {
+      timer = setTimeout(() => resolve(TIMED_OUT), sendTimeoutMs);
+    });
+    const sent = options
+      .send(entry)
+      .catch(classifyKinSendFailure)
+      .finally(() => clearTimeout(timer));
+    return Promise.race([sent, timeout]);
+  };
+
   const deliverOne = async (entry: KinOutboxEntry): Promise<"next" | "stop"> => {
     set({ ...entry, state: "sending" });
-    const outcome = await options.send(entry).catch(classifyKinSendFailure);
+    const outcome = await sendWithTimeout(entry);
     const current = entries.get(entry.clientMessageId);
     // Discarded while in flight, or a duplicate ack for an entry that already settled.
     if (current === undefined || current.state === "sent") return "next";
@@ -184,8 +233,18 @@ export function createKinOutbox(options: KinOutboxOptions) {
     readonly environmentId: EnvironmentId;
     readonly chatId: KinChatId;
     readonly body: string;
-  }): Promise<KinOutboxEntry> => {
+  }): Promise<
+    | { readonly _tag: "queued"; readonly entry: KinOutboxEntry }
+    | { readonly _tag: "full" }
+    | { readonly _tag: "too_long" }
+  > => {
+    if (input.body.length > KIN_MESSAGE_MAX_LENGTH) return { _tag: "too_long" };
     await load();
+    let unsent = 0;
+    for (const entry of entries.values()) {
+      if (entry.environmentId === input.environmentId && entry.state !== "sent") unsent++;
+    }
+    if (unsent >= maxEntries) return { _tag: "full" };
     const entry: KinOutboxEntry = {
       environmentId: input.environmentId,
       chatId: input.chatId,
@@ -198,23 +257,31 @@ export function createKinOutbox(options: KinOutboxOptions) {
     };
     set(entry);
     await persist();
-    return entry;
+    return { _tag: "queued", entry };
   };
 
-  const retry = async (clientMessageId: string): Promise<void> => {
+  /** Drops an unsent message for good; the same id is never sent again. Returns its body. */
+  const discard = async (clientMessageId: string): Promise<string | null> => {
     const entry = entries.get(clientMessageId);
-    if (entry?.state !== "failed") return;
-    set({ ...entry, state: "waiting", error: null });
+    if (entry === undefined || entry.state === "sending" || entry.state === "sent") return null;
+    remove(entry);
     await persist();
-    await deliver(entry.environmentId);
+    return entry.body;
   };
 
-  /** Drops a failed send for good. The same id is never sent again. */
-  const discard = async (clientMessageId: string): Promise<void> => {
-    const entry = entries.get(clientMessageId);
-    if (entry === undefined || entry.state === "sending") return;
-    entries.delete(clientMessageId);
-    publish(entry.environmentId, entry.chatId);
+  /** Forgets acked entries once the chat's stream carries their message. */
+  const forgetEchoed = (messageIds: ReadonlySet<string>) => {
+    for (const entry of entries.values()) {
+      if (entry.sent !== null && messageIds.has(entry.sent.messageId)) remove(entry);
+    }
+  };
+
+  /** The environment was removed from this device; its unsent messages go with it. */
+  const clearEnvironment = async (environmentId: EnvironmentId): Promise<void> => {
+    await load();
+    for (const entry of entries.values()) {
+      if (entry.environmentId === environmentId) remove(entry);
+    }
     await persist();
   };
 
@@ -222,8 +289,9 @@ export function createKinOutbox(options: KinOutboxOptions) {
     load,
     enqueue,
     deliver,
-    retry,
     discard,
+    forgetEchoed,
+    clearEnvironment,
     chatAtom: (environmentId: EnvironmentId, chatId: KinChatId) =>
       chatAtom(chatKey(environmentId, chatId)),
     /** Environments with sends still waiting, for the reconnect trigger. */
@@ -242,19 +310,26 @@ export type KinOutbox = ReturnType<typeof createKinOutbox>;
 
 /**
  * Splits a chat's outbox for the feed: acked messages join the stream's (its copy wins once it
- * arrives) and the rest render as pending bubbles after the last message.
+ * arrives) and the rest render as pending bubbles after the last message. `echoed` lists the
+ * acked messages the stream already holds, so the outbox can forget them.
  */
 export function splitKinOutbox(
   outbox: ReadonlyArray<KinOutboxEntry>,
   streamed: ReadonlyArray<KinMessage>,
-): { readonly acked: ReadonlyArray<KinMessage>; readonly pending: ReadonlyArray<KinOutboxEntry> } {
-  if (outbox.length === 0) return { acked: [], pending: EMPTY };
+): {
+  readonly acked: ReadonlyArray<KinMessage>;
+  readonly pending: ReadonlyArray<KinOutboxEntry>;
+  readonly echoed: ReadonlyArray<string>;
+} {
+  if (outbox.length === 0) return { acked: [], pending: EMPTY, echoed: [] };
   const known = new Set(streamed.map((message) => message.messageId));
   const acked: KinMessage[] = [];
   const pending: KinOutboxEntry[] = [];
+  const echoed: string[] = [];
   for (const entry of outbox) {
     if (entry.sent === null) pending.push(entry);
-    else if (!known.has(entry.sent.messageId)) acked.push(entry.sent);
+    else if (known.has(entry.sent.messageId)) echoed.push(entry.sent.messageId);
+    else acked.push(entry.sent);
   }
-  return { acked, pending };
+  return { acked, pending, echoed };
 }

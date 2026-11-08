@@ -14,7 +14,7 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { Atom, AtomRegistry, type AsyncResult } from "effect/reactivity";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { View } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 
@@ -32,7 +32,7 @@ import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useMarkdownPreviewStyles } from "../files/FileMarkdownPreview";
-import { KinComposer } from "./components/KinComposer";
+import { editKinOutboxEntry, KinComposer, kinDraftKey } from "./components/KinComposer";
 import { KinFoldLine } from "./components/KinFoldLine";
 import { KinMessageBubble, KinPendingBubble, KinSystemLine } from "./components/KinMessageBubble";
 import {
@@ -339,7 +339,12 @@ function KinChatFeed(props: {
 
   const outbox = useAtomValue(kinOutbox.chatAtom(props.environmentId, props.chatId));
   const streamed = mergeKinFeed(props.chat.value, paging.earlier);
-  const { acked, pending } = splitKinOutbox(outbox, streamed.messages);
+  const { acked, pending, echoed } = splitKinOutbox(outbox, streamed.messages);
+  const echoedKey = echoed.join("\n");
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- frees acked outbox entries once the stream carries their message
+  useEffect(() => {
+    if (echoedKey !== "") kinOutbox.forgetEchoed(new Set(echoedKey.split("\n")));
+  }, [echoedKey]);
   const { messages } = mergeKinFeed(streamed, { ...emptyKinChat, messages: acked });
   const feedRows = buildKinFeedRows(messages, props.viewer, expandedRuns);
   const rows: ReadonlyArray<KinChatRow> =
@@ -421,7 +426,12 @@ function KinChatFeed(props: {
           <KinPendingBubble
             entry={item.entry}
             connected={props.connected}
-            onRetry={() => void kinOutbox.retry(item.entry.clientMessageId)}
+            onEdit={() =>
+              void editKinOutboxEntry(
+                kinDraftKey(props.orgId, props.chatId),
+                item.entry.clientMessageId,
+              )
+            }
             onDiscard={() => void kinOutbox.discard(item.entry.clientMessageId)}
           />
         );

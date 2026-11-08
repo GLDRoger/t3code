@@ -1,5 +1,6 @@
 import type { EnvironmentId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import { AppState } from "react-native";
 
 import { writeFileAtomically } from "../../../lib/atomic-file";
 import { uuidv4 } from "../../../lib/uuid";
@@ -7,10 +8,9 @@ import { appAtomRegistry } from "../../../state/atom-registry";
 import { environmentPresentations } from "../../../state/presentation";
 import { kinClient } from "./kinClient";
 import { classifyKinSendFailure, createKinOutbox, type KinOutboxStorage } from "./kinOutbox";
+import { createKinOutboxRetry } from "./kinOutboxRetry";
 
 const OUTBOX_FILE = "kin-outbox.json";
-/** A transient failure while the host still reads as connected tries again after this. */
-const RETRY_WHILE_CONNECTED_MS = 5_000;
 
 async function outboxFile() {
   const { File, Paths } = await import("expo-file-system");
@@ -50,39 +50,45 @@ const connectedEnvironments = (): ReadonlySet<EnvironmentId> => {
   return connected;
 };
 
-let started = false;
-let retryTimer: ReturnType<typeof setTimeout> | null = null;
+const retry = createKinOutboxRetry({
+  isForeground: () => AppState.currentState === "active",
+  deliver: async () => {
+    await kinOutbox.load();
+    const connected = connectedEnvironments();
+    const waiting = [...kinOutbox.waitingEnvironments()].filter((id) => connected.has(id));
+    await Promise.all(waiting.map((environmentId) => kinOutbox.deliver(environmentId)));
+    const stillConnected = connectedEnvironments();
+    return [...kinOutbox.waitingEnvironments()].some((id) => stillConnected.has(id));
+  },
+});
 
-/** Delivers waiting sends for every connected environment. */
-export async function deliverKinOutbox(): Promise<void> {
-  await kinOutbox.load();
-  const connected = connectedEnvironments();
-  const waiting = [...kinOutbox.waitingEnvironments()].filter((id) => connected.has(id));
-  await Promise.all(waiting.map((environmentId) => kinOutbox.deliver(environmentId)));
-  const stillWaiting = [...kinOutbox.waitingEnvironments()].some((id) =>
-    connectedEnvironments().has(id),
-  );
-  if (stillWaiting && retryTimer === null) {
-    retryTimer = setTimeout(() => {
-      retryTimer = null;
-      void deliverKinOutbox();
-    }, RETRY_WHILE_CONNECTED_MS);
-  }
-}
+/** Delivers waiting sends for every connected environment, retrying with backoff. */
+export const deliverKinOutbox = (): Promise<void> => retry.run();
 
-/** Loads the persisted outbox once and sends it whenever an environment comes back. */
-export function startKinOutbox(): void {
-  if (started) return;
-  started = true;
+/** The environment was removed; drop its unsent messages from memory and disk. */
+export const clearKinOutboxEnvironment = (environmentId: EnvironmentId): Promise<void> =>
+  kinOutbox.clearEnvironment(environmentId);
+
+/** Loads the persisted outbox and sends it whenever an environment comes back or the app wakes. */
+export function startKinOutbox(): () => void {
   let previous: ReadonlySet<EnvironmentId> = new Set();
-  appAtomRegistry.subscribe(
+  const unsubscribe = appAtomRegistry.subscribe(
     environmentPresentations.presentationsAtom,
     () => {
       const connected = connectedEnvironments();
       const reconnected = [...connected].some((id) => !previous.has(id));
       previous = connected;
-      if (reconnected) void deliverKinOutbox();
+      if (reconnected) void retry.reconnected();
     },
     { immediate: true },
   );
+  const appState = AppState.addEventListener("change", (state) => {
+    if (state === "active") void retry.reconnected();
+    else retry.pause();
+  });
+  return () => {
+    unsubscribe();
+    appState.remove();
+    retry.pause();
+  };
 }

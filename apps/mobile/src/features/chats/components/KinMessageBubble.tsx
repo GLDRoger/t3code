@@ -103,13 +103,14 @@ export function KinSystemLine(props: { readonly row: SystemRow }) {
 export function KinPendingBubble(props: {
   readonly entry: KinOutboxEntry;
   readonly connected: boolean;
-  readonly onRetry: () => void;
+  /** Puts the body back in the draft and drops the refused send. */
+  readonly onEdit: () => void;
   readonly onDiscard: () => void;
 }) {
   const { entry } = props;
   const failed = entry.state === "failed";
   const status = failed
-    ? "Not sent. Tap to retry"
+    ? `Not sent: ${entry.error ?? "refused"}`
     : props.connected || entry.state === "sending"
       ? "Sending…"
       : "Waiting for connection";
@@ -117,7 +118,7 @@ export function KinPendingBubble(props: {
     <View className="items-end gap-1 px-4 pb-1.5">
       <Pressable
         disabled={!failed}
-        onPress={props.onRetry}
+        onPress={props.onEdit}
         onLongPress={
           failed
             ? () =>
@@ -132,7 +133,7 @@ export function KinPendingBubble(props: {
         }
         accessibilityRole={failed ? "button" : undefined}
         accessibilityLabel={`You: ${entry.body}. ${status}.`}
-        accessibilityHint={failed ? (entry.error ?? undefined) : undefined}
+        accessibilityHint={failed ? "Edit it in the message box." : undefined}
         className={cn(
           "max-w-[85%] rounded-[20px] bg-user-bubble px-3.5 py-2.5",
           !failed && "opacity-70",
@@ -142,14 +143,25 @@ export function KinPendingBubble(props: {
           {entry.body}
         </Text>
       </Pressable>
-      <Text
-        textRole="caption"
-        importantForAccessibility="no"
+      <View
+        className="flex-row items-center gap-2 px-1"
+        importantForAccessibility="no-hide-descendants"
         accessibilityElementsHidden
-        className={cn("px-1", failed ? "text-danger-foreground" : "text-foreground-muted")}
       >
-        {status}
-      </Text>
+        <Text
+          textRole="caption"
+          className={failed ? "text-danger-foreground" : "text-foreground-muted"}
+        >
+          {status}
+        </Text>
+        {failed ? (
+          <Pressable onPress={props.onEdit} hitSlop={12}>
+            <Text textRole="caption" className="font-t3-medium text-foreground">
+              Edit
+            </Text>
+          </Pressable>
+        ) : null}
+      </View>
     </View>
   );
 }
