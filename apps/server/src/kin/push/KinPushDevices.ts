@@ -109,7 +109,8 @@ const make = Effect.gen(function* () {
       const person = yield* personIn(caller, input.orgId);
       const now = yield* Clock.currentTimeMillis;
       // A phone re-registers on every connect, which also moves the row to its current session.
-      yield* sql`INSERT INTO kin_push_devices ${sql.insert({
+      // Someone else's token moves only once the session that registered it is revoked or gone.
+      const saved = yield* sql`INSERT INTO kin_push_devices ${sql.insert({
         org_id: input.orgId,
         token: input.token,
         person_id: person.personId,
@@ -128,7 +129,13 @@ const make = Effect.gen(function* () {
           device_label = excluded.device_label,
           session_id = excluded.session_id,
           proof_key_thumbprint = excluded.proof_key_thumbprint,
-          updated_at = excluded.updated_at`;
+          updated_at = excluded.updated_at
+        WHERE kin_push_devices.person_id = excluded.person_id OR NOT EXISTS (
+          SELECT 1 FROM auth_sessions s
+          WHERE s.session_id = kin_push_devices.session_id AND s.revoked_at IS NULL)
+        RETURNING token`;
+      if (saved.length === 0)
+        return yield* fail("not_member", "This device is registered to someone else.");
       yield* sql`DELETE FROM kin_push_devices
         WHERE org_id = ${input.orgId} AND person_id = ${person.personId} AND token != ${input.token}
           AND token NOT IN (

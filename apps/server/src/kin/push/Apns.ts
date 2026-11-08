@@ -18,6 +18,7 @@ const ORIGINS: Record<KinApsEnvironment, string> = {
 };
 // APNs refuses tokens older than an hour and throttles ones renewed more often than every 20 minutes.
 const JWT_TTL_MS = 40 * 60 * 1000;
+const JWT_MIN_RENEW_MS = 20 * 60 * 1000;
 const REQUEST_TIMEOUT = "10 seconds";
 
 export type KinApnsCredentials = {
@@ -172,42 +173,53 @@ const unconfigured = (reason: string) =>
   );
 
 const unreachable: KinApnsResult = { status: 0, reason: "transport" };
-// APNs answers these with 403 when the cached provider token stopped working.
-const STALE_PROVIDER_TOKEN = new Set(["ExpiredProviderToken", "InvalidProviderToken"]);
+// No answer, or APNs' own trouble: worth one more try on a new connection.
+const RETRY_STATUSES = new Set([0, 500, 503]);
+// An idle HTTP/2 connection can be dead without erroring, so one unused this long is replaced.
+const SESSION_IDLE_MS = 5 * 60 * 1000;
 
 /** The ready transport. `origin` exists so tests can point it at a local HTTP/2 server. */
 export const makeApnsTransport = Effect.fn("KinApns.makeTransport")(function* (
   credentials: KinApnsCredentials,
   origin: (environment: KinApsEnvironment) => string = (environment) => ORIGINS[environment],
 ) {
-  const sessions = new Map<KinApsEnvironment, NodeHttp2.ClientHttp2Session>();
+  type Open = { readonly session: NodeHttp2.ClientHttp2Session; usedAt: number };
+  const sessions = new Map<KinApsEnvironment, Open>();
   let jwt: { readonly value: string; readonly at: number } | undefined;
   yield* Effect.addFinalizer(() =>
     Effect.sync(() => {
-      for (const session of sessions.values()) session.close();
+      for (const open of sessions.values()) open.session.close();
       sessions.clear();
     }),
   );
 
-  const sessionFor = (environment: KinApsEnvironment) => {
+  const sessionFor = Effect.fnUntraced(function* (environment: KinApsEnvironment) {
+    const now = yield* Clock.currentTimeMillis;
     const open = sessions.get(environment);
-    if (open !== undefined && !open.closed && !open.destroyed) return open;
+    if (open !== undefined && !open.session.closed && !open.session.destroyed) {
+      if (now - open.usedAt < SESSION_IDLE_MS) {
+        open.usedAt = now;
+        return open.session;
+      }
+      sessions.delete(environment);
+      open.session.close();
+    }
     const session = NodeHttp2.connect(origin(environment));
     const drop = () => {
-      if (sessions.get(environment) === session) sessions.delete(environment);
+      if (sessions.get(environment)?.session === session) sessions.delete(environment);
     };
     session.on("error", drop);
     session.on("close", drop);
     session.on("goaway", drop);
     session.unref();
-    sessions.set(environment, session);
+    sessions.set(environment, { session, usedAt: now });
     return session;
-  };
+  });
 
   // A dead connection never errors on its own, so a timeout must end it or every push stalls.
   const discard = (environment: KinApsEnvironment, session: NodeHttp2.ClientHttp2Session) =>
     Effect.sync(() => {
-      if (sessions.get(environment) === session) sessions.delete(environment);
+      if (sessions.get(environment)?.session === session) sessions.delete(environment);
       session.destroy();
     });
 
@@ -215,28 +227,50 @@ export const makeApnsTransport = Effect.fn("KinApns.makeTransport")(function* (
     const now = yield* Clock.currentTimeMillis;
     if (jwt === undefined || now - jwt.at >= JWT_TTL_MS)
       jwt = { value: apnsProviderToken(credentials, now), at: now };
-    return jwt.value;
+    return jwt;
+  });
+
+  const attempt = Effect.fnUntraced(function* (push: KinApnsPush, body: string, token: string) {
+    const session = yield* sessionFor(push.environment);
+    const result = yield* post(session, apnsRequestHeaders(credentials, push, token), body).pipe(
+      Effect.timeout(REQUEST_TIMEOUT),
+      Effect.tapError(() => discard(push.environment, session)),
+      Effect.catch((error) =>
+        Effect.logWarning("Kin push couldn't reach APNs.", { error: String(error) }).pipe(
+          Effect.as(unreachable),
+        ),
+      ),
+    );
+    if (result.status === 500 || result.status === 503) yield* discard(push.environment, session);
+    return result;
   });
 
   return KinApnsTransport.of({
     status: "ready",
+    // At most one retry per push. A 429 isn't retried: the sender logs it and drops the push.
     send: Effect.fn("KinApnsTransport.send")(function* (push: KinApnsPush) {
-      const headers = apnsRequestHeaders(credentials, push, yield* providerToken);
-      const result = yield* encodeJson(push.payload).pipe(
-        Effect.flatMap((body) => {
-          const session = sessionFor(push.environment);
-          return post(session, headers, body).pipe(
-            Effect.timeout(REQUEST_TIMEOUT),
-            Effect.tapError(() => discard(push.environment, session)),
-          );
-        }),
-        Effect.catch((error) =>
-          Effect.logWarning("Kin push couldn't reach APNs.", { error: String(error) }).pipe(
-            Effect.as(unreachable),
-          ),
-        ),
-      );
-      if (STALE_PROVIDER_TOKEN.has(result.reason ?? "")) jwt = undefined;
+      const body = yield* encodeJson(push.payload).pipe(Effect.option);
+      if (Option.isNone(body)) {
+        yield* Effect.logWarning("Kin push payload isn't JSON.");
+        return { status: 0, reason: "payload" };
+      }
+      const token = yield* providerToken;
+      const result = yield* attempt(push, body.value, token.value);
+      if (RETRY_STATUSES.has(result.status)) return yield* attempt(push, body.value, token.value);
+      if (result.reason === "ExpiredProviderToken") {
+        const now = yield* Clock.currentTimeMillis;
+        // APNs throttles provider tokens renewed more often than every 20 minutes.
+        if (now - token.at < JWT_MIN_RENEW_MS) {
+          yield* Effect.logWarning("APNs called a fresh Kin provider token expired.");
+          return result;
+        }
+        jwt = { value: apnsProviderToken(credentials, now), at: now };
+        return yield* attempt(push, body.value, jwt.value);
+      }
+      if (result.reason === "InvalidProviderToken")
+        yield* Effect.logError(
+          "APNs refused the Kin provider token: check KIN_APNS_KEY_ID, KIN_APNS_TEAM_ID and the key.",
+        );
       return result;
     }),
   });

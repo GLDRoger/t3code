@@ -1,4 +1,4 @@
-import type { AuthSessionId, KinChatId } from "@t3tools/contracts";
+import type { AuthSessionId, KinChatId, KinPushWatchBeat } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -6,28 +6,26 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
-/** A watcher whose last beat is older than this no longer counts as on screen. */
-const KIN_PUSH_PRESENCE_TTL = Duration.seconds(90);
-const BEAT_INTERVAL = Duration.seconds(30);
-const BEAT: unique symbol = Symbol("KinPushPresence.beat");
+/** A watcher not refreshed for this long no longer counts as on screen. */
+const KIN_PUSH_PRESENCE_TTL = Duration.seconds(45);
+const KIN_PUSH_BEAT_INTERVAL = Duration.seconds(15);
 
 /**
  * Which sessions have a chat open right now. Upstream owns the phone's foreground handler,
  * so the server skips a push for a chat the device is already showing (mobile spec, correction 8).
- * The phone ends its chat stream when it leaves the foreground, so a live stream means "on screen".
  */
 export class KinPushPresence extends Context.Service<
   KinPushPresence,
   {
     /**
-     * Marks the chat open for the session while the stream runs. Beats travel through the
-     * stream, and the RPC server pulls only after the client acks a chunk, so a half-open
-     * socket stops refreshing once a chunk goes unacked.
+     * Marks the chat open for the session while the stream runs. Each pull refreshes the mark,
+     * and the RPC server pulls only after the client acks the last beat, so a half-open socket
+     * stops suppressing within the TTL whatever the chat's traffic.
      */
-    readonly watching: (
+    readonly watch: (
       sessionId: AuthSessionId,
       chatId: KinChatId,
-    ) => <A, E, R>(stream: Stream.Stream<A, E, R>) => Stream.Stream<A, E, R>;
+    ) => Stream.Stream<KinPushWatchBeat>;
     readonly isWatching: (sessionId: AuthSessionId, chatId: KinChatId) => Effect.Effect<boolean>;
   }
 >()("t3/kin/push/KinPushPresence") {}
@@ -38,7 +36,7 @@ const make = Effect.sync(() => {
   const slot = (sessionId: AuthSessionId, chatId: KinChatId) => `${sessionId}\u0000${chatId}`;
   const ttl = Duration.toMillis(KIN_PUSH_PRESENCE_TTL);
 
-  const watch = Effect.fn("KinPushPresence.watch")(function* (key: string) {
+  const mark = Effect.fn("KinPushPresence.mark")(function* (key: string) {
     const watcher: Watcher = { refreshedAt: yield* Clock.currentTimeMillis };
     yield* Effect.acquireRelease(
       Effect.sync(() => {
@@ -57,26 +55,21 @@ const make = Effect.sync(() => {
   });
 
   return KinPushPresence.of({
-    watching:
-      (sessionId, chatId) =>
-      <A, E, R>(stream: Stream.Stream<A, E, R>) =>
-        Stream.unwrap(
-          Effect.map(watch(slot(sessionId, chatId)), (watcher) =>
-            stream.pipe(
-              Stream.merge(Stream.tick(BEAT_INTERVAL).pipe(Stream.as(BEAT)), {
-                haltStrategy: "left",
+    watch: (sessionId, chatId) =>
+      Stream.unwrap(
+        Effect.map(mark(slot(sessionId, chatId)), (watcher) =>
+          // Refresh first, then wait: the refresh marks the moment the previous beat was acked.
+          Stream.fromEffectRepeat(
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) => {
+                watcher.refreshedAt = now;
               }),
-              Stream.tap((event) =>
-                event === BEAT
-                  ? Effect.map(Clock.currentTimeMillis, (now) => {
-                      watcher.refreshedAt = now;
-                    })
-                  : Effect.void,
-              ),
-              Stream.filter((event): event is A => event !== BEAT),
+              Effect.andThen(Effect.sleep(KIN_PUSH_BEAT_INTERVAL)),
+              Effect.as("beat" as const),
             ),
           ),
         ),
+      ),
     isWatching: Effect.fn("KinPushPresence.isWatching")(function* (sessionId, chatId) {
       const watchers = open.get(slot(sessionId, chatId));
       if (watchers === undefined) return false;

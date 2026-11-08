@@ -140,7 +140,11 @@ const seed = Effect.gen(function* () {
     platform: "ios",
     apsEnvironment: "development",
   });
-  return { sql, devices, sender: yield* Sender.KinPushSender };
+  const sender = yield* Sender.KinPushSender;
+  // Waits for the background send so tests can read its outcome.
+  const notify = (notification: Sender.KinPushNotification) =>
+    sender.notify(notification).pipe(Effect.flatMap(Fiber.join));
+  return { sql, devices, sender, notify };
 });
 
 const postMessage = (
@@ -184,7 +188,7 @@ describe("KinPushSender", () => {
   it.effect("sends approval pushes only to approvers' devices, with ids and fixed text", () => {
     const apns = makeApns();
     return Effect.gen(function* () {
-      const { sender, sql } = yield* seed;
+      const { sender, notify, sql } = yield* seed;
       const actions = yield* PendingActions.KinPendingActions;
       const { action } = yield* actions.create({
         orgId,
@@ -215,7 +219,16 @@ describe("KinPushSender", () => {
         source: KinEventId.make("evt-212"),
       } as unknown as PendingActions.KinPendingActionCreateInput);
 
-      const outcome = yield* sender.notify({ _tag: "approval", orgId, actionId: action.id });
+      // The send outlives the request that asked for it.
+      const handed = yield* Deferred.make<Fiber.Fiber<Sender.KinPushOutcome>>();
+      const request = yield* sender.notify({ _tag: "approval", orgId, actionId: action.id }).pipe(
+        Effect.flatMap((delivery) => Deferred.succeed(handed, delivery)),
+        Effect.andThen(Effect.never),
+        Effect.forkChild,
+      );
+      const delivery = yield* Deferred.await(handed);
+      yield* Fiber.interrupt(request);
+      const outcome = yield* Fiber.join(delivery);
       assert.deepStrictEqual(outcome, { status: "ready", sent: 2, suppressed: 0, failed: 0 });
       assert.deepStrictEqual(
         apns.sent.map((push) => [push.token, push.environment]),
@@ -243,7 +256,7 @@ describe("KinPushSender", () => {
 
       // Once the approver's key session is revoked, nobody is an approver and nothing is sent.
       yield* sql`UPDATE auth_sessions SET revoked_at = ${T} WHERE session_id = 'sess-key'`;
-      const after = yield* sender.notify({ _tag: "approval", orgId, actionId: action.id });
+      const after = yield* notify({ _tag: "approval", orgId, actionId: action.id });
       assert.strictEqual(after.sent, 0);
       assert.strictEqual(apns.sent.length, 2);
     }).pipe(Effect.provide(build(apns)));
@@ -252,7 +265,7 @@ describe("KinPushSender", () => {
   it.effect("picks the category from the widget and routes only to who it awaits", () => {
     const apns = makeApns();
     return Effect.gen(function* () {
-      const { sender, sql } = yield* seed;
+      const { notify, sql } = yield* seed;
       const cases = [
         ["deferral", { phase: "confirmed" }, [member], ["kin.deferral.confirmed"]],
         [
@@ -269,7 +282,7 @@ describe("KinPushSender", () => {
       for (const [type, state, awaiting, expected] of cases) {
         apns.sent.length = 0;
         const widgetId = yield* postWidget(sql, type, state, awaiting);
-        yield* sender.notify({ _tag: "widget", orgId, widgetId });
+        yield* notify({ _tag: "widget", orgId, widgetId });
         assert.deepStrictEqual(
           categories(apns.sent),
           [...expected],
@@ -278,7 +291,7 @@ describe("KinPushSender", () => {
       }
       apns.sent.length = 0;
       const widgetId = yield* postWidget(sql, "deferral", { phase: "confirmed" }, [member]);
-      yield* sender.notify({ _tag: "widget", orgId, widgetId });
+      yield* notify({ _tag: "widget", orgId, widgetId });
       assert.deepStrictEqual(apns.sent[0]?.payload, {
         aps: {
           alert: { title: "Deferred", body: "A deferral needs a look" },
@@ -299,7 +312,7 @@ describe("KinPushSender", () => {
 
       apns.sent.length = 0;
       const messageId = yield* postMessage(sql, { personId: owner, memberId: "m_owner" });
-      yield* sender.notify({ _tag: "message", orgId, messageId });
+      yield* notify({ _tag: "message", orgId, messageId });
       // The author doesn't hear about their own message, and the text never leaves the server.
       assert.deepStrictEqual(
         apns.sent.map((push) => push.token),
@@ -311,44 +324,48 @@ describe("KinPushSender", () => {
       assert.match(apns.sent[0]?.collapseId ?? "", /^kin:[0-9a-f]{12}$/);
       // A suggestion only the owner can see isn't announced to anyone.
       const suggested = yield* postMessage(sql, "system", "suggested");
-      assert.strictEqual(
-        (yield* sender.notify({ _tag: "message", orgId, messageId: suggested })).sent,
-        0,
-      );
+      assert.strictEqual((yield* notify({ _tag: "message", orgId, messageId: suggested })).sent, 0);
     }).pipe(Effect.provide(build(apns)));
   });
 
-  it.effect("skips a device while its session has the chat open", () => {
+  it.effect("skips a device while its session watches the chat and acks", () => {
     const apns = makeApns();
     return Effect.gen(function* () {
-      const { sender, sql } = yield* seed;
+      const { notify, sql } = yield* seed;
       const presence = yield* KinPushPresence;
+      const phone = AuthSessionId.make("sess-owner-phone");
+      const chat = KinChatId.make("chat_team");
       const messageId = yield* postMessage(sql, { personId: member, memberId: "m_priya" });
-      const open = yield* Deferred.make<void>();
-      const stream = yield* Stream.fromEffect(Deferred.succeed(open, undefined)).pipe(
-        Stream.concat(Stream.never),
-        presence.watching(AuthSessionId.make("sess-owner-phone"), KinChatId.make("chat_team")),
-        Stream.runDrain,
-        Effect.forkChild,
-      );
-      yield* Deferred.await(open);
-      const watched = yield* sender.notify({ _tag: "message", orgId, messageId });
+      const watching = yield* presence
+        .watch(phone, chat)
+        .pipe(Stream.runDrain, Effect.forkChild({ startImmediately: true }));
+      const watched = yield* notify({ _tag: "message", orgId, messageId });
       assert.deepStrictEqual(watched, { status: "ready", sent: 1, suppressed: 1, failed: 0 });
       assert.deepStrictEqual(
         apns.sent.map((push) => push.token),
         [ownerTablet],
       );
-      // Closing the chat stream ends the suppression.
-      yield* Fiber.interrupt(stream);
-      const closed = yield* sender.notify({ _tag: "message", orgId, messageId });
+      // Closing the watch ends the suppression.
+      yield* Fiber.interrupt(watching);
+      const closed = yield* notify({ _tag: "message", orgId, messageId });
       assert.deepStrictEqual(closed, { status: "ready", sent: 2, suppressed: 0, failed: 0 });
+
+      // A phone that dropped off without closing its socket stops acking. After an idle hour,
+      // the next message reaches it.
+      yield* presence.watch(phone, chat).pipe(
+        Stream.runForEach(() => Effect.never),
+        Effect.forkChild({ startImmediately: true }),
+      );
+      for (let minute = 0; minute < 60; minute += 1) yield* TestClock.adjust("1 minute");
+      const idle = yield* notify({ _tag: "message", orgId, messageId });
+      assert.deepStrictEqual(idle, { status: "ready", sent: 2, suppressed: 0, failed: 0 });
     }).pipe(Effect.provide(build(apns)));
   });
 
   it.effect("reaches only people still in the chat, in this org, and not muted", () => {
     const apns = makeApns();
     return Effect.gen(function* () {
-      const { sender, sql, devices } = yield* seed;
+      const { notify, sql, devices } = yield* seed;
       // Someone in another org with a device there hears nothing about this org's chat.
       const elsewhere = KinOrgId.make("org_02");
       const stranger = KinPersonId.make("h_stranger");
@@ -367,7 +384,7 @@ describe("KinPushSender", () => {
             WHERE member_id = 'm_priya'`;
           apns.sent.length = 0;
           const messageId = yield* postMessage(sql, { personId: owner, memberId: "m_owner" });
-          yield* sender.notify({ _tag: "message", orgId, messageId });
+          yield* notify({ _tag: "message", orgId, messageId });
           return apns.sent.map((push) => push.token);
         });
       assert.deepStrictEqual(yield* recipients(null, null), [memberPhone]);
@@ -395,7 +412,7 @@ describe("KinPushSender", () => {
       }),
     );
     return Effect.gen(function* () {
-      const { sender, sql, devices } = yield* seed;
+      const { notify, sql, devices } = yield* seed;
       for (const fill of ["d", "e", "f", "1"])
         yield* devices.register(caller("sess-owner-phone", owner), {
           orgId,
@@ -404,7 +421,7 @@ describe("KinPushSender", () => {
           apsEnvironment: "production",
         });
       const messageId = yield* postMessage(sql, { personId: member, memberId: "m_priya" });
-      const outcome = yield* sender.notify({ _tag: "message", orgId, messageId });
+      const outcome = yield* notify({ _tag: "message", orgId, messageId });
       assert.deepStrictEqual(outcome, { status: "ready", sent: 6, suppressed: 0, failed: 0 });
       assert.strictEqual(peak, 4);
       assert.strictEqual(started.length, 6);
@@ -414,9 +431,9 @@ describe("KinPushSender", () => {
   it.effect("sends nothing without an APNs key", () => {
     const apns = makeApns("unconfigured");
     return Effect.gen(function* () {
-      const { sender, sql } = yield* seed;
+      const { notify, sql } = yield* seed;
       const messageId = yield* postMessage(sql, { personId: owner, memberId: "m_owner" });
-      assert.deepStrictEqual(yield* sender.notify({ _tag: "message", orgId, messageId }), {
+      assert.deepStrictEqual(yield* notify({ _tag: "message", orgId, messageId }), {
         status: "unconfigured",
         sent: 0,
         suppressed: 0,
@@ -499,6 +516,41 @@ describe("KinPushDevices", () => {
     }).pipe(Effect.provide(build(apns)));
   });
 
+  it.effect("hands a token to another person only once its session is revoked or gone", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { sql, devices } = yield* seed;
+      const takeover = devices.register(caller("sess-member", member), {
+        orgId,
+        token: ownerPhone,
+        platform: "ios",
+        apsEnvironment: "development",
+      });
+      const owners = sql<{ person_id: string }>`
+        SELECT person_id FROM kin_push_devices WHERE token = ${ownerPhone}`;
+      const refused = yield* Effect.exit(takeover);
+      assert.isTrue(
+        Exit.isFailure(refused) &&
+          (refused.cause.reasons[0] as { error?: KinPushError }).error?.reason === "not_member",
+      );
+      assert.deepStrictEqual(yield* owners, [{ person_id: owner }]);
+      for (const release of [
+        sql`UPDATE auth_sessions SET revoked_at = ${T} WHERE session_id = 'sess-owner-phone'`,
+        sql`DELETE FROM auth_sessions WHERE session_id = 'sess-owner-phone'`,
+      ]) {
+        yield* sql`UPDATE kin_push_devices SET person_id = ${owner},
+          session_id = 'sess-owner-phone' WHERE token = ${ownerPhone}`;
+        yield* sql`INSERT OR REPLACE INTO auth_sessions (session_id, subject, scopes, method,
+            issued_at, expires_at)
+          VALUES ('sess-owner-phone', 'x', '[]', 'bearer-access-token', ${T},
+            '2026-12-07T00:00:00.000Z')`;
+        yield* release;
+        yield* takeover;
+        assert.deepStrictEqual(yield* owners, [{ person_id: member }]);
+      }
+    }).pipe(Effect.provide(build(apns)));
+  });
+
   it.effect("keeps the ten most recently registered devices per person", () => {
     const apns = makeApns();
     return Effect.gen(function* () {
@@ -532,10 +584,10 @@ describe("KinPushDevices", () => {
   it.effect("drops a dead token, unless the phone registered it again since", () => {
     const apns = makeApns();
     return Effect.gen(function* () {
-      const { sender, sql } = yield* seed;
+      const { notify, sql } = yield* seed;
       const notifyOwner = Effect.gen(function* () {
         const messageId = yield* postMessage(sql, { personId: member, memberId: "m_priya" });
-        return yield* sender.notify({ _tag: "message", orgId, messageId });
+        return yield* notify({ _tag: "message", orgId, messageId });
       });
       // A wrong topic is our misconfiguration: the token stays.
       apns.answers.set(ownerTablet, { status: 400, reason: "DeviceTokenNotForTopic" });

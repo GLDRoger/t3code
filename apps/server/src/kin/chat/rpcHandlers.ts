@@ -8,7 +8,6 @@ import * as RpcGroup from "effect/rpc/RpcGroup";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { KinServer } from "../layer.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
-import { KinPushPresence } from "../push/KinPushPresence.ts";
 import { KinIdentity } from "./KinIdentity.ts";
 import { KinChatService } from "./KinChatService.ts";
 
@@ -31,12 +30,11 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
       identity: Context.get(kin.value.services.value, KinIdentity),
       budget: Context.get(kin.value.services.value, KinBudget),
       chat: Context.get(kin.value.services.value, KinChatService),
-      presence: Context.get(kin.value.services.value, KinPushPresence),
     };
   });
   const viewer = Effect.gen(function* () {
-    const { identity, chat, presence } = yield* services;
-    return { chat, presence, people: yield* identity.resolve(session) };
+    const { identity, chat } = yield* services;
+    return { chat, people: yield* identity.resolve(session) };
   });
   return group.of({
     "kin.budget.get": (input) =>
@@ -84,12 +82,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
       ),
     "kin.chat.subscribe": (input) =>
       Stream.unwrap(
-        viewer.pipe(
-          // While this stream lives, pushes for the chat skip this session's device.
-          Effect.map(({ chat, people, presence }) =>
-            chat.subscribe(people, input).pipe(presence.watching(session.sessionId, input.chatId)),
-          ),
-        ),
+        viewer.pipe(Effect.map(({ chat, people }) => chat.subscribe(people, input))),
       ).pipe(
         Stream.tapError(logInfra),
         Stream.mapError(mapError),

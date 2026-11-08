@@ -13,6 +13,7 @@ import type {
 import * as Context from "effect/Context";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import type * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -90,15 +91,15 @@ export class KinPushSender extends Context.Service<
   KinPushSender,
   {
     readonly status: KinPushSendingStatus;
-    /**
-     * Never fails: a push is best effort, and a failure is logged without the token. Callers run
-     * it after their transaction commits and fork it off the request, since APNs can take seconds.
-     */
-    readonly notify: (notification: KinPushNotification) => Effect.Effect<KinPushOutcome>;
+    /** Call after the commit; it sends in the background, outliving the request, and never fails. */
+    readonly notify: (
+      notification: KinPushNotification,
+    ) => Effect.Effect<Fiber.Fiber<KinPushOutcome>>;
   }
 >()("t3/kin/push/KinPushSender") {}
 
 const make = Effect.gen(function* () {
+  const scope = yield* Effect.scope;
   const sql = yield* SqlClient.SqlClient;
   const apns = yield* KinApnsTransport;
   const devices = yield* KinPushDevices;
@@ -245,13 +246,22 @@ const make = Effect.gen(function* () {
     });
     if (result.status === 200) return "sent" as const;
     const deviceId = kinPushDeviceId(device.token);
-    if (result.status === 410 || DEAD_TOKEN_REASONS.has(result.reason ?? "")) {
-      yield* devices.forget(
-        orgId,
-        device.token,
-        result.status === 410 ? result.timestamp : undefined,
-      );
+    if (result.status === 410) {
+      yield* devices.forget(orgId, device.token, result.timestamp);
       yield* Effect.logInfo("Kin push device token is gone.", { deviceId, reason: result.reason });
+    } else if (DEAD_TOKEN_REASONS.has(result.reason ?? "")) {
+      yield* devices.forget(orgId, device.token);
+      // Often a token sent to the wrong APNs environment, so say which one it went to.
+      yield* Effect.logWarning("APNs called a Kin push device token bad; it was removed.", {
+        deviceId,
+        reason: result.reason,
+        environment: device.apsEnvironment,
+      });
+    } else if (result.status === 429) {
+      yield* Effect.logWarning("APNs is throttling Kin pushes; this one was dropped.", {
+        deviceId,
+        reason: result.reason,
+      });
     } else if (CONFIG_REASONS.has(result.reason ?? "")) {
       yield* Effect.logError("APNs refused a Kin push: check KIN_APNS_TOPIC.", {
         deviceId,
@@ -280,7 +290,7 @@ const make = Effect.gen(function* () {
 
   const nothing: KinPushOutcome = { status: apns.status, sent: 0, suppressed: 0, failed: 0 };
 
-  const notify = Effect.fn("KinPushSender.notify")(
+  const run = Effect.fn("KinPushSender.run")(
     function* (notification: KinPushNotification) {
       if (apns.status === "unconfigured") return nothing;
       const push =
@@ -302,6 +312,10 @@ const make = Effect.gen(function* () {
       ),
     ),
   );
+
+  const notify = Effect.fn("KinPushSender.notify")(function* (notification: KinPushNotification) {
+    return yield* Effect.forkIn(run(notification), scope);
+  });
 
   return KinPushSender.of({ status: apns.status, notify });
 });

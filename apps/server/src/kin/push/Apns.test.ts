@@ -150,48 +150,86 @@ const push = {
   payload: {},
 } as const;
 
-it.effect("replaces a dead APNs connection and renews a refused provider token", () =>
+const credentials = {
+  keyId: "ABC123DEFG",
+  teamId: "TEAM123456",
+  topic: "codes.kin.app",
+  key: NodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" }).privateKey,
+};
+
+it.effect("retries once on a new connection after no answer or a 5xx, never after a 429", () =>
   Effect.gen(function* () {
     const apns = yield* fakeApns([
       "hang",
-      { status: 403, body: { reason: "ExpiredProviderToken" } },
       { status: 200 },
+      { status: 500 },
       { status: 200 },
-      { status: 410, body: { reason: "Unregistered", timestamp: 1_794_000_000_000 } },
+      { status: 503 },
+      { status: 503 },
+      { status: 429, body: { reason: "TooManyRequests" } },
+      { status: 200 },
     ]);
-    const credentials = {
-      keyId: "ABC123DEFG",
-      teamId: "TEAM123456",
-      topic: "codes.kin.app",
-      key: NodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" }).privateKey,
-    };
     const transport = yield* makeApnsTransport(credentials, () => apns.origin);
 
-    // The first connection takes the request and never answers.
+    // The first connection takes the request and never answers; the retry opens a new one.
     const stalled = yield* Effect.forkChild(transport.send(push));
     yield* Effect.promise(() => apns.hung);
     yield* TestClock.adjust("10 seconds");
-    assert.deepStrictEqual(yield* Fiber.join(stalled), { status: 0, reason: "transport" });
+    assert.deepStrictEqual(yield* Fiber.join(stalled), { status: 200, reason: undefined });
+    assert.deepStrictEqual(yield* transport.send(push), { status: 200, reason: undefined });
+    // Only one retry: a second 503 is the answer.
+    assert.deepStrictEqual(yield* transport.send(push), { status: 503, reason: undefined });
+    assert.deepStrictEqual(yield* transport.send(push), {
+      status: 429,
+      reason: "TooManyRequests",
+    });
+    // A connection that answered 5xx is dropped too, and one idle five minutes is replaced.
+    yield* TestClock.adjust("5 minutes");
+    yield* transport.send(push);
+    assert.deepStrictEqual(
+      apns.seen.map((request) => request.session),
+      [0, 1, 1, 2, 2, 3, 4, 5],
+    );
+  }).pipe(Effect.scoped),
+);
 
-    // The next push opens a new connection instead of waiting on the dead one.
+it.effect("renews an expired provider token at most every 20 minutes and keeps a refused one", () =>
+  Effect.gen(function* () {
+    const apns = yield* fakeApns([
+      { status: 403, body: { reason: "ExpiredProviderToken" } },
+      { status: 403, body: { reason: "ExpiredProviderToken" } },
+      { status: 200 },
+      { status: 403, body: { reason: "InvalidProviderToken" } },
+      { status: 200 },
+      { status: 410, body: { reason: "Unregistered", timestamp: 1_794_000_000_000 } },
+    ]);
+    const transport = yield* makeApnsTransport(credentials, () => apns.origin);
+
+    // A token APNs calls expired right after signing isn't renewed: that would be throttled.
     assert.deepStrictEqual(yield* transport.send(push), {
       status: 403,
       reason: "ExpiredProviderToken",
     });
+    // Twenty minutes in, it is renewed and the push retried with the new one.
+    yield* TestClock.adjust("20 minutes");
     assert.deepStrictEqual(yield* transport.send(push), { status: 200, reason: undefined });
+    // A refused token is a configuration problem; signing again on every push won't fix it.
+    assert.deepStrictEqual(yield* transport.send(push), {
+      status: 403,
+      reason: "InvalidProviderToken",
+    });
     yield* transport.send(push);
     assert.deepStrictEqual(yield* transport.send(push), {
       status: 410,
       reason: "Unregistered",
       timestamp: 1_794_000_000_000,
     });
-    const [first, refused, renewed, cached] = apns.seen;
-    assert.deepStrictEqual(
-      apns.seen.map((request) => request.session),
-      [0, 1, 1, 1, 1],
+    const [first, expired, renewed, refused, kept] = apns.seen.map(
+      (request) => request.authorization,
     );
-    assert.strictEqual(refused?.authorization, first?.authorization);
-    assert.notStrictEqual(renewed?.authorization, refused?.authorization);
-    assert.strictEqual(cached?.authorization, renewed?.authorization);
+    assert.strictEqual(expired, first);
+    assert.notStrictEqual(renewed, expired);
+    assert.strictEqual(refused, renewed);
+    assert.strictEqual(kept, renewed);
   }).pipe(Effect.scoped),
 );

@@ -82,6 +82,13 @@ export type KinPushUnregisterDeviceInput = typeof KinPushUnregisterDeviceInput.T
 export const KinPushUnregisterDeviceResult = Schema.Struct({ removed: Schema.Boolean });
 export type KinPushUnregisterDeviceResult = typeof KinPushUnregisterDeviceResult.Type;
 
+export const KinPushWatchInput = Schema.Struct({ chatId: KinChatId });
+export type KinPushWatchInput = typeof KinPushWatchInput.Type;
+
+/** One per beat interval; the server counts a beat as presence only once the client acks it. */
+export const KinPushWatchBeat = Schema.Literal("beat");
+export type KinPushWatchBeat = typeof KinPushWatchBeat.Type;
+
 export class KinPushError extends Schema.TaggedError<KinPushError>()("KinPushError", {
   reason: Schema.Literals(["not_member", "unavailable"]),
   message: Schema.String,
@@ -90,6 +97,7 @@ export class KinPushError extends Schema.TaggedError<KinPushError>()("KinPushErr
 export const KIN_PUSH_WS_METHODS = {
   registerDevice: "kin.push.registerDevice",
   unregisterDevice: "kin.push.unregisterDevice",
+  watch: "kin.push.watch",
 } as const;
 
 const error = Schema.Union([KinPushError, EnvironmentAuthorizationError]);
@@ -105,12 +113,20 @@ export const KinPushRpcs = [
     success: KinPushUnregisterDeviceResult,
     error,
   }),
+  // Open while a chat is on screen: that session's device gets no pushes for the chat.
+  Rpc.make(KIN_PUSH_WS_METHODS.watch, {
+    payload: KinPushWatchInput,
+    success: KinPushWatchBeat,
+    error,
+    stream: true,
+  }),
 ] as const;
 
 // A device only receives what its session can already read, so reading is the gate.
 export const KIN_PUSH_RPC_SCOPES = {
   [KIN_PUSH_WS_METHODS.registerDevice]: AuthOrchestrationReadScope,
   [KIN_PUSH_WS_METHODS.unregisterDevice]: AuthOrchestrationReadScope,
+  [KIN_PUSH_WS_METHODS.watch]: AuthOrchestrationReadScope,
 } as const satisfies Record<
   (typeof KIN_PUSH_WS_METHODS)[keyof typeof KIN_PUSH_WS_METHODS],
   AuthEnvironmentScope

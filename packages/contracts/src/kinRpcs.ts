@@ -57,4 +57,5 @@ export const KIN_RPC_AGGREGATES = {
   "kin.audit.verify": "kin-approvals",
   "kin.push.registerDevice": "kin-push",
   "kin.push.unregisterDevice": "kin-push",
+  "kin.push.watch": "kin-push",
 } as const;
