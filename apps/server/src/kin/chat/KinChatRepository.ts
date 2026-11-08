@@ -433,7 +433,7 @@ const make = Effect.gen(function* () {
           ON p.thread_id = child.thread_id
           AND (p.run_id = json_extract(child.payload_json, '$.restartContinuationOfRunId')
             OR p.run_id = json_extract(child.payload_json, '$.usageLimitContinuationOfRunId'))
-        -- Only server recovery workers (agent/server) may continue a wake-up; clients are forced to user.
+        -- Continuation links plus agent/server provenance come only from the restart and usage-limit workers.
         JOIN orchestration_v2_projection_messages cm
           ON cm.message_id = json_extract(child.payload_json, '$.userMessageId')
           AND cm.thread_id = child.thread_id AND cm.run_id = child.run_id
