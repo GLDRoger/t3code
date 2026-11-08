@@ -12,6 +12,7 @@ import { KinInboxNotice, KinScreenState } from "./components/KinScreenState";
 import { KinWaitingBanner } from "./components/KinWaitingBanner";
 import { selectKinInboxView } from "./state/kinInboxModel";
 import {
+  formatKinTime,
   kinChatRowLabel,
   kinChatRowView,
   kinDirectory,
@@ -22,13 +23,6 @@ import {
   type KinInboxScreenState,
 } from "./state/kinScreenState";
 import { useKinInbox } from "./state/useKinInbox";
-
-const labelTimeFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
-const labelDateFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
-const formatLabelTime = (date: Date) =>
-  date.toDateString() === new Date().toDateString()
-    ? labelTimeFormat.format(date)
-    : labelDateFormat.format(date);
 
 export function KinChatsScreen() {
   const navigation = useNavigation();
@@ -59,6 +53,7 @@ export function KinChatsView(props: {
 }) {
   const { state, onOpenChat } = props;
   const view = state._tag === "ready" ? selectKinInboxView(state.inbox.value) : null;
+  const banner = view === null ? null : kinWaitingBannerView(view.waiting);
   if (state._tag !== "ready" || view === null || view.rows.length === 0) {
     return (
       <ScreenScrollView
@@ -68,16 +63,20 @@ export function KinChatsView(props: {
       >
         <KinScreenState state={state} onRetry={props.onRetry} loading={<KinChatRowSkeletons />}>
           {() => (
-            <EmptyState
-              title="No chats yet"
-              detail="Your lead's chat appears here once Kin is set up."
-            />
+            <>
+              {banner === null ? null : (
+                <KinWaitingBanner view={banner} onPress={props.onOpenWaiting} />
+              )}
+              <EmptyState
+                title="No chats yet"
+                detail="Your lead's chat appears here once Kin is set up."
+              />
+            </>
           )}
         </KinScreenState>
       </ScreenScrollView>
     );
   }
-  const banner = kinWaitingBannerView(view.waiting);
   const leadChatId = kinLeadChatId(view.rows);
   const rows = view.rows.map((row) => kinChatRowView(row, props.directory));
   return (
@@ -93,7 +92,7 @@ export function KinChatsView(props: {
       renderItem={({ item }) => (
         <KinChatRow
           view={item}
-          accessibilityLabel={kinChatRowLabel(item, formatLabelTime)}
+          accessibilityLabel={kinChatRowLabel(item, (date) => formatKinTime(date))}
           {...(onOpenChat === undefined ? {} : { onPress: () => onOpenChat(item.chatId) })}
         />
       )}

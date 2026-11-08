@@ -7,6 +7,7 @@ import type { KinSynced } from "./kinStreams";
 import type { KinHost, KinProbe } from "./kinHost";
 import { emptyKinInbox, selectKinInboxView, type KinInboxState } from "./kinInboxModel";
 import {
+  formatKinTime,
   kinChatRowLabel,
   kinChatRowView,
   kinDirectory,
@@ -188,7 +189,11 @@ describe("chat list rows", () => {
       } as never,
     }),
   );
-  const member = (principal: object, leftAt: string | null = null) => ({ principal, leftAt });
+  const member = (
+    principal: object,
+    leftAt: string | null = null,
+    joinedAt = "2026-11-01T00:00:00.000Z",
+  ) => ({ principal, leftAt, joinedAt });
   const row = (chat: object, waitingCount = 0) =>
     ({
       chat: {
@@ -285,21 +290,41 @@ describe("chat list rows", () => {
     expect(view.title).toBe("Direct chat");
   });
 
-  it("flattens markdown to one line", () => {
-    expect(kinPreviewText("## Done\n\n- **Merged** [#212](https://x.test) `main`")).toBe(
-      "Done Merged #212 main",
-    );
+  it.each([
+    ["## Done\n\n- **Merged** [#212](https://x.test) `main`", "Done Merged #212 main"],
+    ["*Shipped* the _retry_ fix", "Shipped the retry fix"],
+    ["Run:\n```ts\nawait retry()\n```", "Run: await retry()"],
+    ["2 * 3 * 4 in snake_case_name", "2 * 3 * 4 in snake_case_name"],
+  ])("flattens %j to one line", (body, preview) => {
+    expect(kinPreviewText(body)).toBe(preview);
+  });
+
+  it("initials the first two words", () => {
     expect(kinInitials("  lead ")).toBe("L");
     expect(kinInitials("")).toBe("?");
   });
 
-  it("opens the first direct chat from the footer", () => {
+  it("opens the lead's direct chat from the footer, not the most active one", () => {
+    const direct = (chatId: string, agentId: string, joinedAt: string, waitingCount = 0) =>
+      row(
+        {
+          chatId,
+          members: [
+            member({ _tag: "person", personId: "owner" }),
+            member({ _tag: "agent", agentId }, null, joinedAt),
+          ],
+        },
+        waitingCount,
+      );
     expect(
       kinLeadChatId([
+        // Waiting chats sort first, so the newer QA chat leads the list.
+        direct("qa", "qa", "2026-11-07T00:00:00.000Z", 2),
         row({ chatId: "g", kind: "team_group" }),
-        row({ chatId: "d", kind: "direct" }),
+        direct("lead", "lead", "2026-11-01T00:00:00.000Z"),
       ]),
-    ).toBe("d");
+    ).toBe("lead");
+    expect(kinLeadChatId([row({ chatId: "g", kind: "team_group" })])).toBeNull();
     expect(kinLeadChatId([])).toBeNull();
   });
 });
@@ -311,16 +336,29 @@ describe("kinWaitingBannerView", () => {
     expect(kinWaitingBannerView([])).toBeNull();
   });
 
-  it("names up to two kinds, oldest first, and counts every item", () => {
+  it("names up to two kinds, oldest first, and counts the rest", () => {
     expect(
       kinWaitingBannerView([item("approval"), item("question"), item("question"), item("mention")]),
     ).toEqual({
       count: 4,
-      summary: "1 approval · 2 questions",
-      accessibilityLabel: "Waiting on you, 4 items: 1 approval, 2 questions",
+      summary: "1 approval · 2 questions · 1 more",
+      accessibilityLabel: "Waiting on you, 4 items: 1 approval, 2 questions, and 1 more",
     });
     expect(kinWaitingBannerView([item("decision")])?.accessibilityLabel).toBe(
       "Waiting on you, 1 item: 1 decision",
     );
+  });
+});
+
+describe("formatKinTime", () => {
+  const clock = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+  const day = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
+  const lateLastNight = new Date(2026, 10, 7, 23, 50);
+
+  it.each([
+    ["the same day", new Date(2026, 10, 7, 23, 59), clock.format(lateLastNight)],
+    ["just after midnight", new Date(2026, 10, 8, 0, 10), day.format(lateLastNight)],
+  ])("reads a time against now on %s", (_name, now, label) => {
+    expect(formatKinTime(lateLastNight, now)).toBe(label);
   });
 });

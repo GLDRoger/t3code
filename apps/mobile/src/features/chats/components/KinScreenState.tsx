@@ -10,11 +10,9 @@ import { ErrorBanner } from "../../../components/ui/ErrorBanner";
 import { Notice } from "../../../components/ui/Notice";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
-import { kinInboxNotice, type KinInboxScreenState } from "../state/kinScreenState";
+import { formatKinTime, kinInboxNotice, type KinInboxScreenState } from "../state/kinScreenState";
 
 export type KinReadyState = Extract<KinInboxScreenState, { readonly _tag: "ready" }>;
-
-const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 
 /** A Kin page: its bar, then the inbox's state, with `children` drawing the ready inbox. */
 export function KinInboxPage(props: {
@@ -117,7 +115,7 @@ export function KinScreenState(props: {
 
 /** "Offline. Last updated 9:41." over a cached inbox; nothing while it is live. */
 export function KinInboxNotice(props: { readonly state: KinReadyState }) {
-  const notice = kinInboxNotice(props.state, (date) => timeFormat.format(date));
+  const notice = kinInboxNotice(props.state, (date) => formatKinTime(date));
   if (notice === null) return null;
   return (
     <Notice {...(notice.offline ? { icon: "wifi.slash" as const } : {})} message={notice.message} />

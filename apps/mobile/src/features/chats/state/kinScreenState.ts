@@ -79,6 +79,16 @@ const activityAt = (row: KinInboxRow) => row.chat.lastMessageAt ?? row.chat.crea
 
 type KinReadyScreenState = Extract<KinInboxScreenState, { readonly _tag: "ready" }>;
 
+const kinClockFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+const kinDayFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
+
+/** "9:41" for a time today (by `now`'s local day), "7 Nov" for any other day. */
+export function formatKinTime(date: Date, now: Date = new Date()): string {
+  return date.toDateString() === now.toDateString()
+    ? kinClockFormat.format(date)
+    : kinDayFormat.format(date);
+}
+
 /** The stale-data notice over a ready inbox, or null while it is live and connected. */
 export function kinInboxNotice(
   state: KinReadyScreenState,
@@ -172,7 +182,10 @@ export function kinPreviewText(body: string): string {
   return body
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/^\s{0,3}(?:#{1,6}|>|[-*+]|\d+\.)\s+/gm, "")
+    .replace(/```[^\s`]*/g, "")
     .replace(/(\*\*|__|~~|`)/g, "")
+    .replace(/(^|[^\w*])\*(?=\S)([^*\n]*?\S)\*(?![\w*])/g, "$1$2")
+    .replace(/(^|[^\w])_(?=\S)([^_\n]*?\S)_(?!\w)/g, "$1$2")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -248,7 +261,7 @@ const WAITING_REASON_NOUNS: Record<KinWaitingReason, string> = {
 
 export interface KinWaitingBannerView {
   readonly count: number;
-  /** Up to two kinds of item, oldest first: "1 approval · 2 questions". */
+  /** Up to two kinds of item, oldest first, then the rest: "1 approval · 2 questions · 1 more". */
   readonly summary: string;
   readonly accessibilityLabel: string;
 }
@@ -263,18 +276,37 @@ export function kinWaitingBannerView(
   if (waiting.length === 0) return null;
   const counts = new Map<KinWaitingReason, number>();
   for (const item of waiting) counts.set(item.reason, (counts.get(item.reason) ?? 0) + 1);
-  const parts = [...counts]
-    .slice(0, 2)
-    .map(([reason, count]) => `${count} ${WAITING_REASON_NOUNS[reason]}${count === 1 ? "" : "s"}`);
+  const named = [...counts].slice(0, 2);
+  const parts = named.map(
+    ([reason, count]) => `${count} ${WAITING_REASON_NOUNS[reason]}${count === 1 ? "" : "s"}`,
+  );
+  const rest = waiting.length - named.reduce((sum, [, count]) => sum + count, 0);
   const items = waiting.length === 1 ? "1 item" : `${waiting.length} items`;
   return {
     count: waiting.length,
-    summary: parts.join(" · "),
-    accessibilityLabel: `Waiting on you, ${items}: ${parts.join(", ")}`,
+    summary: [...parts, ...(rest > 0 ? [`${rest} more`] : [])].join(" · "),
+    accessibilityLabel: `Waiting on you, ${items}: ${parts.join(", ")}${rest > 0 ? `, and ${rest} more` : ""}`,
   };
 }
 
-/** The footer's target: in phase 1, the viewer's direct chat with the lead. */
+/**
+ * The footer's target: the viewer's direct chat with the lead. `kin.orgs.list` carries no agent
+ * role yet, so the lead is the agent that joined a direct chat first: setup creates it before any
+ * other. Activity order never decides, so the target stays put as chats update.
+ */
 export function kinLeadChatId(rows: ReadonlyArray<KinInboxRow>): KinChatId | null {
-  return rows.find((row) => row.chat.kind === "direct")?.chat.chatId ?? null;
+  let best: { readonly chatId: KinChatId; readonly joinedAt: string } | null = null;
+  for (const { chat } of rows) {
+    if (chat.kind !== "direct") continue;
+    const agent = chat.members.find((member) => member.principal._tag === "agent");
+    const joinedAt = agent?.joinedAt ?? chat.createdAt;
+    if (
+      best === null ||
+      joinedAt < best.joinedAt ||
+      (joinedAt === best.joinedAt && chat.chatId < best.chatId)
+    ) {
+      best = { chatId: chat.chatId, joinedAt };
+    }
+  }
+  return best?.chatId ?? null;
 }
