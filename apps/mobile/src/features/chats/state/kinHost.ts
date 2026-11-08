@@ -116,6 +116,30 @@ export function resolveKinHost(input: {
   return fallback ?? { _tag: "none" };
 }
 
+/**
+ * The host for a route that names its environment, such as a deep link to one chat. Every paired
+ * host can be Kin under the same org id, so the route's environment wins over the saved host.
+ */
+export function resolveKinHostAt(input: {
+  readonly candidates: ReadonlyArray<KinHostCandidate>;
+  readonly probe: (environmentId: EnvironmentId) => KinProbe;
+  readonly environmentId: EnvironmentId;
+}): KinHost {
+  const candidate = input.candidates.find((c) => c.environmentId === input.environmentId);
+  if (candidate === undefined) return { _tag: "none" };
+  if (!candidate.connected) {
+    return {
+      _tag: "host",
+      environmentId: candidate.environmentId,
+      connected: false,
+      probe: { _tag: "pending" },
+    };
+  }
+  const probe = input.probe(candidate.environmentId);
+  if (probe._tag === "notKin") return { _tag: "none" };
+  return { _tag: "host", environmentId: candidate.environmentId, connected: true, probe };
+}
+
 /** The id worth saving: only a host that answered with an identity. */
 export function kinHostIdToSave(host: KinHost): EnvironmentId | null {
   return host._tag === "host" && host.probe._tag === "ready" ? host.environmentId : null;

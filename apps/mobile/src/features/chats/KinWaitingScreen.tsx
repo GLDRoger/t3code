@@ -1,24 +1,18 @@
-import type { KinWaitingReason } from "@t3tools/contracts";
-import { View } from "react-native";
+import { useNavigation } from "@react-navigation/native";
 
 import { EmptyState } from "../../components/ui/EmptyState";
-import { ListRowLayout } from "../../components/ui/ListRowLayout";
+import { ListRow } from "../../components/ui/ListRow";
 import { ListSection } from "../../components/ui/ListSection";
 import { KinInboxPage } from "./components/KinScreenState";
 import { selectKinInboxView } from "./state/kinInboxModel";
+import { formatKinTime, kinDirectory, kinWaitingRowView } from "./state/kinScreenState";
 import { useKinInbox } from "./state/useKinInbox";
-
-const REASON_LABELS: Record<KinWaitingReason, string> = {
-  approval: "Approval",
-  decision: "Decision",
-  question: "Question",
-  suggestion: "Suggestion",
-  mention: "Mention",
-};
 
 /** Placeholder Waiting on you until the native cards land: one row per item, oldest first. */
 export function KinWaitingScreen() {
-  const { state, retry } = useKinInbox();
+  const navigation = useNavigation();
+  const { host, state, retry } = useKinInbox();
+  const { agentNames } = kinDirectory(host);
   return (
     <KinInboxPage title="Waiting on you" state={state} onRetry={retry}>
       {(ready) => {
@@ -32,16 +26,25 @@ export function KinWaitingScreen() {
             />
           );
         }
-        const chatTitles = new Map(view.rows.map((row) => [row.chat.chatId, row.chat.title]));
         return (
           <ListSection>
             {view.waiting.map((item) => {
-              const label = REASON_LABELS[item.reason];
-              const chat = chatTitles.get(item.chatId) ?? "Direct chat";
+              const row = kinWaitingRowView(item, ready.inbox.value.chats, agentNames);
               return (
-                <View key={item.waitingId} accessible accessibilityLabel={`${label}, in ${chat}`}>
-                  <ListRowLayout icon="exclamationmark.circle" label={label} description={chat} />
-                </View>
+                <ListRow
+                  key={item.waitingId}
+                  icon="exclamationmark.circle"
+                  label={`${row.label} · ${row.chatTitle}`}
+                  description={row.text ?? `Open the chat with ${row.chatTitle}`}
+                  detail={formatKinTime(new Date(row.createdAt))}
+                  onPress={() =>
+                    navigation.navigate("KinChat", {
+                      environmentId: ready.environmentId,
+                      orgId: item.orgId,
+                      chatId: item.chatId,
+                    })
+                  }
+                />
               );
             })}
           </ListSection>

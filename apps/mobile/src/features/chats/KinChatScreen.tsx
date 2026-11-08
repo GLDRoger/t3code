@@ -1,19 +1,23 @@
 import { useAtomValue } from "@effect/atom-react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react-native";
-import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
+  StackActions,
+  useIsFocused,
+  useNavigation,
+  type StaticScreenProps,
+} from "@react-navigation/native";
+import {
+  EnvironmentId,
   KinChatId,
-  type EnvironmentId,
   type KinChatHistoryInput,
   type KinChatHistoryResult,
-  type KinChatSummary,
   type KinMessage,
 } from "@t3tools/contracts";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { Atom, type AsyncResult } from "effect/reactivity";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
@@ -31,7 +35,7 @@ import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useMarkdownPreviewStyles } from "../files/FileMarkdownPreview";
 import { KinFoldLine } from "./components/KinFoldLine";
-import { KinMessageBubble, KinSystemLine } from "./components/KinMessageBubble";
+import { KinDayLine, KinMessageBubble, KinSystemLine } from "./components/KinMessageBubble";
 import {
   buildKinFeedRows,
   initialKinPaging,
@@ -40,6 +44,7 @@ import {
   kinChatStatusLine,
   kinEarlierPage,
   kinFeedViewer,
+  kinSeqToMarkRead,
   kinUnseenCount,
   latestKinSeq,
   mergeKinFeed,
@@ -62,9 +67,14 @@ import {
   type KinChatState,
   type KinInboxState,
 } from "./state/kinInboxModel";
-import { useKinHost } from "./state/useKinHost";
+import { kinChatTitle } from "./state/kinScreenState";
+import { useKinHostAt } from "./state/useKinHost";
 
-type KinChatParams = { readonly orgId: string; readonly chatId: string };
+type KinChatParams = {
+  readonly environmentId: string;
+  readonly orgId: string;
+  readonly chatId: string;
+};
 
 type KinFixtures = typeof import("./state/kinChatFixtures");
 
@@ -73,7 +83,28 @@ export function KinChatScreen({ route }: StaticScreenProps<KinChatParams>) {
   if (__DEV__ && route.params.chatId === "dev-fixture") {
     return <KinFixtureChat fixtures={require("./state/kinChatFixtures") as KinFixtures} />;
   }
-  return <KinLiveChat orgId={route.params.orgId} chatId={route.params.chatId} />;
+  const environmentId = decodeEnvironmentId(route.params.environmentId);
+  if (Option.isNone(environmentId)) {
+    return (
+      <KinChatPage
+        chatId={route.params.chatId as KinChatId}
+        title="Chat"
+        unread={null}
+        markRead={null}
+        state={{ _tag: "noHost" }}
+        viewer={{ personId: null, agentNames: new Map() }}
+        onRetry={() => {}}
+        readHistory={null}
+      />
+    );
+  }
+  return (
+    <KinLiveChat
+      environmentId={environmentId.value}
+      orgId={route.params.orgId}
+      chatId={route.params.chatId}
+    />
+  );
 }
 
 type ChatResult = AsyncResult.AsyncResult<KinSynced<KinChatState>, unknown> | null;
@@ -82,17 +113,15 @@ const noChatAtom: Atom.Atom<ChatResult> = Atom.make<ChatResult>(null);
 const noInboxAtom: Atom.Atom<InboxResult> = Atom.make<InboxResult>(null);
 
 const decodeChatId = Schema.decodeUnknownOption(KinChatId);
+const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 
-function chatTitle(summary: KinChatSummary | undefined, viewer: KinFeedViewer): string {
-  if (summary?.title) return summary.title;
-  const agent = summary?.members.find(
-    (member) => member.principal._tag === "agent" && member.leftAt === null,
-  )?.principal;
-  return (agent?._tag === "agent" ? viewer.agentNames.get(agent.agentId) : undefined) ?? "Chat";
-}
-
-function KinLiveChat(props: { readonly orgId: string; readonly chatId: string }) {
-  const host = useKinHost();
+function KinLiveChat(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: string;
+  readonly chatId: string;
+}) {
+  // The route's host, not the saved one: every Kin host uses the same org id.
+  const host = useKinHostAt(props.environmentId);
   const chatId = Option.getOrNull(decodeChatId(props.chatId));
   const environmentId = host._tag === "host" ? host.environmentId : null;
   const chatAtom: Atom.Atom<ChatResult> =
@@ -126,7 +155,16 @@ function KinLiveChat(props: { readonly orgId: string; readonly chatId: string })
   return (
     <KinChatPage
       chatId={chatId ?? (props.chatId as KinChatId)}
-      title={chatTitle(summary, viewer)}
+      title={summary === undefined ? "Chat" : kinChatTitle(summary, viewer.agentNames)}
+      unread={summary?.unread ?? null}
+      markRead={
+        environmentId === null || chatId === null
+          ? null
+          : (seq) =>
+              kinClient.markRead
+                .run(appAtomRegistry, { environmentId, input: { chatId, seq } })
+                .then((result) => result._tag === "Success")
+      }
       state={state}
       viewer={viewer}
       onRetry={retry}
@@ -155,6 +193,8 @@ function KinFixtureChat({ fixtures }: { readonly fixtures: KinFixtures }) {
     <KinChatPage
       chatId={fixtures.KIN_FIXTURE_CHAT_ID}
       title="Tech lead"
+      unread={null}
+      markRead={null}
       state={{
         _tag: "ready",
         environmentId: "dev-fixture" as EnvironmentId,
@@ -178,9 +218,15 @@ type ReadHistory = (
   input: KinChatHistoryInput,
 ) => Promise<Exit.Exit<KinChatHistoryResult, unknown>>;
 
+type MarkRead = (seq: number) => Promise<boolean>;
+
 function KinChatPage(props: {
   readonly chatId: KinChatId;
   readonly title: string;
+  /** The inbox's unread count for this chat; null until the inbox loads. */
+  readonly unread: number | null;
+  /** Null where nothing can be marked, such as the dev fixture. */
+  readonly markRead: MarkRead | null;
   readonly state: KinChatScreenState;
   readonly viewer: KinFeedViewer;
   readonly onRetry: () => void;
@@ -207,6 +253,8 @@ function KinChatPage(props: {
             onRetry={props.onRetry}
             viewer={props.viewer}
             readHistory={props.readHistory}
+            unread={props.unread}
+            markRead={props.markRead}
           />
         ) : (
           <KinChatStateView state={state} onRetry={props.onRetry} />
@@ -311,8 +359,13 @@ function KinChatFeed(props: {
   readonly onRetry: () => void;
   readonly viewer: KinFeedViewer;
   readonly readHistory: ReadHistory | null;
+  readonly unread: number | null;
+  readonly markRead: MarkRead | null;
 }) {
   const listRef = useRef<LegendListRef>(null);
+  const markedSeq = useRef(0);
+  const marking = useRef(false);
+  const focused = useIsFocused();
   const lastRequest = useRef(0);
   const reduceMotion = useReduceMotionEnabled();
   const markdownStyle = useMarkdownPreviewStyles().nativeTextStyle;
@@ -332,6 +385,20 @@ function KinChatFeed(props: {
   const loading = paging.request !== null;
   const earlierPage = kinEarlierPage(props.chatId, messages, paging.exhausted);
   const canLoadEarlier = props.readHistory !== null && earlierPage !== null;
+  const latestSeq = latestKinSeq(messages);
+  const seesEnd = followsEnd && focused && props.connected && props.chat.live;
+  const { markRead, unread } = props;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tells the host what the reader has seen, one call in flight at a time
+  useEffect(() => {
+    if (markRead === null || marking.current) return;
+    const seq = kinSeqToMarkRead({ seesEnd, latestSeq, markedSeq: markedSeq.current, unread });
+    if (seq === null) return;
+    marking.current = true;
+    void markRead(seq).then((marked) => {
+      marking.current = false;
+      if (marked) markedSeq.current = Math.max(markedSeq.current, seq);
+    });
+  }, [markRead, seesEnd, latestSeq, unread]);
 
   const transition = (event: KinFeedFollowEvent) =>
     setFollow((current) => resolveKinFeedFollow(current, event));
@@ -413,6 +480,8 @@ function KinChatFeed(props: {
         return <KinSystemLine row={item} />;
       case "fold":
         return <KinFoldLine row={item} onToggle={() => toggleRun(item.runId)} />;
+      case "day":
+        return <KinDayLine row={item} />;
     }
   };
 

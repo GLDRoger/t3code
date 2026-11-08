@@ -9,7 +9,14 @@ import { connectionAtomRuntime } from "../../../connection/runtime";
 import * as MobileSecureStorage from "../../../persistence/mobile-secure-storage";
 import { environmentPresentations } from "../../../state/presentation";
 import { kinClient, markKinHostKnown } from "./kinClient";
-import { classifyKinProbe, kinHostIdToSave, resolveKinHost, type KinHost } from "./kinHost";
+import {
+  classifyKinProbe,
+  kinHostIdToSave,
+  resolveKinHost,
+  resolveKinHostAt,
+  type KinHost,
+  type KinHostCandidate,
+} from "./kinHost";
 
 const KIN_HOST_STORAGE_KEY = "kin.hostEnvironmentId";
 
@@ -30,15 +37,19 @@ const saveKinHostAtom = connectionAtomRuntime.fn((environmentId: EnvironmentId, 
   ),
 );
 
+const kinHostCandidates = (get: Atom.AtomContext): ReadonlyArray<KinHostCandidate> =>
+  [...get(environmentPresentations.presentationsAtom)].map(([environmentId, presentation]) => ({
+    environmentId,
+    connected: presentation.connection.phase === "connected",
+  }));
+
+const kinProbe = (get: Atom.AtomContext) => (environmentId: EnvironmentId) =>
+  classifyKinProbe(get(kinClient.orgs({ environmentId, input: {} })));
+
 export const kinHostAtom: Atom.Atom<KinHost> = Atom.make((get): KinHost => {
   if (!get(environmentCatalog.catalogValueAtom).isReady) return { _tag: "searching" };
   const saved = get(savedKinHostAtom);
-  const candidates = [...get(environmentPresentations.presentationsAtom)].map(
-    ([environmentId, presentation]) => ({
-      environmentId,
-      connected: presentation.connection.phase === "connected",
-    }),
-  );
+  const candidates = kinHostCandidates(get);
   const savedHostId =
     saved._tag === "Initial" ? undefined : AsyncResult.getOrElse(saved, () => null);
   // Before its first probe runs, so an outage there keeps it rather than hiding Kin.
@@ -46,9 +57,25 @@ export const kinHostAtom: Atom.Atom<KinHost> = Atom.make((get): KinHost => {
   return resolveKinHost({
     candidates,
     savedHostId,
-    probe: (environmentId) => classifyKinProbe(get(kinClient.orgs({ environmentId, input: {} }))),
+    probe: kinProbe(get),
   });
 }).pipe(Atom.withLabel("kin:host"));
+
+const kinHostAtAtom = Atom.family((environmentId: EnvironmentId) =>
+  Atom.make((get): KinHost => {
+    if (!get(environmentCatalog.catalogValueAtom).isReady) return { _tag: "searching" };
+    return resolveKinHostAt({
+      candidates: kinHostCandidates(get),
+      environmentId,
+      probe: kinProbe(get),
+    });
+  }).pipe(Atom.withLabel(`kin:host:${environmentId}`)),
+);
+
+/** The Kin host a route names, connected or not; `none` when it left the catalog or isn't Kin. */
+export function useKinHostAt(environmentId: EnvironmentId): KinHost {
+  return useAtomValue(kinHostAtAtom(environmentId));
+}
 
 /** The connected environment that hosts Kin. `none` on plain T3 servers and with Kin off. */
 export function useKinHost(): KinHost {

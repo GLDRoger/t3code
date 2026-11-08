@@ -19,7 +19,8 @@ export const KIN_SCREENS = {
   }),
   KinChat: createNativeStackScreen({
     screen: KinChatScreen,
-    linking: "kin/:orgId/chats/:chatId",
+    // Every Kin host uses the same org id, so the environment names the chat's host.
+    linking: "kin/:environmentId/:orgId/chats/:chatId",
     options: pageRoute({ duoMinimize: "onScrollUp" }),
   }),
 };

@@ -67,12 +67,12 @@ All Kin code lives in `apps/mobile/src/features/chats/`. It reaches upstream thr
 
 1. **Routes.** `Stack.tsx` spreads `...KIN_SCREENS` into the root `screens` map, next to `...SETTINGS_SCREENS`. That is one import and one line. Kin's routes:
 
-| Route         | Linking path                          | Preset                                     | Screen                                            |
-| ------------- | ------------------------------------- | ------------------------------------------ | ------------------------------------------------- |
-| `KinChats`    | `kin`                                 | `pageRoute({ title: "Kin" })`              | Chat list                                         |
-| `KinWaiting`  | `kin/waiting`                         | `pageRoute({ title: "Waiting on you" })`   | Waiting on you                                    |
-| `KinChat`     | `kin/:orgId/chats/:chatId`            | `pageRoute({ duoMinimize: "onScrollUp" })` | Direct chat                                       |
-| `KinApproval` | `kin/:orgId/actions/:pendingActionId` | `sheetRoute({ detent: 0.75 })`             | Approval detail (also opened from a notification) |
+| Route         | Linking path                                         | Preset                                     | Screen                                            |
+| ------------- | ---------------------------------------------------- | ------------------------------------------ | ------------------------------------------------- |
+| `KinChats`    | `kin`                                                | `pageRoute({ title: "Kin" })`              | Chat list                                         |
+| `KinWaiting`  | `kin/waiting`                                        | `pageRoute({ title: "Waiting on you" })`   | Waiting on you                                    |
+| `KinChat`     | `kin/:environmentId/:orgId/chats/:chatId`            | `pageRoute({ duoMinimize: "onScrollUp" })` | Direct chat                                       |
+| `KinApproval` | `kin/:environmentId/:orgId/actions/:pendingActionId` | `sheetRoute({ detent: 0.75 })`             | Approval detail (also opened from a notification) |
 
 2. **Entry row.** `features/home/HomeScreen.tsx` renders `<KinHomeEntry />` in `v2ListHeader`, right after Android's top spacer and before the iOS filters (above the spacer it would sit under the Android bar). That is one import and one line. The row reads "Kin" with the latest preview, or "Waiting on you · 2" in the highlighted style when anything waits. A tap pushes `KinChats`. It renders nothing when no connected environment hosts a Kin organization, so upstream T3 users see no change. It lives in the thread list's header, so it doesn't show where Home skips the list: with no environment, and on Android with no threads.
 3. **Notifications.** `App.tsx` adds `installKinNotifications(linkToAppPath),` to `appServiceDisposers`, plus its import.
@@ -91,6 +91,8 @@ Kin runs on the Kin host, which the phone reaches as an ordinary T3 environment.
 The rules are pure in `state/kinHost.ts` (`resolveKinHost`, `classifyKinProbe`) and unit-tested.
 
 Phase 1 has one organization. `orgId` is carried in every route param and atom input anyway, so the space switcher (phase 5) only changes which `orgId` is passed.
+
+Every Kin host uses the same org id (`kin-default`), so `(environmentId, orgId, chatId)` names a chat. Routes to one chat or action carry the environment id, and their screens read that host (`useKinHostAt`, `resolveKinHostAt`) rather than `useKinHost()`, so a link from one host never opens another host's cached chat. An offline route host shows its cache or the offline state. Device cache rows and composer drafts are keyed by environment too.
 
 ### Client state (`features/chats/state/kinClient.ts`, new)
 
@@ -308,7 +310,7 @@ Hiding the buttons is a convenience, not the protection (DESIGN 9.3). The server
 
 New, all under `apps/mobile/src/features/chats/` unless noted:
 
-- `routes.tsx`: `KIN_SCREENS` (the four routes above; MOB-2 adds `KinChats` and `KinWaiting`, and `KinChat` and `KinApproval` arrive with their screens)
+- `routes.tsx`: `KIN_SCREENS` (the four routes above; MOB-2 adds `KinChats`, `KinWaiting` and a placeholder `KinChat` the list can open; MOB-4 fills `KinChat` and `KinApproval` arrives with its screen)
 - `KinHomeEntry.tsx`, `KinChatsScreen.tsx`, `KinChatScreen.tsx`, `KinWaitingScreen.tsx`, `KinApprovalRouteScreen.tsx`
 - `components/KinAvatar.tsx`, `KinChatRow.tsx`, `KinWaitingBanner.tsx`, `KinMessageBubble.tsx`, `KinFoldLine.tsx`, `KinComposer.tsx`, `KinScreenState.tsx` (the state table as one component)
 - `widgets/KinWidgetView.tsx`, `KinTaskCard.tsx`, `KinDeferralCard.tsx`, `KinApprovalCard.tsx`, `kinCardPresentation.ts` (pure copy and format functions, unit-tested)

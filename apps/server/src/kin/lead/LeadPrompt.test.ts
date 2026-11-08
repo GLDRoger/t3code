@@ -59,6 +59,10 @@ const repository = Chat.layer.pipe(Layer.provide(database));
 const memory = Layer.succeed(
   Memory.Memory,
   Memory.Memory.of({
+    withWriterLock: (_org, effect) => effect,
+    anchor: () => Effect.succeed("fixture"),
+    record: () => Effect.void,
+    recover: () => Effect.void,
     readPromptSnapshot: (org, head) =>
       org !== orgId || !["head-one", "head-two"].includes(head)
         ? Effect.fail(new Memory.MemoryError({ orgId: org, operation: "promptSnapshot" }))

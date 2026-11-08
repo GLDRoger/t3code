@@ -10,7 +10,13 @@ import { RpcClientError } from "effect/rpc";
 import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
-import { classifyKinProbe, kinHostIdToSave, resolveKinHost, type KinProbe } from "./kinHost";
+import {
+  classifyKinProbe,
+  kinHostIdToSave,
+  resolveKinHost,
+  resolveKinHostAt,
+  type KinProbe,
+} from "./kinHost";
 
 const orgs = (me: KinOrgsListResult["me"]) =>
   ({
@@ -142,5 +148,40 @@ describe("resolveKinHost", () => {
 
   it("ignores offline environments it has not saved", () => {
     expect(resolve({ [a]: ready }, { offline: [a] })).toEqual({ _tag: "none" });
+  });
+});
+
+describe("resolveKinHostAt", () => {
+  const at = (
+    environmentId: EnvironmentId,
+    probes: Record<string, KinProbe>,
+    offline: ReadonlyArray<EnvironmentId> = [],
+  ) =>
+    resolveKinHostAt({
+      candidates: [a, b].map((id) => ({ environmentId: id, connected: !offline.includes(id) })),
+      environmentId,
+      probe: (id) => probes[id] ?? notKin,
+    });
+
+  it("uses the route's host, not the first or saved Kin host", () => {
+    expect(at(b, { [a]: ready, [b]: ready })).toMatchObject({
+      _tag: "host",
+      environmentId: b,
+      connected: true,
+    });
+  });
+
+  it("keeps an offline route host so its cache or offline state shows", () => {
+    expect(at(a, { [b]: ready }, [a])).toMatchObject({
+      _tag: "host",
+      environmentId: a,
+      connected: false,
+    });
+  });
+
+  it("has no host when the route's environment left the catalog or isn't Kin", () => {
+    expect(at(EnvironmentId.make("gone"), { [a]: ready })).toEqual({ _tag: "none" });
+    expect(at(b, { [a]: ready })).toEqual({ _tag: "none" });
+    expect(at(a, { [a]: pending })).toMatchObject({ environmentId: a, probe: pending });
   });
 });
