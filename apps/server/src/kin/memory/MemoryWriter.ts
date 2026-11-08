@@ -139,8 +139,23 @@ export class MemoryWriter extends Context.Service<
       wakeupId: string,
       outcome: "completed" | "failed",
     ) => Effect.Effect<{ commit: string }, Failure>;
+    readonly dreamBase: (
+      orgId: KinOrgId,
+    ) => Effect.Effect<{ head: string; files: ReadonlyMap<string, Buffer> }, Failure>;
+    /** Commits on `base` and force-pushes `dream/<date>`; never touches the default branch. */
+    readonly commitDream: (
+      orgId: KinOrgId,
+      input: {
+        readonly branch: string;
+        readonly base: string;
+        readonly files: ReadonlyMap<string, string>;
+        readonly message: string;
+      },
+    ) => Effect.Effect<{ commit: string }, Failure>;
+    readonly deleteDreamBranch: (orgId: KinOrgId, branch: string) => Effect.Effect<void, Failure>;
   }
 >()("t3/kin/memory/MemoryWriter") {}
+const dreamBranch = /^dream\/\d{4}-\d{2}-\d{2}$/;
 const folders = ["objectives", "commitments", "deferrals", "decisions", "people", "claims"];
 const render = (fields: object, body: string) => `---\n${stringify(fields)}---\n${body}`;
 const make = Effect.gen(function* () {
@@ -386,6 +401,101 @@ const make = Effect.gen(function* () {
           : Effect.void,
       ),
     );
+  const regularPaths = Effect.fn("MemoryWriter.regularPaths")(function* (
+    orgId: KinOrgId,
+    writer: string,
+    commit: string,
+  ) {
+    const entries = yield* readTree(orgId, writer, commit).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(VcsProcess, vcs),
+    );
+    return new Set(
+      entries
+        .filter((entry) => ["100644", "100755"].includes(entry.mode))
+        .map((entry) => entry.relative),
+    );
+  });
+  const indexFor = Effect.fn("MemoryWriter.indexFor")(function* (
+    orgId: KinOrgId,
+    combined: ReadonlyMap<string, string>,
+  ) {
+    const heads = [];
+    for (const [path, text] of combined) {
+      if (!folders.some((folder) => path.startsWith(`${folder}/`))) continue;
+      const parsed = yield* parseFrontMatter(orgId, path, text).pipe(Effect.result);
+      if (parsed._tag === "Success") heads.push({ ...parsed.success.frontMatter, orgId, path });
+    }
+    const reads = yield* cache
+      .lastReads(orgId)
+      .pipe(Effect.mapError((cause) => new MemoryError({ orgId, operation: "index", cause })));
+    const zone = yield* cache
+      .ownerTimeZone(orgId)
+      .pipe(Effect.mapError((cause) => new MemoryError({ orgId, operation: "index", cause })));
+    return buildIndex(heads, reads, yield* Clock.currentTimeMillis, zone);
+  });
+  const writeCommit = Effect.fn("MemoryWriter.writeCommit")(function* (
+    orgId: KinOrgId,
+    writer: string,
+    parent: string,
+    parentFiles: ReadonlyMap<string, Buffer>,
+    changes: ReadonlyMap<string, Buffer>,
+    message: string,
+  ) {
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        const temporary = yield* io(orgId, fs.makeTempDirectoryScoped());
+        const env = {
+          GIT_INDEX_FILE: `${temporary}/index`,
+          GIT_AUTHOR_NAME: config.botName ?? "Kin Memory Bot",
+          GIT_AUTHOR_EMAIL: config.botEmail ?? "kin-memory@localhost",
+          GIT_COMMITTER_NAME: config.botName ?? "Kin Memory Bot",
+          GIT_COMMITTER_EMAIL: config.botEmail ?? "kin-memory@localhost",
+        };
+        yield* git(orgId, writer, ["read-tree", "--empty"], env);
+        const entries = yield* readTree(orgId, writer, parent).pipe(
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(VcsProcess, vcs),
+        );
+        const metadata = new Map(entries.map((entry) => [entry.relative, entry]));
+        const finalFiles = new Map(parentFiles);
+        for (const [file, bytes] of changes) finalFiles.set(file, bytes);
+        const expected = new Map<string, { mode: string; sha: string }>();
+        for (const [file, bytes] of finalFiles) {
+          if (changes.has(file)) yield* safePath(orgId, writer, file, true);
+          const input = `${temporary}/blob`;
+          yield* io(orgId, fs.writeFile(input, bytes));
+          const mode = changes.has(file) ? "100644" : (metadata.get(file)?.mode ?? "100644");
+          const blob =
+            mode === "160000"
+              ? bytes.toString("ascii")
+              : yield* git(orgId, writer, ["hash-object", "-w", "--no-filters", input], env);
+          expected.set(file, {
+            mode,
+            sha: mode === "160000" ? bytes.toString("ascii") : objectHash(bytes, parent.length),
+          });
+          yield* git(
+            orgId,
+            writer,
+            ["update-index", "--add", "--cacheinfo", `${mode},${blob},${file}`],
+            env,
+          );
+        }
+        const tree = yield* git(orgId, writer, ["write-tree"], env);
+        yield* verifyTree(orgId, writer, tree, expected).pipe(
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(VcsProcess, vcs),
+        );
+        return yield* git(orgId, writer, ["commit-tree", tree, "-p", parent], env, message);
+      }),
+    );
+  });
+  const repoFor = Effect.fn("MemoryWriter.repoFor")(function* (orgId: KinOrgId) {
+    const repo = config.repositories.find((entry) => entry.orgId === orgId);
+    if (!repo)
+      return yield* new MemoryConfigError({ orgId, operation: "writer", reason: "Unknown org" });
+    return repo;
+  });
   return MemoryWriter.of({
     stage: Effect.fn("MemoryWriter.stage")((orgId, wakeupId, change) =>
       report(
@@ -691,41 +801,14 @@ const make = Effect.gen(function* () {
                 Buffer.from(entry.text),
               ]);
               state.files.set(entry.path, journal.toString("utf8"));
-              const regular = new Set(
-                (yield* readTree(orgId, writer, recorded).pipe(
-                  Effect.provideService(FileSystem.FileSystem, fs),
-                  Effect.provideService(VcsProcess, vcs),
-                ))
-                  .filter((entry) => ["100644", "100755"].includes(entry.mode))
-                  .map((entry) => entry.relative),
-              );
+              const regular = yield* regularPaths(orgId, writer, recorded);
               const combined = new Map(
                 [...recordedFiles]
                   .filter(([path]) => regular.has(path))
                   .map(([path, bytes]) => [path, bytes.toString("utf8")]),
               );
               for (const [path, text] of state.files) combined.set(path, text);
-              const heads = [];
-              for (const [path, text] of combined) {
-                if (!folders.some((folder) => path.startsWith(`${folder}/`))) continue;
-                const parsed = yield* parseFrontMatter(orgId, path, text).pipe(Effect.result);
-                if (parsed._tag === "Success")
-                  heads.push({ ...parsed.success.frontMatter, orgId, path });
-              }
-              const reads = yield* cache
-                .lastReads(orgId)
-                .pipe(
-                  Effect.mapError((cause) => new MemoryError({ orgId, operation: "index", cause })),
-                );
-              const zone = yield* cache
-                .ownerTimeZone(orgId)
-                .pipe(
-                  Effect.mapError((cause) => new MemoryError({ orgId, operation: "index", cause })),
-                );
-              state.files.set(
-                "INDEX.md",
-                buildIndex(heads, reads, yield* Clock.currentTimeMillis, zone),
-              );
+              state.files.set("INDEX.md", yield* indexFor(orgId, combined));
               const findings = yield* scanner.scan({
                 orgId,
                 files: [...state.files].map(([path, content]) => ({
@@ -734,83 +817,129 @@ const make = Effect.gen(function* () {
                 })),
               });
               if (findings.length) return yield* new MemorySecretBlocked({ orgId, findings });
-              return yield* Effect.scoped(
-                Effect.gen(function* () {
-                  const temporary = yield* io(orgId, fs.makeTempDirectoryScoped());
-                  const env = {
-                    GIT_INDEX_FILE: `${temporary}/index`,
-                    GIT_AUTHOR_NAME: config.botName ?? "Kin Memory Bot",
-                    GIT_AUTHOR_EMAIL: config.botEmail ?? "kin-memory@localhost",
-                    GIT_COMMITTER_NAME: config.botName ?? "Kin Memory Bot",
-                    GIT_COMMITTER_EMAIL: config.botEmail ?? "kin-memory@localhost",
-                  };
-                  yield* git(orgId, writer, ["read-tree", "--empty"], env);
-                  const entries = yield* readTree(orgId, writer, recorded).pipe(
-                    Effect.provideService(FileSystem.FileSystem, fs),
-                    Effect.provideService(VcsProcess, vcs),
-                  );
-                  const metadata = new Map(entries.map((entry) => [entry.relative, entry]));
-                  const finalFiles = new Map(recordedFiles);
-                  for (const [file, text] of state.files)
-                    finalFiles.set(file, file === entry.path ? journal : Buffer.from(text));
-                  const expected = new Map<string, { mode: string; sha: string }>();
-                  for (const [file, bytes] of finalFiles) {
-                    if (state.files.has(file)) yield* safePath(orgId, writer, file, true);
-                    const input = `${temporary}/blob`;
-                    yield* io(orgId, fs.writeFile(input, bytes));
-                    const mode = state.files.has(file)
-                      ? "100644"
-                      : (metadata.get(file)?.mode ?? "100644");
-                    const blob =
-                      mode === "160000"
-                        ? bytes.toString("ascii")
-                        : yield* git(
-                            orgId,
-                            writer,
-                            ["hash-object", "-w", "--no-filters", input],
-                            env,
-                          );
-                    expected.set(file, {
-                      mode,
-                      sha:
-                        mode === "160000"
-                          ? bytes.toString("ascii")
-                          : objectHash(bytes, recorded.length),
-                    });
-                    yield* git(
-                      orgId,
-                      writer,
-                      ["update-index", "--add", "--cacheinfo", `${mode},${blob},${file}`],
-                      env,
-                    );
-                  }
-                  const tree = yield* git(orgId, writer, ["write-tree"], env);
-                  yield* verifyTree(orgId, writer, tree, expected).pipe(
-                    Effect.provideService(FileSystem.FileSystem, fs),
-                    Effect.provideService(VcsProcess, vcs),
-                  );
-                  const message = `${subject}\n\nEvents: ${ctx.eventIds.join(", ")}\nKin-Outcome: ${outcome}\nKin-Request: ${fingerprint}\n`;
-                  const commit = yield* git(
-                    orgId,
-                    writer,
-                    ["commit-tree", tree, "-p", recorded],
-                    env,
-                    message,
-                  );
-                  yield* git(orgId, writer, [
-                    "update-ref",
-                    `refs/heads/${branch}`,
-                    commit,
-                    recorded,
-                  ]);
-                  yield* memory.record(orgId, branch, recorded, commit);
-                  yield* push(commit);
-                  return { commit };
-                }),
+              const changes = new Map(
+                [...state.files].map(([file, text]) => [
+                  file,
+                  file === entry.path ? journal : Buffer.from(text),
+                ]),
               );
+              const message = `${subject}\n\nEvents: ${ctx.eventIds.join(", ")}\nKin-Outcome: ${outcome}\nKin-Request: ${fingerprint}\n`;
+              const commit = yield* writeCommit(
+                orgId,
+                writer,
+                recorded,
+                recordedFiles,
+                changes,
+                message,
+              );
+              yield* git(orgId, writer, ["update-ref", `refs/heads/${branch}`, commit, recorded]);
+              yield* memory.record(orgId, branch, recorded, commit);
+              yield* push(commit);
+              return { commit };
             }).pipe(Effect.ensuring(Effect.sync(() => sessions.delete(orgId))));
           }),
         ),
+      ),
+    ),
+    dreamBase: Effect.fn("MemoryWriter.dreamBase")((orgId) =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const { writer } = yield* validate(orgId);
+          const head = yield* branchHead(orgId, writer, config.defaultBranch ?? "main");
+          const regular = yield* regularPaths(orgId, writer, head);
+          const files = new Map(
+            [...(yield* filesAt(orgId, writer, head))].filter(([path]) => regular.has(path)),
+          );
+          return { head, files };
+        }),
+      ),
+    ),
+    commitDream: Effect.fn("MemoryWriter.commitDream")((orgId, input) =>
+      report(
+        orgId,
+        input.branch,
+        locked(
+          orgId,
+          Effect.gen(function* () {
+            if (!dreamBranch.test(input.branch))
+              return yield* new MemoryWriteRejected({ reason: "Invalid dream branch" });
+            const { writer } = yield* validate(orgId);
+            const repo = yield* repoFor(orgId);
+            const baseFiles = yield* filesAt(orgId, writer, input.base);
+            const regular = yield* regularPaths(orgId, writer, input.base);
+            const combined = new Map(
+              [...baseFiles]
+                .filter(([path]) => regular.has(path))
+                .map(([path, bytes]) => [path, bytes.toString("utf8")]),
+            );
+            for (const [path, text] of input.files) {
+              if (path === "INDEX.md")
+                return yield* new MemoryWriteRejected({ reason: "INDEX.md is built by code" });
+              yield* safePath(orgId, writer, path);
+              if (!path.startsWith("journal/")) {
+                const { frontMatter } = yield* parseFrontMatter(orgId, path, text);
+                const folder = frontMatter.kind === "person" ? "people" : `${frontMatter.kind}s`;
+                if (!path.startsWith(`${folder}/`))
+                  return yield* new MemoryWriteRejected({ reason: "Kind does not match path" });
+              }
+              combined.set(path, text);
+            }
+            const changes = new Map(
+              [...input.files].map(([path, text]) => [path, Buffer.from(text)]),
+            );
+            changes.set("INDEX.md", Buffer.from(yield* indexFor(orgId, combined)));
+            const findings = yield* scanner.scan({
+              orgId,
+              files: [...changes].map(([path, content]) => ({ path, content })),
+            });
+            if (findings.length) return yield* new MemorySecretBlocked({ orgId, findings });
+            const commit = yield* writeCommit(
+              orgId,
+              writer,
+              input.base,
+              baseFiles,
+              changes,
+              input.message,
+            );
+            yield* git(orgId, writer, [
+              "push",
+              "--",
+              repo.repoUrl,
+              `+${commit}:refs/heads/${input.branch}`,
+            ]).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new MemorySyncConflict({
+                    orgId,
+                    operation: "push",
+                    reason: "Dream branch push rejected",
+                    cause,
+                  }),
+              ),
+            );
+            return { commit };
+          }),
+        ),
+      ),
+    ),
+    deleteDreamBranch: Effect.fn("MemoryWriter.deleteDreamBranch")((orgId, branch) =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          if (!dreamBranch.test(branch))
+            return yield* new MemoryWriteRejected({ reason: "Invalid dream branch" });
+          const { writer } = yield* validate(orgId);
+          const repo = yield* repoFor(orgId);
+          const advertised = yield* git(orgId, writer, [
+            "ls-remote",
+            "--",
+            repo.repoUrl,
+            `refs/heads/${branch}`,
+          ]);
+          if (advertised)
+            yield* git(orgId, writer, ["push", "--", repo.repoUrl, `:refs/heads/${branch}`]);
+        }),
       ),
     ),
   });

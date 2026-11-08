@@ -125,6 +125,9 @@ describe("WakeupRunner", () => {
       const writer = Layer.succeed(
         Writer.MemoryWriter,
         Writer.MemoryWriter.of({
+          dreamBase: () => Effect.die("unused"),
+          commitDream: () => Effect.die("unused"),
+          deleteDreamBranch: () => Effect.die("unused"),
           stage: (_org, wakeup) =>
             Effect.sync(() => {
               assert.isTrue(owner === undefined || owner === wakeup);
@@ -211,6 +214,9 @@ describe("WakeupRunner", () => {
               const sql = yield* SqlClient.SqlClient;
               return Writer.MemoryWriter.of({
                 stage: () => Effect.die("unused"),
+                dreamBase: () => Effect.die("unused"),
+                commitDream: () => Effect.die("unused"),
+                deleteDreamBranch: () => Effect.die("unused"),
                 discard: () => Effect.void,
                 appendJournal: (_org, _wakeup, lines) =>
                   Effect.sync(() =>
