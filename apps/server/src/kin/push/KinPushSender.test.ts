@@ -275,6 +275,19 @@ describe("KinPushSender", () => {
       const { notify, sql } = yield* seed;
       const cases = [
         ["deferral", { phase: "confirmed" }, [member], ["kin.deferral.confirmed"]],
+        // Lane A's card (#64) carries no phase until TRIG-8; a fresh one is a confirmed deferral.
+        [
+          "deferral",
+          {
+            itemId: "item-1",
+            title: "Ship it",
+            dueAt: "2026-11-13T09:00:00.000Z",
+            onDue: "start",
+            text: "Deferred",
+          },
+          [member],
+          ["kin.deferral.confirmed"],
+        ],
         [
           "deferral",
           { phase: "heads_up" },

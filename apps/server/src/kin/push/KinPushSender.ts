@@ -191,7 +191,7 @@ const make = Effect.gen(function* () {
     const kind =
       row.type !== "deferral"
         ? ({ category: "kin.message", title: "Waiting on you", body: "A card needs you" } as const)
-        : row.phase === "confirmed"
+        : row.phase === "confirmed" || row.phase === null
           ? ({
               category: "kin.deferral.confirmed",
               title: "Deferred",
