@@ -36,6 +36,7 @@ import * as Base64Url from "effect/encoding/Base64Url";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
+import { proofKeyRevoked, revokedBySession } from "../auth/ProofKeySessions.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinAttestationTrust } from "./attestation/AttestationTrust.ts";
 import {
@@ -245,12 +246,17 @@ const make = Effect.gen(function* () {
 
   // T3 revokes sessions in SessionStore (revokeClient, revokeOtherClients, managed policy).
   // Reading its table here keeps auth free of Kin hooks, and runs before every key is trusted.
+  // Relay sessions renew under new ids, so the DPoP key's own revocations count too (spec section 4).
   const reconcileSessions = Effect.fn("ApproverKeys.reconcileSessions")(
     function* () {
       const rows = yield* sql<{ org_id: KinOrgId; thumbprint: KinKeyThumbprint }>`
         SELECT k.org_id, k.thumbprint FROM kin_approver_keys k
-        JOIN auth_sessions s ON s.session_id = k.session_id
-        WHERE k.state != 'revoked' AND s.revoked_at IS NOT NULL`;
+        WHERE k.state != 'revoked' AND ${revokedBySession(
+          sql,
+          { sessionId: sql`k.session_id`, proofKey: sql`k.proof_key_thumbprint` },
+          // A repair re-trusts a proof key, never an approver key (spec section 4).
+          { honorRepairs: false },
+        )}`;
       for (const row of rows) {
         yield* revokeRow({ orgId: row.org_id, thumbprint: row.thumbprint }, "session_revoked");
       }
@@ -312,6 +318,18 @@ const make = Effect.gen(function* () {
         return yield* fail("bad_challenge", "Ask for a new key challenge on this connection.");
       const challenge = new Uint8Array(Buffer.from(input.challenge, "base64url"));
       yield* reconcileSessions();
+      // Reconcile ignores repairs, so a key from a re-paired proof key would be revoked at once.
+      const proofKey = caller.session.proofKeyThumbprint;
+      if (proofKey !== undefined) {
+        const [seen] = yield* sql<{ revoked: number }>`SELECT ${proofKeyRevoked(sql, proofKey, {
+          honorRepairs: false,
+        })} AS revoked`;
+        if (seen?.revoked === 1)
+          return yield* fail(
+            "invalid_state",
+            "This phone's connection key was revoked before. Pair the phone again so it makes a new key, then add the approver key.",
+          );
+      }
 
       const thumbprint = computeDpopJwkThumbprint(input.publicJwk) as KinKeyThumbprint;
       const ref = { orgId: input.orgId, thumbprint };
