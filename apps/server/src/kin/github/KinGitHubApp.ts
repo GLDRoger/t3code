@@ -12,13 +12,14 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/http";
 
-import { gitHubJson, gitHubRequest, type KinGitHubRequestError } from "./githubRest.ts";
+import { gitHubJson, gitHubRequest, KinGitHubRequestError } from "./githubRest.ts";
 import * as Keychain from "./Keychain.ts";
 import {
+  grantWidening,
   narrowingViolation,
-  type KinGitHubAccess,
   type KinGitHubPermissionSet,
 } from "./KinGitHubPermissions.ts";
+import { isScopedRepo, KinGitHubScope } from "./KinGitHubScope.ts";
 
 /** Keychain item `kin-github-app` / `<appId>`, written once by `scripts/kin-github-app.ts`. */
 export const KinGitHubAppSecrets = Schema.Struct({
@@ -28,6 +29,7 @@ export const KinGitHubAppSecrets = Schema.Struct({
   clientSecret: Schema.optional(Schema.String),
 });
 const decodeSecrets = Schema.decodeUnknownOption(Schema.fromJsonString(KinGitHubAppSecrets));
+const INSTALLATIONS_PAGE_SIZE = 100;
 
 const isRepoSlug = Schema.is(RepoSlug);
 const PermissionMap = Schema.Record(Schema.String, Schema.String);
@@ -58,6 +60,9 @@ const AccessTokenResponse = Schema.Struct({
   repository_selection: Schema.optional(Schema.String),
   repositories: Schema.optional(Schema.Array(Schema.Struct({ full_name: Schema.String }))),
 });
+const decodeAccessToken = Schema.decodeUnknownOption(AccessTokenResponse);
+const MintedToken = Schema.Struct({ token: Schema.String });
+const decodeMintedToken = Schema.decodeUnknownOption(MintedToken);
 
 export class KinGitHubAppNotConfiguredError extends Schema.TaggedError<KinGitHubAppNotConfiguredError>()(
   "KinGitHubAppNotConfiguredError",
@@ -74,13 +79,18 @@ export class KinGitHubTokenNarrowingError extends Schema.TaggedError<KinGitHubTo
     repo: Schema.String,
     // Built only from permission names and levels.
     reason: Schema.String,
-    stage: Schema.Literals(["request", "granted"]),
+    stage: Schema.Literals(["request", "installation", "granted"]),
   },
 ) {
   override get message(): string {
-    return this.stage === "request"
-      ? `Refused a Kin App token for ${this.repo}: ${this.reason}.`
-      : `GitHub granted a Kin App token for ${this.repo} wider than asked (${this.reason}); it was revoked.`;
+    switch (this.stage) {
+      case "request":
+        return `Refused a Kin App token for ${this.repo}: ${this.reason}.`;
+      case "installation":
+        return `Refused a Kin App token for ${this.repo}: ${this.reason}. Set the installation to Only select repositories.`;
+      case "granted":
+        return `GitHub granted a Kin App token for ${this.repo} wider than asked (${this.reason}); it was revoked.`;
+    }
   }
 }
 
@@ -122,15 +132,20 @@ export class KinGitHubApp extends Context.Service<
     readonly app: Effect.Effect<KinGitHubAppInfo, KinGitHubAppError>;
     readonly installations: Effect.Effect<ReadonlyArray<KinGitHubInstallation>, KinGitHubAppError>;
     /**
-     * A one-hour token for one repository with only `permissions`, which must sit inside the
-     * App's table. Workers that read untrusted input should ask for `{ contents: "read" }`.
+     * A one-hour token for one scoped repository with only `permissions`, which must sit inside
+     * the App's table. Workers that read untrusted input should ask for `{ contents: "read" }`.
+     * A lead never gets `contents: write`: with it, it could merge once the owner has reviewed.
      */
     readonly installationToken: (input: {
       readonly repo: RepoSlug;
       readonly permissions: KinGitHubPermissionSet;
+      readonly holder: KinGitHubTokenHolder;
     }) => Effect.Effect<KinInstallationToken, KinGitHubAppError>;
   }
 >()("t3/kin/github/KinGitHubApp") {}
+
+/** Who will hold the token: a lead session, or a worker it started. */
+export type KinGitHubTokenHolder = "lead" | "worker";
 
 const base64Url = (value: string | Buffer) => Buffer.from(value).toString("base64url");
 
@@ -152,25 +167,11 @@ function signAppJwt(input: {
   return Redacted.make(`${header}.${payload}.${signature}`);
 }
 
-const widening = (
-  requested: KinGitHubPermissionSet,
-  granted: Readonly<Record<string, string>>,
-): string | null => {
-  const asked: Readonly<Record<string, KinGitHubAccess | undefined>> = requested;
-  for (const [name, level] of Object.entries(granted)) {
-    // GitHub adds metadata: read to every narrowed token.
-    if (name === "metadata" && level === "read") continue;
-    const want = asked[name];
-    if (want === undefined) return `${name}: ${level} was not asked for`;
-    if (want === "read" && level !== "read") return `${name}: ${level} exceeds read`;
-  }
-  return null;
-};
-
 const make = Effect.gen(function* () {
   const { appId } = yield* KinGitHubAppConfig;
   const keychain = yield* Keychain.KinKeychain;
   const client = yield* HttpClient.HttpClient;
+  const scope = yield* KinGitHubScope;
 
   const jwt = Effect.gen(function* () {
     const stored = yield* keychain.get("kin-github-app", appId);
@@ -195,25 +196,53 @@ const make = Effect.gen(function* () {
 
   const installations = Effect.gen(function* () {
     const token = yield* jwt;
-    const response = yield* gitHubJson({
-      client,
-      operation: "app.installations",
-      method: "GET",
-      path: "/app/installations?per_page=100",
-      token,
-      schema: Schema.Array(InstallationResponse),
-    });
-    return response.body;
+    const all: Array<KinGitHubInstallation> = [];
+    for (let page = 1; ; page++) {
+      const response = yield* gitHubJson({
+        client,
+        operation: "app.installations",
+        method: "GET",
+        path: `/app/installations?per_page=${INSTALLATIONS_PAGE_SIZE}&page=${page}`,
+        token,
+        schema: Schema.Array(InstallationResponse),
+      });
+      all.push(...response.body);
+      if (response.body.length < INSTALLATIONS_PAGE_SIZE) return all;
+    }
   }).pipe(Effect.withSpan("KinGitHubApp.installations"));
+
+  // Best effort: a token that can't be revoked still expires within the hour.
+  const revoke = (repo: RepoSlug, token: Redacted.Redacted<string>) =>
+    client.execute(gitHubRequest("DELETE", "/installation/token", token)).pipe(
+      Effect.flatMap((response) =>
+        response.status === 204
+          ? Effect.void
+          : Effect.logWarning("Could not revoke a Kin App token", {
+              repo,
+              status: response.status,
+            }),
+      ),
+      Effect.catch(() =>
+        Effect.logWarning("Could not reach GitHub to revoke a Kin App token", { repo }),
+      ),
+    );
 
   const installationToken = Effect.fn("KinGitHubApp.installationToken")(function* (input: {
     readonly repo: RepoSlug;
     readonly permissions: KinGitHubPermissionSet;
+    readonly holder: KinGitHubTokenHolder;
   }) {
-    yield* Effect.annotateCurrentSpan({ "kin.github.repo": input.repo });
-    const violation = isRepoSlug(input.repo)
-      ? narrowingViolation(input.permissions)
-      : "not an owner/name repository";
+    yield* Effect.annotateCurrentSpan({
+      "kin.github.repo": input.repo,
+      "kin.github.holder": input.holder,
+    });
+    const violation = !isRepoSlug(input.repo)
+      ? "not an owner/name repository"
+      : !isScopedRepo(scope.repos, input.repo)
+        ? "not a repository in KIN_GITHUB_REPOS"
+        : input.holder === "lead" && input.permissions.contents === "write"
+          ? "a lead can't have contents: write"
+          : narrowingViolation(input.permissions);
     if (violation !== null) {
       return yield* new KinGitHubTokenNarrowingError({
         repo: input.repo,
@@ -229,8 +258,18 @@ const make = Effect.gen(function* () {
       method: "GET",
       path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/installation`,
       token: appToken,
-      schema: Schema.Struct({ id: Schema.Int }),
+      schema: Schema.Struct({
+        id: Schema.Int,
+        repository_selection: Schema.Literals(["all", "selected"]),
+      }),
     });
+    if (installation.body.repository_selection !== "selected") {
+      return yield* new KinGitHubTokenNarrowingError({
+        repo: input.repo,
+        reason: "the App is installed on all of the account's repositories",
+        stage: "installation",
+      });
+    }
     const minted = yield* gitHubJson({
       client,
       operation: "installations.accessToken",
@@ -238,21 +277,30 @@ const make = Effect.gen(function* () {
       path: `/app/installations/${installation.body.id}/access_tokens`,
       token: appToken,
       body: { repositories: [name], permissions: input.permissions },
-      schema: AccessTokenResponse,
+      schema: Schema.Unknown,
       okStatuses: [201],
     });
-    const token = Redacted.make(minted.body.token);
-    const repositories = (minted.body.repositories ?? []).map((repo) =>
+    const body = decodeAccessToken(minted.body);
+    if (Option.isNone(body)) {
+      // GitHub minted something; revoke it if the token can be found before failing.
+      const stray = decodeMintedToken(minted.body);
+      if (Option.isSome(stray)) yield* revoke(input.repo, Redacted.make(stray.value.token));
+      return yield* new KinGitHubRequestError({
+        operation: "installations.accessToken",
+        stage: "decode",
+        status: minted.status,
+      });
+    }
+    const token = Redacted.make(body.value.token);
+    const repositories = (body.value.repositories ?? []).map((repo) =>
       repo.full_name.toLowerCase(),
     );
     const wider =
       repositories.length !== 1 || repositories[0] !== input.repo.toLowerCase()
         ? `repositories: ${repositories.length === 0 ? "all" : repositories.length}`
-        : widening(input.permissions, minted.body.permissions);
+        : grantWidening(input.permissions, body.value.permissions);
     if (wider !== null) {
-      yield* client
-        .execute(gitHubRequest("DELETE", "/installation/token", token))
-        .pipe(Effect.ignore);
+      yield* revoke(input.repo, token);
       return yield* new KinGitHubTokenNarrowingError({
         repo: input.repo,
         reason: wider,
@@ -262,8 +310,8 @@ const make = Effect.gen(function* () {
     return {
       token,
       repo: input.repo,
-      expiresAt: minted.body.expires_at,
-      permissions: minted.body.permissions,
+      expiresAt: body.value.expires_at,
+      permissions: body.value.permissions,
     } satisfies KinInstallationToken;
   });
 

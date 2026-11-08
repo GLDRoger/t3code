@@ -25,6 +25,7 @@ import {
   kinRulesets,
   type KinRuleset,
 } from "./KinRulesets.ts";
+import { KinGitHubScope } from "./KinGitHubScope.ts";
 import * as OwnerMergeClient from "./OwnerMergeClient.ts";
 
 export interface RulesetsResult {
@@ -537,7 +538,27 @@ export const runTest23 = Effect.fn("kinRulesets.test23")(function* (input: {
 });
 
 const decodeRepo = Schema.decodeUnknownEffect(RepoSlug);
-const decodeOrgId = Schema.decodeUnknownEffect(KinOrgId);
+const TEST_23_ORG = Schema.decodeSync(KinOrgId)("kin-test-23");
+
+/** `OwnerMergeClient.save` writes to this, so test 23's probes run without storing the token. */
+const discardKeychain = Layer.succeed(
+  Keychain.KinKeychain,
+  Keychain.KinKeychain.of({
+    get: Effect.fn("discardKeychain.get")(function* () {
+      return Option.none<Redacted.Redacted<string>>();
+    }),
+    set: Effect.fn("discardKeychain.set")(function* () {}),
+    remove: Effect.fn("discardKeychain.remove")(function* () {}),
+    ready: Effect.fn("discardKeychain.ready")(function* () {}),
+  }),
+);
+
+const scratchMergeToken = Prompt.run(
+  Prompt.Hidden({
+    message:
+      "Paste a fine-grained token of the owner's for the scratch repo only, with Contents: Read and write and Metadata: Read (hidden)",
+  }),
+).pipe(Effect.map((pasted) => Redacted.make(String(Redacted.value(pasted)))));
 
 const ownerToken = Effect.gen(function* () {
   const fromEnv = yield* Config.option(Config.Redacted("GH_TOKEN"));
@@ -580,10 +601,6 @@ export const kinRulesetsCommand = Command.make(
       ),
       Flag.atLeast(0),
     ),
-    kinOrg: Flag.String("kin-org").pipe(
-      Flag.withDescription("For --test-23: the Kin org whose merge token is in the keychain."),
-      Flag.optional,
-    ),
     appId: Flag.String("app-id").pipe(
       Flag.withDescription("For --test-23: the bot App id; defaults to KIN_GITHUB_APP_ID."),
       Flag.optional,
@@ -610,25 +627,38 @@ export const kinRulesetsCommand = Command.make(
       if (input.codeowners) return yield* checkRepo(target, { requiredChecks, rulesets: false });
       if (input.check) return yield* checkRepo(target, { requiredChecks, rulesets: true });
       if (!input.test23) return yield* applyRepo(target, { requiredChecks });
-      if (Option.isNone(input.kinOrg)) return yield* refuse("--test-23 needs --kin-org <org-id>.");
-      const orgId = yield* decodeOrgId(input.kinOrg.value);
+      const scope = yield* KinGitHubScope;
       const appConfig = Option.match(input.appId, {
         onNone: () => KinGitHubApp.KinGitHubAppConfig.layer,
         onSome: (appId) => Layer.succeed(KinGitHubApp.KinGitHubAppConfig, { appId }),
       });
+      // The App and the merge token are checked against the scratch repo alone. The stored merge
+      // token is scoped to the Kin repos, so test 23 takes a scratch token with the same shape and
+      // runs `save`'s probes on it without keeping it.
+      const scratchScope = Layer.succeed(KinGitHubScope, { ...scope, repos: [repo] });
       return yield* Effect.gen(function* () {
+        const mergeToken = yield* scratchMergeToken;
+        yield* (yield* OwnerMergeClient.OwnerMergeClient).save({
+          orgId: TEST_23_ORG,
+          token: mergeToken,
+        });
         const bot = yield* (yield* KinGitHubApp.KinGitHubApp).installationToken({
           repo,
           permissions: { contents: "write", pull_requests: "write" },
+          holder: "worker",
         });
-        const mergeToken = yield* (yield* OwnerMergeClient.OwnerMergeClient).token(orgId);
         return yield* runTest23({ target, requiredChecks, botToken: bot.token, mergeToken });
       }).pipe(
         Effect.provide(
-          Layer.mergeAll(KinGitHubApp.layer.pipe(Layer.provide(appConfig)), OwnerMergeClient.layer),
+          Layer.mergeAll(
+            KinGitHubApp.layer.pipe(Layer.provide(Layer.mergeAll(appConfig, scratchScope))),
+            OwnerMergeClient.layer.pipe(
+              Layer.provide(Layer.mergeAll(scratchScope, discardKeychain)),
+            ),
+          ),
         ),
       );
-    });
+    }).pipe(Effect.provide(KinGitHubScope.layer));
     return program.pipe(
       Effect.catch(failed),
       Effect.provide(Layer.mergeAll(Keychain.layer, FetchHttpClient.layer)),

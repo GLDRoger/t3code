@@ -24,6 +24,7 @@ import {
   diffAppPermissions,
   type KinPermissionDiffLine,
 } from "./KinGitHubPermissions.ts";
+import { KinGitHubOwnerLogin, KinGitHubScope } from "./KinGitHubScope.ts";
 import * as OwnerMergeClient from "./OwnerMergeClient.ts";
 
 const DEFAULT_PORT = 47821;
@@ -91,9 +92,13 @@ export const checkApp = Effect.gen(function* () {
   return { ok, lines } satisfies SetupResult;
 }).pipe(Effect.withSpan("kinGitHubApp.check"));
 
-/** Finishes the manifest flow: secrets go to the keychain; only public facts come back. */
+/**
+ * Finishes the manifest flow. Secrets go to the keychain only when the App's permissions match the
+ * table and its owner is `expectedOwner`; only public facts come back.
+ */
 export const completeManifest = Effect.fn("kinGitHubApp.completeManifest")(function* (
   code: string,
+  expectedOwner: string,
 ) {
   const client = yield* HttpClient.HttpClient;
   const keychain = yield* Keychain.KinKeychain;
@@ -112,6 +117,20 @@ export const completeManifest = Effect.fn("kinGitHubApp.completeManifest")(funct
     okStatuses: [201],
   });
   const app = converted.body;
+  const diff = diffAppPermissions(app.permissions);
+  const owner = app.owner?.login ?? "unknown";
+  const ownerMatches = owner.toLowerCase() === expectedOwner.toLowerCase();
+  if (!ownerMatches || !diff.every((line) => line.status === "ok")) {
+    return {
+      ok: false,
+      lines: [
+        `GitHub created ${app.slug} (App id ${app.id}) owned by ${owner}, but Kin did not store its keys:`,
+        ...(ownerMatches ? [] : [`  FAIL owner ${owner} is not ${expectedOwner}`]),
+        ...formatDiff(diff),
+        `Delete it at https://github.com/settings/apps/${app.slug}/advanced (or the org's settings) and run this again.`,
+      ],
+    } satisfies SetupResult;
+  }
   const secrets = yield* encodeSecrets({
     privateKeyPem: app.pem,
     ...(app.webhook_secret === null ? {} : { webhookSecret: app.webhook_secret }),
@@ -119,11 +138,10 @@ export const completeManifest = Effect.fn("kinGitHubApp.completeManifest")(funct
     clientSecret: app.client_secret,
   });
   yield* keychain.set("kin-github-app", String(app.id), Redacted.make(secrets));
-  const diff = diffAppPermissions(app.permissions);
   return {
-    ok: diff.every((line) => line.status === "ok"),
+    ok: true,
     lines: [
-      `Created ${app.slug} (App id ${app.id}) owned by ${app.owner?.login ?? "unknown"}.`,
+      `Created ${app.slug} (App id ${app.id}) owned by ${owner}.`,
       "Its private key, webhook secret and client secret are in this user's OS keychain (kin-github-app).",
       "Permissions:",
       ...formatDiff(diff),
@@ -136,12 +154,22 @@ export const completeManifest = Effect.fn("kinGitHubApp.completeManifest")(funct
 const escapeHtml = (value: string) =>
   value.replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
 
+/** Loopback only; a forwarded port over SSH still arrives with one of these hosts. */
+export const isLoopbackHost = (host: string | undefined, port: number) =>
+  host === `127.0.0.1:${port}` || host === `localhost:${port}`;
+
+// Local race: any process on this host can reach the port. Another user could read `state` from
+// the form and send a callback with a code for an App they made; the owner and permission checks
+// in completeManifest refuse that App. A process that holds the port first makes listen fail.
 const createApp = Effect.fn("kinGitHubApp.create")(function* (input: {
   readonly port: number;
   readonly org: Option.Option<string>;
   readonly name: string;
   readonly webhookUrl: Option.Option<string>;
 }) {
+  // Before GitHub makes the key: the conversion answer is the only copy of it.
+  yield* (yield* Keychain.KinKeychain).ready("kin-github-app");
+  const expectedOwner = Option.isSome(input.org) ? input.org.value : yield* KinGitHubOwnerLogin;
   const state = NodeCrypto.randomBytes(32).toString("base64url");
   const origin = `http://127.0.0.1:${input.port}`;
   const manifest = yield* encodeJson(
@@ -165,7 +193,7 @@ const createApp = Effect.fn("kinGitHubApp.create")(function* (input: {
   const context = yield* Effect.context<HttpClient.HttpClient | Keychain.KinKeychain>();
   const finish = (code: string) =>
     Effect.runPromiseWith(context)(
-      completeManifest(code).pipe(
+      completeManifest(code, expectedOwner).pipe(
         Effect.catch((error) => Effect.succeed({ ok: false, lines: [error.message] })),
       ),
     );
@@ -181,6 +209,7 @@ const createApp = Effect.fn("kinGitHubApp.create")(function* (input: {
         response.writeHead(status, { "content-type": "text/html; charset=utf-8" });
         response.end(body);
       };
+      if (!isLoopbackHost(request.headers.host, input.port)) return send(421, "Wrong host");
       if (url.pathname === "/" && request.method === "GET") return send(200, form);
       if (url.pathname !== "/callback") return send(404, "Not found");
       // One redirect, from the form this run served; anything else is a stale or forged link.
@@ -194,16 +223,24 @@ const createApp = Effect.fn("kinGitHubApp.create")(function* (input: {
         resume(Effect.succeed(done));
       });
     });
+    server.once("error", (error) => {
+      resume(
+        Effect.succeed({ ok: false, lines: [`Could not listen on ${origin}: ${error.message}`] }),
+      );
+    });
     server.listen(input.port, "127.0.0.1");
     return Effect.sync(() => server.close());
   });
 });
 
 const storeMergeToken = Effect.fn("kinGitHubApp.storeMergeToken")(function* (orgId: KinOrgId) {
+  yield* (yield* Keychain.KinKeychain).ready("kin-owner-merge");
   yield* Console.log(
     "Make a fine-grained token at https://github.com/settings/personal-access-tokens/new\n" +
-      "  Repository access: only the Kin repositories. Expiration: 90 days.\n" +
-      "  Permissions: Contents: Read and write, Metadata: Read. Nothing else, so it can't review.",
+      "  Resource owner: the account that owns the Kin repositories.\n" +
+      "  Repository access: Only select repositories, exactly KIN_GITHUB_REPOS. Expiration: 90 days.\n" +
+      "  Permissions: Contents: Read and write, Metadata: Read. Nothing else, so it can't review.\n" +
+      "Kin probes the token before storing it and refuses one that can do more.",
   );
   const token = yield* Prompt.run(Prompt.Hidden({ message: "Paste the token (hidden)" }));
   const merge = yield* OwnerMergeClient.OwnerMergeClient;
@@ -264,7 +301,9 @@ export const kinGitHubAppCommand = Command.make(
     });
     const program = input.check
       ? checkApp.pipe(
-          Effect.provide(KinGitHubApp.layer.pipe(Layer.provide(appConfig))),
+          Effect.provide(
+            KinGitHubApp.layer.pipe(Layer.provide(Layer.mergeAll(appConfig, KinGitHubScope.layer))),
+          ),
           Effect.catch(failed),
         )
       : input.mergeToken
@@ -273,7 +312,7 @@ export const kinGitHubAppCommand = Command.make(
             onSome: (org) =>
               decodeOrgId(org).pipe(
                 Effect.flatMap(storeMergeToken),
-                Effect.provide(OwnerMergeClient.layer),
+                Effect.provide(OwnerMergeClient.layer.pipe(Layer.provide(KinGitHubScope.layer))),
                 Effect.catch(failed),
               ),
           })

@@ -8,14 +8,20 @@ import * as TestClock from "effect/testing/TestClock";
 import { describe } from "vite-plus/test";
 
 import * as OwnerMergeClient from "../github/OwnerMergeClient.ts";
-import { fakeGitHub, memoryKeychain } from "../github/testFakes.ts";
+import { fakeGitHub, memoryKeychain, scopeLayer } from "../github/testFakes.ts";
 import * as CredentialHygiene from "./CredentialHygiene.ts";
 
 const ORG = "org_kin" as KinOrgId;
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.UTC(2026, 10, 8);
 
-type Identity = Option.Option<{ readonly login: string; readonly source: string }> | "unreachable";
+type Identity =
+  | {
+      readonly t3?: Option.Option<{ readonly login: string; readonly source: string }>;
+      readonly gh?: ReadonlyArray<string>;
+      readonly git?: Option.Option<string>;
+    }
+  | "unreachable";
 
 const setup = (input: {
   readonly identity: Identity;
@@ -41,10 +47,14 @@ const setup = (input: {
   const identity = Layer.succeed(
     CredentialHygiene.T3GitHubIdentity,
     CredentialHygiene.T3GitHubIdentity.of({
-      current: Effect.suspend(() =>
+      identities: Effect.suspend(() =>
         state.identity === "unreachable"
           ? Effect.fail(new CredentialHygiene.T3GitHubIdentityError({ cause: "offline" }))
-          : Effect.succeed(state.identity),
+          : Effect.succeed({
+              t3: state.identity.t3 ?? Option.none(),
+              ghAccounts: state.identity.gh ?? [],
+              gitCredential: state.identity.git ?? Option.none(),
+            }),
       ),
     }),
   );
@@ -54,11 +64,16 @@ const setup = (input: {
     Layer.provide(keychain.layer),
     Layer.provide(fakeGitHub(() => ({ status: 500 })).layer),
     Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: input.env ?? {} }))),
+    Layer.provide(scopeLayer()),
   );
   return { state, layer };
 };
 
-const bot = Option.some({ login: "kin-bot", source: "gh" });
+const bot: Identity = {
+  t3: Option.some({ login: "kin-bot", source: "gh" }),
+  gh: ["kin-bot"],
+  git: Option.some("Kin-Bot"),
+};
 
 const check = Effect.gen(function* () {
   yield* TestClock.setTime(NOW);
@@ -68,7 +83,9 @@ const check = Effect.gen(function* () {
 
 describe("CredentialHygiene", () => {
   it.effect("privileged execution is refused while the credential hygiene check fails", () => {
-    const { state, layer } = setup({ identity: Option.some({ login: "nishchay", source: "gh" }) });
+    const { state, layer } = setup({
+      identity: { t3: Option.some({ login: "nishchay", source: "gh" }) },
+    });
     return Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
       const hygiene = yield* CredentialHygiene.CredentialHygiene;
@@ -88,14 +105,40 @@ describe("CredentialHygiene", () => {
       state.identity = bot;
       yield* execute;
       assert.strictEqual(merges, 1);
+      assert.strictEqual((yield* hygiene.requirePassing(ORG)).orgId, ORG);
     }).pipe(Effect.provide(layer));
   });
 
   it.effect.each([
     [
       "T3 signed in as the owner",
-      { identity: Option.some({ login: "NISHCHAY", source: "app" }) },
+      { identity: { t3: Option.some({ login: "NISHCHAY", source: "app" }) } },
       ["owner_identity"],
+    ],
+    [
+      "an inactive gh account that is the owner",
+      { identity: { ...bot, gh: ["kin-bot", "Nishchay"] } },
+      ["owner_identity"],
+    ],
+    [
+      "the git credential helper signed in as the owner",
+      { identity: { ...bot, git: Option.some("nishchay") } },
+      ["owner_identity"],
+    ],
+    [
+      "the configured owner with no merge token to compare",
+      { identity: { gh: ["Nishchay"] }, mergeToken: null },
+      ["merge_token_missing", "owner_identity"],
+    ],
+    [
+      "a gh account that isn't the bot",
+      { identity: { ...bot, gh: ["kin-bot", "someone-else"] } },
+      ["non_bot_identity"],
+    ],
+    [
+      "T3 using a login that isn't the bot",
+      { identity: { t3: Option.some({ login: "someone-else", source: "app" }) } },
+      ["non_bot_identity"],
     ],
     ["GH_TOKEN in the environment", { identity: bot, env: { GH_TOKEN: "ghp_x" } }, ["env_token"]],
     [
@@ -105,7 +148,7 @@ describe("CredentialHygiene", () => {
     ],
     [
       "T3 using an environment token",
-      { identity: Option.some({ login: "kin-bot", source: "env" }) },
+      { identity: { t3: Option.some({ login: "kin-bot", source: "env" }) } },
       ["env_token"],
     ],
     ["the identity unreachable", { identity: "unreachable" }, ["identity_unknown"]],
@@ -133,8 +176,22 @@ describe("CredentialHygiene", () => {
 
   it.effect("passes with the bot or no GitHub login, and warns 7 days before expiry", () =>
     Effect.gen(function* () {
-      const quiet = yield* check.pipe(Effect.provide(setup({ identity: Option.none() }).layer));
-      assert.deepInclude(quiet, { passed: true, failures: [], warnings: [], t3Login: null });
+      const quiet = yield* check.pipe(Effect.provide(setup({ identity: {} }).layer));
+      assert.deepInclude(quiet, {
+        passed: true,
+        failures: [],
+        warnings: [],
+        t3Login: null,
+        identities: [],
+      });
+
+      const everywhere = yield* check.pipe(Effect.provide(setup({ identity: bot }).layer));
+      assert.deepInclude(everywhere, { passed: true });
+      assert.deepStrictEqual(everywhere.identities, [
+        { source: "t3", login: "kin-bot" },
+        { source: "gh", login: "kin-bot" },
+        { source: "git_credential", login: "Kin-Bot" },
+      ]);
 
       const expiring = yield* check.pipe(
         Effect.provide(
