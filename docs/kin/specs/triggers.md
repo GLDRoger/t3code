@@ -459,8 +459,7 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
 **Backups:**
 
 - Memory is in GitHub, the source of truth.
-- Kin's own DB: `ops/kin/host/backup.sh`, run nightly by `kin-backup.timer` as `kin`, does `sqlite3 ~kin/.t3/userdata/statev2.sqlite ".backup <dest>/kin-$(date +%F).sqlite"` and keeps 14 days. It holds the trigger tables, chats, and T3's `webhook_secret` column in plain text, so the script refuses a destination that isn't on LUKS/dm-crypt unless passed `--i-know-dest-is-encrypted`.
-- It also copies `~kin/.t3/userdata/secrets/` and `~kin/.t3/service.env` to the same destination.
+- Kin's own state: [`ops/kin/host/backup.sh`](../../../ops/kin/host/backup.sh), run nightly by `kin-backup.timer` as `kin`, writes `kin-<date>/userdata/` and `kin-<date>/service.env` and keeps 14 days. `userdata` is copied whole, so `environment-id`, `secrets/` and attachments come back, except logs and files the server rebuilds; `statev2.sqlite` comes from `sqlite3 .backup`, a consistent snapshot of the live database. It holds chats, trigger tables and T3's `webhook_secret` column in plain text, so the script refuses a destination on kin's own disk or the root filesystem, and one that isn't on LUKS/dm-crypt unless passed `--i-know-dest-is-encrypted`.
 - Time Machine to an encrypted disk, excluding `~/.t3/worktrees`.
 - After a restore ([`ops/kin/host/restore.md`](../../../ops/kin/host/restore.md)), `trigger_reconcile` rebuilds triggers from memory.
 

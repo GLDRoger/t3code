@@ -50,21 +50,12 @@ home_of() {
   if command -v getent >/dev/null; then getent passwd "$1" | cut -d: -f6; fi
 }
 
-# 1. The kin user.
-CREATED=0
-if user_exists; then
-  say "User $KIN_USER exists."
-else
-  run useradd --create-home --shell /bin/bash "$KIN_USER"
-  CREATED=1
-fi
+# Guards run before anything is created: a refused run leaves no account behind.
+# This script manages a dedicated, unprivileged kin account only.
 KIN_HOME="/home/$KIN_USER"
 if user_exists; then KIN_HOME="$(home_of "$KIN_USER")"; fi
-KIN_UID="$(id -u "$KIN_USER" 2>/dev/null || echo '<uid>')"
 CHECKOUT="${CHECKOUT:-$KIN_HOME/t3code}"
 CURRENT="$KIN_HOME/kin-current"
-
-# Guards: this script manages a dedicated, unprivileged kin account only.
 [ "$KIN_USER" != root ] || refuse "$KIN_USER is root. Use a dedicated user."
 [ "$KIN_HOME" != "${HOME:-}" ] || refuse "$KIN_USER's home ($KIN_HOME) is this shell's \$HOME."
 for invoker in "${SUDO_USER:-}" "$(id -un)"; do
@@ -76,10 +67,13 @@ if [ -n "$login_uid" ] && [ "$login_uid" != 4294967295 ] && command -v getent >/
   login_home="$(getent passwd "$login_uid" | cut -d: -f6)"
   [ "$KIN_HOME" != "$login_home" ] || refuse "$KIN_USER's home ($KIN_HOME) is the logged-in user's home."
 fi
-if user_exists && [ "$CREATED" -eq 0 ]; then
-  [ "$KIN_UID" -ge 1000 ] || refuse "$KIN_USER has uid $KIN_UID, a system account."
+if user_exists; then
+  existing_uid="$(id -u "$KIN_USER")"
+  [ "$existing_uid" -ge 1000 ] || refuse "$KIN_USER has uid $existing_uid, a system account."
   for group in $(id -nG "$KIN_USER"); do
-    case "$group" in sudo | wheel | admin) refuse "$KIN_USER is in the $group group." ;; esac
+    case "$group" in
+      sudo | wheel | admin | root | docker | lxd | libvirt | disk) refuse "$KIN_USER is in the $group group." ;;
+    esac
   done
 fi
 case "$CHECKOUT" in
@@ -89,6 +83,14 @@ esac
 if [ -e "$CHECKOUT" ] && [ "$(uname -s)" = Linux ] && [ "$(stat -c %U "$CHECKOUT")" != "$KIN_USER" ]; then
   refuse "$CHECKOUT is not owned by $KIN_USER."
 fi
+
+# 1. The kin user.
+if user_exists; then
+  say "User $KIN_USER exists."
+else
+  run useradd --create-home --shell /bin/bash "$KIN_USER"
+fi
+KIN_UID="$(id -u "$KIN_USER" 2>/dev/null || echo '<uid>')"
 
 as_kin() {
   sudo -u "$KIN_USER" -H env \

@@ -43,7 +43,7 @@ if [ "$PREVIOUS" = "$BUILD" ] && [ -f "$BUILD/apps/server/dist/bin.mjs" ]; then
 fi
 
 mkdir -p "$BUILDS"
-if [ -e "$BUILD" ]; then git -C "$REPO" worktree remove --force "$BUILD"; fi
+if [ -e "$BUILD" ]; then git -C "$REPO" worktree remove --force "$BUILD" 2>/dev/null || rm -rf "$BUILD"; fi
 git -C "$REPO" worktree prune
 git -C "$REPO" worktree add --detach "$BUILD" "$SHA"
 trap 'echo "update.sh: build of $SHA failed; the server still runs ${PREVIOUS:-nothing}." >&2; git -C "$REPO" worktree remove --force "$BUILD"' ERR
@@ -54,7 +54,8 @@ node_version="$(sed -n '/"engines"/,/}/s/.*"node": *"\([^"]*\)".*/\1/p' "$BUILD/
 mise install "node@$node_version"
 
 cd "$BUILD"
-mise exec "node@$node_version" -- vp i
+# Unattended, like scripts/setup-worktree.ts: a stale lockfile must fail, not be rewritten.
+mise exec "node@$node_version" -- vp i --frozen-lockfile -- --yes </dev/null
 (cd apps/server && mise exec "node@$node_version" -- vp test run kin-contract)
 mise exec "node@$node_version" -- vp run build:desktop
 [ -f apps/server/dist/bin.mjs ] || { echo "update.sh: the build wrote no apps/server/dist/bin.mjs." >&2; false; }
@@ -81,14 +82,28 @@ ln -sfn "$BUILD" "$CURRENT.new"
 mv -T "$CURRENT.new" "$CURRENT"
 systemctl --user daemon-reload
 systemctl --user restart kin-server
-systemctl --user is-active kin-server
+# A build that crashes on boot still reads "active" right after restart; Restart=always hides it.
+sleep 15
+health="$(systemctl --user show -p ActiveState -p NRestarts --value kin-server | paste -sd' ')"
+if [ "$health" != "active 0" ]; then
+  echo "update.sh: $SHA didn't stay up (ActiveState NRestarts: $health)." >&2
+  if [ -n "$PREVIOUS" ]; then
+    echo "Roll back: ln -sfn $PREVIOUS $CURRENT.new && mv -T $CURRENT.new $CURRENT && systemctl --user restart kin-server" >&2
+  fi
+  exit 1
+fi
 echo "update.sh: running $SHA. Previous build: ${PREVIOUS:-none}."
 
-# Keep the newest builds, the running one and the previous one.
-kept=0
+# Keep the newest complete builds, the running one and the previous one. Interrupted
+# builds (no dist/bin.mjs) take no rollback slot and are removed.
+kept=1
+if [ -n "$PREVIOUS" ] && [ "$PREVIOUS" != "$BUILD" ]; then kept=2; fi
 while IFS= read -r dir; do
-  kept=$((kept + 1))
-  if [ "$kept" -le "$KEEP_BUILDS" ] || [ "$dir" = "$BUILD" ] || [ "$dir" = "$PREVIOUS" ]; then continue; fi
-  git -C "$REPO" worktree remove --force "$dir" || rm -rf "$dir"
+  if [ "$dir" = "$BUILD" ] || [ "$dir" = "$PREVIOUS" ]; then continue; fi
+  if [ -f "$dir/apps/server/dist/bin.mjs" ] && [ "$kept" -lt "$KEEP_BUILDS" ]; then
+    kept=$((kept + 1))
+    continue
+  fi
+  git -C "$REPO" worktree remove --force "$dir" 2>/dev/null || rm -rf "$dir"
 done < <(stat -c '%.9Y %n' "$BUILDS"/*/ | sort -rn | cut -d' ' -f2- | sed 's:/$::')
 git -C "$REPO" worktree prune

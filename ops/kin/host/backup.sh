@@ -40,14 +40,22 @@ USERDATA="$BASE/userdata"
 DB="$USERDATA/statev2.sqlite"
 [ -f "$DB" ] || die "no database at $DB."
 [ -d "$DEST" ] || die "destination $DEST does not exist."
+case "$DEST" in *"'"*) die "destination $DEST contains a single quote." ;; esac
 
 mount_target() { findmnt --noheadings --output TARGET --target "$1" 2>/dev/null; }
+# The backing device, without a btrfs [subvolume] suffix, so bind mounts and subvolumes match.
+mount_device() {
+  local source
+  source="$(findmnt --noheadings --output SOURCE --target "$1" 2>/dev/null)" || return 1
+  echo "${source%%\[*}"
+}
 
-# A destination on kin's own filesystem, or an unmounted mountpoint on /, is not a backup.
+# A destination on kin's own disk, or an unmounted mountpoint on /, is not a backup.
 DEST_MOUNT="$(mount_target "$DEST")" || die "can't find the filesystem holding $DEST."
-DATA_MOUNT="$(mount_target "$BASE")" || die "can't find the filesystem holding $BASE."
-if [ "$DEST_MOUNT" = "$DATA_MOUNT" ] || [ "$DEST_MOUNT" = / ]; then
-  die "$DEST is on $DEST_MOUNT, the same filesystem as kin's data or the root filesystem.
+DEST_DEVICE="$(mount_device "$DEST")" || die "can't find the device holding $DEST."
+DATA_DEVICE="$(mount_device "$BASE")" || die "can't find the device holding $BASE."
+if [ "$DEST_DEVICE" = "$DATA_DEVICE" ] || [ "$DEST_MOUNT" = / ]; then
+  die "$DEST is on $DEST_DEVICE ($DEST_MOUNT), the same disk as kin's data or the root filesystem.
 Mount the backup volume there first."
 fi
 
@@ -74,12 +82,19 @@ trap 'rm -rf "$STAGE"' EXIT
 
 # The database comes from .backup below. The rest is logs or files the server recreates;
 # worktrees and caches live outside userdata (apps/server/src/config.ts).
+# The server writes while this reads: tar exits 1 for a file that changed or vanished, which
+# is accepted on the create side only. The extract side stays strict.
 mkdir "$STAGE/$NAME" "$STAGE/$NAME/userdata"
-tar -C "$USERDATA" --anchored \
-  --exclude=./statev2.sqlite --exclude=./statev2.sqlite-wal --exclude=./statev2.sqlite-shm \
-  --exclude=./statev2.sqlite-journal --exclude=./logs --exclude=./worktrees \
-  --exclude=./browser-artifacts --exclude=./server-runtime.json \
-  -cf - . | tar -C "$STAGE/$NAME/userdata" -xpf -
+{
+  tar -C "$USERDATA" --anchored --warning=no-file-changed --warning=no-file-removed \
+    --ignore-failed-read \
+    --exclude=./statev2.sqlite --exclude=./statev2.sqlite-wal --exclude=./statev2.sqlite-shm \
+    --exclude=./statev2.sqlite-journal --exclude=./logs --exclude=./worktrees \
+    --exclude=./browser-artifacts --exclude=./server-runtime.json \
+    --exclude=./speech --exclude=./server-browser --exclude=./triage --exclude=./antigravity-tmp \
+    --exclude='./server-owner.sqlite*' --exclude='./usage-scan-cache*' \
+    -cf - . || [ $? -eq 1 ]
+} | tar -C "$STAGE/$NAME/userdata" -xpf -
 
 # .backup takes a consistent snapshot of a live WAL database.
 sqlite3 "$DB" ".backup '$STAGE/$NAME/userdata/statev2.sqlite'"
