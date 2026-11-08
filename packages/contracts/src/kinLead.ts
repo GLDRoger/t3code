@@ -20,6 +20,8 @@ import {
 import { ModelSelection } from "./modelSelection.ts";
 import { ScheduledTaskWebhookDeliveryId } from "./scheduledTask.ts";
 
+export const KinWakeupId = TrimmedNonEmptyString.pipe(Schema.brand("KinWakeupId"));
+export type KinWakeupId = typeof KinWakeupId.Type;
 export const KinEventId = TrimmedNonEmptyString.pipe(Schema.brand("KinEventId"));
 export type KinEventId = typeof KinEventId.Type;
 export const KinWorkerId = TrimmedNonEmptyString.pipe(Schema.brand("KinWorkerId"));
@@ -27,7 +29,7 @@ export type KinWorkerId = typeof KinWorkerId.Type;
 export const KinMemoryItemId = TrimmedNonEmptyString.pipe(Schema.brand("KinMemoryItemId"));
 export type KinMemoryItemId = typeof KinMemoryItemId.Type;
 
-const CanonicalUtcTimestamp = Schema.String.check(
+export const CanonicalUtcTimestamp = Schema.String.check(
   Schema.makeFilter(
     (value) => {
       return Option.exists(

@@ -20,15 +20,22 @@ const tableNames = [
   "kin_cursor",
   "kin_events",
   "kin_leads",
+  "kin_memory_reads",
   "kin_messages",
   "kin_org_state",
   "kin_orgs",
   "kin_people",
+  "kin_ping_ledger",
   "kin_read_state",
   "kin_session_bindings",
   "kin_shadow_entries",
+  "kin_trigger_fires",
+  "kin_trigger_inbox",
+  "kin_trigger_settings",
+  "kin_triggers",
   "kin_waiting",
   "kin_wakeups",
+  "kin_webhook_sources",
   "kin_widgets",
   "kin_workers",
 ];
@@ -60,7 +67,7 @@ const upstreamHistory = Effect.gen(function* () {
 
 describe("Kin migrations", () => {
   it.effect(
-    "creates K001 and K002 in their own track after upstream and reruns without changes",
+    "creates K001, K002 and K003 in their own track after upstream and reruns without changes",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -73,10 +80,30 @@ describe("Kin migrations", () => {
         assert.deepStrictEqual(yield* kinHistory, [
           { migration_id: 1, name: "ChatCore" },
           { migration_id: 2, name: "Lead" },
+          { migration_id: 3, name: "Triggers" },
+          { migration_id: 4, name: "MemoryReads" },
+          { migration_id: 5, name: "OneChatOwner" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
           migrationManifest,
+        );
+        for (const [table, names] of [
+          ["kin_triggers", ["next_run_at", "created_at", "updated_at"]],
+          ["kin_trigger_fires", ["fired_at"]],
+          ["kin_trigger_inbox", ["received_at", "consumed_at"]],
+          ["kin_ping_ledger", ["pinged_at", "escalated_at"]],
+        ] as const) {
+          const columns = yield* sql<{ name: string; type: string }>`
+            SELECT name, type FROM pragma_table_info(${table})
+          `;
+          for (const name of names) {
+            assert.strictEqual(columns.find((column) => column.name === name)?.type, "INTEGER");
+          }
+        }
+        assert.deepStrictEqual(
+          yield* sql`SELECT name FROM pragma_table_info('kin_webhook_sources') WHERE pk > 0 ORDER BY pk`,
+          [{ name: "org_id" }, { name: "source_id" }],
         );
         for (const { name } of before) {
           const columns = yield* sql<{ name: string; notnull: number }>`
@@ -97,16 +124,25 @@ describe("Kin migrations", () => {
         assert.deepStrictEqual(yield* kinHistory, [
           { migration_id: 1, name: "ChatCore" },
           { migration_id: 2, name: "Lead" },
+          { migration_id: 3, name: "Triggers" },
+          { migration_id: 4, name: "MemoryReads" },
+          { migration_id: 5, name: "OneChatOwner" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
           { org_id: "org", name: "Kin", created_at: timestamp },
         ]);
+        assert.deepStrictEqual(
+          yield* sql`SELECT name FROM pragma_index_info('idx_kin_triggers_due') ORDER BY seqno`,
+          ["next_run_at", "org_id", "trigger_id"].map((name) => ({ name })),
+        );
         const indexes = yield* sql<{ name: string }>`
         SELECT name FROM sqlite_master WHERE type = 'index' AND name GLOB 'idx_kin_*' ORDER BY name
       `;
         assert.deepStrictEqual(indexes, [
           { name: "idx_kin_agents_org_agent" },
+          { name: "idx_kin_chat_members_agent" },
+          { name: "idx_kin_chat_members_person" },
           { name: "idx_kin_chats_org_chat" },
           { name: "idx_kin_events_dedupe" },
           { name: "idx_kin_events_queue" },
@@ -114,9 +150,14 @@ describe("Kin migrations", () => {
           { name: "idx_kin_people_org_person" },
           { name: "idx_kin_shadow_entries_promotion" },
           { name: "idx_kin_shadow_entries_review" },
+          { name: "idx_kin_trigger_fires_retention" },
+          { name: "idx_kin_trigger_inbox_pending" },
+          { name: "idx_kin_trigger_inbox_retention" },
+          { name: "idx_kin_triggers_due" },
           { name: "idx_kin_waiting_open_widget_person" },
           { name: "idx_kin_waiting_person_resolved_at" },
           { name: "idx_kin_wakeups_running_org" },
+          { name: "idx_kin_widgets_chat_message" },
           { name: "idx_kin_widgets_type_closed_at" },
           { name: "idx_kin_workers_status" },
         ]);
@@ -148,6 +189,9 @@ describe("Kin migrations", () => {
       assert.deepStrictEqual(yield* runKinMigrations(), [
         [1, "ChatCore"],
         [2, "Lead"],
+        [3, "Triggers"],
+        [4, "MemoryReads"],
+        [5, "OneChatOwner"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -159,6 +203,19 @@ describe("Kin migrations", () => {
         [],
       );
       yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('owner', 'org', 'owner', 'Owner', ${timestamp})`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+        VALUES ('existing-chat', 'org', 'project_group', 0, ${timestamp})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('existing-owner', 'org', 'existing-chat', 'person', 'owner', 'owner', ${timestamp})`;
+      yield* sql`DROP INDEX kin_chat_members_one_owner`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 5`;
+      assert.deepStrictEqual(yield* runKinMigrations(), [[5, "OneChatOwner"]]);
+      assert.deepStrictEqual(
+        yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,
+        [{ member_id: "existing-owner" }],
+      );
       yield* runMigrations();
       assert.deepStrictEqual(
         (yield* upstreamHistory).map((row) => [row.migration_id, row.name] as const),
@@ -168,6 +225,9 @@ describe("Kin migrations", () => {
       assert.deepStrictEqual(yield* kinHistory, [
         { migration_id: 1, name: "ChatCore" },
         { migration_id: 2, name: "Lead" },
+        { migration_id: 3, name: "Triggers" },
+        { migration_id: 4, name: "MemoryReads" },
+        { migration_id: 5, name: "OneChatOwner" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);
@@ -223,6 +283,7 @@ describe("Kin migrations", () => {
           json: '{"_tag":"resume"}',
           dedupe_key: "resume:1",
           received_at: 1794009600000,
+          queued_at: 1794009600000,
           state: "claimed",
           wakeup_id: "wake",
           not_before: null,
@@ -243,6 +304,7 @@ describe("Kin migrations", () => {
           started_at: 1794009600000,
           ended_at: 1794009600000,
         },
+        kin_memory_reads: { org_id: "org", item_id: "fixture-id", last_read_at: 1794009600000 },
         kin_cursor: { org_id: "org", consumer: "worker-tracker", after_sequence: 42 },
         kin_shadow_entries: {
           org_id: "org",
@@ -287,7 +349,22 @@ describe("Kin migrations", () => {
         yield* sql`INSERT INTO ${sql(table)} ${sql.insert(row)}`;
         assert.deepStrictEqual(yield* sql`SELECT * FROM ${sql(table)} WHERE org_id = 'org'`, [row]);
       }
+      yield* sql`INSERT INTO kin_memory_reads (org_id, item_id, last_read_at) VALUES ('other', 'fixture-id', 1)`;
+      assert.deepStrictEqual(
+        yield* sql`SELECT org_id, item_id, last_read_at FROM kin_memory_reads ORDER BY org_id, item_id`,
+        [rows.kin_memory_reads, { org_id: "other", item_id: "fixture-id", last_read_at: 1 }],
+      );
       const rejected = [
+        {
+          table: "kin_memory_reads",
+          row: { org_id: "missing", item_id: "fixture", last_read_at: 1 },
+          error: "FOREIGN KEY constraint failed",
+        },
+        {
+          table: "kin_memory_reads",
+          row: { org_id: "org", item_id: "invalid-time", last_read_at: "invalid" },
+          error: "CHECK constraint failed",
+        },
         {
           table: "kin_org_state",
           row: { ...rows.kin_org_state, org_id: "other", paused_at: null, paused_by: null },
@@ -555,6 +632,11 @@ describe("Kin migrations", () => {
       );
       const rejected = [
         {
+          name: "second owner",
+          query: sql`UPDATE kin_chat_members SET role = 'owner' WHERE member_id = 'member-person'`,
+          error: "UNIQUE constraint failed: kin_chat_members.org_id, kin_chat_members.chat_id",
+        },
+        {
           name: "direct chat without direct_key",
           query: sql`
             INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
@@ -605,7 +687,7 @@ describe("Kin migrations", () => {
           ) VALUES (
             ${`duplicate-${member.id}`}, 'org', 'team_group', ${member.kind},
             ${member.kind === "person" ? member.id : null}, ${member.kind === "agent" ? member.id : null},
-            ${member.role}, ${timestamp}
+            ${member.role === "owner" ? "member" : member.role}, ${timestamp}
           )
         `);
         assert.isTrue(Exit.isFailure(duplicateMember));

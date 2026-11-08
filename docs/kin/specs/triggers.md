@@ -79,13 +79,13 @@ KinTriggerScheduler (Scheduler tick, kin_triggers) ────────▶ k
 
 - **Webhooks use T3's scheduled tasks**, because the relay only forwards to `/api/hooks/:hookId/:token`, and signature, replay, filters, the offline hold and the delivery log all live there. Kin owns one unbound T3 webhook task per (org, repo).
 - **Time triggers use Kin's own table** on T3's `Scheduler`, reusing `nextScheduledRunAt`. T3's runs always start an agent, `fixed_time` uses the server's zone, late `fixed_time` runs are dropped, and a crash can lose a `once`. Kin needs the owner's zone per org, a late policy per kind, multi-step deferrals, `orgId`, and priority for the budget. Those trigger rows are derived from memory (deferrals) and org settings (routines), so they can be rebuilt.
-- **Why a durable inbox.** The sink sits inside `ScheduledTaskService`'s dependencies, so it may depend only on `SqlClient`, `ThreadManagementService` and a `PubSub`. Otherwise the Kin layer, which itself needs `ScheduledTaskService`, would form a cycle. The inbox row also survives a crash between receipt and processing.
+- **Why a durable inbox.** The sink sits inside `ScheduledTaskService`'s dependencies, so it depends only on `SqlClient`, `ThreadManagementService`, and Kin's SQL-backed inbox/store. Its layer runs Kin migrations before looking up sources. Otherwise the Kin layer, which itself needs `ScheduledTaskService`, would form a cycle. The inbox row also survives a crash between receipt and processing.
 
 ### Data shapes (new, `packages/contracts/src/kinTriggers.ts`)
 
 The schemas reuse `KinOrgId` and `KinPersonId` from `kinChat.ts` and T3's existing task, delivery and thread IDs. Follow-up `person` is a Kin person ID, not a handle. Every top-level record carries `orgId`; nested schedules, subjects and payloads inherit their envelope's org. These contracts are independent of LEAD's `KinEvent`.
 
-Schedules reuse the same shapes as T3's upsert schedules, minus webhook; `fixed_time` is read in `timeZone`, not the server's zone. Schedule unions keep T3's `type` discriminator, and fire payloads keep `kind`. Intervals are at least 60 000 ms, weekdays are integers 0–6, and lateness is non-negative. `TimeOfDay` follows T3's local-time pattern (H:MM or HH:MM). Record timestamps use the same `IsoDateTime` schema as chat contracts; `once.runAt` uses T3's stricter ISO date-time with an explicit offset. Timezone fields validate IANA zones, including `UTC`.
+Schedules reuse the same shapes as T3's upsert schedules, minus webhook; `fixed_time` is read in `timeZone`, not the server's zone. Schedule unions keep T3's `type` discriminator, and fire payloads keep `kind`. Intervals are at least 60 000 ms, weekdays are integers 0–6, and lateness is non-negative. `TimeOfDay` follows T3's local-time pattern (H:MM or HH:MM). Server-generated record timestamps use LEAD's canonical UTC schema (`YYYY-MM-DDTHH:mm:ss.sssZ`); `once.runAt` uses T3's stricter ISO date-time with an explicit offset. Timezone fields validate IANA zones, including `UTC`.
 
 The exported schemas and types are defined in [`kinTriggers.ts`](../../../packages/contracts/src/kinTriggers.ts).
 
@@ -93,14 +93,22 @@ Each fire has a stable `fireId`: `${triggerId}:${dueAtMs}` for time triggers or 
 
 Defaults: brief 08:30 daily, summary 18:30 Mon–Fri, dream 03:00 daily, full rebuild on Sunday (it replaces that night's dream), owner check Monday 09:00, quiet hours 21:00–08:00. Morning brief and dream days are fixed to daily, and evening summary days are fixed to Mon–Fri; their settings change only the time.
 
-**Tables (new, Kin migrations):** `kin_triggers`, `kin_trigger_fires` (fireId primary key, 30-day retention), `kin_trigger_inbox` (fireId primary key, `payload_json`, `consumed_at`), `kin_webhook_sources`, `kin_deferral_runs`, `kin_ping_ledger`, `kin_dream_runs`, `kin_prepared_briefs`. Every row has `org_id`.
+**Tables (new, Kin migrations):** `kin_triggers` (primary key `(org_id, trigger_id)`), `kin_trigger_fires` (primary key `(org_id, fire_id)`, 30-day retention), `kin_trigger_inbox` (primary key `(org_id, fire_id)`), `kin_webhook_sources`, `kin_trigger_settings`, `kin_deferral_runs`, `kin_ping_ledger`, `kin_dream_runs`, `kin_prepared_briefs`. Every row has `org_id NOT NULL`. TRIG-2 creates the trigger, fire, inbox, source, settings and ping tables; the deferral and dream tasks own their remaining tables.
+
+- `kin_triggers` stores the `KinTrigger` fields, with `subject_json` and `schedule_json`. Trigger and fire IDs are unique within an org; fire and event deduplication are org-scoped. CRUD is org-scoped; due scans span orgs. `next_run_at`, `created_at` and `updated_at` are integer epoch milliseconds. Indexed due scans use keyset paging on `(next_run_at, org_id, trigger_id)`; a concurrent fire cannot shift an OFFSET page. Time trigger IDs may not start with `gh:`, which is reserved for webhook fires.
+- `kin_trigger_fires` stores `fire_id`, `org_id` and indexed integer `fired_at`. Retention deletes only rows strictly older than `now - 30 days`, not inbox work. Pending inbox rows continue to reject replays after fire retention; consumed inbox rows are separately removed after 7 days, so the inbox does not generally outlive the fire ledger.
+- `kin_trigger_inbox` stores the full `KinTriggerFired` envelope in `payload_json`, integer `received_at` and nullable integer `consumed_at`. Both receive paths insert with `ON CONFLICT (org_id, fire_id) DO NOTHING RETURNING fire_id`; other constraint failures raise. `listPending(orgId, limit)` reads unconsumed rows in `received_at, fire_id` order using an org-scoped pending index. The lead consumer reads pending rows, performs read-only or idempotent I/O (which can run again on replay), then in one transaction inserts into `kin_events` with `ON CONFLICT DO NOTHING` on `(org_id, dedupe_key)` and calls `markConsumed(orgId, fireIds)`. A crash replays pending work; durable event dedupe absorbs it. There are no claims or recovery loop. Reconciliation deletes consumed rows strictly older than 7 days using the `consumed_at` index.
+- `kin_webhook_sources` stores the `KinWebhookSource` fields, keyed by `(org_id, source_id)`, unique by `(org_id, repo)` and by `scheduled_task_id` for the sink lookup. Task and thread IDs have no upstream foreign keys. `kin_trigger_settings` stores one `KinTriggerSettings` per org, including `quiet_hours_json`.
+- `kin_ping_ledger` has the unique key `(org_id, person, item_id, day)`, where `day` is the owner's local calendar date, plus integer `pinged_at` and nullable integer `escalated_at`. TRIG-11 owns sending, batching and escalation.
 
 ### Time triggers: `KinTriggerScheduler`
 
-- Registers with `scheduler.register("kin-triggers", runDue)`. Each tick selects rows where `enabled AND next_run_at <= now`, ordered by `next_run_at`.
-- **Firing.** In one transaction it inserts into `kin_trigger_fires` and `kin_trigger_inbox` (`INSERT OR IGNORE` on `fireId`) and advances `next_run_at`. A fire therefore happens at most once (gap 4), and a crash before commit simply refires.
-- **Next run.** `nextScheduledRunAt(schedule, DateTime.makeZoned(now, { timeZone }))`. `once` rows get `next_run_at = null` after firing. Startup recovery has nothing to fix, because there is no "running" state.
-- **Lateness.** `lateByMs = now − dueAt`. The scheduler never drops a fire. Each kind's late policy is applied when the fire is handled:
+- Registers with `scheduler.register("kin-triggers", runDue)`, reusing T3's scoped, non-overlapping 5-second tick and startup activation. Each tick reads `Clock` once and visits all rows where `enabled AND next_run_at <= now`, in batches of 100 ordered by `(next_run_at, org_id, trigger_id)`. A failed fire is logged without blocking other rows or later batches.
+- **Firing.** The scheduler passes a next-run function to `KinTriggerStore.fire`, which rejects a time fire unless its `fireId` is `${triggerId}:${dueAtMs}`. In one transaction the store inserts into `kin_trigger_fires` and `kin_trigger_inbox` with `ON CONFLICT (org_id, fire_id) DO NOTHING RETURNING fire_id` and advances `next_run_at` (always clears it for `once`). An existing inbox row must be a time fire for the same trigger; a different identity fails with `identity_conflict`, never a false duplicate. `updated_at` never moves backwards on fire. A duplicate still runs the guarded schedule update, so an already-fired due row cannot stay armed. The store reads the trigger in the same write transaction and computes its next run from that row, so settings recompute cannot commit between the read and update. The update requires the same org, an enabled trigger and the original `dueAt` still in `next_run_at` (compared as integer milliseconds); a new stale, missing or disarmed fire rolls back both inserts. A crash before commit simply refires. The single scheduler scans due rows across orgs with a limit, logging and skipping undecodable rows. Store numeric inputs are non-negative safe integers.
+- **Next run.** Reuse `nextScheduledRunAt` with `DateTime.makeZonedUnsafe(now, { timeZone: trigger.timeZone })`, where the stored zone is the validated org owner-zone snapshot. Compute strictly after the tick's **now**, not the old due slot: fixed times stay at the owner's wall-clock time across DST; intervals add elapsed milliseconds; neither replays missed slots. `once` rows get `next_run_at = null` after firing. Startup recovery has nothing to fix, because there is no "running" state.
+- **Settings changes.** The settings write path calls `KinTriggerScheduler.recompute(settings)` with the validated new settings. In one transaction it refreshes that org's trigger zone snapshots, routine schedules and next times from `Clock` now. Routine weekdays follow the defaults above; `dream_full` uses the configured full-rebuild day and dream time. Disabled triggers stay disarmed, consumed `once` triggers stay cleared, and armed `once` triggers keep their absolute due instant (including past-due times). Armed overdue slots keep their stored due instant and fire late on the next tick, then advance using the new settings. Intervals keep their existing next run. Unchanged rows are not written. The caller owns persisting the settings and creating any missing routine rows; this method only recomputes existing rows.
+- Catch-up fires share `received_at`, so consumers must not rely on inbox order between a deferral's `heads_up` and `due`; skipping heads-up when due has also passed is the consumer's job.
+- **Lateness.** `lateByMs = now − dueAt`. The scheduler never drops a fire, even more than 10 minutes late. It emits exactly one envelope for the stored overdue slot and advances recurring triggers beyond now, with no backfill. Each kind's late policy is applied when the fire is handled:
 
 | Kind                | Late policy (decided by the consumer, using `lateByMs` and owner time)                                                              |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
@@ -120,7 +128,7 @@ Defaults: brief 08:30 daily, summary 18:30 Mon–Fri, dream 03:00 daily, full re
 **Creating a source** (`KinWebhookSources.add(orgId, repo)`):
 
 1. Generate a 32-byte secret with `SecureRandom`.
-2. Create the org's inbox thread once. It is a real thread, launched with `ThreadLaunchService.launch` without a message, then archived, and stored as `inboxThreadId`.
+2. Create the org's inbox thread once. It is a real thread, launched with `ThreadLaunchService.launch` without a message, then archived and stored as `inboxThreadId`. The inbox thread is never an agent thread and is never registered in `kin_agent_threads`. The sink can read an archived inbox projection without posting a message to it.
 3. Call `ScheduledTaskService.upsert`. Kin holds the secret only for this call:
 
 ```ts
@@ -147,7 +155,7 @@ Defaults: brief 08:30 daily, summary 18:30 Mon–Fri, dream 03:00 daily, full re
 
 **Why no coalescing.** T3 coalescing keeps only the latest payload, so two PRs in one window would lose one. LEAD's per-org merge window does the batching without dropping events. Rotation: `rotateWebhookToken`, then update the GitHub hook URL through the same executor action.
 
-**Receiving: `KinTriggerSink`.** It wraps the `ThreadLaunchService` given to `ScheduledTaskService`:
+**Receiving: `KinTriggerSink`.** It wraps the `ThreadLaunchService` and `ThreadManagementService` given only to `ScheduledTaskService`:
 
 ```ts
 launch: (input) => {
@@ -156,13 +164,17 @@ launch: (input) => {
   if (!source) return inner.launch(input);                    // not Kin's: unchanged
   const deliveryId = parseDelivery(input.commandId, taskId);  // suffix after `${taskId}:webhook:`
   if (deliveryId === null) return Effect.fail(launchError(input, "dispatch-message"));
-  return inbox.put({ fireId: `gh:${source.orgId}:${deliveryId}`, ... })   // INSERT OR IGNORE
+  return inbox.put({ fireId: `gh:${source.orgId}:${deliveryId}`, ... })   // ON CONFLICT (org_id, fire_id) DO NOTHING
     .pipe(Effect.andThen(threads.getThreadProjection(source.inboxThreadId)),
           Effect.map((projection) => ({ threadId: source.inboxThreadId, projection, resumed: false })));
 }
 ```
 
-A Kin task never falls through to a real launch. If parsing fails, the launch fails, and T3 logs `dispatch_failed` in Deliveries.
+A registered Kin task never falls through to a real launch. The wrapper is local to scheduled tasks and is given the existing thread-management layer explicitly; other callers retain the original launch and thread-management services. Bound Kin sends and failed source lookups are rejected before dispatch; ordinary sends pass through. If parsing, source validation or inbox persistence fails, the launch fails, and T3 logs `dispatch_failed` in Deliveries.
+
+`KinTriggerStore.registerSource` requires an existing org and an unbound `new_thread` webhook task. `getThreadProjection` checks that the inbox thread is not deleted and its project matches the task's project. Identical registration returns the stored source; conflicting identity fails. TRIG-5 must retain this unbound task shape on edits and disable/delete the upstream task before unregistering its source. Sources have no upstream org column: the `kin_webhook_sources` row establishes ownership; registration rejects task or inbox IDs already owned by another org.
+
+The sink verifies the delivery-log row belongs to the scheduled task. `dueAt` is the log's `received_at`, `firedAt` comes from `Clock`, and `lateByMs` is their nonnegative difference. `KinTriggerFired` carries only T3's delivery-log id, not GitHub's delivery header; TRIG-6 reads `x-github-delivery` through `getWebhookDelivery` as described below. No contract change or payload parsing is needed here.
 
 **Consuming (Kin layer, outside the cycle).**
 
@@ -224,6 +236,8 @@ armed ──heads_up fire──▶ recheck ──changed──▶ asked   (decis
 
 ### Routines (`fixed_time` in the owner's zone)
 
+The dream consumer suppresses a `dream` fire whose `dueAt`, in owner time, falls on `fullRebuildWeekday`.
+
 | Routine           | Does                                                                                                                                                                                                                                                                                                                                  |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `morning_brief`   | Posts `kin_prepared_briefs` for today (prepared by the dream), refreshed with events since 03:00. If no dream ran, the lead builds one live. On Mondays, adds deferrals and commitments due this week.                                                                                                                                |
@@ -250,12 +264,14 @@ All are plain code. They write memory only through the LEAD queue as code-only e
 **`review_by` defaults** are filled at write time by `freshness.ts`:
 
 - person: +90 days;
-- objective: next milestone date;
+- objective: next milestone date supplied by the writer, falling back to `due`, then +30 days from `recorded_at`;
 - commitment and deferral: `due`;
 - decision: null;
 - claim: +30 days.
 
-**`INDEX.md` is built by code**, not by the model (`buildIndex.ts`), from the front-matter cache. It has at most 200 lines and an `As of <ISO>` first line. Sections: Waiting on owner, due in 7 days, open objectives, open commitments, overdue (flagged `⚠ review`). Items flagged misleading drop to the end with a mark. Items unread for 8 weeks are left out, using `lastReadAt` that LEAD's Memory read path records in Kin's DB, not in git.
+**`INDEX.md` is built by code**, not by the model (`buildIndex.ts`), from the front-matter cache. It has at most 200 lines and an `As of <ISO>` first line. Sections: Waiting on owner, due in 7 days, open objectives, open commitments, overdue (flagged `⚠ review`). Items flagged misleading drop to the end with a mark. Items unread for 8 weeks are left out, using last-read timestamps that LEAD's Memory read path records in Kin's DB (`kin_memory_reads`), not in git. Never-read items use `recorded_at` as the baseline.
+
+The builder takes item heads (optionally marked `misleading` by the caller), last-read integer milliseconds, caller-supplied `now` and the owner's IANA zone. Each item appears once, in the first matching section; open, valid `on_due: ask` items with `due <= now` mean Waiting on owner (asked but not yet answered); future-due ask items stay in their normal section. Due in 7 days includes today through the seventh following owner-calendar date (exclusive midnight of day 8); front-matter date-only values still mean UTC midnight. Other items remain in Other memory; misleading items go last. Within each section, order is due, review date (missing dates last), id, path, then title, using ordinal string order. Overdue due dates on open items and overdue review dates are flagged. The cap includes headings and the omitted-item count. Memory reads the owner's zone from `kin_trigger_settings`, using UTC before settings exist or when the zone is invalid or cannot be read. `defaultReviewBy` is the pure helper LEAD-3's `stage` calls on the lead's staged input, before it becomes front matter, with `recordedAt` in integer milliseconds; it applies defaults only when the input omitted `review_by` and preserves explicit dates and null. Committed front matter always carries `review_by` (the schema requires it), so the helper never runs on parsed files. The truncation line is "N more items not listed; use memory_search".
 
 **Contradiction checks** at write time are LEAD's (Memory writer). Dreams list the ones they find.
 
@@ -347,7 +363,7 @@ cd apps/server && vp test run kin-contract
 cd apps/mobile && vp test run kin-contract
 ```
 
-Each test pins only what Kin uses.
+Each test pins only what Kin uses. `scheduledTask.kin-contract.test.ts` must pin the upstream columns Kin reads: `scheduled_tasks.task_id`, `project_id`, `thread_id`, `thread_mode`, `schedule_json`, and `scheduled_task_webhook_deliveries.task_id`, `delivery_id`, `received_at`.
 
 | Piece               | File                                                                         | Asserts                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | ------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -416,9 +432,9 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
 - `ops/kin/host/kin-server.service`, `ops/kin/host/setup.sh` (user, linger, suspend off, and checks), `ops/kin/host/backup.sh`
 - In `GLDRoger/kin-memory`: `CODEOWNERS`, `.github/workflows/memory-check.yml`
 
-**Upstream files touched (one line each):**
+**Upstream files touched:**
 
-- `apps/server/src/orchestration-v2/runtimeLayer.ts`, inside `layerScheduledTaskProvided`'s `Layer.mergeAll(...)`: replace `layerThreadLaunchProvided,` with `KinTriggerSink.wrapThreadLaunch(layerThreadLaunchProvided),`. Only `ScheduledTaskService` sees the wrapper. Effect memoises `layerThreadLaunchProvided` by reference, so the rest of the server keeps the same instance.
+- `apps/server/src/orchestration-v2/runtimeLayer.ts`, inside `layerScheduledTaskProvided`'s `Layer.mergeAll(...)`: replace the `layerThreadLaunchProvided,` and `layerThreadManagementProvided,` entries with `KinTriggerSink.wrapTaskDispatch(layerThreadLaunchProvided, layerThreadManagementProvided),`. Add the `KinTriggerSink` namespace import in the same file: one import plus one replacement call for the two dependency entries. Only `ScheduledTaskService` sees the wrapper. Effect memoises `layerThreadLaunchProvided` by reference, so the rest of the server keeps the same instance.
 - Kin's server layer and migration list: added by CHAT-2 and CHAT-6. This spec adds no new upstream hook for them.
 - `apps/mobile/src/features/threads/McpAppWebView.tsx`: `export` on `function outerDocument`, so the TRIG-19 contract test can run the outer document's script.
 - `KIN.md` sync steps (Kin's own file): add the two `kin-contract` commands after `vp run check:changed`.
@@ -451,8 +467,8 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
 ## Tests and acceptance criteria
 
 - `cd apps/server && vp test run src/kin/triggers src/kin/memory src/kin/dreaming` passes. Use `TestClock`; no sleeps (`docs/internals/testing.md`).
-- **Scheduler:** a deferral due 09:00 +05:30 fires once at 09:00. Two ticks at the same instant give one inbox row. Advancing the clock 10 h with the scheduler stopped, then starting it, gives one fire with `lateByMs = 10 h` and a "This was due at 9:00" card.
-- **Timezone:** with the server zone `UTC` and the org zone `Asia/Kolkata`, the dream fires at 21:30 UTC.
+- **Scheduler:** a deferral due 09:00 +05:30 fires once at 09:00. Two ticks at the same instant give one inbox row. Advancing the clock 10 h with the scheduler stopped, then starting it, gives one inbox fire with `lateByMs = 10 h`; the deferral consumer (TRIG-8) posts the "This was due at 9:00" card. Recurring downtime emits one stored slot, not every missed occurrence.
+- **Timezone:** with the server zone `UTC` and the org zone `Asia/Kolkata`, the dream fires at 21:30 UTC. A 09:00 routine in `America/New_York` stays at 09:00 across both DST transitions; weekdays are owner-local. Two orgs with different zones fire independently; changing one org's zone or routine times recomputes only its schedules.
 - **Sink:** a signed GitHub `pull_request` request through the real `ScheduledTaskService` gives exactly one inbox row and no thread launch. A replay gives `duplicate` and no new row. A bot-sender request gives `filtered`. A non-Kin task still launches normally.
 - **Deferral:** unchanged recheck, then heads-up, then silence, then `started` at due. A linked issue closed before due leads to `asked`, and nothing starts. With the stop switch on, it asks. [Monday] re-arms to next Monday 09:00.
 - **Dream:** a dream touching `rules.md` fails, and `main` is unchanged. A dream with one journal fold and one `decisions/` change opens two PRs, and only the auto one merges.
@@ -461,6 +477,8 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
 - **Contract tests:** `vp test run kin-contract` passes on today's upstream. Renaming `scheduledTaskId` in a scratch branch makes it fail.
 
 ## Tasks
+
+**TRIG-4 constraints.** A Kin source task bound to a thread fails each delivery with `OrchestratorCommandRejectedError`; unbind it to resume. TRIG-4 is where Kin persistence first joins boot; CHAT-6/7's boot containment must cover it.
 
 | Id      | What                                                                                                           | Files                                                      | Depends on                                                                                          | Done when                                                                                                                                                          | Owner   |
 | ------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------- |

@@ -1,13 +1,8 @@
 import * as Schema from "effect/Schema";
 
-import {
-  IsoDateTime,
-  NonNegativeInt,
-  ScheduledTaskId,
-  ThreadId,
-  TrimmedNonEmptyString,
-} from "./baseSchemas.ts";
+import { NonNegativeInt, ScheduledTaskId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinOrgId, KinPersonId } from "./kinChat.ts";
+import { CanonicalUtcTimestamp, KinMemoryItemId } from "./kinLead.ts";
 import { ScheduledTaskUpsertSchedule, ScheduledTaskWebhookDeliveryId } from "./scheduledTask.ts";
 
 const [interval, fixedTime, once] = ScheduledTaskUpsertSchedule.members;
@@ -58,13 +53,13 @@ export type KinTriggerSchedule = typeof KinTriggerSchedule.Type;
 export const KinTriggerSubject = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("deferral"),
-    itemId: TrimmedNonEmptyString,
+    itemId: KinMemoryItemId,
     phase: Schema.Literals(["heads_up", "due"]),
   }),
-  Schema.Struct({ type: Schema.Literal("reminder"), itemId: TrimmedNonEmptyString }),
+  Schema.Struct({ type: Schema.Literal("reminder"), itemId: KinMemoryItemId }),
   Schema.Struct({
     type: Schema.Literal("followup"),
-    itemId: TrimmedNonEmptyString,
+    itemId: KinMemoryItemId,
     person: KinPersonId,
   }),
   Schema.Struct({ type: Schema.Literal("routine"), routine: KinRoutine }),
@@ -79,18 +74,18 @@ export const KinTrigger = Schema.Struct({
   schedule: KinTriggerSchedule,
   timeZone: TimeZone,
   enabled: Schema.Boolean,
-  nextRunAt: Schema.NullOr(IsoDateTime),
+  nextRunAt: Schema.NullOr(Schema.toEncoded(CanonicalUtcTimestamp)),
   lastFireId: Schema.NullOr(KinTriggerFireId),
-  createdAt: IsoDateTime,
-  updatedAt: IsoDateTime,
+  createdAt: Schema.toEncoded(CanonicalUtcTimestamp),
+  updatedAt: Schema.toEncoded(CanonicalUtcTimestamp),
 });
 export type KinTrigger = typeof KinTrigger.Type;
 
 export const KinTriggerFired = Schema.Struct({
   fireId: KinTriggerFireId,
   orgId: KinOrgId,
-  dueAt: IsoDateTime,
-  firedAt: IsoDateTime,
+  dueAt: Schema.toEncoded(CanonicalUtcTimestamp),
+  firedAt: Schema.toEncoded(CanonicalUtcTimestamp),
   lateByMs: NonNegativeInt,
   payload: Schema.Union([
     Schema.Struct({
@@ -129,7 +124,7 @@ export const KinGithubEvent = Schema.Struct({
   number: Schema.NullOr(Schema.Int),
   headSha: Schema.NullOr(Schema.String),
   sender: Schema.String,
-  receivedAt: IsoDateTime,
+  receivedAt: Schema.toEncoded(CanonicalUtcTimestamp),
   heldByRelay: Schema.Boolean,
   bodyTruncated: Schema.Boolean,
   payload: Schema.Unknown,
