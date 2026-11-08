@@ -97,8 +97,8 @@ Phase 1 has one organization. `orgId` is carried in every route param and atom i
 Atoms are built on `connectionAtomRuntime`. As built in MOB-1 (`kinClient`): `orgs`, `inbox`, `chat`, `history`, `createDirect`, `send`, `markRead` and `widgetAction`. `pendingAction` and `registerPush` arrive with the approvals spec and MOB-10. Two differences from the sketch below:
 
 - Every `kin.*` method, reads included, is in `CLIENT_GUARDED_RPC_SCOPES`, so `createEnvironmentRpcQueryAtomFamily` refuses them. `orgs` and `history` are query atoms that run the method through `createEnvironmentRpcCommand`'s scope check.
-- `inbox` and `chat` (built in `state/kinStreams.ts`) fold their streams in `state/kinInboxModel.ts` and emit `KinSynced<State>` (`{ value, live, savedAt }`), only when the state changes. `chat` resubscribes with `afterSeq` = the highest contiguous seq held, read at each (re)subscription, and then re-reads the latest page with `history`, because the backlog only covers `seq > afterSeq` (see the request to the chat spec below). A `reset` also re-reads it.
-- A `member` event with `leftAt` ends the `chat` stream with `left: true`, drops that chat's cache entry, and removes the chat from `inbox`. That removal reaches `inbox` only through an open chat stream; otherwise the host's next snapshot drops it. `KinChatError` `not_found`, `not_allowed` or `unavailable` on the chat stream ends it with `closed` set instead of failing the atom. Neither `left` nor `closed` is cached.
+- `inbox` and `chat` (built in `state/kinStreams.ts`) fold their streams in `state/kinInboxModel.ts` and emit `KinSynced<State>` (`{ value, live, savedAt }`), only when the state changes. `chat` resubscribes with `afterSeq` = the highest contiguous seq held and `afterChangeSeq` = the last backlog's `lastChangeSeq`, both read at each (re)subscription. The backlog then carries missed messages plus older messages and widgets changed while away, applied by id. Live events never move `afterChangeSeq`. A `reset` drops the held feed and re-reads the latest page with `history`.
+- A `member` event with `leftAt` ends the `chat` stream with `left: true`, drops that chat's cache entry, and removes the chat from `inbox`. That removal reaches `inbox` only through an open chat stream; otherwise the host's next snapshot drops it. `KinChatError` `unavailable` is the only retryable Kin error: both streams resubscribe after 1 s, doubling to 30 s, and start over once events flow. Any other `KinChatError` on the chat stream is final and ends it with `closed` set to that reason instead of failing the atom; `not_found` and `not_allowed` also drop its cache entry. Neither `left` nor `closed` is cached.
 - The Kin streams are scope-checked on the server only. The client checks scopes for `orgs`, `history` and the commands.
 
 The original sketch:
@@ -145,7 +145,7 @@ export const kinClient = {
 
 Offline cache: the last inbox state, and the last 50 messages of each opened chat (with the widgets they anchor and the contiguous seq), are saved with `persistQuery(...)` under Kin's own `"kin"` cache kind (`state/kinCache.ts`). Each stream saves at most every 1.5 s and flushes its last change when it stops. A reset never saves its empty feed over cached messages. The store keeps the 40 most recently saved entries per environment and skips a record over 512 KiB. The cache belongs to `me[0].personId`. When the host answers with another person, or with none, that environment's Kin cache is cleared. The stream emits the cached value first with `live: false`. On a cold start, the cache renders at once, marked "Offline · last updated 9:41" from `savedAt`.
 
-Request to the chat spec (issue #12): `kin.chat.subscribe`'s backlog only covers `seq > afterSeq`, so edits, status changes and widget revisions to older messages made while the phone was away are missed. Mobile re-reads the latest page as a stopgap; older messages stay stale. A resume cursor that also replays changes (for example an `afterChange` revision) would close the gap.
+Offline edits (issue #12) are replayed by the change cursor above (#55); mobile no longer re-reads the latest page for them.
 
 ### Shapes mobile reads (owned by the chat and approvals specs)
 
@@ -346,9 +346,9 @@ Upstream files touched, one hook each:
 
 Commands, from `apps/mobile`: `vp run typecheck` and `vp test run --project unit src/features/chats`. Server: `vp test run apps/server/src/kin/push`.
 
-- `kinInboxModel.test.ts`: waiting chats sort first, deltas merge by `seq`, contiguous-seq tracking, `leftAt` removal, reset and history. `KinMessage` carries no `clientMessageId`, so replacing the pending bubble belongs to the outbox (MOB-5), matched by the send reply's `messageId`.
+- `kinInboxModel.test.ts`: waiting chats sort first, backlog changes replace held messages and widgets by id, contiguous-seq and change-cursor tracking, `leftAt` removal, reset and history. The author's `KinMessage` carries its `clientMessageId`, which the outbox (MOB-5) uses to replace the pending bubble.
 - `kinHost.test.ts`: probe classification (including a transport error and a defect) and host choice.
-- `kinStreams.test.ts`: across a session swap, the cached value comes first with `live: false`, the second subscription's `afterSeq` comes from the current state, the latest page is re-read, and a `left` event ends the chat, drops its cache entry and reaches the inbox.
+- `kinStreams.test.ts`: across a session swap, the cached value comes first with `live: false`, the second subscription's `afterSeq` and `afterChangeSeq` come from the current state, no history page is re-read, `unavailable` backs off and resubscribes while other refusals close the chat, and a `left` event ends the chat, drops its cache entry and reaches the inbox.
 - `kinCardPresentation.test.ts`: the approval title template, the SHA short form, the checks summary, every `status` line, owner vs member eyebrow, Approve disabled while checks are pending, deferral time format across timezones.
 - `kinPushPayload.test.ts`: valid payloads route; `/threads/...`, `//evil`, query strings and malformed JSON are dropped; an action response produces one `widgetAction` per notification id.
 - `KinPushSender.test.ts`: category per widget kind; approval pushes only reach approver devices; skipped when a foreground subscription exists.
