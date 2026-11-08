@@ -1,6 +1,6 @@
 import type { EnvironmentId, KinChatId } from "@t3tools/contracts";
 import { useRef, useState } from "react";
-import { View } from "react-native";
+import { Platform, View } from "react-native";
 
 import { ComposerEditor } from "../../../components/ComposerEditor";
 import { AppText as Text } from "../../../components/ui/AppText";
@@ -115,7 +115,7 @@ export function KinComposer(props: {
             }}
             contentInsetVertical={EDITOR_INSET}
             singleLineCentered={contentHeight <= EDITOR_MIN_HEIGHT - 2 * EDITOR_INSET}
-            scrollEnabled={editorHeight >= EDITOR_MAX_HEIGHT}
+            scrollEnabled={Platform.OS === "android" || editorHeight >= EDITOR_MAX_HEIGHT}
             onContentSizeChange={(size) => setContentHeight(size.height)}
             style={{ height: editorHeight }}
           />
