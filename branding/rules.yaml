@@ -58,6 +58,17 @@ text:
   - files: [apps/mobile/app.config.ts]
     from: T3 Code
     to: Kin
+  # The dev client opens the scheme it is started with, so it must match the branded app.
+  # Longer schemes first: the last rule only sees the plain one.
+  - files: [apps/mobile/package.json]
+    from: "--scheme t3code-dev"
+    to: "--scheme kin-dev"
+  - files: [apps/mobile/package.json]
+    from: "--scheme t3code-preview"
+    to: "--scheme kin-preview"
+  - files: [apps/mobile/package.json]
+    from: "--scheme t3code"
+    to: "--scheme kin"
 
   # Mobile: links the app opens and builds, and the names it shows.
   - files: [apps/mobile/src/widgets/AgentActivity.tsx]
