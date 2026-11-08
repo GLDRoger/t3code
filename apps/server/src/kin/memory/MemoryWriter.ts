@@ -1,3 +1,4 @@
+import type { PersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Clock from "effect/Clock";
 import { readFiles, readCommit, readTree, objectHash, verifyTree } from "./objects.ts";
 import { buildIndex } from "./buildIndex.ts";
@@ -32,6 +33,7 @@ export interface WakeupContext extends JournalContext {
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;
   readonly level: "L0" | "L1" | "L2" | "L3";
+  readonly stagedReceipts?: boolean;
   readonly sources: ReadonlyMap<
     string,
     { readonly saidBy: string; readonly trust: MemoryTrust; readonly source: string } & (
@@ -51,7 +53,7 @@ export class MemoryWriterAuthority extends Context.Service<
     readonly resolve: (
       orgId: KinOrgId,
       wakeupId: string,
-    ) => Effect.Effect<WakeupContext, MemoryWriteRejected>;
+    ) => Effect.Effect<WakeupContext, MemoryWriteRejected | PersistenceSqlError>;
   }
 >()("t3/kin/memory/MemoryWriter/MemoryWriterAuthority") {}
 export class MemoryWriteRejected extends Schema.TaggedError<MemoryWriteRejected>()(
@@ -90,6 +92,7 @@ export interface MemoryChange {
   readonly supersedes?: string;
 }
 type Failure =
+  | PersistenceSqlError
   | MemoryJournalError
   | MemoryConfigError
   | MemoryQueryDecodeError
@@ -265,6 +268,19 @@ const make = Effect.gen(function* () {
       return yield* new MemoryWriteRejected({ reason: "Another wake-up owns the writer" });
     const state = previous ?? { wakeupId, files: new Map<string, string>(), lines: [] };
     sessions.set(orgId, state);
+    if (!previous && ctx.stagedReceipts) {
+      const { writer } = yield* validate(orgId);
+      const branch =
+        ctx.level === "L0" ? `kin/shadow/${ctx.agentId}` : (config.defaultBranch ?? "main");
+      const head = yield* branchHead(orgId, writer, branch);
+      const { message } = yield* commitAt(orgId, writer, head);
+      if (message.split("\n")[0] !== `kin(${ctx.agentId}): wake-up ${wakeupId}`) {
+        const reason =
+          "Staged changes and kin_end summary were lost on restart; tool receipts do not prove those changes were committed.";
+        state.lines.push(reason);
+        yield* recovery.notify({ orgId, branch: `wakeup:${wakeupId}`, reason });
+      }
+    }
     return { ctx, state };
   });
   const safePath = Effect.fn("MemoryWriter.safePath")(function* (
@@ -454,6 +470,7 @@ const make = Effect.gen(function* () {
                     "trust",
                     "said_by",
                     "source",
+                    "source_event",
                   ]);
                   if (
                     source.kind === "owner_check" &&
@@ -483,6 +500,7 @@ const make = Effect.gen(function* () {
               ...fm,
               said_by: source.saidBy,
               source: source.source,
+              source_event: change.sourceEventId,
               trust:
                 fm.trust === "external" ||
                 (fm.trust === "agent" && source.trust !== "external") ||

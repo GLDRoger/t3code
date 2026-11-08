@@ -78,6 +78,9 @@ export const MemoryItemFrontMatter = Schema.Struct({
   title: Schema.String,
   status: Schema.Literals(["open", "done", "cancelled", "superseded"]),
   due: Schema.NullOr(Schema.String),
+  what: Schema.optional(Schema.String),
+  chat: Schema.optional(KinChatId),
+  source_event: Schema.optional(KinEventId),
   on_due: Schema.optional(Schema.Literals(["remind", "start", "ask", "chase"])),
   owner: Schema.optional(TrimmedNonEmptyString),
   tz: Schema.optional(

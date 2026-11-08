@@ -16,6 +16,7 @@ import ChatChanges from "./migrations/K010_ChatChanges.ts";
 import MemoryHeads from "./migrations/K011_MemoryHeads.ts";
 
 import Routines from "./migrations/K013_Routines.ts";
+import LeadToolCalls from "./migrations/K014_LeadToolCalls.ts";
 
 const run = Migrator.make({});
 const loader = Migrator.fromRecord({
@@ -31,6 +32,7 @@ const loader = Migrator.fromRecord({
   "10_ChatChanges": ChatChanges,
   "11_MemoryHeads": MemoryHeads,
   "13_Routines": Routines,
+  "14_LeadToolCalls": LeadToolCalls,
 });
 
 export const runKinMigrations = Effect.fn("KinMigrations.run")(function* () {

@@ -1,20 +1,32 @@
-import { forkParked } from "../../serverActivation.ts";
-import { KinOrgId } from "@t3tools/contracts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
-import * as Config from "effect/Config";
-import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Routines from "../triggers/routines.ts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as TriggerScheduler from "../triggers/KinTriggerScheduler.ts";
 import * as TriggerStore from "../triggers/KinTriggerStore.ts";
 import * as TriggerInbox from "../triggers/KinTriggerInbox.ts";
+import { forkParked } from "../../serverActivation.ts";
+import { KinOrgId, KinChatId, KinMessageId } from "@t3tools/contracts";
+import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as DateTime from "effect/DateTime";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as Option from "effect/Option";
+import { KinChatHub } from "../chat/KinChatHub.ts";
+import * as Config from "effect/Config";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryConfig from "../memory/MemoryConfig.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import * as Writer from "../memory/MemoryWriter.ts";
+import * as Scan from "../memory/secretScan.ts";
+import * as LeadMemory from "./LeadMemory.ts";
+import * as Cache from "../memory/MemoryCache.ts";
+import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
+import { KinLeadToolkit } from "./mcp/tools.ts";
+import { handlers } from "./mcp/handlers.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
@@ -48,49 +60,121 @@ const routineRuntime = Routines.layer.pipe(
   Layer.provide(Scheduler.layer),
 );
 
-export const layer = Layer.effectDiscard(
+const runner = Layer.effectDiscard(
   Effect.gen(function* () {
-    const runner = yield* WakeupRunner.WakeupRunner;
+    const routineRuntime = Routines.layer.pipe(
+  Layer.provideMerge(TriggerScheduler.layer),
+  Layer.provide(Layer.mergeAll(TriggerStore.layer, TriggerInbox.layer)),
+  // Kin builds in its contained startup scope; orchestration runtime does not expose its scheduler.
+  Layer.provide(Scheduler.layer),
+);
+
+const runner = yield* WakeupRunner.WakeupRunner;
     yield* Effect.gen(function* () {
       const context = yield* Layer.build(routineRuntime);
       yield* runner.start.pipe(Effect.provideContext(context));
     }).pipe(forkParked);
   }),
-).pipe(
-  Layer.provide(WakeupRunner.layer),
-  Layer.provide(OwnerCheck.layer),
-  Layer.provide(
-    Layer.mergeAll(KinLeadRegistry.layer, KinLeadPrompt.layer).pipe(
-      Layer.provideMerge(
-        Layer.mergeAll(
-          Memory.layer.pipe(
-            Layer.provide(
-              Layer.succeed(Memory.MemoryRecoveryHooks, {
-                notify: Effect.fn("KinMemoryRecovery.notify")((notice) =>
-                  Effect.logWarning("Kin memory recovery requires operator attention", notice),
-                ),
-              }),
-            ),
-          ),
-          KinChatRepository.layer,
-        ),
+).pipe(Layer.provide(WakeupRunner.layer), Layer.provide(OwnerCheck.layer));
+
+const withServices = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
+  entry.pipe(
+    Layer.provide(
+      Layer.mergeAll(KinLeadRegistry.layer, KinLeadPrompt.layer).pipe(
+        Layer.provideMerge(Layer.mergeAll(Memory.layer, KinChatRepository.layer)),
       ),
     ),
+    Layer.provide(
+      Layer.effect(
+        Memory.MemoryRecoveryHooks,
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const chat = yield* KinChatRepository.KinChatRepository;
+          const hub = yield* Effect.serviceOption(KinChatHub);
+          return Memory.MemoryRecoveryHooks.of({
+            notify: Effect.fn("KinMemoryRecovery.notify")(
+              function* (notice) {
+                yield* Effect.logWarning("Kin memory recovery requires operator attention", notice);
+                const leads = yield* sql<{
+                  chatId: string;
+                }>`SELECT DISTINCT owner_chat_id AS "chatId" FROM kin_leads WHERE org_id = ${notice.orgId}`;
+                for (const lead of leads) {
+                  const message = yield* chat.insertMessage({
+                    orgId: notice.orgId,
+                    chatId: KinChatId.make(lead.chatId),
+                    messageId: KinMessageId.make(`kin-memory:${SecureRandom.uuidV4Unsafe()}`),
+                    author: { _tag: "system" },
+                    kind: "text",
+                    body: notice.reason,
+                    intent: null,
+                    mentions: [],
+                    replyTo: null,
+                    widgetId: null,
+                    floorRunId: null,
+                    status: "posted",
+                    sentBy: null,
+                    clientMessageId: null,
+                    createdAt: DateTime.formatIso(yield* DateTime.now),
+                    editedAt: null,
+                  });
+                  if (Option.isSome(hub))
+                    yield* hub.value.publish({
+                      type: "message.posted",
+                      orgId: notice.orgId,
+                      message,
+                    });
+                }
+              },
+              Effect.catchCause((cause) =>
+                Effect.logError("Kin memory owner notice failed", cause),
+              ),
+            ),
+          });
+        }),
+      ).pipe(Layer.provide(KinChatRepository.layer)),
+    ),
+    Layer.provide(KinPersistence.layer),
+  );
+
+const registration = McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers);
+const toolkit = LeadMemory.layer.pipe(
+  Layer.provideMerge(Writer.layer),
+  Layer.provide(LeadMemory.authority),
+  Layer.provide(Cache.layer),
+  Layer.provide(Scan.noFindingsStubLayer),
+  Layer.provide(
+    Layer.succeed(Writer.MemoryWriterHooks, {
+      notify: Effect.fn("KinMemoryWriter.notify")((notice) =>
+        Effect.logWarning("Kin memory writer refused commit", {
+          orgId: notice.orgId,
+          wakeupId: notice.wakeupId,
+          errorTag: notice.error._tag,
+        }),
+      ),
+    }),
   ),
-  Layer.provide(KinPersistence.layer),
+);
+
+export const layer = withServices(runner);
+const production = withServices(
+  Layer.merge(runner, registration).pipe(Layer.provideMerge(toolkit)),
 );
 
 const Repositories = Schema.fromJsonString(
   Schema.Array(Schema.Struct({ orgId: KinOrgId, repoUrl: Schema.String })),
 );
-export const layerServer = containStartup(
-  Layer.unwrap(
-    Effect.gen(function* () {
-      const repositories = yield* Config.schema(Repositories, "KIN_MEMORY_REPOSITORIES").pipe(
-        Config.withDefault([]),
-      );
-      if (repositories.length === 0) return Layer.empty;
-      return layer.pipe(Layer.provide(MemoryConfig.layer(repositories)));
-    }),
-  ),
-);
+const configured = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
+  containStartup(
+    Layer.unwrap(
+      Effect.gen(function* () {
+        const repositories = yield* Config.schema(Repositories, "KIN_MEMORY_REPOSITORIES").pipe(
+          Config.withDefault([]),
+        );
+        if (repositories.length === 0) return Layer.empty;
+        return entry.pipe(Layer.provide(MemoryConfig.layer(repositories)));
+      }),
+    ),
+  );
+
+export const layerServer = configured(layer);
+export const layerMcp = configured(production);

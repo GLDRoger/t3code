@@ -268,6 +268,18 @@ it.effect.each([true, false])(
           initialize,
         );
         assert.strictEqual(initialized.status, 200);
+        const toolList = yield* request(
+          "/kin/mcp",
+          issued.config.authorizationHeader,
+          "tools/list",
+          {},
+          initialized.headers["mcp-session-id"],
+        );
+        const toolListText = yield* Effect.promise(() => HttpServerResponse.toWeb(toolList).text());
+        assert.include(toolListText, "kin_chat_read");
+        assert.notInclude(toolListText, "schedule_task");
+        assert.notInclude(toolListText, "t3_thread_launch");
+        assert.notInclude(toolListText, "create_threads");
         const result = yield* request(
           "/kin/mcp",
           issued.config.authorizationHeader,
