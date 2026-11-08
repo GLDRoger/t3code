@@ -131,11 +131,17 @@ export const gitHubStatus = Effect.fn("KinGitHub.status")(function* (input: {
  * GitHub's rate limits: 429, or a 403 that says so in its headers. A rate-limited refusal says
  * nothing about the token's permissions.
  */
-export const isGitHubRateLimit = (answer: Pick<GitHubStatusResponse, "status" | "headers">) =>
+export const isGitHubRateLimit = (
+  answer: Pick<GitHubStatusResponse, "status" | "headers"> & {
+    readonly message?: string | null | undefined;
+  },
+) =>
   answer.status === 429 ||
   (answer.status === 403 &&
     (answer.headers["x-ratelimit-remaining"] === "0" ||
-      answer.headers["retry-after"] !== undefined));
+      answer.headers["retry-after"] !== undefined ||
+      // GitHub's secondary limit can come with neither header.
+      (answer.message?.toLowerCase().includes("secondary rate limit") ?? false)));
 
 /** `/repos/{owner}/{name}` for an `owner/name` slug. */
 export const repoPath = (repo: string) => {

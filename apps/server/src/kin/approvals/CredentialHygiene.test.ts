@@ -147,6 +147,23 @@ describe("CredentialHygiene", () => {
       ["non_bot_identity"],
     ],
     [
+      "an SSH key ssh skipped for its file permissions",
+      {
+        identity: {
+          ...bot,
+          ssh: [
+            `WARNING: UNPROTECTED PRIVATE KEY FILE!\nThis private key will be ignored.\nLoad key "/home/kin/.ssh/owner_ed25519": bad permissions\n${SSH_DENIED}`,
+          ],
+        },
+      },
+      ["identity_unknown"],
+    ],
+    [
+      "an owner greeting after a bot greeting in one answer",
+      { identity: { ...bot, ssh: [`${sshHi("kin-bot")}\n${sshHi("Nishchay")}`] } },
+      ["owner_identity"],
+    ],
+    [
       "an SSH answer that can't be read",
       { identity: { ...bot, ssh: ["Host key verification failed."] } },
       ["identity_unknown"],

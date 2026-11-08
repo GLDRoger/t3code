@@ -32,6 +32,11 @@ export const GITHUB_SSH_PROBE = [
   "BatchMode=yes",
   "-o",
   "StrictHostKeyChecking=yes",
+  // A `~/.ssh/config` block can turn key auth off for the probe while agents turn it back on.
+  "-o",
+  "PubkeyAuthentication=yes",
+  "-o",
+  "ConnectTimeout=10",
   "git@github.com",
 ] as const;
 
@@ -43,12 +48,15 @@ export const GITHUB_SSH_PROBE = [
 function parseGitHubSshAnswer(
   output: string,
 ):
-  | { readonly _tag: "login"; readonly login: string }
+  | { readonly _tag: "logins"; readonly logins: ReadonlyArray<string> }
   | { readonly _tag: "none" }
   | { readonly _tag: "unknown" } {
-  const greeting = /^Hi ([^\s!]+)! You've successfully authenticated/m.exec(output);
-  if (greeting !== null) return { _tag: "login", login: greeting[1] as string };
-  if (/^git@github\.com: Permission denied \(publickey\)\.?$/m.test(output.trim())) {
+  const logins = [...output.matchAll(/^Hi ([^\s!]+)! You've successfully authenticated/gm)].map(
+    (match) => match[1] as string,
+  );
+  if (logins.length > 0) return { _tag: "logins", logins };
+  // Only a bare denial means no key: ssh also prints it after skipping a key it couldn't load.
+  if (/^git@github\.com: Permission denied \(publickey\)\.?$/.test(output.trim())) {
     return { _tag: "none" };
   }
   return { _tag: "unknown" };
@@ -134,7 +142,8 @@ export class CredentialHygienePass {
     if (issue !== ISSUE_PASS)
       throw new Error("Only CredentialHygiene.requirePassing makes a pass.");
     this.#orgId = orgId;
-    this.#report = report;
+    // Frozen so a holder can't move `checkedAt` forward and dodge the pass's age limit.
+    this.#report = Object.freeze({ ...report });
   }
   get orgId(): KinOrgId {
     return this.#orgId;
@@ -233,11 +242,11 @@ const make = Effect.gen(function* () {
       for (const output of ssh) {
         const answer = parseGitHubSshAnswer(output);
         if (answer._tag === "unknown") failures.add("identity_unknown");
-        if (
-          answer._tag === "login" &&
-          !found.some((item) => item.source === "ssh" && item.login === answer.login)
-        ) {
-          found.push({ source: "ssh", login: answer.login });
+        if (answer._tag !== "logins") continue;
+        for (const login of answer.logins) {
+          if (!found.some((item) => item.source === "ssh" && item.login === login)) {
+            found.push({ source: "ssh", login });
+          }
         }
       }
     }
