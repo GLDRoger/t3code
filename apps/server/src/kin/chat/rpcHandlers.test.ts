@@ -431,6 +431,43 @@ it.effect("resets large backlogs and bounds a resume to the current snapshot", (
       ),
       { _tag: "reset", lastSeq: 201, lastChangeSeq: 402 },
     );
+    // A client keeps its change cursor frozen while live, so the stream must refresh it.
+    const events = yield* Stream.toQueue(
+      chat.subscribe(person, { chatId: direct.chatId, afterSeq: 201, afterChangeSeq: 402 }),
+      { capacity: "unbounded" },
+    );
+    let cursor = yield* Queue.take(events);
+    assert.strictEqual(cursor._tag, "backlog");
+    for (let i = 0; i < 201; i++)
+      yield* chat.send(person, {
+        chatId: direct.chatId,
+        body: `Live ${i}`,
+        clientMessageId: `live-${i}`,
+      });
+    const held = new Set<string>();
+    let afterSeq = 201;
+    for (let i = 0; i < 201; i++) {
+      const event = yield* Queue.take(events);
+      if (event._tag === "message") {
+        held.add(event.message.messageId);
+        afterSeq = Math.max(afterSeq, event.message.seq);
+      } else if (event._tag === "backlog") {
+        assert.isFalse(event.messages.some((m) => held.has(m.messageId)));
+        cursor = event;
+      }
+    }
+    assert.strictEqual(cursor._tag, "backlog");
+    if (cursor._tag !== "backlog") return;
+    const reconnect = Option.getOrThrow(
+      yield* Stream.runHead(
+        chat.subscribe(person, {
+          chatId: direct.chatId,
+          afterSeq,
+          afterChangeSeq: cursor.lastChangeSeq,
+        }),
+      ),
+    );
+    assert.strictEqual(reconnect._tag, "backlog");
   }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 
