@@ -163,6 +163,10 @@ export class Memory extends Context.Service<
       orgId: KinOrgId,
       id: KinMemoryItemId,
     ) => Effect.Effect<MemoryCache.MemoryItem, MemoryFailure | MemoryNotFound | MemoryDuplicateId>;
+    readonly readItemQuietly: (
+      orgId: KinOrgId,
+      id: KinMemoryItemId,
+    ) => Effect.Effect<MemoryCache.MemoryItem, MemoryFailure | MemoryNotFound | MemoryDuplicateId>;
     readonly query: (
       orgId: KinOrgId,
       query: MemoryQuery,
@@ -292,6 +296,7 @@ const make = Effect.gen(function* () {
   const cache = yield* MemoryCache.MemoryCache;
   const locks = new Map<KinOrgId, Semaphore.Semaphore>();
   const pinnedHeads = new Map<KinOrgId, string>();
+  const initializedCheckouts = new Set<KinOrgId>();
   const duplicateWarnings = new Map<KinOrgId, ReadonlySet<string>>();
   const snapshots = new Map<KinOrgId, Snapshot>();
   const blobCaches = new Map<KinOrgId, BlobCache>();
@@ -459,8 +464,13 @@ const make = Effect.gen(function* () {
     );
   });
 
-  const ensureCheckouts = Effect.fn("Memory.ensureCheckouts")(function* (orgId: KinOrgId) {
+  const ensureCheckouts = Effect.fn("Memory.ensureCheckouts")(function* (
+    orgId: KinOrgId,
+    reusePin = false,
+  ) {
     const paths = yield* pathsFor(orgId);
+    if (reusePin && initializedCheckouts.has(orgId) && pinnedHeads.has(orgId))
+      return { writer: paths.writer, read: paths.read };
     yield* io(orgId, "mkdir", fs.makeDirectory(paths.root, { recursive: true }));
     if (yield* io(orgId, "exists", fs.exists(paths.writer))) {
       yield* validateWriter(orgId, paths, false);
@@ -502,6 +512,7 @@ const make = Effect.gen(function* () {
         }).pipe(Effect.scoped),
       );
     }
+    initializedCheckouts.add(orgId);
     return { writer: paths.writer, read: paths.read };
   });
 
@@ -712,17 +723,23 @@ const make = Effect.gen(function* () {
       .slice(0, q.limit === undefined ? undefined : Math.max(0, Math.floor(q.limit)));
   });
 
-  const readItem = Effect.fn("Memory.readItem")(function* (orgId: KinOrgId, id: KinMemoryItemId) {
+  const readItem = Effect.fn("Memory.readItem")(function* (
+    orgId: KinOrgId,
+    id: KinMemoryItemId,
+    recordRead: boolean,
+  ) {
     const { items } = yield* load(orgId);
     const matches = items.filter((item) => item.head.id === id);
     const item = matches[0];
     if (!item) return yield* new MemoryNotFound({ orgId, id });
     if (matches.length > 1) return yield* new MemoryDuplicateId({ orgId, id });
-    yield* cache.read(orgId, id).pipe(
-      Effect.catchTags({
-        MemoryHistoryError: () => Effect.logWarning("Could not record memory read", { orgId, id }),
-      }),
-    );
+    if (recordRead)
+      yield* cache.read(orgId, id).pipe(
+        Effect.catchTags({
+          MemoryHistoryError: () =>
+            Effect.logWarning("Could not record memory read", { orgId, id }),
+        }),
+      );
     return item;
   });
 
@@ -1210,7 +1227,7 @@ const make = Effect.gen(function* () {
     anchor,
     record,
     ensureCheckouts: Effect.fn("Memory.ensureCheckoutsLocked")((orgId) =>
-      locked(orgId, ensureCheckouts(orgId)),
+      locked(orgId, ensureCheckouts(orgId, true)),
     ),
     prepareWakeup: Effect.fn("Memory.prepareWakeup")((orgId, wakeupId) =>
       withWriterLock(orgId, locked(orgId, prepare(orgId, wakeupId))),
@@ -1241,7 +1258,12 @@ const make = Effect.gen(function* () {
     readIndex: Effect.fn("Memory.readIndex")((orgId) => locked(orgId, readFile(orgId, "INDEX.md"))),
     readRules: Effect.fn("Memory.readRules")((orgId) => locked(orgId, readFile(orgId, "rules.md"))),
     query: Effect.fn("Memory.queryLocked")((orgId, q) => locked(orgId, query(orgId, q))),
-    readItem: Effect.fn("Memory.readItemLocked")((orgId, id) => locked(orgId, readItem(orgId, id))),
+    readItem: Effect.fn("Memory.readItemLocked")((orgId, id) =>
+      locked(orgId, readItem(orgId, id, true)),
+    ),
+    readItemQuietly: Effect.fn("Memory.readItemQuietly")((orgId, id) =>
+      locked(orgId, readItem(orgId, id, false)),
+    ),
     rebuildIndex: Effect.fn("Memory.rebuildIndexLocked")((orgId) =>
       locked(orgId, rebuildIndex(orgId)),
     ),

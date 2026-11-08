@@ -146,7 +146,10 @@ const samples = {
   KinPrincipal: principals,
   KinChatMember: [member],
   KinAuthor: authors,
-  KinMessage: authors.map((author) => ({ ...message, author })),
+  KinMessage: [
+    ...authors.map((author) => ({ ...message, author })),
+    { ...message, changeSeq: 2, clientMessageId: "pending" },
+  ],
   KinWidget: [
     widget,
     { ...widget, widgetClass: "generated", source: { threadId: "thread-1", itemId: "item-1" } },
@@ -166,6 +169,8 @@ const samples = {
   KinChatStreamEvent: [
     { _tag: "backlog", messages: [message], widgets: [widget], lastSeq: 1 },
     { _tag: "reset", lastSeq: 1 },
+    { _tag: "backlog", messages: [message], widgets: [widget], lastSeq: 1, lastChangeSeq: 2 },
+    { _tag: "reset", lastSeq: 1, lastChangeSeq: 2 },
     { _tag: "message", message },
     { _tag: "widget", widget },
     { _tag: "member", member },
@@ -189,7 +194,11 @@ const samples = {
   ],
   KinChatsSubscribeInput: [{}, { orgId: "org-1" }],
   KinChatsCreateDirectInput: [{ orgId: "org-1", agentId: "agent-1" }],
-  KinChatSubscribeInput: [{ chatId: "chat-1" }, { chatId: "chat-1", afterSeq: 0 }],
+  KinChatSubscribeInput: [
+    { chatId: "chat-1" },
+    { chatId: "chat-1", afterSeq: 0 },
+    { chatId: "chat-1", afterSeq: 1, afterChangeSeq: 2 },
+  ],
   KinChatHistoryInput: [{ chatId: "chat-1", beforeSeq: 2, limit: 100 }],
   KinChatHistoryResult: [{ messages: [message], widgets: [widget], hasMore: false }],
   KinMessagesSendInput: [send, { ...send, mentions: ["member-2"], replyTo: "message-1" }],
