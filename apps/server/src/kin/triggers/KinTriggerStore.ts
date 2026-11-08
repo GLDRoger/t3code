@@ -1,5 +1,7 @@
 import {
   CanonicalUtcTimestamp,
+  CommandId,
+  KIN_GITHUB_APP_SOURCE,
   canonicalTimeZone,
   NonNegativeInt,
   KinOrgId,
@@ -48,7 +50,12 @@ export class KinWebhookSourceConflict extends Schema.TaggedError<KinWebhookSourc
   "KinWebhookSourceConflict",
   {
     orgId: KinOrgId,
-    reason: Schema.Literals(["unknown_source", "identity_conflict", "task_active"]),
+    reason: Schema.Literals([
+      "unknown_source",
+      "identity_conflict",
+      "task_active",
+      "app_source_taken",
+    ]),
   },
 ) {}
 
@@ -79,6 +86,18 @@ const decodeInboxRow = Schema.decodeUnknownEffect(
   Schema.Struct({ payload: Schema.fromJsonString(KinTriggerFired) }),
 );
 const Scope = Schema.Struct({ orgId: KinOrgId, id: KinTriggerId });
+
+export const githubAppCommandId = (orgId: KinOrgId) =>
+  CommandId.make(`kin:webhook:${orgId}:${KIN_GITHUB_APP_SOURCE}`);
+// Upstream names a task created by commandId `scheduled-task:${commandId}`.
+export const githubAppTaskId = (orgId: KinOrgId) =>
+  ScheduledTaskId.make(`scheduled-task:${githubAppCommandId(orgId)}`);
+export const KIN_WEBHOOK_TASK_PREFIX = "scheduled-task:kin:webhook:";
+
+// Cross-org on purpose: one GitHub App has one hook config, so its source is host-wide.
+export const appSourceHeldElsewhere = (sql: SqlClient.SqlClient, orgId: KinOrgId) =>
+  sql`SELECT 1 FROM kin_webhook_sources WHERE repo = ${KIN_GITHUB_APP_SOURCE}
+    AND org_id <> ${orgId} LIMIT 1`.pipe(Effect.map((rows) => rows.length > 0));
 
 // Shared with the upstream contract test: a direct delivery marks its task running and a
 // queued one holds a pending row until its launch returns.
@@ -203,6 +222,14 @@ const make = Effect.gen(function* () {
           );
         return yield* sql.withTransaction(
           Effect.gen(function* () {
+            if (
+              value.repo === KIN_GITHUB_APP_SOURCE &&
+              (yield* appSourceHeldElsewhere(sql, value.orgId))
+            )
+              return yield* new KinWebhookSourceConflict({
+                orgId: value.orgId,
+                reason: "app_source_taken",
+              });
             const owned = yield* sql`
             SELECT t.task_id FROM scheduled_tasks t
             WHERE t.task_id = ${value.scheduledTaskId}

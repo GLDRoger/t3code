@@ -42,6 +42,7 @@ const orgA = KinOrgId.make("org-a");
 const orgB = KinOrgId.make("org-b");
 const decodeSource = Schema.decodeUnknownSync(KinWebhookSource);
 const decodeUpsert = Schema.decodeEffect(ScheduledTaskUpsertInput);
+const decodeUnknownUpsert = Schema.decodeUnknownEffect(ScheduledTaskUpsertInput);
 const decodeFire = Schema.decodeEffect(KinTriggerFired);
 const configured = ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }));
 const database = KinPersistence.layer.pipe(
@@ -99,6 +100,13 @@ const upsert = (id: string, orgId = orgA) =>
       filters: [{ path: "body.sender.login", op: "notEquals", value: "kin[bot]" }],
     },
   });
+
+const weakened = (id: string, schedule: Record<string, unknown>) =>
+  upsert(id).pipe(
+    Effect.flatMap((input) =>
+      decodeUnknownUpsert({ ...input, schedule: { ...input.schedule, ...schedule } }),
+    ),
+  );
 
 const threads = Layer.mock(ThreadManagementService.ThreadManagementService)({
   getThreadProjection: (id) => Effect.succeed(projection(id === `inbox-${orgB}` ? orgB : orgA)),
@@ -339,6 +347,37 @@ describe("KinTriggerSink", () => {
           assert.lengthOf(yield* inbox.listPending(orgA), 1);
           assert.lengthOf(sends, 0);
           assert.lengthOf(launches, 0);
+          const dispatchFailed = (task: { readonly id: ScheduledTaskId }, key: string) =>
+            Effect.gen(function* () {
+              const result = yield* waitForDispatch(service.triggerWebhook(request(task, key)));
+              if (result._tag !== "accepted") return assert.fail(`Unexpected ${result._tag}`);
+              const { delivery } = yield* service.getWebhookDelivery({
+                id: task.id,
+                deliveryId: result.deliveryId,
+                acceptAnyOutcome: true,
+              });
+              assert.strictEqual(delivery.outcome, "dispatch_failed", key);
+            });
+          // Any agent can re-save the task through schedule_task; a weakened one never routes.
+          for (const [key, schedule] of [
+            ["unsigned", { signature: null }],
+            ["unfiltered", { filters: [] }],
+            [
+              "other-bot",
+              { filters: [{ path: "body.sender.login", op: "notEquals", value: "other[bot]" }] },
+            ],
+          ] as const) {
+            const { task: weak } = yield* service.upsert(yield* weakened("task-org-a", schedule));
+            yield* dispatchFailed(weak, key);
+          }
+          // Kin's deterministic task id refuses to launch even before its source exists.
+          const { task: orphan } = yield* service.upsert(
+            yield* upsert(KinTriggerStore.githubAppTaskId(orgA)),
+          );
+          yield* dispatchFailed(orphan, "orphan");
+          assert.lengthOf(yield* inbox.listPending(orgA), 1);
+          assert.lengthOf(launches, 0);
+          yield* service.delete({ id: orphan.id });
           const ordinary = yield* upsert("ordinary-bound");
           const { task: other } = yield* service.upsert({
             ...ordinary,

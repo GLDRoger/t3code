@@ -60,6 +60,8 @@ const projection = () => {
   return emptyProjection(event);
 };
 
+export const CONTRACT_BOT_LOGIN = "kin-contract[bot]";
+
 export const webhookInput = (overrides: Partial<typeof ScheduledTaskUpsertInput.Encoded> = {}) =>
   decodeUpsert({
     id: "kin-github",
@@ -85,6 +87,7 @@ export const withScheduledTasks = Effect.fn("KinContract.withScheduledTasks")(fu
     launchInFlight: Queue.Queue<number>;
   }) => Effect.Effect<A, E, SqlClient.SqlClient>,
   policy?: ManagedPolicyDocument,
+  workers?: Map<string, Effect.Effect<void>>,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const launchDeliveries =
@@ -94,7 +97,17 @@ export const withScheduledTasks = Effect.fn("KinContract.withScheduledTasks")(fu
   const sends = yield* Queue.unbounded<ThreadManagement.ThreadManagementSendInput>();
   const dependencies = Layer.mergeAll(
     NodeCrypto.layer,
-    Scheduler.layer,
+    workers === undefined
+      ? Scheduler.layer
+      : Layer.succeed(Scheduler.Scheduler, {
+          register: Effect.fn("KinContract.register")(function* <E2, R2>(
+            name: string,
+            work: Effect.Effect<void, E2, R2>,
+          ) {
+            const context = yield* Effect.context<R2>();
+            workers.set(name, work.pipe(Effect.provideContext(context), Effect.orDie));
+          }),
+        }),
     ManagedPolicy.layerTest(policy),
     Layer.mock(ThreadLaunch.ThreadLaunchService)({
       launch: Effect.fn("KinContract.launch")(function* (input) {
@@ -105,6 +118,7 @@ export const withScheduledTasks = Effect.fn("KinContract.withScheduledTasks")(fu
           taskId: taskId ?? "",
           deliveryId,
           projectId: input.projectId,
+          botLogin: CONTRACT_BOT_LOGIN,
         }).pipe(Effect.orDie);
         yield* Queue.offer(launchDeliveries, rows);
         const inFlight = yield* KinTriggerStore.inFlightDeliveries(sql, taskId ?? "").pipe(
