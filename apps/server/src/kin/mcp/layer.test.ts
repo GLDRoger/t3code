@@ -16,6 +16,7 @@ import {
 } from "@t3tools/contracts";
 import { McpServer } from "effect/ai";
 import { KinAgentSessions } from "./layer.ts";
+import * as KinIssuedTokens from "./KinIssuedTokens.ts";
 import { KinChatToolkit, handlers } from "./KinChatToolkit.ts";
 import budget from "./agentContextBudget.json" with { type: "json" };
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -127,6 +128,7 @@ it.effect.each([true, false])(
             Context.Context<
               | Kin.KinServer
               | KinAgentSessions
+              | KinIssuedTokens.KinIssuedTokens
               | McpSessions.McpSessionRegistry
               | SqlClient.SqlClient
               | OrchestratorV2
@@ -138,6 +140,7 @@ it.effect.each([true, false])(
             Effect.context<
               | Kin.KinServer
               | KinAgentSessions
+              | KinIssuedTokens.KinIssuedTokens
               | McpSessions.McpSessionRegistry
               | SqlClient.SqlClient
               | OrchestratorV2
@@ -317,6 +320,22 @@ it.effect.each([true, false])(
           )).status,
           401,
         );
+        const dream = yield* registry.issue({
+          threadId: ThreadId.make("kin-dream:dream_20260101_abc:extract"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        });
+        for (const path of ["/mcp", "/kin/mcp"])
+          assert.strictEqual(
+            (yield* request(path, dream.config.authorizationHeader, "initialize", initialize))
+              .status,
+            401,
+          );
+        const tokens = Context.get(services, KinIssuedTokens.KinIssuedTokens);
+        const leak = (header: string) => tokens.containsIssuedToken(`argv: "${header}"`);
+        assert.isTrue(yield* leak(ordinary.config.authorizationHeader));
+        assert.isFalse(yield* leak(dream.config.authorizationHeader));
+        yield* registry.revokeThread(ThreadId.make("ordinary-thread"));
+        assert.isFalse(yield* leak(ordinary.config.authorizationHeader));
         const result = yield* request(
           "/kin/mcp",
           issued.config.authorizationHeader,

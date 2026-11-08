@@ -22,6 +22,7 @@ const tableNames = [
   "kin_chats",
   "kin_cursor",
   "kin_deferral_runs",
+  "kin_dream_runs",
   "kin_events",
   "kin_floor_grants",
   "kin_floor_notices",
@@ -112,6 +113,7 @@ describe("Kin migrations", () => {
           { migration_id: 15, name: "AuthSessionKeys" },
           { migration_id: 16, name: "DeferralRuns" },
           { migration_id: 17, name: "Workers" },
+          { migration_id: 18, name: "Dreams" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
@@ -122,6 +124,7 @@ describe("Kin migrations", () => {
           ["kin_auth_session_keys", ["created_at", "repaired_at"]],
           ["kin_auth_key_repairs", ["created_at", "consumed_at"]],
           ["kin_trigger_fires", ["fired_at"]],
+          ["kin_dream_runs", ["material_from", "material_until", "started_at", "ended_at"]],
           ["kin_trigger_inbox", ["received_at", "consumed_at"]],
           ["kin_ping_ledger", ["pinged_at", "escalated_at"]],
           ["kin_floor_runs", ["opened_at"]],
@@ -175,6 +178,7 @@ describe("Kin migrations", () => {
           { migration_id: 15, name: "AuthSessionKeys" },
           { migration_id: 16, name: "DeferralRuns" },
           { migration_id: 17, name: "Workers" },
+          { migration_id: 18, name: "Dreams" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -196,6 +200,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_chat_members_agent" },
           { name: "idx_kin_chat_members_person" },
           { name: "idx_kin_chats_org_chat" },
+          { name: "idx_kin_dream_runs_material" },
           { name: "idx_kin_events_dedupe" },
           { name: "idx_kin_events_queue" },
           { name: "idx_kin_events_wakeup" },
@@ -263,6 +268,7 @@ describe("Kin migrations", () => {
         [15, "AuthSessionKeys"],
         [16, "DeferralRuns"],
         [17, "Workers"],
+        [18, "Dreams"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -291,6 +297,7 @@ describe("Kin migrations", () => {
       yield* sql`DROP INDEX idx_kin_messages_changes`;
       yield* sql`ALTER TABLE kin_messages DROP COLUMN change_seq`;
       yield* sql`ALTER TABLE kin_chats DROP COLUMN change_seq`;
+      yield* sql`DROP TABLE kin_dream_runs`;
       yield* sql`DROP TABLE kin_deferral_runs`;
       yield* sql`DROP TABLE kin_auth_key_repairs`;
       yield* sql`DROP TABLE kin_auth_session_keys`;
@@ -331,6 +338,7 @@ describe("Kin migrations", () => {
         [15, "AuthSessionKeys"],
         [16, "DeferralRuns"],
         [17, "Workers"],
+        [18, "Dreams"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,
@@ -373,6 +381,7 @@ describe("Kin migrations", () => {
         { migration_id: 15, name: "AuthSessionKeys" },
         { migration_id: 16, name: "DeferralRuns" },
         { migration_id: 17, name: "Workers" },
+        { migration_id: 18, name: "Dreams" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);

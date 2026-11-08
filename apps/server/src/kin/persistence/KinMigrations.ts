@@ -20,6 +20,7 @@ import LeadToolCalls from "./migrations/K014_LeadToolCalls.ts";
 import AuthSessionKeys from "./migrations/K015_AuthSessionKeys.ts";
 import DeferralRuns from "./migrations/K016_DeferralRuns.ts";
 import Workers from "./migrations/K017_Workers.ts";
+import Dreams from "./migrations/K018_Dreams.ts";
 
 const run = Migrator.make({});
 const loader = Migrator.fromRecord({
@@ -40,6 +41,7 @@ const loader = Migrator.fromRecord({
   "15_AuthSessionKeys": AuthSessionKeys,
   "16_DeferralRuns": DeferralRuns,
   "17_Workers": Workers,
+  "18_Dreams": Dreams,
 });
 
 export const runKinMigrations = Effect.fn("KinMigrations.run")(function* () {
