@@ -119,13 +119,13 @@ final class KinGrant {
       }
       case "set_level": {
         only(p);
-        exactKeys(target, setOf("_tag", "leadId", "level"), setOf("chatId"), "target");
+        exactKeys(target, setOf("_tag", "agentId", "level"), setOf("chatId"), "target");
         tag(target, "level");
         String level = string(target, "level");
         if (!level.matches("L[0-3]")) throw new NotAGrantException("level is not L0-L3");
         String chat =
             target.containsKey("chatId") ? " in chat \"" + shown(target, "chatId", ID) + "\"" : " in all chats";
-        text = "Set lead \"" + shown(target, "leadId", ID) + "\" to " + level + chat;
+        text = "Set lead \"" + shown(target, "agentId", ID) + "\" to " + level + chat;
         break;
       }
       case "change_rules":

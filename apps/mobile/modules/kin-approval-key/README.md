@@ -30,7 +30,7 @@ Every hash shows its first 16 characters. A shown value is never cleaned or cut:
 
 - Repo: GitHub's `owner/name` rules (owner: letters, digits, `-`, up to 39; name: letters, digits, `. _ -`, up to 100).
 - Branches (`base`, `ref`) and `path`: letters, digits and `. _ - / +`. That is a subset of what git allows, so a merge into a branch with other characters (non-ASCII, `@`, `#` and so on) can't be approved from the phone.
-- `leadId`, `chatId`: letters, digits and `. _ -`.
+- `agentId`, `chatId`: letters, digits and `. _ -`.
 
 `register_approver_key` also needs `hardware` (`secure_enclave`, `strongbox` or `tee`) and `attested: true` in its target: the server never activates an unattested key, so there is nothing to approve for one.
 

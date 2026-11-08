@@ -103,12 +103,12 @@ enum KinGrant {
       text = "Delete branch \"\(try shown(target, "ref", .name))\" (\(try headSha(p))) in \(repo)"
     case "set_level":
       try only(p, [])
-      try exactKeys(target, ["_tag", "leadId", "level"], ["chatId"], "target")
+      try exactKeys(target, ["_tag", "agentId", "level"], ["chatId"], "target")
       try tag(target, "level")
       let level = try string(target, "level")
       guard ["L0", "L1", "L2", "L3"].contains(level) else { throw NotAGrant("level is not L0-L3") }
       let chat = target["chatId"] == nil ? " in all chats" : " in chat \"\(try shown(target, "chatId", .id))\""
-      text = "Set lead \"\(try shown(target, "leadId", .id))\" to \(level)\(chat)"
+      text = "Set lead \"\(try shown(target, "agentId", .id))\" to \(level)\(chat)"
     case "change_rules", "memory_purge":
       try only(p, [])
       try exactKeys(target, ["_tag", "path", "sha256"], [], "target")
