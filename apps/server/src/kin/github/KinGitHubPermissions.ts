@@ -31,13 +31,15 @@ const KIN_GITHUB_APP_FORBIDDEN = {
   organization_administration: "could change organization settings",
 } as const;
 
+// The triggers spec's App webhook source filters to exactly these (TRIG-5).
 export const KIN_GITHUB_APP_EVENTS = [
   "pull_request",
   "pull_request_review",
-  "check_suite",
-  "check_run",
-  "status",
+  "pull_request_review_comment",
   "issue_comment",
+  "issues",
+  "check_suite",
+  "workflow_run",
   "push",
 ] as const;
 
