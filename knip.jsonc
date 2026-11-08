@@ -116,6 +116,8 @@
         "scripts/generate-device-stream.mts",
         "src/features/devices/device-stream.browser.ts!",
         "src/features/browser/preview-stream.browser.ts!",
+        // Kin's approval key has no importer until APPR-7's approval flow.
+        "modules/kin-approval-key/index.ts!",
       ],
       // Fonts are configured as asset paths; Expo autolinks the native packages.
       "ignoreDependencies": [

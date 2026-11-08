@@ -39,11 +39,18 @@ export class KinTriggerInboxConflict extends Schema.TaggedError<KinTriggerInboxC
 
 type InboxError = PersistenceSqlError | PersistenceDecodeError | KinTriggerInboxConflict;
 const isInboxConflict = Schema.is(KinTriggerInboxConflict);
+const FireKind = Schema.Literals(["time", "github", "github_recheck"]);
+type FireKind = typeof FireKind.Type;
 const PendingRequest = Schema.Struct({
   orgId: KinOrgId,
   limit: Schema.Int.check(Schema.isGreaterThan(0)),
-  routines: Schema.optional(Schema.Array(KinRoutine)),
+  routines: Schema.optional(Schema.Union([Schema.Array(KinRoutine), Schema.Literal("deferral")])),
+  kinds: Schema.optional(Schema.Array(FireKind)),
 });
+
+/** The `github_recheck` request a `github` fire turns into: one per fire, in the webhook id space. */
+export const recheckFireId = (orgId: KinOrgId, sourceFireId: KinTriggerFireId) =>
+  KinTriggerFireId.make(`gh:${orgId}:recheck:${sourceFireId.slice(`gh:${orgId}:`.length)}`);
 const InboxRow = Schema.Struct({ payload: Schema.fromJsonString(KinTriggerFired) });
 const decodeInboxRow = Schema.decodeUnknownEffect(InboxRow);
 
@@ -54,10 +61,12 @@ export class KinTriggerInbox extends Context.Service<
       event: KinTriggerFired,
       receivedAt: number,
     ) => Effect.Effect<boolean, InboxError>;
+    /** `subjects` narrows to those routines, or to deferral fires. */
     readonly listPending: (
       orgId: KinOrgId,
       limit?: number,
-      routines?: ReadonlyArray<KinRoutine>,
+      subjects?: ReadonlyArray<KinRoutine> | "deferral",
+      kinds?: ReadonlyArray<FireKind>,
     ) => Effect.Effect<ReadonlyArray<KinTriggerFired>, InboxError>;
     readonly markConsumed: (
       orgId: KinOrgId,
@@ -81,13 +90,20 @@ const make = Effect.gen(function* () {
   const pending = SqlSchema.findAll({
     Request: PendingRequest,
     Result: InboxRow,
-    execute: ({ orgId, limit, routines }) => sql`
+    execute: ({ orgId, limit, routines, kinds }) => sql`
       SELECT payload_json AS payload FROM kin_trigger_inbox
       WHERE org_id = ${orgId} AND consumed_at IS NULL
         ${
           routines === undefined
             ? sql``
-            : sql`AND json_extract(payload_json, '$.payload.subject.routine') IN (${sql.join(",", false)(routines.map((routine) => sql`${routine}`))})`
+            : routines === "deferral"
+              ? sql`AND json_extract(payload_json, '$.payload.subject.type') = 'deferral'`
+              : sql`AND json_extract(payload_json, '$.payload.subject.routine') IN (${sql.join(",", false)(routines.map((routine) => sql`${routine}`))})`
+        }
+        ${
+          kinds === undefined
+            ? sql``
+            : sql`AND json_extract(payload_json, '$.payload.kind') IN (${sql.join(",", false)(kinds.map((kind) => sql`${kind}`))})`
         }
       ORDER BY received_at, fire_id LIMIT ${limit}
     `,
@@ -114,13 +130,43 @@ const make = Effect.gen(function* () {
                   incoming.kind === "github" &&
                   (previous.deliveryId !== incoming.deliveryId ||
                     previous.sourceId !== incoming.sourceId ||
-                    previous.scheduledTaskId !== incoming.scheduledTaskId))
+                    previous.scheduledTaskId !== incoming.scheduledTaskId)) ||
+                (previous.kind === "github_recheck" &&
+                  incoming.kind === "github_recheck" &&
+                  previous.sourceFireId !== incoming.sourceFireId)
               ) {
                 return yield* new KinTriggerInboxConflict({
                   orgId: event.orgId,
                   reason: "identity_conflict",
                 });
               }
+            }
+            const insert = sql`
+              INSERT INTO kin_trigger_inbox (fire_id, org_id, payload_json, received_at)
+              VALUES (${event.fireId}, ${event.orgId}, ${payload}, ${at})
+              ON CONFLICT (org_id, fire_id) DO NOTHING RETURNING fire_id
+            `.pipe(Effect.map((rows) => rows.length === 1));
+            if (event.payload.kind === "github_recheck") {
+              if (
+                !event.payload.sourceFireId.startsWith(`gh:${event.orgId}:delivery:`) ||
+                event.fireId !== recheckFireId(event.orgId, event.payload.sourceFireId)
+              ) {
+                return yield* new KinTriggerInboxConflict({
+                  orgId: event.orgId,
+                  reason: "invalid_fire_id",
+                });
+              }
+              const origin = yield* sql`
+                SELECT fire_id FROM kin_trigger_inbox
+                WHERE org_id = ${event.orgId} AND fire_id = ${event.payload.sourceFireId}
+              `;
+              if (origin.length === 0) {
+                return yield* new KinTriggerInboxConflict({
+                  orgId: event.orgId,
+                  reason: "unknown_source",
+                });
+              }
+              return yield* insert;
             }
             if (event.payload.kind !== "github") {
               return yield* new KinTriggerInboxConflict({
@@ -145,23 +191,19 @@ const make = Effect.gen(function* () {
                 reason: "unknown_source",
               });
             }
-            const inserted = yield* sql`
-            INSERT INTO kin_trigger_inbox (fire_id, org_id, payload_json, received_at)
-            VALUES (${event.fireId}, ${event.orgId}, ${payload}, ${at})
-            ON CONFLICT (org_id, fire_id) DO NOTHING RETURNING fire_id
-          `;
-            return inserted.length === 1;
+            return yield* insert;
           }),
         );
       },
       Effect.mapError(toInboxError("KinTriggerInbox.put")),
     ),
     listPending: Effect.fn("KinTriggerInbox.listPending")(
-      function* (orgId, limit = 100, routines) {
+      function* (orgId, limit = 100, routines, kinds) {
         return (yield* pending({
           orgId,
           limit,
           ...(routines === undefined ? {} : { routines }),
+          ...(kinds === undefined ? {} : { kinds }),
         }).pipe(NodeSqliteClient.readOnly)).map((row) => row.payload);
       },
       Effect.mapError(toInboxError("KinTriggerInbox.listPending")),
