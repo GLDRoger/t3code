@@ -363,7 +363,7 @@ export const KinChatStreamEvent = Schema.Union([
 
 `KinChatToolkit` (**new**, `apps/server/src/kin/mcp/KinChatToolkit.ts`):
 
-- `kin_chat_post({ chatId, body, intent, mentions?, replyTo?, clientMessageId? })`
+- `kin_chat_post({ chatId, body, intent, mentions?, replyTo?, clientMessageId?, floorGrant? })`
 - `kin_chat_read({ chatId, afterSeq?, limit? })`: messages as data. Text from anyone but the owner is wrapped in quoted blocks labelled with the author's role (section 9.4) by the lead spec's brief builder, not here; this tool returns `authorRole` so it can.
 - `kin_widget_upsert({ chatId, widgetId, revision, type, state, awaiting?, closed? })`: updates an existing task card anchored by the agent's own member. Server-owned state is preserved. Agents never create task cards; creation returns `not_allowed`. Refuses `approval`.
 - `kin_floor_bid({ chatId, runId, reason, intent })` (phase 2).
@@ -374,7 +374,7 @@ Kin serves these tools at **`/kin/mcp`**, alongside the existing T3 tools, never
 
 `kin_chat_post` accepts an optional `clientMessageId` retry key. Reusing it with identical content returns the stored row; changed content fails `not_allowed`. Omission creates a fresh post on each call. Bodies are nonblank, at most 16,000 characters, and contain no NUL; mentions are capped at 100. Reads are per-call, ascending after a non-negative safe-integer `afterSeq`, with a default limit of 50 and a maximum of 100, and preserve the viewer's suggestion visibility. No agent stream is exposed.
 
-Task-card creation is server-only and unavailable through this toolkit. Updates require `widgetId` plus the expected `revision`; missing revision is refused and stale revision fails `widget_changed`. The anchor is immutable, and an agent can update only cards anchored by its own member. Neither trusted waiting APIs nor hub subscriptions are exposed. `approval` is refused by the service. `kin_floor_bid` and `floorGrant` are phase 2 and absent from the phase-1 toolkit.
+Task-card creation is server-only and unavailable through this toolkit. Updates require `widgetId` plus the expected `revision`; missing revision is refused and stale revision fails `widget_changed`. The anchor is immutable, and an agent can update only cards anchored by its own member. Neither trusted waiting APIs nor hub subscriptions are exposed. `approval` is refused by the service. `kin_floor_bid` is phase 2 and absent from the phase-1 toolkit. CHAT-9 accepts optional `floorGrant` for server-issued group grants; direct-chat grants are implicit. Grants expire after five minutes and are single-use. Trusted server notices (`KinChatService.notice`) bypass the floor and agent-notice quota; agent notices are classified from the running wake-up's stored events, never from a model-provided flag. A batch containing chat events is treated as replies.
 
 ### Floor manager (plain code)
 

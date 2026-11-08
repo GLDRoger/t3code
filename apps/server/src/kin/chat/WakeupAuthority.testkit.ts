@@ -1,11 +1,15 @@
 import {
   CommandId,
+  type KinOrgId,
+  type KinAgentId,
   MessageId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
@@ -71,4 +75,29 @@ export const startWakeupRun = Effect.fn("test.startWakeupRun")(function* (
     creationSource: "server",
   });
   return (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
+});
+
+const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+
+export const markWakeupAsNotice = Effect.fn("test.markWakeupAsNotice")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+  readonly wakeupId: string;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const eventId = `notice:${input.wakeupId}`;
+  const event = {
+    _tag: "routine",
+    orgId: input.orgId,
+    agentId: input.agentId,
+    eventId,
+    receivedAt: "1970-01-01T00:00:00.000Z",
+    dedupeKey: null,
+    provenance: { _tag: "system" },
+    routine: "morning_brief",
+  };
+  yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
+    VALUES (${eventId}, ${input.orgId}, ${input.agentId}, 'routine', 'P2', ${yield* encodeJson(event)}, 0, 0, 'claimed', ${input.wakeupId})
+    ON CONFLICT DO NOTHING RETURNING event_id`;
+  yield* sql`UPDATE kin_wakeups SET event_ids = ${yield* encodeJson([eventId])} WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId}`;
 });

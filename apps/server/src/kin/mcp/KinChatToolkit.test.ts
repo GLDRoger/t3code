@@ -1,5 +1,11 @@
 import { environment } from "../chat/TaskCard.testkit.ts";
-import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
+import {
+  authorityLayer,
+  startWakeupRun,
+  markWakeupAsNotice,
+} from "../chat/WakeupAuthority.testkit.ts";
+import * as TestClock from "effect/testing/TestClock";
+import { FLOOR_GRANT_TTL_MS } from "../floor/FloorManager.ts";
 import * as FileSystem from "effect/FileSystem";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -8,6 +14,10 @@ import {
   AuthStandardClientScopes,
   EnvironmentId,
   KinAgentId,
+  KinMessageId,
+  KinMemberId,
+  KinOrgId,
+  KinPersonId,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -159,6 +169,7 @@ const seed = Effect.gen(function* () {
   const run = yield* startWakeupRun(threadId, "toolkit-wakeup");
   yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids)
     VALUES ('toolkit-wakeup', ${person.orgId}, ${agentId}, ${threadId}, ${run.id}, 'test', 0, 'running', '[]')`;
+  yield* markWakeupAsNotice({ orgId: person.orgId, agentId, wakeupId: "toolkit-wakeup" });
   return { identity, chatService, person, chat, sql };
 });
 
@@ -482,4 +493,318 @@ it.effect("keeps trusted persistence, waiting and hub APIs outside the toolkit",
     assert.notMatch(source, /import[^;]*(?:KinChatRepository|KinChatHub)/);
     assert.notMatch(source, /\.addWaiting\(|\.subscribeForViewer\(/);
   }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "enforces implicit direct grants atomically, keeps retries, and permits wake-up notices outside runs",
+  () =>
+    Effect.gen(function* () {
+      const { chat, person, chatService, sql } = yield* seed;
+      yield* sql`UPDATE kin_wakeups SET event_ids = '[]' WHERE org_id = ${person.orgId} AND wakeup_id = 'toolkit-wakeup'`;
+      const post = {
+        chatId: chat.chatId,
+        body: "Answer",
+        intent: "answer",
+        clientMessageId: "floor-reply",
+      };
+      assert.include(errorOf(yield* call("kin_chat_post", post)), { reason: "floor_not_granted" });
+      const prompt = { chatId: chat.chatId, body: "Please answer", clientMessageId: "floor-human" };
+      const human = yield* chatService.send(person, prompt);
+      const [grant] = yield* sql<{
+        token: string;
+        run_id: string;
+      }>`SELECT token, run_id FROM kin_floor_grants WHERE org_id = ${person.orgId} AND chat_id = ${chat.chatId} ORDER BY token`;
+      assert.isDefined(grant);
+      assert.include(errorOf(yield* call("kin_chat_post", { ...post, floorGrant: "forged" })), {
+        reason: "floor_not_granted",
+      });
+      assert.include(
+        errorOf(yield* call("kin_chat_post", { ...post, replyTo: "foreign-message" })),
+        { reason: "not_found", message: "Kin record not found." },
+      );
+      const first = yield* call("kin_chat_post", post);
+      assert.isFalse(first.isError);
+      assert.deepStrictEqual(yield* call("kin_chat_post", post), first);
+      assert.include(errorOf(yield* call("kin_chat_post", { ...post, body: "Changed" })), {
+        reason: "not_allowed",
+      });
+      assert.deepStrictEqual(yield* chatService.send(person, prompt), human);
+      for (const intent of ["answer", "evidence", "question"]) {
+        assert.include(
+          errorOf(
+            yield* call("kin_chat_post", {
+              ...post,
+              intent,
+              clientMessageId: `second-${intent}`,
+              notice: true,
+              floorGrant: grant.token,
+            }),
+          ),
+          { reason: "floor_not_granted" },
+        );
+      }
+      const { agent, read } = yield* agentServices.pipe(
+        Effect.provideService(McpInvocationContext, scope),
+      );
+      assert.strictEqual(
+        (yield* read(agent, { chatId: chat.chatId })).at(-1)?.floorRunId,
+        grant.run_id,
+      );
+      yield* markWakeupAsNotice({ orgId: person.orgId, agentId, wakeupId: "toolkit-wakeup" });
+      assert.isFalse(
+        (yield* call("kin_chat_post", {
+          ...post,
+          body: "Routine evidence",
+          intent: "evidence",
+          clientMessageId: "notice",
+        })).isError,
+      );
+      assert.isNull((yield* read(agent, { chatId: chat.chatId })).at(-1)?.floorRunId);
+      assert.deepStrictEqual(
+        yield* sql`SELECT agent_turns FROM kin_floor_runs WHERE org_id = ${person.orgId} AND run_id = ${grant.run_id} ORDER BY run_id`,
+        [{ agent_turns: 1 }],
+      );
+      yield* sql`UPDATE kin_wakeups SET event_ids = '[]' WHERE org_id = ${person.orgId} AND wakeup_id = 'toolkit-wakeup'`;
+      yield* chatService.send(person, { ...prompt, clientMessageId: "concurrent-human" });
+      const concurrent = yield* Effect.forEach(
+        ["a", "b"],
+        (key) =>
+          call("kin_chat_post", {
+            ...post,
+            clientMessageId: `concurrent-${key}`,
+          }),
+        { concurrency: "unbounded" },
+      );
+      assert.strictEqual(concurrent.filter((result) => !result.isError).length, 1);
+      assert.include(errorOf(concurrent.find((result) => result.isError)!), {
+        reason: "floor_not_granted",
+      });
+      yield* markWakeupAsNotice({ orgId: person.orgId, agentId, wakeupId: "toolkit-wakeup" });
+      assert.include(
+        errorOf(yield* call("kin_chat_post", { ...post, clientMessageId: "notice-answer" })),
+        { reason: "floor_not_granted" },
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "expires and releases grants on time and new human messages, and scopes tokens to chat, org and agent",
+  () =>
+    Effect.gen(function* () {
+      const { chat, person, chatService, sql } = yield* seed;
+      yield* sql`UPDATE kin_wakeups SET event_ids = '[]' WHERE org_id = ${person.orgId} AND wakeup_id = 'toolkit-wakeup'`;
+      const human = (id: string) =>
+        chatService.send(person, { chatId: chat.chatId, body: "Question", clientMessageId: id });
+      yield* human("human-1");
+      const [grant] = yield* sql<{
+        token: string;
+        run_id: string;
+      }>`SELECT token, run_id FROM kin_floor_grants WHERE org_id = ${person.orgId} AND chat_id = ${chat.chatId} ORDER BY token`;
+      assert.isDefined(grant);
+      const post = {
+        chatId: chat.chatId,
+        body: "Answer",
+        intent: "answer",
+        floorGrant: grant.token,
+      };
+      yield* TestClock.adjust(FLOOR_GRANT_TTL_MS);
+      assert.include(errorOf(yield* call("kin_chat_post", post)), { reason: "floor_not_granted" });
+      yield* human("human-2");
+      assert.include(errorOf(yield* call("kin_chat_post", post)), { reason: "floor_not_granted" });
+      const [fresh] = yield* sql<{
+        token: string;
+        run_id: string;
+      }>`SELECT token, run_id FROM kin_floor_grants WHERE org_id = ${person.orgId} AND run_id != ${grant.run_id} ORDER BY token`;
+      assert.isDefined(fresh);
+      // Corrupt-scope rows simulate otherwise valid server tokens belonging to another principal.
+      const otherAgent = KinAgentId.make("other-agent");
+      yield* sql`INSERT INTO kin_agents (org_id, agent_id, display_name, role, owner_person_id, created_at)
+      VALUES (${person.orgId}, ${otherAgent}, 'Other', 'qa', ${person.personId}, '1970-01-01T00:00:00.000Z')`;
+      const other = yield* chatService.createDirect(person, {
+        orgId: person.orgId,
+        agentId: otherAgent,
+      });
+      for (const change of ["agent", "chat"] as const) {
+        yield* sql`UPDATE kin_floor_grants SET agent_id = ${change === "agent" ? otherAgent : agentId}, chat_id = ${change === "chat" ? other.chatId : chat.chatId}
+        WHERE org_id = ${person.orgId} AND token = ${fresh.token}`;
+        assert.include(
+          errorOf(yield* call("kin_chat_post", { ...post, floorGrant: fresh.token })),
+          { reason: "floor_not_granted" },
+        );
+      }
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('foreign-org', 'Foreign', '1970-01-01T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES ('foreign-person', 'foreign-org', 'foreign', 'Foreign', '1970-01-01T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_agents (org_id, agent_id, display_name, role, owner_person_id, created_at)
+      VALUES ('foreign-org', 'foreign-agent', 'Foreign', 'lead', 'foreign-person', '1970-01-01T00:00:00.000Z')`;
+      const foreignPerson = {
+        _tag: "person",
+        orgId: KinOrgId.make("foreign-org"),
+        personId: KinPersonId.make("foreign-person"),
+      } as const;
+      const foreignChat = yield* chatService.createDirect(foreignPerson, {
+        orgId: foreignPerson.orgId,
+        agentId: KinAgentId.make("foreign-agent"),
+      });
+      yield* chatService.send(foreignPerson, {
+        chatId: foreignChat.chatId,
+        body: "Foreign question",
+        clientMessageId: "foreign-human",
+      });
+      const [foreignGrant] = yield* sql<{
+        token: string;
+      }>`SELECT token FROM kin_floor_grants WHERE org_id = ${foreignPerson.orgId} ORDER BY token`;
+      assert.isDefined(foreignGrant);
+      assert.include(
+        errorOf(yield* call("kin_chat_post", { ...post, floorGrant: foreignGrant.token })),
+        { reason: "floor_not_granted" },
+      );
+      assert.include(
+        errorOf(
+          yield* call("kin_chat_post", {
+            ...post,
+            chatId: foreignChat.chatId,
+            floorGrant: foreignGrant.token,
+          }),
+        ),
+        { reason: "not_found", message: "Kin record not found." },
+      );
+      yield* sql`UPDATE kin_floor_grants SET agent_id = ${agentId}, chat_id = ${chat.chatId} WHERE org_id = ${person.orgId} AND token = ${fresh.token}`;
+      assert.isFalse((yield* call("kin_chat_post", { ...post, floorGrant: fresh.token })).isError);
+      yield* human("human-3");
+      assert.include(errorOf(yield* call("kin_chat_post", { ...post, floorGrant: fresh.token })), {
+        reason: "floor_not_granted",
+      });
+      assert.isFalse(
+        (yield* call("kin_chat_post", {
+          chatId: post.chatId,
+          body: post.body,
+          intent: post.intent,
+        })).isError,
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "limits agent notices to ten per rolling hour without charging retries or server notices",
+  () =>
+    Effect.gen(function* () {
+      const { chat, person, chatService, sql } = yield* seed;
+      const post = {
+        chatId: chat.chatId,
+        body: "Notice",
+        intent: "evidence",
+        clientMessageId: "notice-0",
+      };
+      const first = yield* call("kin_chat_post", post);
+      assert.isFalse(first.isError);
+      for (let n = 1; n < 10; n++)
+        assert.isFalse(
+          (yield* call("kin_chat_post", { ...post, clientMessageId: `notice-${n}` })).isError,
+        );
+      assert.deepStrictEqual(yield* call("kin_chat_post", post), first);
+      assert.include(
+        errorOf(yield* call("kin_chat_post", { ...post, clientMessageId: "limited" })),
+        { reason: "limit" },
+      );
+      yield* chatService.notice({
+        orgId: person.orgId,
+        chatId: chat.chatId,
+        messageId: KinMessageId.make("server-notice"),
+        body: "Server notice",
+      });
+      assert.deepStrictEqual(
+        yield* sql`SELECT COUNT(*) AS count FROM kin_floor_notices WHERE org_id = ${person.orgId} AND chat_id = ${chat.chatId} ORDER BY message_id`,
+        [{ count: 10 }],
+      );
+      yield* TestClock.adjust(3_600_000);
+      assert.isFalse(
+        (yield* call("kin_chat_post", { ...post, clientMessageId: "new-hour" })).isError,
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "requires explicit group grants and keeps the six-turn door closed until a human speaks",
+  () =>
+    Effect.gen(function* () {
+      const { chat, person, chatService, sql } = yield* seed;
+      yield* sql`UPDATE kin_wakeups SET event_ids = '[]' WHERE org_id = ${person.orgId} AND wakeup_id = 'toolkit-wakeup'`;
+      yield* sql`UPDATE kin_chats SET kind = 'team_group', direct_key = NULL WHERE org_id = ${person.orgId} AND chat_id = ${chat.chatId}`;
+      const [member] = yield* sql<{
+        member_id: string;
+      }>`SELECT member_id FROM kin_chat_members WHERE org_id = ${person.orgId} AND chat_id = ${chat.chatId} AND agent_id = ${agentId} ORDER BY member_id`;
+      assert.isDefined(member);
+      yield* sql`INSERT INTO kin_agents (org_id, agent_id, display_name, role, owner_person_id, created_at)
+        VALUES (${person.orgId}, 'queued-qa', 'QA', 'qa', ${person.personId}, '1970-01-01T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+        VALUES ('queued-qa-member', ${person.orgId}, ${chat.chatId}, 'agent', 'queued-qa', 'member', '1970-01-01T00:00:00.000Z')`;
+      yield* chatService.send(person, {
+        chatId: chat.chatId,
+        body: "Please answer",
+        mentions: [KinMemberId.make(member.member_id), KinMemberId.make("queued-qa-member")],
+        clientMessageId: "group-human",
+      });
+      const [grant] = yield* sql<{
+        token: string;
+        run_id: string;
+      }>`SELECT token, run_id FROM kin_floor_grants WHERE org_id = ${person.orgId} AND chat_id = ${chat.chatId} ORDER BY token`;
+      assert.isDefined(grant);
+      const post = {
+        chatId: chat.chatId,
+        body: "Answer",
+        intent: "answer",
+        clientMessageId: "group-answer",
+      };
+      assert.include(errorOf(yield* call("kin_chat_post", post)), { reason: "floor_not_granted" });
+      const first = yield* call("kin_chat_post", { ...post, floorGrant: grant.token });
+      assert.isFalse(first.isError);
+      assert.deepStrictEqual(
+        yield* sql`SELECT agent_id FROM kin_floor_grants
+        WHERE org_id = ${person.orgId} AND run_id = ${grant.run_id} AND consumed_at IS NULL ORDER BY token`,
+        [{ agent_id: "queued-qa" }],
+      );
+      assert.deepStrictEqual(
+        yield* call("kin_chat_post", { ...post, floorGrant: grant.token }),
+        first,
+      );
+      assert.include(
+        errorOf(
+          yield* call("kin_chat_post", {
+            ...post,
+            clientMessageId: "reuse",
+            floorGrant: grant.token,
+          }),
+        ),
+        { reason: "floor_not_granted" },
+      );
+      yield* sql`UPDATE kin_floor_runs SET agent_turns = 6, state = 'closed' WHERE org_id = ${person.orgId} AND run_id = ${grant.run_id}`;
+      assert.include(
+        errorOf(
+          yield* call("kin_chat_post", {
+            ...post,
+            clientMessageId: "closed",
+            floorGrant: grant.token,
+          }),
+        ),
+        { reason: "floor_closed" },
+      );
+      yield* chatService.send(person, {
+        chatId: chat.chatId,
+        body: "New question",
+        mentions: [KinMemberId.make(member.member_id)],
+        clientMessageId: "new-group-human",
+      });
+      const [fresh] = yield* sql<{
+        token: string;
+      }>`SELECT token FROM kin_floor_grants WHERE org_id = ${person.orgId} AND run_id != ${grant.run_id} ORDER BY token`;
+      assert.isDefined(fresh);
+      assert.isFalse(
+        (yield* call("kin_chat_post", {
+          ...post,
+          clientMessageId: "new-group-answer",
+          floorGrant: fresh.token,
+        })).isError,
+      );
+    }).pipe(Effect.provide(layer)),
 );

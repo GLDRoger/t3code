@@ -1,7 +1,7 @@
 import { environment } from "./TaskCard.testkit.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import { CommandId } from "@t3tools/contracts";
-import { startWakeupRun, authorityLayer } from "./WakeupAuthority.testkit.ts";
+import { startWakeupRun, authorityLayer, markWakeupAsNotice } from "./WakeupAuthority.testkit.ts";
 import { assert, describe, it } from "@effect/vitest";
 import {
   AuthSessionId,
@@ -112,6 +112,7 @@ const seed = Effect.gen(function* () {
   const run = yield* startWakeupRun(threadId, "service-wakeup");
   yield* sql`UPDATE kin_wakeups SET run_id = ${run.id} WHERE wakeup_id = 'service-wakeup'`;
   yield* startWakeupRun(state.threadId!, "worker");
+  yield* markWakeupAsNotice({ orgId: person.orgId, agentId, wakeupId: "service-wakeup" });
   const agent = yield* identity.resolveAgent(caller);
   return { repo, service, identity, person, agent, chat };
 });
@@ -802,7 +803,7 @@ describe("KinChatService", () => {
         chatId: other.chatId,
         body: "Private",
         clientMessageId: "private",
-        intent: "answer",
+        intent: "evidence",
       });
       const widget = yield* service.createTaskCard({
         orgId: person.orgId,
