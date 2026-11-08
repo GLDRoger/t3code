@@ -240,8 +240,8 @@ const make = Effect.gen(function* () {
   );
 
   const create = Effect.fn("KinPendingActions.create")(
-    function* (input: KinPendingActionCreateInput) {
-      yield* decodeCreateInput(input);
+    function* (raw: KinPendingActionCreateInput) {
+      const input = yield* decodeCreateInput(raw);
       const now = yield* Clock.currentTimeMillis;
       const idempotencyKey = kinIdempotencyKey(input);
       const id = yield* decodeActionId(`act_${SecureRandom.ulidUnsafe()}`);
@@ -312,6 +312,7 @@ const make = Effect.gen(function* () {
               nonce = ${newNonce()}, revision = revision + 1, updated_at = ${now}
             WHERE org_id = ${input.orgId} AND action_id = ${input.actionId}
               AND state = 'awaiting_approval' AND revision = ${input.revision}
+              AND expires_at > ${now}
             RETURNING *`;
           if (row === undefined) return Option.none();
           yield* audit.append({
@@ -342,6 +343,7 @@ const make = Effect.gen(function* () {
             SET state = ${input.to}, state_reason = ${input.reason ?? null}, updated_at = ${now}
             WHERE org_id = ${input.orgId} AND action_id = ${input.actionId}
               AND state = ${from} AND revision = ${input.revision}
+              AND (${input.to} != 'expired' OR expires_at <= ${now})
             RETURNING action_id, kind, resolved_json`;
           if (row === undefined) return false;
           yield* audit.append({
@@ -385,7 +387,7 @@ const make = Effect.gen(function* () {
           Effect.gen(function* () {
             const [inserted] = yield* sql`
               INSERT INTO kin_grants (grant_id, org_id, action_id, revision, jti, approver_human_id,
-                key_thumbprint, compact, iat, exp, accepted_at)
+                key_thumbprint, compact, iat_s, exp_s, accepted_at)
               SELECT ${grantId}, org_id, action_id, ${input.revision}, ${input.jti},
                 ${input.approverHumanId}, ${input.keyThumbprint}, ${input.compact}, ${input.iat},
                 ${input.exp}, ${now}
@@ -394,8 +396,8 @@ const make = Effect.gen(function* () {
               RETURNING grant_id`;
             if (inserted === undefined) {
               const [seen] = yield* sql`SELECT 1 FROM kin_grants
-                WHERE jti = ${input.jti} OR (action_id = ${input.actionId}
-                  AND approver_human_id = ${input.approverHumanId})`;
+                WHERE org_id = ${input.orgId} AND (jti = ${input.jti} OR (action_id = ${input.actionId}
+                  AND approver_human_id = ${input.approverHumanId}))`;
               return seen === undefined
                 ? { _tag: "stale" as const }
                 : { _tag: "replayed" as const };
@@ -404,7 +406,7 @@ const make = Effect.gen(function* () {
               SET state = 'approved', updated_at = ${now}
               WHERE org_id = ${input.orgId} AND action_id = ${input.actionId}
                 AND state = 'awaiting_approval' AND revision = ${input.revision}
-                AND nonce = ${input.nonce}
+                AND nonce = ${input.nonce} AND expires_at > ${now}
               RETURNING action_id, kind, resolved_json`;
             if (won === undefined) return yield* new Rollback();
             yield* audit.append({
@@ -458,6 +460,7 @@ const make = Effect.gen(function* () {
               WHERE grant_id = ${input.grantId} AND org_id = ${input.orgId}
                 AND action_id = ${input.actionId} AND revision = ${input.revision}
                 AND consumed_at IS NULL
+                AND MIN(exp_s * 1000, accepted_at + ${GRANT_ACCEPTED_TTL_MS}) > ${now}
               ON CONFLICT DO NOTHING
               RETURNING action_id`;
             if (claimed.length === 0) return false;
@@ -547,7 +550,7 @@ const make = Effect.gen(function* () {
               SELECT 1 FROM kin_grants g
               WHERE g.action_id = kin_pending_actions.action_id
                 AND g.revision = kin_pending_actions.revision AND g.consumed_at IS NULL
-                AND MIN(g.exp * 1000, g.accepted_at + ${GRANT_ACCEPTED_TTL_MS}) <= ${now})
+                AND MIN(g.exp_s * 1000, g.accepted_at + ${GRANT_ACCEPTED_TTL_MS}) <= ${now})
             RETURNING org_id, action_id, kind, resolved_json`;
           const record = (event: "action_expired" | "action_voided", result: string) =>
             Effect.forEach(

@@ -184,13 +184,13 @@
     {
       "name": "set a level in one chat",
       "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
-      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"set_level\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"level\",\"chatId\":\"chat_7\",\"leadId\":\"tech-lead\",\"level\":\"L2\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"set_level\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"level\",\"agentId\":\"tech-lead\",\"chatId\":\"chat_7\",\"level\":\"L2\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
       "prompt": "Set lead \"tech-lead\" to L2 in chat \"chat_7\""
     },
     {
       "name": "set a level everywhere",
       "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
-      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"set_level\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"level\",\"leadId\":\"tech-lead\",\"level\":\"L0\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"set_level\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"level\",\"agentId\":\"tech-lead\",\"level\":\"L0\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
       "prompt": "Set lead \"tech-lead\" to L0 in all chats"
     },
     {
@@ -208,8 +208,56 @@
     {
       "name": "register an approver key",
       "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"register_approver_key\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"device_key\",\"attested\":true,\"hardware\":\"secure_enclave\",\"thumbprint\":\"NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "prompt": "Add approver key NzbLsXh8uDCcd-6M (Secure Enclave, attested)"
+    },
+    {
+      "name": "register a StrongBox approver key",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"register_approver_key\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"device_key\",\"attested\":true,\"hardware\":\"strongbox\",\"thumbprint\":\"NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "prompt": "Add approver key NzbLsXh8uDCcd-6M (StrongBox, attested)"
+    },
+    {
+      "name": "register a TEE approver key",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"register_approver_key\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"device_key\",\"attested\":true,\"hardware\":\"tee\",\"thumbprint\":\"NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "prompt": "Add approver key NzbLsXh8uDCcd-6M (TEE, attested)"
+    },
+    {
+      "name": "an unattested approver key is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"register_approver_key\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"device_key\",\"attested\":false,\"hardware\":\"secure_enclave\",\"thumbprint\":\"NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a software approver key is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"register_approver_key\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"device_key\",\"attested\":true,\"hardware\":\"software\",\"thumbprint\":\"NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "an approver key with attested as a string is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"register_approver_key\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"device_key\",\"attested\":\"true\",\"hardware\":\"secure_enclave\",\"thumbprint\":\"NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "an approver key without hardware is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"register_approver_key\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"device_key\",\"attested\":true,\"thumbprint\":\"NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "an approver key without attested is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"register_approver_key\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"device_key\",\"hardware\":\"tee\",\"thumbprint\":\"NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "an approver key with only a thumbprint is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
       "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"register_approver_key\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"device_key\",\"thumbprint\":\"NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
-      "prompt": "Add approver key NzbLsXh8uDCcd-6M"
+      "error": "E_NOT_A_GRANT"
     },
     {
       "name": "escapes decode in a field that isn't shown",
@@ -429,13 +477,13 @@
     {
       "name": "set_level carrying headSha",
       "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
-      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"set_level\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"level\",\"leadId\":\"l\",\"level\":\"L1\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"set_level\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"level\",\"agentId\":\"l\",\"level\":\"L1\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
       "error": "E_NOT_A_GRANT"
     },
     {
       "name": "level L4",
       "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
-      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"set_level\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"level\",\"leadId\":\"l\",\"level\":\"L4\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"set_level\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"level\",\"agentId\":\"l\",\"level\":\"L4\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
       "error": "E_NOT_A_GRANT"
     },
     {
@@ -495,7 +543,7 @@
     {
       "name": "short thumbprint",
       "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
-      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"register_approver_key\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"device_key\",\"thumbprint\":\"abc\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"register_approver_key\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"device_key\",\"attested\":true,\"hardware\":\"secure_enclave\",\"thumbprint\":\"abc\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
       "error": "E_NOT_A_GRANT"
     },
     {
@@ -559,15 +607,15 @@
       "error": "E_NOT_A_GRANT"
     },
     {
-      "name": "a leadId with a space is refused",
+      "name": "an agentId with a space is refused",
       "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
-      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"set_level\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"level\",\"leadId\":\"tech lead\",\"level\":\"L0\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"set_level\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"level\",\"agentId\":\"tech lead\",\"level\":\"L0\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
       "error": "E_NOT_A_GRANT"
     },
     {
       "name": "a chatId with a slash is refused",
       "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
-      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"set_level\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"level\",\"chatId\":\"chat/7\",\"leadId\":\"tech-lead\",\"level\":\"L2\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"set_level\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"level\",\"agentId\":\"tech-lead\",\"chatId\":\"chat/7\",\"level\":\"L2\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
       "error": "E_NOT_A_GRANT"
     },
     {

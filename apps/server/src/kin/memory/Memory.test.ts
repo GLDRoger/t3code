@@ -45,6 +45,7 @@ const fakeRepository = () => {
     }
     return sha;
   };
+  let validations = 0;
   let treeReads = 0;
   let blobReads = 0;
   let revision = 0;
@@ -63,6 +64,7 @@ const fakeRepository = () => {
                 : `fixture-head-${revision}`;
             break;
           case "remote":
+            validations++;
             stdout = "unused";
             break;
           case "ls-tree": {
@@ -118,7 +120,7 @@ const fakeRepository = () => {
     commit: () => {
       revision++;
     },
-    counts: () => ({ treeReads, blobReads }),
+    counts: () => ({ treeReads, blobReads, validations }),
     corruptBatch: () => {
       corruptNextBatch = true;
     },
@@ -400,7 +402,16 @@ it.effect(
         expect(yield* memory.readIndex(orgA)).toContain("⚠ review");
         const counts = repository.counts();
         yield* memory.query(orgA, {});
+        const reads =
+          yield* sql`SELECT * FROM kin_memory_reads WHERE org_id = ${orgA} ORDER BY item_id`;
+        yield* memory.readItemQuietly(orgA, itemId);
+        expect(
+          yield* sql`SELECT * FROM kin_memory_reads WHERE org_id = ${orgA} ORDER BY item_id`,
+        ).toEqual(reads);
         yield* memory.readItem(orgA, itemId);
+        expect(
+          yield* sql`SELECT * FROM kin_memory_reads WHERE org_id = ${orgA} ORDER BY item_id`,
+        ).toHaveLength(1);
         expect(repository.counts()).toEqual(counts);
         yield* TestClock.adjust("7 weeks");
         yield* memory.readItem(orgA, itemId);

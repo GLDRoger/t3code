@@ -92,7 +92,11 @@ export const KinActionTarget = Schema.Union([
     chatId: Schema.optional(KinChatId),
     level: KinLevel,
   }),
-  Schema.TaggedStruct("device_key", { thumbprint: Schema.String }),
+  Schema.TaggedStruct("device_key", {
+    thumbprint: Schema.String,
+    hardware: Schema.Literals(["secure_enclave", "strongbox", "tee"]), // the server's record
+    attested: Schema.Literal(true), // only an attested key can be proposed
+  }),
 ]);
 ```
 
@@ -152,7 +156,7 @@ Transitions (every one is a compare-and-set `UPDATE … WHERE id = ? AND state =
 Storage (new, SQLite, Kin's own migration track in `apps/server/src/kin/persistence/` (`KinMigrations.ts`, one `migrations/K00N_*.ts` file per change) with its own `Migrator` table `kin_sql_migrations`; owned with the chat spec so all Kin tables share one runner):
 
 - `kin_pending_actions` — columns as above; `UNIQUE(org_id, idempotency_key)`; index `(org_id, state)`.
-- `kin_grants` — `id`, `org_id`, `action_id`, `revision`, `jti` **UNIQUE**, `approver_human_id`, `key_thumbprint`, `compact` (the signed token), `iat`, `exp`, `accepted_at`, `consumed_at`; `UNIQUE(action_id, approver_human_id)`.
+- `kin_grants` — `id`, `org_id`, `action_id`, `revision`, `jti` **UNIQUE**, `approver_human_id`, `key_thumbprint`, `compact` (the signed token), `iat_s`, `exp_s` (the token's seconds), `accepted_at`, `consumed_at`; `UNIQUE(action_id, approver_human_id)`.
 - `kin_executions` — `action_id` **PRIMARY KEY**, `grant_id`, `started_at`, `finished_at`, `outcome`, `github_request_id`, `merge_commit_sha`, `error`. Inserting this row is the claim; a second insert fails.
 - `kin_approver_keys` — section 4.
 - `kin_audit` — section 9.
