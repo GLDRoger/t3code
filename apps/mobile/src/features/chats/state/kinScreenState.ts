@@ -1,4 +1,10 @@
-import { EnvironmentAuthorizationError, type EnvironmentId } from "@t3tools/contracts";
+import {
+  EnvironmentAuthorizationError,
+  type EnvironmentId,
+  type KinChatSummary,
+  type KinWaitingItem,
+  type KinWaitingReason,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
 import type { AsyncResult } from "effect/reactivity";
@@ -73,6 +79,16 @@ const activityAt = (row: KinInboxRow) => row.chat.lastMessageAt ?? row.chat.crea
 
 type KinReadyScreenState = Extract<KinInboxScreenState, { readonly _tag: "ready" }>;
 
+const kinClockFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+const kinDayFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
+
+/** "9:41" for a time today (by `now`'s local day), "7 Nov" for any other day. */
+export function formatKinTime(date: Date, now: Date = new Date()): string {
+  return date.toDateString() === now.toDateString()
+    ? kinClockFormat.format(date)
+    : kinDayFormat.format(date);
+}
+
 /** The stale-data notice over a ready inbox, or null while it is live and connected. */
 export function kinInboxNotice(
   state: KinReadyScreenState,
@@ -114,4 +130,74 @@ export function kinHomeSubtitle(
     default:
       return null;
   }
+}
+
+// Chat list rows and the Waiting on you banner
+
+/** Who the viewer is and what agents are called, from the host's `kin.orgs.list`. */
+export interface KinDirectory {
+  readonly agentNames: ReadonlyMap<string, string>;
+  readonly me: ReadonlySet<string>;
+}
+
+export const emptyKinDirectory: KinDirectory = { agentNames: new Map(), me: new Set() };
+
+export function kinDirectory(host: KinHost): KinDirectory {
+  if (host._tag !== "host") return emptyKinDirectory;
+  const { probe } = host;
+  if (probe._tag !== "ready" && probe._tag !== "noIdentity") return emptyKinDirectory;
+  return {
+    agentNames: new Map(
+      probe.orgs.orgs.flatMap((org) =>
+        org.agents.map((agent) => [agent.agentId, agent.displayName] as const),
+      ),
+    ),
+    me: new Set(probe.orgs.me.map((me) => me.personId)),
+  };
+}
+
+/** The host's title, else the chat's agent by name: the host leaves direct chats untitled. */
+export function kinChatTitle(
+  chat: Pick<KinChatSummary, "title" | "kind" | "members">,
+  agentNames: ReadonlyMap<string, string>,
+): string {
+  if (chat.title !== null) return chat.title;
+  for (const member of chat.members) {
+    if (member.leftAt !== null || member.principal._tag !== "agent") continue;
+    const name = agentNames.get(member.principal.agentId);
+    if (name !== undefined) return name;
+  }
+  return chat.kind === "direct" ? "Direct chat" : "Chat";
+}
+
+const WAITING_REASON_LABELS: Record<KinWaitingReason, string> = {
+  approval: "Approval",
+  decision: "Decision",
+  question: "Question",
+  suggestion: "Suggestion",
+  mention: "Mention",
+};
+
+export interface KinWaitingRowView {
+  readonly label: string;
+  readonly chatTitle: string;
+  /** The message that asks, when the inbox carries it; items have no text of their own. */
+  readonly text: string | null;
+  readonly createdAt: string;
+}
+
+export function kinWaitingRowView(
+  item: KinWaitingItem,
+  chats: ReadonlyArray<KinChatSummary>,
+  agentNames: ReadonlyMap<string, string>,
+): KinWaitingRowView {
+  const chat = chats.find((held) => held.chatId === item.chatId);
+  const last = chat?.lastMessage ?? null;
+  const message = last !== null && last.messageId === item.messageId ? last : null;
+  return {
+    label: WAITING_REASON_LABELS[item.reason],
+    chatTitle: chat === undefined ? "Direct chat" : kinChatTitle(chat, agentNames),
+    text: message === null || message.status === "deleted" ? null : message.body,
+    createdAt: item.createdAt,
+  };
 }

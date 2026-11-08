@@ -310,7 +310,7 @@ Hiding the buttons is a convenience, not the protection (DESIGN 9.3). The server
 
 New, all under `apps/mobile/src/features/chats/` unless noted:
 
-- `routes.tsx`: `KIN_SCREENS` (the four routes above; MOB-2 adds `KinChats` and `KinWaiting`, and `KinChat` and `KinApproval` arrive with their screens)
+- `routes.tsx`: `KIN_SCREENS` (the four routes above; MOB-2 adds `KinChats`, `KinWaiting` and a placeholder `KinChat` the list can open; MOB-4 fills `KinChat` and `KinApproval` arrives with its screen)
 - `KinHomeEntry.tsx`, `KinChatsScreen.tsx`, `KinChatScreen.tsx`, `KinWaitingScreen.tsx`, `KinApprovalRouteScreen.tsx`
 - `components/KinAvatar.tsx`, `KinChatRow.tsx`, `KinWaitingBanner.tsx`, `KinMessageBubble.tsx`, `KinFoldLine.tsx`, `KinComposer.tsx`, `KinScreenState.tsx` (the state table as one component)
 - `widgets/KinWidgetView.tsx`, `KinTaskCard.tsx`, `KinDeferralCard.tsx`, `KinApprovalCard.tsx`, `kinCardPresentation.ts` (pure copy and format functions, unit-tested)
