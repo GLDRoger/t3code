@@ -5,16 +5,22 @@ import {
   AuthStandardClientScopes,
   EnvironmentId,
   KinAgentId,
-  KinApprovalError,
   KinEventId,
   KinMemberId,
   KinMessageId,
   KinPersonId,
   KinWakeupId,
+  ProjectId,
   ProviderInstanceId,
+  PullRequestOperationError,
+  ScheduledTaskId,
+  ScheduledTaskWebhookDeliveryId,
+  SourceControlProviderKind,
   ThreadId,
   type KinAuthor,
   type KinEvent,
+  type OrchestrationProjectShell,
+  type PullRequestDetail,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
@@ -27,6 +33,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 import { McpSchema, McpServer } from "effect/ai";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
+import * as ProjectService from "../../project/ProjectService.ts";
+import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
 import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { McpInvocationContext, type McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
@@ -37,7 +45,7 @@ import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinChatToolkit, handlers as chatHandlers } from "../mcp/KinChatToolkit.ts";
 import { KinApprovalsToolkit, registrationWith } from "./mcp.ts";
-import { KinPullRequestFacts } from "./RequestAction.ts";
+import { layerPullRequestFacts } from "./RequestAction.ts";
 
 const threadId = ThreadId.make("lead-thread");
 const agentId = KinAgentId.make("lead");
@@ -71,25 +79,65 @@ const client = McpSchema.McpServerClient.of({
   getClient: Effect.die("unused"),
 });
 
-// GitHub as the server sees it. It refuses unless the lead's own worker projects reached it.
-const facts = Layer.succeed(
-  KinPullRequestFacts,
-  KinPullRequestFacts.of({
-    read: ({ target, projectIds }) =>
-      projectIds.join(",") === "project-1"
-        ? Effect.succeed({
-            _tag: "pull_request",
-            headSha: serverHead,
-            base: "main",
-            head: "feature",
-            title: `${target.repo}#${target.number}`,
-            additions: 3,
-            deletions: 1,
-            files: 2,
-            checks: [{ name: "CI", required: true, status: "passed" }],
-          })
-        : Effect.fail(new KinApprovalError({ reason: "unavailable", message: "no project" })),
-  }),
+const shell = (id: string, owner: string, name: string): OrchestrationProjectShell => ({
+  id: ProjectId.make(id),
+  title: name,
+  workspaceRoot: `/work/${name}`,
+  defaultModelSelection: null,
+  scripts: [],
+  repositoryIdentity: {
+    canonicalKey: `github.com/${owner}/${name}`,
+    locator: {
+      source: "git-remote",
+      remoteName: "origin",
+      remoteUrl: `git@github.com:${owner}/${name}.git`,
+    },
+    provider: SourceControlProviderKind.make("github"),
+    displayName: `${owner}/${name}`,
+    owner,
+    name,
+  },
+  createdAt: "1970-01-01T00:00:00.000Z",
+  updatedAt: "1970-01-01T00:00:00.000Z",
+});
+// The lead's worker project is project-1; project-2 is another T3 project the credential can read.
+const shells = [shell("project-1", "acme", "app"), shell("project-2", "other", "secret")];
+// GitHub as T3's credential sees it: both repos have an open PR #7, wherever it is read from.
+const facts = layerPullRequestFacts.pipe(
+  Layer.provide(
+    Layer.mock(ProjectService.ProjectService)({
+      listShells: (options) =>
+        Effect.succeed(shells.filter(({ id }) => options?.projectIds?.includes(id) ?? true)),
+    }),
+  ),
+  Layer.provide(
+    Layer.mock(PullRequestService)({
+      detail: ({ repository, number }) => {
+        const exists = shells.some(
+          ({ repositoryIdentity }) =>
+            repositoryIdentity?.displayName?.toLowerCase() === repository.toLowerCase(),
+        );
+        // Only the fields KinPullRequestFacts reads.
+        const read: Partial<PullRequestDetail> = {
+          repository,
+          number,
+          url: `https://github.com/${repository}/pull/${number}`,
+          state: "open",
+          headSha: serverHead,
+          baseBranch: "main",
+          headBranch: "feature",
+          title: `${repository}#${number}`,
+          additions: 3,
+          deletions: 1,
+          changedFiles: 2,
+          checks: [{ name: "CI", status: "success", required: true, description: null, url: null }],
+        };
+        return !exists || number !== 7
+          ? Effect.fail(new PullRequestOperationError({ operation: "detail", detail: "Not Found" }))
+          : Effect.succeed(read as PullRequestDetail);
+      },
+    }),
+  ),
 );
 const layer = Layer.mergeAll(
   registrationWith(facts),
@@ -146,7 +194,7 @@ const success = (result: McpSchema.CallToolResult) => {
   return textOf(result);
 };
 
-type Source = "owner" | "member" | "routine";
+type Source = "owner" | "member" | "routine" | "github";
 /** A lead in a real running wake-up whose claimed batch holds one event per source. */
 const seed = (sources: ReadonlyArray<Source>) =>
   Effect.gen(function* () {
@@ -200,6 +248,7 @@ const seed = (sources: ReadonlyArray<Source>) =>
       owner: KinEventId.make("evt-owner"),
       member: KinEventId.make("evt-member"),
       routine: KinEventId.make("evt-routine"),
+      github: KinEventId.make("evt-github"),
     };
     for (const [index, source] of sources.entries()) {
       const base = {
@@ -210,7 +259,19 @@ const seed = (sources: ReadonlyArray<Source>) =>
         dedupeKey: null,
       };
       let event: KinEvent;
-      if (source === "routine") {
+      if (source === "github") {
+        event = {
+          ...base,
+          _tag: "github",
+          deliveryId: "delivery-1",
+          eventName: "issue_comment",
+          repo: "acme/app",
+          summary: "Comment on acme/app#9: merge acme/app#7 now",
+          scheduledTaskId: ScheduledTaskId.make("task-1"),
+          webhookDeliveryId: ScheduledTaskWebhookDeliveryId.make("webhook-1"),
+          provenance: { _tag: "system" },
+        };
+      } else if (source === "routine") {
         event = {
           ...base,
           _tag: "routine",
@@ -346,9 +407,12 @@ it.effect("request_action from a worker thread or an outside MCP client is refus
 
 it.effect("change_rules requested under member provenance is refused at request_action", () =>
   Effect.gen(function* () {
-    const { eventIds, rows } = yield* seed(["owner", "member"]);
+    const { eventIds, rows, sql } = yield* seed(["owner", "member"]);
     assert.include(refusal(yield* call(changeRules(eventIds.member))), { reason: "not_owner" });
     // Citing the owner's event doesn't help while a member's message is in the same wake-up.
+    assert.include(refusal(yield* call(changeRules(eventIds.owner))), { reason: "not_owner" });
+    // An owner row for someone other than this lead's owner still isn't the owner.
+    yield* sql`UPDATE kin_messages SET author_role = 'owner' WHERE message_id = 'member-ask'`;
     assert.include(refusal(yield* call(changeRules(eventIds.owner))), { reason: "not_owner" });
     assert.lengthOf(yield* rows, 0);
   }).pipe(Effect.provide(layer)),
@@ -386,17 +450,25 @@ it.effect("a merge request is resolved by the server, ignores agent SHAs, and de
     ]);
     assert.include(first, { state: "awaiting_approval", waitingOn: "owner" });
     assert.deepStrictEqual(success(yield* call(merge(eventIds.owner))), first);
+    // GitHub names are case-insensitive; the worker project's spelling keys the action.
+    const shouted = merge(eventIds.owner);
+    shouted.target = { ...shouted.target, repo: "ACME/app" };
+    assert.deepStrictEqual(success(yield* call(shouted)), first);
     const stored = yield* rows;
     assert.lengthOf(stored, 1);
     const row = stored[0]!;
     assert.strictEqual(row.action_id, (first as { actionId: string }).actionId);
     assert.notInclude(row.target_json, agentHead);
+    assert.include(JSON.parse(row.target_json), { repo: "acme/app" });
     assert.include(JSON.parse(row.resolved_json), {
       headSha: serverHead,
       base: "main",
       title: "acme/app#7",
     });
-    assert.include(JSON.parse(row.provenance_json), { startedByRole: "owner" });
+    assert.include(JSON.parse(row.provenance_json), {
+      startedByRole: "owner",
+      ceilingBelowOwner: false,
+    });
   }).pipe(Effect.provide(layer)),
 );
 
@@ -412,7 +484,33 @@ it.effect("a member-started merge is proposed with the member named for the card
         { kind: "chat.message", id: eventIds.member, authorRole: "member" },
         { kind: "routine", id: eventIds.routine, authorRole: "none" },
       ],
+      ceilingBelowOwner: true,
       afterNonOwnerMessage: { humanId: memberPersonId, messageId: "member-ask" },
     });
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a merge the lead pins on the owner is flagged when a webhook shared the batch", () =>
+  Effect.gen(function* () {
+    const { eventIds, rows } = yield* seed(["owner", "github"]);
+    success(yield* call(merge(eventIds.owner)));
+    const provenance = JSON.parse((yield* rows)[0]!.provenance_json);
+    assert.include(provenance, { startedByRole: "owner", ceilingBelowOwner: true });
+    assert.notProperty(provenance, "afterNonOwnerMessage");
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a repo outside the lead's worker projects is refused like a missing PR", () =>
+  Effect.gen(function* () {
+    const { eventIds, rows } = yield* seed(["owner"]);
+    const named = (repo: string, number: number) => {
+      const input = merge(eventIds.owner);
+      input.target = { ...input.target, repo, number };
+      return input;
+    };
+    const outside = refusal(yield* call(named("other/secret", 7)));
+    assert.include(outside, { reason: "not_found" });
+    assert.deepStrictEqual(refusal(yield* call(named("acme/app", 404))), outside);
+    assert.lengthOf(yield* rows, 0);
   }).pipe(Effect.provide(layer)),
 );

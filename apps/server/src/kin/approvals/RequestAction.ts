@@ -22,7 +22,9 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as ProjectService from "../../project/ProjectService.ts";
 import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
+import { sourceControlDefinitions } from "../../sourceControl/sourceControlDefinitions.ts";
 import type { AgentIdentity } from "../chat/KinIdentity.ts";
 import * as PendingActions from "./PendingActions.ts";
 
@@ -43,14 +45,20 @@ export type RequestActionResult = typeof RequestActionResult.Type;
 type PullRequestTarget = Extract<KinActionTarget, { readonly _tag: "pull_request" }>;
 type PullRequestFacts = Extract<KinResolvedTarget, { readonly _tag: "pull_request" }>;
 
-/** What the server reads from GitHub itself; the agent only names the PR. */
+/**
+ * What the server reads from GitHub itself; the agent only names the PR. `target` comes back
+ * with the worker project's spelling of the repository, so one PR keys one action.
+ */
 export class KinPullRequestFacts extends Context.Service<
   KinPullRequestFacts,
   {
     readonly read: (input: {
       readonly target: PullRequestTarget;
       readonly projectIds: ReadonlyArray<ProjectId>;
-    }) => Effect.Effect<PullRequestFacts, KinApprovalError>;
+    }) => Effect.Effect<
+      { readonly target: PullRequestTarget; readonly resolved: PullRequestFacts },
+      KinApprovalError
+    >;
   }
 >()("t3/kin/approvals/RequestAction/KinPullRequestFacts") {}
 
@@ -68,20 +76,37 @@ export const layerPullRequestFacts = Layer.effect(
   KinPullRequestFacts,
   Effect.gen(function* () {
     const pullRequests = yield* PullRequestService;
+    const projects = yield* ProjectService.ProjectService;
     const unavailable = (message: string) =>
       new KinApprovalError({ reason: "unavailable", message });
+    // One refusal for "not this lead's repo" and "no such PR", so private repos can't be probed.
+    const notFound = new KinApprovalError({
+      reason: "not_found",
+      message: "No such pull request in this lead's worker projects.",
+    });
     return KinPullRequestFacts.of({
       read: Effect.fn("KinPullRequestFacts.read")(function* ({ target, projectIds }) {
-        // GitHub's public host reads through any project; worker projects carry the lead's access.
-        const [projectId] = projectIds;
-        if (projectId === undefined)
-          return yield* unavailable("This lead has no worker project to read GitHub through.");
+        // Public GitHub reads through any project, so the lead's worker projects are the allowlist.
+        const shells = yield* projects
+          .listShells({ projectIds })
+          .pipe(Effect.mapError(() => unavailable("This lead's worker projects can't be read.")));
+        const match = shells
+          .filter((shell) => projectIds.includes(shell.id))
+          .map((shell) => ({
+            projectId: shell.id,
+            repo: sourceControlDefinitions.repositorySelector(shell.repositoryIdentity),
+          }))
+          .find(({ repo }) => repo?.toLowerCase() === target.repo.toLowerCase());
+        if (match?.repo == null) return yield* notFound;
+        const canonical = { ...target, repo: match.repo };
+        // No host: the read stays on the project's own repository instead of routing elsewhere.
         const detail = yield* pullRequests
-          .detail({ projectId, host: target.host, repository: target.repo, number: target.number })
-          .pipe(Effect.mapError(() => unavailable("The pull request could not be read.")));
+          .detail({ projectId: match.projectId, repository: canonical.repo, number: target.number })
+          .pipe(Effect.mapError(() => notFound));
         if (
-          detail.repository.toLowerCase() !== target.repo.toLowerCase() ||
-          detail.number !== target.number
+          detail.repository.toLowerCase() !== canonical.repo.toLowerCase() ||
+          detail.number !== target.number ||
+          URL.parse(detail.url)?.hostname.toLowerCase() !== target.host
         )
           return yield* unavailable("GitHub returned a different pull request.");
         if (detail.state !== "open")
@@ -105,7 +130,7 @@ export const layerPullRequestFacts = Layer.effect(
           })),
         }).pipe(Effect.mapError(() => unavailable("GitHub's answer is missing the head or base.")));
         return facts._tag === "pull_request"
-          ? facts
+          ? { target: canonical, resolved: facts }
           : yield* unavailable("GitHub's answer is missing the head or base.");
       }),
     });
@@ -166,7 +191,10 @@ const make = Effect.gen(function* () {
   const facts = yield* KinPullRequestFacts;
 
   /** Who stands behind one event, from stored rows; event provenance alone never names a role. */
-  const roleOf = Effect.fn("KinRequestAction.roleOf")(function* (event: KinEvent) {
+  const roleOf = Effect.fn("KinRequestAction.roleOf")(function* (
+    agent: AgentIdentity,
+    event: KinEvent,
+  ) {
     const author = event.provenance;
     if (author._tag !== "human") return "none" as const;
     const rows =
@@ -178,7 +206,9 @@ const make = Effect.gen(function* () {
         : yield* sql<{ role: KinProvenanceRole }>`SELECT role FROM kin_chat_members
             WHERE org_id = ${event.orgId} AND member_id = ${author.memberId}
               AND principal_kind = 'person' AND person_id = ${author.personId} AND left_at IS NULL`;
-    return rows[0]?.role ?? ("none" as const);
+    const role = rows[0]?.role ?? ("none" as const);
+    // Only this lead's own owner counts as owner; anyone else in the chat is a member.
+    return role === "owner" && author.personId !== agent.ownerPersonId ? ("member" as const) : role;
   });
 
   /** Provenance from the wake-up the caller is running, never from tool input (spec section 8). */
@@ -193,7 +223,7 @@ const make = Effect.gen(function* () {
       ORDER BY e.received_at, e.event_id`;
     const events = yield* Effect.forEach(rows, (row) => decodeEvent(row.json));
     const chain = yield* Effect.forEach(events, (event) =>
-      roleOf(event).pipe(
+      roleOf(agent, event).pipe(
         Effect.map((authorRole) => ({
           event,
           entry: { kind: event._tag, id: event.eventId, authorRole },
@@ -211,6 +241,11 @@ const make = Effect.gen(function* () {
         entry.authorRole !== "owner" &&
         entry.authorRole !== "none",
     );
+    const ceiling = chain.reduce(
+      (lowest, { entry }) => Math.min(lowest, ROLE_RANK[entry.authorRole]),
+      ROLE_RANK.owner as number,
+    );
+    const ceilingIsOwner = ceiling === ROLE_RANK.owner;
     const provenance: KinProvenance = {
       startedBy:
         source.provenance._tag === "human"
@@ -220,6 +255,7 @@ const make = Effect.gen(function* () {
             : "schedule",
       startedByRole,
       chain: chain.map(({ entry }) => entry),
+      ceilingBelowOwner: !ceilingIsOwner,
       ...(nonOwner !== undefined &&
       nonOwner.event._tag === "chat.message" &&
       nonOwner.event.provenance._tag === "human"
@@ -231,11 +267,7 @@ const make = Effect.gen(function* () {
           }
         : {}),
     };
-    const ceiling = chain.reduce(
-      (lowest, { entry }) => Math.min(lowest, ROLE_RANK[entry.authorRole]),
-      ROLE_RANK.owner as number,
-    );
-    return { provenance, ceilingIsOwner: ceiling === ROLE_RANK.owner };
+    return { provenance, ceilingIsOwner };
   });
 
   const request = Effect.fn("KinRequestAction.request")(
@@ -259,12 +291,12 @@ const make = Effect.gen(function* () {
         );
       if (!REQUESTABLE_KINDS.has(input.kind))
         return yield* refuse("unsupported_kind", `${input.kind} can't be requested yet.`);
-      // Decoding again keeps only declared fields, so a smuggled headSha never reaches the digest.
-      const target = yield* decodeTarget(input.target);
-      if (target._tag !== "pull_request")
+      // Defensive: decoding here too keeps only declared fields, whoever calls the service.
+      const named = yield* decodeTarget(input.target);
+      if (named._tag !== "pull_request")
         return yield* refuse("invalid_state", `${input.kind} needs a pull_request target.`);
-      const resolved = yield* facts.read({
-        target,
+      const { target, resolved } = yield* facts.read({
+        target: named,
         projectIds: yield* decodeProjects(lead.worker_projects_json),
       });
       const { action } = yield* pending.create({

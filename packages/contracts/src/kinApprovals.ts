@@ -163,6 +163,8 @@ export const KinProvenance = Schema.Struct({
       authorRole: KinProvenanceRole,
     }),
   ),
+  /** Some event in the wake-up's batch is below owner, whichever event the lead cited. */
+  ceilingBelowOwner: Schema.Boolean,
   afterNonOwnerMessage: Schema.optional(
     Schema.Struct({ humanId: KinPersonId, messageId: KinMessageId }),
   ),
