@@ -41,6 +41,7 @@ import { parseT3ProjectFile } from "@t3tools/shared/t3ProjectFile";
 import { resolveProjectFileBackedSetting } from "@t3tools/shared/projectSettings";
 import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../observability/Metrics.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
+import { isNonRepositoryGitStderr } from "./gitErrors.ts";
 import { removeEmptyDirectory, type RemoveEmptyDirectoryError } from "./removeEmptyDirectory.ts";
 import { explicitBareRepositoryEnv, gitConfigEnv } from "./VcsProcess.ts";
 import { removeLinkedWorktree } from "./worktreeRemoval.ts";
@@ -561,9 +562,6 @@ function isMissingGitCwdError(error: GitCommandError): boolean {
   );
 }
 
-function isNonRepositoryGitStderr(stderr: string): boolean {
-  return stderr.toLowerCase().includes("not a git repository");
-}
 function isUnbornHeadStderr(stderr: string): boolean {
   const normalized = stderr.toLowerCase();
   return (

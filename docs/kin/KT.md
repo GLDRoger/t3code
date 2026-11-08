@@ -74,7 +74,7 @@ Upstream's [development runbook](../operations/development.md#first-checkout) co
    gh pr create --repo GLDRoger/t3code --base kin --draft --title "CHAT-3: Repository"
    ```
    Kin PRs don't belong on `pingdotgg/t3code`, and upstream doesn't take unsolicited features.
-   Without write access to `GLDRoger/t3code`, fork it (`gh repo fork GLDRoger/t3code --clone`), push your branch to your fork, and run the same command; `gh` opens the PR from your fork. GitHub holds CI on a first-time contributor's PRs until Nishchay approves the run.
+   Team members get write access to `GLDRoger/t3code` and push task branches there. `kin` and `main` refuse direct pushes, so everything lands through PRs. Outside contributors can fork instead and run the same command; GitHub holds CI on a first-time contributor's PR until Nishchay approves the run.
 4. Build what the task says. Its "Done when" is the acceptance test.
 5. Before pushing, run `vp run check:changed upstream/main`, plus the task's own test. Don't run repo-wide checks; CI does that.
 6. Commits use Conventional Commits (`feat(kin): …`, `docs(kin): …`). The PR body is three short parts: **Why**, **How**, **Tests** (the commands you ran and their results).

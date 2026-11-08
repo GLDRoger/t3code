@@ -1,3 +1,4 @@
+import { KIN_RPC_AGGREGATES } from "@t3tools/contracts";
 import { ORCHESTRATION_V2_WS_METHODS, WS_METHODS, type WsRpcGroup } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -11,6 +12,7 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
 
 // Trace queries and dashboards depend on these labels, including deviations from method prefixes.
 const RPC_AGGREGATES = {
+  ...KIN_RPC_AGGREGATES,
   [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: "orchestrationV2",
   [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: "orchestration",
   [ORCHESTRATION_V2_WS_METHODS.getNativeChildWork]: "orchestration",
@@ -46,6 +48,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.chatGptHandoffSubscribe]: "provider",
   [WS_METHODS.providerAuthRespond]: "provider",
   [WS_METHODS.providerAuthCancel]: "provider",
+  [WS_METHODS.providerAuthRemoveMethod]: "provider",
   [WS_METHODS.providerAuthLogout]: "provider",
   [WS_METHODS.providerAuthSubscribe]: "provider",
   [WS_METHODS.providerInstallStart]: "provider",
