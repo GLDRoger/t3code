@@ -43,7 +43,7 @@ import {
   verifyAppleAppAttest,
   type AttestationResult,
 } from "./attestation/verify.ts";
-import { KinPendingActions } from "./PendingActions.ts";
+import { KIN_APPROVER_KEYS_REQUESTER, KinPendingActions } from "./PendingActions.ts";
 
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 const CONFIRM_TTL_MS = 10 * 60 * 1000;
@@ -96,10 +96,9 @@ const decodeEventId = Schema.decodeEffect(KinEventId);
 const decodeTarget = Schema.decodeUnknownEffect(KinActionTarget);
 const isKinApprovalError = Schema.is(KinApprovalError);
 
-// Not an agent: the phone asked for this action, and the approver signs it on an existing key.
 const SERVER_REQUESTER = {
-  agentId: Schema.decodeSync(KinAgentId)("kin-approver-keys"),
-  threadId: Schema.decodeSync(ThreadId)("kin-approver-keys"),
+  agentId: Schema.decodeSync(KinAgentId)(KIN_APPROVER_KEYS_REQUESTER),
+  threadId: Schema.decodeSync(ThreadId)(KIN_APPROVER_KEYS_REQUESTER),
 };
 
 const fail = (reason: KinApprovalError["reason"], message: string) =>

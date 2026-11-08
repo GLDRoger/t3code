@@ -39,6 +39,8 @@ const AWAITING_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 // A grant lapses at min(exp, acceptedAt + 15 min) (approvals spec section 5).
 const GRANT_ACCEPTED_TTL_MS = 15 * 60 * 1000;
 
+/** `registerKey`'s requester: the phone asked, not an agent, so no agent may use this id. */
+export const KIN_APPROVER_KEYS_REQUESTER = "kin-approver-keys";
 const CreateInput = Schema.Struct({
   orgId: KinOrgId,
   kind: KinActionKind,
@@ -49,7 +51,16 @@ const CreateInput = Schema.Struct({
   requestedBy: Schema.Struct({ agentId: KinAgentId, threadId: ThreadId }),
   provenance: KinProvenance,
   source: KinEventId,
-});
+}).check(
+  Schema.makeFilter(
+    ({ kind, requestedBy: { agentId, threadId } }) =>
+      (agentId !== KIN_APPROVER_KEYS_REQUESTER && threadId !== KIN_APPROVER_KEYS_REQUESTER) ||
+      (kind === "register_approver_key" &&
+        agentId === KIN_APPROVER_KEYS_REQUESTER &&
+        threadId === KIN_APPROVER_KEYS_REQUESTER),
+    { expected: `a requester other than the reserved ${KIN_APPROVER_KEYS_REQUESTER}` },
+  ),
+);
 export type KinPendingActionCreateInput = typeof CreateInput.Type;
 const decodeCreateInput = Schema.decodeEffect(CreateInput);
 const StoredAction = Schema.Struct({
