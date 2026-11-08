@@ -13,6 +13,7 @@ import {
   type MemoryItemHead,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -140,7 +141,7 @@ const tapOnce = Effect.fn("test.deferralTap")(function* (
     onNone: () => 1,
     onSome: (widget) => widget.revision,
   });
-  const at = new Date(yield* Clock.currentTimeMillis).toISOString();
+  const at = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
   // Stands in for the gated dispatcher: chat act refuses deferral taps today.
   const message = yield* repo.insertMessage({
     orgId,
@@ -295,8 +296,8 @@ it.effect("unchanged recheck, heads-up, silence, then starts once at due", () =>
 });
 
 it.effect("asks instead of starting when a linked issue closes before due", () => {
-  const github = new Map([
-    ["acme/api#12", { state: "open" as const, assignees: [], linkedPrs: [] }],
+  const github = new Map<string, Omit<GithubLinkState, "link">>([
+    ["acme/api#12", { state: "open", assignees: [], linkedPrs: [] }],
   ]);
   const linked = makeDeferral("def-1", { links: [issue] });
   return Effect.gen(function* () {
@@ -430,7 +431,7 @@ it.effect(
       const grace = yield* cardOf("def-2");
       assert.equal(grace.phase, "heads_up");
       assert.equal(grace.text, "Starting def-2 at 10:45. This was due at 10:00.");
-      assert.equal(grace.graceEndsAt, new Date(wake + 30 * 60_000).toISOString());
+      assert.equal(grace.graceEndsAt, DateTime.formatIso(DateTime.makeUnsafe(wake + 30 * 60_000)));
       assert.lengthOf(yield* starts(), 0);
       assert.lengthOf(yield* pendingFires(), 0);
 
