@@ -42,7 +42,7 @@ const isInboxConflict = Schema.is(KinTriggerInboxConflict);
 const PendingRequest = Schema.Struct({
   orgId: KinOrgId,
   limit: Schema.Int.check(Schema.isGreaterThan(0)),
-  routines: Schema.optional(Schema.Array(KinRoutine)),
+  routines: Schema.optional(Schema.Union([Schema.Array(KinRoutine), Schema.Literal("deferral")])),
 });
 const InboxRow = Schema.Struct({ payload: Schema.fromJsonString(KinTriggerFired) });
 const decodeInboxRow = Schema.decodeUnknownEffect(InboxRow);
@@ -54,10 +54,11 @@ export class KinTriggerInbox extends Context.Service<
       event: KinTriggerFired,
       receivedAt: number,
     ) => Effect.Effect<boolean, InboxError>;
+    /** `subjects` narrows to those routines, or to deferral fires. */
     readonly listPending: (
       orgId: KinOrgId,
       limit?: number,
-      routines?: ReadonlyArray<KinRoutine>,
+      subjects?: ReadonlyArray<KinRoutine> | "deferral",
     ) => Effect.Effect<ReadonlyArray<KinTriggerFired>, InboxError>;
     readonly markConsumed: (
       orgId: KinOrgId,
@@ -87,7 +88,9 @@ const make = Effect.gen(function* () {
         ${
           routines === undefined
             ? sql``
-            : sql`AND json_extract(payload_json, '$.payload.subject.routine') IN (${sql.join(",", false)(routines.map((routine) => sql`${routine}`))})`
+            : routines === "deferral"
+              ? sql`AND json_extract(payload_json, '$.payload.subject.type') = 'deferral'`
+              : sql`AND json_extract(payload_json, '$.payload.subject.routine') IN (${sql.join(",", false)(routines.map((routine) => sql`${routine}`))})`
         }
       ORDER BY received_at, fire_id LIMIT ${limit}
     `,

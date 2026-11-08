@@ -48,6 +48,12 @@ export interface WakeupContext extends JournalContext {
           readonly action: "keep" | "update" | "drop";
         }
       | { readonly kind: "deferral_card"; readonly itemId: string; readonly action: "remind" }
+      | {
+          readonly kind: "deferral_card";
+          readonly itemId: string;
+          readonly action: "monday";
+          readonly due: string;
+        }
     )
   >;
 }
@@ -644,11 +650,20 @@ const make = Effect.gen(function* () {
                     mutable.add("review_by");
                   if (
                     source.kind === "deferral_card" &&
+                    source.action === "remind" &&
                     source.itemId === item.id &&
                     item.kind === "deferral" &&
                     fm.on_due === "remind"
                   )
                     mutable.add("on_due");
+                  if (
+                    source.kind === "deferral_card" &&
+                    source.action === "monday" &&
+                    source.itemId === item.id &&
+                    item.kind === "deferral" &&
+                    fm.due === source.due
+                  )
+                    mutable.add("due");
                   const existing = new Map(Object.entries(item));
                   if (
                     [...new Set([...existing.keys(), ...proposed.keys()])].some(

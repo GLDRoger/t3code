@@ -153,7 +153,7 @@ export const verifyOwnerTap = Effect.fn("OwnerCheck.verifyOwnerTap")(function* (
           event.actionId !== action.actionId
         )
           return yield* Effect.fail("invalid_card" as const);
-        return { action, chatId: event.chatId, widget: widget.value };
+        return { action, chatId: event.chatId, widget: widget.value, provenance: event.provenance };
       }),
     )
     .pipe(
