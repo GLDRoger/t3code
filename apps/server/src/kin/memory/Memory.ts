@@ -162,6 +162,8 @@ export class Memory extends Context.Service<
       head: string,
     ) => Effect.Effect<void, MemoryFailure>;
     readonly recover: (orgId: KinOrgId) => Effect.Effect<void, MemoryFailure>;
+    /** Server-only, for history rewrites: the caller holds the writer lock. Never preserves old anchors. */
+    readonly reclone: (orgId: KinOrgId) => Effect.Effect<void, MemoryFailure>;
     readonly ensureCheckouts: (orgId: KinOrgId) => Effect.Effect<MemoryPaths, MemoryFailure>;
     readonly prepareWakeup: (
       orgId: KinOrgId,
@@ -1289,8 +1291,20 @@ const make = Effect.gen(function* () {
     return { head, indexAsOf: DateTime.toUtc(indexAsOf) };
   });
 
+  const reclone = Effect.fn("Memory.reclone")(function* (orgId: KinOrgId) {
+    const paths = yield* pathsFor(orgId);
+    for (const directory of [paths.writer, paths.read])
+      yield* io(orgId, "reclone", fs.remove(directory, { recursive: true, force: true }));
+    initializedCheckouts.delete(orgId);
+    // With no writer checkout, recover clones fresh and records the rewritten heads.
+    yield* recover(orgId);
+    yield* prepare(orgId);
+    yield* rebuildIndex(orgId);
+  });
+
   return Memory.of({
     withWriterLock,
+    reclone: Effect.fn("Memory.recloneLocked")((orgId) => locked(orgId, reclone(orgId))),
     recover: Effect.fn("Memory.recoverLocked")((orgId) =>
       withWriterLock(orgId, locked(orgId, recover(orgId))),
     ),

@@ -44,6 +44,7 @@ vi.mock("../memory/Memory.ts", async (importOriginal) => {
           anchor: () => Effect.die("unused"),
           record: () => Effect.die("unused"),
           recover: () => Effect.die("unused"),
+          reclone: () => Effect.die("unused"),
           ensureCheckouts: () => Effect.succeed({ writer: "/private/tmp", read: "/private/tmp" }),
           prepareWakeup: () =>
             Effect.sync(() => {

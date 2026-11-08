@@ -426,17 +426,22 @@ Known gaps, accepted for phase 1: JWE (five-part) tokens and JWT headers longer 
 
 ### Owner-signed purge (gap 5)
 
-Pending action `memory.purge` with `{ orgId, repo, paths, mode: "drop_file" | "redact_text", patterns? }`. The owner opens it from an item's menu, or Kin proposes it when the weekly `dream_full` scans full history and finds a secret. Approval uses a native card and a signed grant (APPR). The executor then:
+Pending action `memory_purge`. Its `content` target holds the sha256 of the plan `{ orgId, repo, paths, mode: "drop_file" | "redact_text", patterns? }` (`purgePlanDigest`), so the grant binds the exact plan. The owner opens it from an item's menu, or Kin proposes it when the weekly `dream_full` scans full history and finds a secret. Approval uses a native card and a signed grant (APPR). `memoryPurgeHandler` in `apps/server/src/kin/memory/purge.ts` is the only entry point; no model, MCP tool or RPC reaches `KinPurge`. It refuses with `KinPurgeExecutorNotReady` until APPR-9 and APPR-10 land.
 
-1. Pauses the org's lead queue and takes the memory writer lock.
-2. Makes a fresh mirror clone and runs `git filter-repo --invert-paths --path <p>` (`drop_file`) or `--replace-text <rules>` (`redact_text`), then re-runs the scan over all history.
-3. Force-pushes the rewritten branches with the owner's credential. This needs the owner as a bypass actor on the memory repo's ruleset. It closes open dream PRs that touch the paths.
-4. For `drop_file`, commits a tombstone at the same path: `status: cancelled`, `invalid_at: now`, body "Purged on <date> by the owner (audit <id>)". Memory still shows that something was there.
-5. Re-clones every local checkout and worktree of the memory repo, rebuilds the cache and `INDEX.md`, and resumes the queue.
-6. Writes a `KinAuditEntry` (APPR) with the grant, device, paths, old head, new head and the refs rewritten.
-7. Tells the owner what a purge can't reach: GitHub keeps `refs/pull/*` and cached PR diffs (removing those needs a GitHub Support request), forks, local backups (Time Machine), and the chat database. A leaked credential must be rotated whatever happens.
+Before anything runs, the grant, action and plan must share the org, the grant must bind the action id and revision, and `repo` must equal the org's configured memory URL. Paths: 1–64, unique, relative `.md` files other than `rules.md`, with no `..`, `.`, empty, `-`-leading or `.git` segment, backslash or control character. `redact_text` takes 1–64 literal patterns of 8–1024 characters without control characters or `==>`; each becomes one `literal:` rule, so a pattern can't add a rule or switch to regex. `drop_file` takes none. Every argument goes to git and `git-filter-repo` as an argv entry, never through a shell.
 
-**Dependency:** `git-filter-repo` (git's recommended history rewriter; `brew install git-filter-repo`). Check its licence and release activity when installing (TRIG-17).
+The executor then:
+
+1. Pauses the org's lead queue (`KinPurgeQueue`, a no-op until LEAD-11 builds the pause) and takes the memory writer lock.
+2. Mirror-clones the remote into a scratch directory and runs `git filter-repo --invert-paths --path <p>` (`drop_file`) or `--replace-text <rules> --replace-message <rules>` (`redact_text`). A plan that changes no ref fails.
+3. For `drop_file`, checks that no reachable commit touches the paths, then commits a tombstone on the default branch for each item path present at the old head: the original `id` and the folder's kind, `title: Purged item`, `status: cancelled`, `invalid_at: now`, `said_by` the approving owner, body "Purged on <date> by the owner (audit <id>)", where `<id>` is the executor's `execution_started` audit entry. Memory still shows that something was there. Journal and other non-item paths get no tombstone.
+4. Reads every blob ever introduced at every path, merge sides included, and every commit object. It fails if a redacted pattern remains, then runs `KinSecretScan` over all of it and fails closed on **any** finding: findings carry no fingerprint, so the purge can't prove one unrelated, and a copy under an older path would otherwise survive. Allowlisted fingerprints don't count. Annotated tag messages are not scanned.
+5. Force-pushes the changed `refs/heads/*` and `refs/tags/*` in one atomic push, each leased at its cloned value, through `KinPurgePush`. `gitPushLayer` runs git with the owner's credential helper or SSH command, so T3 never reads the credential, and push errors drop their cause so neither the URL nor helper output is logged. This needs the owner as a bypass actor on the memory repo's ruleset. Closing open dream PRs that touch the paths waits on the GitHub client.
+6. `Memory.reclone` deletes the writer and read checkouts, clones fresh, records the rewritten anchors without preserving the old ones (a conflict branch would push the purged history back), and rebuilds the read checkout, cache and `INDEX.md`. The queue resumes. A failure before the push resumes the queue with nothing changed; from the push on, `KinPurgeFailed` carries `queueHeld: true` and the queue stays paused for owner recovery.
+7. Returns the `execution_finished` audit input (grant `jti`, key thumbprint, device, new head) with the paths, old head, new head and rewritten refs; APPR-10 writes it as a `KinAuditEntry`.
+8. Tells the owner what a purge can't reach: GitHub keeps `refs/pull/*` and cached PR diffs (removing those needs a GitHub Support request), forks, local backups (Time Machine), and the chat database. A leaked credential must be rotated whatever happens.
+
+**Dependency:** `git-filter-repo` (git's recommended history rewriter; MIT, also usable under git's GPL), checked at v2.47.0. TRIG-20 installs it on the Kin host; `GitFilterRepoCommand` overrides the binary path. The real-rewrite tests skip on machines without it.
 
 ### Upstream contract tests (gap 7)
 
@@ -533,7 +538,7 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
   - provides the `kin_defer` tool.
 - **CHAT:** `KinOrgId`; delivering messages and pings; `KinWidget` payloads `KinDeferralCard`, `KinHeadsUpCard`, `KinOwnerCheckCard`, `KinDreamReviewCard`; the chat message store for dream material; verified authors for trust checks.
 - **APPR:**
-  - action kinds `github.app_hook.configure`, `memory.dream_review`, `memory.purge`, `kin.secret_allow`;
+  - action kinds `github.app_hook.configure`, `memory.dream_review`, `memory_purge`, `kin.secret_allow`;
   - the standing `dream:auto` delegation;
   - the executor merging at a bound SHA;
   - `KinAuditEntry`;
@@ -557,7 +562,7 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
 - **Deferral:** unchanged recheck, then heads-up, then silence, then `started` at due. A linked issue closed before due leads to `asked`, and nothing starts. With the stop switch on, it asks. [Monday] re-arms to next Monday 09:00. A `due` fire consumed two hours late asks; a queued fire for a disarmed or moved deferral is dropped.
 - **Dream:** a dream touching `rules.md` fails, and `main` is unchanged. A dream with one journal fold and one `decisions/` change opens two PRs, and only the auto one merges.
 - **Secret scan:** a journal line holding `ghp_` plus 36 characters blocks the entire commit, and the owner gets one typed notification without the value.
-- **Purge:** on a fixture repo, the file is gone from `git log --all -p`, a tombstone exists, and an audit row exists.
+- **Purge:** on a fixture repo, the file is gone from `git log --all -p` and the recloned checkout, a tombstone exists and parses, and the returned audit input carries the old and new heads. A surviving secret fails closed before the push.
 - **Contract tests:** `vp test run kin-contract` passes on today's upstream. Renaming `scheduledTaskId` in a scratch branch makes it fail.
 
 ## Tasks
