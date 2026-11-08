@@ -107,7 +107,7 @@ const message = (id: string, overrides: Partial<Omit<KinMessage, "seq">> = {}) =
     editedAt: null,
     ...overrides,
     clientMessageId: { kind: "send", id },
-  }) satisfies Omit<KinMessage, "seq"> & {
+  }) satisfies Omit<KinMessage, "seq" | "clientMessageId"> & {
     caller: McpThreadCaller;
     clientMessageId: { kind: "send" | "act"; id: string };
   };
@@ -355,7 +355,10 @@ describe("KinChatRepository", () => {
           );
         }
         const first = yield* repo.insertMessage(message("first"));
-        assert.deepStrictEqual(first, decodeMessage({ ...message("first"), seq: 1 }));
+        assert.deepStrictEqual(
+          first,
+          decodeMessage({ ...message("first"), clientMessageId: "first", seq: 1, changeSeq: 1 }),
+        );
         const repeated = yield* Effect.all(
           Array.from({ length: 5 }, (_, i) =>
             repo.insertMessage({

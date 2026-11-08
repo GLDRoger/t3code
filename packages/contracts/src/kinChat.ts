@@ -146,6 +146,8 @@ export const KinMessage = Schema.Struct({
   chatId: KinChatId,
   messageId: KinMessageId,
   seq: PositiveInt,
+  changeSeq: Schema.optional(NonNegativeInt),
+  clientMessageId: Schema.optional(TrimmedNonEmptyString),
   author: KinAuthor,
   authorRole: KinRole,
   kind: KinMessageKind,
@@ -260,8 +262,12 @@ export const KinChatStreamEvent = Schema.Union([
     messages: Schema.Array(KinMessage),
     widgets: Schema.Array(KinWidget),
     lastSeq: NonNegativeInt,
+    lastChangeSeq: Schema.optional(NonNegativeInt),
   }),
-  Schema.TaggedStruct("reset", { lastSeq: NonNegativeInt }),
+  Schema.TaggedStruct("reset", {
+    lastSeq: NonNegativeInt,
+    lastChangeSeq: Schema.optional(NonNegativeInt),
+  }),
   Schema.TaggedStruct("message", { message: KinMessage }),
   Schema.TaggedStruct("widget", { widget: KinWidget }),
   Schema.TaggedStruct("member", { member: KinChatMember }),
@@ -294,6 +300,7 @@ export type KinChatsCreateDirectInput = typeof KinChatsCreateDirectInput.Type;
 export const KinChatSubscribeInput = Schema.Struct({
   chatId: KinChatId,
   afterSeq: Schema.optional(NonNegativeInt),
+  afterChangeSeq: Schema.optional(NonNegativeInt),
 });
 export type KinChatSubscribeInput = typeof KinChatSubscribeInput.Type;
 export const KinChatHistoryInput = Schema.Struct({
@@ -308,10 +315,11 @@ export const KinChatHistoryResult = Schema.Struct({
   hasMore: Schema.Boolean,
 });
 export type KinChatHistoryResult = typeof KinChatHistoryResult.Type;
+export const KIN_MESSAGE_BODY_MAX_LENGTH = 16_000;
 export const KinMessagesSendInput = Schema.Struct({
   chatId: KinChatId,
   clientMessageId: TrimmedNonEmptyString,
-  body: MessageBody.check(isNonBlankBody, Schema.isMaxLength(16_000)),
+  body: MessageBody.check(isNonBlankBody, Schema.isMaxLength(KIN_MESSAGE_BODY_MAX_LENGTH)),
   mentions: Schema.optional(Schema.Array(KinMemberId)),
   replyTo: Schema.optional(KinMessageId),
 });
