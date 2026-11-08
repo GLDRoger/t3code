@@ -1,5 +1,6 @@
 import {
   CanonicalUtcTimestamp,
+  canonicalTimeZone,
   NonNegativeInt,
   KinOrgId,
   KinWebhookSource,
@@ -266,9 +267,7 @@ const make = Effect.gen(function* () {
     put: Effect.fn("KinTriggerStore.put")(
       function* (trigger) {
         const value = yield* decodePutTrigger({ ...trigger, lastFireId: null });
-        const timeZone = new Intl.DateTimeFormat("en-US", {
-          timeZone: value.timeZone,
-        }).resolvedOptions().timeZone;
+        const timeZone = canonicalTimeZone(value.timeZone);
         const subject = yield* encodeSubject(value.subject);
         const schedule = yield* encodeSchedule(value.schedule);
         const nextRunAt = value.nextRunAt === null ? null : yield* epoch(value.nextRunAt);
