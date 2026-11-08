@@ -184,6 +184,7 @@ describe("Kin lead contracts", () => {
     { schema: Kin.KinBudget, value: { ...budget, day: "tomorrow" } },
     { schema: Kin.KinBudget, value: { ...budget, leadUnits: Infinity } },
     { schema: Kin.KinBudgetLimits, value: { ...limits, workerUnits: Infinity } },
+    { schema: Kin.KinBudgetLimits, value: { ...limits, leadUnits: Number.MAX_SAFE_INTEGER + 1 } },
     { schema: Kin.KinOrgState, value: { ...state, paused: true } },
     {
       schema: Kin.KinOrgState,

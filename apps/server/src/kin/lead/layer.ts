@@ -9,7 +9,6 @@ import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryConfig from "../memory/MemoryConfig.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
-import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
@@ -44,7 +43,7 @@ export const layer = Layer.effectDiscard(
 ).pipe(
   Layer.provide(WakeupRunner.layer),
   Layer.provide(
-    Layer.mergeAll(KinLeadRegistry.layer, KinEventQueue.layer, KinLeadPrompt.layer).pipe(
+    Layer.mergeAll(KinLeadRegistry.layer, KinLeadPrompt.layer).pipe(
       Layer.provideMerge(Layer.mergeAll(Memory.layer, KinChatRepository.layer)),
     ),
   ),

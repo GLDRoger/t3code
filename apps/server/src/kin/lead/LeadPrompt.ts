@@ -29,6 +29,7 @@ export interface KinLeadPromptInput {
   readonly wakeupId: KinWakeupId;
   readonly events: ReadonlyArray<KinEvent>;
   readonly memoryHead: string;
+  readonly budgetContext?: string;
 }
 
 export class KinLeadPrompt extends Context.Service<
@@ -131,6 +132,7 @@ export class KinLeadPrompt extends Context.Service<
           `Wake-up: ${encoded(input.wakeupId)}`,
           `Organization: ${encoded(orgId)}`,
           `Lead: ${encoded(agentId)}`,
+          ...(input.budgetContext === undefined ? [] : [`Budget: ${input.budgetContext}`]),
           "# Events",
           boundedEvents(events),
         ].join("\n\n");
