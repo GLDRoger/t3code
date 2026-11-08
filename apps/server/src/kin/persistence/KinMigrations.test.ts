@@ -13,17 +13,22 @@ import * as KinPersistence from "./KinPersistence.ts";
 const tableNames = [
   "kin_agent_threads",
   "kin_agents",
+  "kin_approver_keys",
+  "kin_audit",
   "kin_budget",
   "kin_budget_limits",
   "kin_chat_members",
   "kin_chats",
   "kin_cursor",
   "kin_events",
+  "kin_executions",
+  "kin_grants",
   "kin_leads",
   "kin_memory_reads",
   "kin_messages",
   "kin_org_state",
   "kin_orgs",
+  "kin_pending_actions",
   "kin_people",
   "kin_ping_ledger",
   "kin_read_state",
@@ -83,6 +88,7 @@ describe("Kin migrations", () => {
           { migration_id: 3, name: "Triggers" },
           { migration_id: 4, name: "MemoryReads" },
           { migration_id: 5, name: "OneChatOwner" },
+          { migration_id: 8, name: "Approvals" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
@@ -93,6 +99,9 @@ describe("Kin migrations", () => {
           ["kin_trigger_fires", ["fired_at"]],
           ["kin_trigger_inbox", ["received_at", "consumed_at"]],
           ["kin_ping_ledger", ["pinged_at", "escalated_at"]],
+          ["kin_pending_actions", ["created_at", "updated_at", "expires_at"]],
+          ["kin_grants", ["accepted_at", "consumed_at"]],
+          ["kin_executions", ["started_at", "finished_at"]],
         ] as const) {
           const columns = yield* sql<{ name: string; type: string }>`
             SELECT name, type FROM pragma_table_info(${table})
@@ -127,6 +136,7 @@ describe("Kin migrations", () => {
           { migration_id: 3, name: "Triggers" },
           { migration_id: 4, name: "MemoryReads" },
           { migration_id: 5, name: "OneChatOwner" },
+          { migration_id: 8, name: "Approvals" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -147,6 +157,8 @@ describe("Kin migrations", () => {
           { name: "idx_kin_events_dedupe" },
           { name: "idx_kin_events_queue" },
           { name: "idx_kin_events_wakeup" },
+          { name: "idx_kin_pending_actions_expiry" },
+          { name: "idx_kin_pending_actions_org_state" },
           { name: "idx_kin_people_org_person" },
           { name: "idx_kin_shadow_entries_promotion" },
           { name: "idx_kin_shadow_entries_review" },
@@ -192,6 +204,7 @@ describe("Kin migrations", () => {
         [3, "Triggers"],
         [4, "MemoryReads"],
         [5, "OneChatOwner"],
+        [8, "Approvals"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -210,8 +223,20 @@ describe("Kin migrations", () => {
       yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
         VALUES ('existing-owner', 'org', 'existing-chat', 'person', 'owner', 'owner', ${timestamp})`;
       yield* sql`DROP INDEX kin_chat_members_one_owner`;
-      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 5`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [[5, "OneChatOwner"]]);
+      for (const table of [
+        "kin_executions",
+        "kin_grants",
+        "kin_pending_actions",
+        "kin_approver_keys",
+        "kin_audit",
+      ]) {
+        yield* sql`DROP TABLE ${sql(table)}`;
+      }
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 5`;
+      assert.deepStrictEqual(yield* runKinMigrations(), [
+        [5, "OneChatOwner"],
+        [8, "Approvals"],
+      ]);
       assert.deepStrictEqual(
         yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,
         [{ member_id: "existing-owner" }],
@@ -228,6 +253,7 @@ describe("Kin migrations", () => {
         { migration_id: 3, name: "Triggers" },
         { migration_id: 4, name: "MemoryReads" },
         { migration_id: 5, name: "OneChatOwner" },
+        { migration_id: 8, name: "Approvals" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);

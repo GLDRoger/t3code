@@ -6,6 +6,7 @@ import Lead from "./migrations/K002_Lead.ts";
 import Triggers from "./migrations/K003_Triggers.ts";
 import MemoryReads from "./migrations/K004_MemoryReads.ts";
 import OneChatOwner from "./migrations/K005_OneChatOwner.ts";
+import Approvals from "./migrations/K008_Approvals.ts";
 
 const run = Migrator.make({});
 const loader = Migrator.fromRecord({
@@ -14,6 +15,7 @@ const loader = Migrator.fromRecord({
   "3_Triggers": Triggers,
   "4_MemoryReads": MemoryReads,
   "5_OneChatOwner": OneChatOwner,
+  "8_Approvals": Approvals,
 });
 
 export const runKinMigrations = Effect.fn("KinMigrations.run")(function* () {

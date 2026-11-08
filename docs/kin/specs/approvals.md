@@ -149,7 +149,7 @@ Transitions (every one is a compare-and-set `UPDATE … WHERE id = ? AND state =
 | `executing`         | `succeeded` / `failed`                      | GitHub answers                                                                       |
 | `executing`         | `succeeded` / `interrupted`                 | Restart finds it mid-flight; reconciliation decides (section 6)                      |
 
-Storage (new, SQLite, Kin's own migration set in `apps/server/src/kin/persistence/migrations.ts` with its own `Migrator` table `kin_sql_migrations`; owned with the chat spec so all Kin tables share one runner):
+Storage (new, SQLite, Kin's own migration track in `apps/server/src/kin/persistence/` (`KinMigrations.ts`, one `migrations/K00N_*.ts` file per change) with its own `Migrator` table `kin_sql_migrations`; owned with the chat spec so all Kin tables share one runner):
 
 - `kin_pending_actions` — columns as above; `UNIQUE(org_id, idempotency_key)`; index `(org_id, state)`.
 - `kin_grants` — `id`, `org_id`, `action_id`, `revision`, `jti` **UNIQUE**, `approver_human_id`, `key_thumbprint`, `compact` (the signed token), `iat`, `exp`, `accepted_at`, `consumed_at`; `UNIQUE(action_id, approver_human_id)`.
@@ -452,7 +452,7 @@ New (Kin-owned):
 - `packages/shared/src/kinGrant.ts` — `encodeGrantSigningInput`, `verifyKinGrant` (pure, shared with mobile).
 - `apps/server/src/kin/approvals/` — `PendingActions.ts` (repository + CAS), `GrantVerifier.ts`, `ApproverKeys.ts`, `ActionExecutor.ts`, `handlers/mergePullRequest.ts`, `handlers/deleteBranch.ts`, `handlers/registerApproverKey.ts`, `mcp.ts` (`request_action`, `/kin/mcp`), `rpc.ts`, `Audit.ts`, `CredentialHygiene.ts`, `*.test.ts`.
 - `apps/server/src/kin/github/` — `KinGitHubApp.ts` (installation tokens), `OwnerMergeClient.ts`, `Keychain.ts`.
-- `apps/server/src/kin/persistence/migrations.ts` (shared with the chat spec).
+- `apps/server/src/kin/persistence/migrations/K00N_Approvals.ts`, registered in `KinMigrations.ts` (the track is shared with the chat spec).
 - `apps/mobile/modules/kin-approval-key/` — Swift, Kotlin, `expo-module.config.json`, `index.ts`.
 - `apps/mobile/src/features/chats/approvals/` — `ApprovalCard.tsx`, `useApproveAction.ts`, `githubReviewToken.ts`.
 - `apps/mobile/plugins/withKinApprovalKey.cjs`.
