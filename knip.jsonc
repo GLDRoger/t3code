@@ -28,6 +28,7 @@
         // These fixture scripts are injected into a browser page by path.
         "fixtures/*/*.js",
         "kin-github-app.ts",
+        "kin-rulesets.ts",
         "knip-schemas.ts",
         "linux-after-pack.ts",
         "mobile-behavior/run.ts",

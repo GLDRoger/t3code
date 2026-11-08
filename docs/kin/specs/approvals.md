@@ -349,7 +349,7 @@ Webhook events (consumed by the triggers spec): `pull_request`, `pull_request_re
 
 **The owner's GitHub review comes from the phone.** The ruleset needs a code-owner approval that the server can't produce, since the merge token above can't review. When the owner taps Approve, the phone, after the same biometric prompt, calls `POST /repos/{o}/{r}/pulls/{n}/reviews` with `{event: "APPROVE", commit_id: headSha}` directly to GitHub, using a user-to-server token for the Kin App held only on the phone (`expo-secure-store` with `requireAuthentication: true`, obtained once by device flow). Then it submits the grant. The server never sees this token. If the phone has no token, the card offers "Approve on GitHub" and waits for the `pull_request_review` webhook before enabling the Kin approval.
 
-**Ruleset on each Kin repo** (`scripts/kin-rulesets.ts` applies it with `POST /repos/{o}/{r}/rulesets` and checks for drift):
+**Ruleset on each Kin repo** (`scripts/kin-rulesets.ts` applies it with `POST /repos/{o}/{r}/rulesets` and checks for drift; the desired rulesets are one definition, `kinRulesets` in `apps/server/src/kin/github/KinRulesets.ts`):
 
 ```json
 {
@@ -376,6 +376,7 @@ Webhook events (consumed by the triggers spec): `pull_request`, `pull_request_re
       "type": "required_status_checks",
       "parameters": {
         "strict_required_status_checks_policy": true,
+        "do_not_enforce_on_create": false,
         "required_status_checks": [{ "context": "<per repo>" }]
       }
     }
@@ -384,8 +385,10 @@ Webhook events (consumed by the triggers spec): `pull_request`, `pull_request_re
 ```
 
 - `bypass_actors` is empty, including repository admins. Otherwise the owner's merge token could skip review.
-- `.github/CODEOWNERS` contains `* @GLDRoger`, so the bot's approval never counts, and a PR that changes CODEOWNERS needs the owner's review too.
-- A tag ruleset `kin-release` restricts `v*` tag creation and deletion, with no bypass, for when releases arrive.
+- `.github/CODEOWNERS` contains `* @GLDRoger`, so the bot's approval never counts, and a PR that changes CODEOWNERS needs the owner's review too. The check reads the copy on the default branch (the one GitHub uses for reviews into it) and GitHub's `codeowners/errors`, and requires a `*` rule with every rule naming exactly `@GLDRoger`, so no later rule hands a path to someone else or to no one. Without it, `require_code_owner_review` is met by anyone's approval, so apply refuses to change any ruleset until CODEOWNERS passes.
+- A tag ruleset `kin-release` (`refs/tags/v*`) blocks tag creation, update and deletion, with no bypass, for when releases arrive. Update is included so a release tag can't be moved to another commit.
+- The required check for `GLDRoger/t3code` is `Check`, the `ci.yml` job that fails unless every other job passed or was skipped as not needed. Other repos pass `--status-check`.
+- The script takes the owner's own sign-in (`GH_TOKEN` or a hidden prompt) and refuses anything else before writing: an installation token (`ghs_`, refused before any request), a credential `GET /user` rejects or reports as a bot, a login other than the owner's, and a credential without admin on the repo (GitHub hides `bypass_actors` from those, so drift could go unseen). `--check` reports every drifted field, including any bypass actor, a rule someone added or removed, and changed parameters; parameters GitHub adds that the spec doesn't set are not compared. Apply creates or replaces each ruleset by name, writes nothing when it already matches, and re-reads to confirm no drift.
 
 ### 11. Audit
 
@@ -514,7 +517,7 @@ RPCs and scopes: `kin.approvals.list` (stream) and `get` → `orchestration:read
 20. `the audit chain detects an edited row` (`kin.audit.verify`).
 21. `the first approver key can't be confirmed from a remote session`.
 22. Mobile (`apps/mobile/modules/kin-approval-key`, device test): `signing without biometrics fails`, `re-enrolling biometrics invalidates the key`, `DER signatures convert to compact and verify on the server`.
-23. GitHub (`scripts/kin-rulesets.ts --check`, run against a scratch repo): `the owner merge token can't submit a review` (expect 403), `the bot can't merge to main` and `a merge without a code-owner review is blocked`.
+23. GitHub (`scripts/kin-rulesets.ts --test-23`, run against a scratch repo after `--check` passes there): the bot opens a PR, the owner posts success statuses for the required checks, then `the owner merge token can't submit a review` (expect 403), `the bot can't merge to main` (and can't push to it), and `a merge without a code-owner review is blocked`. A last step has the owner approve and the merge token merge, which shows the blocks came from the review rule rather than something else. The logic is tested against a fake GitHub in `apps/server/src/kin/github/rulesetsSetup.test.ts`.
 
 Acceptance for phase 1: on `GLDRoger/t3code`, the lead requests a merge of a bot PR; the owner approves on the phone with Face ID; the GitHub review lands from the phone; the executor merges with the pinned SHA; the audit lists grant, device, SHA, provenance and merge commit. Tests 1–21 pass in CI; 22–23 pass on the release checklist.
 
@@ -565,7 +568,7 @@ Later, marked by phase:
 ## Open questions
 
 1. The phone needs a GitHub user token for the Kin App (device flow, once). Is that acceptable, or should phase 1 start with "Approve on GitHub" only and add the phone token later?
-2. Owner-written PRs under an empty bypass list: route them through the bot, or add a time-boxed bypass toggled by an owner-signed action?
+2. Owner-written PRs under an empty bypass list: route them through the bot, or add a time-boxed bypass toggled by an owner-signed action? Upstream syncs make this urgent: once `kin-main` is on `GLDRoger/t3code`, `KIN.md`'s `git push origin main kin` is rejected, a sync PR the owner opens has no code owner left to approve it, the bot can't open one because upstream merges change `.github/workflows` (no Workflows permission), and squash-only would flatten the upstream merge so the next sync conflicts. Decide before applying the ruleset there; one option is `allowed_merge_methods: ["squash", "merge"]` plus a second code owner for sync PRs.
 3. Merge-queue repos: support `enablePullRequestAutoMerge` with `expectedHeadOid` later, or keep refusing?
 4. Should the executor run as a separate OS user with its own keychain, so code running as the Kin server's user can't read the merge token at all? Phase 1 relies on the token being unable to review.
 5. Desktop approvals: a Touch ID-gated Secure Enclave key on macOS through a native addon, or phone-only for good?

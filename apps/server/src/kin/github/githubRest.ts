@@ -36,7 +36,7 @@ export interface GitHubJsonResponse<A> {
 
 /** Standard headers for a Kin GitHub REST call. */
 export const gitHubRequest = (
-  method: "GET" | "POST" | "PUT" | "DELETE",
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
   path: string,
   token: Redacted.Redacted<string> | undefined,
 ) => {
@@ -54,7 +54,7 @@ export const gitHubRequest = (
 export const gitHubJson = Effect.fn("KinGitHub.request")(function* <S extends Schema.Top>(input: {
   readonly client: HttpClient.HttpClient;
   readonly operation: string;
-  readonly method: "GET" | "POST" | "PUT" | "DELETE";
+  readonly method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   readonly path: string;
   readonly token?: Redacted.Redacted<string> | undefined;
   readonly body?: unknown;
