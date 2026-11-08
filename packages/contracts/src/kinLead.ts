@@ -241,7 +241,17 @@ export const KinBudgetLimits = Schema.Struct({
 export type KinBudgetLimits = typeof KinBudgetLimits.Type;
 export const KinBudget = Schema.Struct({
   orgId: KinOrgId,
-  day: Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/)),
+  day: Schema.String.check(
+    Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/),
+    Schema.makeFilter(
+      (value) =>
+        Option.exists(
+          DateTime.make(`${value}T00:00:00.000Z`),
+          (dateTime) => DateTime.formatIsoDate(dateTime) === value,
+        ),
+      { expected: "a real YYYY-MM-DD calendar date" },
+    ),
+  ),
   leadUnits: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
   workerUnits: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
   limits: KinBudgetLimits,
