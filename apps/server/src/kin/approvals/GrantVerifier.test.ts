@@ -1034,7 +1034,8 @@ describe("GrantVerifier", () => {
     ]);
     // Those handlers are served only on the authenticated `/ws` session, never over MCP.
     const handlerImporters = importers("kin/approvals/rpcHandlers.ts");
-    assert.deepStrictEqual(handlerImporters, ["ws.ts"]);
+    assert.deepStrictEqual(handlerImporters, ["kin/rpcHandlers.ts"]);
+    assert.deepStrictEqual(importers("kin/rpcHandlers.ts"), ["ws.ts"]);
     assert.deepStrictEqual(
       files.filter(
         (file) =>
