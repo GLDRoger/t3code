@@ -6,7 +6,18 @@ import { describe, expect, it } from "vite-plus/test";
 import type { KinSynced } from "./kinStreams";
 import type { KinHost, KinProbe } from "./kinHost";
 import { emptyKinInbox, selectKinInboxView, type KinInboxState } from "./kinInboxModel";
-import { kinHomeSubtitle, kinInboxNotice, kinInboxScreenState } from "./kinScreenState";
+import {
+  kinChatRowLabel,
+  kinChatRowView,
+  kinDirectory,
+  kinHomeSubtitle,
+  kinInboxNotice,
+  kinInboxScreenState,
+  kinInitials,
+  kinLeadChatId,
+  kinPreviewText,
+  kinWaitingBannerView,
+} from "./kinScreenState";
 
 const environmentId = EnvironmentId.make("env-kin");
 const ready: KinProbe = { _tag: "ready", orgs: { orgs: [], me: [] } as never };
@@ -163,6 +174,153 @@ describe("kinHomeSubtitle", () => {
   it("says when Kin doesn't know this session", () => {
     expect(kinHomeSubtitle({ _tag: "noIdentity" }, null)).toBe(
       "Kin doesn't know you on this server yet",
+    );
+  });
+});
+
+describe("chat list rows", () => {
+  const directory = kinDirectory(
+    host({
+      _tag: "ready",
+      orgs: {
+        orgs: [{ agents: [{ agentId: "lead", displayName: "Tech lead", retired: false }] }],
+        me: [{ orgId: "org", personId: "owner" }],
+      } as never,
+    }),
+  );
+  const member = (principal: object, leftAt: string | null = null) => ({ principal, leftAt });
+  const row = (chat: object, waitingCount = 0) =>
+    ({
+      chat: {
+        chatId: "c1",
+        kind: "direct",
+        title: null,
+        lastMessageAt: "2026-11-08T09:30:00.000Z",
+        members: [
+          member({ _tag: "person", personId: "owner" }),
+          member({ _tag: "agent", agentId: "lead" }),
+        ],
+        lastMessage: {
+          author: { _tag: "agent", agentId: "lead" },
+          status: "posted",
+          body: "Payments test fixed, PR 212 ready.",
+        },
+        unread: 3,
+        ...chat,
+      },
+      waitingCount,
+    }) as never;
+
+  it("names a direct chat after its agent and reads as the spec's label", () => {
+    const view = kinChatRowView(row({}), directory);
+    expect(view).toMatchObject({
+      title: "Tech lead",
+      avatar: { kind: "agent", initials: "TL" },
+      author: "Tech lead",
+    });
+    expect(kinChatRowLabel(view, () => "9:30")).toBe(
+      "Tech lead, agent. Payments test fixed, PR 212 ready. 9:30. 3 unread.",
+    );
+  });
+
+  it("prefixes the viewer's own message and drops a missing time and zero unread", () => {
+    const view = kinChatRowView(
+      row({
+        lastMessageAt: null,
+        unread: 0,
+        lastMessage: { author: { _tag: "human", personId: "owner" }, status: "posted", body: "Ok" },
+      }),
+      directory,
+    );
+    expect(view.author).toBe("You");
+    expect(kinChatRowLabel(view, () => "never")).toBe("Tech lead, agent. You: Ok.");
+  });
+
+  it.each([
+    ["no message", { lastMessage: null }, null, "No messages yet"],
+    [
+      "a deleted message",
+      { lastMessage: { author: { _tag: "agent", agentId: "lead" }, status: "deleted", body: "" } },
+      null,
+      "Message deleted",
+    ],
+    [
+      "someone it can't name",
+      {
+        lastMessage: { author: { _tag: "human", personId: "ravi" }, status: "posted", body: "Hi" },
+      },
+      null,
+      "Hi",
+    ],
+  ])("previews %s", (_name, chat, author, preview) => {
+    expect(kinChatRowView(row(chat), directory)).toMatchObject({ author, preview });
+  });
+
+  it("draws a person when the other side is a person, and survives unknown agents", () => {
+    const person = kinChatRowView(
+      row({
+        title: "Ravi Patel",
+        members: [
+          member({ _tag: "person", personId: "owner" }),
+          member({ _tag: "person", personId: "ravi" }),
+        ],
+      }),
+      directory,
+    );
+    expect(person.avatar).toEqual({ kind: "person", initials: "RP" });
+    const unknown = kinChatRowView(row({}), kinDirectory({ _tag: "none" }));
+    expect(unknown).toMatchObject({ title: "Direct chat", author: null });
+  });
+
+  it("ignores an agent that left", () => {
+    const view = kinChatRowView(
+      row({
+        members: [
+          member({ _tag: "person", personId: "owner" }),
+          member({ _tag: "agent", agentId: "lead" }, "2026-11-08T09:00:00.000Z"),
+        ],
+      }),
+      directory,
+    );
+    expect(view.title).toBe("Direct chat");
+  });
+
+  it("flattens markdown to one line", () => {
+    expect(kinPreviewText("## Done\n\n- **Merged** [#212](https://x.test) `main`")).toBe(
+      "Done Merged #212 main",
+    );
+    expect(kinInitials("  lead ")).toBe("L");
+    expect(kinInitials("")).toBe("?");
+  });
+
+  it("opens the first direct chat from the footer", () => {
+    expect(
+      kinLeadChatId([
+        row({ chatId: "g", kind: "team_group" }),
+        row({ chatId: "d", kind: "direct" }),
+      ]),
+    ).toBe("d");
+    expect(kinLeadChatId([])).toBeNull();
+  });
+});
+
+describe("kinWaitingBannerView", () => {
+  const item = (reason: string) => ({ reason }) as never;
+
+  it("is absent when nothing waits", () => {
+    expect(kinWaitingBannerView([])).toBeNull();
+  });
+
+  it("names up to two kinds, oldest first, and counts every item", () => {
+    expect(
+      kinWaitingBannerView([item("approval"), item("question"), item("question"), item("mention")]),
+    ).toEqual({
+      count: 4,
+      summary: "1 approval · 2 questions",
+      accessibilityLabel: "Waiting on you, 4 items: 1 approval, 2 questions",
+    });
+    expect(kinWaitingBannerView([item("decision")])?.accessibilityLabel).toBe(
+      "Waiting on you, 1 item: 1 decision",
     );
   });
 });

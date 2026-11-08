@@ -1,4 +1,10 @@
-import { EnvironmentAuthorizationError, type EnvironmentId } from "@t3tools/contracts";
+import {
+  EnvironmentAuthorizationError,
+  type EnvironmentId,
+  type KinChatId,
+  type KinWaitingItem,
+  type KinWaitingReason,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
 import type { AsyncResult } from "effect/reactivity";
@@ -114,4 +120,161 @@ export function kinHomeSubtitle(
     default:
       return null;
   }
+}
+
+// Chat list rows and the Waiting on you banner
+
+/** Who the viewer is and what agents are called, from the host's `kin.orgs.list`. */
+export interface KinDirectory {
+  readonly agentNames: ReadonlyMap<string, string>;
+  readonly me: ReadonlySet<string>;
+}
+
+export const emptyKinDirectory: KinDirectory = { agentNames: new Map(), me: new Set() };
+
+export function kinDirectory(host: KinHost): KinDirectory {
+  if (host._tag !== "host") return emptyKinDirectory;
+  const { probe } = host;
+  if (probe._tag !== "ready" && probe._tag !== "noIdentity") return emptyKinDirectory;
+  return {
+    agentNames: new Map(
+      probe.orgs.orgs.flatMap((org) =>
+        org.agents.map((agent) => [agent.agentId, agent.displayName] as const),
+      ),
+    ),
+    me: new Set(probe.orgs.me.map((me) => me.personId)),
+  };
+}
+
+export interface KinChatRowView {
+  readonly chatId: KinChatId;
+  readonly title: string;
+  readonly avatar: { readonly kind: "agent" | "person"; readonly initials: string };
+  /** "Lead" in "Lead: Payments test fixed". */
+  readonly author: string | null;
+  readonly preview: string;
+  readonly sentAt: string | null;
+  readonly unread: number;
+}
+
+/** First letters of the first two words: "Tech lead" is "TL". */
+export function kinInitials(name: string): string {
+  const letters = name
+    .split(/\s+/)
+    .filter((word) => word.length > 0)
+    .slice(0, 2)
+    .map((word) => Array.from(word)[0]!.toUpperCase());
+  return letters.length > 0 ? letters.join("") : "?";
+}
+
+/** Message markdown as one plain line. */
+export function kinPreviewText(body: string): string {
+  return body
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/^\s{0,3}(?:#{1,6}|>|[-*+]|\d+\.)\s+/gm, "")
+    .replace(/(\*\*|__|~~|`)/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function kinChatRowView(row: KinInboxRow, directory: KinDirectory): KinChatRowView {
+  const { chat } = row;
+  const others = chat.members.filter(
+    (member) =>
+      member.leftAt === null &&
+      !(member.principal._tag === "person" && directory.me.has(member.principal.personId)),
+  );
+  // A direct chat is one person and one agent, so the other side is its agent.
+  const counterpart =
+    others.find((member) => member.principal._tag === "agent") ?? others[0] ?? null;
+  const counterpartName =
+    counterpart?.principal._tag === "agent"
+      ? directory.agentNames.get(counterpart.principal.agentId)
+      : undefined;
+  const title = chat.title ?? counterpartName ?? "Direct chat";
+  const last = chat.lastMessage;
+  const author =
+    last === null
+      ? null
+      : last.author._tag === "agent"
+        ? (directory.agentNames.get(last.author.agentId) ?? null)
+        : last.author._tag === "human" && directory.me.has(last.author.personId)
+          ? "You"
+          : null;
+  const preview =
+    last === null
+      ? "No messages yet"
+      : last.status === "deleted"
+        ? "Message deleted"
+        : kinPreviewText(last.body) || "Message";
+  return {
+    chatId: chat.chatId,
+    title,
+    avatar: {
+      kind: counterpart?.principal._tag === "person" ? "person" : "agent",
+      initials: kinInitials(title),
+    },
+    author: last?.status === "deleted" ? null : author,
+    preview,
+    sentAt: chat.lastMessageAt,
+    unread: chat.unread,
+  };
+}
+
+/** "Tech lead, agent. Payments test fixed, PR 212 ready. 9:30. 3 unread." */
+export function kinChatRowLabel(view: KinChatRowView, formatTime: (date: Date) => string): string {
+  const preview =
+    view.author !== null && view.author !== view.title
+      ? `${view.author}: ${view.preview}`
+      : view.preview;
+  return [
+    `${view.title}, ${view.avatar.kind}`,
+    preview.replace(/[.!?]+$/, ""),
+    view.sentAt === null ? null : formatTime(new Date(view.sentAt)),
+    view.unread > 0 ? `${view.unread} unread` : null,
+  ]
+    .filter((part): part is string => part !== null && part.length > 0)
+    .map((part) => `${part}.`)
+    .join(" ");
+}
+
+const WAITING_REASON_NOUNS: Record<KinWaitingReason, string> = {
+  approval: "approval",
+  decision: "decision",
+  question: "question",
+  suggestion: "suggestion",
+  mention: "mention",
+};
+
+export interface KinWaitingBannerView {
+  readonly count: number;
+  /** Up to two kinds of item, oldest first: "1 approval · 2 questions". */
+  readonly summary: string;
+  readonly accessibilityLabel: string;
+}
+
+/**
+ * Waiting items carry a reason but no title, so the banner names kinds of item.
+ * `waiting` is oldest first, as `selectKinInboxView` returns it. Null when nothing waits.
+ */
+export function kinWaitingBannerView(
+  waiting: ReadonlyArray<KinWaitingItem>,
+): KinWaitingBannerView | null {
+  if (waiting.length === 0) return null;
+  const counts = new Map<KinWaitingReason, number>();
+  for (const item of waiting) counts.set(item.reason, (counts.get(item.reason) ?? 0) + 1);
+  const parts = [...counts]
+    .slice(0, 2)
+    .map(([reason, count]) => `${count} ${WAITING_REASON_NOUNS[reason]}${count === 1 ? "" : "s"}`);
+  const items = waiting.length === 1 ? "1 item" : `${waiting.length} items`;
+  return {
+    count: waiting.length,
+    summary: parts.join(" · "),
+    accessibilityLabel: `Waiting on you, ${items}: ${parts.join(", ")}`,
+  };
+}
+
+/** The footer's target: in phase 1, the viewer's direct chat with the lead. */
+export function kinLeadChatId(rows: ReadonlyArray<KinInboxRow>): KinChatId | null {
+  return rows.find((row) => row.chat.kind === "direct")?.chat.chatId ?? null;
 }

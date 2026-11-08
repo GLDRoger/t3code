@@ -1,67 +1,122 @@
+import { LegendList } from "@legendapp/list/react-native";
 import { useNavigation } from "@react-navigation/native";
 import { View } from "react-native";
 
+import { AppBar } from "../../components/ui/AppBar";
 import { EmptyState } from "../../components/ui/EmptyState";
-import { ListRow } from "../../components/ui/ListRow";
-import { ListRowLayout } from "../../components/ui/ListRowLayout";
-import { ListSection } from "../../components/ui/ListSection";
-import { KinInboxPage } from "./components/KinScreenState";
+import { ScreenContent } from "../../components/ui/ScreenContent";
+import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
+import { NativeScrollView } from "../../native/NativeScrollViewMarker";
+import { KinAskRow, KinChatRow, KinChatRowSkeletons } from "./components/KinChatRow";
+import { KinInboxNotice, KinScreenState } from "./components/KinScreenState";
+import { KinWaitingBanner } from "./components/KinWaitingBanner";
 import { selectKinInboxView } from "./state/kinInboxModel";
+import {
+  kinChatRowLabel,
+  kinChatRowView,
+  kinDirectory,
+  kinLeadChatId,
+  kinWaitingBannerView,
+  type KinChatRowView,
+  type KinDirectory,
+  type KinInboxScreenState,
+} from "./state/kinScreenState";
 import { useKinInbox } from "./state/useKinInbox";
 
-/** Placeholder chat list until MOB-3: Waiting on you and plain rows. */
+const labelTimeFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+const labelDateFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
+const formatLabelTime = (date: Date) =>
+  date.toDateString() === new Date().toDateString()
+    ? labelTimeFormat.format(date)
+    : labelDateFormat.format(date);
+
 export function KinChatsScreen() {
   const navigation = useNavigation();
-  const { state, retry } = useKinInbox();
+  const { host, state, retry } = useKinInbox();
   return (
-    <KinInboxPage title="Kin" state={state} onRetry={retry}>
-      {(ready) => {
-        const view = selectKinInboxView(ready.inbox.value);
-        if (view.rows.length === 0) {
-          return (
+    <View collapsable={false} className="flex-1 bg-screen">
+      <AppBar title="Kin" onBack={() => navigation.goBack()} />
+      <ScreenContent surface="screen">
+        <KinChatsView
+          state={state}
+          directory={kinDirectory(host)}
+          onRetry={retry}
+          onOpenWaiting={() => navigation.navigate("KinWaiting")}
+        />
+      </ScreenContent>
+    </View>
+  );
+}
+
+/** The chat list for one inbox state. Also rendered from fixtures in the component catalog. */
+export function KinChatsView(props: {
+  readonly state: KinInboxScreenState;
+  readonly directory: KinDirectory;
+  readonly onRetry: () => void;
+  readonly onOpenWaiting: () => void;
+  /** Unset until the direct chat screen (MOB-4) exists; rows and the footer are then static. */
+  readonly onOpenChat?: (chatId: KinChatRowView["chatId"]) => void;
+}) {
+  const { state, onOpenChat } = props;
+  const view = state._tag === "ready" ? selectKinInboxView(state.inbox.value) : null;
+  if (state._tag !== "ready" || view === null || view.rows.length === 0) {
+    return (
+      <ScreenScrollView
+        className="flex-1"
+        contentInsetAdjustmentBehavior="automatic"
+        contentContainerStyle={{ padding: 16, gap: 12 }}
+      >
+        <KinScreenState state={state} onRetry={props.onRetry} loading={<KinChatRowSkeletons />}>
+          {() => (
             <EmptyState
               title="No chats yet"
               detail="Your lead's chat appears here once Kin is set up."
             />
-          );
-        }
-        return (
-          <>
-            {view.waitingCount > 0 ? (
-              <ListSection>
-                <ListRow
-                  icon="exclamationmark.circle"
-                  label="Waiting on you"
-                  detail={String(view.waitingCount)}
-                  onPress={() => navigation.navigate("KinWaiting")}
-                />
-              </ListSection>
-            ) : null}
-            <ListSection>
-              {view.rows.map((row) => (
-                <View
-                  key={row.chat.chatId}
-                  accessible
-                  accessibilityLabel={[
-                    row.chat.title ?? "Direct chat",
-                    row.chat.lastMessage?.body,
-                    row.chat.unread > 0 ? `${row.chat.unread} unread` : undefined,
-                  ]
-                    .filter(Boolean)
-                    .join(". ")}
-                >
-                  <ListRowLayout
-                    icon="bubble.left"
-                    label={row.chat.title ?? "Direct chat"}
-                    description={row.chat.lastMessage?.body ?? "No messages yet"}
-                    {...(row.chat.unread > 0 ? { detail: String(row.chat.unread) } : {})}
-                  />
-                </View>
-              ))}
-            </ListSection>
-          </>
-        );
-      }}
-    </KinInboxPage>
+          )}
+        </KinScreenState>
+      </ScreenScrollView>
+    );
+  }
+  const banner = kinWaitingBannerView(view.waiting);
+  const leadChatId = kinLeadChatId(view.rows);
+  const rows = view.rows.map((row) => kinChatRowView(row, props.directory));
+  return (
+    <LegendList
+      renderScrollComponent={NativeScrollView}
+      className="flex-1"
+      contentInsetAdjustmentBehavior="automatic"
+      contentContainerStyle={{ paddingTop: 4, paddingBottom: 16 }}
+      data={rows}
+      keyExtractor={(row) => row.chatId}
+      estimatedItemSize={72}
+      recycleItems
+      renderItem={({ item }) => (
+        <KinChatRow
+          view={item}
+          accessibilityLabel={kinChatRowLabel(item, formatLabelTime)}
+          {...(onOpenChat === undefined ? {} : { onPress: () => onOpenChat(item.chatId) })}
+        />
+      )}
+      ItemSeparatorComponent={KinRowDivider}
+      ListHeaderComponent={
+        <View className="gap-3 px-4 pb-2 pt-2">
+          <KinInboxNotice state={state} />
+          {banner === null ? null : (
+            <KinWaitingBanner view={banner} onPress={props.onOpenWaiting} />
+          )}
+        </View>
+      }
+      ListFooterComponent={
+        <KinAskRow
+          {...(onOpenChat === undefined || leadChatId === null
+            ? {}
+            : { onPress: () => onOpenChat(leadChatId) })}
+        />
+      }
+    />
   );
+}
+
+function KinRowDivider() {
+  return <View className="ml-[68px] h-px bg-border-subtle" />;
 }

@@ -12,7 +12,7 @@ import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
 import { kinInboxNotice, type KinInboxScreenState } from "../state/kinScreenState";
 
-type ReadyState = Extract<KinInboxScreenState, { readonly _tag: "ready" }>;
+export type KinReadyState = Extract<KinInboxScreenState, { readonly _tag: "ready" }>;
 
 const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 
@@ -21,7 +21,7 @@ export function KinInboxPage(props: {
   readonly title: string;
   readonly state: KinInboxScreenState;
   readonly onRetry: () => void;
-  readonly children: (ready: ReadyState) => ReactNode;
+  readonly children: (ready: KinReadyState) => ReactNode;
 }) {
   const navigation = useNavigation();
   return (
@@ -33,22 +33,25 @@ export function KinInboxPage(props: {
           contentInsetAdjustmentBehavior="automatic"
           contentContainerStyle={{ padding: 16, gap: 12 }}
         >
-          <KinInboxStateBody {...props} />
+          <KinScreenState {...props} />
         </ScreenScrollView>
       </ScreenContent>
     </View>
   );
 }
 
-function KinInboxStateBody(props: {
+/** The spec's state table for one Kin screen. `loading` replaces the default spinner. */
+export function KinScreenState(props: {
   readonly state: KinInboxScreenState;
   readonly onRetry: () => void;
-  readonly children: (ready: ReadyState) => ReactNode;
+  readonly loading?: ReactNode;
+  readonly children: (ready: KinReadyState) => ReactNode;
 }) {
   const navigation = useNavigation();
   const { state } = props;
   switch (state._tag) {
     case "loading":
+      if (props.loading !== undefined) return props.loading;
       return (
         <View
           className="items-center py-12"
@@ -102,19 +105,21 @@ function KinInboxStateBody(props: {
           </View>
         </View>
       );
-    case "ready": {
-      const notice = kinInboxNotice(state, (date) => timeFormat.format(date));
+    case "ready":
       return (
         <>
-          {notice === null ? null : (
-            <Notice
-              {...(notice.offline ? { icon: "wifi.slash" as const } : {})}
-              message={notice.message}
-            />
-          )}
+          <KinInboxNotice state={state} />
           {props.children(state)}
         </>
       );
-    }
   }
+}
+
+/** "Offline. Last updated 9:41." over a cached inbox; nothing while it is live. */
+export function KinInboxNotice(props: { readonly state: KinReadyState }) {
+  const notice = kinInboxNotice(props.state, (date) => timeFormat.format(date));
+  if (notice === null) return null;
+  return (
+    <Notice {...(notice.offline ? { icon: "wifi.slash" as const } : {})} message={notice.message} />
+  );
 }
