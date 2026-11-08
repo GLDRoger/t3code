@@ -68,14 +68,24 @@ export class MemorySecretBlocked extends Schema.TaggedError<MemorySecretBlocked>
   {
     orgId: Schema.String,
     findings: Schema.Array(
-      Schema.Struct({ path: Schema.String, ruleId: Schema.String, line: Schema.Number }),
+      Schema.Struct({
+        path: Schema.String,
+        ruleId: Schema.String,
+        line: Schema.Number,
+        pathHit: Schema.optional(Schema.Boolean),
+        itemPath: Schema.optional(Schema.String),
+      }),
     ),
   },
 ) {}
 export type WriterNotice = {
   readonly orgId: KinOrgId;
   readonly wakeupId: string;
-  readonly error: MemoryCheckoutInvalid | MemorySyncConflict | MemorySecretBlocked;
+  readonly error:
+    | MemoryCheckoutInvalid
+    | MemorySyncConflict
+    | MemorySecretBlocked
+    | KinSecretScanError;
 };
 export class MemoryWriterHooks extends Context.Service<
   MemoryWriterHooks,
@@ -295,7 +305,11 @@ const make = Effect.gen(function* () {
       const result = yield* fs.lstat(current).pipe(Effect.result);
       if (result._tag === "Failure") {
         if (result.failure.reason._tag !== "NotFound")
-          return yield* new MemoryError({ orgId, operation: "path", cause: result.failure });
+          return yield* new MemoryError({
+            orgId,
+            operation: "path",
+            cause: "Unable to inspect memory path",
+          });
       } else if (
         result.success.type === "SymbolicLink" ||
         (result.success.type === "File" &&
@@ -313,10 +327,25 @@ const make = Effect.gen(function* () {
   });
   const report = <A>(orgId: KinOrgId, wakeupId: string, effect: Effect.Effect<A, Failure>) =>
     effect.pipe(
+      Effect.catchTags({
+        MemoryItemError: (error) =>
+          scanner.scan({ orgId, files: [{ path: error.path, content: new Uint8Array() }] }).pipe(
+            Effect.flatMap((findings) =>
+              Effect.fail(
+                new MemoryItemError({
+                  orgId: error.orgId,
+                  path: findings.length ? "[redacted]" : error.path,
+                  reason: error.reason,
+                }),
+              ),
+            ),
+          ),
+      }),
       Effect.tapError((error) =>
         error._tag === "MemoryCheckoutInvalid" ||
         error._tag === "MemorySyncConflict" ||
-        error._tag === "MemorySecretBlocked"
+        error._tag === "MemorySecretBlocked" ||
+        error._tag === "KinSecretScanError"
           ? hooks
               .notify({ orgId, wakeupId, error })
               .pipe(

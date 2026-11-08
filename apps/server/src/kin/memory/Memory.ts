@@ -1,3 +1,4 @@
+import * as SecretScan from "./secretScan.ts";
 import {
   readTree,
   readObjects,
@@ -203,6 +204,7 @@ interface BlobCache {
 }
 
 const make = Effect.gen(function* () {
+  const scanner = yield* SecretScan.KinSecretScan;
   const config = yield* MemoryConfig;
   const fs = yield* FileSystem.FileSystem;
   const { notify } = yield* MemoryRecoveryHooks;
@@ -1079,6 +1081,7 @@ const make = Effect.gen(function* () {
                 });
               } else {
                 const { files: mergedFiles, modes } = merged;
+                const remoteOriginal = new Map(remoteFiles);
                 remoteFiles.clear();
                 for (const [file, bytes] of mergedFiles) remoteFiles.set(file, bytes);
                 const heads = [];
@@ -1098,6 +1101,36 @@ const make = Effect.gen(function* () {
                   "INDEX.md",
                   Buffer.from(buildIndex(heads, reads, yield* Clock.currentTimeMillis, zone)),
                 );
+                const findings = yield* scanner
+                  .scan({
+                    orgId,
+                    files: [...remoteFiles]
+                      .filter(
+                        ([path, bytes]) =>
+                          path === "INDEX.md" || !remoteOriginal.get(path)?.equals(bytes),
+                      )
+                      .map(([path, content]) => ({ path, content })),
+                  })
+                  .pipe(
+                    Effect.tapError((cause) =>
+                      notify({ orgId, branch, reason: `Secret scan failed: ${cause.reason}` }),
+                    ),
+                    Effect.mapError(
+                      (cause) => new MemoryError({ orgId, operation: "secretScan", cause }),
+                    ),
+                  );
+                if (findings.length) {
+                  yield* notify({
+                    orgId,
+                    branch,
+                    reason: `Secret scan blocked merge: ${findings[0]!.ruleId} in ${findings[0]!.pathHit ? "[redacted]" : (findings[0]!.itemPath ?? findings[0]!.path)}`,
+                  });
+                  return yield* new MemoryError({
+                    orgId,
+                    operation: "secretScan",
+                    reason: `Secret scan blocked merge: ${findings[0]!.ruleId} in ${findings[0]!.pathHit ? "[redacted]" : (findings[0]!.itemPath ?? findings[0]!.path)}`,
+                  });
+                }
                 tree = yield* Effect.scoped(
                   Effect.gen(function* () {
                     const temp = yield* io(orgId, "journalMerge", fs.makeTempDirectoryScoped());
@@ -1286,4 +1319,7 @@ const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(Memory, make).pipe(Layer.provide(MemoryCache.layer));
+export const layer = Layer.effect(Memory, make).pipe(
+  Layer.provide(MemoryCache.layer),
+  Layer.provide(SecretScan.layer),
+);
