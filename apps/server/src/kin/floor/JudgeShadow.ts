@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as FiberSet from "effect/FiberSet";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as SqlClient from "effect/sql/SqlClient";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
@@ -48,6 +49,8 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const judge = yield* Judge;
   const workers = yield* FiberSet.make<void>();
+  // Bounds concurrent judge calls and log writes under a burst of human messages.
+  const permits = yield* Semaphore.make(2);
   const record = Effect.fn("KinJudge.record")(
     function* (message: KinMessage, floorDecision: FloorDecision | null) {
       const agents = yield* sql`SELECT a.agent_id, a.role FROM kin_chat_members m
@@ -106,11 +109,13 @@ const make = Effect.gen(function* () {
         return;
       // Fork only after commit, without inheriting the post's transaction connection.
       yield* sql.afterCommit(
-        record(message, decision).pipe(
-          Effect.catchCause(() => Effect.logWarning("Kin shadow judge log failed.")),
-          FiberSet.run(workers, { startImmediately: false }),
-          Effect.asVoid,
-        ),
+        permits
+          .withPermits(1)(record(message, decision))
+          .pipe(
+            Effect.catchCause(() => Effect.logWarning("Kin shadow judge log failed.")),
+            FiberSet.run(workers, { startImmediately: false }),
+            Effect.asVoid,
+          ),
       );
     }),
   });

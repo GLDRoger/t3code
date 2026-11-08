@@ -38,5 +38,5 @@ export class Judge extends Context.Service<
     readonly judge: (input: JudgeInput) => Effect.Effect<JudgeVerdict, JudgeError>;
   }
 >()("t3/kin/floor/Judge") {}
-export const JUDGE_MODE = "shadow";
+export const JUDGE_MODE: "off" | "shadow" | "live" = "shadow";
 export const JUDGE_THRESHOLDS = { act: 0.8, ask: 0.5 } as const;
