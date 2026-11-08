@@ -193,6 +193,10 @@ const decodeAct = Schema.decodeEffect(KinWidgetsActInput);
 const encodeAction = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const invalidState = new KinChatError({ reason: "invalid_state", message: "Invalid chat input." });
 const notFound = new KinChatError({ reason: "not_found", message: "Kin record not found." });
+const isKinChatError = Schema.is(KinChatError);
+// Live inserts also advance change_seq, so refresh the client's frozen change cursor well under
+// resume's 200-message reset cap.
+const checkpointEvery = 100;
 const notAllowed = new KinChatError({
   reason: "not_allowed",
   message: "Chat operation not allowed.",
@@ -598,6 +602,28 @@ const make = Effect.gen(function* () {
           const revisions = new Map(
             backlog._tag === "backlog" ? backlog.widgets.map((w) => [w.widgetId, w.revision]) : [],
           );
+          let cursor = { lastSeq: resumed.lastSeq, lastChangeSeq: resumed.lastChangeSeq };
+          let delivered = 0;
+          const checkpoint = Effect.fn("KinChatService.subscribeCheckpoint")(function* () {
+            const next = yield* repo.resume({
+              ...member,
+              afterSeq: cursor.lastSeq,
+              afterChangeSeq: cursor.lastChangeSeq,
+            });
+            cursor = { lastSeq: next.lastSeq, lastChangeSeq: next.lastChangeSeq };
+            delivered = 0;
+            if (next.reset) return { _tag: "reset", ...cursor } satisfies KinChatStreamEvent;
+            // The client already holds rows and widgets at the versions this stream delivered.
+            const messages = next.messages.filter(
+              (m) => (m.changeSeq ?? m.seq) !== messageChanges.get(m.messageId),
+            );
+            const widgets = next.widgets.filter(
+              (w) => w.revision > (revisions.get(w.widgetId) ?? 0),
+            );
+            for (const m of messages) messageChanges.set(m.messageId, m.changeSeq ?? m.seq);
+            for (const w of widgets) revisions.set(w.widgetId, w.revision);
+            return { _tag: "backlog", ...cursor, messages, widgets } satisfies KinChatStreamEvent;
+          });
           return Stream.concat(
             Stream.succeed(backlog),
             live.pipe(
@@ -607,7 +633,7 @@ const make = Effect.gen(function* () {
                     const change = event.message.changeSeq ?? event.message.seq;
                     if (
                       event.message.chatId !== input.chatId ||
-                      change <= resumed.lastChangeSeq ||
+                      change <= cursor.lastChangeSeq ||
                       change <= (messageChanges.get(event.message.messageId) ?? 0)
                     )
                       return Option.none();
@@ -647,6 +673,22 @@ const make = Effect.gen(function* () {
               }),
               Stream.filter(Option.isSome),
               Stream.map((event) => event.value),
+              // Widget writes bump their anchor's change_seq, so they count toward the refresh too.
+              // The dedupe state above is updated per event; the hub delivers one event per chunk.
+              Stream.mapEffect((event) =>
+                (event._tag === "message" || event._tag === "widget") &&
+                ++delivered >= checkpointEvery
+                  ? checkpoint().pipe(
+                      Effect.map((next) => [event, next]),
+                      // A member who just left gets not_found; the member event that follows ends the stream.
+                      Effect.catchIf(
+                        (error) => isKinChatError(error) && error.reason === "not_found",
+                        () => Effect.succeed([event]),
+                      ),
+                    )
+                  : Effect.succeed([event]),
+              ),
+              Stream.flattenIterable,
               Stream.takeUntil((event) => event._tag === "member" && event.member.leftAt !== null),
             ),
           );

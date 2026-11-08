@@ -13,6 +13,10 @@ import { KinChatService } from "./KinChatService.ts";
 
 const group = RpcGroup.make(...KinChatAndBudgetRpcs);
 const unavailable = new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
+const disabled = new KinChatError({
+  reason: "disabled",
+  message: "Kin is not running on this host.",
+});
 const isKinChatError = Schema.is(KinChatError);
 const mapError = (error: unknown) => (isKinChatError(error) ? error : unavailable);
 const logInfra = (error: unknown) =>
@@ -25,7 +29,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
 ) {
   const kin = yield* Effect.serviceOption(KinServer);
   const services = Effect.gen(function* () {
-    if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
+    if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* disabled;
     return {
       identity: Context.get(kin.value.services.value, KinIdentity),
       budget: Context.get(kin.value.services.value, KinBudget),
