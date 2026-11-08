@@ -31,6 +31,8 @@ import { handlers } from "./mcp/handlers.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
+import * as DreamRunner from "../dreaming/DreamRunner.ts";
+import * as DreamSession from "../dreaming/DreamSession.ts";
 import * as Workers from "./Workers.ts";
 import * as WorkerTracker from "./WorkerTracker.ts";
 
@@ -58,9 +60,14 @@ export function containStartup<A, E, R>(layer: Layer.Layer<A, E, R>) {
 
 const routineRuntime = Routines.layer.pipe(
   Layer.provideMerge(TriggerScheduler.layer),
-  Layer.provide(Layer.mergeAll(TriggerStore.layer, TriggerInbox.layer)),
+  Layer.provideMerge(Layer.mergeAll(TriggerStore.layer, TriggerInbox.layer)),
   // Kin builds in its contained startup scope; orchestration runtime does not expose its scheduler.
-  Layer.provide(Scheduler.layer),
+  Layer.provideMerge(Scheduler.layer),
+);
+const dreamRuntime = DreamRunner.layer.pipe(
+  Layer.provide(DreamSession.layer),
+  Layer.provide(Scan.layer),
+  Layer.provide(Cache.layer),
 );
 
 const runner = Layer.effectDiscard(
@@ -68,6 +75,9 @@ const runner = Layer.effectDiscard(
     const runner = yield* WakeupRunner.WakeupRunner;
     yield* Effect.gen(function* () {
       const context = yield* Layer.build(routineRuntime);
+      yield* Layer.build(dreamRuntime.pipe(Layer.provide(Layer.succeedContext(context)))).pipe(
+        Effect.catchCause((cause) => Effect.logError("Kin dreams unavailable", { cause })),
+      );
       yield* runner.start.pipe(Effect.provideContext(context));
     }).pipe(forkParked);
   }),
