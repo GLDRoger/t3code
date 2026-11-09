@@ -175,4 +175,51 @@ describe("KinLeadProvision", () => {
       assert.deepStrictEqual(yield* Provision.list(), [retired.lead, next.lead]);
     }).pipe(Effect.provide(layer)),
   );
+
+  it.effect(
+    "replaces a live lead's worker projects, refusing unknown, retired and other-org leads",
+    () =>
+      Effect.gen(function* () {
+        yield* seedProject;
+        const sql = yield* SqlClient.SqlClient;
+        const { lead } = yield* Provision.create(input(owner, []));
+        const updated = yield* Provision.setWorkerProjects(lead.agentId, [project, project]);
+        assert.deepStrictEqual(updated, {
+          _tag: "updated",
+          lead: { ...lead, workerProjects: [project] },
+        });
+        assert.deepStrictEqual(yield* Provision.list(), [updated.lead]);
+        assert.strictEqual(
+          yield* refusal(
+            Provision.setWorkerProjects(lead.agentId, [project, ProjectId.make("missing")]),
+          ),
+          "unknown_project",
+        );
+
+        yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org-b', 'B', '2026-11-09T00:00:00.000Z')`;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('person-b', 'org-b', 'b', 'B', '2026-11-09T00:00:00.000Z')`;
+        yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+        VALUES ('lead-b', 'org-b', 'B', 'lead', 'person-b', '2026-11-09T00:00:00.000Z')`;
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at) VALUES ('chat-b', 'org-b', 'team_group', 0, '2026-11-09T00:00:00.000Z')`;
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+        VALUES ('lead-b', 'org-b', 'B', 0, '{}', '[]', 'chat-b')`;
+        assert.strictEqual(
+          yield* refusal(Provision.setWorkerProjects(KinAgentId.make("lead-b"), [project])),
+          "not_found",
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT worker_projects_json FROM kin_leads WHERE agent_id = 'lead-b' ORDER BY agent_id`,
+          [{ worker_projects_json: "[]" }],
+        );
+
+        yield* Provision.retire(lead.agentId);
+        assert.strictEqual(
+          yield* refusal(Provision.setWorkerProjects(lead.agentId, [])),
+          "retired",
+        );
+        const [after] = yield* Provision.list();
+        assert.deepStrictEqual(after?.workerProjects, [project]);
+      }).pipe(Effect.provide(layer)),
+  );
 });

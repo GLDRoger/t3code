@@ -950,6 +950,31 @@ it.effect(
     ),
 );
 
+it.effect("a project removed from the lead's list refuses new and follow-up work there", () =>
+  run(({ ctx, fakes, workers }) =>
+    Effect.gen(function* () {
+      const worker = yield* workers.delegate(scope, delegateInput);
+      assert.ok("workerId" in worker);
+      const sends = fakes.sends.length;
+      yield* ctx.sql`UPDATE kin_leads SET worker_projects_json = '[]' WHERE org_id = ${ctx.orgId} AND agent_id = ${leadId}`;
+      for (const attempt of [
+        workers.delegate(scope, { ...delegateInput, title: "Another task" }),
+        workers.followUp(scope, {
+          workerId: worker.workerId,
+          brief: "More",
+          sourceEventId: "lead-event",
+        }),
+      ] as ReadonlyArray<Effect.Effect<object, KinChatError>>) {
+        const refused = yield* Effect.flip(attempt);
+        assert.strictEqual(refused.reason, "not_allowed");
+        assert.include(refused.message, "worker projects");
+      }
+      assert.lengthOf(fakes.launches, 1);
+      assert.lengthOf(fakes.sends, sends);
+    }),
+  ),
+);
+
 it.effect("stopping a worker closes its card and a follow-up reopens the same card", () =>
   run(({ ctx, fakes, workers }) =>
     Effect.gen(function* () {
