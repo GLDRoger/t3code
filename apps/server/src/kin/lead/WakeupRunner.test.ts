@@ -27,6 +27,8 @@ import {
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as ChatService from "../chat/KinChatService.ts";
 import * as ChatHub from "../chat/KinChatHub.ts";
+import * as Presence from "../reply/KinPresence.ts";
+import * as LevelGate from "./LevelGate.ts";
 import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import * as Floor from "../floor/KinFloor.ts";
 import { FLOOR_GRANT_TTL_MS } from "../floor/FloorManager.ts";
@@ -425,78 +427,80 @@ describe("WakeupRunner", () => {
         ]);
       }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
   );
-  it.effect("re-arms a lapsed direct-chat grant when the wake-up starts, for one reply only", () =>
-    Effect.gen(function* () {
-      const entered = yield* Deferred.make<void>();
-      const hold = yield* Deferred.make<void>();
-      yield* Effect.gen(function* () {
-        yield* seed;
-        const sql = yield* SqlClient.SqlClient;
-        const repo = yield* KinChatRepository.KinChatRepository;
-        const floor = yield* Floor.KinFloor;
-        const at = "2026-11-08T00:00:00.000Z";
-        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+  it.effect(
+    "re-arms a lapsed direct-chat grant when the wake-up starts, for that wake-up only",
+    () =>
+      Effect.gen(function* () {
+        const entered = yield* Deferred.make<void>();
+        const hold = yield* Deferred.make<void>();
+        yield* Effect.gen(function* () {
+          yield* seed;
+          const sql = yield* SqlClient.SqlClient;
+          const repo = yield* KinChatRepository.KinChatRepository;
+          const floor = yield* Floor.KinFloor;
+          const at = "2026-11-08T00:00:00.000Z";
+          yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
             VALUES ('direct', 'org', 'direct', 'owner:lead', 1, ${at})`;
-        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+          yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
             VALUES ('owner-member', 'org', 'direct', 'person', 'owner', 'owner', ${at})`;
-        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+          yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
             VALUES ('lead-member', 'org', 'direct', 'agent', 'lead', 'member', ${at})`;
-        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+          yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
               author_member_id, author_role, kind, body, mentions_json, status, created_at)
             VALUES ('hi', 'org', 'direct', 1, 'human', 'owner', 'owner-member', 'owner', 'text', 'hi', '[]',
               'posted', ${at})`;
-        const scope = { orgId, chatId: KinChatId.make("direct") };
-        const chat = Option.getOrThrow(yield* repo.getChat(scope));
-        const message = Option.getOrThrow(
-          yield* repo.getMessage({ orgId, messageId: KinMessageId.make("hi") }),
-        );
-        yield* floor.open(message, chat);
-        // The post-time grant lapses while the server is down, before catch-up enqueues it.
-        yield* TestClock.adjust(FLOOR_GRANT_TTL_MS + 60_000);
-        yield* (yield* KinEventQueue.KinEventQueue).enqueue(
-          decodeEvent({
-            _tag: "chat.message",
+          const scope = { orgId, chatId: KinChatId.make("direct") };
+          const chat = Option.getOrThrow(yield* repo.getChat(scope));
+          const message = Option.getOrThrow(
+            yield* repo.getMessage({ orgId, messageId: KinMessageId.make("hi") }),
+          );
+          yield* floor.open(message, chat);
+          // The post-time grant lapses while the server is down, before catch-up enqueues it.
+          yield* TestClock.adjust(FLOOR_GRANT_TTL_MS + 60_000);
+          yield* (yield* KinEventQueue.KinEventQueue).enqueue(
+            decodeEvent({
+              _tag: "chat.message",
+              orgId,
+              agentId,
+              eventId: "catch-up-hi",
+              receivedAt: at,
+              dedupeKey: "chat-message:hi:lead",
+              provenance: { _tag: "human", personId: "owner", memberId: "owner-member" },
+              chatId: "direct",
+              messageId: "hi",
+            }),
+          );
+          const fiber = yield* run();
+          yield* Deferred.await(entered);
+          const [lead] = yield* sql<{ thread_id: string }>`SELECT thread_id FROM kin_leads`;
+          const identity = yield* resolveAgent(ThreadId.make(lead!.thread_id));
+          // The renewed grant lasts as long as the wake-up, so a reply 10 minutes in still lands.
+          yield* TestClock.adjust("10 minutes");
+          const { runId } = yield* floor.authorize(identity, chat, "answer");
+          assert.isNotNull(runId);
+          // The wake-up keeps the grant for its run: its next post is the same agent turn.
+          assert.strictEqual((yield* floor.authorize(identity, chat, "evidence")).runId, runId);
+          // A used grant is never re-armed, whatever deadline is asked for.
+          const grantExpiry = sql<{ expires_at: number }>`SELECT expires_at FROM kin_floor_grants
+          WHERE org_id = ${orgId} AND agent_id = ${agentId} ORDER BY expires_at`;
+          const before = yield* grantExpiry;
+          yield* floor.renew({
             orgId,
             agentId,
-            eventId: "catch-up-hi",
-            receivedAt: at,
-            dedupeKey: "chat-message:hi:lead",
-            provenance: { _tag: "human", personId: "owner", memberId: "owner-member" },
-            chatId: "direct",
-            messageId: "hi",
-          }),
-        );
-        const fiber = yield* run();
-        yield* Deferred.await(entered);
-        const [lead] = yield* sql<{ thread_id: string }>`SELECT thread_id FROM kin_leads`;
-        const identity = yield* resolveAgent(ThreadId.make(lead!.thread_id));
-        // The renewed grant lasts as long as the wake-up, so a reply 10 minutes in still lands.
-        yield* TestClock.adjust("10 minutes");
-        assert.isNotNull((yield* floor.authorize(identity, chat, "answer")).runId);
-        assert.include(yield* floor.authorize(identity, chat, "evidence").pipe(Effect.flip), {
-          reason: "floor_not_granted",
-        });
-        // A used grant is never re-armed, whatever deadline is asked for.
-        const grantExpiry = sql<{ expires_at: number }>`SELECT expires_at FROM kin_floor_grants
-          WHERE org_id = ${orgId} AND agent_id = ${agentId} ORDER BY expires_at`;
-        const before = yield* grantExpiry;
-        yield* floor.renew({
-          orgId,
-          agentId,
-          messageIds: [KinMessageId.make("hi")],
-          until: Number.MAX_SAFE_INTEGER,
-        });
-        assert.deepStrictEqual(yield* grantExpiry, before);
-        yield* Deferred.succeed(hold, undefined);
-        yield* Fiber.join(fiber);
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(Floor.layer, KinChatRepository.layer).pipe(
-            Layer.provideMerge(harness({ entered, hold })),
+            messageIds: [KinMessageId.make("hi")],
+            until: Number.MAX_SAFE_INTEGER,
+          });
+          assert.deepStrictEqual(yield* grantExpiry, before);
+          yield* Deferred.succeed(hold, undefined);
+          yield* Fiber.join(fiber);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(Floor.layer, KinChatRepository.layer).pipe(
+              Layer.provideMerge(harness({ entered, hold })),
+            ),
           ),
-        ),
-      );
-    }).pipe(provideDeterministicTestRuntime),
+        );
+      }).pipe(provideDeterministicTestRuntime),
   );
 
   it.effect("interrupts mid-wake-up without counting an attempt and admits the next claim", () =>
@@ -1219,6 +1223,8 @@ describe("WakeupRunner", () => {
           Layer.mergeAll(
             Layer.mock(ChatService.KinChatService)({}),
             Layer.mock(ChatHub.KinChatHub)({}),
+            Layer.mock(LevelGate.KinLevelGate)({}),
+            Layer.mock(Presence.KinPresence)({ snapshot: () => ({ presence: [], drafts: [] }) }),
             Layer.mock(Budget.KinBudget)({}),
             Layer.mock(KinStop.KinStop)({}),
             Layer.mock(KinEventQueue.KinEventQueue)({}),

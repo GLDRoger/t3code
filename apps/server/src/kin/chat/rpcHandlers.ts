@@ -183,8 +183,16 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
         Effect.mapError(mapError),
         Effect.catchDefect(defect),
       ),
-    // Contract first: reactions land with R1-REACT, Stop with the reply bridge.
+    // Reactions land with R1-REACT.
     "kin.messages.react": () => Effect.fail(notYet),
-    "kin.lead.interrupt": () => Effect.fail(notYet),
+    "kin.lead.interrupt": (input) =>
+      services.pipe(
+        Effect.flatMap(({ identity, stop }) =>
+          identity.resolve(session).pipe(Effect.flatMap((people) => stop.interrupt(people, input))),
+        ),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
   });
 });

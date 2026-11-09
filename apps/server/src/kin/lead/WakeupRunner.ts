@@ -44,6 +44,7 @@ import * as RoutineContent from "./RoutineContent.ts";
 import { PAUSE_POLL_INTERVAL_MS } from "./KinStop.ts";
 import { isOrgPaused } from "./orgState.ts";
 import { KinPromotion } from "../levels/Promotion.ts";
+import { KinReplyBridge, rescueMessageId } from "../reply/KinReplyBridge.ts";
 
 /** How long one wake-up may run before it is interrupted. */
 const WAKEUP_DEADLINE_MS = 900_000;
@@ -109,6 +110,9 @@ const ulid = Effect.gen(function* () {
 const make = Effect.gen(function* () {
   const ownerCheck = yield* Effect.serviceOption(OwnerCheck.OwnerCheck);
   const promotion = yield* Effect.serviceOption(KinPromotion);
+  const bridge = yield* Effect.serviceOption(KinReplyBridge);
+  const endReply = (row: { readonly orgId: KinOrgId; readonly wakeupId: KinWakeupId }) =>
+    Option.isSome(bridge) ? bridge.value.end(row.orgId, row.wakeupId) : Effect.void;
   const routineContent = yield* Effect.serviceOption(RoutineContent.KinRoutineContent);
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
@@ -166,6 +170,7 @@ const make = Effect.gen(function* () {
     const runIds = new Set([row.runId]);
     for (const run of projection.runs.toSorted((a, b) => a.ordinal - b.ordinal)) {
       if (
+        run.userMessageId === rescueMessageId(row.wakeupId) ||
         (run.restartContinuationOfRunId !== undefined &&
           runIds.has(run.restartContinuationOfRunId)) ||
         (run.usageLimitContinuationOfRunId !== undefined &&
@@ -232,6 +237,15 @@ const make = Effect.gen(function* () {
               runId,
             });
         }
+        // The reply lands before memory commits, while the wake-up still owns its lane.
+        if (Option.isSome(bridge) && !stopped)
+          yield* bridge.value.complete({
+            orgId: row.orgId,
+            wakeupId: row.wakeupId,
+            projectId,
+            rootRunId: runId,
+            rescueUntil: status === "completed" ? row.startedAt + WAKEUP_DEADLINE_MS : null,
+          });
         if (Option.isSome(writer)) {
           const ended =
             yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId} AND call_key = 'end'`;
@@ -277,6 +291,7 @@ const make = Effect.gen(function* () {
             ? writer.value.discard(row.orgId, row.wakeupId).pipe(Effect.ignore)
             : Effect.void,
         ),
+        Effect.ensuring(endReply(row)),
       ),
   );
   const clearMissingThread = Effect.fn("WakeupRunner.clearMissingThread")(function* (
@@ -302,6 +317,7 @@ const make = Effect.gen(function* () {
   ) {
     if (Option.isSome(writer))
       yield* writer.value.discard(row.orgId, row.wakeupId).pipe(Effect.ignore);
+    yield* endReply(row);
     const [running] =
       yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId} AND status = 'running'`;
     if (running === undefined) return;
@@ -418,6 +434,9 @@ const make = Effect.gen(function* () {
               return;
             }
             const budgetContext = yield* budget.promptContext(orgId);
+            const lane = Option.isSome(bridge)
+              ? Option.getOrUndefined(yield* bridge.value.lane({ orgId, agentId, wakeupId }))
+              : undefined;
             const pinned = yield* memory.prepareWakeup(orgId, wakeupId, { lead: agentId }).pipe(
               Effect.tapError((error) =>
                 Effect.logError("Kin memory preparation failed", {
@@ -498,6 +517,7 @@ const make = Effect.gen(function* () {
               events,
               memoryHead: pinned.head,
               budgetContext,
+              ...(lane === undefined ? {} : { lane }),
             });
             const urgent =
               yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND priority IN ('P0', 'P1') LIMIT 1`;
@@ -532,6 +552,14 @@ const make = Effect.gen(function* () {
               }),
             );
             yield* registry.register(threadId, { orgId, agentId, wakeupId, level: current.level });
+            if (Option.isSome(bridge))
+              yield* bridge.value.begin({
+                orgId,
+                agentId,
+                wakeupId,
+                threadId,
+                startedAt: row.startedAt,
+              });
             const commandId = CommandId.make(`kin-wakeup:${wakeupId}`);
             const messageId = MessageId.make(`kin-wakeup-msg:${wakeupId}`);
             const sent =
@@ -668,6 +696,8 @@ const make = Effect.gen(function* () {
               threadId: projection.thread.id,
             });
             yield* registry.register(projection.thread.id, { ...row, level: record.level });
+            if (Option.isSome(bridge))
+              yield* bridge.value.begin({ ...row, threadId: projection.thread.id });
             yield* wait(row, projection.thread.projectId).pipe(
               Effect.onExit((exit) =>
                 Exit.isFailure(exit)

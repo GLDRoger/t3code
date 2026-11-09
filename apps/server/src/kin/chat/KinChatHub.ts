@@ -1,6 +1,9 @@
 import type {
+  KinAgentId,
   KinChat,
   KinChatId,
+  KinChatStreamEvent,
+  KinPresence,
   KinMemberId,
   KinChatMember,
   KinMessage,
@@ -31,6 +34,18 @@ type ChatEvent =
       readonly chatId: KinChatId;
       readonly memberId: KinMemberId;
       readonly seq: number;
+    }
+  // Live only: never persisted, never in a checkpoint.
+  | {
+      readonly type: "presence.updated";
+      readonly chatId: KinChatId;
+      readonly agentId: KinAgentId;
+      readonly presence: KinPresence | null;
+    }
+  | {
+      readonly type: "draft.updated";
+      readonly chatId: KinChatId;
+      readonly draft: Omit<Extract<KinChatStreamEvent, { _tag: "draft" }>, "_tag">;
     };
 export type KinChatHubEvent = ChatEvent & { readonly orgId: KinOrgId };
 

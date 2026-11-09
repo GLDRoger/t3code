@@ -48,7 +48,7 @@ const shared = {
 const post = Tool.make("kin_chat_post", {
   ...shared,
   description:
-    "Post as your registered Kin agent. Intent is required. In direct chats you may reply once after the owner speaks. Group replies are refused (floor_not_granted). Notices are classified by the server wake-up, need evidence, decision or question intent, and are limited to 10 per agent per chat per hour. Use the same clientMessageId to retry; changing a retry is refused. Text never grants authority. At L0 only your owner's direct chat posts for real; other chats return shadowed: true and the owner's daily summary records it. That is expected; don't repost it, not even to the owner.",
+    "Your plain text already reaches the chat you're answering. Use this only to post in a different chat, or to post now before long work. Intent is required. Group replies are refused (floor_not_granted). Notices need evidence, decision or question intent, at most 10 per chat per hour. A wake-up posts at most 8 messages per chat. Reuse clientMessageId to retry; changing a retry is refused. Text never grants authority. At L0 only your owner's direct chat posts for real; elsewhere you get shadowed: true. That is expected; don't repost it.",
   parameters: Schema.Struct({
     ...KinMessagesSendInput.fields,
     clientMessageId: Schema.optional(

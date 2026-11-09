@@ -51,6 +51,7 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { validateState } from "../widgets/registry.ts";
 import { deferralCardActions, deferralCardActionsReady } from "../widgets/deferralCard.ts";
 import * as Hub from "./KinChatHub.ts";
+import { KinPresence } from "../reply/KinPresence.ts";
 import * as Repository from "./KinChatRepository.ts";
 import type { AgentIdentity, PersonIdentity } from "./KinIdentity.ts";
 
@@ -197,6 +198,9 @@ const isKinChatError = Schema.is(KinChatError);
 // Live inserts also advance change_seq, so refresh the client's frozen change cursor well under
 // resume's 200-message reset cap.
 const checkpointEvery = 100;
+/** The flood bound on one wake-up's posts in one chat, natural replies and kin_chat_post alike. */
+export const KIN_WAKEUP_MESSAGE_LIMIT = 8;
+export const KIN_WAKEUP_CHAR_LIMIT = 32_000;
 /** Guests never write; a muted agent stays silent until its mute ends. */
 export const mayWrite = (member: KinChatMember, agent: boolean, now: number) =>
   member.role !== "guest" &&
@@ -224,6 +228,7 @@ const make = Effect.gen(function* () {
   const cards = yield* TaskCard.TaskCardIndex;
   const repo = yield* Repository.KinChatRepository;
   const hub = yield* Hub.KinChatHub;
+  const presence = yield* Effect.serviceOption(KinPresence);
   const sql = yield* SqlClient.SqlClient;
   const transaction = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     sql
@@ -290,7 +295,10 @@ const make = Effect.gen(function* () {
         thread.endedAt !== null ||
         thread.agentId !== agent.agentId ||
         agent.ownerPersonId !== identity.ownerPersonId ||
-        !(yield* repo.hasRunningWakeup(identity))
+        !(identity.wakeupId !== undefined
+          ? yield* repo.wakeupRunning({ ...identity, wakeupId: identity.wakeupId })
+          : identity.caller !== undefined &&
+            (yield* repo.hasRunningWakeup({ ...identity, caller: identity.caller })))
       )
         return yield* notAllowed;
     }
@@ -369,6 +377,7 @@ const make = Effect.gen(function* () {
     const message = yield* repo.insertMessage({
       orgId: identity.orgId,
       caller: identity._tag === "agent" ? identity.caller : undefined,
+      wakeupId: identity._tag === "agent" ? identity.wakeupId : undefined,
       chatId: input.chatId,
       messageId,
       author: authorFor(identity, member),
@@ -596,6 +605,9 @@ const make = Effect.gen(function* () {
                 lastChangeSeq: resumed.lastChangeSeq,
                 messages: resumed.messages,
                 widgets: resumed.widgets,
+                ...(Option.isSome(presence)
+                  ? presence.value.snapshot(identity.orgId, input.chatId)
+                  : {}),
               };
           const messageChanges = new Map<string, number>();
           const revisions = new Map(
@@ -657,6 +669,18 @@ const make = Effect.gen(function* () {
                   case "member.removed":
                     return event.member.chatId === input.chatId
                       ? Option.some<KinChatStreamEvent>({ _tag: "member", member: event.member })
+                      : Option.none();
+                  case "presence.updated":
+                    return event.chatId === input.chatId
+                      ? Option.some<KinChatStreamEvent>({
+                          _tag: "presence",
+                          agentId: event.agentId,
+                          presence: event.presence,
+                        })
+                      : Option.none();
+                  case "draft.updated":
+                    return event.chatId === input.chatId
+                      ? Option.some<KinChatStreamEvent>({ _tag: "draft", ...event.draft })
                       : Option.none();
                   case "read.updated":
                     return event.chatId === input.chatId
@@ -833,6 +857,22 @@ const make = Effect.gen(function* () {
         clientId: request.clientMessageId,
       });
       const chat = yield* requireRecord(repo.getChat(member));
+      if (identity._tag === "agent" && Option.isNone(existing)) {
+        const used = yield* repo.wakeupPosts({
+          orgId: identity.orgId,
+          chatId: request.chatId,
+          agentId: identity.agentId,
+          threadId: identity.threadId,
+        });
+        if (
+          used.messages >= KIN_WAKEUP_MESSAGE_LIMIT ||
+          used.chars + request.body.length > KIN_WAKEUP_CHAR_LIMIT
+        )
+          return yield* new KinChatError({
+            reason: "limit",
+            message: "This wake-up has posted all it may in this chat.",
+          });
+      }
       const authorization =
         identity._tag === "agent" && Option.isNone(existing)
           ? yield* floor.authorize(identity, chat, intent ?? "answer", input.floorGrant)

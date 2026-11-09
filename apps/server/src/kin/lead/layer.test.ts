@@ -17,6 +17,8 @@ import * as ThreadManagement from "../../orchestration-v2/ThreadManagementServic
 import { provideDeterministicTestRuntime } from "../../orchestration-v2/testkit/DeterministicRuntime.ts";
 import * as ChatService from "../chat/KinChatService.ts";
 import * as ChatHub from "../chat/KinChatHub.ts";
+import * as Presence from "../reply/KinPresence.ts";
+import * as LevelGate from "./LevelGate.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinLead from "./layer.ts";
 import { event, harness, seed, orgId } from "./WakeupRunner.testkit.ts";
@@ -24,6 +26,12 @@ import { event, harness, seed, orgId } from "./WakeupRunner.testkit.ts";
 const external = Layer.mergeAll(
   Layer.mock(ChatService.KinChatService)({}),
   Layer.mock(ChatHub.KinChatHub)({ subscribeAll: Effect.succeed(Stream.never) }),
+  Layer.mock(LevelGate.KinLevelGate)({}),
+  Layer.mock(Presence.KinPresence)({
+    set: () => Effect.void,
+    clear: () => Effect.void,
+    snapshot: () => ({ presence: [], drafts: [] }),
+  }),
   ServerConfig.layerTest(process.cwd(), { prefix: "kin-lead-layer-" }),
   Layer.mock(VcsProcess.VcsProcess)({}),
 ).pipe(Layer.provideMerge(NodeServices.layer));
@@ -105,7 +113,7 @@ it.effect("starts configured Kin with the real prompt and the runner's pinned me
           ThreadId.make(wakeup!.thread_id),
         );
       assert.strictEqual(projection.messages.length, 1);
-      assert.include(projection.messages[0]!.text, "instructions-version: 3");
+      assert.include(projection.messages[0]!.text, "instructions-version: 4");
       assert.include(projection.messages[0]!.text, "Fixture standing rules");
       assert.include(projection.messages[0]!.text, "Fixture memory index");
       yield* Deferred.succeed(hold, undefined);

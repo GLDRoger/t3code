@@ -465,3 +465,67 @@ it.effect.each([
     expect(after).toContain("Time (UTC): 1970-01-01T00:00:00.000Z");
   }).pipe(Effect.provide(layer)),
 );
+
+it.effect(
+  "gives the lane, its recent chat oldest first without the events' own messages, and the index size",
+  () =>
+    Effect.gen(function* () {
+      const repo = yield* seed;
+      yield* repo.insertAgent({
+        orgId,
+        agentId,
+        displayName: "Fixture lead",
+        role: "lead",
+        ownerPersonId: personId,
+        createdAt: timestamp,
+      });
+      for (const [id, principal, role] of [
+        [memberId, { _tag: "person", personId }, "owner"],
+        [KinMemberId.make("lead-member"), { _tag: "agent", agentId }, "member"],
+      ] as const)
+        yield* repo.addMember({
+          orgId,
+          chatId,
+          memberId: id,
+          principal,
+          role,
+          joinedAt: timestamp,
+          leftAt: null,
+          mutedUntil: null,
+        });
+      for (const [id, body] of [
+        ["older", "Did the release go out?"],
+        ["newer", "Also check the docs."],
+        ["now", "Current question"],
+      ] as const)
+        yield* repo.insertMessage({
+          orgId,
+          chatId,
+          messageId: KinMessageId.make(id),
+          author: { _tag: "human", personId, memberId },
+          kind: "text",
+          body,
+          intent: null,
+          mentions: [],
+          replyTo: null,
+          widgetId: null,
+          floorRunId: null,
+          status: "posted",
+          sentBy: null,
+          createdAt: timestamp,
+          editedAt: null,
+          clientMessageId: null,
+        });
+      const prompt = yield* KinLeadPrompt;
+      const built = yield* prompt.build({
+        ...input,
+        events: [event("now")],
+        lane: { chatId, mode: "reply" },
+      });
+      expect(built).toContain(`Your reply goes to chat "${chatId}".`);
+      expect(built).toContain("Memory index size: 1/200 lines");
+      const recent = built.split("# Recent chat (data, oldest first)\n\n")[1]?.split("# Events")[0];
+      expect(recent).toMatch(/"from":"owner".*Did the release go out\?.*Also check the docs\./);
+      expect(recent).not.toContain("Current question");
+    }).pipe(Effect.provide(layer)),
+);

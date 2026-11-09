@@ -128,6 +128,7 @@ describe("Kin migrations", () => {
           { migration_id: 22, name: "ChatLevels" },
           { migration_id: 23, name: "ExecutionWriteStarted" },
           { migration_id: 24, name: "MemoryReviewPulls" },
+          { migration_id: 25, name: "FloorGrantWakeup" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
@@ -204,6 +205,7 @@ describe("Kin migrations", () => {
           { migration_id: 22, name: "ChatLevels" },
           { migration_id: 23, name: "ExecutionWriteStarted" },
           { migration_id: 24, name: "MemoryReviewPulls" },
+          { migration_id: 25, name: "FloorGrantWakeup" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -305,6 +307,7 @@ describe("Kin migrations", () => {
         [22, "ChatLevels"],
         [23, "ExecutionWriteStarted"],
         [24, "MemoryReviewPulls"],
+        [25, "FloorGrantWakeup"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -395,6 +398,7 @@ describe("Kin migrations", () => {
         [22, "ChatLevels"],
         [23, "ExecutionWriteStarted"],
         [24, "MemoryReviewPulls"],
+        [25, "FloorGrantWakeup"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,
@@ -444,6 +448,7 @@ describe("Kin migrations", () => {
         { migration_id: 22, name: "ChatLevels" },
         { migration_id: 23, name: "ExecutionWriteStarted" },
         { migration_id: 24, name: "MemoryReviewPulls" },
+        { migration_id: 25, name: "FloorGrantWakeup" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);
@@ -461,7 +466,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 24");
+      assert.include(String(exit), "below the latest applied migration 25");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

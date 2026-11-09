@@ -21,6 +21,7 @@ import {
   KinChatHistoryInput,
   type KinChatHistoryResult,
   ThreadId,
+  type KinWakeupId,
   IsoDateTime,
   NonNegativeInt,
   TrimmedNonEmptyString,
@@ -63,6 +64,8 @@ type ChatScope = Scope & { readonly chatId: KinChatId };
 type MemberScope = ChatScope & { readonly memberId: KinMemberId };
 type InsertMessage = Omit<KinMessage, "seq" | "authorRole" | "clientMessageId"> & {
   readonly caller?: McpThreadCaller | undefined;
+  // The reply bridge posts for a wake-up it resolved itself; its running row is the authority.
+  readonly wakeupId?: KinWakeupId | undefined;
   // Only the server-only task card creator may attribute a message outside an agent wake-up.
   readonly serverTaskCard?: true;
   readonly clientMessageId: {
@@ -225,6 +228,18 @@ export class KinChatRepository extends Context.Service<
         readonly caller: McpThreadCaller;
       },
     ) => Effect.Effect<boolean, RepositoryError>;
+    /** Whether this exact wake-up is still running for the agent's thread. */
+    readonly wakeupRunning: (
+      input: Scope & {
+        readonly agentId: KinAgentId;
+        readonly threadId: ThreadId;
+        readonly wakeupId: KinWakeupId;
+      },
+    ) => Effect.Effect<boolean, RepositoryError>;
+    /** What the thread's running wake-up has posted in the chat so far. */
+    readonly wakeupPosts: (
+      input: ChatScope & { readonly agentId: KinAgentId; readonly threadId: ThreadId },
+    ) => Effect.Effect<{ readonly messages: number; readonly chars: number }, RepositoryError>;
     readonly findAgentThread: (
       threadId: ThreadId,
     ) => Effect.Effect<Option.Option<KinAgentThread>, RepositoryError>;
@@ -505,6 +520,30 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(toRepositoryError("KinChatRepository.hasRunningWakeup")),
   );
+  const wakeupPosts = Effect.fn("KinChatRepository.wakeupPosts")(
+    function* (input: ChatScope & { readonly agentId: KinAgentId; readonly threadId: ThreadId }) {
+      const rows = yield* sql<{ messages: number; chars: number }>`
+        SELECT COUNT(m.message_id) AS messages, COALESCE(SUM(length(m.body)), 0) AS chars
+        FROM kin_wakeups w JOIN kin_messages m ON m.org_id = w.org_id AND m.chat_id = ${input.chatId}
+          AND m.author_kind = 'agent' AND m.author_agent_id = w.agent_id
+          AND m.author_thread_id = w.thread_id
+          AND m.created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', w.started_at / 1000.0, 'unixepoch')
+        WHERE w.org_id = ${input.orgId} AND w.agent_id = ${input.agentId}
+          AND w.thread_id = ${input.threadId} AND w.status = 'running'
+        GROUP BY w.wakeup_id ORDER BY w.wakeup_id LIMIT 1`;
+      return { messages: rows[0]?.messages ?? 0, chars: rows[0]?.chars ?? 0 };
+    },
+    Effect.mapError(toRepositoryError("KinChatRepository.wakeupPosts")),
+  );
+  const wakeupRunning = Effect.fn("KinChatRepository.wakeupRunning")(
+    function* (input: Scope & { agentId: KinAgentId; threadId: ThreadId; wakeupId: KinWakeupId }) {
+      const rows = yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${input.orgId}
+        AND wakeup_id = ${input.wakeupId} AND agent_id = ${input.agentId}
+        AND thread_id = ${input.threadId} AND status = 'running' ORDER BY wakeup_id LIMIT 1`;
+      return rows.length > 0;
+    },
+    Effect.mapError(toRepositoryError("KinChatRepository.wakeupRunning")),
+  );
   const validateWidgetReferences = Effect.fn("KinChatRepository.validateWidgetReferences")(
     function* (input: Pick<KinWidget, "orgId" | "chatId" | "awaiting" | "source">) {
       for (const personId of input.awaiting) {
@@ -627,6 +666,8 @@ const make = Effect.gen(function* () {
   );
   return KinChatRepository.of({
     hasRunningWakeup,
+    wakeupRunning,
+    wakeupPosts,
     getOrg: orgOne,
     getPerson: personOne,
     getAgent: agentOne,
@@ -1203,13 +1244,20 @@ const make = Effect.gen(function* () {
             if (
               author._tag === "agent" &&
               input.serverTaskCard !== true &&
-              (input.caller === undefined ||
-                !(yield* hasRunningWakeup({
-                  ...input,
-                  agentId: author.agentId,
-                  threadId: author.threadId,
-                  caller: input.caller,
-                })))
+              !(input.wakeupId !== undefined
+                ? yield* wakeupRunning({
+                    orgId: input.orgId,
+                    agentId: author.agentId,
+                    threadId: author.threadId,
+                    wakeupId: input.wakeupId,
+                  })
+                : input.caller !== undefined &&
+                  (yield* hasRunningWakeup({
+                    ...input,
+                    agentId: author.agentId,
+                    threadId: author.threadId,
+                    caller: input.caller,
+                  })))
             )
               return yield* new KinChatError({
                 reason: "not_allowed",
