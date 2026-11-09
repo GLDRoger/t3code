@@ -11,6 +11,8 @@ import {
   type KinMessage,
   type KinMessagesSendInput,
   type KinOrgId,
+  type KinReaction,
+  type KinReactionEmoji,
   type KinShadowResult,
   type KinWidget,
 } from "@t3tools/contracts";
@@ -61,6 +63,15 @@ export class KinLevelGate extends Context.Service<
       agent: AgentIdentity,
       input: AskInput,
     ) => Effect.Effect<KinWidget | KinShadowResult, KinChatError>;
+    /** `kin_react`: the lead's reaction, gated like a post since it can stand for its reply. */
+    readonly react: (
+      agent: AgentIdentity,
+      input: {
+        readonly chatId: KinChatId;
+        readonly messageId: KinMessageId;
+        readonly emoji: KinReactionEmoji;
+      },
+    ) => Effect.Effect<KinReaction | KinShadowResult, KinChatError>;
   }
 >()("t3/kin/lead/LevelGate/KinLevelGate") {}
 
@@ -166,6 +177,8 @@ const fullText = (tool: string, input: unknown) => {
           labelled("Options", labels.join(" / ")),
         );
       }
+      case "kin_react":
+        return `Reacted ${text(field(input, "emoji"))} to message ${text(field(input, "messageId"))}`;
       case "request_action":
         return lines(
           `${text(field(input, "kind"))}: ${targetText(field(input, "target"))}`,
@@ -340,7 +353,7 @@ const make = Effect.gen(function* () {
   const shadow = Effect.fn("KinLevelGate.shadow")(function* (
     agent: AgentIdentity,
     level: KinLevel,
-    tool: "kin_chat_post" | "reply" | "kin_ask",
+    tool: "kin_chat_post" | "reply" | "kin_ask" | "kin_react",
     input: {
       readonly chatId: KinChatId;
       readonly clientMessageId: string;
@@ -371,7 +384,7 @@ const make = Effect.gen(function* () {
       const [shadowed] = yield* sql<{ n: number }>`
               SELECT COUNT(*) AS n FROM kin_shadow_entries
               WHERE org_id = ${agent.orgId} AND agent_id = ${agent.agentId} AND created_at > ${since}
-                AND tool IN ('kin_chat_post', 'reply', 'kin_ask') AND would_target = ${input.chatId}
+                AND tool IN ('kin_chat_post', 'reply', 'kin_ask', 'kin_react') AND would_target = ${input.chatId}
                 AND json_extract(input_json, '$.notice') = 1
               ORDER BY n`.pipe(
         Effect.mapError(toPersistenceSqlError("KinLevelGate.shadowedNotices")),
@@ -542,8 +555,55 @@ const make = Effect.gen(function* () {
     ),
   );
 
+  const react = Effect.fn("KinLevelGate.react")(
+    function* (agent: AgentIdentity, input: Parameters<KinLevelGate["Service"]["react"]>[1]) {
+      const result = yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const level = yield* KinLevels.effectiveLevel({
+            orgId: agent.orgId,
+            agentId: agent.agentId,
+            chatId: input.chatId,
+          });
+          if (KinLevels.atLeast(level, "L1") || (yield* isOwnerChat(agent, input.chatId)))
+            return yield* chat.react(agent, { ...input, on: true });
+          return yield* shadow(agent, level, "kin_react", {
+            chatId: input.chatId,
+            clientMessageId: `react:${input.messageId}:${input.emoji}`,
+            intent: "evidence",
+            fields: { messageId: input.messageId, emoji: input.emoji },
+          });
+        }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+      );
+      if (!("shadowed" in result)) return result;
+      if (result.created) yield* refresh({ orgId: agent.orgId, agentId: agent.agentId });
+      return { shadowed: true as const, entryId: result.entryId };
+    },
+    Effect.catch((error) =>
+      error._tag === "KinChatError"
+        ? Effect.fail(error)
+        : error._tag === "KinLevelRefused"
+          ? Effect.fail(
+              refused(
+                error.reason === "not_running"
+                  ? "Kin wake-up is not running."
+                  : error.reason === "limit"
+                    ? KinLevels.SHADOW_LIMIT_MESSAGE
+                    : "Chat operation not allowed.",
+                error.reason === "limit" ? "limit" : "not_allowed",
+              ),
+            )
+          : Effect.logError("Kin level-gated reaction failed", error).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new KinChatError({ reason: "unavailable", message: "Kin is unavailable." }),
+                ),
+              ),
+            ),
+    ),
+  );
+
   return {
-    gate: KinLevelGate.of({ post, upsertWidget, ask }),
+    gate: KinLevelGate.of({ post, upsertWidget, ask, react }),
     summary: KinLevels.KinShadowSummary.of({ refresh }),
   };
 });

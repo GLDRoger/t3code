@@ -74,7 +74,7 @@ const SteerInput = Schema.Struct({
  * An event's lane, the chat a wake-up answers: a human message's or card tap's own chat, else
  * the lead's direct chat with its owner. Derived from stored rows only, never model text.
  */
-const LANE_OF = `CASE WHEN e.tag IN ('chat.message', 'widget.action')
+const LANE_OF = `CASE WHEN e.tag IN ('chat.message', 'widget.action', 'chat.reaction')
   THEN json_extract(e.json, '$.chatId') ELSE l.owner_chat_id END`;
 
 const decodeClaimInput = Schema.decodeEffect(ClaimInput);
@@ -162,7 +162,7 @@ export class KinEventQueue extends Context.Service<
       Scope.Scope
     >;
     /**
-     * Claims queued human messages and card taps in a running wake-up's lane into that
+     * Claims queued human messages, card taps and soft reactions in a running wake-up's lane into that
      * wake-up, unchanged, so the runner can steer them into its live session.
      */
     readonly steer: (
@@ -266,6 +266,7 @@ const make = Effect.gen(function* () {
               break;
             case "chat.message":
             case "widget.action":
+            case "chat.reaction":
               if (event.provenance._tag === "human") {
                 const owners = yield* sql`
             SELECT 1 FROM kin_chat_members
@@ -489,7 +490,7 @@ const make = Effect.gen(function* () {
           WHERE org_id = ${input.orgId} AND event_id IN (
             SELECT e.event_id FROM kin_events e JOIN wakeup w ON w.org_id = e.org_id AND w.agent_id = e.agent_id
             WHERE e.org_id = ${input.orgId} AND e.state = 'queued'
-              AND e.tag IN ('chat.message', 'widget.action')
+              AND e.tag IN ('chat.message', 'widget.action', 'chat.reaction')
               AND json_extract(e.json, '$.provenance._tag') = 'human'
               AND json_extract(e.json, '$.chatId') = (SELECT chat_id FROM lane)
               AND (e.not_before IS NULL OR e.not_before <= ${now})

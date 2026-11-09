@@ -312,6 +312,7 @@ Method names live in `KIN_CHAT_WS_METHODS` in `kinChat.ts`. `kinChat.ts` must no
 | `kin.messages.send`                                  | `{ chatId, clientMessageId, body, mentions?, replyTo? }`   | `KinMessage`                                    | 1     | `orchestration:operate` |
 | `kin.messages.markRead`                              | `{ chatId, seq }`                                          | `{}`                                            | 1     | `orchestration:read`    |
 | `kin.widgets.act`                                    | `{ widgetId, revision, actionId, value?, clientActionId }` | `KinMessage`                                    | 1     | `orchestration:operate` |
+| `kin.messages.react`                                 | `{ messageId, emoji, on }`                                 | `KinReaction`                                   | 1     | `orchestration:operate` |
 | `kin.widgets.setPinned`                              | `{ widgetId, pinned }`                                     | `KinWidget`                                     | 2     | `orchestration:operate` |
 | `kin.chats.createGroup`                              | `{ orgId, kind, title, teamId?, members }`                 | `KinChat`                                       | 2     | `orchestration:operate` |
 | `kin.members.add` / `.remove` / `.setRole` / `.mute` | `{ chatId, ... }`                                          | `KinChatMember`                                 | 2     | `orchestration:operate` |
@@ -347,12 +348,14 @@ export const KinChatStreamEvent = Schema.Union([
   Schema.TaggedStruct("widget", { widget: KinWidget }),
   Schema.TaggedStruct("member", { member: KinChatMember }),
   Schema.TaggedStruct("read", { memberId: KinMemberId, seq: NonNegativeInt }),
-  // Live only, never persisted: a reply streaming in, an agent's status line, a reaction.
+  // Live only, never persisted: a reply streaming in, an agent's status line.
   Schema.TaggedStruct("draft", { draftId, agentId, offset, text, end?: { messageId | null } }),
   Schema.TaggedStruct("presence", { agentId, presence: KinPresence | null }),
-  Schema.TaggedStruct("reaction", { reaction: KinReaction }),
+  Schema.TaggedStruct("reaction", { reaction: KinReaction }), // added, or withdrawn (removedAt set)
 ]);
 ```
+
+- **Reactions** (K026 `kin_reactions`) are one of six emoji per member and message, toggled on and off. A `backlog` carries the chat's live reactions in full, so a client replaces its set; `kin.chat.history` carries those on its page. What a reaction means is decided in code, never by the model: an owner's yes/no emoji on an open choice card with one `yes` and one `no` option answers it through the same compare-and-set as a tap (`via: "reaction"`); an owner's yes/no emoji on the lead's latest message in their direct chat, within a day, wakes the lead as a P0 `chat.reaction` event (or steers into its running wake-up), at most once per chat per 30 s, and opens a floor run so it can answer; anything else is stored, shown, and quoted to the lead as context. Approval, level, review, deferral and owner-check cards refuse reactions, so a reaction can never stand in for a signed grant. A lead reacts only through `kin_react`, in its wake-up's chat, behind the same level gate as a post; it counts as the reply only when every message the wake-up owed was the owner's text without a `?`.
 
 - **Live state:** `backlog` also carries the chat's current `presence` lines and open `drafts`, so a reconnect shows them at once. A draft delta appends `text` at `offset`, at most one per 250 ms per chat; a client whose draft length differs ignores deltas until `end`, the durable message, or the next backlog. Presence is sent only on change, never as a tick. `contracts/src/kinChat.ts` holds the shapes.
 

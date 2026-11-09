@@ -2,6 +2,7 @@ import {
   KinChatSummary,
   KinMessage,
   KinPresence,
+  KinReaction,
   KinWaitingItem,
   KinWidget,
   type KinChatId,
@@ -19,6 +20,7 @@ import {
   KinHeldDraft,
   settleKinDrafts,
 } from "./kinLive";
+import { applyKinReaction, mergeKinReactions } from "./kinReactions";
 
 export const KIN_CACHED_MESSAGE_LIMIT = 50;
 
@@ -143,6 +145,8 @@ export const KinChatState = Schema.Struct({
   drafts: Schema.Array(KinHeldDraft).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
   /** What each working agent is doing; hub-only, never cached. */
   presence: Schema.Array(KinPresence).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
+  /** Live reactions on held messages; a backlog that carries them replaces the set. */
+  reactions: Schema.Array(KinReaction).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
 });
 export type KinChatState = typeof KinChatState.Type;
 
@@ -157,6 +161,7 @@ export const emptyKinChat: KinChatState = {
   closed: null,
   drafts: [],
   presence: [],
+  reactions: [],
 };
 
 /** Every Kin refusal but `unavailable`, which the stream retries. */
@@ -238,7 +243,10 @@ export function applyKinChatEvent(
       // Only a fully applied backlog moves it; live events keep this snapshot cursor.
       const changeSeq = event.lastChangeSeq ?? state.changeSeq;
       const live = applyKinLiveBacklog(state, event, messages, now);
+      // The host sends the chat's live reactions in full; a backlog without them keeps ours.
+      const reactions = event.reactions ?? state.reactions;
       if (
+        reactions === state.reactions &&
         messages === state.messages &&
         widgets === state.widgets &&
         contiguousSeq === state.contiguousSeq &&
@@ -250,7 +258,7 @@ export function applyKinChatEvent(
       ) {
         return state;
       }
-      return { ...state, messages, widgets, contiguousSeq, changeSeq, ...live };
+      return { ...state, messages, widgets, contiguousSeq, changeSeq, reactions, ...live };
     }
     case "reset":
       return {
@@ -300,9 +308,10 @@ export function applyKinChatEvent(
         drafts: drafts.length === state.drafts.length ? state.drafts : drafts,
       };
     }
-    // Reactions show with R1-REACT-UI.
-    case "reaction":
-      return state;
+    case "reaction": {
+      const reactions = applyKinReaction(state.reactions, event.reaction);
+      return reactions === state.reactions ? state : { ...state, reactions };
+    }
   }
 }
 
@@ -317,6 +326,7 @@ export function applyKinChatHistory(state: KinChatState, page: KinChatHistoryRes
     ...state,
     messages: mergeMessages(state.messages, page.messages),
     widgets: mergeWidgets(state.widgets, page.widgets),
+    reactions: mergeKinReactions(state.reactions, page.reactions ?? []),
     needsHistoryReload: false,
   };
 }
@@ -329,6 +339,7 @@ export function trimKinChatForCache(state: KinChatState): KinChatState {
     ...state,
     messages,
     widgets: state.widgets.filter((widget) => kept.has(widget.messageId)),
+    reactions: state.reactions.filter((reaction) => kept.has(reaction.messageId)),
     left: false,
     closed: null,
     drafts: [],

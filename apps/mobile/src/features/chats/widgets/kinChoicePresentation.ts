@@ -25,6 +25,8 @@ export interface KinChoiceCardView {
     readonly personId: KinPersonId;
     readonly emoji: string | null;
   } | null;
+  /** Exactly one yes and one no option: the owner's 👍 or 👎 answers it too. */
+  readonly takesReaction: boolean;
   /** When an unanswered card stops taking taps; the host refuses later ones. */
   readonly expiresAtMs: number;
   readonly closed: boolean;
@@ -61,6 +63,9 @@ export function kinChoiceCardView(widget: KinWidget): KinChoiceCardView | null {
             personId: card.answer.personId,
             emoji: card.answer.via === "reaction" ? card.answer.emoji : null,
           },
+    takesReaction:
+      card.options.filter((option) => option.kind === "yes").length === 1 &&
+      card.options.filter((option) => option.kind === "no").length === 1,
     // Unanswered cards are never rewritten, so `updatedAt` is still the time it was posted.
     expiresAtMs: Date.parse(widget.updatedAt) + KIN_CHOICE_CARD_TTL_MS,
     closed: widget.closedAt !== null,

@@ -12,10 +12,14 @@ import {
 } from "@react-navigation/native";
 import {
   EnvironmentId,
+  KIN_NO_REACTIONS,
+  KIN_YES_REACTIONS,
   KinChatId,
   type KinChatHistoryInput,
   type KinChatHistoryResult,
+  type KinChatMember,
   type KinMessage,
+  type KinReactionEmoji,
   type KinPresence,
   type KinWakeupId,
 } from "@t3tools/contracts";
@@ -44,6 +48,8 @@ import { deriveThreadFeedInitialContentInset } from "../../lib/layout";
 import { NativeScrollViewMarker } from "../../native/NativeScrollViewMarker";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { appAtomRegistry } from "../../state/atom-registry";
+import { useAtomCommand } from "../../state/use-atom-command";
+import { useNowMinuteMs } from "../../lib/clock";
 import { useMarkdownPreviewStyles } from "../files/FileMarkdownPreview";
 import {
   editKinOutboxEntry,
@@ -106,6 +112,12 @@ import {
 import { kinPresenceLine, kinPresenceNeedsClock } from "./state/kinLive";
 import { kinChatTitle, kinDirectAgentName, kinLevelsAgentId } from "./state/kinScreenState";
 import { useKinHostAt } from "./state/useKinHost";
+import {
+  kinReactionChips,
+  kinReactionToggle,
+  kinSoftReplyMessageId,
+  kinViewerMemberId,
+} from "./state/kinReactions";
 import { KinChatPushWatch } from "./notifications/KinChatPushWatch";
 
 type KinChatParams = {
@@ -232,6 +244,8 @@ function KinLiveChat(props: {
         }
         state={state}
         viewer={viewer}
+        members={summary?.members ?? []}
+        direct={summary?.kind === "direct"}
         onRetry={retry}
         readHistory={
           state._tag === "ready" && state.connected
@@ -242,6 +256,10 @@ function KinLiveChat(props: {
     </>
   );
 }
+
+// Mirrors the host's reactable cards; the host still refuses the rest.
+const REACTABLE_WIDGETS = new Set(["choice", "task", "routine"]);
+const YES_NO = new Set<string>([...KIN_YES_REACTIONS, ...KIN_NO_REACTIONS]);
 
 let fixtureMessages: ReadonlyArray<KinMessage> | null = null;
 const readFixtureMessages = (fixtures: KinFixtures) =>
@@ -355,6 +373,9 @@ function KinChatPage(props: {
   readonly onRetry: () => void;
   /** Null while older pages can't be read, such as offline. */
   readonly readHistory: ReadHistory | null;
+  /** The chat's members from the inbox, for reactions; empty until it loads. */
+  readonly members?: ReadonlyArray<KinChatMember>;
+  readonly direct?: boolean;
 }) {
   const navigation = useNavigation();
   const topInset = useContentTopInset();
@@ -400,6 +421,8 @@ function KinChatPage(props: {
             markRead={props.markRead}
             presence={livePresence(state)}
             stopLead={props.stopLead ?? null}
+            members={props.members ?? []}
+            direct={props.direct ?? false}
           />
         ) : (
           <KinChatStateView state={state} onRetry={props.onRetry} />
@@ -535,6 +558,8 @@ function KinChatFeed(props: {
   readonly markRead: MarkRead | null;
   readonly presence: KinPresence | undefined;
   readonly stopLead: StopLead | null;
+  readonly members: ReadonlyArray<KinChatMember>;
+  readonly direct: boolean;
 }) {
   const listRef = useRef<LegendListRef>(null);
   const markedSeq = useRef(0);
@@ -613,6 +638,30 @@ function KinChatFeed(props: {
   }, [echoedKey]);
   const { messages } = mergeKinFeed(streamed, { ...emptyKinChat, messages: acked });
   const widgets = new Map(streamed.widgets.map((widget) => [widget.widgetId, widget]));
+  const canReactHere = useAtomValue(kinClient.react.permissionAtom(props.environmentId));
+  const react = useAtomCommand(kinClient.react, "react");
+  const nowMs = useNowMinuteMs();
+  const viewerMemberId = kinViewerMemberId(props.members, props.viewer.personId);
+  const canReact =
+    canReactHere &&
+    viewerMemberId !== null &&
+    props.members.some((member) => member.memberId === viewerMemberId && member.role !== "guest");
+  const softReplyId = kinSoftReplyMessageId(
+    streamed.messages,
+    props.members,
+    props.viewer.personId,
+    props.direct,
+    nowMs,
+  );
+  const reactorName = (memberId: string) => {
+    const member = props.members.find((candidate) => candidate.memberId === memberId);
+    if (member === undefined) return null;
+    return member.principal._tag === "agent"
+      ? (props.viewer.agentNames.get(member.principal.agentId) ?? "Lead")
+      : member.role === "owner"
+        ? "Owner"
+        : "Member";
+  };
   const feedRows = buildKinFeedRows(
     messages,
     props.viewer,
@@ -761,17 +810,48 @@ function KinChatFeed(props: {
 
   const renderItem = ({ item }: { readonly item: KinChatRow }) => {
     switch (item.type) {
-      case "message":
+      case "message": {
+        const { message } = item;
+        const widget = message.widgetId === null ? undefined : widgets.get(message.widgetId);
+        const chips = kinReactionChips(
+          streamed.reactions,
+          message.messageId,
+          viewerMemberId,
+          reactorName,
+        );
+        // The host refuses reactions on approval, level, review and deferral cards.
+        const reactable =
+          canReact &&
+          message.status === "posted" &&
+          (message.widgetId === null ||
+            (widget !== undefined && REACTABLE_WIDGETS.has(widget.type)));
         return (
           <KinMessageBubble
             row={item}
             markdownStyle={markdownStyle}
             onLinkPress={onLinkPress}
-            widget={item.message.widgetId === null ? undefined : widgets.get(item.message.widgetId)}
+            widget={widget}
             environmentId={props.environmentId}
             viewerPersonId={props.viewer.personId}
+            reactions={chips}
+            onReact={
+              reactable
+                ? (emoji: KinReactionEmoji) =>
+                    void react({
+                      environmentId: props.environmentId,
+                      input: kinReactionToggle(chips, message.messageId, emoji),
+                    })
+                : null
+            }
+            showReplyHint={
+              canReact &&
+              message.messageId === softReplyId &&
+              message.widgetId === null &&
+              !chips.some((chip) => chip.mine && YES_NO.has(chip.emoji))
+            }
           />
         );
+      }
       case "system":
         return <KinSystemLine row={item} />;
       case "fold":
@@ -902,7 +982,7 @@ function KinChatFeed(props: {
         }
         renderItem={renderItem}
         // Both reach rows only through renderItem, which the list doesn't watch.
-        extraData={[streamed.widgets, markdownStyle]}
+        extraData={[streamed.widgets, streamed.reactions, softReplyId, canReact, markdownStyle]}
         estimatedItemSize={72}
         drawDistance={500}
         // UIKit insets the feed under the bar, which LegendList can't see: without this a short

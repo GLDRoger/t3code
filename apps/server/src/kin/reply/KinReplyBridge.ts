@@ -170,7 +170,7 @@ export const laneFor = Effect.fn("KinReplyBridge.lane")(
     const [human] = yield* sql<{ chatId: string | null }>`
       SELECT json_extract(json, '$.chatId') AS "chatId" FROM kin_events
       WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND wakeup_id = ${input.wakeupId}
-        AND tag IN ('chat.message', 'widget.action')
+        AND tag IN ('chat.message', 'widget.action', 'chat.reaction')
       ORDER BY priority, received_at, event_id LIMIT 1`;
     const chatId = human?.chatId ?? lead?.ownerChatId;
     if (chatId === undefined || chatId === null) return Option.none<Lane>();
@@ -477,15 +477,32 @@ const make = Effect.gen(function* () {
     }
   });
 
-  // The seam for replies given another way, such as a lead's reaction once reactions land.
+  // Replies given another way. A lead's reaction (kin_react) counts only when everything the
+  // wake-up owed was the owner's text without a "?", and it reacted to one of those messages:
+  // "thanks, that's all" can take a 👍; a question, a card tap or a reaction still needs words.
   const answered = Effect.fn("KinReplyBridge.answered")(function* (wake: Wake) {
     if (wake.answered || wake.lane.mode === "notice") return true;
+    const owed = sql`SELECT e.event_id, e.tag, e.priority, q.body FROM kin_events e
+      LEFT JOIN kin_messages q ON q.org_id = e.org_id
+        AND q.message_id = json_extract(e.json, '$.messageId') AND q.chat_id = ${wake.lane.chatId}
+      WHERE e.org_id = ${wake.orgId} AND e.wakeup_id = ${wake.wakeupId}
+        AND e.tag IN ('chat.message', 'widget.action', 'chat.reaction')`;
     const rows = yield* sql`SELECT 1 FROM kin_messages
         WHERE org_id = ${wake.orgId} AND chat_id = ${wake.lane.chatId} AND author_kind = 'agent'
           AND author_agent_id = ${wake.agentId} AND author_thread_id = ${wake.threadId}
           AND created_at >= ${iso(wake.startedAt)}
       UNION ALL SELECT 1 FROM kin_shadow_entries
         WHERE org_id = ${wake.orgId} AND wakeup_id = ${wake.wakeupId} AND would_target = ${wake.lane.chatId}
+      UNION ALL SELECT 1 FROM kin_reactions r
+        JOIN kin_chat_members m ON m.org_id = r.org_id AND m.chat_id = r.chat_id
+          AND m.member_id = r.member_id AND m.principal_kind = 'agent' AND m.agent_id = ${wake.agentId}
+        WHERE r.org_id = ${wake.orgId} AND r.chat_id = ${wake.lane.chatId}
+          AND r.removed_at IS NULL AND r.created_at >= ${wake.startedAt}
+          AND r.message_id IN (SELECT json_extract(e.json, '$.messageId') FROM kin_events e
+            WHERE e.org_id = ${wake.orgId} AND e.wakeup_id = ${wake.wakeupId} AND e.tag = 'chat.message')
+          AND NOT EXISTS (SELECT 1 FROM (${owed}) o
+            WHERE o.tag != 'chat.message' OR o.priority != 'P0' OR o.body IS NULL
+              OR instr(o.body, '?') > 0)
       ORDER BY 1 LIMIT 1`;
     return rows.length > 0;
   });

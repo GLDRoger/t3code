@@ -292,6 +292,7 @@ it.live(
           "kin_follow_up",
           "kin_worker_stop",
           "kin_ask",
+          "kin_react",
           "memory_search",
           "memory_read",
           "memory_write",

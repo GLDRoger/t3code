@@ -454,7 +454,7 @@ it.effect("at L0 kin_chat_post posts nothing, records a shadow entry and updates
 );
 
 it.effect(
-  "at L0 a kin_ask card posts only in the owner's direct chat and is shadowed elsewhere",
+  "at L0 a kin_ask card and a kin_react land only in the owner's direct chat and are shadowed elsewhere",
   () =>
     Effect.gen(function* () {
       const { chat, person, sql } = yield* seed(false, "L0");
@@ -471,7 +471,17 @@ it.effect(
         });
       assert.include(yield* ask("group-1"), { shadowed: true });
       assert.include(yield* ask("other-direct"), { shadowed: true });
-      assert.include(yield* ask(chat.chatId), { type: "choice", chatId: chat.chatId });
+      const card = yield* ask(chat.chatId);
+      assert.include(card, { type: "choice", chatId: chat.chatId });
+      assert.ok("messageId" in card);
+      const react = (chatId: string) =>
+        gate.react(agent, {
+          chatId: KinChatId.make(chatId),
+          messageId: card.messageId,
+          emoji: "👍",
+        });
+      assert.include(yield* react("group-1"), { shadowed: true });
+      assert.include(yield* react(chat.chatId), { emoji: "👍", chatId: chat.chatId });
       assert.deepStrictEqual(
         yield* sql<{
           chatId: string;
@@ -485,6 +495,7 @@ it.effect(
         FROM kin_shadow_entries WHERE org_id = ${person.orgId} ORDER BY created_at, would_target`,
         [
           { tool: "kin_ask", target: "group-1" },
+          { tool: "kin_react", target: "group-1" },
           { tool: "kin_ask", target: "other-direct" },
         ],
       );

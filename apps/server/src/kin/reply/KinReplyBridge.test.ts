@@ -378,6 +378,33 @@ it.effect.each([
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect.each([
+  { ask: "Thanks, that's all for today.", rescues: 0, expected: [] },
+  {
+    ask: "Did the deploy finish?",
+    rescues: 1,
+    expected: ["system:Ada didn't reply. Send your message again to ask again."],
+  },
+])(
+  "a lead's 👍 is its reply only when the owner asked nothing (%#)",
+  ({ ask, rescues, expected }) =>
+    Effect.gen(function* () {
+      const { identity, chats, owner, wakeupId, message, complete, fake, posted } = yield* setup({
+        ask,
+      });
+      const lead = Option.getOrThrow(
+        yield* identity.agentForWakeup({ orgId: owner.orgId, wakeupId }),
+      );
+      yield* chats.react(lead, { messageId: message!.messageId, emoji: "👍", on: true });
+      yield* complete;
+      assert.strictEqual(fake.rescues, rescues);
+      assert.deepStrictEqual(
+        (yield* posted).map((row) => `${row.authorKind}:${row.body}`),
+        expected,
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect.each(["CI is red on main since 9:00.", "NO_REPLY"])(
   "sends a notice wake-up's text to the owner's chat, or nothing on NO_REPLY (%s)",
   (body) =>

@@ -10,6 +10,7 @@ import {
   KinAgentId,
   KinChatId,
   KinMemberId,
+  KinMessageId,
   KinMessagesSendInput,
   KinOrgId,
   KinPersonId,
@@ -361,6 +362,149 @@ describe("KinChatService", () => {
         assert.include(
           yield* service.act(person, tap("late", 1, later.widgetId)).pipe(Effect.flip),
           { reason: "invalid_state", message: "This question expired." },
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "takes reactions as replies: 👍 answers a yes/no card once, wakes on the lead's latest message, refuses privileged cards",
+    () =>
+      Effect.gen(function* () {
+        const { repo, service, person, agent, chat } = yield* seed();
+        const sql = yield* SqlClient.SqlClient;
+        const react = (messageId: KinMessageId, emoji: "👍" | "✅" | "❤️", on = true) =>
+          service.react(person, { messageId, emoji, on });
+        const card = yield* service.ask(agent, {
+          chatId: chat.chatId,
+          clientMessageId: "ask-react",
+          question: "Ship today?",
+          options: [
+            { label: "Ship it", kind: "yes" },
+            { label: "Wait", kind: "no" },
+          ],
+        });
+        const first = yield* react(card.messageId, "👍");
+        // A retried reaction changes nothing.
+        assert.deepStrictEqual(yield* react(card.messageId, "👍"), first);
+        const answered = Option.getOrThrow(yield* repo.getWidget(card));
+        assert.include((answered.state as { answer: object }).answer, {
+          optionId: "option-1",
+          via: "reaction",
+          emoji: "👍",
+        });
+        assert.include(yield* react(card.messageId, "✅").pipe(Effect.flip), {
+          reason: "widget_changed",
+        });
+        const tap = {
+          widgetId: card.widgetId,
+          revision: answered.revision,
+          actionId: "choose",
+          value: "option-2",
+          clientActionId: "tap-after-reaction",
+        };
+        assert.include(yield* service.act(person, tap).pipe(Effect.flip), {
+          reason: "widget_changed",
+        });
+        // A card tap wakes the lead through its widget_action message, so the reaction doesn't.
+        const woke = () =>
+          sql<{ messageId: string; emoji: string }>`SELECT message_id AS "messageId", emoji
+            FROM kin_reactions WHERE org_id = ${person.orgId} AND woke_at IS NOT NULL
+            ORDER BY woke_at, message_id`;
+        assert.deepStrictEqual(yield* woke(), []);
+
+        const older = yield* service.send(agent, {
+          chatId: chat.chatId,
+          clientMessageId: "lead-older",
+          body: "Shall I merge it?",
+          intent: "answer",
+        });
+        const latest = yield* service.send(agent, {
+          chatId: chat.chatId,
+          clientMessageId: "lead-latest",
+          body: "Merged. Anything else?",
+          intent: "answer",
+        });
+        yield* react(older.messageId, "👍");
+        yield* react(latest.messageId, "❤️");
+        assert.deepStrictEqual(yield* woke(), []);
+        yield* react(latest.messageId, "👍");
+        // The second yes inside the 30 s cooldown is recorded, not a second wake-up.
+        yield* react(latest.messageId, "✅");
+        assert.deepStrictEqual(yield* woke(), [{ messageId: latest.messageId, emoji: "👍" }]);
+        assert.deepStrictEqual(
+          yield* sql`SELECT 1 AS opened FROM kin_floor_runs
+            WHERE org_id = ${person.orgId} AND opened_by = ${latest.messageId} AND state = 'open'`,
+          [{ opened: 1 }],
+        );
+        yield* TestClock.adjust("30 seconds");
+        yield* react(latest.messageId, "✅", false);
+        yield* react(latest.messageId, "✅");
+        assert.lengthOf(yield* woke(), 2);
+        const history = yield* service.history(person, {
+          chatId: chat.chatId,
+          beforeSeq: latest.seq + 1,
+          limit: 10,
+        });
+        assert.deepStrictEqual(
+          history.reactions
+            ?.filter((reaction) => reaction.messageId === latest.messageId)
+            .map((reaction) => reaction.emoji)
+            .toSorted(),
+          ["✅", "❤️", "👍"].toSorted(),
+        );
+
+        // Approval and other privileged cards refuse; so do non-members and unknown emoji.
+        const notice = yield* service.notice({
+          orgId: person.orgId,
+          chatId: chat.chatId,
+          messageId: KinMessageId.make("approval-anchor"),
+          body: "Approve the merge?",
+        });
+        yield* repo.insertWidget({
+          ...card,
+          widgetId: KinWidgetId.make("approval-card"),
+          messageId: notice.message.messageId,
+          type: "approval",
+          state: {},
+        });
+        assert.include(yield* react(notice.message.messageId, "👍").pipe(Effect.flip), {
+          reason: "not_allowed",
+        });
+        const outsider = { ...person, personId: decodeKinPersonId("reaction-outsider") };
+        yield* repo.insertPerson({
+          ...outsider,
+          handle: "reaction-outsider",
+          displayName: "Outsider",
+          githubLogin: null,
+          createdAt: timestamp,
+        });
+        assert.include(
+          yield* service
+            .react(outsider, { messageId: latest.messageId, emoji: "👍", on: true })
+            .pipe(Effect.flip),
+          { reason: "not_found" },
+        );
+        assert.include(
+          yield* service
+            .react(person, {
+              messageId: latest.messageId,
+              emoji: "🔥" as "👍",
+              on: true,
+            })
+            .pipe(Effect.flip),
+          { reason: "invalid_state" },
+        );
+        // kin_react pins the message to its wake-up's chat.
+        assert.include(
+          yield* service
+            .react(agent, {
+              messageId: latest.messageId,
+              emoji: "👍",
+              on: true,
+              chatId: decodeKinChatId("other-chat"),
+            })
+            .pipe(Effect.flip),
+          { reason: "not_found" },
         );
       }).pipe(Effect.provide(layer)),
   );

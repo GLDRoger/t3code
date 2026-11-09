@@ -369,7 +369,9 @@ const make = Effect.gen(function* () {
         const author =
           input.reviewOf === undefined ? undefined : yield* worker(ctx.orgId, input.reviewOf);
         const chatId =
-          event._tag === "chat.message" || event._tag === "widget.action"
+          event._tag === "chat.message" ||
+          event._tag === "widget.action" ||
+          event._tag === "chat.reaction"
             ? event.chatId
             : config.ownerChatId;
         return { config, event, author, chatId, level: yield* levelOf(ctx, chatId) };

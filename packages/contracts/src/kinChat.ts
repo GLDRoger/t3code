@@ -443,7 +443,7 @@ export const KinWidgetsActInput = Schema.Struct({
   clientActionId: TrimmedNonEmptyString,
 });
 export type KinWidgetsActInput = typeof KinWidgetsActInput.Type;
-/** Adds (`on: true`) or withdraws the caller's reaction. Agents can't react. */
+/** Adds (`on: true`) or withdraws the caller's reaction. A lead reacts only through `kin_react`. */
 export const KinMessagesReactInput = Schema.Struct({
   messageId: KinMessageId,
   emoji: KinReactionEmoji,

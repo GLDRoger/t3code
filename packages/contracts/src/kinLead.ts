@@ -17,6 +17,7 @@ import {
   KinMessageId,
   KinOrgId,
   KinPersonId,
+  KinReactionEmoji,
   KinWidgetId,
 } from "./kinChat.ts";
 import { TimeOfDay, TimeZone } from "./kinTime.ts";
@@ -282,6 +283,13 @@ export const KinEvent = Schema.Union([
     chatId: KinChatId,
     messageId: KinMessageId,
     actionId: TrimmedNonEmptyString,
+  }),
+  // The owner's 👍/👎-style reaction on the lead's latest message: a soft reply, never authority.
+  Schema.TaggedStruct("chat.reaction", {
+    ...EventBase,
+    chatId: KinChatId,
+    messageId: KinMessageId,
+    emoji: KinReactionEmoji,
   }),
   Schema.TaggedStruct("github", {
     ...EventBase,

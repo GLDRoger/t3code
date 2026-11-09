@@ -1,5 +1,7 @@
 import type {
   KinAgentId,
+  KinAuthor,
+  KinReaction,
   KinChat,
   KinChatId,
   KinChatStreamEvent,
@@ -34,6 +36,14 @@ type ChatEvent =
       readonly chatId: KinChatId;
       readonly memberId: KinMemberId;
       readonly seq: number;
+    }
+  | {
+      readonly type: "reaction.updated";
+      readonly chatId: KinChatId;
+      readonly reaction: KinReaction;
+      // An owner's soft reply that should wake the lead; `by` is the reacting member.
+      readonly woke: boolean;
+      readonly by: KinAuthor;
     }
   // Live only: never persisted, never in a checkpoint.
   | {

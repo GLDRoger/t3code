@@ -1,4 +1,11 @@
-import { KinChatError, KinShadowResult, OrchestratorMcpFailure } from "@t3tools/contracts";
+import {
+  KinChatError,
+  KinMessageId,
+  KinReaction,
+  KinReactionEmoji,
+  KinShadowResult,
+  OrchestratorMcpFailure,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
@@ -62,6 +69,13 @@ export const KinLeadToolkit = Toolkit.make(
       "Ask a question with 2-4 tap-to-answer options, posted as a card in the chat your reply goes to. Use it when the answer is one of a few choices; otherwise ask in plain text. Mark a yes/no pair with kind. The card counts as your reply. The tap arrives later as their reply. A choice is not an approval: privileged actions still need request_action. At L0 outside your owner's direct chat you get shadowed: true; that is expected.",
     parameters: ChoiceCard.AskInput,
     success: Schema.Union([ChoiceCard.AskResult, KinShadowResult]),
+  }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("kin_react", {
+    ...chat,
+    description:
+      "React to a message in the chat your reply goes to, with one of 👍 ✅ 👎 ❌ ❤️ 👀. A 👍 can end your turn instead of a reply when the owner's message needs no answer, such as \"thanks, that's all\". If they asked something, still reply in text. Never an approval. At L0 outside your owner's direct chat you get shadowed: true.",
+    parameters: Schema.Struct({ messageId: KinMessageId, emoji: KinReactionEmoji }),
+    success: Schema.Union([KinReaction, KinShadowResult]),
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("memory_search", {
     ...shared,

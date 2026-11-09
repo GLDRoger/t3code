@@ -7,6 +7,7 @@ import {
   KinText,
   KinTrimmedText,
   type KinPersonId,
+  type KinReactionEmoji,
   type KinWidget,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -72,7 +73,12 @@ export const readChoice = Effect.fn("KinChoiceCard.read")(function* (
 export const settleChoice = Effect.fn("KinChoiceCard.settle")(function* (
   widget: KinWidget,
   choice: Effect.Success<ReturnType<typeof readChoice>>,
-  by: { readonly personId: KinPersonId; readonly now: number },
+  // `emoji` is set when an owner's yes/no reaction picked the option instead of a tap.
+  by: {
+    readonly personId: KinPersonId;
+    readonly now: number;
+    readonly emoji: KinReactionEmoji | null;
+  },
 ) {
   if (choice.card.answer !== null)
     return yield* new KinChatError({
@@ -90,8 +96,8 @@ export const settleChoice = Effect.fn("KinChoiceCard.settle")(function* (
     answer: {
       optionId: choice.option.optionId,
       personId: by.personId,
-      via: "tap",
-      emoji: null,
+      via: by.emoji === null ? "tap" : "reaction",
+      emoji: by.emoji,
       answeredAt: DateTime.formatIso(DateTime.makeUnsafe(by.now)),
     },
   } satisfies KinChoiceCardState;
