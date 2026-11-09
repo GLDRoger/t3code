@@ -25,7 +25,7 @@ import { KinServer } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 
-const enabled = () => {
+export const enabled = () => {
   const fiber = Fiber.getCurrent();
   if (!fiber) return false;
   const kin = Context.getOrUndefined(fiber.context, KinServer);

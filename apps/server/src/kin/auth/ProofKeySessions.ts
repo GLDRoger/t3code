@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type * as Context from "effect/Context";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as Statement from "effect/sql/Statement";
 import type { AuthSessionId } from "@t3tools/contracts";
 import * as SessionStore from "../../auth/SessionStore.ts";
 import * as Ref from "effect/Ref";
@@ -11,10 +12,57 @@ import * as KinEnabled from "../KinEnabled.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { SessionHooks } from "./sessionHooks.ts";
 
+type Column = Statement.Fragment | string | number;
+/**
+ * Repaired revocations don't count, except ones at or after `since` (epoch ms): a repair re-trusts
+ * a proof key, never an approver key registered before the revocation (approvals spec section 4).
+ */
+type RevocationOptions = { readonly since?: Column };
+
 // `individually_revoked`: 0 none; 1 blocks only if `revoked_at <= expires_at`; 2 blocks unconditionally
 // (bulk sign-out, or a revoke that killed an active session).
 const GUARDED_BLOCK = 1;
 const UNCONDITIONAL_BLOCK = 2;
+
+// `auth_sessions` stores ISO-8601 UTC text; Kin stores integer milliseconds.
+const epochMillis = (sql: SqlClient.SqlClient, iso: Statement.Fragment) =>
+  sql`CAST(ROUND((julianday(${iso}) - 2440587.5) * 86400000) AS INTEGER)`;
+
+const unrepaired = (sql: SqlClient.SqlClient, options: RevocationOptions) =>
+  options.since === undefined
+    ? sql`m.repaired_at IS NULL`
+    : sql`(m.repaired_at IS NULL OR ${epochMillis(sql, sql`s.revoked_at`)} >= ${options.since})`;
+
+// Readers of `individually_revoked` test `!= 0` and apply the expiry guard only to 1.
+const marked = (sql: SqlClient.SqlClient, options: RevocationOptions) =>
+  sql`m.individually_revoked != 0 AND ${unrepaired(sql, options)}
+      AND (m.individually_revoked != ${GUARDED_BLOCK} OR s.revoked_at <= s.expires_at)`;
+
+/**
+ * A revocation reaches a proof key when its mapping is marked (bulk sign-out never marks the
+ * caller's own key), passes the expiry guard for 1, and isn't repaired (see `RevocationOptions`).
+ */
+export const proofKeyRevoked = (
+  sql: SqlClient.SqlClient,
+  proofKey: Column,
+  options: RevocationOptions = {},
+) =>
+  sql`EXISTS (SELECT 1 FROM kin_auth_session_keys m JOIN auth_sessions s ON s.session_id = m.session_id
+    WHERE m.proof_key_thumbprint = ${proofKey} AND s.revoked_at IS NOT NULL AND ${marked(sql, options)})`;
+
+/**
+ * Whether a revocation reached something registered from `sessionId` under `proofKey`: that
+ * session's own (an unmapped one counts unless after expiry), or any of its proof key's.
+ */
+export const revokedBySession = (
+  sql: SqlClient.SqlClient,
+  row: { readonly sessionId: Column; readonly proofKey: Column },
+  options: RevocationOptions = {},
+) =>
+  sql`(EXISTS (SELECT 1 FROM auth_sessions s LEFT JOIN kin_auth_session_keys m ON m.session_id = s.session_id
+    WHERE s.session_id = ${row.sessionId} AND s.revoked_at IS NOT NULL
+      AND ((m.session_id IS NULL AND s.revoked_at <= s.expires_at) OR (${marked(sql, options)})))
+    OR ${proofKeyRevoked(sql, row.proofKey, options)})`;
 
 const enabled = Layer.effect(
   SessionHooks,
@@ -22,13 +70,10 @@ const enabled = Layer.effect(
     const sql = yield* SqlClient.SqlClient;
     const blocked = Effect.fn("ProofKeySessions.blocked")(
       function* (thumbprint: string) {
-        // Readers of `individually_revoked` test `!= 0` and apply the expiry guard only to 1.
-        const rows =
-          yield* sql`SELECT 1 FROM kin_auth_session_keys m JOIN auth_sessions s ON s.session_id = m.session_id
-      WHERE m.proof_key_thumbprint = ${thumbprint} AND m.repaired_at IS NULL AND s.revoked_at IS NOT NULL
-        AND m.individually_revoked != 0
-        AND (m.individually_revoked != ${GUARDED_BLOCK} OR s.revoked_at <= s.expires_at) LIMIT 1`;
-        return rows.length > 0;
+        const [row] = yield* sql<{
+          blocked: number;
+        }>`SELECT ${proofKeyRevoked(sql, thumbprint)} AS blocked`;
+        return row?.blocked === 1;
       },
       Effect.mapError(toPersistenceSqlError("ProofKeySessions.blocked")),
     );

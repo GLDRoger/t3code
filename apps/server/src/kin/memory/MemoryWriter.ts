@@ -48,6 +48,12 @@ export interface WakeupContext extends JournalContext {
           readonly action: "keep" | "update" | "drop";
         }
       | { readonly kind: "deferral_card"; readonly itemId: string; readonly action: "remind" }
+      | {
+          readonly kind: "deferral_card";
+          readonly itemId: string;
+          readonly action: "monday";
+          readonly due: string;
+        }
     )
   >;
 }
@@ -190,6 +196,7 @@ const make = Effect.gen(function* () {
     KinOrgId,
     {
       wakeupId: string;
+      generation: number;
       files: Map<string, string>;
       lines: string[];
       supersessions: Map<string, string>;
@@ -301,8 +308,19 @@ const make = Effect.gen(function* () {
     const previous = sessions.get(orgId);
     if (previous && previous.wakeupId !== wakeupId)
       return yield* new MemoryWriteRejected({ reason: "Another wake-up owns the writer" });
+    const generation = yield* memory.historyGeneration(orgId);
+    // A purge rewrote history after this wake-up staged; committing it could restore purged content.
+    if (previous && previous.generation !== generation) {
+      sessions.delete(orgId);
+      return yield* new MemorySyncConflict({
+        orgId,
+        operation: "push",
+        reason: "Memory history was rewritten during this wake-up; its staged changes were dropped",
+      });
+    }
     const state = previous ?? {
       wakeupId,
+      generation,
       files: new Map<string, string>(),
       lines: [],
       supersessions: new Map<string, string>(),
@@ -370,6 +388,17 @@ const make = Effect.gen(function* () {
   const validate = Effect.fn("MemoryWriter.validate")(function* (orgId: KinOrgId) {
     const paths = yield* memory.ensureCheckouts(orgId);
     return paths;
+  });
+  // Every caller holds the writer lock, and the marker only changes under it.
+  const refuseDuringPurge = Effect.fn("MemoryWriter.refuseDuringPurge")(function* (
+    orgId: KinOrgId,
+  ) {
+    if ((yield* memory.purgeInFlight(orgId)) !== undefined)
+      return yield* new MemorySyncConflict({
+        orgId,
+        operation: "push",
+        reason: "A memory purge is in flight; old history must not be pushed",
+      });
   });
   const report = <A>(orgId: KinOrgId, wakeupId: string, effect: Effect.Effect<A, Failure>) =>
     effect.pipe(
@@ -644,11 +673,20 @@ const make = Effect.gen(function* () {
                     mutable.add("review_by");
                   if (
                     source.kind === "deferral_card" &&
+                    source.action === "remind" &&
                     source.itemId === item.id &&
                     item.kind === "deferral" &&
                     fm.on_due === "remind"
                   )
                     mutable.add("on_due");
+                  if (
+                    source.kind === "deferral_card" &&
+                    source.action === "monday" &&
+                    source.itemId === item.id &&
+                    item.kind === "deferral" &&
+                    fm.due === source.due
+                  )
+                    mutable.add("due");
                   const existing = new Map(Object.entries(item));
                   if (
                     [...new Set([...existing.keys(), ...proposed.keys()])].some(
@@ -755,6 +793,7 @@ const make = Effect.gen(function* () {
           Effect.gen(function* () {
             const { ctx, state } = yield* session(orgId, wakeupId);
             const { writer } = yield* validate(orgId);
+            yield* refuseDuringPurge(orgId);
             const repo = config.repositories.find((entry) => entry.orgId === orgId);
             if (!repo)
               return yield* new MemoryConfigError({
@@ -884,7 +923,20 @@ const make = Effect.gen(function* () {
             if (!dreamBranch.test(input.branch))
               return yield* new MemoryWriteRejected({ reason: "Invalid dream branch" });
             const { writer } = yield* validate(orgId);
+            yield* refuseDuringPurge(orgId);
             const repo = yield* repoFor(orgId);
+            // A purge's reclone drops the old history, so a dream started before it has no base here.
+            if (
+              !/^[a-f0-9]{40}([a-f0-9]{24})?$/.test(input.base) ||
+              (yield* git(orgId, writer, ["cat-file", "-e", `${input.base}^{commit}`]).pipe(
+                Effect.result,
+              ))._tag === "Failure"
+            )
+              return yield* new MemorySyncConflict({
+                orgId,
+                operation: "push",
+                reason: "The dream's base is no longer in memory history",
+              });
             const baseFiles = yield* filesAt(orgId, writer, input.base);
             const regular = yield* regularPaths(orgId, writer, input.base);
             const combined = new Map(
@@ -949,6 +1001,7 @@ const make = Effect.gen(function* () {
           if (!dreamBranch.test(branch))
             return yield* new MemoryWriteRejected({ reason: "Invalid dream branch" });
           const { writer } = yield* validate(orgId);
+          yield* refuseDuringPurge(orgId);
           const repo = yield* repoFor(orgId);
           const advertised = yield* git(orgId, writer, [
             "ls-remote",

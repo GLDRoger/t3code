@@ -13,6 +13,14 @@ const dateOrder = (value: string | null) => {
 
 type IndexItem = MemoryItemHead & { readonly misleading?: boolean };
 
+/** Needs a rebuild: no zoned "As of" first line, one in the future, or one 36 h old. */
+export function indexIsStale(index: string, now: number): boolean {
+  const asOf = /^As of ([^\r\n]+)(?:\r?\n|$)/.exec(index)?.[1];
+  if (asOf === undefined || !/(?:Z|[+-]\d{2}:\d{2})$/.test(asOf)) return true;
+  const at = memoryDateMillis(asOf);
+  return !Number.isFinite(at) || at > now || now - at >= 36 * 60 * 60 * 1000;
+}
+
 export function buildIndex(
   items: ReadonlyArray<IndexItem>,
   readHistory: Readonly<Record<string, number>>,

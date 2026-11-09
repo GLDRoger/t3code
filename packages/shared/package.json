@@ -187,6 +187,10 @@
       "types": "./src/dpop.ts",
       "import": "./src/dpop.ts"
     },
+    "./kinGrant": {
+      "types": "./src/kinGrant.ts",
+      "import": "./src/kinGrant.ts"
+    },
     "./desktopBootstrapToken": {
       "types": "./src/desktopBootstrapToken.ts",
       "import": "./src/desktopBootstrapToken.ts"
