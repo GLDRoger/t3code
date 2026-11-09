@@ -27,6 +27,8 @@ import * as Memory from "../memory/Memory.ts";
 import * as MemoryConfig from "../memory/MemoryConfig.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
+import * as MemoryPullRequests from "../memory/MemoryPullRequests.ts";
+import * as Cause from "effect/Cause";
 import * as Scan from "../memory/secretScan.ts";
 import * as LeadMemory from "./LeadMemory.ts";
 import * as Cache from "../memory/MemoryCache.ts";
@@ -174,9 +176,34 @@ const withServices = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
     Layer.provide(GithubReaders.layer),
   );
 
+// TRIG-15: without the Kin App, memory writes to the default branch are refused unless
+// KIN_MEMORY_DIRECT_PUSH=true, because the memory repo's ruleset rejects a direct push.
+const memoryPullRequests = Layer.unwrap(
+  Effect.gen(function* () {
+    const off =
+      "memory writes to the default branch are refused unless KIN_MEMORY_DIRECT_PUSH=true";
+    if (Option.isNone(yield* Config.option(Config.String("KIN_GITHUB_APP_ID")))) {
+      yield* Effect.logWarning(`Kin memory PRs are off: KIN_GITHUB_APP_ID is unset, so ${off}`);
+      return Layer.empty;
+    }
+    return MemoryPullRequests.layer.pipe(
+      Layer.provide(GithubReaders.appLayer),
+      Layer.catchCause((cause) =>
+        Layer.effectDiscard(
+          Effect.logWarning(
+            `Kin memory PRs are off: the Kin GitHub App is unavailable, so ${off}`,
+            Cause.pretty(cause),
+          ),
+        ),
+      ),
+    );
+  }),
+);
+
 const registration = McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers);
 const toolkit = LeadMemory.layer.pipe(
   Layer.provideMerge(Writer.layer),
+  Layer.provide(memoryPullRequests),
   Layer.provide(LeadMemory.authority),
   Layer.provide(Cache.layer),
   Layer.provide(Scan.layer),

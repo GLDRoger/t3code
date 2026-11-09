@@ -6,7 +6,7 @@ import { readFiles, readCommit, readTree, objectHash, verifyTree } from "./objec
 import { buildIndex } from "./buildIndex.ts";
 import { isCheckoutPath } from "./checkoutPaths.ts";
 import * as MemoryCache from "./MemoryCache.ts";
-import type { KinAgentId, KinOrgId, MemoryTrust } from "@t3tools/contracts";
+import { RepoSlug, type KinAgentId, type KinOrgId, type MemoryTrust } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -33,6 +33,7 @@ import { journalEntry, MemoryJournalError, type JournalContext } from "./journal
 import { mergeMemoryFiles } from "./merge.ts";
 import { isOwnerReviewedPath, kinShapeFailure } from "./lint.ts";
 import { KinSecretScan, KinSecretScanError } from "./secretScan.ts";
+import { MemoryPullRequests } from "./MemoryPullRequests.ts";
 
 export const LEAD_ENDED_WITHOUT_KIN_END = "Lead ended without calling kin_end.";
 
@@ -181,6 +182,7 @@ export class MemoryWriter extends Context.Service<
     ) => Effect.Effect<{ readonly kept: number; readonly paths: ReadonlyArray<string> }, Failure>;
   }
 >()("t3/kin/memory/MemoryWriter") {}
+const isRepoSlug = Schema.is(RepoSlug);
 const dreamBranch = /^dream\/\d{4}-\d{2}-\d{2}$/;
 const folders = ["objectives", "commitments", "deferrals", "decisions", "people", "claims"];
 const render = (fields: object, body: string) => `---\n${stringify(fields)}---\n${body}`;
@@ -200,6 +202,12 @@ const make = Effect.gen(function* () {
     );
   const config = yield* MemoryConfig;
   const cache = yield* MemoryCache.MemoryCache;
+  const pullRequests = yield* Effect.serviceOption(MemoryPullRequests);
+  const mainWrites = Option.isSome(pullRequests)
+    ? "pull_request"
+    : config.directMainPush === true
+      ? "direct"
+      : "refused";
   const filesAt = (orgId: KinOrgId, writer: string, commit: string) =>
     readFiles(orgId, writer, commit).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
@@ -542,6 +550,126 @@ const make = Effect.gen(function* () {
       return yield* new MemoryConfigError({ orgId, operation: "writer", reason: "Unknown org" });
     return repo;
   });
+  const refuseMainWrite = Effect.fn("MemoryWriter.refuseMainWrite")(function* (orgId: KinOrgId) {
+    const reason =
+      "Memory writes to the default branch need the Kin GitHub App (TRIG-15); this one was not committed";
+    yield* recovery.notify({ orgId, branch: config.defaultBranch ?? "main", reason });
+    return yield* new MemorySyncConflict({ orgId, operation: "push", reason });
+  });
+  /**
+   * Lands Kin's commits through PRs (TRIG-15). The local default branch moves only after GitHub
+   * merged, and then to the remote head, so a refused PR leaves it where it was.
+   */
+  const landOnMain = Effect.fn("MemoryWriter.landOnMain")(function* (
+    orgId: KinOrgId,
+    writer: string,
+    input: {
+      readonly agentId: string;
+      readonly id: string;
+      readonly base: string;
+      readonly commit: string;
+      readonly message: string;
+      readonly review?: { readonly commit: string; readonly message: string };
+    },
+  ) {
+    if (Option.isNone(pullRequests)) return yield* refuseMainWrite(orgId);
+    const repo = yield* repoFor(orgId);
+    const main = config.defaultBranch ?? "main";
+    const conflict = (reason: string) =>
+      new MemorySyncConflict({ orgId, operation: "push", reason });
+    if (repo.githubRepo === undefined || !isRepoSlug(repo.githubRepo))
+      return yield* conflict("The memory repo is not on GitHub, so Kin cannot open its PR");
+    const github = repo.githubRepo;
+    const open = Effect.fn("MemoryWriter.openPullRequest")(function* (
+      branch: string,
+      commit: string,
+      message: string,
+      ownerReview: boolean,
+    ) {
+      yield* git(orgId, writer, [
+        "push",
+        "--",
+        repo.repoUrl,
+        `+${commit}:refs/heads/${branch}`,
+      ]).pipe(Effect.mapError(() => conflict("Memory PR branch push rejected")));
+      return yield* pullRequests.value.land({
+        orgId,
+        repo: github,
+        branch,
+        base: main,
+        sha: commit,
+        title: message.split("\n")[0] ?? message,
+        message,
+        ownerReview,
+      });
+    });
+    const branch = `kin/write/${input.agentId}/${input.id}`;
+    if (input.review !== undefined) {
+      const reviewBranch = `${branch}-review`;
+      yield* open(reviewBranch, input.review.commit, input.review.message, true).pipe(
+        Effect.flatMap((opened) =>
+          recovery.notify({
+            orgId,
+            branch: reviewBranch,
+            reason: `Memory changes on paths you review wait in ${opened.url}`,
+          }),
+        ),
+        Effect.catch((error) =>
+          recovery.notify({
+            orgId,
+            branch: reviewBranch,
+            reason: `Memory changes on paths you review were not opened as a PR: ${error.reason}`,
+          }),
+        ),
+      );
+    }
+    const landed = yield* open(branch, input.commit, input.message, false).pipe(
+      Effect.tapError((error) =>
+        recovery.notify({
+          orgId,
+          branch,
+          reason: `Memory write not merged: ${error.reason}${error._tag === "MemoryPullRequestRefused" && error.url ? ` (${error.url})` : ""}`,
+        }),
+      ),
+      Effect.mapError((error) =>
+        error._tag === "MemoryPullRequestRefused" ? conflict(error.reason) : error,
+      ),
+    );
+    if (landed._tag !== "merged") return yield* conflict("The memory PR was not merged");
+    const advertised = yield* git(orgId, writer, [
+      "ls-remote",
+      "--",
+      repo.repoUrl,
+      `refs/heads/${main}`,
+    ]);
+    const [head, name] = advertised.split(/\s+/);
+    if (!head || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(head) || name !== `refs/heads/${main}`)
+      return yield* conflict("The default branch is missing after the merge");
+    yield* git(orgId, writer, ["fetch", "--", repo.repoUrl, head]);
+    const ancestor = (older: string, newer: string) =>
+      git(orgId, writer, ["merge-base", "--is-ancestor", older, newer]).pipe(
+        Effect.as(true),
+        Effect.catchTags({ MemoryError: () => Effect.succeed(false) }),
+      );
+    if (!(yield* ancestor(landed.commit, head)) || !(yield* ancestor(input.base, landed.commit)))
+      return yield* conflict("The merged memory commit is not on the default branch");
+    const [parent, mergedTree, ownTree] = [
+      yield* git(orgId, writer, ["rev-parse", `${landed.commit}^`]),
+      yield* git(orgId, writer, ["rev-parse", `${landed.commit}^{tree}`]),
+      yield* git(orgId, writer, ["rev-parse", `${input.commit}^{tree}`]),
+    ];
+    if (parent === input.base && mergedTree !== ownTree)
+      return yield* conflict("GitHub merged a different tree than Kin pushed");
+    yield* filesAt(orgId, writer, head);
+    yield* git(orgId, writer, ["update-ref", `refs/heads/${main}`, head, input.base]);
+    yield* memory.record(orgId, main, input.base, head);
+    yield* git(orgId, writer, ["push", "--", repo.repoUrl, `:refs/heads/${branch}`]).pipe(
+      Effect.catch(() =>
+        Effect.logWarning("Could not delete a merged memory PR branch", { orgId }),
+      ),
+    );
+    return head;
+  });
   return MemoryWriter.of({
     stage: Effect.fn("MemoryWriter.stage")((orgId, wakeupId, change) =>
       report(
@@ -819,6 +947,9 @@ const make = Effect.gen(function* () {
               });
             const branch =
               ctx.level === "L0" ? `kin/shadow/${ctx.agentId}` : (config.defaultBranch ?? "main");
+            const onMain = branch === (config.defaultBranch ?? "main");
+            if (onMain && mainWrites === "refused") return yield* refuseMainWrite(orgId);
+            const viaPullRequest = onMain && mainWrites === "pull_request";
             const recorded = yield* branchHead(orgId, writer, branch);
             const push = (sha: string) =>
               git(orgId, writer, ["push", "--", repo.repoUrl, `${sha}:refs/heads/${branch}`]).pipe(
@@ -853,7 +984,8 @@ const make = Effect.gen(function* () {
                     !body.includes(`Kin-Request: ${fingerprint}`))
                 )
                   return yield* new MemoryWriteRejected({ reason: "Different wake-up retry" });
-                yield* push(recorded);
+                // Through PRs the default branch only ever holds what GitHub already merged.
+                if (!viaPullRequest) yield* push(recorded);
                 return { commit: recorded };
               }
               if (outcome === "failed") state.files.clear();
@@ -871,7 +1003,9 @@ const make = Effect.gen(function* () {
                   .filter(([path]) => regular.has(path))
                   .map(([path, bytes]) => [path, bytes.toString("utf8")]),
               );
-              for (const [path, text] of state.files) combined.set(path, text);
+              // Paths the owner reviews reach the default branch only through their own PR.
+              const reviewed = (path: string) => viaPullRequest && isOwnerReviewedPath(path);
+              for (const [path, text] of state.files) if (!reviewed(path)) combined.set(path, text);
               state.files.set("INDEX.md", yield* indexFor(orgId, combined));
               const findings = yield* scanner.scan({
                 orgId,
@@ -888,6 +1022,49 @@ const make = Effect.gen(function* () {
                 ]),
               );
               const message = `${subject}\n\nEvents: ${ctx.eventIds.join(", ")}\nKin-Outcome: ${outcome}\nKin-Request: ${fingerprint}\n`;
+              if (viaPullRequest) {
+                const review = new Map([...changes].filter(([file]) => reviewed(file)));
+                const commit = yield* writeCommit(
+                  orgId,
+                  writer,
+                  recorded,
+                  recordedFiles,
+                  new Map([...changes].filter(([file]) => !reviewed(file))),
+                  message,
+                );
+                const reviewMessage = `kin(${ctx.agentId}): review wake-up ${wakeupId}\n\nEvents: ${ctx.eventIds.join(", ")}\n`;
+                const head = yield* landOnMain(orgId, writer, {
+                  agentId: ctx.agentId,
+                  id: wakeupId,
+                  base: recorded,
+                  commit,
+                  message,
+                  ...(review.size === 0
+                    ? {}
+                    : {
+                        review: {
+                          commit: yield* writeCommit(
+                            orgId,
+                            writer,
+                            recorded,
+                            recordedFiles,
+                            review,
+                            reviewMessage,
+                          ),
+                          message: reviewMessage,
+                        },
+                      }),
+                });
+                yield* memory.rebuildCache(orgId).pipe(
+                  Effect.catch((error) =>
+                    Effect.logWarning("Could not refresh memory cache after commit", {
+                      orgId,
+                      errorTag: error._tag,
+                    }),
+                  ),
+                );
+                return { commit: head };
+              }
               const commit = yield* writeCommit(
                 orgId,
                 writer,
@@ -1095,6 +1272,7 @@ const make = Effect.gen(function* () {
                 `It changes paths you review in a pull request (${reviewed.slice(0, 5).join(", ")}${reviewed.length > 5 ? ", …" : ""}); start clean instead`,
               );
             if (changes.size > 0) {
+              if (mainWrites === "refused") return yield* refuseMainWrite(orgId);
               kept = changes.size;
               const regular = yield* regularPaths(orgId, writer, mainHead);
               const combined = new Map(
@@ -1108,22 +1286,37 @@ const make = Effect.gen(function* () {
                 files: [...changes].map(([path, content]) => ({ path, content })),
               });
               if (findings.length) return yield* new MemorySecretBlocked({ orgId, findings });
+              const message = `kin(${agentId}): keep shadow memory\n\nKin-Shadow: ${shadowHead}\n`;
               const commit = yield* writeCommit(
                 orgId,
                 writer,
                 mainHead,
                 mainFiles,
                 changes,
-                `kin(${agentId}): keep shadow memory\n\nKin-Shadow: ${shadowHead}\n`,
+                message,
               );
-              yield* git(orgId, writer, ["update-ref", `refs/heads/${main}`, commit, mainHead]);
-              yield* memory.record(orgId, main, mainHead, commit);
-              yield* git(orgId, writer, [
-                "push",
-                "--",
-                repo.repoUrl,
-                `${commit}:refs/heads/${main}`,
-              ]).pipe(Effect.mapError(() => conflict("Push rejected; retry or reconcile remote")));
+              if (mainWrites === "pull_request") {
+                head = yield* landOnMain(orgId, writer, {
+                  agentId,
+                  id: `keep-${shadowHead.slice(0, 12)}`,
+                  base: mainHead,
+                  commit,
+                  message,
+                });
+              } else {
+                // Push first, so a rejected push leaves the local default branch where it was.
+                yield* git(orgId, writer, [
+                  "push",
+                  "--",
+                  repo.repoUrl,
+                  `${commit}:refs/heads/${main}`,
+                ]).pipe(
+                  Effect.mapError(() => conflict("Push rejected; retry or reconcile remote")),
+                );
+                yield* git(orgId, writer, ["update-ref", `refs/heads/${main}`, commit, mainHead]);
+                yield* memory.record(orgId, main, mainHead, commit);
+                head = commit;
+              }
               yield* memory.rebuildCache(orgId).pipe(
                 Effect.catch((error) =>
                   Effect.logWarning("Could not refresh memory cache after commit", {
@@ -1132,7 +1325,6 @@ const make = Effect.gen(function* () {
                   }),
                 ),
               );
-              head = commit;
             }
           }
           // A later trial at L0 starts from what the lead reads at L1, not the old shadow week.

@@ -442,7 +442,8 @@ const decodeSecrets = Schema.decodeUnknownOption(
   Schema.fromJsonString(KinGitHubApp.KinGitHubAppSecrets),
 );
 
-const appLayer = Layer.effectDiscard(
+/** The Kin App with its id, key check, scope and HTTP client; fails when the key is missing. */
+export const appLayer = Layer.effectDiscard(
   Effect.gen(function* () {
     const { appId } = yield* KinGitHubApp.KinGitHubAppConfig;
     const keychain = yield* Keychain.KinKeychain;
