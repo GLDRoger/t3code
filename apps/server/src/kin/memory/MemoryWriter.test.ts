@@ -224,6 +224,7 @@ it.live.each([
       baseDirectory: root,
       credentialHelper: "fixture-server-helper",
       sshCommand: "ssh -i /fixture/kin-memory-key",
+      directMainPush: true,
       repositories: [{ orgId, repoUrl: remote, path: "state" }],
     });
     const synced: Array<ReadonlyArray<MemoryItemHead>> = [];

@@ -9,10 +9,12 @@ import { persistQuery } from "@t3tools/client-runtime/state/query-persistence";
 import { watchKinChatForPush } from "@t3tools/client-runtime/kin-push";
 import {
   KIN_CHAT_WS_METHODS,
+  KIN_LEVEL_WS_METHODS,
   KIN_PUSH_WS_METHODS,
   KinOrgsListResult,
   type EnvironmentId,
   type KinChatHistoryInput,
+  type KinLevelsGetInput,
   type KinOrgsListInput,
   type KinPushWatchInput,
 } from "@t3tools/contracts";
@@ -79,6 +81,11 @@ export const markKinHostKnown = (environmentId: EnvironmentId) => {
   knownKinHosts.add(environmentId);
 };
 const readHistory = guardedRead(historyRead);
+const levelsRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:levels:read",
+  tag: KIN_LEVEL_WS_METHODS.get,
+});
+const readLevels = guardedRead(levelsRead);
 
 /** A dropped connection can leave a read pending; "Load earlier" fails after this and offers Retry. */
 export const KIN_HISTORY_PAGE_TIMEOUT = Duration.seconds(20);
@@ -154,6 +161,36 @@ export const kinClient = {
     label: "kin:widget-action",
     tag: KIN_CHAT_WS_METHODS.widgetsAct,
     concurrency: { mode: "singleFlight", key: ({ input }) => input.clientActionId },
+  }),
+  /** A lead's levels, trial counts and open raises. Owner only; the host refuses anyone else. */
+  levels: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:levels",
+    execute: Effect.fn("KinClient.levels")(function* (input: KinLevelsGetInput) {
+      return yield* readLevels(input);
+    }),
+    staleTimeMs: 30_000,
+  }),
+  /** Gates the Levels entry point the same way the read itself is gated. */
+  levelsRead,
+  review: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:levels:review",
+    tag: KIN_LEVEL_WS_METHODS.review,
+  }),
+  lower: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:levels:lower",
+    tag: KIN_LEVEL_WS_METHODS.lower,
+  }),
+  raise: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:levels:raise",
+    tag: KIN_LEVEL_WS_METHODS.raise,
+  }),
+  deferPromotion: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:levels:defer",
+    tag: KIN_LEVEL_WS_METHODS.deferPromotion,
+  }),
+  shadowMemory: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:levels:shadow-memory",
+    tag: KIN_LEVEL_WS_METHODS.shadowMemory,
   }),
   registerPush: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:register-push",

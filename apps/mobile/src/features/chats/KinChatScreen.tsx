@@ -94,7 +94,7 @@ import {
   type KinChatState,
   type KinInboxState,
 } from "./state/kinInboxModel";
-import { kinChatTitle, kinDirectAgentName } from "./state/kinScreenState";
+import { kinChatTitle, kinDirectAgentName, kinLevelsAgentId } from "./state/kinScreenState";
 import { useKinHostAt } from "./state/useKinHost";
 import { KinChatPushWatch } from "./notifications/KinChatPushWatch";
 
@@ -172,6 +172,9 @@ function KinLiveChat(props: {
     inbox?._tag === "Success"
       ? inbox.value.value.chats.find((chat) => chat.chatId === chatId)
       : undefined;
+  const canReadLevels = useAtomValue(kinClient.levelsRead.permissionAtom(props.environmentId));
+  const levelsAgentId =
+    summary === undefined || !canReadLevels ? null : kinLevelsAgentId(summary, viewer.personId);
 
   const retry = () => {
     if (environmentId === null) return;
@@ -190,6 +193,11 @@ function KinLiveChat(props: {
         chatId={chatId ?? (props.chatId as KinChatId)}
         title={summary === undefined ? "Chat" : kinChatTitle(summary, viewer.agentNames)}
         agentName={summary === undefined ? null : kinDirectAgentName(summary, viewer.agentNames)}
+        levels={
+          levelsAgentId === null
+            ? null
+            : { environmentId: props.environmentId, orgId: props.orgId, agentId: levelsAgentId }
+        }
         unread={summary?.unread ?? null}
         markRead={
           environmentId === null || chatId === null
@@ -263,6 +271,12 @@ function KinChatPage(props: {
   readonly title: string;
   /** The agent a direct chat is with, for the empty chat's copy; null when unknown. */
   readonly agentName: string | null;
+  /** The lead's Levels screen, for its owner in their direct chat; null elsewhere. */
+  readonly levels?: {
+    readonly environmentId: string;
+    readonly orgId: string;
+    readonly agentId: string;
+  } | null;
   /** The inbox's unread count for this chat; null until the inbox loads. */
   readonly unread: number | null;
   /** Null where nothing can be marked, such as the dev fixture. */
@@ -277,9 +291,25 @@ function KinChatPage(props: {
   const topInset = useContentTopInset();
   const { state } = props;
   const subtitle = state._tag === "ready" ? kinChatStatusLine(state.chat.value.widgets) : null;
+  const { levels } = props;
   return (
     <View collapsable={false} className="flex-1 bg-screen">
-      <AppBar title={props.title} subtitle={subtitle} onBack={() => navigation.goBack()} />
+      <AppBar
+        title={props.title}
+        subtitle={subtitle}
+        onBack={() => navigation.goBack()}
+        actions={
+          levels == null
+            ? undefined
+            : [
+                {
+                  accessibilityLabel: "Levels",
+                  icon: "slider.horizontal.3",
+                  onPress: () => navigation.navigate("KinLevels", levels),
+                },
+              ]
+        }
+      />
       <ScreenContent surface="screen">
         {state._tag === "ready" ? (
           <KinChatFeed

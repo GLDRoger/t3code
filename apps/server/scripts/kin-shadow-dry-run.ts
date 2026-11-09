@@ -438,6 +438,8 @@ export const runDryRun = Effect.fn("KinDryRun.run")(
     );
     const memoryConfig = MemoryConfig.of({
       baseDirectory: path.join(stateDir, "kin"),
+      // Writes reach only the local mirror, so a write to main shows up in the ref check below.
+      directMainPush: true,
       repositories: [{ orgId, repoUrl: memoryUrl, path: encodeURIComponent(orgId) }],
     });
     const refsBefore = yield* listRefs(stateDir, memoryUrl);

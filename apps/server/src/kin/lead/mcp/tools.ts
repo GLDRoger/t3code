@@ -5,18 +5,20 @@ import * as Schema from "effect/Schema";
 import { McpSchema, Tool, Toolkit } from "effect/ai";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
+import { KinIdentity } from "../../chat/KinIdentity.ts";
 import * as Lead from "../LeadMemory.ts";
 import * as Workers from "../Workers.ts";
 
+// tools/list runs this before handler services are provided; the Kin MCP endpoint provides `KinIdentity`.
 const enabled = () => {
   const fiber = Fiber.getCurrent();
   if (!fiber) return false;
   const scope = Context.getOrUndefined(fiber.context, McpInvocationContext);
-  const service = Context.getOrUndefined(fiber.context, Lead.LeadMemory);
+  const identity = Context.getOrUndefined(fiber.context, KinIdentity);
   return (
     scope?.thread !== undefined &&
     scope.thread.subagent !== true &&
-    service?.visible(scope.thread.threadId) === true
+    identity?.isLeadThread(scope.thread.threadId) === true
   );
 };
 const shared = {

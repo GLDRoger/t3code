@@ -1,5 +1,5 @@
 import { stableStringify } from "@t3tools/shared/relaySigning";
-import type { KinOrgId, KinAgentId, MemoryTrust, ThreadId } from "@t3tools/contracts";
+import type { KinOrgId, KinAgentId, MemoryTrust } from "@t3tools/contracts";
 import * as Digest from "effect/crypto/Digest";
 import * as Hex from "effect/encoding/Hex";
 import {
@@ -27,7 +27,6 @@ import * as Memory from "../memory/Memory.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import * as Cache from "../memory/MemoryCache.ts";
 import { MemoryItemError, memoryDateMillis } from "../memory/frontMatter.ts";
-import { KinLeadRegistry } from "./KinLeadRegistry.ts";
 
 const text = Schema.String.check(Schema.isMaxLength(100_000));
 const date = Schema.String.check(
@@ -111,7 +110,6 @@ const decodeEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(KinEvent));
 export class LeadMemory extends Context.Service<
   LeadMemory,
   {
-    readonly visible: (threadId: ThreadId) => boolean;
     readonly search: (
       scope: McpInvocationScope,
       input: typeof SearchInput.Type,
@@ -242,7 +240,6 @@ const make = Effect.gen(function* () {
   const writer = yield* Writer.MemoryWriter;
   const writerAuthority = yield* Writer.MemoryWriterAuthority;
   const sql = yield* SqlClient.SqlClient;
-  const registry = yield* KinLeadRegistry;
   const locks = new Map<KinOrgId, Semaphore.Semaphore>();
   const locked = Effect.fn("LeadMemory.locked")(function* <A, E, R>(
     orgId: KinOrgId,
@@ -356,7 +353,6 @@ const make = Effect.gen(function* () {
     return { itemId: fields.id };
   });
   return LeadMemory.of({
-    visible: (threadId) => registry.lookup(threadId) !== undefined,
     search: Effect.fn("LeadMemory.search")(function* (scope, input) {
       const ctx = yield* resolve(scope);
       return yield* memory.query(ctx.orgId, {

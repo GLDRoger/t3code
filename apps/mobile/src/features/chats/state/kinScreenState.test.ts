@@ -18,6 +18,7 @@ import {
   kinInboxScreenState,
   kinInitials,
   kinLeadChatId,
+  kinLevelsAgentId,
   kinPreviewText,
   kinWaitingBannerView,
   kinWaitingRowView,
@@ -383,6 +384,33 @@ const agentNames = new Map([["agent-atlas", "Atlas"]]);
 const member = (principal: object, leftAt: string | null = null) => ({ principal, leftAt });
 const owner = member({ _tag: "person", personId: "owner" });
 const atlas = member({ _tag: "agent", agentId: "agent-atlas" });
+
+describe("kinLevelsAgentId", () => {
+  const person = (personId: string, role: string, leftAt: string | null = null) => ({
+    principal: { _tag: "person", personId },
+    role,
+    leftAt,
+  });
+  const lead = {
+    principal: { _tag: "agent", agentId: "agent-atlas" },
+    role: "member",
+    leftAt: null,
+  };
+  const chat = (kind: string, members: ReadonlyArray<object>) => ({ kind, members }) as never;
+
+  it("opens Levels only for the owner of a direct chat with an agent", () => {
+    expect(kinLevelsAgentId(chat("direct", [person("me", "owner"), lead]), "me")).toBe(
+      "agent-atlas",
+    );
+    expect(kinLevelsAgentId(chat("direct", [person("me", "member"), lead]), "me")).toBeNull();
+    expect(
+      kinLevelsAgentId(chat("direct", [person("me", "owner", "2026-11-01"), lead]), "me"),
+    ).toBeNull();
+    expect(kinLevelsAgentId(chat("team_group", [person("me", "owner"), lead]), "me")).toBeNull();
+    expect(kinLevelsAgentId(chat("direct", [person("me", "owner")]), "me")).toBeNull();
+    expect(kinLevelsAgentId(chat("direct", [person("me", "owner"), lead]), null)).toBeNull();
+  });
+});
 
 describe("kinChatTitle", () => {
   it.each([
