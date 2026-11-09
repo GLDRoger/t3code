@@ -37,6 +37,7 @@ export class KinLeadProvisionError extends Schema.TaggedError<KinLeadProvisionEr
       "lead_exists",
       "unknown_project",
       "not_found",
+      "retired",
       "conflict",
     ]),
     message: Schema.String,
@@ -109,6 +110,22 @@ const leadsIn = Effect.fn("KinLeadProvision.leadsIn")(function* (
   );
 });
 
+/** The deduplicated projects, refused unless each is a live project on this host. */
+const knownProjects = Effect.fn("KinLeadProvision.knownProjects")(function* (
+  workerProjects: ReadonlyArray<ProjectId>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const projects = [...new Set(workerProjects)];
+  if (projects.length === 0) return projects;
+  const found = yield* sql<{ projectId: string }>`SELECT project_id AS "projectId"
+      FROM projection_projects
+      WHERE project_id IN ${sql.in(projects)} AND deleted_at IS NULL ORDER BY project_id`;
+  const missing = projects.filter((id) => !found.some((row) => row.projectId === id));
+  if (missing.length > 0)
+    return yield* refuse("unknown_project", `Unknown project: ${missing.join(", ")}.`);
+  return projects;
+});
+
 /** The person the lead belongs to, by the same mapping a paired client gets from KinIdentity. */
 const ownerFor = Effect.fn("KinLeadProvision.ownerFor")(function* (owner: LeadOwner) {
   const identity = yield* KinIdentity;
@@ -150,15 +167,7 @@ export const create = Effect.fn("KinLeadProvision.create")(function* (input: Cre
           `Org ${orgId} already has live lead ${live.agentId}. Retire it first.`,
         );
       }
-      const projects = [...new Set(input.workerProjects)];
-      if (projects.length > 0) {
-        const found = yield* sql<{ projectId: string }>`SELECT project_id AS "projectId"
-            FROM projection_projects
-            WHERE project_id IN ${sql.in(projects)} AND deleted_at IS NULL ORDER BY project_id`;
-        const missing = projects.filter((id) => !found.some((row) => row.projectId === id));
-        if (missing.length > 0)
-          return yield* refuse("unknown_project", `Unknown project: ${missing.join(", ")}.`);
-      }
+      const projects = yield* knownProjects(input.workerProjects);
       const agentId = KinAgentId.make(`lead-${SecureRandom.uuidV4Unsafe()}`);
       const now = yield* DateTime.now;
       yield* repo.insertAgent({
@@ -215,6 +224,33 @@ export const retire = Effect.fn("KinLeadProvision.retire")(function* (agentId: K
       if (changed.length === 0)
         return yield* refuse("conflict", `Lead ${agentId} changed while retiring.`);
       return { _tag: "retired" as const, lead: { ...lead, retiredAt } };
+    }),
+  );
+});
+
+/** Replaces a live lead's worker projects. Readers query the row per call, so it applies at once. */
+export const setWorkerProjects = Effect.fn("KinLeadProvision.setWorkerProjects")(function* (
+  agentId: KinAgentId,
+  workerProjects: ReadonlyArray<ProjectId>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const { orgId } = (yield* KinIdentity).owner;
+  return yield* transaction(
+    sql,
+    "KinLeadProvision.setWorkerProjects",
+    Effect.gen(function* () {
+      const [lead] = yield* leadsIn(orgId, { liveOnly: false, agentId });
+      if (lead === undefined)
+        return yield* refuse("not_found", `Org ${orgId} has no lead ${agentId}.`);
+      if (lead.retiredAt !== null)
+        return yield* refuse("retired", `Lead ${agentId} was retired at ${lead.retiredAt}.`);
+      const projects = yield* knownProjects(workerProjects);
+      const json = yield* encodeProjects(projects).pipe(Effect.orDie);
+      const changed = yield* sql`UPDATE kin_leads SET worker_projects_json = ${json}
+          WHERE org_id = ${orgId} AND agent_id = ${agentId} RETURNING agent_id`;
+      if (changed.length === 0)
+        return yield* refuse("conflict", `Lead ${agentId} changed while updating.`);
+      return { _tag: "updated" as const, lead: { ...lead, workerProjects: projects } };
     }),
   );
 });

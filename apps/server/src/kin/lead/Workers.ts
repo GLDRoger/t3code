@@ -528,6 +528,8 @@ const make = Effect.gen(function* () {
     const projection = yield* threads
       .getThreadProjection(plan.worker.threadId)
       .pipe(Effect.mapError(() => missing()));
+    if (!plan.config.projects.includes(projection.thread.projectId))
+      return yield* denied("Workers may only run in this lead's worker projects.");
     const sent = yield* threads
       .sendToThread({
         projectId: projection.thread.projectId,
