@@ -82,12 +82,11 @@ const clip = (value: string, max: number) => {
   // Never leave half of an escape pair at the cut.
   return `${(cut.match(/\\+$/)?.[0].length ?? 0) % 2 === 1 ? cut.slice(0, -1) : cut}…`;
 };
-/** Memory, chat and GitHub text in the Markdown body: escaped so it renders as plain data. */
-const escapeMarkdown = (value: string) => value.replace(/[\\[\]()!*_`#<>|~]/g, "\\$&");
-// A link shows as a bare URL only when nothing in it could close or open Markdown syntax.
-const SAFE_URL = /^https?:\/\/[^\s<>()[\]\\`*|!]+$/;
-const link = (url: string | undefined) =>
-  url === undefined ? "" : ` ${SAFE_URL.test(url) ? url : escapeMarkdown(url)}`;
+/**
+ * Memory, chat and GitHub text in the Markdown body: escaped so it renders as plain data. The
+ * phone's parser autolinks bare URLs, `www.` hosts and emails, so `:`, `.` and `@` are escaped too.
+ */
+const escapeMarkdown = (value: string) => value.replace(/[\\[\]()!*_`#<>|~$:@.&]/g, "\\$&");
 const entry = (row: RoutineRow) =>
   row.note === undefined
     ? escapeMarkdown(row.title)
@@ -129,7 +128,7 @@ function headerLines(routine: KinLeadRoutine, header: RoutineHeader) {
 
 function morningLines(facts: MorningFacts) {
   const lines = [
-    ...facts.dueToday.map((row) => `Due today: ${entry(row)}${link(row.link)}`),
+    ...facts.dueToday.map((row) => `Due today: ${entry(row)}`),
     ...inline("Due this week", facts.dueThisWeek),
     ...inline("Overdue", facts.overdue),
     ...(facts.waiting.length === 0

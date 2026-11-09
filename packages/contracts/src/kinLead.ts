@@ -247,6 +247,7 @@ export const KinRoutineCard = Schema.Struct({
       title: Schema.String.check(Schema.isMaxLength(280)),
       note: Schema.optional(Schema.String.check(Schema.isMaxLength(280))),
       itemId: Schema.optional(KinMemoryItemId),
+      // Untrusted (memory and worker evidence): validate before opening.
       link: Schema.optional(Schema.String.check(Schema.isMaxLength(2_000))),
       // The existing card whose buttons act on this row, such as the item's deferral card.
       widgetId: Schema.optional(KinWidgetId),

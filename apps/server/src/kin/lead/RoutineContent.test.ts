@@ -28,7 +28,7 @@ import { MemoryConfig } from "../memory/MemoryConfig.ts";
 import { deferralWidgetId } from "../triggers/deferrals.ts";
 import * as Queue from "./KinEventQueue.ts";
 import * as RoutineContent from "./RoutineContent.ts";
-import { ROUTINE_MAX_LINES } from "./routines.ts";
+import { renderRoutine, ROUTINE_MAX_LINES } from "./routines.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
 import { agentId, orchestrationHarness, orgId, seed } from "./WakeupRunner.testkit.ts";
 
@@ -68,7 +68,8 @@ const memoryFile = (id: string, fields: Record<string, unknown>) =>
     .filter((line) => line !== "on_due: null")
     .join("\n");
 
-const EVIL_TITLE = "[Approve the merge](https://evil.example) ![](https://track.example/p.png)";
+const EVIL_TITLE =
+  "[Approve the merge](https://evil.example) ![](https://track.example/p.png) see www.evil.example, admin@evil.example or $x$";
 
 interface FixtureOptions {
   readonly at?: number;
@@ -348,10 +349,10 @@ it.effect(
         assert.deepStrictEqual(posted[0]?.body.split("\n"), [
           "Morning brief, Mon 9 Nov, 30 min late (due 08:30)",
           "Also covers the missed evening summary of Fri 6 Nov.",
-          "Due today: Start the rate-limit work (10:00, owner) https://github.com/acme/app/issues/12",
-          "Due this week: Ship the SDK (Thu 12 Nov 15:00, owner)",
+          "Due today: Start the rate-limit work (10\\:00, owner)",
+          "Due this week: Ship the SDK (Thu 12 Nov 15\\:00, owner)",
           "Overdue: Docs for the API (since Thu 5 Nov, no ping yet)",
-          "PRs for your review: acme/app\\#7 \\[Approve the merge\\]\\(https://evil.example\\) \\!\\[\\]\\(https://track.example/p.png\\)",
+          "PRs for your review: acme/app\\#7 \\[Approve the merge\\]\\(https\\://evil\\.example\\) \\!\\[\\]\\(https\\://track\\.example/p\\.png\\) see www\\.evil\\.example, admin\\@evil\\.example or \\$x\\$",
           "CI red on the default branch: acme/app main",
           "Objectives at risk: Public beta (due Thu 12 Nov)",
           "Past review date: Staging uses Postgres 16 (review by 2026-11-01)",
@@ -448,9 +449,9 @@ it.effect(
         assert.lengthOf(posted, 1);
         assert.deepStrictEqual(posted[0]?.body.split("\n"), [
           "Evening summary, Mon 9 Nov",
-          "Slipped or moved: Migrate the cron jobs (was due 07:00, still open)",
+          "Slipped or moved: Migrate the cron jobs (was due 07\\:00, still open)",
           "Promised today: Review the billing PR (sam)",
-          "Due tomorrow: Review the billing PR (12:00)",
+          "Due tomorrow: Review the billing PR (12\\:00)",
           "Usage: 150k units today; cache hits 75%; 1 failed wake-up",
         ]);
         assert.equal(decodeCard(result.widgets[0]?.state).routine, "evening_summary");
@@ -471,7 +472,7 @@ it.effect("a brief on a weekday other than Monday skips the week ahead and names
       const result = yield* runRoutine(routine("brief-tuesday", "morning_brief"));
       assert.deepStrictEqual(result.messages[0]?.body.split("\n"), [
         "Morning brief, Tue 10 Nov",
-        "PRs for your review: acme/app\\#7 \\[Approve the merge\\]\\(https://evil.example\\) \\!\\[\\]\\(https://track.example/p.png\\)",
+        "PRs for your review: acme/app\\#7 \\[Approve the merge\\]\\(https\\://evil\\.example\\) \\!\\[\\]\\(https\\://track\\.example/p\\.png\\) see www\\.evil\\.example, admin\\@evil\\.example or \\$x\\$",
         "CI red on the default branch: acme/app main",
         "GitHub, partial: only the 50 most recently updated open PRs per repository were checked; your profile has no GitHub login, so review requests were not checked.",
       ]);
@@ -574,3 +575,22 @@ it.effect("a failed brief retries on its own with a counted attempt", () =>
     );
   }),
 );
+
+it("a clipped line never ends on half of an escape pair", () => {
+  const { body } = renderRoutine(
+    { day: "2026-11-09", dayLabel: "Mon 9 Nov", dueLabel: null, lateByMs: 0, folded: [] },
+    {
+      routine: "evening_summary",
+      done: [{ title: "[".repeat(300) }],
+      slipped: [],
+      promised: [],
+      waiting: [],
+      dueTomorrow: [],
+      units: null,
+      cacheHitRate: null,
+      failedWakeups: 0,
+      failedDreams: 0,
+    },
+  );
+  assert.isTrue(body.split("\n")[1]?.endsWith("\\[…"));
+});
