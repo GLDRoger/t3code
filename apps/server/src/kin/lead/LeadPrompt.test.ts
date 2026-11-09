@@ -446,7 +446,20 @@ it.effect("quotes a choice tap as the owner's words, not its JSON", () =>
     const prompt = yield* KinLeadPrompt;
     const built = yield* prompt.build({
       ...input,
-      events: [{ ...event("tap"), _tag: "widget.action", actionId: "choose" }],
+      events: [
+        decodeEvent({
+          _tag: "widget.action",
+          orgId,
+          agentId,
+          chatId,
+          messageId: "tap",
+          actionId: "choose",
+          eventId: "event-tap",
+          receivedAt: timestamp,
+          dedupeKey: null,
+          provenance: { _tag: "system" },
+        }),
+      ],
     });
     const quoted = built.split("> BEGIN QUOTE: owner message")[1] ?? "";
     expect(quoted).toContain('Chose \\"Ship it\\" on \\"Release today?\\"');
