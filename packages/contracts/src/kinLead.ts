@@ -221,6 +221,7 @@ export type KinShadowSummaryCard = typeof KinShadowSummaryCard.Type;
 
 export const KinRoutineSection = Schema.Literals([
   "due_today",
+  "due_this_week",
   "overdue",
   "waiting",
   "review_requested",

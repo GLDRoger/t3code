@@ -33,6 +33,7 @@ import {
   renderRoutine,
   type EveningFacts,
   type MorningFacts,
+  type RoutineGithubGap,
   type RoutineHeader,
   type RoutineRow,
 } from "./routines.ts";
@@ -48,6 +49,8 @@ export interface KinRoutineGithubState {
   }>;
   readonly ciRed: ReadonlyArray<{ readonly repo: string; readonly branch: string }>;
   readonly failedRepos: number;
+  /** Repos with more open PRs than one page; their review list may be incomplete. */
+  readonly truncatedRepos: number;
   readonly repos: number;
 }
 export interface KinRoutineGithubReaderShape {
@@ -135,9 +138,8 @@ const make = Effect.gen(function* () {
     const zone = yield* cache.ownerTimeZone(orgId);
     const local = DateTime.makeZonedUnsafe(now, { timeZone: zone });
     const dayStart = DateTime.toEpochMillis(DateTime.startOf(local, "day"));
-    const dayEnd = DateTime.toEpochMillis(
-      DateTime.add(DateTime.startOf(local, "day"), { days: 1 }),
-    );
+    const tomorrowStart = DateTime.add(DateTime.startOf(local, "day"), { days: 1 });
+    const dayEnd = DateTime.toEpochMillis(tomorrowStart);
     const day = DateTime.formatIsoDate(local);
     const dayOf = (ms: number) =>
       DateTime.formatIsoDate(DateTime.makeZonedUnsafe(ms, { timeZone: zone }));
@@ -262,9 +264,29 @@ const make = Effect.gen(function* () {
         )
         .slice(0, 3)
         .map((item) => row(item, `review by ${item.review_by}`));
+      const githubGaps = Option.match(github, {
+        onNone: (): ReadonlyArray<RoutineGithubGap> => ["unread_repos"],
+        onSome: (state) => [
+          ...(state.failedRepos > 0 ? (["unread_repos"] as const) : []),
+          ...(state.truncatedRepos > 0 ? (["more_pulls"] as const) : []),
+        ],
+      });
       const facts: MorningFacts = {
         routine: "morning_brief",
         dueToday,
+        // Mondays also look ahead to the rest of the owner's week.
+        dueThisWeek:
+          DateTime.getPart(local, "weekDay") === 1
+            ? dueBetween(
+                dayEnd,
+                DateTime.toEpochMillis(DateTime.add(tomorrowStart, { days: 6 })),
+              ).map((item) =>
+                row(
+                  item,
+                  `${dayLabel(due(item))} ${timeLabel(due(item))}, ${item.owner ?? item.said_by}`,
+                ),
+              )
+            : [],
         overdue,
         waiting,
         reviews: Option.match(github, {
@@ -282,9 +304,7 @@ const make = Effect.gen(function* () {
         github:
           reader === null
             ? "off"
-            : Option.isNone(github) || github.value.failedRepos > 0
-              ? "partial"
-              : "read",
+            : [...githubGaps, ...(owner.login === null ? (["no_login"] as const) : [])],
         objectives,
         workersRunning: workers.filter((worker) => worker.status === "queued").length,
         workersBlocked,

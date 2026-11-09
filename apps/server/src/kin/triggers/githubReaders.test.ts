@@ -247,7 +247,10 @@ describe("Kin GitHub readers", () => {
         data: {
           repository: {
             defaultBranchRef: { name: "main", target: { statusCheckRollup: { state: "FAILURE" } } },
-            pullRequests: { nodes: [pull(4, "Owner"), pull(5, "someone"), pull(6, "owner", true)] },
+            pullRequests: {
+              pageInfo: { hasNextPage: true },
+              nodes: [pull(4, "Owner"), pull(5, "someone"), pull(6, "owner", true)],
+            },
           },
         },
       },
@@ -262,6 +265,7 @@ describe("Kin GitHub readers", () => {
         ],
         ciRed: [{ repo: REPO, branch: "main" }],
         failedRepos: 0,
+        truncatedRepos: 1,
         repos: 1,
       });
       assert.deepStrictEqual(mints[0]?.permissions, {

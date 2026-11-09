@@ -136,7 +136,8 @@ const ROUTINE_PERMISSIONS = {
 } as const satisfies KinGitHubPermissionSet;
 export const ROUTINE_QUERY = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {
   defaultBranchRef { name target { ... on Commit { statusCheckRollup { state } } } }
-  pullRequests(states: [OPEN], first: 50, orderBy: { field: CREATED_AT, direction: ASC }) {
+  pullRequests(states: [OPEN], first: 50, orderBy: { field: UPDATED_AT, direction: DESC }) {
+    pageInfo { hasNextPage }
     nodes { number title url isDraft reviewRequests(first: 20) { nodes { requestedReviewer { ... on User { login } } } } }
   }
 } }`;
@@ -159,6 +160,7 @@ const RoutineAnswer = Schema.Struct({
               }),
             ),
             pullRequests: Schema.Struct({
+              pageInfo: Schema.Struct({ hasNextPage: Schema.Boolean }),
               nodes: Schema.Array(
                 Schema.NullOr(
                   Schema.Struct({
@@ -348,7 +350,7 @@ const make = Effect.gen(function* () {
     ),
   };
 
-  /** Open PRs awaiting `login`'s review and the default branch's check rollup, one query per repo. */
+  /** Of the 50 latest-updated open PRs, those awaiting `login` directly (not via a team); plus CI. */
   const readRoutineRepo = Effect.fn("KinGithubReaders.routineRepo")(function* (
     repo: string,
     login: string | null,
@@ -377,6 +379,7 @@ const make = Effect.gen(function* () {
     const state = repository.defaultBranchRef?.target?.statusCheckRollup?.state;
     const branch = repository.defaultBranchRef?.name;
     return {
+      truncated: repository.pullRequests.pageInfo.hasNextPage,
       reviews: repository.pullRequests.nodes.flatMap((pull) =>
         pull === null ||
         pull.isDraft ||
@@ -400,6 +403,7 @@ const make = Effect.gen(function* () {
       const reviews: Array<KinRoutineGithubState["reviews"][number]> = [];
       const ciRed: Array<KinRoutineGithubState["ciRed"][number]> = [];
       let failed = 0;
+      let truncated = 0;
       for (const repo of scope.repos) {
         const result = yield* readRoutineRepo(repo, login).pipe(Effect.result);
         if (result._tag === "Failure") {
@@ -411,10 +415,17 @@ const make = Effect.gen(function* () {
           });
           continue;
         }
+        if (result.success.truncated) truncated++;
         reviews.push(...result.success.reviews);
         ciRed.push(...result.success.ciRed);
       }
-      return { reviews, ciRed, failedRepos: failed, repos: scope.repos.length };
+      return {
+        reviews,
+        ciRed,
+        failedRepos: failed,
+        truncatedRepos: truncated,
+        repos: scope.repos.length,
+      };
     }),
   };
 

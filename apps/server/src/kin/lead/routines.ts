@@ -24,11 +24,14 @@ export interface RoutineRow {
 export interface MorningFacts {
   readonly routine: "morning_brief";
   readonly dueToday: ReadonlyArray<RoutineRow>;
+  /** Owner-local Mondays only; other days leave it empty. */
+  readonly dueThisWeek: ReadonlyArray<RoutineRow>;
   readonly overdue: ReadonlyArray<RoutineRow>;
   readonly waiting: ReadonlyArray<RoutineRow>;
   readonly reviews: ReadonlyArray<RoutineRow>;
   readonly ciRed: ReadonlyArray<RoutineRow>;
-  readonly github: "read" | "off" | "partial";
+  /** `off` without the Kin App; otherwise what the read missed, empty when complete. */
+  readonly github: "off" | ReadonlyArray<RoutineGithubGap>;
   readonly objectives: ReadonlyArray<RoutineRow>;
   readonly workersRunning: number;
   readonly workersBlocked: ReadonlyArray<RoutineRow>;
@@ -36,6 +39,8 @@ export interface MorningFacts {
   readonly yesterdayUnits: number | null;
   readonly pastReview: ReadonlyArray<RoutineRow>;
 }
+
+export type RoutineGithubGap = "unread_repos" | "more_pulls" | "no_login";
 
 export interface EveningFacts {
   readonly routine: "evening_summary";
@@ -64,13 +69,29 @@ const names: Record<KinLeadRoutine, string> = {
   owner_check: "Owner check",
 };
 const LATE_NOTE_MS = 15 * 60_000;
+const githubGaps: Record<RoutineGithubGap, string> = {
+  unread_repos: "some repositories could not be read",
+  more_pulls: "only the 50 most recently updated open PRs per repository were checked",
+  no_login: "your profile has no GitHub login, so review requests were not checked",
+};
 
 const clip = (value: string, max: number) => {
   const flat = value.replace(/\s+/g, " ").trim();
-  return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
+  if (flat.length <= max) return flat;
+  const cut = flat.slice(0, max - 1);
+  // Never leave half of an escape pair at the cut.
+  return `${(cut.match(/\\+$/)?.[0].length ?? 0) % 2 === 1 ? cut.slice(0, -1) : cut}…`;
 };
+/** Memory, chat and GitHub text in the Markdown body: escaped so it renders as plain data. */
+const escapeMarkdown = (value: string) => value.replace(/[\\[\]()!*_`#<>|~]/g, "\\$&");
+// A link shows as a bare URL only when nothing in it could close or open Markdown syntax.
+const SAFE_URL = /^https?:\/\/[^\s<>()[\]\\`*|!]+$/;
+const link = (url: string | undefined) =>
+  url === undefined ? "" : ` ${SAFE_URL.test(url) ? url : escapeMarkdown(url)}`;
 const entry = (row: RoutineRow) =>
-  row.note === undefined ? row.title : `${row.title} (${row.note})`;
+  row.note === undefined
+    ? escapeMarkdown(row.title)
+    : `${escapeMarkdown(row.title)} (${escapeMarkdown(row.note)})`;
 const inline = (label: string, rows: ReadonlyArray<RoutineRow>) =>
   rows.length === 0
     ? []
@@ -108,7 +129,8 @@ function headerLines(routine: KinLeadRoutine, header: RoutineHeader) {
 
 function morningLines(facts: MorningFacts) {
   const lines = [
-    ...facts.dueToday.map((row) => `Due today: ${entry(row)}${row.link ? ` ${row.link}` : ""}`),
+    ...facts.dueToday.map((row) => `Due today: ${entry(row)}${link(row.link)}`),
+    ...inline("Due this week", facts.dueThisWeek),
     ...inline("Overdue", facts.overdue),
     ...(facts.waiting.length === 0
       ? []
@@ -119,9 +141,9 @@ function morningLines(facts: MorningFacts) {
     ...inline("CI red on the default branch", facts.ciRed),
     ...(facts.github === "off"
       ? ["GitHub: not connected, so PRs and CI were not checked."]
-      : facts.github === "partial"
-        ? ["GitHub: some repositories could not be read."]
-        : []),
+      : facts.github.length === 0
+        ? []
+        : [`GitHub, partial: ${facts.github.map((gap) => githubGaps[gap]).join("; ")}.`]),
     ...inline("Objectives at risk", facts.objectives),
     ...(facts.workersRunning === 0 && facts.workersBlocked.length === 0
       ? []
@@ -131,7 +153,7 @@ function morningLines(facts: MorningFacts) {
               ? ""
               : ` (${facts.workersBlocked
                   .slice(0, INLINE_ENTRIES)
-                  .map((row) => row.title)
+                  .map((row) => escapeMarkdown(row.title))
                   .join("; ")})`
           }`,
         ]),
@@ -182,6 +204,7 @@ const sections = (
   facts.routine === "morning_brief"
     ? [
         ["due_today", facts.dueToday],
+        ["due_this_week", facts.dueThisWeek],
         ["overdue", facts.overdue],
         ["waiting", facts.waiting],
         ["review_requested", facts.reviews],

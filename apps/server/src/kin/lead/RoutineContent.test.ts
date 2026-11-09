@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
+  KinAgentId,
   KinChatId,
   KinEvent,
   KinMessageId,
@@ -67,8 +68,17 @@ const memoryFile = (id: string, fields: Record<string, unknown>) =>
     .filter((line) => line !== "on_due: null")
     .join("\n");
 
+const EVIL_TITLE = "[Approve the merge](https://evil.example) ![](https://track.example/p.png)";
+
+interface FixtureOptions {
+  readonly at?: number;
+  readonly truncatedRepos?: number;
+  /** Runs inside the GitHub read, after the first lead lookup and before the write transaction. */
+  readonly onGithubRead?: Effect.Effect<void, never, SqlClient.SqlClient>;
+}
+
 /** The real runner and content service over fixture memory in a fake git remote. */
-function layerFor(files: ReadonlyArray<readonly [string, string]>) {
+function layerFor(files: ReadonlyArray<readonly [string, string]>, options: FixtureOptions) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
@@ -101,22 +111,32 @@ function layerFor(files: ReadonlyArray<readonly [string, string]>) {
       Layer.provideMerge(Hub.layer),
       Layer.provideMerge(Repository.layer),
     );
-    const github = Layer.succeed(RoutineContent.KinRoutineGithubReader, {
-      read: () =>
-        Effect.succeed({
-          reviews: [
-            {
-              repo: "acme/app",
-              number: 7,
-              title: "Add rate limits",
-              url: "https://github.com/acme/app/pull/7",
-            },
-          ],
-          ciRed: [{ repo: "acme/app", branch: "main" }],
-          failedRepos: 0,
-          repos: 1,
-        }),
-    });
+    const github = Layer.effect(
+      RoutineContent.KinRoutineGithubReader,
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        return {
+          read: () =>
+            (options.onGithubRead ?? Effect.void).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.as({
+                reviews: [
+                  {
+                    repo: "acme/app",
+                    number: 7,
+                    title: EVIL_TITLE,
+                    url: "https://github.com/acme/app/pull/7",
+                  },
+                ],
+                ciRed: [{ repo: "acme/app", branch: "main" }],
+                failedRepos: 0,
+                truncatedRepos: options.truncatedRepos ?? 0,
+                repos: 1,
+              }),
+            ),
+        };
+      }),
+    );
     // The runner keeps the harness's memory stub; only the content service reads fixture memory.
     const content = RoutineContent.layer.pipe(
       Layer.provide(memory),
@@ -147,9 +167,14 @@ const runRoutine = (event: KinEvent, setup: Setup = Effect.void) =>
     const fiber = yield* runner.runOnce(orgId, agentId).pipe(Effect.forkChild);
     yield* TestClock.adjust("20 seconds");
     yield* Fiber.join(fiber);
-    const messages = yield* sql<{ messageId: string; body: string; widgetId: string | null }>`
-      SELECT message_id AS "messageId", body, widget_id AS "widgetId" FROM kin_messages
-      WHERE org_id = ${orgId} ORDER BY seq`;
+    const messages = yield* sql<{
+      messageId: string;
+      chatId: string;
+      body: string;
+      widgetId: string | null;
+    }>`
+      SELECT message_id AS "messageId", chat_id AS "chatId", body, widget_id AS "widgetId"
+      FROM kin_messages WHERE org_id = ${orgId} ORDER BY seq`;
     const widgets = yield* sql<{
       widgetId: string;
       messageId: string;
@@ -168,13 +193,54 @@ const runRoutine = (event: KinEvent, setup: Setup = Effect.void) =>
 const withFixture = <A, E>(
   files: ReadonlyArray<readonly [string, string]>,
   test: Effect.Effect<A, E, Layer.Success<Effect.Success<ReturnType<typeof layerFor>>>>,
+  options: FixtureOptions = {},
 ) =>
   Effect.gen(function* () {
     // Before the runtime starts its timers, so none of them replays the years since the epoch.
-    yield* TestClock.setTime(now);
-    const layer = yield* layerFor(files);
+    yield* TestClock.setTime(options.at ?? now);
+    const layer = yield* layerFor(files, options);
     return yield* test.pipe(Effect.provide(layer));
   }).pipe(Effect.provide(NodeServices.layer), Effect.scoped);
+
+const OTHER_MODELS =
+  '{"strong":{"instanceId":"codex","model":"gpt-5.1-codex"},"cheap":{"instanceId":"codex","model":"gpt-5.1-codex-mini"}}';
+const otherReport = JSON.stringify({
+  result: "done",
+  summary: "Other org shipped",
+  evidence: [],
+  openQuestions: [],
+  memorySuggestions: [],
+  misleadingMemory: [],
+  parsed: true,
+});
+
+/**
+ * Another org's rows, inserted before this org's so an unfiltered query reads them first. Its
+ * waiting row names this org's owner, as a corrupt cross-org row would.
+ */
+const otherOrg: Setup = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_orgs VALUES ('a-other', 'Other', ${timestamp})`;
+  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('other-owner', 'a-other', 'other', 'Other', ${timestamp})`;
+  yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at) VALUES ('other-lead', 'a-other', 'Other lead', 'lead', 'other-owner', ${timestamp})`;
+  yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at) VALUES ('other-chat', 'a-other', 'direct', 'other-direct', 0, ${timestamp})`;
+  yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id) VALUES ('other-lead', 'a-other', 'Other lead', 0, ${OTHER_MODELS}, '[]', 'other-chat')`;
+  for (const day of ["2026-11-08", "2026-11-09"])
+    yield* sql`INSERT INTO kin_budget (org_id, day, lead_units) VALUES ('a-other', ${day}, 9000000)`;
+  yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids) VALUES ('a-other', 'other-wake', 'other-lead', 'fixture', ${now - 7_200_000}, 'timed_out', '[]')`;
+  yield* sql`INSERT INTO kin_budget_charges (org_id, wakeup_id, day, units, tokens_json) VALUES ('a-other', 'other-wake', '2026-11-09', 10, '[{"turnTokenUsage":{"inputTokens":3000,"cachedInputTokens":0}}]')`;
+  yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id, model_json, provenance_json, status, started_at) VALUES ('other-queued', 'a-other', 'other-lead', 'other-wake', 'build', 'other-thread-1', '{}', '{}', 'queued', ${now - 3_600_000})`;
+  yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id, model_json, provenance_json, status, report_json, started_at, ended_at) VALUES ('other-done', 'a-other', 'other-lead', 'other-wake', 'build', 'other-thread-2', '{}', '{}', 'completed', ${otherReport}, ${now - 3_600_000}, ${now - 1_800_000})`;
+  yield* sql`INSERT INTO kin_waiting (waiting_id, org_id, person_id, chat_id, reason, created_at) VALUES ('other-waiting', 'a-other', 'owner', 'other-chat', 'decision', ${timestamp})`;
+  yield* sql`INSERT INTO kin_ping_ledger (org_id, person, item_id, day, pinged_at) VALUES ('a-other', 'owner', 'com-docs', '2026-11-08', 0)`;
+  yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, budget_deferred) VALUES ('other-event', 'a-other', 'other-lead', 'routine', 'P2', '{}', 0, 0, 1)`;
+  yield* sql`INSERT INTO kin_dream_runs (org_id, owner_date, dream_id, full, status, branch, material_from, material_until, started_at, ended_at) VALUES ('a-other', '2026-11-09', 'dream', 0, 'failed', 'dream/2026-11-09', 0, 0, 0, 1)`;
+}).pipe(Effect.orDie);
+
+const ownerLogin: Setup = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_people SET github_login = 'owner' WHERE org_id = ${orgId} AND person_id = 'owner'`;
+}).pipe(Effect.orDie);
 
 // A deferral card for one due item, as the deferral flow would have posted it.
 const deferralCard: Setup = Effect.gen(function* () {
@@ -220,6 +286,14 @@ it.effect(
           }),
         ],
         [
+          "deferrals/def-week.md",
+          memoryFile("def-week", { title: "Ship the SDK", due: "2026-11-12T15:00Z" }),
+        ],
+        [
+          "deferrals/def-next.md",
+          memoryFile("def-next", { title: "Next week's work", due: "2026-11-16T10:00Z" }),
+        ],
+        [
           "commitments/com-docs.md",
           memoryFile("com-docs", {
             kind: "commitment",
@@ -262,17 +336,22 @@ it.effect(
           lateByMs: 30 * 60_000,
           foldedRoutines: [{ routine: "evening_summary", dueAt: "2026-11-06T18:30:00.000Z" }],
         });
-        const result = yield* runRoutine(event, deferralCard);
+        const result = yield* runRoutine(
+          event,
+          Effect.all([otherOrg, ownerLogin, deferralCard], { discard: true }),
+        );
         const posted = result.messages.filter((message) =>
           message.messageId.startsWith("routine:"),
         );
         assert.lengthOf(posted, 1);
+        assert.equal(posted[0]?.chatId, "owner-chat");
         assert.deepStrictEqual(posted[0]?.body.split("\n"), [
           "Morning brief, Mon 9 Nov, 30 min late (due 08:30)",
           "Also covers the missed evening summary of Fri 6 Nov.",
           "Due today: Start the rate-limit work (10:00, owner) https://github.com/acme/app/issues/12",
+          "Due this week: Ship the SDK (Thu 12 Nov 15:00, owner)",
           "Overdue: Docs for the API (since Thu 5 Nov, no ping yet)",
-          "PRs for your review: acme/app#7 Add rate limits",
+          "PRs for your review: acme/app\\#7 \\[Approve the merge\\]\\(https://evil.example\\) \\!\\[\\]\\(https://track.example/p.png\\)",
           "CI red on the default branch: acme/app main",
           "Objectives at risk: Public beta (due Thu 12 Nov)",
           "Past review date: Staging uses Postgres 16 (review by 2026-11-01)",
@@ -288,8 +367,10 @@ it.effect(
           card.rows.map((row) => [row.section, row.itemId ?? row.title, row.widgetId ?? null]),
           [
             ["due_today", "def-standup", deferralWidgetId(orgId, "def-standup")],
+            ["due_this_week", "def-week", null],
             ["overdue", "com-docs", null],
-            ["review_requested", "acme/app#7 Add rate limits", null],
+            // The card's fields are plain text, so they stay unescaped.
+            ["review_requested", `acme/app#7 ${EVIL_TITLE}`, null],
             ["ci_red", "acme/app main", null],
             ["objective_at_risk", "obj-launch", null],
             ["past_review", "claim-old", null],
@@ -319,7 +400,7 @@ it.effect("caps a crowded brief at twelve lines and keeps every row on the card"
       const lines = message?.body.split("\n") ?? [];
       assert.lengthOf(result.messages, 1);
       assert.lengthOf(lines, ROUTINE_MAX_LINES);
-      assert.equal(lines.at(-1), "+7 more lines in the card");
+      assert.equal(lines.at(-1), "+8 more lines in the card");
       const card = decodeCard(result.widgets[0]?.state);
       assert.lengthOf(
         card.rows.filter((row) => row.section === "due_today"),
@@ -354,13 +435,10 @@ it.effect(
         const result = yield* runRoutine(
           routine("summary-1", "evening_summary"),
           Effect.gen(function* () {
+            yield* otherOrg;
             const sql = yield* SqlClient.SqlClient;
             yield* sql`INSERT INTO kin_budget (org_id, day, lead_units, worker_units) VALUES (${orgId}, '2026-11-09', 120000, 30000)`;
             yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids) VALUES (${orgId}, 'earlier', ${agentId}, 'fixture', ${now - 3_600_000}, 'failed', '[]')`;
-            // Another organization's failures must never reach this owner's summary.
-            yield* sql`INSERT INTO kin_orgs VALUES ('other', 'Other', ${timestamp})`;
-            yield* sql`INSERT INTO kin_budget (org_id, day, lead_units) VALUES ('other', '2026-11-09', 1)`;
-            yield* sql`INSERT INTO kin_dream_runs (org_id, owner_date, dream_id, full, status, branch, material_from, material_until, started_at, ended_at) VALUES ('other', '2026-11-09', 'dream', 0, 'failed', 'dream/2026-11-09', 0, 0, 0, 1)`;
             yield* sql`INSERT INTO kin_budget_charges (org_id, wakeup_id, day, units, tokens_json) VALUES (${orgId}, 'earlier', '2026-11-09', 10, '[{"providerTurnId":"t","turnTokenUsage":{"inputTokens":1000,"cachedInputTokens":750}}]')`;
           }).pipe(Effect.orDie),
         );
@@ -379,6 +457,81 @@ it.effect(
         assert.equal(result.eventState, "done");
       }),
     ),
+);
+
+it.effect("a brief on a weekday other than Monday skips the week ahead and names GitHub gaps", () =>
+  withFixture(
+    [
+      [
+        "deferrals/def-week.md",
+        memoryFile("def-week", { title: "Ship the SDK", due: "2026-11-12T15:00Z" }),
+      ],
+    ],
+    Effect.gen(function* () {
+      const result = yield* runRoutine(routine("brief-tuesday", "morning_brief"));
+      assert.deepStrictEqual(result.messages[0]?.body.split("\n"), [
+        "Morning brief, Tue 10 Nov",
+        "PRs for your review: acme/app\\#7 \\[Approve the merge\\]\\(https://evil.example\\) \\!\\[\\]\\(https://track.example/p.png\\)",
+        "CI red on the default branch: acme/app main",
+        "GitHub, partial: only the 50 most recently updated open PRs per repository were checked; your profile has no GitHub login, so review requests were not checked.",
+      ]);
+      assert.notInclude(
+        decodeCard(result.widgets[0]?.state).rows.map((row) => row.section),
+        "due_this_week",
+      );
+    }),
+    { at: Date.parse("2026-11-10T09:00:00.000Z"), truncatedRepos: 1 },
+  ),
+);
+
+it.effect("posts to the owner chat as it stands when the write starts", () =>
+  withFixture(
+    [],
+    Effect.gen(function* () {
+      const result = yield* runRoutine(
+        routine("brief-moved", "morning_brief"),
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at) VALUES ('new-owner-chat', ${orgId}, 'direct', 'new-direct', 0, ${timestamp})`;
+        }).pipe(Effect.orDie),
+      );
+      assert.deepStrictEqual(
+        result.messages.map((message) => message.chatId),
+        ["new-owner-chat"],
+      );
+    }),
+    {
+      onGithubRead: Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE kin_leads SET owner_chat_id = 'new-owner-chat' WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+      }).pipe(Effect.orDie),
+    },
+  ),
+);
+
+it.effect("never posts for a lead of another org", () =>
+  withFixture(
+    [],
+    Effect.gen(function* () {
+      yield* seed;
+      yield* otherOrg;
+      const content = yield* RoutineContent.KinRoutineContent;
+      const event = decodeEvent({
+        _tag: "routine",
+        orgId,
+        agentId: "other-lead",
+        eventId: "brief-cross",
+        receivedAt: timestamp,
+        dedupeKey: "brief-cross",
+        provenance: { _tag: "system" },
+        routine: "morning_brief",
+      });
+      if (!RoutineContent.isRoutineContent(event)) return assert.fail("not a routine event");
+      assert.isNull(yield* content.post(KinAgentId.make("other-lead"), event));
+      const sql = yield* SqlClient.SqlClient;
+      assert.deepStrictEqual(yield* sql`SELECT message_id FROM kin_messages ORDER BY seq`, []);
+    }),
+  ),
 );
 
 it.effect("a failed brief retries on its own with a counted attempt", () =>
