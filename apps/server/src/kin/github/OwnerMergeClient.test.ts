@@ -81,7 +81,7 @@ const withHygiene = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
         Layer.provide(
           Layer.succeed(CredentialHygiene.T3GitHubIdentity, {
             identities: Effect.succeed({
-              t3: Option.none(),
+              t3: [],
               ghAccounts: [],
               gitCredential: Option.none(),
               ssh: ["git@github.com: Permission denied (publickey)."],

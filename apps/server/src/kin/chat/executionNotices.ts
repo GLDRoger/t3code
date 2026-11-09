@@ -83,7 +83,7 @@ export const layer = Layer.effect(
         WHERE l.org_id = ${orgId} AND a.retired_at IS NULL ORDER BY l.agent_id LIMIT 1`;
     return KinExecutionNotices.of({
       credentialCheck: Effect.fn("KinExecutionNotices.credentialCheck")(
-        function* ({ orgId, report }) {
+        function* ({ orgId, report, recoveredFrom }) {
           const [lead] = yield* ownerChat(orgId);
           if (lead === undefined) {
             yield* Effect.logWarning("Kin credential check changed with no owner chat", {
@@ -96,7 +96,11 @@ export const layer = Layer.effect(
           yield* chat.notice({
             orgId,
             chatId: KinChatId.make(lead.chatId),
-            messageId: KinMessageId.make(`kin-hygiene:${orgId}:${report.checkedAt}`),
+            messageId: KinMessageId.make(
+              recoveredFrom === undefined
+                ? `kin-hygiene:${orgId}:${report.checkedAt}`
+                : `kin-hygiene:${orgId}:recovered:${recoveredFrom}`,
+            ),
             body: credentialCheckBody(orgId, report),
           });
         },

@@ -78,10 +78,11 @@ export class T3GitHubIdentityError extends Schema.TaggedError<T3GitHubIdentityEr
  */
 export interface T3GitHubIdentities {
   /**
-   * T3's own credential: `GitHubRequestPolicy.credential("github.com")`, then `GET /user`. None
-   * when T3 has no GitHub credential. `source` is where it came from; `"env"` fails the check.
+   * Every credential T3 holds for github.com, each named by `GET /user`: the token saved in
+   * Settings, the app sign-in, `GH_TOKEN`/`GITHUB_TOKEN` and `gh auth token`, whether or not the
+   * host is enabled. `source` is where it came from; `"env"` fails the check.
    */
-  readonly t3: Option.Option<{ readonly login: string; readonly source: string }>;
+  readonly t3: ReadonlyArray<{ readonly login: string; readonly source: string }>;
   /** Every account `gh auth status --hostname github.com` lists, active or not. */
   readonly ghAccounts: ReadonlyArray<string>;
   /**
@@ -91,8 +92,9 @@ export interface T3GitHubIdentities {
   readonly gitCredential: Option.Option<string>;
   /**
    * The combined stdout and stderr of each SSH probe: `GITHUB_SSH_PROBE` as is, then once per
-   * private key in `~/.ssh` with `-o IdentitiesOnly=yes -i <key>` added, since GitHub greets only
-   * the first key it accepts. The check parses them; any answer it can't read fails it.
+   * private key (each `IdentityFile` `ssh -G` lists, and every key in `~/.ssh`) with
+   * `-o IdentitiesOnly=yes -i <key>` added, since GitHub greets only the first key it accepts. The
+   * check parses them; any answer it can't read fails it.
    */
   readonly ssh: ReadonlyArray<string>;
 }
@@ -118,6 +120,7 @@ export interface CredentialHygieneReport {
   readonly warnings: ReadonlyArray<"merge_token_expiring">;
   /** Credential variables set in the server's environment. Names only, never values. */
   readonly envTokenNames: ReadonlyArray<string>;
+  /** The first T3 credential's login, in the order T3 ranks them (saved, app, then personal). */
   readonly t3Login: string | null;
   /** Every login found, with where it came from. Logins only; no credential leaves the probe. */
   readonly identities: ReadonlyArray<{
@@ -171,9 +174,13 @@ export class CredentialHygieneFailedError extends Schema.TaggedError<CredentialH
   }
 }
 
+/** How long `check` reuses one probe, across every org and held action. */
+export const PROBE_CACHE_TTL = "60 seconds";
+
 /**
- * Spec section 12. The executor runs `check` at startup and hourly (audit `credential_check_failed`
- * and the owner's card on failure) and calls `requirePassing` before every privileged run.
+ * Spec section 12. The executor runs `check` at startup, hourly and to hold an action (audit
+ * `credential_check_failed` and the owner's card on failure), and calls `requirePassing` before
+ * every privileged run. `check` shares one probe for `PROBE_CACHE_TTL`; `requirePassing` never does.
  */
 export class CredentialHygiene extends Context.Service<
   CredentialHygiene,
@@ -203,7 +210,13 @@ const make = Effect.gen(function* () {
     Effect.provideService(ConfigProvider.ConfigProvider, configProvider),
   );
 
-  const check = Effect.fn("CredentialHygiene.check")(function* (orgId: KinOrgId) {
+  // Single-flight too: concurrent checks wait on the probe already running.
+  const cachedIdentities = yield* Effect.cachedWithTTL(identity.identities, PROBE_CACHE_TTL);
+
+  const evaluate = Effect.fnUntraced(function* (
+    orgId: KinOrgId,
+    probe: typeof identity.identities,
+  ) {
     const failures = new Set<CredentialHygieneFailure>();
     const warnings: Array<"merge_token_expiring"> = [];
 
@@ -221,17 +234,17 @@ const make = Effect.gen(function* () {
     if (status._tag === "expired") failures.add("merge_token_expired");
     if (status._tag === "active" && status.expiringSoon) warnings.push("merge_token_expiring");
 
-    const probed = yield* identity.identities.pipe(Effect.option);
+    const probed = yield* probe.pipe(Effect.option);
     let t3Login: string | null = null;
     const found: Array<CredentialHygieneReport["identities"][number]> = [];
     if (Option.isNone(probed)) {
       failures.add("identity_unknown");
     } else {
       const { t3, ghAccounts, gitCredential, ssh } = probed.value;
-      if (Option.isSome(t3)) {
-        t3Login = t3.value.login;
-        if (t3.value.source === "env") failures.add("env_token");
-        found.push({ source: "t3", login: t3.value.login });
+      t3Login = t3[0]?.login ?? null;
+      for (const { login, source } of t3) {
+        if (source === "env") failures.add("env_token");
+        found.push({ source: "t3", login });
       }
       for (const login of ghAccounts) found.push({ source: "gh", login });
       if (Option.isSome(gitCredential)) {
@@ -243,15 +256,16 @@ const make = Effect.gen(function* () {
         const answer = parseGitHubSshAnswer(output);
         if (answer._tag === "unknown") failures.add("identity_unknown");
         if (answer._tag !== "logins") continue;
-        for (const login of answer.logins) {
-          if (!found.some((item) => item.source === "ssh" && item.login === login)) {
-            found.push({ source: "ssh", login });
-          }
-        }
+        for (const login of answer.logins) found.push({ source: "ssh", login });
       }
     }
+    const identities = found.filter(
+      (item, index) =>
+        found.findIndex((other) => other.source === item.source && other.login === item.login) ===
+        index,
+    );
     const bot = scope.botLogin.toLowerCase();
-    for (const { login } of found) {
+    for (const { login } of identities) {
       const normalized = login.toLowerCase();
       if (ownerLogins.has(normalized)) failures.add("owner_identity");
       else if (normalized !== bot) failures.add("non_bot_identity");
@@ -263,7 +277,7 @@ const make = Effect.gen(function* () {
       warnings,
       envTokenNames: envNames,
       t3Login,
-      identities: found,
+      identities,
       checkedAt: yield* Clock.currentTimeMillis,
     };
     yield* Effect.annotateCurrentSpan({
@@ -273,8 +287,13 @@ const make = Effect.gen(function* () {
     return report;
   });
 
+  const check = Effect.fn("CredentialHygiene.check")(function* (orgId: KinOrgId) {
+    return yield* evaluate(orgId, cachedIdentities);
+  });
+
   const requirePassing = Effect.fn("CredentialHygiene.requirePassing")(function* (orgId: KinOrgId) {
-    const report = yield* check(orgId);
+    // A fresh probe, started after the caller's claim, so a cached pass never gates a side effect.
+    const report = yield* evaluate(orgId, identity.identities);
     if (!report.passed) {
       return yield* new CredentialHygieneFailedError({ failures: report.failures });
     }

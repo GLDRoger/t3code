@@ -110,5 +110,4 @@ export const driver = defineSourceControlDriver({
   make: withOwnServices(makeInstance, services),
 });
 
-export { GitHubRequestPolicy } from "./GitHubRequestPolicy.ts";
-export { layerWithDependencies as gitHubRequestPolicyLayer } from "./GitHubRest.ts";
+export { GitHubAppSession } from "./GitHubAppSignIn.ts";

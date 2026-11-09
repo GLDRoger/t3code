@@ -2,6 +2,7 @@ import { assert, it } from "@effect/vitest";
 import type { KinOrgId } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as TestClock from "effect/testing/TestClock";
@@ -20,7 +21,7 @@ const SSH_DENIED = "git@github.com: Permission denied (publickey).";
 
 type Identity =
   | {
-      readonly t3?: Option.Option<{ readonly login: string; readonly source: string }>;
+      readonly t3?: ReadonlyArray<{ readonly login: string; readonly source: string }>;
       readonly gh?: ReadonlyArray<string>;
       readonly git?: Option.Option<string>;
       readonly ssh?: ReadonlyArray<string>;
@@ -32,7 +33,7 @@ const setup = (input: {
   readonly env?: Record<string, string>;
   readonly mergeToken?: { readonly login: string; readonly expiresAt: number } | null;
 }) => {
-  const state = { identity: input.identity };
+  const state = { identity: input.identity, probes: 0 };
   const mergeToken =
     input.mergeToken === undefined
       ? { login: "Nishchay", expiresAt: NOW + 30 * DAY }
@@ -51,15 +52,21 @@ const setup = (input: {
   const identity = Layer.succeed(
     CredentialHygiene.T3GitHubIdentity,
     CredentialHygiene.T3GitHubIdentity.of({
-      identities: Effect.suspend(() =>
-        state.identity === "unreachable"
-          ? Effect.fail(new CredentialHygiene.T3GitHubIdentityError({ cause: "offline" }))
-          : Effect.succeed({
-              t3: state.identity.t3 ?? Option.none(),
-              ghAccounts: state.identity.gh ?? [],
-              gitCredential: state.identity.git ?? Option.none(),
-              ssh: state.identity.ssh ?? [SSH_DENIED],
-            }),
+      identities: Effect.suspend(() => {
+        state.probes += 1;
+        // Takes a second, so a check that starts meanwhile shares it.
+        return Effect.sleep("1 second");
+      }).pipe(
+        Effect.andThen(() =>
+          state.identity === "unreachable"
+            ? Effect.fail(new CredentialHygiene.T3GitHubIdentityError({ cause: "offline" }))
+            : Effect.succeed({
+                t3: state.identity.t3 ?? [],
+                ghAccounts: state.identity.gh ?? [],
+                gitCredential: state.identity.git ?? Option.none(),
+                ssh: state.identity.ssh ?? [SSH_DENIED],
+              }),
+        ),
       ),
     }),
   );
@@ -75,7 +82,7 @@ const setup = (input: {
 };
 
 const bot: Identity = {
-  t3: Option.some({ login: "kin-bot", source: "gh" }),
+  t3: [{ login: "kin-bot", source: "gh" }],
   gh: ["kin-bot"],
   git: Option.some("Kin-Bot"),
   ssh: [sshHi("kin-bot"), SSH_DENIED],
@@ -84,21 +91,31 @@ const bot: Identity = {
 const check = Effect.gen(function* () {
   yield* TestClock.setTime(NOW);
   const hygiene = yield* CredentialHygiene.CredentialHygiene;
-  return yield* hygiene.check(ORG);
+  const running = yield* Effect.forkChild(hygiene.check(ORG));
+  yield* TestClock.adjust("1 second");
+  return yield* Fiber.join(running);
 });
+
+/** Runs `effect` past the probe's one-second wait. */
+const settled = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const running = yield* Effect.forkChild(effect);
+    yield* TestClock.adjust("1 second");
+    return yield* Fiber.join(running);
+  });
 
 describe("CredentialHygiene", () => {
   it.effect("privileged execution is refused while the credential hygiene check fails", () => {
     const { state, layer } = setup({
-      identity: { t3: Option.some({ login: "nishchay", source: "gh" }) },
+      identity: { t3: [{ login: "nishchay", source: "gh" }] },
     });
     return Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
       const hygiene = yield* CredentialHygiene.CredentialHygiene;
       let merges = 0;
-      const execute = hygiene
-        .requirePassing(ORG)
-        .pipe(Effect.andThen(Effect.sync(() => void merges++)));
+      const execute = settled(hygiene.requirePassing(ORG)).pipe(
+        Effect.andThen(Effect.sync(() => void merges++)),
+      );
 
       const refused = yield* execute.pipe(Effect.flip);
       assert.deepStrictEqual(refused.failures, ["owner_identity"]);
@@ -111,14 +128,27 @@ describe("CredentialHygiene", () => {
       state.identity = bot;
       yield* execute;
       assert.strictEqual(merges, 1);
-      assert.strictEqual((yield* hygiene.requirePassing(ORG)).orgId, ORG);
+      assert.strictEqual((yield* settled(hygiene.requirePassing(ORG))).orgId, ORG);
     }).pipe(Effect.provide(layer));
   });
 
   it.effect.each([
     [
       "T3 signed in as the owner",
-      { identity: { t3: Option.some({ login: "NISHCHAY", source: "app" }) } },
+      { identity: { t3: [{ login: "NISHCHAY", source: "app" }] } },
+      ["owner_identity"],
+    ],
+    [
+      "one of T3's credentials signed in as the owner",
+      {
+        identity: {
+          ...bot,
+          t3: [
+            { login: "kin-bot", source: "settings" },
+            { login: "Nishchay", source: "app" },
+          ],
+        },
+      },
       ["owner_identity"],
     ],
     [
@@ -181,7 +211,7 @@ describe("CredentialHygiene", () => {
     ],
     [
       "T3 using a login that isn't the bot",
-      { identity: { t3: Option.some({ login: "someone-else", source: "app" }) } },
+      { identity: { t3: [{ login: "someone-else", source: "app" }] } },
       ["non_bot_identity"],
     ],
     ["GH_TOKEN in the environment", { identity: bot, env: { GH_TOKEN: "ghp_x" } }, ["env_token"]],
@@ -192,7 +222,7 @@ describe("CredentialHygiene", () => {
     ],
     [
       "T3 using an environment token",
-      { identity: { t3: Option.some({ login: "kin-bot", source: "env" }) } },
+      { identity: { t3: [{ login: "kin-bot", source: "env" }] } },
       ["env_token"],
     ],
     ["the identity unreachable", { identity: "unreachable" }, ["identity_unknown"]],
@@ -209,6 +239,39 @@ describe("CredentialHygiene", () => {
       assert.deepStrictEqual(report.failures, failures);
     }).pipe(Effect.provide(setup(input).layer)),
   );
+
+  it.effect("checks share one probe for a minute; requirePassing always probes afresh", () => {
+    const { state, layer } = setup({ identity: bot });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const hygiene = yield* CredentialHygiene.CredentialHygiene;
+      const other = "org_other" as KinOrgId;
+      const reports = yield* settled(
+        Effect.all([hygiene.check(ORG), hygiene.check(other), hygiene.check(ORG)], {
+          concurrency: "unbounded",
+        }),
+      );
+      assert.deepStrictEqual(
+        reports.map((report) => report.passed),
+        [true, false, true],
+      );
+      assert.strictEqual(state.probes, 1);
+
+      state.identity = { ...bot, gh: ["kin-bot", "Nishchay"] };
+      assert.isTrue((yield* settled(hygiene.check(ORG))).passed);
+      assert.strictEqual(state.probes, 1);
+      // The gate before a side effect never reuses the cached pass.
+      assert.deepStrictEqual(
+        (yield* settled(hygiene.requirePassing(ORG)).pipe(Effect.flip)).failures,
+        ["owner_identity"],
+      );
+      assert.strictEqual(state.probes, 2);
+
+      yield* TestClock.adjust(CredentialHygiene.PROBE_CACHE_TTL);
+      assert.isFalse((yield* settled(hygiene.check(ORG))).passed);
+      assert.strictEqual(state.probes, 3);
+    }).pipe(Effect.provide(layer));
+  });
 
   it.effect("names environment tokens without their values", () =>
     Effect.gen(function* () {

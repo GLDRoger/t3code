@@ -34,7 +34,8 @@ const REQUEST_TIMEOUT = Duration.seconds(15);
 // Refresh ahead of expiry so a token never lapses between the check and a long request.
 const REFRESH_MARGIN_MS = Duration.toMillis(Duration.minutes(5));
 
-const GitHubAppSession = Schema.Struct({
+/** The stored app sign-in, as the `signIns` setting holds it. */
+export const GitHubAppSession = Schema.Struct({
   accessToken: Schema.String,
   /** Null when the app hands out tokens that do not expire. */
   accessTokenExpiresAt: Schema.NullOr(Schema.Number),

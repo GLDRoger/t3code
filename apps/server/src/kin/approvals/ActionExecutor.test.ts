@@ -156,7 +156,11 @@ function harness() {
   const notices: Array<{ readonly actionId: string; readonly outcome: string }> = [];
   // What the owner is told about the credential check; `posted` lets a test await each one.
   const credentialNotices: {
-    readonly sent: Array<{ readonly orgId: string; readonly failures: ReadonlyArray<string> }>;
+    readonly sent: Array<{
+      readonly orgId: string;
+      readonly failures: ReadonlyArray<string>;
+      readonly recoveredFrom?: number;
+    }>;
     posted?: (failures: ReadonlyArray<string>) => Effect.Effect<unknown>;
   } = { sent: [] };
   const noticed = Deferred.makeUnsafe<void>();
@@ -198,7 +202,7 @@ function harness() {
         checks.failing
           ? Effect.fail(new CredentialHygiene.T3GitHubIdentityError({ cause: "probe failed" }))
           : Effect.succeed({
-              t3: Option.some({ login: "kin-bot", source: "app" }),
+              t3: [{ login: "kin-bot", source: "app" }],
               ghAccounts: ["kin-bot"],
               gitCredential: Option.none(),
               ssh: ["git@github.com: Permission denied (publickey)."],
@@ -220,9 +224,13 @@ function harness() {
   const notifications = Layer.succeed(
     ActionExecutor.KinExecutionNotices,
     ActionExecutor.KinExecutionNotices.of({
-      credentialCheck: ({ orgId: org, report }) =>
+      credentialCheck: ({ orgId: org, report, recoveredFrom }) =>
         Effect.sync(() =>
-          credentialNotices.sent.push({ orgId: org, failures: report.failures }),
+          credentialNotices.sent.push({
+            orgId: org,
+            failures: report.failures,
+            ...(recoveredFrom === undefined ? {} : { recoveredFrom }),
+          }),
         ).pipe(Effect.andThen(credentialNotices.posted?.(report.failures) ?? Effect.void)),
       finished: ({ action, outcome }) =>
         Effect.sync(() => void notices.push({ actionId: action.id, outcome })).pipe(
@@ -534,8 +542,11 @@ describe("KinActionExecutor", () => {
         failed.map((entry) => entry.result),
         ["identity_unknown"],
       );
-      // Fixed before the grant lapses: it runs.
+      // Both holds within the minute shared one probe.
+      assert.strictEqual(checks.count, 1);
+      // Fixed before the grant lapses: the next tick's check sees it, and it runs.
       checks.failing = false;
+      yield* TestClock.adjust("1 minute");
       assert.deepInclude(yield* executor.execute(ref), { outcome: "succeeded" });
       assert.deepStrictEqual(writes(requests), [`PUT ${PULL}/merge`]);
     }).pipe(Effect.provide(layer));
@@ -670,10 +681,6 @@ describe("KinActionExecutor", () => {
           assert.deepStrictEqual(yield* Queue.take(posted), []);
         }).pipe(Effect.provide(ActionExecutor.layer), Effect.scoped);
         assert.strictEqual(checks.count, 3);
-        assert.deepStrictEqual(credentialNotices.sent, [
-          { orgId, failures: ["identity_unknown"] },
-          { orgId, failures: [] },
-        ]);
         const failed = (yield* auditEntries).filter(
           (entry) => entry.event === "credential_check_failed",
         );
@@ -681,9 +688,40 @@ describe("KinActionExecutor", () => {
           failed.map((entry) => [entry.actionId, entry.result]),
           [[undefined, "identity_unknown"]],
         );
+        assert.deepStrictEqual(credentialNotices.sent, [
+          { orgId, failures: ["identity_unknown"] },
+          { orgId, failures: [], recoveredFrom: failed[0]!.seq as number },
+        ]);
       }).pipe(Effect.provide(deps));
     },
   );
+
+  it.effect("tells only orgs with a merge token, and says it passes again after a restart", () => {
+    const { checks, credentialNotices, deps } = harness();
+    return Effect.gen(function* () {
+      const { sql } = yield* seed;
+      // An org that never saved a merge token hasn't set GitHub up: no notice, no audit.
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at)
+        VALUES ('org_02', 'Other', '2026-11-07T00:00:00.000Z')`;
+      checks.failing = true;
+      yield* (yield* ActionExecutor.make).checkCredentials;
+      assert.deepStrictEqual(credentialNotices.sent, [{ orgId, failures: ["identity_unknown"] }]);
+      const others = yield* sql`SELECT seq FROM kin_audit WHERE org_id = 'org_02'`;
+      assert.lengthOf(others, 0);
+      const [failure] = (yield* auditEntries).filter(
+        (entry) => entry.event === "credential_check_failed",
+      );
+
+      // Restarted after the fix: each new executor says it passes again, under one notice id.
+      checks.failing = false;
+      yield* TestClock.adjust("1 minute");
+      for (const _ of [1, 2]) yield* (yield* ActionExecutor.make).checkCredentials;
+      assert.deepStrictEqual(credentialNotices.sent.slice(1), [
+        { orgId, failures: [], recoveredFrom: failure!.seq as number },
+        { orgId, failures: [], recoveredFrom: failure!.seq as number },
+      ]);
+    }).pipe(Effect.provide(deps));
+  });
 
   it.effect("the worker executes an approval as it lands", () => {
     const { requests, noticed, deps } = harness();
