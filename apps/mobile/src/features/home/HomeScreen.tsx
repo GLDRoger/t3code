@@ -690,6 +690,7 @@ export function HomeScreen(props: HomeScreenProps) {
             }}
           >
             <View className="w-full max-w-[430px]">
+              <KinHomeEntry />
               <EmptyState
                 title={emptyState.title}
                 detail={emptyState.detail}
