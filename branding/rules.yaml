@@ -63,6 +63,16 @@ text:
   - files: [apps/mobile/app.config.ts]
     from: T3 Code
     to: Kin
+  # Release Android icon colours: the adaptive background behind Kin's foreground, and the
+  # notification tint. Must match the night and ember in branding/source/kin-icon.svg.
+  - files: [apps/mobile/app.config.ts]
+    from: "#000000"
+    to: "#182543"
+    exact: true
+  - files: [apps/mobile/app.config.ts]
+    from: "#FFFFFF"
+    to: "#FFB238"
+    exact: true
   # The dev client opens the scheme it is started with, so it must match the branded app.
   # Longer schemes first: the last rule only sees the plain one.
   - files: [apps/mobile/package.json]
