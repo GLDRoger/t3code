@@ -12,8 +12,16 @@ import { runDryRun, seedFixtureRemote } from "./kin-shadow-dry-run.ts";
 const day = new URL("./kin-shadow-dry-run.day.json", import.meta.url).pathname;
 const services = Vcs.layer.pipe(Layer.provideMerge(NodeServices.layer));
 const shadow = "refs/heads/kin/shadow/fixture-lead";
-const decodeMemory = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(Schema.Struct({ memory: Schema.Record(Schema.String, Schema.String) })),
+const decodeRecord = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+);
+const decodeDay = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      memory: Schema.Record(Schema.String, Schema.String),
+      events: Schema.Array(Schema.Unknown),
+    }),
+  ),
 );
 
 const gitIn = Effect.fn("KinDryRunTest.git")(function* (cwd: string, args: ReadonlyArray<string>) {
@@ -40,7 +48,7 @@ const realRemote = Effect.fn("KinDryRunTest.realRemote")(function* () {
   const fs = yield* FileSystem.FileSystem;
   const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
   yield* fs.makeDirectory(`${root}/remote`);
-  const { memory } = yield* decodeMemory(yield* fs.readFileString(day));
+  const { memory } = yield* decodeDay(yield* fs.readFileString(day));
   const remote = yield* seedFixtureRemote(`${root}/remote`, memory);
   return { root, remote, before: yield* refsOf(remote) };
 });
@@ -97,25 +105,53 @@ it.live("with --push the real remote gains exactly the shadow branch, after the 
   }).pipe(Effect.provide(services), Effect.scoped),
 );
 
-it.live("a writer that moves main fails the checks and never reaches the real remote", () =>
+it.live("a failed check never reaches the real remote, even with --push", () =>
   Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
     const { root, remote, before } = yield* realRemote();
-    // Above L0 the writer commits to main, standing in for a writer bug at L0.
-    const report = yield* runDryRun({
-      dayFile: day,
-      stateDir: `${root}/state`,
-      agentId: "fixture-lead",
-      memoryUrl: remote,
-      home: `${root}/home`,
-      push: true,
-      level: "L1",
-    });
-    assert.include(
-      report.violations,
-      `The mirror ref refs/heads/main changed; only ${shadow} may.`,
+    // A lead turn that fails after the shadow branch was written.
+    const text = yield* fs.readFileString(day);
+    const recorded = yield* decodeDay(text);
+    const brokenDay = `${root}/broken-day.json`;
+    yield* fs.writeFileString(
+      brokenDay,
+      JSON.stringify({
+        ...(yield* decodeRecord(text)),
+        events: [
+          ...recorded.events,
+          {
+            _tag: "watchdog",
+            id: "broken",
+            at: "2026-11-09T20:00:00.000Z",
+            finding: "Synthetic",
+            lead: [{ tool: "no_such_tool", arguments: {} }],
+          },
+        ],
+      }),
     );
-    assert.strictEqual(report.pushed, undefined);
-    assert.deepStrictEqual(yield* refsOf(remote), before);
+    for (const failing of [
+      // Above L0 the writer commits to main, standing in for a writer bug at L0.
+      {
+        name: "l1",
+        dayFile: day,
+        level: "L1",
+        violation: `The mirror ref refs/heads/main changed; only ${shadow} may.`,
+      },
+      { name: "broken", dayFile: brokenDay, level: "L0", violation: "Lead turn failed" },
+    ] as const) {
+      const report = yield* runDryRun({
+        dayFile: failing.dayFile,
+        stateDir: `${root}/state-${failing.name}`,
+        agentId: "fixture-lead",
+        memoryUrl: remote,
+        home: `${root}/home`,
+        push: true,
+        level: failing.level,
+      });
+      assert.isTrue(report.violations.some((violation) => violation.startsWith(failing.violation)));
+      assert.strictEqual(report.pushed, undefined);
+      assert.deepStrictEqual(yield* refsOf(remote), before);
+    }
   }).pipe(Effect.provide(services), Effect.scoped),
 );
 
