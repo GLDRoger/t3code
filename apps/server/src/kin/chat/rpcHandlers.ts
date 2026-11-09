@@ -9,6 +9,7 @@ import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { KinServer } from "../KinServer.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
 import { KinStop } from "../lead/KinStop.ts";
+import { KinOwnerTimeZone } from "../triggers/ownerTimeZone.ts";
 import { KinIdentity } from "./KinIdentity.ts";
 import { KinChatService } from "./KinChatService.ts";
 
@@ -39,6 +40,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
       identity: Context.get(kin.value.services.value, KinIdentity),
       budget: Context.get(kin.value.services.value, KinBudget),
       stop: Context.get(kin.value.services.value, KinStop),
+      timeZone: Context.get(kin.value.services.value, KinOwnerTimeZone),
       chat: Context.get(kin.value.services.value, KinChatService),
     };
   });
@@ -91,6 +93,24 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
       services.pipe(
         Effect.flatMap(({ identity, stop }) =>
           identity.resolve(session).pipe(Effect.flatMap((people) => stop.resume(people, input))),
+        ),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.triggers.getTimeZone": (input) =>
+      services.pipe(
+        Effect.flatMap(({ identity, timeZone }) =>
+          identity.resolve(session).pipe(Effect.flatMap((people) => timeZone.get(people, input))),
+        ),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.triggers.setTimeZone": (input) =>
+      services.pipe(
+        Effect.flatMap(({ identity, timeZone }) =>
+          identity.resolve(session).pipe(Effect.flatMap((people) => timeZone.set(people, input))),
         ),
         Effect.tapError(logInfra),
         Effect.mapError(mapError),

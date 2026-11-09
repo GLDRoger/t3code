@@ -132,6 +132,8 @@ const samples = {
     ],
   ],
   KinTriggerSettings: [Kin.KinTriggerSettings, [settings, { ...settings, timeZone: "UTC" }]],
+  KinOwnerTimeZoneGetInput: [Kin.KinOwnerTimeZoneGetInput, [{ orgId: "org-1" }]],
+  KinOwnerTimeZone: [Kin.KinOwnerTimeZone, [{ orgId: "org-1", timeZone: "Asia/Kolkata" }]],
   KinGithubWebhookSetupInput: [
     Kin.KinGithubWebhookSetupInput,
     [{ orgId: "org-1", projectId: "project-1" }],
@@ -206,6 +208,7 @@ const rejections = [
   ...["", "Not/AZone", "+05:30"].flatMap((timeZone) => [
     { schema: Kin.KinTrigger, value: { ...trigger, timeZone } },
     { schema: Kin.KinTriggerSettings, value: { ...settings, timeZone } },
+    { schema: Kin.KinOwnerTimeZone, value: { orgId: "org-1", timeZone } },
   ]),
   { schema: Kin.KinTriggerFired, value: { ...fire, fireId: "" } },
   { schema: Kin.KinTrigger, value: { ...trigger, lastFireId: "" } },

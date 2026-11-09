@@ -27,6 +27,7 @@ import { Atom, AsyncResult, AtomRegistry } from "effect/reactivity";
 import { connectionAtomRuntime } from "../../../connection/runtime";
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { syncKinCacheIdentity, withKinCache } from "./kinCache";
+import { syncKinOwnerTimeZone } from "./kinTimeZone";
 import {
   KIN_CHAT_LABEL,
   KIN_INBOX_LABEL,
@@ -117,6 +118,11 @@ export const kinClient = {
       yield* syncKinCacheIdentity(environmentId, result.me[0]?.personId ?? null);
       yield* withKinCache(orgsCache.save(environmentId, ORGS_CACHE_KEY, result));
       appAtomRegistry.refresh(kinCachedOrgsAtom(environmentId));
+      syncKinOwnerTimeZone(
+        appAtomRegistry,
+        environmentId,
+        result.me.map((me) => me.orgId),
+      );
       return result;
     }),
     staleTimeMs: 60_000,

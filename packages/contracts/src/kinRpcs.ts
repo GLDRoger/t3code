@@ -24,6 +24,8 @@ import {
   KinGithubWebhookSecretInput,
   KinGithubWebhookSetup,
   KinGithubWebhookSetupInput,
+  KinOwnerTimeZone,
+  KinOwnerTimeZoneGetInput,
 } from "./kinTriggers.ts";
 import {
   EnvironmentAuthorizationError,
@@ -77,11 +79,25 @@ export const KinGithubWebhookRpcs = [
     error: KinError,
   }),
 ] as const;
+// Owner only: the zone routines, deferrals and notices use. Unset reads as UTC.
+const KinTimeZoneRpcs = [
+  Rpc.make("kin.triggers.getTimeZone", {
+    payload: KinOwnerTimeZoneGetInput,
+    success: KinOwnerTimeZone,
+    error: KinError,
+  }),
+  Rpc.make("kin.triggers.setTimeZone", {
+    payload: KinOwnerTimeZone,
+    success: KinOwnerTimeZone,
+    error: KinError,
+  }),
+] as const;
 export const KinChatAndBudgetRpcs = [
   ...KinChatRpcs,
   ...KinBudgetRpcs,
   ...KinOrgRpcs,
   ...KinLeadRpcs,
+  ...KinTimeZoneRpcs,
 ] as const;
 export const KinRpcs = [
   ...KinChatAndBudgetRpcs,
@@ -102,6 +118,8 @@ export const KIN_RPC_SCOPES = {
   "kin.org.pause": AuthOrchestrationOperateScope,
   "kin.org.resume": AuthOrchestrationOperateScope,
   "kin.lead.interrupt": AuthOrchestrationOperateScope,
+  "kin.triggers.getTimeZone": AuthOrchestrationReadScope,
+  "kin.triggers.setTimeZone": AuthSettingsWriteScope,
   "kin.webhooks.github.setup": AuthSettingsWriteScope,
   "kin.webhooks.github.setSecret": AuthSettingsWriteScope,
   "kin.webhooks.github.rotate": AuthSettingsWriteScope,
@@ -145,6 +163,8 @@ export const KIN_RPC_AGGREGATES = {
   "kin.push.registerDevice": "kin-push",
   "kin.push.unregisterDevice": "kin-push",
   "kin.push.watch": "kin-push",
+  "kin.triggers.getTimeZone": "kin-triggers",
+  "kin.triggers.setTimeZone": "kin-triggers",
   "kin.webhooks.github.setup": "kin-webhooks",
   "kin.webhooks.github.setSecret": "kin-webhooks",
   "kin.webhooks.github.rotate": "kin-webhooks",

@@ -1,5 +1,11 @@
 import { assert, it } from "@effect/vitest";
-import { KinOrgId, KinTriggerId, KinEvent, type KinTriggerSettings } from "@t3tools/contracts";
+import {
+  KinOrgId,
+  KinPersonId,
+  KinTriggerId,
+  KinEvent,
+  type KinTriggerSettings,
+} from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
@@ -10,6 +16,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 import * as Memory from "../memory/Memory.ts";
+import * as OwnerTimeZone from "./ownerTimeZone.ts";
 import * as Routines from "./routines.ts";
 import * as TriggerScheduler from "./KinTriggerScheduler.ts";
 import * as TriggerStore from "./KinTriggerStore.ts";
@@ -180,6 +187,61 @@ it.effect(
         0,
       );
     }).pipe(Effect.provide(fixture())),
+);
+
+it.effect("the owner's time zone reschedules routines from the defaults; others are refused", () =>
+  Effect.gen(function* () {
+    yield* seed();
+    const routines = yield* Routines.KinRoutines;
+    const store = yield* TriggerStore.KinTriggerStore;
+    const sql = yield* SqlClient.SqlClient;
+    const zones = yield* OwnerTimeZone.KinOwnerTimeZone;
+    yield* zones.attach(routines);
+    yield* TestClock.setTime(Date.parse("2026-11-09T00:00:00.000Z"));
+    yield* routines.setEnabled(orgA, "morning_brief", true);
+    const brief = KinTriggerId.make("routine:morning_brief");
+    const dream = KinTriggerId.make("routine:dream");
+    assert.equal((yield* store.get(orgA, brief))?.nextRunAt, "2026-11-09T08:30:00.000Z");
+    yield* store.put({
+      id: dream,
+      orgId: orgA,
+      subject: { type: "routine", routine: "dream" },
+      schedule: { type: "fixed_time", timeOfDay: "03:00" },
+      timeZone: "UTC",
+      enabled: true,
+      nextRunAt: "2026-11-09T03:00:00.000Z",
+      createdAt: "2026-11-09T00:00:00.000Z",
+      updatedAt: "2026-11-09T00:00:00.000Z",
+    });
+    const owner = [{ _tag: "person", orgId: orgA, personId: KinPersonId.make("owner-a") }] as const;
+    const memberId = KinPersonId.make("member-a");
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES (${memberId}, ${orgA}, 'member', 'Member', '2026-11-07T00:00:00.000Z')`;
+    const member = [{ _tag: "person", orgId: orgA, personId: memberId }] as const;
+    const input = { orgId: orgA, timeZone: "Asia/Kolkata" };
+
+    assert.deepEqual(yield* zones.get(owner, input), { orgId: orgA, timeZone: "UTC" });
+    for (const call of [zones.set(member, input), zones.get(member, input)])
+      assert.include(yield* call.pipe(Effect.flip), { reason: "not_allowed" });
+    assert.include(
+      yield* zones.set(owner, { ...input, timeZone: "Mars/Olympus" }).pipe(Effect.flip),
+      { reason: "invalid_state" },
+    );
+    assert.equal((yield* store.get(orgA, brief))?.timeZone, "UTC");
+
+    assert.deepEqual(yield* zones.set(owner, input), input);
+    assert.deepEqual(yield* zones.get(owner, input), input);
+    // 08:30 and 03:00 in Kolkata; the dream's slot today has passed there.
+    assert.equal((yield* store.get(orgA, brief))?.nextRunAt, "2026-11-09T03:00:00.000Z");
+    assert.equal((yield* store.get(orgA, dream))?.nextRunAt, "2026-11-09T21:30:00.000Z");
+    const [row] = yield* sql<{
+      morning_brief: string;
+      quiet_hours_json: string;
+    }>`SELECT morning_brief, quiet_hours_json FROM kin_trigger_settings WHERE org_id = ${orgA}`;
+    assert.deepEqual(row, {
+      morning_brief: "08:30",
+      quiet_hours_json: '{"from":"21:00","to":"08:00"}',
+    });
+  }).pipe(Effect.provide(OwnerTimeZone.layer.pipe(Layer.provideMerge(fixture())))),
 );
 
 it.effect.each(["transient", "decode", "expired"] as const)(
