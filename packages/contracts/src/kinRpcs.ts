@@ -11,6 +11,7 @@ import {
 } from "./kinLead.ts";
 import { KinApprovalRpcs, KIN_APPROVAL_RPC_SCOPES } from "./kinApprovals.ts";
 import { KinLevelRpcs, KIN_LEVEL_RPC_SCOPES } from "./kinLevels.ts";
+import { KinMemoryRpcs, KIN_MEMORY_RPC_SCOPES } from "./kinMemory.ts";
 import {
   KinChatError,
   KinChatRpcs,
@@ -103,6 +104,7 @@ export const KinRpcs = [
   ...KinChatAndBudgetRpcs,
   ...KinApprovalRpcs,
   ...KinLevelRpcs,
+  ...KinMemoryRpcs,
   ...KinGithubWebhookRpcs,
   ...KinPushRpcs,
 ] as const;
@@ -110,6 +112,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_CHAT_RPC_SCOPES,
   ...KIN_APPROVAL_RPC_SCOPES,
   ...KIN_LEVEL_RPC_SCOPES,
+  ...KIN_MEMORY_RPC_SCOPES,
   ...KIN_PUSH_RPC_SCOPES,
   "kin.budget.get": AuthOrchestrationReadScope,
   "kin.budget.set": AuthSettingsWriteScope,
@@ -160,6 +163,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.levels.raise": "kin-levels",
   "kin.levels.deferPromotion": "kin-levels",
   "kin.levels.shadowMemory": "kin-levels",
+  "kin.memory.undo": "kin-memory",
   "kin.push.registerDevice": "kin-push",
   "kin.push.unregisterDevice": "kin-push",
   "kin.push.watch": "kin-push",
