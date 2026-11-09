@@ -14,7 +14,7 @@ import {
   kinLevelsFailureText,
   type KinPromotionActionId,
   type KinPromotionCardView,
-} from "./kinLevelsPresentation";
+} from "@t3tools/client-runtime/kin/kinLevelsPresentation";
 
 type Notice = { readonly revision: number; readonly text: string; readonly error: boolean };
 

@@ -3,7 +3,10 @@ import { View } from "react-native";
 
 import { AppText as Text } from "../../../components/ui/AppText";
 import { Chip } from "../../../components/ui/Chip";
-import type { KinDigestCardView, KinDigestRow } from "./kinCardPresentation";
+import type {
+  KinDigestCardView,
+  KinDigestRow,
+} from "@t3tools/client-runtime/kin/kinCardPresentation";
 
 /** A server-drawn list: the shadow summary or a routine. Plain text only; links open on a tap. */
 export const KinDigestCard = memo(function KinDigestCard(props: {

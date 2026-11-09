@@ -10,7 +10,11 @@ import { ErrorBanner } from "../../../components/ui/ErrorBanner";
 import { Notice } from "../../../components/ui/Notice";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
-import { formatKinTime, kinInboxNotice, type KinInboxScreenState } from "../state/kinScreenState";
+import {
+  formatKinTime,
+  kinInboxNotice,
+  type KinInboxScreenState,
+} from "@t3tools/client-runtime/kin/kinScreenState";
 
 export type KinReadyState = Extract<KinInboxScreenState, { readonly _tag: "ready" }>;
 

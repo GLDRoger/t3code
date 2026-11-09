@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Fixtures build ISO times relative to a fixed clock.
 import type { EnvironmentId, KinMessage, KinPresence, KinWidget } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
@@ -11,7 +12,7 @@ import {
   KIN_FIXTURE_QA,
   makeKinFixtureMessages,
   readKinFixtureHistory,
-} from "./kinChatFixtures";
+} from "./kinChatFixtures.ts";
 import {
   buildKinFeedRows,
   initialKinPaging,
@@ -34,16 +35,16 @@ import {
   mergeKinFeed,
   type KinFeedRow,
   type KinFeedViewer,
-} from "./kinChatFeed";
-import type { KinHost } from "./kinHost";
-import { KIN_SLOW_START_AFTER_MS, kinPresenceLine, kinPresenceNeedsClock } from "./kinLive";
-import { kinSentences } from "./kinScreenState";
+} from "./kinChatFeed.ts";
+import type { KinHost } from "./kinHost.ts";
+import { KIN_SLOW_START_AFTER_MS, kinPresenceLine, kinPresenceNeedsClock } from "./kinLive.ts";
+import { kinSentences } from "./kinScreenState.ts";
 import {
   applyKinChatEvent,
   applyKinChatHistory,
   emptyKinChat,
   type KinChatState,
-} from "./kinInboxModel";
+} from "./kinInboxModel.ts";
 
 const all = makeKinFixtureMessages(500);
 const viewer: KinFeedViewer = {

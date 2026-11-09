@@ -1,5 +1,6 @@
-export const KIN_RETRY_BASE_MS = 5_000;
-export const KIN_RETRY_MAX_MS = 60_000;
+// @effect-diagnostics globalTimers:off - Promise-based retry scheduling for the React outbox, outside an Effect runtime.
+const KIN_RETRY_BASE_MS = 5_000;
+const KIN_RETRY_MAX_MS = 60_000;
 
 /**
  * Retries sends that failed while the host still reads as connected: 5 s, doubling, capped at a

@@ -24,8 +24,8 @@ import {
   selectKinInboxView,
   trimKinChatForCache,
   type KinChatState,
-} from "./kinInboxModel";
-import { kinReactionChips, kinReactionToggle } from "./kinReactions";
+} from "./kinInboxModel.ts";
+import { kinReactionChips, kinReactionToggle } from "./kinReactions.ts";
 
 const at = (minute: number) => `2026-11-08T09:${String(minute).padStart(2, "0")}:00.000Z`;
 

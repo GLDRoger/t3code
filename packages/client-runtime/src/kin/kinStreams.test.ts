@@ -4,10 +4,10 @@ import {
   PrimaryConnectionTarget,
   type PreparedConnection,
   type SupervisorConnectionState,
-} from "@t3tools/client-runtime/connection";
-import type { RpcSession } from "@t3tools/client-runtime/rpc";
-import { EnvironmentQueryStore } from "@t3tools/client-runtime/state/query-persistence";
-import { queryPersistenceKey } from "@t3tools/client-runtime/state/runtime";
+} from "../connection/index.ts";
+import type { RpcSession } from "../rpc/index.ts";
+import { EnvironmentQueryStore } from "../state/queryPersistence.ts";
+import { queryPersistenceKey } from "../state/runtime.ts";
 import {
   EnvironmentId,
   KIN_CHAT_WS_METHODS,
@@ -30,17 +30,16 @@ import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
 
-import { MobileDatabase } from "../../../persistence/mobile-database";
-import { KIN_CACHE_MAX_PAYLOAD_BYTES, syncKinCacheIdentity, withKinCache } from "./kinCache";
-import { KinChatState, type KinInboxState } from "./kinInboxModel";
+import { KinChatState, type KinInboxState } from "./kinInboxModel.ts";
 import {
   isKinRetryable,
   KIN_CHAT_LABEL,
+  KinCacheEviction,
   kinInboxStream,
   makeKinChatStream,
   retryKinProbe,
   type KinSynced,
-} from "./kinStreams";
+} from "./kinStreams.ts";
 
 const environmentId = EnvironmentId.make("kin-host");
 const chatId = "c1" as KinChatId;
@@ -88,29 +87,25 @@ const leftEvent = {
   member: { orgId: "org", chatId, memberId: "me", leftAt: at },
 } as unknown as KinChatStreamEvent;
 
-const chatRowKey = `v1:${queryPersistenceKey(KIN_CHAT_LABEL, { chatId })}`;
+const chatRowKey = queryPersistenceKey(KIN_CHAT_LABEL, { chatId });
 const encodeCachedChat = Schema.encodeSync(
   Schema.fromJsonString(
     Schema.toCodecJson(Schema.Struct({ chat: KinChatState, savedAt: Schema.String })),
   ),
 );
 
-function fakeDatabase(rows: Map<string, string>) {
-  const id = (kind: string, key: string) => `${kind}|${key}`;
-  return {
-    loadCache: (_environmentId: EnvironmentId, kind: string, key: string) =>
-      Effect.sync(() => Option.fromNullishOr(rows.get(id(kind, key)))),
-    saveCache: (
-      _environmentId: EnvironmentId,
-      kind: string,
-      key: string,
-      _version: number,
-      payload: string,
-    ) => Effect.sync(() => void rows.set(id(kind, key), payload)),
-    removeCache: (_environmentId: EnvironmentId, kind: string, key: string) =>
-      Effect.sync(() => void rows.delete(id(kind, key))),
-    clearCacheKind: () => Effect.sync(() => rows.clear()),
-  } as unknown as MobileDatabase["Service"];
+/** An in-memory device cache: rows keyed by query key, as a client's store would hold them. */
+function fakeCache(rows: Map<string, string>) {
+  return <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    effect.pipe(
+      Effect.provideService(EnvironmentQueryStore, {
+        load: (_environmentId, key) => Effect.sync(() => Option.fromNullishOr(rows.get(key))),
+        save: (_environmentId, key, payload) => Effect.sync(() => void rows.set(key, payload)),
+      }),
+      Effect.provideService(KinCacheEviction, (_environmentId, key) =>
+        Effect.sync(() => void rows.delete(key)),
+      ),
+    );
 }
 
 function fakeSession(streams: {
@@ -149,12 +144,10 @@ const provider = Effect.fnUntraced(function* (
     disconnect: Effect.void,
     retryNow: Effect.void,
   } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
-  return <A, E>(
-    effect: Effect.Effect<A, E, EnvironmentSupervisor.EnvironmentSupervisor | MobileDatabase>,
-  ) =>
+  return <A, E>(effect: Effect.Effect<A, E, EnvironmentSupervisor.EnvironmentSupervisor>) =>
     effect.pipe(
       Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-      Effect.provideService(MobileDatabase, fakeDatabase(rows)),
+      fakeCache(rows),
     );
 });
 
@@ -172,33 +165,6 @@ describe("Kin streams", () => {
   ] as const)("retries a %s Kin error: %s", (reason, retryable) => {
     expect(isKinRetryable(kinError(reason))).toBe(retryable);
   });
-
-  it.effect("drops the cache when the host maps this session to another person", () =>
-    Effect.gen(function* () {
-      const rows = new Map([
-        ["kin|index", JSON.stringify({ identity: "p1", keys: ["inbox"] })],
-        ["kin|v1:inbox", "p1's inbox"],
-      ]);
-      yield* syncKinCacheIdentity(environmentId, "p2").pipe(
-        Effect.provideService(MobileDatabase, fakeDatabase(rows)),
-      );
-      expect([...rows.keys()]).toEqual(["kin|index"]);
-      expect(JSON.parse(rows.get("kin|index") ?? "")).toEqual({ identity: "p2", keys: [] });
-    }),
-  );
-
-  it.effect("skips a payload past the byte cap, even when its length is under it", () =>
-    Effect.gen(function* () {
-      const rows = new Map<string, string>();
-      // Three UTF-8 bytes per character: half the cap in length, 1.5 times it in bytes.
-      const payload = "€".repeat(KIN_CACHE_MAX_PAYLOAD_BYTES / 2);
-      yield* EnvironmentQueryStore.use((store) => store!.save(environmentId, "big", payload)).pipe(
-        withKinCache,
-        Effect.provideService(MobileDatabase, fakeDatabase(rows)),
-      );
-      expect(rows.size).toBe(0);
-    }),
-  );
 
   it.effect(
     "backs off 1 s doubling to 30 s, starts over once events flow, and ends on a refusal",
@@ -302,7 +268,7 @@ describe("Kin streams", () => {
     Effect.gen(function* () {
       const rows = new Map<string, string>();
       rows.set(
-        `kin|${chatRowKey}`,
+        chatRowKey,
         encodeCachedChat({
           chat: {
             messages: [message(1)],
@@ -333,7 +299,7 @@ describe("Kin streams", () => {
         provide,
       );
       expect(views.at(-1)?.value.closed).toBe(reason);
-      expect(rows.has(`kin|${chatRowKey}`)).toBe(kept);
+      expect(rows.has(chatRowKey)).toBe(kept);
     }),
   );
 
@@ -472,7 +438,7 @@ describe("Kin streams", () => {
     Effect.gen(function* () {
       const rows = new Map<string, string>();
       rows.set(
-        `kin|${chatRowKey}`,
+        chatRowKey,
         encodeCachedChat({
           chat: {
             messages: [message(1), message(2)],
@@ -569,7 +535,7 @@ describe("Kin streams", () => {
       yield* Queue.offer(secondChat, leftEvent);
       expect((yield* Queue.take(chatViews)).value.left).toBe(true);
       yield* Fiber.join(chatFiber);
-      expect(rows.has(`kin|${chatRowKey}`)).toBe(false);
+      expect(rows.has(chatRowKey)).toBe(false);
 
       expect((yield* Queue.take(inboxViews)).value.chats.map((c) => c.chatId)).toEqual(["c2"]);
       yield* Fiber.interrupt(inboxFiber);

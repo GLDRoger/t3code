@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import {
   EnvironmentAuthorizationError,
   KinTaskCardState,
@@ -14,19 +15,18 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 
-import type { MarkdownImageRequest } from "../../../native/SelectableMarkdownText";
-import type { KinRouteHost } from "./kinHost";
+import type { KinRouteHost } from "./kinHost.ts";
 import {
   applyKinChatHistory,
   emptyKinChat,
   type KinChatClosedReason,
   type KinChatState,
-} from "./kinInboxModel";
-import { kinTapText } from "../widgets/kinChoicePresentation";
-import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks";
-import { kinReplyKey, type KinHeldDraft } from "./kinLive";
-import { kinSentences } from "./kinScreenState";
-import type { KinSynced } from "./kinStreams";
+} from "./kinInboxModel.ts";
+import { kinTapText } from "./kinChoicePresentation.ts";
+import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks.ts";
+import { kinReplyKey, type KinHeldDraft } from "./kinLive.ts";
+import { kinSentences } from "./kinScreenState.ts";
+import type { KinSynced } from "./kinStreams.ts";
 
 export const KIN_HISTORY_PAGE_SIZE = 50;
 
@@ -198,7 +198,7 @@ export type KinFeedRow =
 
 const ROLE_LABELS = { owner: "Owner", member: "Member", guest: "Guest" } as const;
 
-export function kinAuthorLabel(message: KinMessage, viewer: KinFeedViewer): string {
+function kinAuthorLabel(message: KinMessage, viewer: KinFeedViewer): string {
   const { author } = message;
   if (author._tag === "agent") return viewer.agentNames.get(author.agentId) ?? "Agent";
   if (author._tag === "human") return ROLE_LABELS[message.authorRole];
@@ -377,7 +377,7 @@ export function buildKinFeedRows(
 }
 
 /** The local calendar day of an ISO time, as `2026-11-08`. */
-export function kinLocalDayKey(iso: string): string {
+function kinLocalDayKey(iso: string): string {
   const date = new Date(iso);
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
@@ -477,7 +477,7 @@ export const kinBodyMarkdown = (body: string) =>
     .replace(HTML_IMAGE, "Image");
 
 /** A standalone image block, drawn as text in its place. */
-export const kinImageText = (image: MarkdownImageRequest) =>
+export const kinImageText = (image: { readonly alt: string | null }) =>
   image.alt?.trim() ? `Image: ${image.alt.trim()}` : "Image";
 
 /** The bubble's one VoiceOver label: "Tech lead, agent. Payments test fixed. 9:30." */

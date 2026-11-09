@@ -24,7 +24,7 @@ import {
   type KinCountdownKind,
   type KinDeferralActionId,
   type KinDeferralCardView,
-} from "./kinDeferralPresentation";
+} from "@t3tools/client-runtime/kin/kinDeferralPresentation";
 
 const NOTICE_CLASSES: Record<KinCardNotice["kind"], string> = {
   sent: "text-foreground-muted",

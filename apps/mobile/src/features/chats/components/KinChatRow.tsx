@@ -7,7 +7,7 @@ import { SymbolView } from "../../../components/ui/AppSymbol";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { RowPressable } from "../../../components/ui/RowPressable";
 import { cn } from "../../../lib/cn";
-import type { KinChatRowView } from "../state/kinScreenState";
+import type { KinChatRowView } from "@t3tools/client-runtime/kin/kinScreenState";
 import { KinAvatar } from "./KinAvatar";
 
 const ROW_CLASS_NAME = "min-h-[72px] flex-row items-center gap-3 px-4 py-3";

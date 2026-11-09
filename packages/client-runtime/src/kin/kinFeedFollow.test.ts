@@ -6,7 +6,7 @@ import {
   resolveKinFeedFollow,
   type KinFeedFollow,
   type KinFeedFollowEvent,
-} from "./kinFeedFollow";
+} from "./kinFeedFollow.ts";
 
 const run = (
   events: ReadonlyArray<KinFeedFollowEvent>,

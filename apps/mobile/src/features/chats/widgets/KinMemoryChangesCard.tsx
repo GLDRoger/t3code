@@ -13,7 +13,7 @@ import {
   kinMemoryUndoFailureText,
   type KinMemoryChangeItemView,
   type KinMemoryChangesCardView,
-} from "./kinMemoryChangesPresentation";
+} from "@t3tools/client-runtime/kin/kinMemoryChangesPresentation";
 
 /** What the lead changed in memory in one wake-up, each line with Undo (`kin.memory.undo`). */
 export const KinMemoryChangesCard = memo(function KinMemoryChangesCard(props: {

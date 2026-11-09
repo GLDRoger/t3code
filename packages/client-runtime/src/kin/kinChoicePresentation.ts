@@ -9,7 +9,7 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import { kinSentences } from "../state/kinScreenState";
+import { kinSentences } from "./kinScreenState.ts";
 
 export const KIN_CHOICE_EXPIRED_TEXT = "This question expired. Answer in the chat instead.";
 

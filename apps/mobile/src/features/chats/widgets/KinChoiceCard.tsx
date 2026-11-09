@@ -12,7 +12,10 @@ import { useNowMinuteMs } from "../../../lib/clock";
 import { uuidv4 } from "../../../lib/uuid";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
-import { KIN_REACTION_HINT, KIN_REACTION_HINT_LABEL } from "../state/kinReactions";
+import {
+  KIN_REACTION_HINT,
+  KIN_REACTION_HINT_LABEL,
+} from "@t3tools/client-runtime/kin/kinReactions";
 import {
   KIN_CHOICE_EXPIRED_TEXT,
   kinChoiceAccessibilityLabel,
@@ -20,12 +23,12 @@ import {
   kinChoiceAnswerText,
   kinChoicePhase,
   type KinChoiceCardView,
-} from "./kinChoicePresentation";
+} from "@t3tools/client-runtime/kin/kinChoicePresentation";
 import {
   createKinCardActions,
   visibleKinCardStatus,
   type KinCardStatus,
-} from "./kinDeferralPresentation";
+} from "@t3tools/client-runtime/kin/kinDeferralPresentation";
 
 /** A lead's question with 2-4 answers. The owner's tap is their reply; it never approves anything. */
 export const KinChoiceCard = memo(function KinChoiceCard(props: {

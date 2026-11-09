@@ -14,6 +14,8 @@ import {
   KinOrgsListResult,
   type EnvironmentId,
   type KinChatHistoryInput,
+  type KinChatId,
+  type KinChatsSubscribeInput,
   type KinLevelsGetInput,
   type KinOrgsListInput,
   type KinPushWatchInput,
@@ -26,7 +28,7 @@ import { Atom, AsyncResult, AtomRegistry } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../../../connection/runtime";
 import { appAtomRegistry } from "../../../state/atom-registry";
-import { syncKinCacheIdentity, withKinCache } from "./kinCache";
+import { syncKinCacheIdentity, withKinCache, withKinCacheStream } from "./kinCache";
 import { syncKinOwnerTimeZone } from "./kinTimeZone";
 import {
   KIN_CHAT_LABEL,
@@ -34,9 +36,9 @@ import {
   kinInboxStream,
   makeKinChatStream,
   retryKinProbe,
-} from "./kinStreams";
+} from "@t3tools/client-runtime/kin/kinStreams";
 
-export type { KinSynced } from "./kinStreams";
+export type { KinSynced } from "@t3tools/client-runtime/kin/kinStreams";
 
 const currentEnvironmentId = EnvironmentSupervisor.EnvironmentSupervisor.pipe(
   Effect.map((supervisor) => supervisor.target.environmentId),
@@ -107,6 +109,10 @@ export const kinCachedOrgsAtom = Atom.family((environmentId: EnvironmentId) =>
     .pipe(Atom.withLabel(`kin:orgs-cache:${environmentId}`)),
 );
 
+const chatStream = makeKinChatStream((input) =>
+  readHistory(input).pipe(Effect.provideService(AtomRegistry.AtomRegistry, appAtomRegistry)),
+);
+
 export const kinClient = {
   /** Orgs, their agents, and the viewer's person per org. An empty `me` means no identity. */
   orgs: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
@@ -132,13 +138,11 @@ export const kinClient = {
   /** Chat list plus Waiting on you. Reconnecting replaces it with the host's fresh snapshot. */
   inbox: createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {
     label: KIN_INBOX_LABEL,
-    subscribe: kinInboxStream,
+    subscribe: (input: KinChatsSubscribeInput) => withKinCacheStream(kinInboxStream(input)),
   }),
   chat: createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {
     label: KIN_CHAT_LABEL,
-    subscribe: makeKinChatStream((input) =>
-      readHistory(input).pipe(Effect.provideService(AtomRegistry.AtomRegistry, appAtomRegistry)),
-    ),
+    subscribe: (input: { readonly chatId: KinChatId }) => withKinCacheStream(chatStream(input)),
   }),
   /** One "Load earlier" page, read fresh every time so a retry after a failure refetches. */
   readHistoryPage: (environmentId: EnvironmentId, input: KinChatHistoryInput) =>

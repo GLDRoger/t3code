@@ -1,9 +1,11 @@
+import { KinCacheEviction } from "@t3tools/client-runtime/kin/kinStreams";
 import { EnvironmentQueryStore } from "@t3tools/client-runtime/state/query-persistence";
 import type { EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
 
 import { MobileDatabase } from "../../../persistence/mobile-database";
 
@@ -78,6 +80,23 @@ function makeStore(database: Database): NonNullable<typeof EnvironmentQueryStore
 export const withKinCache = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   MobileDatabase.use((database) =>
     effect.pipe(Effect.provideService(EnvironmentQueryStore, makeStore(database))),
+  );
+
+/** Runs a Kin stream against the `kin` cache kind: its loads, saves and evictions. */
+export const withKinCacheStream = <A, E, R>(stream: Stream.Stream<A, E, R>) =>
+  Stream.unwrap(
+    MobileDatabase.use((database) =>
+      Effect.succeed(
+        stream.pipe(
+          Stream.provideService(EnvironmentQueryStore, makeStore(database)),
+          Stream.provideService(KinCacheEviction, (environmentId, key) =>
+            removeKinCacheEntry(environmentId, key).pipe(
+              Effect.provideService(MobileDatabase, database),
+            ),
+          ),
+        ),
+      ),
+    ),
   );
 
 export const removeKinCacheEntry = Effect.fn("KinCache.remove")(function* (

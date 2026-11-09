@@ -7,13 +7,13 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import { kinSentences } from "../state/kinScreenState";
+import { kinSentences } from "./kinScreenState.ts";
 
 export const KIN_STALE_CARD_TEXT = "This card changed. Check it again.";
 export const KIN_SENT_CARD_TEXT = "Sent. Your lead will update this card.";
 export const KIN_CHANGE_SENT_TEXT = "Sent. Your lead will ask what to change.";
 export const KIN_SEND_FAILED_TEXT = "Couldn't send that. Try again.";
-export const KIN_UNDONE_TEXT = "Undone. Kin won't act on this.";
+const KIN_UNDONE_TEXT = "Undone. Kin won't act on this.";
 export const KIN_UNDO_TOO_LATE_TEXT = "Too late to undo: Kin already acted on this.";
 
 /** The ids the host takes for each phase (`actionsFor` in the server's deferrals). */

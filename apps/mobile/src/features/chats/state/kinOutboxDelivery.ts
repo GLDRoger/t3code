@@ -10,8 +10,12 @@ import { uuidv4 } from "../../../lib/uuid";
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { environmentPresentations } from "../../../state/presentation";
 import { kinClient } from "./kinClient";
-import { classifyKinSendFailure, createKinOutbox, type KinOutboxStorage } from "./kinOutbox";
-import { createKinOutboxRetry } from "./kinOutboxRetry";
+import {
+  classifyKinSendFailure,
+  createKinOutbox,
+  type KinOutboxStorage,
+} from "@t3tools/client-runtime/kin/kinOutbox";
+import { createKinOutboxRetry } from "@t3tools/client-runtime/kin/kinOutboxRetry";
 
 const OUTBOX_FILE = "kin-outbox.json";
 

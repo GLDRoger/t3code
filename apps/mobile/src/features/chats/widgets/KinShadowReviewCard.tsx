@@ -9,7 +9,7 @@ import { AppText as Text } from "../../../components/ui/AppText";
 import { Chip } from "../../../components/ui/Chip";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
-import { kinDirectory } from "../state/kinScreenState";
+import { kinDirectory } from "@t3tools/client-runtime/kin/kinScreenState";
 import { useKinHostAt } from "../state/useKinHost";
 import {
   KIN_VERDICTS,
@@ -17,7 +17,7 @@ import {
   kinShownVerdict,
   type KinShadowReviewCardView,
   type KinShadowReviewEntryView,
-} from "./kinLevelsPresentation";
+} from "@t3tools/client-runtime/kin/kinLevelsPresentation";
 
 /** The evening trial review: each shadow entry with the owner's verdict. Taps call `kin.levels.review`. */
 export const KinShadowReviewCard = memo(function KinShadowReviewCard(props: {

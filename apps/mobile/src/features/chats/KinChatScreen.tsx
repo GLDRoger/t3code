@@ -93,18 +93,18 @@ import {
   type KinFeedRow,
   type KinFeedViewer,
   type KinPaging,
-} from "./state/kinChatFeed";
+} from "@t3tools/client-runtime/kin/kinChatFeed";
 import { useLocalDayStartMs } from "./state/useLocalDayStartMs";
 import { kinClient, type KinSynced } from "./state/kinClient";
-import { splitKinOutbox, type KinOutboxEntry } from "./state/kinOutbox";
+import { splitKinOutbox, type KinOutboxEntry } from "@t3tools/client-runtime/kin/kinOutbox";
 import { deliverKinOutbox, kinOutbox } from "./state/kinOutboxDelivery";
-import { kinIntroVisible } from "./state/kinIntro";
+import { kinIntroVisible } from "@t3tools/client-runtime/kin/kinIntro";
 import {
   initialKinFeedFollow,
   kinFollowsEnd,
   resolveKinFeedFollow,
   type KinFeedFollowEvent,
-} from "./state/kinFeedFollow";
+} from "@t3tools/client-runtime/kin/kinFeedFollow";
 import {
   applyKinChatEvent,
   applyKinChatHistory,
@@ -112,16 +112,20 @@ import {
   KIN_CACHED_MESSAGE_LIMIT,
   type KinChatState,
   type KinInboxState,
-} from "./state/kinInboxModel";
-import { kinPresenceLine, kinPresenceNeedsClock } from "./state/kinLive";
-import { kinChatTitle, kinDirectAgentName, kinLevelsAgentId } from "./state/kinScreenState";
+} from "@t3tools/client-runtime/kin/kinInboxModel";
+import { kinPresenceLine, kinPresenceNeedsClock } from "@t3tools/client-runtime/kin/kinLive";
+import {
+  kinChatTitle,
+  kinDirectAgentName,
+  kinLevelsAgentId,
+} from "@t3tools/client-runtime/kin/kinScreenState";
 import { useKinHostAt } from "./state/useKinHost";
 import {
   kinReactionChips,
   kinReactionToggle,
   kinSoftReplyMessageId,
   kinViewerMemberId,
-} from "./state/kinReactions";
+} from "@t3tools/client-runtime/kin/kinReactions";
 import { KinChatPushWatch } from "./notifications/KinChatPushWatch";
 
 type KinChatParams = {
@@ -130,12 +134,16 @@ type KinChatParams = {
   readonly chatId: string;
 };
 
-type KinFixtures = typeof import("./state/kinChatFixtures");
+type KinFixtures = typeof import("@t3tools/client-runtime/kin/kinChatFixtures");
 
 export function KinChatScreen({ route }: StaticScreenProps<KinChatParams>) {
   // `KIN_FIXTURE_CHAT_ID`; required inside the `__DEV__` branch so release builds drop it.
   if (__DEV__ && route.params.chatId === "dev-fixture") {
-    return <KinFixtureChat fixtures={require("./state/kinChatFixtures") as KinFixtures} />;
+    return (
+      <KinFixtureChat
+        fixtures={require("@t3tools/client-runtime/kin/kinChatFixtures") as KinFixtures}
+      />
+    );
   }
   const environmentId = decodeEnvironmentId(route.params.environmentId);
   if (Option.isNone(environmentId)) {
