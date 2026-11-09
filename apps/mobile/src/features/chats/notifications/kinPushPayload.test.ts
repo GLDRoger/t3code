@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { KIN_DEFAULT_ACTION_IDENTIFIER, kinNotificationRoute } from "./kinPushPayload";
+import { EnvironmentId } from "@t3tools/contracts";
+
+import {
+  KIN_DEFAULT_ACTION_IDENTIFIER,
+  kinActionDelivery,
+  kinNotificationRoute,
+} from "./kinPushPayload";
 
 const chatLink = "/kin/env-1/kin-default/chats/chat-1";
 const deferral = {
@@ -156,5 +162,33 @@ describe("kinNotificationRoute", () => {
     const route = kinNotificationRoute(response({ data, action, category }));
     expect(route?.path).toBe(chatLink);
     expect(route?.act).toBeNull();
+  });
+});
+
+describe("kinActionDelivery", () => {
+  const host = EnvironmentId.make("env-1");
+  const ready = {
+    hostEnvironmentId: host,
+    targetEnvironmentId: host,
+    connected: true,
+    inFlight: false,
+  };
+  it.each([
+    ["posts a tap for the connected Kin host", ready, "post"],
+    [
+      "drops a tap from another host",
+      { ...ready, targetEnvironmentId: EnvironmentId.make("env-2") },
+      "drop",
+    ],
+    [
+      "drops another host's tap even while disconnected",
+      { ...ready, targetEnvironmentId: EnvironmentId.make("env-2"), connected: false },
+      "drop",
+    ],
+    ["waits until this phone knows its Kin host", { ...ready, hostEnvironmentId: null }, "wait"],
+    ["waits for the host to connect", { ...ready, connected: false }, "wait"],
+    ["waits while the same tap is in flight", { ...ready, inFlight: true }, "wait"],
+  ] as const)("%s", (_name, input, delivery) => {
+    expect(kinActionDelivery(input)).toBe(delivery);
   });
 });

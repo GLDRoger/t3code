@@ -38,7 +38,6 @@ import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { useBarOverlap, useContentTopInset } from "../../components/ui/useBarInset";
 import { useReduceMotionEnabled } from "../../lib/appState";
-import { useLocalDayStartMs } from "../../lib/clock";
 import { deriveThreadFeedInitialContentInset } from "../../lib/layout";
 import { NativeScrollViewMarker } from "../../native/NativeScrollViewMarker";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
@@ -66,6 +65,7 @@ import {
   kinChatStatusLine,
   kinEarlierPage,
   kinFeedViewer,
+  kinLinkToOpen,
   kinMarkReadRearms,
   kinRowSeq,
   kinSeqToMarkRead,
@@ -77,6 +77,7 @@ import {
   type KinFeedViewer,
   type KinPaging,
 } from "./state/kinChatFeed";
+import { useLocalDayStartMs } from "./state/useLocalDayStartMs";
 import { kinClient, type KinSynced } from "./state/kinClient";
 import { splitKinOutbox, type KinOutboxEntry } from "./state/kinOutbox";
 import { kinOutbox } from "./state/kinOutboxDelivery";
@@ -623,7 +624,10 @@ function KinChatFeed(props: {
     });
   };
 
-  const onLinkPress = (href: string) => void openLink(href);
+  const onLinkPress = (href: string) => {
+    const url = kinLinkToOpen(href);
+    if (url !== null) void openLink(url);
+  };
 
   const renderItem = ({ item }: { readonly item: KinChatRow }) => {
     switch (item.type) {

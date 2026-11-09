@@ -1,11 +1,19 @@
-import { KinTaskCardState, type EnvironmentId, type KinWidget } from "@t3tools/contracts";
+import {
+  KinRoutineCard,
+  KinShadowSummaryCard,
+  KinTaskCardState,
+  type EnvironmentId,
+  type KinRoutineSection,
+  type KinWidget,
+} from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { kinLinkLabel, kinSafeWebUrl } from "../state/kinLinks";
 import { kinSentences } from "../state/kinScreenState";
 import { kinDeferralCardView, type KinDeferralCardView } from "./kinDeferralPresentation";
 
-export const KIN_UNKNOWN_CARD_TEXT = "This card needs a newer version of Kin.";
+export const KIN_UNKNOWN_CARD_TEXT = "This card can't be shown here yet.";
 export const KIN_MISSING_CARD_TEXT = "This card hasn't loaded yet.";
 
 type TaskStatus = KinTaskCardState["status"];
@@ -31,6 +39,7 @@ export interface KinTaskCardView {
 export type KinCardView =
   | { readonly kind: "task"; readonly task: KinTaskCardView }
   | { readonly kind: "deferral"; readonly deferral: KinDeferralCardView }
+  | { readonly kind: "digest"; readonly digest: KinDigestCardView }
   | { readonly kind: "missing" }
   | { readonly kind: "unknown" };
 
@@ -45,22 +54,14 @@ const STATUS: Record<TaskStatus, { readonly label: string; readonly tone: KinTas
 };
 
 const decodeTaskState = Schema.decodeUnknownOption(KinTaskCardState);
+const decodeShadowSummary = Schema.decodeUnknownOption(KinShadowSummaryCard);
+const decodeRoutine = Schema.decodeUnknownOption(KinRoutineCard);
 
 // Agents write widget state, so every string is clamped and shown as plain text.
 const clamp = (text: string, max: number) => {
   const chars = Array.from(text.replace(/\s+/g, " ").trim());
   return chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : chars.join("");
 };
-
-/** Only web links open from a card; anything else an agent wrote is dropped. */
-function safeWebUrl(url: string): URL | null {
-  try {
-    const parsed = new URL(url);
-    return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed : null;
-  } catch {
-    return null;
-  }
-}
 
 export function kinTaskCardView(
   state: KinTaskCardState,
@@ -79,12 +80,11 @@ export function kinTaskCardView(
   const open =
     state.threadId !== null && known ? { environmentId, threadId: state.threadId } : null;
   const pullRequests = state.pullRequests.flatMap((pr) => {
-    const url = safeWebUrl(pr.url);
-    if (url === null) return [];
-    // Name any host other than GitHub so a look-alike link can't pass as a GitHub PR.
-    const label =
-      url.hostname === "github.com" ? `PR ${pr.number}` : `PR ${pr.number} · ${url.hostname}`;
-    return [{ url: url.toString(), label }];
+    const url = kinSafeWebUrl(pr.url);
+    // Any host other than GitHub is named, so a look-alike link can't pass as a GitHub PR.
+    return url === null
+      ? []
+      : [{ url: url.toString(), label: kinLinkLabel(`PR ${pr.number}`, url) }];
   });
   const parts = [
     `Task: ${title}`,
@@ -109,9 +109,115 @@ export function kinTaskCardView(
   };
 }
 
+export interface KinDigestRow {
+  readonly key: string;
+  /** The section this row starts, such as "Overdue"; null while the section continues. */
+  readonly heading: string | null;
+  readonly text: string;
+  readonly note: string | null;
+  readonly link: {
+    readonly url: string;
+    /** The row's text plus the real host, for the card's accessibility action. */
+    readonly label: string;
+    readonly chipLabel: string;
+  } | null;
+}
+
+/** A server-drawn list card (shadow summary, morning brief, evening summary), as plain text. */
+export interface KinDigestCardView {
+  readonly eyebrow: string;
+  readonly title: string;
+  readonly rows: ReadonlyArray<KinDigestRow>;
+  readonly more: string | null;
+  readonly accessibilityLabel: string;
+}
+
+const ROUTINE_SECTIONS: Record<KinRoutineSection, string> = {
+  due_today: "Due today",
+  due_this_week: "Due this week",
+  overdue: "Overdue",
+  waiting: "Waiting",
+  review_requested: "Review requested",
+  ci_red: "CI failing",
+  objective_at_risk: "Objective at risk",
+  worker: "Workers",
+  past_review: "Past review",
+  done: "Done",
+  slipped: "Slipped",
+  promised: "Promised",
+  due_tomorrow: "Due tomorrow",
+};
+
+// `day` is the owner's local date; built from its parts so no timezone shifts it.
+const dayFormat = new Intl.DateTimeFormat(undefined, {
+  weekday: "long",
+  month: "long",
+  day: "numeric",
+});
+const formatDay = (day: string) => {
+  const [year, month, date] = day.split("-").map(Number);
+  return dayFormat.format(new Date(year!, month! - 1, date));
+};
+
+function digestView(card: Omit<KinDigestCardView, "accessibilityLabel">): KinDigestCardView {
+  const parts = [
+    card.eyebrow,
+    card.title,
+    ...card.rows.flatMap((row) => [row.heading, row.text, row.note]),
+    card.more,
+  ];
+  return { ...card, accessibilityLabel: kinSentences(parts) };
+}
+
+export function kinShadowSummaryView(card: KinShadowSummaryCard): KinDigestCardView {
+  const hidden = card.total - card.entries.length;
+  return digestView({
+    eyebrow: "Shadow week",
+    title: clamp(card.title, 200),
+    rows: card.entries.map((entry) => ({
+      key: entry.entryId,
+      heading: null,
+      text: clamp(entry.preview, 280) || clamp(entry.tool, 60),
+      note: clamp(entry.wouldTarget, 120) || null,
+      link: null,
+    })),
+    more: hidden > 0 ? `${hidden} more today` : null,
+  });
+}
+
+export function kinRoutineView(card: KinRoutineCard): KinDigestCardView {
+  return digestView({
+    eyebrow: card.routine === "morning_brief" ? "Morning brief" : "Evening summary",
+    title: formatDay(card.day),
+    rows: card.rows.map((row, index) => {
+      const text = clamp(row.title, 280);
+      const url = row.link === undefined ? null : kinSafeWebUrl(row.link);
+      return {
+        // Rows are fixed per revision, so their position identifies them.
+        key: `${row.section}:${index}`,
+        heading:
+          index > 0 && card.rows[index - 1]!.section === row.section
+            ? null
+            : ROUTINE_SECTIONS[row.section],
+        text,
+        note: row.note === undefined ? null : clamp(row.note, 280) || null,
+        link:
+          url === null
+            ? null
+            : {
+                url: url.href,
+                label: kinLinkLabel(text || "Link", url),
+                chipLabel: kinLinkLabel("Open", url),
+              },
+      };
+    }),
+    more: null,
+  });
+}
+
 /**
  * What a message's card draws. Anything this build can't read falls back to plain text, including
- * reserved types whose cards haven't shipped, such as `deferral`.
+ * reserved types whose cards haven't shipped, such as `shadow_review` and `promotion`.
  */
 export function kinCardView(
   widget: KinWidget | undefined,
@@ -133,6 +239,18 @@ export function kinCardView(
     case "deferral": {
       const deferral = kinDeferralCardView(widget);
       return deferral === null ? { kind: "unknown" } : { kind: "deferral", deferral };
+    }
+    case "shadow_summary": {
+      const card = decodeShadowSummary(widget.state);
+      return Option.isSome(card)
+        ? { kind: "digest", digest: kinShadowSummaryView(card.value) }
+        : { kind: "unknown" };
+    }
+    case "routine": {
+      const card = decodeRoutine(widget.state);
+      return Option.isSome(card)
+        ? { kind: "digest", digest: kinRoutineView(card.value) }
+        : { kind: "unknown" };
     }
     default:
       return { kind: "unknown" };

@@ -14,6 +14,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 
+import type { MarkdownImageRequest } from "../../../native/SelectableMarkdownText";
 import type { KinRouteHost } from "./kinHost";
 import {
   applyKinChatHistory,
@@ -21,6 +22,7 @@ import {
   type KinChatClosedReason,
   type KinChatState,
 } from "./kinInboxModel";
+import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks";
 import { kinSentences } from "./kinScreenState";
 import type { KinSynced } from "./kinStreams";
 
@@ -375,20 +377,41 @@ export function kinPlainText(markdown: string): string {
 }
 
 export interface KinMessageLink {
+  /** The link text, plus its real host when the text doesn't name it. */
   readonly label: string;
   readonly href: string;
 }
 
-/** Links in a message, in order, for the bubble's accessibility actions. */
+/** The web links in a message, in order, for the bubble's accessibility actions. */
 export function kinMessageLinks(markdown: string): ReadonlyArray<KinMessageLink> {
   const links: KinMessageLink[] = [];
+  const add = (text: string, href: string) => {
+    const url = kinSafeWebUrl(href);
+    if (url !== null) links.push({ label: kinLinkLabel(text.trim() || href, url), href: url.href });
+  };
   const rest = markdown.replace(MARKDOWN_LINK, (match, label: string, href: string) => {
-    if (!match.startsWith("!")) links.push({ label: label.trim() || href, href });
+    if (!match.startsWith("!")) add(label, href);
     return " ";
   });
-  for (const match of rest.matchAll(BARE_URL)) links.push({ label: match[1]!, href: match[1]! });
+  for (const match of rest.matchAll(BARE_URL)) add(match[1]!, match[1]!);
   return links.filter((link, index) => links.findIndex((l) => l.href === link.href) === index);
 }
+
+/** What a tapped Kin link opens: web links only, so a bubble can't dial, text or deep-link. */
+export function kinLinkToOpen(href: string): string | null {
+  return kinSafeWebUrl(href)?.href ?? null;
+}
+
+/**
+ * Agents write message bodies, and loading `![](https://x.example/p.png?d=…)` would send data out
+ * the moment the chat opens. Every image resolves to an empty source: the renderer keeps its
+ * placeholder and requests nothing.
+ */
+export const kinImageSource = () => ({ uri: "" });
+
+/** A standalone image block, drawn as text in its place. */
+export const kinImageText = (image: MarkdownImageRequest) =>
+  image.alt?.trim() ? `Image: ${image.alt.trim()}` : "Image";
 
 /** The bubble's one VoiceOver label: "Tech lead, agent. Payments test fixed. 9:30." */
 export function kinMessageLabel(row: MessageRow, time: string): string {

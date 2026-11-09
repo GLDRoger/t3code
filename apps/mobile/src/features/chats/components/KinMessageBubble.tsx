@@ -6,9 +6,12 @@ import * as Dialog from "../../../components/ui/Dialog";
 import { cn } from "../../../lib/cn";
 import {
   SelectableMarkdownText,
+  type MarkdownImageRenderer,
   type NativeMarkdownTextStyle,
 } from "../../../native/SelectableMarkdownText";
 import {
+  kinImageSource,
+  kinImageText,
   kinMessageLabel,
   kinMessageLinks,
   kinPlainText,
@@ -25,11 +28,18 @@ type DayRow = Extract<KinFeedRow, { readonly type: "day" }>;
 const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 const formatTime = (iso: string) => timeFormat.format(new Date(iso));
 
+const renderImageAsText: MarkdownImageRenderer = (image) => (
+  <Text textRole="body" className="italic text-foreground-muted">
+    {kinImageText(image)}
+  </Text>
+);
+
 /** One message. The owner's own sit right on the user bubble; others sit left under an author line. */
 export function KinMessageBubble(props: {
   readonly row: MessageRow;
   /** `useMarkdownPreviewStyles().nativeTextStyle`, read once by the screen. */
   readonly markdownStyle: NativeMarkdownTextStyle;
+  /** Gets any link the author wrote; the screen opens web links only (`kinLinkToOpen`). */
   readonly onLinkPress: (href: string) => void;
   /** The widget `row.message.widgetId` points at, if the feed holds it. */
   readonly widget: KinWidget | undefined;
@@ -83,6 +93,8 @@ export function KinMessageBubble(props: {
               textStyle={props.markdownStyle}
               preserveSoftBreaks
               onLinkPress={props.onLinkPress}
+              renderImage={renderImageAsText}
+              resolveImageSource={kinImageSource}
             />
           ) : deleted ? (
             <Text textRole="body" className="italic text-foreground-muted">

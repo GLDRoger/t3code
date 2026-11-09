@@ -23,7 +23,7 @@ import { resolveApsEnvironment } from "../../agent-awareness/registrationPayload
 import { kinClient } from "../state/kinClient";
 import { kinHostAtom } from "../state/useKinHost";
 import { KIN_NOTIFICATION_CATEGORIES } from "./kinCategories";
-import { kinNotificationRoute } from "./kinPushPayload";
+import { kinActionDelivery, kinNotificationRoute } from "./kinPushPayload";
 import { createKinPushRefusals } from "./kinPushRegistration";
 
 // A refusal is final for this response; anything else (a dropped socket) waits for a connect.
@@ -54,15 +54,17 @@ function createActionDelivery() {
   const inFlight = new Set<string>();
   const flush = () => {
     for (const [key, target] of pending) {
-      const hostEnvironment = kinHostEnvironment();
-      if (hostEnvironment === null) continue;
-      // Any host holding this phone's token can send a push; only the Kin host's own buttons act.
-      if (hostEnvironment !== target.environmentId) {
+      const delivery = kinActionDelivery({
+        hostEnvironmentId: kinHostEnvironment(),
+        targetEnvironmentId: target.environmentId,
+        connected: isConnected(target.environmentId),
+        inFlight: inFlight.has(key),
+      });
+      if (delivery === "drop") {
         pending.delete(key);
         console.warn("Dropped a Kin notification action for another host");
-        continue;
       }
-      if (inFlight.has(key) || !isConnected(target.environmentId)) continue;
+      if (delivery !== "post") continue;
       inFlight.add(key);
       void runAtomCommand(appAtomRegistry, kinClient.widgetAction, target, {
         reportFailure: false,

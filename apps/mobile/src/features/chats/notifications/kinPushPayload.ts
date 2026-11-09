@@ -122,3 +122,19 @@ export function kinNotificationRoute(response: unknown): KinNotificationRoute | 
     act: action === undefined ? null : deferralAct(data, action, notificationId),
   };
 }
+
+export type KinActionDelivery = "drop" | "wait" | "post";
+
+/** What to do with a pending notification button tap, given the current Kin host. */
+export function kinActionDelivery(input: {
+  /** Null until this phone knows its Kin host. */
+  readonly hostEnvironmentId: EnvironmentId | null;
+  readonly targetEnvironmentId: EnvironmentId;
+  readonly connected: boolean;
+  readonly inFlight: boolean;
+}): KinActionDelivery {
+  if (input.hostEnvironmentId === null) return "wait";
+  // Any host holding this phone's token can send a push; only the Kin host's own buttons act.
+  if (input.hostEnvironmentId !== input.targetEnvironmentId) return "drop";
+  return input.inFlight || !input.connected ? "wait" : "post";
+}

