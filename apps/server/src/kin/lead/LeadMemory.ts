@@ -11,6 +11,7 @@ import {
   MemoryItemHead,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -27,6 +28,7 @@ import * as Memory from "../memory/Memory.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import * as Cache from "../memory/MemoryCache.ts";
 import { MemoryItemError, memoryDateMillis } from "../memory/frontMatter.ts";
+import * as KinLevels from "./KinLevels.ts";
 
 const text = Schema.String.check(Schema.isMaxLength(100_000));
 const date = Schema.String.check(
@@ -352,6 +354,47 @@ const make = Effect.gen(function* () {
     );
     return { itemId: fields.id };
   });
+  // A claimed owner message whose reply grant is still usable means the owner has no answer yet.
+  // A reply consumes the grant; a lapsed grant, closed run, mute or L0 shadow lets the lead end.
+  const requireReplies = Effect.fn("LeadMemory.requireReplies")(function* (
+    ctx: Effect.Success<ReturnType<typeof resolve>>,
+  ) {
+    const now = yield* Clock.currentTimeMillis;
+    const pending = yield* sql<{
+      chatId: KinChatId;
+      ownerChatId: string;
+      mutedUntil: string | null;
+    }>`SELECT DISTINCT r.chat_id AS "chatId", l.owner_chat_id AS "ownerChatId", m.muted_until AS "mutedUntil"
+      FROM kin_events e
+      JOIN kin_leads l ON l.org_id = e.org_id AND l.agent_id = e.agent_id
+      JOIN kin_floor_runs r ON r.org_id = e.org_id AND r.state = 'open'
+        AND r.chat_id = json_extract(e.json, '$.chatId') AND r.opened_by = json_extract(e.json, '$.messageId')
+      JOIN kin_chats c ON c.org_id = r.org_id AND c.chat_id = r.chat_id AND c.kind = 'direct'
+      JOIN kin_floor_grants g ON g.org_id = r.org_id AND g.run_id = r.run_id AND g.agent_id = e.agent_id
+        AND g.consumed_at IS NULL AND g.expires_at > ${now}
+      JOIN kin_chat_members m ON m.org_id = r.org_id AND m.chat_id = r.chat_id AND m.principal_kind = 'agent'
+        AND m.agent_id = e.agent_id AND m.left_at IS NULL
+      WHERE e.org_id = ${ctx.orgId} AND e.agent_id = ${ctx.agentId} AND e.wakeup_id = ${ctx.wakeupId}
+        AND e.tag IN ('chat.message', 'widget.action')
+      ORDER BY r.chat_id`;
+    for (const row of pending) {
+      if (row.mutedUntil !== null && Date.parse(row.mutedUntil) > now) continue;
+      if (
+        row.chatId !== row.ownerChatId &&
+        !KinLevels.atLeast(
+          yield* KinLevels.effectiveLevel({ ...ctx, chatId: row.chatId }).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          ),
+          "L1",
+        )
+      )
+        continue;
+      return yield* new KinChatError({
+        reason: "invalid_state",
+        message: `Reply to the owner with kin_chat_post in chat ${row.chatId} before kin_end. Your plain text is never shown.`,
+      });
+    }
+  });
   return LeadMemory.of({
     search: Effect.fn("LeadMemory.search")(function* (scope, input) {
       const ctx = yield* resolve(scope);
@@ -452,6 +495,7 @@ const make = Effect.gen(function* () {
         ctx.orgId,
         Effect.gen(function* () {
           const ctx = yield* resolve(scope, true);
+          yield* requireReplies(ctx);
           yield* receipt(
             ctx,
             "end",

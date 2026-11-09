@@ -502,12 +502,54 @@ it.live(
           did: ["Wrote memory"],
           skipped: ["No external work"],
         });
+        // Plain assistant text never reaches the owner, so ending before a reply is refused.
+        const unanswered = yield* service
+          .end(scope, { summary: "Finished fixture" })
+          .pipe(Effect.flip);
+        assert.strictEqual(unanswered.reason, "invalid_state");
+        assert.include(unanswered.message, `kin_chat_post in chat ${chat.chatId}`);
+        const lead = yield* identity.resolveAgent(scope);
+        yield* chats.send(lead, {
+          chatId: chat.chatId,
+          body: "Noted.",
+          clientMessageId: "fixture-reply",
+          intent: "answer",
+        });
         yield* service.end(scope, { summary: "Finished fixture" });
         yield* service.end(scope, { summary: "Finished fixture" });
         assert.strictEqual(
           (yield* service.end(scope, { summary: "Changed" }).pipe(Effect.flip)).reason,
           "not_allowed",
         );
+        // A second claimed owner message owes its own reply, until its grant lapses.
+        const followUp = yield* chats.send(person!, {
+          chatId: chat.chatId,
+          body: "One more thing",
+          clientMessageId: "fixture-follow-up",
+        });
+        const followUpEvent = {
+          ...event,
+          eventId: "follow-up-event",
+          messageId: followUp.messageId,
+        };
+        yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id) VALUES ('follow-up-event', ${orgId}, ${agentId}, 'chat.message', 'P0', ${JSON.stringify(followUpEvent)}, 0, 0, 'claimed', 'fixture-wakeup')`;
+        assert.strictEqual(
+          (yield* service.end(scope, { summary: "Finished fixture" }).pipe(Effect.flip)).reason,
+          "invalid_state",
+        );
+        yield* sql`UPDATE kin_floor_grants SET expires_at = 0 WHERE org_id = ${orgId} AND consumed_at IS NULL`;
+        assert.include(
+          yield* chats
+            .send(lead, {
+              chatId: chat.chatId,
+              body: "Late",
+              clientMessageId: "fixture-late",
+              intent: "answer",
+            })
+            .pipe(Effect.flip),
+          { reason: "floor_not_granted" },
+        );
+        yield* service.end(scope, { summary: "Finished fixture" });
         assert.strictEqual(
           (yield* service.write(scope, input).pipe(Effect.flip)).reason,
           "not_allowed",
