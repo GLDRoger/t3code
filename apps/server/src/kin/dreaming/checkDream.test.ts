@@ -93,6 +93,20 @@ it.effect.each([
     ],
   },
   {
+    name: "rejects item and journal paths memory-check would refuse",
+    tree: new Map([
+      ...goodTree,
+      ["claims/acme.renewal.md", "x\n"],
+      ["commitments/q4/ship.md", "x\n"],
+      ["journal/2026/week-45.md", "x\n"],
+    ]),
+    failures: [
+      "claims/acme.renewal.md is outside item files and journal/",
+      "commitments/q4/ship.md is outside item files and journal/",
+      "journal/2026/week-45.md is outside item files and journal/",
+    ],
+  },
+  {
     name: "rejects a change dream.json does not list",
     dream: { ...goodDream, changes: goodDream.changes.slice(1) },
     failures: ["claims/new.md is not listed in dream.json"],
