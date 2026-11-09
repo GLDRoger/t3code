@@ -1,11 +1,14 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { KinAgentId, KinMemoryItemId, KinOrgId } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Vcs from "../../vcs/VcsProcess.ts";
@@ -37,6 +40,7 @@ it.each([
 
 const scenarios = [
   "merged",
+  "rerun",
   "foreign-check",
   "forged-in-suite",
   "run-wrong-sha",
@@ -45,19 +49,29 @@ const scenarios = [
   "run-wrong-pr",
   "run-wrong-base",
   "truncated",
+  "second-pr",
+  "pulls-truncated",
+  "base-changed",
+  "events-truncated",
   "moved-head",
   "check-failed",
   "check-pending",
   "merge-rejected",
   "owner-path",
+  "owner-path-close-fails",
   "owner-path-refused",
+  "records-broken",
+  "hang",
+  "stall-body",
   "keep",
   "keep-moved-head",
   "no-app",
 ] as const;
 
-it.live.each(scenarios)("memory writes through PRs: %s", (scenario) =>
+// `it.effect`: real git, but GitHub's silences only end when the test clock moves.
+it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
   Effect.gen(function* () {
+    yield* TestClock.setTime(Date.UTC(2026, 10, 9));
     const fs = yield* FileSystem.FileSystem;
     const vcs = yield* Vcs.VcsProcess;
     const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
@@ -79,9 +93,13 @@ it.live.each(scenarios)("memory writes through PRs: %s", (scenario) =>
     const original = yield* bare("rev-parse", "refs/heads/main");
 
     // A GitHub over the bare remote: it squash-merges there, as the real one would.
-    const pulls = new Map<number, { branch: string; state: string }>();
+    const pulls = new Map<number, { branch: string; state: string; base: string; sha?: string }>();
     const merges: Array<{ number: number; body: unknown }> = [];
     const tokens: Array<unknown> = [];
+    // The request GitHub never answers in `hang` and `stall-body`.
+    const silenced = yield* Deferred.make<void>();
+    let jobsListed = false;
+    let unclosable: number | undefined;
     const branchHead = (branch: string) => bare("rev-parse", `refs/heads/${branch}`);
     const pullBody = (number: number) =>
       Effect.gen(function* () {
@@ -91,27 +109,64 @@ it.live.each(scenarios)("memory writes through PRs: %s", (scenario) =>
           html_url: `https://github.com/${repo}/pull/${number}`,
           state: pull.state,
           head: {
-            sha: yield* branchHead(pull.branch),
+            sha: pull.sha ?? (yield* branchHead(pull.branch)),
             ref: pull.branch,
             repo: { full_name: repo },
           },
-          base: { ref: "main" },
+          base: { ref: pull.base },
         };
       });
     const route = (request: RecordedRequest): Effect.Effect<FakeAnswer> =>
       Effect.gen(function* () {
         const path = request.path.slice(`/repos/${repo}`.length);
+        const query = new URL(path, "https://github.invalid").searchParams;
         const body = request.body as Record<string, string> | undefined;
         if (request.method === "POST" && path === "/pulls") {
+          if (scenario === "hang") {
+            yield* Deferred.succeed(silenced, undefined);
+            return { status: 0, hang: true };
+          }
           const number = pulls.size + 1;
-          pulls.set(number, { branch: body!.head!, state: "open" });
+          pulls.set(number, { branch: body!.head!, state: "open", base: body!.base! });
+          // Another PR from Kin's branch, into a base with its own `memory-check.yml`.
+          if (scenario === "second-pr")
+            pulls.set(number + 1, { branch: body!.head!, state: "closed", base: "attacker" });
           return { status: 201, body: yield* pullBody(number) };
+        }
+        if (request.method === "GET" && path.startsWith("/pulls?") && query.has("head")) {
+          const branch = query.get("head")!.slice(`${repo.split("/")[0]}:`.length);
+          const listed = [...pulls].filter(
+            ([, pull]) =>
+              pull.branch === branch && (query.get("state") === "all" || pull.state === "open"),
+          );
+          return {
+            status: 200,
+            body: yield* Effect.forEach(listed, ([number]) => pullBody(number)),
+            ...(scenario === "pulls-truncated" && query.get("state") === "all"
+              ? { headers: { link: `<https://api.github.com${request.path}&page=2>; rel="next"` } }
+              : {}),
+          };
+        }
+        const events = /^\/issues\/(\d+)\/events\?/.exec(path);
+        if (events) {
+          const labeled = Array.from({ length: 100 }, () => ({ event: "labeled" }));
+          return {
+            status: 200,
+            body:
+              scenario === "events-truncated"
+                ? labeled
+                : // Moved to an attacker's base for a run, then back, while Kin polled.
+                  scenario === "base-changed" && jobsListed
+                  ? [{ event: "base_ref_changed" }, { event: "base_ref_changed" }]
+                  : [],
+          };
         }
         const pull = /^\/pulls\/(\d+)(\/merge)?$/.exec(path);
         if (pull) {
           const number = Number(pull[1]);
           const state = pulls.get(number)!;
           if (request.method === "PATCH") {
+            if (number === unclosable) return { status: 500, body: { message: "Server Error" } };
             state.state = body!.state!;
             return { status: 200, body: yield* pullBody(number) };
           }
@@ -143,7 +198,11 @@ it.live.each(scenarios)("memory writes through PRs: %s", (scenario) =>
           return { status: 200, body: { merged: true, sha: squash } };
         }
         if (request.method === "GET" && /^\/pulls\?state=open&per_page=/.test(path)) {
-          const open = [...pulls].filter(([, pull]) => pull.state === "open");
+          // Newest first, one page.
+          const open = [...pulls]
+            .filter(([, pull]) => pull.state === "open")
+            .toSorted(([a], [b]) => b - a)
+            .slice(0, Number(query.get("per_page")));
           return {
             status: 200,
             body: yield* Effect.forEach(open, ([number]) => pullBody(number)),
@@ -193,27 +252,34 @@ it.live.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         }
         const jobs = /^\/actions\/runs\/(\d+)\/jobs\?/.exec(path);
         if (jobs) {
+          jobsListed = true;
           const pending = scenario === "check-pending";
           const failed = scenario === "check-failed" || scenario === "owner-path-refused";
+          const job = (id: number) =>
+            Effect.gen(function* () {
+              return {
+                id,
+                name: "memory-check",
+                head_sha: yield* branchHead(pulls.get(1)!.branch),
+                status: pending ? "in_progress" : "completed",
+                conclusion: pending ? null : failed ? "failure" : "success",
+              };
+            });
+          // An Actions job's id is its check run's id.
+          const ids = jobs[1] !== "10" ? [200] : scenario === "rerun" ? [100, 101] : [100];
+          // A re-run's earlier attempts are listed only with `filter=all`.
+          const listed = query.get("filter") === "all" ? ids : ids.slice(-1);
           return {
             status: 200,
-            body: {
-              total_count: 1,
-              jobs: [
-                {
-                  // An Actions job's id is its check run's id.
-                  id: jobs[1] === "10" ? 100 : 200,
-                  name: "memory-check",
-                  head_sha: yield* branchHead(pulls.get(1)!.branch),
-                  status: pending ? "in_progress" : "completed",
-                  conclusion: pending ? null : failed ? "failure" : "success",
-                },
-              ],
-            },
+            body: { total_count: listed.length, jobs: yield* Effect.forEach(listed, job) },
           };
         }
         const checks = /^\/commits\/([a-f0-9]+)\/check-runs\?(.*)$/.exec(path);
         if (checks) {
+          if (scenario === "stall-body") {
+            yield* Deferred.succeed(silenced, undefined);
+            return { status: 200, stallBody: true };
+          }
           const check = (id: number, suite: number) => ({
             id,
             name: "memory-check",
@@ -225,6 +291,7 @@ it.live.each(scenarios)("memory writes through PRs: %s", (scenario) =>
             // Posted by another branch's workflow through the checks API, into our run's suite.
             ...(scenario === "forged-in-suite" ? [check(300, 1)] : []),
             check(100, 1),
+            ...(scenario === "rerun" ? [check(101, 1)] : []),
             ...(scenario === "foreign-check" ? [check(200, 2)] : []),
           ];
           // GitHub's default `filter=latest` keeps only the newest run per name in each suite.
@@ -365,7 +432,14 @@ it.live.each(scenarios)("memory writes through PRs: %s", (scenario) =>
       }
 
       yield* writer.stage(orgId, "wake1", { ...claim, sourceEventId: "owner" });
-      const ownerPath = scenario === "owner-path" || scenario === "owner-path-refused";
+      const reviewed = scenario === "owner-path" || scenario === "owner-path-close-fails";
+      const ownerPath =
+        reviewed || scenario === "owner-path-refused" || scenario === "records-broken";
+      const sql = yield* SqlClient.SqlClient;
+      const records = sql`SELECT branch, head FROM kin_memory_review_pulls ORDER BY branch`;
+      if (scenario === "records-broken")
+        yield* sql`CREATE TRIGGER no_insert BEFORE INSERT ON kin_memory_review_pulls
+          BEGIN SELECT RAISE(ABORT, 'fixture'); END`;
       if (ownerPath)
         yield* writer.stage(orgId, "wake1", {
           path: "decisions/dec-001.md",
@@ -383,16 +457,43 @@ it.live.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         );
         return;
       }
-      if (scenario !== "merged" && scenario !== "owner-path") {
+      if (scenario === "hang" || scenario === "stall-body") {
+        const running = yield* Effect.forkChild(committing);
+        yield* Deferred.await(silenced);
+        yield* TestClock.adjust("30 seconds");
+        const error = yield* refused(Fiber.join(running));
+        expect(error).toMatchObject({
+          reason: expect.stringContaining(
+            `could not reach GitHub for ${scenario === "hang" ? "pulls.create" : "checks.list"}`,
+          ),
+        });
+        yield* unchanged;
+        // The writer lock is free again: the sweep takes it and closes the PR left open.
+        yield* writer.sweepPullRequests(orgId);
+        expect(merges).toEqual([]);
+        expect([...pulls.values()].map((pull) => pull.state)).toEqual(
+          scenario === "hang" ? [] : ["closed"],
+        );
+        return;
+      }
+      if (
+        !reviewed &&
+        scenario !== "merged" &&
+        scenario !== "rerun" &&
+        scenario !== "records-broken"
+      ) {
         const foreign = "did not come from .github/workflows/memory-check.yml";
         const error = yield* refused(committing);
         yield* unchanged;
         expect(merges.length).toBe(scenario === "merge-rejected" ? 1 : 0);
         expect(pulls.get(1)?.state).toBe("closed");
         // A refused write opens no review PR, so none is left waiting alone.
-        expect([...pulls.values()].map((pull) => pull.branch)).toEqual([
-          `kin/write/${agentId}/wake1`,
-        ]);
+        expect([...pulls.values()].filter((pull) => pull.branch.endsWith("-review"))).toEqual([]);
+        // A PR from Kin's branch that isn't this one fails before Kin reads any run.
+        if (scenario === "second-pr")
+          expect(github.requests.map((request) => request.path)).not.toContainEqual(
+            expect.stringContaining("/actions/runs"),
+          );
         expect(github.requests).toContainEqual(
           expect.objectContaining({ method: "POST", path: `/repos/${repo}/issues/1/comments` }),
         );
@@ -410,6 +511,10 @@ it.live.each(scenarios)("memory writes through PRs: %s", (scenario) =>
               "run-wrong-pr": foreign,
               "run-wrong-base": foreign,
               truncated: "GitHub listed more check runs than one page holds",
+              "second-pr": "another PR was opened from Kin's branch",
+              "pulls-truncated": "GitHub listed more PRs from Kin's branch than one page holds",
+              "base-changed": "the PR's base branch was changed",
+              "events-truncated": "GitHub listed more PR events than one page holds",
               "moved-head": "head is not the commit Kin pushed",
               "check-failed": "memory-check failed",
               "owner-path-refused": "memory-check failed",
@@ -431,7 +536,7 @@ it.live.each(scenarios)("memory writes through PRs: %s", (scenario) =>
       expect(yield* remoteFiles(main)).toContain("claims/new.md");
       // The merged branch is deleted; the merge was pinned to the commit Kin pushed.
       expect(yield* bare("for-each-ref", "--format=%(refname)", "refs/heads/kin/write/")).toBe(
-        scenario === "owner-path" ? `refs/heads/kin/write/${agentId}/wake1-review` : "",
+        ownerPath ? `refs/heads/kin/write/${agentId}/wake1-review` : "",
       );
       const auto = [...pulls].find(([, pull]) => pull.branch === `kin/write/${agentId}/wake1`)!;
       const autoHead = yield* git(paths.writer, ["rev-parse", `${main}^{tree}`]);
@@ -454,10 +559,36 @@ it.live.each(scenarios)("memory writes through PRs: %s", (scenario) =>
             actions: "read",
           },
         },
-        ...(scenario === "owner-path" ? [expect.objectContaining({ holder: "server" })] : []),
+        ...(ownerPath ? [expect.objectContaining({ holder: "server" })] : []),
       ]);
 
-      if (scenario === "owner-path") {
+      if (scenario === "records-broken") {
+        const reviewNumber = [...pulls].find(([, pull]) => pull.branch.endsWith("-review"))![0];
+        expect(pulls.get(reviewNumber)?.state).toBe("closed");
+        expect(notices.map((notice) => notice.reason)).toContainEqual(
+          "Memory changes on paths you review were not opened as a PR: Kin could not record the commit it pushed (MemoryPullRequests.recordReview)",
+        );
+        const sweepRefusal = Effect.gen(function* () {
+          const error = yield* refused(writer.sweepPullRequests(orgId));
+          return error.reason;
+        });
+        yield* sql`DROP TRIGGER no_insert`;
+        yield* sql`INSERT INTO kin_memory_review_pulls (org_id, branch, head)
+          VALUES (${orgId}, 'kin/write/gone-review', ${original})
+          ON CONFLICT (org_id, branch) DO NOTHING`;
+        yield* sql`CREATE TRIGGER no_delete BEFORE DELETE ON kin_memory_review_pulls
+          BEGIN SELECT RAISE(ABORT, 'fixture'); END`;
+        expect(yield* sweepRefusal).toBe(
+          "Kin could not update its record of review PRs (MemoryPullRequests.forgetReview)",
+        );
+        yield* sql`ALTER TABLE kin_memory_review_pulls RENAME TO kin_memory_review_pulls_gone`;
+        expect(yield* sweepRefusal).toBe(
+          "Kin could not read its record of review PRs (MemoryPullRequests.records)",
+        );
+        return;
+      }
+
+      if (reviewed) {
         const reviewBranch = `kin/write/${agentId}/wake1-review`;
         const review = [...pulls].find(([, pull]) => pull.branch === reviewBranch)!;
         // Kin never merges the owner's paths; the PR stays open for their review.
@@ -491,7 +622,7 @@ it.live.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         const orphanBranch = "kin/write/other/orphan";
         yield* bare("update-ref", `refs/heads/${orphanBranch}`, original);
         const orphan = pulls.size + 1;
-        pulls.set(orphan, { branch: orphanBranch, state: "open" });
+        pulls.set(orphan, { branch: orphanBranch, state: "open", base: "main" });
         yield* writer.sweepPullRequests(orgId);
         expect(pulls.get(orphan)?.state).toBe("closed");
         expect(github.requests).toContainEqual(
@@ -502,18 +633,49 @@ it.live.each(scenarios)("memory writes through PRs: %s", (scenario) =>
           }),
         );
         expect(review[1].state).toBe("open");
-        const sql = yield* SqlClient.SqlClient;
-        const records = sql`SELECT branch, head FROM kin_memory_review_pulls`;
         expect(yield* records).toEqual([{ branch: reviewBranch, head: reviewHead }]);
+
+        // Agents flood the repo with newer PRs, which must not hide the review PR from the sweep.
+        for (let flood = 0; flood < 120; flood++)
+          pulls.set(pulls.size + 1, {
+            branch: `feature/${flood}`,
+            state: "open",
+            base: "main",
+            sha: original,
+          });
+        // A review PR Kin never recorded is closed with a comment, without telling the owner.
+        const fakeBranch = "kin/write/other/fake-review";
+        const fake = pulls.size + 1;
+        pulls.set(fake, { branch: fakeBranch, state: "open", base: "main", sha: original });
 
         // An agent with the deploy key swaps what the owner would merge.
         yield* bare("update-ref", `refs/heads/${reviewBranch}`, original);
+        if (scenario === "owner-path-close-fails") unclosable = review[0];
+        const before = notices.length;
         yield* writer.sweepPullRequests(orgId);
-        expect(review[1].state).toBe("closed");
-        expect(notices.map((notice) => notice.reason)).toContainEqual(
-          `Kin closed https://github.com/${repo}/pull/${review[0]}, the memory PR for paths you review: its head is no longer \`${reviewHead}\`, the commit Kin pushed`,
+        const moved = `https://github.com/${repo}/pull/${review[0]}`;
+        const reason = `its head is no longer \`${reviewHead}\`, the commit Kin pushed`;
+        expect(pulls.get(fake)?.state).toBe("closed");
+        expect(github.requests).toContainEqual(
+          expect.objectContaining({
+            method: "POST",
+            path: `/repos/${repo}/issues/${fake}/comments`,
+            body: { body: "Kin closed this memory PR: Kin did not open it." },
+          }),
         );
         expect(merges.map((merge) => merge.number)).toEqual([auto[0]]);
+        if (scenario === "owner-path-close-fails") {
+          expect(review[1].state).toBe("open");
+          expect(notices.slice(before).map((notice) => notice.reason)).toEqual([
+            `Kin could not close ${moved}, the memory PR for paths you review, and it is still open. Close it without merging: ${reason}`,
+          ]);
+          expect(yield* records).toEqual([{ branch: reviewBranch, head: reviewHead }]);
+          return;
+        }
+        expect(review[1].state).toBe("closed");
+        expect(notices.slice(before).map((notice) => notice.reason)).toEqual([
+          `Kin closed ${moved}, the memory PR for paths you review: ${reason}`,
+        ]);
         expect(yield* records).toEqual([]);
       }
     }).pipe(Effect.provide(writerLayer));

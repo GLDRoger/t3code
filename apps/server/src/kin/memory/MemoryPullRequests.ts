@@ -9,7 +9,8 @@ import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/http";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { gitHubAnswer, repoPath } from "../github/githubRest.ts";
+import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { type GitHubAnswer, gitHubAnswer, repoPath } from "../github/githubRest.ts";
 import { KinGitHubApp } from "../github/KinGitHubApp.ts";
 import { GITHUB_ACTIONS_INTEGRATION_ID } from "../github/KinRulesets.ts";
 
@@ -75,6 +76,9 @@ const decodeChecks = Schema.decodeUnknownOption(CheckRuns);
 const decodeMerge = Schema.decodeUnknownOption(
   Schema.Struct({ merged: Schema.Boolean, sha: Schema.String }),
 );
+const decodeEvents = Schema.decodeUnknownOption(
+  Schema.Array(Schema.Struct({ event: Schema.String })),
+);
 
 export class MemoryPullRequestRefused extends Schema.TaggedError<MemoryPullRequestRefused>()(
   "MemoryPullRequestRefused",
@@ -103,11 +107,12 @@ interface MemoryPullRequestInput {
   readonly ownerReview: boolean;
 }
 
-interface ClosedPullRequest {
+/** A review PR Kin recorded whose head or base moved; `closed` is false when closing it failed. */
+interface MovedReviewPullRequest {
   readonly url: string;
   readonly branch: string;
   readonly reason: string;
-  readonly ownerReview: boolean;
+  readonly closed: boolean;
 }
 
 export const WRITE_BRANCH_PREFIX = "kin/write/";
@@ -125,13 +130,14 @@ export class MemoryPullRequests extends Context.Service<
     ) => Effect.Effect<MemoryPullRequestOutcome, MemoryPullRequestRefused>;
     /**
      * Closes every open `kin/write/*` PR that no write is waiting on: review PRs whose head is not
-     * the commit Kin recorded, and all others. Run it under the writer lock, so no `land` is open.
+     * the commit Kin recorded, and all others. Returns only the recorded review PRs it closed or
+     * failed to close. Run it under the writer lock, so no `land` is open.
      */
     readonly sweep: (input: {
       readonly orgId: KinOrgId;
       readonly repo: RepoSlug;
       readonly base: string;
-    }) => Effect.Effect<ReadonlyArray<ClosedPullRequest>, MemoryPullRequestRefused>;
+    }) => Effect.Effect<ReadonlyArray<MovedReviewPullRequest>, MemoryPullRequestRefused>;
   }
 >()("t3/kin/memory/MemoryPullRequests") {}
 
@@ -145,7 +151,12 @@ const truncated = (reason: string): Verdict => ({
   reason: `GitHub listed more ${reason} than one page holds`,
 });
 
-/** A `pull_request` run of the memory-check workflow for exactly this PR, branch and commit. */
+/**
+ * A `pull_request` run of the memory-check workflow on this branch and commit. GitHub fills
+ * `pull_requests` from the PRs open with that head now, not the one that triggered the run, so
+ * `land` also checks that no other PR ever came from this branch and that this PR's base never
+ * changed.
+ */
 const isOurRun = (
   input: MemoryPullRequestInput,
   number: number,
@@ -193,6 +204,12 @@ const memoryCheckVerdict = (
 
 const PAGE = 100;
 const MAX_RUNS = 10;
+// Every call runs under the writer lock; GitHub's own edge gives up after about 10 seconds.
+const CALL_TIMEOUT: Duration.Input = "30 seconds";
+
+/** A full page, or a `next` link, may hide more; lists that decide anything fail closed on it. */
+const pastOnePage = (answer: GitHubAnswer, length: number) =>
+  length >= PAGE || /rel="next"/.test(answer.headers["link"] ?? "");
 
 export const make = Effect.fn("MemoryPullRequests.make")(function* (options: {
   readonly pollInterval: Duration.Input;
@@ -226,6 +243,8 @@ export const make = Effect.fn("MemoryPullRequests.make")(function* (options: {
       );
     const token: Redacted.Redacted<string> = minted.token;
     const base = repoPath(repo);
+    const owner = repo.split("/")[0] ?? "";
+    const fromBranch = (branch: string) => encodeURIComponent(`${owner}:${branch}`);
     const call = (
       operation: string,
       method: "GET" | "POST" | "PUT" | "PATCH",
@@ -238,8 +257,16 @@ export const make = Effect.fn("MemoryPullRequests.make")(function* (options: {
         method,
         path: `${base}${path}`,
         token,
+        timeout: CALL_TIMEOUT,
         ...(body === undefined ? {} : { body }),
       }).pipe(Effect.mapError(() => refuse(`could not reach GitHub for ${operation}`)));
+    const sqlRefusal =
+      (operation: string, reason: string) =>
+      <A, E>(effect: Effect.Effect<A, E>) =>
+        effect.pipe(
+          Effect.mapError(toPersistenceSqlError(`MemoryPullRequests.${operation}`)),
+          Effect.mapError((error) => refuse(`${reason} (${error.operation})`)),
+        );
     const close = Effect.fn("MemoryPullRequests.close")(function* (number: number, reason: string) {
       yield* call("issues.comment", "POST", `/issues/${number}/comments`, {
         body: `Kin closed this memory PR: ${reason}.`,
@@ -250,15 +277,14 @@ export const make = Effect.fn("MemoryPullRequests.make")(function* (options: {
     const records = sql<{
       branch: string;
       head: string;
-    }>`SELECT branch, head FROM kin_memory_review_pulls WHERE org_id = ${orgId}`.pipe(
-      Effect.mapError(() => refuse("Kin could not read its record of review PRs")),
-    );
-    return { refuse, call, close, records };
+    }>`SELECT branch, head FROM kin_memory_review_pulls WHERE org_id = ${orgId}
+      ORDER BY branch`.pipe(sqlRefusal("records", "Kin could not read its record of review PRs"));
+    return { refuse, call, close, records, fromBranch, sqlRefusal };
   });
 
   const land = Effect.fn("MemoryPullRequests.land")(function* (input: MemoryPullRequestInput) {
     yield* Effect.annotateCurrentSpan({ "kin.github.repo": input.repo });
-    const { refuse, call, close } = yield* connect(input.orgId, input.repo);
+    const { refuse, call, close, fromBranch, sqlRefusal } = yield* connect(input.orgId, input.repo);
     const describe = (answer: { status: number; message: string }) =>
       `HTTP ${answer.status}${answer.message ? `: ${answer.message}` : ""}`;
 
@@ -274,11 +300,10 @@ export const make = Effect.fn("MemoryPullRequests.make")(function* (options: {
     let pull = opened.status === 201 ? Option.getOrUndefined(decodePull(opened.body)) : undefined;
     // A retry of the same write finds the PR it opened before.
     if (pull === undefined && opened.status === 422) {
-      const owner = input.repo.split("/")[0] ?? "";
       const listed = yield* call(
         "pulls.list",
         "GET",
-        `/pulls?state=open&head=${encodeURIComponent(`${owner}:${input.branch}`)}&base=${encodeURIComponent(input.base)}`,
+        `/pulls?state=open&head=${fromBranch(input.branch)}&base=${encodeURIComponent(input.base)}`,
       );
       pull = Option.getOrUndefined(decodePulls(listed.body))?.[0];
     }
@@ -305,17 +330,52 @@ export const make = Effect.fn("MemoryPullRequests.make")(function* (options: {
         current.value.base.ref === input.base
       );
     });
+    // Ties every run on Kin's branch to this PR into `input.base`: an agent could open another PR
+    // from the branch into a base with its own `memory-check.yml`, or move this PR's base there.
+    const unboundReason = Effect.gen(function* () {
+      const listed = yield* call(
+        "pulls.list",
+        "GET",
+        `/pulls?state=all&head=${fromBranch(input.branch)}&per_page=${PAGE}`,
+      );
+      const pulls = listed.status === 200 ? decodePulls(listed.body) : Option.none();
+      if (Option.isNone(pulls)) return "GitHub did not list the PRs from Kin's branch";
+      if (pastOnePage(listed, pulls.value.length))
+        return "GitHub listed more PRs from Kin's branch than one page holds";
+      if (pulls.value.length !== 1 || pulls.value[0]?.number !== number)
+        return "another PR was opened from Kin's branch";
+      const answer = yield* call(
+        "issues.events",
+        "GET",
+        `/issues/${number}/events?per_page=${PAGE}`,
+      );
+      const events = answer.status === 200 ? decodeEvents(answer.body) : Option.none();
+      if (Option.isNone(events)) return "GitHub did not list the PR's events";
+      if (pastOnePage(answer, events.value.length))
+        return "GitHub listed more PR events than one page holds";
+      if (events.value.some((event) => event.event === "base_ref_changed"))
+        return "the PR's base branch was changed";
+      return undefined;
+    });
+    const refuseUnbound = Effect.gen(function* () {
+      const reason = yield* unboundReason;
+      if (reason !== undefined) return yield* refuseAndClose(reason);
+    });
+
     if (!(yield* headIsOurs))
       return yield* refuseAndClose("the PR's head is not the commit Kin pushed");
     if (input.ownerReview) {
       // The sweep closes this PR if its head ever stops being the commit recorded here.
       const recorded = yield* sql`INSERT INTO kin_memory_review_pulls (org_id, branch, head)
         VALUES (${input.orgId}, ${input.branch}, ${input.sha})
-        ON CONFLICT (org_id, branch) DO UPDATE SET head = excluded.head`.pipe(Effect.result);
-      if (recorded._tag === "Failure")
-        return yield* refuseAndClose("Kin could not record the commit it pushed");
+        ON CONFLICT (org_id, branch) DO UPDATE SET head = excluded.head`.pipe(
+        sqlRefusal("recordReview", "Kin could not record the commit it pushed"),
+        Effect.result,
+      );
+      if (recorded._tag === "Failure") return yield* refuseAndClose(recorded.failure.reason);
       return { _tag: "awaiting_owner", url } as const;
     }
+    yield* refuseUnbound;
 
     let verdict: Verdict = { _tag: "pending" };
     for (let poll = 0; poll < options.polls && verdict._tag === "pending"; poll++) {
@@ -360,6 +420,7 @@ export const make = Effect.fn("MemoryPullRequests.make")(function* (options: {
     if (verdict._tag === "fail") return yield* refuseAndClose(verdict.reason);
     if (!(yield* headIsOurs))
       return yield* refuseAndClose("the PR's head moved after the check passed");
+    yield* refuseUnbound;
 
     const [title, ...rest] = input.message.split("\n");
     const merge = yield* call("pulls.merge", "PUT", `/pulls/${number}/merge`, {
@@ -380,56 +441,94 @@ export const make = Effect.fn("MemoryPullRequests.make")(function* (options: {
     readonly base: string;
   }) {
     yield* Effect.annotateCurrentSpan({ "kin.github.repo": input.repo });
-    const { refuse, call, close, records } = yield* connect(input.orgId, input.repo);
-    const listed = yield* call("pulls.list", "GET", `/pulls?state=open&per_page=${PAGE}`);
-    const pulls = listed.status === 200 ? decodePulls(listed.body) : Option.none();
-    if (Option.isNone(pulls)) return yield* refuse("GitHub did not list the open PRs");
-    const recorded = new Map((yield* records).map((row) => [row.branch, row.head]));
-    const kept = new Set<string>();
-    const closed: Array<ClosedPullRequest> = [];
-    for (const pull of pulls.value) {
-      const branch = pull.head.ref;
-      if (!branch.startsWith(WRITE_BRANCH_PREFIX)) continue;
-      const ownerReview = branch.endsWith(REVIEW_BRANCH_SUFFIX);
-      const pushed = recorded.get(branch);
-      if (
-        ownerReview &&
-        pushed === pull.head.sha &&
-        pull.head.repo?.full_name.toLowerCase() === input.repo.toLowerCase() &&
-        pull.base.ref === input.base
-      ) {
-        kept.add(branch);
-        continue;
-      }
-      const reason = !ownerReview
-        ? "no Kin memory write is waiting on it"
-        : pushed === undefined
-          ? "Kin did not open it"
-          : `its head is no longer \`${pushed}\`, the commit Kin pushed`;
-      const done = yield* close(pull.number, reason).pipe(Effect.result);
-      if (done._tag === "Failure") {
-        yield* Effect.logWarning("Could not close an orphaned memory PR", {
-          repo: input.repo,
-          number: pull.number,
+    const { refuse, call, close, records, fromBranch, sqlRefusal } = yield* connect(
+      input.orgId,
+      input.repo,
+    );
+    const list = (path: string, what: string) =>
+      call("pulls.list", "GET", path).pipe(
+        Effect.flatMap((listed) => {
+          const pulls = listed.status === 200 ? decodePulls(listed.body) : Option.none();
+          return Option.isSome(pulls)
+            ? Effect.succeed({ pulls: pulls.value, full: pastOnePage(listed, pulls.value.length) })
+            : Effect.fail(refuse(`GitHub did not list ${what}`));
+        }),
+      );
+    // Read everything before closing anything, so a failed read loses no owner notice.
+    // Each recorded review branch is looked up by head: newer PRs can't push it off a page.
+    const reviews = yield* Effect.forEach(yield* records, (record) =>
+      list(
+        `/pulls?state=open&head=${fromBranch(record.branch)}&per_page=${PAGE}`,
+        `the open PRs from ${record.branch}`,
+      ).pipe(
+        Effect.flatMap(({ pulls, full }) =>
+          full
+            ? Effect.fail(
+                refuse(`GitHub listed more PRs from ${record.branch} than one page holds`),
+              )
+            : Effect.succeed({ ...record, pulls }),
+        ),
+      ),
+    );
+    // Orphans are found on one page of open PRs, newest first; older ones wait for a later sweep.
+    const open = yield* list(`/pulls?state=open&per_page=${PAGE}`, "the open PRs");
+    if (open.full)
+      yield* Effect.logWarning("More open PRs than one memory PR sweep reads", {
+        repo: input.repo,
+      });
+
+    const handled = new Set<number>();
+    const moved: Array<MovedReviewPullRequest> = [];
+    for (const review of reviews) {
+      let kept = false;
+      for (const pull of review.pulls) {
+        handled.add(pull.number);
+        const sameRepo = pull.head.repo?.full_name.toLowerCase() === input.repo.toLowerCase();
+        if (pull.head.sha === review.head && sameRepo && pull.base.ref === input.base) {
+          kept = true;
+          continue;
+        }
+        const reason =
+          pull.head.sha !== review.head || !sameRepo
+            ? `its head is no longer \`${review.head}\`, the commit Kin pushed`
+            : `its base is no longer \`${input.base}\``;
+        const done = yield* close(pull.number, reason).pipe(Effect.result);
+        if (done._tag === "Failure") {
+          yield* Effect.logWarning("Could not close a moved memory review PR", {
+            repo: input.repo,
+            number: pull.number,
+          });
+          kept = true;
+        }
+        moved.push({
+          url: pull.html_url,
+          branch: review.branch,
+          reason,
+          closed: done._tag === "Success",
         });
-        kept.add(branch);
-        continue;
       }
-      closed.push({ url: pull.html_url, branch, reason, ownerReview });
+      if (!kept)
+        yield* sql`DELETE FROM kin_memory_review_pulls
+          WHERE org_id = ${input.orgId} AND branch = ${review.branch}`.pipe(
+          sqlRefusal("forgetReview", "Kin could not update its record of review PRs"),
+        );
     }
-    // Only a complete list shows which recorded review PRs are gone.
-    if (pulls.value.length >= PAGE) {
-      yield* Effect.logWarning("More open memory PRs than one sweep reads", { repo: input.repo });
-      return closed;
-    }
-    for (const branch of recorded.keys()) {
-      if (kept.has(branch)) continue;
-      yield* sql`DELETE FROM kin_memory_review_pulls
-        WHERE org_id = ${input.orgId} AND branch = ${branch}`.pipe(
-        Effect.mapError(() => refuse("Kin could not update its record of review PRs")),
+    for (const pull of open.pulls) {
+      const branch = pull.head.ref;
+      if (!branch.startsWith(WRITE_BRANCH_PREFIX) || handled.has(pull.number)) continue;
+      const reason = branch.endsWith(REVIEW_BRANCH_SUFFIX)
+        ? "Kin did not open it"
+        : "no Kin memory write is waiting on it";
+      yield* close(pull.number, reason).pipe(
+        Effect.catch(() =>
+          Effect.logWarning("Could not close an orphaned memory PR", {
+            repo: input.repo,
+            number: pull.number,
+          }),
+        ),
       );
     }
-    return closed;
+    return moved;
   });
 
   return MemoryPullRequests.of({ land, sweep });

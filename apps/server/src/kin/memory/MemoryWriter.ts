@@ -1357,7 +1357,7 @@ const make = Effect.gen(function* () {
           if (Option.isNone(pullRequests)) return;
           const repo = yield* repoFor(orgId);
           if (repo.githubRepo === undefined || !isRepoSlug(repo.githubRepo)) return;
-          const closed = yield* pullRequests.value
+          const moved = yield* pullRequests.value
             .sweep({ orgId, repo: repo.githubRepo, base: config.defaultBranch ?? "main" })
             .pipe(
               Effect.mapError(
@@ -1365,13 +1365,14 @@ const make = Effect.gen(function* () {
                   new MemorySyncConflict({ orgId, operation: "sweep", reason: error.reason }),
               ),
             );
-          for (const pull of closed)
-            if (pull.ownerReview)
-              yield* recovery.notify({
-                orgId,
-                branch: pull.branch,
-                reason: `Kin closed ${pull.url}, the memory PR for paths you review: ${pull.reason}`,
-              });
+          for (const pull of moved)
+            yield* recovery.notify({
+              orgId,
+              branch: pull.branch,
+              reason: pull.closed
+                ? `Kin closed ${pull.url}, the memory PR for paths you review: ${pull.reason}`
+                : `Kin could not close ${pull.url}, the memory PR for paths you review, and it is still open. Close it without merging: ${pull.reason}`,
+            });
         }),
       ),
     ),
