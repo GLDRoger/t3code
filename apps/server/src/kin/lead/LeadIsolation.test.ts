@@ -8,6 +8,7 @@ import * as Layer from "effect/Layer";
 import * as ServerConfig from "../../config.ts";
 import * as ClaudeAdapterV2 from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import * as DreamIsolation from "../dreaming/DreamIsolation.ts";
+import { instructions } from "./instructions.ts";
 import * as LeadIsolation from "./LeadIsolation.ts";
 
 const optionsAt = (cwd: string) =>
@@ -84,8 +85,11 @@ it.effect.each([
         return;
       }
       const config = yield* ServerConfig.ServerConfig;
+      const preset = lead.systemPrompt;
+      assert(typeof preset === "object" && !Array.isArray(preset) && preset.type === "preset");
       assert.deepStrictEqual(leadOpened, {
         ...lead,
+        systemPrompt: { ...preset, append: `${preset.append}\n\n${instructions}`, snapshot: false },
         settingSources: ["user"],
         tools: LeadIsolation.leadTools,
         disallowedTools: [
@@ -106,6 +110,7 @@ it.effect.each([
         env: { ...lead.env, ENABLE_TOOL_SEARCH: "false" },
       });
       assert.isUndefined(otherOpened?.strictMcpConfig);
+      assert.deepStrictEqual(dreamOpened?.systemPrompt, dream.systemPrompt);
       assert.notProperty(dreamOpened?.settings ?? {}, "env");
       // A dream keeps the edit tools its checkout needs.
       assert.deepStrictEqual(dreamOpened?.tools, DreamIsolation.dreamTools);

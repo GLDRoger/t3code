@@ -34,7 +34,7 @@ import {
   KIN_WAKEUP_CHAR_LIMIT,
   KIN_WAKEUP_MESSAGE_LIMIT,
 } from "../chat/KinChatService.ts";
-import { KinIdentity, type AgentIdentity } from "../chat/KinIdentity.ts";
+import { KinIdentity, rescueMessageId, type AgentIdentity } from "../chat/KinIdentity.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import {
@@ -50,7 +50,7 @@ import { KinPresence } from "./KinPresence.ts";
 /** One rescue turn asks for the reply the run owed; its text is posted like any other. */
 const RESCUE_PROMPT =
   "You ended without replying to the owner. Write your reply now as plain text.";
-export const rescueMessageId = (wakeupId: KinWakeupId) => `kin-rescue-msg:${wakeupId}`;
+export { rescueMessageId };
 /** No turn-item or provider-turn update for this long shows the owner a stall and Stop. */
 const STALL_MS = 120_000;
 /** A streaming segment this old becomes a visible draft even while still short. */
@@ -84,7 +84,8 @@ type Wake = {
   readonly wakeupId: KinWakeupId;
   readonly threadId: ThreadId;
   readonly startedAt: number;
-  readonly lane: Lane;
+  // A message steered into a notice wake-up makes it owe a reply in the same chat.
+  lane: Lane;
   readonly lock: Semaphore.Semaphore;
   readonly segments: Map<TurnItemId, Segment>;
   // Ordinals of tool items seen live, to decide a short segment once the next item lands.
@@ -129,6 +130,14 @@ export class KinReplyBridge extends Context.Service<
       readonly projectId: ProjectId;
       readonly rootRunId: RunId;
       readonly rescueUntil: number | null;
+    }) => Effect.Effect<void>;
+    /** A message was steered into the wake-up: re-reads its lane, which may now owe a reply. */
+    readonly steered: (orgId: KinOrgId, wakeupId: KinWakeupId) => Effect.Effect<void>;
+    /** The wake-up failed after something visible, so its events are not retried. */
+    readonly partway: (input: {
+      readonly orgId: KinOrgId;
+      readonly agentId: KinAgentId;
+      readonly wakeupId: KinWakeupId;
     }) => Effect.Effect<void>;
     readonly end: (orgId: KinOrgId, wakeupId: KinWakeupId) => Effect.Effect<void>;
   }
@@ -570,6 +579,36 @@ const make = Effect.gen(function* () {
     Effect.catchCause((cause) => Effect.logWarning("Kin reply completion failed", { cause })),
   );
 
+  const steered = Effect.fn("KinReplyBridge.steered")(function* (
+    orgId: KinOrgId,
+    wakeupId: KinWakeupId,
+  ) {
+    const wake = byWakeup.get(wakeupId);
+    if (wake === undefined || wake.orgId !== orgId) return;
+    const found = yield* lane(wake);
+    // The queue steers only within the lane, so only the mode can change.
+    if (Option.isSome(found) && found.value.chatId === wake.lane.chatId)
+      yield* wake.lock.withPermits(1)(Effect.sync(() => (wake.lane = found.value)));
+  });
+
+  const partway = Effect.fn("KinReplyBridge.partway")(
+    function* (input: {
+      readonly orgId: KinOrgId;
+      readonly agentId: KinAgentId;
+      readonly wakeupId: KinWakeupId;
+    }) {
+      const found = yield* lane(input);
+      if (Option.isNone(found)) return;
+      yield* chat.notice({
+        messageId: KinMessageId.make(`kin-partway:${input.wakeupId}`),
+        orgId: input.orgId,
+        chatId: found.value.chatId,
+        body: `${found.value.leadName} stopped partway. Send your message again to retry.`,
+      });
+    },
+    Effect.catchCause((cause) => Effect.logWarning("Kin partway notice failed", { cause })),
+  );
+
   const end = Effect.fn("KinReplyBridge.end")(function* (orgId: KinOrgId, wakeupId: KinWakeupId) {
     const wake = byWakeup.get(wakeupId);
     if (wake === undefined || wake.orgId !== orgId) return;
@@ -632,6 +671,8 @@ const make = Effect.gen(function* () {
     lane,
     begin,
     complete,
+    steered,
+    partway,
     end,
   });
 });

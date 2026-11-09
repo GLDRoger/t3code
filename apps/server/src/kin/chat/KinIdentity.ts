@@ -44,6 +44,18 @@ export class KinIdentityConfig extends Context.Service<
 }
 
 type IdentityError = KinChatRepository.RepositoryError;
+
+/**
+ * Lead-thread message ids only Kin's server sends, always as `system`/`server`. A wake-up owns
+ * its root run and adopts the later runs its runner or reply bridge started: a steer that
+ * landed after the turn ended, and the rescue turn (see `hasRunningWakeup`).
+ */
+export const wakeupMessageId = (wakeupId: KinWakeupId) => `kin-wakeup-msg:${wakeupId}`;
+export const steerMessageId = (wakeupId: KinWakeupId, n: number) =>
+  `kin-steer-msg:${wakeupId}:${n}`;
+export const rescueMessageId = (wakeupId: KinWakeupId) => `kin-rescue-msg:${wakeupId}`;
+export const isAdoptedRunMessage = (wakeupId: KinWakeupId, messageId: string) =>
+  messageId === rescueMessageId(wakeupId) || messageId.startsWith(`kin-steer-msg:${wakeupId}:`);
 export type PersonIdentity = {
   readonly _tag: "person";
   readonly orgId: KinOrgId;
