@@ -123,6 +123,7 @@ type SchemaName = {
   [K in keyof typeof Kin]: (typeof Kin)[K] extends Schema.Top ? K : never;
 }[keyof typeof Kin];
 
+const activity = { agentId: "agent-1", phase: "notes_read", since: 1 };
 const samples = {
   KinText: ["", "Hello\nworld", "  Markdown  "],
   KinTrimmedText: ["Kin", "Owner name"],
@@ -170,8 +171,13 @@ const samples = {
     { _tag: "chat", chat: summary },
     { _tag: "waiting", item: waiting },
   ],
+  KinChatActivityPhase: ["queued", "started", "failed", "idle"],
+  KinChatActivity: [activity, { ...activity, phase: "budget", resumesAt: 9 }],
   KinChatStreamEvent: [
     { _tag: "backlog", messages: [message], widgets: [widget], lastSeq: 1 },
+    { _tag: "backlog", messages: [], widgets: [], lastSeq: 1, activity: null },
+    { _tag: "reset", lastSeq: 1, activity },
+    { _tag: "activity", ...activity },
     { _tag: "reset", lastSeq: 1 },
     { _tag: "backlog", messages: [message], widgets: [widget], lastSeq: 1, lastChangeSeq: 2 },
     { _tag: "reset", lastSeq: 1, lastChangeSeq: 2 },
