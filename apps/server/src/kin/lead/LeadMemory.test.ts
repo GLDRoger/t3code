@@ -239,6 +239,7 @@ it.live(
         Layer.provide(
           Layer.succeed(MemoryConfig, {
             baseDirectory: `${root}/state`,
+            directMainPush: true,
             repositories: [
               { orgId, path: "a", repoUrl: remote },
               { orgId: other, path: "b", repoUrl: remoteB },

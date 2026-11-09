@@ -64,7 +64,9 @@ export interface FakeAnswer {
 }
 
 /** A GitHub that answers from `route`; nothing leaves the process. */
-export const fakeGitHub = (route: (request: RecordedRequest) => FakeAnswer) => {
+export const fakeGitHub = (
+  route: (request: RecordedRequest) => FakeAnswer | Effect.Effect<FakeAnswer>,
+) => {
   const requests: Array<RecordedRequest> = [];
   const layer = Layer.succeed(
     HttpClient.HttpClient,
@@ -81,21 +83,26 @@ export const fakeGitHub = (route: (request: RecordedRequest) => FakeAnswer) => {
       };
       requests.push(recorded);
       const answer = route(recorded);
-      if (answer.hang === true) return Effect.never;
-      return Effect.succeed(
-        HttpClientResponse.fromWeb(
-          request,
-          new Response(
-            answer.stallBody === true
-              ? new ReadableStream()
-              : answer.body === undefined
-                ? null
-                : JSON.stringify(answer.body),
-            {
-              status: answer.status,
-              headers: { "content-type": "application/json", ...answer.headers },
-            },
-          ),
+      return (Effect.isEffect(answer) ? answer : Effect.succeed(answer)).pipe(
+        Effect.flatMap((answer) =>
+          answer.hang === true
+            ? Effect.never
+            : Effect.succeed(
+                HttpClientResponse.fromWeb(
+                  request,
+                  new Response(
+                    answer.stallBody === true
+                      ? new ReadableStream()
+                      : answer.body === undefined
+                        ? null
+                        : JSON.stringify(answer.body),
+                    {
+                      status: answer.status,
+                      headers: { "content-type": "application/json", ...answer.headers },
+                    },
+                  ),
+                ),
+              ),
         ),
       );
     }),
