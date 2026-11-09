@@ -170,6 +170,20 @@ export function kinDirectory(host: KinHost): KinDirectory {
   };
 }
 
+/** A direct chat's agent by name; null for other chats or an agent the directory doesn't name. */
+export function kinDirectAgentName(
+  chat: Pick<KinChatSummary, "kind" | "members">,
+  agentNames: ReadonlyMap<string, string>,
+): string | null {
+  if (chat.kind !== "direct") return null;
+  for (const member of chat.members) {
+    if (member.leftAt !== null || member.principal._tag !== "agent") continue;
+    const name = agentNames.get(member.principal.agentId);
+    if (name !== undefined) return name;
+  }
+  return null;
+}
+
 /** The host's title, else the chat's agent by name: the host leaves direct chats untitled. */
 export function kinChatTitle(
   chat: Pick<KinChatSummary, "title" | "kind" | "members">,
@@ -177,12 +191,7 @@ export function kinChatTitle(
 ): string {
   if (chat.title !== null) return chat.title;
   if (chat.kind !== "direct") return "Chat";
-  for (const member of chat.members) {
-    if (member.leftAt !== null || member.principal._tag !== "agent") continue;
-    const name = agentNames.get(member.principal.agentId);
-    if (name !== undefined) return name;
-  }
-  return "Direct chat";
+  return kinDirectAgentName(chat, agentNames) ?? "Direct chat";
 }
 
 const WAITING_REASON_LABELS: Record<KinWaitingReason, string> = {

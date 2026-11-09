@@ -21,6 +21,7 @@ import {
   type KinChatClosedReason,
   type KinChatState,
 } from "./kinInboxModel";
+import { kinSentences } from "./kinScreenState";
 import type { KinSynced } from "./kinStreams";
 
 export const KIN_HISTORY_PAGE_SIZE = 50;
@@ -178,6 +179,8 @@ export type KinFeedRow =
       /** The run's last `decision` message body, if it reached one. */
       readonly decision: string | null;
       readonly expanded: boolean;
+      /** The run's latest seq, seen once the fold is on screen. */
+      readonly lastSeq: number;
     };
 
 const ROLE_LABELS = { owner: "Owner", member: "Member", guest: "Guest" } as const;
@@ -309,6 +312,7 @@ export function buildKinFeedRows(
       authors,
       decision,
       expanded,
+      lastSeq: run[run.length - 1]!.seq,
     });
     previousAuthor = null;
     if (expanded) run.forEach(pushMessage);
@@ -386,15 +390,6 @@ export function kinMessageLinks(markdown: string): ReadonlyArray<KinMessageLink>
   return links.filter((link, index) => links.findIndex((l) => l.href === link.href) === index);
 }
 
-/** One VoiceOver label from its parts, each read as a sentence without doubling its end mark. */
-export function kinSentences(parts: ReadonlyArray<string | null>): string {
-  return parts
-    .map((part) => part?.trim() ?? "")
-    .filter((part) => part.length > 0)
-    .map((part) => (/[.!?…]$/.test(part) ? part : `${part}.`))
-    .join(" ");
-}
-
 /** The bubble's one VoiceOver label: "Tech lead, agent. Payments test fixed. 9:30." */
 export function kinMessageLabel(row: MessageRow, time: string): string {
   const { message } = row;
@@ -413,8 +408,21 @@ export function kinMessageLabel(row: MessageRow, time: string): string {
 
 // Follow-the-end
 
+/** The latest seq a feed row shows; day lines show none. */
+export function kinRowSeq(row: KinFeedRow): number {
+  switch (row.type) {
+    case "message":
+    case "system":
+      return row.message.seq;
+    case "fold":
+      return row.lastSeq;
+    case "day":
+      return 0;
+  }
+}
+
 /**
- * Messages from others past `seenSeq`, the latest seq when the reader left the end. The
+ * Messages from others past `seenSeq`, the latest seq the reader has had on screen. The
  * "New messages" pill shows while this is above zero and the reader is away from the end.
  */
 export function kinUnseenCount(

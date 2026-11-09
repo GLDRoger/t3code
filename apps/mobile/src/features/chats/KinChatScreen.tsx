@@ -1,5 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
-import { LegendList, type LegendListRef } from "@legendapp/list/react-native";
+import {
+  LegendList,
+  type LegendListRef,
+  type OnViewableItemsChangedInfo,
+  type ViewabilityConfig,
+} from "@legendapp/list/react-native";
 import {
   StackActions,
   useIsFocused,
@@ -19,6 +24,7 @@ import * as Schema from "effect/Schema";
 import { Atom, type AsyncResult } from "effect/reactivity";
 import { useEffect, useRef, useState } from "react";
 import { View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppBar } from "../../components/ui/AppBar";
 import { Button } from "../../components/ui/Button";
@@ -46,6 +52,7 @@ import {
   kinEarlierPage,
   kinFeedViewer,
   kinMarkReadRearms,
+  kinRowSeq,
   kinSeqToMarkRead,
   kinUnseenCount,
   latestKinSeq,
@@ -69,7 +76,7 @@ import {
   type KinChatState,
   type KinInboxState,
 } from "./state/kinInboxModel";
-import { kinChatTitle } from "./state/kinScreenState";
+import { kinChatTitle, kinDirectAgentName } from "./state/kinScreenState";
 import { useKinHostAt } from "./state/useKinHost";
 
 type KinChatParams = {
@@ -91,6 +98,7 @@ export function KinChatScreen({ route }: StaticScreenProps<KinChatParams>) {
       <KinChatPage
         chatId={route.params.chatId as KinChatId}
         title="Chat"
+        agentName={null}
         unread={null}
         markRead={null}
         state={{ _tag: "noHost" }}
@@ -158,6 +166,7 @@ function KinLiveChat(props: {
     <KinChatPage
       chatId={chatId ?? (props.chatId as KinChatId)}
       title={summary === undefined ? "Chat" : kinChatTitle(summary, viewer.agentNames)}
+      agentName={summary === undefined ? null : kinDirectAgentName(summary, viewer.agentNames)}
       unread={summary?.unread ?? null}
       markRead={
         environmentId === null || chatId === null
@@ -195,6 +204,7 @@ function KinFixtureChat({ fixtures }: { readonly fixtures: KinFixtures }) {
     <KinChatPage
       chatId={fixtures.KIN_FIXTURE_CHAT_ID}
       title="Tech lead"
+      agentName="Tech lead"
       unread={null}
       markRead={null}
       state={{
@@ -225,6 +235,8 @@ type MarkRead = (seq: number) => Promise<boolean>;
 function KinChatPage(props: {
   readonly chatId: KinChatId;
   readonly title: string;
+  /** The agent a direct chat is with, for the empty chat's copy; null when unknown. */
+  readonly agentName: string | null;
   /** The inbox's unread count for this chat; null until the inbox loads. */
   readonly unread: number | null;
   /** Null where nothing can be marked, such as the dev fixture. */
@@ -248,6 +260,7 @@ function KinChatPage(props: {
             // Paging, folds and follow belong to one chat.
             key={`${state.environmentId}:${props.chatId}`}
             chatId={props.chatId}
+            agentName={props.agentName}
             chat={state.chat}
             connected={state.connected}
             error={state.error}
@@ -363,9 +376,12 @@ function KinChatStateView(props: {
 }
 
 const offlineTime = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+// A row half on screen counts as seen, so a message peeking under the edge still lights the pill.
+const SEEN_ROW_CONFIG: ViewabilityConfig = { itemVisiblePercentThreshold: 50 };
 
 function KinChatFeed(props: {
   readonly chatId: KinChatId;
+  readonly agentName: string | null;
   readonly chat: KinSynced<KinChatState>;
   readonly connected: boolean;
   /** The stream failed after the feed loaded. */
@@ -386,10 +402,13 @@ function KinChatFeed(props: {
   const reduceMotion = useReduceMotionEnabled();
   const barOverlap = useBarOverlap();
   const markdownStyle = useMarkdownPreviewStyles().nativeTextStyle;
+  const bottomInset = useSafeAreaInsets().bottom;
   const openLink = useOpenPullRequest();
   const [heldPaging, setPaging] = useState<KinPaging>(initialKinPaging);
   const [expandedRuns, setExpandedRuns] = useState<ReadonlySet<string>>(new Set());
-  const [follow, setFollow] = useState(initialKinFeedFollow);
+  const [follow, setFollow] = useState(() =>
+    initialKinFeedFollow(latestKinSeq(props.chat.value.messages)),
+  );
 
   const live = props.chat.value;
   const paging = kinActivePaging(heldPaging, live);
@@ -449,7 +468,7 @@ function KinChatFeed(props: {
       request,
       error: null,
     });
-    transition({ type: "page-start", latestSeq: latestKinSeq(messages) });
+    transition({ type: "page-start" });
     void read(earlierPage).then((exit) => {
       // A newer request or a remount owns the state now.
       if (lastRequest.current !== request) return;
@@ -471,13 +490,12 @@ function KinChatFeed(props: {
   };
 
   const checkEnd = () => {
-    const isAtEnd = listRef.current?.getState().isAtEnd ?? true;
-    const next = resolveKinFeedFollow(follow, {
-      type: "end-check",
-      isAtEnd,
-      latestSeq: latestKinSeq(messages),
-    });
-    if (next !== follow) setFollow(next);
+    transition({ type: "end-check", isAtEnd: listRef.current?.getState().isAtEnd ?? true });
+  };
+
+  const markSeen = ({ viewableItems }: OnViewableItemsChangedInfo<KinFeedRow>) => {
+    const seq = Math.max(0, ...viewableItems.map((token) => kinRowSeq(token.item)));
+    if (seq > 0) transition({ type: "seen", seq });
   };
 
   const jumpToEnd = () => {
@@ -522,9 +540,6 @@ function KinChatFeed(props: {
           </View>
         </View>
       )}
-      {notice === null ? null : (
-        <Notice {...(props.connected ? {} : { icon: "wifi.slash" as const })} message={notice} />
-      )}
       {canLoadEarlier ? (
         <View className="items-center">
           <Button
@@ -551,15 +566,29 @@ function KinChatFeed(props: {
     </View>
   );
 
+  const noticeView =
+    notice === null ? null : (
+      <Notice
+        {...(props.connected ? {} : { icon: "wifi.slash" as const })}
+        message={notice}
+        floating
+      />
+    );
+
   // After a reset the feed is empty until the latest page reloads; that's not an empty chat.
   if (rows.length === 0 && earlierPage === null && !live.needsHistoryReload) {
     return (
-      <View className="flex-1 justify-center p-4">
+      <View className="flex-1 justify-center gap-3 p-4">
+        {noticeView}
         {header}
         <EmptyState
           variant="plain"
-          title="Say hello to your lead."
-          detail="It reads every message here."
+          title={props.agentName === null ? "No messages yet" : `Say hello to ${props.agentName}.`}
+          detail={
+            props.agentName === null
+              ? "Messages in this chat show up here."
+              : "It reads every message here."
+          }
         />
       </View>
     );
@@ -567,51 +596,61 @@ function KinChatFeed(props: {
 
   return (
     <View className="flex-1">
-      <LegendList
-        ref={listRef}
-        renderScrollComponent={NativeScrollView}
-        style={{ flex: 1 }}
-        contentInsetAdjustmentBehavior="automatic"
-        contentContainerStyle={{ paddingTop: 8, paddingBottom: 16 }}
-        data={rows}
-        keyExtractor={(row) => row.key}
-        getItemType={(row) => (row.type === "message" ? (row.own ? "own" : "other") : row.type)}
-        renderItem={renderItem}
-        extraData={markdownStyle}
-        estimatedItemSize={72}
-        drawDistance={500}
-        // UIKit insets the feed under the bar, which LegendList can't see: without this a short
-        // chat's end-alignment spacer overfills and pushes its newest messages below the fold.
-        contentInsetStartAdjustment={barOverlap}
-        alignItemsAtEnd
-        initialScrollAtEnd
-        maintainScrollAtEnd={
-          followsEnd
-            ? { animated: false, on: { dataChange: true, itemLayout: true, layout: true } }
-            : false
-        }
-        maintainVisibleContentPosition={followsEnd ? false : { data: true, size: true }}
-        onScroll={checkEnd}
-        onScrollBeginDrag={() => transition({ type: "drag-begin" })}
-        onScrollEndDrag={checkEnd}
-        onMomentumScrollEnd={checkEnd}
-        scrollEventThrottle={32}
-        keyboardDismissMode="interactive"
-        keyboardShouldPersistTaps="handled"
-        ListHeaderComponent={header}
-      />
-      {unseen > 0 ? (
-        <View pointerEvents="box-none" className="absolute inset-x-0 bottom-4 items-center">
-          <ControlPill
-            variant="pill"
-            icon="chevron.down"
-            label="New messages"
-            accessibilityLabel={`${unseen} new ${unseen === 1 ? "message" : "messages"}. Scroll to the latest.`}
-            className="border border-border shadow-md shadow-black/10"
-            onPress={jumpToEnd}
-          />
+      <View className="flex-1">
+        <LegendList
+          ref={listRef}
+          renderScrollComponent={NativeScrollView}
+          style={{ flex: 1 }}
+          contentInsetAdjustmentBehavior="automatic"
+          contentContainerStyle={{ paddingTop: 8, paddingBottom: 16 }}
+          data={rows}
+          keyExtractor={(row) => row.key}
+          getItemType={(row) => (row.type === "message" ? (row.own ? "own" : "other") : row.type)}
+          renderItem={renderItem}
+          extraData={markdownStyle}
+          estimatedItemSize={72}
+          drawDistance={500}
+          // UIKit insets the feed under the bar, which LegendList can't see: without this a short
+          // chat's end-alignment spacer overfills and pushes its newest messages below the fold.
+          contentInsetStartAdjustment={barOverlap}
+          alignItemsAtEnd
+          initialScrollAtEnd
+          maintainScrollAtEnd={
+            followsEnd
+              ? { animated: false, on: { dataChange: true, itemLayout: true, layout: true } }
+              : false
+          }
+          maintainVisibleContentPosition={followsEnd ? false : { data: true, size: true }}
+          onScroll={checkEnd}
+          viewabilityConfig={SEEN_ROW_CONFIG}
+          onViewableItemsChanged={markSeen}
+          onScrollBeginDrag={() => transition({ type: "drag-begin" })}
+          onScrollEndDrag={checkEnd}
+          onMomentumScrollEnd={checkEnd}
+          scrollEventThrottle={32}
+          keyboardDismissMode="interactive"
+          keyboardShouldPersistTaps="handled"
+          ListHeaderComponent={header}
+        />
+        {unseen > 0 ? (
+          <View pointerEvents="box-none" className="absolute inset-x-0 bottom-4 items-center">
+            <ControlPill
+              variant="pill"
+              icon="chevron.down"
+              label="New messages"
+              accessibilityLabel={`${unseen} new ${unseen === 1 ? "message" : "messages"}. Scroll to the latest.`}
+              className="border border-border shadow-md shadow-black/10"
+              onPress={jumpToEnd}
+            />
+          </View>
+        ) : null}
+      </View>
+      {noticeView === null ? null : (
+        // Under the feed, so a long chat opened at its end still shows why it stopped updating.
+        <View className="px-4 pt-2" style={{ paddingBottom: bottomInset + 12 }}>
+          {noticeView}
         </View>
-      ) : null}
+      )}
     </View>
   );
 }
