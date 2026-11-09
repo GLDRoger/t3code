@@ -73,9 +73,7 @@ export const memoryGit = Effect.fn("Memory.gitHardened")(function* (
         cwd,
         args: [
           "--no-replace-objects",
-          ...(repo && args[0] !== "clone-snapshot"
-            ? [`--git-dir=${directory}`, ...(args[0] === "checkout" ? [`--work-tree=${cwd}`] : [])]
-            : []),
+          ...(repo ? [`--git-dir=${directory}`] : []),
           "-c",
           "core.hooksPath=/dev/null",
           "-c",
@@ -87,9 +85,7 @@ export const memoryGit = Effect.fn("Memory.gitHardened")(function* (
           ...(config?.credentialHelper
             ? ["-c", "credential.helper=", "-c", `credential.helper=${config.credentialHelper}`]
             : []),
-          ...(args[0] === "clone-snapshot"
-            ? ["clone", "--no-local", "--no-checkout", "--", directory, args[1]!]
-            : args),
+          ...args,
         ],
         env: {
           GIT_CONFIG_NOSYSTEM: "1",

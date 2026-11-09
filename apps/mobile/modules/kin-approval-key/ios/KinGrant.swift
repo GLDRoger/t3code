@@ -65,7 +65,10 @@ enum KinGrant {
     try exactKeys(p, payloadRequired, payloadOptional, "payload")
     guard try integer(p, "v") == 1 else { throw NotAGrant("v is not 1") }
     guard try string(p, "decision") == "approve" else { throw NotAGrant("decision is not approve") }
-    for key: Bytes in ["orgId", "actionId", "nonce", "jti"] { try nonEmpty(p, key) }
+    for key: Bytes in ["orgId", "actionId"] { try nonEmpty(p, key) }
+    // Spec section 5: a jti is 16+ random bytes, a nonce exactly 32, as unpadded base64url.
+    try base64Url(p, "jti", length: 22...Int.max)
+    try base64Url(p, "nonce", length: 43...43)
     guard try integer(p, "revision") >= 0 else { throw NotAGrant("revision is negative") }
     _ = try hex(p, "targetDigest", length: 64)
     let approver = try child(p, "approver")
@@ -202,6 +205,13 @@ enum KinGrant {
 
   private static func nonEmpty(_ map: [Bytes: Value], _ key: Bytes) throws {
     guard try !string(map, key).utf8.isEmpty else { throw NotAGrant("\(key) is empty") }
+  }
+
+  private static func base64Url(_ map: [Bytes: Value], _ key: Bytes, length: ClosedRange<Int>) throws {
+    let value = try string(map, key).utf8
+    guard length.contains(value.count), value.allSatisfy(isBase64UrlByte) else {
+      throw NotAGrant("\(key) is malformed")
+    }
   }
 
   private static func hex(_ map: [Bytes: Value], _ key: Bytes, length: Int) throws -> String {

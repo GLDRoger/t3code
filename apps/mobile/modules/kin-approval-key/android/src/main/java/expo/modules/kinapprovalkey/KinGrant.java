@@ -39,6 +39,9 @@ final class KinGrant {
   /** Lead and chat ids: letters, digits and {@code . _ -}. */
   private static final Pattern ID = Pattern.compile("[A-Za-z0-9._-]+");
   private static final Pattern THUMBPRINT = Pattern.compile("[A-Za-z0-9_-]{43}");
+  // Spec section 5: a jti is 16+ random bytes, a nonce exactly 32, as unpadded base64url.
+  private static final Pattern JTI = Pattern.compile("[A-Za-z0-9_-]{22,}");
+  private static final Pattern NONCE = Pattern.compile("[A-Za-z0-9_-]{43}");
 
   private static final Set<String> PAYLOAD_REQUIRED = setOf(
       "v", "orgId", "actionId", "revision", "nonce", "jti", "kind", "targetDigest", "target",
@@ -81,7 +84,9 @@ final class KinGrant {
     exactKeys(p, PAYLOAD_REQUIRED, setOf("headSha", "base", "mergeMethod"), "payload");
     if (integer(p, "v") != 1) throw new NotAGrantException("v is not 1");
     if (!"approve".equals(p.get("decision"))) throw new NotAGrantException("decision is not approve");
-    for (String key : new String[] {"orgId", "actionId", "nonce", "jti"}) nonEmpty(p, key);
+    for (String key : new String[] {"orgId", "actionId"}) nonEmpty(p, key);
+    matches(p, "jti", JTI);
+    matches(p, "nonce", NONCE);
     if (integer(p, "revision") < 0) throw new NotAGrantException("revision is negative");
     matches(p, "targetDigest", HEX64);
     Map<String, Object> approver = child(p, "approver");
