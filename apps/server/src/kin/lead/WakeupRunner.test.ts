@@ -57,7 +57,7 @@ import * as KinLead from "./layer.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinStop from "./KinStop.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
-import { KinLeadPrompt } from "./LeadPrompt.ts";
+import { KinLeadPrompt, type KinLeadPromptInput } from "./LeadPrompt.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
@@ -96,7 +96,7 @@ const resolveAgent = Effect.fn("test.resolveAgent")(function* (threadId: ThreadI
   return yield* identity.resolveAgent(scope!);
 });
 // A human message in the lead's lane, the chat its notices and replies go to.
-const laneMessage = (id: string) =>
+const laneMessage = (id: string, chatId = "owner-chat") =>
   decodeEvent({
     _tag: "chat.message",
     orgId,
@@ -105,7 +105,7 @@ const laneMessage = (id: string) =>
     receivedAt: "2026-11-08T00:00:00.000Z",
     dedupeKey: id,
     provenance: { _tag: "human", personId: "owner", memberId: "owner-member" },
-    chatId: "owner-chat",
+    chatId,
     messageId: id,
   });
 const run = Effect.fn("test.run")(function* () {
@@ -113,6 +113,30 @@ const run = Effect.fn("test.run")(function* () {
   const fiber = yield* runner.runOnce(orgId, agentId).pipe(Effect.forkChild);
   yield* TestClock.adjust("20 seconds");
   return fiber;
+});
+const seedDirectChats = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  for (const chat of ["direct", "other-direct"])
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+      VALUES (${chat}, 'org', 'direct', ${`owner:${chat}`}, 0, '2026-11-08T00:00:00.000Z')`;
+});
+const wake = Effect.fn("test.wake")(function* (id: string, chatId = "direct") {
+  yield* (yield* KinEventQueue.KinEventQueue).enqueue(laneMessage(id, chatId));
+  yield* Fiber.join(yield* run());
+});
+/** Each run's provider conversation, numbered in order of first use. */
+const sessions = Effect.fn("test.sessions")(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const [lead] = yield* sql<{ threadId: string }>`SELECT thread_id AS "threadId" FROM kin_leads`;
+  const threads = yield* ThreadManagement.ThreadManagementService;
+  const projection = yield* threads.getThreadProjection(ThreadId.make(lead!.threadId));
+  const numbers = new Map<string | null, number>();
+  return projection.runs
+    .toSorted((a, b) => a.ordinal - b.ordinal)
+    .map((run) => {
+      if (!numbers.has(run.providerThreadId)) numbers.set(run.providerThreadId, numbers.size + 1);
+      return numbers.get(run.providerThreadId);
+    });
 });
 
 describe("WakeupRunner", () => {
@@ -515,6 +539,61 @@ describe("WakeupRunner", () => {
             ),
           ),
         );
+      }).pipe(provideDeterministicTestRuntime),
+  );
+
+  it.effect(
+    "keeps a direct chat's session for 10 wake-ups under 10 idle minutes apart, committing each",
+    () =>
+      Effect.gen(function* () {
+        let commits = 0;
+        let journals = 0;
+        const prompts: Array<KinLeadPromptInput> = [];
+        const opened: Array<string> = [];
+        const writer = Layer.mock(Writer.MemoryWriter)({
+          appendJournal: () => Effect.sync(() => void journals++),
+          commitWakeup: () => Effect.sync(() => (commits++, { commit: "fixture" })),
+          discard: () => Effect.void,
+        });
+        yield* Effect.gen(function* () {
+          yield* seed;
+          yield* seedDirectChats;
+          for (let i = 1; i <= 11; i++) {
+            yield* wake(`m${i}`);
+            yield* TestClock.adjust("9 minutes");
+          }
+          yield* TestClock.adjust("1 minute");
+          yield* wake("late");
+          // The 11th starts fresh at the turn cap, and the 12th after 10 idle minutes.
+          assert.deepStrictEqual(yield* sessions(), [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 3]);
+          // Each wake-up still gets its own process, so its cwd is the newly replaced read clone.
+          assert.lengthOf(opened, 12);
+          assert.deepStrictEqual(
+            prompts.map((prompt) => prompt.since !== undefined),
+            [false, ...Array.from({ length: 9 }, () => true), false, false],
+          );
+          assert.strictEqual(commits, 12);
+          assert.strictEqual(journals, 12);
+        }).pipe(Effect.provide(harness({ writer, prompts, opened })));
+      }).pipe(provideDeterministicTestRuntime),
+  );
+  it.effect.each(["another direct chat", "a level change", "new standing rules"] as const)(
+    "starts a fresh session for %s",
+    (change) =>
+      Effect.gen(function* () {
+        let rules = "rules";
+        const snapshot = () => Effect.sync(() => ({ rules, index: "index" }));
+        yield* Effect.gen(function* () {
+          yield* seed;
+          yield* seedDirectChats;
+          const sql = yield* SqlClient.SqlClient;
+          yield* wake("first");
+          yield* TestClock.adjust("1 minute");
+          if (change === "a level change") yield* sql`UPDATE kin_leads SET level = 'L1'`;
+          if (change === "new standing rules") rules = "new rules";
+          yield* wake("second", change === "another direct chat" ? "other-direct" : "direct");
+          assert.deepStrictEqual(yield* sessions(), [1, 2]);
+        }).pipe(Effect.provide(harness({ snapshot })));
       }).pipe(provideDeterministicTestRuntime),
   );
 
@@ -1354,6 +1433,7 @@ describe("WakeupRunner", () => {
             Layer.mock(KinEventQueue.KinEventQueue)({}),
             Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
             Layer.mock(ThreadManagement.ThreadManagementService)({}),
+            Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
             Layer.mock(ProjectService.ProjectService)({}),
             Layer.mock(ServerSettings.ServerSettingsService)({}),
             Layer.mock(KinIssuedTokens.KinIssuedTokens)({}),
