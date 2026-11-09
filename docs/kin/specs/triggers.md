@@ -399,7 +399,7 @@ The builder takes item heads (optionally marked `misleading` by the caller), las
 
 GitHub then blocks a bad auto-merge even if Kin's classifier is wrong.
 
-**Daytime lead writes (decided).** Because `main` requires PRs, LEAD's daytime memory writes land as PRs that Kin auto-merges once `memory-check` passes; a write touching an owner path waits for the owner's review like any other PR. APPR-8 (#44) and APPR-11 (#46) have merged; the TRIG-15 follow-up is the `MemoryWriter` PR path and running APPR-11's rulesets in a memory-repo mode, since its CODEOWNERS check expects every line to name the owner (lane A and lane C coordinate on #12).
+**Daytime lead writes (decided).** Because `main` requires PRs, LEAD's daytime memory writes land as PRs that Kin auto-merges once `memory-check` passes; a write touching an owner path waits for the owner's review like any other PR. APPR-8 (#44) and APPR-11 (#46) have merged; the TRIG-15 follow-up is the `MemoryWriter` PR path and adding the memory repo to APPR-11's `KIN_REPOS` with `kind: "memory"` (approvals spec section 10, memory repo mode; lane A and lane C coordinate on #12).
 
 ### Secret scan before memory commits (gap 5)
 

@@ -23,7 +23,8 @@ export interface MemoryTreeEntry {
 }
 
 const codeowners = ".github/CODEOWNERS";
-const kinOnlyPaths = ["/commitments/", "/deferrals/", "/claims/", "/journal/", "/INDEX.md"];
+/** The CODEOWNERS patterns Kin writes alone; everything else in the memory repo is the owner's. */
+export const kinOnlyPaths = ["/commitments/", "/deferrals/", "/claims/", "/journal/", "/INDEX.md"];
 const kinOnlyRoots = kinOnlyPaths.map((pattern) => pattern.slice(1).replace(/\/$/, ""));
 const regularModes = ["100644", "100755"];
 

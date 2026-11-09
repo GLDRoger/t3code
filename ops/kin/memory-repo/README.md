@@ -16,7 +16,7 @@ Templates for the private memory repo (`kin-memory`). This public repo holds onl
 
 To pick up new lint or scanner rules, bump `T3CODE_REF` in a reviewed PR. The lint code and the gitleaks config always come from that commit, never from the PR's own files, which the job reads only as data.
 
-The ruleset on `main` (PRs required, code-owner review, `memory-check` required, no bypass for Kin's bot) comes in the TRIG-15 follow-up with the `MemoryWriter` PR path. APPR-8 and APPR-11 have merged, but APPR-11's ruleset setup needs a memory-repo mode first: its CODEOWNERS check expects every line to name the owner, and this file's Kin lines name none.
+The ruleset on `main` (PRs required, code-owner review, `memory-check` required, no bypass for Kin's bot) comes in the TRIG-15 follow-up with the `MemoryWriter` PR path. `scripts/kin-rulesets.ts` applies it once the memory repo is in `KIN_REPOS` with `kind: "memory"`, which accepts this file's owner-less Kin lines.
 
 ## Cost
 

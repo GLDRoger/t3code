@@ -1,3 +1,4 @@
+import * as NodeFS from "node:fs";
 import { RepoSlug } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -5,7 +6,7 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import { describe } from "vite-plus/test";
 
-import { codeownersProblems, kinRulesets } from "./KinRulesets.ts";
+import { codeownersProblems, kinRulesets, type KinRepoKind } from "./KinRulesets.ts";
 import * as Rulesets from "./rulesetsSetup.ts";
 import { isKinBlock, type KinBlock } from "./rulesetsTest23.ts";
 import { fakeGitHub, type FakeAnswer, type RecordedRequest } from "./testFakes.ts";
@@ -211,8 +212,19 @@ const writes = (requests: ReadonlyArray<RecordedRequest>) =>
   requests.filter((request) => request.method !== "GET");
 
 const checks = ["Check"];
-const apply = (t = target()) => Rulesets.applyRepo(t, { requiredChecks: checks });
-const check = (t = target()) => Rulesets.checkRepo(t, { requiredChecks: checks, rulesets: true });
+const memoryChecks = ["memory-check"];
+const memoryCodeowners = NodeFS.readFileSync(
+  new URL("../../../../../ops/kin/memory-repo/CODEOWNERS.template", import.meta.url),
+  "utf8",
+).replace("* @OWNER", "* @GLDRoger");
+const apply = (t = target(), kind: KinRepoKind = "code") =>
+  Rulesets.applyRepo(t, { requiredChecks: kind === "memory" ? memoryChecks : checks, kind });
+const check = (t = target(), kind: KinRepoKind = "code") =>
+  Rulesets.checkRepo(t, {
+    requiredChecks: kind === "memory" ? memoryChecks : checks,
+    kind,
+    rulesets: true,
+  });
 
 describe("kin-rulesets apply", () => {
   it.effect("creates both rulesets, then a second apply writes nothing and --check passes", () => {
@@ -234,6 +246,52 @@ describe("kin-rulesets apply", () => {
       const checked = yield* check();
       assert.isTrue(checked.ok);
       assert.strictEqual(checked.lines.at(-1), "PASS: no drift.");
+    }).pipe(Effect.provide(github.layer));
+  });
+
+  it.effect("gives a memory repo one branch ruleset that frees Kin's paths, with no bypass", () => {
+    const github = githubRepo({ codeowners: memoryCodeowners });
+    return Effect.gen(function* () {
+      const applied = yield* apply(target(), "memory");
+      assert.isTrue(applied.ok, applied.lines.join("\n"));
+      assert.include(applied.lines, "CODEOWNERS: ok (@GLDRoger owns every path but Kin's own)");
+      assert.deepStrictEqual(
+        github.rulesets.map(({ name, target, bypass_actors }) => ({ name, target, bypass_actors })),
+        [{ name: "kin-main", target: "branch", bypass_actors: [] }],
+      );
+      assert.deepStrictEqual(ruleParameters(github.rulesets, "pull_request"), {
+        required_approving_review_count: 0,
+        require_code_owner_review: true,
+        dismiss_stale_reviews_on_push: true,
+        require_last_push_approval: false,
+        required_review_thread_resolution: true,
+        allowed_merge_methods: ["squash"],
+      });
+      assert.deepStrictEqual(
+        ruleParameters(github.rulesets, "required_status_checks").required_status_checks,
+        [{ context: "memory-check", integration_id: 15368 }],
+      );
+      assert.strictEqual((yield* check(target(), "memory")).lines.at(-1), "PASS: no drift.");
+      ruleParameters(github.rulesets, "pull_request").require_code_owner_review = false;
+      const drifted = yield* check(target(), "memory");
+      assert.isFalse(drifted.ok);
+      assert.include(
+        drifted.lines,
+        "  FAIL rules.pull_request.require_code_owner_review: expected true, got false",
+      );
+    }).pipe(Effect.provide(github.layer));
+  });
+
+  it.effect("checks a code repo's rulesets as drift on a memory repo", () => {
+    const github = githubRepo({ codeowners: memoryCodeowners.replace(/\n\/.*/g, "") });
+    return Effect.gen(function* () {
+      assert.isTrue((yield* apply()).ok);
+      const result = yield* check(target(), "memory");
+      assert.isFalse(result.ok);
+      assert.include(
+        result.lines,
+        "  FAIL rules.pull_request.required_approving_review_count: expected 0, got 1",
+      );
     }).pipe(Effect.provide(github.layer));
   });
 
@@ -365,12 +423,17 @@ describe("kin-rulesets --check", () => {
 
 describe("kin-rulesets CODEOWNERS", () => {
   it.each([
-    ["# Kin\n* @gldroger # owner\n", []],
-    ["*\t@GLDRoger\r\n", []],
-    ["", ['no "* @GLDRoger" rule, so some paths have no code owner']],
-    ["* @priya\n", ['line 1: "*" is owned by @priya, not only @GLDRoger']],
-    ["* @GLDRoger @priya\n", ['line 1: "*" is owned by @GLDRoger @priya, not only @GLDRoger']],
+    ["code", "# Kin\n* @gldroger # owner\n", []],
+    ["code", "*\t@GLDRoger\r\n", []],
+    ["code", "", ['no "* @GLDRoger" rule, so some paths have no code owner']],
+    ["code", "* @priya\n", ['line 1: "*" is owned by @priya, not only @GLDRoger']],
     [
+      "code",
+      "* @GLDRoger @priya\n",
+      ['line 1: "*" is owned by @GLDRoger @priya, not only @GLDRoger'],
+    ],
+    [
+      "code",
       "* @GLDRoger\n/docs/ @priya\n/apps/\n",
       [
         'line 2: "/docs/" is owned by @priya, not only @GLDRoger',
@@ -378,6 +441,7 @@ describe("kin-rulesets CODEOWNERS", () => {
       ],
     ],
     [
+      "code",
       "﻿* @GLDRoger\n* @GLDRoger @priya\n* @GLDRoger\u000B@priya\n",
       [
         'no "* @GLDRoger" rule, so some paths have no code owner',
@@ -386,8 +450,31 @@ describe("kin-rulesets CODEOWNERS", () => {
         "line 3: has a non-ASCII or control character (or a BOM)",
       ],
     ],
-  ] as const)("judges %j", (content, problems) => {
-    assert.deepStrictEqual(codeownersProblems(content, "GLDRoger"), problems);
+    [
+      "code",
+      memoryCodeowners,
+      ["/commitments/", "/deferrals/", "/claims/", "/journal/", "/INDEX.md"].map(
+        (path, index) => `line ${index + 6}: "${path}" is owned by no one, not only @GLDRoger`,
+      ),
+    ],
+    ["memory", memoryCodeowners, []],
+    [
+      "memory",
+      `${memoryCodeowners}/rules.md\n`,
+      ['line 11: "/rules.md" is owned by no one, not only @GLDRoger'],
+    ],
+    [
+      "memory",
+      memoryCodeowners.replace("* @GLDRoger", "*"),
+      ['line 5: "*" is owned by no one, not only @GLDRoger'],
+    ],
+    [
+      "memory",
+      memoryCodeowners.replace("/journal/", "/journal/ @priya"),
+      ['line 9: "/journal/" is owned by @priya, not only @GLDRoger'],
+    ],
+  ] as const)("judges %s %j", (kind, content, problems) => {
+    assert.deepStrictEqual(codeownersProblems(content, "GLDRoger", kind), problems);
   });
 
   it.effect("fails when GitHub reports CODEOWNERS syntax errors", () => {
@@ -395,6 +482,7 @@ describe("kin-rulesets CODEOWNERS", () => {
     return Effect.gen(function* () {
       const result = yield* Rulesets.checkRepo(target(), {
         requiredChecks: checks,
+        kind: "code",
         rulesets: false,
       });
       assert.isFalse(result.ok);
@@ -670,7 +758,10 @@ const runTest23 = (slug = scratch) =>
   });
 const test23 = () =>
   Effect.gen(function* () {
-    yield* Rulesets.applyRepo(target(OWNER_TOKEN, scratch), { requiredChecks: ["ci"] });
+    yield* Rulesets.applyRepo(target(OWNER_TOKEN, scratch), {
+      requiredChecks: ["ci"],
+      kind: "code",
+    });
     return yield* runTest23();
   });
 
@@ -820,7 +911,10 @@ describe("security test 23 (kin-rulesets --test-23)", () => {
   ] as const)("refuses, writing nothing, when GitHub %s", ([, fullName, reason]) => {
     const github = scratchRepo({ fullName });
     return Effect.gen(function* () {
-      yield* Rulesets.applyRepo(target(OWNER_TOKEN, scratch), { requiredChecks: ["ci"] });
+      yield* Rulesets.applyRepo(target(OWNER_TOKEN, scratch), {
+        requiredChecks: ["ci"],
+        kind: "code",
+      });
       const before = github.requests.length;
       const error = yield* Effect.flip(runTest23());
       assert.include(error.message, reason);
