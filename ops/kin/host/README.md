@@ -60,7 +60,7 @@ KIN_MEMORY_SSH_COMMAND="ssh -i /home/kin/.config/kin/kin-memory-deploy-key -o Id
 Point `KIN_MEMORY_REPOSITORIES` at the SSH URL (`git@github.com:<owner>/<memory repo>.git`), make sure `~/.ssh/known_hosts` holds GitHub's host key, and restart `kin-server`. The key stays out of `~/.ssh` because the approvals credential check tries every key there against GitHub, and a deploy key's greeting names a repo instead of the bot, so the check fails with `non_bot_identity` and privileged actions stop. **The key is not contained.** Agents run as `kin` and can read the file, so a prompt-injected lead or worker can push to the memory repo directly, around Kin's memory writer and its rules (owner-only `rules.md`, server-set trust, secret scanning, L0 writes only on `kin/shadow/*`). Until Kin runs memory git as a separate OS user, contain it on GitHub:
 
 - While every lead is at L0, protect `main` in the memory repo with a ruleset that requires a pull request and the `memory-check` workflow, with no bypass for this deploy key. The key can then update every ref except `main`, so a branch it pushes is never trusted on its own (see `ops/kin/memory-repo/README.md`, Workflow permissions).
-- Don't raise any lead to L1 (which writes `main` directly) until memory git runs as a separate OS user whose key agents can't read. This is the same gap as the approval key (approvals spec, section 12) and has the same fix.
+- Don't raise any lead to L1 (whose memory writes Kin merges into `main`) until memory git runs as a separate OS user whose key agents can't read. This is the same gap as the approval key (approvals spec, section 12) and has the same fix.
 
 **HTTPS.** Set `KIN_MEMORY_CREDENTIAL_HELPER` to a git credential helper's name or absolute path, with an `https://` repo URL. There is no GitHub App installation-token helper yet, so this route has nothing to point at until one is written.
 
@@ -76,6 +76,30 @@ systemctl --user restart kin-server
 ```
 
 Then turn on **Hold webhooks while offline** for this environment in Settings, from any client.
+
+## Create the first lead
+
+A fresh host has no lead, so the phone shows "No chats yet". Pair the phone first (above), then in a kin shell find its session id:
+
+```bash
+KIN_ENABLED=true node ~/kin-current/apps/server/dist/bin.mjs auth session list --base-dir ~/.t3
+```
+
+Create the lead with that session as its owner:
+
+```bash
+KIN_ENABLED=true node ~/kin-current/apps/server/dist/bin.mjs kin lead create --base-dir ~/.t3 \
+  --session <session id> --name <lead name> \
+  --strong codex:<model> --cheap codex:<model> \
+  --worker-project <project id>
+```
+
+The lead starts at L0 with a direct chat to you. Models are `<provider instance id>:<model>`. Repeat `--worker-project` for each project its workers may use, or leave it out; `project add` prints a project's id. Instead of `--session` you can pass `--person kin-default-owner`. Either one has to resolve to the Kin owner.
+
+Running it again changes nothing and prints the existing lead. A host has one live lead, so a second one is refused until you retire the first. It's safe while `kin-server` runs; a phone that's already open shows the new chat once it reconnects.
+
+- `kin lead list` shows every lead with its level, owner chat and whether it's retired.
+- `kin lead retire <agent id>` retires one. Its rows and chat stay. Its Kin tool calls are refused at once. A running server expires its queued events and ends its thread once any current wake-up finishes (up to 15 minutes; pause Kin to halt it sooner), or at its next start if it's stopped. After that, `kin lead create` makes a new lead.
 
 ## Update
 

@@ -132,6 +132,7 @@ describe("WakeupRunner", () => {
           commitDream: () => Effect.die("unused"),
           deleteDreamBranch: () => Effect.die("unused"),
           settleShadow: () => Effect.die("unused"),
+          sweepPullRequests: () => Effect.die("unused"),
           stage: (_org, wakeup) =>
             Effect.sync(() => {
               assert.isTrue(owner === undefined || owner === wakeup);
@@ -223,6 +224,7 @@ describe("WakeupRunner", () => {
                 commitDream: () => Effect.die("unused"),
                 deleteDreamBranch: () => Effect.die("unused"),
                 settleShadow: () => Effect.die("unused"),
+                sweepPullRequests: () => Effect.die("unused"),
                 discard: () => Effect.void,
                 appendJournal: (_org, _wakeup, lines) =>
                   Effect.sync(() =>
@@ -1107,6 +1109,7 @@ describe("WakeupRunner", () => {
           Layer.mock(KinIdentity.KinIdentity)({
             owner: { _tag: "person", orgId, personId: KinPersonId.make("owner") },
             isAgentThread: () => false,
+            isLeadThread: () => false,
           }),
         ),
         Layer.provide(

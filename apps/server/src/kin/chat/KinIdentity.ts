@@ -79,6 +79,8 @@ export class KinIdentity extends Context.Service<
       readonly threadId: ThreadId;
     }) => Effect.Effect<boolean, IdentityError>;
     readonly isAgentThread: (threadId: ThreadId) => boolean;
+    /** Whether the thread is an active agent thread whose agent is a lead. */
+    readonly isLeadThread: (threadId: ThreadId) => boolean;
   }
 >()("t3/kin/chat/KinIdentity") {
   static readonly layer = Layer.effect(
@@ -91,9 +93,9 @@ export class KinIdentity extends Context.Service<
         ...config,
         createdAt: DateTime.formatIso(yield* DateTime.now),
       });
-      const active = new Set(
-        (yield* repository.listActiveAgentThreads()).map((row) => row.threadId),
-      );
+      const rows = yield* repository.listActiveAgentThreads();
+      const active = new Set(rows.map((row) => row.threadId));
+      const leads = new Set(rows.filter((row) => row.role === "lead").map((row) => row.threadId));
       const lock = yield* Semaphore.make(1);
       return KinIdentity.of({
         owner: { _tag: "person", orgId: owner.orgId, personId: owner.personId },
@@ -145,9 +147,12 @@ export class KinIdentity extends Context.Service<
               startedAt: DateTime.formatIso(yield* DateTime.now),
               endedAt: null,
             });
+            const agent = yield* repository.getAgent(row);
+            const lead = Option.exists(agent, (found) => found.role === "lead");
             yield* sql.afterCommit(
               Effect.sync(() => {
                 active.add(row.threadId);
+                if (lead) leads.add(row.threadId);
               }),
             );
           },
@@ -169,6 +174,7 @@ export class KinIdentity extends Context.Service<
             yield* sql.afterCommit(
               Effect.sync(() => {
                 active.delete(input.threadId);
+                leads.delete(input.threadId);
               }),
             );
             return ended;
@@ -177,6 +183,7 @@ export class KinIdentity extends Context.Service<
           lock.withPermits(1),
         ),
         isAgentThread: (threadId) => active.has(threadId),
+        isLeadThread: (threadId) => leads.has(threadId),
       });
     }),
   );

@@ -19,10 +19,17 @@ export class MemoryConfig extends Context.Service<
     readonly credentialHelper?: string;
     readonly sshCommand?: string;
     readonly botEmail?: string;
+    /**
+     * Without the Kin GitHub App, writes to the default branch are refused unless this is set;
+     * then they push directly, which a TRIG-15 ruleset on the memory repo rejects.
+     */
+    readonly directMainPush?: boolean;
     readonly repositories: ReadonlyArray<{
       readonly orgId: KinOrgId;
       readonly repoUrl: string;
       readonly path: string;
+      /** `owner/name` when `repoUrl` is on github.com; memory PRs go there. */
+      readonly githubRepo?: string;
     }>;
   }
 >()("t3/kin/memory/MemoryConfig") {}
@@ -37,6 +44,11 @@ export class MemoryCredentialConfigError extends Schema.TaggedError<MemoryCreden
       : "KIN_MEMORY_SSH_COMMAND must be a plain ssh command naming its key file, without shell syntax.";
   }
 }
+
+const GITHUB_URL =
+  /^(?:git@github\.com:|(?:https|ssh):\/\/(?:git@)?github\.com\/)([A-Za-z0-9-]+\/[A-Za-z0-9._-]+?)(?:\.git)?\/?$/;
+
+export const githubRepoOf = (repoUrl: string) => GITHUB_URL.exec(repoUrl)?.[1];
 
 const credential = Effect.fn("MemoryConfig.credential")(function* (
   variable: MemoryCredentialConfigError["variable"],
@@ -62,14 +74,22 @@ export const layer = (
         isCredentialHelperReference,
       );
       const sshCommand = yield* credential("KIN_MEMORY_SSH_COMMAND", isSshCommandReference);
+      const directMainPush = yield* Config.Boolean("KIN_MEMORY_DIRECT_PUSH").pipe(
+        Config.withDefault(false),
+      );
       return MemoryConfig.of({
         baseDirectory: path.join(config.stateDir, "kin"),
         ...(credentialHelper === undefined ? {} : { credentialHelper }),
         ...(sshCommand === undefined ? {} : { sshCommand }),
-        repositories: repositories.map((repo) => ({
-          ...repo,
-          path: encodeURIComponent(repo.orgId),
-        })),
+        directMainPush,
+        repositories: repositories.map((repo) => {
+          const githubRepo = githubRepoOf(repo.repoUrl);
+          return {
+            ...repo,
+            path: encodeURIComponent(repo.orgId),
+            ...(githubRepo === undefined ? {} : { githubRepo }),
+          };
+        }),
       });
     }),
   );

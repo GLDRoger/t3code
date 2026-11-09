@@ -973,23 +973,36 @@ describe("KinActionExecutor", () => {
     });
   });
 
-  it.effect("two executors racing on one action run it once", () => {
-    const { requests, layer } = harness();
+  it.effect("an executor that loses the claim after its checks pass writes nothing", () => {
+    const { requests, roleChecks, layer } = harness();
     return Effect.gen(function* () {
       yield* seed;
-      const executor = yield* ActionExecutor.KinActionExecutor;
+      // Two hosts: separate executors, so separate org locks, over one database.
+      const loser = yield* ActionExecutor.KinActionExecutor;
+      const winner = yield* ActionExecutor.make;
       const ref = yield* approvedMerge("webhook-1");
-      const results = yield* Effect.all(
-        [executor.execute(ref), executor.execute(ref), executor.execute(ref)],
-        { concurrency: "unbounded" },
-      );
-      assert.lengthOf(
-        results.filter((result) => result._tag === "finished"),
-        1,
-      );
-      assert.isTrue(results.every((result) => ["finished", "skipped"].includes(result._tag)));
-      assert.lengthOf(yield* executions, 1);
+      let won: ActionExecutor.KinExecuteResult | undefined;
+      // The loser's pre-claim owner check: the winner runs the whole action in that gap.
+      roleChecks.during = (count) =>
+        count === 1
+          ? winner.execute(ref).pipe(
+              Effect.orDie,
+              Effect.tap((result) => Effect.sync(() => (won = result))),
+            )
+          : Effect.void;
+      assert.deepStrictEqual(yield* loser.execute(ref), { _tag: "skipped" });
+      assert.deepStrictEqual(won, { _tag: "finished", outcome: "succeeded" });
+      // Only the winner's merge, and its execution as it left it.
       assert.deepStrictEqual(writes(requests), [`PUT ${PULL}/merge`]);
+      assert.deepStrictEqual(yield* executions, [
+        {
+          action_id: ref.actionId,
+          outcome: "succeeded",
+          merge_commit_sha: MERGED,
+          github_request_id: "REQ-1",
+        },
+      ]);
+      assert.deepStrictEqual(yield* stateOf(ref), { state: "succeeded", reason: undefined });
     }).pipe(Effect.provide(layer));
   });
 
@@ -1039,6 +1052,16 @@ describe("KinActionExecutor", () => {
         // Idempotent: a decided action is never reconciled or run again.
         assert.deepStrictEqual(yield* executor.reconcile(open), { _tag: "skipped" });
         assert.deepStrictEqual(yield* executor.execute(open), { _tag: "skipped" });
+
+        // Our merge timed out, the head moved, and a person merged that: not this grant's merge.
+        const overtaken = yield* claimedThenCrashed("webhook-4");
+        world.pull = { ...mergedPull, head: MOVED };
+        assert.deepStrictEqual(yield* executor.reconcile(overtaken), { _tag: "unknown" });
+        yield* TestClock.adjust("2 minutes");
+        assert.deepStrictEqual(yield* executor.reconcile(overtaken), {
+          _tag: "finished",
+          outcome: "interrupted",
+        });
         assert.deepStrictEqual(writes(requests), []);
       }).pipe(Effect.provide(layer));
     },
@@ -1782,6 +1805,14 @@ describe("KinActionExecutor", () => {
       files.filter((file) => graph.get(file)?.includes("kin/approvals/ActionExecutor.ts")),
       ["kin/approvals/layer.ts"],
     );
+    // The roots chain in one line, so none of them is a door to the executor from elsewhere.
+    const importers = (target: string) => files.filter((file) => graph.get(file)?.includes(target));
+    assert.deepStrictEqual(importers("kin/approvals/layer.ts"), ["kin/layer.ts"]);
+    assert.deepStrictEqual(importers("kin/layer.ts"), ["server.ts"]);
+    assert.deepStrictEqual(importers("server.ts"), [
+      "cli/server.ts",
+      "kin/auth/ProofKeySessions.testkit.ts",
+    ]);
 
     // Claim and finish live on the ledger, which only the executor's layer is given.
     const ledgerUsers = files.filter((file) =>
@@ -1804,5 +1835,21 @@ describe("KinActionExecutor", () => {
     // No RPC or MCP surface carries the executor's service. A tag forged with its key string finds
     // nothing, since no shared context holds it (the production layer test checks the output).
     assert.notInclude(source("kin/KinServer.ts"), "KinActionExecutor");
+
+    // Creating or retiring a lead is the host operator's: only the `kin lead` CLI reaches it, and
+    // nothing the server runs (RPC, MCP, agent toolkits, routes, schedules) reaches that CLI.
+    assert.deepStrictEqual(importers("kin/lead/KinLeadProvision.ts"), ["kin/cli/lead.ts"]);
+    assert.deepStrictEqual(importers("kin/cli/lead.ts"), ["binCli.ts"]);
+    const served = new Set<string>();
+    const pending = ["server.ts"];
+    for (let file = pending.pop(); file !== undefined; file = pending.pop()) {
+      for (const target of graph.get(file) ?? []) {
+        if (served.has(target)) continue;
+        served.add(target);
+        pending.push(target);
+      }
+    }
+    assert.isTrue(served.size > 100);
+    assert.notInclude([...served], "kin/cli/lead.ts");
   });
 });

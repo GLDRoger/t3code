@@ -27,6 +27,9 @@ import * as Memory from "../memory/Memory.ts";
 import * as MemoryConfig from "../memory/MemoryConfig.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
+import * as MemoryPullRequests from "../memory/MemoryPullRequests.ts";
+import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Scan from "../memory/secretScan.ts";
 import * as LeadMemory from "./LeadMemory.ts";
 import * as Cache from "../memory/MemoryCache.ts";
@@ -83,6 +86,32 @@ const dreamRuntime = DreamRunner.layer.pipe(
   Layer.provide(Cache.layer),
 );
 
+// TRIG-15: at startup and every 5 minutes, close memory PRs no write waits on.
+const memoryPullRequestSweep = Effect.fn("KinMemoryPullRequests.sweepDue")(function* (
+  writer: Writer.MemoryWriter["Service"],
+) {
+  const { repositories } = yield* MemoryConfig.MemoryConfig;
+  let due = 0;
+  return Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    if (now < due) return;
+    due = now + 5 * 60_000;
+    yield* Effect.forEach(
+      repositories,
+      ({ orgId }) =>
+        writer.sweepPullRequests(orgId).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin memory PR sweep failed", {
+              orgId,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        ),
+      { discard: true },
+    );
+  });
+});
+
 const runner = Layer.effectDiscard(
   Effect.gen(function* () {
     const runner = yield* WakeupRunner.WakeupRunner;
@@ -94,6 +123,11 @@ const runner = Layer.effectDiscard(
       yield* promotion.value.attachShadowMemory(writer.value.settleShadow);
     yield* Effect.gen(function* () {
       const context = yield* Layer.build(routineRuntime);
+      if (Option.isSome(writer))
+        yield* Context.get(context, Scheduler.Scheduler).register(
+          "kin-memory-pull-requests",
+          yield* memoryPullRequestSweep(writer.value),
+        );
       yield* Layer.build(dreamRuntime.pipe(Layer.provide(Layer.succeedContext(context)))).pipe(
         Effect.catchCause((cause) => Effect.logError("Kin dreams unavailable", { cause })),
       );
@@ -128,7 +162,10 @@ const withServices = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
                 yield* Effect.logWarning("Kin memory recovery requires operator attention", notice);
                 const leads = yield* sql<{
                   chatId: string;
-                }>`SELECT DISTINCT owner_chat_id AS "chatId" FROM kin_leads WHERE org_id = ${notice.orgId}`;
+                }>`SELECT DISTINCT l.owner_chat_id AS "chatId" FROM kin_leads l
+                  JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+                    AND a.retired_at IS NULL
+                  WHERE l.org_id = ${notice.orgId} ORDER BY l.owner_chat_id`;
                 for (const lead of leads) {
                   const message = yield* chat.insertMessage({
                     orgId: notice.orgId,
@@ -174,9 +211,34 @@ const withServices = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
     Layer.provide(GithubReaders.layer),
   );
 
+// TRIG-15: without the Kin App, memory writes to the default branch are refused unless
+// KIN_MEMORY_DIRECT_PUSH=true, because the memory repo's ruleset rejects a direct push.
+const memoryPullRequests = Layer.unwrap(
+  Effect.gen(function* () {
+    const off =
+      "memory writes to the default branch are refused unless KIN_MEMORY_DIRECT_PUSH=true";
+    if (Option.isNone(yield* Config.option(Config.String("KIN_GITHUB_APP_ID")))) {
+      yield* Effect.logWarning(`Kin memory PRs are off: KIN_GITHUB_APP_ID is unset, so ${off}`);
+      return Layer.empty;
+    }
+    return MemoryPullRequests.layer.pipe(
+      Layer.provide(GithubReaders.appLayer),
+      Layer.catchCause((cause) =>
+        Layer.effectDiscard(
+          Effect.logWarning(
+            `Kin memory PRs are off: the Kin GitHub App is unavailable, so ${off}`,
+            Cause.pretty(cause),
+          ),
+        ),
+      ),
+    );
+  }),
+);
+
 const registration = McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers);
 const toolkit = LeadMemory.layer.pipe(
   Layer.provideMerge(Writer.layer),
+  Layer.provide(memoryPullRequests),
   Layer.provide(LeadMemory.authority),
   Layer.provide(Cache.layer),
   Layer.provide(Scan.layer),

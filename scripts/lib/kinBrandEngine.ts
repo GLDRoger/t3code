@@ -73,6 +73,8 @@ export const LEAK_PATTERNS = [
   { id: "t3-home", pattern: /(?:^|[~/'"]|\$HOME\/)\.t3(?:$|[/\\'"])/ },
   { id: "expo-owner", pattern: /pingdotgg/ },
   { id: "apple-team", pattern: /ARK85ZXQ4Z/ },
+  // T3 Code's App Store Connect app id (eas.json submit.ascAppId).
+  { id: "asc-app", pattern: /\b6787819824\b/ },
   { id: "eas-project", pattern: /d763fcb8-d37c-41ea-a773-b54a0ab4a454|u\.expo\.dev\/d763fcb8/ },
   { id: "clerk-domain", pattern: /clerk\.t3\.codes/ },
   // Any T3 domain: its hosted app, site, relay, telemetry ingest and mail.

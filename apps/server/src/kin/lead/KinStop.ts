@@ -169,7 +169,9 @@ const make = Effect.gen(function* () {
   ) {
     const chats = yield* sql<{
       chatId: string;
-    }>`SELECT DISTINCT owner_chat_id AS "chatId" FROM kin_leads WHERE org_id = ${orgId} ORDER BY owner_chat_id`;
+    }>`SELECT DISTINCT l.owner_chat_id AS "chatId" FROM kin_leads l
+      JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id AND a.retired_at IS NULL
+      WHERE l.org_id = ${orgId} ORDER BY l.owner_chat_id`;
     return yield* Effect.forEach(chats, (row) =>
       chat.insertMessage({
         orgId,
