@@ -88,6 +88,8 @@ export function resolveKinHost(input: {
   readonly probe: (environmentId: EnvironmentId) => KinProbe;
   /** `undefined` while the saved id is still loading. */
   readonly savedHostId: EnvironmentId | null | undefined;
+  /** The directory saved at a host's last answer, read only while it is offline. */
+  readonly cachedOrgs?: (environmentId: EnvironmentId) => KinOrgsListResult | null;
 }): KinHost {
   if (input.savedHostId === undefined) return { _tag: "searching" };
   const saved = input.candidates.find((c) => c.environmentId === input.savedHostId);
@@ -98,7 +100,7 @@ export function resolveKinHost(input: {
         _tag: "host",
         environmentId: saved.environmentId,
         connected: false,
-        probe: { _tag: "pending" },
+        probe: kinOfflineProbe(input.cachedOrgs?.(saved.environmentId) ?? null),
       };
     }
     const probe = input.probe(saved.environmentId);
@@ -133,6 +135,7 @@ export function resolveKinHostAt(input: {
   readonly candidates: ReadonlyArray<KinHostCandidate>;
   readonly probe: (environmentId: EnvironmentId) => KinProbe;
   readonly environmentId: EnvironmentId;
+  readonly cachedOrgs?: (environmentId: EnvironmentId) => KinOrgsListResult | null;
 }): KinHost {
   const candidate = input.candidates.find((c) => c.environmentId === input.environmentId);
   if (candidate === undefined) return { _tag: "none" };
@@ -141,12 +144,22 @@ export function resolveKinHostAt(input: {
       _tag: "host",
       environmentId: candidate.environmentId,
       connected: false,
-      probe: { _tag: "pending" },
+      probe: kinOfflineProbe(input.cachedOrgs?.(candidate.environmentId) ?? null),
     };
   }
   const probe = input.probe(candidate.environmentId);
   if (probe._tag === "notKin") return { _tag: "none" };
   return { _tag: "host", environmentId: candidate.environmentId, connected: true, probe };
+}
+
+/**
+ * An offline host's probe, from the directory saved at its last answer, so its cache still knows
+ * who is who. Without one it stays pending.
+ */
+export function kinOfflineProbe(cached: KinOrgsListResult | null): KinProbe {
+  return cached !== null && cached.me.length > 0
+    ? { _tag: "ready", orgs: cached }
+    : { _tag: "pending" };
 }
 
 /** The id worth saving: only a host that answered with an identity. */
