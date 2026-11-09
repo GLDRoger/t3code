@@ -30,7 +30,7 @@ Nothing automates this yet: Kin has no code that adds the same-tree commit or op
 
 ### Workflow permissions
 
-`memory-check` is pinned to the GitHub Actions App (15368), which trusts any Actions workflow in the repo, not just `memory-check.yml`. A workflow that anyone pushes could post a passing `memory-check` on another PR. So keep the repo's Actions workflow permissions read-only, and never grant the Kin App Workflows permission on this repo. A ruleset `workflows` rule that requires `memory-check.yml` from a pinned ref is planned to close the gap.
+`memory-check` is pinned to the GitHub Actions App (15368), which trusts any Actions workflow in the repo, not just `memory-check.yml`. A workflow pushed to any branch could post a passing `memory-check` on another PR. The repo's read-only workflow-permissions setting doesn't stop this: anyone with write access, which includes the memory deploy key that agents can read, can raise a workflow's own `permissions:`. A ruleset `workflows` rule would close the gap, but it exists only in organization rulesets, and `GLDRoger` is a user account. So a passing `memory-check` alone is not trusted: before merging a PR, Kin checks that it merges the SHA it pushed itself, and that the passing check came from a `pull_request` run of `.github/workflows/memory-check.yml` on that SHA (TRIG-15 writer PR path). Never grant the Kin App Workflows permission on this repo.
 
 ### Before switching it on
 
@@ -47,7 +47,7 @@ Each run checks out `t3code` at the pinned commit without `.repos/`, installs th
 
 ## Things to know
 
-- GitHub runs a PR's own copy of this workflow, so a PR could rewrite the check. The `*` line in `CODEOWNERS`, which also covers `.github/`, is what stops that: such a PR needs the owner's review. A ruleset `workflows` rule that requires this workflow from a pinned ref would remove the gap; it is planned (see Workflow permissions above).
+- GitHub runs a PR's own copy of this workflow, so a PR could rewrite the check. The `*` line in `CODEOWNERS`, which also covers `.github/`, is what stops that: such a PR needs the owner's review. A ruleset `workflows` rule isn't available on a user-owned repo, so Kin checks the check's workflow and SHA itself before merging (see Workflow permissions above).
 - A `.gitleaksignore` anywhere in the memory repo fails the check, because gitleaks would honour it. `gitleaks:allow` comments are ignored.
 - A false positive the owner allowed in `kin_secret_allow` still fails gitleaks, which has no allowlist. Reword the text; whether the owner may merge past the check is settled with the ruleset.
 - `CODEOWNERS` denies by default, so a new root file such as `CLAUDE.md`, `AGENTS.md`, `.claude/`, `.mcp.json` or `.codex/` needs the owner's review before the lead's read checkout loads it. The lint fails if the file still names `@OWNER` or frees any path beyond Kin's own.

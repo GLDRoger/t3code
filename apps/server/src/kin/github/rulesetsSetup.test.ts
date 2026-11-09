@@ -905,6 +905,7 @@ describe("security test 23 (kin-rulesets --test-23)", () => {
 
   it.effect.each([
     ["a Kin repository in another case", "gldroger/t3code", "is a Kin repository"],
+    ["the memory repository", "GLDRoger/kin-memory", "is a Kin repository"],
     ["a repository not named scratch", "GLDRoger/sandbox", 'has no "scratch" in its name'],
   ] as const)("refuses %s before any request", ([, slug, reason]) => {
     const github = scratchRepo();

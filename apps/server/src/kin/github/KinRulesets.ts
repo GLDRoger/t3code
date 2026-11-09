@@ -21,6 +21,7 @@ export interface KinRepo {
 export const KIN_REPOS: Readonly<Record<string, KinRepo>> = {
   // ci.yml's `Check` job fails unless every other CI job passed or was skipped as not needed.
   "GLDRoger/t3code": { kind: "code", requiredChecks: ["Check"] },
+  "GLDRoger/kin-memory": { kind: "memory", requiredChecks: ["memory-check"] },
 };
 
 /**
