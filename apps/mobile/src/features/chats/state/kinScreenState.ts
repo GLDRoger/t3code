@@ -103,6 +103,20 @@ export function kinInboxNotice(
   };
 }
 
+/** One VoiceOver label from its parts, each read as a sentence without doubling its end mark. */
+export function kinSentences(parts: ReadonlyArray<string | null>): string {
+  return parts
+    .map((part) => part?.trim() ?? "")
+    .filter((part) => part.length > 0)
+    .map((part) => (/[.!?…]$/.test(part) ? part : `${part}.`))
+    .join(" ");
+}
+
+/** The home row's VoiceOver label: "Kin. Payments test fixed. 3 unread." */
+export function kinHomeLabel(subtitle: string | null, unreadCount: number): string {
+  return kinSentences(["Kin", subtitle, unreadCount > 0 ? `${unreadCount} unread` : null]);
+}
+
 /** The home row's second line. */
 export function kinHomeSubtitle(
   state: KinInboxScreenState,
