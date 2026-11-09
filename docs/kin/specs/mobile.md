@@ -290,12 +290,12 @@ Hiding the buttons is a convenience, not the protection (DESIGN 9.3). The server
 
 - It registers categories once at install, with `Notifications.setNotificationCategoryAsync`:
 
-| Category id              | Actions (identifier: title)                                              | Action `options` (set on each action)                          |
-| ------------------------ | ------------------------------------------------------------------------ | -------------------------------------------------------------- |
-| `kin.approval`           | `open: Review`                                                           | `opensAppToForeground: true`, `isAuthenticationRequired: true` |
-| `kin.deferral.confirmed` | `change: Change`, `remind: Just remind me`                               | foreground                                                     |
-| `kin.deferral.heads_up`  | `start: Start now`, `monday: Monday`, `cancel: Cancel` (`isDestructive`) | foreground, auth required                                      |
-| `kin.message`            | none (tap opens chat)                                                    | n/a                                                            |
+| Category id              | Actions (identifier: title)                                                  | Action `options` (set on each action)                          |
+| ------------------------ | ---------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `kin.approval`           | `open: Review`                                                               | `opensAppToForeground: true`, `isAuthenticationRequired: true` |
+| `kin.deferral.confirmed` | `change: Change`, `remind: Just remind me`                                   | foreground                                                     |
+| `kin.deferral.heads_up`  | `start_now: Start now`, `monday: Monday`, `cancel: Cancel` (`isDestructive`) | foreground, auth required                                      |
+| `kin.message`            | none (tap opens chat)                                                        | n/a                                                            |
 
 - There is no "Approve" action on the notification. Approving needs the in-app biometric prompt and signature (approvals spec), so the lock screen offers **Review**, which opens `KinApproval`.
 - In phase 1 every action opens the app. Background actions are not reliable when the app has been killed.
