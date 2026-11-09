@@ -46,7 +46,7 @@ import * as KinStop from "./KinStop.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinIssuedTokens from "../mcp/KinIssuedTokens.ts";
-import { KinLeadPrompt } from "./LeadPrompt.ts";
+import { KinLeadPrompt, type KinLeadPromptInput } from "./LeadPrompt.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
@@ -144,6 +144,11 @@ type HarnessOptions = {
   readonly providerSteers?: Queue.Queue<{ readonly runId: string; readonly messageId: string }>;
   /** Completes when the runner builds steer text, under the lock its send holds. */
   readonly steering?: Deferred.Deferred<void>;
+  /** Every prompt the runner builds, in order. */
+  readonly prompts?: Array<KinLeadPromptInput>;
+  readonly snapshot?: Memory.Memory["Service"]["readPromptSnapshot"];
+  /** Every provider process the fake adapter opens. */
+  readonly opened?: Array<string>;
 };
 
 export function harness(options: HarnessOptions = {}) {
@@ -175,6 +180,7 @@ function parts(options: HarnessOptions) {
     planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
     openSession: (session) =>
       Effect.gen(function* () {
+        options.opened?.push(session.providerSessionId);
         const now = yield* DateTime.now;
         const events = yield* PubSub.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
         const open = new Map<
@@ -476,7 +482,11 @@ function parts(options: HarnessOptions) {
       ),
     ),
     Layer.succeed(KinLeadPrompt, {
-      build: () => Effect.succeed("Wake up"),
+      build: (input) =>
+        Effect.sync(() => {
+          options.prompts?.push(input);
+          return "Wake up";
+        }),
       steer: () =>
         options.steering === undefined
           ? Effect.succeed("Steered")
@@ -487,6 +497,8 @@ function parts(options: HarnessOptions) {
         options.prepare ??
         (() => Effect.succeed({ head: "abc", indexAsOf: DateTime.makeUnsafe(timestamp) })),
       ensureCheckouts: () => Effect.succeed({ writer: "/private/tmp", read: "/private/tmp" }),
+      readPromptSnapshot:
+        options.snapshot ?? (() => Effect.succeed({ rules: "rules", index: "index" })),
     }),
   );
   const stack = Layer.mergeAll(

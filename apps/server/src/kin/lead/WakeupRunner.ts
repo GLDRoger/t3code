@@ -1,7 +1,10 @@
 import {
   CommandId,
   KinAgentId,
+  KinChatId,
+  type KinEvent,
   KinLead,
+  type KinLevel,
   KinMessageId,
   KinOrgId,
   KinWakeupId,
@@ -26,7 +29,9 @@ import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
+import { modelSelectionsEqual } from "@t3tools/shared/model";
 
+import * as ProviderSessionManager from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
@@ -61,6 +66,24 @@ const isSteerRun = (wakeupId: KinWakeupId, run: { readonly userMessageId: string
   KinIdentity.isAdoptedRunMessage(wakeupId, run.userMessageId) &&
   run.userMessageId !== KinIdentity.rescueMessageId(wakeupId);
 const ownerCheckDispatcherReady = false;
+/** A direct chat keeps its provider session for this long idle, for at most this many wake-ups. */
+const WARM_IDLE_MS = 600_000;
+const WARM_MAX_WAKEUPS = 10;
+type WarmSession = {
+  readonly threadId: ThreadId;
+  readonly chatId: KinChatId;
+  readonly level: KinLevel;
+  readonly model: ModelSelection;
+  readonly wakeups: number;
+  readonly endedAt: number;
+  readonly rules: string;
+  readonly index: string;
+  readonly chatSeq: number;
+};
+const chatOf = (event: KinEvent) =>
+  event._tag === "chat.message" || event._tag === "widget.action" || event._tag === "chat.reaction"
+    ? event.chatId
+    : undefined;
 
 export class KinWakeupError extends Schema.TaggedError<KinWakeupError>()("KinWakeupError", {
   orgId: KinOrgId,
@@ -148,6 +171,7 @@ const make = Effect.gen(function* () {
   const launch = yield* ThreadLaunchService.ThreadLaunchService;
   const threads = yield* ThreadManagementService.ThreadManagementService;
   const settings = yield* ServerSettingsService;
+  const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
   const paused = (orgId: KinOrgId) =>
     isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
   const threadActivity = Effect.fn("WakeupRunner.threadActivity")(function* (orgId: KinOrgId) {
@@ -174,6 +198,37 @@ const make = Effect.gen(function* () {
     return yield* decodeLead(row);
   });
   const retired = new Set<KinAgentId>();
+  // In memory on purpose: after a restart the first wake-up is fresh, which is always safe.
+  const warm = new Map<string, WarmSession>();
+  const warmKey = (orgId: KinOrgId, agentId: KinAgentId) => `${orgId}\u0000${agentId}`;
+  // Prepare replaces the read clone, so a warm wake-up resumes the conversation in a new process.
+  const releaseProcess = Effect.fn("WakeupRunner.releaseProcess")(function* (threadId: ThreadId) {
+    const own = (yield* threads.getThreadProjection(threadId)).providerThreads.filter(
+      (providerThread) => providerThread.appThreadId === threadId,
+    );
+    let released = true;
+    for (const providerSessionId of new Set(own.map((thread) => thread.providerSessionId)))
+      if (providerSessionId !== null && (yield* sessions.isLive(providerSessionId)))
+        released &&= yield* sessions.releaseUnlessBusy({
+          providerSessionId,
+          ownProviderThreadIds: own.map((thread) => thread.id),
+          reason: "idle_timeout",
+          detail: "Kin wake-up ended",
+        });
+    return released;
+  });
+  /** The direct chat every event of this wake-up came from, if there is exactly one. */
+  const directChat = Effect.fn("WakeupRunner.directChat")(function* (
+    orgId: KinOrgId,
+    events: ReadonlyArray<KinEvent>,
+  ) {
+    const chats = new Set(events.map(chatOf));
+    const [chatId] = chats;
+    if (chats.size !== 1 || chatId === undefined) return undefined;
+    const direct =
+      yield* sql`SELECT 1 FROM kin_chats WHERE org_id = ${orgId} AND chat_id = ${chatId} AND kind = 'direct' AND archived_at IS NULL`;
+    return direct.length > 0 ? chatId : undefined;
+  });
   const retire = Effect.fn("WakeupRunner.retire")(function* (record: typeof LeadRow.Type) {
     if (retired.has(record.agentId)) return;
     yield* queue.expireAgent(record.orgId, record.agentId);
@@ -424,6 +479,7 @@ const make = Effect.gen(function* () {
           commandId: CommandId.make(`kin-settle:${row.wakeupId}`),
           byOwnAgent: true,
         });
+      return status;
     },
     (effect, row) =>
       effect.pipe(
@@ -651,6 +707,31 @@ const make = Effect.gen(function* () {
               workspaceRoot: paths.read,
               title: `Kin · ${record.orgName}`,
             });
+            const urgent =
+              yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND priority IN ('P0', 'P1') LIMIT 1`;
+            const modelSelection =
+              !cheapOnly && (urgent.length > 0 || events.some((event) => event._tag === "routine"))
+                ? current.models.strong
+                : current.models.cheap;
+            // A warm session is one chat's, at one level and model; anything else starts fresh.
+            const previous = warm.get(warmKey(orgId, agentId));
+            warm.delete(warmKey(orgId, agentId));
+            const direct = yield* directChat(orgId, events);
+            const seen =
+              direct === undefined
+                ? undefined
+                : yield* memory.readPromptSnapshot(orgId, pinned.head, { lead: agentId });
+            const resumes =
+              previous !== undefined &&
+              seen !== undefined &&
+              previous.chatId === direct &&
+              previous.threadId === current.threadId &&
+              previous.level === current.level &&
+              modelSelectionsEqual(previous.model, modelSelection) &&
+              previous.wakeups < WARM_MAX_WAKEUPS &&
+              row.startedAt - previous.endedAt < WARM_IDLE_MS &&
+              // New standing rules are a new contract, so they get a fresh session.
+              previous.rules === seen.rules;
             const text = yield* prompt.build({
               orgId,
               agentId,
@@ -659,13 +740,8 @@ const make = Effect.gen(function* () {
               memoryHead: pinned.head,
               budgetContext,
               ...(lane === undefined ? {} : { lane }),
+              ...(resumes ? { since: { index: previous.index, chatSeq: previous.chatSeq } } : {}),
             });
-            const urgent =
-              yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND priority IN ('P0', 'P1') LIMIT 1`;
-            const modelSelection =
-              !cheapOnly && (urgent.length > 0 || events.some((event) => event._tag === "routine"))
-                ? current.models.strong
-                : current.models.cheap;
             const threadId = current.threadId ?? ThreadId.make(`kin:${yield* ulid}`);
             row = { ...row, threadId };
             yield* sql.withTransaction(
@@ -728,7 +804,8 @@ const make = Effect.gen(function* () {
                     text,
                     attachments: [],
                     mode: "queue",
-                    freshContext: true,
+                    // Without a fresh context the run continues the same provider conversation.
+                    ...(resumes ? {} : { freshContext: true }),
                     modelSelection,
                     createdBy: "system",
                     creationSource: "server",
@@ -746,7 +823,32 @@ const make = Effect.gen(function* () {
                 runId: run.id,
                 commandId: CommandId.make(`kin-stop-launch:${wakeupId}`),
               });
-            yield* wait(row, project.id);
+            const status = yield* wait(row, project.id);
+            if (status !== "completed" || direct === undefined || seen === undefined) return;
+            const released = yield* releaseProcess(threadId).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Kin lead process release failed", {
+                  orgId,
+                  wakeupId,
+                  cause,
+                }).pipe(Effect.as(false)),
+              ),
+            );
+            if (!released) return;
+            const [chat] = yield* sql<{
+              lastSeq: number;
+            }>`SELECT last_seq AS "lastSeq" FROM kin_chats WHERE org_id = ${orgId} AND chat_id = ${direct}`;
+            warm.set(warmKey(orgId, agentId), {
+              threadId,
+              chatId: direct,
+              level: current.level,
+              model: modelSelection,
+              wakeups: resumes ? previous.wakeups + 1 : 1,
+              endedAt: yield* Clock.currentTimeMillis,
+              rules: seen.rules,
+              index: seen.index,
+              chatSeq: chat?.lastSeq ?? 0,
+            });
           }).pipe(
             Effect.onExit((exit) =>
               Exit.isFailure(exit)
