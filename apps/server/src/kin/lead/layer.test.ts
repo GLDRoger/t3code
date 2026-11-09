@@ -7,6 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { vi } from "vite-plus/test";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
@@ -22,7 +23,7 @@ import { event, harness, seed, orgId } from "./WakeupRunner.testkit.ts";
 
 const external = Layer.mergeAll(
   Layer.mock(ChatService.KinChatService)({}),
-  Layer.mock(ChatHub.KinChatHub)({}),
+  Layer.mock(ChatHub.KinChatHub)({ subscribeAll: Effect.succeed(Stream.never) }),
   ServerConfig.layerTest(process.cwd(), { prefix: "kin-lead-layer-" }),
   Layer.mock(VcsProcess.VcsProcess)({}),
 ).pipe(Layer.provideMerge(NodeServices.layer));
