@@ -6,7 +6,7 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
-import { KinServer } from "../layer.ts";
+import { KinServer } from "../KinServer.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
 import { KinStop } from "../lead/KinStop.ts";
 import { KinIdentity } from "./KinIdentity.ts";
