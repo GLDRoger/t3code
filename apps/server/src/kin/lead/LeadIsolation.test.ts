@@ -95,6 +95,8 @@ it.effect.each([
           `Read(/${config.baseDir}/service.env)`,
           `Read(/${config.dbPath}*)`,
           "Read(~/.ssh/**)",
+          "Read(~/.config/kin/**)",
+          "Read(~/.config/gh/**)",
         ],
         strictMcpConfig: true,
         settings: {

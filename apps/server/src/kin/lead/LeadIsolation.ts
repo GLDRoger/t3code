@@ -44,6 +44,9 @@ const leadSecretReadRules = (config: {
   `Read(/${config.baseDir}/service.env)`,
   `Read(/${config.dbPath}*)`,
   "Read(~/.ssh/**)",
+  // Host operator config: the memory deploy key and server env live here (ops/kin/host).
+  "Read(~/.config/kin/**)",
+  "Read(~/.config/gh/**)",
 ];
 
 const leadOptions = (
