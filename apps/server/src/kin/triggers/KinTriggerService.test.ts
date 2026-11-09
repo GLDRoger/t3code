@@ -11,8 +11,10 @@ import {
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
@@ -98,8 +100,20 @@ it.effect("arms from front matter, re-arms on edits, and re-syncs without writes
     deferral({ links: ["https://github.com/acme/api/issues/12"], ...overrides });
   return Effect.gen(function* () {
     const { sql, service } = yield* setup();
+    const live = yield* (yield* Hub.KinChatHub).subscribeAll;
+    const firstPost = yield* live.pipe(
+      Stream.filter((event) => event.type === "message.posted"),
+      Stream.runHead,
+      Effect.forkScoped,
+    );
     assert.equal(yield* service.syncItem(linked()), "armed");
     assert.equal(reads, 1);
+    // Clients attach a card only through its message's widgetId, so the live post must carry it.
+    const livePost = Option.getOrThrow(yield* Fiber.join(firstPost));
+    assert.equal(
+      livePost.type === "message.posted" && livePost.message.widgetId,
+      KinWidgetId.make(`deferral:${orgId}:def-1`),
+    );
     // Unchanged re-syncs, per item or per head, don't read GitHub.
     assert.equal(yield* service.syncItem(linked()), "unchanged");
     yield* service.syncOrg(orgId, [linked()]);
@@ -170,7 +184,11 @@ it.effect("arms from front matter, re-arms on edits, and re-syncs without writes
         [0, null],
       ],
     );
-  }).pipe(Effect.provideService(KinDeferralGithubReader, reader), Effect.provide(layer));
+  }).pipe(
+    Effect.scoped,
+    Effect.provideService(KinDeferralGithubReader, reader),
+    Effect.provide(layer),
+  );
 });
 
 it.effect.each([

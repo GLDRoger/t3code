@@ -6,6 +6,7 @@ import {
   KIN_SEND_FAILED_TEXT,
   KIN_SENT_CARD_TEXT,
   KIN_STALE_CARD_TEXT,
+  KIN_UNDO_TOO_LATE_TEXT,
   KIN_START_NOW_REFUSALS,
   createKinCardActions,
   formatKinDeferralClock,
@@ -60,8 +61,6 @@ describe("kinDeferralCardView", () => {
     expect(confirmed.lines).toEqual(["Deferred to Fri 13 Nov, 9:00. I'll start then."]);
     expect(confirmed.eyebrow).toBe("Deferral");
     expect(confirmed.countdown).toEqual({ to: Date.parse(DUE), kind: "due" });
-    expect(actionIds(deferral())).toEqual(["change", "remind"]);
-    expect(actionIds(deferral({ onDue: "remind" }))).toEqual(["change"]);
     expect(view(deferral({ onDue: "remind", text: "" })).lines).toEqual([
       "Deferred to Fri 13 Nov, 9:00. I'll remind you then.",
     ]);
@@ -77,10 +76,9 @@ describe("kinDeferralCardView", () => {
     expect(view(deferral({ phase: "heads_up" }, { closedAt: DUE })).actions).toEqual([]);
   });
 
-  // Mirrors `actionsFor` in apps/server/src/kin/triggers/deferrals.ts.
+  // The taps `KinChatService.act` accepts today; the rest mirror `actionsFor` in deferrals.ts.
   it.each([
-    ["confirm", {}, ["change", "remind"]],
-    ["confirm that only reminds", { onDue: "remind" }, ["change"]],
+    ["confirm", {}, ["undo"]],
     ["heads_up", { phase: "heads_up" }, ["start_now", "monday", "cancel"]],
     ["asked", { phase: "asked" }, ["start_now", "monday", "cancel"]],
     ["started", { phase: "started" }, []],
@@ -221,7 +219,7 @@ describe("createKinCardActions", () => {
     return { posted, act };
   };
   const ok = () => Promise.resolve({ ok: true } as const);
-  const refused = (reason: "widget_changed" | "not_allowed") =>
+  const refused = (reason: "widget_changed" | "not_allowed" | "invalid_state") =>
     Promise.resolve({
       ok: false,
       cause: new KinChatError({ reason, message: "Refused." }),
@@ -229,6 +227,7 @@ describe("createKinCardActions", () => {
   const dropped = () => Promise.reject(new Error("socket hang up ECONNRESET"));
 
   it.each<[KinDeferralActionId, Record<string, unknown>]>([
+    ["undo", {}],
     ["change", {}],
     ["remind", {}],
     ["start_now", { phase: "heads_up" }],
@@ -309,6 +308,11 @@ describe("createKinCardActions", () => {
     expect(await act(view(deferral()), "remind")).toEqual({
       status: "failed",
       notice: { kind: "stale", text: KIN_STALE_CARD_TEXT },
+    });
+    const late = setup(() => refused("invalid_state"));
+    expect(await late.act(view(deferral()), "undo")).toEqual({
+      status: "failed",
+      notice: { kind: "stale", text: KIN_UNDO_TOO_LATE_TEXT },
     });
   });
 

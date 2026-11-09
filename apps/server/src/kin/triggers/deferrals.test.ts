@@ -25,6 +25,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as Chat from "../chat/KinChatService.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as Queue from "../lead/KinEventQueue.ts";
 import { WorkerLaunchGate } from "../lead/Workers.ts";
@@ -541,6 +542,63 @@ it.effect("drops queued fires for disarmed or moved deferrals", () => {
     yield* tick(Date.parse("2026-11-14T03:30:00.000Z"));
     assert.deepStrictEqual(yield* reminders(), [{ body: "Reminder: def-2." }]);
   }).pipe(openGates(new Map()), Effect.provide(layerFor(items)));
+});
+
+it.effect("an Undo disarms the reminder; a late or outsider Undo is refused", () => {
+  const undone = makeDeferral("def-u", { on_due: "remind" });
+  const late = makeDeferral("def-l", { on_due: "remind" });
+  return Effect.gen(function* () {
+    yield* setup();
+    const sql = yield* SqlClient.SqlClient;
+    const repo = yield* Repository.KinChatRepository;
+    const chat = yield* Chat.KinChatService;
+    const service = yield* TriggerService.KinTriggerService;
+    for (const entry of [undone, late]) yield* service.syncItem(entry);
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES ('outsider-a', ${orgId}, 'outsider', 'Outsider', 0)`;
+    const undo = (personId: string, itemId: string) =>
+      Effect.gen(function* () {
+        const widget = Option.getOrThrow(
+          yield* repo.getWidget({ orgId, widgetId: widgetFor(itemId) }),
+        );
+        return yield* chat
+          .act(
+            { _tag: "person", orgId, personId: KinPersonId.make(personId) },
+            {
+              widgetId: widget.widgetId,
+              revision: widget.revision,
+              actionId: "undo",
+              value: itemId,
+              clientActionId: `undo-${personId}-${itemId}`,
+            },
+          )
+          .pipe(Effect.result);
+      });
+    const reason = (result: Effect.Success<ReturnType<typeof undo>>) =>
+      result._tag === "Failure" && result.failure._tag === "KinChatError"
+        ? result.failure.reason
+        : result._tag;
+
+    assert.notEqual(reason(yield* undo("outsider-a", "def-u")), "Success");
+    assert.equal((yield* runOf("def-u"))?.state, "armed");
+
+    assert.equal(reason(yield* undo("owner-a", "def-u")), "Success");
+    assert.equal((yield* runOf("def-u"))?.state, "undone");
+    assert.isNotNull(
+      Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId: widgetFor("def-u") })).closedAt,
+    );
+    // Memory still says open until the lead records the cancel; the Undo holds meanwhile.
+    assert.equal(yield* service.syncItem(undone), "unchanged");
+
+    yield* tick(dueAt);
+    const reminders = yield* sql<{ body: string }>`SELECT body FROM kin_messages
+      WHERE org_id = ${orgId} AND body LIKE 'Reminder:%' ORDER BY seq`;
+    assert.deepStrictEqual(reminders, [{ body: "Reminder: def-l." }]);
+    assert.lengthOf(yield* pendingFires(), 0);
+
+    assert.equal(reason(yield* undo("owner-a", "def-l")), "invalid_state");
+    assert.equal((yield* runOf("def-l"))?.state, "reminded");
+  }).pipe(Effect.provide(layerFor([undone, late])));
 });
 
 it.effect("remind, ask and chase act at due, noting lateness", () => {

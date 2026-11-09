@@ -81,19 +81,24 @@ const triggerCurrent = (runAt: number | undefined, row: StoredTrigger | undefine
     ? row === undefined || (!row.enabled && row.nextRunAt === null)
     : row?.enabled === true && row.runAt === runAt;
 
+// An owner's Undo holds until the item leaves `open` or moves to a new due time.
+const isUndone = (plan: DeferralPlan, stored: Stored | undefined) =>
+  stored?.run.state === "undone" && (!plan.armed || stored.run.dueAt === plan.dueAt);
+
 const isCurrent = (plan: DeferralPlan, stored: Stored | undefined) =>
-  phases.every((phase) =>
+  isUndone(plan, stored) ||
+  (phases.every((phase) =>
     triggerCurrent(
       plan.phases.find((entry) => entry.phase === phase)?.runAt,
       stored?.triggers.get(phase),
     ),
   ) &&
-  (plan.armed
-    ? stored !== undefined &&
-      stored.run.state !== "disarmed" &&
-      stored.run.dueAt === plan.dueAt &&
-      stored.run.onDue === plan.onDue
-    : stored === undefined || stored.run.state === "disarmed");
+    (plan.armed
+      ? stored !== undefined &&
+        stored.run.state !== "disarmed" &&
+        stored.run.dueAt === plan.dueAt &&
+        stored.run.onDue === plan.onDue
+      : stored === undefined || stored.run.state === "disarmed"));
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -325,6 +330,29 @@ const make = Effect.gen(function* () {
       if (failures.length > 0) return yield* failures[0]!;
     }),
   });
+});
+
+/**
+ * The Undo on a deferral's confirm card, inside the caller's transaction. Compare-and-set on
+ * the armed run at `dueAt`: false once a fire was handled or the item moved, so a late Undo
+ * changes nothing. The deferral flow drops a pending fire whose run is `undone`.
+ */
+export const undoDeferral = Effect.fn("KinTriggerService.undoDeferral")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly itemId: KinMemoryItemId;
+  readonly dueAt: number;
+  readonly now: number;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const { orgId, itemId, dueAt, now } = input;
+  const undone = yield* sql`UPDATE kin_deferral_runs SET state = 'undone', updated_at = ${now}
+    WHERE org_id = ${orgId} AND item_id = ${itemId} AND due_at = ${dueAt} AND state = 'armed'
+    RETURNING item_id`;
+  if (undone.length === 0) return false;
+  yield* sql`UPDATE kin_triggers SET enabled = 0, next_run_at = NULL,
+    updated_at = max(updated_at, ${now}) WHERE org_id = ${orgId}
+      AND trigger_id IN (${deferralTriggerId(itemId, "heads_up")}, ${deferralTriggerId(itemId, "due")})`;
+  return true;
 });
 
 export const layer = Layer.effect(KinTriggerService, make).pipe(Layer.provide(MemoryCache.layer));

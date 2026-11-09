@@ -13,9 +13,11 @@ export const KIN_STALE_CARD_TEXT = "This card changed. Check it again.";
 export const KIN_SENT_CARD_TEXT = "Sent. Your lead will update this card.";
 export const KIN_CHANGE_SENT_TEXT = "Sent. Your lead will ask what to change.";
 export const KIN_SEND_FAILED_TEXT = "Couldn't send that. Try again.";
+export const KIN_UNDONE_TEXT = "Undone. Kin won't act on this.";
+export const KIN_UNDO_TOO_LATE_TEXT = "Too late to undo: Kin already acted on this.";
 
 /** The ids the host takes for each phase (`actionsFor` in the server's deferrals). */
-export type KinDeferralActionId = "change" | "remind" | "start_now" | "monday" | "cancel";
+export type KinDeferralActionId = "undo" | "change" | "remind" | "start_now" | "monday" | "cancel";
 export type KinDeferralPhase = "confirmed" | "heads_up" | "asked" | "started" | "closed";
 
 export interface KinDeferralAction {
@@ -49,6 +51,12 @@ const then: Record<KinDeferralCard["onDue"], string> = {
 };
 
 const ACTIONS: Record<KinDeferralActionId, KinDeferralAction> = {
+  undo: {
+    id: "undo",
+    label: "Undo",
+    accessibilityLabel: "Undo this deferral",
+    tone: "secondary",
+  },
   change: {
     id: "change",
     label: "Change",
@@ -174,8 +182,8 @@ function cardBody(card: KinDeferralCard, timeZone: string | undefined): CardBody
           `Deferred to ${formatKinDeferralTime(dueMs, timeZone)}. ${then[card.onDue]}`,
         ]),
         countdown: { to: dueMs, kind: "due" },
-        // "Just remind me" changes nothing on a deferral that already only reminds.
-        actions: card.onDue === "remind" ? [ACTIONS.change] : [ACTIONS.change, ACTIONS.remind],
+        // The host takes only Undo here until its owner-tap dispatcher lands for Change and Just remind me.
+        actions: [ACTIONS.undo],
       };
     case "heads_up": {
       // The host's text repeats the start time in the owner's zone, so the local lines replace it.
@@ -257,8 +265,13 @@ export type KinCardNotice = {
 };
 
 /** What the card says when the host refuses an action or the send fails. */
-export function kinActionFailureNotice(cause: unknown): KinCardNotice {
+export function kinActionFailureNotice(
+  cause: unknown,
+  actionId?: KinDeferralActionId,
+): KinCardNotice {
   if (!isKinChatError(cause)) return { kind: "error", text: KIN_SEND_FAILED_TEXT };
+  if (actionId === "undo" && cause.reason === "invalid_state")
+    return { kind: "stale", text: KIN_UNDO_TOO_LATE_TEXT };
   switch (cause.reason) {
     case "widget_changed":
       return { kind: "stale", text: KIN_STALE_CARD_TEXT };
@@ -325,7 +338,7 @@ export function createKinCardActions(options: {
       const result = await options.post(kinDeferralActInput(view, actionId, clientActionId));
       if (result.ok) return { status: "sent" };
       return isKinChatError(result.cause)
-        ? { status: "failed", notice: kinActionFailureNotice(result.cause) }
+        ? { status: "failed", notice: kinActionFailureNotice(result.cause, actionId) }
         : transportFailure();
     } catch {
       return transportFailure();
@@ -353,9 +366,13 @@ export function kinCardStatusAfter(
   revision: number,
 ): KinCardStatus {
   if (outcome.status === "failed") return { revision, notice: outcome.notice, holding: false };
-  return actionId === "change"
-    ? { revision, notice: { kind: "sent", text: KIN_CHANGE_SENT_TEXT }, holding: false }
-    : { revision, notice: { kind: "sent", text: KIN_SENT_CARD_TEXT }, holding: true };
+  if (actionId === "change")
+    return { revision, notice: { kind: "sent", text: KIN_CHANGE_SENT_TEXT }, holding: false };
+  return {
+    revision,
+    notice: { kind: "sent", text: actionId === "undo" ? KIN_UNDONE_TEXT : KIN_SENT_CARD_TEXT },
+    holding: true,
+  };
 }
 
 /** A status raised on an older revision no longer describes the card. */

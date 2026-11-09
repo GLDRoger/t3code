@@ -279,7 +279,8 @@ export const makeDeferralCards = Effect.gen(function* () {
       updatedAt: at,
     };
     yield* repo.insertWidget(widget);
-    yield* publish({ type: "message.posted", orgId, message });
+    // The insert links the message to the card; clients only attach a card through that link.
+    yield* publish({ type: "message.posted", orgId, message: { ...message, widgetId } });
     yield* publish({ type: "widget.updated", orgId, widget: { ...widget, revision: 1 } });
     return true;
   });
@@ -377,6 +378,7 @@ const decodeAction = Schema.decodeUnknownEffect(
   Schema.Struct({ actionId: Schema.Literals(deferralCardActions), value: KinMemoryItemId }),
 );
 type DeferralAction = (typeof deferralCardActions)[number];
+// [Undo] never reaches the dispatcher: `KinChatService.act` applies it in the tap's transaction.
 const actionsFor = (phase: KinDeferralCard["phase"]): ReadonlyArray<DeferralAction> =>
   phase === undefined
     ? ["change", "remind"]
@@ -444,6 +446,8 @@ const make = Effect.gen(function* () {
             sourceEventId: eventId,
           });
         switch (action.actionId) {
+          case "undo":
+            return yield* Effect.fail("stale_card" as const);
           case "remind":
             if (item.head.on_due !== "remind") yield* stage({ on_due: "remind" });
             return result;
