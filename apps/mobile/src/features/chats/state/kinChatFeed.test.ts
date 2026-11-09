@@ -23,7 +23,6 @@ import {
   kinMessageLabel,
   kinMessageLinks,
   kinMarkReadRearms,
-  kinSentences,
   kinSeqToMarkRead,
   kinUnseenCount,
   mergeKinFeed,
@@ -31,6 +30,7 @@ import {
   type KinFeedViewer,
 } from "./kinChatFeed";
 import type { KinHost } from "./kinHost";
+import { kinSentences } from "./kinScreenState";
 import { applyKinChatHistory, emptyKinChat, type KinChatState } from "./kinInboxModel";
 
 const all = makeKinFixtureMessages(500);

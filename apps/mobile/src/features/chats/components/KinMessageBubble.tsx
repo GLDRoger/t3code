@@ -11,10 +11,10 @@ import {
   kinMessageLabel,
   kinMessageLinks,
   kinPlainText,
-  kinSentences,
   type KinFeedRow,
 } from "../state/kinChatFeed";
 import type { KinOutboxEntry } from "../state/kinOutbox";
+import { kinSentences } from "../state/kinScreenState";
 
 type MessageRow = Extract<KinFeedRow, { readonly type: "message" }>;
 type SystemRow = Extract<KinFeedRow, { readonly type: "system" }>;

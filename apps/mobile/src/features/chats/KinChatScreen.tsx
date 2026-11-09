@@ -1,5 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
-import { LegendList, type LegendListRef } from "@legendapp/list/react-native";
+import {
+  LegendList,
+  type LegendListRef,
+  type OnViewableItemsChangedInfo,
+  type ViewabilityConfig,
+} from "@legendapp/list/react-native";
 import {
   StackActions,
   useIsFocused,
@@ -53,6 +58,7 @@ import {
   kinEarlierPage,
   kinFeedViewer,
   kinMarkReadRearms,
+  kinRowSeq,
   kinSeqToMarkRead,
   kinUnseenCount,
   latestKinSeq,
@@ -78,7 +84,7 @@ import {
   type KinChatState,
   type KinInboxState,
 } from "./state/kinInboxModel";
-import { kinChatTitle } from "./state/kinScreenState";
+import { kinChatTitle, kinDirectAgentName } from "./state/kinScreenState";
 import { useKinHostAt } from "./state/useKinHost";
 
 type KinChatParams = {
@@ -101,6 +107,7 @@ export function KinChatScreen({ route }: StaticScreenProps<KinChatParams>) {
         orgId={route.params.orgId}
         chatId={route.params.chatId as KinChatId}
         title="Chat"
+        agentName={null}
         unread={null}
         markRead={null}
         state={{ _tag: "noHost" }}
@@ -169,6 +176,7 @@ function KinLiveChat(props: {
       orgId={props.orgId}
       chatId={chatId ?? (props.chatId as KinChatId)}
       title={summary === undefined ? "Chat" : kinChatTitle(summary, viewer.agentNames)}
+      agentName={summary === undefined ? null : kinDirectAgentName(summary, viewer.agentNames)}
       unread={summary?.unread ?? null}
       markRead={
         environmentId === null || chatId === null
@@ -207,6 +215,7 @@ function KinFixtureChat({ fixtures }: { readonly fixtures: KinFixtures }) {
       orgId="dev"
       chatId={fixtures.KIN_FIXTURE_CHAT_ID}
       title="Tech lead"
+      agentName="Tech lead"
       unread={null}
       markRead={null}
       state={{
@@ -238,6 +247,8 @@ function KinChatPage(props: {
   readonly orgId: string;
   readonly chatId: KinChatId;
   readonly title: string;
+  /** The agent a direct chat is with, for the empty chat's copy; null when unknown. */
+  readonly agentName: string | null;
   /** The inbox's unread count for this chat; null until the inbox loads. */
   readonly unread: number | null;
   /** Null where nothing can be marked, such as the dev fixture. */
@@ -264,6 +275,7 @@ function KinChatPage(props: {
             title={props.title}
             environmentId={state.environmentId}
             chatId={props.chatId}
+            agentName={props.agentName}
             chat={state.chat}
             connected={state.connected}
             error={state.error}
@@ -379,6 +391,8 @@ function KinChatStateView(props: {
 }
 
 const offlineTime = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+// A row half on screen counts as seen, so a message peeking under the edge still lights the pill.
+const SEEN_ROW_CONFIG: ViewabilityConfig = { itemVisiblePercentThreshold: 50 };
 
 type KinChatRow =
   | KinFeedRow
@@ -389,6 +403,7 @@ function KinChatFeed(props: {
   readonly title: string;
   readonly environmentId: EnvironmentId;
   readonly chatId: KinChatId;
+  readonly agentName: string | null;
   readonly chat: KinSynced<KinChatState>;
   readonly connected: boolean;
   /** The stream failed after the feed loaded. */
@@ -412,7 +427,9 @@ function KinChatFeed(props: {
   const openLink = useOpenPullRequest();
   const [heldPaging, setPaging] = useState<KinPaging>(initialKinPaging);
   const [expandedRuns, setExpandedRuns] = useState<ReadonlySet<string>>(new Set());
-  const [follow, setFollow] = useState(initialKinFeedFollow);
+  const [follow, setFollow] = useState(() =>
+    initialKinFeedFollow(latestKinSeq(props.chat.value.messages)),
+  );
 
   const live = props.chat.value;
   const paging = kinActivePaging(heldPaging, live);
@@ -490,7 +507,7 @@ function KinChatFeed(props: {
       request,
       error: null,
     });
-    transition({ type: "page-start", latestSeq: latestKinSeq(messages) });
+    transition({ type: "page-start" });
     void read(earlierPage).then((exit) => {
       // A newer request or a remount owns the state now.
       if (lastRequest.current !== request) return;
@@ -512,13 +529,15 @@ function KinChatFeed(props: {
   };
 
   const checkEnd = () => {
-    const isAtEnd = listRef.current?.getState().isAtEnd ?? true;
-    const next = resolveKinFeedFollow(follow, {
-      type: "end-check",
-      isAtEnd,
-      latestSeq: latestKinSeq(messages),
-    });
-    if (next !== follow) setFollow(next);
+    transition({ type: "end-check", isAtEnd: listRef.current?.getState().isAtEnd ?? true });
+  };
+
+  const markSeen = ({ viewableItems }: OnViewableItemsChangedInfo<KinChatRow>) => {
+    const seq = Math.max(
+      0,
+      ...viewableItems.map((token) => (token.item.type === "pending" ? 0 : kinRowSeq(token.item))),
+    );
+    if (seq > 0) transition({ type: "seen", seq });
   };
 
   const jumpToEnd = () => {
@@ -587,9 +606,6 @@ function KinChatFeed(props: {
           </View>
         </View>
       )}
-      {notice === null ? null : (
-        <Notice {...(props.connected ? {} : { icon: "wifi.slash" as const })} message={notice} />
-      )}
       {canLoadEarlier ? (
         <View className="items-center">
           <Button
@@ -616,6 +632,18 @@ function KinChatFeed(props: {
     </View>
   );
 
+  // Above the composer, so a long chat opened at its end still shows why it stopped updating.
+  const noticeBar =
+    notice === null ? null : (
+      <View className="px-4 pb-3">
+        <Notice
+          {...(props.connected ? {} : { icon: "wifi.slash" as const })}
+          message={notice}
+          floating
+        />
+      </View>
+    );
+
   // After a reset the feed is empty until the latest page reloads; that's not an empty chat.
   if (rows.length === 0 && earlierPage === null && !live.needsHistoryReload) {
     return (
@@ -624,10 +652,17 @@ function KinChatFeed(props: {
           {header}
           <EmptyState
             variant="plain"
-            title="Say hello to your lead."
-            detail="It reads every message here."
+            title={
+              props.agentName === null ? "No messages yet" : `Say hello to ${props.agentName}.`
+            }
+            detail={
+              props.agentName === null
+                ? "Messages in this chat show up here."
+                : "It reads every message here."
+            }
           />
         </View>
+        {noticeBar}
         {composer}
       </KeyboardAvoidingView>
     );
@@ -661,6 +696,8 @@ function KinChatFeed(props: {
           }
           maintainVisibleContentPosition={followsEnd ? false : { data: true, size: true }}
           onScroll={checkEnd}
+          viewabilityConfig={SEEN_ROW_CONFIG}
+          onViewableItemsChanged={markSeen}
           onScrollBeginDrag={() => transition({ type: "drag-begin" })}
           onScrollEndDrag={checkEnd}
           onMomentumScrollEnd={checkEnd}
@@ -682,6 +719,7 @@ function KinChatFeed(props: {
           </View>
         ) : null}
       </View>
+      {noticeBar}
       {composer}
     </KeyboardAvoidingView>
   );

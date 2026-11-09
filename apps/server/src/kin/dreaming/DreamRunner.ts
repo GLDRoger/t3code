@@ -26,6 +26,7 @@ import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { VcsProcess } from "../../vcs/VcsProcess.ts";
 import * as KinBudget from "../lead/KinBudget.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
+import { isCheckoutPath } from "../memory/checkoutPaths.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
@@ -33,7 +34,7 @@ import * as SecretScan from "../memory/secretScan.ts";
 import { KinIssuedTokens } from "../mcp/KinIssuedTokens.ts";
 import * as KinTriggerInbox from "../triggers/KinTriggerInbox.ts";
 import * as KinTriggerStore from "../triggers/KinTriggerStore.ts";
-import { checkDream, DreamJson, isDreamPath } from "./checkDream.ts";
+import { checkDream, DreamJson } from "./checkDream.ts";
 import * as DreamSession from "./DreamSession.ts";
 import { collectMaterial, type DreamMaterial } from "./material.ts";
 
@@ -315,7 +316,7 @@ const make = Effect.gen(function* () {
     const base = yield* writer.value.dreamBase(orgId);
     yield* sql`UPDATE kin_dream_runs SET base_head = ${base.head}
       WHERE org_id = ${orgId} AND dream_id = ${dreamId} AND status = 'running' RETURNING dream_id`;
-    const files = new Map([...base.files].filter(([file]) => isDreamPath(file)));
+    const files = new Map([...base.files].filter(([file]) => isCheckoutPath(file)));
     const baseText = new Map([...files].map(([file, bytes]) => [file, bytes.toString("utf8")]));
     const material = yield* collectMaterial({
       orgId,

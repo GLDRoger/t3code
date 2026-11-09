@@ -89,7 +89,7 @@ import { stableStringify } from "./src/relaySigning.ts";
 const b = (o) => Buffer.from(stableStringify(o)).toString("base64url");
 const now = Math.floor(Date.now() / 1000);
 const header = { alg: "ES256", kid: "test", typ: "kin-grant+jws" };
-const payload = { v: 1, orgId: "org", actionId: "act_test", revision: 0, nonce: "n", jti: crypto.randomUUID(),
+const payload = { v: 1, orgId: "org", actionId: "act_test", revision: 0, nonce: "n".repeat(43), jti: crypto.randomUUID(),
   kind: "merge_pull_request", targetDigest: "0".repeat(64), headSha: "a1b2c3d".padEnd(40, "0"), base: "main",
   mergeMethod: "squash", target: { _tag: "pull_request", host: "github.com", repo: "GLDRoger/t3code", number: 212,
   mergeMethod: "squash", deleteBranchAfter: false }, approver: { humanId: "h", kid: "test" }, decision: "approve",
