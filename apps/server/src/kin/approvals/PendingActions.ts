@@ -25,7 +25,9 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Base64Url from "effect/encoding/Base64Url";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -82,7 +84,9 @@ const encodeApprovers = Schema.encodeEffect(StoredAction.fields.requiredApprover
 const decodeGrant = Schema.decodeUnknownEffect(KinGrant);
 const decodeActionId = Schema.decodeEffect(KinActionId);
 
-type ActionRef = { readonly orgId: KinOrgId; readonly actionId: KinActionId };
+export type ActionRef = { readonly orgId: KinOrgId; readonly actionId: KinActionId };
+/** An action with the grant that approved its current revision. */
+export type KinActionWithGrant = { readonly action: KinPendingAction; readonly grant: KinGrant };
 type RevisionRef = ActionRef & { readonly revision: number };
 type GrantRef = ActionRef & { readonly jti: string; readonly approverHumanId: KinPersonId };
 
@@ -236,7 +240,18 @@ export class KinPendingActions extends Context.Service<
     ) => Effect.Effect<KinApproveResult, Errors>;
     /** Whether the org already holds this `jti`, or this approver's grant for the action. */
     readonly heldGrant: (ref: GrantRef) => Effect.Effect<boolean, Errors>;
-    /** The executor's single claim: the `kin_executions` insert plus `approved → executing`. */
+    /** Approved actions with their current revision's grant, oldest first, for the executor. */
+    readonly approvedWithGrant: (
+      orgId?: KinOrgId,
+    ) => Effect.Effect<ReadonlyArray<KinActionWithGrant>, Errors>;
+    /** `executing` actions and the grant their claim consumed: startup reconciliation's work. */
+    readonly executingWithGrant: () => Effect.Effect<ReadonlyArray<KinActionWithGrant>, Errors>;
+    /** Every action `approve` moves to `approved`, published after its transaction commits. */
+    readonly approvals: Effect.Effect<PubSub.Subscription<ActionRef>, never, Scope.Scope>;
+    /**
+     * The executor's single claim: the `kin_executions` insert plus `approved → executing`. Refused
+     * while the org's stop switch is on, in the same statement.
+     */
     readonly claim: (
       input: RevisionRef & { readonly grantId: KinGrant["id"] },
     ) => Effect.Effect<boolean, Errors>;
@@ -261,6 +276,7 @@ export class KinPendingActions extends Context.Service<
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const audit = yield* KinAudit;
+  const approvedHub = yield* PubSub.unbounded<ActionRef>();
 
   const select = (ref: ActionRef) =>
     sql<ActionRow>`SELECT * FROM kin_pending_actions
@@ -504,7 +520,9 @@ const make = Effect.gen(function* () {
         );
       // A refused grant still leaves a trace (spec section 11), but only on the chain of the org
       // that owns the action: an unknown org or action stays `stale` and writes nothing.
-      if (result._tag !== "approved") {
+      if (result._tag === "approved") {
+        yield* PubSub.publish(approvedHub, { orgId: input.orgId, actionId: input.actionId });
+      } else {
         yield* sql
           .withTransaction(
             Effect.gen(function* () {
@@ -532,6 +550,67 @@ const make = Effect.gen(function* () {
     Effect.mapError(toError("KinPendingActions.approve")),
   );
 
+  type GrantRow = {
+    readonly grant_id: string;
+    readonly g_revision: number;
+    readonly jti: string;
+    readonly approver_human_id: string;
+    readonly key_thumbprint: string;
+    readonly compact: string;
+    readonly iat_s: number;
+    readonly exp_s: number;
+    readonly accepted_at: number;
+    readonly consumed_at: number | null;
+  };
+  const withGrant = (rows: ReadonlyArray<ActionRow & GrantRow>) =>
+    Effect.forEach(rows, (row) =>
+      Effect.all({
+        action: toAction(row),
+        grant: decodeGrant({
+          id: row.grant_id,
+          orgId: row.org_id,
+          actionId: row.action_id,
+          revision: row.g_revision,
+          jti: row.jti,
+          approverHumanId: row.approver_human_id,
+          keyThumbprint: row.key_thumbprint,
+          compact: row.compact,
+          iat: row.iat_s,
+          exp: row.exp_s,
+          acceptedAt: iso(row.accepted_at),
+          consumedAt: row.consumed_at === null ? null : iso(row.consumed_at),
+        }),
+      }),
+    );
+  const grantColumns = sql`g.grant_id, g.revision AS g_revision, g.jti, g.approver_human_id,
+    g.key_thumbprint, g.compact, g.iat_s, g.exp_s, g.accepted_at, g.consumed_at`;
+
+  const approvedWithGrant = Effect.fn("KinPendingActions.approvedWithGrant")(
+    function* (orgId?: KinOrgId) {
+      const rows = yield* sql<ActionRow & GrantRow>`SELECT a.*, ${grantColumns}
+        FROM kin_pending_actions a JOIN kin_grants g
+          ON g.org_id = a.org_id AND g.action_id = a.action_id AND g.revision = a.revision
+        WHERE a.state = 'approved' AND g.consumed_at IS NULL
+          AND ${orgId === undefined ? sql`1 = 1` : sql`a.org_id = ${orgId}`}
+        ORDER BY a.updated_at, a.action_id`;
+      return yield* withGrant(rows);
+    },
+    Effect.mapError(toError("KinPendingActions.approvedWithGrant")),
+  );
+
+  const executingWithGrant = Effect.fn("KinPendingActions.executingWithGrant")(
+    function* () {
+      const rows = yield* sql<ActionRow & GrantRow>`SELECT a.*, ${grantColumns}
+        FROM kin_pending_actions a
+        JOIN kin_executions e ON e.org_id = a.org_id AND e.action_id = a.action_id
+        JOIN kin_grants g ON g.grant_id = e.grant_id
+        WHERE a.state = 'executing' AND e.finished_at IS NULL
+        ORDER BY e.started_at, a.action_id`;
+      return yield* withGrant(rows);
+    },
+    Effect.mapError(toError("KinPendingActions.executingWithGrant")),
+  );
+
   const claim = Effect.fn("KinPendingActions.claim")(
     function* (input: RevisionRef & { readonly grantId: KinGrant["id"] }) {
       const now = yield* Clock.currentTimeMillis;
@@ -545,6 +624,8 @@ const make = Effect.gen(function* () {
                 AND action_id = ${input.actionId} AND revision = ${input.revision}
                 AND consumed_at IS NULL
                 AND MIN(exp_s * 1000, accepted_at + ${GRANT_ACCEPTED_TTL_MS}) > ${now}
+                AND NOT EXISTS (SELECT 1 FROM kin_org_state s
+                  WHERE s.org_id = kin_grants.org_id AND s.paused = 1)
                 AND ${signingKeyUsable({
                   orgId: sql`kin_grants.org_id`,
                   keyThumbprint: sql`kin_grants.key_thumbprint`,
@@ -604,10 +685,27 @@ const make = Effect.gen(function* () {
               WHERE org_id = ${input.orgId} AND action_id = ${input.actionId} AND finished_at IS NULL
               RETURNING action_id`;
             if (recorded.length === 0) return yield* new Rollback();
+            // The grant payload has no device label; the signing key's record does.
+            const [signer] = yield* sql<{
+              jti: string;
+              key_thumbprint: KinKeyThumbprint;
+              device_label: string | null;
+            }>`SELECT g.jti, g.key_thumbprint, k.device_label
+              FROM kin_executions e JOIN kin_grants g ON g.grant_id = e.grant_id
+              LEFT JOIN kin_approver_keys k
+                ON k.org_id = g.org_id AND k.thumbprint = g.key_thumbprint
+              WHERE e.org_id = ${input.orgId} AND e.action_id = ${input.actionId}`;
             yield* audit.append({
               orgId: input.orgId,
               event: input.reconciled === true ? "execution_reconciled" : "execution_finished",
               ...(yield* auditFacts(won)),
+              ...(signer === undefined
+                ? {}
+                : {
+                    grantJti: signer.jti,
+                    keyThumbprint: signer.key_thumbprint,
+                    ...(signer.device_label === null ? {} : { deviceLabel: signer.device_label }),
+                  }),
               result:
                 input.outcome === "succeeded"
                   ? (input.mergeCommitSha ?? "succeeded")
@@ -670,6 +768,9 @@ const make = Effect.gen(function* () {
     transition,
     approve,
     heldGrant,
+    approvedWithGrant,
+    executingWithGrant,
+    approvals: PubSub.subscribe(approvedHub),
     claim,
     finish,
     sweep,

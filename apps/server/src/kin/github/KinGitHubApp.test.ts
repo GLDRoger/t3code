@@ -10,6 +10,8 @@ import * as Redacted from "effect/Redacted";
 import * as TestClock from "effect/testing/TestClock";
 import { describe } from "vite-plus/test";
 
+import * as GithubWebhooks from "../triggers/githubWebhooks.ts";
+import * as AppHookClient from "./appHookClient.ts";
 import * as KinGitHubApp from "./KinGitHubApp.ts";
 import type { KinGitHubPermissionSet } from "./KinGitHubPermissions.ts";
 import {
@@ -289,5 +291,74 @@ describe("KinGitHubApp.installations", () => {
         ["/app/installations?per_page=100&page=1", "/app/installations?per_page=100&page=2"],
       );
     }).pipe(Effect.provide(layer));
+  });
+});
+
+describe("the App hook client (github.app_hook.configure)", () => {
+  it.effect("patches the App's own webhook with an App JWT and maps refusals", () => {
+    const answers: Array<FakeAnswer> = [
+      { status: 200, body: { url: "https://kin.example/hook", secret: "********" } },
+      { status: 422, body: { message: "Validation Failed" } },
+    ];
+    const { requests, layer } = setup((request) =>
+      request.method === "PATCH" ? answers.shift() : undefined,
+    );
+    const client = AppHookClient.layer.pipe(Layer.provide(layer));
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(NOW_MS);
+      const hook = yield* GithubWebhooks.GithubAppHookClient;
+      yield* hook.patchHookConfig({
+        url: "https://kin.example/hook",
+        content_type: "json",
+        insecure_ssl: "0",
+        secret: Redacted.make("whsec_fake"),
+      });
+      const [patch] = requests;
+      assert.strictEqual(`${patch?.method} ${patch?.path}`, "PATCH /app/hook/config");
+      assert.deepStrictEqual(patch?.body, {
+        url: "https://kin.example/hook",
+        content_type: "json",
+        insecure_ssl: "0",
+        secret: "whsec_fake",
+      });
+      // Signed by the App's key, not an installation token.
+      const jwt = patch?.authorization?.replace(/^Bearer /, "") ?? "";
+      const [header, payload, signature] = jwt.split(".") as [string, string, string];
+      assert.isTrue(
+        NodeCrypto.verify(
+          "sha256",
+          Buffer.from(`${header}.${payload}`),
+          publicKey,
+          Buffer.from(signature, "base64url"),
+        ),
+      );
+      assert.strictEqual(JSON.parse(Buffer.from(payload, "base64url").toString()).iss, APP_ID);
+      // No secret on the call: the field is left out rather than cleared.
+      const refused = yield* hook
+        .patchHookConfig({
+          url: "https://kin.example/hook",
+          content_type: "json",
+          insecure_ssl: "0",
+        })
+        .pipe(Effect.flip);
+      assert.notProperty(requests[1]?.body, "secret");
+      assert.deepInclude(refused, { _tag: "GithubAppHookRefused", reason: "failed" });
+    }).pipe(Effect.provide(client));
+  });
+
+  it.effect("is unavailable without the App's key, and never calls GitHub", () => {
+    const { requests, layer } = setup(() => undefined, { withKey: false });
+    return Effect.gen(function* () {
+      const hook = yield* GithubWebhooks.GithubAppHookClient;
+      const refused = yield* hook
+        .patchHookConfig({
+          url: "https://kin.example/hook",
+          content_type: "json",
+          insecure_ssl: "0",
+        })
+        .pipe(Effect.flip);
+      assert.deepInclude(refused, { reason: "unavailable" });
+      assert.lengthOf(requests, 0);
+    }).pipe(Effect.provide(AppHookClient.layer.pipe(Layer.provide(layer))));
   });
 });

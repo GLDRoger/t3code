@@ -1,4 +1,4 @@
-import type { KinOrgId } from "@t3tools/contracts";
+import { Sha40, type KinOrgId, type PullRequestMergeMethod } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -13,10 +13,13 @@ import { HttpClient } from "effect/http";
 import { CredentialHygienePass } from "../approvals/CredentialHygiene.ts";
 import {
   GITHUB_PAT_NOT_ACCESSIBLE,
+  gitHubAnswer,
   gitHubJson,
   gitHubStatus,
   isGitHubRateLimit,
   type GitHubStatusResponse,
+  repoPath,
+  type GitHubAnswer,
   type KinGitHubRequestError,
 } from "./githubRest.ts";
 import * as Keychain from "./Keychain.ts";
@@ -142,6 +145,60 @@ export type OwnerMergeTokenStatus =
     }
   | { readonly _tag: "expired"; readonly login: string; readonly expiresAt: number };
 
+/**
+ * What GitHub said to one of the owner's writes. `unknown` (a 5xx, an unreadable answer, or no
+ * answer) means the write may have happened: the executor reconciles instead of calling it failed.
+ */
+export type OwnerWriteAnswer =
+  | { readonly _tag: "done"; readonly mergeCommitSha?: string; readonly requestId?: string }
+  | {
+      readonly _tag: "refused";
+      readonly reason:
+        | "head_moved"
+        | "not_mergeable"
+        | "denied"
+        | "not_found"
+        | "rate_limited"
+        | "invalid";
+      readonly status: number;
+      /** GitHub's own error message, which never carries a credential. */
+      readonly message: string;
+      readonly requestId?: string;
+    }
+  | { readonly _tag: "unknown"; readonly status?: number; readonly requestId?: string };
+
+const MergeAnswer = Schema.Struct({
+  merged: Schema.Literal(true),
+  sha: Sha40,
+});
+const decodeMergeAnswer = Schema.decodeUnknownOption(MergeAnswer);
+
+const requestIdOf = (answer: Pick<GitHubAnswer, "headers">) => {
+  const id = answer.headers["x-github-request-id"];
+  return id === undefined ? {} : { requestId: id };
+};
+
+/** The refusals both writes share; `null` for a status the write judges itself. */
+function refusalOf(answer: GitHubAnswer): OwnerWriteAnswer | null {
+  const refused = (reason: Extract<OwnerWriteAnswer, { _tag: "refused" }>["reason"]) => ({
+    _tag: "refused" as const,
+    reason,
+    status: answer.status,
+    message: answer.message.slice(0, 300),
+    ...requestIdOf(answer),
+  });
+  if (isGitHubRateLimit(answer)) return refused("rate_limited");
+  if (answer.status === 401 || answer.status === 403) return refused("denied");
+  if (answer.status === 404) return refused("not_found");
+  // A 5xx can arrive after GitHub merged; only reconciliation can tell.
+  if (answer.status >= 500)
+    return { _tag: "unknown", status: answer.status, ...requestIdOf(answer) };
+  return null;
+}
+
+const branchRefPath = (repo: string, branch: string) =>
+  `${repoPath(repo)}/git/refs/heads/${branch.split("/").map(encodeURIComponent).join("/")}`;
+
 /** GitHub sends `2026-12-01 00:00:00 UTC` or `… +0000` on fine-grained token responses. */
 function parseTokenExpiration(header: string | undefined): number | null {
   if (header === undefined) return null;
@@ -157,7 +214,7 @@ function parseTokenExpiration(header: string | undefined): number | null {
 
 /**
  * The owner's merge credential (spec section 6): read per execution and never logged, put in an
- * environment variable or handed to a child process. APPR-9 adds the merge call here.
+ * environment variable or handed to a child process.
  */
 export class OwnerMergeClient extends Context.Service<
   OwnerMergeClient,
@@ -189,6 +246,24 @@ export class OwnerMergeClient extends Context.Service<
       Redacted.Redacted<string>,
       OwnerMergeTokenMissingError | Keychain.KinKeychainError
     >;
+    /**
+     * `PUT /pulls/{n}/merge` with the exact approved `sha`, so GitHub refuses (409) if the head
+     * moved. Never `PullRequestService.runAction`, which doesn't pin the head (spec section 6).
+     */
+    readonly merge: (
+      pass: CredentialHygienePass,
+      input: {
+        readonly repo: string;
+        readonly number: number;
+        readonly sha: string;
+        readonly mergeMethod: PullRequestMergeMethod;
+      },
+    ) => Effect.Effect<OwnerWriteAnswer, OwnerMergeTokenMissingError | Keychain.KinKeychainError>;
+    /** `DELETE /git/refs/heads/{branch}`. GitHub can't pin this to a SHA; the caller prechecks. */
+    readonly deleteBranch: (
+      pass: CredentialHygienePass,
+      input: { readonly repo: string; readonly branch: string },
+    ) => Effect.Effect<OwnerWriteAnswer, OwnerMergeTokenMissingError | Keychain.KinKeychainError>;
   }
 >()("t3/kin/github/OwnerMergeClient") {}
 
@@ -374,7 +449,87 @@ const make = Effect.gen(function* () {
     return Redacted.make(item.value.token);
   });
 
-  return OwnerMergeClient.of({ save, status, token });
+  // No answer at all may still mean GitHub acted: unknown, never failed.
+  const write = (input: {
+    readonly operation: string;
+    readonly method: "PUT" | "DELETE";
+    readonly path: string;
+    readonly token: Redacted.Redacted<string>;
+    readonly body?: unknown;
+  }) =>
+    gitHubAnswer({ client, ...input }).pipe(
+      Effect.map((answer) => ({ answer })),
+      Effect.orElseSucceed(() => ({ answer: undefined })),
+    );
+
+  const merge = Effect.fn("OwnerMergeClient.merge")(function* (
+    pass: CredentialHygienePass,
+    input: {
+      readonly repo: string;
+      readonly number: number;
+      readonly sha: string;
+      readonly mergeMethod: PullRequestMergeMethod;
+    },
+  ) {
+    yield* Effect.annotateCurrentSpan({
+      "kin.github.repo": input.repo,
+      "kin.github.pr": input.number,
+    });
+    const { answer } = yield* write({
+      operation: "pulls.merge",
+      method: "PUT",
+      path: `${repoPath(input.repo)}/pulls/${input.number}/merge`,
+      token: yield* token(pass),
+      body: { sha: input.sha, merge_method: input.mergeMethod },
+    });
+    if (answer === undefined) return { _tag: "unknown" } satisfies OwnerWriteAnswer;
+    if (answer.status === 200) {
+      const merged = decodeMergeAnswer(answer.body);
+      return (
+        Option.isSome(merged)
+          ? { _tag: "done", mergeCommitSha: merged.value.sha, ...requestIdOf(answer) }
+          : { _tag: "unknown", status: 200, ...requestIdOf(answer) }
+      ) satisfies OwnerWriteAnswer;
+    }
+    const shared = refusalOf(answer);
+    if (shared !== null) return shared;
+    return {
+      _tag: "refused",
+      // 409: "Head branch was modified", the `sha` pin. 405: not mergeable (rules, method, queue).
+      reason:
+        answer.status === 409 ? "head_moved" : answer.status === 405 ? "not_mergeable" : "invalid",
+      status: answer.status,
+      message: answer.message.slice(0, 300),
+      ...requestIdOf(answer),
+    } satisfies OwnerWriteAnswer;
+  });
+
+  const deleteBranch = Effect.fn("OwnerMergeClient.deleteBranch")(function* (
+    pass: CredentialHygienePass,
+    input: { readonly repo: string; readonly branch: string },
+  ) {
+    yield* Effect.annotateCurrentSpan({ "kin.github.repo": input.repo });
+    const { answer } = yield* write({
+      operation: "git.deleteRef",
+      method: "DELETE",
+      path: branchRefPath(input.repo, input.branch),
+      token: yield* token(pass),
+    });
+    if (answer === undefined) return { _tag: "unknown" } satisfies OwnerWriteAnswer;
+    if (answer.status === 204)
+      return { _tag: "done", ...requestIdOf(answer) } satisfies OwnerWriteAnswer;
+    const shared = refusalOf(answer);
+    if (shared !== null) return shared;
+    return {
+      _tag: "refused",
+      reason: answer.message === "Reference does not exist" ? "not_found" : "invalid",
+      status: answer.status,
+      message: answer.message.slice(0, 300),
+      ...requestIdOf(answer),
+    } satisfies OwnerWriteAnswer;
+  });
+
+  return OwnerMergeClient.of({ save, status, token, merge, deleteBranch });
 });
 
 export const layer = Layer.effect(OwnerMergeClient, make);

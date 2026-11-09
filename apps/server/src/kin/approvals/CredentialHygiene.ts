@@ -102,6 +102,19 @@ export class T3GitHubIdentity extends Context.Service<
   { readonly identities: Effect.Effect<T3GitHubIdentities, T3GitHubIdentityError> }
 >()("t3/kin/approvals/CredentialHygiene/T3GitHubIdentity") {}
 
+/**
+ * Until the live probe lands (spec section 12: `gh`, the git credential helper, SSH and T3's own
+ * credential), no identity can be read, so every check fails `identity_unknown` and nothing runs.
+ */
+export const identityUnavailableLayer = Layer.succeed(
+  T3GitHubIdentity,
+  T3GitHubIdentity.of({
+    identities: Effect.fail(
+      new T3GitHubIdentityError({ cause: "the live GitHub identity probe is not installed" }),
+    ),
+  }),
+);
+
 export const CredentialHygieneFailure = Schema.Literals([
   "env_token",
   "owner_identity",
