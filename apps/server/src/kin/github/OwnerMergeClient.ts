@@ -135,6 +135,16 @@ export class OwnerMergeTokenMissingError extends Schema.TaggedError<OwnerMergeTo
   }
 }
 
+/** The hygiene pass is over a minute old. Raised before any request, so nothing was sent. */
+export class OwnerMergePassStaleError extends Schema.TaggedError<OwnerMergePassStaleError>()(
+  "OwnerMergePassStaleError",
+  { ageMs: Schema.Number },
+) {
+  override get message(): string {
+    return `The credential check is ${Math.round(this.ageMs / 1000)} s old; the merge token needs one from the last minute.`;
+  }
+}
+
 export type OwnerMergeTokenStatus =
   | { readonly _tag: "missing" }
   | {
@@ -213,6 +223,11 @@ function parseTokenExpiration(header: string | undefined): number | null {
   return Number.isFinite(at) ? at : null;
 }
 
+export type OwnerMergeTokenError =
+  | OwnerMergeTokenMissingError
+  | OwnerMergePassStaleError
+  | Keychain.KinKeychainError;
+
 /**
  * The owner's merge credential (spec section 6): read per execution and never logged, put in an
  * environment variable or handed to a child process.
@@ -239,14 +254,11 @@ export class OwnerMergeClient extends Context.Service<
     ) => Effect.Effect<OwnerMergeTokenStatus, Keychain.KinKeychainError>;
     /**
      * Only `CredentialHygiene.requirePassing` makes a pass, so the token needs a passing check, made
-     * in the last 60 seconds. A forged or stale pass is a defect.
+     * in the last 60 seconds. A forged pass is a defect; a stale one fails before anything is sent.
      */
     readonly token: (
       pass: CredentialHygienePass,
-    ) => Effect.Effect<
-      Redacted.Redacted<string>,
-      OwnerMergeTokenMissingError | Keychain.KinKeychainError
-    >;
+    ) => Effect.Effect<Redacted.Redacted<string>, OwnerMergeTokenError>;
     /**
      * `PUT /pulls/{n}/merge` with the exact approved `sha`, so GitHub refuses (409) if the head
      * moved. Never `PullRequestService.runAction`, which doesn't pin the head (spec section 6).
@@ -259,12 +271,12 @@ export class OwnerMergeClient extends Context.Service<
         readonly sha: string;
         readonly mergeMethod: PullRequestMergeMethod;
       },
-    ) => Effect.Effect<OwnerWriteAnswer, OwnerMergeTokenMissingError | Keychain.KinKeychainError>;
+    ) => Effect.Effect<OwnerWriteAnswer, OwnerMergeTokenError>;
     /** `DELETE /git/refs/heads/{branch}`. GitHub can't pin this to a SHA; the caller prechecks. */
     readonly deleteBranch: (
       pass: CredentialHygienePass,
       input: { readonly repo: string; readonly branch: string },
-    ) => Effect.Effect<OwnerWriteAnswer, OwnerMergeTokenMissingError | Keychain.KinKeychainError>;
+    ) => Effect.Effect<OwnerWriteAnswer, OwnerMergeTokenError>;
   }
 >()("t3/kin/github/OwnerMergeClient") {}
 
@@ -437,9 +449,8 @@ const make = Effect.gen(function* () {
     if (orgId === null) {
       return yield* Effect.die("OwnerMergeClient.token needs a real hygiene pass");
     }
-    if ((yield* Clock.currentTimeMillis) - pass.report.checkedAt > PASS_MAX_AGE_MS) {
-      return yield* Effect.die("OwnerMergeClient.token needs a hygiene pass from the last minute");
-    }
+    const ageMs = (yield* Clock.currentTimeMillis) - pass.report.checkedAt;
+    if (ageMs > PASS_MAX_AGE_MS) return yield* new OwnerMergePassStaleError({ ageMs });
     const item = yield* stored(orgId);
     if (Option.isNone(item)) {
       return yield* new OwnerMergeTokenMissingError({ orgId, expired: false });

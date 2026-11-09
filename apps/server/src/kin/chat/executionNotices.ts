@@ -41,35 +41,59 @@ const executionNoticeBody = (input: {
   return `Didn't carry out ${what}: ${input.error ?? "no reason given"}. Approve a new request to try again.`;
 };
 
+const holdText = (holdReason: string) => {
+  const [reason, failures] = holdReason.split(": ");
+  switch (reason) {
+    case "paused":
+      return "Kin was paused";
+    case "not_configured":
+      return "GitHub isn't set up on this Kin host";
+    case "roles_unavailable":
+      return "Kin couldn't confirm the approver is still an owner";
+    case "credential_check_failed":
+      return `the credential check failed (${failures ?? "no reason given"})`;
+    default:
+      return holdReason;
+  }
+};
+
 /** Posts each result once (the message id is the action's) to the lead's direct chat. */
 export const layer = Layer.effect(
   KinExecutionNotices,
   Effect.gen(function* () {
     const chat = yield* KinChatService;
     const sql = yield* SqlClient.SqlClient;
+    const post = Effect.fnUntraced(function* (action: KinPendingAction, body: string) {
+      const [lead] = yield* sql<{ readonly chatId: string }>`
+        SELECT owner_chat_id AS "chatId" FROM kin_leads
+        WHERE org_id = ${action.orgId} AND agent_id = ${action.requestedBy.agentId}
+        ORDER BY agent_id`;
+      if (lead === undefined) {
+        yield* Effect.logInfo("Kin action notice has no chat", { actionId: action.id, body });
+        return;
+      }
+      yield* chat.notice({
+        orgId: action.orgId,
+        chatId: KinChatId.make(lead.chatId),
+        messageId: KinMessageId.make(`kin-exec:${action.id}`),
+        body,
+      });
+    });
     return KinExecutionNotices.of({
       finished: Effect.fn("KinExecutionNotices.finished")(
         function* (input) {
-          const { action } = input;
-          const [lead] = yield* sql<{ readonly chatId: string }>`
-          SELECT owner_chat_id AS "chatId" FROM kin_leads
-          WHERE org_id = ${action.orgId} AND agent_id = ${action.requestedBy.agentId}
-          ORDER BY agent_id`;
-          if (lead === undefined) {
-            yield* Effect.logInfo("Kin action finished", {
-              actionId: action.id,
-              outcome: input.outcome,
-            });
-            return;
-          }
-          yield* chat.notice({
-            orgId: action.orgId,
-            chatId: KinChatId.make(lead.chatId),
-            messageId: KinMessageId.make(`kin-exec:${action.id}`),
-            body: executionNoticeBody(input),
-          });
+          yield* post(input.action, executionNoticeBody(input));
         },
         Effect.catchCause((cause) => Effect.logWarning("Kin execution notice not posted", cause)),
+      ),
+      lapsed: Effect.fn("KinExecutionNotices.lapsed")(
+        function* ({ action, holdReason }) {
+          yield* post(
+            action,
+            `The approval for ${subject(action)} lapsed before it could run: ${holdText(holdReason)}. Approve a new request to try again.`,
+          );
+        },
+        Effect.catchCause((cause) => Effect.logWarning("Kin lapse notice not posted", cause)),
       ),
     });
   }),

@@ -108,14 +108,19 @@ const executorDeps = handlers.pipe(
   ),
 );
 
+const executor = ActionExecutor.layer.pipe(
+  Layer.provide(Layer.merge(executorDeps, PendingActions.ledgerLayer)),
+);
+
 /**
  * Push routing reads pending actions, so they stay in the layer's output. The executor needs a
  * `KinExecutionNotices` from outside, since the chat it posts to can't be imported here.
  */
 export const layer = Layer.mergeAll(
   GrantVerifier.layer,
-  // The ledger (claim and finish) goes to the executor alone, never into the layer's output.
-  ActionExecutor.layer.pipe(Layer.provide(Layer.merge(executorDeps, PendingActions.ledgerLayer))),
+  // Built for its worker only. Context lookups go by key string, so anything in this output
+  // reaches every service holding `kin.services`; the executor, ledger and handlers stay out.
+  Layer.empty.pipe(Layer.provide(executor)),
 ).pipe(
   Layer.provideMerge(ApproverKeys.layer),
   Layer.provideMerge(PendingActions.layer),

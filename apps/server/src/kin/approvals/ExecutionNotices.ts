@@ -19,5 +19,10 @@ export class KinExecutionNotices extends Context.Service<
       /** Something the owner should know about a success, such as a head branch left in place. */
       readonly note?: string;
     }) => Effect.Effect<void>;
+    /** An approval whose grant lapsed while the executor held it; `holdReason` says why. */
+    readonly lapsed: (input: {
+      readonly action: KinPendingAction;
+      readonly holdReason: string;
+    }) => Effect.Effect<void>;
   }
 >()("t3/kin/approvals/ExecutionNotices/KinExecutionNotices") {}

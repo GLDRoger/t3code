@@ -78,11 +78,22 @@ export const makeMergePullRequestHandler = Effect.gen(function* () {
       const outcome = yield* outcomeOf(answer);
       if (!target.deleteBranchAfter) return outcome;
       const deleted = yield* deleteHead(action, context.pass).pipe(
-        Effect.orElseSucceed(() => "unavailable" as const),
+        Effect.catch((error) =>
+          Effect.succeed(
+            error._tag === "KinGitHubRequestError" && error.stage === "transport"
+              ? ("GitHub didn't answer" as const)
+              : ("couldn't check it on GitHub" as const),
+          ),
+        ),
       );
       if (deleted === "done") return outcome;
       yield* Effect.logInfo("Kin merge: head branch left in place", { reason: deleted });
-      return { ...outcome, note: `Kept head branch ${resolved.head}: ${deleted}.` };
+      // The delete was sent and may have landed; every other answer means it was kept.
+      const note =
+        deleted === "unknown"
+          ? `Head branch ${resolved.head} may not have been deleted; GitHub didn't answer.`
+          : `Kept head branch ${resolved.head}: ${deleted}.`;
+      return { ...outcome, note };
     },
   );
 

@@ -11,6 +11,8 @@ import * as KinGitHubApp from "./KinGitHubApp.ts";
 
 // Read-only, so the executor's prechecks never hold a token that could write.
 const READ_PERMISSIONS = { pull_requests: "read", contents: "read" } as const;
+/** A read, token mint included, that takes longer fails `transport`: GitHub didn't answer. */
+const BOT_READ_TIMEOUT = "15 seconds";
 
 const PullAnswer = Schema.Struct({
   state: Schema.Literals(["open", "closed"]),
@@ -87,7 +89,21 @@ const make = Effect.gen(function* () {
   const app = yield* KinGitHubApp.KinGitHubApp;
   const client = yield* HttpClient.HttpClient;
 
-  const read = Effect.fnUntraced(function* <A>(
+  const read = <A>(
+    repo: RepoSlug,
+    operation: string,
+    path: string,
+    decode: (body: unknown) => Option.Option<A>,
+    missingOk: boolean,
+  ) =>
+    readOnce(repo, operation, path, decode, missingOk).pipe(
+      Effect.timeoutOrElse({
+        duration: BOT_READ_TIMEOUT,
+        orElse: () => Effect.fail(new KinGitHubRequestError({ operation, stage: "transport" })),
+      }),
+    );
+
+  const readOnce = Effect.fnUntraced(function* <A>(
     repo: RepoSlug,
     operation: string,
     path: string,

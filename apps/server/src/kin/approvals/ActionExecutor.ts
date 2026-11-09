@@ -32,7 +32,8 @@ const TICK_INTERVAL = "1 minute";
 const SWEEP_INTERVAL = "1 minute";
 /** Reconciliation that can't read GitHub retries until it can; it never re-runs the action. */
 const RECONCILE_RETRY = Schedule.spaced("30 seconds");
-// GitHub's edge answers 502 after ~10 s while a slow merge keeps running; 2 minutes covers that.
+// GitHub's edge answers 502 after ~10 s while a slow merge keeps running; 2 minutes after the
+// write was sent covers that.
 const NOT_DONE_AFTER_MS = 2 * 60 * 1000;
 
 export type KinExecuteResult =
@@ -46,7 +47,7 @@ export type KinExecuteResult =
   | { readonly _tag: "reconciling" };
 
 export type KinReconcileResult =
-  | { readonly _tag: "finished"; readonly outcome: "succeeded" | "interrupted" }
+  | { readonly _tag: "finished"; readonly outcome: KinExecutionOutcome }
   | { readonly _tag: "unknown" }
   | { readonly _tag: "skipped" };
 
@@ -119,9 +120,29 @@ export const make = Effect.gen(function* () {
           ),
         );
       });
-  // One `credential_check_failed` entry per held action and failure set, not one per tick.
-  // Entries go when the action stops being held, so the map stays as small as the held set.
-  const auditedHolds = new Map<string, string>();
+  // Why each action is held: one audit entry per action and reason, not one per tick, and the
+  // reason the owner's notice names if the grant lapses. Entries go when the hold ends.
+  const holds = new Map<string, string>();
+  const held = Effect.fnUntraced(function* (
+    action: KinPendingAction,
+    reason: string,
+    failures?: string,
+  ): Effect.fn.Return<KinExecuteResult> {
+    const why = failures === undefined ? reason : `${reason}: ${failures}`;
+    if (holds.get(action.id) !== why) {
+      holds.set(action.id, why);
+      yield* audit
+        .append({
+          orgId: action.orgId,
+          event: failures === undefined ? "execution_held" : "credential_check_failed",
+          actionId: action.id,
+          kind: action.kind,
+          result: failures ?? `held: ${reason}`,
+        })
+        .pipe(Effect.catch((error) => Effect.logWarning("Kin audit not written", error)));
+    }
+    return { _tag: "held", reason };
+  });
 
   const paused = (orgId: KinOrgId) =>
     isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
@@ -157,11 +178,16 @@ export const make = Effect.gen(function* () {
         : Effect.succeed(decoded.payload);
     });
 
-  /** `startedAt` is the claim's time: a "not done" read only counts once it is old enough. */
+  /** `writeStartedAt`: when the side effect was sent, if it was. "Not done" counts once it's old. */
   const reconcileClaimed = Effect.fn("KinActionExecutor.reconcileClaimed")(function* (
     action: KinPendingAction,
-    startedAt: number,
+    writeStartedAt: number | null,
   ): Effect.fn.Return<KinReconcileResult, Errors> {
+    if (writeStartedAt === null) {
+      // Stopped between the claim and the write: nothing was sent, so nothing can land.
+      yield* finish(action, "failed", { error: "not_started", reconciled: true });
+      return { _tag: "finished", outcome: "failed" } as KinReconcileResult;
+    }
     const handler = handlers.get(action.kind);
     if (Option.isNone(handler)) return { _tag: "unknown" } as KinReconcileResult;
     const verdict = yield* handler.value
@@ -175,7 +201,7 @@ export const make = Effect.gen(function* () {
       );
     if (verdict === "unknown") return { _tag: "unknown" } as KinReconcileResult;
     if (verdict === "not_done") {
-      if ((yield* Clock.currentTimeMillis) - startedAt < NOT_DONE_AFTER_MS)
+      if ((yield* Clock.currentTimeMillis) - writeStartedAt < NOT_DONE_AFTER_MS)
         return { _tag: "unknown" } as KinReconcileResult;
       // Terminal: the grant is spent. The owner approves a new request to try again.
       yield* finish(action, "interrupted", { error: "did not finish", reconciled: true });
@@ -193,8 +219,8 @@ export const make = Effect.gen(function* () {
     action: KinPendingAction,
     grant: KinGrant,
     handler: KinActionHandler,
-    startedAt: number,
   ) {
+    let writeStartedAt: number | null = null;
     const failed = (error: KinExecError) =>
       finish(action, "failed", {
         error: failureText(error),
@@ -222,9 +248,15 @@ export const make = Effect.gen(function* () {
         .pipe(Effect.mapError(() => new KinExecError({ reason: "unavailable", detail: "roles" })));
       if (!owner) return yield* new KinExecError({ reason: "not_owner" });
       yield* handler.precheck(action);
-      // The stop switch, immediately before the side effect.
+      // The stop switch and the write's start time, immediately before the side effect.
       if (yield* paused(action.orgId).pipe(Effect.orElseSucceed(() => true)))
         return yield* new KinExecError({ reason: "paused" });
+      const at = yield* Clock.currentTimeMillis;
+      const marked = yield* ledger
+        .writeStarting({ ...refOf(action), at })
+        .pipe(Effect.orElseSucceed(() => false));
+      if (!marked) return yield* new KinExecError({ reason: "unavailable", detail: "ledger" });
+      writeStartedAt = at;
       return yield* handler
         .run(action, { grant, payload: payloadOf(grant), pass })
         .pipe(
@@ -240,7 +272,7 @@ export const make = Effect.gen(function* () {
     }
     const error = result.failure;
     if (error.reason !== "unknown_outcome") return yield* failed(error);
-    const reconciled = yield* reconcileClaimed(action, startedAt);
+    const reconciled = yield* reconcileClaimed(action, writeStartedAt);
     return (
       reconciled._tag === "finished"
         ? { _tag: "finished", outcome: reconciled.outcome }
@@ -267,37 +299,21 @@ export const make = Effect.gen(function* () {
     const handler = handlers.get(action.kind);
     if (Option.isNone(handler))
       return handlers.unavailable.has(action.kind)
-        ? ({ _tag: "held", reason: "not_configured" } as KinExecuteResult)
+        ? yield* held(action, "not_configured")
         : yield* voided("unsupported_kind");
     // 1. Stop switch: stay approved until the grant lapses; the sweep then voids it.
-    if (yield* paused(action.orgId)) return { _tag: "held", reason: "paused" } as KinExecuteResult;
+    if (yield* paused(action.orgId)) return yield* held(action, "paused");
     // 2. The approver still meets the requirement (the claim re-checks key and grant expiry).
     const owner = yield* roles
       .isOwner({ orgId: action.orgId, personId: grant.approverHumanId })
       .pipe(Effect.option);
-    if (Option.isNone(owner))
-      return { _tag: "held", reason: "roles_unavailable" } as KinExecuteResult;
+    if (Option.isNone(owner)) return yield* held(action, "roles_unavailable");
     if (!owner.value) return yield* voided("approver_not_owner");
     // Checked before the claim too, so a misconfigured host holds the grant instead of spending it.
     const check = yield* hygiene.requirePassing(action.orgId).pipe(Effect.flip, Effect.option);
-    if (Option.isSome(check)) {
-      const failures = check.value.failures.join(",");
-      if (auditedHolds.get(action.id) !== failures) {
-        auditedHolds.set(action.id, failures);
-        yield* audit
-          .append({
-            orgId: action.orgId,
-            event: "credential_check_failed",
-            actionId: action.id,
-            kind: action.kind,
-            result: failures,
-          })
-          .pipe(Effect.catch((error) => Effect.logWarning("Kin audit not written", error)));
-      }
-      return { _tag: "held", reason: "credential_check_failed" } as KinExecuteResult;
-    }
+    if (Option.isSome(check))
+      return yield* held(action, "credential_check_failed", check.value.failures.join(","));
     // 3. The claim: one `kin_executions` row, whatever races or restarts.
-    const startedAt = yield* Clock.currentTimeMillis;
     const claimed = yield* ledger.claim({
       orgId: action.orgId,
       actionId: action.id,
@@ -306,15 +322,13 @@ export const make = Effect.gen(function* () {
     });
     if (!claimed) return { _tag: "skipped" } as KinExecuteResult;
     const claimedAction: KinPendingAction = { ...action, state: "executing" };
-    return yield* runClaimed(claimedAction, grant, handler.value, startedAt);
+    return yield* runClaimed(claimedAction, grant, handler.value);
   });
 
   const execute = (ref: ActionRef) =>
     withOrgLock(ref.orgId, executeLocked(ref)).pipe(
       Effect.tap((result) =>
-        result._tag === "held" && result.reason === "credential_check_failed"
-          ? Effect.void
-          : Effect.sync(() => auditedHolds.delete(ref.actionId)),
+        result._tag === "held" ? Effect.void : Effect.sync(() => holds.delete(ref.actionId)),
       ),
       holding(ref),
       Effect.withSpan("KinActionExecutor.execute"),
@@ -328,7 +342,7 @@ export const make = Effect.gen(function* () {
           (item) => item.action.orgId === ref.orgId && item.action.id === ref.actionId,
         );
         if (found === undefined) return { _tag: "skipped" } as KinReconcileResult;
-        return yield* reconcileClaimed(found.action, found.startedAt);
+        return yield* reconcileClaimed(found.action, found.writeStartedAt);
       }),
     );
   });
@@ -356,10 +370,16 @@ export const make = Effect.gen(function* () {
     return { approved: approved.filter(free), orphaned: executing.filter(free) };
   }).pipe(Effect.withSpan("KinActionExecutor.pickup"));
 
+  // A grant that lapsed while held: the owner learns why it never ran.
+  const lapsed = Effect.fnUntraced(function* (ref: ActionRef) {
+    const reason = holds.get(ref.actionId);
+    holds.delete(ref.actionId);
+    if (reason === undefined) return;
+    const action = yield* pending.get(ref);
+    if (Option.isSome(action)) yield* notices.lapsed({ action: action.value, holdReason: reason });
+  });
   const sweep = pending.sweep().pipe(
-    Effect.tap(({ voided }) =>
-      Effect.sync(() => voided.forEach((ref) => auditedHolds.delete(ref.actionId))),
-    ),
+    Effect.flatMap(({ voided }) => Effect.forEach(voided, lapsed, { discard: true })),
     Effect.asVoid,
     Effect.withSpan("KinActionExecutor.sweep"),
   );

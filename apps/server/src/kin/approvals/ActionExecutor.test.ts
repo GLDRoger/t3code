@@ -14,6 +14,7 @@ import {
 } from "@t3tools/contracts";
 import { encodeGrantSigningInput } from "@t3tools/shared/kinGrant";
 import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -45,6 +46,7 @@ import * as Audit from "./Audit.ts";
 import * as CredentialHygiene from "./CredentialHygiene.ts";
 import { KinExecutionNotices } from "./ExecutionNotices.ts";
 import { KinOrgRoles } from "./GrantPorts.ts";
+import * as ApprovalsLayer from "./layer.ts";
 import { makeDeleteBranchHandler } from "./handlers/deleteBranch.ts";
 import { makeMergePullRequestHandler } from "./handlers/mergePullRequest.ts";
 import * as PendingActions from "./PendingActions.ts";
@@ -104,6 +106,10 @@ interface World {
   mergeThrows: boolean;
   /** The bot's pull request read never answers. */
   pullHangs: boolean;
+  /** The bot's branch head read never answers. */
+  refHangs: boolean;
+  /** What the owner's branch delete answers instead of deleting it. */
+  deleteAnswer: FakeAnswer | undefined;
   branches: Map<string, string>;
   /** Ruleset rules per branch; branches not listed have none. */
   rules: Map<string, ReadonlyArray<{ readonly type: string }>>;
@@ -147,6 +153,8 @@ function harness(
     mergeLands: true,
     mergeThrows: false,
     pullHangs: false,
+    refHangs: false,
+    deleteAnswer: undefined,
     branches: new Map([
       ["kin", HEAD],
       ["kin/fix-212", HEAD],
@@ -196,6 +204,7 @@ function harness(
     }
     const ref = /^GET \/repos\/GLDRoger\/t3code\/git\/ref\/heads\/(.+)$/.exec(key)?.[1];
     if (ref !== undefined) {
+      if (world.refHangs) return { hang: true, status: 0 };
       const sha = world.branches.get(decodeURIComponent(ref));
       return sha === undefined
         ? { status: 404, body: { message: "Not Found" } }
@@ -203,6 +212,7 @@ function harness(
     }
     const deleted = /^DELETE \/repos\/GLDRoger\/t3code\/git\/refs\/heads\/(.+)$/.exec(key)?.[1];
     if (deleted !== undefined) {
+      if (world.deleteAnswer !== undefined) return world.deleteAnswer;
       world.branches.delete(decodeURIComponent(deleted));
       return { status: 204 };
     }
@@ -230,8 +240,13 @@ function harness(
   } = { count: 0, failing: false };
   const mints: Array<string> = [];
   const owners = new Set<string>([owner]);
-  // The next `finishFailures` calls to the ledger's `finish` fail, as a database error would.
-  const faults = { finishFailures: 0 };
+  // Each owner-role check runs `during` with its count: 1 before the claim, 2 after it.
+  const roleChecks: { count: number; during?: (count: number) => Effect.Effect<unknown> } = {
+    count: 0,
+  };
+  // The next `finishFailures` calls to the ledger's `finish` fail, as a database error would;
+  // `writeStartFails` makes recording the write's start fail the same way.
+  const faults = { finishFailures: 0, writeStartFails: false };
 
   const app = Layer.succeed(
     KinGitHubApp.KinGitHubApp,
@@ -299,10 +314,18 @@ function harness(
               ...(note === undefined ? {} : { note }),
             }),
         ).pipe(Effect.andThen(Deferred.succeed(noticed, undefined)), Effect.asVoid),
+      lapsed: ({ action, holdReason }) =>
+        Effect.sync(
+          () => void notices.push({ actionId: action.id, outcome: "lapsed", note: holdReason }),
+        ),
     }),
   );
   const roles = Layer.succeed(KinOrgRoles, {
-    isOwner: (ref) => Effect.sync(() => ref.orgId === orgId && owners.has(ref.personId)),
+    isOwner: (ref) =>
+      Effect.suspend(() => {
+        roleChecks.count += 1;
+        return roleChecks.during?.(roleChecks.count) ?? Effect.void;
+      }).pipe(Effect.map(() => ref.orgId === orgId && owners.has(ref.personId))),
   });
   const ledger = Layer.effect(
     PendingActions.KinExecutionLedger,
@@ -310,6 +333,10 @@ function harness(
       const real = yield* PendingActions.KinExecutionLedger;
       return PendingActions.KinExecutionLedger.of({
         ...real,
+        writeStarting: (input) =>
+          faults.writeStartFails
+            ? Effect.fail(new PersistenceSqlError({ operation: "test.writeStarting" }))
+            : real.writeStarting(input),
         finish: (input) =>
           Effect.suspend(() => {
             if (faults.finishFailures === 0) return real.finish(input);
@@ -338,6 +365,7 @@ function harness(
     checks,
     mints,
     owners,
+    roleChecks,
     faults,
     layer,
     deps,
@@ -434,18 +462,23 @@ const approvedMerge = (source: string, deleteBranchAfter = false) =>
     source,
   });
 
-/** A crash right after the claim: the row stays `executing` with no result. */
-const claimedThenCrashed = (source: string) =>
+/** Claims an approved action as the executor does; `wrote` also records the write's start. */
+const claim = <Ref extends PendingActions.ActionRef>(ref: Ref, wrote: boolean) =>
   Effect.gen(function* () {
     const actions = yield* PendingActions.KinPendingActions;
     const ledger = yield* PendingActions.KinExecutionLedger;
-    const ref = yield* approvedMerge(source);
     const found = (yield* actions.approvedWithGrant(orgId)).find(
       (item) => item.action.id === ref.actionId,
     );
     assert.isTrue(yield* ledger.claim({ ...ref, revision: 0, grantId: found!.grant.id }));
+    if (wrote)
+      assert.isTrue(yield* ledger.writeStarting({ ...ref, at: yield* Clock.currentTimeMillis }));
     return ref;
   });
+
+/** A crash mid-write, or with `wrote: false` between the claim and the write. */
+const claimedThenCrashed = (source: string, wrote = true) =>
+  approvedMerge(source).pipe(Effect.flatMap((ref) => claim(ref, wrote)));
 
 const stateOf = (ref: PendingActions.ActionRef) =>
   Effect.gen(function* () {
@@ -575,6 +608,36 @@ describe("KinActionExecutor", () => {
       // The merges ran; no head branch was deleted.
       assert.notInclude(writes(requests), HEAD_DELETE);
       assert.lengthOf(writes(requests), cases.length);
+
+      // A read GitHub never answers keeps the branch; the merge still stands.
+      world.pull = { ...openPull };
+      world.refHangs = true;
+      const silent = yield* approvedMerge("keep-silent", true);
+      const running = yield* executor.execute(silent).pipe(Effect.forkChild);
+      yield* TestClock.adjust("15 seconds");
+      assert.deepStrictEqual(yield* Fiber.join(running), {
+        _tag: "finished",
+        outcome: "succeeded",
+      });
+      world.refHangs = false;
+      assert.deepInclude(notices.at(-1), {
+        actionId: silent.actionId,
+        note: "Kept head branch kin/fix-212: GitHub didn't answer.",
+      });
+      // The delete went out with no clear answer, so it may have happened.
+      world.pull = { ...openPull };
+      world.deleteAnswer = { status: 502, body: { message: "Bad gateway" } };
+      const lost = yield* approvedMerge("keep-lost", true);
+      assert.deepInclude(yield* executor.execute(lost), { outcome: "succeeded" });
+      assert.deepInclude(notices.at(-1), {
+        actionId: lost.actionId,
+        note: "Head branch kin/fix-212 may not have been deleted; GitHub didn't answer.",
+      });
+      assert.deepStrictEqual(writes(requests).slice(cases.length), [
+        `PUT ${PULL}/merge`,
+        `PUT ${PULL}/merge`,
+        HEAD_DELETE,
+      ]);
     }).pipe(Effect.provide(layer));
   });
 
@@ -709,7 +772,7 @@ describe("KinActionExecutor", () => {
   });
 
   it.effect("a paused org never executes, even when the pause lands mid-run", () => {
-    const { requests, checks, layer } = harness();
+    const { requests, checks, notices, layer } = harness();
     return Effect.gen(function* () {
       const { sql, actions } = yield* seed;
       const ledger = yield* PendingActions.KinExecutionLedger;
@@ -733,6 +796,10 @@ describe("KinActionExecutor", () => {
       yield* TestClock.adjust("16 minutes");
       yield* executor.sweep;
       assert.deepInclude(yield* stateOf(held), { state: "voided", reason: "grant_expired" });
+      // The owner learns why it never ran.
+      assert.deepStrictEqual(notices, [
+        { actionId: held.actionId, outcome: "lapsed", note: "paused" },
+      ]);
 
       // Paused after the claim and the precheck, just before the side effect: never sent.
       yield* resume;
@@ -796,15 +863,27 @@ describe("KinActionExecutor", () => {
         yield* seed;
         const executor = yield* ActionExecutor.KinActionExecutor;
         const ref = yield* approvedMerge("webhook-1");
-        assert.deepStrictEqual(yield* executor.execute(ref), {
-          _tag: "held",
-          reason: "not_configured",
-        });
+        for (const _ of [1, 2]) {
+          assert.deepStrictEqual(yield* executor.execute(ref), {
+            _tag: "held",
+            reason: "not_configured",
+          });
+        }
+        // One trace per held action and reason, however many ticks retry it.
+        assert.deepStrictEqual(
+          (yield* auditEntries)
+            .filter((entry) => entry.event === "execution_held")
+            .map((entry) => [entry.actionId, entry.result]),
+          [[ref.actionId, "held: not_configured"]],
+        );
         // Still approved, so the sweep lapses it like any other held grant.
         assert.deepInclude(yield* stateOf(ref), { state: "approved" });
         yield* TestClock.adjust("16 minutes");
         yield* executor.sweep;
         assert.deepInclude(yield* stateOf(ref), { state: "voided", reason: "grant_expired" });
+        assert.deepStrictEqual(unconfigured.notices, [
+          { actionId: ref.actionId, outcome: "lapsed", note: "not_configured" },
+        ]);
       }).pipe(Effect.provide(unconfigured.layer));
       assert.deepStrictEqual(writes([...unsupported.requests, ...unconfigured.requests]), []);
     });
@@ -880,6 +959,122 @@ describe("KinActionExecutor", () => {
       }).pipe(Effect.provide(layer));
     },
   );
+
+  it.effect("a slow check after the claim doesn't eat the write's 2 minutes", () => {
+    const { world, requests, checks, layer } = harness();
+    return Effect.gen(function* () {
+      yield* seed;
+      const executor = yield* ActionExecutor.KinActionExecutor;
+      // The post-claim check takes 100 s, then the merge never answers and never lands.
+      checks.count = 0;
+      checks.during = (count) => (count === 2 ? Effect.sleep("100 seconds") : Effect.void);
+      world.mergeLands = false;
+      world.merge = { hang: true, status: 0 };
+      const ref = yield* approvedMerge("slow-check");
+      const running = yield* executor.execute(ref).pipe(Effect.forkChild);
+      yield* TestClock.adjust("130 seconds");
+      // 130 s after the claim but 30 s after the write: GitHub may still be merging.
+      assert.deepStrictEqual(yield* Fiber.join(running), { _tag: "reconciling" });
+      assert.deepInclude(yield* stateOf(ref), { state: "executing" });
+      yield* TestClock.adjust("89 seconds");
+      assert.deepStrictEqual(yield* executor.reconcile(ref), { _tag: "unknown" });
+      yield* TestClock.adjust("1 second");
+      assert.deepStrictEqual(yield* executor.reconcile(ref), {
+        _tag: "finished",
+        outcome: "interrupted",
+      });
+      assert.deepStrictEqual(writes(requests), [`PUT ${PULL}/merge`]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("a restart counts from the stored write time, and a claim never written fails", () => {
+    const { world, requests, layer } = harness();
+    return Effect.gen(function* () {
+      yield* seed;
+      const executor = yield* ActionExecutor.KinActionExecutor;
+      world.pull = { ...openPull };
+      // Claimed, then 100 s of checks, then the write, then the crash.
+      const ref = yield* claimedThenCrashed("restart-late-write", false);
+      yield* TestClock.adjust("100 seconds");
+      const ledger = yield* PendingActions.KinExecutionLedger;
+      assert.isTrue(yield* ledger.writeStarting({ ...ref, at: yield* Clock.currentTimeMillis }));
+      // Written once: a second mark can't move the window.
+      assert.isFalse(yield* ledger.writeStarting({ ...ref, at: NOW }));
+      yield* TestClock.adjust("30 seconds");
+      assert.deepStrictEqual(yield* executor.reconcile(ref), { _tag: "unknown" });
+      yield* TestClock.adjust("90 seconds");
+      assert.deepStrictEqual(yield* executor.reconcile(ref), {
+        _tag: "finished",
+        outcome: "interrupted",
+      });
+
+      // A crash between the claim and the write: nothing was sent, so no read is needed.
+      const reads = requests.length;
+      const unsent = yield* claimedThenCrashed("restart-no-write", false);
+      assert.deepStrictEqual(yield* executor.reconcile(unsent), {
+        _tag: "finished",
+        outcome: "failed",
+      });
+      assert.deepStrictEqual(yield* stateOf(unsent), { state: "failed", reason: "not_started" });
+      assert.deepInclude((yield* auditEntries).at(-1), {
+        event: "execution_reconciled",
+        actionId: unsent.actionId,
+        result: "failed: not_started",
+      });
+      assert.lengthOf(requests, reads);
+      assert.deepStrictEqual(writes(requests), []);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("a write whose start can't be recorded is never sent", () => {
+    const { faults, requests, layer } = harness();
+    return Effect.gen(function* () {
+      yield* seed;
+      const executor = yield* ActionExecutor.KinActionExecutor;
+      faults.writeStartFails = true;
+      const ref = yield* approvedMerge("unrecorded");
+      assert.deepStrictEqual(yield* executor.execute(ref), {
+        _tag: "finished",
+        outcome: "failed",
+        error: "unavailable: ledger",
+      });
+      assert.deepStrictEqual(writes(requests), []);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("a credential pass that goes stale before the write ends failed, unsent", () => {
+    const { requests, roleChecks, layer } = harness();
+    return Effect.gen(function* () {
+      yield* seed;
+      const executor = yield* ActionExecutor.KinActionExecutor;
+      // The owner re-check after the claim takes 61 s, so the pass taken before it is too old.
+      roleChecks.during = (count) => (count === 2 ? Effect.sleep("61 seconds") : Effect.void);
+      const ref = yield* approvedMerge("stale-pass");
+      const running = yield* executor.execute(ref).pipe(Effect.forkChild);
+      yield* TestClock.adjust("61 seconds");
+      assert.deepInclude(yield* Fiber.join(running), { _tag: "finished", outcome: "failed" });
+      assert.match(
+        (yield* stateOf(ref)).reason ?? "",
+        /^credential_check_failed: The credential check is 61 s old/,
+      );
+      assert.deepStrictEqual(writes(requests), []);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("a precheck read GitHub never answers ends the action failed", () => {
+    const { world, requests, layer } = harness();
+    return Effect.gen(function* () {
+      yield* seed;
+      const executor = yield* ActionExecutor.KinActionExecutor;
+      world.pullHangs = true;
+      const ref = yield* approvedMerge("silent-precheck");
+      const running = yield* executor.execute(ref).pipe(Effect.forkChild);
+      yield* TestClock.adjust("15 seconds");
+      assert.deepInclude(yield* Fiber.join(running), { _tag: "finished", outcome: "failed" });
+      assert.match((yield* stateOf(ref)).reason ?? "", /^unavailable: could not read the pull/);
+      assert.deepStrictEqual(writes(requests), []);
+    }).pipe(Effect.provide(layer));
+  });
 
   it.effect("a merge whose answer is lost is reconciled, never sent twice", () => {
     const { world, requests, layer } = harness();
@@ -1015,20 +1210,49 @@ describe("KinActionExecutor", () => {
   });
 
   it.effect("a stuck execution doesn't hold up the expiry sweep", () => {
-    const { world, deps } = harness();
+    const { checks, deps } = harness();
     return Effect.gen(function* () {
       yield* seed;
       yield* Effect.gen(function* () {
         yield* ActionExecutor.KinActionExecutor;
         yield* TestClock.adjust("1 second");
-        // The first run's precheck read never answers, so it holds the org's lock.
-        world.pullHangs = true;
+        // The first run's post-claim credential check never returns, so it holds the org's lock.
+        checks.count = 0;
+        checks.during = (count) => (count === 2 ? Effect.never : Effect.void);
         const stuck = yield* approvedMerge("webhook-1");
         yield* TestClock.adjust("1 second");
         const waiting = yield* approvedMerge("webhook-2");
         yield* TestClock.adjust("16 minutes");
         assert.deepInclude(yield* stateOf(stuck), { state: "executing" });
         assert.deepInclude(yield* stateOf(waiting), { state: "voided", reason: "grant_expired" });
+      }).pipe(Effect.provide(ActionExecutor.layer), Effect.scoped);
+    }).pipe(Effect.provide(deps));
+  });
+
+  it.effect("a stuck execution the tick started doesn't hold up the next tick", () => {
+    const { world, deps } = harness();
+    return Effect.gen(function* () {
+      yield* seed;
+      // Approved before the worker starts, so only the tick's startup pass runs it. Its merge
+      // gets a 502 and never lands, so it stays reconciling for 2 minutes.
+      world.merge = { status: 502, body: { message: "Bad gateway" } };
+      world.mergeLands = false;
+      const stuck = yield* approvedMerge("webhook-1");
+      yield* Effect.gen(function* () {
+        yield* ActionExecutor.KinActionExecutor;
+        yield* TestClock.adjust("1 second");
+        assert.deepInclude(yield* stateOf(stuck), { state: "executing" });
+        // A branch deletion orphaned mid-write; only the next tick can pick it up.
+        const orphan = yield* approved({
+          kind: "delete_branch",
+          target: { _tag: "branch", host: "github.com", repo: REPO, ref: "kin/stale" },
+          resolved: { _tag: "branch", headSha: HEAD },
+          source: "orphan",
+        }).pipe(Effect.flatMap((ref) => claim(ref, true)));
+        world.branches.delete("kin/stale");
+        yield* TestClock.adjust("1 minute");
+        assert.deepInclude(yield* stateOf(orphan), { state: "succeeded" });
+        assert.deepInclude(yield* stateOf(stuck), { state: "executing" });
       }).pipe(Effect.provide(ActionExecutor.layer), Effect.scoped);
     }).pipe(Effect.provide(deps));
   });
@@ -1110,6 +1334,57 @@ describe("KinActionExecutor", () => {
     );
   });
 
+  it.effect(
+    "the production layer shares none of the executor's services, and holds GitHub kinds",
+    () => {
+      const lapses: Array<string> = [];
+      const outside = Layer.mergeAll(
+        Layer.succeed(
+          KinExecutionNotices,
+          KinExecutionNotices.of({
+            finished: () => Effect.void,
+            lapsed: ({ holdReason }) => Effect.sync(() => void lapses.push(holdReason)),
+          }),
+        ),
+        // No GitHub App or scope configured: the host the unconfigured fallback is for.
+        ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })),
+        Sqlite.layerMemory,
+      );
+      return Effect.gen(function* () {
+        // Before the worker's schedules start, or they replay every minute since the epoch.
+        yield* TestClock.setTime(NOW);
+        const context = yield* Layer.build(ApprovalsLayer.layer.pipe(Layer.provideMerge(outside)));
+        // `kin.services` hands this whole context to RPC handlers and the lead's MCP tools.
+        for (const tag of [
+          PendingActions.KinExecutionLedger,
+          OwnerMergeClient.OwnerMergeClient,
+          ActionHandlers.KinActionHandlers,
+          ActionExecutor.KinActionExecutor,
+          CredentialHygiene.CredentialHygiene,
+        ] as const) {
+          assert.isTrue(Option.isNone(Context.getOption(context, tag as never)), tag.key);
+        }
+        assert.isTrue(Option.isSome(Context.getOption(context, PendingActions.KinPendingActions)));
+        yield* Effect.gen(function* () {
+          yield* seed;
+          // The worker takes the approval as it lands and holds it: no handler, but not voided.
+          const ref = yield* approvedMerge("unconfigured");
+          yield* TestClock.adjust("1 second");
+          assert.deepInclude(yield* stateOf(ref), { state: "approved" });
+          assert.deepStrictEqual(
+            (yield* auditEntries)
+              .filter((entry) => entry.event === "execution_held")
+              .map((entry) => entry.result),
+            ["held: not_configured"],
+          );
+          yield* TestClock.adjust("16 minutes");
+          assert.deepInclude(yield* stateOf(ref), { state: "voided", reason: "grant_expired" });
+          assert.deepStrictEqual(lapses, ["not_configured"]);
+        }).pipe(Effect.provide(context));
+      }).pipe(Effect.scoped);
+    },
+  );
+
   it("no agent, MCP tool or model-reachable path can claim, run or finish an action", () => {
     const root = NodePath.resolve(import.meta.dirname, "../..");
     const files = (NodeFS.readdirSync(root, { recursive: true }) as Array<string>)
@@ -1149,6 +1424,99 @@ describe("KinActionExecutor", () => {
     };
     const graph = new Map(files.map((file) => [file, imports(file)]));
     assert.deepStrictEqual(unfollowable, []);
+
+    // `require`, `eval` and `new Function` load code the import graph can't follow. Each line
+    // using one is listed, and loads a package, generated script text, or the server bundle itself.
+    const dynamicLoads = new Map<string, ReadonlyArray<string>>([
+      [
+        "bin.ts",
+        [
+          // A Node SEA loads its own bundled entry, which is the composition root.
+          "const require = NodeModule.createRequire(import.meta.url);",
+          "// require() resolves links in the executable path, such as a Windows junction.",
+          'return require(process.execPath) as typeof import("./binMain.ts");',
+        ],
+      ],
+      [
+        "binMain.ts",
+        [
+          "// Packaged builds load this graph with require(esm): top-level await anywhere in it breaks them.",
+        ],
+      ],
+      ["outboundHttp.ts", ["const requireUndici = NodeModule.createRequire(import.meta.url);"]],
+      [
+        "policy/ManagedPolicy.ts",
+        ["const requireForFfi = NodeModule.createRequire(import.meta.url);"],
+      ],
+      [
+        "preview/ServerBrowserContexts.ts",
+        [
+          "// Playwright needs its files on disk. createRequire also resolves it from a Node SEA executable.",
+          "const requirePlaywright = NodeModule.createRequire(import.meta.url);",
+        ],
+      ],
+      [
+        "terminal/NodePtyAdapter.ts",
+        ["const requireForNodePty = NodeModule.createRequire(import.meta.url);"],
+      ],
+      [
+        "workspace/WorkspaceSearchIndex.ts",
+        ["const requireForFff = NodeModule.createRequire(import.meta.url);"],
+      ],
+      // Source text for the speech worker, a separate Node process.
+      [
+        "speech/native.ts",
+        [
+          'const { createRequire, findPackageJSON } = await import("node:module");',
+          'speech = createRequire(packagePath)(join(dirname(packagePath), "dist/index.js"));',
+          "const run = new Function(",
+        ],
+      ],
+      // Scripts run with `node -e` on a device host.
+      ...[
+        "device/sshDeviceScript.ts",
+        "device/deviceToolMaintenance.ts",
+        "device/DeviceService.ts",
+      ].map((file): [string, ReadonlyArray<string>] => [
+        file,
+        ["*require('node:", '*require("node:'],
+      ]),
+    ]);
+    const dynamic = /\b(?:createRequire|require|eval)\s*\(|\bnew\s+Function\s*\(/;
+    const unlisted = files.flatMap((file) =>
+      source(file)
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => dynamic.test(line))
+        .filter(
+          (line) =>
+            !dynamicLoads
+              .get(file)
+              ?.some((allowed) =>
+                allowed.startsWith("*") ? line.includes(allowed.slice(1)) : line === allowed,
+              ),
+        )
+        .map((line) => `${file}: ${line}`),
+    );
+    assert.deepStrictEqual(unlisted, []);
+    // What each `createRequire` loader is called with: a package name, never a relative path.
+    const code = (file: string) =>
+      source(file)
+        .split("\n")
+        .filter((line) => !line.trim().startsWith("//"))
+        .join("\n");
+    const required = files.flatMap((file) =>
+      [...code(file).matchAll(/const (\w+) = NodeModule\.createRequire\(/g)].flatMap(([, name]) =>
+        [...code(file).matchAll(new RegExp(`\\b${name}(?:\\.resolve)?\\(([^)]*)\\)`, "g"))]
+          .map((call) => call[1]!)
+          .filter((argument) => !/^["'][^./"'][^"']*["']$/.test(argument))
+          .map((argument) => `${file}: ${name}(${argument})`),
+      ),
+    );
+    assert.deepStrictEqual(required, [
+      "bin.ts: require(process.execPath)",
+      "bin.ts: require(process.execPath)",
+    ]);
 
     // Composition roots build the executor; reaching one isn't reaching what it builds.
     const compositionRoots = new Set(["server.ts", "kin/layer.ts", "kin/approvals/layer.ts"]);
@@ -1202,7 +1570,8 @@ describe("KinActionExecutor", () => {
         /\.(?:claim|finish)\s*\(|\[\s*["'`](?:claim|finish)["'`]\s*\]/.test(source(file)),
     );
     assert.deepStrictEqual(sneaking, []);
-    // No RPC or MCP surface carries the executor's service.
+    // No RPC or MCP surface carries the executor's service. A tag forged with its key string finds
+    // nothing, since no shared context holds it (the production layer test checks the output).
     assert.notInclude(source("kin/KinServer.ts"), "KinActionExecutor");
   });
 });
