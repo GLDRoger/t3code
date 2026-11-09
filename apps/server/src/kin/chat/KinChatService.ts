@@ -197,6 +197,10 @@ const isKinChatError = Schema.is(KinChatError);
 // Live inserts also advance change_seq, so refresh the client's frozen change cursor well under
 // resume's 200-message reset cap.
 const checkpointEvery = 100;
+/** Guests never write; a muted agent stays silent until its mute ends. */
+export const mayWrite = (member: KinChatMember, agent: boolean, now: number) =>
+  member.role !== "guest" &&
+  !(agent && member.mutedUntil !== null && Date.parse(member.mutedUntil) > now);
 const notAllowed = new KinChatError({
   reason: "not_allowed",
   message: "Chat operation not allowed.",
@@ -306,12 +310,7 @@ const make = Effect.gen(function* () {
     identity: Identity,
     member: KinChatMember,
   ) {
-    if (member.role === "guest") return yield* notAllowed;
-    if (
-      identity._tag === "agent" &&
-      member.mutedUntil !== null &&
-      Date.parse(member.mutedUntil) > (yield* Clock.currentTimeMillis)
-    )
+    if (!mayWrite(member, identity._tag === "agent", yield* Clock.currentTimeMillis))
       return yield* notAllowed;
   });
   const resolve = Effect.fn("KinChatService.resolve")(function* (

@@ -7,7 +7,7 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import { kinSentences } from "../state/kinChatFeed";
+import { kinSentences } from "../state/kinScreenState";
 
 export const KIN_STALE_CARD_TEXT = "This card changed. Check it again.";
 export const KIN_SENT_CARD_TEXT = "Sent. Your lead will update this card.";

@@ -649,6 +649,18 @@ it.effect("kin_delegate below L2 records a shadow entry and starts nothing", () 
   ),
 );
 
+it.effect("a chat's own level caps kin_delegate where its card would go", () =>
+  run(
+    ({ ctx, fakes, workers }) =>
+      Effect.gen(function* () {
+        yield* ctx.sql`INSERT INTO kin_chat_levels (org_id, agent_id, chat_id, level, level_since) SELECT org_id, ${leadId}, chat_id, 'L1', 0 FROM kin_chats WHERE org_id = ${ctx.orgId} ORDER BY chat_id`;
+        assert.ok("shadowed" in (yield* workers.delegate(scope, delegateInput)));
+        assert.lengthOf(fakes.launches, 0);
+      }),
+    "L2",
+  ),
+);
+
 it.effect("at L2 the production release gate refuses kin_delegate and kin_follow_up", () =>
   run(
     ({ ctx, fakes, workers }) =>

@@ -2,7 +2,7 @@ import { KinTaskCardState, type EnvironmentId, type KinWidget } from "@t3tools/c
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import { kinSentences } from "../state/kinChatFeed";
+import { kinSentences } from "../state/kinScreenState";
 import { kinDeferralCardView, type KinDeferralCardView } from "./kinDeferralPresentation";
 
 export const KIN_UNKNOWN_CARD_TEXT = "This card needs a newer version of Kin.";

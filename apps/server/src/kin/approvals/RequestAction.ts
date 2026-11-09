@@ -10,8 +10,10 @@ import {
   KinEventId,
   KinPendingActionState,
   KinResolvedTarget,
+  KinShadowResult,
   ProjectId,
   type Hex64,
+  type KinLevel,
   type KinProvenance,
   type KinProvenanceRole,
 } from "@t3tools/contracts";
@@ -28,6 +30,7 @@ import * as ProjectService from "../../project/ProjectService.ts";
 import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
 import { sourceControlDefinitions } from "../../sourceControl/sourceControlDefinitions.ts";
 import type { AgentIdentity } from "../chat/KinIdentity.ts";
+import * as KinLevels from "../lead/KinLevels.ts";
 import * as Audit from "./Audit.ts";
 import * as PendingActions from "./PendingActions.ts";
 
@@ -38,11 +41,14 @@ export const RequestActionInput = Schema.Struct({
   sourceEventId: KinEventId,
 });
 export type RequestActionInput = typeof RequestActionInput.Type;
-export const RequestActionResult = Schema.Struct({
-  actionId: KinActionId,
-  state: KinPendingActionState,
-  waitingOn: Schema.Literal("owner"),
-});
+export const RequestActionResult = Schema.Union([
+  Schema.Struct({
+    actionId: KinActionId,
+    state: KinPendingActionState,
+    waitingOn: Schema.Literal("owner"),
+  }),
+  KinShadowResult,
+]);
 export type RequestActionResult = typeof RequestActionResult.Type;
 
 type PullRequestTarget = Extract<KinActionTarget, { readonly _tag: "pull_request" }>;
@@ -62,6 +68,11 @@ export class KinPullRequestFacts extends Context.Service<
       { readonly target: PullRequestTarget; readonly resolved: PullRequestFacts },
       KinApprovalError
     >;
+    /** The worker-project mapping alone, with no GitHub read: the target in the project's spelling. */
+    readonly canonical: (input: {
+      readonly target: PullRequestTarget;
+      readonly projectIds: ReadonlyArray<ProjectId>;
+    }) => Effect.Effect<PullRequestTarget, KinApprovalError>;
   }
 >()("t3/kin/approvals/RequestAction/KinPullRequestFacts") {}
 
@@ -87,24 +98,33 @@ export const layerPullRequestFacts = Layer.effect(
       reason: "not_found",
       message: "No such pull request in this lead's worker projects.",
     });
+    // Public GitHub reads through any project, so the lead's worker projects are the allowlist.
+    const project = Effect.fn("KinPullRequestFacts.project")(function* (
+      target: PullRequestTarget,
+      projectIds: ReadonlyArray<ProjectId>,
+    ) {
+      const shells = yield* projects
+        .listShells({ projectIds })
+        .pipe(Effect.mapError(() => unavailable("This lead's worker projects can't be read.")));
+      const match = shells
+        .filter((shell) => projectIds.includes(shell.id))
+        .map((shell) => ({
+          projectId: shell.id,
+          repo: sourceControlDefinitions.repositorySelector(shell.repositoryIdentity),
+        }))
+        .find(({ repo }) => repo?.toLowerCase() === target.repo.toLowerCase());
+      if (match?.repo == null) return yield* notFound;
+      return { projectId: match.projectId, canonical: { ...target, repo: match.repo } };
+    });
     return KinPullRequestFacts.of({
+      canonical: Effect.fn("KinPullRequestFacts.canonical")(function* ({ target, projectIds }) {
+        return (yield* project(target, projectIds)).canonical;
+      }),
       read: Effect.fn("KinPullRequestFacts.read")(function* ({ target, projectIds }) {
-        // Public GitHub reads through any project, so the lead's worker projects are the allowlist.
-        const shells = yield* projects
-          .listShells({ projectIds })
-          .pipe(Effect.mapError(() => unavailable("This lead's worker projects can't be read.")));
-        const match = shells
-          .filter((shell) => projectIds.includes(shell.id))
-          .map((shell) => ({
-            projectId: shell.id,
-            repo: sourceControlDefinitions.repositorySelector(shell.repositoryIdentity),
-          }))
-          .find(({ repo }) => repo?.toLowerCase() === target.repo.toLowerCase());
-        if (match?.repo == null) return yield* notFound;
-        const canonical = { ...target, repo: match.repo };
+        const { projectId, canonical } = yield* project(target, projectIds);
         // No host: the read stays on the project's own repository instead of routing elsewhere.
         const detail = yield* pullRequests
-          .detail({ projectId: match.projectId, repository: canonical.repo, number: target.number })
+          .detail({ projectId, repository: canonical.repo, number: target.number })
           .pipe(Effect.mapError(() => notFound));
         if (
           detail.repository.toLowerCase() !== canonical.repo.toLowerCase() ||
@@ -168,6 +188,9 @@ const OWNER_ONLY_KINDS: ReadonlySet<KinActionKind> = new Set([
 // Kinds whose target the server can resolve and whose handler is specified for phase 1.
 // The executor's handler registry (APPR-9) replaces this list.
 const REQUESTABLE_KINDS: ReadonlySet<KinActionKind> = new Set(["merge_pull_request"]);
+// The lead spec's level table: a privileged request reaches the owner only from L3 (APPR-13 will
+// narrow merges at L3 to low-risk targets). Below it the request becomes a shadow entry.
+const PRIVILEGED_LEVEL = "L3";
 // Bounds how many cards one lead can put in front of the owner at once.
 export const MAX_OPEN_ACTIONS_PER_LEAD = 10;
 
@@ -288,6 +311,20 @@ const make = Effect.gen(function* () {
         AND a.role = 'lead' AND a.retired_at IS NULL
       ORDER BY l.agent_id`.pipe(Effect.mapError(toPersistenceSqlError("KinRequestAction.leadOf")));
 
+  /** Refuses once this lead has the most cards it may keep in front of the owner. */
+  const admitOpen = Effect.fn("KinRequestAction.admitOpen")(function* (agent: AgentIdentity) {
+    const now = yield* Clock.currentTimeMillis;
+    const [count] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_pending_actions
+      WHERE org_id = ${agent.orgId} AND requested_by_agent_id = ${agent.agentId}
+        AND state = 'awaiting_approval' AND expires_at > ${now}
+      ORDER BY n`.pipe(Effect.mapError(toPersistenceSqlError("KinRequestAction.openCount")));
+    if ((count?.n ?? 0) >= MAX_OPEN_ACTIONS_PER_LEAD)
+      return yield* refuse(
+        "invalid_state",
+        `You already have ${MAX_OPEN_ACTIONS_PER_LEAD} actions waiting on the owner; wait for some to be decided.`,
+      );
+  });
+
   /** Who may ask and from which event, checked again inside the write after the GitHub read. */
   const authorize = Effect.fn("KinRequestAction.authorize")(function* (
     agent: AgentIdentity,
@@ -307,22 +344,82 @@ const make = Effect.gen(function* () {
         "not_owner",
         `${input.kind} needs a request from the owner alone; ask the owner to send it directly.`,
       );
-    return { lead, origin };
+    const level = yield* KinLevels.effectiveLevel(agent).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.catchTags({
+        KinLevelRefused: () => refuse("not_a_lead", "Only a Kin lead can request actions."),
+      }),
+    );
+    return { lead, origin, level };
+  });
+
+  /**
+   * Below the kind's level nothing reaches the owner; the would-be request is recorded instead.
+   * A new entry first passes the open-card cap the real request would meet.
+   */
+  const shadow = Effect.fn("KinRequestAction.shadow")(function* (
+    agent: AgentIdentity,
+    input: RequestActionInput,
+    level: KinLevel,
+    provenance: KinProvenance,
+  ) {
+    const target = input.target;
+    const entry = yield* KinLevels.recordShadow(
+      {
+        orgId: agent.orgId,
+        agentId: agent.agentId,
+        threadId: agent.threadId,
+        level,
+        unlocksLevel: PRIVILEGED_LEVEL,
+        tool: "request_action",
+        key: input,
+        // Provenance is the server's, kept so the owner's review shows who drove the request.
+        input: { ...input, provenance },
+        wouldTarget:
+          target._tag === "pull_request"
+            ? `${target.repo}#${target.number}`
+            : target._tag === "branch"
+              ? `${target.repo}:${target.ref}`
+              : input.kind,
+      },
+      admitOpen(agent),
+    ).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.catchTags({
+        KinLevelRefused: (error) =>
+          error.reason === "conflict"
+            ? refuse("invalid_state", "This request was already recorded differently.")
+            : error.reason === "limit"
+              ? refuse("invalid_state", KinLevels.SHADOW_LIMIT_MESSAGE)
+              : refuse("not_a_lead", "Only a Kin lead in a running wake-up can request actions."),
+      }),
+    );
+    if (entry.created) yield* KinLevels.refreshSummary(agent);
+    return { shadowed: true as const, entryId: entry.entryId };
   });
 
   const request = Effect.fn("KinRequestAction.request")(
     function* (agent: AgentIdentity, input: RequestActionInput) {
-      const { lead } = yield* authorize(agent, input);
+      // Levels are raised only from the owner's promotion card (LEAD-12), never by a lead's request.
+      if (input.kind === "set_level")
+        return yield* refuse(
+          "unsupported_kind",
+          "Leads can never request a level change; the owner raises a level from the promotion card.",
+        );
+      const { lead, origin, level } = yield* authorize(agent, input);
       if (!REQUESTABLE_KINDS.has(input.kind))
         return yield* refuse("unsupported_kind", `${input.kind} can't be requested yet.`);
       // Defensive: decoding here too keeps only declared fields, whoever calls the service.
       const named = yield* decodeTarget(input.target);
       if (named._tag !== "pull_request")
         return yield* refuse("invalid_state", `${input.kind} needs a pull_request target.`);
-      const { target, resolved } = yield* facts.read({
-        target: named,
-        projectIds: yield* decodeProjects(lead.worker_projects_json),
-      });
+      const projectIds = yield* decodeProjects(lead.worker_projects_json);
+      // Shadowed before GitHub is read: below the level the request has no side effect at all.
+      if (!KinLevels.atLeast(level, PRIVILEGED_LEVEL)) {
+        const target = yield* facts.canonical({ target: named, projectIds });
+        return yield* shadow(agent, { ...input, target }, level, origin.provenance);
+      }
+      const { target, resolved } = yield* facts.read({ target: named, projectIds });
       const source = input.sourceEventId;
       const idempotencyKey = PendingActions.kinIdempotencyKey({
         orgId: agent.orgId,
@@ -332,8 +429,10 @@ const make = Effect.gen(function* () {
       });
       return yield* sql.withTransaction(
         Effect.gen(function* () {
-          // The lead may be retired or its wake-up ended while GitHub answered.
-          const { origin } = yield* authorize(agent, input);
+          // The lead may be retired, lowered or its wake-up ended while GitHub answered.
+          const { origin, level } = yield* authorize(agent, input);
+          if (!KinLevels.atLeast(level, PRIVILEGED_LEVEL))
+            return yield* shadow(agent, { ...input, target }, level, origin.provenance);
           const now = yield* Clock.currentTimeMillis;
           const open = yield* sql<{ action_id: KinActionId; idempotency_key: string }>`
             SELECT action_id, idempotency_key FROM kin_pending_actions
@@ -350,19 +449,7 @@ const make = Effect.gen(function* () {
               "invalid_state",
               `Action ${other.action_id} for this pull request is already waiting on the owner; wait for it to be decided.`,
             );
-          if (open.length === 0) {
-            const [count] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_pending_actions
-              WHERE org_id = ${agent.orgId} AND requested_by_agent_id = ${agent.agentId}
-                AND state = 'awaiting_approval' AND expires_at > ${now}
-              ORDER BY n`.pipe(
-              Effect.mapError(toPersistenceSqlError("KinRequestAction.openCount")),
-            );
-            if ((count?.n ?? 0) >= MAX_OPEN_ACTIONS_PER_LEAD)
-              return yield* refuse(
-                "invalid_state",
-                `You already have ${MAX_OPEN_ACTIONS_PER_LEAD} actions waiting on the owner; wait for some to be decided.`,
-              );
-          }
+          if (open.length === 0) yield* admitOpen(agent);
           const { action } = yield* pending.create({
             orgId: agent.orgId,
             kind: input.kind,
