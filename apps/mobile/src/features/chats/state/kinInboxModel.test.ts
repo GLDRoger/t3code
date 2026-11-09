@@ -120,30 +120,41 @@ const backlog = (
   lastChangeSeq?: number,
 ) => ({ _tag: "backlog", messages, widgets, lastSeq, lastChangeSeq }) as const;
 
-const chatIds = (rows: ReturnType<typeof selectKinInboxView>["rows"]) =>
-  rows.map((row) => row.chat.chatId);
-
 describe("kin inbox", () => {
-  it("sorts chats with anything waiting first, then by latest activity", () => {
+  it("folds chats into Needs you, Working and the rest, each newest first", () => {
     const state = applyKinInboxEvent(emptyKinInbox, {
       _tag: "snapshot",
       chats: [
         chat("old", { lastMessageAt: at(1), unread: 2 }),
         chat("new", { lastMessageAt: at(9), unread: 1 }),
         chat("asks", { lastMessageAt: at(0) }),
+        // Asking wins over working: the viewer is the one holding it up.
+        chat("asks-busy", { lastMessageAt: at(2), working: true }),
+        chat("busy", { lastMessageAt: at(3), working: true }),
+        chat("idle", { lastMessageAt: at(8), working: false }),
         chat("quiet", { lastMessageAt: null, createdAt: at(5) }),
-        chat("archived", { lastMessageAt: at(30), archivedAt: at(31), unread: 4 }),
+        chat("archived", { lastMessageAt: at(30), archivedAt: at(31), unread: 4, working: true }),
       ],
       waiting: [
         waiting("w1", "asks"),
         waiting("w2", "asks"),
+        waiting("w3", "asks-busy", { reason: "decision" }),
         waiting("done", "new", { resolvedAt: at(2), resolution: "answered" }),
       ],
     });
     const view = selectKinInboxView(state);
-    expect(chatIds(view.rows)).toEqual(["asks", "new", "quiet", "old"]);
-    expect(view.rows[0]!.waitingCount).toBe(2);
-    expect(view.waitingCount).toBe(2);
+    expect(view.rows.map((row) => [row.chat.chatId, row.fold])).toEqual([
+      ["asks-busy", "needsYou"],
+      ["asks", "needsYou"],
+      ["busy", "working"],
+      ["new", "rest"],
+      ["idle", "rest"],
+      ["quiet", "rest"],
+      ["old", "rest"],
+    ]);
+    expect(view.folds).toEqual({ needsYou: 2, working: 1, rest: 4 });
+    expect(view.rows[1]!.waitingCount).toBe(2);
+    expect(view.waitingCount).toBe(3);
     expect(view.unreadCount).toBe(3);
   });
 

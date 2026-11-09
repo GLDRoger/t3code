@@ -71,14 +71,22 @@ export function applyKinInboxEvent(state: KinInboxState, event: KinInboxEvent): 
   }
 }
 
+/** Where a chat sits in the list: something waits on the viewer, an agent is on it, or neither. */
+export type KinInboxFold = "needsYou" | "working" | "rest";
+
+const FOLD_ORDER: Record<KinInboxFold, number> = { needsYou: 0, working: 1, rest: 2 };
+
 export interface KinInboxRow {
   readonly chat: KinChatSummary;
   readonly waitingCount: number;
+  readonly fold: KinInboxFold;
 }
 
 export interface KinInboxView {
-  /** Chats with anything waiting first, then most recent activity first. */
+  /** Needs you, then Working, then the rest; most recent activity first within each. */
   readonly rows: ReadonlyArray<KinInboxRow>;
+  /** Chats per fold. */
+  readonly folds: Readonly<Record<KinInboxFold, number>>;
   /** Waiting on you, oldest first. */
   readonly waiting: ReadonlyArray<KinWaitingItem>;
   readonly unreadCount: number;
@@ -87,22 +95,38 @@ export interface KinInboxView {
 
 const activityAt = (chat: KinChatSummary) => chat.lastMessageAt ?? chat.createdAt;
 
+/**
+ * Waiting items already cover every way a chat asks the viewer: an open choice card (decision),
+ * an approval, a deferral or a lead's question (question), a mention or a suggestion.
+ */
+export function kinInboxFold(chat: KinChatSummary, waitingCount: number): KinInboxFold {
+  if (waitingCount > 0) return "needsYou";
+  return chat.working === true ? "working" : "rest";
+}
+
 export function selectKinInboxView(state: KinInboxState): KinInboxView {
   const waitingByChat = new Map<KinChatId, number>();
   for (const item of state.waiting) {
     waitingByChat.set(item.chatId, (waitingByChat.get(item.chatId) ?? 0) + 1);
   }
+  const folds = { needsYou: 0, working: 0, rest: 0 };
   const rows = state.chats
     .filter((chat) => chat.archivedAt === null)
-    .map((chat) => ({ chat, waitingCount: waitingByChat.get(chat.chatId) ?? 0 }))
+    .map((chat) => {
+      const waitingCount = waitingByChat.get(chat.chatId) ?? 0;
+      const fold = kinInboxFold(chat, waitingCount);
+      folds[fold] += 1;
+      return { chat, waitingCount, fold };
+    })
     .sort((a, b) => {
-      const waiting = Number(b.waitingCount > 0) - Number(a.waitingCount > 0);
-      if (waiting !== 0) return waiting;
+      const fold = FOLD_ORDER[a.fold] - FOLD_ORDER[b.fold];
+      if (fold !== 0) return fold;
       const activity = activityAt(b.chat).localeCompare(activityAt(a.chat));
       return activity !== 0 ? activity : a.chat.chatId.localeCompare(b.chat.chatId);
     });
   return {
     rows,
+    folds,
     waiting: [...state.waiting].sort(
       (a, b) => a.createdAt.localeCompare(b.createdAt) || a.waitingId.localeCompare(b.waitingId),
     ),

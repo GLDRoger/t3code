@@ -28,6 +28,7 @@ import {
   type KinChatsSubscribeInput,
   type KinOrgsListResult,
   type KinChatSummary,
+  type KinPresenceState,
   type KinChatHistoryInput,
   type KinChatHistoryResult,
   type KinChatMember,
@@ -254,6 +255,15 @@ const taskCardWidgetId = (input: { readonly chatId: KinChatId; readonly threadId
     Effect.orDie,
     Effect.map((key) => KinWidgetId.make(`task:${key}`)),
   );
+
+/** Presence states of an agent run still under way, for the chat list's `working`. */
+const WORKING_PRESENCE: ReadonlySet<KinPresenceState> = new Set([
+  "starting",
+  "thinking",
+  "working",
+  "writing",
+  "stalled",
+]);
 
 const make = Effect.gen(function* () {
   const floor = yield* Floor.KinFloor;
@@ -594,6 +604,11 @@ const make = Effect.gen(function* () {
       members: yield* repo.listMembers(chat),
       lastMessage: history.messages[0] ?? null,
       unread: yield* repo.unreadCount(member),
+      working:
+        Option.isSome(presence) &&
+        presence.value
+          .snapshot(identity.orgId, chatId)
+          .presence.some((line) => WORKING_PRESENCE.has(line.state)),
     };
   });
   const snapshot = Effect.fn("KinChatService.snapshot")(
@@ -903,8 +918,9 @@ const make = Effect.gen(function* () {
           const live = Stream.mergeAll(streams, { concurrency: "unbounded" }).pipe(
             Stream.mapEffect(({ viewer, event }) =>
               Effect.gen(function* (): Effect.fn.Return<KinChatListEvent, ServiceError> {
-                // Reactions don't change a chat's row.
-                if (event.type === "reaction.updated") return yield* notFound;
+                // Reactions and draft deltas don't change a chat's row.
+                if (event.type === "reaction.updated" || event.type === "draft.updated")
+                  return yield* notFound;
                 if (event.type === "waiting.updated")
                   return yield* requireRecord(repo.getWaiting(event.item)).pipe(
                     Effect.map((item) => ({ _tag: "waiting" as const, item })),

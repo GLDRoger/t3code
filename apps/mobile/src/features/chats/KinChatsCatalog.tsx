@@ -60,6 +60,7 @@ function chat(input: {
   readonly fromMe?: boolean;
   readonly minutes: number;
   readonly unread?: number;
+  readonly working?: boolean;
 }): KinChatSummary {
   const chatId = KinChatId.make(input.id);
   const sentAt = minutesAgo(input.minutes);
@@ -109,6 +110,7 @@ function chat(input: {
             editedAt: null,
           },
     unread: input.unread ?? 0,
+    working: input.working ?? false,
   };
 }
 
@@ -137,6 +139,14 @@ const typicalInbox: KinInboxState = {
       body: "Ran the retry suite twice. **All green.**",
       minutes: 95,
     }),
+    chat({
+      id: "search",
+      agent: qa,
+      title: "Search",
+      body: "Trying the cache on the staging index now.",
+      minutes: 4,
+      working: true,
+    }),
   ],
   waiting: [waiting("w1", "lead", "approval"), waiting("w2", "lead", "decision")],
 };
@@ -154,6 +164,7 @@ const manyInbox: KinInboxState = {
       fromMe: index % 4 === 1,
       minutes: index * 47,
       unread: index % 5 === 0 ? index + 1 : 0,
+      working: index === 3 || index === 20,
     }),
   ),
   waiting: [

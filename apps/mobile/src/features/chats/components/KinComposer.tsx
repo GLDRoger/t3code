@@ -1,6 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId, KinChatId } from "@t3tools/contracts";
-import { useRef, useState } from "react";
+import { useState, type RefObject } from "react";
 import { Platform, View } from "react-native";
 
 import { ComposerEditor } from "../../../components/ComposerEditor";
@@ -61,10 +61,12 @@ export function KinComposer(props: {
   /** Called once the message is in the outbox, so the feed can show the end. */
   readonly onSend: () => void;
   readonly onFocusChange?: (focused: boolean) => void;
+  /** Owned by the feed, so it can focus the editor after filling the draft. */
+  readonly editorRef: RefObject<ComposerEditorHandle | null>;
 }) {
   const draftKey = kinDraftKey(props.environmentId, props.orgId, props.chatId);
   const draft = useComposerDraft(draftKey);
-  const editorRef = useRef<ComposerEditorHandle>(null);
+  const { editorRef } = props;
   const full = useAtomValue(kinOutbox.fullAtom(props.environmentId));
   const [contentHeight, setContentHeight] = useState(0);
   const maxContentHeight = useScaledTextRole("body").lineHeight * EDITOR_MAX_LINES;
