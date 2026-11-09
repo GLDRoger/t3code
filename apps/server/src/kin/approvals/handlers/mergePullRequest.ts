@@ -117,11 +117,13 @@ export const makeMergePullRequestHandler = Effect.gen(function* () {
 
   const reconcile: KinActionHandler["reconcile"] = Effect.fn("mergePullRequest.reconcile")(
     function* (action) {
-      const { target } = yield* partsOf(action);
+      const { target, resolved } = yield* partsOf(action);
       const pull = yield* reads
         .pullRequest({ repo: target.repo, number: target.number })
         .pipe(Effect.option);
       if (Option.isNone(pull)) return "unknown" as const;
+      // Our PUT only merges the approved head; a merge at any other head was someone else's.
+      if (pull.value.headSha !== resolved.headSha) return "not_done" as const;
       // `merged_by` isn't compared: only the owner's token can merge, and GitHub's own record wins.
       if (pull.value.merged && pull.value.mergeCommitSha !== null)
         return { _tag: "done", outcome: { mergeCommitSha: pull.value.mergeCommitSha } } as const;
