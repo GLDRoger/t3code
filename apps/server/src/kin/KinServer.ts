@@ -12,7 +12,7 @@ import { GrantVerifier } from "./approvals/GrantVerifier.ts";
 import { KinStop } from "./lead/KinStop.ts";
 import type { KinShadowSummary } from "./lead/KinLevels.ts";
 import type { KinLevelGate } from "./lead/LevelGate.ts";
-import type { KinPromotion } from "./lead/Promotion.ts";
+import type { KinPromotion } from "./levels/Promotion.ts";
 import type { KinPromotionCards } from "./lead/KinLevels.ts";
 import type { KinGithubWebhookLock } from "./triggers/githubWebhooks.ts";
 import type { KinPushDevices } from "./push/KinPushDevices.ts";

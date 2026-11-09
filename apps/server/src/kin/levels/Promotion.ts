@@ -45,8 +45,8 @@ import * as Repository from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
-import * as KinLevels from "./KinLevels.ts";
-import { preview } from "./LevelGate.ts";
+import * as KinLevels from "../lead/KinLevels.ts";
+import { preview } from "../lead/LevelGate.ts";
 
 const DAY_MS = 86_400_000;
 const REVIEW_ENTRIES = 50;
@@ -99,7 +99,7 @@ export class KinPromotion extends Context.Service<
       settle: KinShadowSettle,
     ) => Effect.Effect<void, never, Scope.Scope>;
   }
->()("t3/kin/lead/Promotion/KinPromotion") {}
+>()("t3/kin/levels/Promotion/KinPromotion") {}
 
 const reviewWidgetId = (agentId: KinAgentId, day: string) =>
   KinWidgetId.make(`shadow-review:${agentId}:${day}`);
@@ -437,8 +437,14 @@ const make = Effect.gen(function* () {
           promotion.eligible ? ready : { ...updated, status: "closed" },
         );
       case "closed":
-      case "raised":
         if (promotion.eligible) yield* putPromotion(lead, ready);
+        return;
+      case "raised":
+        // The lead is back below this card's level: its shadow-memory choice no longer applies.
+        return yield* putPromotion(
+          lead,
+          promotion.eligible ? ready : { ...updated, status: "closed", shadowMemory: null },
+        );
     }
   });
 

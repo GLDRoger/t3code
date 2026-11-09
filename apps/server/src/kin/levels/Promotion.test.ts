@@ -38,8 +38,8 @@ import * as Repository from "../chat/KinChatRepository.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as Kin from "../layer.ts";
 import { makeKinHandlers } from "../rpcHandlers.ts";
-import * as KinLevels from "./KinLevels.ts";
-import { dormantLeadDependencies } from "./layer.testkit.ts";
+import * as KinLevels from "../lead/KinLevels.ts";
+import { dormantLeadDependencies } from "../lead/layer.testkit.ts";
 import { KinPromotion } from "./Promotion.ts";
 
 const DAY = 86_400_000;
@@ -247,18 +247,18 @@ it.effect("only the lead's owner reads, reviews, lowers or raises; others are re
     yield* entries(["e-0"]);
     yield* sql`UPDATE kin_leads SET level = 'L2' WHERE org_id = ${lead.orgId}`;
     const lowerGroup = { ...lead, chatId: group, level: "L0" as const };
-    for (const call of [
-      member["kin.levels.get"](lead),
-      member["kin.levels.review"]({ orgId: lead.orgId, entryId: "e-0", verdict: "harmful" }),
-      member["kin.levels.lower"](lowerGroup),
-      member["kin.levels.raise"]({ ...lead, level: "L3" }),
-      member["kin.levels.deferPromotion"](lead),
-      member["kin.levels.shadowMemory"]({ ...lead, choice: "keep" }),
-    ])
-      assert.include(yield* call.pipe(Effect.flip), {
-        _tag: "KinChatError",
-        reason: "not_allowed",
-      });
+    const refusals = yield* Effect.all([
+      member["kin.levels.get"](lead).pipe(Effect.flip),
+      member["kin.levels.review"]({ orgId: lead.orgId, entryId: "e-0", verdict: "harmful" }).pipe(
+        Effect.flip,
+      ),
+      member["kin.levels.lower"](lowerGroup).pipe(Effect.flip),
+      member["kin.levels.raise"]({ ...lead, level: "L3" }).pipe(Effect.flip),
+      member["kin.levels.deferPromotion"](lead).pipe(Effect.flip),
+      member["kin.levels.shadowMemory"]({ ...lead, choice: "keep" }).pipe(Effect.flip),
+    ]);
+    for (const refusal of refusals)
+      assert.include(refusal, { _tag: "KinChatError", reason: "not_allowed" });
     assert.include(
       yield* client["kin.levels.get"]({ orgId: KinOrgId.make("foreign"), agentId }).pipe(
         Effect.flip,
@@ -267,12 +267,15 @@ it.effect("only the lead's owner reads, reviews, lowers or raises; others are re
     );
     // A read-only session may look, never change.
     assert.strictEqual((yield* readOnly["kin.levels.get"](lead)).level, "L2");
-    for (const call of [
-      readOnly["kin.levels.lower"](lowerGroup),
-      readOnly["kin.levels.raise"]({ ...lead, level: "L3" }),
-      readOnly["kin.levels.review"]({ orgId: lead.orgId, entryId: "e-0", verdict: "fine" }),
-    ])
-      assert.strictEqual((yield* call.pipe(Effect.flip))._tag, "EnvironmentAuthorizationError");
+    const forbidden = yield* Effect.all([
+      readOnly["kin.levels.lower"](lowerGroup).pipe(Effect.flip),
+      readOnly["kin.levels.raise"]({ ...lead, level: "L3" }).pipe(Effect.flip),
+      readOnly["kin.levels.review"]({ orgId: lead.orgId, entryId: "e-0", verdict: "fine" }).pipe(
+        Effect.flip,
+      ),
+    ]);
+    for (const refusal of forbidden)
+      assert.strictEqual(refusal._tag, "EnvironmentAuthorizationError");
     const [entry] = yield* sql<{
       verdict: string | null;
     }>`SELECT verdict FROM kin_shadow_entries ORDER BY entry_id`;

@@ -11,7 +11,7 @@ import * as Option from "effect/Option";
 import * as KinChat from "./chat/layer.ts";
 import * as KinApprovals from "./approvals/layer.ts";
 import * as KinPush from "./push/layer.ts";
-import * as Promotion from "./lead/Promotion.ts";
+import * as Promotion from "./levels/Promotion.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
 
 import { KinServer, type Services } from "./KinServer.ts";

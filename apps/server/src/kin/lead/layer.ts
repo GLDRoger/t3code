@@ -37,7 +37,7 @@ import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
 import * as KinStop from "./KinStop.ts";
-import { KinPromotion } from "./Promotion.ts";
+import { KinPromotion } from "../levels/Promotion.ts";
 import * as DreamRunner from "../dreaming/DreamRunner.ts";
 import * as DreamSession from "../dreaming/DreamSession.ts";
 import * as Workers from "./Workers.ts";

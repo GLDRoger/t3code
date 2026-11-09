@@ -39,7 +39,7 @@ import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import { PAUSE_POLL_INTERVAL_MS } from "./KinStop.ts";
 import { isOrgPaused } from "./orgState.ts";
-import { KinPromotion } from "./Promotion.ts";
+import { KinPromotion } from "../levels/Promotion.ts";
 
 const ownerCheckDispatcherReady = false;
 

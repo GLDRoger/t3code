@@ -470,17 +470,18 @@ L0 talks only to its owner: a `kin_chat_post` to the lead's direct chat with its
 
 Per-chat levels live in `kin_chat_levels (org_id, agent_id, chat_id)` (K022), the `set_level` target's `chatId`; no row means the lead's own level. `request_action` checks the level after the provenance gate, so `not_owner` and the ban on leads requesting `set_level` refuse at every level and record nothing. Below a kind's level (L3 for every privileged kind) it records the entry, with the server-computed provenance, before GitHub is read, and rechecks inside the write. Until APPR-13 classifies risk, an L3 merge request goes to the owner like any other.
 
-Memory at L0 goes to the shadow branch so the lead can keep track of its own deferrals during the shadow week while the default branch stays clean. Reads at L0 use the shadow branch. On promotion the owner picks "Keep shadow memory" (the writer merges the branch through a PR on the memory repo) or "Start clean".
+Memory at L0 goes to the shadow branch so the lead can keep track of its own deferrals during the shadow week while the default branch stays clean. Reads at L0 use the shadow branch. After a raise from L0 the owner picks "Keep shadow memory" or "Start clean" (below); until then the shadow branch is left as it is, and the lead at L1 reads only the default branch.
 
 ### Level promotion (gap 6)
 
-1. Every evening during a level's trial, the evening routine includes a review card for the day's shadow entries: each shows what would have been posted or done, with buttons Fine as is, I'd change it, Wrong, Harmful. A verdict is a `widget.action` from the owner, recorded on the entry.
-2. A lead is eligible to move from level N to N+1 when all of these hold: at least 7 days at level N; at least 20 entries reviewed with `unlocks_level = N+1`, counted per `(org_id, agent_id, unlocks_level, verdict)`; at least 80% Fine as is; no Harmful.
-3. When eligible, the owner's direct chat gets one card: "tech-lead is ready for L1: 34 of 39 would have gone out unchanged, none harmful." [Raise to L1] [Another week].
-4. Raising a level is a permission change, so it is a privileged action. The card button creates a `KinPendingAction { kind: "kin.level.set" }` through the approvals spec, and the change applies only with the owner's signed grant. The lead cannot request it.
-5. Lowering a level needs no signature and applies at once (owner, settings or chat). A Harmful verdict on a live action at L1+ lowers the lead one level automatically and tells the owner why.
+1. Every evening during a level's trial (any level below L3), the server posts a native `shadow_review` card (`KinShadowReviewCard`) in the owner's direct chat for that owner-local day's shadow entries, unreviewed first, each showing what would have been posted or done, with Fine as is, I'd change it, Wrong, Harmful. A verdict is the owner's `kin.levels.review` call, recorded on the entry; the owner can change it. The lead never draws or taps these cards, and `kin.widgets.act` refuses them, so a verdict never passes through a wake-up.
+2. A lead is eligible to move from level N to N+1 when all of these hold: at least 7 days at level N (since `level_since`); at least 20 reviewed entries with `unlocks_level = N+1` recorded since `level_since`, counted per `(org_id, agent_id, unlocks_level, verdict)`; at least 80% of them Fine as is; none Harmful.
+3. When eligible, the owner's direct chat gets one `promotion` card (`KinPromotionCard`, one per lead and target level): "tech-lead is ready for L1: 34 of 39 would have gone out unchanged, none harmful." [Raise to L1] [Another week]. Another week (`kin.levels.deferPromotion`) puts the card off for 7 days; Raise still works from settings meanwhile. A Harmful verdict or a lower level closes the card, and it reopens once the lead is eligible again.
+4. Raising a level is a permission change, so it is a privileged action. `kin.levels.raise` (the card button, or settings) creates a `KinPendingAction { kind: "set_level" }` with the reserved requester `kin-promotion`; `KinPendingActions.create` refuses `set_level` from any other requester, and `request_action` refuses it outright, so the lead cannot request it. The change applies only when the executor claims the action under the owner's signed grant: the `set_level` handler (`approvals/handlers/setLevel.ts`) calls `KinLevels.raiseByGrant`, whose write itself requires that claimed execution and the consumed grant of the lead's own owner. A lead goes up one level at a time and must still be eligible; a chat's cap goes back up to at most the lead's level (at the lead's level its row is deleted, so the chat follows the lead again). Until APPR-9 registers the handler, an approved raise lapses unapplied.
+5. Lowering a level needs no signature and applies at once (`kin.levels.lower`, owner only, from settings or chat), for the lead or one chat. A Harmful verdict on an entry the lead recorded at L1 or above lowers the lead one level automatically and tells the owner why in their direct chat. Live actions have no review card yet; until one exists, the shadow entries a lead records at L1 and above stand in for them.
+6. After a raise from L0 the promotion card offers Keep shadow memory or Start clean (`kin.levels.shadowMemory`, owner only, refused at L0). Keep commits the shadow branch's changes onto the default branch as one commit through the memory writer, refusing conflicts, deletions and secrets; there is no memory-repo PR client yet, and the owner's tap is the review. Either way `kin/shadow/<agentId>` then restarts from the default branch, so a later trial at L0 doesn't resume the old shadow week.
 
-Thresholds live in code (`KinLevels.promotionRule`) and are shown on the card.
+`kin.levels.get` (owner only) shows the lead's level, each chat's cap and the trial's counts. Thresholds live in code (`KinLevels.promotionRule`) and are shown on the cards. Scopes: `get` needs `orchestration:read`, `review` and `deferPromotion` `orchestration:operate`, and `lower`, `raise` and `shadowMemory` `settings:write`; every method then checks that the caller owns the lead.
 
 ### Budget (gap 2)
 
@@ -591,7 +592,7 @@ Upstream files touched, one line each:
 | This spec needs                                                                                                          | From      |
 | ------------------------------------------------------------------------------------------------------------------------ | --------- |
 | `KinChatService.postAgentMessage`, `KinChat.level`, owner direct chat id, widget update in place, `widget.action` events | chat      |
-| `request_action`, `KinPendingAction`, `kin.level.set` grant                                                              | approvals |
+| `request_action`, `KinPendingAction`, `set_level` grant                                                                  | approvals |
 | `MemorySecretScan.check`, `KinRoutines.pauseAll`, routine and deferral fires routed into `enqueue`                       | triggers  |
 | Pause switch UI and lock screen action                                                                                   | mobile    |
 
@@ -620,6 +621,7 @@ Upstream files touched, one line each:
 - Reviewer model: `kin_delegate` with `kind: "review"` and the author's model is rejected.
 - Levels: at L0, `kin_chat_post` to a group returns `shadowed: true`, posts nothing, and adds a shadow entry; the owner's summary widget updates. The same post to the owner's direct chat is delivered, and a second unsolicited one is refused as at L1.
 - Promotion: with 20 reviewed entries, 16 Fine and 0 Harmful after 7 days, the eligibility card appears; with one Harmful it does not.
+- Raising: `kin.levels.raise` leaves the level unchanged until the executor claims the owner-granted `set_level` action; `raiseByGrant` without that claim is refused. A member or a read-only session gets a permission error from every level method that changes something, and no Kin MCP tool reaches the level writers.
 - Stop: `kin.org.pause` interrupts a running lead and worker within 5 s; new events stay queued; `resume` produces one `resume` wake-up; a member calling `kin.org.pause` gets a permission error.
 - Budget: with 15% left, a P3 event is deferred and a P0 event runs.
 - Restart: killing the server mid wake-up and restarting finishes the wake-up once, with no duplicate commit.
@@ -650,7 +652,7 @@ LEAD-10. **Budget.** Units from turn usage, daily reset in the owner's timezone,
 
 LEAD-11. **Stop switch.** `KinStop`, RPC methods with owner-only authorization, interrupt fan-out, resume event, expiry of old events. Depends on: LEAD-5, LEAD-9, CHAT-6. Done when: the stop tests pass. Owner: backend.
 
-LEAD-12. **Promotion.** Review card in the evening summary, verdicts, the eligibility rule, the `kin.level.set` pending action, automatic demotion, shadow-branch keep or discard. Depends on: LEAD-8, APPR-4. Done when: the promotion tests pass. Owner: backend (card layout: UI, with the mobile spec).
+LEAD-12. **Promotion.** Review card in the evening summary, verdicts, the eligibility rule, the `set_level` pending action, automatic demotion, shadow-branch keep or discard. Depends on: LEAD-8, APPR-4. Done when: the promotion tests pass. Owner: backend (card layout: UI, with the mobile spec).
 
 LEAD-13. **Routine content.** Morning and evening templates, data gathering (cache, open PRs, CI state, workers, budget), and an end-to-end test that a `routine` event yields one message of at most 12 lines with its widgets. Depends on: LEAD-6, LEAD-8, LEAD-10. Done when: that test passes against fixture memory. Owner: backend.
 

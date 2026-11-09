@@ -179,7 +179,7 @@ it.effect("only KinLevels writes levels, and no agent path reaches its writers",
     ]);
     assert.deepStrictEqual(using(/\bKinLevels\.lower\b/), [
       "lead/KinLevels.ts",
-      "lead/Promotion.ts",
+      "levels/Promotion.ts",
     ]);
     // Tool handlers and the lead's MCP surface never import the level services.
     const agentFacing = [...sources.keys()].filter(
