@@ -24,6 +24,8 @@ const indexCodec = Schema.fromJsonString(Schema.toCodecJson(KinCacheIndex));
 const decodeIndex = Schema.decodeUnknownOption(indexCodec);
 const encodeIndex = Schema.encodeSync(indexCodec);
 
+const encoder = new TextEncoder();
+
 // Index read-modify-writes from concurrent streams must not interleave.
 const indexLock = Semaphore.makeUnsafe(1);
 
@@ -51,7 +53,7 @@ function makeStore(database: Database): NonNullable<typeof EnvironmentQueryStore
         .pipe(Effect.catch(() => Effect.succeedNone)),
     save: Effect.fn("KinCache.save")(
       function* (environmentId, key, payload) {
-        if (payload.length > KIN_CACHE_MAX_PAYLOAD_BYTES) return;
+        if (encoder.encode(payload).length > KIN_CACHE_MAX_PAYLOAD_BYTES) return;
         yield* database.saveCache(environmentId, KIND, rowKey(key), VERSION, payload);
         const index = Option.getOrElse(
           yield* readIndex(database, environmentId),
