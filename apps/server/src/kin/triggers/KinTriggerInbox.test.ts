@@ -161,6 +161,28 @@ describe("KinTriggerInbox", () => {
         assert.strictEqual(error._tag, "KinTriggerInboxConflict");
         if ("reason" in error) assert.strictEqual(error.reason, "unknown_source");
       }
+      const source = event("delivery:x");
+      const recheck = (fireId: string, sourceFireId: string = source.fireId) =>
+        decodeFire({
+          ...source,
+          fireId,
+          payload: { kind: "github_recheck", repo: null, reason: "repo_unknown", sourceFireId },
+        });
+      const recheckId = KinTriggerInbox.recheckFireId(orgA, source.fireId);
+      for (const [candidate, reason] of [
+        [recheck(recheckId), "unknown_source"],
+        [recheck(`${source.fireId}:recheck`), "invalid_fire_id"],
+        [recheck(recheckId, event("delivery:x", orgB).fireId), "invalid_fire_id"],
+      ] as const) {
+        const error = yield* Effect.flip(inbox.put(candidate, 0));
+        if ("reason" in error) assert.strictEqual(error.reason, reason);
+      }
+      assert.isTrue(yield* inbox.put(source, 0));
+      assert.isTrue(yield* inbox.put(recheck(recheckId), 0));
+      assert.isFalse(yield* inbox.put(recheck(recheckId), 0));
+      assert.deepStrictEqual(yield* inbox.listPending(orgA, 100, undefined, ["github_recheck"]), [
+        recheck(recheckId),
+      ]);
       yield* sql`DELETE FROM kin_trigger_inbox WHERE org_id = ${orgA}`;
       for (const invalid of [NaN, 1.5, Infinity, -1, Number.MAX_SAFE_INTEGER + 1]) {
         assert.isTrue(Exit.isFailure(yield* Effect.exit(inbox.put(a, invalid))));

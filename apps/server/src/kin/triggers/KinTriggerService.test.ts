@@ -21,6 +21,7 @@ import * as Repository from "../chat/KinChatRepository.ts";
 import * as JudgeShadow from "../floor/JudgeShadow.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as Persistence from "../persistence/KinPersistence.ts";
+import { KinDeferralGithubReader } from "./deferralGithub.ts";
 import * as TriggerService from "./KinTriggerService.ts";
 import { item, orgId, otherOrg, seed } from "./routines.testkit.ts";
 
@@ -78,10 +79,25 @@ const card = Effect.fn("test.deferralCard")(function* (org: string) {
   return rows.map((row) => ({ ...row, state: decodeCard(row.state) }));
 });
 
-it.effect("arms from front matter, re-arms on edits, and re-syncs without writes", () =>
-  Effect.gen(function* () {
+it.effect("arms from front matter, re-arms on edits, and re-syncs without writes", () => {
+  let reads = 0;
+  const reader = {
+    read: () =>
+      Effect.sync(() => {
+        reads++;
+        return { state: "open" as const, assignees: [], linkedPrs: [] };
+      }),
+  };
+  const linked = (overrides: Partial<MemoryItemHead> = {}) =>
+    deferral({ links: ["https://github.com/acme/api/issues/12"], ...overrides });
+  return Effect.gen(function* () {
     const { sql, service } = yield* setup();
-    assert.equal(yield* service.syncItem(deferral()), "armed");
+    assert.equal(yield* service.syncItem(linked()), "armed");
+    assert.equal(reads, 1);
+    // Unchanged re-syncs, per item or per head, don't read GitHub.
+    assert.equal(yield* service.syncItem(linked()), "unchanged");
+    yield* service.syncOrg(orgId, [linked()]);
+    assert.equal(reads, 1);
     const armed = yield* triggers(orgId);
     assert.deepEqual(
       armed.map(({ id, enabled, nextRunAt }) => [id, enabled, nextRunAt]),
@@ -148,8 +164,8 @@ it.effect("arms from front matter, re-arms on edits, and re-syncs without writes
         [0, null],
       ],
     );
-  }).pipe(Effect.provide(layer)),
-);
+  }).pipe(Effect.provideService(KinDeferralGithubReader, reader), Effect.provide(layer));
+});
 
 it.effect.each([
   ["done", { status: "done" }],

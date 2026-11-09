@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 
+import * as Sqlite from "../../persistence/Sqlite.ts";
 import { connectionOf, makeKinApprovalHandlers } from "./rpcHandlers.ts";
 
 it.effect("reads the call's socket and headers from the upgrade request", () =>
@@ -45,5 +46,5 @@ it.effect("key methods refuse as disabled when Kin is off", () =>
     assert.include(yield* handlers["kin.approvals.keyChallenge"]().pipe(Effect.flip), {
       reason: "disabled",
     });
-  }),
+  }).pipe(Effect.provide(Sqlite.layerMemory)),
 );

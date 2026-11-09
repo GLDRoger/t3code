@@ -26,6 +26,7 @@ import * as SessionStore from "../../auth/SessionStore.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ApproverKeys from "../approvals/ApproverKeys.ts";
+import * as Audit from "../approvals/Audit.ts";
 import { KinAttestationTrust } from "../approvals/attestation/AttestationTrust.ts";
 import * as PendingActions from "../approvals/PendingActions.ts";
 import { layerKinAuthTest, repairProofKey } from "../auth/ProofKeySessions.testkit.ts";
@@ -87,6 +88,7 @@ const buildOn = <A, E, R>(apns: ReturnType<typeof makeApns>, database: Layer.Lay
     Layer.provideMerge(Layer.mergeAll(Devices.layer, Presence.layer, apns.layer)),
     Layer.provideMerge(ApproverKeys.layer),
     Layer.provideMerge(PendingActions.layer),
+    Layer.provideMerge(Audit.layer),
     Layer.provide(Layer.succeed(KinAttestationTrust, { load: () => Effect.die("unused") })),
     Layer.provide(
       Layer.mock(ServerEnvironment.ServerEnvironment)({
@@ -229,7 +231,12 @@ describe("KinPushSender", () => {
         targetDigest: "1".repeat(64),
         reason: "Approve now, the token is ghp_secret",
         requestedBy: { agentId: "lead", threadId: "thread-lead" },
-        provenance: { startedBy: { humanId: member }, startedByRole: "member", chain: [] },
+        provenance: {
+          startedBy: { humanId: member },
+          startedByRole: "member",
+          chain: [],
+          ceilingBelowOwner: true,
+        },
         source: KinEventId.make("evt-212"),
       } as unknown as PendingActions.KinPendingActionCreateInput);
 

@@ -50,8 +50,10 @@ import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import { buildCodexAdditionalContext } from "../../apps/server/src/provider/CodexDeveloperInstructions.ts";
 import { makeSideChatContext } from "../../apps/server/src/orchestration-v2/ContextHandoffService.ts";
 import { withInlineContext } from "../../apps/server/src/orchestration-v2/ContextHandoffDelivery.ts";
+import { instructions as kinLeadInstructions } from "../../apps/server/src/kin/lead/instructions.ts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
 import { KinChatToolkit } from "../../apps/server/src/kin/mcp/KinChatToolkit.ts";
+import { KinApprovalsToolkit } from "../../apps/server/src/kin/approvals/mcp.ts";
 import { AttachmentToolkit } from "../../apps/server/src/mcp/toolkits/attachment/tools.ts";
 import { DeviceToolkit } from "../../apps/server/src/mcp/toolkits/device/tools.ts";
 import { EnvironmentToolkit } from "../../apps/server/src/mcp/toolkits/environment/tools.ts";
@@ -437,6 +439,7 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   DeviceToolkit,
   HtmlToolkit,
   KinChatToolkit,
+  KinApprovalsToolkit,
   KinLeadToolkit,
 ].flatMap((toolkit): ReadonlyArray<Tool.Any> => Object.values(toolkit.tools));
 // McpHttpServer decodes arguments with each tool's JSON codec, which drops undeclared keys.
@@ -494,12 +497,16 @@ const visibleT3Tools = (options: {
   t3Tools.filter(
     (tool) =>
       (options.kinAgent === true || options.kinLead === true
-        ? Object.keys(KinChatToolkit.tools).some((name) => tool.name === `${T3_PREFIX}${name}`) ||
+        ? [...Object.keys(KinChatToolkit.tools), ...Object.keys(KinApprovalsToolkit.tools)].some(
+            (name) => tool.name === `${T3_PREFIX}${name}`,
+          ) ||
           (options.kinLead === true &&
             Object.keys(KinLeadToolkit.tools).some((name) => tool.name === `${T3_PREFIX}${name}`))
-        : ![...Object.keys(KinChatToolkit.tools), ...Object.keys(KinLeadToolkit.tools)].some(
-            (name) => tool.name === `${T3_PREFIX}${name}`,
-          )) &&
+        : ![
+            ...Object.keys(KinChatToolkit.tools),
+            ...Object.keys(KinLeadToolkit.tools),
+            ...Object.keys(KinApprovalsToolkit.tools),
+          ].some((name) => tool.name === `${T3_PREFIX}${name}`)) &&
       (options.links === true || !hiddenWhileLinksOff.has(tool.name)) &&
       !(options.subagent === true && hiddenFromSubagents.has(tool.name)),
   );
@@ -1034,8 +1041,11 @@ export const buildMessages = (sample: Sample) => {
     testCase.promptContext === undefined
       ? testCase.prompt
       : projectComposerContextForProvider({ text: testCase.prompt, ...testCase.promptContext });
-  const prompt =
+  const inline =
     sideChatContext === undefined ? userText : withInlineContext(sideChatContext, userText);
+  // A Kin lead's wake-up prompt opens with its instructions, as LeadPrompt's does.
+  const prompt =
+    testCase.setup.world?.kinLead === true ? `${kinLeadInstructions}\n\n${inline}` : inline;
   const childPrompt = () => taskPrompt({ task: prompt, role: delegateRole });
   if (testCase.prompt !== "")
     push("user", text(role === "delegated-child" ? childPrompt() : prompt));

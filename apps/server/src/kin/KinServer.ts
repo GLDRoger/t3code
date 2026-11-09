@@ -8,6 +8,8 @@ import { KinChatHub } from "./chat/KinChatHub.ts";
 import { KinBudget } from "./lead/KinBudget.ts";
 import { KinEventQueue } from "./lead/KinEventQueue.ts";
 import { ApproverKeys } from "./approvals/ApproverKeys.ts";
+import { KinStop } from "./lead/KinStop.ts";
+import type { KinGithubWebhookLock } from "./triggers/githubWebhooks.ts";
 import type { KinPushDevices } from "./push/KinPushDevices.ts";
 import type { KinPushPresence } from "./push/KinPushPresence.ts";
 import type { KinPushSender } from "./push/KinPushSender.ts";
@@ -18,6 +20,8 @@ export type Services =
   | KinBudget
   | KinEventQueue
   | KinChatHub
+  | KinStop
+  | KinGithubWebhookLock
   | ApproverKeys
   | KinPushDevices
   | KinPushPresence

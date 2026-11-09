@@ -1,8 +1,14 @@
 import * as Schema from "effect/Schema";
 
-import { NonNegativeInt, ScheduledTaskId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  NonNegativeInt,
+  ProjectId,
+  ScheduledTaskId,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
 import { KinOrgId, KinPersonId, KinText } from "./kinChat.ts";
-import { CanonicalUtcTimestamp, KinMemoryItemId } from "./kinLead.ts";
+import { CanonicalUtcTimestamp, GithubRepoSlug, KinMemoryItemId } from "./kinLead.ts";
 import { ScheduledTaskUpsertSchedule, ScheduledTaskWebhookDeliveryId } from "./scheduledTask.ts";
 
 import { TimeOfDay, TimeZone } from "./kinTime.ts";
@@ -91,6 +97,13 @@ export const KinTriggerFired = Schema.Struct({
       scheduledTaskId: ScheduledTaskId,
       deliveryId: ScheduledTaskWebhookDeliveryId,
     }),
+    /** TRIG-6 asks TRIG-10's sweep to re-read GitHub; `repo: null` means every scoped repo. */
+    Schema.Struct({
+      kind: Schema.Literal("github_recheck"),
+      repo: Schema.NullOr(GithubRepoSlug),
+      reason: Schema.Literals(["delivery_missing", "body_unparseable", "repo_unknown", "stale"]),
+      sourceFireId: KinTriggerFireId,
+    }),
   ]),
 });
 export type KinTriggerFired = typeof KinTriggerFired.Type;
@@ -106,6 +119,40 @@ export const KinWebhookSource = Schema.Struct({
   status: Schema.Literals(["active", "paused_in_t3", "blocked_by_policy", "missing"]),
 });
 export type KinWebhookSource = typeof KinWebhookSource.Type;
+
+/** `KinWebhookSource.repo` of an org's GitHub App webhook source, which covers every installed repo. */
+export const KIN_GITHUB_APP_SOURCE = "github-app";
+
+export const KinGithubWebhookSetupInput = Schema.Struct({ orgId: KinOrgId, projectId: ProjectId });
+export type KinGithubWebhookSetupInput = typeof KinGithubWebhookSetupInput.Type;
+export const KinGithubWebhookOrgInput = Schema.Struct({ orgId: KinOrgId });
+export type KinGithubWebhookOrgInput = typeof KinGithubWebhookOrgInput.Type;
+// The message names only length and character class: RpcServer returns it to the client verbatim.
+const WebhookSecret = Schema.String.check(
+  Schema.makeFilter((value: string) => value.length >= 16 && !/\s/.test(value), {
+    message: "A webhook secret needs at least 16 characters and no whitespace.",
+  }),
+);
+export const KinGithubWebhookSecretInput = Schema.Struct({
+  orgId: KinOrgId,
+  secret: Schema.RedactedFromValue(WebhookSecret),
+});
+export type KinGithubWebhookSecretInput = typeof KinGithubWebhookSecretInput.Type;
+
+/**
+ * `configured`: GitHub and T3 share the secret. `needs_secret`: set this URL and a new secret in
+ * the GitHub App's webhook settings, then send the secret. `needs_url`: update only the URL there;
+ * a rotate has already retired the old URL, so deliveries fail until GitHub has the new one.
+ */
+export const KinGithubWebhookSetup = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("needs_connect") }),
+  Schema.Struct({
+    status: Schema.Literals(["configured", "needs_secret", "needs_url"]),
+    sourceId: KinWebhookSourceId,
+    url: Schema.String,
+  }),
+]);
+export type KinGithubWebhookSetup = typeof KinGithubWebhookSetup.Type;
 
 export const KinGithubEvent = Schema.Struct({
   orgId: KinOrgId,

@@ -91,7 +91,7 @@ A task can start once everything it depends on has merged. These waves come from
 
 **Critical path:** CHAT-1 → CHAT-3 → CHAT-4 → CHAT-5 → CHAT-7 → LEAD-7 → LEAD-9 → LEAD-11 → APPR-9 → TRIG-5 → TRIG-6 → TRIG-10. Review those PRs first. GitHub webhooks come late only because TRIG-5 creates repo hooks through the executor. If that becomes the bottleneck, TRIG-5 can create the hook directly with the bot's token and move to wave 5.
 
-**BRAND-1. Branding script.** `scripts/kin-brand.ts`, `branding/rules.yaml`, `branding/assets/`, as described in [KIN.md](../../KIN.md#branding-at-build-time). Done when: running it on a clean checkout produces a copy that typechecks, shows "Kin" in the mobile, desktop and web app names, installs alongside T3 Code (different bundle ids and scheme), and its drift check fails when a rule matches nothing. Owner: backend.
+**BRAND-1. Branding script.** `scripts/kin-brand.ts`, `branding/rules.yaml`, `branding/assets/`, as described in [KIN.md](../../KIN.md#branding-at-build-time). Done when: running it on a clean checkout produces a copy that typechecks, shows "Kin" in the mobile, desktop and web app names, installs alongside T3 Code (different bundle ids and scheme), turns over-the-air updates on only when both a Kin EAS project and an update code-signing certificate are configured, and its drift check fails when a rule matches nothing. Owner: backend.
 
 ## Shared decisions the specs settled
 

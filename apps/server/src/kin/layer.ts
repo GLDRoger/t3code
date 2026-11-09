@@ -18,6 +18,7 @@ export { KinServer } from "./KinServer.ts";
 import type * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as KinMcp from "./mcp/layer.ts";
+import * as GithubWebhooks from "./triggers/githubWebhooks.ts";
 
 const enabled = Layer.effect(
   KinServer,
@@ -37,7 +38,11 @@ const enabled = Layer.effect(
   }),
 ).pipe(
   Layer.provide(
-    Layer.merge(KinChat.layer, KinPush.layer.pipe(Layer.provideMerge(KinApprovals.layer))),
+    Layer.mergeAll(
+      KinChat.layer,
+      KinPush.layer.pipe(Layer.provideMerge(KinApprovals.layer)),
+      GithubWebhooks.lockLayer,
+    ),
   ),
 );
 const disabled = Layer.succeed(KinServer, {

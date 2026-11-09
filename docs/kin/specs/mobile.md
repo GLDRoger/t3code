@@ -238,7 +238,7 @@ Every screen handles the same seven states. Each state's copy is fixed below.
 3. `prTitle` on its own line, plain text, limited to 2 lines.
 4. Facts list, one line each:
    - Repository: `GLDRoger/t3code`
-   - Commit: first 7 characters of `headSha`, with the full SHA in the accessibility label and on long-press copy
+   - Commit: the full 40-character `headSha`, as the approval prompt shows it (approvals spec, section 5). It may wrap to a second line but is never cut; long-press copies it
    - Merge method: Squash
    - Changes: 4 files, +120 −30
    - Checks: 12 passed, 0 failed, 1 pending, with each required check underneath
@@ -461,7 +461,7 @@ Commands, from `apps/mobile`: `vp run typecheck` and `vp test run --project unit
 
 ## Open questions
 
-- Which Apple Developer team signs the Kin build, and who creates its APNs key? Android FCM waits until someone uses Android.
+- Which Apple Developer team signs the Kin build, and who creates its APNs key? Its App ID also needs the App Attest capability, or approval keys can't be activated (approvals spec, section 4). Android FCM waits until someone uses Android.
 - Is "Kin" the right label for the entry row, or should it carry the lead's name?
 - Should the Waiting on you banner also show on T3's Home list when the Kin row is scrolled away (for example, as a pinned header)?
 - Does phase 1 need folded agent talk, given there is one agent in a direct chat?
