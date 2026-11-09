@@ -415,7 +415,7 @@ const make = Effect.gen(function* () {
     const items = reads.some(
       ({ result }) => Result.isSuccess(result) && result.success._tag === "event",
     )
-      ? yield* memory.query(orgId, { status: "open", excludeInvalid: true }).pipe(
+      ? yield* memory.query(orgId, { status: "open", excludeInvalid: true }, "triggers").pipe(
           Effect.catch((cause) =>
             Effect.logWarning("Kin GitHub condition matching skipped: memory unavailable", {
               orgId,

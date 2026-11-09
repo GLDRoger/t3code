@@ -578,7 +578,7 @@ const make = Effect.gen(function* () {
       ),
     );
     // Re-arms open deferrals the cache hook missed; a failed read must not disarm everything.
-    yield* memory.query(orgId, {}).pipe(
+    yield* memory.query(orgId, {}, "triggers").pipe(
       Effect.flatMap((items) => triggers.syncOrg(orgId, items)),
       Effect.catch((cause) => Effect.logWarning("Kin trigger re-arm failed", { orgId, cause })),
     );

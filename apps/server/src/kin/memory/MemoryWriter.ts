@@ -27,6 +27,7 @@ import {
   MemoryQueryDecodeError,
   MemoryNotFound,
   MemoryDuplicateId,
+  shadowBranch,
 } from "./Memory.ts";
 import { parseFrontMatter, MemoryItemError } from "./frontMatter.ts";
 import { journalEntry, MemoryJournalError, type JournalContext } from "./journal.ts";
@@ -196,6 +197,8 @@ const make = Effect.gen(function* () {
   const memory = yield* Memory;
   const recovery = yield* MemoryRecoveryHooks;
   const reportedOpen = new Set<string>();
+  // Shadow branches whose last push was refused; the owner hears once until a push lands.
+  const unpushedShadows = new Set<string>();
   const authority = yield* MemoryWriterAuthority;
   const hooks = yield* MemoryWriterHooks;
   const scanner = yield* KinSecretScan;
@@ -362,7 +365,7 @@ const make = Effect.gen(function* () {
     if (!previous && ctx.stagedReceipts) {
       const { writer } = yield* validate(orgId);
       const branch =
-        ctx.level === "L0" ? `kin/shadow/${ctx.agentId}` : (config.defaultBranch ?? "main");
+        ctx.level === "L0" ? shadowBranch(ctx.agentId) : (config.defaultBranch ?? "main");
       const head = yield* branchHead(orgId, writer, branch);
       const { message } = yield* commitAt(orgId, writer, head);
       if (message.split("\n")[0] !== `kin(${ctx.agentId}): wake-up ${wakeupId}`) {
@@ -714,7 +717,7 @@ const make = Effect.gen(function* () {
             if (!change.path.startsWith(`${folder}/`))
               return yield* new MemoryWriteRejected({ reason: "Kind does not match path" });
             const branch =
-              ctx.level === "L0" ? `kin/shadow/${ctx.agentId}` : (config.defaultBranch ?? "main");
+              ctx.level === "L0" ? shadowBranch(ctx.agentId) : (config.defaultBranch ?? "main");
             const recorded = yield* branchHead(orgId, writer, branch);
             const recordedFiles = yield* filesAt(orgId, writer, recorded);
             const items = [];
@@ -918,7 +921,7 @@ const make = Effect.gen(function* () {
           if (lines.length === 1 && lines[0] === LEAD_ENDED_WITHOUT_KIN_END) {
             const { writer } = yield* validate(orgId);
             const branch =
-              ctx.level === "L0" ? `kin/shadow/${ctx.agentId}` : (config.defaultBranch ?? "main");
+              ctx.level === "L0" ? shadowBranch(ctx.agentId) : (config.defaultBranch ?? "main");
             const head = yield* branchHead(orgId, writer, branch);
             const { message } = yield* commitAt(orgId, writer, head);
             if (message.split("\n")[0] === `kin(${ctx.agentId}): wake-up ${wakeupId}`) return;
@@ -956,13 +959,29 @@ const make = Effect.gen(function* () {
                 reason: "Unknown org",
               });
             const branch =
-              ctx.level === "L0" ? `kin/shadow/${ctx.agentId}` : (config.defaultBranch ?? "main");
+              ctx.level === "L0" ? shadowBranch(ctx.agentId) : (config.defaultBranch ?? "main");
             const onMain = branch === (config.defaultBranch ?? "main");
             if (onMain && mainWrites === "refused") return yield* refuseMainWrite(orgId);
             const viaPullRequest = onMain && mainWrites === "pull_request";
             const recorded = yield* branchHead(orgId, writer, branch);
+            const unpushedKey = `${orgId}\u0000${branch}`;
             const push = (sha: string) =>
               git(orgId, writer, ["push", "--", repo.repoUrl, `${sha}:refs/heads/${branch}`]).pipe(
+                Effect.tap(() => Effect.sync(() => unpushedShadows.delete(unpushedKey))),
+                // A shadow commit is already what the lead reads, so a refused push leaves it on this server only.
+                Effect.tapError(() =>
+                  onMain || unpushedShadows.has(unpushedKey)
+                    ? Effect.void
+                    : Effect.sync(() => unpushedShadows.add(unpushedKey)).pipe(
+                        Effect.andThen(
+                          recovery.notify({
+                            orgId,
+                            branch,
+                            reason: `The memory repo refused ${branch}, so this lead's shadow memory is only on this server. Kin pushes it again with the next commit; check that the memory deploy key can push kin/shadow/*`,
+                          }),
+                        ),
+                      ),
+                ),
                 Effect.mapError(
                   (cause) =>
                     new MemorySyncConflict({
@@ -1085,16 +1104,15 @@ const make = Effect.gen(function* () {
               );
               yield* git(orgId, writer, ["update-ref", `refs/heads/${branch}`, commit, recorded]);
               yield* memory.record(orgId, branch, recorded, commit);
-              // Arms deferrals from the commit now, not at the next wake-up.
-              if (branch === (config.defaultBranch ?? "main"))
-                yield* memory.rebuildCache(orgId).pipe(
-                  Effect.catch((error) =>
-                    Effect.logWarning("Could not refresh memory cache after commit", {
-                      orgId,
-                      errorTag: error._tag,
-                    }),
-                  ),
-                );
+              // Arms deferrals from the commit now, not at the next wake-up; shadow commits too.
+              yield* memory.rebuildCache(orgId).pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning("Could not refresh memory cache after commit", {
+                    orgId,
+                    errorTag: error._tag,
+                  }),
+                ),
+              );
               yield* push(commit);
               return { commit };
             }).pipe(Effect.ensuring(Effect.sync(() => sessions.delete(orgId))));
@@ -1227,7 +1245,7 @@ const make = Effect.gen(function* () {
           yield* refuseDuringPurge(orgId);
           const repo = yield* repoFor(orgId);
           const main = config.defaultBranch ?? "main";
-          const shadow = `kin/shadow/${agentId}`;
+          const shadow = shadowBranch(agentId);
           const mainHead = yield* branchHead(orgId, writer, main);
           const shadowHead = yield* branchHead(orgId, writer, shadow);
           const conflict = (reason: string) =>

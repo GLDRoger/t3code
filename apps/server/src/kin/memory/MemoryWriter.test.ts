@@ -52,6 +52,7 @@ it.live.each([
   "P7-crash",
   "P8-lost-writer",
   "P9-shadow",
+  "P11-unpushed-shadow",
   "shadow-merge",
   "shadow-discard",
   "shadow-owner-path",
@@ -640,6 +641,19 @@ it.live.each([
           ),
         ).toEqual({ kept: 0, paths: [] });
         expect(yield* remoteHead("main")).toBe(settled);
+        return;
+      }
+      if (scenario === "P11-unpushed-shadow") {
+        // The remote lost the shadow branch (a refused push, say); the anchored local head is its only copy.
+        const shadow = `kin/shadow/${agentId}`;
+        const { commit } = yield* writer.commitWakeup(orgId, "wake0", "completed");
+        yield* git(root, [`--git-dir=${remote}`, "update-ref", "-d", `refs/heads/${shadow}`]);
+        yield* memory.recover(orgId);
+        expect(yield* memory.anchor(orgId, shadow)).toBe(commit);
+        expect(yield* git(paths.writer, ["rev-parse", `refs/heads/${shadow}`])).toBe(commit);
+        expect(yield* git(root, [`--git-dir=${remote}`, "rev-parse", `refs/heads/${shadow}`])).toBe(
+          commit,
+        );
         return;
       }
       if (scenario === "P8-lost-writer" || scenario === "P9-shadow") {
