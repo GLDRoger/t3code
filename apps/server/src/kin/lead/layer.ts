@@ -3,6 +3,7 @@ import * as Routines from "../triggers/routines.ts";
 import * as DeferralFlow from "../triggers/deferralFlow.ts";
 import * as GithubEvents from "../triggers/githubEvents.ts";
 import * as Watchdogs from "../triggers/watchdogs.ts";
+import * as GithubReaders from "../triggers/githubReaders.ts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as TriggerScheduler from "../triggers/KinTriggerScheduler.ts";
 import * as TriggerStore from "../triggers/KinTriggerStore.ts";
@@ -160,6 +161,7 @@ const withServices = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
       ),
     ),
     Layer.provide(KinPersistence.layer),
+    Layer.provide(GithubReaders.layer),
   );
 
 const registration = McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers);
