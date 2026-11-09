@@ -12,6 +12,7 @@ import {
   kinChatRowView,
   kinChatTitle,
   kinDirectory,
+  kinHomeLabel,
   kinHomeSubtitle,
   kinInboxNotice,
   kinInboxScreenState,
@@ -178,6 +179,19 @@ describe("kinHomeSubtitle", () => {
     expect(kinHomeSubtitle({ _tag: "noIdentity" }, null)).toBe(
       "Kin doesn't know you on this server yet",
     );
+  });
+
+  it.each([
+    [
+      "ends a message once",
+      "Live card on a real T3 thread.",
+      3,
+      "Kin. Live card on a real T3 thread. 3 unread.",
+    ],
+    ["adds the end mark", "Payments test fixed", 0, "Kin. Payments test fixed."],
+    ["has no subtitle", null, 0, "Kin."],
+  ] as const)("labels the row for VoiceOver: %s", (_name, subtitle, unread, label) => {
+    expect(kinHomeLabel(subtitle, unread)).toBe(label);
   });
 });
 

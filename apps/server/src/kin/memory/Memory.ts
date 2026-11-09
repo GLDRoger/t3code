@@ -27,6 +27,7 @@ import * as Semaphore from "effect/Semaphore";
 
 import * as SqlClient from "effect/sql/SqlClient";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { isCheckoutPath, itemFolders } from "./checkoutPaths.ts";
 import { memoryGit as runMemoryGit } from "./git.ts";
 import { VcsProcess } from "../../vcs/VcsProcess.ts";
 import * as MemoryCache from "./MemoryCache.ts";
@@ -210,9 +211,12 @@ export class Memory extends Context.Service<
 >()("t3/kin/memory/Memory") {}
 
 const decodeHead = Schema.decodeEffect(MemoryItemHead);
+
 export const folders = ["objectives", "commitments", "deferrals", "decisions", "people", "claims"];
 
 export const maxBlobBytes = 256 * 1024;
+// Well under memoryGit's 64 MiB output cap, so a large journal reads in a few `cat-file` runs.
+const checkoutBatchBytes = 16 * 1024 * 1024;
 
 interface Snapshot extends MemorySyncSnapshot {
   readonly files: ReadonlyMap<string, string>;
@@ -246,6 +250,7 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const writerLocks = new Map<KinOrgId, Semaphore.Semaphore>();
   const pinnedHeads = new Map<KinOrgId, string>();
+  const skipWarnedHeads = new Map<KinOrgId, string>();
   const hooks = yield* MemorySyncHooks;
   const withWriterLock = <A, E>(orgId: KinOrgId, effect: Effect.Effect<A, E>) => {
     let lock = writerLocks.get(orgId);
@@ -631,7 +636,7 @@ const make = Effect.gen(function* () {
         ({ relative, mode }) =>
           ["100644", "100755"].includes(mode) &&
           relative.endsWith(".md") &&
-          (folders.some((folder) => relative.startsWith(`${folder}/`)) ||
+          (itemFolders.some((folder) => relative.startsWith(`${folder}/`)) ||
             ["rules.md", "INDEX.md"].includes(relative)),
       )
       .map((entry) => ({ ...entry, size: sizes.get(entry.sha) ?? Infinity }));
@@ -697,7 +702,7 @@ const make = Effect.gen(function* () {
       const text = blobs.get(sha);
       if (text === undefined) return;
       files.set(relative, text);
-      if (!folders.some((folder) => relative.startsWith(`${folder}/`))) return;
+      if (!itemFolders.some((folder) => relative.startsWith(`${folder}/`))) return;
       if (!parsedBlobs.has(sha)) {
         const parsed = yield* parseFrontMatter(orgId, relative, text).pipe(
           Effect.catchTags({
@@ -1156,7 +1161,7 @@ const make = Effect.gen(function* () {
                 const heads = [];
                 for (const [file, bytes] of remoteFiles) {
                   if (!["100644", "100755"].includes(modes.get(file) ?? "")) continue;
-                  if (!folders.some((folder) => file.startsWith(`${folder}/`))) continue;
+                  if (!itemFolders.some((folder) => file.startsWith(`${folder}/`))) continue;
                   const parsed = yield* parseFrontMatter(orgId, file, bytes.toString("utf8")).pipe(
                     Effect.result,
                   );
@@ -1302,16 +1307,80 @@ const make = Effect.gen(function* () {
         }
       }
     }
+    // The lead runs full-access here, so the checkout holds only memory files, never provider config.
+    const entries = yield* readTree(orgId, paths.writer, head).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(VcsProcess, vcs),
+    );
+    const kept = entries.filter(
+      ({ relative, mode }) => ["100644", "100755"].includes(mode) && isCheckoutPath(relative),
+    );
+    if (kept.length < entries.length && skipWarnedHeads.get(orgId) !== head) {
+      const keptSet = new Set(kept);
+      yield* Effect.logWarning("Kin memory checkout skipped paths", {
+        orgId,
+        paths: entries.filter((entry) => !keptSet.has(entry)).map(({ relative }) => relative),
+      });
+    }
+    skipWarnedHeads.set(orgId, head);
+    const sizes = new Map<string, number>();
+    if (kept.length)
+      for (const line of (yield* git(
+        orgId,
+        paths.writer,
+        ["cat-file", "--batch-check"],
+        kept.map(({ sha }) => sha).join("\n") + "\n",
+      ))
+        .trim()
+        .split("\n")) {
+        const [sha, , size] = line.split(" ");
+        if (sha && size) sizes.set(sha, Number(size));
+      }
+    const batches: Array<typeof kept> = [];
+    let batchBytes = Infinity;
+    for (const entry of kept) {
+      const bytes = sizes.get(entry.sha) ?? 0;
+      if (batchBytes + bytes > checkoutBatchBytes || batches.at(-1)!.length >= 4096) {
+        batches.push([]);
+        batchBytes = 0;
+      }
+      batches.at(-1)!.push(entry);
+      batchBytes += bytes;
+    }
+    const blobs: Array<Buffer> = [];
+    for (const batch of batches)
+      blobs.push(
+        ...(yield* readObjects(
+          orgId,
+          paths.writer,
+          batch.map(({ sha }) => ({ sha, type: "blob" as const })),
+        ).pipe(
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(VcsProcess, vcs),
+        )),
+      );
     yield* io(
       orgId,
       "readSnapshot",
       Effect.scoped(
         Effect.gen(function* () {
-          const temporary = yield* fs.makeTempDirectoryScoped();
-          yield* git(orgId, paths.writer, ["clone-snapshot", `${temporary}/read`]);
-          yield* git(orgId, `${temporary}/read`, ["checkout", "--detach", head]);
+          const read = path.join(yield* fs.makeTempDirectoryScoped(), "read");
+          yield* fs.makeDirectory(read);
+          for (const [index, { relative }] of kept.entries()) {
+            const target = path.join(read, relative);
+            yield* fs.makeDirectory(path.dirname(target), { recursive: true });
+            yield* fs.writeFile(target, blobs[index]!);
+          }
+          // An empty repo keeps stray `git` and turn checkpoints out of any enclosing repo.
+          yield* vcs.run({
+            operation: "Memory.readCheckoutRepo",
+            command: "git",
+            cwd: read,
+            args: ["init", "--quiet", "--", read],
+            env: { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TEMPLATE_DIR: "" },
+          });
           yield* fs.remove(paths.read, { recursive: true, force: true });
-          yield* fs.rename(`${temporary}/read`, paths.read);
+          yield* fs.rename(read, paths.read);
         }),
       ),
     );
@@ -1337,6 +1406,7 @@ const make = Effect.gen(function* () {
       yield* removeStaleClones(orgId, paths.root);
     initializedCheckouts.delete(orgId);
     pinnedHeads.delete(orgId);
+    skipWarnedHeads.delete(orgId);
     snapshots.delete(orgId);
     blobCaches.delete(orgId);
     return paths;

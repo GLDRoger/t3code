@@ -107,7 +107,7 @@ export const fakeRepository = (fs: FileSystem.FileSystem) => {
         }
         onStdoutChunk?.(Buffer.from(stdout));
         return Effect.gen(function* () {
-          if (args[0] === "clone" || args[0] === "clone-snapshot") {
+          if (args[0] === "clone") {
             yield* fs
               .makeDirectory(`${args.at(-1)}/.git/objects`, { recursive: true })
               .pipe(Effect.orDie);
