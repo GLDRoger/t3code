@@ -6,15 +6,17 @@ const isKinPushError = Schema.is(KinPushError);
 interface KinPushTarget {
   readonly environmentId: EnvironmentId;
   readonly orgId: string;
+  /** The person this session is in that org; a refusal holds only for them. */
+  readonly personId: string;
   readonly token: string;
 }
 
 const targetKey = (target: KinPushTarget) =>
-  `${target.environmentId}\u0000${target.orgId}\u0000${target.token}`;
+  `${target.environmentId}\u0000${target.orgId}\u0000${target.personId}\u0000${target.token}`;
 
 /**
- * Tokens a host holds for another person. That answer is final: the token isn't sent to that
- * org again until it changes, and each refusal is noted once.
+ * Tokens a host holds for another person. That answer is final for this person: the token isn't
+ * sent to that org again until it or the signed-in person changes, and each refusal is noted once.
  */
 export function createKinPushRefusals() {
   const refused = new Set<string>();

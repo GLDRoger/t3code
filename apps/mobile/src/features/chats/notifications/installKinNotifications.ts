@@ -138,7 +138,7 @@ function createTokenRegistration() {
     registered = key;
     const current = token;
     const orgs = host.probe.orgs.me
-      .map(({ orgId }) => ({ environmentId, orgId, token: current }))
+      .map(({ orgId, personId }) => ({ environmentId, orgId, personId, token: current }))
       .filter((target) => !refusals.isRefused(target));
     const results = await Promise.all(
       orgs.map(async (target) => {
