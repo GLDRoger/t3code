@@ -149,8 +149,9 @@ it.effect("a shadow entry needs the caller's running wake-up and is idempotent b
   }).pipe(Effect.provide(layer)),
 );
 
-// Raising a level is LEAD-12's signed kin.level.set action; until it lands nothing writes levels.
-it.effect("no Kin server code writes a lead's or a chat's level", () =>
+// Levels change only through owner-authorised paths: `raiseByGrant` behind a claimed set_level
+// grant, and `lower` for the owner's RPC and the server's automatic demotion.
+it.effect("only KinLevels writes levels, and no agent path reaches its writers", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -162,11 +163,38 @@ it.effect("no Kin server code writes a lead's or a chat's level", () =>
         !file.endsWith(".testkit.ts") &&
         !file.startsWith("persistence/migrations/"),
     );
+    const sources = new Map<string, string>();
+    for (const file of files) sources.set(file, yield* fs.readFileString(path.join(kin, file)));
     const writes =
       /\b(?:INSERT\s+(?:OR\s+\w+\s+)?INTO|REPLACE\s+INTO|DELETE\s+FROM)\s+kin_(?:leads|chat_levels)\b|\bUPDATE\s+kin_chat_levels\b|\bUPDATE\s+kin_leads\s+SET\b[^`]*\blevel\b/i;
-    const offenders: Array<string> = [];
-    for (const file of files)
-      if (writes.test(yield* fs.readFileString(path.join(kin, file)))) offenders.push(file);
-    assert.deepStrictEqual(offenders, []);
+    const using = (pattern: RegExp) =>
+      [...sources]
+        .filter(([, text]) => pattern.test(text))
+        .map(([file]) => file)
+        .toSorted();
+    assert.deepStrictEqual(using(writes), ["lead/KinLevels.ts"]);
+    assert.deepStrictEqual(using(/\braiseByGrant\b/), [
+      "approvals/handlers/setLevel.ts",
+      "lead/KinLevels.ts",
+    ]);
+    assert.deepStrictEqual(using(/\bKinLevels\.lower\b/), [
+      "lead/KinLevels.ts",
+      "levels/Promotion.ts",
+    ]);
+    // Tool handlers and the lead's MCP surface never import the level services.
+    const agentFacing = [...sources.keys()].filter(
+      (file) =>
+        file.startsWith("mcp/") ||
+        file.startsWith("lead/mcp/") ||
+        file === "approvals/mcp.ts" ||
+        file === "approvals/RequestAction.ts",
+    );
+    assert.isNotEmpty(agentFacing);
+    for (const file of agentFacing)
+      assert.notMatch(
+        sources.get(file) ?? "",
+        /Promotion\.ts|handlers\/setLevel|\b(?:raiseByGrant|checkRaise|KinPromotion)\b|KinLevels\.lower\b/,
+        file,
+      );
   }).pipe(Effect.provide(NodeServices.layer)),
 );
