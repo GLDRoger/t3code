@@ -64,12 +64,14 @@ const handlers = Layer.effect(
   ]).pipe(Effect.map(ActionHandlers.make)),
 ).pipe(Layer.provideMerge(github));
 
-// Without the GitHub App and scope configured, nothing that touches GitHub can run, and the
-// hygiene check can't pass, so approved actions lapse instead of executing.
+// Without the GitHub App and scope configured, the GitHub kinds have no handler but stay held
+// until their grants lapse, and the hygiene check can't pass, so nothing else runs either.
 const unconfigured = Layer.mergeAll(
   Layer.effect(
     ActionHandlers.KinActionHandlers,
-    Effect.map(registerApproverKeyHandler, (handler) => ActionHandlers.make([handler])),
+    Effect.map(registerApproverKeyHandler, (handler) =>
+      ActionHandlers.make([handler], ["merge_pull_request", "delete_branch"]),
+    ),
   ),
   Layer.succeed(
     CredentialHygiene.CredentialHygiene,
@@ -112,7 +114,8 @@ const executorDeps = handlers.pipe(
  */
 export const layer = Layer.mergeAll(
   GrantVerifier.layer,
-  ActionExecutor.layer.pipe(Layer.provide(executorDeps)),
+  // The ledger (claim and finish) goes to the executor alone, never into the layer's output.
+  ActionExecutor.layer.pipe(Layer.provide(Layer.merge(executorDeps, PendingActions.ledgerLayer))),
 ).pipe(
   Layer.provideMerge(ApproverKeys.layer),
   Layer.provideMerge(PendingActions.layer),

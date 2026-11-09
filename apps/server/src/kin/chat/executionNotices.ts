@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { KinExecutionNotices, type KinExecutionOutcome } from "../approvals/ActionExecutor.ts";
+import { KinExecutionNotices, type KinExecutionOutcome } from "../approvals/ExecutionNotices.ts";
 import { KinChatService } from "./KinChatService.ts";
 
 const subject = (action: KinPendingAction) => {
@@ -23,15 +23,19 @@ const executionNoticeBody = (input: {
   readonly outcome: KinExecutionOutcome;
   readonly mergeCommitSha?: string;
   readonly error?: string;
+  readonly note?: string;
 }) => {
   const { action } = input;
   const what = subject(action);
-  if (input.outcome === "succeeded")
-    return action.kind === "merge_pull_request" && action.target._tag === "pull_request"
-      ? `Merged ${what} (${action.target.mergeMethod})${input.mergeCommitSha === undefined ? "" : ` as ${input.mergeCommitSha}`}.`
-      : action.kind === "delete_branch"
-        ? `Deleted ${what}.`
-        : `Done: ${what}.`;
+  if (input.outcome === "succeeded") {
+    const done =
+      action.kind === "merge_pull_request" && action.target._tag === "pull_request"
+        ? `Merged ${what} (${action.target.mergeMethod})${input.mergeCommitSha === undefined ? "" : ` as ${input.mergeCommitSha}`}.`
+        : action.kind === "delete_branch"
+          ? `Deleted ${what}.`
+          : `Done: ${what}.`;
+    return input.note === undefined ? done : `${done} ${input.note}`;
+  }
   if (input.outcome === "interrupted")
     return `${what} didn't finish, and the approval is spent. Approve a new request to try again.`;
   return `Didn't carry out ${what}: ${input.error ?? "no reason given"}. Approve a new request to try again.`;

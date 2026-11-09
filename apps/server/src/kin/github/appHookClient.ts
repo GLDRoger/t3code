@@ -1,3 +1,4 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
@@ -43,7 +44,8 @@ export const liveLayer = layer.pipe(
       KinGitHubApp.KinGitHubAppConfig.layer,
       KinGitHubScope.layer,
       FetchHttpClient.layer,
-      Keychain.layer,
+      // The keychain's Secret Service probe needs a spawner, as in `approvals/layer.ts`.
+      Keychain.layer.pipe(Layer.provide(NodeServices.layer)),
     ),
   ),
 );

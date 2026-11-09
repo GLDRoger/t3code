@@ -54,6 +54,8 @@ export interface RecordedRequest {
 }
 
 export interface FakeAnswer {
+  /** Never answers, like a connection GitHub leaves open. */
+  readonly hang?: true;
   readonly status: number;
   readonly body?: unknown;
   readonly headers?: Record<string, string>;
@@ -77,6 +79,7 @@ export const fakeGitHub = (route: (request: RecordedRequest) => FakeAnswer) => {
       };
       requests.push(recorded);
       const answer = route(recorded);
+      if (answer.hang === true) return Effect.never;
       return Effect.succeed(
         HttpClientResponse.fromWeb(
           request,

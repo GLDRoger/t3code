@@ -28,6 +28,8 @@ const RefAnswer = Schema.Struct({ object: Schema.Struct({ sha: Sha40 }) });
 const decodeRef = Schema.decodeUnknownOption(RefAnswer);
 const RulesAnswer = Schema.Array(Schema.Struct({ type: Schema.String }));
 const decodeRules = Schema.decodeUnknownOption(RulesAnswer);
+const OpenPullsAnswer = Schema.Array(Schema.Struct({ number: Schema.Int }));
+const decodeOpenPulls = Schema.decodeUnknownOption(OpenPullsAnswer);
 const RepoAnswer = Schema.Struct({ default_branch: Schema.String });
 const decodeRepo = Schema.decodeUnknownOption(RepoAnswer);
 
@@ -68,6 +70,16 @@ export class KinBotReads extends Context.Service<
       readonly repo: RepoSlug;
       readonly branch: string;
     }) => Effect.Effect<boolean, KinBotReadError>;
+    /** Whether any ruleset rule applies to the branch. */
+    readonly branchHasRules: (input: {
+      readonly repo: RepoSlug;
+      readonly branch: string;
+    }) => Effect.Effect<boolean, KinBotReadError>;
+    /** Whether an open pull request targets the branch as its base. */
+    readonly isBaseOfOpenPull: (input: {
+      readonly repo: RepoSlug;
+      readonly branch: string;
+    }) => Effect.Effect<boolean, KinBotReadError>;
   }
 >()("t3/kin/github/KinBotReads") {}
 
@@ -100,6 +112,18 @@ const make = Effect.gen(function* () {
   const required = <A>(effect: Effect.Effect<Option.Option<A>, KinBotReadError>) =>
     effect.pipe(Effect.map(Option.getOrThrow));
 
+  // Active rules on the branch from every ruleset that targets it.
+  const branchRules = (repo: RepoSlug, branch: string) =>
+    required(
+      read(
+        repo,
+        "repos.getBranchRules",
+        `${repoPath(repo)}/rules/branches/${branchPath(branch)}`,
+        decodeRules,
+        false,
+      ),
+    );
+
   return KinBotReads.of({
     pullRequest: Effect.fn("KinBotReads.pullRequest")(function* ({ repo, number }) {
       const pull = yield* required(
@@ -130,17 +154,23 @@ const make = Effect.gen(function* () {
       return found.default_branch;
     }),
     mergeQueueRequired: Effect.fn("KinBotReads.mergeQueueRequired")(function* ({ repo, branch }) {
-      // Active rules on the branch from every ruleset that targets it.
-      const rules = yield* required(
+      const rules = yield* branchRules(repo, branch);
+      return rules.some((rule) => rule.type === "merge_queue");
+    }),
+    branchHasRules: Effect.fn("KinBotReads.branchHasRules")(function* ({ repo, branch }) {
+      return (yield* branchRules(repo, branch)).length > 0;
+    }),
+    isBaseOfOpenPull: Effect.fn("KinBotReads.isBaseOfOpenPull")(function* ({ repo, branch }) {
+      const pulls = yield* required(
         read(
           repo,
-          "repos.getBranchRules",
-          `${repoPath(repo)}/rules/branches/${branchPath(branch)}`,
-          decodeRules,
+          "pulls.list",
+          `${repoPath(repo)}/pulls?state=open&base=${encodeURIComponent(branch)}&per_page=1`,
+          decodeOpenPulls,
           false,
         ),
       );
-      return rules.some((rule) => rule.type === "merge_queue");
+      return pulls.length > 0;
     }),
   });
 });

@@ -42,17 +42,24 @@ export const makeMergePullRequestHandler = Effect.gen(function* () {
     if (queued) return yield* new KinExecError({ reason: "merge_queue_unsupported" });
   });
 
-  /** `deleteBranchAfter`: only a same-repo head still at the merged SHA. Never fails the merge. */
+  /**
+   * `deleteBranchAfter`: only a same-repo head still at the merged SHA, and never one
+   * `delete_branch` would refuse or that other work depends on. Never fails the merge.
+   */
   const deleteHead = Effect.fn("mergePullRequest.deleteHead")(function* (
     action: KinPendingAction,
     pass: Parameters<OwnerMergeClient["Service"]["deleteBranch"]>[0],
   ) {
     const { target, resolved } = yield* partsOf(action);
+    const branch = { repo: target.repo, branch: resolved.head };
     const pull = yield* reads.pullRequest({ repo: target.repo, number: target.number });
     if (pull.headRepo?.toLowerCase() !== target.repo.toLowerCase()) return "fork";
-    const head = yield* reads.branchHead({ repo: target.repo, branch: resolved.head });
+    if ((yield* reads.defaultBranch(target.repo)) === resolved.head) return "default branch";
+    if (yield* reads.branchHasRules(branch)) return "branch rules apply";
+    if (yield* reads.isBaseOfOpenPull(branch)) return "base of an open pull request";
+    const head = yield* reads.branchHead(branch);
     if (Option.isNone(head) || head.value !== resolved.headSha) return "moved";
-    const answer = yield* owner.deleteBranch(pass, { repo: target.repo, branch: resolved.head });
+    const answer = yield* owner.deleteBranch(pass, branch);
     return answer._tag;
   });
 
@@ -69,14 +76,13 @@ export const makeMergePullRequestHandler = Effect.gen(function* () {
         })
         .pipe(Effect.mapError(tokenFailure));
       const outcome = yield* outcomeOf(answer);
-      if (target.deleteBranchAfter) {
-        const deleted = yield* deleteHead(action, context.pass).pipe(
-          Effect.orElseSucceed(() => "unavailable" as const),
-        );
-        if (deleted !== "done")
-          yield* Effect.logInfo("Kin merge: head branch left in place", { reason: deleted });
-      }
-      return outcome;
+      if (!target.deleteBranchAfter) return outcome;
+      const deleted = yield* deleteHead(action, context.pass).pipe(
+        Effect.orElseSucceed(() => "unavailable" as const),
+      );
+      if (deleted === "done") return outcome;
+      yield* Effect.logInfo("Kin merge: head branch left in place", { reason: deleted });
+      return { ...outcome, note: `Kept head branch ${resolved.head}: ${deleted}.` };
     },
   );
 
@@ -87,6 +93,7 @@ export const makeMergePullRequestHandler = Effect.gen(function* () {
         .pullRequest({ repo: target.repo, number: target.number })
         .pipe(Effect.option);
       if (Option.isNone(pull)) return "unknown" as const;
+      // `merged_by` isn't compared: only the owner's token can merge, and GitHub's own record wins.
       if (pull.value.merged && pull.value.mergeCommitSha !== null)
         return { _tag: "done", outcome: { mergeCommitSha: pull.value.mergeCommitSha } } as const;
       return pull.value.merged ? ("unknown" as const) : ("not_done" as const);

@@ -27,6 +27,9 @@ export const KinExecFailure = Schema.Literals([
   "paused",
   "grant_mismatch",
   "refused",
+  // Re-checked after the claim, so a revoke or role change since then still stops the run.
+  "revoked_key",
+  "not_owner",
   // The side effect may have happened: the executor reconciles and never retries the run.
   "unknown_outcome",
 ]);
@@ -47,6 +50,8 @@ export class KinExecError extends Schema.TaggedError<KinExecError>()("KinExecErr
 export interface KinOutcome {
   readonly mergeCommitSha?: string;
   readonly githubRequestId?: string;
+  /** For the audit and the owner's notice: a part of the action that was skipped, and why. */
+  readonly note?: string;
 }
 
 /** Startup reconciliation's answer; a bare `"done"` is a success with nothing more to record. */
@@ -90,11 +95,16 @@ export class KinActionHandlers extends Context.Service<
   {
     readonly get: (kind: KinActionKind) => Option.Option<KinActionHandler>;
     readonly kinds: ReadonlySet<KinActionKind>;
+    /** Kinds this host could run once configured: held until the grant lapses, not voided. */
+    readonly unavailable: ReadonlySet<KinActionKind>;
   }
 >()("t3/kin/approvals/ActionHandlers/KinActionHandlers") {}
 
 /** One handler per kind; registering a kind twice is a wiring bug. */
-export const make = (handlers: ReadonlyArray<KinActionHandler>) => {
+export const make = (
+  handlers: ReadonlyArray<KinActionHandler>,
+  unavailable: ReadonlyArray<KinActionKind> = [],
+) => {
   const byKind = new Map<KinActionKind, KinActionHandler>();
   for (const handler of handlers) {
     if (byKind.has(handler.kind)) throw new Error(`Two Kin action handlers for ${handler.kind}`);
@@ -103,5 +113,6 @@ export const make = (handlers: ReadonlyArray<KinActionHandler>) => {
   return KinActionHandlers.of({
     get: (kind) => Option.fromNullishOr(byKind.get(kind)),
     kinds: new Set(byKind.keys()),
+    unavailable: new Set(unavailable.filter((kind) => !byKind.has(kind))),
   });
 };
