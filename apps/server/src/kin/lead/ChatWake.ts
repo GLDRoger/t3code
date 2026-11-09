@@ -7,6 +7,9 @@ import {
   type KinEvent,
   type KinMessage,
 } from "@t3tools/contracts";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
+import * as NodeCrypto from "node:crypto";
+
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -67,15 +70,18 @@ const make = Effect.gen(function* () {
       for (const target of targets) {
         const agentId = KinAgentId.make(target.agentId);
         // Every field comes from the stored message, so a replay enqueues byte-identical JSON.
+        const prefix = message.kind === "widget_action" ? "widget-action" : "chat-message";
+        const dedupeKey = `${prefix}:${message.messageId}:${agentId}`;
+        // The memory writer accepts only [a-zA-Z0-9_-] in event ids, so hash the readable key.
         const eventId = KinEventId.make(
-          `${message.kind === "widget_action" ? "widget-action" : "chat-message"}:${message.messageId}:${agentId}`,
+          `${prefix}-${NodeCrypto.createHash("sha256").update(dedupeKey).digest("hex").slice(0, 32)}`,
         );
         const base = {
           orgId: message.orgId,
           eventId,
           agentId,
           receivedAt: DateTime.makeUnsafe(message.createdAt),
-          dedupeKey: eventId,
+          dedupeKey,
           provenance: message.author,
           chatId: message.chatId,
           messageId: message.messageId,

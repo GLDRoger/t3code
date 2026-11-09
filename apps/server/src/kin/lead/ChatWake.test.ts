@@ -141,7 +141,7 @@ describe("ChatWake", () => {
       assert.strictEqual(tap?.duplicate, false);
       const stored = yield* storedEvents();
       assert.deepStrictEqual(
-        stored.map(({ event, priority }) => [event._tag, event.eventId, priority]),
+        stored.map(({ event, priority }) => [event._tag, event.dedupeKey, priority]),
         [
           ["chat.message", "chat-message:m1:lead-a", "P0"],
           ["widget.action", "widget-action:tap:lead-a", "P0"],
@@ -149,7 +149,7 @@ describe("ChatWake", () => {
       );
       const event = stored[0]!.event;
       assert.strictEqual(event.agentId, "lead-a");
-      assert.strictEqual(event.dedupeKey, event.eventId);
+      assert.match(event.eventId, /^chat-message-[a-f0-9]{32}$/);
       assert.deepStrictEqual(event.provenance, message("a", "m1").author);
       assert.strictEqual(
         stored[1]!.event._tag === "widget.action" && stored[1]!.event.actionId,
@@ -183,9 +183,9 @@ describe("ChatWake", () => {
       });
       // The stream is ordered, so the sentinel's result means the earlier posts were handled.
       const result = yield* Queue.take(results);
-      assert.strictEqual(result.event.eventId, "chat-message:sentinel:lead-a");
+      assert.strictEqual(result.event.dedupeKey, "chat-message:sentinel:lead-a");
       assert.deepStrictEqual(
-        (yield* storedEvents()).map(({ event }) => event.eventId),
+        (yield* storedEvents()).map(({ event }) => event.dedupeKey),
         ["chat-message:sentinel:lead-a"],
       );
     }).pipe(Effect.provide(services)),
@@ -200,7 +200,7 @@ describe("ChatWake", () => {
       const hub = yield* Hub.KinChatHub;
       const results = yield* start();
       assert.strictEqual(
-        (yield* Queue.take(results)).event.eventId,
+        (yield* Queue.take(results)).event.dedupeKey,
         "chat-message:unanswered:lead-a",
       );
       yield* hub.publish({
@@ -208,9 +208,9 @@ describe("ChatWake", () => {
         orgId: KinOrgId.make("a"),
         message: message("a", "live", { seq: 4 }),
       });
-      assert.strictEqual((yield* Queue.take(results)).event.eventId, "chat-message:live:lead-a");
+      assert.strictEqual((yield* Queue.take(results)).event.dedupeKey, "chat-message:live:lead-a");
       assert.deepStrictEqual(
-        (yield* storedEvents()).map(({ event }) => event.eventId),
+        (yield* storedEvents()).map(({ event }) => event.dedupeKey).toSorted(),
         ["chat-message:live:lead-a", "chat-message:unanswered:lead-a"],
       );
     }).pipe(Effect.provide(services)),
