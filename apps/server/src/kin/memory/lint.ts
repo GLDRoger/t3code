@@ -16,14 +16,42 @@ export interface LintFailure {
 const orgId = KinOrgId.make("memory-lint");
 const formatIssue = SchemaIssue.makeFormatterStandardSchemaV1();
 
+export interface MemoryTreeEntry {
+  readonly path: string;
+  readonly mode: string;
+  readonly content?: Uint8Array;
+}
+
 const codeowners = ".github/CODEOWNERS";
 const kinOnlyPaths = ["/commitments/", "/deferrals/", "/claims/", "/journal/", "/INDEX.md"];
+const kinOnlyRoots = kinOnlyPaths.map((pattern) => pattern.slice(1).replace(/\/$/, ""));
+const regularModes = ["100644", "100755"];
 
 export const isLintedPath = (path: string) =>
   path === "rules.md" ||
   path === codeowners ||
   path === "INDEX.md" ||
   (path.endsWith(".md") && folders.some((folder) => path.startsWith(`${folder}/`)));
+
+// CODEOWNERS cannot negate a pattern, so nothing but Kin's own shapes may live under its paths.
+// Agent instruction files would be loaded by any agent that reads the folder.
+const agentFiles = /^(claude|agents?|gemini)$/i;
+const itemPath = /^(?:commitments|deferrals|claims)\/([a-zA-Z0-9][a-zA-Z0-9_-]{0,199})\.md$/;
+const journalPath = /^journal\/\d{4}\/(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\.md$/;
+
+const entryFailure = ({ path, mode }: MemoryTreeEntry) => {
+  if (mode === "120000") return "Symlinks are not allowed";
+  if (mode === "160000") return "Submodules are not allowed";
+  if (!regularModes.includes(mode)) return "Not a regular file";
+  const [root, ...rest] = path.split("/");
+  if (!kinOnlyRoots.includes(root ?? "")) return undefined;
+  if (root === "INDEX.md") return rest.length ? "INDEX.md must be a file" : undefined;
+  if (rest.some((segment) => segment.startsWith(".")))
+    return "Hidden paths are not allowed in Kin's unowned folders";
+  const item = itemPath.exec(path)?.[1];
+  if (journalPath.test(path) || (item !== undefined && !agentFiles.test(item))) return undefined;
+  return "Kin's unowned folders only hold item and journal files";
+};
 
 const keyLine = (text: string, key: string) => {
   const index = text.split("\n").findIndex((line) => line.startsWith(`${key}:`));
@@ -97,9 +125,9 @@ const describe = (error: MemoryItemError, text: string): { line: number; reason:
 export const formatLintFailure = (failure: LintFailure) =>
   `${failure.path.replace(/[\p{Cc}\p{Cf}\u2028\u2029\\]/gu, (char) => `\\u{${char.codePointAt(0)!.toString(16)}}`)}:${failure.line} ${failure.reason}`;
 
-/** Checks memory files the way `Memory.load` reads them, so CI rejects what the server would skip. */
+/** Checks the whole tree: Kin's unowned paths against an allowlist, memory files the way `Memory.load` reads them. */
 export const lintMemoryFiles = Effect.fn("MemoryLint.lint")(function* (
-  files: ReadonlyArray<{ readonly path: string; readonly content: Uint8Array }>,
+  files: ReadonlyArray<MemoryTreeEntry>,
 ) {
   const failures: Array<LintFailure> = [];
   const ids = new Map<string, string>();
@@ -108,7 +136,16 @@ export const lintMemoryFiles = Effect.fn("MemoryLint.lint")(function* (
   if (!files.some((file) => file.path === codeowners))
     failures.push({ path: codeowners, line: 1, reason: `Missing ${codeowners}` });
   for (const file of [...files].sort((a, b) => a.path.localeCompare(b.path))) {
+    const shape = entryFailure(file);
+    if (shape !== undefined) {
+      failures.push({ path: file.path, line: 1, reason: shape });
+      continue;
+    }
     if (!isLintedPath(file.path)) continue;
+    if (file.content === undefined) {
+      failures.push({ path: file.path, line: 1, reason: "Unreadable file" });
+      continue;
+    }
     if (file.content.byteLength > maxBlobBytes) {
       failures.push({ path: file.path, line: 1, reason: `Larger than ${maxBlobBytes} bytes` });
       continue;

@@ -24,9 +24,11 @@ Each run checks out `t3code` at the pinned commit without `.repos/`, installs th
 
 ## Things to know
 
-- GitHub runs a PR's own copy of this workflow, so a PR could rewrite the check. The `/.github/` line in `CODEOWNERS` is what stops that: such a PR needs the owner's review. An org ruleset that requires this workflow from a pinned ref would remove the gap; consider it with the ruleset.
+- GitHub runs a PR's own copy of this workflow, so a PR could rewrite the check. The `*` line in `CODEOWNERS`, which also covers `.github/`, is what stops that: such a PR needs the owner's review. An org ruleset that requires this workflow from a pinned ref would remove the gap; consider it with the ruleset.
 - A `.gitleaksignore` anywhere in the memory repo fails the check, because gitleaks would honour it. `gitleaks:allow` comments are ignored.
 - A false positive the owner allowed in `kin_secret_allow` still fails gitleaks, which has no allowlist. Reword the text; whether the owner may merge past the check is settled with the ruleset.
 - `CODEOWNERS` denies by default, so a new root file such as `CLAUDE.md`, `AGENTS.md`, `.claude/`, `.mcp.json` or `.codex/` needs the owner's review before the lead's read checkout loads it. The lint fails if the file still names `@OWNER` or frees any path beyond Kin's own.
-- Gitleaks matches the scanner's patterns but not its Unicode folding, wrapped-token joining or word boundaries, so it can flag more than the scanner. It adds its own decoding and covers every commit in the PR, merge resolutions included.
+- CODEOWNERS can't carve a path back out of Kin's owner-less lines, so the lint does it: under those paths it allows only `commitments/`, `deferrals/` and `claims/` items one level deep (`<id>.md`, never `CLAUDE.md`, `AGENTS.md` or `GEMINI.md`), `journal/YYYY/MM-DD.md` and a root `INDEX.md` file. It reads git's index, so a `.claude/` folder, a symlink or a submodule fails it rather than being skipped; paths the owner reviews stay free-form.
+- Gitleaks matches the scanner's patterns but not its Unicode folding, wrapped-token joining or word boundaries, so it can flag both more and less than the scanner. It adds its own decoding and covers every commit in the PR, merge resolutions included.
 - Gitleaks scans file contents, not file paths. A token in a file or folder name passes this check; only `KinSecretScan` catches it, on Kin's own writes.
+- Other known gitleaks misses, left as they are: a token glued to a decoy with `-`, a value an allowed `secret-assignment` match swallows (`secret=https://x/?db_password=…`, `token_scopes=read&api_key=…`), and a token split across lines or hidden with zero-width or fullwidth characters.
