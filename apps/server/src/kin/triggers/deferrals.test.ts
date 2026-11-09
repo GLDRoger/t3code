@@ -34,11 +34,7 @@ import * as Memory from "../memory/Memory.ts";
 import * as MemoryConfig from "../memory/MemoryConfig.ts";
 import * as MemoryWriter from "../memory/MemoryWriter.ts";
 import * as DeferralFlow from "./deferralFlow.ts";
-import {
-  KinDeferralGithubError,
-  KinDeferralGithubReader,
-  type GithubLinkState,
-} from "./deferralGithub.ts";
+import { KinDeferralGithubReader, type GithubLinkState } from "./deferralGithub.ts";
 import * as Deferrals from "./deferrals.ts";
 import * as TriggerScheduler from "./KinTriggerScheduler.ts";
 import * as TriggerService from "./KinTriggerService.ts";
@@ -75,12 +71,15 @@ const layerFor = <E = never>(
   );
 
 const fakeGithub = (states: Map<string, Omit<GithubLinkState, "link">>) => ({
-  read: (org: typeof orgId, ref: { readonly repo: string; readonly number: number }) => {
-    const state = states.get(`${ref.repo}#${ref.number}`);
-    return state === undefined
-      ? Effect.fail(new KinDeferralGithubError({ orgId: org, reason: "not_found" }))
-      : Effect.succeed(state);
-  },
+  readRepo: (_org: typeof orgId, repo: string, numbers: ReadonlyArray<number>) =>
+    Effect.succeed(
+      new Map(
+        numbers.flatMap((number) => {
+          const state = states.get(`${repo}#${number}`);
+          return state === undefined ? [] : [[number, state] as const];
+        }),
+      ),
+    ),
 });
 // Stands in for LEAD-11, the worker release gate and #44's GitHub client.
 const openGates =

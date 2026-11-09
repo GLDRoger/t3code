@@ -6,7 +6,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import type * as Redacted from "effect/Redacted";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import { FetchHttpClient, HttpClient } from "effect/http";
 
@@ -16,7 +16,7 @@ import * as KinGitHubApp from "../github/KinGitHubApp.ts";
 import type { KinGitHubPermissionSet } from "../github/KinGitHubPermissions.ts";
 import { KinGitHubScope } from "../github/KinGitHubScope.ts";
 import {
-  type GithubRef,
+  type GithubLinkState,
   KinDeferralGithubError,
   KinDeferralGithubReader,
   type KinDeferralGithubReaderShape,
@@ -29,9 +29,6 @@ import {
   type KinWatchdogGithubReaderShape,
 } from "./watchdogs.ts";
 
-// The deferral read runs under the org memory lock, so it gets far less than a watchdog sweep.
-const DEFERRAL_READ_TIMEOUT = "10 seconds";
-const WATCHDOG_READ_TIMEOUT = "30 seconds";
 const ITEMS_PER_QUERY = 50;
 const TOKEN_REUSE_MARGIN_MS = 5 * 60_000;
 const READ_PERMISSIONS = {
@@ -44,25 +41,33 @@ const ITEM_FRAGMENT = `fragment KinItem on IssueOrPullRequest {
   __typename
   ... on Issue {
     number state
-    assignees(first: 50) { nodes { login } }
-    closedByPullRequestsReferences(first: 50, includeClosedPrs: true) { nodes { number } }
+    assignees(first: 50) { pageInfo { hasNextPage } nodes { login } }
+    closedByPullRequestsReferences(first: 50, includeClosedPrs: true) {
+      pageInfo { hasNextPage } nodes { number repository { nameWithOwner } }
+    }
   }
   ... on PullRequest {
     number pullState: state
-    assignees(first: 50) { nodes { login } }
-    reviewRequests(first: 20) { nodes { requestedReviewer { ... on User { login } } } }
+    assignees(first: 50) { pageInfo { hasNextPage } nodes { login } }
+    reviewRequests(first: 20) {
+      pageInfo { hasNextPage } nodes { requestedReviewer { ... on User { login } } }
+    }
     timelineItems(last: 50, itemTypes: [REVIEW_REQUESTED_EVENT]) {
+      pageInfo { hasPreviousPage }
       nodes { ... on ReviewRequestedEvent { createdAt requestedReviewer { ... on User { login } } } }
     }
   }
 }`;
-// Numbers are positive safe integers, so the aliases can't carry anything else into the query.
+const isItemNumber = (number: number) => Number.isSafeInteger(number) && number > 0;
+// Only positive safe integers reach the aliases, so they can't carry anything else into the query.
 export const itemsQuery = (numbers: ReadonlyArray<number>) =>
   `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${numbers
     .map((number) => `i${number}: issueOrPullRequest(number: ${number}) { ...KinItem }`)
     .join(" ")} } }\n${ITEM_FRAGMENT}`;
 
+const NextPage = Schema.Struct({ hasNextPage: Schema.Boolean });
 const Logins = Schema.Struct({
+  pageInfo: NextPage,
   nodes: Schema.Array(Schema.NullOr(Schema.Struct({ login: Schema.String }))),
 });
 const Reviewer = Schema.NullOr(Schema.Struct({ login: Schema.optional(Schema.String) }));
@@ -72,7 +77,15 @@ const Issue = Schema.Struct({
   state: Schema.Literals(["OPEN", "CLOSED"]),
   assignees: Logins,
   closedByPullRequestsReferences: Schema.Struct({
-    nodes: Schema.Array(Schema.NullOr(Schema.Struct({ number: Schema.Int }))),
+    pageInfo: NextPage,
+    nodes: Schema.Array(
+      Schema.NullOr(
+        Schema.Struct({
+          number: Schema.Int,
+          repository: Schema.Struct({ nameWithOwner: Schema.String }),
+        }),
+      ),
+    ),
   }),
 });
 const Pull = Schema.Struct({
@@ -81,9 +94,11 @@ const Pull = Schema.Struct({
   pullState: Schema.Literals(["OPEN", "CLOSED", "MERGED"]),
   assignees: Logins,
   reviewRequests: Schema.Struct({
+    pageInfo: NextPage,
     nodes: Schema.Array(Schema.NullOr(Schema.Struct({ requestedReviewer: Reviewer }))),
   }),
   timelineItems: Schema.Struct({
+    pageInfo: Schema.Struct({ hasPreviousPage: Schema.Boolean }),
     nodes: Schema.Array(
       Schema.NullOr(
         Schema.Struct({
@@ -111,13 +126,15 @@ const isRepoSlug = Schema.is(RepoSlug);
 
 class KinGithubReadFailed extends Schema.TaggedError<KinGithubReadFailed>()("KinGithubReadFailed", {
   repo: Schema.String,
-  reason: Schema.Literals(["out_of_scope", "token", "rate_limited", "unavailable", "timeout"]),
+  reason: Schema.Literals(["out_of_scope", "token", "rate_limited", "unavailable"]),
 }) {}
 
 const lowerState = (item: Item): GithubItemState["state"] => {
   const state = item.__typename === "Issue" ? item.state : item.pullState;
   return state === "OPEN" ? "open" : state === "MERGED" ? "merged" : "closed";
 };
+
+const sameRepo = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 /** Pending user review requests, each dated by its latest request event; undated ones are left out. */
 function reviewRequestsOf(pull: typeof Pull.Type): GithubItemState["reviewRequests"] {
@@ -170,10 +187,12 @@ const make = Effect.gen(function* () {
   ) {
     if (!isRepoSlug(repo) || !inRepoScope(scope.repos, repo))
       return yield* new KinGithubReadFailed({ repo, reason: "out_of_scope" });
+    const wanted = [...new Set(numbers.filter(isItemNumber))];
+    const items = new Map<number, Item>();
+    if (wanted.length === 0) return items;
     const token = yield* tokenFor(repo);
     const [owner, name] = repo.split("/");
-    const items = new Map<number, Item>();
-    for (let start = 0; start < numbers.length; start += ITEMS_PER_QUERY) {
+    for (let start = 0; start < wanted.length; start += ITEMS_PER_QUERY) {
       const answer = yield* gitHubAnswer({
         client,
         operation: "graphql.items",
@@ -181,11 +200,15 @@ const make = Effect.gen(function* () {
         path: "/graphql",
         token,
         body: {
-          query: itemsQuery(numbers.slice(start, start + ITEMS_PER_QUERY)),
+          query: itemsQuery(wanted.slice(start, start + ITEMS_PER_QUERY)),
           variables: { owner, name },
         },
       }).pipe(Effect.mapError(() => new KinGithubReadFailed({ repo, reason: "unavailable" })));
-      if (answer.status === 401) tokens.delete(repo.toLowerCase());
+      if (
+        answer.status === 401 ||
+        (answer.status === 403 && answer.message === "Resource not accessible by integration")
+      )
+        tokens.delete(repo.toLowerCase());
       const body = decodeAnswer(answer.body);
       const errors = Option.isSome(body) ? (body.value.errors ?? []) : [];
       if (isGitHubRateLimit(answer) || errors.some((error) => error.type === "RATE_LIMITED")) {
@@ -209,35 +232,25 @@ const make = Effect.gen(function* () {
   });
 
   const deferral: KinDeferralGithubReaderShape = {
-    read: Effect.fn("KinGithubReaders.deferral")(
-      function* (_orgId: KinOrgId, ref: GithubRef) {
-        const item = (yield* fetchItems(ref.repo, [ref.number])).get(ref.number);
-        if (item === undefined) return Option.none();
-        return Option.some({
-          state: lowerState(item),
-          assignees: item.assignees.nodes.flatMap((node) => (node === null ? [] : [node.login])),
-          linkedPrs:
-            item.__typename === "Issue"
-              ? item.closedByPullRequestsReferences.nodes.flatMap((node) =>
-                  node === null ? [] : [node.number],
-                )
-              : [],
-        });
+    readRepo: Effect.fn("KinGithubReaders.deferral")(
+      function* (_orgId: KinOrgId, repo: string, numbers: ReadonlyArray<number>) {
+        const states = new Map<number, Omit<GithubLinkState, "link">>();
+        for (const item of (yield* fetchItems(repo, numbers)).values()) {
+          const linked = item.__typename === "Issue" ? item.closedByPullRequestsReferences : null;
+          if (item.assignees.pageInfo.hasNextPage || linked?.pageInfo.hasNextPage) continue;
+          states.set(item.number, {
+            state: lowerState(item),
+            assignees: item.assignees.nodes.flatMap((node) => (node === null ? [] : [node.login])),
+            linkedPrs: (linked?.nodes ?? []).flatMap((node) =>
+              node === null || !sameRepo(node.repository.nameWithOwner, repo) ? [] : [node.number],
+            ),
+          });
+        }
+        return states;
       },
-      (effect, orgId, ref) =>
+      (effect, orgId) =>
         effect.pipe(
-          Effect.timeoutOrElse({
-            duration: DEFERRAL_READ_TIMEOUT,
-            orElse: () =>
-              Effect.fail(new KinGithubReadFailed({ repo: ref.repo, reason: "timeout" })),
-          }),
           Effect.mapError(() => new KinDeferralGithubError({ orgId, reason: "unavailable" })),
-          Effect.flatMap(
-            Option.match({
-              onNone: () => Effect.fail(new KinDeferralGithubError({ orgId, reason: "not_found" })),
-              onSome: Effect.succeed,
-            }),
-          ),
         ),
     ),
   };
@@ -248,7 +261,13 @@ const make = Effect.gen(function* () {
         const items = yield* fetchItems(repo, numbers);
         return numbers.flatMap((number): ReadonlyArray<GithubItemState> => {
           const item = items.get(number);
-          if (item === undefined) return [];
+          if (
+            item === undefined ||
+            (item.__typename === "PullRequest" &&
+              (item.reviewRequests.pageInfo.hasNextPage ||
+                item.timelineItems.pageInfo.hasPreviousPage))
+          )
+            return [];
           const kind = item.__typename === "Issue" ? "issue" : "pull";
           return [
             {
@@ -262,18 +281,7 @@ const make = Effect.gen(function* () {
       },
       (effect, orgId, repo) =>
         effect.pipe(
-          Effect.timeoutOrElse({
-            duration: WATCHDOG_READ_TIMEOUT,
-            orElse: () => Effect.fail(new KinGithubReadFailed({ repo, reason: "timeout" })),
-          }),
-          Effect.mapError(
-            (failure) =>
-              new KinWatchdogGithubError({
-                orgId,
-                repo,
-                reason: failure.reason === "timeout" ? "timeout" : "unavailable",
-              }),
-          ),
+          Effect.mapError(() => new KinWatchdogGithubError({ orgId, repo, reason: "unavailable" })),
         ),
     ),
   };
@@ -286,24 +294,29 @@ const make = Effect.gen(function* () {
 /** Both readers over `KinGitHubApp`; needs the App id and its key in the keychain. */
 export const readersLayer = Layer.effectContext(make);
 
-const appLayer = (appId: string) =>
-  Layer.effectDiscard(
-    Effect.gen(function* () {
-      const keychain = yield* Keychain.KinKeychain;
-      if (Option.isNone(yield* keychain.get("kin-github-app", appId)))
-        return yield* new KinGitHubApp.KinGitHubAppNotConfiguredError({ appId });
-    }),
-  ).pipe(
-    Layer.provideMerge(KinGitHubApp.layer),
-    Layer.provideMerge(
-      Layer.mergeAll(
-        Layer.succeed(KinGitHubApp.KinGitHubAppConfig, { appId }),
-        KinGitHubScope.layer,
-        FetchHttpClient.layer,
-        Keychain.layer,
-      ),
+const decodeSecrets = Schema.decodeUnknownOption(
+  Schema.fromJsonString(KinGitHubApp.KinGitHubAppSecrets),
+);
+
+const appLayer = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const { appId } = yield* KinGitHubApp.KinGitHubAppConfig;
+    const keychain = yield* Keychain.KinKeychain;
+    const stored = yield* keychain.get("kin-github-app", appId);
+    if (Option.isNone(Option.flatMap(stored, (value) => decodeSecrets(Redacted.value(value)))))
+      return yield* new KinGitHubApp.KinGitHubAppNotConfiguredError({ appId });
+  }),
+).pipe(
+  Layer.provideMerge(KinGitHubApp.layer),
+  Layer.provideMerge(
+    Layer.mergeAll(
+      KinGitHubApp.KinGitHubAppConfig.layer,
+      KinGitHubScope.layer,
+      FetchHttpClient.layer,
+      Keychain.layer,
     ),
-  );
+  ),
+);
 
 /**
  * The real readers when the Kin App is configured. Otherwise, or if the App can't be built, one
@@ -319,7 +332,7 @@ export const layer = Layer.unwrap(
       return Layer.empty;
     }
     return readersLayer.pipe(
-      Layer.provide(Layer.mergeAll(appLayer(appId.value), repoScopeLayer)),
+      Layer.provide(Layer.mergeAll(appLayer, repoScopeLayer)),
       Layer.catchCause((cause) =>
         Layer.effectDiscard(
           Effect.logWarning(

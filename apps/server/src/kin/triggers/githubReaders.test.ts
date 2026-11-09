@@ -17,7 +17,7 @@ import { buildSchema, parse, validate } from "graphql";
 
 import * as KinGitHubApp from "../github/KinGitHubApp.ts";
 import { fakeGitHub, type FakeAnswer, type RecordedRequest } from "../github/testFakes.ts";
-import { KinDeferralGithubReader, readGithubLinks } from "./deferralGithub.ts";
+import { KinDeferralGithubReader, readGithubLinks, readGithubLinkSets } from "./deferralGithub.ts";
 import { KinGithubRepoScope } from "./githubEvents.ts";
 import * as GithubReaders from "./githubReaders.ts";
 import { KinWatchdogGithubReader } from "./watchdogs.ts";
@@ -27,40 +27,69 @@ const REPO = "GLDRoger/t3code";
 const TOKEN = "ghs_reader_token_never_shown";
 const NOW = Date.UTC(2026, 10, 8, 12);
 
+const more = { pageInfo: { hasNextPage: false } };
+const pr = (number: number, repo = REPO) => ({ number, repository: { nameWithOwner: repo } });
 const closedIssue = {
   __typename: "Issue",
   number: 7,
   state: "CLOSED",
-  assignees: { nodes: [{ login: "zoe" }, { login: "amir" }] },
-  closedByPullRequestsReferences: { nodes: [{ number: 12 }, { number: 9 }] },
+  assignees: { ...more, nodes: [{ login: "zoe" }, { login: "amir" }] },
+  closedByPullRequestsReferences: {
+    ...more,
+    nodes: [pr(12), pr(9), pr(30, "someone/fork"), pr(31, REPO.toLowerCase())],
+  },
 };
 const mergedPr = {
   __typename: "PullRequest",
   number: 9,
   pullState: "MERGED",
-  assignees: { nodes: [] },
-  reviewRequests: { nodes: [] },
-  timelineItems: { nodes: [] },
+  assignees: { ...more, nodes: [] },
+  reviewRequests: { ...more, nodes: [] },
+  timelineItems: { pageInfo: { hasPreviousPage: false }, nodes: [] },
 };
 const openPr = {
   __typename: "PullRequest",
   number: 11,
   pullState: "OPEN",
-  assignees: { nodes: [{ login: "amir" }] },
+  assignees: { ...more, nodes: [{ login: "amir" }] },
   reviewRequests: {
+    ...more,
     nodes: [{ requestedReviewer: { login: "Zoe" } }, { requestedReviewer: {} }],
   },
   timelineItems: {
+    pageInfo: { hasPreviousPage: false },
     nodes: [
       { createdAt: "2026-11-01T00:00:00Z", requestedReviewer: { login: "zoe" } },
       { createdAt: "2026-11-05T00:00:00Z", requestedReviewer: { login: "zoe" } },
     ],
   },
 };
+const truncated = { pageInfo: { hasNextPage: true } };
 const fixtures = new Map<number, unknown>([
   [7, closedIssue],
   [9, mergedPr],
   [11, openPr],
+  [20, { ...closedIssue, number: 20, assignees: { ...closedIssue.assignees, ...truncated } }],
+  [
+    21,
+    {
+      ...closedIssue,
+      number: 21,
+      closedByPullRequestsReferences: {
+        ...closedIssue.closedByPullRequestsReferences,
+        ...truncated,
+      },
+    },
+  ],
+  [22, { ...openPr, number: 22, reviewRequests: { ...openPr.reviewRequests, ...truncated } }],
+  [
+    23,
+    {
+      ...openPr,
+      number: 23,
+      timelineItems: { ...openPr.timelineItems, pageInfo: { hasPreviousPage: true } },
+    },
+  ],
 ]);
 
 /** GraphQL answers from `fixtures`; numbers it lacks come back null with NOT_FOUND, as GitHub does. */
@@ -160,15 +189,32 @@ describe("Kin GitHub readers", () => {
             link: "https://github.com/GLDRoger/t3code/issues/7",
             state: "closed",
             assignees: ["amir", "zoe"],
-            linkedPrs: [9, 12],
+            linkedPrs: [9, 12, 31],
           },
         ],
       );
       assert.isNull(yield* readGithubLinks(orgId, ["GLDRoger/t3code#404"]));
+      // A list GitHub cut short fails the item rather than reporting part of it.
+      assert.deepStrictEqual(
+        yield* readGithubLinkSets(orgId, [
+          ["GLDRoger/t3code#20"],
+          ["GLDRoger/t3code#21"],
+          ["GLDRoger/t3code#22"],
+        ]),
+        [
+          null,
+          null,
+          [{ link: "GLDRoger/t3code#22", state: "open", assignees: ["amir"], linkedPrs: [] }],
+        ],
+      );
+      assert.deepStrictEqual(
+        (yield* watchdog.readRepo(orgId, REPO, [20, 22, 23])).map(({ number }) => number),
+        [20],
+      );
 
       assert.deepStrictEqual(
         requests.map(({ method, path }) => `${method} ${path}`),
-        ["POST /graphql", "POST /graphql", "POST /graphql"],
+        Array.from({ length: 5 }, () => "POST /graphql"),
       );
       assert.equal(requests[0]?.authorization, `Bearer ${TOKEN}`);
       assert.deepInclude(requests[0]?.body, { variables: { owner: "GLDRoger", name: "t3code" } });
@@ -188,7 +234,7 @@ describe("Kin GitHub readers", () => {
       const { deferral, watchdog } = yield* readers;
       const read = yield* watchdog.readRepo(orgId, "other/repo", [7]).pipe(Effect.flip);
       assert.equal(read.reason, "unavailable");
-      const one = yield* deferral.read(orgId, { repo: "other/repo", number: 7 }).pipe(Effect.flip);
+      const one = yield* deferral.readRepo(orgId, "other/repo", [7]).pipe(Effect.flip);
       assert.equal(one.reason, "unavailable");
       assert.lengthOf(requests, 0);
       assert.lengthOf(mints, 0);
@@ -219,7 +265,7 @@ describe("Kin GitHub readers", () => {
           "unavailable",
         );
         assert.equal(
-          (yield* deferral.read(orgId, { repo: REPO, number: 7 }).pipe(Effect.flip)).reason,
+          (yield* deferral.readRepo(orgId, REPO, [7]).pipe(Effect.flip)).reason,
           "unavailable",
         );
         assert.lengthOf(requests, 2);
@@ -227,22 +273,19 @@ describe("Kin GitHub readers", () => {
     },
   );
 
-  it.effect("bounds each read in time", () => {
+  it.effect("gives every deferral link one shared budget", () => {
     const hanging = Layer.succeed(
       HttpClient.HttpClient,
       HttpClient.make(() => Effect.never),
     );
     const { layer } = setup(graphql, hanging);
     return Effect.gen(function* () {
-      const { deferral, watchdog } = yield* readers;
-      const one = yield* deferral
-        .read(orgId, { repo: REPO, number: 7 })
-        .pipe(Effect.flip, Effect.forkChild);
-      const batch = yield* watchdog.readRepo(orgId, REPO, [7]).pipe(Effect.flip, Effect.forkChild);
+      const read = yield* readGithubLinkSets(orgId, [
+        ["GLDRoger/t3code#7"],
+        ["GLDRoger/t3code#9", "https://example.com/not-github"],
+      ]).pipe(Effect.forkChild);
       yield* TestClock.adjust("10 seconds");
-      assert.equal((yield* Fiber.join(one)).reason, "unavailable");
-      yield* TestClock.adjust("20 seconds");
-      assert.equal((yield* Fiber.join(batch)).reason, "timeout");
+      assert.deepStrictEqual(yield* Fiber.join(read), [null, null]);
     }).pipe(Effect.provide(layer));
   });
 
@@ -256,17 +299,21 @@ describe("Kin GitHub readers", () => {
     const answers: ReadonlyArray<FakeAnswer> = [
       { status: 401, body: { message: "Bad credentials" } },
       { status: 429, headers: { "retry-after": "60" }, body: { message: "slow down" } },
+      { status: 403, body: { message: "Resource not accessible by integration" } },
       { status: 500, body: { message: "boom" } },
     ];
-    const { requests, layer } = setup(() => answers[call++ % answers.length]!);
+    const { mints, requests, layer } = setup(() => answers[call++ % answers.length]!);
     return Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
       const { deferral, watchdog } = yield* readers;
       const errors = [
         yield* watchdog.readRepo(orgId, REPO, [7]).pipe(Effect.flip),
         yield* watchdog.readRepo(orgId, REPO, [7]).pipe(Effect.flip),
-        yield* deferral.read(orgId, { repo: REPO, number: 7 }).pipe(Effect.flip),
+        yield* deferral.readRepo(orgId, REPO, [7]).pipe(Effect.flip),
+        yield* deferral.readRepo(orgId, REPO, [7]).pipe(Effect.flip),
       ];
+      // The 401 and the integration 403 drop the cached token, so the next read mints; a 429 keeps it.
+      assert.lengthOf(mints, 3);
       assert.isTrue(requests.every((request) => request.authorization === `Bearer ${TOKEN}`));
       assert.isNotEmpty(lines);
       for (const text of [
@@ -297,7 +344,7 @@ describe("Kin GitHub readers", () => {
     return Effect.gen(function* () {
       assert.isNull(yield* KinWatchdogGithubReader);
       const read = yield* (yield* KinDeferralGithubReader)
-        .read(orgId, { repo: REPO, number: 7 })
+        .readRepo(orgId, REPO, [7])
         .pipe(Effect.flip);
       assert.equal(read.reason, "unavailable");
       assert.lengthOf(
