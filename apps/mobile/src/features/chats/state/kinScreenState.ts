@@ -2,6 +2,7 @@ import {
   EnvironmentAuthorizationError,
   type EnvironmentId,
   type KinChatId,
+  type KinAgentId,
   type KinChatSummary,
   type KinWaitingItem,
   type KinWaitingReason,
@@ -320,6 +321,26 @@ export function kinLeadChatId(rows: ReadonlyArray<KinInboxRow>): KinChatId | nul
     }
   }
   return best?.chatId ?? null;
+}
+
+/**
+ * The lead whose Levels this viewer may open from a chat: the agent of a direct chat the viewer
+ * owns. Only a lead's owner reaches its levels; the host checks that again on every call.
+ */
+export function kinLevelsAgentId(
+  chat: Pick<KinChatSummary, "kind" | "members">,
+  personId: string | null,
+): KinAgentId | null {
+  if (chat.kind !== "direct" || personId === null) return null;
+  const active = chat.members.filter((member) => member.leftAt === null);
+  const owns = active.some(
+    (member) =>
+      member.role === "owner" &&
+      member.principal._tag === "person" &&
+      member.principal.personId === personId,
+  );
+  const agent = active.find((member) => member.principal._tag === "agent")?.principal;
+  return owns && agent?._tag === "agent" ? agent.agentId : null;
 }
 
 /** A direct chat's agent by name; null for other chats or an agent the directory doesn't name. */

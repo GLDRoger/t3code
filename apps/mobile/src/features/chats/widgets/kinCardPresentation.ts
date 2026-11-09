@@ -12,6 +12,7 @@ import * as Schema from "effect/Schema";
 import { kinLinkLabel, kinSafeWebUrl } from "../state/kinLinks";
 import { kinSentences } from "../state/kinScreenState";
 import { kinDeferralCardView, type KinDeferralCardView } from "./kinDeferralPresentation";
+import { kinLevelsCardView, type KinLevelsCardView } from "./kinLevelsPresentation";
 
 export const KIN_UNKNOWN_CARD_TEXT = "This card can't be shown here yet.";
 export const KIN_MISSING_CARD_TEXT = "This card hasn't loaded yet.";
@@ -40,6 +41,7 @@ export type KinCardView =
   | { readonly kind: "task"; readonly task: KinTaskCardView }
   | { readonly kind: "deferral"; readonly deferral: KinDeferralCardView }
   | { readonly kind: "digest"; readonly digest: KinDigestCardView }
+  | KinLevelsCardView
   | { readonly kind: "missing" }
   | { readonly kind: "unknown" };
 
@@ -215,10 +217,7 @@ export function kinRoutineView(card: KinRoutineCard): KinDigestCardView {
   });
 }
 
-/**
- * What a message's card draws. Anything this build can't read falls back to plain text, including
- * reserved types whose cards haven't shipped, such as `shadow_review` and `promotion`.
- */
+/** What a message's card draws. Anything this build can't read falls back to plain text. */
 export function kinCardView(
   widget: KinWidget | undefined,
   hostEnvironmentId: EnvironmentId,
@@ -252,6 +251,9 @@ export function kinCardView(
         ? { kind: "digest", digest: kinRoutineView(card.value) }
         : { kind: "unknown" };
     }
+    case "shadow_review":
+    case "promotion":
+      return kinLevelsCardView(widget) ?? { kind: "unknown" };
     default:
       return { kind: "unknown" };
   }
