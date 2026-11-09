@@ -9,6 +9,7 @@ import {
   kinLevelsScreenView,
   kinShownVerdict,
 } from "./kinLevelsPresentation";
+import { kinMemoryUndoFailureText } from "./kinMemoryChangesPresentation";
 
 const taskState = (overrides: Record<string, unknown> = {}) => ({
   taskId: "task-1",
@@ -552,5 +553,51 @@ describe("levels cards", () => {
       KIN_SEND_FAILED_TEXT,
     );
     expect(kinLevelsFailureText(new Error("socket closed"))).toBe(KIN_SEND_FAILED_TEXT);
+  });
+});
+
+describe("memory change card", () => {
+  it("lists each change in plain words with its Undo state", () => {
+    const item = (itemId: string, change: string, undo: string | null) => ({
+      itemId,
+      path: `claims/${itemId}.md`,
+      title: itemId === "short" ? "you prefer short replies" : "main repo is GLDRoger/t3code",
+      change,
+      undo,
+    });
+    const view = kinCardView(
+      widget({
+        type: "memory_changes",
+        state: {
+          agentId: "lead",
+          wakeupId: "wake-1",
+          branch: "kin/shadow/lead",
+          base: "a".repeat(40),
+          commit: "b".repeat(40),
+          items: [item("short", "created", null), item("repo", "updated", "stale")],
+          more: 1,
+        },
+      }),
+      HOST,
+      known(),
+    );
+    if (view.kind !== "memory_changes")
+      throw new Error(`expected memory changes, got ${view.kind}`);
+    expect(view.changes.items.map(({ line, undo }) => [line, undo])).toEqual([
+      ["Remembered: you prefer short replies", "available"],
+      ["Updated: main repo is GLDRoger/t3code", "stale"],
+    ]);
+    expect(view.changes.more).toBe("And 1 more change.");
+    expect(
+      kinCardView(widget({ type: "memory_changes", state: { items: [] } }), HOST, known()).kind,
+    ).toBe("unknown");
+    expect(
+      kinMemoryUndoFailureText(
+        new KinChatError({
+          reason: "conflict",
+          message: "This changed again since, so it wasn't undone.",
+        }),
+      ),
+    ).toBe("This changed again since, so it wasn't undone.");
   });
 });

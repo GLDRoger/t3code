@@ -44,6 +44,7 @@ import * as ReplyBridge from "../reply/KinReplyBridge.ts";
 import * as RoutineContent from "./RoutineContent.ts";
 import * as KinStop from "./KinStop.ts";
 import { KinPromotion } from "../levels/Promotion.ts";
+import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import * as DreamRunner from "../dreaming/DreamRunner.ts";
 import * as DreamSession from "../dreaming/DreamSession.ts";
 import * as Workers from "./Workers.ts";
@@ -125,6 +126,10 @@ const runner = Layer.effectDiscard(
     const promotion = yield* Effect.serviceOption(KinPromotion);
     if (Option.isSome(writer) && Option.isSome(promotion))
       yield* promotion.value.attachShadowMemory(writer.value.settleShadow);
+    // The owner's Undo on a memory change card runs on this runtime's writer too.
+    const memoryChanges = yield* Effect.serviceOption(KinMemoryChanges);
+    if (Option.isSome(writer) && Option.isSome(memoryChanges))
+      yield* memoryChanges.value.attachWriter(writer.value.undoChange);
     yield* Effect.gen(function* () {
       const context = yield* Layer.build(routineRuntime);
       if (Option.isSome(writer))

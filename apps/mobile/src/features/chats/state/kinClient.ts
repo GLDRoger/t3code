@@ -193,6 +193,15 @@ export const kinClient = {
   }),
   /** Gates the Levels entry point the same way the read itself is gated. */
   levelsRead,
+  /** Owner-only Undo of one line on a memory change card. */
+  memoryUndo: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:memory:undo",
+    tag: "kin.memory.undo",
+    concurrency: {
+      mode: "singleFlight",
+      key: ({ input }) => `${input.widgetId}:${input.itemId}`,
+    },
+  }),
   review: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:levels:review",
     tag: KIN_LEVEL_WS_METHODS.review,

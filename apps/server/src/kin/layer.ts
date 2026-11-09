@@ -13,6 +13,7 @@ import * as KinApprovals from "./approvals/layer.ts";
 import * as ExecutionNotices from "./chat/executionNotices.ts";
 import * as KinPush from "./push/layer.ts";
 import * as Promotion from "./levels/Promotion.ts";
+import * as MemoryChanges from "./memory/MemoryChanges.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
 
 import { KinServer, type Services } from "./KinServer.ts";
@@ -46,7 +47,7 @@ const enabled = Layer.effect(
       KinApprovals.executorLayer.pipe(
         Layer.provide(ExecutionNotices.layer),
         Layer.provideMerge(
-          Layer.mergeAll(KinPush.layer, Promotion.layer).pipe(
+          Layer.mergeAll(KinPush.layer, Promotion.layer, MemoryChanges.layer).pipe(
             Layer.provideMerge(KinApprovals.layer),
           ),
         ),

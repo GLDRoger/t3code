@@ -332,6 +332,8 @@ export const KinChatSummary = Schema.Struct({
   members: Schema.Array(KinChatMember),
   lastMessage: Schema.NullOr(KinMessage),
   unread: NonNegativeInt,
+  /** An agent in the chat is on a live wake-up. Absent from servers without it. */
+  working: Schema.optional(Schema.Boolean),
 });
 export type KinChatSummary = typeof KinChatSummary.Type;
 

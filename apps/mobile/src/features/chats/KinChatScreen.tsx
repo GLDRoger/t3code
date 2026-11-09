@@ -47,7 +47,9 @@ import { useReduceMotionEnabled } from "../../lib/appState";
 import { deriveThreadFeedInitialContentInset } from "../../lib/layout";
 import { NativeScrollViewMarker } from "../../native/NativeScrollViewMarker";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
+import type { ComposerEditorHandle } from "../../native/T3ComposerEditor.types";
 import { appAtomRegistry } from "../../state/atom-registry";
+import { setComposerDraftText } from "../../state/use-composer-drafts";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useNowMinuteMs } from "../../lib/clock";
 import { useMarkdownPreviewStyles } from "../files/FileMarkdownPreview";
@@ -59,6 +61,7 @@ import {
   kinDraftKey,
 } from "./components/KinComposer";
 import { KinFoldLine } from "./components/KinFoldLine";
+import { KinIntro } from "./components/KinIntro";
 import {
   KinPresenceLine,
   useKinPresenceNow,
@@ -94,7 +97,8 @@ import {
 import { useLocalDayStartMs } from "./state/useLocalDayStartMs";
 import { kinClient, type KinSynced } from "./state/kinClient";
 import { splitKinOutbox, type KinOutboxEntry } from "./state/kinOutbox";
-import { kinOutbox } from "./state/kinOutboxDelivery";
+import { deliverKinOutbox, kinOutbox } from "./state/kinOutboxDelivery";
+import { kinIntroVisible } from "./state/kinIntro";
 import {
   initialKinFeedFollow,
   kinFollowsEnd,
@@ -246,6 +250,7 @@ function KinLiveChat(props: {
         viewer={viewer}
         members={summary?.members ?? []}
         direct={summary?.kind === "direct"}
+        ownsLead={ownedAgentId !== null}
         onRetry={retry}
         readHistory={
           state._tag === "ready" && state.connected
@@ -376,6 +381,8 @@ function KinChatPage(props: {
   /** The chat's members from the inbox, for reactions; empty until it loads. */
   readonly members?: ReadonlyArray<KinChatMember>;
   readonly direct?: boolean;
+  /** The viewer owns this direct chat's lead, so a first run shows the intro. */
+  readonly ownsLead?: boolean;
 }) {
   const navigation = useNavigation();
   const topInset = useContentTopInset();
@@ -423,6 +430,7 @@ function KinChatPage(props: {
             stopLead={props.stopLead ?? null}
             members={props.members ?? []}
             direct={props.direct ?? false}
+            ownsLead={props.ownsLead ?? false}
           />
         ) : (
           <KinChatStateView state={state} onRetry={props.onRetry} />
@@ -560,8 +568,10 @@ function KinChatFeed(props: {
   readonly stopLead: StopLead | null;
   readonly members: ReadonlyArray<KinChatMember>;
   readonly direct: boolean;
+  readonly ownsLead: boolean;
 }) {
   const listRef = useRef<LegendListRef>(null);
+  const editorRef = useRef<ComposerEditorHandle>(null);
   const markedSeq = useRef(0);
   const attemptedSeq = useRef(0);
   const marking = useRef(false);
@@ -706,6 +716,14 @@ function KinChatFeed(props: {
   const earlierPage = kinEarlierPage(props.chatId, messages, paging.exhausted);
   const canLoadEarlier = props.readHistory !== null && earlierPage !== null;
   const latestSeq = latestKinSeq(messages);
+  const showIntro = kinIntroVisible({
+    ownsLead: props.ownsLead,
+    agentName: props.agentName,
+    viewerPersonId: props.viewer.personId,
+    messages,
+    pendingCount: pending.length,
+    historyIncomplete: earlierPage !== null || live.needsHistoryReload,
+  });
   const { connected, markRead, unread } = props;
   const seesEnd = followsEnd && focused && connected && props.chat.live;
   const reading = useRef({ markRead, seesEnd, latestSeq, unread, connected, focused });
@@ -888,8 +906,27 @@ function KinChatFeed(props: {
       bottomInset={composerInset}
       onSend={jumpToEnd}
       onFocusChange={onComposerFocus}
+      editorRef={editorRef}
     />
   );
+
+  const sendSample = (body: string) => {
+    void kinOutbox
+      .enqueue({ environmentId: props.environmentId, chatId: props.chatId, body })
+      .then((queued) => {
+        if (queued._tag !== "queued") return;
+        jumpToEnd();
+        void deliverKinOutbox();
+      });
+  };
+  const startSample = (body: string) => {
+    setComposerDraftText(kinDraftKey(props.environmentId, props.orgId, props.chatId), body);
+    editorRef.current?.focus();
+  };
+  const intro =
+    showIntro && props.agentName !== null ? (
+      <KinIntro agentName={props.agentName} onSend={sendSample} onStart={startSample} />
+    ) : null;
 
   const header = (
     <View className="gap-3 px-4 pb-3">
@@ -924,6 +961,7 @@ function KinChatFeed(props: {
         </View>
       ) : null}
       {paging.error === null ? null : <ErrorBanner message={paging.error} />}
+      {rows.length === 0 ? null : intro}
     </View>
   );
 
@@ -944,15 +982,19 @@ function KinChatFeed(props: {
   const empty =
     rows.length === 0 && earlierPage === null && !live.needsHistoryReload ? (
       <View className="p-4">
-        <EmptyState
-          variant="plain"
-          title={props.agentName === null ? "No messages yet" : `Say hello to ${props.agentName}.`}
-          detail={
-            props.agentName === null
-              ? "Messages in this chat show up here."
-              : "It reads every message here."
-          }
-        />
+        {intro ?? (
+          <EmptyState
+            variant="plain"
+            title={
+              props.agentName === null ? "No messages yet" : `Say hello to ${props.agentName}.`
+            }
+            detail={
+              props.agentName === null
+                ? "Messages in this chat show up here."
+                : "It reads every message here."
+            }
+          />
+        )}
       </View>
     ) : null;
 

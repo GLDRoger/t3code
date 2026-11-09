@@ -2,11 +2,21 @@
 import * as NodeCrypto from "node:crypto";
 import type { PersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import { readFiles, readCommit, readTree, objectHash, verifyTree } from "./objects.ts";
 import { buildIndex } from "./buildIndex.ts";
 import { isCheckoutPath } from "./checkoutPaths.ts";
 import * as MemoryCache from "./MemoryCache.ts";
-import { RepoSlug, type KinAgentId, type KinOrgId, type MemoryTrust } from "@t3tools/contracts";
+import {
+  KIN_HIDDEN_CHARACTER,
+  KIN_MEMORY_CHANGE_TITLE_MAX,
+  RepoSlug,
+  type KinAgentId,
+  type KinMemoryChangeKind,
+  type KinMemoryItemId,
+  type KinOrgId,
+  type MemoryTrust,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -121,6 +131,48 @@ export class MemoryWriterHooks extends Context.Service<
     readonly notify: (notice: WriterNotice) => Effect.Effect<void>;
   }
 >()("t3/kin/memory/MemoryWriter/MemoryWriterHooks") {}
+/** The items one wake-up's commit changed, for the owner's change card. */
+export interface WakeupMemoryChanges {
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+  readonly wakeupId: string;
+  readonly branch: string;
+  /** The branch head the commit was made on, which Undo restores from. */
+  readonly base: string;
+  readonly commit: string;
+  readonly items: ReadonlyArray<{
+    readonly itemId: KinMemoryItemId;
+    readonly path: string;
+    readonly title: string;
+    readonly change: KinMemoryChangeKind;
+  }>;
+}
+/** Optional: told once per committed wake-up that changed items, never for journal-only ones. */
+export class MemoryChangeHooks extends Context.Service<
+  MemoryChangeHooks,
+  { readonly committed: (changes: WakeupMemoryChanges) => Effect.Effect<void> }
+>()("t3/kin/memory/MemoryWriter/MemoryChangeHooks") {}
+export interface MemoryUndo {
+  readonly agentId: KinAgentId;
+  readonly itemId: KinMemoryItemId;
+  readonly path: string;
+  readonly branch: string;
+  readonly base: string;
+  readonly commit: string;
+}
+export type MemoryUndoResult =
+  | { readonly _tag: "undone"; readonly commit: string }
+  /** The item changed after `commit`, or that history is gone. */
+  | { readonly _tag: "stale" };
+const hiddenCharacters = new RegExp(KIN_HIDDEN_CHARACTER.source, "gu");
+/** One plain line from lead-written front matter: no hidden characters, capped. */
+const changeTitle = (title: string, what: string | undefined) => {
+  const line = (text: string) => text.replace(hiddenCharacters, " ").replace(/\s+/g, " ").trim();
+  const text = line(title) || line(what ?? "") || "Untitled item";
+  return text.length > KIN_MEMORY_CHANGE_TITLE_MAX
+    ? `${text.slice(0, KIN_MEMORY_CHANGE_TITLE_MAX - 1).trimEnd()}…`
+    : text;
+};
 export interface MemoryChange {
   readonly path: string;
   readonly content: string;
@@ -185,6 +237,15 @@ export class MemoryWriter extends Context.Service<
       agentId: KinAgentId,
       choice: ShadowChoice,
     ) => Effect.Effect<{ readonly kept: number; readonly paths: ReadonlyArray<string> }, Failure>;
+    /**
+     * The owner's Undo of one item a wake-up changed: a new commit on the same branch that
+     * restores the item from `base`, or invalidates it if the wake-up created it. Compare-and-set:
+     * `stale` when the item differs from what `commit` wrote.
+     */
+    readonly undoChange: (
+      orgId: KinOrgId,
+      input: MemoryUndo,
+    ) => Effect.Effect<MemoryUndoResult, Failure>;
     /** Closes `kin/write/*` PRs no write waits on (TRIG-15) and tells the owner about review PRs. */
     readonly sweepPullRequests: (orgId: KinOrgId) => Effect.Effect<void, Failure>;
   }
@@ -201,6 +262,7 @@ const make = Effect.gen(function* () {
   const unpushedShadows = new Set<string>();
   const authority = yield* MemoryWriterAuthority;
   const hooks = yield* MemoryWriterHooks;
+  const changeHooks = yield* Effect.serviceOption(MemoryChangeHooks);
   const scanner = yield* KinSecretScan;
   const fs = yield* FileSystem.FileSystem;
   const vcs = yield* VcsProcess;
@@ -683,6 +745,46 @@ const make = Effect.gen(function* () {
     );
     return head;
   });
+  const itemChanges = Effect.fn("MemoryWriter.itemChanges")(function* (
+    orgId: KinOrgId,
+    before: ReadonlyMap<string, Buffer>,
+    after: ReadonlyMap<string, Buffer>,
+  ) {
+    const items: Array<WakeupMemoryChanges["items"][number]> = [];
+    for (const [path, bytes] of after) {
+      if (!folders.some((folder) => path.startsWith(`${folder}/`))) continue;
+      const prior = before.get(path);
+      if (prior?.equals(bytes)) continue;
+      const next = yield* parseFrontMatter(orgId, path, bytes.toString("utf8")).pipe(Effect.option);
+      if (Option.isNone(next)) continue;
+      const fm = next.value.frontMatter;
+      const old =
+        prior === undefined
+          ? undefined
+          : Option.getOrUndefined(
+              yield* parseFrontMatter(orgId, path, prior.toString("utf8")).pipe(Effect.option),
+            )?.frontMatter;
+      const change: KinMemoryChangeKind =
+        old === undefined
+          ? "created"
+          : fm.status === "superseded" && old.status !== "superseded"
+            ? "superseded"
+            : (fm.invalid_at !== null && old.invalid_at === null) ||
+                (fm.status === "cancelled" && old.status !== "cancelled")
+              ? "invalidated"
+              : "updated";
+      items.push({ itemId: fm.id, path, title: changeTitle(fm.title, fm.what), change });
+    }
+    return items.toSorted((a, b) => a.path.localeCompare(b.path));
+  });
+  const announce = (changes: WakeupMemoryChanges) =>
+    Option.isNone(changeHooks) || changes.items.length === 0
+      ? Effect.void
+      : changeHooks.value
+          .committed(changes)
+          .pipe(
+            Effect.catchCause((cause) => Effect.logWarning("Memory change card failed", cause)),
+          );
   return MemoryWriter.of({
     stage: Effect.fn("MemoryWriter.stage")((orgId, wakeupId, change) =>
       report(
@@ -1092,6 +1194,19 @@ const make = Effect.gen(function* () {
                     }),
                   ),
                 );
+                yield* announce({
+                  orgId,
+                  agentId: ctx.agentId,
+                  wakeupId,
+                  branch,
+                  base: recorded,
+                  commit: head,
+                  items: yield* itemChanges(
+                    orgId,
+                    recordedFiles,
+                    new Map([...changes].filter(([file]) => !reviewed(file))),
+                  ),
+                });
                 return { commit: head };
               }
               const commit = yield* writeCommit(
@@ -1114,6 +1229,15 @@ const make = Effect.gen(function* () {
                 ),
               );
               yield* push(commit);
+              yield* announce({
+                orgId,
+                agentId: ctx.agentId,
+                wakeupId,
+                branch,
+                base: recorded,
+                commit,
+                items: yield* itemChanges(orgId, recordedFiles, changes),
+              });
               return { commit };
             }).pipe(Effect.ensuring(Effect.sync(() => sessions.delete(orgId))));
           }),
@@ -1367,6 +1491,104 @@ const make = Effect.gen(function* () {
             ]).pipe(Effect.mapError(() => conflict("Shadow branch push rejected")));
           }
           return { kept, paths };
+        }),
+      ),
+    ),
+    undoChange: Effect.fn("MemoryWriter.undoChange")((orgId, input) =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const main = config.defaultBranch ?? "main";
+          if (
+            !/^[a-zA-Z0-9_-]+$/.test(input.agentId) ||
+            (input.branch !== main && input.branch !== shadowBranch(input.agentId)) ||
+            !folders.some((folder) => input.path.startsWith(`${folder}/`))
+          )
+            return yield* new MemoryWriteRejected({ reason: "Invalid undo target" });
+          const { writer } = yield* validate(orgId);
+          yield* refuseDuringPurge(orgId);
+          const repo = yield* repoFor(orgId);
+          const onMain = input.branch === main;
+          if (onMain && mainWrites === "refused") return yield* refuseMainWrite(orgId);
+          const stale = { _tag: "stale" } as const;
+          // A purge rewrites history, so the wake-up's commits may be gone.
+          for (const sha of [input.base, input.commit])
+            if (
+              !/^[a-f0-9]{40}([a-f0-9]{24})?$/.test(sha) ||
+              (yield* git(orgId, writer, ["cat-file", "-e", `${sha}^{commit}`]).pipe(Effect.result))
+                ._tag === "Failure"
+            )
+              return stale;
+          const head = yield* branchHead(orgId, writer, input.branch);
+          const headFiles = yield* filesAt(orgId, writer, head);
+          const current = headFiles.get(input.path);
+          const written = (yield* filesAt(orgId, writer, input.commit)).get(input.path);
+          if (current === undefined || written === undefined || !current.equals(written))
+            return stale;
+          const before = (yield* filesAt(orgId, writer, input.base)).get(input.path);
+          let restored: string;
+          if (before !== undefined) restored = before.toString("utf8");
+          else {
+            // The writer never deletes, so undoing a new item marks it no longer true.
+            const { frontMatter, body } = yield* parseFrontMatter(
+              orgId,
+              input.path,
+              current.toString("utf8"),
+            );
+            const invalidAt = DateTime.formatIso(
+              DateTime.makeUnsafe(yield* Clock.currentTimeMillis),
+            );
+            restored = render({ ...frontMatter, invalid_at: invalidAt }, body);
+          }
+          const { frontMatter } = yield* parseFrontMatter(orgId, input.path, restored);
+          if (frontMatter.id !== input.itemId)
+            return yield* new MemoryWriteRejected({ reason: "Invalid undo target" });
+          const changes = new Map([[input.path, Buffer.from(restored)]]);
+          const regular = yield* regularPaths(orgId, writer, head);
+          const combined = new Map(
+            [...headFiles, ...changes]
+              .filter(([path]) => regular.has(path) || changes.has(path))
+              .map(([path, bytes]) => [path, bytes.toString("utf8")]),
+          );
+          changes.set("INDEX.md", Buffer.from(yield* indexFor(orgId, combined)));
+          const findings = yield* scanner.scan({
+            orgId,
+            files: [...changes].map(([path, content]) => ({ path, content })),
+          });
+          if (findings.length) return yield* new MemorySecretBlocked({ orgId, findings });
+          const message = `kin(${input.agentId}): owner undo ${input.itemId}\n\nKin-Undo: ${input.commit}\n`;
+          const commit = yield* writeCommit(orgId, writer, head, headFiles, changes, message);
+          const conflict = (reason: string) =>
+            new MemorySyncConflict({ orgId, operation: "push", reason });
+          let landed = commit;
+          if (onMain && mainWrites === "pull_request") {
+            landed = yield* landOnMain(orgId, writer, {
+              agentId: input.agentId,
+              id: `undo-${input.commit.slice(0, 12)}`,
+              base: head,
+              commit,
+              message,
+            });
+          } else {
+            // Push first, so a rejected push leaves the local branch where it was.
+            yield* git(orgId, writer, [
+              "push",
+              "--",
+              repo.repoUrl,
+              `${commit}:refs/heads/${input.branch}`,
+            ]).pipe(Effect.mapError(() => conflict("Push rejected; retry or reconcile remote")));
+            yield* git(orgId, writer, ["update-ref", `refs/heads/${input.branch}`, commit, head]);
+            yield* memory.record(orgId, input.branch, head, commit);
+          }
+          yield* memory.rebuildCache(orgId).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("Could not refresh memory cache after undo", {
+                orgId,
+                errorTag: error._tag,
+              }),
+            ),
+          );
+          return { _tag: "undone", commit: landed } as const;
         }),
       ),
     ),

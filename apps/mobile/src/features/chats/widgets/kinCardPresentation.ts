@@ -1,4 +1,5 @@
 import {
+  KIN_MEMORY_CHANGES_CARD,
   KinRoutineCard,
   KinShadowSummaryCard,
   KinTaskCardState,
@@ -14,6 +15,10 @@ import { kinSentences } from "../state/kinScreenState";
 import { kinChoiceCardView, type KinChoiceCardView } from "./kinChoicePresentation";
 import { kinDeferralCardView, type KinDeferralCardView } from "./kinDeferralPresentation";
 import { kinLevelsCardView, type KinLevelsCardView } from "./kinLevelsPresentation";
+import {
+  kinMemoryChangesView,
+  type KinMemoryChangesCardView,
+} from "./kinMemoryChangesPresentation";
 
 export const KIN_UNKNOWN_CARD_TEXT = "This card can't be shown here yet.";
 export const KIN_MISSING_CARD_TEXT = "This card hasn't loaded yet.";
@@ -44,6 +49,7 @@ export type KinCardView =
   | { readonly kind: "choice"; readonly choice: KinChoiceCardView }
   | { readonly kind: "digest"; readonly digest: KinDigestCardView }
   | KinLevelsCardView
+  | { readonly kind: "memory_changes"; readonly changes: KinMemoryChangesCardView }
   | { readonly kind: "missing" }
   | { readonly kind: "unknown" };
 
@@ -260,6 +266,10 @@ export function kinCardView(
     case "shadow_review":
     case "promotion":
       return kinLevelsCardView(widget) ?? { kind: "unknown" };
+    case KIN_MEMORY_CHANGES_CARD: {
+      const changes = kinMemoryChangesView(widget);
+      return changes === null ? { kind: "unknown" } : { kind: "memory_changes", changes };
+    }
     default:
       return { kind: "unknown" };
   }
