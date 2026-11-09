@@ -232,6 +232,8 @@ export class KinPendingActions extends Context.Service<
         readonly exp: number;
         readonly sessionId?: AuthSessionId;
         readonly deviceLabel?: string;
+        /** False when the caller's audit budget is spent: a refusal is then not written. */
+        readonly auditRefusal?: boolean;
       },
     ) => Effect.Effect<KinApproveResult, Errors>;
     /** Whether the org already holds this `jti`, or this approver's grant for the action. */
@@ -435,6 +437,7 @@ const make = Effect.gen(function* () {
         readonly exp: number;
         readonly sessionId?: AuthSessionId;
         readonly deviceLabel?: string;
+        readonly auditRefusal?: boolean;
       },
     ) {
       const now = yield* Clock.currentTimeMillis;
@@ -504,17 +507,18 @@ const make = Effect.gen(function* () {
         );
       // A refused grant still leaves a trace (spec section 11), but only on the chain of the org
       // that owns the action: an unknown org or action stays `stale` and writes nothing.
-      if (result._tag !== "approved") {
+      if (result._tag !== "approved" && input.auditRefusal !== false) {
         yield* sql
           .withTransaction(
             Effect.gen(function* () {
-              const [owned] = yield* sql`SELECT 1 FROM kin_pending_actions
-              WHERE org_id = ${input.orgId} AND action_id = ${input.actionId}`;
+              const [owned] = yield* sql<FactsRow>`SELECT action_id, kind, resolved_json
+                FROM kin_pending_actions
+                WHERE org_id = ${input.orgId} AND action_id = ${input.actionId}`;
               if (owned === undefined) return;
               yield* audit.append({
                 orgId: input.orgId,
                 event: "grant_rejected",
-                actionId: input.actionId,
+                ...(yield* auditFacts(owned)),
                 ...who,
                 result: result._tag,
               });
