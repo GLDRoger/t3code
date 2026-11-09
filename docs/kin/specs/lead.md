@@ -456,7 +456,7 @@ Effective level for a call is `min(lead.level, chat.level)` for chat targets, an
 
 | Tool                                          | L0 shadow     | L1 comment and ping | L2 workers and draft PRs | L3 low-risk merges                                     |
 | --------------------------------------------- | ------------- | ------------------- | ------------------------ | ------------------------------------------------------ |
-| `kin_chat_post` to the owner's summary        | yes           | yes                 | yes                      | yes                                                    |
+| `kin_chat_post` to the owner's direct chat    | yes           | yes                 | yes                      | yes                                                    |
 | `kin_chat_post` elsewhere                     | shadow        | yes                 | yes                      | yes                                                    |
 | `request_action` Talk (GitHub comment, ping)  | shadow        | yes                 | yes                      | yes                                                    |
 | `kin_delegate`                                | shadow        | shadow              | yes                      | yes                                                    |
@@ -466,7 +466,7 @@ Effective level for a call is `min(lead.level, chat.level)` for chat targets, an
 
 "Shadow" means the handler does not act. It writes a `kin_shadow_entries` row (**new**: `org_id, entry_id, agent_id, wakeup_id, level, unlocks_level, tool, input_json, would_target, created_at, verdict, verdict_note, reviewed_at`) and returns `{ shadowed: true, entryId }` so the lead carries on as if it had acted. `unlocks_level` is set when the entry is written to the level that unlocks the action. Verdicts persist as `fine`, `change`, `wrong`, or `harmful`; an unreviewed entry has null verdict fields.
 
-L0 "writes only to the owner's summary": the owner's summary is one live widget message in the owner's direct chat (`ownerChatId`), titled "What tech-lead would have done today". Every L0 `kin_chat_post` is shadowed, the owner's direct chat included; the summary is the only thing L0 writes, and the server, not the lead, writes it. It is a server-drawn `shadow_summary` card (`KinShadowSummaryCard`) per owner-local day, updated in place whenever a shadow entry is recorded; clients cannot create or edit one. Section 9 applies at every level: privileged actions still need a signed grant.
+L0 talks only to its owner: a `kin_chat_post` to the lead's direct chat with its owner (`ownerChatId`, a `direct` chat, read from `kin_leads` on the server, never from tool input) posts for real through the normal chat service and floor, with the same reply, notice, mute and retry rules as at L1. Every other L0 post, in groups and other direct chats, is shadowed, so the lead stays invisible to everyone but its owner during the shadow week. The owner's summary is one live widget message in the owner's direct chat, titled "What tech-lead would have done today"; the server, not the lead, writes it. It is a server-drawn `shadow_summary` card (`KinShadowSummaryCard`) per owner-local day, updated in place whenever a shadow entry is recorded; clients cannot create or edit one. Section 9 applies at every level: privileged actions still need a signed grant.
 
 Per-chat levels live in `kin_chat_levels (org_id, agent_id, chat_id)` (K022), the `set_level` target's `chatId`; no row means the lead's own level. `request_action` checks the level after the provenance gate, so `not_owner` and the ban on leads requesting `set_level` refuse at every level and record nothing. Below a kind's level (L3 for every privileged kind) it records the entry, with the server-computed provenance, before GitHub is read, and rechecks inside the write. Until APPR-13 classifies risk, an L3 merge request goes to the owner like any other.
 
@@ -523,7 +523,7 @@ RPC (**new**, through the chat spec's `kinRpcs.ts`): `kin.org.get` for any perso
 
 ### Morning and evening routines: content
 
-Scheduling is the triggers spec's. Each fires a `routine` event, and the lead writes the message. A request carries its original due time, lateness and any folded routine dates; content must acknowledge those dates rather than imply an on-time run. The owner check selects memory-review items in code and posts its native card after budget admission; its taps use owner-authored writer sources, not model authority. `routines.ts` holds these templates. Each is one message of at most 12 lines, plus widgets, posted to the owner's direct chat (shadow summary at L0).
+Scheduling is the triggers spec's. Each fires a `routine` event, and the lead writes the message. A request carries its original due time, lateness and any folded routine dates; content must acknowledge those dates rather than imply an on-time run. The owner check selects memory-review items in code and posts its native card after budget admission; its taps use owner-authored writer sources, not model authority. `routines.ts` holds these templates. Each is one message of at most 12 lines, plus widgets, posted to the owner's direct chat, at every level.
 
 Morning brief, from the dream's prepared brief plus a live recheck:
 
@@ -618,7 +618,7 @@ Upstream files touched, one line each:
 - Failed wake-up: staged items are discarded; the journal records the failure.
 - Worker report: a worker ending with a valid `kin-report` block yields a parsed `worker.report` event; a cancelled worker yields `parsed: false`, `result: blocked`.
 - Reviewer model: `kin_delegate` with `kind: "review"` and the author's model is rejected.
-- Levels: at L0, `kin_chat_post` to a group returns `shadowed: true`, posts nothing, and adds a shadow entry; the owner's summary widget updates.
+- Levels: at L0, `kin_chat_post` to a group returns `shadowed: true`, posts nothing, and adds a shadow entry; the owner's summary widget updates. The same post to the owner's direct chat is delivered, and a second unsolicited one is refused as at L1.
 - Promotion: with 20 reviewed entries, 16 Fine and 0 Harmful after 7 days, the eligibility card appears; with one Harmful it does not.
 - Stop: `kin.org.pause` interrupts a running lead and worker within 5 s; new events stay queued; `resume` produces one `resume` wake-up; a member calling `kin.org.pause` gets a permission error.
 - Budget: with 15% left, a P3 event is deferred and a P0 event runs.

@@ -33,7 +33,10 @@ import * as KinLevels from "./KinLevels.ts";
 
 type PostInput = KinMessagesSendInput & { readonly intent: KinAgentIntent };
 
-/** `kin_chat_post` behind the lead's level: below L1 it records a shadow entry and posts nothing. */
+/**
+ * `kin_chat_post` behind the lead's level: below L1 it records a shadow entry and posts nothing,
+ * except in the lead's direct chat with its owner, which posts as at L1.
+ */
 export class KinLevelGate extends Context.Service<
   KinLevelGate,
   {
@@ -198,6 +201,22 @@ const make = Effect.gen(function* () {
     Effect.catchCause((cause) => Effect.logWarning("Kin shadow summary refresh failed", { cause })),
   );
 
+  // The lead's own direct chat with its owner, read from stored rows only.
+  const isOwnerChat = Effect.fn("KinLevelGate.isOwnerChat")(
+    function* (agent: AgentIdentity, chatId: KinChatId) {
+      const rows = yield* sql<{ chatId: string }>`
+        SELECT c.chat_id AS "chatId" FROM kin_leads l
+        JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+        JOIN kin_chats c ON c.org_id = l.org_id AND c.chat_id = l.owner_chat_id
+        WHERE l.org_id = ${agent.orgId} AND l.agent_id = ${agent.agentId}
+          AND a.role = 'lead' AND a.retired_at IS NULL
+          AND c.kind = 'direct' AND c.chat_id = ${chatId}
+        ORDER BY l.agent_id`;
+      return rows.length > 0;
+    },
+    Effect.mapError(toPersistenceSqlError("KinLevelGate.isOwnerChat")),
+  );
+
   const refused = (message: string, reason: KinChatError["reason"] = "not_allowed") =>
     new KinChatError({ reason, message });
   const post = Effect.fn("KinLevelGate.post")(
@@ -209,7 +228,9 @@ const make = Effect.gen(function* () {
             agentId: agent.agentId,
             chatId: input.chatId,
           });
-          if (KinLevels.atLeast(level, "L1")) return yield* chat.send(agent, input);
+          // At L0 the owner still talks to the lead in their direct chat, through the real floor.
+          if (KinLevels.atLeast(level, "L1") || (yield* isOwnerChat(agent, input.chatId)))
+            return yield* chat.send(agent, input);
           // A shadow entry only names a chat the lead is an active member of, in its own org.
           const member = yield* repo.activeMember({
             orgId: agent.orgId,

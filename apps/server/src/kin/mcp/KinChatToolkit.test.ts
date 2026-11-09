@@ -355,15 +355,20 @@ const resultOf = (result: McpSchema.CallToolResult) => {
   const value: unknown = JSON.parse(text);
   return value;
 };
+// Chats the lead is in besides its owner's direct chat: a team group and another direct chat.
+const otherChats = (sql: SqlClient.SqlClient, orgId: KinOrgId) =>
+  Effect.gen(function* () {
+    const at = "1970-01-01T00:00:00.000Z";
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, team_id, direct_key, last_seq, last_message_at, created_at, archived_at) VALUES ('group-1', ${orgId}, 'team_group', 'Team', NULL, NULL, 0, NULL, ${at}, NULL), ('other-direct', ${orgId}, 'direct', NULL, NULL, 'other-key', 0, NULL, ${at}, NULL)`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at) VALUES ('group-lead', ${orgId}, 'group-1', 'agent', ${agentId}, 'member', ${at}), ('other-lead', ${orgId}, 'other-direct', 'agent', ${agentId}, 'member', ${at})`;
+  });
 
 // Lead spec acceptance: "at L0, kin_chat_post to a group returns shadowed: true, posts nothing,
 // and adds a shadow entry; the owner's summary widget updates."
 it.effect("at L0 kin_chat_post posts nothing, records a shadow entry and updates the summary", () =>
   Effect.gen(function* () {
     const { chat, person, chatService, sql } = yield* seed(false, "L0");
-    const at = "1970-01-01T00:00:00.000Z";
-    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, team_id, direct_key, last_seq, last_message_at, created_at, archived_at) VALUES ('group-1', ${person.orgId}, 'team_group', 'Team', NULL, NULL, 0, NULL, ${at}, NULL)`;
-    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at) VALUES ('group-lead', ${person.orgId}, 'group-1', 'agent', ${agentId}, 'member', ${at})`;
+    yield* otherChats(sql, person.orgId);
     const agentMessages = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_messages
       WHERE org_id = ${person.orgId} AND author_kind = 'agent' ORDER BY n`;
     const entries = sql<{ tool: string; level: string; unlocks: string; target: string }>`
@@ -403,8 +408,13 @@ it.effect("at L0 kin_chat_post posts nothing, records a shadow entry and updates
       wouldTarget: "project-1",
     });
     yield* TestClock.adjust("1 second");
-    // L0 writes only to the owner's summary: the direct chat with the owner is shadowed too.
-    const direct = { chatId: chat.chatId, body: "Done.", intent: "answer", clientMessageId: "d-1" };
+    // Only the owner's own direct chat posts at L0; another direct chat is shadowed.
+    const direct = {
+      chatId: "other-direct",
+      body: "Done.",
+      intent: "answer",
+      clientMessageId: "d-1",
+    };
     assert.include(resultOf(yield* call("kin_chat_post", direct)), { shadowed: true });
     for (const chatId of ["missing", "foreign-chat"])
       assert.include(
@@ -415,7 +425,7 @@ it.effect("at L0 kin_chat_post posts nothing, records a shadow entry and updates
     assert.deepStrictEqual(yield* entries, [
       { tool: "kin_chat_post", level: "L0", unlocks: "L1", target: "group-1" },
       { tool: "kin_delegate", level: "L0", unlocks: "L2", target: "project-1" },
-      { tool: "kin_chat_post", level: "L0", unlocks: "L1", target: chat.chatId },
+      { tool: "kin_chat_post", level: "L0", unlocks: "L1", target: "other-direct" },
     ]);
     const [updated] = yield* card;
     assert.strictEqual(updated?.revision, 2);
@@ -429,7 +439,7 @@ it.effect("at L0 kin_chat_post posts nothing, records a shadow entry and updates
       [
         ["group-1", "Rate limiting moves to Friday."],
         ["project-1", "code: Forged"],
-        [chat.chatId, "Done."],
+        ["other-direct", "Done."],
       ],
     );
     assert.isFalse(state.entries.some((entry: object) => "ceilingBelowOwner" in entry));
@@ -444,30 +454,60 @@ it.effect("at L0 kin_chat_post posts nothing, records a shadow entry and updates
 it.effect("a chat's own level caps the lead's: min(lead, chat), from stored rows only", () =>
   Effect.gen(function* () {
     const { chat, person, sql } = yield* seed(false, "L1");
-    const post = (clientMessageId: string) =>
-      call("kin_chat_post", {
-        chatId: chat.chatId,
-        body: "Answer",
-        intent: "answer",
-        clientMessageId,
-      }).pipe(Effect.map(resultOf));
-    yield* sql`INSERT INTO kin_chat_levels (org_id, agent_id, chat_id, level, level_since) VALUES (${person.orgId}, ${agentId}, ${chat.chatId}, 'L0', 0)`;
-    assert.include(yield* post("capped"), { shadowed: true });
+    yield* otherChats(sql, person.orgId);
+    const post = (chatId: string, clientMessageId: string) =>
+      call("kin_chat_post", { chatId, body: "Answer", intent: "answer", clientMessageId });
+    yield* sql`INSERT INTO kin_chat_levels (org_id, agent_id, chat_id, level, level_since) VALUES (${person.orgId}, ${agentId}, 'group-1', 'L0', 0), (${person.orgId}, ${agentId}, ${chat.chatId}, 'L0', 0)`;
+    assert.include(resultOf(yield* post("group-1", "capped")), { shadowed: true });
+    // The owner's direct chat posts at L0, whichever level makes it L0.
+    assert.include(resultOf(yield* post(chat.chatId, "owner")), { authorRole: "member" });
     // A chat level above the lead's never raises it.
     yield* sql`UPDATE kin_leads SET level = 'L0' WHERE agent_id = ${agentId}`;
     yield* sql`UPDATE kin_chat_levels SET level = 'L3' WHERE agent_id = ${agentId}`;
-    assert.include(yield* post("still-l0"), { shadowed: true });
+    assert.include(resultOf(yield* post("group-1", "still-l0")), { shadowed: true });
+    // Only a direct chat counts as the owner's, whatever kin_leads names.
+    yield* sql`UPDATE kin_leads SET owner_chat_id = 'group-1' WHERE agent_id = ${agentId}`;
+    assert.include(resultOf(yield* post("group-1", "not-direct")), { shadowed: true });
+    yield* sql`UPDATE kin_leads SET owner_chat_id = ${chat.chatId} WHERE agent_id = ${agentId}`;
     yield* sql`UPDATE kin_leads SET level = 'L1' WHERE agent_id = ${agentId}`;
     yield* sql`DELETE FROM kin_chat_levels WHERE agent_id = ${agentId}`;
-    assert.include(yield* post("live"), { authorRole: "member", body: "Answer" });
+    assert.include(errorOf(yield* post("group-1", "live")), { reason: "floor_not_granted" });
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each(["L0", "L1"] as const)(
+  "at %s the owner's direct chat posts for real, under the floor",
+  (level) =>
+    Effect.gen(function* () {
+      const { chat, person, sql } = yield* seed(false, level);
+      const post = (clientMessageId: string, body = "Answer", intent = "answer") =>
+        call("kin_chat_post", { chatId: chat.chatId, body, intent, clientMessageId });
+      const reply = resultOf(yield* post("reply"));
+      assert.include(reply, { chatId: chat.chatId, authorRole: "member", body: "Answer" });
+      assert.deepStrictEqual(resultOf(yield* post("reply")), reply);
+      assert.include(errorOf(yield* post("reply", "Changed")), { reason: "not_allowed" });
+      // One reply per owner message: a second, unsolicited post is refused as at L1.
+      assert.include(errorOf(yield* post("again", "More", "evidence")), {
+        reason: "floor_not_granted",
+      });
+      assert.include(errorOf(yield* post("again")), { reason: "invalid_state" });
+      assert.deepStrictEqual(
+        yield* sql`SELECT COUNT(*) AS n FROM kin_shadow_entries WHERE org_id = ${person.orgId} ORDER BY n`,
+        [{ n: 0 }],
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT COUNT(*) AS n FROM kin_messages WHERE org_id = ${person.orgId} AND author_kind = 'agent' ORDER BY n`,
+        [{ n: 1 }],
+      );
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect("at L0 a post L1 would refuse is refused, not recorded for review", () =>
   Effect.gen(function* () {
-    const { chat, person, sql } = yield* seed(true, "L0");
+    const { person, sql } = yield* seed(true, "L0");
+    yield* otherChats(sql, person.orgId);
     const notice = (clientMessageId: string, intent = "evidence") =>
-      call("kin_chat_post", { chatId: chat.chatId, body: "Notice", intent, clientMessageId });
+      call("kin_chat_post", { chatId: "group-1", body: "Notice", intent, clientMessageId });
     const entries = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_shadow_entries
       WHERE org_id = ${person.orgId} ORDER BY n`;
     const first = resultOf(yield* notice("notice-0"));
