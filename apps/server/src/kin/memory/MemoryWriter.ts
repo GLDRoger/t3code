@@ -195,6 +195,7 @@ const render = (fields: object, body: string) => `---\n${stringify(fields)}---\n
 const make = Effect.gen(function* () {
   const memory = yield* Memory;
   const recovery = yield* MemoryRecoveryHooks;
+  const reportedOpen = new Set<string>();
   const authority = yield* MemoryWriterAuthority;
   const hooks = yield* MemoryWriterHooks;
   const scanner = yield* KinSecretScan;
@@ -609,7 +610,8 @@ const make = Effect.gen(function* () {
         ownerReview,
       });
     });
-    const branch = `${WRITE_BRANCH_PREFIX}${input.agentId}/${input.id}`;
+    // Each attempt's commit is fresh, so a retry gets its own branch; `land` refuses reused ones.
+    const branch = `${WRITE_BRANCH_PREFIX}${input.agentId}/${input.id}-${input.commit.slice(0, 12)}`;
     const landed = yield* open(branch, input.commit, input.message, false).pipe(
       Effect.tapError((error) =>
         recovery.notify({
@@ -1365,7 +1367,10 @@ const make = Effect.gen(function* () {
                   new MemorySyncConflict({ orgId, operation: "sweep", reason: error.reason }),
               ),
             );
-          for (const pull of moved)
+          for (const pull of moved) {
+            // A PR GitHub keeps refusing to close is reported once per process, not every sweep.
+            if (!pull.closed && reportedOpen.has(pull.url)) continue;
+            if (!pull.closed) reportedOpen.add(pull.url);
             yield* recovery.notify({
               orgId,
               branch: pull.branch,
@@ -1373,6 +1378,7 @@ const make = Effect.gen(function* () {
                 ? `Kin closed ${pull.url}, the memory PR for paths you review: ${pull.reason}`
                 : `Kin could not close ${pull.url}, the memory PR for paths you review, and it is still open. Close it without merging: ${pull.reason}`,
             });
+          }
         }),
       ),
     ),

@@ -41,6 +41,7 @@ const WorkflowRuns = Schema.Struct({
       event: Schema.String,
       head_sha: Schema.String,
       head_branch: Schema.NullOr(Schema.String),
+      head_repository: Schema.NullOr(Schema.Struct({ full_name: Schema.String })),
       pull_requests: Schema.Array(
         Schema.Struct({ number: Schema.Int, base: Schema.Struct({ ref: Schema.String }) }),
       ),
@@ -166,6 +167,7 @@ const isOurRun = (
   run.event === "pull_request" &&
   run.head_sha === input.sha &&
   run.head_branch === input.branch &&
+  run.head_repository?.full_name === input.repo &&
   run.pull_requests.some((pull) => pull.number === number && pull.base.ref === input.base);
 
 /**
@@ -237,6 +239,7 @@ export const make = Effect.fn("MemoryPullRequests.make")(function* (options: {
         holder: "server",
       })
       .pipe(
+        Effect.timeout(CALL_TIMEOUT),
         Effect.mapError((error) =>
           refuse(`the Kin GitHub App gave no token for ${repo} (${error._tag})`),
         ),
@@ -268,11 +271,11 @@ export const make = Effect.fn("MemoryPullRequests.make")(function* (options: {
           Effect.mapError((error) => refuse(`${reason} (${error.operation})`)),
         );
     const close = Effect.fn("MemoryPullRequests.close")(function* (number: number, reason: string) {
-      yield* call("issues.comment", "POST", `/issues/${number}/comments`, {
-        body: `Kin closed this memory PR: ${reason}.`,
-      });
       const closed = yield* call("pulls.close", "PATCH", `/pulls/${number}`, { state: "closed" });
       if (closed.status !== 200) return yield* refuse(`GitHub did not close PR #${number}`);
+      yield* call("issues.comment", "POST", `/issues/${number}/comments`, {
+        body: `Kin closed this memory PR: ${reason}.`,
+      }).pipe(Effect.ignore);
     });
     const records = sql<{
       branch: string;

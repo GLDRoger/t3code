@@ -63,6 +63,7 @@ const scenarios = [
   "records-broken",
   "hang",
   "stall-body",
+  "run-from-fork",
   "keep",
   "keep-moved-head",
   "no-app",
@@ -98,6 +99,7 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
     const tokens: Array<unknown> = [];
     // The request GitHub never answers in `hang` and `stall-body`.
     const silenced = yield* Deferred.make<void>();
+    let stalls = 0;
     let jobsListed = false;
     let unclosable: number | undefined;
     const branchHead = (branch: string) => bare("rev-parse", `refs/heads/${branch}`);
@@ -224,6 +226,7 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
             event: "pull_request",
             head_sha: sha,
             head_branch: pull.branch,
+            head_repository: { full_name: repo },
             pull_requests: [{ number: pull.number, base: { ref: "main" } }],
           });
           const ours = run(10, "memory-check.yml");
@@ -237,6 +240,9 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
                   ...(scenario === "run-wrong-sha" ? { head_sha: original } : {}),
                   ...(scenario === "run-wrong-event" ? { event: "push" } : {}),
                   ...(scenario === "run-wrong-branch" ? { head_branch: "kin/write/other" } : {}),
+                  ...(scenario === "run-from-fork"
+                    ? { head_repository: { full_name: "attacker/memory" } }
+                    : {}),
                   ...(scenario === "run-wrong-pr"
                     ? { pull_requests: [{ number: 99, base: { ref: "main" } }] }
                     : {}),
@@ -260,7 +266,8 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
               return {
                 id,
                 name: "memory-check",
-                head_sha: yield* branchHead(pulls.get(1)!.branch),
+                // The newest PR is the attempt being checked (a retry opens PR 2).
+                head_sha: yield* branchHead(pulls.get(Math.max(...pulls.keys()))!.branch),
                 status: pending ? "in_progress" : "completed",
                 conclusion: pending ? null : failed ? "failure" : "success",
               };
@@ -276,7 +283,8 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         }
         const checks = /^\/commits\/([a-f0-9]+)\/check-runs\?(.*)$/.exec(path);
         if (checks) {
-          if (scenario === "stall-body") {
+          // Only the first attempt stalls, so the retry after the sweep can land.
+          if (scenario === "stall-body" && stalls++ === 0) {
             yield* Deferred.succeed(silenced, undefined);
             return { status: 200, stallBody: true as const };
           }
@@ -419,8 +427,9 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
           return;
         }
         expect(yield* keep).toEqual({ kept: 2, paths: shown });
-        const branch = `kin/write/${agentId}/keep-${shadowed.commit.slice(0, 12)}`;
-        expect(pulls.get(1)?.branch).toBe(branch);
+        expect(pulls.get(1)?.branch).toMatch(
+          new RegExp(`^kin/write/${agentId}/keep-${shadowed.commit.slice(0, 12)}-[0-9a-f]{12}$`),
+        );
         const main = yield* bare("rev-parse", "refs/heads/main");
         expect(merges).toEqual([
           { number: 1, body: expect.objectContaining({ sha: expect.any(String) }) },
@@ -474,6 +483,11 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         expect([...pulls.values()].map((pull) => pull.state)).toEqual(
           scenario === "hang" ? [] : ["closed"],
         );
+        // A retry gets a fresh commit and branch, so the closed PR doesn't block it.
+        if (scenario === "stall-body") {
+          yield* writer.commitWakeup(orgId, "wake1", "completed");
+          expect(merges.length).toBe(1);
+        }
         return;
       }
       if (
@@ -508,6 +522,7 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
               "run-wrong-sha": foreign,
               "run-wrong-event": foreign,
               "run-wrong-branch": foreign,
+              "run-from-fork": foreign,
               "run-wrong-pr": foreign,
               "run-wrong-base": foreign,
               truncated: "GitHub listed more check runs than one page holds",
@@ -535,10 +550,11 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
       expect(yield* bare("log", "-1", "--format=%s", main)).toBe(`kin(${agentId}): wake-up wake1`);
       expect(yield* remoteFiles(main)).toContain("claims/new.md");
       // The merged branch is deleted; the merge was pinned to the commit Kin pushed.
+      const wakeBranch = new RegExp(`^kin/write/${agentId}/wake1-[0-9a-f]{12}$`);
+      const auto = [...pulls].find(([, pull]) => wakeBranch.test(pull.branch))!;
       expect(yield* bare("for-each-ref", "--format=%(refname)", "refs/heads/kin/write/")).toBe(
-        ownerPath ? `refs/heads/kin/write/${agentId}/wake1-review` : "",
+        ownerPath ? `refs/heads/${auto[1].branch}-review` : "",
       );
-      const auto = [...pulls].find(([, pull]) => pull.branch === `kin/write/${agentId}/wake1`)!;
       const autoHead = yield* git(paths.writer, ["rev-parse", `${main}^{tree}`]);
       expect(merges).toEqual([
         {
@@ -586,8 +602,10 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
       }
 
       if (reviewed) {
-        const reviewBranch = `kin/write/${agentId}/wake1-review`;
-        const review = [...pulls].find(([, pull]) => pull.branch === reviewBranch)!;
+        const review = [...pulls].find(([, pull]) =>
+          new RegExp(`^kin/write/${agentId}/wake1-[0-9a-f]{12}-review$`).test(pull.branch),
+        )!;
+        const reviewBranch = review[1].branch;
         // Kin never merges the owner's paths; the PR stays open for their review.
         expect(review[1].state).toBe("open");
         expect(merges.map((merge) => merge.number)).not.toContain(review[0]);
@@ -667,6 +685,10 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
             `Kin could not close ${moved}, the memory PR for paths you review, and it is still open. Close it without merging: ${reason}`,
           ]);
           expect(yield* records).toEqual([{ branch: reviewBranch, head: reviewHead }]);
+          // The next sweep still can't close it, and doesn't tell the owner again.
+          const again = notices.length;
+          yield* writer.sweepPullRequests(orgId);
+          expect(notices.length).toBe(again);
           return;
         }
         expect(review[1].state).toBe("closed");
