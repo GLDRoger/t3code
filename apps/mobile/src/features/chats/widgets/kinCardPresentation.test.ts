@@ -127,6 +127,11 @@ describe("kinCardView", () => {
       { title: "Why is CI red?", model: null },
       "Task: Why is CI red? Working. Opens the thread.",
     ],
+    [
+      "an error that trails off",
+      { status: "blocked", lastError: "Waiting on review…", model: null },
+      "Task: Fix the payments test. Blocked. Waiting on review… Opens the thread.",
+    ],
   ])("reads one sentence per part with %s", (_name, overrides, label) => {
     expect(task(widget({ state: taskState(overrides) })).accessibilityLabel).toBe(label);
   });

@@ -8,7 +8,7 @@ import { environmentCatalog } from "../../../connection/catalog";
 import { connectionAtomRuntime } from "../../../connection/runtime";
 import * as MobileSecureStorage from "../../../persistence/mobile-secure-storage";
 import { environmentPresentations } from "../../../state/presentation";
-import { kinClient, markKinHostKnown } from "./kinClient";
+import { kinCachedOrgsAtom, kinClient, markKinHostKnown } from "./kinClient";
 import {
   classifyKinProbe,
   kinHostIdToSave,
@@ -47,6 +47,9 @@ const kinHostCandidates = (get: Atom.AtomContext): ReadonlyArray<KinHostCandidat
 const kinProbe = (get: Atom.AtomContext) => (environmentId: EnvironmentId) =>
   classifyKinProbe(get(kinClient.orgs({ environmentId, input: {} })));
 
+const kinCachedOrgs = (get: Atom.AtomContext) => (environmentId: EnvironmentId) =>
+  AsyncResult.getOrElse(get(kinCachedOrgsAtom(environmentId)), () => null);
+
 export const kinHostAtom: Atom.Atom<KinHost> = Atom.make((get): KinHost => {
   if (!get(environmentCatalog.catalogValueAtom).isReady) return { _tag: "searching" };
   const saved = get(savedKinHostAtom);
@@ -59,6 +62,7 @@ export const kinHostAtom: Atom.Atom<KinHost> = Atom.make((get): KinHost => {
     candidates,
     savedHostId,
     probe: kinProbe(get),
+    cachedOrgs: kinCachedOrgs(get),
   });
 }).pipe(Atom.withLabel("kin:host"));
 
@@ -69,6 +73,7 @@ const kinHostAtAtom = Atom.family((environmentId: EnvironmentId) =>
       candidates: kinHostCandidates(get),
       environmentId,
       probe: kinProbe(get),
+      cachedOrgs: kinCachedOrgs(get),
     });
   }).pipe(Atom.withLabel(`kin:host:${environmentId}`)),
 );

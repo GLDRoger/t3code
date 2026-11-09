@@ -2,6 +2,7 @@ import { KinTaskCardState, type EnvironmentId, type KinWidget } from "@t3tools/c
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { kinSentences } from "../state/kinChatFeed";
 import { kinDeferralCardView, type KinDeferralCardView } from "./kinDeferralPresentation";
 
 export const KIN_UNKNOWN_CARD_TEXT = "This card needs a newer version of Kin.";
@@ -104,10 +105,7 @@ export function kinTaskCardView(
     open,
     unknownEnvironment: state.threadId !== null && !known,
     pullRequests,
-    accessibilityLabel: parts
-      .filter((part) => part !== null)
-      .map((part) => (/[.!?…]$/.test(part) ? part : `${part}.`))
-      .join(" "),
+    accessibilityLabel: kinSentences(parts),
   };
 }
 
