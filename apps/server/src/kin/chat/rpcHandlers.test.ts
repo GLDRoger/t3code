@@ -749,11 +749,14 @@ it.effect(
       assert.include(yield* memberClient["kin.triggers.setTimeZone"](zone).pipe(Effect.flip), {
         reason: "not_allowed",
       });
-      for (const denied of [
-        readOnly["kin.budget.set"](input),
-        readOnly["kin.triggers.setTimeZone"](zone),
-      ])
-        assert.strictEqual((yield* denied.pipe(Effect.flip))._tag, "EnvironmentAuthorizationError");
+      assert.strictEqual(
+        (yield* readOnly["kin.budget.set"](input).pipe(Effect.flip))._tag,
+        "EnvironmentAuthorizationError",
+      );
+      assert.strictEqual(
+        (yield* readOnly["kin.triggers.setTimeZone"](zone).pipe(Effect.flip))._tag,
+        "EnvironmentAuthorizationError",
+      );
     }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 
