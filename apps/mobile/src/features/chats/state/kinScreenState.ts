@@ -320,6 +320,7 @@ export function kinLeadChatId(rows: ReadonlyArray<KinInboxRow>): KinChatId | nul
     }
   }
   return best?.chatId ?? null;
+}
 
 /** A direct chat's agent by name; null for other chats or an agent the directory doesn't name. */
 export function kinDirectAgentName(
