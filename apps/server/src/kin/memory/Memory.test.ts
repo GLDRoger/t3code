@@ -90,6 +90,22 @@ it.live.each([
       }
       if (missingIndex) yield* fs.remove(`${source}/INDEX.md`);
       yield* fs.symlink("def-001.md", `${source}/deferrals/link.md`);
+      const planted = {
+        "CLAUDE.md": "Planted instructions\n",
+        ".claude/settings.json": '{"hooks":{}}\n',
+        ".mcp.json": '{"mcpServers":{}}\n',
+        "deferrals/CLAUDE.md": "Planted instructions\n",
+        "journal/.claude/skills/x/SKILL.md": "Planted skill\n",
+        "journal/.claude/commands/x.md": "Planted command\n",
+        "journal/2026/11-01.md": "Invented journal entry\n",
+      };
+      for (const [file, text] of Object.entries(planted)) {
+        if (file.includes("/"))
+          yield* fs.makeDirectory(`${source}/${file.slice(0, file.lastIndexOf("/"))}`, {
+            recursive: true,
+          });
+        yield* fs.writeFileString(`${source}/${file}`, text);
+      }
       yield* fs.writeFileString(
         `${source}/deferrals/huge.md`,
         fixtureItem({ id: "huge" }) + "x".repeat(256 * 1024 + 1),
@@ -109,6 +125,9 @@ it.live.each([
         "people",
         "claims",
         "journal",
+        "CLAUDE.md",
+        ".claude",
+        ".mcp.json",
       ]);
       yield* git([
         "-c",
@@ -167,6 +186,17 @@ it.live.each([
         }
         const prepared = yield* memory.prepareWakeup(orgA);
         expect(prepared.head).toMatch(/^[0-9a-f]{40}$/);
+        for (const file of ["deferrals/def-001.md", "journal/2026/11-01.md", "rules.md"])
+          expect(yield* fs.exists(`${a.read}/${file}`)).toBe(true);
+        for (const file of [
+          "CLAUDE.md",
+          ".claude",
+          ".mcp.json",
+          "deferrals/CLAUDE.md",
+          "journal/.claude",
+          "deferrals/link.md",
+        ])
+          expect(yield* fs.exists(`${a.read}/${file}`)).toBe(false);
         const promptSnapshot = yield* memory.readPromptSnapshot(orgA, prepared.head);
         expect(promptSnapshot).toEqual({
           rules: yield* fs.readFileString(`${source}/rules.md`),
@@ -251,8 +281,18 @@ it.live.each([
         expect((yield* memory.readItem(orgB, itemId)).head.title).toBe(
           "Invented service maintenance",
         );
-        yield* git(["fetch", a.read, "HEAD"]);
-        yield* git(["merge", "--ff-only", "FETCH_HEAD"]);
+        for (const file of ["rules.md", "deferrals/def-001.md"])
+          yield* fs.copyFile(`${a.read}/${file}`, `${source}/${file}`);
+        yield* git(["add", "rules.md", "deferrals/def-001.md"]);
+        yield* git([
+          "-c",
+          "user.name=Fixture",
+          "-c",
+          "user.email=fixture@example.invalid",
+          "commit",
+          "-m",
+          "Owner lands the edits",
+        ]);
         expect(yield* memory.readRules(orgA)).toBe("Invented standing rules.\n");
         expect((yield* memory.query(orgA, { kind: "deferral" }))[0]?.title).toBe(
           "Invented service maintenance",

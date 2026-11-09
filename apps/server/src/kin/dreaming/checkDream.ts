@@ -2,8 +2,9 @@ import type { KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import { isCheckoutPath, isItemPath } from "../memory/checkoutPaths.ts";
 import { parseFrontMatter } from "../memory/frontMatter.ts";
-import { itemFolders, type MaterialEntry } from "./material.ts";
+import type { MaterialEntry } from "./material.ts";
 
 const Sources = Schema.Array(Schema.String).check(Schema.isMinLength(1));
 const Id = Schema.String.check(Schema.isNonEmpty());
@@ -38,13 +39,6 @@ export const DreamJson = Schema.Struct({
 });
 export type DreamJson = typeof DreamJson.Type;
 const decodeDream = Schema.decodeUnknownEffect(Schema.fromJsonString(DreamJson));
-
-const isItemPath = (path: string) =>
-  path.endsWith(".md") && itemFolders.some((folder) => path.startsWith(`${folder}/`));
-const isJournalPath = (path: string) => path.startsWith("journal/") && path.endsWith(".md");
-/** What a dream checkout holds. Anything else at HEAD, such as `.mcp.json` or `.claude/`, could configure the provider. */
-export const isDreamPath = (path: string) =>
-  path === "rules.md" || path === "INDEX.md" || isItemPath(path) || isJournalPath(path);
 
 /**
  * The code checks a dream must pass before anything is committed. `tree` is what the
@@ -85,7 +79,7 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
       failures.push("INDEX.md is built by code");
       continue;
     }
-    if (!isItemPath(path) && !isJournalPath(path)) {
+    if (!isCheckoutPath(path)) {
       failures.push(`${path} is outside item files and journal/`);
       continue;
     }

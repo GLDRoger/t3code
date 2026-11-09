@@ -754,6 +754,7 @@ it.live.each([
         );
         yield* fs.chmod(script, 0o755);
         for (const repo of [paths.read, paths.writer]) {
+          yield* fs.makeDirectory(`${repo}/.git/hooks`, { recursive: true });
           yield* fs.writeFileString(
             `${repo}/.git/hooks/post-checkout`,
             `#!/bin/sh\ntouch '${marker}'\n`,
