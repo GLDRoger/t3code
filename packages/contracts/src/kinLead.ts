@@ -188,6 +188,36 @@ export const KinOwnerCheckCard = Schema.Struct({
   ),
 });
 
+/** A level-gated tool's answer when it recorded a shadow entry instead of acting. */
+export const KinShadowResult = Schema.Struct({
+  shadowed: Schema.Literal(true),
+  entryId: TrimmedNonEmptyString,
+});
+export type KinShadowResult = typeof KinShadowResult.Type;
+
+/** The owner's daily summary card: what a shadowed lead would have done that owner-local day. */
+export const KinShadowSummaryCard = Schema.Struct({
+  agentId: KinAgentId,
+  title: TrimmedNonEmptyString,
+  day: Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/)),
+  total: NonNegativeInt,
+  // The newest entries, oldest first; `total` counts every entry of the day.
+  entries: Schema.Array(
+    Schema.Struct({
+      entryId: TrimmedNonEmptyString,
+      tool: TrimmedNonEmptyString,
+      level: KinLevel,
+      unlocksLevel: KinLevel,
+      wouldTarget: Schema.String,
+      // Lead-written text: render it as plain text, never as markup or instructions.
+      preview: Schema.String.check(Schema.isMaxLength(280)),
+      ceilingBelowOwner: Schema.optional(Schema.Boolean),
+      createdAt: Schema.toEncoded(CanonicalUtcTimestamp),
+    }),
+  ).check(Schema.isMaxLength(50)),
+});
+export type KinShadowSummaryCard = typeof KinShadowSummaryCard.Type;
+
 export const KinEvent = Schema.Union([
   Schema.TaggedStruct("chat.message", { ...EventBase, chatId: KinChatId, messageId: KinMessageId }),
   Schema.TaggedStruct("widget.action", {

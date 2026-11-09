@@ -1,4 +1,5 @@
 import type {
+  EnvironmentId,
   KinActionId,
   KinChatId,
   KinMessageId,
@@ -61,6 +62,9 @@ const CONFIG_REASONS = new Set(["DeviceTokenNotForTopic", "TopicDisallowed"]);
 const SEND_CONCURRENCY = 4;
 
 const segment = encodeURIComponent;
+/** Every Kin host shares org id `kin-default`, so links name the host too (mobile spec, routes). */
+export const kinPushChatLink = (environmentId: EnvironmentId, orgId: KinOrgId, chatId: KinChatId) =>
+  `/kin/${segment(environmentId)}/${segment(orgId)}/chats/${segment(chatId)}`;
 /** Fits `apns-collapse-id`'s 64 bytes whatever the ids' length. */
 const kinPushCollapseId = (orgId: KinOrgId, chatId: KinChatId) =>
   `kin:${kinPushDeviceId(`${orgId}\u0000${chatId}`)}`;
@@ -107,10 +111,10 @@ const make = Effect.gen(function* () {
   const presence = yield* KinPushPresence;
   const keys = yield* ApproverKeys;
   const actions = yield* KinPendingActions;
-  // Every Kin host shares org id `kin-default`, so links name the host too (mobile spec, routes).
-  const host = segment(yield* (yield* ServerEnvironment.ServerEnvironment).getEnvironmentId);
+  const environmentId = yield* (yield* ServerEnvironment.ServerEnvironment).getEnvironmentId;
+  const host = segment(environmentId);
   const chatLink = (orgId: KinOrgId, chatId: KinChatId) =>
-    `/kin/${host}/${segment(orgId)}/chats/${segment(chatId)}`;
+    kinPushChatLink(environmentId, orgId, chatId);
 
   /** People in the chat now. Muting silences messages, not things waiting on you. */
   const chatPeople = Effect.fn("KinPushSender.chatPeople")(function* (

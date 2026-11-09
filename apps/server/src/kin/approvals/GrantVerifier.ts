@@ -20,6 +20,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -35,16 +36,16 @@ import { KinPendingActions, kinTargetDigest } from "./PendingActions.ts";
 // the budget that records forgeries against a real key. Past the budget, rejections are counted.
 const AUDITS_PER_WINDOW = 20;
 const JUNK_WINDOW = Duration.minutes(1);
-const auditBucket = (reason: KinApprovalError["reason"], signatureVerified: boolean) =>
+type AuditBucket = "signed" | "junk" | "names_key";
+const auditBucket = (
+  reason: KinApprovalError["reason"],
+  signatureVerified: boolean,
+): AuditBucket =>
   signatureVerified
     ? "signed"
     : reason === "malformed" || reason === "unknown_key"
       ? "junk"
       : "names_key";
-
-// A jti is 16+ random bytes (spec section 5): 22 unpadded base64url characters. Kept out of the
-// shared decoder so it stays byte-for-byte with the device's parser.
-const MIN_JTI_CHARS = 22;
 
 const isKinApprovalError = Schema.is(KinApprovalError);
 const decodeUnsigned = Schema.decodeUnknownEffect(KinGrantUnsignedPayload);
@@ -206,7 +207,6 @@ const make = Effect.gen(function* () {
       keyThumbprint: header.kid,
       ...(payload.headSha === undefined ? {} : { headSha: payload.headSha }),
     };
-    if (payload.jti.length < MIN_JTI_CHARS) return yield* reject("malformed");
 
     // 2. An active key in the grant's org, after session revocations.
     const key = yield* keys.requireActive({ orgId: payload.orgId, thumbprint: header.kid });
@@ -273,26 +273,43 @@ const make = Effect.gen(function* () {
       }
     }
 
-    // 10. Grant row and CAS in one transaction, against the row's own org and nonce.
-    const result = yield* actions.approve({
-      orgId: action.orgId,
-      actionId: action.id,
-      revision: action.revision,
-      nonce: action.nonce,
-      jti: payload.jti,
-      approverHumanId: key.humanId,
-      keyThumbprint: key.thumbprint,
-      compact,
-      iat: payload.iat,
-      exp: payload.exp,
-      sessionId: caller.session.sessionId,
+    // 10. Grant row and CAS in one transaction, against the row's own org and nonce. A refusal
+    // here spends the verified-grant budget like any other; the slot is handed back on approval.
+    const window = yield* auditWindow(action.orgId, caller.session.sessionId, "signed");
+    const auditRefusal = window.used < AUDITS_PER_WINDOW;
+    if (auditRefusal) window.used += 1;
+    const release = Effect.sync(() => {
+      if (auditRefusal) window.used -= 1;
     });
-    if (result._tag !== "approved") {
-      // `approve` already wrote this refusal's `grant_rejected` on the action's own chain.
-      seen.audited = true;
-      return yield* reject(result._tag);
-    }
-    return { action, grant: result.grant };
+    const result = yield* actions
+      .approve({
+        orgId: action.orgId,
+        actionId: action.id,
+        revision: action.revision,
+        nonce: action.nonce,
+        jti: payload.jti,
+        approverHumanId: key.humanId,
+        keyThumbprint: key.thumbprint,
+        compact,
+        iat: payload.iat,
+        exp: payload.exp,
+        sessionId: caller.session.sessionId,
+        auditRefusal,
+        ...(payload.headSha === undefined ? {} : { headSha: payload.headSha }),
+      })
+      .pipe(
+        // Only a refusal keeps its slot; approval, failure and interruption hand it back.
+        Effect.onExit((exit) =>
+          Exit.isSuccess(exit) && exit.value._tag !== "approved" ? Effect.void : release,
+        ),
+      );
+    if (result._tag === "approved") return { action, grant: result.grant };
+    // `approve` wrote this refusal's `grant_rejected` on the action's own chain, or counted it.
+    // Re-read the window: the one checked above may have closed while `approve` ran.
+    if (!auditRefusal)
+      (yield* auditWindow(action.orgId, caller.session.sessionId, "signed")).skipped += 1;
+    seen.audited = true;
+    return yield* reject(result._tag);
   });
 
   /** The window's skipped count is written when it ends, or when the server stops. */
@@ -316,6 +333,13 @@ const make = Effect.gen(function* () {
       Effect.as(window),
     );
   };
+
+  const auditWindow = (orgId: KinOrgId, sessionId: AuthSessionId, bucket: AuditBucket) =>
+    Effect.suspend(() => {
+      const slot = `${orgId} ${sessionId} ${bucket}`;
+      const window = junkWindows.get(slot);
+      return window === undefined ? openJunkWindow(slot, orgId, sessionId) : Effect.succeed(window);
+    });
 
   const recordRejection = Effect.fn("GrantVerifier.recordRejection")(function* (
     caller: KinKeyCaller,
@@ -342,8 +366,11 @@ const make = Effect.gen(function* () {
       sessionId,
       result: error.reason,
     };
-    const slot = `${orgId} ${sessionId} ${auditBucket(error.reason, seen.orgId !== undefined)}`;
-    const window = junkWindows.get(slot) ?? (yield* openJunkWindow(slot, orgId, sessionId));
+    const window = yield* auditWindow(
+      orgId,
+      sessionId,
+      auditBucket(error.reason, seen.orgId !== undefined),
+    );
     if (window.used >= AUDITS_PER_WINDOW) {
       window.skipped += 1;
       return;
