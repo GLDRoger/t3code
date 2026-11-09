@@ -234,6 +234,8 @@ export class KinPendingActions extends Context.Service<
         readonly deviceLabel?: string;
         /** False when the caller's audit budget is spent: a refusal is then not written. */
         readonly auditRefusal?: boolean;
+        /** The head the grant signed; a refusal records it, not the row's possibly newer head. */
+        readonly headSha?: string;
       },
     ) => Effect.Effect<KinApproveResult, Errors>;
     /** Whether the org already holds this `jti`, or this approver's grant for the action. */
@@ -438,6 +440,7 @@ const make = Effect.gen(function* () {
         readonly sessionId?: AuthSessionId;
         readonly deviceLabel?: string;
         readonly auditRefusal?: boolean;
+        readonly headSha?: string;
       },
     ) {
       const now = yield* Clock.currentTimeMillis;
@@ -515,10 +518,12 @@ const make = Effect.gen(function* () {
                 FROM kin_pending_actions
                 WHERE org_id = ${input.orgId} AND action_id = ${input.actionId}`;
               if (owned === undefined) return;
+              const { headSha: _rowHead, ...facts } = yield* auditFacts(owned);
               yield* audit.append({
                 orgId: input.orgId,
                 event: "grant_rejected",
-                ...(yield* auditFacts(owned)),
+                ...facts,
+                ...(input.headSha === undefined ? {} : { headSha: input.headSha }),
                 ...who,
                 result: result._tag,
               });

@@ -897,12 +897,27 @@ describe("GrantVerifier", () => {
     const h = harness();
     return Effect.gen(function* () {
       const { grants, actions, ownerKey } = yield* enrol;
-      const loseAtCheck10 = Effect.fn(function* (number: number) {
+      const loseAtCheck10 = Effect.fn(function* (number: number, moveHead = false) {
         const action = yield* requestMerge(actions, number, h.github);
         const compact = yield* signFor(grants, ownerPhone, action, signerOf(ownerKey));
-        h.race.during = actions
-          .transition({ orgId, actionId: action.id, revision: 0, to: "rejected" })
-          .pipe(Effect.orDie);
+        // A concurrent refresh moves the row to a head the owner never signed.
+        const resolved =
+          action.resolved._tag === "none"
+            ? action.resolved
+            : { ...action.resolved, headSha: sha("c") };
+        h.race.during = moveHead
+          ? actions
+              .refresh({
+                orgId,
+                actionId: action.id,
+                revision: 0,
+                resolved,
+                targetDigest: kinTargetDigest(action.kind, action.target, resolved),
+              })
+              .pipe(Effect.orDie)
+          : actions
+              .transition({ orgId, actionId: action.id, revision: 0, to: "rejected" })
+              .pipe(Effect.orDie);
         const exit = yield* Effect.exit(grants.submitGrant(ownerPhone, { compact }));
         delete h.race.during;
         assert.strictEqual(reasonOf(exit), "stale");
@@ -913,12 +928,17 @@ describe("GrantVerifier", () => {
           (entry) => entry.event === "grant_rejected" && entry.sessionId !== undefined,
         );
 
-      const first = yield* loseAtCheck10(300);
+      const first = yield* loseAtCheck10(300, true);
       assert.include(rejections()[0], {
         actionId: first.id,
         kind: "merge_pull_request",
         headSha: sha("b"),
         result: "stale",
+      });
+      // An approval hands its reserved slot back.
+      const approved = yield* requestMerge(actions, 303, h.github);
+      yield* grants.submitGrant(ownerPhone, {
+        compact: yield* signFor(grants, ownerPhone, approved, signerOf(ownerKey)),
       });
       // Check 6's refusals fill the rest of the same budget.
       const gone = yield* requestMerge(actions, 301, h.github);

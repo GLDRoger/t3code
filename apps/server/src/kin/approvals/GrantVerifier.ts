@@ -20,6 +20,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -294,14 +295,19 @@ const make = Effect.gen(function* () {
         exp: payload.exp,
         sessionId: caller.session.sessionId,
         auditRefusal,
+        ...(payload.headSha === undefined ? {} : { headSha: payload.headSha }),
       })
-      .pipe(Effect.tapError(() => release));
-    if (result._tag === "approved") {
-      yield* release;
-      return { action, grant: result.grant };
-    }
+      .pipe(
+        // Only a refusal keeps its slot; approval, failure and interruption hand it back.
+        Effect.onExit((exit) =>
+          Exit.isSuccess(exit) && exit.value._tag !== "approved" ? Effect.void : release,
+        ),
+      );
+    if (result._tag === "approved") return { action, grant: result.grant };
     // `approve` wrote this refusal's `grant_rejected` on the action's own chain, or counted it.
-    if (!auditRefusal) window.skipped += 1;
+    // Re-read the window: the one checked above may have closed while `approve` ran.
+    if (!auditRefusal)
+      (yield* auditWindow(action.orgId, caller.session.sessionId, "signed")).skipped += 1;
     seen.audited = true;
     return yield* reject(result._tag);
   });
