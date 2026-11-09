@@ -95,6 +95,7 @@ import {
 } from "./state/kinInboxModel";
 import { kinChatTitle, kinDirectAgentName } from "./state/kinScreenState";
 import { useKinHostAt } from "./state/useKinHost";
+import { KinChatPushWatch } from "./notifications/KinChatPushWatch";
 
 type KinChatParams = {
   readonly environmentId: string;
@@ -181,29 +182,32 @@ function KinLiveChat(props: {
   };
 
   return (
-    <KinChatPage
-      orgId={props.orgId}
-      chatId={chatId ?? (props.chatId as KinChatId)}
-      title={summary === undefined ? "Chat" : kinChatTitle(summary, viewer.agentNames)}
-      agentName={summary === undefined ? null : kinDirectAgentName(summary, viewer.agentNames)}
-      unread={summary?.unread ?? null}
-      markRead={
-        environmentId === null || chatId === null
-          ? null
-          : (seq) =>
-              kinClient.markRead
-                .run(appAtomRegistry, { environmentId, input: { chatId, seq } })
-                .then((result) => result._tag === "Success")
-      }
-      state={state}
-      viewer={viewer}
-      onRetry={retry}
-      readHistory={
-        state._tag === "ready" && state.connected
-          ? (input) => kinClient.readHistoryPage(state.environmentId, input)
-          : null
-      }
-    />
+    <>
+      <KinChatPushWatch environmentId={props.environmentId} chatId={props.chatId} />
+      <KinChatPage
+        orgId={props.orgId}
+        chatId={chatId ?? (props.chatId as KinChatId)}
+        title={summary === undefined ? "Chat" : kinChatTitle(summary, viewer.agentNames)}
+        agentName={summary === undefined ? null : kinDirectAgentName(summary, viewer.agentNames)}
+        unread={summary?.unread ?? null}
+        markRead={
+          environmentId === null || chatId === null
+            ? null
+            : (seq) =>
+                kinClient.markRead
+                  .run(appAtomRegistry, { environmentId, input: { chatId, seq } })
+                  .then((result) => result._tag === "Success")
+        }
+        state={state}
+        viewer={viewer}
+        onRetry={retry}
+        readHistory={
+          state._tag === "ready" && state.connected
+            ? (input) => kinClient.readHistoryPage(state.environmentId, input)
+            : null
+        }
+      />
+    </>
   );
 }
 

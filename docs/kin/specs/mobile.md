@@ -306,14 +306,14 @@ Hiding the buttons is a convenience, not the protection (DESIGN 9.3). The server
 
 | Category id              | Actions (identifier: title)                                                  | Action `options` (set on each action)                          |
 | ------------------------ | ---------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `kin.approval`           | `open: Review`                                                               | `opensAppToForeground: true`, `isAuthenticationRequired: true` |
+| `kin.approval`           | `review: Review`                                                             | `opensAppToForeground: true`, `isAuthenticationRequired: true` |
 | `kin.deferral.confirmed` | `change: Change`, `remind: Just remind me`                                   | foreground                                                     |
 | `kin.deferral.heads_up`  | `start_now: Start now`, `monday: Monday`, `cancel: Cancel` (`isDestructive`) | foreground, auth required                                      |
 | `kin.message`            | none (tap opens chat)                                                        | n/a                                                            |
 
 - There is no "Approve" action on the notification. Approving needs the in-app biometric prompt and signature (approvals spec), so the lock screen offers **Review**, which opens `KinApproval`.
 - In phase 1 every action opens the app. Background actions are not reliable when the app has been killed.
-- It adds its own `addNotificationResponseReceivedListener` and reads `getLastNotificationResponseAsync()` synchronously at install, so the cold-start tap is seen before upstream's consumer clears it. It decodes `KinPushData` and drops anything that fails or whose `deepLink` doesn't start with `/kin/`. Then it navigates with `linkToAppPath(deepLink)`.
+- It adds its own `addNotificationResponseReceivedListener` and reads the synchronous `getLastNotificationResponse()` at install, so the cold-start tap is seen before upstream's consumer clears it. It decodes `KinPushData` and drops anything that fails or whose `deepLink` isn't `/kin/<environmentId>/<orgId>/(chats|actions)/<id>` with ids matching the push. A button acts only when the link names the current Kin host. Then it navigates with `linkToAppPath(deepLink)`.
 - For an action id other than the default, it also posts `widgetAction` with a `clientActionId` derived from the notification identifier plus the action id, so a replayed response can't act twice. Upstream's thread router ignores these responses, because they carry no `/threads/` link.
 - It registers the APNs token from `Notifications.getDevicePushTokenAsync()` with `kinClient.registerPush`. It reuses the existing permission prompt (`notificationPermissions.ts`) and never asks twice.
 
