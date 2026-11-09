@@ -1,6 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
-  LegendList,
   type LegendListRef,
   type OnViewableItemsChangedInfo,
   type ViewabilityConfigCallbackPairs,
@@ -22,9 +21,11 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { Atom, type AsyncResult } from "effect/reactivity";
-import { useEffect, useRef, useState } from "react";
-import { View } from "react-native";
-import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import { KeyboardAwareLegendList, useKeyboardChatComposerInset } from "@legendapp/list/keyboard";
+import { useEffect, useRef, useState, type ComponentPropsWithRef } from "react";
+import { Platform, View, type ViewInstance } from "react-native";
+import { KeyboardAvoidingView, KeyboardStickyView } from "react-native-keyboard-controller";
+import Animated from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppBar } from "../../components/ui/AppBar";
@@ -38,12 +39,14 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { useBarOverlap, useContentTopInset } from "../../components/ui/useBarInset";
 import { useReduceMotionEnabled } from "../../lib/appState";
 import { useLocalDayStartMs } from "../../lib/clock";
-import { NativeScrollView } from "../../native/NativeScrollViewMarker";
+import { deriveThreadFeedInitialContentInset } from "../../lib/layout";
+import { NativeScrollViewMarker } from "../../native/NativeScrollViewMarker";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useMarkdownPreviewStyles } from "../files/FileMarkdownPreview";
 import {
   editKinOutboxEntry,
+  KIN_COMPOSER_COLLAPSED_HEIGHT,
   KIN_COMPOSER_GUTTER,
   KinComposer,
   kinDraftKey,
@@ -434,9 +437,30 @@ function KinChatFeed(props: {
   const reduceMotion = useReduceMotionEnabled();
   const barOverlap = useBarOverlap();
   const markdownStyle = useMarkdownPreviewStyles().nativeTextStyle;
+  const safeBottom = useSafeAreaInsets().bottom;
   // Clears the home indicator; the keyboard offset gives that space back while the keyboard is up.
-  const composerInset = Math.max(useSafeAreaInsets().bottom, KIN_COMPOSER_GUTTER);
-  const keyboardOffset = KIN_COMPOSER_GUTTER - composerInset;
+  const composerInset = Math.max(safeBottom, KIN_COMPOSER_GUTTER);
+  const keyboardOffset = composerInset - KIN_COMPOSER_GUTTER;
+  // As in the thread feed: the composer overlays the feed, whose end inset tracks the composer's
+  // measured height and the keyboard. UIKit already adds the safe-area bottom to that inset.
+  const insetOvercount = Platform.OS === "ios" ? safeBottom : 0;
+  const composerOverlayRef = useRef<ViewInstance>(null);
+  const estimatedComposerInset = Math.max(
+    0,
+    KIN_COMPOSER_COLLAPSED_HEIGHT + composerInset - insetOvercount,
+  );
+  const { contentInsetEndAdjustment, onComposerLayout } = useKeyboardChatComposerInset(
+    listRef,
+    composerOverlayRef,
+    estimatedComposerInset,
+    -insetOvercount,
+    0,
+  );
+  const initialContentInset = deriveThreadFeedInitialContentInset({
+    platform: Platform.OS,
+    usesNativeAutomaticInsets: Platform.OS === "ios",
+    bottomContentInset: estimatedComposerInset,
+  });
   const openLink = useOpenPullRequest();
   const [heldPaging, setPaging] = useState<KinPaging>(initialKinPaging);
   const [expandedRuns, setExpandedRuns] = useState<ReadonlySet<string>>(new Set());
@@ -668,7 +692,7 @@ function KinChatFeed(props: {
       <KeyboardAvoidingView
         automaticOffset
         behavior="padding"
-        keyboardVerticalOffset={keyboardOffset}
+        keyboardVerticalOffset={-keyboardOffset}
         className="flex-1"
       >
         <View className="flex-1 justify-center p-4">
@@ -692,62 +716,86 @@ function KinChatFeed(props: {
   }
 
   return (
-    <KeyboardAvoidingView
-      automaticOffset
-      behavior="padding"
-      keyboardVerticalOffset={keyboardOffset}
-      className="flex-1"
-    >
-      <View className="flex-1">
-        <LegendList
-          ref={listRef}
-          renderScrollComponent={NativeScrollView}
-          style={{ flex: 1 }}
-          contentInsetAdjustmentBehavior="automatic"
-          contentContainerStyle={{ paddingTop: 8, paddingBottom: 16 }}
-          data={rows}
-          keyExtractor={(row) => row.key}
-          getItemType={(row) => (row.type === "message" ? (row.own ? "own" : "other") : row.type)}
-          renderItem={renderItem}
-          extraData={markdownStyle}
-          estimatedItemSize={72}
-          drawDistance={500}
-          // UIKit insets the feed under the bar, which LegendList can't see: without this a short
-          // chat's end-alignment spacer overfills and pushes its newest messages below the fold.
-          contentInsetStartAdjustment={barOverlap}
-          alignItemsAtEnd
-          initialScrollAtEnd
-          maintainScrollAtEnd={
-            followsEnd
-              ? { animated: false, on: { dataChange: true, itemLayout: true, layout: true } }
-              : false
-          }
-          maintainVisibleContentPosition={followsEnd ? false : { data: true, size: true }}
-          onScroll={checkEnd}
-          viewabilityConfigCallbackPairs={seenPairs}
-          onScrollBeginDrag={() => transition({ type: "drag-begin" })}
-          onScrollEndDrag={checkEnd}
-          onMomentumScrollEnd={checkEnd}
-          scrollEventThrottle={32}
-          keyboardDismissMode="interactive"
-          keyboardShouldPersistTaps="handled"
-          ListHeaderComponent={header}
-        />
-        {unseen > 0 ? (
-          <View pointerEvents="box-none" className="absolute inset-x-0 bottom-4 items-center">
-            <ControlPill
-              variant="pill"
-              icon="chevron.down"
-              label="New messages"
-              accessibilityLabel={`${unseen} new ${unseen === 1 ? "message" : "messages"}. Scroll to the latest.`}
-              className="border border-border shadow-md shadow-black/10"
-              onPress={jumpToEnd}
-            />
-          </View>
-        ) : null}
-      </View>
-      {noticeBar}
-      {composer}
-    </KeyboardAvoidingView>
+    <View className="flex-1">
+      {/* oxlint-disable-next-line t3code/require-registered-list-scroll -- KinFeedScrollView is passed through the iOS-only spread below, as in the thread feed. */}
+      <KeyboardAwareLegendList
+        ref={listRef}
+        style={{ flex: 1 }}
+        // RN 0.81+ drops inset-area touches (facebook/react-native#54123).
+        applyWorkaroundForContentInsetHitTestBug
+        {...(Platform.OS === "ios" ? { ScrollViewComponent: KinFeedScrollView } : {})}
+        contentInsetAdjustmentBehavior="automatic"
+        contentContainerStyle={{ paddingTop: 8, paddingBottom: 16 }}
+        data={rows}
+        keyExtractor={(row) => row.key}
+        getItemType={(row) => (row.type === "message" ? (row.own ? "own" : "other") : row.type)}
+        renderItem={renderItem}
+        extraData={markdownStyle}
+        estimatedItemSize={72}
+        drawDistance={500}
+        // UIKit insets the feed under the bar, which LegendList can't see: without this a short
+        // chat's end-alignment spacer overfills and pushes its newest messages below the fold.
+        contentInsetStartAdjustment={barOverlap}
+        contentInsetEndAdjustment={contentInsetEndAdjustment}
+        contentInsetEndStaticAdjustment={insetOvercount}
+        adjustedInsetCompensation={insetOvercount}
+        // Android's initial end scroll runs before the composer is measured without this seed.
+        {...(initialContentInset ? { contentInset: initialContentInset } : {})}
+        keyboardOffset={keyboardOffset}
+        keyboardLiftBehavior="whenAtEnd"
+        alignItemsAtEnd
+        initialScrollAtEnd
+        maintainScrollAtEnd={
+          followsEnd
+            ? { animated: false, on: { dataChange: true, itemLayout: true, layout: true } }
+            : false
+        }
+        maintainVisibleContentPosition={followsEnd ? false : { data: true, size: true }}
+        onScroll={checkEnd}
+        viewabilityConfigCallbackPairs={seenPairs}
+        onScrollBeginDrag={() => transition({ type: "drag-begin" })}
+        onScrollEndDrag={checkEnd}
+        onMomentumScrollEnd={checkEnd}
+        scrollEventThrottle={32}
+        keyboardDismissMode="interactive"
+        keyboardShouldPersistTaps="handled"
+        ListHeaderComponent={header}
+      />
+      <KeyboardStickyView
+        pointerEvents="box-none"
+        style={{ position: "absolute", bottom: 0, left: 0, right: 0 }}
+        offset={{ closed: 0, opened: keyboardOffset }}
+      >
+        <View ref={composerOverlayRef} onLayout={onComposerLayout} pointerEvents="box-none">
+          {unseen > 0 ? (
+            // Out of the overlay's measured height, so the pill never moves the feed.
+            <View
+              pointerEvents="box-none"
+              className="absolute inset-x-0 items-center pb-4"
+              style={{ bottom: "100%" }}
+            >
+              <ControlPill
+                variant="pill"
+                icon="chevron.down"
+                label="New messages"
+                accessibilityLabel={`${unseen} new ${unseen === 1 ? "message" : "messages"}. Scroll to the latest.`}
+                className="border border-border shadow-md shadow-black/10"
+                onPress={jumpToEnd}
+              />
+            </View>
+          ) : null}
+          {noticeBar}
+          {composer}
+        </View>
+      </KeyboardStickyView>
+    </View>
+  );
+}
+
+function KinFeedScrollView(props: ComponentPropsWithRef<typeof Animated.ScrollView>) {
+  return (
+    <NativeScrollViewMarker style={{ flex: 1 }}>
+      <Animated.ScrollView {...props} />
+    </NativeScrollViewMarker>
   );
 }

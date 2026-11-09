@@ -29,6 +29,8 @@ const lengthFormat = new Intl.NumberFormat();
 
 /** The space under the Send row while the keyboard is up, and the least it gets without one. */
 export const KIN_COMPOSER_GUTTER = 12;
+/** The composer's height above `bottomInset` with one line and no hint, until it's measured. */
+export const KIN_COMPOSER_COLLAPSED_HEIGHT = 53;
 
 /** Puts an unsent body back in the draft, ahead of anything typed since. */
 function restoreDraft(draftKey: string, body: string) {
