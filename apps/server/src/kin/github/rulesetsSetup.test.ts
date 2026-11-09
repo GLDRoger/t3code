@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off - the CODEOWNERS table reads the real template synchronously.
 import * as NodeFS from "node:fs";
 import { RepoSlug } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
