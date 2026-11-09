@@ -70,6 +70,15 @@ export class KinFloor extends Context.Service<
       message: KinMessage,
       chat: KinChat,
     ) => Effect.Effect<FloorDecision | null, PersistenceSqlError>;
+    /**
+     * Re-arms the agent's unused direct-chat grant on each open run one of `messageIds` opened,
+     * so a wake-up that starts after the TTL can still reply once. It never issues a grant.
+     */
+    readonly renew: (input: {
+      readonly orgId: KinOrgId;
+      readonly agentId: KinAgentId;
+      readonly messageIds: ReadonlyArray<KinMessageId>;
+    }) => Effect.Effect<void, PersistenceSqlError>;
     readonly authorize: (
       identity: AgentIdentity,
       chat: KinChat,
@@ -166,6 +175,25 @@ const make = Effect.gen(function* () {
       return decision;
     },
     Effect.mapError(toPersistenceSqlError("KinFloor.open")),
+  );
+
+  const renew = Effect.fn("KinFloor.renew")(
+    function* (input: {
+      readonly orgId: KinOrgId;
+      readonly agentId: KinAgentId;
+      readonly messageIds: ReadonlyArray<KinMessageId>;
+    }) {
+      if (input.messageIds.length === 0) return;
+      const expiresAt = (yield* Clock.currentTimeMillis) + FLOOR_GRANT_TTL_MS;
+      // A new human message closes the run, and a reply consumes the grant, so neither re-arms.
+      yield* sql`UPDATE kin_floor_grants SET expires_at = MAX(expires_at, ${expiresAt})
+      WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND consumed_at IS NULL
+        AND run_id IN (SELECT r.run_id FROM kin_floor_runs r
+          JOIN kin_chats c ON c.org_id = r.org_id AND c.chat_id = r.chat_id AND c.kind = 'direct'
+          WHERE r.org_id = ${input.orgId} AND r.state = 'open'
+            AND r.opened_by IN ${sql.in(input.messageIds)})`;
+    },
+    Effect.mapError(toPersistenceSqlError("KinFloor.renew")),
   );
 
   const noticeOnly = Effect.fn("KinFloor.noticeOnly")(
@@ -308,6 +336,6 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(toPersistenceSqlError("KinFloor.recordNotice")),
   );
-  return KinFloor.of({ open, authorize, noticeOnly, admitNotice, recordNotice });
+  return KinFloor.of({ open, renew, authorize, noticeOnly, admitNotice, recordNotice });
 });
 export const layer = Layer.effect(KinFloor, make);

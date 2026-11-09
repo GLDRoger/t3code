@@ -165,7 +165,9 @@ Events carry references, not bodies. The lead reads the message or payload throu
 | Executor finishes or a grant expires    | `action.resolved` | approvals spec                                            |
 | Stop switch turned off                  | `resume`          | this spec                                                 |
 
-`ChatWake` subscribes to every organization on `KinChatHub` and wakes mentioned leads, else the chat's first lead, as the floor manager does. Agent and system posts never wake a lead. Event ids derive from the message and lead, so a replay collapses. Posts made while the server was down never reach the hub, so on startup it re-enqueues human posts from the last 24 hours that came after the lead's last post in that chat.
+`ChatWake` subscribes to every organization on `KinChatHub` and wakes mentioned leads, else the chat's first lead, as the floor manager does. It covers direct chats only, since a lead can't reply in a group until CHAT-11. Agent and system posts never wake a lead. Event ids derive from the message and lead, so a replay collapses. Posts made while the server was down never reach the hub, so on startup it re-enqueues, per organization, human posts from the last 24 hours that came after the lead's last post in that chat. `subscribeAll` is server-only: a source guard in `ChatWake.test.ts` keeps it out of tools and transports.
+
+The floor grant from a post lasts five minutes, and a queued wake-up can start later (catch-up, the stop switch, budget deferral). So when the runner launches a wake-up, `KinFloor.renew` gives five more minutes to the lead's unused grant on each open direct-chat run that one of its claimed messages opened. It never issues a grant: a newer human message has closed that run, and a reply has used the grant.
 
 All producers call one entry point: `KinEventQueue.enqueue(event)`. Nothing else may start a lead session. Scheduled tasks in particular must not launch a T3 thread with a lead prompt; the triggers spec routes their fires into `enqueue`.
 

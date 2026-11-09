@@ -29,6 +29,7 @@ import * as ThreadManagementService from "../../orchestration-v2/ThreadManagemen
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import * as KinIdentity from "../chat/KinIdentity.ts";
+import * as Floor from "../floor/KinFloor.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as Routines from "../triggers/routines.ts";
@@ -113,6 +114,7 @@ const make = Effect.gen(function* () {
   const hooks = yield* Effect.serviceOption(KinWakeupHooks);
   const prompt = yield* KinLeadPrompt;
   const identity = yield* KinIdentity.KinIdentity;
+  const floor = yield* Floor.KinFloor;
   const registry = yield* KinLeadRegistry.KinLeadRegistry;
   const projects = yield* ProjectService.ProjectService;
   const launch = yield* ThreadLaunchService.ThreadLaunchService;
@@ -499,6 +501,16 @@ const make = Effect.gen(function* () {
                   yield* sql`SELECT 1 FROM kin_agents WHERE org_id = ${orgId} AND agent_id = ${agentId} AND retired_at IS NULL`;
                 if (active === undefined)
                   return yield* new KinWakeupError({ orgId, agentId, cause: "retired" });
+                // The post-time grant may have lapsed while these events waited to be claimed.
+                yield* floor.renew({
+                  orgId,
+                  agentId,
+                  messageIds: events.flatMap((event) =>
+                    event._tag === "chat.message" || event._tag === "widget.action"
+                      ? [event.messageId]
+                      : [],
+                  ),
+                });
                 yield* identity.registerAgentThread({ orgId, agentId, threadId });
                 yield* sql`UPDATE kin_leads SET thread_id = ${threadId} WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
                 yield* sql`UPDATE kin_wakeups SET thread_id = ${threadId}, model = ${modelSelection.model}
@@ -760,4 +772,4 @@ const make = Effect.gen(function* () {
   return WakeupRunner.of({ runOnce, recover, start });
 });
 
-export const layer = Layer.effect(WakeupRunner, make);
+export const layer = Layer.effect(WakeupRunner, make).pipe(Layer.provide(Floor.layer));

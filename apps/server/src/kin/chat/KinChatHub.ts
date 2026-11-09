@@ -80,8 +80,10 @@ const make = Effect.gen(function* () {
       );
     }),
     subscribeAll: Effect.gen(function* () {
-      const created = yield* PubSub.unbounded<KinChatHubEvent>();
-      all ??= created;
+      if (all === undefined) {
+        const created = yield* PubSub.unbounded<KinChatHubEvent>();
+        all ??= created;
+      }
       return Stream.fromEffectRepeat(PubSub.take(yield* PubSub.subscribe(all)));
     }).pipe(Effect.withSpan("KinChatHub.subscribeAll")),
     subscribeForViewer: Effect.fn("KinChatHub.subscribeForViewer")(function* (identity) {

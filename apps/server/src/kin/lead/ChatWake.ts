@@ -18,6 +18,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { forkParked } from "../../serverActivation.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
@@ -28,11 +29,12 @@ const decodeTap = Schema.decodeUnknownEffect(
 );
 // Matches the resume expiry: older unanswered messages are not worth a wake-up after downtime.
 const CATCH_UP_WINDOW = { hours: 24 } as const;
-const CATCH_UP_LIMIT = 200;
+const CATCH_UP_LIMIT_PER_ORG = 200;
 
 /**
  * Turns committed human chat posts and widget taps into `chat.message` and `widget.action`
  * events for the lead the floor manager would wake: mentioned leads, else the chat's lead.
+ * Direct chats only: a lead cannot reply in a group until CHAT-11 delivers group grants.
  */
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -47,10 +49,13 @@ const make = Effect.gen(function* () {
       const leads = yield* sql<{ agentId: string; memberId: string }>`
         SELECT l.agent_id AS "agentId", m.member_id AS "memberId" FROM kin_leads l
         JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id AND a.retired_at IS NULL
-        JOIN kin_chat_members m ON m.org_id = l.org_id AND m.chat_id = ${message.chatId}
+        JOIN kin_chats c ON c.org_id = l.org_id AND c.chat_id = ${message.chatId} AND c.kind = 'direct'
+        JOIN kin_chat_members m ON m.org_id = l.org_id AND m.chat_id = c.chat_id
           AND m.principal_kind = 'agent' AND m.agent_id = l.agent_id AND m.left_at IS NULL
         WHERE l.org_id = ${message.orgId}
-        ORDER BY CASE a.role WHEN 'lead' THEN 0 ELSE 1 END, m.joined_at, l.agent_id`;
+        ORDER BY CASE a.role WHEN 'lead' THEN 0 ELSE 1 END, m.joined_at, l.agent_id`.pipe(
+        Effect.mapError(toPersistenceSqlError("KinChatWake.leads")),
+      );
       const mentioned = leads.filter((lead) =>
         message.mentions.some((memberId) => memberId === lead.memberId),
       );
@@ -103,29 +108,49 @@ const make = Effect.gen(function* () {
   );
 
   // Messages posted while the server was down or Kin was off never reached the hub.
-  const catchUp = Effect.fn("KinChatWake.catchUp")(
-    function* () {
-      const since = DateTime.formatIso(DateTime.subtract(yield* DateTime.now, CATCH_UP_WINDOW));
-      const rows = yield* sql<{ orgId: string; messageId: string; createdAt: string }>`
-      SELECT DISTINCT m.org_id AS "orgId", m.message_id AS "messageId", m.created_at AS "createdAt"
+  const catchUpOrg = Effect.fn("KinChatWake.catchUpOrg")(
+    function* (orgId: KinOrgId, since: string) {
+      const rows = yield* sql<{ messageId: string }>`
+      SELECT DISTINCT m.message_id AS "messageId", m.created_at AS "createdAt"
       FROM kin_leads l
       JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id AND a.retired_at IS NULL
       JOIN kin_chat_members am ON am.org_id = l.org_id AND am.principal_kind = 'agent'
         AND am.agent_id = l.agent_id AND am.left_at IS NULL
-      JOIN kin_messages m ON m.org_id = am.org_id AND m.chat_id = am.chat_id
-      WHERE m.author_kind = 'human' AND m.status = 'posted' AND m.kind IN ('text', 'widget_action')
+      JOIN kin_chats c ON c.org_id = am.org_id AND c.chat_id = am.chat_id AND c.kind = 'direct'
+      JOIN kin_messages m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
+      WHERE l.org_id = ${orgId}
+        AND m.author_kind = 'human' AND m.status = 'posted' AND m.kind IN ('text', 'widget_action')
         AND m.created_at > ${since}
         AND m.seq > COALESCE((SELECT MAX(x.seq) FROM kin_messages x
           WHERE x.org_id = m.org_id AND x.chat_id = m.chat_id AND x.author_kind = 'agent'
             AND x.author_agent_id = l.agent_id), 0)
-      ORDER BY m.created_at DESC, m.message_id DESC LIMIT ${CATCH_UP_LIMIT}`;
+      ORDER BY m.created_at DESC, m.message_id DESC LIMIT ${CATCH_UP_LIMIT_PER_ORG}`.pipe(
+        Effect.mapError(toPersistenceSqlError("KinChatWake.catchUpOrg")),
+      );
       for (const row of rows) {
         const message = yield* repo.getMessage({
-          orgId: KinOrgId.make(row.orgId),
+          orgId,
           messageId: KinMessageId.make(row.messageId),
         });
         if (Option.isSome(message)) yield* wake(message.value);
       }
+    },
+    (effect, orgId) =>
+      effect.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logError("Kin chat wake-up catch-up failed", { orgId, cause }),
+        ),
+      ),
+  );
+  const catchUp = Effect.fn("KinChatWake.catchUp")(
+    function* () {
+      const since = DateTime.formatIso(DateTime.subtract(yield* DateTime.now, CATCH_UP_WINDOW));
+      const orgs = yield* sql<{ orgId: string }>`
+        SELECT DISTINCT org_id AS "orgId" FROM kin_leads ORDER BY org_id`.pipe(
+        Effect.mapError(toPersistenceSqlError("KinChatWake.catchUp")),
+      );
+      // Per organization, so one busy organization cannot use up another's catch-up.
+      for (const org of orgs) yield* catchUpOrg(KinOrgId.make(org.orgId), since);
     },
     Effect.catchCause((cause) => Effect.logError("Kin chat wake-up catch-up failed", { cause })),
   );
