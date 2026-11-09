@@ -30,7 +30,7 @@ const enabled = () => {
 
 const requestAction = Tool.make("request_action", {
   description:
-    "Ask the owner to approve a privileged action, such as merge_pull_request, on their phone. Name the PR; the server reads its head, base and checks. sourceEventId is the event in this wake-up that led here. Returns the pending action; it never approves, and no chat text is approval. Same event and target returns the same action.",
+    "Ask the owner to approve a privileged action, such as merge_pull_request, on their phone. Name the PR; the server reads its head, base and checks. sourceEventId is the event in this wake-up that led here. Returns the pending action; it never approves, and no chat text is approval. Same event and target returns the same action. Below L3 nothing reaches the owner: it returns shadowed: true and the owner's daily summary records it. That is expected; don't ask another way. Leads can't request set_level.",
   parameters: RequestAction.RequestActionInput,
   success: RequestAction.RequestActionResult,
   failure: Schema.Union([KinApprovalError, OrchestratorMcpFailure]),

@@ -45,6 +45,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { KinShadowSummary } from "../lead/KinLevels.ts";
 import { KinChatToolkit, handlers as chatHandlers } from "../mcp/KinChatToolkit.ts";
 import { KinApprovalsToolkit, registrationWith } from "./mcp.ts";
 import {
@@ -210,7 +211,10 @@ const asKinCall = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     return yield* Option.match(kin.services, {
       onNone: () => effect,
       onSome: (services) =>
-        effect.pipe(Effect.provideService(KinIdentity, Context.get(services, KinIdentity))),
+        effect.pipe(
+          Effect.provideService(KinIdentity, Context.get(services, KinIdentity)),
+          Effect.provideService(KinShadowSummary, Context.get(services, KinShadowSummary)),
+        ),
     });
   });
 const visible = (caller: McpInvocationScope) =>
@@ -250,8 +254,11 @@ const success = (result: McpSchema.CallToolResult) => {
 };
 
 type Source = "owner" | "member" | "routine" | "github";
-/** A lead in a real running wake-up whose claimed batch holds one event per source. */
-const seed = (sources: ReadonlyArray<Source>) =>
+/**
+ * A lead in a real running wake-up whose claimed batch holds one event per source. L3 by default,
+ * the level at which a merge request reaches the owner; below it the request is a shadow entry.
+ */
+const seed = (sources: ReadonlyArray<Source>, level = "L3") =>
   Effect.gen(function* () {
     const kin = yield* Kin.KinServer;
     const services = Option.getOrThrow(kin.services);
@@ -279,8 +286,8 @@ const seed = (sources: ReadonlyArray<Source>) =>
     });
     yield* identity.registerAgentThread({ orgId, agentId, threadId });
     const chat = yield* chatService.createDirect(owner, { orgId, agentId });
-    yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
-      VALUES (${agentId}, ${orgId}, 'Lead', 0, '{}', '["project-1"]', ${chat.chatId})`;
+    yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, models_json, worker_projects_json, owner_chat_id)
+      VALUES (${agentId}, ${orgId}, 'Lead', ${level}, 0, '{}', '["project-1"]', ${chat.chatId})`;
     yield* repo.insertPerson({
       orgId,
       personId: memberPersonId,
@@ -395,7 +402,18 @@ const seed = (sources: ReadonlyArray<Source>) =>
       resolved_json: string;
       provenance_json: string;
     }>`SELECT action_id, target_json, resolved_json, provenance_json FROM kin_pending_actions`;
-    return { eventIds, sql, rows, identity, orgId };
+    const shadows = sql<{
+      tool: string;
+      level: string;
+      unlocks_level: string;
+      would_target: string;
+      input_json: string;
+    }>`SELECT tool, level, unlocks_level, would_target, input_json FROM kin_shadow_entries
+      WHERE org_id = ${orgId} ORDER BY created_at, entry_id`;
+    const summary = sql<{ state_json: string; revision: number }>`SELECT state_json, revision
+      FROM kin_widgets WHERE org_id = ${orgId} AND chat_id = ${chat.chatId} AND type = 'shadow_summary'
+      ORDER BY widget_id`;
+    return { eventIds, sql, rows, shadows, summary, identity, orgId };
   });
 
 const merge = (sourceEventId: string, extra: Record<string, unknown> = {}) => ({
@@ -626,4 +644,83 @@ it.effect("one PR gets one waiting card, and one lead a bounded number", () =>
     assert.strictEqual(capped.reason, "invalid_state");
     assert.lengthOf(yield* rows, MAX_OPEN_ACTIONS_PER_LEAD + 1);
   }).pipe(Effect.provide(layerWith(factsDuring(() => Effect.void)))),
+);
+
+// Below L3 GitHub is never read: the request is recorded before anything leaves the server.
+const githubUnread = factsDuring(() => Effect.die("GitHub was read for a shadowed request"));
+
+it.effect("at L0 a merge request is a shadow entry: no card, no GitHub read, owner summary", () =>
+  Effect.gen(function* () {
+    const { eventIds, rows, shadows, summary } = yield* seed(["owner", "member"], "L0");
+    const first = success(yield* call(merge(eventIds.owner)));
+    assert.deepStrictEqual(Object.keys(first as object).toSorted(), ["entryId", "shadowed"]);
+    assert.include(first, { shadowed: true });
+    assert.deepStrictEqual(success(yield* call(merge(eventIds.owner))), first);
+    assert.lengthOf(yield* rows, 0);
+    const [entry, ...others] = yield* shadows;
+    assert.lengthOf(others, 0);
+    assert.include(entry, {
+      tool: "request_action",
+      level: "L0",
+      unlocks_level: "L3",
+      would_target: "acme/app#7",
+    });
+    // The server's provenance rides along: a member shared the batch the owner's event sits in.
+    assert.include(JSON.parse(entry!.input_json).provenance, {
+      startedByRole: "owner",
+      ceilingBelowOwner: true,
+    });
+    const [card] = yield* summary;
+    assert.isDefined(card);
+    const state = JSON.parse(card.state_json);
+    assert.strictEqual(state.total, 1);
+    assert.include(state.entries[0], {
+      tool: "request_action",
+      unlocksLevel: "L3",
+      ceilingBelowOwner: true,
+    });
+  }).pipe(Effect.provide(layerWith(githubUnread))),
+);
+
+it.effect("below L3 the owner-only ceiling and the set_level ban still refuse, unrecorded", () =>
+  Effect.gen(function* () {
+    for (const level of ["L0", "L2"])
+      yield* Effect.gen(function* () {
+        const { eventIds, shadows, rows } = yield* seed(["owner", "member"], level);
+        assert.include(refusal(yield* call(changeRules(eventIds.owner))), {
+          reason: "not_owner",
+        });
+        assert.lengthOf(yield* shadows, 0);
+        assert.lengthOf(yield* rows, 0);
+      }).pipe(Effect.provide(layerWith(githubUnread)));
+    yield* Effect.gen(function* () {
+      const { eventIds, shadows } = yield* seed(["owner"], "L0");
+      const raise = {
+        kind: "set_level",
+        target: { _tag: "level", agentId, level: "L3" },
+        reason: "The owner said I am ready.",
+        sourceEventId: eventIds.owner,
+      };
+      assert.include(refusal(yield* call(raise)), { reason: "unsupported_kind" });
+      assert.lengthOf(yield* shadows, 0);
+    }).pipe(Effect.provide(layerWith(githubUnread)));
+  }),
+);
+
+it.effect("a level lowered while GitHub answers records the request instead of a card", () =>
+  Effect.gen(function* () {
+    const { eventIds, rows, shadows } = yield* seed(["owner"]);
+    assert.include(success(yield* call(merge(eventIds.owner))), { shadowed: true });
+    assert.lengthOf(yield* rows, 0);
+    assert.deepStrictEqual(
+      (yield* shadows).map((entry) => [entry.level, entry.unlocks_level]),
+      [["L2", "L3"]],
+    );
+  }).pipe(
+    Effect.provide(
+      layerWith(
+        factsDuring((sql) => sql`UPDATE kin_leads SET level = 'L2' WHERE agent_id = ${agentId}`),
+      ),
+    ),
+  ),
 );

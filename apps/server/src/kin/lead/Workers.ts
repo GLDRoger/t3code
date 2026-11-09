@@ -42,6 +42,7 @@ import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as Memory from "../memory/Memory.ts";
 import { KinBudget } from "./KinBudget.ts";
+import * as KinLevels from "./KinLevels.ts";
 import { isOrgPaused, STOP_REASON } from "./orgState.ts";
 import { resolveLead } from "./LeadMemory.ts";
 import { quote } from "./LeadPrompt.ts";
@@ -143,7 +144,6 @@ const guarded =
   <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(Effect.catch((error) => Effect.flatMap(toolFailure(label)(error), Effect.fail)));
 const LeadRow = Schema.Struct({
-  level: Schema.Literals(["L0", "L1", "L2", "L3"]),
   models: Schema.fromJsonString(Schema.Struct({ strong: ModelSelection, cheap: ModelSelection })),
   projects: Schema.fromJsonString(Schema.Array(ProjectId)),
   ownerChatId: KinChatId,
@@ -196,6 +196,7 @@ const make = Effect.gen(function* () {
   const providers = yield* ProviderInstanceRegistry;
   const environment = yield* ServerEnvironment;
   const orchestrator = yield* OrchestratorV2;
+  const summary = yield* KinLevels.KinShadowSummary;
   const digest = yield* Digest.Digest;
   const hash = Effect.fn("KinWorkers.hash")((value: unknown) =>
     digest
@@ -208,7 +209,7 @@ const make = Effect.gen(function* () {
       Effect.provideService(SqlClient.SqlClient, sql),
     );
   const leadConfig = Effect.fn("KinWorkers.leadConfig")(function* (ctx: Lead) {
-    const [row] = yield* sql`SELECT level, models_json AS models, worker_projects_json AS projects,
+    const [row] = yield* sql`SELECT models_json AS models, worker_projects_json AS projects,
       owner_chat_id AS "ownerChatId" FROM kin_leads
       WHERE org_id = ${ctx.orgId} AND agent_id = ${ctx.agentId} ORDER BY agent_id`;
     if (row === undefined) return yield* denied();
@@ -229,7 +230,12 @@ const make = Effect.gen(function* () {
     if (row === undefined) return yield* missing();
     return yield* decodeWorker(row);
   });
-  // Shadow levels record what the lead would have done (LEAD-8 renders the summary).
+  const levelOf = (ctx: Lead) =>
+    KinLevels.effectiveLevel(ctx).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.catchTags({ KinLevelRefused: () => Effect.fail(denied()) }),
+    );
+  // Below L2 the lead's worker calls become shadow entries for the owner's daily summary.
   const shadow = Effect.fn("KinWorkers.shadow")(function* (
     ctx: Lead,
     level: KinLevel,
@@ -237,20 +243,21 @@ const make = Effect.gen(function* () {
     input: unknown,
     target: string,
   ) {
-    const entryId = `shadow-${(yield* hash({ wakeupId: ctx.wakeupId, tool, input })).slice(0, 32)}`;
-    const json = yield* encodeJson(input);
-    const inserted = yield* sql`INSERT INTO kin_shadow_entries
-      (entry_id, org_id, agent_id, wakeup_id, level, unlocks_level, tool, input_json, would_target, created_at)
-      VALUES (${entryId}, ${ctx.orgId}, ${ctx.agentId}, ${ctx.wakeupId}, ${level}, 'L2', ${tool}, ${json}, ${target},
-        ${yield* Clock.currentTimeMillis}) ON CONFLICT DO NOTHING RETURNING entry_id`;
-    if (inserted.length === 0) {
-      const [stored] = yield* sql<{
-        json: string;
-      }>`SELECT input_json AS json FROM kin_shadow_entries
-        WHERE org_id = ${ctx.orgId} AND entry_id = ${entryId} ORDER BY entry_id`;
-      if (stored?.json !== json) return yield* denied();
-    }
-    return { shadowed: true as const, entryId };
+    const entry = yield* KinLevels.recordShadow({
+      orgId: ctx.orgId,
+      agentId: ctx.agentId,
+      threadId: ctx.threadId,
+      level,
+      unlocksLevel: "L2",
+      tool,
+      input,
+      wouldTarget: target,
+    }).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.catchTags({ KinLevelRefused: () => Effect.fail(denied()) }),
+    );
+    if (entry.created) yield* summary.refresh({ orgId: ctx.orgId, agentId: ctx.agentId });
+    return { shadowed: true as const, entryId: entry.entryId };
   });
   const admit = Effect.fn("KinWorkers.admit")(function* (orgId: KinOrgId) {
     if (!(yield* WorkerLaunchGate))
@@ -346,7 +353,7 @@ const make = Effect.gen(function* () {
           return yield* denied("Review workers need reviewOf, and only review workers take it.");
         const author =
           input.reviewOf === undefined ? undefined : yield* worker(ctx.orgId, input.reviewOf);
-        return { config, event, author };
+        return { config, event, author, level: yield* levelOf(ctx) };
       }),
     );
     const modelSelection = yield* selection(input.model, plan.config.models);
@@ -365,8 +372,8 @@ const make = Effect.gen(function* () {
       if (reviewRefs.length === 0)
         return yield* denied("The author worker has not reported a PR or commit to review yet.");
     }
-    if (plan.config.level === "L0" || plan.config.level === "L1")
-      return yield* shadow(ctx, plan.config.level, "kin_delegate", input, input.projectId);
+    if (!KinLevels.atLeast(plan.level, "L2"))
+      return yield* shadow(ctx, plan.level, "kin_delegate", input, input.projectId);
     yield* admit(ctx.orgId);
     const items =
       reviewRefs !== undefined
@@ -495,11 +502,11 @@ const make = Effect.gen(function* () {
           return yield* denied(
             "Review workers take no follow-ups. Start a new review with kin_delegate.",
           );
-        return { config, worker: stored };
+        return { config, worker: stored, level: yield* levelOf(ctx) };
       }),
     );
-    if (plan.config.level === "L0" || plan.config.level === "L1")
-      return yield* shadow(ctx, plan.config.level, "kin_follow_up", input, input.workerId);
+    if (!KinLevels.atLeast(plan.level, "L2"))
+      return yield* shadow(ctx, plan.level, "kin_follow_up", input, input.workerId);
     yield* admit(ctx.orgId);
     const key = (yield* hash({ wakeupId: ctx.wakeupId, input })).slice(0, 32);
     const projection = yield* threads

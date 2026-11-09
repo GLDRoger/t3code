@@ -142,7 +142,8 @@ const errorOf = (result: McpSchema.CallToolResult) => {
   const error: unknown = JSON.parse(text);
   return error;
 };
-const seed = Effect.fn("test.seed")(function* (notice = false) {
+// L1 by default: these tests post for real. An L0 lead's posts become shadow entries.
+const seed = Effect.fn("test.seed")(function* (notice = false, level = "L1") {
   const kin = yield* Kin.KinServer;
   const services = Option.getOrThrow(kin.services);
   const identity = Context.get(services, KinIdentity);
@@ -162,8 +163,8 @@ const seed = Effect.fn("test.seed")(function* (notice = false) {
   );
   yield* identity.registerAgentThread({ orgId: person.orgId, agentId, threadId });
   const chat = yield* chatService.createDirect(person, { orgId: person.orgId, agentId });
-  yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
-    VALUES (${agentId}, ${person.orgId}, 'Lead', 0, '{}', '[]', ${chat.chatId})`;
+  yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, models_json, worker_projects_json, owner_chat_id)
+    VALUES (${agentId}, ${person.orgId}, 'Lead', ${level}, 0, '{}', '[]', ${chat.chatId})`;
   const prompt = notice
     ? undefined
     : yield* chatService.send(person, {
@@ -343,6 +344,106 @@ it.effect("hides foreign chats with the same not_found error", () =>
         { reason: "not_found" },
       );
     }
+  }).pipe(Effect.provide(layer)),
+);
+
+const resultOf = (result: McpSchema.CallToolResult) => {
+  assert.isFalse(result.isError);
+  const text = result.content.find((item) => item.type === "text")?.text;
+  assert.isDefined(text);
+  const value: unknown = JSON.parse(text);
+  return value;
+};
+
+// Lead spec acceptance: "at L0, kin_chat_post to a group returns shadowed: true, posts nothing,
+// and adds a shadow entry; the owner's summary widget updates."
+it.effect("at L0 kin_chat_post posts nothing, records a shadow entry and updates the summary", () =>
+  Effect.gen(function* () {
+    const { chat, person, chatService, sql } = yield* seed(false, "L0");
+    const at = "1970-01-01T00:00:00.000Z";
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, team_id, direct_key, last_seq, last_message_at, created_at, archived_at) VALUES ('group-1', ${person.orgId}, 'team_group', 'Team', NULL, NULL, 0, NULL, ${at}, NULL)`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at) VALUES ('group-lead', ${person.orgId}, 'group-1', 'agent', ${agentId}, 'member', ${at})`;
+    const agentMessages = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_messages
+      WHERE org_id = ${person.orgId} AND author_kind = 'agent' ORDER BY n`;
+    const entries = sql<{ tool: string; level: string; unlocks: string; target: string }>`
+      SELECT tool, level, unlocks_level AS unlocks, would_target AS target FROM kin_shadow_entries
+      WHERE org_id = ${person.orgId} ORDER BY created_at, entry_id`;
+    const card = sql<{ chatId: string; revision: number; state: string }>`
+      SELECT chat_id AS "chatId", revision, state_json AS state FROM kin_widgets
+      WHERE org_id = ${person.orgId} AND type = 'shadow_summary' ORDER BY widget_id`;
+    const group = {
+      chatId: "group-1",
+      body: "Rate limiting moves to Friday.",
+      intent: "decision",
+      clientMessageId: "group-decision",
+    };
+    const first = resultOf(yield* call("kin_chat_post", group));
+    assert.deepStrictEqual(Object.keys(first as object).toSorted(), ["entryId", "shadowed"]);
+    assert.include(first, { shadowed: true });
+    assert.deepStrictEqual(resultOf(yield* call("kin_chat_post", group)), first);
+    // Like a real post, a changed retry under the same clientMessageId is refused.
+    assert.include(
+      errorOf(yield* call("kin_chat_post", { ...group, body: "Rate limiting is cancelled." })),
+      { reason: "not_allowed" },
+    );
+    const [summary] = yield* card;
+    assert.strictEqual(summary?.chatId, chat.chatId);
+    assert.strictEqual(summary?.revision, 1);
+    yield* TestClock.adjust("1 second");
+    // L0 writes only to the owner's summary: the direct chat with the owner is shadowed too.
+    const direct = { chatId: chat.chatId, body: "Done.", intent: "answer", clientMessageId: "d-1" };
+    assert.include(resultOf(yield* call("kin_chat_post", direct)), { shadowed: true });
+    for (const chatId of ["missing", "foreign-chat"])
+      assert.include(
+        errorOf(yield* call("kin_chat_post", { ...direct, chatId, clientMessageId: chatId })),
+        { reason: "not_found" },
+      );
+    assert.deepStrictEqual(yield* agentMessages, [{ n: 0 }]);
+    assert.deepStrictEqual(yield* entries, [
+      { tool: "kin_chat_post", level: "L0", unlocks: "L1", target: "group-1" },
+      { tool: "kin_chat_post", level: "L0", unlocks: "L1", target: chat.chatId },
+    ]);
+    const [updated] = yield* card;
+    assert.strictEqual(updated?.revision, 2);
+    const state = JSON.parse(updated!.state);
+    assert.include(state, { agentId, title: "What Lead would have done today", total: 2 });
+    assert.deepStrictEqual(
+      state.entries.map((entry: { preview: string; wouldTarget: string }) => [
+        entry.wouldTarget,
+        entry.preview,
+      ]),
+      [
+        ["group-1", "Rate limiting moves to Friday."],
+        [chat.chatId, "Done."],
+      ],
+    );
+    // The card is server-drawn: no client can create or overwrite one.
+    const forged = yield* chatService
+      .upsertWidget(person, { chatId: chat.chatId, type: "shadow_summary", state })
+      .pipe(Effect.flip);
+    assert.include(forged, { reason: "invalid_state" });
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a chat's own level caps the lead's: min(lead, chat), from stored rows only", () =>
+  Effect.gen(function* () {
+    const { chat, person, sql } = yield* seed(false, "L1");
+    const post = (clientMessageId: string) =>
+      call("kin_chat_post", {
+        chatId: chat.chatId,
+        body: "Answer",
+        intent: "answer",
+        clientMessageId,
+      }).pipe(Effect.map(resultOf));
+    yield* sql`INSERT INTO kin_chat_levels (org_id, agent_id, chat_id, level, level_since) VALUES (${person.orgId}, ${agentId}, ${chat.chatId}, 'L0', 0)`;
+    assert.include(yield* post("capped"), { shadowed: true });
+    // A chat level above the lead's never raises it.
+    yield* sql`UPDATE kin_leads SET level = 'L0' WHERE agent_id = ${agentId}`;
+    yield* sql`UPDATE kin_chat_levels SET level = 'L3' WHERE agent_id = ${agentId}`;
+    assert.include(yield* post("still-l0"), { shadowed: true });
+    yield* sql`UPDATE kin_leads SET level = 'L1' WHERE agent_id = ${agentId}`;
+    yield* sql`DELETE FROM kin_chat_levels WHERE agent_id = ${agentId}`;
+    assert.include(yield* post("live"), { authorRole: "member", body: "Answer" });
   }).pipe(Effect.provide(layer)),
 );
 
