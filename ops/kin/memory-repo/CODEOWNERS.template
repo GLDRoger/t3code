@@ -1,0 +1,10 @@
+# Install as .github/CODEOWNERS in the memory repo and replace @OWNER with the owner's GitHub login.
+# Deny by default: the owner reviews every path, including a root CLAUDE.md, AGENTS.md, .claude/,
+# .mcp.json or .codex/ that the lead's read checkout would load. The last matching line wins, so the
+# owner-less lines below free only the paths Kin writes alone. memory-check's lint enforces this shape.
+* @OWNER
+/commitments/
+/deferrals/
+/claims/
+/journal/
+/INDEX.md
