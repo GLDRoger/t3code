@@ -10,6 +10,7 @@ import {
   KinOrgState,
 } from "./kinLead.ts";
 import { KinApprovalRpcs, KIN_APPROVAL_RPC_SCOPES } from "./kinApprovals.ts";
+import { KinLevelRpcs, KIN_LEVEL_RPC_SCOPES } from "./kinLevels.ts";
 import { KinChatError, KinChatRpcs, KIN_CHAT_RPC_SCOPES } from "./kinChat.ts";
 import { KinPushRpcs, KIN_PUSH_RPC_SCOPES } from "./kinPush.ts";
 import {
@@ -66,12 +67,14 @@ export const KinChatAndBudgetRpcs = [...KinChatRpcs, ...KinBudgetRpcs, ...KinOrg
 export const KinRpcs = [
   ...KinChatAndBudgetRpcs,
   ...KinApprovalRpcs,
+  ...KinLevelRpcs,
   ...KinGithubWebhookRpcs,
   ...KinPushRpcs,
 ] as const;
 export const KIN_RPC_SCOPES = {
   ...KIN_CHAT_RPC_SCOPES,
   ...KIN_APPROVAL_RPC_SCOPES,
+  ...KIN_LEVEL_RPC_SCOPES,
   ...KIN_PUSH_RPC_SCOPES,
   "kin.budget.get": AuthOrchestrationReadScope,
   "kin.budget.set": AuthSettingsWriteScope,
@@ -111,6 +114,12 @@ export const KIN_RPC_AGGREGATES = {
   "kin.approvals.revokeKey": "kin-approvals",
   "kin.audit.list": "kin-approvals",
   "kin.audit.verify": "kin-approvals",
+  "kin.levels.get": "kin-levels",
+  "kin.levels.review": "kin-levels",
+  "kin.levels.lower": "kin-levels",
+  "kin.levels.raise": "kin-levels",
+  "kin.levels.deferPromotion": "kin-levels",
+  "kin.levels.shadowMemory": "kin-levels",
   "kin.push.registerDevice": "kin-push",
   "kin.push.unregisterDevice": "kin-push",
   "kin.push.watch": "kin-push",

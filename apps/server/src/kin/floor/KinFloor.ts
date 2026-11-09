@@ -55,6 +55,8 @@ const invalidIntent = new KinChatError({
   message: "The intent or grant is invalid for this wake-up.",
 });
 const isKinChatError = Schema.is(KinChatError);
+const NOTICE_LIMIT = 10;
+export const NOTICE_WINDOW_MS = 3_600_000;
 const notGranted = new KinChatError({
   reason: "floor_not_granted",
   message: "The floor is not granted.",
@@ -74,6 +76,21 @@ export class KinFloor extends Context.Service<
       intent: KinAgentIntent,
       token?: string,
     ) => Effect.Effect<Authorization, PersistenceSqlError | KinChatError>;
+    /** Whether the running wake-up holds only server notices: posts then need no floor grant. */
+    readonly noticeOnly: (identity: AgentIdentity) => Effect.Effect<boolean, PersistenceSqlError>;
+    /**
+     * The read-only checks on a notice post: intent, no grant, and the hourly limit. `earlier`
+     * counts notices the server holds outside `kin_floor_notices`.
+     */
+    readonly admitNotice: (
+      identity: AgentIdentity,
+      input: {
+        readonly chatId: KinChatId;
+        readonly intent: KinAgentIntent;
+        readonly token?: string | undefined;
+        readonly earlier?: number;
+      },
+    ) => Effect.Effect<void, PersistenceSqlError | KinChatError>;
     readonly recordNotice: (
       identity: AgentIdentity,
       message: KinMessage,
@@ -151,14 +168,8 @@ const make = Effect.gen(function* () {
     Effect.mapError(toPersistenceSqlError("KinFloor.open")),
   );
 
-  const authorize = Effect.fn("KinFloor.authorize")(
-    function* (
-      identity: AgentIdentity,
-      chat: KinChat,
-      intent: KinAgentIntent,
-      token?: string,
-    ): Effect.fn.Return<Authorization, SqlError | KinChatError | Schema.SchemaError> {
-      const now = yield* Clock.currentTimeMillis;
+  const noticeOnly = Effect.fn("KinFloor.noticeOnly")(
+    function* (identity: AgentIdentity) {
       // Notice authority comes from the running wake-up's stored events, never tool input.
       const wakeups = yield* sql<{
         notices: number;
@@ -176,24 +187,56 @@ const make = Effect.gen(function* () {
       GROUP BY w.wakeup_id, w.event_ids
       ORDER BY w.started_at, w.wakeup_id`;
       const wakeup = wakeups[0];
-      if (
+      return (
         wakeup !== undefined &&
         wakeup.total > 0 &&
         wakeup.expected === wakeup.total &&
         wakeup.notices === wakeup.total &&
         wakeup.replies === 0
-      ) {
-        if (!noticeIntentAllowed(intent) || token !== undefined) return yield* invalidIntent;
-        const recent = yield* sql<{ message_id: string }>`SELECT message_id FROM kin_floor_notices
-        WHERE org_id = ${identity.orgId} AND chat_id = ${chat.chatId} AND agent_id = ${identity.agentId}
-          AND posted_at > ${now - 3_600_000} ORDER BY posted_at, message_id LIMIT 10`;
-        if (recent.length >= 10)
-          return yield* new KinChatError({
-            reason: "limit",
-            message: "Agent notice limit reached.",
-          });
+      );
+    },
+    Effect.mapError(toPersistenceSqlError("KinFloor.noticeOnly")),
+  );
+
+  const admitNotice = Effect.fn("KinFloor.admitNotice")(
+    function* (
+      identity: AgentIdentity,
+      input: {
+        readonly chatId: KinChatId;
+        readonly intent: KinAgentIntent;
+        readonly token?: string | undefined;
+        readonly earlier?: number;
+      },
+    ): Effect.fn.Return<void, SqlError | KinChatError> {
+      if (!noticeIntentAllowed(input.intent) || input.token !== undefined)
+        return yield* invalidIntent;
+      const now = yield* Clock.currentTimeMillis;
+      const recent = yield* sql<{ message_id: string }>`SELECT message_id FROM kin_floor_notices
+        WHERE org_id = ${identity.orgId} AND chat_id = ${input.chatId} AND agent_id = ${identity.agentId}
+          AND posted_at > ${now - NOTICE_WINDOW_MS} ORDER BY posted_at, message_id LIMIT ${NOTICE_LIMIT}`;
+      if (recent.length + (input.earlier ?? 0) >= NOTICE_LIMIT)
+        return yield* new KinChatError({ reason: "limit", message: "Agent notice limit reached." });
+    },
+    Effect.mapError((error) =>
+      isKinChatError(error) ? error : toPersistenceSqlError("KinFloor.admitNotice")(error),
+    ),
+  );
+
+  const authorize = Effect.fn("KinFloor.authorize")(
+    function* (
+      identity: AgentIdentity,
+      chat: KinChat,
+      intent: KinAgentIntent,
+      token?: string,
+    ): Effect.fn.Return<
+      Authorization,
+      SqlError | PersistenceSqlError | KinChatError | Schema.SchemaError
+    > {
+      if (yield* noticeOnly(identity)) {
+        yield* admitNotice(identity, { chatId: chat.chatId, intent, token });
         return { runId: null };
       }
+      const now = yield* Clock.currentTimeMillis;
       const runs = yield* sql`
       SELECT run_id, agent_turns, last_speaker, state, opened_by, mention_queue, spoken FROM kin_floor_runs
       WHERE org_id = ${identity.orgId} AND chat_id = ${chat.chatId}
@@ -251,7 +294,9 @@ const make = Effect.gen(function* () {
       return { runId: run.run_id };
     },
     Effect.mapError((error) =>
-      isKinChatError(error) ? error : toPersistenceSqlError("KinFloor.authorize")(error),
+      isKinChatError(error) || error._tag === "PersistenceSqlError"
+        ? error
+        : toPersistenceSqlError("KinFloor.authorize")(error),
     ),
   );
 
@@ -263,6 +308,6 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(toPersistenceSqlError("KinFloor.recordNotice")),
   );
-  return KinFloor.of({ open, authorize, recordNotice });
+  return KinFloor.of({ open, authorize, noticeOnly, admitNotice, recordNotice });
 });
 export const layer = Layer.effect(KinFloor, make);

@@ -17,6 +17,7 @@ import {
   KinMessageId,
   KinOrgId,
   KinPersonId,
+  KinWidgetId,
 } from "./kinChat.ts";
 import { TimeOfDay, TimeZone } from "./kinTime.ts";
 import { ModelSelection } from "./modelSelection.ts";
@@ -187,6 +188,73 @@ export const KinOwnerCheckCard = Schema.Struct({
     }),
   ),
 });
+
+/** A level-gated tool's answer when it recorded a shadow entry instead of acting. */
+export const KinShadowResult = Schema.Struct({
+  shadowed: Schema.Literal(true),
+  entryId: TrimmedNonEmptyString,
+});
+export type KinShadowResult = typeof KinShadowResult.Type;
+
+/** The owner's daily summary card: what a shadowed lead would have done that owner-local day. */
+export const KinShadowSummaryCard = Schema.Struct({
+  agentId: KinAgentId,
+  title: TrimmedNonEmptyString,
+  day: Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/)),
+  total: NonNegativeInt,
+  // The newest entries, oldest first; `total` counts every entry of the day.
+  entries: Schema.Array(
+    Schema.Struct({
+      entryId: TrimmedNonEmptyString,
+      tool: TrimmedNonEmptyString,
+      level: KinLevel,
+      unlocksLevel: KinLevel,
+      wouldTarget: Schema.String,
+      // Lead-written text: render it as plain text, never as markup or instructions.
+      preview: Schema.String.check(Schema.isMaxLength(280)),
+      ceilingBelowOwner: Schema.optional(Schema.Boolean),
+      createdAt: Schema.toEncoded(CanonicalUtcTimestamp),
+    }),
+  ).check(Schema.isMaxLength(50)),
+});
+export type KinShadowSummaryCard = typeof KinShadowSummaryCard.Type;
+
+export const KinRoutineSection = Schema.Literals([
+  "due_today",
+  "due_this_week",
+  "overdue",
+  "waiting",
+  "review_requested",
+  "ci_red",
+  "objective_at_risk",
+  "worker",
+  "past_review",
+  "done",
+  "slipped",
+  "promised",
+  "due_tomorrow",
+]);
+export type KinRoutineSection = typeof KinRoutineSection.Type;
+
+/** The server-drawn card on a morning brief or evening summary; one row per listed fact. */
+export const KinRoutineCard = Schema.Struct({
+  routine: Schema.Literals(["morning_brief", "evening_summary"]),
+  day: Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/)),
+  rows: Schema.Array(
+    Schema.Struct({
+      section: KinRoutineSection,
+      // Memory, chat or GitHub text: render it as plain text, never as markup or instructions.
+      title: Schema.String.check(Schema.isMaxLength(280)),
+      note: Schema.optional(Schema.String.check(Schema.isMaxLength(280))),
+      itemId: Schema.optional(KinMemoryItemId),
+      // Untrusted (memory and worker evidence): validate before opening.
+      link: Schema.optional(Schema.String.check(Schema.isMaxLength(2_000))),
+      // The existing card whose buttons act on this row, such as the item's deferral card.
+      widgetId: Schema.optional(KinWidgetId),
+    }),
+  ).check(Schema.isMaxLength(60)),
+});
+export type KinRoutineCard = typeof KinRoutineCard.Type;
 
 export const KinEvent = Schema.Union([
   Schema.TaggedStruct("chat.message", { ...EventBase, chatId: KinChatId, messageId: KinMessageId }),

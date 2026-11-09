@@ -14,6 +14,7 @@ import * as KinLead from "../lead/layer.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import { KinServer } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { KinShadowSummary } from "../lead/KinLevels.ts";
 import { KinChatToolkit, handlers } from "./KinChatToolkit.ts";
 import * as KinApprovalsMcp from "../approvals/mcp.ts";
 import * as KinIssuedTokens from "./KinIssuedTokens.ts";
@@ -58,6 +59,8 @@ const auth = HttpRouter.middleware<{ provides: McpInvocationContext | KinServer 
         Effect.provideService(McpInvocationContext, scope),
         Effect.provideService(KinServer, kin),
         Effect.provideService(KinIdentity, identity),
+        // request_action refreshes the owner's shadow summary without importing the chat service.
+        Effect.provideService(KinShadowSummary, Context.get(kin.services.value, KinShadowSummary)),
       );
     }) satisfies Auth;
   }),
