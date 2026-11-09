@@ -2,6 +2,7 @@ import { KinChatError, type EnvironmentId, type KinWidget } from "@t3tools/contr
 import { describe, expect, it } from "vite-plus/test";
 
 import { kinCardView } from "./kinCardPresentation";
+import { kinChoiceAnswerText, kinChoicePhase } from "./kinChoicePresentation";
 import { KIN_SEND_FAILED_TEXT } from "./kinDeferralPresentation";
 import {
   kinLevelsFailureText,
@@ -192,6 +193,67 @@ describe("kinCardView", () => {
     ]);
     expect(view.accessibilityLabel).toBe(
       "Task: Fix the payments test. Working. GPT-6.1 Sol. PR 212. PR 9 · github.com.evil.example. Opens the thread.",
+    );
+  });
+});
+
+describe("choice cards", () => {
+  const posted = Date.parse("2026-11-08T09:00:00.000Z");
+  const choiceState = (answer: unknown = null) => ({
+    question: "Ship   today?",
+    detail: null,
+    options: [
+      { optionId: "option-1", label: "Ship it", kind: "yes" },
+      { optionId: "option-2", label: "Wait", kind: "no" },
+    ],
+    answer,
+  });
+  const choice = (overrides: Record<string, unknown> = {}) => {
+    const view = kinCardView(
+      widget({ type: "choice", state: choiceState(), ...overrides }),
+      HOST,
+      known(),
+    );
+    if (view.kind !== "choice") throw new Error(`expected a choice card, got ${view.kind}`);
+    return view.choice;
+  };
+
+  it("takes taps until it is answered, closed or a day old", () => {
+    const open = choice();
+    expect(open.question).toBe("Ship today?");
+    expect(open.options.map((option) => option.label)).toEqual(["Ship it", "Wait"]);
+    expect(kinChoicePhase(open, posted + 60_000)).toBe("open");
+    expect(kinChoicePhase(open, posted + 24 * 60 * 60 * 1000)).toBe("expired");
+    expect(kinChoicePhase(choice({ closedAt: "2026-11-08T10:00:00.000Z" }), posted)).toBe(
+      "expired",
+    );
+    expect(
+      kinCardView(
+        widget({ type: "choice", state: { ...choiceState(), options: [] } }),
+        HOST,
+        known(),
+      ).kind,
+    ).toBe("unknown");
+  });
+
+  it("says who chose which option, and how", () => {
+    const answer = (via: "tap" | "reaction", emoji: string | null) =>
+      choice({
+        revision: 2,
+        state: choiceState({
+          optionId: "option-1",
+          personId: "owner",
+          via,
+          emoji,
+          answeredAt: "2026-11-08T09:05:00.000Z",
+        }),
+      });
+    const tapped = answer("tap", null);
+    expect(kinChoicePhase(tapped, posted + 48 * 60 * 60 * 1000)).toBe("answered");
+    expect(kinChoiceAnswerText(tapped.answer!, "owner" as never)).toBe("You chose “Ship it”");
+    expect(kinChoiceAnswerText(tapped.answer!, null)).toBe("Chose “Ship it”");
+    expect(kinChoiceAnswerText(answer("reaction", "👍").answer!, "owner" as never)).toBe(
+      "You chose “Ship it” with 👍",
     );
   });
 });

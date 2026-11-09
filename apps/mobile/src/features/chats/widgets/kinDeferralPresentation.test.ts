@@ -8,6 +8,7 @@ import {
   KIN_STALE_CARD_TEXT,
   KIN_START_NOW_REFUSALS,
   createKinCardActions,
+  kinDeferralActInput,
   formatKinDeferralClock,
   formatKinDeferralTime,
   kinCardStatusAfter,
@@ -212,6 +213,7 @@ describe("createKinCardActions", () => {
     const posted: KinWidgetsActInput[] = [];
     let id = 0;
     const act = createKinCardActions({
+      toInput: kinDeferralActInput,
       newId: () => `client-${++id}`,
       post: (input) => {
         posted.push(input);

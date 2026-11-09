@@ -22,6 +22,7 @@ import {
   type KinChatClosedReason,
   type KinChatState,
 } from "./kinInboxModel";
+import { kinTapText } from "../widgets/kinChoicePresentation";
 import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks";
 import { kinReplyKey, type KinHeldDraft } from "./kinLive";
 import { kinSentences } from "./kinScreenState";
@@ -218,6 +219,13 @@ const messageRowKey = (message: KinMessage) =>
     ? message.clientMessageId
     : message.messageId;
 
+// A choice tap shows as the owner's words, not its JSON, and never repeats the card it answered.
+const shownMessage = (message: KinMessage): KinMessage => {
+  if (message.kind !== "widget_action") return message;
+  const text = kinTapText(message.body);
+  return text === null ? message : { ...message, body: text, widgetId: null };
+};
+
 // Rows for unchanged messages keep their identity, so one new message doesn't redraw every bubble.
 const messageRows = new WeakMap<KinMessage, MessageRow>();
 
@@ -232,7 +240,12 @@ function messageRow(message: KinMessage, fields: Omit<MessageRow, "type" | "key"
   ) {
     return held;
   }
-  const row: MessageRow = { type: "message", key: messageRowKey(message), message, ...fields };
+  const row: MessageRow = {
+    type: "message",
+    key: messageRowKey(message),
+    message: shownMessage(message),
+    ...fields,
+  };
   messageRows.set(message, row);
   return row;
 }

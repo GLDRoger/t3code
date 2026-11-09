@@ -297,17 +297,21 @@ export type KinActionOutcome =
  * tap posts once. Retrying the same action on the same revision after a transport failure
  * reuses its `clientActionId`, since the host may have taken the first send.
  */
-export function createKinCardActions(options: {
+export function createKinCardActions<
+  Target extends Pick<KinWidgetsActInput, "widgetId" | "revision">,
+  Action extends string,
+>(options: {
   readonly post: (
     input: KinWidgetsActInput,
   ) => Promise<{ readonly ok: true } | { readonly ok: false; readonly cause: unknown }>;
   readonly newId: () => string;
+  readonly toInput: (view: Target, actionId: Action, clientActionId: string) => KinWidgetsActInput;
 }) {
   let busy = false;
   let unsettled: { readonly key: string; readonly clientActionId: string } | null = null;
   return async (
-    view: KinCardTarget,
-    actionId: KinDeferralActionId,
+    view: Target,
+    actionId: Action,
     /** Runs only for an accepted tap, before it posts. */
     onStart?: () => void,
   ): Promise<KinActionOutcome> => {
@@ -322,7 +326,7 @@ export function createKinCardActions(options: {
     };
     try {
       onStart?.();
-      const result = await options.post(kinDeferralActInput(view, actionId, clientActionId));
+      const result = await options.post(options.toInput(view, actionId, clientActionId));
       if (result.ok) return { status: "sent" };
       return isKinChatError(result.cause)
         ? { status: "failed", notice: kinActionFailureNotice(result.cause) }

@@ -11,6 +11,7 @@ import * as Schema from "effect/Schema";
 
 import { kinLinkLabel, kinSafeWebUrl } from "../state/kinLinks";
 import { kinSentences } from "../state/kinScreenState";
+import { kinChoiceCardView, type KinChoiceCardView } from "./kinChoicePresentation";
 import { kinDeferralCardView, type KinDeferralCardView } from "./kinDeferralPresentation";
 import { kinLevelsCardView, type KinLevelsCardView } from "./kinLevelsPresentation";
 
@@ -40,6 +41,7 @@ export interface KinTaskCardView {
 export type KinCardView =
   | { readonly kind: "task"; readonly task: KinTaskCardView }
   | { readonly kind: "deferral"; readonly deferral: KinDeferralCardView }
+  | { readonly kind: "choice"; readonly choice: KinChoiceCardView }
   | { readonly kind: "digest"; readonly digest: KinDigestCardView }
   | KinLevelsCardView
   | { readonly kind: "missing" }
@@ -238,6 +240,10 @@ export function kinCardView(
     case "deferral": {
       const deferral = kinDeferralCardView(widget);
       return deferral === null ? { kind: "unknown" } : { kind: "deferral", deferral };
+    }
+    case "choice": {
+      const choice = kinChoiceCardView(widget);
+      return choice === null ? { kind: "unknown" } : { kind: "choice", choice };
     }
     case "shadow_summary": {
       const card = decodeShadowSummary(widget.state);
