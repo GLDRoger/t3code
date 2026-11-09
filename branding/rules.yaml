@@ -32,6 +32,11 @@ text:
     from: com.t3tools.t3code
     to: com.gldroger.kin
     exact: true
+  # TestFlight uploads go to Kin HQ (App Store Connect app for com.gldroger.kin), not T3 Code.
+  - files: [apps/mobile/eas.json]
+    from: "6787819824"
+    to: "6832554486"
+    exact: true
   - files: [apps/mobile/app.config.ts]
     from: com.t3tools.t3code.dev
     to: com.gldroger.kin.dev
