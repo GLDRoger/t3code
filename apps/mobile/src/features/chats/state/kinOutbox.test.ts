@@ -85,7 +85,8 @@ function setup(
     ...extra,
   });
   const chat = () => registry.get(outbox.chatAtom(ENV, CHAT));
-  return { host, disk, outbox, chat };
+  const full = () => registry.get(outbox.fullAtom(ENV));
+  return { host, disk, outbox, chat, full };
 }
 
 describe("kinOutbox", () => {
@@ -274,17 +275,22 @@ describe("kinOutbox", () => {
   });
 
   it("refuses a body over the limit and a send past the cap, queuing neither", async () => {
-    const { outbox, chat } = setup(makeHost(), makeStorage(), undefined, { maxEntries: 2 });
+    const { outbox, chat, full } = setup(makeHost(), makeStorage(), undefined, { maxEntries: 2 });
     const long = "x".repeat(KIN_MESSAGE_MAX_LENGTH + 1);
     expect(await outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: long })).toEqual({
       _tag: "too_long",
     });
     await outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: "one" });
+    expect(full()).toBe(false);
     await outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: "two" });
+    // Full before the next send is tried, so the composer can disable Send up front.
+    expect(full()).toBe(true);
     expect(await outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: "three" })).toEqual({
       _tag: "full",
     });
     expect(chat().map((entry) => entry.body)).toEqual(["one", "two"]);
+    await outbox.discard(chat()[0]!.clientMessageId);
+    expect(full()).toBe(false);
   });
 
   it("forgets acked entries the stream holds, and a removed environment's entries", async () => {

@@ -1,3 +1,4 @@
+import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId, KinChatId } from "@t3tools/contracts";
 import { useRef, useState } from "react";
 import { Platform, View } from "react-native";
@@ -54,7 +55,7 @@ export function KinComposer(props: {
   const draftKey = kinDraftKey(props.environmentId, props.orgId, props.chatId);
   const draft = useComposerDraft(draftKey);
   const editorRef = useRef<ComposerEditorHandle>(null);
-  const [full, setFull] = useState(false);
+  const full = useAtomValue(kinOutbox.fullAtom(props.environmentId));
   const [contentHeight, setContentHeight] = useState(0);
   const editorHeight = Math.min(
     EDITOR_MAX_HEIGHT,
@@ -62,7 +63,7 @@ export function KinComposer(props: {
   );
   const length = draft.text.trim().length;
   const tooLong = length > KIN_MESSAGE_MAX_LENGTH;
-  const canSend = length > 0 && !tooLong;
+  const canSend = length > 0 && !tooLong && !full;
   const hint = tooLong
     ? `Too long to send: ${lengthFormat.format(length)} of ${lengthFormat.format(KIN_MESSAGE_MAX_LENGTH)} characters.`
     : full
@@ -79,7 +80,6 @@ export function KinComposer(props: {
       chatId: props.chatId,
       body,
     });
-    setFull(queued._tag === "full");
     if (queued._tag !== "queued") {
       restoreDraft(draftKey, body);
       return;
@@ -109,10 +109,7 @@ export function KinComposer(props: {
             value={draft.text}
             placeholder={`Message ${props.recipient}`}
             onSubmit={() => void send()}
-            onChangeText={(text) => {
-              if (full) setFull(false);
-              setComposerDraftText(draftKey, text);
-            }}
+            onChangeText={(text) => setComposerDraftText(draftKey, text)}
             contentInsetVertical={EDITOR_INSET}
             singleLineCentered={contentHeight <= EDITOR_MIN_HEIGHT - 2 * EDITOR_INSET}
             scrollEnabled={Platform.OS === "android" || editorHeight >= EDITOR_MAX_HEIGHT}

@@ -110,11 +110,23 @@ export function createKinOutbox(options: KinOutboxOptions) {
       Atom.withLabel("kin:outbox:chat"),
     ),
   );
+  // The cap counts unsent messages per environment, so the composer can disable Send before a try.
+  const fullAtom = Atom.family((_environmentId: EnvironmentId) =>
+    Atom.make(false).pipe(Atom.keepAlive, Atom.withLabel("kin:outbox:full")),
+  );
   const entries = new Map<string, KinOutboxEntry>();
   const delivering = new Set<EnvironmentId>();
   const deliverAgain = new Set<EnvironmentId>();
   let loaded: Promise<void> | null = null;
   let writes: Promise<void> = Promise.resolve();
+
+  const unsentIn = (environmentId: EnvironmentId) => {
+    let unsent = 0;
+    for (const entry of entries.values()) {
+      if (entry.environmentId === environmentId && entry.state !== "sent") unsent++;
+    }
+    return unsent;
+  };
 
   const publish = (environmentId: EnvironmentId, chatId: KinChatId) => {
     const forChat = [...entries.values()].filter(
@@ -124,6 +136,7 @@ export function createKinOutbox(options: KinOutboxOptions) {
       chatAtom(chatKey(environmentId, chatId)),
       forChat.length ? forChat : EMPTY,
     );
+    options.registry.set(fullAtom(environmentId), unsentIn(environmentId) >= maxEntries);
   };
 
   const set = (entry: KinOutboxEntry) => {
@@ -242,11 +255,7 @@ export function createKinOutbox(options: KinOutboxOptions) {
   > => {
     if (input.body.length > KIN_MESSAGE_MAX_LENGTH) return { _tag: "too_long" };
     await load();
-    let unsent = 0;
-    for (const entry of entries.values()) {
-      if (entry.environmentId === input.environmentId && entry.state !== "sent") unsent++;
-    }
-    if (unsent >= maxEntries) return { _tag: "full" };
+    if (unsentIn(input.environmentId) >= maxEntries) return { _tag: "full" };
     const entry: KinOutboxEntry = {
       environmentId: input.environmentId,
       chatId: input.chatId,
@@ -300,6 +309,8 @@ export function createKinOutbox(options: KinOutboxOptions) {
     clearEnvironment,
     chatAtom: (environmentId: EnvironmentId, chatId: KinChatId) =>
       chatAtom(chatKey(environmentId, chatId)),
+    /** True while the environment holds as many unsent messages as the outbox takes. */
+    fullAtom,
     /** Environments with sends still waiting, for the reconnect trigger. */
     waitingEnvironments: (): ReadonlySet<EnvironmentId> =>
       new Set(
