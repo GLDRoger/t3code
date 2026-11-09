@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { parseFrontMatter } from "../memory/frontMatter.ts";
+import { kinShapeFailure } from "../memory/lint.ts";
 import { itemFolders, type MaterialEntry } from "./material.ts";
 
 const Sources = Schema.Array(Schema.String).check(Schema.isMinLength(1));
@@ -85,7 +86,7 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
       failures.push("INDEX.md is built by code");
       continue;
     }
-    if (!isItemPath(path) && !isJournalPath(path)) {
+    if ((!isItemPath(path) && !isJournalPath(path)) || kinShapeFailure(path) !== undefined) {
       failures.push(`${path} is outside item files and journal/`);
       continue;
     }
