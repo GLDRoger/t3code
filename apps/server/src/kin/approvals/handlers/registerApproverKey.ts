@@ -55,5 +55,12 @@ export const makeRegisterApproverKeyHandler = Effect.gen(function* () {
     return key.state === "active" ? ("done" as const) : ("not_done" as const);
   });
 
-  return { kind: "register_approver_key" as const, precheck, run, reconcile };
+  // Gated like the GitHub kinds (spec section 12).
+  return {
+    kind: "register_approver_key" as const,
+    credentialCheck: true,
+    precheck,
+    run,
+    reconcile,
+  };
 });

@@ -7,7 +7,6 @@ import {
   KinEventId,
   KinKeyThumbprint,
   KinOrgId,
-  KinPersonId,
   type KinActionTarget,
   type KinGrantPayload,
   type KinResolvedTarget,
@@ -45,7 +44,7 @@ import * as ActionHandlers from "./ActionHandlers.ts";
 import * as Audit from "./Audit.ts";
 import * as CredentialHygiene from "./CredentialHygiene.ts";
 import { KinExecutionNotices } from "./ExecutionNotices.ts";
-import { KinOrgRoles } from "./GrantPorts.ts";
+import { BOOTSTRAP_OWNER, KinOrgRoles } from "./GrantPorts.ts";
 import * as ApprovalsLayer from "./layer.ts";
 import { makeDeleteBranchHandler } from "./handlers/deleteBranch.ts";
 import { makeMergePullRequestHandler } from "./handlers/mergePullRequest.ts";
@@ -54,7 +53,8 @@ import * as PendingActions from "./PendingActions.ts";
 const NOW = Date.parse("2026-11-08T00:00:00Z");
 const DAY = 24 * 60 * 60 * 1000;
 const orgId = Schema.decodeSync(KinOrgId)("org_01");
-const owner = Schema.decodeSync(KinPersonId)("h_owner");
+// The production layer's roles port knows only the bootstrap owner.
+const owner = BOOTSTRAP_OWNER;
 const kid = Schema.decodeSync(KinKeyThumbprint)("Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E");
 const decodeEventId = Schema.decodeSync(KinEventId);
 const REPO = "GLDRoger/t3code";
@@ -245,8 +245,14 @@ function harness(
     count: 0,
   };
   // The next `finishFailures` calls to the ledger's `finish` fail, as a database error would;
-  // `writeStartFails` makes recording the write's start fail the same way.
-  const faults = { finishFailures: 0, writeStartFails: false };
+  // `writeStartFails` makes recording the write's start fail the same way. `afterMerge` runs once
+  // GitHub answers the merge, and `staleDelete` makes the owner's branch delete find a stale pass.
+  const faults: {
+    finishFailures: number;
+    writeStartFails: boolean;
+    afterMerge?: Effect.Effect<unknown>;
+    staleDelete: boolean;
+  } = { finishFailures: 0, writeStartFails: false, staleDelete: false };
 
   const app = Layer.succeed(
     KinGitHubApp.KinGitHubApp,
@@ -266,7 +272,22 @@ function harness(
     }),
   );
   const scope = scopeLayer({ repos: [REPO] });
-  const githubStack = Layer.mergeAll(KinBotReads.layer, OwnerMergeClient.layer).pipe(
+  const ownerClient = Layer.effect(
+    OwnerMergeClient.OwnerMergeClient,
+    Effect.gen(function* () {
+      const real = yield* OwnerMergeClient.OwnerMergeClient;
+      return OwnerMergeClient.OwnerMergeClient.of({
+        ...real,
+        merge: (pass, input) =>
+          real.merge(pass, input).pipe(Effect.tap(() => faults.afterMerge ?? Effect.void)),
+        deleteBranch: (pass, input) =>
+          faults.staleDelete
+            ? Effect.fail(new OwnerMergeClient.OwnerMergePassStaleError({ ageMs: 60_001 }))
+            : real.deleteBranch(pass, input),
+      });
+    }),
+  ).pipe(Layer.provide(OwnerMergeClient.layer));
+  const githubStack = Layer.mergeAll(KinBotReads.layer, ownerClient).pipe(
     Layer.provide(Layer.mergeAll(app, github.layer, keychain.layer, scope)),
   );
   const identity = Layer.succeed(CredentialHygiene.T3GitHubIdentity, {
@@ -558,9 +579,9 @@ describe("KinActionExecutor", () => {
   });
 
   it.effect("keeps the head branch whenever delete_branch would refuse it", () => {
-    const { world, requests, notices, layer } = harness();
+    const { world, requests, notices, faults, layer } = harness();
     return Effect.gen(function* () {
-      yield* seed;
+      const { sql } = yield* seed;
       const executor = yield* ActionExecutor.KinActionExecutor;
       const cases: ReadonlyArray<readonly [string, () => void, () => void]> = [
         ["fork", () => (world.pull.headRepo = "someone/t3code"), () => {}],
@@ -633,10 +654,37 @@ describe("KinActionExecutor", () => {
         actionId: lost.actionId,
         note: "Head branch kin/fix-212 may not have been deleted; GitHub didn't answer.",
       });
+
+      // The stop switch lands while the merge runs: the delete is never sent.
+      world.pull = { ...openPull };
+      faults.afterMerge = Effect.orDie(
+        sql`INSERT INTO kin_org_state (org_id, paused, paused_at, paused_by, reason)
+          VALUES ('org_01', 1, ${NOW}, ${owner}, 'stop')`,
+      );
+      const paused = yield* approvedMerge("keep-paused", true);
+      assert.deepInclude(yield* executor.execute(paused), { outcome: "succeeded" });
+      delete faults.afterMerge;
+      yield* sql`DELETE FROM kin_org_state WHERE org_id = 'org_01'`;
+      assert.deepInclude(notices.at(-1), {
+        actionId: paused.actionId,
+        note: "Kept head branch kin/fix-212: Kin was paused.",
+      });
+      // A hygiene pass that went stale during the merge: the token refuses, and the note says so.
+      world.pull = { ...openPull };
+      faults.staleDelete = true;
+      const stale = yield* approvedMerge("keep-stale", true);
+      assert.deepInclude(yield* executor.execute(stale), { outcome: "succeeded" });
+      faults.staleDelete = false;
+      assert.deepInclude(notices.at(-1), {
+        actionId: stale.actionId,
+        note: "Kept head branch kin/fix-212: the credential check went stale before the delete.",
+      });
       assert.deepStrictEqual(writes(requests).slice(cases.length), [
         `PUT ${PULL}/merge`,
         `PUT ${PULL}/merge`,
         HEAD_DELETE,
+        `PUT ${PULL}/merge`,
+        `PUT ${PULL}/merge`,
       ]);
     }).pipe(Effect.provide(layer));
   });
@@ -693,16 +741,23 @@ describe("KinActionExecutor", () => {
       world.rules.set("kin", [{ type: "merge_queue" }]);
       yield* refusedWith("queued", /^merge_queue_unsupported/);
       world.rules.set("kin", []);
-      // The signed payload names another target: the run refuses before any write.
-      const unbound = yield* approved({
-        kind: "merge_pull_request",
-        target: prTarget(),
-        resolved: prFacts,
-        source: "unbound",
-        payload: (payload) => ({ ...payload, targetDigest: "0".repeat(64) as never }),
-      });
-      assert.deepInclude(yield* executor.execute(unbound), { outcome: "failed" });
-      assert.match((yield* stateOf(unbound)).reason ?? "", /^grant_mismatch/);
+      // The signed payload names another target or head: the run refuses before any write.
+      const edits: ReadonlyArray<readonly [string, (payload: KinGrantPayload) => KinGrantPayload]> =
+        [
+          ["unbound", (payload) => ({ ...payload, targetDigest: "0".repeat(64) as never })],
+          ["unbound-head", (payload) => ({ ...payload, headSha: MOVED })],
+        ];
+      for (const [source, payload] of edits) {
+        const unbound = yield* approved({
+          kind: "merge_pull_request",
+          target: prTarget(),
+          resolved: prFacts,
+          source,
+          payload,
+        });
+        assert.deepInclude(yield* executor.execute(unbound), { outcome: "failed" });
+        assert.match((yield* stateOf(unbound)).reason ?? "", /^grant_mismatch/, source);
+      }
       assert.deepStrictEqual(writes(requests), []);
     }).pipe(Effect.provide(layer));
   });
@@ -1334,26 +1389,34 @@ describe("KinActionExecutor", () => {
     );
   });
 
+  /** The production composition, as `kin/layer.ts` builds it, with `notices` posting lapses. */
+  const production = (executor: typeof ApprovalsLayer.executorLayer, lapses: Array<string>) =>
+    executor.pipe(
+      Layer.provideMerge(ApprovalsLayer.layer),
+      Layer.provideMerge(
+        Layer.mergeAll(
+          Layer.succeed(
+            KinExecutionNotices,
+            KinExecutionNotices.of({
+              finished: () => Effect.void,
+              lapsed: ({ holdReason }) => Effect.sync(() => void lapses.push(holdReason)),
+            }),
+          ),
+          ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })),
+          Sqlite.layerMemory,
+        ),
+      ),
+    );
+
   it.effect(
     "the production layer shares none of the executor's services, and holds GitHub kinds",
     () => {
       const lapses: Array<string> = [];
-      const outside = Layer.mergeAll(
-        Layer.succeed(
-          KinExecutionNotices,
-          KinExecutionNotices.of({
-            finished: () => Effect.void,
-            lapsed: ({ holdReason }) => Effect.sync(() => void lapses.push(holdReason)),
-          }),
-        ),
-        // No GitHub App or scope configured: the host the unconfigured fallback is for.
-        ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })),
-        Sqlite.layerMemory,
-      );
       return Effect.gen(function* () {
         // Before the worker's schedules start, or they replay every minute since the epoch.
         yield* TestClock.setTime(NOW);
-        const context = yield* Layer.build(ApprovalsLayer.layer.pipe(Layer.provideMerge(outside)));
+        // No GitHub App or scope configured: the host the unconfigured fallback is for.
+        const context = yield* Layer.build(production(ApprovalsLayer.executorLayer, lapses));
         // `kin.services` hands this whole context to RPC handlers and the lead's MCP tools.
         for (const tag of [
           PendingActions.KinExecutionLedger,
@@ -1384,6 +1447,70 @@ describe("KinActionExecutor", () => {
       }).pipe(Effect.scoped);
     },
   );
+
+  it.effect("on a configured host, the identity probe APPR-16 adds holds every GitHub kind", () => {
+    const lapses: Array<string> = [];
+    const github = fakeGitHub(() => ({ status: 404, body: { message: "Not Found" } }));
+    const platform = Layer.mergeAll(
+      Layer.succeed(KinGitHubApp.KinGitHubAppConfig, { appId: "1" }),
+      scopeLayer({ repos: [REPO] }),
+      github.layer,
+      memoryKeychain({
+        [`kin-owner-merge/${orgId}`]: JSON.stringify({
+          token: OWNER_TOKEN,
+          login: "Nishchay",
+          expiresAt: NOW + 30 * DAY,
+          savedAt: NOW,
+        }),
+      }).layer,
+    );
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const context = yield* Layer.build(
+        production(ApprovalsLayer.makeExecutorLayer(platform), lapses),
+      );
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const ref = yield* approvedMerge("configured", true);
+        yield* TestClock.adjust("1 second");
+        assert.deepInclude(yield* stateOf(ref), { state: "approved" });
+        assert.deepStrictEqual(
+          (yield* auditEntries)
+            .filter((entry) => entry.event === "credential_check_failed")
+            .map((entry) => entry.result),
+          ["identity_unknown"],
+        );
+        yield* TestClock.adjust("16 minutes");
+        assert.deepInclude(yield* stateOf(ref), { state: "voided", reason: "grant_expired" });
+        assert.deepStrictEqual(lapses, ["credential_check_failed: identity_unknown"]);
+      }).pipe(Effect.provide(context));
+      assert.deepStrictEqual(github.requests, []);
+    }).pipe(Effect.scoped);
+  });
+
+  it.effect("an execution never pairs with a grant from another org", () => {
+    const { layer } = harness();
+    return Effect.gen(function* () {
+      const { sql } = yield* seed;
+      const executor = yield* ActionExecutor.KinActionExecutor;
+      const ledger = yield* PendingActions.KinExecutionLedger;
+      const ref = yield* claimedThenCrashed("other-org");
+      // A grant row moved to another org that holds the same key, as corrupt data would.
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at)
+        VALUES ('org_02', 'Other', '2026-11-07T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_approver_keys (thumbprint, org_id, public_jwk_json, human_id,
+          device_label, platform, hardware, attested, state, created_at)
+        VALUES (${kid}, 'org_02', '{}', ${owner}, 'Pixel 9', 'android', 'tee', 1, 'active', 0)`;
+      yield* sql`UPDATE kin_grants SET org_id = 'org_02' WHERE action_id = ${ref.actionId}`;
+      assert.deepStrictEqual((yield* executor.pickup).orphaned, []);
+      assert.deepStrictEqual(yield* executor.reconcile(ref), { _tag: "skipped" });
+      assert.isFalse(yield* ledger.signingKeyUsable(ref));
+      assert.isTrue(yield* ledger.finish({ ...ref, outcome: "failed", error: "test" }));
+      const finished = (yield* auditEntries).at(-1);
+      assert.strictEqual(finished?.event, "execution_finished");
+      assert.notProperty(finished, "grantJti");
+    }).pipe(Effect.provide(layer));
+  });
 
   it("no agent, MCP tool or model-reachable path can claim, run or finish an action", () => {
     const root = NodePath.resolve(import.meta.dirname, "../..");

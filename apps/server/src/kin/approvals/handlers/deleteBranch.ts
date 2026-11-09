@@ -5,7 +5,13 @@ import * as Option from "effect/Option";
 import { KinBotReads } from "../../github/KinBotReads.ts";
 import { OwnerMergeClient } from "../../github/OwnerMergeClient.ts";
 import { KinExecError, type KinActionHandler } from "../ActionHandlers.ts";
-import { githubUnavailable, outcomeOf, requireBinding, tokenFailure } from "./ownerWrite.ts";
+import {
+  githubUnavailable,
+  outcomeOf,
+  requireBinding,
+  requirePass,
+  tokenFailure,
+} from "./ownerWrite.ts";
 
 const partsOf = Effect.fnUntraced(function* (action: KinPendingAction) {
   if (
@@ -50,8 +56,9 @@ export const makeDeleteBranchHandler = Effect.gen(function* () {
   const run: KinActionHandler["run"] = Effect.fn("deleteBranch.run")(function* (action, context) {
     const { target, resolved } = yield* partsOf(action);
     yield* requireBinding(action, context, resolved.headSha);
+    const pass = yield* requirePass(context);
     const answer = yield* owner
-      .deleteBranch(context.pass, { repo: target.repo, branch: target.ref })
+      .deleteBranch(pass, { repo: target.repo, branch: target.ref })
       .pipe(Effect.mapError(tokenFailure));
     return yield* outcomeOf(answer);
   });
@@ -64,5 +71,11 @@ export const makeDeleteBranchHandler = Effect.gen(function* () {
     },
   );
 
-  return { kind: "delete_branch", precheck, run, reconcile } satisfies KinActionHandler;
+  return {
+    kind: "delete_branch",
+    credentialCheck: true,
+    precheck,
+    run,
+    reconcile,
+  } satisfies KinActionHandler;
 });

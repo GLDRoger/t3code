@@ -178,7 +178,7 @@ export const gitHubAnswer = Effect.fn("KinGitHub.answer")(function* (input: {
   readonly path: string;
   readonly token: Redacted.Redacted<string>;
   readonly body?: unknown;
-  /** A timeout fails like a lost connection: `transport`. */
+  /** For the whole answer, body included. A timeout fails like a lost connection: `transport`. */
   readonly timeout?: Duration.Input;
 }) {
   yield* Effect.annotateCurrentSpan({ "kin.github.operation": input.operation });
@@ -187,13 +187,17 @@ export const gitHubAnswer = Effect.fn("KinGitHub.answer")(function* (input: {
   if (input.body !== undefined) {
     request = yield* HttpClientRequest.bodyJson(request, input.body).pipe(Effect.mapError(fail));
   }
-  const sent = input.client.execute(request).pipe(Effect.mapError(fail));
-  const response = yield* input.timeout === undefined
-    ? sent
-    : sent.pipe(
+  const answered = Effect.gen(function* () {
+    const response = yield* input.client.execute(request).pipe(Effect.mapError(fail));
+    const body: unknown = yield* response.json.pipe(Effect.orElseSucceed(() => null));
+    return { response, body };
+  });
+  // The timeout covers the body too: a stalled body is as silent as no answer.
+  const { response, body } = yield* input.timeout === undefined
+    ? answered
+    : answered.pipe(
         Effect.timeoutOrElse({ duration: input.timeout, orElse: () => Effect.fail(fail()) }),
       );
-  const body: unknown = yield* response.json.pipe(Effect.orElseSucceed(() => null));
   const message =
     typeof body === "object" &&
     body !== null &&

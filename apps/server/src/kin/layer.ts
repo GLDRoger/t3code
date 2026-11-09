@@ -41,9 +41,15 @@ const enabled = Layer.effect(
 ).pipe(
   Layer.provide(
     Layer.mergeAll(
-      // Promotion asks for set_level through the same pending actions the executor watches.
-      Layer.mergeAll(KinPush.layer, Promotion.layer).pipe(
-        Layer.provideMerge(KinApprovals.layer.pipe(Layer.provide(ExecutionNotices.layer))),
+      // On top of Promotion and approvals: the executor takes approvals from their pending
+      // actions instance, and a raise redraws Promotion's card.
+      KinApprovals.executorLayer.pipe(
+        Layer.provide(ExecutionNotices.layer),
+        Layer.provideMerge(
+          Layer.mergeAll(KinPush.layer, Promotion.layer).pipe(
+            Layer.provideMerge(KinApprovals.layer),
+          ),
+        ),
       ),
       GithubWebhooks.lockLayer,
     ).pipe(Layer.provideMerge(KinChat.layer)),

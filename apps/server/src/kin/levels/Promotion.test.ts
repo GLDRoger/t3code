@@ -669,6 +669,24 @@ it.effect("a raise applies only through the claimed set_level action its own own
   }).pipe(Effect.provide(root)),
 );
 
+it.effect("the executor applies an approved raise on a host without GitHub configured", () =>
+  Effect.gen(function* () {
+    const ctx = yield* seed;
+    const { lead, client, widget, level, pending, sign } = ctx;
+    yield* eligible(ctx);
+    const { actionId } = yield* client["kin.levels.raise"]({ ...lead, level: "L1" });
+    // Approved only: the production worker claims and runs it, with no credential check.
+    yield* sign(actionId, { claim: false });
+    yield* TestClock.adjust("1 second");
+    assert.deepInclude(Option.getOrThrow(yield* pending.get({ orgId: lead.orgId, actionId })), {
+      state: "succeeded",
+    });
+    assert.strictEqual(yield* level, "L1");
+    const card = yield* widget(`promotion:${agentId}:L1`);
+    assert.deepInclude(card && decodePromotion(card.state), { status: "raised" });
+  }).pipe(Effect.provide(root)),
+);
+
 it.effect("lowering withdraws the raises it overtook and shows what stays open", () =>
   Effect.gen(function* () {
     const ctx = yield* seed;
