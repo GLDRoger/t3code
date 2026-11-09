@@ -23,6 +23,11 @@ import {
 } from "./deferralGithub.ts";
 import { inRepoScope, KinGithubRepoScope, repoScopeLayer } from "./githubEvents.ts";
 import {
+  KinRoutineGithubReader,
+  type KinRoutineGithubReaderShape,
+  type KinRoutineGithubState,
+} from "../lead/RoutineContent.ts";
+import {
   type GithubItemState,
   KinWatchdogGithubError,
   KinWatchdogGithubReader,
@@ -122,6 +127,62 @@ const GraphQlAnswer = Schema.Struct({
   errors: Schema.optional(Schema.Array(Schema.Struct({ type: Schema.optional(Schema.String) }))),
 });
 const decodeAnswer = Schema.decodeUnknownOption(GraphQlAnswer);
+
+const ROUTINE_PERMISSIONS = {
+  contents: "read",
+  pull_requests: "read",
+  checks: "read",
+  statuses: "read",
+} as const satisfies KinGitHubPermissionSet;
+export const ROUTINE_QUERY = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {
+  defaultBranchRef { name target { ... on Commit { statusCheckRollup { state } } } }
+  pullRequests(states: [OPEN], first: 50, orderBy: { field: CREATED_AT, direction: ASC }) {
+    nodes { number title url isDraft reviewRequests(first: 20) { nodes { requestedReviewer { ... on User { login } } } } }
+  }
+} }`;
+const RoutineAnswer = Schema.Struct({
+  data: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        repository: Schema.NullOr(
+          Schema.Struct({
+            defaultBranchRef: Schema.NullOr(
+              Schema.Struct({
+                name: Schema.String,
+                target: Schema.NullOr(
+                  Schema.Struct({
+                    statusCheckRollup: Schema.optional(
+                      Schema.NullOr(Schema.Struct({ state: Schema.String })),
+                    ),
+                  }),
+                ),
+              }),
+            ),
+            pullRequests: Schema.Struct({
+              nodes: Schema.Array(
+                Schema.NullOr(
+                  Schema.Struct({
+                    number: Schema.Int,
+                    title: Schema.String,
+                    url: Schema.String,
+                    isDraft: Schema.Boolean,
+                    reviewRequests: Schema.Struct({
+                      nodes: Schema.Array(
+                        Schema.NullOr(Schema.Struct({ requestedReviewer: Reviewer })),
+                      ),
+                    }),
+                  }),
+                ),
+              ),
+            }),
+          }),
+        ),
+      }),
+    ),
+  ),
+  errors: Schema.optional(Schema.Array(Schema.Struct({ type: Schema.optional(Schema.String) }))),
+});
+const decodeRoutineAnswer = Schema.decodeUnknownOption(RoutineAnswer);
 const isRepoSlug = Schema.is(RepoSlug);
 
 class KinGithubReadFailed extends Schema.TaggedError<KinGithubReadFailed>()("KinGithubReadFailed", {
@@ -160,21 +221,22 @@ const make = Effect.gen(function* () {
     { readonly token: Redacted.Redacted<string>; readonly expiresAt: number }
   >();
 
-  /** One read-only `server` token per repo, reused until shortly before GitHub expires it. */
-  const tokenFor = Effect.fn("KinGithubReaders.token")(function* (repo: RepoSlug) {
-    const key = repo.toLowerCase();
+  /** One read-only `server` token per repo and permission set, reused until shortly before expiry. */
+  const tokenFor = Effect.fn("KinGithubReaders.token")(function* (
+    repo: RepoSlug,
+    permissions: KinGitHubPermissionSet = READ_PERMISSIONS,
+  ) {
+    const key = `${permissions === READ_PERMISSIONS ? "items" : "routine"}:${repo.toLowerCase()}`;
     const now = yield* Clock.currentTimeMillis;
     const cached = tokens.get(key);
     if (cached !== undefined && now < cached.expiresAt - TOKEN_REUSE_MARGIN_MS) return cached.token;
     tokens.delete(key);
-    const minted = yield* app
-      .installationToken({ repo, permissions: READ_PERMISSIONS, holder: "server" })
-      .pipe(
-        Effect.tapError((error) =>
-          Effect.logWarning("Kin GitHub read token refused", { repo, errorTag: error._tag }),
-        ),
-        Effect.mapError(() => new KinGithubReadFailed({ repo, reason: "token" })),
-      );
+    const minted = yield* app.installationToken({ repo, permissions, holder: "server" }).pipe(
+      Effect.tapError((error) =>
+        Effect.logWarning("Kin GitHub read token refused", { repo, errorTag: error._tag }),
+      ),
+      Effect.mapError(() => new KinGithubReadFailed({ repo, reason: "token" })),
+    );
     const expiresAt = Date.parse(minted.expiresAt);
     if (Number.isFinite(expiresAt)) tokens.set(key, { token: minted.token, expiresAt });
     return minted.token;
@@ -208,7 +270,7 @@ const make = Effect.gen(function* () {
         answer.status === 401 ||
         (answer.status === 403 && answer.message === "Resource not accessible by integration")
       )
-        tokens.delete(repo.toLowerCase());
+        tokens.delete(`items:${repo.toLowerCase()}`);
       const body = decodeAnswer(answer.body);
       const errors = Option.isSome(body) ? (body.value.errors ?? []) : [];
       if (isGitHubRateLimit(answer) || errors.some((error) => error.type === "RATE_LIMITED")) {
@@ -286,12 +348,83 @@ const make = Effect.gen(function* () {
     ),
   };
 
+  /** Open PRs awaiting `login`'s review and the default branch's check rollup, one query per repo. */
+  const readRoutineRepo = Effect.fn("KinGithubReaders.routineRepo")(function* (
+    repo: string,
+    login: string | null,
+  ) {
+    if (!isRepoSlug(repo) || !inRepoScope(scope.repos, repo))
+      return yield* new KinGithubReadFailed({ repo, reason: "out_of_scope" });
+    const token = yield* tokenFor(repo, ROUTINE_PERMISSIONS);
+    const [owner, name] = repo.split("/");
+    const answer = yield* gitHubAnswer({
+      client,
+      operation: "graphql.routine",
+      method: "POST",
+      path: "/graphql",
+      token,
+      body: { query: ROUTINE_QUERY, variables: { owner, name } },
+    }).pipe(Effect.mapError(() => new KinGithubReadFailed({ repo, reason: "unavailable" })));
+    if (answer.status === 401 || answer.status === 403)
+      tokens.delete(`routine:${repo.toLowerCase()}`);
+    const body = decodeRoutineAnswer(answer.body);
+    const errors = Option.isSome(body) ? (body.value.errors ?? []) : [];
+    if (isGitHubRateLimit(answer) || errors.some((error) => error.type === "RATE_LIMITED"))
+      return yield* new KinGithubReadFailed({ repo, reason: "rate_limited" });
+    const repository = Option.isSome(body) ? body.value.data?.repository : undefined;
+    if (answer.status !== 200 || repository == null || errors.length > 0)
+      return yield* new KinGithubReadFailed({ repo, reason: "unavailable" });
+    const state = repository.defaultBranchRef?.target?.statusCheckRollup?.state;
+    const branch = repository.defaultBranchRef?.name;
+    return {
+      reviews: repository.pullRequests.nodes.flatMap((pull) =>
+        pull === null ||
+        pull.isDraft ||
+        login === null ||
+        !pull.reviewRequests.nodes.some(
+          (request) =>
+            (request?.requestedReviewer?.login ?? "").toLowerCase() === login.toLowerCase(),
+        )
+          ? []
+          : [{ repo, number: pull.number, title: pull.title, url: pull.url }],
+      ),
+      ciRed:
+        branch !== undefined && (state === "FAILURE" || state === "ERROR")
+          ? [{ repo, branch }]
+          : [],
+    };
+  });
+
+  const routine: KinRoutineGithubReaderShape = {
+    read: Effect.fn("KinGithubReaders.routine")(function* (orgId: KinOrgId, login: string | null) {
+      const reviews: Array<KinRoutineGithubState["reviews"][number]> = [];
+      const ciRed: Array<KinRoutineGithubState["ciRed"][number]> = [];
+      let failed = 0;
+      for (const repo of scope.repos) {
+        const result = yield* readRoutineRepo(repo, login).pipe(Effect.result);
+        if (result._tag === "Failure") {
+          failed++;
+          yield* Effect.logWarning("Kin routine GitHub read failed", {
+            orgId,
+            repo,
+            reason: result.failure.reason,
+          });
+          continue;
+        }
+        reviews.push(...result.success.reviews);
+        ciRed.push(...result.success.ciRed);
+      }
+      return { reviews, ciRed, failedRepos: failed, repos: scope.repos.length };
+    }),
+  };
+
   return Context.make(KinDeferralGithubReader, deferral).pipe(
     Context.add(KinWatchdogGithubReader, watchdog),
+    Context.add(KinRoutineGithubReader, routine),
   );
 });
 
-/** Both readers over `KinGitHubApp`; needs the App id and its key in the keychain. */
+/** The deferral, watchdog and routine readers over `KinGitHubApp`; needs the App id and its key in the keychain. */
 export const readersLayer = Layer.effectContext(make);
 
 const decodeSecrets = Schema.decodeUnknownOption(

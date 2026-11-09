@@ -19,6 +19,7 @@ import * as KinGitHubApp from "../github/KinGitHubApp.ts";
 import { fakeGitHub, type FakeAnswer, type RecordedRequest } from "../github/testFakes.ts";
 import { KinDeferralGithubReader, readGithubLinks, readGithubLinkSets } from "./deferralGithub.ts";
 import { KinGithubRepoScope } from "./githubEvents.ts";
+import * as RoutineContent from "../lead/RoutineContent.ts";
 import * as GithubReaders from "./githubReaders.ts";
 import { KinWatchdogGithubReader } from "./watchdogs.ts";
 
@@ -164,6 +165,10 @@ describe("Kin GitHub readers", () => {
       validate(schema, parse(GithubReaders.itemsQuery([7, 9]))).map((error) => error.message),
       [],
     );
+    assert.deepStrictEqual(
+      validate(schema, parse(GithubReaders.ROUTINE_QUERY)).map((error) => error.message),
+      [],
+    );
   });
 
   it.effect("reads a merged PR and a closed issue with one batched query and one token", () => {
@@ -225,6 +230,54 @@ describe("Kin GitHub readers", () => {
       yield* TestClock.adjust("56 minutes");
       yield* watchdog.readRepo(orgId, REPO, [9]);
       assert.lengthOf(mints, 2);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("reads PRs awaiting the owner's review and a red default branch for the brief", () => {
+    const pull = (number: number, login: string, isDraft = false) => ({
+      number,
+      title: `PR ${number}`,
+      url: `https://github.com/${REPO}/pull/${number}`,
+      isDraft,
+      reviewRequests: { nodes: [{ requestedReviewer: { login } }, { requestedReviewer: {} }] },
+    });
+    const { mints, layer } = setup(() => ({
+      status: 200,
+      body: {
+        data: {
+          repository: {
+            defaultBranchRef: { name: "main", target: { statusCheckRollup: { state: "FAILURE" } } },
+            pullRequests: { nodes: [pull(4, "Owner"), pull(5, "someone"), pull(6, "owner", true)] },
+          },
+        },
+      },
+    }));
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const reader = yield* RoutineContent.KinRoutineGithubReader;
+      assert.isNotNull(reader);
+      assert.deepStrictEqual(yield* reader!.read(orgId, "owner"), {
+        reviews: [
+          { repo: REPO, number: 4, title: "PR 4", url: `https://github.com/${REPO}/pull/4` },
+        ],
+        ciRed: [{ repo: REPO, branch: "main" }],
+        failedRepos: 0,
+        repos: 1,
+      });
+      assert.deepStrictEqual(mints[0]?.permissions, {
+        contents: "read",
+        pull_requests: "read",
+        checks: "read",
+        statuses: "read",
+      });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("counts an unreadable repo instead of failing the brief", () => {
+    const { layer } = setup(() => ({ status: 502, body: {} }));
+    return Effect.gen(function* () {
+      const reader = yield* RoutineContent.KinRoutineGithubReader;
+      assert.deepInclude(yield* reader!.read(orgId, "owner"), { failedRepos: 1, reviews: [] });
     }).pipe(Effect.provide(layer));
   });
 

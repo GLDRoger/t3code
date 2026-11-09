@@ -523,9 +523,11 @@ RPC (**new**, through the chat spec's `kinRpcs.ts`): `kin.org.get` for any perso
 
 ### Morning and evening routines: content
 
-Scheduling is the triggers spec's. Each fires a `routine` event, and the lead writes the message. A request carries its original due time, lateness and any folded routine dates; content must acknowledge those dates rather than imply an on-time run. The owner check selects memory-review items in code and posts its native card after budget admission; its taps use owner-authored writer sources, not model authority. `routines.ts` holds these templates. Each is one message of at most 12 lines, plus widgets, posted to the owner's direct chat, at every level.
+Scheduling is the triggers spec's. Each fires a `routine` event through the queue, so stop, budget admission and retries apply as to any event. The server, not the lead, writes the morning brief and evening summary: after budget admission the runner gathers the facts below in code (memory cache, chat waiting items, workers, budget, wake-ups and dreams, and GitHub through the Kin App's read-only routine reader), renders them with the templates in `routines.ts`, and posts one system message with one native `routine` card (`KinRoutineCard`) to the owner's direct chat (`ownerChatId`, read from `kin_leads` inside the write transaction), at every level. These events never start a lead session, and model text never shapes them. The 12-line cap is enforced in code: overflow ends in "+N more lines in the card", and the card keeps every row. The message and card ids derive from the event id, so a retry never posts twice; a failed brief is released with a counted attempt while the rest of the batch runs. A request carries its original due time, lateness and any folded routine dates; the header names lateness over 15 minutes and every folded routine. The owner check selects memory-review items in code and posts its native card after budget admission; its taps use owner-authored writer sources, not model authority.
 
-Morning brief, from the dream's prepared brief plus a live recheck:
+Card rows carry the memory item id and link. A due deferral's row names its existing deferral card (`widgetId`), whose buttons act on it; the card has no buttons of its own. Keep, Update and Drop for items past `review_by` stay on the weekly owner-check card, so the brief lists those items without buttons. Without the Kin App, the brief says PRs and CI were not checked; a repo GitHub could not read makes it say so.
+
+Morning brief, gathered live (TRIG-13 has no prepared brief yet):
 
 - Due today: deferrals and commitments (with person and link), each with buttons from the deferral card.
 - Overdue: commitments past their date, and whether a ping went out.
@@ -534,17 +536,17 @@ Morning brief, from the dream's prepared brief plus a live recheck:
 - Objectives at risk, one line each with the reason.
 - Workers running or blocked.
 - Postponed for budget, and yesterday's units used.
-- Up to 3 items past `review_by`, with Keep, Update and Drop.
+- Up to 3 items past `review_by` (their Keep, Update and Drop are on the owner-check card).
 
 Evening summary:
 
-- Done today, each with evidence (PR, commit, CI run).
-- Slipped or changed, with the new date.
+- Done today: worker reports marked done, each with its first PR, commit or CI run.
+- Slipped or changed: items superseded today with a new date, and items due earlier today still open.
 - Promises made today, by whom.
-- Open questions for the owner, as a decision card where possible.
+- Open questions: the owner's unresolved waiting items, count and oldest.
 - Due tomorrow.
-- Units used and cache hit rate; any failed wake-ups, refused commits or dreams.
-- During a level trial: the shadow review card.
+- Units used and cache hit rate (cached over input tokens on today's lead charges); failed or timed-out wake-ups and failed dreams. Refused commits are only logged today, so the summary cannot count them yet.
+- During a level trial: the shadow review card (LEAD-12).
 
 ### Failure cases
 
@@ -565,7 +567,7 @@ New:
 
 - `packages/contracts/src/kinLead.ts`: `KinLevel`, `KinLead`, `KinEvent`, `WorkerReport`, `MemoryItemFrontMatter`, budget and stop RPC payloads.
 - `apps/server/src/kin/lead/KinEventQueue.ts`, `WakeupRunner.ts`, `LeadPrompt.ts`, `KinLeadRegistry.ts`, `WorkerTracker.ts`, `KinBudget.ts`, `KinStop.ts`, `KinLevels.ts`, `layer.ts`.
-- `apps/server/src/kin/lead/instructions.ts`, `apps/server/src/kin/lead/routines.ts` (instruction text and brief/summary templates as string constants; the only source of truth).
+- `apps/server/src/kin/lead/instructions.ts` (instruction text), `apps/server/src/kin/lead/routines.ts` (brief and summary templates and the line cap; the only source of truth) and `RoutineContent.ts` (gathering and posting).
 - `apps/server/src/kin/lead/mcp/tools.ts`, `handlers.ts`.
 - `apps/server/src/kin/memory/Memory.ts`, `MemoryWriter.ts`, `MemoryCache.ts`, `frontMatter.ts`, `journal.ts`.
 - `apps/server/src/kin/persistence/migrations/K002_Lead.ts` creates `kin_events`, `kin_wakeups`, `kin_workers`, `kin_cursor`, `kin_shadow_entries`, `kin_budget_limits`, `kin_budget`, `kin_org_state`, `kin_leads`, registered as `2_Lead` using the Kin migration list from CHAT-2 (its own `kin_sql_migrations` table), so upstream's numbered list in `apps/server/src/persistence/Migrations.ts` is never touched.
