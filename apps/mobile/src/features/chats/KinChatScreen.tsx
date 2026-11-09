@@ -14,6 +14,7 @@ import {
   EnvironmentId,
   KinChatId,
   type KinChatHistoryInput,
+  type KinChatActivity,
   type KinChatHistoryResult,
   type KinMessage,
 } from "@t3tools/contracts";
@@ -23,7 +24,7 @@ import * as Schema from "effect/Schema";
 import { Atom, type AsyncResult } from "effect/reactivity";
 import { KeyboardAwareLegendList, useKeyboardChatComposerInset } from "@legendapp/list/keyboard";
 import { useEffect, useRef, useState, type ComponentPropsWithRef } from "react";
-import { AppState, Platform, View, type ViewInstance } from "react-native";
+import { AccessibilityInfo, AppState, Platform, View, type ViewInstance } from "react-native";
 import { KeyboardStickyView, useKeyboardState } from "react-native-keyboard-controller";
 import Animated from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -51,6 +52,7 @@ import {
   kinDraftKey,
 } from "./components/KinComposer";
 import { KinFoldLine } from "./components/KinFoldLine";
+import { KinActivityRow, kinActivityLabel } from "./components/KinActivityRow";
 import {
   KinDayLine,
   KinMessageBubble,
@@ -61,6 +63,7 @@ import {
   buildKinFeedRows,
   initialKinPaging,
   kinActivePaging,
+  kinActivityWorking,
   kinChatScreenState,
   kinChatStatusLine,
   kinEarlierPage,
@@ -69,6 +72,7 @@ import {
   kinMarkReadRearms,
   kinRowSeq,
   kinSeqToMarkRead,
+  kinShownActivity,
   kinUnseenCount,
   latestKinSeq,
   mergeKinFeed,
@@ -276,7 +280,15 @@ function KinChatPage(props: {
   const navigation = useNavigation();
   const topInset = useContentTopInset();
   const { state } = props;
-  const subtitle = state._tag === "ready" ? kinChatStatusLine(state.chat.value.widgets) : null;
+  const shownActivity =
+    state._tag === "ready"
+      ? kinShownActivity(state.chat.value.activity, state.chat.value.messages)
+      : null;
+  const subtitle =
+    state._tag === "ready"
+      ? (kinChatStatusLine(state.chat.value.widgets) ??
+        (shownActivity !== null && kinActivityWorking(shownActivity) ? "Working…" : null))
+      : null;
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar title={props.title} subtitle={subtitle} onBack={() => navigation.goBack()} />
@@ -414,7 +426,13 @@ const SEEN_ROW_CONFIGS = [
 
 type KinChatRow =
   | KinFeedRow
-  | { readonly type: "pending"; readonly key: string; readonly entry: KinOutboxEntry };
+  | { readonly type: "pending"; readonly key: string; readonly entry: KinOutboxEntry }
+  | {
+      readonly type: "activity";
+      readonly key: string;
+      readonly activity: KinChatActivity;
+      readonly agentName: string;
+    };
 
 function KinChatFeed(props: {
   readonly orgId: string;
@@ -510,8 +528,14 @@ function KinChatFeed(props: {
   const { messages } = mergeKinFeed(streamed, { ...emptyKinChat, messages: acked });
   const widgets = new Map(streamed.widgets.map((widget) => [widget.widgetId, widget]));
   const feedRows = buildKinFeedRows(messages, props.viewer, expandedRuns, new Date(dayStartMs));
+  const activity = kinShownActivity(live.activity, messages);
+  const activityAgent =
+    activity === null
+      ? ""
+      : (props.viewer.agentNames.get(activity.agentId) ?? props.agentName ?? "Your lead");
+  // Last in the data, so the feed follows it to the end like a new message.
   const rows: ReadonlyArray<KinChatRow> =
-    pending.length === 0
+    pending.length === 0 && activity === null
       ? feedRows
       : [
           ...feedRows,
@@ -520,7 +544,24 @@ function KinChatFeed(props: {
             key: `pending:${entry.clientMessageId}`,
             entry,
           })),
+          ...(activity === null
+            ? []
+            : [{ type: "activity" as const, key: "activity", activity, agentName: activityAgent }]),
         ];
+  // Working phases read as one status; a change of meaning (waiting, failed, too late) speaks again.
+  const announceKey =
+    activity === null
+      ? null
+      : `${activity.agentId}:${kinActivityWorking(activity) ? "working" : activity.phase}`;
+  const announced = useRef<string | null>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tells VoiceOver and TalkBack once per status, not on each phase or timer
+  useEffect(() => {
+    const previous = announced.current;
+    announced.current = announceKey;
+    if (announceKey === null || activity === null || previous === announceKey) return;
+    AccessibilityInfo.announceForAccessibility(kinActivityLabel(activity, activityAgent));
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- the key is the announcement's identity
+  }, [announceKey]);
   const followsEnd = kinFollowsEnd(follow);
   const unseen = followsEnd ? 0 : kinUnseenCount(messages, follow.seenSeq, props.viewer.personId);
   const loading = paging.request !== null;
@@ -603,7 +644,9 @@ function KinChatFeed(props: {
   const markSeen = ({ viewableItems }: OnViewableItemsChangedInfo<KinChatRow>) => {
     const seq = Math.max(
       0,
-      ...viewableItems.map((token) => (token.item.type === "pending" ? 0 : kinRowSeq(token.item))),
+      ...viewableItems.map((token) =>
+        token.item.type === "pending" || token.item.type === "activity" ? 0 : kinRowSeq(token.item),
+      ),
     );
     if (seq > 0) transition({ type: "seen", seq });
   };
@@ -661,6 +704,8 @@ function KinChatFeed(props: {
         );
       case "day":
         return <KinDayLine row={item} />;
+      case "activity":
+        return <KinActivityRow activity={item.activity} agentName={item.agentName} />;
     }
   };
 

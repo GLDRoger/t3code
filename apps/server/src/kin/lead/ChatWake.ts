@@ -22,6 +22,7 @@ import { forkParked } from "../../serverActivation.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
+import * as ChatActivity from "./chatActivity.ts";
 
 const decodeTap = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Struct({ actionId: TrimmedNonEmptyString })),
@@ -89,14 +90,23 @@ const make = Effect.gen(function* () {
         const event: KinEvent = Option.isSome(actionId)
           ? { ...base, _tag: "widget.action", actionId: actionId.value }
           : { ...base, _tag: "chat.message" };
-        yield* queue.enqueue(event).pipe(
+        const queued = yield* queue.enqueue(event).pipe(
+          Effect.asSome,
           Effect.catchTags({
-            KinEventQueueRetiredAgent: () => Effect.void,
-            KinEventQueueUnknownAgent: () => Effect.void,
+            KinEventQueueRetiredAgent: () => Effect.succeedNone,
+            KinEventQueueUnknownAgent: () => Effect.succeedNone,
             KinEventQueueConflict: (error) =>
-              Effect.logWarning("Kin chat wake-up conflicts with a stored event", error),
+              Effect.logWarning("Kin chat wake-up conflicts with a stored event", error).pipe(
+                Effect.as(Option.none()),
+              ),
           }),
         );
+        if (Option.isSome(queued) && !queued.value.duplicate)
+          yield* ChatActivity.enqueued(hub, {
+            orgId: message.orgId,
+            agentId,
+            chatId: message.chatId,
+          });
       }
     },
     Effect.catchCause((cause) => Effect.logError("Kin chat wake-up failed", { cause })),

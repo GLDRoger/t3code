@@ -1,4 +1,5 @@
 import type {
+  KinAgentId,
   KinChatId,
   KinChatMember,
   KinChatSummary,
@@ -305,6 +306,26 @@ describe("kin chat feed", () => {
     const state = applyKinChatEvent(emptyKinChat, backlog([], 0));
     expect(applyKinChatEvent(state, { _tag: "member", member: member(null) }).left).toBe(false);
     expect(applyKinChatEvent(state, { _tag: "member", member: member(at(4)) }).left).toBe(true);
+  });
+
+  it("holds the lead's activity from the stream and its snapshots, and clears it on idle", () => {
+    const working = { agentId: "lead" as KinAgentId, phase: "started", since: 1 } as const;
+    let state = applyKinChatEvent(emptyKinChat, { _tag: "activity", ...working });
+    expect(state.activity).toEqual(working);
+    // A repeat changes nothing; an older host's backlog, without the field, keeps it.
+    expect(applyKinChatEvent(state, { _tag: "activity", ...working })).toBe(state);
+    expect(applyKinChatEvent(state, backlog([], 0))).toBe(state);
+    state = applyKinChatEvent(state, { _tag: "activity", ...working, phase: "notes_read" });
+    expect(state.activity?.phase).toBe("notes_read");
+    // A reconnect's snapshot says the wake-up ended while away.
+    expect(applyKinChatEvent(state, { ...backlog([], 0), activity: null }).activity).toBeNull();
+    expect(
+      applyKinChatEvent(state, { _tag: "reset", lastSeq: 9, activity: working }).activity,
+    ).toEqual(working);
+    expect(
+      applyKinChatEvent(state, { _tag: "activity", ...working, phase: "idle", since: 2 }).activity,
+    ).toBeNull();
+    expect(trimKinChatForCache(state).activity).toBeNull();
   });
 
   it("moves read marks forward only", () => {

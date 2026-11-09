@@ -1,6 +1,7 @@
 import {
   CommandId,
   KinAgentId,
+  KinChatId,
   KinLead,
   KinOrgId,
   KinWakeupId,
@@ -34,6 +35,8 @@ import * as Memory from "../memory/Memory.ts";
 import * as Routines from "../triggers/routines.ts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
+import { KinChatHub } from "../chat/KinChatHub.ts";
+import * as ChatActivity from "./chatActivity.ts";
 import * as KinBudget from "./KinBudget.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
@@ -88,6 +91,9 @@ const RunningRow = Schema.Struct({
   startedAt: Schema.Number,
 });
 const decodeLead = Schema.decodeUnknownEffect(LeadRow);
+// A run the stop switch interrupted is "stopped": its events wait for the resume, not a retry.
+const endedInFailure = (status: string | undefined) =>
+  status === "failed" || status === "timed_out";
 const decodeRunning = Schema.decodeUnknownEffect(RunningRow);
 const ulid = Effect.gen(function* () {
   const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -114,6 +120,7 @@ const make = Effect.gen(function* () {
   const prompt = yield* KinLeadPrompt;
   const identity = yield* KinIdentity.KinIdentity;
   const registry = yield* KinLeadRegistry.KinLeadRegistry;
+  const hub = yield* KinChatHub;
   const projects = yield* ProjectService.ProjectService;
   const launch = yield* ThreadLaunchService.ThreadLaunchService;
   const threads = yield* ThreadManagementService.ThreadManagementService;
@@ -259,6 +266,7 @@ const make = Effect.gen(function* () {
           commandId: CommandId.make(`kin-settle:${row.wakeupId}`),
           byOwnAgent: true,
         });
+      return stopped ? "stopped" : status;
     },
     (effect, row) =>
       effect.pipe(
@@ -269,6 +277,25 @@ const make = Effect.gen(function* () {
         ),
       ),
   );
+  // Settles the chats' activity when the scope closes; queue state has settled by then.
+  const trackChats = Effect.fn("WakeupRunner.trackChats")(function* (
+    orgId: KinOrgId,
+    agentId: KinAgentId,
+    chatIds: ReadonlyArray<KinChatId>,
+    failed: () => boolean,
+  ) {
+    yield* Effect.acquireRelease(Effect.void, (_, exit) =>
+      ChatActivity.settle(hub, {
+        orgId,
+        agentId,
+        chatIds,
+        failed: (Exit.isFailure(exit) && !Exit.hasInterrupts(exit)) || failed(),
+      }).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.catchCause((cause) => Effect.logWarning("Kin chat activity settle failed", cause)),
+      ),
+    );
+  });
   const clearMissingThread = Effect.fn("WakeupRunner.clearMissingThread")(function* (
     row: typeof RunningRow.Type,
   ) {
@@ -356,6 +383,9 @@ const make = Effect.gen(function* () {
               ),
           );
           row = { ...row, startedAt: yield* Clock.currentTimeMillis };
+          let failed = false;
+          const claimedChats = ChatActivity.chatIdsOf(events);
+          yield* trackChats(orgId, agentId, claimedChats, () => failed);
           yield* Effect.gen(function* () {
             if (yield* paused(orgId)) {
               yield* queue.release({
@@ -372,6 +402,7 @@ const make = Effect.gen(function* () {
               return yield* retire(current);
             }
             let cheapOnly = false;
+            let deferredUntil: number | undefined;
             for (const priority of new Set(events.map((item) => item.priority))) {
               const admission = yield* budget.admit(orgId, priority);
               cheapOnly ||= admission.cheapOnly;
@@ -390,7 +421,18 @@ const make = Effect.gen(function* () {
                   budgetDeferred: true,
                 });
                 events = events.filter((event) => !deferred.has(event.eventId));
+                deferredUntil = Math.max(deferredUntil ?? 0, admission.nextReset);
               }
+            }
+            if (deferredUntil !== undefined) {
+              const running = new Set(ChatActivity.chatIdsOf(events));
+              yield* hub.setActivity({
+                orgId,
+                agentId,
+                chatIds: claimedChats.filter((chatId) => !running.has(chatId)),
+                phase: "budget",
+                resumesAt: deferredUntil,
+              });
             }
             const routines = yield* Effect.serviceOption(Routines.KinRoutines);
             if (Option.isSome(routines))
@@ -403,6 +445,12 @@ const make = Effect.gen(function* () {
               yield* queue.finish({ orgId, wakeupId, status: "completed" });
               return;
             }
+            yield* hub.setActivity({
+              orgId,
+              agentId,
+              chatIds: ChatActivity.chatIdsOf(events),
+              phase: "started",
+            });
             const budgetContext = yield* budget.promptContext(orgId);
             const pinned = yield* memory.prepareWakeup(orgId, wakeupId).pipe(
               Effect.tapError((error) =>
@@ -549,7 +597,7 @@ const make = Effect.gen(function* () {
                 runId: run.id,
                 commandId: CommandId.make(`kin-stop-launch:${wakeupId}`),
               });
-            yield* wait(row, project.id);
+            failed = endedInFailure(yield* wait(row, project.id));
           }).pipe(
             Effect.onExit((exit) =>
               Exit.isFailure(exit)
@@ -642,11 +690,26 @@ const make = Effect.gen(function* () {
               threadId: projection.thread.id,
             });
             yield* registry.register(projection.thread.id, { ...row, level: record.level });
-            yield* wait(row, projection.thread.projectId).pipe(
-              Effect.onExit((exit) =>
-                Exit.isFailure(exit)
-                  ? cleanup(row, Exit.hasInterrupts(exit)).pipe(Effect.ignore)
-                  : Effect.void,
+            const chats = yield* sql<{ chatId: string }>`
+              SELECT DISTINCT json_extract(json, '$.chatId') AS "chatId" FROM kin_events
+              WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId}
+                AND json_extract(json, '$.chatId') IS NOT NULL`;
+            let failed = false;
+            const chatIds = chats.map((chat) => KinChatId.make(chat.chatId));
+            yield* trackChats(row.orgId, row.agentId, chatIds, () => failed);
+            yield* hub.setActivity({
+              orgId: row.orgId,
+              agentId: row.agentId,
+              chatIds,
+              phase: "started",
+            });
+            failed = endedInFailure(
+              yield* wait(row, projection.thread.projectId).pipe(
+                Effect.onExit((exit) =>
+                  Exit.isFailure(exit)
+                    ? cleanup(row, Exit.hasInterrupts(exit)).pipe(Effect.ignore)
+                    : Effect.void,
+                ),
               ),
             );
           }),

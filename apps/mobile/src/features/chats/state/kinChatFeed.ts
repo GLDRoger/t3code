@@ -2,6 +2,8 @@ import {
   EnvironmentAuthorizationError,
   KinTaskCardState,
   type EnvironmentId,
+  type KinChatActivity,
+  type KinChatActivityPhase,
   type KinChatHistoryInput,
   type KinChatId,
   type KinMessage,
@@ -515,6 +517,88 @@ export function kinChatStatusLine(widgets: ReadonlyArray<KinWidget>): string | n
   }
   if (working === 0) return null;
   return working === 1 ? "Working on 1 task" : `Working on ${working} tasks`;
+}
+
+// Lead activity
+
+/** Phases of a running wake-up; queued, paused and the end states are not "working". */
+const WORKING_PHASES: ReadonlySet<KinChatActivityPhase> = new Set([
+  "started",
+  "notes_read",
+  "notes_write",
+  "delegating",
+  "approval",
+  "scheduling",
+]);
+export const KIN_STILL_WORKING_MS = 45_000;
+
+export const kinActivityWorking = (activity: KinChatActivity) => WORKING_PHASES.has(activity.phase);
+
+/**
+ * The activity the feed's end shows, or null. A working phase hides once the lead has posted
+ * since it began: the reply landed, and its next tool call brings the row back. A failure or a
+ * late reply hides once someone writes again.
+ */
+export function kinShownActivity(
+  activity: KinChatActivity | null | undefined,
+  messages: ReadonlyArray<KinMessage>,
+): KinChatActivity | null {
+  if (!activity || activity.phase === "idle") return null;
+  const working = kinActivityWorking(activity);
+  if (!working && activity.phase !== "failed" && activity.phase !== "reply_late") return activity;
+  const latest = messages.findLast((message) =>
+    working
+      ? message.author._tag === "agent" && message.author.agentId === activity.agentId
+      : message.author._tag === "human",
+  );
+  return latest !== undefined && Date.parse(latest.createdAt) >= activity.since ? null : activity;
+}
+
+/** Milliseconds until a working phase reads "Still working", or null when it never will. */
+export function kinStillWorkingIn(activity: KinChatActivity, nowMs: number): number | null {
+  if (!kinActivityWorking(activity)) return null;
+  return Math.max(0, activity.since + KIN_STILL_WORKING_MS - nowMs);
+}
+
+/** What the lead is doing, from the owner's side. */
+export function kinActivityCopy(input: {
+  readonly activity: KinChatActivity;
+  readonly agentName: string;
+  readonly stillWorking: boolean;
+  readonly formatTime: (epochMs: number) => string;
+}): string {
+  const { activity, agentName: name } = input;
+  const text = (() => {
+    switch (activity.phase) {
+      case "queued":
+        return `Waiting for ${name}…`;
+      case "budget":
+        return activity.resumesAt === undefined
+          ? `Paused: ${name}'s budget for today is used up.`
+          : `Paused: ${name}'s budget for today is used up. It resumes at ${input.formatTime(activity.resumesAt)}.`;
+      case "paused":
+        return "Kin is paused. Messages wait until you resume it.";
+      case "started":
+        return `${name} is reading your message…`;
+      case "notes_read":
+        return "Checking its notes…";
+      case "notes_write":
+        return "Saving to its notes…";
+      case "delegating":
+        return "Handing work to a worker…";
+      case "approval":
+        return "Preparing something for you to approve…";
+      case "scheduling":
+        return "Scheduling a follow-up…";
+      case "failed":
+        return `${name} couldn't finish. Send your message again to retry.`;
+      case "reply_late":
+        return `${name}'s reply came too late to post. Send your message again.`;
+      case "idle":
+        return "";
+    }
+  })();
+  return input.stillWorking && kinActivityWorking(activity) ? `${text} Still working.` : text;
 }
 
 /** The viewer and agent names from the host's `kin.orgs.list` answer. */

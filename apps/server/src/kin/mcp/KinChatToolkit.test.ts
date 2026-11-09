@@ -3,6 +3,7 @@ import { authorityLayer, startAgentWakeup } from "../chat/WakeupAuthority.testki
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as TestClock from "effect/testing/TestClock";
 import { FLOOR_GRANT_TTL_MS } from "../floor/FloorManager.ts";
+import { isReplyWindowClosed } from "../floor/KinFloor.ts";
 import * as FileSystem from "effect/FileSystem";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -11,6 +12,7 @@ import {
   AuthStandardClientScopes,
   EnvironmentId,
   KinAgentId,
+  KinChatError,
   KinMessageId,
   KinMemberId,
   KinOrgId,
@@ -26,6 +28,7 @@ import * as Result from "effect/Result";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 import { McpSchema, McpServer } from "effect/ai";
+import * as Schema from "effect/Schema";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import * as McpSessions from "../../mcp/McpSessionRegistry.ts";
@@ -738,6 +741,7 @@ const sendFloor = Effect.fn("test.sendFloor")(function* (input: FloorPost) {
     clientMessageId: input.clientMessageId ?? SecureRandom.uuidV4Unsafe(),
   }).pipe(Effect.result);
 });
+const isKinChatError = Schema.is(KinChatError);
 const failureOf = <A, E>(result: Result.Result<A, E>) => Result.getOrThrow(Result.flip(result));
 
 it.effect(
@@ -894,9 +898,14 @@ it.effect(
         floorGrant: grant.token,
       } as const;
       yield* TestClock.adjust(FLOOR_GRANT_TTL_MS);
-      assert.include(failureOf(yield* sendFloor(post)), { reason: "floor_not_granted" });
+      const late = failureOf(yield* sendFloor(post));
+      assert.include(late, { reason: "floor_not_granted" });
+      // The phone says the reply came too late only for a lapsed grant, not a newer run's.
+      assert.isTrue(isKinChatError(late) && isReplyWindowClosed(late));
       yield* human("human-2");
-      assert.include(failureOf(yield* sendFloor(post)), { reason: "floor_not_granted" });
+      const superseded = failureOf(yield* sendFloor(post));
+      assert.include(superseded, { reason: "floor_not_granted" });
+      assert.isFalse(isKinChatError(superseded) && isReplyWindowClosed(superseded));
       const [fresh] = yield* sql<{
         token: string;
         run_id: string;

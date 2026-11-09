@@ -1,5 +1,8 @@
 import type {
+  KinAgentId,
   KinChat,
+  KinChatActivity,
+  KinChatActivityPhase,
   KinChatId,
   KinMemberId,
   KinChatMember,
@@ -8,6 +11,7 @@ import type {
   KinWaitingItem,
   KinWidget,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -27,12 +31,34 @@ type ChatEvent =
   | { readonly type: "waiting.updated"; readonly item: KinWaitingItem }
   | { readonly type: "member.removed"; readonly member: KinChatMember }
   | {
+      readonly type: "activity.updated";
+      readonly chatId: KinChatId;
+      readonly activity: KinChatActivity;
+    }
+  | {
       readonly type: "read.updated";
       readonly chatId: KinChatId;
       readonly memberId: KinMemberId;
       readonly seq: number;
     };
 export type KinChatHubEvent = ChatEvent & { readonly orgId: KinOrgId };
+
+/** Phases a running wake-up reports; MCP tool calls move only these. */
+export const WORKING_PHASES: ReadonlySet<KinChatActivityPhase> = new Set([
+  "started",
+  "notes_read",
+  "notes_write",
+  "delegating",
+  "approval",
+  "scheduling",
+]);
+export interface ActivityInput {
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+  readonly chatIds: Iterable<KinChatId>;
+  readonly phase: KinChatActivityPhase;
+  readonly resumesAt?: number | undefined;
+}
 
 export class KinChatHub extends Context.Service<
   KinChatHub,
@@ -45,6 +71,19 @@ export class KinChatHub extends Context.Service<
       never,
       Scope.Scope
     >;
+    /** The chat's current activity, held in memory: a restart ends every wake-up. */
+    readonly activity: (
+      orgId: KinOrgId,
+      chatId: KinChatId,
+    ) => Effect.Effect<KinChatActivity | null>;
+    /** Sets each chat's activity, publishing only a changed phase. `idle` clears it. */
+    readonly setActivity: (input: ActivityInput) => Effect.Effect<void>;
+    /** Moves every chat the agent is working on to `phase`; others keep theirs. */
+    readonly setWorkingPhase: (
+      orgId: KinOrgId,
+      agentId: KinAgentId,
+      phase: KinChatActivityPhase,
+    ) => Effect.Effect<void>;
     /** Every organization's committed events, unfiltered. Server consumers only, never a client. */
     readonly subscribeAll: Effect.Effect<Stream.Stream<KinChatHubEvent>, never, Scope.Scope>;
   }
@@ -69,15 +108,58 @@ const make = Effect.gen(function* () {
     }
     return yield* PubSub.subscribe(hub);
   });
+  const deliver = Effect.fnUntraced(function* (event: KinChatHubEvent) {
+    const hub = hubs.get(event.orgId);
+    if (hub !== undefined) yield* PubSub.publish(hub, event);
+    if (all !== undefined) yield* PubSub.publish(all, event);
+  });
+  const activities = new Map<
+    string,
+    { readonly orgId: KinOrgId; readonly chatId: KinChatId; readonly activity: KinChatActivity }
+  >();
+  const activityKey = (orgId: KinOrgId, chatId: KinChatId) => `${orgId}:${chatId}`;
+  const setActivity = Effect.fn("KinChatHub.setActivity")(function* (input: ActivityInput) {
+    const since = yield* Clock.currentTimeMillis;
+    for (const chatId of new Set(input.chatIds)) {
+      const key = activityKey(input.orgId, chatId);
+      const held = activities.get(key)?.activity;
+      const unchanged =
+        input.phase === "idle"
+          ? held === undefined
+          : held?.phase === input.phase &&
+            held.agentId === input.agentId &&
+            held.resumesAt === input.resumesAt;
+      if (unchanged) continue;
+      const activity: KinChatActivity = {
+        agentId: input.agentId,
+        phase: input.phase,
+        since,
+        ...(input.resumesAt === undefined ? {} : { resumesAt: input.resumesAt }),
+      };
+      if (input.phase === "idle") activities.delete(key);
+      else activities.set(key, { orgId: input.orgId, chatId, activity });
+      // Activity is memory-only, so it publishes at once rather than after a commit.
+      yield* deliver({ type: "activity.updated", orgId: input.orgId, chatId, activity });
+    }
+  });
   return KinChatHub.of({
     publish: Effect.fn("KinChatHub.publish")(function (event) {
-      return sql.afterCommit(
-        Effect.gen(function* () {
-          const hub = hubs.get(event.orgId);
-          if (hub !== undefined) yield* PubSub.publish(hub, event);
-          if (all !== undefined) yield* PubSub.publish(all, event);
-        }),
-      );
+      return sql.afterCommit(deliver(event));
+    }),
+    activity: Effect.fn("KinChatHub.activity")(function* (orgId, chatId) {
+      return activities.get(activityKey(orgId, chatId))?.activity ?? null;
+    }),
+    setActivity,
+    setWorkingPhase: Effect.fn("KinChatHub.setWorkingPhase")(function* (orgId, agentId, phase) {
+      const chatIds = [...activities.values()]
+        .filter(
+          (held) =>
+            held.orgId === orgId &&
+            held.activity.agentId === agentId &&
+            WORKING_PHASES.has(held.activity.phase),
+        )
+        .map((held) => held.chatId);
+      if (chatIds.length > 0) yield* setActivity({ orgId, agentId, chatIds, phase });
     }),
     subscribeAll: Effect.gen(function* () {
       const created = yield* PubSub.unbounded<KinChatHubEvent>();

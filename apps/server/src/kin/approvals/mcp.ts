@@ -12,6 +12,7 @@ import { McpInvocationContext } from "../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
 import { ThreadManagementService } from "../../orchestration-v2/ThreadManagementService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { announceToolPhase } from "../mcp/toolPhase.ts";
 import * as RequestAction from "./RequestAction.ts";
 
 // Reads `KinIdentity`, which the Kin MCP endpoint provides per call: `KinServer` reaches the judge.
@@ -70,6 +71,7 @@ const handlers = McpToolAccess.toLayer(
                 isKinChatError(error) && error.reason === "not_allowed" ? notALead : unavailable,
               ),
             );
+          yield* announceToolPhase("approval");
           return yield* requests.request(agent, input);
         }),
       ),

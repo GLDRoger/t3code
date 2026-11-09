@@ -23,7 +23,11 @@ import { event, harness, seed, orgId } from "./WakeupRunner.testkit.ts";
 
 const external = Layer.mergeAll(
   Layer.mock(ChatService.KinChatService)({}),
-  Layer.mock(ChatHub.KinChatHub)({ subscribeAll: Effect.succeed(Stream.never) }),
+  Layer.mock(ChatHub.KinChatHub)({
+    subscribeAll: Effect.succeed(Stream.never),
+    activity: () => Effect.succeed(null),
+    setActivity: () => Effect.void,
+  }),
   ServerConfig.layerTest(process.cwd(), { prefix: "kin-lead-layer-" }),
   Layer.mock(VcsProcess.VcsProcess)({}),
 ).pipe(Layer.provideMerge(NodeServices.layer));

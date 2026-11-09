@@ -406,8 +406,15 @@ it.effect("resets large backlogs and bounds a resume to the current snapshot", (
       Option.getOrThrow(
         yield* Stream.runHead(chat.subscribe(person, { chatId: direct.chatId, afterSeq: 0 })),
       ),
-      { _tag: "reset", lastSeq: 201, lastChangeSeq: 201 },
+      { _tag: "reset", lastSeq: 201, lastChangeSeq: 201, activity: null },
     );
+    // A phone that reconnects mid-wake-up sees the current phase in its backlog.
+    yield* Context.get(context, Hub.KinChatHub).setActivity({
+      orgId: person.orgId,
+      agentId: KinAgentId.make("lead"),
+      chatIds: [direct.chatId],
+      phase: "started",
+    });
     const resume = Option.getOrThrow(
       yield* Stream.runHead(chat.subscribe(person, { chatId: direct.chatId, afterSeq: 1 })),
     );
@@ -416,6 +423,7 @@ it.effect("resets large backlogs and bounds a resume to the current snapshot", (
       assert.strictEqual(resume.messages.length, 200);
       assert.strictEqual(resume.messages[0]?.seq, 2);
       assert.strictEqual(resume.lastSeq, 201);
+      assert.strictEqual(resume.activity?.phase, "started");
     }
     const sql = yield* SqlClient.SqlClient;
     yield* sql`UPDATE kin_messages SET body = 'Offline edit' WHERE org_id = ${person.orgId} AND chat_id = ${direct.chatId}`;
@@ -429,7 +437,12 @@ it.effect("resets large backlogs and bounds a resume to the current snapshot", (
           }),
         ),
       ),
-      { _tag: "reset", lastSeq: 201, lastChangeSeq: 402 },
+      {
+        _tag: "reset",
+        lastSeq: 201,
+        lastChangeSeq: 402,
+        activity: { agentId: KinAgentId.make("lead"), phase: "started", since: 0 },
+      },
     );
     // A client keeps its change cursor frozen while live, so the stream must refresh it.
     const events = yield* Stream.toQueue(

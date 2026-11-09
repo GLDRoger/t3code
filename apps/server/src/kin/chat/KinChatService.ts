@@ -588,14 +588,23 @@ const make = Effect.gen(function* () {
             afterSeq: input.afterSeq ?? 0,
             afterChangeSeq: input.afterChangeSeq,
           });
+          // Read after subscribing, so a change in between arrives live; repeats are idempotent.
+          const activity = () => hub.activity(identity.orgId, input.chatId);
+          const current = yield* activity();
           const backlog: KinChatStreamEvent = resumed.reset
-            ? { _tag: "reset", lastSeq: resumed.lastSeq, lastChangeSeq: resumed.lastChangeSeq }
+            ? {
+                _tag: "reset",
+                lastSeq: resumed.lastSeq,
+                lastChangeSeq: resumed.lastChangeSeq,
+                activity: current,
+              }
             : {
                 _tag: "backlog",
                 lastSeq: resumed.lastSeq,
                 lastChangeSeq: resumed.lastChangeSeq,
                 messages: resumed.messages,
                 widgets: resumed.widgets,
+                activity: current,
               };
           const messageChanges = new Map<string, number>();
           const revisions = new Map(
@@ -611,7 +620,13 @@ const make = Effect.gen(function* () {
             });
             cursor = { lastSeq: next.lastSeq, lastChangeSeq: next.lastChangeSeq };
             delivered = 0;
-            if (next.reset) return { _tag: "reset", ...cursor } satisfies KinChatStreamEvent;
+            const activityNow = yield* activity();
+            if (next.reset)
+              return {
+                _tag: "reset",
+                ...cursor,
+                activity: activityNow,
+              } satisfies KinChatStreamEvent;
             // The client already holds rows and widgets at the versions this stream delivered.
             const messages = next.messages.filter(
               (m) => (m.changeSeq ?? m.seq) !== messageChanges.get(m.messageId),
@@ -621,7 +636,13 @@ const make = Effect.gen(function* () {
             );
             for (const m of messages) messageChanges.set(m.messageId, m.changeSeq ?? m.seq);
             for (const w of widgets) revisions.set(w.widgetId, w.revision);
-            return { _tag: "backlog", ...cursor, messages, widgets } satisfies KinChatStreamEvent;
+            return {
+              _tag: "backlog",
+              ...cursor,
+              messages,
+              widgets,
+              activity: activityNow,
+            } satisfies KinChatStreamEvent;
           });
           return Stream.concat(
             Stream.succeed(backlog),
@@ -657,6 +678,10 @@ const make = Effect.gen(function* () {
                   case "member.removed":
                     return event.member.chatId === input.chatId
                       ? Option.some<KinChatStreamEvent>({ _tag: "member", member: event.member })
+                      : Option.none();
+                  case "activity.updated":
+                    return event.chatId === input.chatId
+                      ? Option.some<KinChatStreamEvent>({ _tag: "activity", ...event.activity })
                       : Option.none();
                   case "read.updated":
                     return event.chatId === input.chatId
@@ -716,6 +741,8 @@ const make = Effect.gen(function* () {
             initial.waiting.map((item) => [item.waitingId, JSON.stringify(item)]),
           );
           const live = Stream.mergeAll(streams, { concurrency: "unbounded" }).pipe(
+            // Activity changes no summary; skip the re-read.
+            Stream.filter(({ event }) => event.type !== "activity.updated"),
             Stream.mapEffect(({ viewer, event }) =>
               Effect.gen(function* (): Effect.fn.Return<KinChatListEvent, ServiceError> {
                 if (event.type === "waiting.updated")

@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import { KinChatId, KinMemberId, KinOrgId, KinPersonId } from "@t3tools/contracts";
+import { KinAgentId, KinChatId, KinMemberId, KinOrgId, KinPersonId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
@@ -74,5 +74,28 @@ it.effect("delivers only committed viewer events and isolates organizations", ()
       event,
       { ...event, seq: 2 },
     ]);
+
+    // Activity reaches only the chat's members, and only when its phase changes.
+    const agentId = KinAgentId.make("lead");
+    const unjoined = KinChatId.make("unjoined");
+    const activity = (phase: "started" | "notes_read" | "idle") => ({
+      type: "activity.updated" as const,
+      orgId,
+      chatId,
+      activity: { agentId, phase, since: 0 },
+    });
+    yield* hub.setActivity({ orgId, agentId, chatIds: [chatId, unjoined], phase: "started" });
+    yield* hub.setActivity({ orgId, agentId, chatIds: [chatId], phase: "started" });
+    yield* hub.setWorkingPhase(orgId, KinAgentId.make("other"), "notes_read");
+    yield* hub.setWorkingPhase(orgId, agentId, "notes_read");
+    yield* hub.setActivity({ orgId, agentId, chatIds: [chatId], phase: "idle" });
+    yield* hub.setActivity({ orgId, agentId, chatIds: [chatId], phase: "idle" });
+    assert.deepStrictEqual(yield* Stream.runCollect(first.pipe(Stream.take(3))), [
+      activity("started"),
+      activity("notes_read"),
+      activity("idle"),
+    ]);
+    assert.isNull(yield* hub.activity(orgId, chatId));
+    assert.strictEqual((yield* hub.activity(orgId, unjoined))?.phase, "notes_read");
   }).pipe(Effect.provide(layer)),
 );

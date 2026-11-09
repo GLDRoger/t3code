@@ -426,25 +426,13 @@ function parts(options: HarnessOptions) {
   const launch = ThreadLaunch.layer.pipe(
     Layer.provide(Layer.mergeAll(external, management, receipts, IdAllocator.layer)),
   );
+  // One hub instance, so a test reads the activity the runner publishes.
+  const hub = Hub.layer.pipe(Layer.provideMerge(KinChatRepository.layer));
   const kin = Layer.mergeAll(
     KinEventQueue.layer,
-    KinStop.layer.pipe(
-      Layer.provide(
-        Layer.mergeAll(
-          KinEventQueue.layer,
-          Hub.layer.pipe(Layer.provideMerge(KinChatRepository.layer)),
-        ),
-      ),
-    ),
-    Budget.layer.pipe(
-      Layer.provide(
-        Layer.mergeAll(
-          MemoryCache.layer,
-          KinEventQueue.layer,
-          Hub.layer.pipe(Layer.provideMerge(KinChatRepository.layer)),
-        ),
-      ),
-    ),
+    hub,
+    KinStop.layer.pipe(Layer.provide(Layer.mergeAll(KinEventQueue.layer, hub))),
+    Budget.layer.pipe(Layer.provide(Layer.mergeAll(MemoryCache.layer, KinEventQueue.layer, hub))),
     KinLeadRegistry.layer,
     KinIdentity.KinIdentity.layer.pipe(
       Layer.provide(KinChatRepository.layer),

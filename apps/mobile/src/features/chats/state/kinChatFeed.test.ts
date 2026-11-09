@@ -1,4 +1,10 @@
-import type { EnvironmentId, KinMessage, KinWidget } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  KinAgentId,
+  KinChatActivity,
+  KinMessage,
+  KinWidget,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
@@ -16,6 +22,8 @@ import {
   initialKinPaging,
   KIN_HISTORY_PAGE_SIZE,
   kinActivePaging,
+  kinActivityCopy,
+  KIN_STILL_WORKING_MS,
   kinChatScreenState,
   kinChatStatusLine,
   kinDayLabel,
@@ -29,6 +37,8 @@ import {
   kinMarkReadRearms,
   kinRowSeq,
   kinSeqToMarkRead,
+  kinShownActivity,
+  kinStillWorkingIn,
   kinUnseenCount,
   mergeKinFeed,
   type KinFeedRow,
@@ -632,5 +642,84 @@ describe("kinChatStatusLine", () => {
         task("c", "working", "2026-11-08T09:00:00.000Z"),
       ]),
     ).toBe("Working on 2 tasks");
+  });
+});
+
+describe("lead activity", () => {
+  const since = Date.parse("2026-11-08T09:00:00.000Z");
+  const activity = (phase: KinChatActivity["phase"], extra: Partial<KinChatActivity> = {}) =>
+    ({ agentId: KIN_FIXTURE_AGENT as KinAgentId, phase, since, ...extra }) as KinChatActivity;
+  const copy = (value: KinChatActivity, stillWorking = false) =>
+    kinActivityCopy({
+      activity: value,
+      agentName: "Tech lead",
+      stillWorking,
+      formatTime: () => "9:00",
+    });
+
+  it("says what the lead is doing, from the owner's side", () => {
+    expect(
+      (
+        [
+          "queued",
+          "budget",
+          "paused",
+          "started",
+          "notes_read",
+          "notes_write",
+          "delegating",
+          "approval",
+          "scheduling",
+          "failed",
+          "reply_late",
+        ] as const
+      ).map((phase) => copy(activity(phase))),
+    ).toEqual([
+      "Waiting for Tech lead…",
+      "Paused: Tech lead's budget for today is used up.",
+      "Kin is paused. Messages wait until you resume it.",
+      "Tech lead is reading your message…",
+      "Checking its notes…",
+      "Saving to its notes…",
+      "Handing work to a worker…",
+      "Preparing something for you to approve…",
+      "Scheduling a follow-up…",
+      "Tech lead couldn't finish. Send your message again to retry.",
+      "Tech lead's reply came too late to post. Send your message again.",
+    ]);
+    expect(copy(activity("budget", { resumesAt: since + 1 }))).toBe(
+      "Paused: Tech lead's budget for today is used up. It resumes at 9:00.",
+    );
+    expect(copy(activity("notes_read"), true)).toBe("Checking its notes… Still working.");
+    expect(copy(activity("failed"), true)).toBe(
+      "Tech lead couldn't finish. Send your message again to retry.",
+    );
+  });
+
+  it("marks only a working phase long-running, once, after 45 seconds", () => {
+    expect(kinStillWorkingIn(activity("started"), since + 10_000)).toBe(
+      KIN_STILL_WORKING_MS - 10_000,
+    );
+    expect(kinStillWorkingIn(activity("started"), since + 60_000)).toBe(0);
+    expect(kinStillWorkingIn(activity("queued"), since)).toBeNull();
+    expect(kinStillWorkingIn(activity("failed"), since)).toBeNull();
+  });
+
+  it("hides when the reply lands, and a failure once someone writes again", () => {
+    const reply = agentMessage(10, { createdAt: "2026-11-08T09:00:30.000Z" });
+    const earlier = agentMessage(9, { createdAt: "2026-11-08T08:59:00.000Z" });
+    const owner = {
+      ...all.find((m) => m.author._tag === "human")!,
+      seq: 11,
+      createdAt: "2026-11-08T09:01:00.000Z",
+    };
+    expect(kinShownActivity(null, [])).toBeNull();
+    expect(kinShownActivity(activity("idle"), [])).toBeNull();
+    expect(kinShownActivity(activity("started"), [earlier])?.phase).toBe("started");
+    expect(kinShownActivity(activity("notes_read"), [earlier, reply])).toBeNull();
+    expect(kinShownActivity(activity("queued"), [reply])?.phase).toBe("queued");
+    expect(kinShownActivity(activity("failed"), [reply])?.phase).toBe("failed");
+    expect(kinShownActivity(activity("failed"), [reply, owner])).toBeNull();
+    expect(kinShownActivity(activity("reply_late"), [reply, owner])).toBeNull();
   });
 });

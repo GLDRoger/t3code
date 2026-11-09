@@ -1,4 +1,5 @@
 import {
+  KinChatActivity,
   KinChatSummary,
   KinMessage,
   KinWaitingItem,
@@ -111,6 +112,8 @@ export const KinChatState = Schema.Struct({
   /** The last backlog's `lastChangeSeq`; the `afterChangeSeq` that replays edits made offline. */
   changeSeq: Schema.Number,
   reads: Schema.Record(Schema.String, Schema.Number),
+  /** What the lead's wake-up is doing for this chat; null when nothing. Never cached. */
+  activity: Schema.optional(Schema.NullOr(KinChatActivity)),
   /** The server reported a gap of more than 200; reload the latest page with history. */
   needsHistoryReload: Schema.Boolean,
   /** The viewer left; the stream has ended. Never cached. */
@@ -217,15 +220,18 @@ export function applyKinChatEvent(state: KinChatState, event: KinChatStreamEvent
       const contiguousSeq = advanceContiguous(messages, filled);
       // Only a fully applied backlog moves it; live events keep this snapshot cursor.
       const changeSeq = event.lastChangeSeq ?? state.changeSeq;
+      // Older hosts send no activity; keep what the chat holds.
+      const activity = event.activity === undefined ? state.activity : event.activity;
       if (
         messages === state.messages &&
         widgets === state.widgets &&
         contiguousSeq === state.contiguousSeq &&
-        changeSeq === state.changeSeq
+        changeSeq === state.changeSeq &&
+        sameActivity(activity, state.activity)
       ) {
         return state;
       }
-      return { ...state, messages, widgets, contiguousSeq, changeSeq };
+      return { ...state, messages, widgets, contiguousSeq, changeSeq, activity };
     }
     case "reset":
       return {
@@ -235,7 +241,13 @@ export function applyKinChatEvent(state: KinChatState, event: KinChatStreamEvent
         contiguousSeq: event.lastSeq,
         changeSeq: event.lastChangeSeq ?? 0,
         needsHistoryReload: true,
+        activity: event.activity === undefined ? state.activity : event.activity,
       };
+    case "activity": {
+      const { _tag, ...held } = event;
+      const activity = held.phase === "idle" ? null : held;
+      return sameActivity(activity, state.activity) ? state : { ...state, activity };
+    }
     case "message": {
       const messages = mergeMessages(state.messages, [event.message], streamFloor(state));
       if (messages === state.messages) return state;
@@ -257,6 +269,19 @@ export function applyKinChatEvent(state: KinChatState, event: KinChatStreamEvent
       return { ...state, reads: { ...state.reads, [event.memberId]: event.seq } };
     }
   }
+}
+
+function sameActivity(
+  a: KinChatActivity | null | undefined,
+  b: KinChatActivity | null | undefined,
+): boolean {
+  if (!a || !b) return (a ?? null) === (b ?? null);
+  return (
+    a.agentId === b.agentId &&
+    a.phase === b.phase &&
+    a.since === b.since &&
+    a.resumesAt === b.resumesAt
+  );
 }
 
 /** A message from outside the stream, such as a send reply. It never advances `contiguousSeq`. */
@@ -282,6 +307,8 @@ export function trimKinChatForCache(state: KinChatState): KinChatState {
     ...state,
     messages,
     widgets: state.widgets.filter((widget) => kept.has(widget.messageId)),
+    // A cached "working" would be stale by the next open; the stream's backlog brings it back.
+    activity: null,
     left: false,
     closed: null,
   };

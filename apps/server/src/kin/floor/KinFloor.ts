@@ -61,6 +61,13 @@ const notGranted = new KinChatError({
   reason: "floor_not_granted",
   message: "The floor is not granted.",
 });
+const replyWindowClosed = new KinChatError({
+  reason: "floor_not_granted",
+  message: "The reply window closed before this post.",
+});
+/** The agent held a grant for the latest run but it expired unused. */
+export const isReplyWindowClosed = (error: KinChatError) =>
+  error.reason === replyWindowClosed.reason && error.message === replyWindowClosed.message;
 type Scope = { readonly orgId: KinOrgId; readonly chatId: KinChatId };
 type Authorization = { readonly runId: string | null };
 export class KinFloor extends Context.Service<
@@ -254,7 +261,12 @@ const make = Effect.gen(function* () {
         AND (${token ?? null} IS NULL OR token = ${token ?? null})
       ORDER BY expires_at, token LIMIT 1`;
       const grant = grants[0];
-      if (grant === undefined) return yield* notGranted;
+      if (grant === undefined) {
+        const expired = yield* sql`SELECT 1 FROM kin_floor_grants
+          WHERE org_id = ${identity.orgId} AND chat_id = ${chat.chatId} AND agent_id = ${identity.agentId}
+            AND run_id = ${run.run_id} AND consumed_at IS NULL AND expires_at <= ${now} LIMIT 1`;
+        return yield* expired.length > 0 ? replyWindowClosed : notGranted;
+      }
       const consumed = yield* sql`UPDATE kin_floor_grants SET consumed_at = ${now}
       WHERE org_id = ${identity.orgId} AND chat_id = ${chat.chatId} AND agent_id = ${identity.agentId}
         AND run_id = ${run.run_id} AND token = ${grant.token} AND consumed_at IS NULL AND expires_at > ${now}

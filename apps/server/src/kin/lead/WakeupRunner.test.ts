@@ -14,6 +14,7 @@ import {
   KinWakeupId,
   KinEvent,
   KinAgentId,
+  KinChatId,
   KinPersonId,
   ThreadId,
   RunId,
@@ -58,6 +59,10 @@ import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as EffectWorker from "../../orchestration-v2/EffectWorker.ts";
 import { provideDeterministicTestRuntime } from "../../orchestration-v2/testkit/DeterministicRuntime.ts";
 import { harness, seed, orgId, agentId, event } from "./WakeupRunner.testkit.ts";
+import * as ChatActivity from "./chatActivity.ts";
+import { announceToolPhase } from "../mcp/toolPhase.ts";
+import { McpInvocationContext } from "../../mcp/McpInvocationContext.ts";
+import * as Stream from "effect/Stream";
 
 const decodeEvent = Schema.decodeSync(KinEvent);
 const decodeUsage = Schema.decodeEffect(
@@ -73,8 +78,7 @@ const decodeUsage = Schema.decodeEffect(
     ),
   ),
 );
-const resolveAgent = Effect.fn("test.resolveAgent")(function* (threadId: ThreadId) {
-  const identity = yield* KinIdentity.KinIdentity;
+const scopeFor = Effect.fn("test.scopeFor")(function* (threadId: ThreadId) {
   const sessions = yield* McpSessionRegistry.McpSessionRegistry;
   const issued = yield* sessions.issue({
     threadId,
@@ -83,7 +87,34 @@ const resolveAgent = Effect.fn("test.resolveAgent")(function* (threadId: ThreadI
   const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
   const scope = yield* sessions.resolve(token);
   assert.isDefined(scope);
-  return yield* identity.resolveAgent(scope!);
+  return scope!;
+});
+const resolveAgent = Effect.fn("test.resolveAgent")(function* (threadId: ThreadId) {
+  return yield* (yield* KinIdentity.KinIdentity).resolveAgent(yield* scopeFor(threadId));
+});
+const chatId = KinChatId.make("owner-chat");
+const chatEvent = (id: string) =>
+  decodeEvent({
+    _tag: "chat.message",
+    orgId,
+    agentId,
+    eventId: id,
+    receivedAt: "1970-01-01T00:00:00.000Z",
+    dedupeKey: id,
+    provenance: { _tag: "system" },
+    chatId,
+    messageId: `message-${id}`,
+  });
+/** The phases the hub publishes for the owner's chat, in order. */
+const chatPhases = Effect.fn("test.chatPhases")(function* (count: number) {
+  const events = yield* (yield* ChatHub.KinChatHub).subscribeAll;
+  return yield* events.pipe(
+    Stream.filter((item) => item.type === "activity.updated" && item.chatId === chatId),
+    Stream.map((item) => (item.type === "activity.updated" ? item.activity.phase : "idle")),
+    Stream.take(count),
+    Stream.runCollect,
+    Effect.forkChild,
+  );
 });
 const run = Effect.fn("test.run")(function* () {
   const runner = yield* WakeupRunner.WakeupRunner;
@@ -180,6 +211,80 @@ describe("WakeupRunner", () => {
         assert.strictEqual(commits, 2);
       }).pipe(Effect.provide(harness({ writer })));
     }).pipe(provideDeterministicTestRuntime),
+  );
+  it.effect("reports a chat's activity from queued through a tool call to idle", () =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const hold = yield* Deferred.make<void>();
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const hub = yield* ChatHub.KinChatHub;
+        const sql = yield* SqlClient.SqlClient;
+        const phases = yield* chatPhases(4);
+        yield* (yield* KinEventQueue.KinEventQueue).enqueue(chatEvent("hello"));
+        yield* ChatActivity.enqueued(hub, { orgId, agentId, chatId });
+        const fiber = yield* run();
+        yield* Deferred.await(entered);
+        const [wakeup] = yield* sql<{ threadId: ThreadId }>`
+          SELECT thread_id AS "threadId" FROM kin_wakeups WHERE org_id = ${orgId}`;
+        const toolCall = announceToolPhase("notes_read").pipe(
+          Effect.provideService(McpInvocationContext, yield* scopeFor(wakeup!.threadId)),
+          Effect.provideService(ChatHub.KinChatHub, hub),
+          Effect.provideService(KinIdentity.KinIdentity, yield* KinIdentity.KinIdentity),
+        );
+        // A repeated phase publishes nothing.
+        yield* toolCall;
+        yield* toolCall;
+        yield* Deferred.succeed(hold, undefined);
+        yield* Fiber.join(fiber);
+        assert.deepStrictEqual(yield* Fiber.join(phases), [
+          "queued",
+          "started",
+          "notes_read",
+          "idle",
+        ]);
+        assert.isNull(yield* hub.activity(orgId, chatId));
+      }).pipe(Effect.scoped, Effect.provide(harness({ entered, hold })));
+    }).pipe(provideDeterministicTestRuntime),
+  );
+  it.effect("shows a failed chat wake-up until the owner writes again", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const hub = yield* ChatHub.KinChatHub;
+      const queue = yield* KinEventQueue.KinEventQueue;
+      const phases = yield* chatPhases(3);
+      yield* queue.enqueue(chatEvent("fails"));
+      yield* Fiber.join(yield* run());
+      assert.strictEqual((yield* hub.activity(orgId, chatId))?.phase, "failed");
+      yield* queue.enqueue(chatEvent("again"));
+      yield* ChatActivity.enqueued(hub, { orgId, agentId, chatId });
+      assert.deepStrictEqual(yield* Fiber.join(phases), ["started", "failed", "queued"]);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(harness({ failed: true })),
+      provideDeterministicTestRuntime,
+    ),
+  );
+  it.effect("reports a budget-deferred chat event with its reset time", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const hub = yield* ChatHub.KinChatHub;
+      const sql = yield* SqlClient.SqlClient;
+      yield* (yield* Budget.KinBudget).set(
+        [{ _tag: "person", orgId, personId: KinPersonId.make("owner") }],
+        { orgId, limits: { leadUnits: 0, workerUnits: 0 } },
+      );
+      const phases = yield* chatPhases(1);
+      yield* (yield* KinEventQueue.KinEventQueue).enqueue(chatEvent("over-budget"));
+      yield* Fiber.join(yield* run());
+      const [row] = yield* sql<{ notBefore: number }>`
+        SELECT not_before AS "notBefore" FROM kin_events WHERE org_id = ${orgId}`;
+      assert.deepStrictEqual(yield* Fiber.join(phases), ["budget"]);
+      assert.include(yield* hub.activity(orgId, chatId), {
+        phase: "budget",
+        resumesAt: row!.notBefore,
+      });
+    }).pipe(Effect.scoped, Effect.provide(harness()), provideDeterministicTestRuntime),
   );
   it.effect("uses the cheap model for exhausted P0 even when a routine is in the batch", () =>
     Effect.gen(function* () {

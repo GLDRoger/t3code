@@ -26,6 +26,8 @@ import { KinServer } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
+import { isReplyWindowClosed } from "../floor/KinFloor.ts";
+import { announceReplyLate } from "./toolPhase.ts";
 
 export const enabled = () => {
   const fiber = Fiber.getCurrent();
@@ -136,7 +138,12 @@ export const handlers = McpToolAccess.toLayer(KinChatToolkit, {
       return yield* post(agent, {
         ...input,
         clientMessageId: input.clientMessageId ?? SecureRandom.uuidV4Unsafe(),
-      }).pipe(Effect.mapError(failure));
+      }).pipe(
+        Effect.mapError(failure),
+        Effect.tapError((error) =>
+          isReplyWindowClosed(error) ? announceReplyLate(input.chatId) : Effect.void,
+        ),
+      );
     }),
   ),
   kin_chat_read: McpToolAccess.reads(

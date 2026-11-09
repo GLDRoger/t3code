@@ -257,17 +257,47 @@ export const KinChatListEvent = Schema.Union([
 ]);
 export type KinChatListEvent = typeof KinChatListEvent.Type;
 
+/** What a lead's wake-up is doing for a chat. `idle` clears it. */
+export const KinChatActivityPhase = Schema.Literals([
+  "queued",
+  "budget",
+  "paused",
+  "started",
+  "notes_read",
+  "notes_write",
+  "delegating",
+  "approval",
+  "scheduling",
+  "failed",
+  "reply_late",
+  "idle",
+]);
+export type KinChatActivityPhase = typeof KinChatActivityPhase.Type;
+export const KinChatActivity = Schema.Struct({
+  agentId: KinAgentId,
+  phase: KinChatActivityPhase,
+  /** Epoch ms when this phase began. */
+  since: NonNegativeInt,
+  /** Epoch ms when a `budget` phase lifts, when the server knows it. */
+  resumesAt: Schema.optional(NonNegativeInt),
+});
+export type KinChatActivity = typeof KinChatActivity.Type;
+
 export const KinChatStreamEvent = Schema.Union([
   Schema.TaggedStruct("backlog", {
     messages: Schema.Array(KinMessage),
     widgets: Schema.Array(KinWidget),
     lastSeq: NonNegativeInt,
     lastChangeSeq: Schema.optional(NonNegativeInt),
+    /** The chat's current activity; null when none. Absent from older servers. */
+    activity: Schema.optional(Schema.NullOr(KinChatActivity)),
   }),
   Schema.TaggedStruct("reset", {
     lastSeq: NonNegativeInt,
     lastChangeSeq: Schema.optional(NonNegativeInt),
+    activity: Schema.optional(Schema.NullOr(KinChatActivity)),
   }),
+  Schema.TaggedStruct("activity", KinChatActivity.fields),
   Schema.TaggedStruct("message", { message: KinMessage }),
   Schema.TaggedStruct("widget", { widget: KinWidget }),
   Schema.TaggedStruct("member", { member: KinChatMember }),
