@@ -48,7 +48,9 @@ export const collectMaterial = Effect.fn("DreamMaterial.collect")(
     const entries: Array<MaterialEntry> = [];
     const [lead] = yield* sql<{
       agentId: string;
-    }>`SELECT agent_id AS "agentId" FROM kin_leads WHERE org_id = ${orgId} ORDER BY agent_id LIMIT 1`;
+    }>`SELECT l.agent_id AS "agentId" FROM kin_leads l
+      JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+      WHERE l.org_id = ${orgId} AND a.retired_at IS NULL ORDER BY l.agent_id LIMIT 1`;
     const firstDay = from === 0 ? "" : ownerDate(from, input.timeZone);
     const lastDay = ownerDate(until, input.timeZone);
     for (const [path, text] of [...input.files].toSorted(([a], [b]) => (a < b ? -1 : 1))) {
