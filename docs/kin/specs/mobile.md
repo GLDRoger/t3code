@@ -239,14 +239,22 @@ Every screen handles the same seven states. Each state's copy is fixed below.
   - The thread was deleted: the thread screen shows its not-found state.
 - A PR chip, if present, opens the PR with the existing `useOpenPullRequest` (`native/useOpenPullRequest.ts`).
 
-**Deferral card.** Data: `KinDeferralCard` in `packages/contracts/src/kinLead.ts`: `{ itemId, title, dueAt, onDue: "remind" | "start" | "ask" | "chase", text }`. A disarmed deferral closes the widget (`closedAt`), and the card reads "Closed." with no buttons.
+**Deferral card.** Data: `KinDeferralCard` in `packages/contracts/src/kinLead.ts`: `{ itemId, title, dueAt, onDue: "remind" | "start" | "ask" | "chase", text, phase?, graceEndsAt? }`. The phase picks the buttons, which mirror `actionsFor` in `apps/server/src/kin/triggers/deferrals.ts`. Every button posts `value: itemId` (TRIG-7, TRIG-8).
 
-- It reads "Deferred to Fri 13 Nov, 9:00. I'll start then.", then the server's `text` when that adds something, a countdown ("Due in 3 days"), and buttons **Change** and **Just remind me** (hidden when `onDue` is already `remind`). Both post `value: itemId` (TRIG-7).
-- **Change** writes nothing on the server: it hands the item to the lead, which asks the owner what to change. The card says "Sent. Your lead will ask what to change." and its buttons stay usable. **Just remind me** re-arms the deferral and bumps the card, so its buttons stay off until the next revision.
+| Phase               | Reads                                                                                                                                   | Buttons                                                                  |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| none (confirm)      | "Deferred to Fri 13 Nov, 9:00. I'll start then.", the server's `text` when it adds something, "Due in 3 days"                           | **Change**, **Just remind me** (hidden when `onDue` is already `remind`) |
+| `heads_up`          | "Starting at 9:00." and "Starting in 12 min". Inside the grace window (`graceEndsAt`): "This was due at 9:00." then "Starting at 9:30." | **Start now**, **Monday**, **Cancel**                                    |
+| `asked`             | Titled "Needs your decision". The server's `text`, which names what changed: why Kin won't start on its own, or that it's late          | **Start now**, **Monday**, **Cancel**                                    |
+| `started`           | "Started."                                                                                                                              | none                                                                     |
+| closed (`closedAt`) | "Closed."                                                                                                                               | none                                                                     |
+
+- **Change** writes nothing on the server: it hands the item to the lead, which asks the owner what to change. The card says "Sent. Your lead will ask what to change." and its buttons stay usable. Every other button rewrites or closes the card, so its buttons stay off until the next revision.
+- The host may refuse **Start now** with `stopped`, `workers_blocked` or `below_l2`. The card's copy for each is in `KIN_START_NOW_REFUSALS`; it shows once the owner-tap dispatcher reports refusals back.
+- Taps stay refused while `deferralCardActionsReady` is false. The card then shows "Kin didn't take that answer. Tell your lead in the chat instead."
 - Notices belong to the revision they were raised on and disappear when the card changes. A retry of the same action on the same revision after a dropped send reuses its `clientActionId`.
 - The countdown follows the shared minute tick, never a timer of its own.
-- Follow-up: the `heads_up` phase (**Start now**, **Monday**, **Cancel** and its countdown) waits on TRIG-8 adding it to lane A's card contract.
-- All times are in the device timezone, written as "Fri 13 Nov, 9:00" (`Intl.DateTimeFormat`).
+- All times are in the device timezone, written as "Fri 13 Nov, 9:00". They are built from whole `Intl.DateTimeFormat` strings, because Hermes leaves `hour` and `minute` out of `formatToParts`.
 
 **Approval card.** It renders **only** from `kinClient.pendingAction({ pendingActionId })`, the server's pending action. The widget carries nothing but `pendingActionId`. Any agent-supplied text is shown last, quoted and labelled, and never as a title or a button. The exact content, top to bottom:
 
@@ -293,12 +301,12 @@ Hiding the buttons is a convenience, not the protection (DESIGN 9.3). The server
 
 - It registers categories once at install, with `Notifications.setNotificationCategoryAsync`:
 
-| Category id              | Actions (identifier: title)                                              | Action `options` (set on each action)                          |
-| ------------------------ | ------------------------------------------------------------------------ | -------------------------------------------------------------- |
-| `kin.approval`           | `open: Review`                                                           | `opensAppToForeground: true`, `isAuthenticationRequired: true` |
-| `kin.deferral.confirmed` | `change: Change`, `remind: Just remind me`                               | foreground                                                     |
-| `kin.deferral.heads_up`  | `start: Start now`, `monday: Monday`, `cancel: Cancel` (`isDestructive`) | foreground, auth required                                      |
-| `kin.message`            | none (tap opens chat)                                                    | n/a                                                            |
+| Category id              | Actions (identifier: title)                                                  | Action `options` (set on each action)                          |
+| ------------------------ | ---------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `kin.approval`           | `open: Review`                                                               | `opensAppToForeground: true`, `isAuthenticationRequired: true` |
+| `kin.deferral.confirmed` | `change: Change`, `remind: Just remind me`                                   | foreground                                                     |
+| `kin.deferral.heads_up`  | `start_now: Start now`, `monday: Monday`, `cancel: Cancel` (`isDestructive`) | foreground, auth required                                      |
+| `kin.message`            | none (tap opens chat)                                                        | n/a                                                            |
 
 - There is no "Approve" action on the notification. Approving needs the in-app biometric prompt and signature (approvals spec), so the lock screen offers **Review**, which opens `KinApproval`.
 - In phase 1 every action opens the app. Background actions are not reliable when the app has been killed.
@@ -363,7 +371,7 @@ Commands, from `apps/mobile`: `vp run typecheck` and `vp test run --project unit
 - `kinHost.test.ts`: probe classification (including a transport error and a defect) and host choice.
 - `kinStreams.test.ts`: across a session swap, the cached value comes first with `live: false`, the second subscription's `afterSeq` and `afterChangeSeq` come from the current state, no history page is re-read, `unavailable` backs off and resubscribes while other refusals close the chat, and a `left` event ends the chat, drops its cache entry and reaches the inbox.
 - `kinCardPresentation.test.ts`: the approval title template, the SHA short form, the checks summary, every `status` line, owner vs member eyebrow, Approve disabled while checks are pending.
-- `kinDeferralPresentation.test.ts`: the confirmed and closed cards, deferral time format across timezones, countdown boundaries, one posted action per tap, `clientActionId` reuse on retry, and notices tied to a revision.
+- `kinDeferralPresentation.test.ts`: each phase's buttons and lines, grace-window copy, deferral time format across timezones and without `formatToParts`, countdown boundaries, one posted action per tap, `clientActionId` reuse on retry, and notices tied to a revision.
 - `kinPushPayload.test.ts`: valid payloads route; `/threads/...`, `//evil`, query strings and malformed JSON are dropped; an action response produces one `widgetAction` per notification id.
 - `KinPushSender.test.ts`: category per widget kind; approval pushes only reach approver devices; skipped when a foreground subscription exists.
 - Upstream tests still pass: `dependency-graph.test.ts`, `reactCompilerCoverage.test.ts`, `notificationNavigation.test.ts`.
@@ -421,10 +429,10 @@ Commands, from `apps/mobile`: `vp run typecheck` and `vp test run --project unit
 
 **MOB-7 Deferral card** (UI)
 
-- What: the confirmed card, its countdown, and its closed state. The `heads_up` phase follows once TRIG-8 defines it.
-- Files: `widgets/KinDeferralCard.tsx`.
-- Depends on: MOB-6, TRIG-7.
-- Done when: Change and Just remind me each post one action, and a stale revision shows "This card changed".
+- What: the deferral card in every phase (confirm, `heads_up`, `asked`, `started`, closed), its countdown, and its refusal copy.
+- Files: `widgets/KinDeferralCard.tsx`, `widgets/kinDeferralPresentation.ts`.
+- Depends on: MOB-6, TRIG-7, TRIG-8.
+- Done when: each phase shows the server's buttons for it, each tap posts one action, and a stale revision shows "This card changed".
 
 **MOB-8 Approval card and sheet** (UI)
 

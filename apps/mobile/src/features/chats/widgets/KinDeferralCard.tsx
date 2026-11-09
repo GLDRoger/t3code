@@ -19,6 +19,7 @@ import {
   visibleKinCardStatus,
   type KinCardNotice,
   type KinCardStatus,
+  type KinCountdownKind,
   type KinDeferralActionId,
   type KinDeferralCardView,
 } from "./kinDeferralPresentation";
@@ -29,7 +30,7 @@ const NOTICE_CLASSES: Record<KinCardNotice["kind"], string> = {
   error: "text-danger-foreground",
 };
 
-/** A confirmed deferral: when Kin will act, and the owner's ways to change that. */
+/** A deferral at any phase: when Kin will act, and the owner's ways to change that. */
 export const KinDeferralCard = memo(function KinDeferralCard(props: {
   readonly deferral: KinDeferralCardView;
   readonly environmentId: EnvironmentId;
@@ -71,7 +72,7 @@ export const KinDeferralCard = memo(function KinDeferralCard(props: {
         importantForAccessibility="no"
         accessibilityElementsHidden
       >
-        Deferral
+        {deferral.eyebrow}
       </Text>
       <View accessible accessibilityLabel={deferral.accessibilityLabel} className="gap-1.5">
         <Text textRole="headline" className="font-t3-bold text-foreground">
@@ -83,7 +84,9 @@ export const KinDeferralCard = memo(function KinDeferralCard(props: {
           </Text>
         ))}
       </View>
-      {deferral.countdownTo === null ? null : <KinCountdownLine targetMs={deferral.countdownTo} />}
+      {deferral.countdown === null ? null : (
+        <KinCountdownLine targetMs={deferral.countdown.to} kind={deferral.countdown.kind} />
+      )}
       {status?.notice == null ? null : (
         <Text
           accessibilityRole={status.notice.kind === "sent" ? undefined : "alert"}
@@ -118,11 +121,11 @@ export const KinDeferralCard = memo(function KinDeferralCard(props: {
 });
 
 /** Subscribes to the shared minute tick only while a countdown shows; never repaints faster. */
-function KinCountdownLine(props: { readonly targetMs: number }) {
+function KinCountdownLine(props: { readonly targetMs: number; readonly kind: KinCountdownKind }) {
   const nowMs = useNowMinuteMs();
   return (
     <Text textRole="footnote" className="font-t3-medium text-foreground-muted">
-      {kinDeferralCountdown(props.targetMs, nowMs)}
+      {kinDeferralCountdown(props.targetMs, nowMs, props.kind)}
     </Text>
   );
 }

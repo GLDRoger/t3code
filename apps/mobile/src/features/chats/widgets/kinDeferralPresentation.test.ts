@@ -1,16 +1,19 @@
 import { KinChatError, type KinWidget, type KinWidgetsActInput } from "@t3tools/contracts";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   KIN_CHANGE_SENT_TEXT,
   KIN_SEND_FAILED_TEXT,
   KIN_SENT_CARD_TEXT,
   KIN_STALE_CARD_TEXT,
+  KIN_START_NOW_REFUSALS,
   createKinCardActions,
+  formatKinDeferralClock,
   formatKinDeferralTime,
   kinCardStatusAfter,
   kinDeferralCardView,
   kinDeferralCountdown,
+  kinStartNowRefusalNotice,
   visibleKinCardStatus,
   type KinDeferralActionId,
 } from "./kinDeferralPresentation";
@@ -55,7 +58,8 @@ describe("kinDeferralCardView", () => {
     expect(confirmed.phase).toBe("confirmed");
     expect(confirmed.title).toBe("Rate limiting");
     expect(confirmed.lines).toEqual(["Deferred to Fri 13 Nov, 9:00. I'll start then."]);
-    expect(confirmed.countdownTo).toBe(Date.parse(DUE));
+    expect(confirmed.eyebrow).toBe("Deferral");
+    expect(confirmed.countdown).toEqual({ to: Date.parse(DUE), kind: "due" });
     expect(actionIds(deferral())).toEqual(["change", "remind"]);
     expect(actionIds(deferral({ onDue: "remind" }))).toEqual(["change"]);
     expect(view(deferral({ onDue: "remind", text: "" })).lines).toEqual([
@@ -69,7 +73,71 @@ describe("kinDeferralCardView", () => {
     const closed = view(deferral({}, { closedAt: "2026-11-13T09:00:00.000Z" }));
     expect(closed.phase).toBe("closed");
     expect(closed.actions).toEqual([]);
-    expect(closed.countdownTo).toBeNull();
+    expect(closed.countdown).toBeNull();
+    expect(view(deferral({ phase: "heads_up" }, { closedAt: DUE })).actions).toEqual([]);
+  });
+
+  // Mirrors `actionsFor` in apps/server/src/kin/triggers/deferrals.ts.
+  it.each([
+    ["confirm", {}, ["change", "remind"]],
+    ["confirm that only reminds", { onDue: "remind" }, ["change"]],
+    ["heads_up", { phase: "heads_up" }, ["start_now", "monday", "cancel"]],
+    ["asked", { phase: "asked" }, ["start_now", "monday", "cancel"]],
+    ["started", { phase: "started" }, []],
+  ])("offers the host's actions on a %s card", (_name, state, ids) => {
+    expect(actionIds(deferral(state))).toEqual(ids);
+  });
+
+  const GRACE = "2026-11-13T09:30:00.000Z";
+  it.each([
+    [
+      "heads_up names the start time, not the host's owner-zone text",
+      { phase: "heads_up", text: "Starting Rate limiting at 9:00." },
+      ["Starting at 9:00."],
+      { to: Date.parse(DUE), kind: "start" },
+    ],
+    [
+      "heads_up in the grace window says it was due, and when it starts",
+      {
+        phase: "heads_up",
+        graceEndsAt: GRACE,
+        text: "Starting Rate limiting at 9:30. This was due at 9:00.",
+      },
+      ["This was due at 9:00.", "Starting at 9:30."],
+      { to: Date.parse(GRACE), kind: "start" },
+    ],
+    [
+      "asked shows the host's text, which names what changed",
+      {
+        phase: "asked",
+        text: "Rate limiting is due at 9:00. Start it, move it to Monday, or cancel it? I won't start it on my own: Kin is at L1, below L2.",
+      },
+      [
+        "Rate limiting is due at 9:00. Start it, move it to Monday, or cancel it? I won't start it on my own: Kin is at L1, below L2.",
+      ],
+      null,
+    ],
+    [
+      "asked without text still asks",
+      { phase: "asked", text: "" },
+      ["Due at Fri 13 Nov, 9:00. Start it, move it to Monday, or cancel it?"],
+      null,
+    ],
+    ["started", { phase: "started", text: "" }, ["Started."], null],
+  ])("%s", (_name, state, lines, countdown) => {
+    const card = view(deferral(state));
+    expect(card.lines).toEqual(lines);
+    expect(card.countdown).toEqual(countdown);
+    expect(card.phase).toBe(state.phase);
+  });
+
+  it("titles a decision card, and reads each line once", () => {
+    const asked = view(deferral({ phase: "asked", text: "Due at 9:00. Start it?" }));
+    expect(asked.eyebrow).toBe("Needs your decision");
+    expect(asked.accessibilityLabel).toBe("Deferral: Rate limiting. Due at 9:00. Start it?");
+    expect(view(deferral({ text: "Waiting on lane A…" })).accessibilityLabel).toBe(
+      "Deferral: Rate limiting. Deferred to Fri 13 Nov, 9:00. I'll start then. Waiting on lane A…",
+    );
   });
 
   it("refuses state that isn't a deferral card", () => {
@@ -87,6 +155,14 @@ describe("kinDeferralCardView", () => {
     expect(formatKinDeferralTime(Date.parse("2026-11-13T03:00:00.000Z"), "America/New_York")).toBe(
       "Thu 12 Nov, 22:00",
     );
+  });
+
+  it("never reads formatToParts, which Hermes returns without hour and minute", () => {
+    using _parts = vi
+      .spyOn(Intl.DateTimeFormat.prototype, "formatToParts")
+      .mockReturnValue([{ type: "literal", value: "?" }]);
+    expect(formatKinDeferralTime(Date.parse(DUE), "Europe/Lisbon")).toBe("Fri 13 Nov, 9:00");
+    expect(formatKinDeferralClock(Date.parse("2026-11-13T23:05:00.000Z"), "UTC")).toBe("23:05");
   });
 
   it("follows the device when its timezone changes", () => {
@@ -121,6 +197,13 @@ describe("kinDeferralCountdown", () => {
   ] as const)("%s min before due: %s", (minutesBefore, text) => {
     expect(kinDeferralCountdown(due, at(minutesBefore))).toBe(text);
   });
+
+  it.each([
+    [12, "Starting in 12 min"],
+    [0, "Starting now"],
+  ] as const)("%s min before a heads-up start: %s", (minutesBefore, text) => {
+    expect(kinDeferralCountdown(due, at(minutesBefore), "start")).toBe(text);
+  });
 });
 
 describe("createKinCardActions", () => {
@@ -145,22 +228,25 @@ describe("createKinCardActions", () => {
     } as const);
   const dropped = () => Promise.reject(new Error("socket hang up ECONNRESET"));
 
-  it.each<KinDeferralActionId>(["change", "remind"])(
-    "%s posts exactly one action with the item id",
-    async (actionId) => {
-      const { posted, act } = setup(ok);
-      expect(await act(view(deferral()), actionId)).toEqual({ status: "sent" });
-      expect(posted).toEqual([
-        {
-          widgetId: "deferral:org:def-1",
-          revision: 3,
-          actionId,
-          value: "def-1",
-          clientActionId: "client-1",
-        },
-      ]);
-    },
-  );
+  it.each<[KinDeferralActionId, Record<string, unknown>]>([
+    ["change", {}],
+    ["remind", {}],
+    ["start_now", { phase: "heads_up" }],
+    ["monday", { phase: "asked" }],
+    ["cancel", { phase: "asked" }],
+  ])("%s posts exactly one action with the item id", async (actionId, state) => {
+    const { posted, act } = setup(ok);
+    expect(await act(view(deferral(state)), actionId)).toEqual({ status: "sent" });
+    expect(posted).toEqual([
+      {
+        widgetId: "deferral:org:def-1",
+        revision: 3,
+        actionId,
+        value: "def-1",
+        clientActionId: "client-1",
+      },
+    ]);
+  });
 
   it("posts a double tap once, then takes the next tap with a new id", async () => {
     let release: (value: { ok: true }) => void = () => undefined;
@@ -260,6 +346,26 @@ describe("kinCardStatusAfter", () => {
     const notice = { kind: "error", text: KIN_SEND_FAILED_TEXT } as const;
     expect(kinCardStatusAfter({ status: "failed", notice }, "remind", 3).holding).toBe(false);
   });
+
+  it.each<KinDeferralActionId>(["start_now", "monday", "cancel"])(
+    "holds the card after %s until the host rewrites it",
+    (actionId) => {
+      expect(kinCardStatusAfter({ status: "sent" }, actionId, 3)).toEqual({
+        revision: 3,
+        notice: { kind: "sent", text: KIN_SENT_CARD_TEXT },
+        holding: true,
+      });
+    },
+  );
+
+  it.each(Object.keys(KIN_START_NOW_REFUSALS) as Array<keyof typeof KIN_START_NOW_REFUSALS>)(
+    "says why Start now was refused: %s",
+    (reason) => {
+      const notice = kinStartNowRefusalNotice(reason);
+      expect(notice.kind).toBe("error");
+      expect(notice.text).not.toMatch(/_|L2|worker/);
+    },
+  );
 
   it("hides a notice once the card moves to a new revision", () => {
     const status = kinCardStatusAfter(

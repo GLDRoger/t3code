@@ -7,13 +7,16 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { kinSentences } from "../state/kinChatFeed";
+
 export const KIN_STALE_CARD_TEXT = "This card changed. Check it again.";
 export const KIN_SENT_CARD_TEXT = "Sent. Your lead will update this card.";
 export const KIN_CHANGE_SENT_TEXT = "Sent. Your lead will ask what to change.";
 export const KIN_SEND_FAILED_TEXT = "Couldn't send that. Try again.";
 
-export type KinDeferralActionId = "change" | "remind";
-export type KinDeferralPhase = "confirmed" | "closed";
+/** The ids the host takes for each phase (`actionsFor` in the server's deferrals). */
+export type KinDeferralActionId = "change" | "remind" | "start_now" | "monday" | "cancel";
+export type KinDeferralPhase = "confirmed" | "heads_up" | "asked" | "started" | "closed";
 
 export interface KinDeferralAction {
   readonly id: KinDeferralActionId;
@@ -27,10 +30,12 @@ export interface KinDeferralCardView {
   readonly revision: number;
   readonly itemId: string;
   readonly phase: KinDeferralPhase;
+  /** The small line above the title. */
+  readonly eyebrow: string;
   readonly title: string;
   readonly lines: ReadonlyArray<string>;
-  /** Epoch ms the countdown runs to; null when the card is closed. */
-  readonly countdownTo: number | null;
+  /** What the countdown runs to; null when nothing is pending. */
+  readonly countdown: { readonly to: number; readonly kind: KinCountdownKind } | null;
   readonly actions: ReadonlyArray<KinDeferralAction>;
   /** The card's label without the countdown, which reads from its own line. */
   readonly accessibilityLabel: string;
@@ -56,32 +61,64 @@ const ACTIONS: Record<KinDeferralActionId, KinDeferralAction> = {
     accessibilityLabel: "Just remind me, don't start it",
     tone: "secondary",
   },
+  start_now: {
+    id: "start_now",
+    label: "Start now",
+    accessibilityLabel: "Start this now",
+    tone: "secondary",
+  },
+  monday: {
+    id: "monday",
+    label: "Monday",
+    accessibilityLabel: "Move this to Monday at 9:00",
+    tone: "secondary",
+  },
+  cancel: {
+    id: "cancel",
+    label: "Cancel",
+    accessibilityLabel: "Cancel this deferral",
+    tone: "secondary",
+  },
 };
 
-// Keyed by the resolved zone, so a device that changes timezone gets a fresh formatter.
-const formatters = new Map<string, Intl.DateTimeFormat>();
-function partsOf(ms: number, timeZone: string | undefined) {
+const DECISION_ACTIONS = [ACTIONS.start_now, ACTIONS.monday, ACTIONS.cancel];
+
+// Whole formatted strings only: Hermes leaves out `hour` and `minute` from `formatToParts`.
+const formatters = new Map<string, { date: Intl.DateTimeFormat; time: Intl.DateTimeFormat }>();
+function formattersFor(timeZone: string | undefined) {
+  // Keyed by the resolved zone, so a device that changes timezone gets fresh formatters.
   const zone = timeZone ?? new Intl.DateTimeFormat().resolvedOptions().timeZone;
-  let format = formatters.get(zone);
-  if (format === undefined) {
-    format = new Intl.DateTimeFormat("en-GB", {
-      timeZone: zone,
-      weekday: "short",
-      day: "numeric",
-      month: "short",
-      hour: "numeric",
-      minute: "2-digit",
-      hourCycle: "h23",
-    });
-    formatters.set(zone, format);
+  let held = formatters.get(zone);
+  if (held === undefined) {
+    held = {
+      date: new Intl.DateTimeFormat("en-GB", {
+        timeZone: zone,
+        weekday: "short",
+        day: "numeric",
+        month: "short",
+      }),
+      time: new Intl.DateTimeFormat("en-GB", {
+        timeZone: zone,
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      }),
+    };
+    formatters.set(zone, held);
   }
-  return Object.fromEntries(format.formatToParts(ms).map((part) => [part.type, part.value]));
+  return held;
+}
+
+/** "9:00" in the device timezone, or `timeZone` when given. */
+export function formatKinDeferralClock(ms: number, timeZone?: string): string {
+  return formattersFor(timeZone)
+    .time.format(ms)
+    .replace(/^0(?=\d)/, "");
 }
 
 /** "Fri 13 Nov, 9:00" in the device timezone, or `timeZone` when given. */
 export function formatKinDeferralTime(ms: number, timeZone?: string): string {
-  const parts = partsOf(ms, timeZone);
-  return `${parts.weekday} ${parts.day} ${parts.month}, ${Number(parts.hour)}:${parts.minute}`;
+  return `${formattersFor(timeZone).date.format(ms)}, ${formatKinDeferralClock(ms, timeZone)}`;
 }
 
 const MINUTE = 60_000;
@@ -98,10 +135,18 @@ function span(ms: number): string {
   return days === 1 ? "1 day" : `${days} days`;
 }
 
+/** "due" counts down to the due time; "start" to when a heads-up card starts the work. */
+export type KinCountdownKind = "due" | "start";
+
 /** The countdown line. `nowMs` comes from the minute tick, so this changes at most once a minute. */
-export function kinDeferralCountdown(targetMs: number, nowMs: number): string {
+export function kinDeferralCountdown(
+  targetMs: number,
+  nowMs: number,
+  kind: KinCountdownKind = "due",
+): string {
   const remaining = targetMs - nowMs;
-  return remaining <= 0 ? "Due now" : `Due in ${span(remaining)}`;
+  const verb = kind === "due" ? "Due" : "Starting";
+  return remaining <= 0 ? `${verb} now` : `${verb} in ${span(remaining)}`;
 }
 
 // Code writes this card, but its title comes from a memory item, so it is clamped as plain text.
@@ -113,6 +158,58 @@ const clamp = (text: string, max: number) => {
 const decodeDeferral = Schema.decodeUnknownOption(KinDeferralCard);
 const isKinChatError = Schema.is(KinChatError);
 
+type CardBody = Pick<KinDeferralCardView, "phase" | "lines" | "countdown" | "actions">;
+
+function cardBody(card: KinDeferralCard, timeZone: string | undefined): CardBody {
+  const dueMs = Date.parse(card.dueAt);
+  // The host writes `text` in the owner's zone; show it only when it adds to the local lines.
+  const text = clamp(card.text, 280);
+  const withText = (lines: ReadonlyArray<string>) =>
+    text === "" || lines.includes(text) ? lines : [...lines, text];
+  switch (card.phase) {
+    case undefined:
+      return {
+        phase: "confirmed",
+        lines: withText([
+          `Deferred to ${formatKinDeferralTime(dueMs, timeZone)}. ${then[card.onDue]}`,
+        ]),
+        countdown: { to: dueMs, kind: "due" },
+        // "Just remind me" changes nothing on a deferral that already only reminds.
+        actions: card.onDue === "remind" ? [ACTIONS.change] : [ACTIONS.change, ACTIONS.remind],
+      };
+    case "heads_up": {
+      // The host's text repeats the start time in the owner's zone, so the local lines replace it.
+      const graceMs = card.graceEndsAt === undefined ? null : Date.parse(card.graceEndsAt);
+      const startMs = graceMs ?? dueMs;
+      const starting = `Starting at ${formatKinDeferralClock(startMs, timeZone)}.`;
+      return {
+        phase: "heads_up",
+        lines:
+          graceMs === null
+            ? [starting]
+            : [`This was due at ${formatKinDeferralClock(dueMs, timeZone)}.`, starting],
+        countdown: { to: startMs, kind: "start" },
+        actions: DECISION_ACTIONS,
+      };
+    }
+    case "asked":
+      // The host's text names what changed: why it won't start on its own, or that it's late.
+      return {
+        phase: "asked",
+        lines:
+          text === ""
+            ? [
+                `Due at ${formatKinDeferralTime(dueMs, timeZone)}. Start it, move it to Monday, or cancel it?`,
+              ]
+            : [text],
+        countdown: null,
+        actions: DECISION_ACTIONS,
+      };
+    case "started":
+      return { phase: "started", lines: withText(["Started."]), countdown: null, actions: [] };
+  }
+}
+
 export function kinDeferralCardView(
   widget: KinWidget,
   /** The device timezone when omitted; tests pass one. */
@@ -121,41 +218,25 @@ export function kinDeferralCardView(
   const decoded = decodeDeferral(widget.state);
   if (Option.isNone(decoded)) return null;
   const card = decoded.value;
-  const dueMs = Date.parse(card.dueAt);
   const title = clamp(card.title, 200) || "This deferral";
-  const base = { widgetId: widget.widgetId, revision: widget.revision, itemId: card.itemId };
-
-  if (widget.closedAt !== null) {
-    return {
-      ...base,
-      phase: "closed",
-      title,
-      lines: ["Closed."],
-      countdownTo: null,
-      actions: [],
-      accessibilityLabel: `Deferral: ${title}. Closed.`,
-    };
-  }
-
-  const summary = `Deferred to ${formatKinDeferralTime(dueMs, timeZone)}. ${then[card.onDue]}`;
-  // The host writes `text` in the owner's zone; show it only when it adds to the local summary.
-  const text = clamp(card.text, 280);
-  const lines = text === "" || text === summary ? [summary] : [summary, text];
+  const body: CardBody =
+    widget.closedAt === null
+      ? cardBody(card, timeZone)
+      : { phase: "closed", lines: ["Closed."], countdown: null, actions: [] };
   return {
-    ...base,
-    phase: "confirmed",
+    widgetId: widget.widgetId,
+    revision: widget.revision,
+    itemId: card.itemId,
+    eyebrow: body.phase === "asked" ? "Needs your decision" : "Deferral",
     title,
-    lines,
-    countdownTo: dueMs,
-    // "Just remind me" changes nothing on a deferral that already only reminds.
-    actions: card.onDue === "remind" ? [ACTIONS.change] : [ACTIONS.change, ACTIONS.remind],
-    accessibilityLabel: [`Deferral: ${title}`, ...lines].join(". "),
+    ...body,
+    accessibilityLabel: kinSentences([`Deferral: ${title}`, ...body.lines]),
   };
 }
 
 type KinCardTarget = Pick<KinDeferralCardView, "widgetId" | "revision" | "itemId">;
 
-/** The one structured action a tap posts. Both actions carry only the item id (TRIG-7). */
+/** The one structured action a tap posts. Every action carries only the item id (TRIG-7, TRIG-8). */
 export function kinDeferralActInput(
   view: KinCardTarget,
   actionId: KinDeferralActionId,
@@ -191,6 +272,19 @@ export function kinActionFailureNotice(cause: unknown): KinCardNotice {
     default:
       return { kind: "error", text: KIN_SEND_FAILED_TEXT };
   }
+}
+
+/** Why the host may refuse [Start now] (TRIG-8's `Deferrals.act`), in the owner's words. */
+export const KIN_START_NOW_REFUSALS = {
+  stopped: "Starts are paused for now. Ask your lead in the chat.",
+  workers_blocked: "Kin can't start new work right now. Try again soon.",
+  below_l2: "Your lead can't start work on its own yet. Ask it in the chat.",
+} as const satisfies Record<string, string>;
+
+export function kinStartNowRefusalNotice(
+  reason: keyof typeof KIN_START_NOW_REFUSALS,
+): KinCardNotice {
+  return { kind: "error", text: KIN_START_NOW_REFUSALS[reason] };
 }
 
 export type KinActionOutcome =
@@ -250,8 +344,8 @@ export interface KinCardStatus {
 }
 
 /**
- * Change writes nothing on the host, so the card stays usable after it. Remind re-arms and
- * bumps the card, so the buttons hold until that new revision arrives.
+ * Change writes nothing on the host, so the card stays usable after it. Every other action
+ * rewrites or closes the card, so the buttons hold until that new revision arrives.
  */
 export function kinCardStatusAfter(
   outcome: Exclude<KinActionOutcome, { readonly status: "ignored" }>,
