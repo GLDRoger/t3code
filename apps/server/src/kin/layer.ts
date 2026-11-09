@@ -9,6 +9,8 @@ import * as Layer from "effect/Layer";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as Option from "effect/Option";
 import * as KinChat from "./chat/layer.ts";
+import * as KinApprovals from "./approvals/layer.ts";
+import * as KinPush from "./push/layer.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
 
 import { KinServer, type Services } from "./KinServer.ts";
@@ -16,6 +18,7 @@ export { KinServer } from "./KinServer.ts";
 import type * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as KinMcp from "./mcp/layer.ts";
+import * as GithubWebhooks from "./triggers/githubWebhooks.ts";
 
 const enabled = Layer.effect(
   KinServer,
@@ -33,7 +36,15 @@ const enabled = Layer.effect(
       subscribeForViewer: Option.some(hub.subscribeForViewer),
     };
   }),
-).pipe(Layer.provide(KinChat.layer));
+).pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      KinChat.layer,
+      KinPush.layer.pipe(Layer.provideMerge(KinApprovals.layer)),
+      GithubWebhooks.lockLayer,
+    ),
+  ),
+);
 const disabled = Layer.succeed(KinServer, {
   taskCardUpdater: Layer.empty,
   services: Option.none(),

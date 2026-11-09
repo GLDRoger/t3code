@@ -13,6 +13,8 @@ import {
   ScheduledTaskId,
   AuthStandardClientScopes,
   KinChatRpcs,
+  KinOrgId,
+  type KinPushToken,
   RpcScopeAuthorization,
   WsRpcGroup,
   WS_METHODS,
@@ -30,6 +32,7 @@ import * as Kin from "./layer.ts";
 import { runKinMigrations } from "./persistence/KinMigrations.ts";
 import * as Logger from "effect/Logger";
 import { makeKinChatHandlers } from "./chat/rpcHandlers.ts";
+import { makeKinPushHandlers } from "./push/rpcHandlers.ts";
 
 const session = {
   sessionId: AuthSessionId.make("owner"),
@@ -104,6 +107,13 @@ it.effect.each(["identity", "defect", "unconfigured"] as const)(
       assert.include(yield* client["kin.orgs.list"]({}).pipe(Effect.flip), {
         reason: "disabled",
         message: "Kin is not running on this host.",
+      });
+      const push = yield* makeKinPushHandlers(session).pipe(
+        Effect.provideService(Kin.KinServer, kin),
+      );
+      const device = { orgId: KinOrgId.make("org"), token: "a".repeat(64) as KinPushToken };
+      assert.include(yield* push["kin.push.unregisterDevice"](device).pipe(Effect.flip), {
+        reason: "disabled",
       });
     }).pipe(Effect.provide(Sqlite.layerMemory)),
 );

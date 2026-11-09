@@ -18,6 +18,7 @@ import { McpServer } from "effect/ai";
 import { KinAgentSessions } from "./layer.ts";
 import * as KinIssuedTokens from "./KinIssuedTokens.ts";
 import { KinChatToolkit, handlers } from "./KinChatToolkit.ts";
+import * as KinApprovalsMcp from "../approvals/mcp.ts";
 import budget from "./agentContextBudget.json" with { type: "json" };
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
@@ -67,6 +68,7 @@ import { ProjectCloneTracker } from "../../project/ProjectCloneTracker.ts";
 import { ProjectService } from "../../project/ProjectService.ts";
 import { ProjectSetupScriptRunner } from "../../project/ProjectSetupScriptRunner.ts";
 import { PullRequestReviewGuideService } from "../../pullRequest/PullRequestReviewGuideService.ts";
+import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
 import { ScheduledTaskService } from "../../scheduledTasks/ScheduledTaskService.ts";
 import { SecretRequests } from "../../secrets/SecretRequests.ts";
 import * as ServerSettings from "../../serverSettings.ts";
@@ -99,6 +101,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(ProviderInstanceRegistry)({}),
   Layer.mock(ProviderRegistry)({}),
   Layer.mock(PullRequestReviewGuideService)({}),
+  Layer.mock(PullRequestService)({}),
   Layer.mock(RemoteDelegation)({}),
   Layer.mock(ScheduledTaskService)({}),
   Layer.mock(SecretRequests)({}),
@@ -294,6 +297,7 @@ it.effect.each([true, false])(
         );
         const toolListText = yield* Effect.promise(() => HttpServerResponse.toWeb(toolList).text());
         assert.include(toolListText, "kin_chat_read");
+        assert.include(toolListText, "request_action");
         assert.notInclude(toolListText, "schedule_task");
         assert.notInclude(toolListText, "t3_thread_launch");
         assert.notInclude(toolListText, "create_threads");
@@ -381,8 +385,12 @@ it.effect("measures the combined agent tool list separately from ordinary thread
       description: tool.description,
       inputSchema: tool.inputSchema,
     }));
-    const kinTools = tools.filter((tool) => Object.hasOwn(KinChatToolkit.tools, tool.name));
-    assert.lengthOf(kinTools, 3);
+    const kinTools = tools.filter(
+      (tool) =>
+        Object.hasOwn(KinChatToolkit.tools, tool.name) ||
+        Object.hasOwn(KinApprovalsMcp.KinApprovalsToolkit.tools, tool.name),
+    );
+    assert.lengthOf(kinTools, 4);
     assert.deepStrictEqual(
       {
         mcpToolListJsonBytes: Buffer.byteLength(JSON.stringify(tools), "utf8"),
@@ -392,9 +400,10 @@ it.effect("measures the combined agent tool list separately from ordinary thread
     );
   }).pipe(
     Effect.provide(
-      Layer.merge(
+      Layer.mergeAll(
         McpHttpServer.layerTools,
         McpHttpServer.toolkitRegistration(KinChatToolkit, handlers),
+        KinApprovalsMcp.registration,
       ).pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
         Layer.provide(Kin.layer),

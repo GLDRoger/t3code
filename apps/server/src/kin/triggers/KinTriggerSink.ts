@@ -10,6 +10,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -26,17 +27,41 @@ const decodeDelivery = Schema.decodeUnknownEffect(Delivery);
 const decodeFire = Schema.decodeEffect(KinTriggerFired);
 const decodeDeliveryId = Schema.decodeEffect(ScheduledTaskWebhookDeliveryId);
 
+export class KinTriggerSinkRefused extends Schema.TaggedError<KinTriggerSinkRefused>()(
+  "KinTriggerSinkRefused",
+  { scheduledTaskId: Schema.String, reason: Schema.Literal("no_source") },
+) {}
+
 // Shared with the upstream contract test so the tripwire pins exactly what the sink reads.
+// Any agent can re-save a task, so its shape is rechecked per delivery and the secret is
+// returned for the caller to compare with the hash Kin bound; never log or decode it.
 export const findLaunchDelivery = (
   sql: SqlClient.SqlClient,
-  input: { readonly taskId: string; readonly deliveryId: string; readonly projectId: string },
-) => sql<{ readonly receivedAt: unknown }>`
-  SELECT d.received_at AS "receivedAt" FROM scheduled_task_webhook_deliveries d
+  input: {
+    readonly taskId: string;
+    readonly deliveryId: string;
+    readonly projectId: string;
+    readonly botLogin: string;
+  },
+) => sql<{ readonly receivedAt: unknown; readonly secret: string }>`
+  SELECT d.received_at AS "receivedAt", t.webhook_secret AS secret
+  FROM scheduled_task_webhook_deliveries d
   JOIN scheduled_tasks t ON t.task_id = d.task_id
   WHERE d.task_id = ${input.taskId} AND d.delivery_id = ${input.deliveryId}
+    AND d.signature_verified = 1 AND d.outcome = 'accepted'
     AND t.project_id = ${input.projectId}
     AND t.thread_id IS NULL AND t.thread_mode = 'new_thread'
     AND json_extract(t.schedule_json, '$.type') = 'webhook'
+    AND json_extract(t.schedule_json, '$.signature') IS NOT NULL AND t.webhook_secret IS NOT NULL
+    AND json_extract(t.schedule_json, '$.dedupe') = ${JSON.stringify(KinTriggerStore.GITHUB_DEDUPE)}
+    AND EXISTS (SELECT 1 FROM json_each(t.schedule_json, '$.filters') f
+      WHERE json_extract(f.value, '$.path') = 'headers.x-github-event'
+        AND json_extract(f.value, '$.op') = 'in'
+        AND json_extract(f.value, '$.value') = ${JSON.stringify(KinTriggerStore.GITHUB_EVENTS)})
+    AND EXISTS (SELECT 1 FROM json_each(t.schedule_json, '$.filters') f
+      WHERE json_extract(f.value, '$.path') = 'body.sender.login'
+        AND json_extract(f.value, '$.op') = 'notEquals'
+        AND json_extract(f.value, '$.value') = ${input.botLogin})
 `;
 
 export class KinTriggerSink extends Context.Service<
@@ -63,9 +88,18 @@ const make = Effect.gen(function* () {
         const taskId = input.initialMessage?.scheduledTaskId;
         if (taskId === undefined) return;
         const source = yield* store.sourceByTaskId(taskId);
-        if (source === undefined) return;
+        if (source === undefined) {
+          // Kin's task id is deterministic, so a delivery racing remove still refuses to launch.
+          if (taskId.startsWith(KinTriggerStore.KIN_WEBHOOK_TASK_PREFIX))
+            return yield* new KinTriggerSinkRefused({
+              scheduledTaskId: taskId,
+              reason: "no_source",
+            });
+          return;
+        }
         const prefix = `scheduled-task:${taskId}:webhook:`;
-        if (!input.commandId.startsWith(prefix) || source.status !== "active")
+        // `status` is what trigger_reconcile last saw; the task shape and secret below are the gate.
+        if (!input.commandId.startsWith(prefix))
           return yield* new KinTriggerInbox.KinTriggerInboxConflict({
             orgId: source.orgId,
             reason: "unknown_source",
@@ -75,17 +109,28 @@ const make = Effect.gen(function* () {
           taskId,
           deliveryId,
           projectId: input.projectId,
+          botLogin: source.botLogin,
         }).pipe(Effect.mapError(toPersistenceSqlError("KinTriggerSink.receive")));
         if (row === undefined)
           return yield* new KinTriggerInbox.KinTriggerInboxConflict({
             orgId: source.orgId,
             reason: "unknown_source",
           });
-        const delivery = yield* decodeDelivery(row).pipe(
+        const delivery = yield* decodeDelivery({ receivedAt: row.receivedAt }).pipe(
           Effect.mapError((cause) =>
             PersistenceDecodeError.fromSchemaError("KinTriggerSink.receive", cause),
           ),
         );
+        if (
+          !(yield* store.acceptsDelivery(source.orgId, source.id, {
+            secret: Redacted.make(row.secret),
+            receivedAt: DateTime.toEpochMillis(delivery.receivedAt),
+          }))
+        )
+          return yield* new KinTriggerInbox.KinTriggerInboxConflict({
+            orgId: source.orgId,
+            reason: "unknown_source",
+          });
         const projection = yield* threads.getThreadProjection(source.inboxThreadId);
         if (projection.thread.projectId !== input.projectId || projection.thread.deletedAt !== null)
           return yield* new KinTriggerInbox.KinTriggerInboxConflict({
@@ -167,9 +212,13 @@ export function wrapTaskDispatch<E, R, E2, R2>(
                 ),
               ),
             );
-            if (source === undefined) return yield* service.sendToThread(input);
+            if (
+              source === undefined &&
+              !input.scheduledTaskId.startsWith(KinTriggerStore.KIN_WEBHOOK_TASK_PREFIX)
+            )
+              return yield* service.sendToThread(input);
             yield* Effect.logWarning("Kin trigger sources must stay unbound new_thread tasks").pipe(
-              Effect.annotateLogs({ scheduledTaskId: input.scheduledTaskId, sourceId: source.id }),
+              Effect.annotateLogs({ scheduledTaskId: input.scheduledTaskId }),
             );
             return yield* new OrchestratorCommandRejectedError({
               commandId: input.commandId,

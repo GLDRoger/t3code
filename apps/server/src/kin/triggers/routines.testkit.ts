@@ -1,6 +1,7 @@
 import { KinOrgId, KinMemoryItemId, MemoryItemHead } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Sqlite from "../../persistence/Sqlite.ts";
@@ -43,11 +44,13 @@ export const item = (id: string, overrides: Partial<MemoryItemHead> = {}) =>
     links: ["https://example.com/evidence"],
     ...overrides,
   });
-export function fixture(
+export function fixture<E = never>(
   items: ReadonlyArray<MemoryItemHead> = [],
   options: {
     query?: (sql: SqlClient.SqlClient) => Memory.Memory["Service"]["query"];
     register?: Scheduler.Scheduler["Service"]["register"];
+    /** Replaces the mock, e.g. with the real layer over a fake repository. */
+    memory?: Layer.Layer<Memory.Memory, E, SqlClient.SqlClient | Repository.KinChatRepository>;
   } = {},
 ) {
   const database = Persistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory));
@@ -61,26 +64,40 @@ export function fixture(
     Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
   );
   const dependencies = Layer.mergeAll(
-    Layer.unwrap(
-      Effect.map(SqlClient.SqlClient, (sql) =>
-        Layer.mock(Memory.Memory)({
-          query:
+    options.memory ??
+      Layer.unwrap(
+        Effect.map(SqlClient.SqlClient, (sql) => {
+          // Memory takes its org lock, which load holds while it waits for the SQLite writer.
+          const outsideTransaction = <A, E>(name: string, effect: Effect.Effect<A, E>) =>
+            Effect.serviceOption(sql.transactionService).pipe(
+              Effect.flatMap((open) =>
+                Option.isSome(open)
+                  ? Effect.die(`Memory.${name} ran inside a SQLite transaction`)
+                  : effect,
+              ),
+            );
+          const query =
             options.query?.(sql) ??
-            ((orgId) =>
+            ((orgId: KinOrgId) =>
               Effect.succeed(
                 items
                   .filter((item) => item.orgId === orgId)
                   .map((item) => ({ ...item, duplicate: false })),
-              )),
-          readItemQuietly: (orgId, id) => {
-            const head = items.find((item) => item.orgId === orgId && item.id === id);
-            return head === undefined
-              ? Effect.fail(new Memory.MemoryNotFound({ orgId, id }))
-              : Effect.succeed({ head, body: "Body\n" });
-          },
+              ));
+          return Layer.mock(Memory.Memory)({
+            query: (orgId, input) => outsideTransaction("query", query(orgId, input)),
+            readItemQuietly: (orgId, id) => {
+              const head = items.find((item) => item.orgId === orgId && item.id === id);
+              return outsideTransaction(
+                "readItemQuietly",
+                head === undefined
+                  ? Effect.fail(new Memory.MemoryNotFound({ orgId, id }))
+                  : Effect.succeed({ head, body: "Body\n" }),
+              );
+            },
+          });
         }),
       ),
-    ),
     Chat.layer.pipe(Layer.provide(JudgeShadow.layerOff), Layer.provideMerge(Hub.layer)),
     TriggerScheduler.layer,
   ).pipe(
