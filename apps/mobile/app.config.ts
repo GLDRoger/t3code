@@ -12,6 +12,13 @@ process.env.EXPO_NO_TYPESCRIPT_SETUP = "1";
 
 const APP_VARIANT = resolveAppVariant(repoEnv.APP_VARIANT);
 const isIosPersonalTeamBuild = repoEnv.T3CODE_IOS_PERSONAL_TEAM === "1";
+const kinApprovalKeyOptions = {
+  appAttestEnvironment: isIosPersonalTeamBuild
+    ? null
+    : APP_VARIANT === "development"
+      ? "development"
+      : "production",
+};
 const runtimeVersionPolicy =
   process.env.MOBILE_VERSION_POLICY ??
   (APP_VARIANT === "development" ? "appVersion" : "fingerprint");
@@ -454,6 +461,7 @@ const config: ExpoConfig = {
     "./plugins/withAndroidModernAlertDialog.cjs",
     "./plugins/withAndroidPredictiveBackCompat.cjs",
     "./plugins/withAndroidTabletOrientation.cjs",
+    ["./plugins/withKinApprovalKey.cjs", kinApprovalKeyOptions],
     ...(isIosPersonalTeamBuild ? ["./plugins/withoutIosPersonalTeamCapabilities.cjs"] : []),
   ],
   extra: {

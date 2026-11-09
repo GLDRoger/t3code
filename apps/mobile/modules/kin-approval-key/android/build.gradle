@@ -1,0 +1,21 @@
+apply plugin: 'com.android.library'
+apply plugin: 'org.jetbrains.kotlin.android'
+
+group = 'com.t3tools.kinapprovalkey'
+version = '0.0.0'
+
+android {
+  namespace 'expo.modules.kinapprovalkey'
+  compileSdk rootProject.ext.compileSdkVersion
+
+  defaultConfig {
+    minSdkVersion rootProject.ext.minSdkVersion
+    targetSdkVersion rootProject.ext.targetSdkVersion
+  }
+}
+
+dependencies {
+  implementation project(':expo-modules-core')
+  // 1.1.0 is the latest stable release; 1.4.0 is still in beta.
+  implementation 'androidx.biometric:biometric:1.1.0'
+}

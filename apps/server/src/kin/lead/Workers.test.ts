@@ -195,6 +195,11 @@ const harness = () => {
   // The tracker follows these instead of the real stored-event stream.
   const stored: Array<OrchestrationV2StoredEvent> = [];
   const faults = { enqueue: 0, projection: new Set<ThreadId>() };
+  /** Run once a launch or send has started its run, before it returns. */
+  const hooks: {
+    launched: Effect.Effect<void>;
+    sent: Effect.Effect<void>;
+  } = { launched: Effect.void, sent: Effect.void };
   const settles = new Map<RunId, Partial<ThreadManagement.ThreadManagementWaitResult>>();
   const drained = Deferred.makeUnsafe<void>();
   const orchestration = Layer.unwrap(
@@ -212,6 +217,7 @@ const harness = () => {
             Effect.gen(function* () {
               launches.push(input);
               const threadId = yield* startThread(input);
+              yield* hooks.launched;
               return { threadId, projection: yield* projection(threadId), resumed: false };
             }).pipe(Effect.provideService(OrchestratorV2, orchestrator), Effect.orDie),
         }),
@@ -235,6 +241,7 @@ const harness = () => {
                 createdBy: input.createdBy,
                 creationSource: input.creationSource,
               });
+              yield* hooks.sent;
               const sent = yield* projection(input.threadId);
               return {
                 dispatch,
@@ -313,6 +320,7 @@ const harness = () => {
     shells,
     stored,
     faults,
+    hooks,
     settles,
     drained,
     orchestration,
@@ -565,7 +573,7 @@ it.effect(
 );
 
 it.effect(
-  "kin_delegate refuses at 0 worker units, below L2, foreign ids and non-lead callers",
+  "kin_delegate refuses at 0 worker units, while paused, below L2, foreign ids and non-lead callers",
   () =>
     run(({ ctx, fakes, workers }) =>
       Effect.gen(function* () {
@@ -576,6 +584,13 @@ it.effect(
         assert.strictEqual(refused.reason, "limit");
         assert.lengthOf(fakes.launches, 0);
         yield* ctx.sql`UPDATE kin_budget_limits SET limits_json = '{"leadUnits":10,"workerUnits":10}' WHERE org_id = ${ctx.orgId}`;
+        yield* ctx.sql`INSERT INTO kin_org_state (org_id, paused, paused_at, paused_by) SELECT ${ctx.orgId}, 1, 0, person_id FROM kin_people WHERE org_id = ${ctx.orgId} ORDER BY person_id LIMIT 1`;
+        assert.include(yield* Effect.flip(workers.delegate(scope, delegateInput)), {
+          reason: "not_allowed",
+          message: "Kin is paused by the owner. Nothing new starts until they resume.",
+        });
+        assert.lengthOf(fakes.launches, 0);
+        yield* ctx.sql`DELETE FROM kin_org_state WHERE org_id = ${ctx.orgId}`;
 
         const foreign: ReadonlyArray<Effect.Effect<object, KinChatError>> = [
           workers.delegate(scope, {
@@ -885,6 +900,42 @@ it.effect("a parent run re-emitted after its delivery run settled reports that a
       assert.deepStrictEqual(reports, ["worker-report:delivery-run"]);
     }),
   ),
+);
+
+it.effect(
+  "a pause that lands while kin_delegate or kin_follow_up starts a run stops that run",
+  () =>
+    run(({ ctx, fakes, workers }) =>
+      Effect.gen(function* () {
+        const pause =
+          ctx.sql`INSERT INTO kin_org_state (org_id, paused, paused_at, paused_by) SELECT ${ctx.orgId}, 1, 0, person_id FROM kin_people WHERE org_id = ${ctx.orgId} ORDER BY person_id LIMIT 1`.pipe(
+            Effect.orDie,
+            Effect.asVoid,
+          );
+        fakes.hooks.launched = pause;
+        const worker = yield* workers.delegate(scope, delegateInput);
+        assert.ok("workerId" in worker);
+        const threadId = ThreadId.make(`kin-worker-${worker.workerId}`);
+        assert.deepStrictEqual(
+          fakes.interrupts.map((input) => [input.threadId, input.commandId.split(":")[0]]),
+          [[threadId, "kin-stop-launch"]],
+        );
+        assert.deepStrictEqual(fakes.stopped, [threadId]);
+
+        yield* ctx.sql`DELETE FROM kin_org_state WHERE org_id = ${ctx.orgId}`;
+        fakes.hooks.launched = Effect.void;
+        fakes.hooks.sent = pause;
+        yield* workers.followUp(scope, {
+          workerId: worker.workerId,
+          brief: "Also cover the retry path.",
+          sourceEventId: "lead-event",
+        });
+        assert.lengthOf(fakes.interrupts, 2);
+        assert.strictEqual(fakes.interrupts[1]!.threadId, threadId);
+        assert.notStrictEqual(fakes.interrupts[1]!.runId, fakes.interrupts[0]!.runId);
+        assert.deepStrictEqual(fakes.stopped, [threadId, threadId]);
+      }),
+    ),
 );
 
 it.effect("stopping a worker closes its card and a follow-up reopens the same card", () =>

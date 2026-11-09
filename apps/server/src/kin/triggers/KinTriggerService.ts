@@ -2,7 +2,6 @@ import {
   KinChatId,
   type KinDeferralCard,
   KinMemoryItemId,
-  KinMessageId,
   KinOrgId,
   KinTriggerSchedule,
   KinTriggerSubject,
@@ -31,9 +30,11 @@ import {
   deferralTriggerId,
   deferralWidgetId,
   planDeferral,
+  makeDeferralCards,
   type DeferralPhase,
   type DeferralPlan,
 } from "./deferrals.ts";
+import { type GithubLinkState, readGithubLinks, readGithubLinkSets } from "./deferralGithub.ts";
 
 export class KinTriggerSyncError extends Schema.TaggedError<KinTriggerSyncError>()(
   "KinTriggerSyncError",
@@ -101,6 +102,7 @@ const make = Effect.gen(function* () {
   const hub = yield* Effect.serviceOption(KinChatHub);
   const publish = (event: Parameters<KinChatHub["Service"]["publish"]>[0]) =>
     Option.isSome(hub) ? sql.afterCommit(hub.value.publish(event)) : Effect.void;
+  const cards = yield* makeDeferralCards;
 
   // Trigger rows are only written in the same transaction as their run row.
   const readStored = Effect.fn("KinTriggerService.readStored")(function* (
@@ -187,11 +189,11 @@ const make = Effect.gen(function* () {
     timeZone: string,
     now: number,
   ) {
-    const widgetId = KinWidgetId.make(deferralWidgetId(orgId, itemId));
-    const existing = yield* repo.getWidget({ orgId, widgetId });
-    const at = iso(now);
     if (!plan.armed || plan.dueAt === null || item === undefined) {
+      const widgetId = KinWidgetId.make(deferralWidgetId(orgId, itemId));
+      const existing = yield* repo.getWidget({ orgId, widgetId });
       if (Option.isNone(existing) || existing.value.closedAt !== null) return;
+      const at = iso(now);
       const widget = yield* repo.updateWidget({
         ...existing.value,
         expectedRevision: existing.value.revision,
@@ -207,62 +209,16 @@ const make = Effect.gen(function* () {
       onDue: plan.onDue,
       text: confirmText(plan.dueAt, plan.onDue, timeZone),
     };
-    if (Option.isSome(existing)) {
-      const widget = yield* repo.updateWidget({
-        ...existing.value,
-        expectedRevision: existing.value.revision,
-        state,
-        closedAt: null,
-        updatedAt: at,
-      });
-      return yield* publish({ type: "widget.updated", orgId, widget });
-    }
     // Only kin_defer items name a chat; other deferrals arm without a card.
-    if (item.chat === undefined) return;
-    const chatId = KinChatId.make(item.chat);
-    const [chat] = yield* sql`SELECT 1 FROM kin_chats
-      WHERE org_id = ${orgId} AND chat_id = ${chatId} ORDER BY chat_id`;
-    if (chat === undefined)
-      return yield* Effect.logWarning("Deferral chat is not in its organization", {
-        orgId,
-        itemId,
-      });
-    const message = yield* repo.insertMessage({
-      orgId,
-      chatId,
-      messageId: KinMessageId.make(widgetId),
-      author: { _tag: "system" },
-      kind: "system",
-      body: state.text,
-      intent: null,
-      mentions: [],
-      replyTo: null,
-      widgetId: null,
-      floorRunId: null,
-      status: "posted",
-      sentBy: null,
-      clientMessageId: null,
-      createdAt: at,
-      editedAt: null,
-    });
-    const widget = {
-      orgId,
-      chatId,
-      messageId: message.messageId,
-      widgetId,
-      widgetClass: "native" as const,
-      type: "deferral",
-      state,
-      source: null,
-      feed: null,
-      awaiting: [],
-      pinnedAt: null,
-      closedAt: null,
-      updatedAt: at,
-    };
-    yield* repo.insertWidget(widget);
-    yield* publish({ type: "message.posted", orgId, message });
-    yield* publish({ type: "widget.updated", orgId, widget: { ...widget, revision: 1 } });
+    let chatId: KinChatId | null = null;
+    if (item.chat !== undefined) {
+      const [chat] = yield* sql`SELECT 1 FROM kin_chats
+        WHERE org_id = ${orgId} AND chat_id = ${item.chat} ORDER BY chat_id`;
+      if (chat === undefined)
+        yield* Effect.logWarning("Deferral chat is not in its organization", { orgId, itemId });
+      else chatId = KinChatId.make(item.chat);
+    }
+    yield* cards.write({ orgId, itemId, state, chatId, now });
   });
 
   const apply = Effect.fn("KinTriggerService.apply")(function* (
@@ -272,6 +228,7 @@ const make = Effect.gen(function* () {
     plan: DeferralPlan,
     timeZone: string,
     now: number,
+    github: ReadonlyArray<GithubLinkState> | null,
   ) {
     return yield* sql.withTransaction(
       Effect.gen(function* () {
@@ -285,7 +242,7 @@ const make = Effect.gen(function* () {
             yield* writeTrigger(orgId, itemId, phase, runAt, timeZone, now);
         }
         if (plan.armed && item !== undefined) {
-          const snapshot = yield* encodeSnapshot(deferralSnapshot(item));
+          const snapshot = yield* encodeSnapshot(deferralSnapshot(item, github));
           const inserted = yield* sql`
             INSERT INTO kin_deferral_runs (org_id, item_id, state, due_at, on_due, snapshot_json, updated_at)
             VALUES (${orgId}, ${itemId}, 'armed', ${plan.dueAt}, ${plan.onDue}, ${snapshot}, ${now})
@@ -318,7 +275,12 @@ const make = Effect.gen(function* () {
       if (item.kind !== "deferral") return "unchanged" as const;
       const timeZone = yield* cache.ownerTimeZone(item.orgId);
       const now = yield* Clock.currentTimeMillis;
-      return yield* apply(item.orgId, item.id, item, planDeferral(item), timeZone, now).pipe(
+      const plan = planDeferral(item);
+      // GitHub is read only when the run will be (re-)armed, not on every head.
+      const stored = yield* readStored(item.orgId, item.id).pipe(wrap(item.orgId));
+      if (isCurrent(plan, stored.get(item.id))) return "unchanged" as const;
+      const github = plan.armed ? yield* readGithubLinks(item.orgId, item.links) : null;
+      return yield* apply(item.orgId, item.id, item, plan, timeZone, now, github).pipe(
         wrap(item.orgId),
       );
     }),
@@ -338,9 +300,22 @@ const make = Effect.gen(function* () {
       if (pending.length === 0) return;
       const timeZone = yield* cache.ownerTimeZone(orgId);
       const now = yield* Clock.currentTimeMillis;
+      // Every read happens before any write, so the memory lock waits on GitHub at most once.
+      const github = yield* readGithubLinkSets(
+        orgId,
+        pending.map(([, item, plan]) => (plan.armed && item !== undefined ? item.links : [])),
+      );
       const failures: Array<KinTriggerSyncError> = [];
-      for (const [itemId, item, plan] of pending)
-        yield* apply(orgId, itemId, item, plan, timeZone, now).pipe(
+      for (const [index, [itemId, item, plan]] of pending.entries())
+        yield* apply(
+          orgId,
+          itemId,
+          item,
+          plan,
+          timeZone,
+          now,
+          plan.armed && item !== undefined ? (github[index] ?? null) : null,
+        ).pipe(
           wrap(orgId),
           Effect.catch((error) => {
             failures.push(error);
