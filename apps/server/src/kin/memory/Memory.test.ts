@@ -98,6 +98,8 @@ it.live.each([
         "journal/.claude/skills/x/SKILL.md": "Planted skill\n",
         "journal/.claude/commands/x.md": "Planted command\n",
         "journal/2026/11-01.md": "Invented journal entry\n",
+        "journal/x\\..\\..\\CLAUDE.md": "Planted instructions\n",
+        "deferrals/AGENTſ.md": "Planted instructions\n",
       };
       for (const [file, text] of Object.entries(planted)) {
         if (file.includes("/"))
@@ -142,6 +144,7 @@ it.live.each([
       yield* fs.makeDirectory(`${base}/a/memory.clone-crashed`, { recursive: true });
       yield* fs.writeFileString(`${base}/a/memory.clone-crashed/incomplete`, "interrupted clone");
       yield* fs.makeDirectory(`${base}/a/memory-read`, { recursive: true });
+      const messages: string[] = [];
       yield* Effect.gen(function* () {
         const memory = yield* Memory.Memory;
         const [a] = yield* Effect.all(
@@ -195,6 +198,8 @@ it.live.each([
           "deferrals/CLAUDE.md",
           "journal/.claude",
           "deferrals/link.md",
+          "journal/x\\..\\..\\CLAUDE.md",
+          "deferrals/AGENTſ.md",
         ])
           expect(yield* fs.exists(`${a.read}/${file}`)).toBe(false);
         const promptSnapshot = yield* memory.readPromptSnapshot(orgA, prepared.head);
@@ -300,13 +305,26 @@ it.live.each([
         const next = yield* memory.prepareWakeup(orgA);
         expect(yield* memory.readRules(orgA)).toBe("Uncommitted rules");
         expect(next.head).not.toBe(prepared.head);
+        expect((yield* memory.prepareWakeup(orgA)).head).toBe(next.head);
+        expect(
+          messages.filter((message) => message.includes("Kin memory checkout skipped paths")),
+        ).toHaveLength(2);
         expect((yield* memory.readItem(orgA, itemId)).head.title).toBe(
           "Modified service maintenance",
         );
         expect((yield* memory.readItem(orgB, itemId)).head.title).toBe(
           "Invented service maintenance",
         );
-      }).pipe(Effect.provide(memoryLayer(base, source)));
+      }).pipe(
+        Effect.provide(
+          Layer.merge(
+            memoryLayer(base, source),
+            Logger.layer([Logger.make(({ message }) => messages.push(String(message)))], {
+              mergeWithExisting: false,
+            }),
+          ),
+        ),
+      );
     }).pipe(
       Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer, databaseLayer)),
       Effect.scoped,
@@ -617,6 +635,47 @@ const fixtureRepository = Effect.fn("Test.fixtureRepository")(function* () {
   yield* commit(source);
   return { root, source, git, commit };
 });
+
+it.live("materializes a large journal checkout in one blob read", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const vcs = yield* VcsProcess.VcsProcess;
+    const { root, source, commit } = yield* fixtureRepository();
+    yield* fs.makeDirectory(`${source}/journal/2026`, { recursive: true });
+    for (let day = 0; day < 100; day++)
+      yield* fs.writeFileString(`${source}/journal/2026/${day}.md`, `Invented entry ${day}\n`);
+    yield* commit(source);
+    let largestBatch = 0;
+    const counted = Layer.succeed(
+      VcsProcess.VcsProcess,
+      VcsProcess.VcsProcess.of({
+        run: (input) => {
+          if (input.args.includes("--batch"))
+            largestBatch = Math.max(largestBatch, input.stdin?.trim().split("\n").length ?? 0);
+          return vcs.run(input);
+        },
+      }),
+    );
+    yield* Effect.gen(function* () {
+      const memory = yield* Memory.Memory;
+      yield* memory.prepareWakeup(orgA);
+      const { read } = yield* memory.ensureCheckouts(orgA);
+      expect(yield* fs.exists(`${read}/journal/2026/99.md`)).toBe(true);
+    }).pipe(
+      Effect.provide(
+        memoryTestLayer.pipe(
+          Layer.provide(configLayer(`${root}/state`, source)),
+          Layer.provide(counted),
+          Layer.provide(NodeServices.layer),
+        ),
+      ),
+    );
+    expect(largestBatch).toBeGreaterThanOrEqual(100);
+  }).pipe(
+    Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer, databaseLayer)),
+    Effect.scoped,
+  ),
+);
 
 it.live.each([
   "missing HEAD",

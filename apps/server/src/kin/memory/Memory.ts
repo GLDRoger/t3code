@@ -213,6 +213,8 @@ export class Memory extends Context.Service<
 const decodeHead = Schema.decodeEffect(MemoryItemHead);
 
 const maxBlobBytes = 256 * 1024;
+// Well under memoryGit's 64 MiB output cap, so a large journal reads in a few `cat-file` runs.
+const checkoutBatchBytes = 16 * 1024 * 1024;
 
 interface Snapshot extends MemorySyncSnapshot {
   readonly files: ReadonlyMap<string, string>;
@@ -246,6 +248,7 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const writerLocks = new Map<KinOrgId, Semaphore.Semaphore>();
   const pinnedHeads = new Map<KinOrgId, string>();
+  const skipWarnedHeads = new Map<KinOrgId, string>();
   const hooks = yield* MemorySyncHooks;
   const withWriterLock = <A, E>(orgId: KinOrgId, effect: Effect.Effect<A, E>) => {
     let lock = writerLocks.get(orgId);
@@ -1310,18 +1313,45 @@ const make = Effect.gen(function* () {
     const kept = entries.filter(
       ({ relative, mode }) => ["100644", "100755"].includes(mode) && isCheckoutPath(relative),
     );
-    if (kept.length < entries.length)
+    if (kept.length < entries.length && skipWarnedHeads.get(orgId) !== head) {
+      const keptSet = new Set(kept);
       yield* Effect.logWarning("Kin memory checkout skipped paths", {
         orgId,
-        paths: entries.filter((entry) => !kept.includes(entry)).map(({ relative }) => relative),
+        paths: entries.filter((entry) => !keptSet.has(entry)).map(({ relative }) => relative),
       });
+    }
+    skipWarnedHeads.set(orgId, head);
+    const sizes = new Map<string, number>();
+    if (kept.length)
+      for (const line of (yield* git(
+        orgId,
+        paths.writer,
+        ["cat-file", "--batch-check"],
+        kept.map(({ sha }) => sha).join("\n") + "\n",
+      ))
+        .trim()
+        .split("\n")) {
+        const [sha, , size] = line.split(" ");
+        if (sha && size) sizes.set(sha, Number(size));
+      }
+    const batches: Array<typeof kept> = [];
+    let batchBytes = Infinity;
+    for (const entry of kept) {
+      const bytes = sizes.get(entry.sha) ?? 0;
+      if (batchBytes + bytes > checkoutBatchBytes || batches.at(-1)!.length >= 4096) {
+        batches.push([]);
+        batchBytes = 0;
+      }
+      batches.at(-1)!.push(entry);
+      batchBytes += bytes;
+    }
     const blobs: Array<Buffer> = [];
-    for (let index = 0; index < kept.length; index += 32)
+    for (const batch of batches)
       blobs.push(
         ...(yield* readObjects(
           orgId,
           paths.writer,
-          kept.slice(index, index + 32).map(({ sha }) => ({ sha, type: "blob" as const })),
+          batch.map(({ sha }) => ({ sha, type: "blob" as const })),
         ).pipe(
           Effect.provideService(FileSystem.FileSystem, fs),
           Effect.provideService(VcsProcess, vcs),
@@ -1374,6 +1404,7 @@ const make = Effect.gen(function* () {
       yield* removeStaleClones(orgId, paths.root);
     initializedCheckouts.delete(orgId);
     pinnedHeads.delete(orgId);
+    skipWarnedHeads.delete(orgId);
     snapshots.delete(orgId);
     blobCaches.delete(orgId);
     return paths;

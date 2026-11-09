@@ -4,6 +4,7 @@ import type { PersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Clock from "effect/Clock";
 import { readFiles, readCommit, readTree, objectHash, verifyTree } from "./objects.ts";
 import { buildIndex } from "./buildIndex.ts";
+import { isCheckoutPath } from "./checkoutPaths.ts";
 import * as MemoryCache from "./MemoryCache.ts";
 import type { KinAgentId, KinOrgId, MemoryTrust } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -348,19 +349,11 @@ const make = Effect.gen(function* () {
     generated = false,
   ) {
     const parts = relative.split("/");
+    // Memory is pushed to the owner's repo, where a `CLAUDE.md` would configure the owner's own agent.
     if (
-      !relative.endsWith(".md") ||
-      parts.some(
-        (p) =>
-          !p ||
-          p === "." ||
-          p === ".." ||
-          p.toLowerCase() === ".git" ||
-          p.includes("\\") ||
-          p.includes(":"),
-      ) ||
-      /[\x00-\x1f]/.test(relative) ||
-      (!(generated && relative === "INDEX.md") && ![...folders, "journal"].includes(parts[0] ?? ""))
+      !isCheckoutPath(relative) ||
+      relative === "rules.md" ||
+      (relative === "INDEX.md" && !generated)
     )
       return yield* new MemoryWriteRejected({ reason: "Disallowed memory path" });
     let current = writer;

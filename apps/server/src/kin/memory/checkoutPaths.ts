@@ -13,8 +13,12 @@ const agentConfigNames = new Set([
   "claude.local.md",
   "agents.md",
   "agents.override.md",
+  "agent.md",
+  "gemini.md",
   "skill.md",
 ]);
+// ASCII only: Windows splits on `\` and resolves `:` streams, and APFS opens `AGENTſ.md` as `AGENTS.md`.
+const safeSegment = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export const isItemPath = (path: string) =>
   path.endsWith(".md") && itemFolders.some((folder) => path.startsWith(`${folder}/`));
@@ -26,7 +30,7 @@ const isJournalPath = (path: string) => path.startsWith("journal/") && path.ends
  */
 export const isCheckoutPath = (path: string) => {
   const segments = path.split("/");
-  if (segments.some((segment) => segment === "" || segment.startsWith("."))) return false;
+  if (!segments.every((segment) => safeSegment.test(segment))) return false;
   if (agentConfigNames.has(segments.at(-1)!.toLowerCase())) return false;
   return path === "rules.md" || path === "INDEX.md" || isItemPath(path) || isJournalPath(path);
 };

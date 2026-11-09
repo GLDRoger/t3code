@@ -589,6 +589,16 @@ it.live.each([
             .pipe(Effect.result))._tag,
         ).toBe("Failure");
       }
+      // memory_write's `CLAUDE` id lands here; pushed, it would load into the owner's Claude Code.
+      for (const path of ["deferrals/CLAUDE.md", "deferrals/AGENTS.md", "journal/x\\..\\a.md"])
+        expect(
+          yield* writer
+            .stage(orgId, "wake1", { path, content: fixtureItem({ id: "CLAUDE" }) })
+            .pipe(Effect.result),
+        ).toMatchObject({
+          _tag: "Failure",
+          failure: { _tag: "MemoryWriteRejected", reason: "Disallowed memory path" },
+        });
       yield* fs.symlink(source, `${paths.writer}/people`);
       expect(
         (yield* writer
