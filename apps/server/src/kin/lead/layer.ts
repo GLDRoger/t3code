@@ -38,6 +38,7 @@ import { KinLeadPrompt } from "./LeadPrompt.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
 import * as RoutineContent from "./RoutineContent.ts";
 import * as KinStop from "./KinStop.ts";
+import { KinPromotion } from "../levels/Promotion.ts";
 import * as DreamRunner from "../dreaming/DreamRunner.ts";
 import * as DreamSession from "../dreaming/DreamSession.ts";
 import * as Workers from "./Workers.ts";
@@ -86,6 +87,11 @@ const runner = Layer.effectDiscard(
   Effect.gen(function* () {
     const runner = yield* WakeupRunner.WakeupRunner;
     const stop = yield* KinStop.KinStop;
+    // The owner's keep-or-discard of shadow memory runs on this runtime's writer.
+    const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
+    const promotion = yield* Effect.serviceOption(KinPromotion);
+    if (Option.isSome(writer) && Option.isSome(promotion))
+      yield* promotion.value.attachShadowMemory(writer.value.settleShadow);
     yield* Effect.gen(function* () {
       const context = yield* Layer.build(routineRuntime);
       yield* Layer.build(dreamRuntime.pipe(Layer.provide(Layer.succeedContext(context)))).pipe(

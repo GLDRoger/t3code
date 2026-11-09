@@ -40,6 +40,7 @@ import { KinLeadPrompt } from "./LeadPrompt.ts";
 import * as RoutineContent from "./RoutineContent.ts";
 import { PAUSE_POLL_INTERVAL_MS } from "./KinStop.ts";
 import { isOrgPaused } from "./orgState.ts";
+import { KinPromotion } from "../levels/Promotion.ts";
 
 const ownerCheckDispatcherReady = false;
 
@@ -102,6 +103,7 @@ const ulid = Effect.gen(function* () {
 
 const make = Effect.gen(function* () {
   const ownerCheck = yield* Effect.serviceOption(OwnerCheck.OwnerCheck);
+  const promotion = yield* Effect.serviceOption(KinPromotion);
   const routineContent = yield* Effect.serviceOption(RoutineContent.KinRoutineContent);
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
@@ -416,6 +418,9 @@ const make = Effect.gen(function* () {
                   : Effect.void,
               ),
             );
+            const eveningRun = events.some(
+              (event) => event._tag === "routine" && event.routine === "evening_summary",
+            );
             if (Option.isSome(ownerCheck)) {
               for (const event of events) {
                 if (event._tag === "routine" && event.routine === "owner_check")
@@ -454,6 +459,11 @@ const make = Effect.gen(function* () {
                       ),
                     ),
                   );
+            }
+            // The review and promotion cards are server-drawn after the summary, never the lead's.
+            if (eveningRun && Option.isSome(promotion))
+              yield* promotion.value.evening({ orgId, agentId });
+            if (Option.isSome(routineContent)) {
               events = events.filter((event) => !RoutineContent.isRoutineContent(event));
               if (events.length === 0) {
                 yield* queue.finish({ orgId, wakeupId, status: "completed" });
