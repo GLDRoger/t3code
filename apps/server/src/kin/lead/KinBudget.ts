@@ -162,7 +162,9 @@ const make = Effect.gen(function* () {
   ) {
     const [lead] = yield* sql<{
       chatId: string;
-    }>`SELECT owner_chat_id AS "chatId" FROM kin_leads WHERE org_id = ${orgId} ORDER BY agent_id LIMIT 1`;
+    }>`SELECT l.owner_chat_id AS "chatId" FROM kin_leads l
+      JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+      WHERE l.org_id = ${orgId} AND a.retired_at IS NULL ORDER BY l.agent_id LIMIT 1`;
     if (lead === undefined) return;
     const updated =
       yield* sql`UPDATE kin_budget SET exhausted_notified_at = ${now} WHERE org_id = ${orgId} AND day = ${day} AND exhausted_notified_at IS NULL RETURNING org_id`;
