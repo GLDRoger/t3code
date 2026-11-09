@@ -1,4 +1,4 @@
-import { MemoryItemFrontMatter, type KinOrgId } from "@t3tools/contracts";
+import { MemoryItemCondition, MemoryItemFrontMatter, type KinOrgId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -97,6 +97,14 @@ export const parseFrontMatter = Effect.fnUntraced(function* (
         ...(staged ? {} : { cause }),
       }),
   });
+  const on = typeof value === "object" && value !== null ? Reflect.get(value, "on") : undefined;
+  if (
+    typeof on === "object" &&
+    on !== null &&
+    Object.keys(on).some((key) => !Object.hasOwn(MemoryItemCondition.fields, key))
+  ) {
+    return yield* new MemoryItemError({ orgId, path, reason: "Unknown field in on condition" });
+  }
   const decoded = yield* (staged ? decodeStaged(value) : decodeFrontMatter(value)).pipe(
     Effect.mapError(
       (cause) => new MemoryItemError({ orgId, path, reason: "Invalid front matter schema", cause }),
