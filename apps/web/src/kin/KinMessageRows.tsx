@@ -1,0 +1,308 @@
+import {
+  kinBodyMarkdown,
+  kinMessageLabel,
+  kinPlainText,
+  type KinFeedRow,
+} from "@t3tools/client-runtime/kin/kinChatFeed";
+import type { KinOutboxEntry } from "@t3tools/client-runtime/kin/kinOutbox";
+import {
+  KIN_REACTION_HINT,
+  KIN_REACTION_HINT_LABEL,
+  KIN_REACTION_NAMES,
+  type KinReactionChip,
+} from "@t3tools/client-runtime/kin/kinReactions";
+import { kinSentences } from "@t3tools/client-runtime/kin/kinScreenState";
+import {
+  KIN_REACTION_EMOJI,
+  type EnvironmentId,
+  type KinPersonId,
+  type KinReactionEmoji,
+  type KinWidget,
+} from "@t3tools/contracts";
+import { ChevronDownIcon, ChevronUpIcon, SmilePlusIcon } from "lucide-react";
+
+import ChatMarkdown from "../components/ChatMarkdown";
+import { Button } from "../components/ui/button";
+import { Menu, MenuCheckboxItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
+import { cn } from "../lib/utils";
+import { KinCard } from "./KinCards";
+
+type MessageRow = Extract<KinFeedRow, { readonly type: "message" }>;
+type DraftRow = Extract<KinFeedRow, { readonly type: "draft" }>;
+type FoldRow = Extract<KinFeedRow, { readonly type: "fold" }>;
+
+const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+const formatTime = (iso: string) => timeFormat.format(new Date(iso));
+
+const ROW = "mx-auto flex w-full max-w-3xl flex-col gap-1 px-4 pb-1.5";
+const BUBBLE = "min-w-0 max-w-[85%] rounded-2xl px-3.5 py-2 text-sm";
+
+function AuthorLine(props: { readonly label: string; readonly at: string }) {
+  return (
+    <p aria-hidden className="px-1 pt-2 text-xs font-medium text-muted-foreground">
+      {props.label} · {formatTime(props.at)}
+    </p>
+  );
+}
+
+function KinBody(props: { readonly markdown: string; readonly environmentId: EnvironmentId }) {
+  return (
+    <ChatMarkdown
+      text={kinBodyMarkdown(props.markdown)}
+      cwd={undefined}
+      environmentId={props.environmentId}
+      lineBreaks
+    />
+  );
+}
+
+/** One message: the viewer's own sit right; others sit left under an author line. */
+export function KinMessageRow(props: {
+  readonly row: MessageRow;
+  readonly widget: KinWidget | undefined;
+  readonly environmentId: EnvironmentId;
+  readonly viewerPersonId: KinPersonId | null;
+  readonly reactions: ReadonlyArray<KinReactionChip>;
+  /** Toggles the viewer's reaction; null where they can't react, such as a privileged card. */
+  readonly onReact: ((emoji: KinReactionEmoji) => void) | null;
+  readonly showReplyHint: boolean;
+}) {
+  const { row, onReact } = props;
+  const { message } = row;
+  const deleted = message.status === "deleted";
+  const suggested = message.status === "suggested";
+  const hasBody = !deleted && message.body.trim().length > 0;
+  const hasCard = !deleted && message.widgetId !== null;
+  const hasBubble = !hasCard || hasBody || suggested || message.editedAt !== null;
+  const mine = new Set(props.reactions.flatMap((chip) => (chip.mine ? [chip.emoji] : [])));
+  const canReact = onReact !== null && !deleted;
+
+  return (
+    <div className={cn(ROW, "group/kin-message", row.own ? "items-end" : "items-start")}>
+      {row.showAuthor ? <AuthorLine label={row.authorLabel} at={message.createdAt} /> : null}
+      <div className={cn("flex w-full items-center gap-1", row.own && "flex-row-reverse")}>
+        {hasBubble ? (
+          <div
+            role="article"
+            aria-label={kinMessageLabel(row, formatTime(message.createdAt))}
+            className={cn(
+              BUBBLE,
+              row.own ? "bg-message text-message-foreground" : "bg-muted text-foreground",
+              suggested && "border border-dashed border-border",
+            )}
+          >
+            {hasBody ? (
+              <KinBody markdown={message.body} environmentId={props.environmentId} />
+            ) : deleted ? (
+              <p className="italic text-muted-foreground">Message deleted</p>
+            ) : null}
+            {suggested || message.editedAt !== null ? (
+              <p className="pt-0.5 text-xs text-muted-foreground">
+                {suggested ? "Suggestion, not sent yet" : "Edited"}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+        {canReact && hasBubble ? <KinReactMenu mine={mine} onReact={onReact} /> : null}
+      </div>
+      {hasCard ? (
+        <div className="w-full max-w-[85%]">
+          <KinCard
+            widget={props.widget}
+            environmentId={props.environmentId}
+            viewerPersonId={props.viewerPersonId}
+          />
+        </div>
+      ) : null}
+      {props.reactions.length > 0 ? (
+        <div className={cn("flex flex-wrap gap-1 px-1", row.own && "justify-end")}>
+          {props.reactions.map((chip) => (
+            <Button
+              key={chip.emoji}
+              size="micro"
+              variant={chip.mine ? "secondary" : "outline"}
+              aria-pressed={chip.mine}
+              aria-label={
+                onReact === null
+                  ? chip.label
+                  : `${chip.label}. ${chip.mine ? "Remove your reaction" : "Add yours"}`
+              }
+              disabled={onReact === null}
+              onClick={() => onReact?.(chip.emoji)}
+            >
+              {chip.emoji} {chip.count}
+            </Button>
+          ))}
+          {canReact && !hasBubble ? <KinReactMenu mine={mine} onReact={onReact} /> : null}
+        </div>
+      ) : canReact && !hasBubble ? (
+        <KinReactMenu mine={mine} onReact={onReact} />
+      ) : null}
+      {props.showReplyHint ? (
+        <p className="px-1 text-xs text-muted-foreground" aria-label={KIN_REACTION_HINT_LABEL}>
+          {KIN_REACTION_HINT}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function KinReactMenu(props: {
+  readonly mine: ReadonlySet<KinReactionEmoji>;
+  readonly onReact: (emoji: KinReactionEmoji) => void;
+}) {
+  return (
+    <span className="opacity-0 group-hover/kin-message:opacity-100 focus-within:opacity-100 has-data-popup-open:opacity-100 pointer-coarse:opacity-100">
+      <Menu>
+        <MenuTrigger render={<Button size="icon-xs" variant="ghost-muted" aria-label="React" />}>
+          <SmilePlusIcon />
+        </MenuTrigger>
+        <MenuPopup align="start">
+          {KIN_REACTION_EMOJI.map((emoji) => (
+            <MenuCheckboxItem
+              key={emoji}
+              checked={props.mine.has(emoji)}
+              onCheckedChange={() => props.onReact(emoji)}
+            >
+              {emoji} {KIN_REACTION_NAMES[emoji]}
+            </MenuCheckboxItem>
+          ))}
+        </MenuPopup>
+      </Menu>
+    </span>
+  );
+}
+
+/** A reply still streaming, laid out as its message will be so nothing moves when it lands. */
+export function KinDraftRow(props: {
+  readonly row: DraftRow;
+  readonly environmentId: EnvironmentId;
+}) {
+  const { row } = props;
+  return (
+    <div className={cn(ROW, "items-start")}>
+      {row.showAuthor ? <AuthorLine label={row.authorLabel} at={row.draft.startedAt} /> : null}
+      <div
+        role="article"
+        aria-label={kinSentences([
+          `${row.authorLabel}, agent`,
+          kinPlainText(row.draft.text),
+          "Still writing",
+        ])}
+        className={cn(BUBBLE, "bg-muted text-foreground")}
+      >
+        <KinBody markdown={row.draft.text} environmentId={props.environmentId} />
+      </div>
+    </div>
+  );
+}
+
+/** A line from Kin itself, such as a member joining. */
+export function KinSystemRow(props: { readonly body: string }) {
+  return (
+    <p className="mx-auto max-w-3xl px-8 py-2 text-center text-xs text-muted-foreground">
+      {props.body}
+    </p>
+  );
+}
+
+export function KinDayRow(props: { readonly label: string }) {
+  return (
+    <p
+      role="separator"
+      className="mx-auto max-w-3xl px-4 pb-1 pt-4 text-center text-xs font-medium text-muted-foreground"
+    >
+      {props.label}
+    </p>
+  );
+}
+
+const joinNames = (names: ReadonlyArray<string>) =>
+  names.length <= 1
+    ? (names[0] ?? "Agents")
+    : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+
+// The decision is markdown; the fold line shows its first line as plain text.
+const firstLine = (markdown: string) =>
+  markdown
+    .split("\n")
+    .find((line) => line.trim().length > 0)
+    ?.replace(/[*_`#>]/g, "")
+    .trim() ?? "";
+
+/** Folded agent talk: one line naming who talked and what they settled. */
+export function KinFoldRow(props: { readonly row: FoldRow; readonly onToggle: () => void }) {
+  const { row } = props;
+  const decision = row.decision === null ? null : firstLine(row.decision);
+  return (
+    <div className="mx-auto flex w-full max-w-3xl px-4 py-1">
+      <Button
+        size="sm-multiline"
+        variant="outline"
+        aria-expanded={row.expanded}
+        className="w-full justify-start"
+        onClick={props.onToggle}
+      >
+        <span className="min-w-0 flex-1 text-start">
+          <span className="text-muted-foreground">{joinNames(row.authors)} talked it over.</span>
+          {decision ? <span className="font-medium"> {decision}</span> : null}
+          <span className="text-muted-foreground"> {row.count} messages</span>
+        </span>
+        {row.expanded ? <ChevronUpIcon /> : <ChevronDownIcon />}
+      </Button>
+    </div>
+  );
+}
+
+/** The viewer's message before the host has it: sending, waiting for a connection, or refused. */
+export function KinPendingRow(props: {
+  readonly entry: KinOutboxEntry;
+  readonly connected: boolean;
+  /** Puts the body back in the composer and drops the refused send. */
+  readonly onEdit: () => void;
+  readonly onDiscard: () => void;
+}) {
+  const { entry } = props;
+  const failed = entry.state === "failed";
+  const status = failed
+    ? `Not sent: ${entry.error ?? "refused"}`
+    : props.connected || entry.state === "sending"
+      ? "Sending…"
+      : "Waiting for connection";
+  return (
+    <div className={cn(ROW, "items-end")}>
+      <div
+        role="article"
+        aria-label={kinSentences([`You: ${kinPlainText(entry.body)}`, status])}
+        className={cn(
+          BUBBLE,
+          "whitespace-pre-wrap bg-message text-message-foreground",
+          !failed && "opacity-70",
+        )}
+      >
+        {entry.body}
+      </div>
+      <div className="flex items-center gap-1 px-1">
+        <span
+          role={failed ? "alert" : undefined}
+          className={cn(
+            "text-xs",
+            failed ? "text-destructive-foreground" : "text-muted-foreground",
+          )}
+        >
+          {status}
+        </span>
+        {failed ? (
+          <>
+            <Button size="micro" variant="ghost" onClick={props.onEdit}>
+              Edit
+            </Button>
+            <Button size="micro" variant="ghost-destructive" onClick={props.onDiscard}>
+              Delete
+            </Button>
+          </>
+        ) : null}
+      </div>
+    </div>
+  );
+}
