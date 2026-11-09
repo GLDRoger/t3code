@@ -132,6 +132,12 @@ const ownerFrom = Effect.fn("kin.lead.ownerFrom")(function* (flags: {
   } as const;
 });
 
+const workerProjectsFlag = Flag.String("worker-project").pipe(
+  Flag.withSchema(ProjectId),
+  Flag.withDescription("A project the lead's workers may run in. Repeat for more."),
+  Flag.atLeast(0),
+);
+
 const createCommand = Command.make("create", {
   ...authLocationFlags,
   session: Flag.String("session").pipe(
@@ -152,11 +158,7 @@ const createCommand = Command.make("create", {
   ),
   strong: modelFlag("strong"),
   cheap: modelFlag("cheap"),
-  workerProjects: Flag.String("worker-project").pipe(
-    Flag.withSchema(ProjectId),
-    Flag.withDescription("A project the lead's workers may run in. Repeat for more."),
-    Flag.atLeast(0),
-  ),
+  workerProjects: workerProjectsFlag,
   json: jsonFlag,
 }).pipe(
   Command.withDescription(
@@ -226,12 +228,37 @@ const retireCommand = Command.make("retire", {
   ),
 );
 
+const projectsCommand = Command.make("projects", {
+  ...authLocationFlags,
+  agentId: Argument.String("agent-id").pipe(
+    Argument.withSchema(KinAgentId),
+    Argument.withDescription("The lead's agent id, from `kin lead list`."),
+  ),
+  workerProjects: workerProjectsFlag,
+  json: jsonFlag,
+}).pipe(
+  Command.withDescription(
+    "Replace a live lead's worker projects. Pass none to clear them. Applies to its next tool call.",
+  ),
+  Command.withHandler((flags) =>
+    runOnHost(flags, (provision) =>
+      Effect.gen(function* () {
+        const result = yield* provision.setWorkerProjects(flags.agentId, flags.workerProjects);
+        if (flags.json) return yield* Console.log(encodeJson(result));
+        yield* Console.log(`Updated worker projects:\n${describe(result.lead)}`);
+      }),
+    ),
+  ),
+);
+
 export const kinCommand = Command.make("kin").pipe(
   Command.withDescription("Kin host operator commands. Needs KIN_ENABLED=true."),
   Command.withSubcommands([
     Command.make("lead").pipe(
-      Command.withDescription("Create, list and retire this host's Kin lead."),
-      Command.withSubcommands([createCommand, listCommand, retireCommand]),
+      Command.withDescription(
+        "Create, list, retire and set the worker projects of this host's Kin lead.",
+      ),
+      Command.withSubcommands([createCommand, listCommand, retireCommand, projectsCommand]),
     ),
   ]),
 );
