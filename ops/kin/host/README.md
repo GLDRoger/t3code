@@ -39,6 +39,33 @@ export XDG_RUNTIME_DIR=/run/user/$(id -u)
 
 Owner overrides such as `T3CODE_LAN=true` go in `~/.t3/service.env`, which the unit reads and the backup copies. The unit reads it before `kin-server.env`, so it can't change `PATH`, the build or the Node version.
 
+## Memory repo access
+
+Memory git ignores the system and global git config, so the host's credential helpers and `GIT_SSH_COMMAND` don't reach it. Give it a credential through `~/.t3/service.env`. The whole server and its agents see these variables, but only memory git turns them into `GIT_SSH_COMMAND` or a credential helper. Without one, cloning a private memory repo fails and every wake-up fails with it.
+
+**SSH (use this for now).** Add a deploy key with write access to the memory repo only, and keep the private key outside `~/.ssh`:
+
+```bash
+install -d -m 700 ~/.config/kin
+ssh-keygen -t ed25519 -N '' -C kin-memory -f ~/.config/kin/kin-memory-deploy-key
+chmod 600 ~/.config/kin/kin-memory-deploy-key
+```
+
+Then in `~/.t3/service.env`:
+
+```bash
+KIN_MEMORY_SSH_COMMAND="ssh -i /home/kin/.config/kin/kin-memory-deploy-key -o IdentitiesOnly=yes"
+```
+
+Point `KIN_MEMORY_REPOSITORIES` at the SSH URL (`git@github.com:<owner>/<memory repo>.git`), make sure `~/.ssh/known_hosts` holds GitHub's host key, and restart `kin-server`. The key stays out of `~/.ssh` because the approvals credential check tries every key there against GitHub, and a deploy key's greeting names a repo instead of the bot, so the check fails with `non_bot_identity` and privileged actions stop. **The key is not contained.** Agents run as `kin` and can read the file, so a prompt-injected lead or worker can push to the memory repo directly, around Kin's memory writer and its rules (owner-only `rules.md`, server-set trust, secret scanning, L0 writes only on `kin/shadow/*`). Until Kin runs memory git as a separate OS user, contain it on GitHub:
+
+- While every lead is at L0, protect `main` in the memory repo with a ruleset that requires a pull request and the `memory-check` workflow, with no bypass for this deploy key. The key can then only update `kin/shadow/*` and `kin/conflict/*`.
+- Don't raise any lead to L1 (which writes `main` directly) until memory git runs as a separate OS user whose key agents can't read. This is the same gap as the approval key (approvals spec, section 12) and has the same fix.
+
+**HTTPS.** Set `KIN_MEMORY_CREDENTIAL_HELPER` to a git credential helper's name or absolute path, with an `https://` repo URL. There is no GitHub App installation-token helper yet, so this route has nothing to point at until one is written.
+
+Both values must name a credential, never hold it: the server refuses to start Kin when the helper is an inline `!` script, or when the SSH command isn't `ssh` with plain arguments (shell syntax, `ProxyCommand`, `LocalCommand`, `-F`, `-J` and options that weaken host-key checks are refused). It appends `-F none -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none`, so `~/.ssh/config` and the agent are ignored and nothing prompts, and it never logs either value.
+
 ## Link the laptop and phone
 
 Use `connect link`, not `up --connect`. On Linux with systemd, `up` installs the upstream background service: it downloads the pinned upstream release that matches the version and writes `~/.config/systemd/user/t3.service`. That would be a second server on kin's state.
