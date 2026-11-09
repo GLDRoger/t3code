@@ -33,7 +33,11 @@ import { journalEntry, MemoryJournalError, type JournalContext } from "./journal
 import { mergeMemoryFiles } from "./merge.ts";
 import { isOwnerReviewedPath, kinShapeFailure } from "./lint.ts";
 import { KinSecretScan, KinSecretScanError } from "./secretScan.ts";
-import { MemoryPullRequests } from "./MemoryPullRequests.ts";
+import {
+  MemoryPullRequests,
+  REVIEW_BRANCH_SUFFIX,
+  WRITE_BRANCH_PREFIX,
+} from "./MemoryPullRequests.ts";
 
 export const LEAD_ENDED_WITHOUT_KIN_END = "Lead ended without calling kin_end.";
 
@@ -180,6 +184,8 @@ export class MemoryWriter extends Context.Service<
       agentId: KinAgentId,
       choice: ShadowChoice,
     ) => Effect.Effect<{ readonly kept: number; readonly paths: ReadonlyArray<string> }, Failure>;
+    /** Closes `kin/write/*` PRs no write waits on (TRIG-15) and tells the owner about review PRs. */
+    readonly sweepPullRequests: (orgId: KinOrgId) => Effect.Effect<void, Failure>;
   }
 >()("t3/kin/memory/MemoryWriter") {}
 const isRepoSlug = Schema.is(RepoSlug);
@@ -603,26 +609,7 @@ const make = Effect.gen(function* () {
         ownerReview,
       });
     });
-    const branch = `kin/write/${input.agentId}/${input.id}`;
-    if (input.review !== undefined) {
-      const reviewBranch = `${branch}-review`;
-      yield* open(reviewBranch, input.review.commit, input.review.message, true).pipe(
-        Effect.flatMap((opened) =>
-          recovery.notify({
-            orgId,
-            branch: reviewBranch,
-            reason: `Memory changes on paths you review wait in ${opened.url}`,
-          }),
-        ),
-        Effect.catch((error) =>
-          recovery.notify({
-            orgId,
-            branch: reviewBranch,
-            reason: `Memory changes on paths you review were not opened as a PR: ${error.reason}`,
-          }),
-        ),
-      );
-    }
+    const branch = `${WRITE_BRANCH_PREFIX}${input.agentId}/${input.id}`;
     const landed = yield* open(branch, input.commit, input.message, false).pipe(
       Effect.tapError((error) =>
         recovery.notify({
@@ -636,6 +623,27 @@ const make = Effect.gen(function* () {
       ),
     );
     if (landed._tag !== "merged") return yield* conflict("The memory PR was not merged");
+    // Opened only once the rest merged, so a refused write never leaves a lone review PR.
+    if (input.review !== undefined) {
+      const review = input.review;
+      const reviewBranch = `${branch}${REVIEW_BRANCH_SUFFIX}`;
+      yield* open(reviewBranch, review.commit, review.message, true).pipe(
+        Effect.flatMap((opened) =>
+          recovery.notify({
+            orgId,
+            branch: reviewBranch,
+            reason: `Memory changes on paths you review wait in ${opened.url}. Kin pushed \`${review.commit}\`; if the PR's head differs, close it`,
+          }),
+        ),
+        Effect.catch((error) =>
+          recovery.notify({
+            orgId,
+            branch: reviewBranch,
+            reason: `Memory changes on paths you review were not opened as a PR: ${error.reason}`,
+          }),
+        ),
+      );
+    }
     const advertised = yield* git(orgId, writer, [
       "ls-remote",
       "--",
@@ -1339,6 +1347,31 @@ const make = Effect.gen(function* () {
             ]).pipe(Effect.mapError(() => conflict("Shadow branch push rejected")));
           }
           return { kept, paths };
+        }),
+      ),
+    ),
+    sweepPullRequests: Effect.fn("MemoryWriter.sweepPullRequests")((orgId) =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          if (Option.isNone(pullRequests)) return;
+          const repo = yield* repoFor(orgId);
+          if (repo.githubRepo === undefined || !isRepoSlug(repo.githubRepo)) return;
+          const closed = yield* pullRequests.value
+            .sweep({ orgId, repo: repo.githubRepo, base: config.defaultBranch ?? "main" })
+            .pipe(
+              Effect.mapError(
+                (error) =>
+                  new MemorySyncConflict({ orgId, operation: "sweep", reason: error.reason }),
+              ),
+            );
+          for (const pull of closed)
+            if (pull.ownerReview)
+              yield* recovery.notify({
+                orgId,
+                branch: pull.branch,
+                reason: `Kin closed ${pull.url}, the memory PR for paths you review: ${pull.reason}`,
+              });
         }),
       ),
     ),

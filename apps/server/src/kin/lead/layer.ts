@@ -29,6 +29,7 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import * as MemoryPullRequests from "../memory/MemoryPullRequests.ts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Scan from "../memory/secretScan.ts";
 import * as LeadMemory from "./LeadMemory.ts";
 import * as Cache from "../memory/MemoryCache.ts";
@@ -85,6 +86,32 @@ const dreamRuntime = DreamRunner.layer.pipe(
   Layer.provide(Cache.layer),
 );
 
+// TRIG-15: at startup and every 5 minutes, close memory PRs no write waits on.
+const memoryPullRequestSweep = Effect.fn("KinMemoryPullRequests.sweepDue")(function* (
+  writer: Writer.MemoryWriter["Service"],
+) {
+  const { repositories } = yield* MemoryConfig.MemoryConfig;
+  let due = 0;
+  return Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    if (now < due) return;
+    due = now + 5 * 60_000;
+    yield* Effect.forEach(
+      repositories,
+      ({ orgId }) =>
+        writer.sweepPullRequests(orgId).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin memory PR sweep failed", {
+              orgId,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        ),
+      { discard: true },
+    );
+  });
+});
+
 const runner = Layer.effectDiscard(
   Effect.gen(function* () {
     const runner = yield* WakeupRunner.WakeupRunner;
@@ -96,6 +123,11 @@ const runner = Layer.effectDiscard(
       yield* promotion.value.attachShadowMemory(writer.value.settleShadow);
     yield* Effect.gen(function* () {
       const context = yield* Layer.build(routineRuntime);
+      if (Option.isSome(writer))
+        yield* Context.get(context, Scheduler.Scheduler).register(
+          "kin-memory-pull-requests",
+          yield* memoryPullRequestSweep(writer.value),
+        );
       yield* Layer.build(dreamRuntime.pipe(Layer.provide(Layer.succeedContext(context)))).pipe(
         Effect.catchCause((cause) => Effect.logError("Kin dreams unavailable", { cause })),
       );

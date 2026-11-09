@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Vcs from "../../vcs/VcsProcess.ts";
@@ -34,30 +35,28 @@ it.each([
   expect(githubRepoOf(url)).toBe(slug);
 });
 
-type Scenario =
-  | "merged"
-  | "foreign-check"
-  | "moved-head"
-  | "check-failed"
-  | "check-pending"
-  | "merge-rejected"
-  | "owner-path"
-  | "keep"
-  | "keep-moved-head"
-  | "no-app";
-
-it.live.each([
+const scenarios = [
   "merged",
   "foreign-check",
+  "forged-in-suite",
+  "run-wrong-sha",
+  "run-wrong-event",
+  "run-wrong-branch",
+  "run-wrong-pr",
+  "run-wrong-base",
+  "truncated",
   "moved-head",
   "check-failed",
   "check-pending",
   "merge-rejected",
   "owner-path",
+  "owner-path-refused",
   "keep",
   "keep-moved-head",
   "no-app",
-] satisfies ReadonlyArray<Scenario>)("memory writes through PRs: %s", (scenario) =>
+] as const;
+
+it.live.each(scenarios)("memory writes through PRs: %s", (scenario) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const vcs = yield* Vcs.VcsProcess;
@@ -143,47 +142,105 @@ it.live.each([
           state.state = "closed";
           return { status: 200, body: { merged: true, sha: squash } };
         }
+        if (request.method === "GET" && /^\/pulls\?state=open&per_page=/.test(path)) {
+          const open = [...pulls].filter(([, pull]) => pull.state === "open");
+          return {
+            status: 200,
+            body: yield* Effect.forEach(open, ([number]) => pullBody(number)),
+          };
+        }
+        const pullOf = (sha: string) =>
+          Effect.gen(function* () {
+            for (const [number, pull] of pulls)
+              if ((yield* branchHead(pull.branch)) === sha) return { number, branch: pull.branch };
+            return yield* Effect.die(`no PR has ${sha}`);
+          });
         const runs = /^\/actions\/runs\?head_sha=([a-f0-9]+)&event=pull_request/.exec(path);
-        if (runs)
+        if (runs) {
+          const sha = runs[1]!;
+          const pull = yield* pullOf(sha);
+          const run = (id: number, workflow: string) => ({
+            id,
+            path: `.github/workflows/${workflow}`,
+            event: "pull_request",
+            head_sha: sha,
+            head_branch: pull.branch,
+            pull_requests: [{ number: pull.number, base: { ref: "main" } }],
+          });
+          const ours = run(10, "memory-check.yml");
           return {
             status: 200,
             body: {
+              total_count: 2,
               workflow_runs: [
                 {
-                  path: ".github/workflows/memory-check.yml",
-                  event: "pull_request",
-                  head_sha: runs[1],
-                  check_suite_id: 1,
+                  ...ours,
+                  ...(scenario === "run-wrong-sha" ? { head_sha: original } : {}),
+                  ...(scenario === "run-wrong-event" ? { event: "push" } : {}),
+                  ...(scenario === "run-wrong-branch" ? { head_branch: "kin/write/other" } : {}),
+                  ...(scenario === "run-wrong-pr"
+                    ? { pull_requests: [{ number: 99, base: { ref: "main" } }] }
+                    : {}),
+                  ...(scenario === "run-wrong-base"
+                    ? { pull_requests: [{ number: pull.number, base: { ref: "dev" } }] }
+                    : {}),
                 },
                 // Any workflow in the repo can name a job `memory-check`.
+                run(20, "other.yml"),
+              ],
+            },
+          };
+        }
+        const jobs = /^\/actions\/runs\/(\d+)\/jobs\?/.exec(path);
+        if (jobs) {
+          const pending = scenario === "check-pending";
+          const failed = scenario === "check-failed" || scenario === "owner-path-refused";
+          return {
+            status: 200,
+            body: {
+              total_count: 1,
+              jobs: [
                 {
-                  path: ".github/workflows/other.yml",
-                  event: "pull_request",
-                  head_sha: runs[1],
-                  check_suite_id: 2,
+                  // An Actions job's id is its check run's id.
+                  id: jobs[1] === "10" ? 100 : 200,
+                  name: "memory-check",
+                  head_sha: yield* branchHead(pulls.get(1)!.branch),
+                  status: pending ? "in_progress" : "completed",
+                  conclusion: pending ? null : failed ? "failure" : "success",
                 },
               ],
             },
           };
-        const checks = /^\/commits\/([a-f0-9]+)\/check-runs/.exec(path);
+        }
+        const checks = /^\/commits\/([a-f0-9]+)\/check-runs\?(.*)$/.exec(path);
         if (checks) {
-          const check = (suite: number, status: string, conclusion: string | null) => ({
+          const check = (id: number, suite: number) => ({
+            id,
             name: "memory-check",
             head_sha: checks[1],
-            status,
-            conclusion,
             app: { id: 15368 },
             check_suite: { id: suite },
           });
+          const all = [
+            // Posted by another branch's workflow through the checks API, into our run's suite.
+            ...(scenario === "forged-in-suite" ? [check(300, 1)] : []),
+            check(100, 1),
+            ...(scenario === "foreign-check" ? [check(200, 2)] : []),
+          ];
+          // GitHub's default `filter=latest` keeps only the newest run per name in each suite.
+          const listed = checks[2]!.split("&").includes("filter=all")
+            ? all
+            : all.filter(
+                (run, index) =>
+                  !all
+                    .slice(index + 1)
+                    .some((later) => later.check_suite.id === run.check_suite.id),
+              );
           return {
             status: 200,
             body: {
-              check_runs:
-                scenario === "foreign-check"
-                  ? [check(2, "completed", "success")]
-                  : scenario === "check-pending"
-                    ? [check(1, "in_progress", null)]
-                    : [check(1, "completed", scenario === "check-failed" ? "failure" : "success")],
+              total_count: listed.length + (scenario === "truncated" ? 1 : 0),
+              check_runs: listed,
             },
           };
         }
@@ -197,6 +254,7 @@ it.live.each([
       KinGitHubApp.of({
         app: Effect.die("unused"),
         installations: Effect.die("unused"),
+        patchHookConfig: () => Effect.die("unused"),
         installationToken: (input) =>
           Effect.sync(() => {
             tokens.push(input);
@@ -307,7 +365,8 @@ it.live.each([
       }
 
       yield* writer.stage(orgId, "wake1", { ...claim, sourceEventId: "owner" });
-      if (scenario === "owner-path")
+      const ownerPath = scenario === "owner-path" || scenario === "owner-path-refused";
+      if (ownerPath)
         yield* writer.stage(orgId, "wake1", {
           path: "decisions/dec-001.md",
           content: fixtureItem({ id: "dec-001", kind: "decision", review_by: null }),
@@ -325,10 +384,15 @@ it.live.each([
         return;
       }
       if (scenario !== "merged" && scenario !== "owner-path") {
+        const foreign = "did not come from .github/workflows/memory-check.yml";
         const error = yield* refused(committing);
         yield* unchanged;
         expect(merges.length).toBe(scenario === "merge-rejected" ? 1 : 0);
         expect(pulls.get(1)?.state).toBe("closed");
+        // A refused write opens no review PR, so none is left waiting alone.
+        expect([...pulls.values()].map((pull) => pull.branch)).toEqual([
+          `kin/write/${agentId}/wake1`,
+        ]);
         expect(github.requests).toContainEqual(
           expect.objectContaining({ method: "POST", path: `/repos/${repo}/issues/1/comments` }),
         );
@@ -338,9 +402,17 @@ it.live.each([
         expect(error).toMatchObject({
           reason: expect.stringContaining(
             {
-              "foreign-check": "did not come from .github/workflows/memory-check.yml",
+              "foreign-check": foreign,
+              "forged-in-suite": foreign,
+              "run-wrong-sha": foreign,
+              "run-wrong-event": foreign,
+              "run-wrong-branch": foreign,
+              "run-wrong-pr": foreign,
+              "run-wrong-base": foreign,
+              truncated: "GitHub listed more check runs than one page holds",
               "moved-head": "head is not the commit Kin pushed",
               "check-failed": "memory-check failed",
+              "owner-path-refused": "memory-check failed",
               "check-pending": "did not finish in time",
               "merge-rejected": "GitHub refused the merge (HTTP 405",
             }[scenario],
@@ -395,14 +467,54 @@ it.live.each([
         expect(yield* bare("show", `${main}:INDEX.md`)).not.toContain("dec-001");
         expect(yield* remoteFiles(reviewBranch)).toContain("decisions/dec-001.md");
         expect(yield* remoteFiles(reviewBranch)).not.toContain("claims/new.md");
+        const reviewHead = yield* branchHead(reviewBranch);
         expect(notices.map((notice) => notice.reason)).toContainEqual(
-          `Memory changes on paths you review wait in https://github.com/${repo}/pull/${review[0]}`,
+          `Memory changes on paths you review wait in https://github.com/${repo}/pull/${review[0]}. Kin pushed \`${reviewHead}\`; if the PR's head differs, close it`,
+        );
+        expect(github.requests).toContainEqual(
+          expect.objectContaining({
+            method: "POST",
+            path: `/repos/${repo}/pulls`,
+            body: expect.objectContaining({
+              head: reviewBranch,
+              body: expect.stringContaining(`Kin pushed \`${reviewHead}\``),
+            }),
+          }),
         );
         // Reads follow the default branch while the review PR is open.
         expect((yield* memory.prepareWakeup(orgId)).head).toBe(main);
         expect(
           (yield* memory.readItem(orgId, KinMemoryItemId.make("dec-001")).pipe(Effect.flip))._tag,
         ).toBe("MemoryNotFound");
+
+        // A crashed write or an agent's own push leaves a `kin/write/*` PR nobody waits on.
+        const orphanBranch = "kin/write/other/orphan";
+        yield* bare("update-ref", `refs/heads/${orphanBranch}`, original);
+        const orphan = pulls.size + 1;
+        pulls.set(orphan, { branch: orphanBranch, state: "open" });
+        yield* writer.sweepPullRequests(orgId);
+        expect(pulls.get(orphan)?.state).toBe("closed");
+        expect(github.requests).toContainEqual(
+          expect.objectContaining({
+            method: "POST",
+            path: `/repos/${repo}/issues/${orphan}/comments`,
+            body: { body: "Kin closed this memory PR: no Kin memory write is waiting on it." },
+          }),
+        );
+        expect(review[1].state).toBe("open");
+        const sql = yield* SqlClient.SqlClient;
+        const records = sql`SELECT branch, head FROM kin_memory_review_pulls`;
+        expect(yield* records).toEqual([{ branch: reviewBranch, head: reviewHead }]);
+
+        // An agent with the deploy key swaps what the owner would merge.
+        yield* bare("update-ref", `refs/heads/${reviewBranch}`, original);
+        yield* writer.sweepPullRequests(orgId);
+        expect(review[1].state).toBe("closed");
+        expect(notices.map((notice) => notice.reason)).toContainEqual(
+          `Kin closed https://github.com/${repo}/pull/${review[0]}, the memory PR for paths you review: its head is no longer \`${reviewHead}\`, the commit Kin pushed`,
+        );
+        expect(merges.map((merge) => merge.number)).toEqual([auto[0]]);
+        expect(yield* records).toEqual([]);
       }
     }).pipe(Effect.provide(writerLayer));
   }).pipe(
