@@ -19,6 +19,7 @@ import type { KinOwnerTimeZone } from "./triggers/ownerTimeZone.ts";
 import type { KinPushDevices } from "./push/KinPushDevices.ts";
 import type { KinPushPresence } from "./push/KinPushPresence.ts";
 import type { KinPushSender } from "./push/KinPushSender.ts";
+import type { KinPresence } from "./reply/KinPresence.ts";
 
 export type Services =
   | KinIdentity
@@ -37,7 +38,8 @@ export type Services =
   | GrantVerifier
   | KinPushDevices
   | KinPushPresence
-  | KinPushSender;
+  | KinPushSender
+  | KinPresence;
 
 export class KinServer extends Context.Service<
   KinServer,

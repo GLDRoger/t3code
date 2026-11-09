@@ -514,60 +514,13 @@ it.live(
           did: ["Wrote memory"],
           skipped: ["No external work"],
         });
-        // Plain assistant text never reaches the owner, so ending before a reply is refused.
-        const unanswered = yield* service
-          .end(scope, { summary: "Finished fixture" })
-          .pipe(Effect.flip);
-        assert.strictEqual(unanswered.reason, "invalid_state");
-        assert.include(unanswered.message, `Reply in chat ${chat.chatId} with kin_chat_post`);
-        const lead = yield* identity.resolveAgent(scope);
-        yield* chats.send(lead, {
-          chatId: chat.chatId,
-          body: "Noted.",
-          clientMessageId: "fixture-reply",
-          intent: "answer",
-        });
-        // The lead's message in the run is the reply, even if a grant stays usable after it.
-        yield* sql`UPDATE kin_floor_grants SET consumed_at = NULL WHERE org_id = ${orgId}`;
+        // The reply bridge owns owed replies now, so ending before any post is allowed.
         yield* service.end(scope, { summary: "Finished fixture" });
         yield* service.end(scope, { summary: "Finished fixture" });
         assert.strictEqual(
           (yield* service.end(scope, { summary: "Changed" }).pipe(Effect.flip)).reason,
           "not_allowed",
         );
-        // A second claimed owner message owes its own reply, until its grant lapses.
-        const followUp = yield* chats.send(person!, {
-          chatId: chat.chatId,
-          body: "One more thing",
-          clientMessageId: "fixture-follow-up",
-        });
-        const followUpEvent = {
-          ...event,
-          eventId: "follow-up-event",
-          messageId: followUp.messageId,
-        };
-        yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id) VALUES ('follow-up-event', ${orgId}, ${agentId}, 'chat.message', 'P0', ${JSON.stringify(followUpEvent)}, 0, 0, 'claimed', 'fixture-wakeup')`;
-        assert.strictEqual(
-          (yield* service.end(scope, { summary: "Finished fixture" }).pipe(Effect.flip)).reason,
-          "invalid_state",
-        );
-        // A muted lead can't post, so it may end.
-        yield* sql`UPDATE kin_chat_members SET muted_until = '2100-01-01T00:00:00.000Z' WHERE org_id = ${orgId} AND chat_id = ${chat.chatId} AND agent_id = ${agentId}`;
-        yield* service.end(scope, { summary: "Finished fixture" });
-        yield* sql`UPDATE kin_chat_members SET muted_until = NULL WHERE org_id = ${orgId} AND chat_id = ${chat.chatId} AND agent_id = ${agentId}`;
-        yield* sql`UPDATE kin_floor_grants SET expires_at = 0 WHERE org_id = ${orgId} AND consumed_at IS NULL`;
-        assert.include(
-          yield* chats
-            .send(lead, {
-              chatId: chat.chatId,
-              body: "Late",
-              clientMessageId: "fixture-late",
-              intent: "answer",
-            })
-            .pipe(Effect.flip),
-          { reason: "floor_not_granted" },
-        );
-        yield* service.end(scope, { summary: "Finished fixture" });
         assert.strictEqual(
           (yield* service.write(scope, input).pipe(Effect.flip)).reason,
           "not_allowed",

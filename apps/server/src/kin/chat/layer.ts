@@ -10,11 +10,12 @@ import * as LevelGate from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Repository from "./KinChatRepository.ts";
 import * as Hub from "./KinChatHub.ts";
+import * as Presence from "../reply/KinPresence.ts";
 import * as Service from "./KinChatService.ts";
 import { KinIdentity, KinIdentityConfig } from "./KinIdentity.ts";
 
 export const layer = Layer.mergeAll(
-  LevelGate.layer.pipe(Layer.provideMerge(Service.layer)),
+  LevelGate.layer.pipe(Layer.provideMerge(Service.layer), Layer.provideMerge(Presence.layer)),
   Layer.mergeAll(
     Budget.layer.pipe(Layer.provide(Cache.layer)),
     Stop.layer,

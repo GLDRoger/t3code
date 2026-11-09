@@ -498,18 +498,17 @@ it.effect.each(["L0", "L1"] as const)(
       assert.include(reply, { chatId: chat.chatId, authorRole: "member", body: "Answer" });
       assert.deepStrictEqual(resultOf(yield* post("reply")), reply);
       assert.include(errorOf(yield* post("reply", "Changed")), { reason: "not_allowed" });
-      // One reply per owner message: a second, unsolicited post is refused as at L1.
-      assert.include(errorOf(yield* post("again", "More", "evidence")), {
-        reason: "floor_not_granted",
+      // One grant lasts the wake-up: a second post shares the reply's floor run.
+      assert.include(resultOf(yield* post("again", "More", "evidence")), {
+        floorRunId: (reply as { floorRunId: string }).floorRunId,
       });
-      assert.include(errorOf(yield* post("again")), { reason: "invalid_state" });
       assert.deepStrictEqual(
         yield* sql`SELECT COUNT(*) AS n FROM kin_shadow_entries WHERE org_id = ${person.orgId} ORDER BY n`,
         [{ n: 0 }],
       );
       assert.deepStrictEqual(
         yield* sql`SELECT COUNT(*) AS n FROM kin_messages WHERE org_id = ${person.orgId} AND author_kind = 'agent' ORDER BY n`,
-        [{ n: 1 }],
+        [{ n: 2 }],
       );
     }).pipe(Effect.provide(layer)),
 );
@@ -796,19 +795,14 @@ it.effect(
         reason: "not_allowed",
       });
       assert.deepStrictEqual(yield* chatService.send(person, prompt), human);
-      for (const intent of ["answer", "evidence", "question"] as const) {
+      // The wake-up's grant lasts its run: later posts share the floor run as one agent turn.
+      for (const intent of ["answer", "evidence", "question"] as const)
         assert.include(
-          failureOf(
-            yield* sendFloor({
-              ...post,
-              intent,
-              clientMessageId: `second-${intent}`,
-              floorGrant: grant.token,
-            }),
+          Result.getOrThrow(
+            yield* sendFloor({ ...post, intent, clientMessageId: `second-${intent}` }),
           ),
-          { reason: intent === "evidence" ? "floor_not_granted" : "invalid_state" },
+          { floorRunId: grant.run_id },
         );
-      }
       const { read } = yield* agentServices.pipe(
         Effect.provideService(McpInvocationContext, scope),
       );
@@ -861,10 +855,13 @@ it.effect(
           }),
         { concurrency: "unbounded" },
       );
-      assert.strictEqual(concurrent.filter((result) => Result.isSuccess(result)).length, 1);
-      assert.include(failureOf(concurrent.find((result) => Result.isFailure(result))!), {
-        reason: "floor_not_granted",
-      });
+      // One wake-up, one turn: both land in the same run without a second grant.
+      const runs = concurrent.map((result) => Result.getOrThrow(result).floorRunId);
+      assert.strictEqual(new Set(runs).size, 1);
+      assert.deepStrictEqual(
+        yield* sql`SELECT agent_turns FROM kin_floor_runs WHERE org_id = ${person.orgId} AND run_id = ${runs[0]} ORDER BY run_id`,
+        [{ agent_turns: 1 }],
+      );
       yield* startAgentWakeup({ orgId: person.orgId, agentId, threadId });
       assert.include(failureOf(yield* sendFloor({ ...post, clientMessageId: "notice-answer" })), {
         reason: "invalid_state",
@@ -982,10 +979,13 @@ it.effect(
       } as const;
       const first = yield* sendFloor(post);
       assert.isTrue(Result.isSuccess(first));
-      for (let n = 1; n < 10; n++)
+      for (let n = 1; n < 10; n++) {
+        // The hourly limit spans wake-ups; one wake-up alone stops at eight posts per chat.
+        if (n === 5) yield* startAgentWakeup({ orgId: person.orgId, agentId, threadId });
         assert.isFalse(
           (yield* sendFloor({ ...post, clientMessageId: `notice-${n}` }))._tag === "Failure",
         );
+      }
       assert.deepStrictEqual(yield* sendFloor(post), first);
       assert.include(failureOf(yield* sendFloor({ ...post, clientMessageId: "limited" })), {
         reason: "limit",
@@ -1052,16 +1052,16 @@ it.effect(
         [{ agent_id: "queued-qa" }],
       );
       assert.deepStrictEqual(yield* sendFloor({ ...post, floorGrant: grant.token }), first);
+      // The same wake-up keeps talking in its turn; it is still one agent turn.
       assert.include(
-        failureOf(
-          yield* sendFloor({
-            ...post,
-            clientMessageId: "reuse",
-            intent: "evidence",
-            floorGrant: grant.token,
-          }),
+        Result.getOrThrow(
+          yield* sendFloor({ ...post, clientMessageId: "reuse", intent: "evidence" }),
         ),
-        { reason: "floor_not_granted" },
+        { floorRunId: grant.run_id },
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT agent_turns FROM kin_floor_runs WHERE org_id = ${person.orgId} AND run_id = ${grant.run_id} ORDER BY run_id`,
+        [{ agent_turns: 1 }],
       );
       yield* sql`UPDATE kin_floor_runs SET agent_turns = 6, state = 'closed' WHERE org_id = ${person.orgId} AND run_id = ${grant.run_id}`;
       assert.include(

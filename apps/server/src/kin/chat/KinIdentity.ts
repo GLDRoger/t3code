@@ -2,10 +2,11 @@ import {
   AuthStandardClientScopes,
   KinChatError,
   TrimmedNonEmptyString,
-  type KinAgentId,
+  KinAgentId,
+  KinPersonId,
+  ThreadId,
   type KinOrgId,
-  type KinPersonId,
-  type ThreadId,
+  type KinWakeupId,
 } from "@t3tools/contracts";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
@@ -16,6 +17,7 @@ import * as Option from "effect/Option";
 import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
+import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import type { McpThreadCaller, McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as KinChatRepository from "./KinChatRepository.ts";
 
@@ -48,7 +50,9 @@ export type PersonIdentity = {
   readonly personId: KinPersonId;
 };
 export type AgentIdentity = {
-  readonly caller: McpThreadCaller;
+  // Absent on the reply bridge's identity, whose authority is `wakeupId`'s running row instead.
+  readonly caller?: McpThreadCaller;
+  readonly wakeupId?: KinWakeupId;
   readonly _tag: "agent";
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;
@@ -73,6 +77,14 @@ export class KinIdentity extends Context.Service<
     readonly resolveAgent: (
       scope: McpInvocationScope,
     ) => Effect.Effect<AgentIdentity, IdentityError>;
+    /**
+     * The server's own identity for a running wake-up's lead, read from stored rows only: the
+     * running `kin_wakeups` row, its active agent thread and an unretired agent.
+     */
+    readonly agentForWakeup: (input: {
+      readonly orgId: KinOrgId;
+      readonly wakeupId: KinWakeupId;
+    }) => Effect.Effect<Option.Option<AgentIdentity>, IdentityError>;
     readonly registerAgentThread: (input: AgentThreadInput) => Effect.Effect<void, IdentityError>;
     readonly endAgentThread: (input: {
       readonly orgId: KinOrgId;
@@ -140,6 +152,33 @@ export class KinIdentity extends Context.Service<
             threadId: caller.threadId,
           };
         }),
+        agentForWakeup: Effect.fn("KinIdentity.agentForWakeup")(
+          function* (input) {
+            const rows = yield* sql<{
+              agentId: string;
+              threadId: string;
+              ownerPersonId: string;
+            }>`SELECT w.agent_id AS "agentId", w.thread_id AS "threadId", a.owner_person_id AS "ownerPersonId"
+              FROM kin_wakeups w
+              JOIN kin_agent_threads t ON t.org_id = w.org_id AND t.agent_id = w.agent_id
+                AND t.thread_id = w.thread_id AND t.ended_at IS NULL
+              JOIN kin_agents a ON a.org_id = w.org_id AND a.agent_id = w.agent_id AND a.retired_at IS NULL
+              WHERE w.org_id = ${input.orgId} AND w.wakeup_id = ${input.wakeupId} AND w.status = 'running'
+              ORDER BY w.wakeup_id LIMIT 1`;
+            const row = rows[0];
+            return row === undefined
+              ? Option.none()
+              : Option.some<AgentIdentity>({
+                  _tag: "agent",
+                  orgId: input.orgId,
+                  agentId: KinAgentId.make(row.agentId),
+                  ownerPersonId: KinPersonId.make(row.ownerPersonId),
+                  threadId: ThreadId.make(row.threadId),
+                  wakeupId: input.wakeupId,
+                });
+          },
+          Effect.mapError(toPersistenceSqlError("KinIdentity.agentForWakeup")),
+        ),
         registerAgentThread: Effect.fn("KinIdentity.registerAgentThread")(
           function* (input) {
             const row = yield* repository.registerAgentThread({

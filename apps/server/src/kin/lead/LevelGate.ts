@@ -32,7 +32,11 @@ import * as Floor from "../floor/KinFloor.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as KinLevels from "./KinLevels.ts";
 
-type PostInput = KinMessagesSendInput & { readonly intent: KinAgentIntent };
+type PostInput = KinMessagesSendInput & {
+  readonly intent: KinAgentIntent;
+  // The shadow entry's tool: the reply bridge records its natural text as "reply".
+  readonly tool?: "kin_chat_post" | "reply";
+};
 type WidgetInput = Parameters<KinChatService["Service"]["upsertWidget"]>[1];
 
 /**
@@ -119,6 +123,7 @@ const fullText = (tool: string, input: unknown) => {
   const shown = (() => {
     switch (tool) {
       case "kin_chat_post":
+      case "reply":
         return lines(
           text(field(input, "body")),
           labelled("Intent", optional("intent")),
@@ -348,7 +353,7 @@ const make = Effect.gen(function* () {
             const [shadowed] = yield* sql<{ n: number }>`
               SELECT COUNT(*) AS n FROM kin_shadow_entries
               WHERE org_id = ${agent.orgId} AND agent_id = ${agent.agentId} AND created_at > ${since}
-                AND tool = 'kin_chat_post' AND would_target = ${input.chatId}
+                AND tool IN ('kin_chat_post', 'reply') AND would_target = ${input.chatId}
                 AND json_extract(input_json, '$.notice') = 1
               ORDER BY n`.pipe(
               Effect.mapError(toPersistenceSqlError("KinLevelGate.shadowedNotices")),
@@ -366,7 +371,7 @@ const make = Effect.gen(function* () {
               threadId: agent.threadId,
               level,
               unlocksLevel: "L1",
-              tool: "kin_chat_post",
+              tool: input.tool ?? "kin_chat_post",
               // Keyed like a real post: the same clientMessageId with other content is refused.
               key: { chatId: input.chatId, clientMessageId: input.clientMessageId },
               input: {

@@ -276,6 +276,22 @@ const make = Effect.gen(function* () {
       if (run?.agent_turns === FLOOR_MAX_AGENT_TURNS || run?.state === "closed")
         return yield* new KinChatError({ reason: "floor_closed", message: "The floor is closed." });
       if (run === undefined) return yield* notGranted;
+      // A grant lasts the wake-up run: its later posts in this floor run are the same agent turn.
+      const wakeupId =
+        identity.wakeupId ??
+        (yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId" FROM kin_wakeups
+          WHERE org_id = ${identity.orgId} AND agent_id = ${identity.agentId}
+            AND thread_id = ${identity.threadId} AND status = 'running'
+          ORDER BY started_at, wakeup_id LIMIT 1`)[0]?.wakeupId ??
+        null;
+      // Only while nobody else has spoken since: another agent's turn ends this one.
+      if (wakeupId !== null && run.last_speaker === identity.agentId) {
+        const held = yield* sql`SELECT 1 FROM kin_floor_grants
+          WHERE org_id = ${identity.orgId} AND chat_id = ${chat.chatId} AND agent_id = ${identity.agentId}
+            AND run_id = ${run.run_id} AND consumed_wakeup_id = ${wakeupId}
+          ORDER BY token LIMIT 1`;
+        if (held.length > 0) return { runId: run.run_id };
+      }
       if (!replyIntentAllowed(run.agent_turns, intent)) return yield* invalidIntent;
       if (run.last_speaker === identity.agentId) return yield* notGranted;
       if (chat.kind !== "direct" && token === undefined) return yield* notGranted;
@@ -286,7 +302,8 @@ const make = Effect.gen(function* () {
       ORDER BY expires_at, token LIMIT 1`;
       const grant = grants[0];
       if (grant === undefined) return yield* notGranted;
-      const consumed = yield* sql`UPDATE kin_floor_grants SET consumed_at = ${now}
+      const consumed =
+        yield* sql`UPDATE kin_floor_grants SET consumed_at = ${now}, consumed_wakeup_id = ${wakeupId}
       WHERE org_id = ${identity.orgId} AND chat_id = ${chat.chatId} AND agent_id = ${identity.agentId}
         AND run_id = ${run.run_id} AND token = ${grant.token} AND consumed_at IS NULL AND expires_at > ${now}
       RETURNING token`;

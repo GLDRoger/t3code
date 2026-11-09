@@ -40,6 +40,7 @@ import { handlers } from "./mcp/handlers.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
+import * as ReplyBridge from "../reply/KinReplyBridge.ts";
 import * as RoutineContent from "./RoutineContent.ts";
 import * as KinStop from "./KinStop.ts";
 import { KinPromotion } from "../levels/Promotion.ts";
@@ -142,7 +143,7 @@ const runner = Layer.effectDiscard(
     }).pipe(forkParked);
   }),
 ).pipe(
-  Layer.provide(WakeupRunner.layer),
+  Layer.provide(WakeupRunner.layer.pipe(Layer.provide(ReplyBridge.layer))),
   Layer.provide(Layer.mergeAll(OwnerCheck.layer, RoutineContent.layer)),
 );
 
