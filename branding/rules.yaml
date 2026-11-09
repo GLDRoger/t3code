@@ -598,6 +598,14 @@ leaks:
         folder is matched separately.
       leak: t3-home
       files: [apps/server/src/project/AgentSessionScanner.ts]
+    - reason: >-
+        The Kin host runs the server from source with `--base-dir ~/.t3` (ops/kin/host), and the
+        shadow dry run refuses that live state directory; both name the host's real path.
+      leak: t3-home
+      files:
+        - apps/server/scripts/kin-shadow-dry-run.ts
+        - ops/kin/host/backup.sh
+        - ops/kin/host/kin-server.service
     - reason: Message attribution enum on the wire; peers and stored threads use this value.
       leak: scheme-name
       text: "^t3code$"
