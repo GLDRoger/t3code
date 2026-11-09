@@ -87,6 +87,11 @@ export class KinRoutines extends Context.Service<
       routine: KinLeadRoutine,
     ) => Effect.Effect<boolean, KinRoutinesError>;
     readonly configure: (settings: KinTriggerSettings) => Effect.Effect<void, KinRoutinesError>;
+    /** Keeps the other settings, so an unconfigured org gets the defaults in the new zone. */
+    readonly setTimeZone: (
+      orgId: KinOrgId,
+      timeZone: string,
+    ) => Effect.Effect<void, KinRoutinesError>;
     readonly setEnabled: (
       orgId: KinOrgId,
       routine: KinLeadRoutine,
@@ -99,6 +104,7 @@ export class KinRoutines extends Context.Service<
 >()("t3/kin/triggers/routines/KinRoutines") {}
 
 const isDecodeError = Schema.is(PersistenceDecodeError);
+const isRoutinesError = Schema.is(KinRoutinesError);
 export const isPermanent = (error: unknown) => {
   let current = error;
   for (let depth = 0; depth < 8 && typeof current === "object" && current !== null; depth++) {
@@ -235,6 +241,20 @@ const make = Effect.gen(function* () {
           ),
         ),
     ),
+  );
+  const setTimeZone = Effect.fn("KinRoutines.setTimeZone")((orgId: KinOrgId, timeZone: string) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const settings = yield* settingsFor(orgId);
+          yield* configure({ ...settings, timeZone });
+        }),
+      )
+      .pipe(
+        Effect.mapError((cause) =>
+          isRoutinesError(cause) ? cause : new KinRoutinesError({ orgId, cause }),
+        ),
+      ),
   );
   const toggle = Effect.fn("KinRoutines.toggle")(
     (orgId: KinOrgId, routine: KinLeadRoutine | null, value: boolean) =>
@@ -444,6 +464,7 @@ const make = Effect.gen(function* () {
       ),
     ),
     configure,
+    setTimeZone,
     setEnabled: Effect.fn("KinRoutines.setEnabled")((orgId, routine, enabled) =>
       toggle(orgId, routine, enabled),
     ),

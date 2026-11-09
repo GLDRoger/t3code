@@ -9,6 +9,7 @@ import * as TriggerScheduler from "../triggers/KinTriggerScheduler.ts";
 import * as TriggerStore from "../triggers/KinTriggerStore.ts";
 import * as TriggerInbox from "../triggers/KinTriggerInbox.ts";
 import * as TriggerService from "../triggers/KinTriggerService.ts";
+import * as OwnerTimeZone from "../triggers/ownerTimeZone.ts";
 import { forkParked } from "../../serverActivation.ts";
 import { KinOrgId, KinChatId, KinMessageId } from "@t3tools/contracts";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -117,6 +118,7 @@ const runner = Layer.effectDiscard(
   Effect.gen(function* () {
     const runner = yield* WakeupRunner.WakeupRunner;
     const stop = yield* KinStop.KinStop;
+    const ownerTimeZone = yield* Effect.serviceOption(OwnerTimeZone.KinOwnerTimeZone);
     // The owner's keep-or-discard of shadow memory runs on this runtime's writer.
     const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
     const promotion = yield* Effect.serviceOption(KinPromotion);
@@ -132,9 +134,10 @@ const runner = Layer.effectDiscard(
       yield* Layer.build(dreamRuntime.pipe(Layer.provide(Layer.succeedContext(context)))).pipe(
         Effect.catchCause((cause) => Effect.logError("Kin dreams unavailable", { cause })),
       );
-      yield* stop.attach(
-        yield* KinStop.makeFanOut(Context.getOption(context, Routines.KinRoutines)),
-      );
+      const routines = Context.getOption(context, Routines.KinRoutines);
+      yield* stop.attach(yield* KinStop.makeFanOut(routines));
+      if (Option.isSome(routines) && Option.isSome(ownerTimeZone))
+        yield* ownerTimeZone.value.attach(routines.value);
       yield* runner.start.pipe(Effect.provideContext(context));
     }).pipe(forkParked);
   }),
