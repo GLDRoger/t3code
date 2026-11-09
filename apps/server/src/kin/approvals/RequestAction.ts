@@ -174,13 +174,9 @@ const OWNER_ONLY_KINDS: ReadonlySet<KinActionKind> = new Set([
 // Kinds whose target the server can resolve and whose handler is specified for phase 1.
 // The executor's handler registry (APPR-9) replaces this list.
 const REQUESTABLE_KINDS: ReadonlySet<KinActionKind> = new Set(["merge_pull_request"]);
-// The lead spec's level table: privileged kinds go to the owner only from L3 (APPR-13 will narrow
-// merges at L3 to low-risk targets). Below it the request becomes a shadow entry.
-const REQUIRED_LEVEL: Partial<Record<KinActionKind, Exclude<KinLevel, "L0">>> = {
-  merge_pull_request: "L3",
-  delete_branch: "L3",
-};
-const requiredLevel = (kind: KinActionKind) => REQUIRED_LEVEL[kind] ?? "L3";
+// The lead spec's level table: a privileged request reaches the owner only from L3 (APPR-13 will
+// narrow merges at L3 to low-risk targets). Below it the request becomes a shadow entry.
+const PRIVILEGED_LEVEL = "L3";
 // Bounds how many cards one lead can put in front of the owner at once.
 export const MAX_OPEN_ACTIONS_PER_LEAD = 10;
 
@@ -348,7 +344,7 @@ const make = Effect.gen(function* () {
       agentId: agent.agentId,
       threadId: agent.threadId,
       level,
-      unlocksLevel: requiredLevel(input.kind),
+      unlocksLevel: PRIVILEGED_LEVEL,
       tool: "request_action",
       key: input,
       // Provenance is the server's, kept so the owner's review shows who drove the request.
@@ -382,7 +378,7 @@ const make = Effect.gen(function* () {
       if (named._tag !== "pull_request")
         return yield* refuse("invalid_state", `${input.kind} needs a pull_request target.`);
       // Shadowed before GitHub is read: below the level the request has no side effect at all.
-      if (!KinLevels.atLeast(level, requiredLevel(input.kind)))
+      if (!KinLevels.atLeast(level, PRIVILEGED_LEVEL))
         return yield* shadow(agent, { ...input, target: named }, level, origin.provenance);
       const { target, resolved } = yield* facts.read({
         target: named,
@@ -399,7 +395,7 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           // The lead may be retired, lowered or its wake-up ended while GitHub answered.
           const { origin, level } = yield* authorize(agent, input);
-          if (!KinLevels.atLeast(level, requiredLevel(input.kind)))
+          if (!KinLevels.atLeast(level, PRIVILEGED_LEVEL))
             return yield* shadow(agent, { ...input, target: named }, level, origin.provenance);
           const now = yield* Clock.currentTimeMillis;
           const open = yield* sql<{ action_id: KinActionId; idempotency_key: string }>`
