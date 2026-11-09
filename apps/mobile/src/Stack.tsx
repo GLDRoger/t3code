@@ -58,6 +58,7 @@ import { DevicePreviewRouteScreen } from "./features/devices/DevicePreviewRouteS
 import { BrowserPreviewRouteScreen } from "./features/browser/BrowserPreviewRouteScreen";
 import { GitBranchesSheet } from "./features/threads/git/GitBranchesSheet";
 import { GitCommitSheet } from "./features/threads/git/GitCommitSheet";
+import { KIN_SCREENS } from "./features/chats/routes";
 import { GitConfirmSheet } from "./features/threads/git/GitConfirmSheet";
 import { GitOverviewSheet } from "./features/threads/git/GitOverviewSheet";
 import { ThreadPullRequestsSheet } from "./features/threads/ThreadPullRequestsSheet";
@@ -698,6 +699,7 @@ const RootStackConfig = createWorkspaceStackNavigator({
       options: sheetRoute({ detent: 0.55, maxDetent: 0.7, androidFit: true }),
     }),
     ...SETTINGS_SCREENS,
+    ...KIN_SCREENS,
     SettingsLegal: createNativeStackScreen({
       screen: SettingsLegalRouteScreen,
       linking: "settings/legal",

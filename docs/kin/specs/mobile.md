@@ -74,7 +74,7 @@ All Kin code lives in `apps/mobile/src/features/chats/`. It reaches upstream thr
 | `KinChat`     | `kin/:environmentId/:orgId/chats/:chatId`            | `pageRoute({ duoMinimize: "onScrollUp" })` | Direct chat                                       |
 | `KinApproval` | `kin/:environmentId/:orgId/actions/:pendingActionId` | `sheetRoute({ detent: 0.75 })`             | Approval detail (also opened from a notification) |
 
-2. **Entry row.** `features/home/HomeScreen.tsx` renders `<KinHomeEntry />` as the first child of `v2ListHeader`. That is one import and one line. The row reads "Kin" with the latest preview, or "Waiting on you · 2" in the highlighted style when anything waits. A tap pushes `KinChats`. It renders nothing when no connected environment hosts a Kin organization, so upstream T3 users see no change.
+2. **Entry row.** `features/home/HomeScreen.tsx` renders `<KinHomeEntry />` in `v2ListHeader`, right after Android's top spacer and before the iOS filters (above the spacer it would sit under the Android bar). That is one import and one line. The row reads "Kin" with the latest preview, or "Waiting on you · 2" in the highlighted style when anything waits. A tap pushes `KinChats`. It renders nothing when no connected environment hosts a Kin organization, so upstream T3 users see no change. It lives in the thread list's header, so it doesn't show where Home skips the list: with no environment, and on Android with no threads.
 3. **Notifications.** `App.tsx` adds `installKinNotifications(linkToAppPath),` to `appServiceDisposers`, plus its import.
 
 Why not a fourth workspace tab: it isn't a one-line hook. A `"kin"` tab needs edits in `navigation-tab-order.ts` (order and labels), `navigation-tabs.ts` (icon), `workspace-tabs-state.ts` (`initialWorkspaceTabsState`), `WorkspaceExtraTab.tsx` (render), `WorkspaceToolbar.ios.tsx` (`SEARCH_LABELS`), `workspace-tab-navigation.ts` (the `tab !== "usage"` column rule), and `createWorkspaceStackNavigator.ios.tsx` (its hard-coded tab list), along with their tests. Revisit in phase 3, when Kin is the main surface.
@@ -100,7 +100,7 @@ Atoms are built on `connectionAtomRuntime`. As built in MOB-1 (`kinClient`): `or
 
 - Every `kin.*` method, reads included, is in `CLIENT_GUARDED_RPC_SCOPES`, so `createEnvironmentRpcQueryAtomFamily` refuses them. `orgs` and `history` are query atoms that run the method through `createEnvironmentRpcCommand`'s scope check.
 - `inbox` and `chat` (built in `state/kinStreams.ts`) fold their streams in `state/kinInboxModel.ts` and emit `KinSynced<State>` (`{ value, live, savedAt }`), only when the state changes. `chat` resubscribes with `afterSeq` = the highest contiguous seq held and `afterChangeSeq` = the last backlog's `lastChangeSeq`, both read at each (re)subscription. The backlog then carries missed messages plus older messages and widgets changed while away, applied by id. A changed message older than the oldest one held is dropped, not inserted, so "Load earlier" never skips the seqs between it and the window. Live events never move `afterChangeSeq`. A `reset` drops the held feed and re-reads the latest page with `history`.
-- A `member` event with `leftAt` ends the `chat` stream with `left: true`, drops that chat's cache entry, and removes the chat from `inbox`. That removal reaches `inbox` only through an open chat stream; otherwise the host's next snapshot drops it. `KinChatError` `unavailable` is the only retryable Kin error: both streams resubscribe after 1 s, doubling to 30 s, and start over once events flow or a new session comes up, which also ends the wait. Any other `KinChatError` on the chat stream is final and ends it with `closed` set to that reason instead of failing the atom; `not_found` and `not_allowed` also drop its cache entry. Neither `left` nor `closed` is cached.
+- A `member` event with `leftAt` ends the `chat` stream with `left: true`, drops that chat's cache entry, and removes the chat from `inbox`. That removal reaches `inbox` only through an open chat stream; otherwise the host's next snapshot drops it. `KinChatError` `unavailable` is the only retryable Kin error: both streams resubscribe after 1 s, doubling to 30 s, and start over once events flow or a new session comes up, which also ends the wait. `disabled` holds until the host restarts: the chat stream shows `closed: "disabled"`, the inbox keeps its value, and both resubscribe on the next session, so a chat reopens when Kin comes back. Any other `KinChatError` on the chat stream is final and ends it with `closed` set to that reason instead of failing the atom; `not_found` and `not_allowed` also drop its cache entry. Neither `left` nor `closed` is cached.
 - The Kin streams are scope-checked on the server only. The client checks scopes for `orgs`, `history` and the commands.
 
 The original sketch:
@@ -164,8 +164,10 @@ KinMessage = { orgId, chatId, messageId, seq, author: KinAuthor, sentAt,
   text?: string, widget?: KinWidget, clientMessageId?: string }
 KinAuthor = { _tag: "human"; userId; displayName } | { _tag: "agent"; agentId; displayName }
 KinWidget = { widgetId, revision, kind: "task" | "approval" | "deferral" | ..., data }
-KinWaitingItem = { orgId, chatId, widgetId, kind: "approval" | "deferral" | "decision" | "question",
-  title, dueAt?, createdAt }
+KinWaitingItem = { waitingId, orgId, personId, chatId, messageId?, widgetId?,
+  reason: "approval" | "decision" | "question" | "suggestion" | "mention",
+  createdAt, resolvedAt?, resolution? }
+// No title yet: the banner names kinds of item until lane A adds a title field to the contract.
 // viewer context, from the inbox snapshot: { viewerUserId, viewerRole }
 // approvals spec
 KinPendingAction (view) = { orgId, pendingActionId, kind: "merge" | ..., status:
@@ -207,7 +209,7 @@ Every screen handles the same seven states. Each state's copy is fixed below.
 
 **Chat list (`KinChatsScreen`, new).** Matches the mockup.
 
-- **Waiting on you** sits at the top as one full-width banner: `bg-primary`, `text-primary-foreground`, radius `MOBILE_SHAPE.group`. It names up to two items ("Merge #212 · Pick a caching option") and shows a count. A tap opens `KinWaiting`. With nothing waiting, the banner is not rendered; nothing else in the list is ever highlighted (DESIGN 8.1).
+- **Waiting on you** sits at the top as one full-width banner: `bg-primary`, `text-primary-foreground`, radius `MOBILE_SHAPE.group`. It names up to two kinds of item, oldest first, then the rest ("1 approval · 2 questions · 1 more"), and shows a count. Waiting items have no title in the contract yet; naming items ("Merge #212") needs that field from lane A. A tap opens `KinWaiting`. With nothing waiting, the banner is not rendered; nothing else in the list is ever highlighted (DESIGN 8.1).
 - Each row shows the avatar, title, time (`RelativeTime`), a one-line preview prefixed with the author ("Lead: Payments test fixed"), and an unread count badge.
 - **Avatars** (DESIGN 8.7): an agent gets an outlined rounded square (`rounded-[12px]`, 1.5 pt `border-primary`, `text-primary`). A person gets a filled circle (`rounded-full bg-secondary`). Both are 40 pt, with initials. A shared `KinAvatar` component draws both.
 - The footer row reads "Ask anything. It goes to the right team." In phase 1 it opens the direct chat with the lead. The router arrives in phase 3.
@@ -306,7 +308,7 @@ Hiding the buttons is a convenience, not the protection (DESIGN 9.3). The server
 ### Accessibility
 
 - Every row and card is one accessibility element with a full label. A row reads "Tech lead, agent. Payments test fixed, PR 212 ready. 9:30. 3 unread." The shape of an avatar is not the only signal: the label says "agent" or "person".
-- The Waiting on you banner has `accessibilityRole="button"` and the label "Waiting on you, 2 items: Merge 212, Pick a caching option".
+- The Waiting on you banner has `accessibilityRole="button"` and the label "Waiting on you, 4 items: 1 approval, 2 questions, and 1 more".
 - Card buttons are at least 44 pt tall. Destructive buttons say what they do ("Cancel deferral" in the accessibility label).
 - The approval card's facts list reads in order. The commit's label spells out the full SHA. Status changes are announced with `AccessibilityInfo.announceForAccessibility` ("Merged").
 - Text uses `AppText` with `textRole`, so Dynamic Type applies. Rows grow instead of truncating at the accessibility sizes, and previews may wrap to 2 lines.
@@ -317,7 +319,7 @@ Hiding the buttons is a convenience, not the protection (DESIGN 9.3). The server
 
 New, all under `apps/mobile/src/features/chats/` unless noted:
 
-- `routes.tsx`: `KIN_SCREENS` (the four routes above)
+- `routes.tsx`: `KIN_SCREENS` (the four routes above; MOB-2 adds `KinChats`, `KinWaiting` and a placeholder `KinChat` the list can open; MOB-4 fills `KinChat` and `KinApproval` arrives with its screen)
 - `KinHomeEntry.tsx`, `KinChatsScreen.tsx`, `KinChatScreen.tsx`, `KinWaitingScreen.tsx`, `KinApprovalRouteScreen.tsx`
 - `components/KinAvatar.tsx`, `KinChatRow.tsx`, `KinWaitingBanner.tsx`, `KinMessageBubble.tsx`, `KinFoldLine.tsx`, `KinComposer.tsx`, `KinScreenState.tsx` (the state table as one component)
 - `widgets/KinWidgetView.tsx`, `KinTaskCard.tsx`, `KinDeferralCard.tsx`, `KinApprovalCard.tsx`, `kinCardPresentation.ts` (pure copy and format functions, unit-tested)
@@ -327,16 +329,15 @@ New, all under `apps/mobile/src/features/chats/` unless noted:
 
 Upstream files touched, one hook each:
 
-| File                                                 | Hook                                                                                                                                                                      |
-| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `apps/mobile/src/Stack.tsx`                          | `import { KIN_SCREENS } from "./features/chats/routes";` and `...KIN_SCREENS,` in `screens`                                                                               |
-| `apps/mobile/src/features/home/HomeScreen.tsx`       | `import { KinHomeEntry } ...` and `<KinHomeEntry />` first in `v2ListHeader`                                                                                              |
-| `apps/mobile/src/App.tsx`                            | `import { installKinNotifications } ...` and `installKinNotifications(linkToAppPath),` in `appServiceDisposers`                                                           |
-| `packages/client-runtime/src/rpc/client.ts`          | add Kin stream tags to `EnvironmentSubscriptionRpcTag` (one line per tag; may be done by the chat spec)                                                                   |
-| `apps/mobile/index.ts`                               | `import "./src/features/chats/state/kinDevLogEntry";` (MOB-1, dev only: with `EXPO_PUBLIC_KIN_DEV_LOG=1` it logs the host and inbox). Remove it once MOB-2 lands screens. |
-| `apps/mobile/src/persistence/mobile-database.ts`     | `"kin",` in `ClientCacheKind`                                                                                                                                             |
-| `apps/mobile/vite.config.ts`                         | `"src/features/chats/**/*.test.tsx",` in `reactTests` (only if Kin adds component tests)                                                                                  |
-| `apps/mobile/src/features/threads/McpAppWebView.tsx` | `export` on `function outerDocument` (TRIG-19)                                                                                                                            |
+| File                                                 | Hook                                                                                                            |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `apps/mobile/src/Stack.tsx`                          | `import { KIN_SCREENS } from "./features/chats/routes";` and `...KIN_SCREENS,` in `screens`                     |
+| `apps/mobile/src/features/home/HomeScreen.tsx`       | `import { KinHomeEntry } ...` and `<KinHomeEntry />` after `{listHeader}` in `v2ListHeader`                     |
+| `apps/mobile/src/App.tsx`                            | `import { installKinNotifications } ...` and `installKinNotifications(linkToAppPath),` in `appServiceDisposers` |
+| `packages/client-runtime/src/rpc/client.ts`          | add Kin stream tags to `EnvironmentSubscriptionRpcTag` (one line per tag; may be done by the chat spec)         |
+| `apps/mobile/src/persistence/mobile-database.ts`     | `"kin",` in `ClientCacheKind`                                                                                   |
+| `apps/mobile/vite.config.ts`                         | `"src/features/chats/**/*.test.tsx",` in `reactTests` (only if Kin adds component tests)                        |
+| `apps/mobile/src/features/threads/McpAppWebView.tsx` | `export` on `function outerDocument` (TRIG-19)                                                                  |
 
 ## Interfaces to other specs
 

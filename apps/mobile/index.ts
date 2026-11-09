@@ -9,8 +9,6 @@ import { LogBox } from "react-native";
 import { featureFlags } from "react-native-screens";
 
 import App from "./src/App";
-// Kin: dev-only inbox log, gated on EXPO_PUBLIC_KIN_DEV_LOG=1.
-import "./src/features/chats/state/kinDevLogEntry";
 
 // Enables iOS FormSheet sizing for nested native stacks in non-fitToContents sheets.
 featureFlags.experiment.synchronousScreenUpdatesEnabled = true;
