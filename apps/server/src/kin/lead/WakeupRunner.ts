@@ -43,6 +43,8 @@ import { PAUSE_POLL_INTERVAL_MS } from "./KinStop.ts";
 import { isOrgPaused } from "./orgState.ts";
 import { KinPromotion } from "../levels/Promotion.ts";
 
+/** How long one wake-up may run before it is interrupted. */
+const WAKEUP_DEADLINE_MS = 900_000;
 const ownerCheckDispatcherReady = false;
 
 export class KinWakeupError extends Schema.TaggedError<KinWakeupError>()("KinWakeupError", {
@@ -189,7 +191,10 @@ const make = Effect.gen(function* () {
       if (row.threadId === null || row.runId === null) return;
       const threadId = row.threadId;
       const runId = row.runId;
-      const remaining = Math.max(0, row.startedAt + 900_000 - (yield* Clock.currentTimeMillis));
+      const remaining = Math.max(
+        0,
+        row.startedAt + WAKEUP_DEADLINE_MS - (yield* Clock.currentTimeMillis),
+      );
       const result = yield* threads.waitForThread({
         projectId,
         threadId: row.threadId,
@@ -501,10 +506,12 @@ const make = Effect.gen(function* () {
                   yield* sql`SELECT 1 FROM kin_agents WHERE org_id = ${orgId} AND agent_id = ${agentId} AND retired_at IS NULL`;
                 if (active === undefined)
                   return yield* new KinWakeupError({ orgId, agentId, cause: "retired" });
-                // The post-time grant may have lapsed while these events waited to be claimed.
+                // The post-time grant may have lapsed while these events waited to be claimed;
+                // it now lasts as long as the wake-up may run, so a slow first reply still lands.
                 yield* floor.renew({
                   orgId,
                   agentId,
+                  until: row.startedAt + WAKEUP_DEADLINE_MS,
                   messageIds: events.flatMap((event) =>
                     event._tag === "chat.message" || event._tag === "widget.action"
                       ? [event.messageId]

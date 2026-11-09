@@ -447,10 +447,23 @@ describe("WakeupRunner", () => {
         yield* Deferred.await(entered);
         const [lead] = yield* sql<{ thread_id: string }>`SELECT thread_id FROM kin_leads`;
         const identity = yield* resolveAgent(ThreadId.make(lead!.thread_id));
+        // The renewed grant lasts as long as the wake-up, so a reply 10 minutes in still lands.
+        yield* TestClock.adjust("10 minutes");
         assert.isNotNull((yield* floor.authorize(identity, chat, "answer")).runId);
         assert.include(yield* floor.authorize(identity, chat, "evidence").pipe(Effect.flip), {
           reason: "floor_not_granted",
         });
+        // A used grant is never re-armed, whatever deadline is asked for.
+        const grantExpiry = sql<{ expires_at: number }>`SELECT expires_at FROM kin_floor_grants
+          WHERE org_id = ${orgId} AND agent_id = ${agentId} ORDER BY expires_at`;
+        const before = yield* grantExpiry;
+        yield* floor.renew({
+          orgId,
+          agentId,
+          messageIds: [KinMessageId.make("hi")],
+          until: Number.MAX_SAFE_INTEGER,
+        });
+        assert.deepStrictEqual(yield* grantExpiry, before);
         yield* Deferred.succeed(hold, undefined);
         yield* Fiber.join(fiber);
       }).pipe(

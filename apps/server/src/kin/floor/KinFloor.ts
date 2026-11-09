@@ -73,11 +73,13 @@ export class KinFloor extends Context.Service<
     /**
      * Re-arms the agent's unused direct-chat grant on each open run one of `messageIds` opened,
      * so a wake-up that starts after the TTL can still reply once. It never issues a grant.
+     * `until` (the wake-up's own deadline) replaces the default TTL from now.
      */
     readonly renew: (input: {
       readonly orgId: KinOrgId;
       readonly agentId: KinAgentId;
       readonly messageIds: ReadonlyArray<KinMessageId>;
+      readonly until?: number;
     }) => Effect.Effect<void, PersistenceSqlError>;
     readonly authorize: (
       identity: AgentIdentity,
@@ -182,9 +184,10 @@ const make = Effect.gen(function* () {
       readonly orgId: KinOrgId;
       readonly agentId: KinAgentId;
       readonly messageIds: ReadonlyArray<KinMessageId>;
+      readonly until?: number;
     }) {
       if (input.messageIds.length === 0) return;
-      const expiresAt = (yield* Clock.currentTimeMillis) + FLOOR_GRANT_TTL_MS;
+      const expiresAt = input.until ?? (yield* Clock.currentTimeMillis) + FLOOR_GRANT_TTL_MS;
       // A new human message closes the run, and a reply consumes the grant, so neither re-arms.
       yield* sql`UPDATE kin_floor_grants SET expires_at = MAX(expires_at, ${expiresAt})
       WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND consumed_at IS NULL
