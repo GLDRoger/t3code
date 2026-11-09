@@ -1153,6 +1153,8 @@ const make = Effect.gen(function* () {
           reason: "use_approvals",
           message: "Use the signed approvals service.",
         });
+      // Verdicts and raises go to the owner-only kin.levels methods, never the lead's queue.
+      if (widget.type === "shadow_review" || widget.type === "promotion") return yield* notAllowed;
       if (widget.type === "owner_check") {
         if (member.role !== "owner") return yield* notAllowed;
         const card = yield* decodeOwnerCheckCard(widget.state).pipe(
