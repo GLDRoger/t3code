@@ -375,6 +375,13 @@ describe("Kin streams", () => {
       expect((yield* Queue.take(chatViews)).value.contiguousSeq).toBe(1);
       expect((yield* Queue.take(chatViews)).value.closed).toBe("disabled");
 
+      // The host goes down: its turned-off answer goes with it, and the feed shows as cached.
+      yield* SubscriptionRef.set(activeSession, Option.none());
+      expect(yield* Queue.take(chatViews)).toMatchObject({
+        live: false,
+        value: { closed: null, contiguousSeq: 1 },
+      });
+
       // The host restarts with Kin: a backlog that changes nothing still reopens the chat.
       yield* SubscriptionRef.set(
         activeSession,
@@ -407,9 +414,9 @@ describe("Kin streams", () => {
         ),
       );
       expect(yield* Queue.take(subscribed)).toEqual({ chatId, afterSeq: 1, afterChangeSeq: 3 });
-      expect((yield* Queue.take(chatViews)).value).toMatchObject({
-        closed: null,
-        contiguousSeq: 1,
+      expect(yield* Queue.take(chatViews)).toMatchObject({
+        live: true,
+        value: { closed: null, contiguousSeq: 1 },
       });
       expect((yield* Queue.take(chatViews)).value.contiguousSeq).toBe(2);
       expect((yield* Queue.take(inboxViews)).value.chats.map((c) => c.chatId)).toEqual(["c1"]);

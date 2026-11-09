@@ -87,19 +87,40 @@ const sleepUntilNextSession = (delay: Duration.Duration) =>
 const isKinDisabled = (error: unknown): error is KinChatError =>
   isKinChatError(error) && error.reason === "disabled";
 
+/** The next change of session: the current one ended, replaced or not. */
+const sessionEnded = EnvironmentSupervisor.EnvironmentSupervisor.pipe(
+  Effect.flatMap((supervisor) =>
+    SubscriptionRef.changes(supervisor.session).pipe(Stream.drop(1), Stream.runHead),
+  ),
+);
+
 /**
- * Kin is turned off until the host restarts, so after `disabled` the stream shows `onDisabled`
- * and resubscribes on the next session instead of ending.
+ * Kin is turned off until the host restarts, so after `disabled` the stream shows `onDisabled`.
+ * That answer holds only for its session: when the session ends the stream shows `onSessionEnd`,
+ * then resubscribes on the next connected session instead of ending.
  */
 function resubscribeWhenKinReturns<A, E, R>(
   stream: Stream.Stream<A, E, R>,
   onDisabled: Stream.Stream<A>,
+  onSessionEnd: Stream.Stream<A>,
 ): Stream.Stream<A, E, R | EnvironmentSupervisor.EnvironmentSupervisor> {
   const run = (): Stream.Stream<A, E, R | EnvironmentSupervisor.EnvironmentSupervisor> =>
     stream.pipe(
       Stream.catchIf(isKinDisabled, () =>
         onDisabled.pipe(
-          Stream.concat(Stream.fromEffect(nextSession).pipe(Stream.drain)),
+          Stream.concat(
+            Stream.fromEffect(sessionEnded).pipe(
+              Stream.flatMap((next) =>
+                onSessionEnd.pipe(
+                  Stream.concat(
+                    Option.exists(next, Option.isSome)
+                      ? Stream.empty
+                      : Stream.fromEffect(nextSession).pipe(Stream.drain),
+                  ),
+                ),
+              ),
+            ),
+          ),
           Stream.concat(Stream.suspend(run)),
         ),
       ),
@@ -212,6 +233,7 @@ export function kinInboxStream(input: KinChatsSubscribeInput) {
         resubscribeWhenKinReturns(
           retryWhileKinUnavailable(subscribe(KIN_CHAT_WS_METHODS.chatsSubscribe, input)),
           Stream.empty,
+          Stream.empty,
         ),
         Stream.fromPubSub(leftChats(environmentId)).pipe(
           Stream.map((chatId) => ({ _tag: "left", chatId }) as const),
@@ -256,6 +278,7 @@ export function makeKinChatStream<E, R>(readHistory: KinReadHistory<E, R>) {
         const cached = yield* withKinCache(chatCache.load(environmentId, key));
         let state = Option.match(cached, { onNone: () => emptyKinChat, onSome: (c) => c.chat });
         let live = false;
+        let shownAt = Option.match(cached, { onNone: () => null, onSome: (c) => c.savedAt });
         let savedMessages = Option.exists(cached, (c) => c.chat.messages.length > 0);
         const saver = yield* throttledSave((value: { chat: KinChatState; savedAt: string }) =>
           withKinCache(chatCache.save(environmentId, key, value)),
@@ -265,12 +288,13 @@ export function makeKinChatStream<E, R>(readHistory: KinReadHistory<E, R>) {
           return withKinCache(removeKinCacheEntry(environmentId, key));
         });
 
-        // Set while a `disabled` view shows, so the next event reopens the chat even unchanged.
+        // Set while a `disabled` or session-ended view shows, so the next event shows live.
         let shownClosed = false;
         const step = (next: KinChatState): ReadonlyArray<KinSynced<KinChatState>> => {
           if (next === state && live && !shownClosed) return [];
           shownClosed = false;
           const savedAt = nowIso();
+          shownAt = savedAt;
           if (next !== state) {
             const trimmed = trimKinChatForCache(next);
             // A reset empties the feed until history refills it; keep the cached messages.
@@ -333,6 +357,8 @@ export function makeKinChatStream<E, R>(readHistory: KinReadHistory<E, R>) {
             shownClosed = true;
             return closedView("disabled");
           }),
+          // Kin may be back on the next session; show the feed as last received until it answers.
+          Stream.sync(() => ({ value: state, live: false, savedAt: shownAt })),
         ).pipe(
           Stream.catchIf(isKinRefusal, (error) =>
             Stream.fromEffect(
