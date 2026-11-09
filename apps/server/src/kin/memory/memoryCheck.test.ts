@@ -223,7 +223,8 @@ it.effect("memory-check only reads the memory repo and pins what it runs", () =>
     expect(runs).toContain("--config t3code/ops/kin/memory-repo/gitleaks.toml");
     expect(runs).toContain("node t3code/apps/server/src/kin/memory/lintCli.ts memory");
     expect(runs).toMatch(/\^\[0-9a-f\]\{40\}\$/);
-    const t3code = steps.find((s) => s.with?.repository === "GLDRoger/t3code");
-    expect(t3code?.with?.ref).toBe("${{ env.T3CODE_REF }}");
+    const t3code = steps.find((s) => s.name === "Checkout t3code")?.run ?? "";
+    expect(t3code).toContain('fetch -q --depth 1 https://github.com/GLDRoger/t3code "$T3CODE_REF"');
+    expect(t3code).toContain('[[ "$(git -C t3code rev-parse HEAD)" == "$T3CODE_REF" ]]');
   }).pipe(Effect.provide(NodeServices.layer)),
 );
