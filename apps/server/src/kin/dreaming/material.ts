@@ -6,16 +6,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { itemFolders } from "../memory/checkoutPaths.ts";
 import { parseFrontMatter } from "../memory/frontMatter.ts";
-
-export const itemFolders = [
-  "objectives",
-  "commitments",
-  "deferrals",
-  "decisions",
-  "people",
-  "claims",
-] as const;
 
 /** One original the dream may cite. `saidBy` and `trust` come from server records, never the model. */
 export interface MaterialEntry {
