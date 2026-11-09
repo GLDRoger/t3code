@@ -159,7 +159,7 @@ export function resolveKinHostAt(input: {
  * An offline host's probe, from the directory saved at its last answer, so its cache still knows
  * who is who. Without one it stays pending.
  */
-export function kinOfflineProbe(cached: KinOrgsListResult | null): KinProbe {
+function kinOfflineProbe(cached: KinOrgsListResult | null): KinProbe {
   return cached !== null && cached.me.length > 0
     ? { _tag: "ready", orgs: cached }
     : { _tag: "pending" };

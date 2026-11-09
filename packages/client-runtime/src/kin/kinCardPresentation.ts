@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import {
   KIN_MEMORY_CHANGES_CARD,
   KinRoutineCard,
@@ -10,15 +11,15 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import { kinLinkLabel, kinSafeWebUrl } from "../state/kinLinks";
-import { kinSentences } from "../state/kinScreenState";
-import { kinChoiceCardView, type KinChoiceCardView } from "./kinChoicePresentation";
-import { kinDeferralCardView, type KinDeferralCardView } from "./kinDeferralPresentation";
-import { kinLevelsCardView, type KinLevelsCardView } from "./kinLevelsPresentation";
+import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks.ts";
+import { kinSentences } from "./kinScreenState.ts";
+import { kinChoiceCardView, type KinChoiceCardView } from "./kinChoicePresentation.ts";
+import { kinDeferralCardView, type KinDeferralCardView } from "./kinDeferralPresentation.ts";
+import { kinLevelsCardView, type KinLevelsCardView } from "./kinLevelsPresentation.ts";
 import {
   kinMemoryChangesView,
   type KinMemoryChangesCardView,
-} from "./kinMemoryChangesPresentation";
+} from "./kinMemoryChangesPresentation.ts";
 
 export const KIN_UNKNOWN_CARD_TEXT = "This card can't be shown here yet.";
 export const KIN_MISSING_CARD_TEXT = "This card hasn't loaded yet.";
@@ -73,7 +74,7 @@ const clamp = (text: string, max: number) => {
   return chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : chars.join("");
 };
 
-export function kinTaskCardView(
+function kinTaskCardView(
   state: KinTaskCardState,
   /** The environment hosting this chat. A local card must name it; only remote cards go elsewhere. */
   hostEnvironmentId: EnvironmentId,
@@ -179,7 +180,7 @@ function digestView(card: Omit<KinDigestCardView, "accessibilityLabel">): KinDig
   return { ...card, accessibilityLabel: kinSentences(parts) };
 }
 
-export function kinShadowSummaryView(card: KinShadowSummaryCard): KinDigestCardView {
+function kinShadowSummaryView(card: KinShadowSummaryCard): KinDigestCardView {
   const hidden = card.total - card.entries.length;
   return digestView({
     eyebrow: "Shadow week",
@@ -195,7 +196,7 @@ export function kinShadowSummaryView(card: KinShadowSummaryCard): KinDigestCardV
   });
 }
 
-export function kinRoutineView(card: KinRoutineCard): KinDigestCardView {
+function kinRoutineView(card: KinRoutineCard): KinDigestCardView {
   return digestView({
     eyebrow: card.routine === "morning_brief" ? "Morning brief" : "Evening summary",
     title: formatDay(card.day),

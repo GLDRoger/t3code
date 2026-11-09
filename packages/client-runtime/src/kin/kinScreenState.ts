@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import {
   EnvironmentAuthorizationError,
   type EnvironmentId,
@@ -11,9 +12,9 @@ import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
 import type { AsyncResult } from "effect/reactivity";
 
-import type { KinSynced } from "./kinStreams";
-import type { KinHost } from "./kinHost";
-import type { KinInboxFold, KinInboxRow, KinInboxState, KinInboxView } from "./kinInboxModel";
+import type { KinSynced } from "./kinStreams.ts";
+import type { KinHost } from "./kinHost.ts";
+import type { KinInboxFold, KinInboxRow, KinInboxState, KinInboxView } from "./kinInboxModel.ts";
 
 /** What a Kin screen reading the inbox shows. */
 export type KinInboxScreenState =
@@ -158,7 +159,7 @@ export interface KinDirectory {
   readonly me: ReadonlySet<string>;
 }
 
-export const emptyKinDirectory: KinDirectory = { agentNames: new Map(), me: new Set() };
+const emptyKinDirectory: KinDirectory = { agentNames: new Map(), me: new Set() };
 
 export function kinDirectory(host: KinHost): KinDirectory {
   if (host._tag !== "host") return emptyKinDirectory;

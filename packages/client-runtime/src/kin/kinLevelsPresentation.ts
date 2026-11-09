@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import {
   KinChatError,
   KinPromotionCard,
@@ -8,13 +9,13 @@ import {
   type KinShadowVerdict,
   type KinWidget,
 } from "@t3tools/contracts";
-import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { squashAtomCommandFailure } from "../state/runtime.ts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import * as Schema from "effect/Schema";
 
-import { kinSentences } from "../state/kinScreenState";
-import { KIN_SEND_FAILED_TEXT } from "./kinDeferralPresentation";
+import { kinSentences } from "./kinScreenState.ts";
+import { KIN_SEND_FAILED_TEXT } from "./kinDeferralPresentation.ts";
 
 const decodeShadowReview = Schema.decodeUnknownOption(KinShadowReviewCard);
 const decodePromotion = Schema.decodeUnknownOption(KinPromotionCard);
@@ -50,7 +51,7 @@ const TOOL_LABELS: Record<string, string> = {
 const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 /** "Day 3 of 7 at L0. 12 of 20 reviewed, 10 fine as is, none harmful, 2 unreviewed." */
-export function kinTrialLines(stats: KinPromotionStats): ReadonlyArray<string> {
+function kinTrialLines(stats: KinPromotionStats): ReadonlyArray<string> {
   const { rule } = stats;
   const share = Math.round(rule.minFineShare * 100);
   const lines = [
@@ -99,7 +100,7 @@ export interface KinShadowReviewCardView {
   readonly closed: boolean;
 }
 
-export function kinShadowReviewView(
+function kinShadowReviewView(
   widget: KinWidget,
   card: KinShadowReviewCard,
 ): KinShadowReviewCardView {
@@ -249,7 +250,7 @@ function promotionBody(
   }
 }
 
-export function kinPromotionView(widget: KinWidget, card: KinPromotionCard): KinPromotionCardView {
+function kinPromotionView(widget: KinWidget, card: KinPromotionCard): KinPromotionCardView {
   const title = clamp(card.title, 300) || "Promotion";
   const body =
     widget.closedAt !== null && card.status !== "raised"

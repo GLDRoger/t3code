@@ -5,7 +5,11 @@ import { View } from "react-native";
 
 import { AppText as Text } from "../../../components/ui/AppText";
 import { environmentCatalog } from "../../../connection/catalog";
-import { KIN_MISSING_CARD_TEXT, KIN_UNKNOWN_CARD_TEXT, kinCardView } from "./kinCardPresentation";
+import {
+  KIN_MISSING_CARD_TEXT,
+  KIN_UNKNOWN_CARD_TEXT,
+  kinCardView,
+} from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { KinChoiceCard } from "./KinChoiceCard";
 import { KinDeferralCard } from "./KinDeferralCard";
 import { KinDigestCard } from "./KinDigestCard";

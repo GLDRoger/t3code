@@ -1,15 +1,15 @@
 import { KinChatError, type EnvironmentId, type KinWidget } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { kinCardView } from "./kinCardPresentation";
-import { kinChoiceAnswerText, kinChoicePhase } from "./kinChoicePresentation";
-import { KIN_SEND_FAILED_TEXT } from "./kinDeferralPresentation";
+import { kinCardView } from "./kinCardPresentation.ts";
+import { kinChoiceAnswerText, kinChoicePhase } from "./kinChoicePresentation.ts";
+import { KIN_SEND_FAILED_TEXT } from "./kinDeferralPresentation.ts";
 import {
   kinLevelsFailureText,
   kinLevelsScreenView,
   kinShownVerdict,
-} from "./kinLevelsPresentation";
-import { kinMemoryUndoFailureText } from "./kinMemoryChangesPresentation";
+} from "./kinLevelsPresentation.ts";
+import { kinMemoryUndoFailureText } from "./kinMemoryChangesPresentation.ts";
 
 const taskState = (overrides: Record<string, unknown> = {}) => ({
   taskId: "task-1",

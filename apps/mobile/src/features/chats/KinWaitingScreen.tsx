@@ -4,8 +4,12 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListSection } from "../../components/ui/ListSection";
 import { KinInboxPage } from "./components/KinScreenState";
-import { selectKinInboxView } from "./state/kinInboxModel";
-import { formatKinTime, kinDirectory, kinWaitingRowView } from "./state/kinScreenState";
+import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
+import {
+  formatKinTime,
+  kinDirectory,
+  kinWaitingRowView,
+} from "@t3tools/client-runtime/kin/kinScreenState";
 import { useKinInbox } from "./state/useKinInbox";
 
 /** Placeholder Waiting on you until the native cards land: one row per item, oldest first. */

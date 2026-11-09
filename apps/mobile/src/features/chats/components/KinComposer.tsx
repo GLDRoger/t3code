@@ -14,7 +14,7 @@ import {
   setComposerDraftText,
   useComposerDraft,
 } from "../../../state/use-composer-drafts";
-import { KIN_MESSAGE_MAX_LENGTH } from "../state/kinOutbox";
+import { KIN_MESSAGE_MAX_LENGTH } from "@t3tools/client-runtime/kin/kinOutbox";
 import { deliverKinOutbox, kinOutbox } from "../state/kinOutboxDelivery";
 
 /** Every Kin host uses the same org id, so the environment keeps two hosts' drafts apart. */

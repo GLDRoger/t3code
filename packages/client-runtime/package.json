@@ -542,6 +542,78 @@
     "./kin-push": {
       "types": "./src/kinPush.ts",
       "default": "./src/kinPush.ts"
+    },
+    "./kin/kinLive": {
+      "types": "./src/kin/kinLive.ts",
+      "default": "./src/kin/kinLive.ts"
+    },
+    "./kin/kinReactions": {
+      "types": "./src/kin/kinReactions.ts",
+      "default": "./src/kin/kinReactions.ts"
+    },
+    "./kin/kinInboxModel": {
+      "types": "./src/kin/kinInboxModel.ts",
+      "default": "./src/kin/kinInboxModel.ts"
+    },
+    "./kin/kinIntro": {
+      "types": "./src/kin/kinIntro.ts",
+      "default": "./src/kin/kinIntro.ts"
+    },
+    "./kin/kinScreenState": {
+      "types": "./src/kin/kinScreenState.ts",
+      "default": "./src/kin/kinScreenState.ts"
+    },
+    "./kin/kinHost": {
+      "types": "./src/kin/kinHost.ts",
+      "default": "./src/kin/kinHost.ts"
+    },
+    "./kin/kinLinks": {
+      "types": "./src/kin/kinLinks.ts",
+      "default": "./src/kin/kinLinks.ts"
+    },
+    "./kin/kinStreams": {
+      "types": "./src/kin/kinStreams.ts",
+      "default": "./src/kin/kinStreams.ts"
+    },
+    "./kin/kinFeedFollow": {
+      "types": "./src/kin/kinFeedFollow.ts",
+      "default": "./src/kin/kinFeedFollow.ts"
+    },
+    "./kin/kinOutbox": {
+      "types": "./src/kin/kinOutbox.ts",
+      "default": "./src/kin/kinOutbox.ts"
+    },
+    "./kin/kinOutboxRetry": {
+      "types": "./src/kin/kinOutboxRetry.ts",
+      "default": "./src/kin/kinOutboxRetry.ts"
+    },
+    "./kin/kinChatFixtures": {
+      "types": "./src/kin/kinChatFixtures.ts",
+      "default": "./src/kin/kinChatFixtures.ts"
+    },
+    "./kin/kinChatFeed": {
+      "types": "./src/kin/kinChatFeed.ts",
+      "default": "./src/kin/kinChatFeed.ts"
+    },
+    "./kin/kinCardPresentation": {
+      "types": "./src/kin/kinCardPresentation.ts",
+      "default": "./src/kin/kinCardPresentation.ts"
+    },
+    "./kin/kinChoicePresentation": {
+      "types": "./src/kin/kinChoicePresentation.ts",
+      "default": "./src/kin/kinChoicePresentation.ts"
+    },
+    "./kin/kinDeferralPresentation": {
+      "types": "./src/kin/kinDeferralPresentation.ts",
+      "default": "./src/kin/kinDeferralPresentation.ts"
+    },
+    "./kin/kinMemoryChangesPresentation": {
+      "types": "./src/kin/kinMemoryChangesPresentation.ts",
+      "default": "./src/kin/kinMemoryChangesPresentation.ts"
+    },
+    "./kin/kinLevelsPresentation": {
+      "types": "./src/kin/kinLevelsPresentation.ts",
+      "default": "./src/kin/kinLevelsPresentation.ts"
     }
   },
   "scripts": {

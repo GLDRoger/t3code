@@ -15,7 +15,7 @@ import {
 } from "./components/KinChatRow";
 import { KinInboxNotice, KinScreenState } from "./components/KinScreenState";
 import { KinWaitingBanner } from "./components/KinWaitingBanner";
-import { selectKinInboxView } from "./state/kinInboxModel";
+import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
   formatKinTime,
   kinChatRowLabel,
@@ -26,7 +26,7 @@ import {
   type KinChatRowView,
   type KinDirectory,
   type KinInboxScreenState,
-} from "./state/kinScreenState";
+} from "@t3tools/client-runtime/kin/kinScreenState";
 import { useKinInbox } from "./state/useKinInbox";
 
 export function KinChatsScreen() {

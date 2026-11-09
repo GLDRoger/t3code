@@ -2,7 +2,7 @@ import { View } from "react-native";
 
 import { Button } from "../../../components/ui/Button";
 import { EmptyState } from "../../../components/ui/EmptyState";
-import { KIN_INTRO_PROMPTS } from "../state/kinIntro";
+import { KIN_INTRO_PROMPTS } from "@t3tools/client-runtime/kin/kinIntro";
 
 /**
  * First run in the owner's chat with their lead: what the lead does and a few asks to start with.

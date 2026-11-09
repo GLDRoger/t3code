@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Fixtures build ISO times relative to a fixed clock.
 import {
   AuthOrchestrationOperateScope,
   EnvironmentAuthorizationError,
@@ -9,7 +10,7 @@ import {
 import { AtomRegistry } from "effect/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { KIN_FIXTURE_CHAT_ID, makeKinFixtureMessages } from "./kinChatFixtures";
+import { KIN_FIXTURE_CHAT_ID, makeKinFixtureMessages } from "./kinChatFixtures.ts";
 import {
   classifyKinSendFailure,
   createKinOutbox,
@@ -18,8 +19,8 @@ import {
   type KinOutboxRecord,
   type KinOutboxStorage,
   type KinSendOutcome,
-} from "./kinOutbox";
-import { createKinOutboxRetry } from "./kinOutboxRetry";
+} from "./kinOutbox.ts";
+import { createKinOutboxRetry } from "./kinOutboxRetry.ts";
 
 const ENV = "env-kin" as EnvironmentId;
 const CHAT = KIN_FIXTURE_CHAT_ID;

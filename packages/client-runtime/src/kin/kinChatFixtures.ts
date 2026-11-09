@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Fixtures build ISO times relative to a fixed clock.
 import type {
   KinAgentId,
   KinChatHistoryInput,
@@ -129,6 +130,7 @@ const FIXTURE_REPLY =
  * A scripted lead turn for the fixture chat, as the reply bridge would stream it after `seq`:
  * presence through thinking, a tool label and writing, the reply in 250 ms deltas, its durable
  * message, then a stall that offers Stop.
+ * @public Mobile's dev fixture chat replays it.
  */
 export function kinFixtureReplyScript(
   seq: number,

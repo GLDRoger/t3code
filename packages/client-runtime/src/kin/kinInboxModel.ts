@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import {
   KinChatSummary,
   KinMessage,
@@ -19,8 +20,8 @@ import {
   applyKinPresence,
   KinHeldDraft,
   settleKinDrafts,
-} from "./kinLive";
-import { applyKinReaction, mergeKinReactions } from "./kinReactions";
+} from "./kinLive.ts";
+import { applyKinReaction, mergeKinReactions } from "./kinReactions.ts";
 
 export const KIN_CACHED_MESSAGE_LIMIT = 50;
 
@@ -99,7 +100,7 @@ const activityAt = (chat: KinChatSummary) => chat.lastMessageAt ?? chat.createdA
  * Waiting items already cover every way a chat asks the viewer: an open choice card (decision),
  * an approval, a deferral or a lead's question (question), a mention or a suggestion.
  */
-export function kinInboxFold(chat: KinChatSummary, waitingCount: number): KinInboxFold {
+function kinInboxFold(chat: KinChatSummary, waitingCount: number): KinInboxFold {
   if (waitingCount > 0) return "needsYou";
   return chat.working === true ? "working" : "rest";
 }

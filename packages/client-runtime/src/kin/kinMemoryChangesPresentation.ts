@@ -8,7 +8,7 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import { KIN_SEND_FAILED_TEXT } from "./kinDeferralPresentation";
+import { KIN_SEND_FAILED_TEXT } from "./kinDeferralPresentation.ts";
 
 const decodeCard = Schema.decodeUnknownOption(KinMemoryChangeCard);
 const isKinChatError = Schema.is(KinChatError);

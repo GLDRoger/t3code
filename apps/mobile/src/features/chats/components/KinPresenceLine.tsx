@@ -4,7 +4,11 @@ import { AccessibilityInfo, Pressable, View } from "react-native";
 import { AppText as Text } from "../../../components/ui/AppText";
 import type { KinPresence } from "@t3tools/contracts";
 
-import { KIN_PRESENCE_TICK_MS, kinPresenceLine, kinPresenceNeedsClock } from "../state/kinLive";
+import {
+  KIN_PRESENCE_TICK_MS,
+  kinPresenceLine,
+  kinPresenceNeedsClock,
+} from "@t3tools/client-runtime/kin/kinLive";
 
 /**
  * Wall-clock ms, refreshed on 15 s boundaries while `active`, so every reader of one presence

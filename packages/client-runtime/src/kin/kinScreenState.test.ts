@@ -1,11 +1,12 @@
+// @effect-diagnostics globalDate:off - Fixtures build ISO times relative to a fixed clock.
 import { EnvironmentAuthorizationError, EnvironmentId, KinChatError } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
-import type { KinSynced } from "./kinStreams";
-import type { KinHost, KinProbe } from "./kinHost";
-import { emptyKinInbox, selectKinInboxView, type KinInboxState } from "./kinInboxModel";
+import type { KinSynced } from "./kinStreams.ts";
+import type { KinHost, KinProbe } from "./kinHost.ts";
+import { emptyKinInbox, selectKinInboxView, type KinInboxState } from "./kinInboxModel.ts";
 import {
   formatKinTime,
   kinChatRowLabel,
@@ -23,7 +24,7 @@ import {
   kinPreviewText,
   kinWaitingBannerView,
   kinWaitingRowView,
-} from "./kinScreenState";
+} from "./kinScreenState.ts";
 
 const environmentId = EnvironmentId.make("env-kin");
 const ready: KinProbe = { _tag: "ready", orgs: { orgs: [], me: [] } as never };

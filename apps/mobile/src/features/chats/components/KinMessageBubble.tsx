@@ -25,15 +25,15 @@ import {
   kinMessageLinks,
   kinPlainText,
   type KinFeedRow,
-} from "../state/kinChatFeed";
-import type { KinOutboxEntry } from "../state/kinOutbox";
+} from "@t3tools/client-runtime/kin/kinChatFeed";
+import type { KinOutboxEntry } from "@t3tools/client-runtime/kin/kinOutbox";
 import {
   KIN_REACTION_HINT,
   KIN_REACTION_HINT_LABEL,
   KIN_REACTION_NAMES,
   type KinReactionChip,
-} from "../state/kinReactions";
-import { kinSentences } from "../state/kinScreenState";
+} from "@t3tools/client-runtime/kin/kinReactions";
+import { kinSentences } from "@t3tools/client-runtime/kin/kinScreenState";
 import { KinWidgetView } from "../widgets/KinWidgetView";
 
 type MessageRow = Extract<KinFeedRow, { readonly type: "message" }>;

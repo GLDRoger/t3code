@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { createKinOutboxRetry } from "./kinOutboxRetry";
+import { createKinOutboxRetry } from "./kinOutboxRetry.ts";
 
 function setup() {
   vi.useFakeTimers();

@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off globalTimers:off globalConsole:off - A promise-based store driven from React, outside an Effect runtime.
 import {
   EnvironmentAuthorizationError,
   EnvironmentId,
@@ -12,9 +13,9 @@ import { Atom, type AtomRegistry } from "effect/reactivity";
 /** `KinMessagesSendInput.body`'s max length; longer bodies would be refused for good. */
 export const KIN_MESSAGE_MAX_LENGTH = KIN_MESSAGE_BODY_MAX_LENGTH;
 /** Unsent messages one environment may hold; past it, Send keeps the text in the draft. */
-export const KIN_OUTBOX_MAX_ENTRIES = 200;
+const KIN_OUTBOX_MAX_ENTRIES = 200;
 /** A send with no reply by then waits for the next attempt; dedupe makes the resend safe. */
-export const KIN_SEND_TIMEOUT_MS = 30_000;
+const KIN_SEND_TIMEOUT_MS = 30_000;
 
 /**
  * Sends wait here, keyed by `clientMessageId`, until the host acks them. The host dedupes a

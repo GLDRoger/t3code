@@ -1,4 +1,4 @@
-import { EnvironmentRpcUnavailableError } from "@t3tools/client-runtime/rpc";
+import { EnvironmentRpcUnavailableError } from "../rpc/index.ts";
 import {
   EnvironmentAuthorizationError,
   EnvironmentId,
@@ -16,7 +16,7 @@ import {
   resolveKinHost,
   resolveKinHostAt,
   type KinProbe,
-} from "./kinHost";
+} from "./kinHost.ts";
 
 const orgs = (me: KinOrgsListResult["me"]) =>
   ({

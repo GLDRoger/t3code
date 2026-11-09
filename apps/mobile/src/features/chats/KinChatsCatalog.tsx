@@ -19,8 +19,8 @@ import { View } from "react-native";
 import { AppText } from "../../components/ui/AppText";
 import { Chip } from "../../components/ui/Chip";
 import { KinChatsView } from "./KinChatsScreen";
-import type { KinInboxState } from "./state/kinInboxModel";
-import type { KinDirectory, KinInboxScreenState } from "./state/kinScreenState";
+import type { KinInboxState } from "@t3tools/client-runtime/kin/kinInboxModel";
+import type { KinDirectory, KinInboxScreenState } from "@t3tools/client-runtime/kin/kinScreenState";
 
 const orgId = KinOrgId.make("org-catalog");
 const owner = KinPersonId.make("person-owner");

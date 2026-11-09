@@ -1,7 +1,8 @@
-import { EnvironmentSupervisor } from "@t3tools/client-runtime/connection";
-import { subscribe, subscribeDynamic } from "@t3tools/client-runtime/rpc";
-import { persistQuery } from "@t3tools/client-runtime/state/query-persistence";
-import { queryPersistenceKey } from "@t3tools/client-runtime/state/runtime";
+// @effect-diagnostics globalDate:off - Cache records stamp their save time as ISO text.
+import { EnvironmentSupervisor } from "../connection/index.ts";
+import { subscribe, subscribeDynamic } from "../rpc/index.ts";
+import { persistQuery } from "../state/queryPersistence.ts";
+import { queryPersistenceKey } from "../state/runtime.ts";
 import {
   KIN_CHAT_WS_METHODS,
   KinChatError,
@@ -12,6 +13,7 @@ import {
   type KinChatsSubscribeInput,
   type KinChatStreamEvent,
 } from "@t3tools/contracts";
+import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -20,7 +22,6 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
-import { removeKinCacheEntry, withKinCache } from "./kinCache";
 import {
   applyKinChatEvent,
   applyKinChatHistory,
@@ -33,7 +34,15 @@ import {
   trimKinChatForCache,
   type KinChatClosedReason,
   type KinInboxEvent,
-} from "./kinInboxModel";
+} from "./kinInboxModel.ts";
+
+/**
+ * Forgets a chat's cached record when the viewer leaves it or loses access. Clients with a device
+ * cache provide it beside `EnvironmentQueryStore`; without one, nothing is cached to forget.
+ */
+export class KinCacheEviction extends Context.Reference<
+  (environmentId: EnvironmentId, key: string) => Effect.Effect<void>
+>("@t3tools/client-runtime/kin/KinCacheEviction", { defaultValue: () => () => Effect.void }) {}
 
 /** A stream's folded state, seeded from the device cache until the host answers. */
 export interface KinSynced<A> {
@@ -47,7 +56,7 @@ export interface KinSynced<A> {
 export const KIN_INBOX_LABEL = "kin:inbox";
 export const KIN_CHAT_LABEL = "kin:chat";
 /** Streams save at most this often; the last change is flushed when the stream stops. */
-export const KIN_CACHE_SAVE_INTERVAL = Duration.millis(1500);
+const KIN_CACHE_SAVE_INTERVAL = Duration.millis(1500);
 
 const inboxCache = persistQuery(Schema.Struct({ inbox: KinInboxState, savedAt: Schema.String }));
 const chatCache = persistQuery(Schema.Struct({ chat: KinChatState, savedAt: Schema.String }));
@@ -62,8 +71,8 @@ const isKinRefusal = (
 ): error is KinChatError & { readonly reason: KinChatClosedReason } =>
   isKinChatError(error) && error.reason !== "unavailable";
 
-export const KIN_RETRY_BASE_DELAY = Duration.seconds(1);
-export const KIN_RETRY_MAX_DELAY = Duration.seconds(30);
+const KIN_RETRY_BASE_DELAY = Duration.seconds(1);
+const KIN_RETRY_MAX_DELAY = Duration.seconds(30);
 
 /** The wait before retry `attempt`, counting from 0: 1 s, doubling to 30 s. */
 const kinRetryDelay = (attempt: number) =>
@@ -132,7 +141,7 @@ function resubscribeWhenKinReturns<A, E, R>(
  * Resubscribes after `unavailable`: 1 s, doubling to 30 s, starting over once events flow again
  * or a new session comes up.
  */
-export function retryWhileKinUnavailable<A, E, R>(stream: Stream.Stream<A, E, R>) {
+function retryWhileKinUnavailable<A, E, R>(stream: Stream.Stream<A, E, R>) {
   let attempt = 0;
   const run = (): Stream.Stream<A, E, R | EnvironmentSupervisor.EnvironmentSupervisor> =>
     stream.pipe(
@@ -219,11 +228,11 @@ export function kinInboxStream(input: KinChatsSubscribeInput) {
     Effect.gen(function* () {
       const environmentId = yield* currentEnvironmentId;
       const key = queryPersistenceKey(KIN_INBOX_LABEL, input);
-      const cached = yield* withKinCache(inboxCache.load(environmentId, key));
+      const cached = yield* inboxCache.load(environmentId, key);
       let state = Option.match(cached, { onNone: () => emptyKinInbox, onSome: (c) => c.inbox });
       let live = false;
       const saver = yield* throttledSave((value: { inbox: KinInboxState; savedAt: string }) =>
-        withKinCache(inboxCache.save(environmentId, key, value)),
+        inboxCache.save(environmentId, key, value),
       );
       const events: Stream.Stream<
         KinInboxEvent,
@@ -284,17 +293,17 @@ export function makeKinChatStream<E, R>(readHistory: KinReadHistory<E, R>) {
       Effect.gen(function* () {
         const environmentId = yield* currentEnvironmentId;
         const key = queryPersistenceKey(KIN_CHAT_LABEL, input);
-        const cached = yield* withKinCache(chatCache.load(environmentId, key));
+        const cached = yield* chatCache.load(environmentId, key);
         let state = Option.match(cached, { onNone: () => emptyKinChat, onSome: (c) => c.chat });
         let live = false;
         let shownAt = Option.match(cached, { onNone: () => null, onSome: (c) => c.savedAt });
         let savedMessages = Option.exists(cached, (c) => c.chat.messages.length > 0);
         const saver = yield* throttledSave((value: { chat: KinChatState; savedAt: string }) =>
-          withKinCache(chatCache.save(environmentId, key, value)),
+          chatCache.save(environmentId, key, value),
         );
         const forget = Effect.suspend(() => {
           saver.discard();
-          return withKinCache(removeKinCacheEntry(environmentId, key));
+          return KinCacheEviction.use((evict) => evict(environmentId, key));
         });
 
         // Set while a `disabled` or session-ended view shows, so the next event shows live.

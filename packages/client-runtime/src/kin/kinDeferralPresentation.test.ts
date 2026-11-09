@@ -19,7 +19,7 @@ import {
   kinStartNowRefusalNotice,
   visibleKinCardStatus,
   type KinDeferralActionId,
-} from "./kinDeferralPresentation";
+} from "./kinDeferralPresentation.ts";
 
 const DUE = "2026-11-13T09:00:00.000Z";
 const deferral = (state: Record<string, unknown> = {}, overrides: Record<string, unknown> = {}) =>

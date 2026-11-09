@@ -3,7 +3,7 @@ import { Pressable, View } from "react-native";
 
 import { SymbolView } from "../../../components/ui/AppSymbol";
 import { AppText as Text } from "../../../components/ui/AppText";
-import type { KinFeedRow } from "../state/kinChatFeed";
+import type { KinFeedRow } from "@t3tools/client-runtime/kin/kinChatFeed";
 
 type FoldRow = Extract<KinFeedRow, { readonly type: "fold" }>;
 

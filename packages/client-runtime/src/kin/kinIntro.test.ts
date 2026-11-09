@@ -1,7 +1,7 @@
 import type { KinMessage } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { kinIntroVisible } from "./kinIntro";
+import { kinIntroVisible } from "./kinIntro.ts";
 
 const from = (author: KinMessage["author"]) => ({ author }) as KinMessage;
 const lead = from({ _tag: "agent", agentId: "lead" } as never);
