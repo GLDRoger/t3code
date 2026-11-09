@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // Ops only: replays a recorded Kin day through the full lead path at L0, with a scripted
-// provider instead of a model, and checks that memory reached only kin/shadow/<agentId>.
+// provider instead of a model, against a local mirror of the memory remote. Only after the
+// checks pass, and only with --push, does it push kin/shadow/<agentId> to the real remote.
 // Runbook: docs/operations/kin-shadow-dry-run.md.
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import * as NodeOS from "node:os";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   AuthSessionId,
   AuthStandardClientScopes,
@@ -13,6 +14,7 @@ import {
   KinAgentId,
   KinChatId,
   KinEvent,
+  type KinLevel,
   KinOrgId,
   KinPersonId,
   KinRoutineCard,
@@ -24,6 +26,7 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
+import * as Config from "effect/Config";
 import * as Console from "effect/Console";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
@@ -73,6 +76,7 @@ import * as Memory from "../src/kin/memory/Memory.ts";
 import * as Cache from "../src/kin/memory/MemoryCache.ts";
 import { MemoryConfig } from "../src/kin/memory/MemoryConfig.ts";
 import * as Writer from "../src/kin/memory/MemoryWriter.ts";
+import { isCredentialHelperReference, isSshCommandReference } from "../src/kin/memory/purgePush.ts";
 import * as Scan from "../src/kin/memory/secretScan.ts";
 import * as KinPersistence from "../src/kin/persistence/KinPersistence.ts";
 
@@ -153,7 +157,11 @@ interface DryRunOptions {
   readonly credentialHelper?: string | undefined;
   readonly sshCommand?: string | undefined;
   /** The home directory whose `.t3` is the live install; tests pass a temporary one. */
-  readonly home?: string | undefined;
+  readonly home: string | undefined;
+  /** Push the shadow branch to the memory remote once every check passes. */
+  readonly push?: boolean | undefined;
+  /** Test seam for proving the push gate; the CLI always runs L0. */
+  readonly level?: KinLevel | undefined;
 }
 
 interface RefChange {
@@ -165,6 +173,7 @@ interface RefChange {
 interface DryRunReport {
   readonly lines: ReadonlyArray<string>;
   readonly refChanges: ReadonlyArray<RefChange>;
+  readonly pushed: { readonly ref: string; readonly sha: string } | undefined;
   readonly violations: ReadonlyArray<string>;
   readonly toolCalls: ReadonlyArray<{ readonly tool: string; readonly outcome: string }>;
 }
@@ -198,12 +207,20 @@ const decodeReviewCard = Schema.decodeOption(Schema.fromJsonString(KinShadowRevi
 /** Refuses the live install: the state directory may not be `~/.t3` or anything below it. */
 const refuseLiveHome = Effect.fn("KinDryRun.refuseLiveHome")(function* (
   stateDir: string,
-  home: string,
+  home: string | undefined,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  if (home === undefined || !path.isAbsolute(home))
+    return yield* new KinDryRunError({
+      message: "HOME is unset or not absolute, so the live ~/.t3 can't be located. Set HOME.",
+    });
   const real = (target: string) =>
     fs.realPath(target).pipe(Effect.orElseSucceed(() => path.resolve(target)));
+  // macOS and Windows volumes usually fold case, so ~/.T3 is the live ~/.t3 there.
+  const platform = yield* HostProcess.Platform;
+  const fold = (target: string) =>
+    platform === "darwin" || platform === "win32" ? target.toLowerCase() : target;
   // Resolve the deepest existing ancestor, so a symlink into ~/.t3 is caught before creation.
   const resolve = Effect.fn("KinDryRun.resolve")(function* (target: string) {
     let existing = path.resolve(target);
@@ -221,11 +238,35 @@ const refuseLiveHome = Effect.fn("KinDryRun.refuseLiveHome")(function* (
     path.join(path.resolve(home), ".t3"),
     yield* resolve(path.join(home, ".t3")),
   ]))
-    if (state === live || state.startsWith(live + path.sep))
+    if (fold(state) === fold(live) || fold(state).startsWith(fold(live) + path.sep))
       return yield* new KinDryRunError({
         message: `Refusing ${stateDir}: it is the live T3 home (${live}) or inside it. Use a temporary --state-dir.`,
       });
   return state;
+});
+
+/** Credential flags name a helper, a key file or a command, never a secret value. */
+const refuseUnsafeFlags = Effect.fn("KinDryRun.refuseUnsafeFlags")(function* (
+  options: DryRunOptions,
+) {
+  // The id becomes the one pushed ref, so it may not bend the refspec.
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(options.agentId))
+    return yield* new KinDryRunError({
+      message: "--agent-id takes letters, digits, '-' and '_' only.",
+    });
+  if (
+    options.credentialHelper !== undefined &&
+    !isCredentialHelperReference(options.credentialHelper)
+  )
+    return yield* new KinDryRunError({
+      message:
+        "--credential-helper takes a helper name or an absolute path, never a token or an inline `!` script.",
+    });
+  if (options.sshCommand !== undefined && !isSshCommandReference(options.sshCommand))
+    return yield* new KinDryRunError({
+      message:
+        "--ssh-command takes a plain ssh command naming a key file, such as `ssh -i /path/to/key -o IdentitiesOnly=yes`, with no shell syntax or secret.",
+    });
 });
 
 const git = Effect.fn("KinDryRun.git")(function* (cwd: string, args: ReadonlyArray<string>) {
@@ -250,7 +291,7 @@ const git = Effect.fn("KinDryRun.git")(function* (cwd: string, args: ReadonlyArr
 });
 
 /** A local bare remote holding the day's fixture memory, so no test touches a real repository. */
-const seedFixtureRemote = Effect.fn("KinDryRun.seedFixtureRemote")(function* (
+export const seedFixtureRemote = Effect.fn("KinDryRun.seedFixtureRemote")(function* (
   stateDir: string,
   memory: RecordedDay["memory"],
 ) {
@@ -347,7 +388,8 @@ export const runDryRun = Effect.fn("KinDryRun.run")(
   function* (options: DryRunOptions) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const stateDir = yield* refuseLiveHome(options.stateDir, options.home ?? NodeOS.homedir());
+    yield* refuseUnsafeFlags(options);
+    const stateDir = yield* refuseLiveHome(options.stateDir, options.home);
     if ((yield* fs.exists(stateDir)) && (yield* fs.readDirectory(stateDir)).length > 0)
       return yield* new KinDryRunError({
         message: `State directory ${stateDir} is not empty. Use a fresh one for each dry run.`,
@@ -359,18 +401,46 @@ export const runDryRun = Effect.fn("KinDryRun.run")(
       ),
     );
     const agentId = KinAgentId.make(options.agentId);
-    const memoryUrl = options.memoryUrl ?? (yield* seedFixtureRemote(stateDir, day.memory));
+    const shadow = `refs/heads/kin/shadow/${agentId}`;
+    const target = options.memoryUrl ?? (yield* seedFixtureRemote(stateDir, day.memory));
+    const withCredentials = Effect.provideService(
+      MemoryConfig,
+      MemoryConfig.of({
+        baseDirectory: path.join(stateDir, "kin"),
+        repositories: [],
+        ...(options.credentialHelper === undefined
+          ? {}
+          : { credentialHelper: options.credentialHelper }),
+        ...(options.sshCommand === undefined ? {} : { sshCommand: options.sshCommand }),
+      }),
+    );
+    const refuseExistingShadow = Effect.fn("KinDryRun.refuseExistingShadow")(function* () {
+      const refs = yield* listRefs(stateDir, target).pipe(
+        withCredentials,
+        Effect.mapError(
+          (error) =>
+            new KinDryRunError({
+              message: `Could not list refs on ${target}: ${error.message}. Run the runbook's ls-remote pre-check with the same credential to see git's own error.`,
+            }),
+        ),
+      );
+      const existing = refs.get(shadow);
+      if (existing !== undefined)
+        return yield* new KinDryRunError({
+          message: `${shadow} already exists on ${target} at ${existing}. Delete it (see the runbook) or pick another --agent-id.`,
+        });
+    });
+    yield* refuseExistingShadow();
+    // The replay only ever sees this local mirror; the one write to the real remote comes after the checks.
+    const memoryUrl = path.join(stateDir, "memory-mirror.git");
+    yield* memoryGit(stateDir, ["clone", "-q", "--mirror", "--", target, memoryUrl]).pipe(
+      withCredentials,
+    );
     const memoryConfig = MemoryConfig.of({
       baseDirectory: path.join(stateDir, "kin"),
       repositories: [{ orgId, repoUrl: memoryUrl, path: encodeURIComponent(orgId) }],
-      ...(options.credentialHelper === undefined
-        ? {}
-        : { credentialHelper: options.credentialHelper }),
-      ...(options.sshCommand === undefined ? {} : { sshCommand: options.sshCommand }),
     });
-    const refsBefore = yield* listRefs(stateDir, memoryUrl).pipe(
-      Effect.provideService(MemoryConfig, memoryConfig),
-    );
+    const refsBefore = yield* listRefs(stateDir, memoryUrl);
     const events = day.events.toSorted((a, b) => Date.parse(a.at) - Date.parse(b.at));
     const byId = new Map(events.map((event) => [event.id, event]));
     const start = Date.parse(`${day.day}T00:00:00.000Z`);
@@ -427,7 +497,7 @@ export const runDryRun = Effect.fn("KinDryRun.run")(
       const workerProjects = yield* encodeJson(day.workerProjects);
       // Seeded at L0: the level the shadow week runs at, and the one this script checks.
       yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, models_json, worker_projects_json, owner_chat_id)
-      VALUES (${agentId}, ${orgId}, ${day.lead.name}, 'L0', ${start}, ${models}, ${workerProjects}, ${direct.chatId})`;
+      VALUES (${agentId}, ${orgId}, ${day.lead.name}, ${options.level ?? "L0"}, ${start}, ${models}, ${workerProjects}, ${direct.chatId})`;
       for (const person of day.people)
         yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
         VALUES (${person.personId}, ${orgId}, ${person.handle}, ${person.displayName}, ${createdAt})`;
@@ -643,8 +713,9 @@ export const runDryRun = Effect.fn("KinDryRun.run")(
         });
 
         lines.push(
-          `Kin shadow dry run: ${day.day}, lead ${agentId} at L0`,
-          `Memory remote: ${memoryUrl}`,
+          `Kin shadow dry run: ${day.day}, lead ${agentId} at ${options.level ?? "L0"}`,
+          `Memory remote: ${target}`,
+          `Local mirror: ${memoryUrl}`,
           "",
           "Replay:",
         );
@@ -745,23 +816,19 @@ export const runDryRun = Effect.fn("KinDryRun.run")(
       Effect.scoped,
     );
 
-    // Check 1: the remote gained or changed only this lead's shadow branch.
-    const refChanges = yield* listRefs(stateDir, memoryUrl).pipe(
-      Effect.provideService(MemoryConfig, memoryConfig),
-      Effect.map((after) => diffRefs(refsBefore, after)),
-    );
-    const shadow = `refs/heads/kin/shadow/${agentId}`;
-    lines.push("", "Memory remote refs:");
+    // Check 1: the mirror gained or changed only this lead's shadow branch.
+    const refChanges = diffRefs(refsBefore, yield* listRefs(stateDir, memoryUrl));
+    lines.push("", "Local mirror refs:");
     if (refChanges.length === 0) lines.push("  (no change)");
     for (const change of refChanges) {
       lines.push(
-        `  ${change.before === null ? "+" : change.after === null ? "-" : "~"} ${change.ref} ${change.before?.slice(0, 12) ?? "(new)"} -> ${change.after?.slice(0, 12) ?? "(deleted)"}`,
+        `  ${change.before === null ? "+" : change.after === null ? "-" : "~"} ${change.ref} ${change.before ?? "(new)"} -> ${change.after ?? "(deleted)"}`,
       );
       if (change.ref !== shadow)
-        violations.push(`The remote ref ${change.ref} changed; only ${shadow} may.`);
+        violations.push(`The mirror ref ${change.ref} changed; only ${shadow} may.`);
     }
-    if (!refChanges.some((change) => change.ref === shadow && change.after !== null))
-      violations.push(`${shadow} was not written.`);
+    const sha = refChanges.find((change) => change.ref === shadow)?.after ?? undefined;
+    if (sha === undefined) violations.push(`${shadow} was not written.`);
 
     lines.push("", "Checks:");
     lines.push(
@@ -770,7 +837,28 @@ export const runDryRun = Effect.fn("KinDryRun.run")(
         : `  FAIL: ${violations.length} violation(s)`,
       ...violations.map((violation) => `  - ${violation}`),
     );
-    return { lines, refChanges, violations, toolCalls } satisfies DryRunReport;
+
+    lines.push("", "Push:");
+    let pushed: DryRunReport["pushed"];
+    if (violations.length > 0 || sha === undefined) lines.push(`  none: the checks failed.`);
+    else if (options.push !== true)
+      lines.push(`  none (no --push). With --push: ${sha} -> ${target} ${shadow}`);
+    else {
+      yield* refuseExistingShadow();
+      const source = path.join(stateDir, "push-source");
+      yield* memoryGit(stateDir, ["clone", "-q", "--no-checkout", "--", memoryUrl, source]);
+      yield* memoryGit(source, ["push", "-q", "--", target, `${sha}:${shadow}`]).pipe(
+        withCredentials,
+      );
+      const landed = (yield* listRefs(stateDir, target).pipe(withCredentials)).get(shadow);
+      if (landed !== sha)
+        return yield* new KinDryRunError({
+          message: `Pushed ${sha} to ${shadow}, but the remote now reports ${landed ?? "no such ref"}.`,
+        });
+      pushed = { ref: shadow, sha };
+      lines.push(`  + ${shadow} ${sha} -> ${target}`);
+    }
+    return { lines, refChanges, pushed, violations, toolCalls } satisfies DryRunReport;
   },
   (effect) => provideDeterministicTestRuntime(effect),
 );
@@ -788,12 +876,24 @@ const command = Command.make(
     ),
     memoryUrl: Flag.String("memory-url").pipe(
       Flag.withDescription(
-        "Memory remote. Defaults to a local fixture remote in the state directory.",
+        "Memory remote, mirrored into the state directory for the replay. Defaults to a local fixture remote.",
       ),
       Flag.optional,
     ),
-    credentialHelper: Flag.String("credential-helper").pipe(Flag.optional),
-    sshCommand: Flag.String("ssh-command").pipe(Flag.optional),
+    push: Flag.Boolean("push").pipe(
+      Flag.withDefault(false),
+      Flag.withDescription(
+        "After every check passes, push kin/shadow/<id> to the memory remote. Its only write.",
+      ),
+    ),
+    credentialHelper: Flag.String("credential-helper").pipe(
+      Flag.withDescription("Git credential helper name or absolute path. Never a token."),
+      Flag.optional,
+    ),
+    sshCommand: Flag.String("ssh-command").pipe(
+      Flag.withDescription("ssh command naming the deploy key file. Never a secret."),
+      Flag.optional,
+    ),
     verbose: Flag.Boolean("verbose").pipe(Flag.withDefault(false)),
   },
   (flags) =>
@@ -805,6 +905,8 @@ const command = Command.make(
         memoryUrl: Option.getOrUndefined(flags.memoryUrl),
         credentialHelper: Option.getOrUndefined(flags.credentialHelper),
         sshCommand: Option.getOrUndefined(flags.sshCommand),
+        home: Option.getOrUndefined(yield* Config.option(Config.String("HOME"))) || undefined,
+        push: flags.push,
       }).pipe(Effect.provideService(References.MinimumLogLevel, flags.verbose ? "Info" : "Error"));
       yield* Console.log(report.lines.join("\n"));
       if (report.violations.length > 0)
