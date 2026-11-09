@@ -75,7 +75,7 @@ const unconfigured = Layer.mergeAll(
     CredentialHygiene.CredentialHygiene,
     CredentialHygiene.CredentialHygiene.of({
       check: Effect.fn("CredentialHygiene.unconfigured")(function* () {
-        return {
+        return yield* Effect.succeed<CredentialHygiene.CredentialHygieneReport>({
           passed: false,
           failures: ["identity_unknown", "merge_token_missing"],
           warnings: [],
@@ -83,7 +83,7 @@ const unconfigured = Layer.mergeAll(
           t3Login: null,
           identities: [],
           checkedAt: 0,
-        };
+        });
       }),
       requirePassing: Effect.fn("CredentialHygiene.unconfiguredRequirePassing")(function* () {
         return yield* new CredentialHygiene.CredentialHygieneFailedError({

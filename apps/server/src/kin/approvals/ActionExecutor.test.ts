@@ -481,7 +481,7 @@ describe("KinActionExecutor", () => {
       yield* resume;
       checks.count = 0;
       // Check 1 runs before the claim, check 2 right after the precheck.
-      checks.during = (count) => (count === 2 ? pause : Effect.void);
+      checks.during = (count) => (count === 2 ? Effect.orDie(pause) : Effect.void);
       const late = yield* approvedMerge("webhook-2");
       assert.deepStrictEqual(yield* executor.execute(late), {
         _tag: "finished",

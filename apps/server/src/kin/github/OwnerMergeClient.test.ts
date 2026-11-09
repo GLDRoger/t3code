@@ -363,6 +363,40 @@ describe("OwnerMergeClient", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("writes only to the Kin repositories, with the exact SHA", () => {
+    const { requests, layer } = setup(narrowToken(inThirtyDays));
+    return Effect.gen(function* () {
+      yield* save();
+      const client = yield* OwnerMergeClient.OwnerMergeClient;
+      const fresh = yield* withHygiene(pass);
+      const before = requests.length;
+      for (const answer of [
+        yield* client.merge(fresh, {
+          repo: "someone/else",
+          number: 1,
+          sha: "a".repeat(40),
+          mergeMethod: "squash",
+        }),
+        yield* client.deleteBranch(fresh, { repo: "someone/else", branch: "main" }),
+      ]) {
+        assert.deepInclude(answer, { _tag: "refused", reason: "denied" });
+      }
+      assert.strictEqual(requests.length, before);
+      yield* client.merge(fresh, {
+        repo: REPOS[0]!,
+        number: 7,
+        sha: "a".repeat(40),
+        mergeMethod: "merge",
+      });
+      assert.deepInclude(requests.at(-1), {
+        method: "PUT",
+        path: `/repos/${REPOS[0]}/pulls/7/merge`,
+        authorization: `Bearer ${Redacted.value(TOKEN)}`,
+        body: { sha: "a".repeat(40), merge_method: "merge" },
+      });
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("reports a missing token", () => {
     const { layer } = setup(narrowToken({}));
     return Effect.gen(function* () {

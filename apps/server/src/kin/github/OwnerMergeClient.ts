@@ -461,6 +461,11 @@ const make = Effect.gen(function* () {
       Effect.map((answer) => ({ answer })),
       Effect.orElseSucceed(() => ({ answer: undefined })),
     );
+  // The token only reaches the Kin repositories anyway; this refuses before it is even read.
+  const outOfScope = (repo: string): OwnerWriteAnswer | null =>
+    isScopedRepo(scope.repos, repo)
+      ? null
+      : { _tag: "refused", reason: "denied", status: 0, message: "not in KIN_GITHUB_REPOS" };
 
   const merge = Effect.fn("OwnerMergeClient.merge")(function* (
     pass: CredentialHygienePass,
@@ -475,6 +480,8 @@ const make = Effect.gen(function* () {
       "kin.github.repo": input.repo,
       "kin.github.pr": input.number,
     });
+    const refused = outOfScope(input.repo);
+    if (refused !== null) return refused;
     const { answer } = yield* write({
       operation: "pulls.merge",
       method: "PUT",
@@ -509,6 +516,8 @@ const make = Effect.gen(function* () {
     input: { readonly repo: string; readonly branch: string },
   ) {
     yield* Effect.annotateCurrentSpan({ "kin.github.repo": input.repo });
+    const refused = outOfScope(input.repo);
+    if (refused !== null) return refused;
     const { answer } = yield* write({
       operation: "git.deleteRef",
       method: "DELETE",

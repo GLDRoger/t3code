@@ -177,17 +177,15 @@ export const make = Effect.gen(function* () {
       );
     const steps = Effect.gen(function* () {
       yield* handler.precheck(action);
-      const pass = yield* hygiene
-        .requirePassing(action.orgId)
-        .pipe(
-          Effect.mapError(
-            (error) =>
-              new KinExecError({
-                reason: "credential_check_failed",
-                detail: error.failures.join(","),
-              }),
-          ),
-        );
+      const pass = yield* hygiene.requirePassing(action.orgId).pipe(
+        Effect.mapError(
+          (error) =>
+            new KinExecError({
+              reason: "credential_check_failed",
+              detail: error.failures.join(","),
+            }),
+        ),
+      );
       // The stop switch, immediately before the side effect.
       if (yield* paused(action.orgId).pipe(Effect.orElseSucceed(() => true)))
         return yield* new KinExecError({ reason: "paused" });
@@ -325,14 +323,12 @@ export const layer = Layer.effect(
         ),
       );
     const reconcileUntilDecided = (ref: ActionRef) =>
-      executor
-        .reconcile(ref)
-        .pipe(
-          Effect.repeat({
-            schedule: RECONCILE_RETRY,
-            while: (result) => result._tag === "unknown",
-          }),
-        );
+      executor.reconcile(ref).pipe(
+        Effect.repeat({
+          schedule: RECONCILE_RETRY,
+          while: (result) => result._tag === "unknown",
+        }),
+      );
     const settle = (
       results: ReadonlyArray<{ readonly ref: ActionRef; readonly result: KinExecuteResult }>,
     ) =>
