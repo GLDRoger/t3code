@@ -27,6 +27,8 @@
       "entry": [
         // These fixture scripts are injected into a browser page by path.
         "fixtures/*/*.js",
+        "kin-github-app.ts",
+        "kin-rulesets.ts",
         "knip-schemas.ts",
         "linux-after-pack.ts",
         "mobile-behavior/run.ts",
@@ -50,6 +52,7 @@
         "src/claude-history-worker.ts!",
         "scripts/cli.ts",
         "scripts/fetch-expo-schema.ts",
+        "scripts/kin-push-test.ts",
         "scripts/probe-claude-fork-local-rollback-replay.ts",
         "scripts/update-test-shard-weights.ts",
         "scripts/verify-background-live.ts",
@@ -115,6 +118,8 @@
         "scripts/generate-device-stream.mts",
         "src/features/devices/device-stream.browser.ts!",
         "src/features/browser/preview-stream.browser.ts!",
+        // Kin's approval key has no importer until APPR-7's approval flow.
+        "modules/kin-approval-key/index.ts!",
       ],
       // Fonts are configured as asset paths; Expo autolinks the native packages.
       "ignoreDependencies": [

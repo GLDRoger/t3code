@@ -17,6 +17,7 @@ import {
   WorkerReport,
   type KinLevel,
   type OrchestrationV2Run,
+  type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
@@ -41,6 +42,7 @@ import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as Memory from "../memory/Memory.ts";
 import { KinBudget } from "./KinBudget.ts";
+import { isOrgPaused, STOP_REASON } from "./orgState.ts";
 import { resolveLead } from "./LeadMemory.ts";
 import { quote } from "./LeadPrompt.ts";
 import { buildBrief, Quoted, reportFormat } from "./workerBrief.ts";
@@ -85,6 +87,38 @@ const workerLaunchReady = false;
 /** Test seam for the release gate; production always reads `workerLaunchReady`. */
 export const WorkerLaunchGate = Context.Reference<boolean>("t3/kin/lead/Workers/WorkerLaunchGate", {
   defaultValue: () => workerLaunchReady,
+});
+
+const isLive = (run: OrchestrationV2Run) =>
+  run.status === "queued" || ThreadManagement.isActiveRun(run);
+type ThreadRuns = Pick<OrchestrationV2ThreadProjection, "thread" | "runs">;
+const liveRun = (projection: ThreadRuns) => projection.runs.findLast(isLive);
+/** Interrupts the thread's live run and stops its delegated tasks; true when a run was live. */
+export const stopThreadTree = Effect.fn("KinWorkers.stopThreadTree")(function* (
+  threads: ThreadManagement.ThreadManagementService["Service"],
+  input: {
+    readonly projection: ThreadRuns;
+    readonly prefix: string;
+    readonly tag: string;
+    readonly reason: string;
+  },
+) {
+  const { projection, prefix, tag, reason } = input;
+  const active = liveRun(projection);
+  if (active !== undefined)
+    yield* threads.interruptThread({
+      projectId: projection.thread.projectId,
+      threadId: projection.thread.id,
+      runId: active.id,
+      commandId: CommandId.make(`${prefix}:${tag}`),
+      reason,
+    });
+  yield* threads.stopDelegatedTasks({
+    threadId: projection.thread.id,
+    commandId: CommandId.make(`${prefix}-tasks:${tag}`),
+    reason,
+  });
+  return active !== undefined;
 });
 
 const supportedDrivers = new Set([
@@ -221,6 +255,8 @@ const make = Effect.gen(function* () {
   const admit = Effect.fn("KinWorkers.admit")(function* (orgId: KinOrgId) {
     if (!(yield* WorkerLaunchGate))
       return yield* denied("Worker launches are disabled until T3 tool scoping lands.");
+    if (yield* isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
+      return yield* denied("Kin is paused by the owner. Nothing new starts until they resume.");
     if (!(yield* budget.admitWorker(orgId)))
       return yield* new KinChatError({
         reason: "limit",
@@ -243,8 +279,19 @@ const make = Effect.gen(function* () {
       return yield* denied("Kin workers run on an enabled Claude Code or Codex provider only.");
     return chosen;
   });
-  const isLive = (run: OrchestrationV2Run) =>
-    run.status === "queued" || ThreadManagement.isActiveRun(run);
+  /** The stop fan-out misses a run that starts during its pass; a pause seen after the launch or send stops it. */
+  const stopIfPaused = Effect.fn("KinWorkers.stopIfPaused")(function* (
+    orgId: KinOrgId,
+    projection: ThreadRuns,
+  ) {
+    if (!(yield* isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)))) return;
+    yield* stopThreadTree(threads, {
+      projection,
+      prefix: "kin-stop-launch",
+      tag: `${projection.thread.id}:${liveRun(projection)?.id ?? "idle"}`,
+      reason: STOP_REASON,
+    });
+  });
   const threadLink = Effect.fn("KinWorkers.threadLink")(function* (threadId: ThreadId) {
     return formatThreadLink({ environmentId: yield* environment.getEnvironmentId, threadId });
   });
@@ -409,6 +456,7 @@ const make = Effect.gen(function* () {
             }),
         ),
       );
+    yield* stopIfPaused(ctx.orgId, launched.projection);
     const live = launched.projection.runs.some(isLive);
     // A resumed launch can start nothing; the row then takes the thread's real outcome.
     if (!live) {
@@ -457,7 +505,7 @@ const make = Effect.gen(function* () {
     const projection = yield* threads
       .getThreadProjection(plan.worker.threadId)
       .pipe(Effect.mapError(() => missing()));
-    yield* threads
+    const sent = yield* threads
       .sendToThread({
         projectId: projection.thread.projectId,
         commandId: CommandId.make(`kin-follow-up:${ctx.wakeupId}:${key}`),
@@ -485,6 +533,7 @@ const make = Effect.gen(function* () {
       );
     yield* sql`UPDATE kin_workers SET status = 'queued', ended_at = NULL
       WHERE org_id = ${ctx.orgId} AND worker_id = ${input.workerId}`;
+    yield* stopIfPaused(ctx.orgId, sent.projection);
     if (plan.worker.chatId !== null)
       yield* showCard({
         orgId: ctx.orgId,
@@ -507,22 +556,13 @@ const make = Effect.gen(function* () {
     const projection = yield* threads
       .getThreadProjection(record.threadId)
       .pipe(Effect.mapError(() => missing()));
-    const active = projection.runs.findLast(isLive);
-    const reason = input.reason ?? "Stopped by the Kin lead.";
     // A follow-up in the same wake-up starts a new run, which a second stop must still reach.
-    const tag = `${input.workerId}:${ctx.wakeupId}:${(active ?? projection.runs.at(-1))?.id ?? "idle"}`;
-    if (active !== undefined)
-      yield* threads.interruptThread({
-        projectId: projection.thread.projectId,
-        threadId: record.threadId,
-        runId: active.id,
-        commandId: CommandId.make(`kin-worker-stop:${tag}`),
-        reason,
-      });
-    yield* threads.stopDelegatedTasks({
-      threadId: record.threadId,
-      commandId: CommandId.make(`kin-worker-stop-tasks:${tag}`),
-      reason,
+    const tag = `${input.workerId}:${ctx.wakeupId}:${(liveRun(projection) ?? projection.runs.at(-1))?.id ?? "idle"}`;
+    const stopped = yield* stopThreadTree(threads, {
+      projection,
+      prefix: "kin-worker-stop",
+      tag,
+      reason: input.reason ?? "Stopped by the Kin lead.",
     });
     if (record.chatId !== null)
       yield* chat
@@ -537,7 +577,7 @@ const make = Effect.gen(function* () {
             Effect.logWarning("Kin worker task card could not close", { cause }),
           ),
         );
-    return { workerId: input.workerId, stopped: active !== undefined };
+    return { workerId: input.workerId, stopped };
   }, guarded("KinWorkers.stop"));
 
   return KinWorkers.of({ delegate, followUp, stop });

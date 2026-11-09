@@ -1,0 +1,634 @@
+{
+  "now": 1798761600,
+  "cases": [
+    {
+      "name": "merge by squashing",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "prompt": "Merge GLDRoger/t3code #212 (a1b2c3d4e5f60718293a4b5c6d7e8f9012345678) into \"main\" by squashing"
+    },
+    {
+      "name": "merge commit, then delete the branch",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"merge\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":true,\"host\":\"github.com\",\"mergeMethod\":\"merge\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "prompt": "Merge GLDRoger/t3code #212 (a1b2c3d4e5f60718293a4b5c6d7e8f9012345678) into \"main\" with a merge commit, then delete its branch"
+    },
+    {
+      "name": "rebase onto a base with . / + and _",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"release/v2.1+hotfix_x\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"rebase\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"rebase\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "prompt": "Merge GLDRoger/t3code #212 (a1b2c3d4e5f60718293a4b5c6d7e8f9012345678) into \"release/v2.1+hotfix_x\" by rebasing"
+    },
+    {
+      "name": "a non-ASCII base is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"release/ünï-2\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"rebase\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"rebase\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a shown field with U+0007 (control) is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"ma\\u0007in\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a shown field with U+0009 tab is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"ma\\tin\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a shown field with U+000A newline is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"ma\\nin\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a shown field with U+007F delete is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a shown field with U+00AD soft hyphen (format) is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"ma­in\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a shown field with U+200B zero-width space (format) is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"ma​in\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a shown field with U+202E right-to-left override (format) is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"ma‮in\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a shown field with U+2066 left-to-right isolate (format) is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"ma⁦in\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a shown field with U+FEFF byte order mark (format) is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"ma﻿in\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a shown field with U+0020 space is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"ma in\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a shown field with U+00A0 no-break space is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"ma in\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a shown field with U+3000 ideographic space is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"ma　in\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a shown field with U+2028 line separator is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"ma in\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a shown field with U+3164 Hangul filler is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"maㅤin\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a shown field with U+2800 braille blank is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"ma⠀in\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a shown field with U+115F Hangul choseong filler is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"maᅟin\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a shown field with U+0301 combining acute accent is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"máin\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a shown field with U+05D0 Hebrew letter (right-to-left) is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"maאin\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a shown field with U+0430 Cyrillic a, a Latin look-alike is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"maаin\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a shown field with a double quote is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"ma\\\"in\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a shown field with a backslash is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"ma\\\\in\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a 100-character branch is shown in full",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "prompt": "Merge GLDRoger/t3code #212 (a1b2c3d4e5f60718293a4b5c6d7e8f9012345678) into \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\" by squashing"
+    },
+    {
+      "name": "a long repo and branch over 200 characters are refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"ooooooooooooooooooooooooooooooooooooooo/rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a prompt of exactly 200 characters keeps its fixed words",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"merge\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":true,\"host\":\"github.com\",\"mergeMethod\":\"merge\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "prompt": "Merge GLDRoger/t3code #212 (a1b2c3d4e5f60718293a4b5c6d7e8f9012345678) into \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\" with a merge commit, then delete its branch"
+    },
+    {
+      "name": "a prompt of 201 characters is refused, not cut",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"merge\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":true,\"host\":\"github.com\",\"mergeMethod\":\"merge\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "delete a branch",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"delete_branch\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"branch\",\"host\":\"github.com\",\"ref\":\"kin/fix-212\",\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "prompt": "Delete branch \"kin/fix-212\" (a1b2c3d4e5f60718293a4b5c6d7e8f9012345678) in GLDRoger/t3code"
+    },
+    {
+      "name": "set a level in one chat",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"set_level\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"level\",\"agentId\":\"tech-lead\",\"chatId\":\"chat_7\",\"level\":\"L2\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "prompt": "Set lead \"tech-lead\" to L2 in chat \"chat_7\""
+    },
+    {
+      "name": "set a level everywhere",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"set_level\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"level\",\"agentId\":\"tech-lead\",\"level\":\"L0\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "prompt": "Set lead \"tech-lead\" to L0 in all chats"
+    },
+    {
+      "name": "change rules",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"change_rules\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"content\",\"path\":\"rules.md\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "prompt": "Change rules to \"rules.md\" (sha256 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08)"
+    },
+    {
+      "name": "purge memory",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"memory_purge\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"content\",\"path\":\"purge/item-4.json\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "prompt": "Purge memory using \"purge/item-4.json\" (sha256 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08)"
+    },
+    {
+      "name": "register an approver key",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"register_approver_key\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"device_key\",\"attested\":true,\"hardware\":\"secure_enclave\",\"thumbprint\":\"NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "prompt": "Add approver key NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs (Secure Enclave, attested)"
+    },
+    {
+      "name": "register a StrongBox approver key",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"register_approver_key\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"device_key\",\"attested\":true,\"hardware\":\"strongbox\",\"thumbprint\":\"NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "prompt": "Add approver key NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs (StrongBox, attested)"
+    },
+    {
+      "name": "register a TEE approver key",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"register_approver_key\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"device_key\",\"attested\":true,\"hardware\":\"tee\",\"thumbprint\":\"NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "prompt": "Add approver key NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs (TEE, attested)"
+    },
+    {
+      "name": "an unattested approver key is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"register_approver_key\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"device_key\",\"attested\":false,\"hardware\":\"secure_enclave\",\"thumbprint\":\"NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a software approver key is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"register_approver_key\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"device_key\",\"attested\":true,\"hardware\":\"software\",\"thumbprint\":\"NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "an approver key with attested as a string is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"register_approver_key\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"device_key\",\"attested\":\"true\",\"hardware\":\"secure_enclave\",\"thumbprint\":\"NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "an approver key without hardware is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"register_approver_key\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"device_key\",\"attested\":true,\"thumbprint\":\"NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "an approver key without attested is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"register_approver_key\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"device_key\",\"hardware\":\"tee\",\"thumbprint\":\"NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "an approver key with only a thumbprint is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"register_approver_key\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"device_key\",\"thumbprint\":\"NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "escapes decode in a field that isn't shown",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_\\\"q\\\\\\u0001\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "prompt": "Merge GLDRoger/t3code #212 (a1b2c3d4e5f60718293a4b5c6d7e8f9012345678) into \"main\" by squashing"
+    },
+    {
+      "name": "iat 300 s behind the device clock",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798761600,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761300,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "prompt": "Merge GLDRoger/t3code #212 (a1b2c3d4e5f60718293a4b5c6d7e8f9012345678) into \"main\" by squashing"
+    },
+    {
+      "name": "empty",
+      "signingInput": "",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "no dot",
+      "signingInput": "eyJhbGciOiJFUzI1NiIsImtpZCI6IlkwWmtYVmM2ZU5meHYzeFZOSFpKcDF4N20za1FxYjJPOHM1dkIxYVdjOUUiLCJ0eXAiOiJraW4tZ3JhbnQrandzIn0",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "three segments",
+      "signingInput": "eyJhbGciOiJFUzI1NiIsImtpZCI6IlkwWmtYVmM2ZU5meHYzeFZOSFpKcDF4N20za1FxYjJPOHM1dkIxYVdjOUUiLCJ0eXAiOiJraW4tZ3JhbnQrandzIn0.eyJhY3Rpb25JZCI6ImFjdF8wMUpEN1owMDAwMDAwMDAwMDAwMDAwMDAwIiwiYXBwcm92ZXIiOnsiaHVtYW5JZCI6Imhfb3duZXIiLCJraWQiOiJZMFprWFZjNmVOZnh2M3hWTkhaSnAxeDdtM2tRcWIyTzhzNXZCMWFXYzlFIn0sImJhc2UiOiJtYWluIiwiZGVjaXNpb24iOiJhcHByb3ZlIiwiZXhwIjoxNzk4NzYyMTkwLCJoZWFkU2hhIjoiYTFiMmMzZDRlNWY2MDcxODI5M2E0YjVjNmQ3ZThmOTAxMjM0NTY3OCIsImlhdCI6MTc5ODc2MTU5MCwianRpIjoiWkdWMmFXTmxMV3AwYVMweE5pMWkiLCJraW5kIjoibWVyZ2VfcHVsbF9yZXF1ZXN0IiwibWVyZ2VNZXRob2QiOiJzcXVhc2giLCJub25jZSI6ImMyVnlkbVZ5TFc1dmJtTmxMVE15TFdKNWRHVnpMV0poYzJVMk5IVnliQSIsIm9yZ0lkIjoib3JnXzAxIiwicmV2aXNpb24iOjIsInRhcmdldCI6eyJfdGFnIjoicHVsbF9yZXF1ZXN0IiwiZGVsZXRlQnJhbmNoQWZ0ZXIiOmZhbHNlLCJob3N0IjoiZ2l0aHViLmNvbSIsIm1lcmdlTWV0aG9kIjoic3F1YXNoIiwibnVtYmVyIjoyMTIsInJlcG8iOiJHTERSb2dlci90M2NvZGUifSwidGFyZ2V0RGlnZXN0IjoiOWY4NmQwODE4ODRjN2Q2NTlhMmZlYWEwYzU1YWQwMTVhM2JmNGYxYjJiMGI4MjJjZDE1ZDZjMTViMGYwMGEwOCIsInYiOjF9.c2ln",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "padded segment",
+      "signingInput": "eyJhbGciOiJFUzI1NiIsImtpZCI6IlkwWmtYVmM2ZU5meHYzeFZOSFpKcDF4N20za1FxYjJPOHM1dkIxYVdjOUUiLCJ0eXAiOiJraW4tZ3JhbnQrandzIn0.eyJhY3Rpb25JZCI6ImFjdF8wMUpEN1owMDAwMDAwMDAwMDAwMDAwMDAwIiwiYXBwcm92ZXIiOnsiaHVtYW5JZCI6Imhfb3duZXIiLCJraWQiOiJZMFprWFZjNmVOZnh2M3hWTkhaSnAxeDdtM2tRcWIyTzhzNXZCMWFXYzlFIn0sImJhc2UiOiJtYWluIiwiZGVjaXNpb24iOiJhcHByb3ZlIiwiZXhwIjoxNzk4NzYyMTkwLCJoZWFkU2hhIjoiYTFiMmMzZDRlNWY2MDcxODI5M2E0YjVjNmQ3ZThmOTAxMjM0NTY3OCIsImlhdCI6MTc5ODc2MTU5MCwianRpIjoiWkdWMmFXTmxMV3AwYVMweE5pMWkiLCJraW5kIjoibWVyZ2VfcHVsbF9yZXF1ZXN0IiwibWVyZ2VNZXRob2QiOiJzcXVhc2giLCJub25jZSI6ImMyVnlkbVZ5TFc1dmJtTmxMVE15TFdKNWRHVnpMV0poYzJVMk5IVnliQSIsIm9yZ0lkIjoib3JnXzAxIiwicmV2aXNpb24iOjIsInRhcmdldCI6eyJfdGFnIjoicHVsbF9yZXF1ZXN0IiwiZGVsZXRlQnJhbmNoQWZ0ZXIiOmZhbHNlLCJob3N0IjoiZ2l0aHViLmNvbSIsIm1lcmdlTWV0aG9kIjoic3F1YXNoIiwibnVtYmVyIjoyMTIsInJlcG8iOiJHTERSb2dlci90M2NvZGUifSwidGFyZ2V0RGlnZXN0IjoiOWY4NmQwODE4ODRjN2Q2NTlhMmZlYWEwYzU1YWQwMTVhM2JmNGYxYjJiMGI4MjJjZDE1ZDZjMTViMGYwMGEwOCIsInYiOjF9eA==",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "standard base64 characters",
+      "signingInput": "eyJhbGciOiJFUzI1NiIsImtpZCI6IlkwWmtYVmM2ZU5meHYzeFZOSFpKcDF4N20za1FxYjJPOHM1dkIxYVdjOUUiLCJ0eXAiOiJraW4tZ3JhbnQrandzIn0.eyJhY3Rpb25JZCI6ImFjdF8wMUpEN1owMDAwMDAwMDAwMDAwMDAwMDAwIiwiYXBwcm92ZXIiOnsiaHVtYW5JZCI6Imhfb3duZXIiLCJraWQiOiJZMFprWFZjNmVOZnh2M3hWTkhaSnAxeDdtM2tRcWIyTzhzNXZCMWFXYzlFIn0sImJhc2UiOiJtYWluIiwiZGVjaXNpb24iOiJhcHByb3ZlIiwiZXhwIjoxNzk4NzYyMTkwLCJoZWFkU2hhIjoiYTFiMmMzZDRlNWY2MDcxODI5M2E0YjVjNmQ3ZThmOTAxMjM0NTY3OCIsImlhdCI6MTc5ODc2MTU5MCwianRpIjoiWkdWMmFXTmxMV3AwYVMweE5pMWkiLCJraW5kIjoibWVyZ2VfcHVsbF9yZXF1ZXN0IiwibWVyZ2VNZXRob2QiOiJzcXVhc2giLCJub25jZSI6ImMyVnlkbVZ5TFc1dmJtTmxMVE15TFdKNWRHVnpMV0poYzJVMk5IVnliQSIsIm9yZ0lkIjoib3JnXzAxIiwicmV2aXNpb24iOjIsInRhcmdldCI6eyJfdGFnIjoicHVsbF9yZXF1ZXN0IiwiZGVsZXRlQnJhbmNoQWZ0ZXIiOmZhbHNlLCJob3N0IjoiZ2l0aHViLmNvbSIsIm1lcmdlTWV0aG9kIjoic3F1YXNoIiwibnVtYmVyIjoyMTIsInJlcG8iOiJHTERSb2dlci90M2NvZGUifSwidGFyZ2V0RGlnZXN0IjoiOWY4NmQwODE4ODRjN2Q2NTlhMmZlYWEwYzU1YWQwMTVhM2JmNGYxYjJiMGI4MjJjZDE1ZDZjMTViMGYwMGEwOCIsInYiOjF9+",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "control for the trailing-bits case",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"maina\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "prompt": "Merge GLDRoger/t3code #212 (a1b2c3d4e5f60718293a4b5c6d7e8f9012345678) into \"maina\" by squashing"
+    },
+    {
+      "name": "non-zero trailing bits",
+      "signingInput": "eyJhbGciOiJFUzI1NiIsImtpZCI6IlkwWmtYVmM2ZU5meHYzeFZOSFpKcDF4N20za1FxYjJPOHM1dkIxYVdjOUUiLCJ0eXAiOiJraW4tZ3JhbnQrandzIn0.eyJhY3Rpb25JZCI6ImFjdF8wMUpEN1owMDAwMDAwMDAwMDAwMDAwMDAwIiwiYXBwcm92ZXIiOnsiaHVtYW5JZCI6Imhfb3duZXIiLCJraWQiOiJZMFprWFZjNmVOZnh2M3hWTkhaSnAxeDdtM2tRcWIyTzhzNXZCMWFXYzlFIn0sImJhc2UiOiJtYWluYSIsImRlY2lzaW9uIjoiYXBwcm92ZSIsImV4cCI6MTc5ODc2MjE5MCwiaGVhZFNoYSI6ImExYjJjM2Q0ZTVmNjA3MTgyOTNhNGI1YzZkN2U4ZjkwMTIzNDU2NzgiLCJpYXQiOjE3OTg3NjE1OTAsImp0aSI6IlpHVjJhV05sTFdwMGFTMHhOaTFpIiwia2luZCI6Im1lcmdlX3B1bGxfcmVxdWVzdCIsIm1lcmdlTWV0aG9kIjoic3F1YXNoIiwibm9uY2UiOiJjMlZ5ZG1WeUxXNXZibU5sTFRNeUxXSjVkR1Z6TFdKaGMyVTJOSFZ5YkEiLCJvcmdJZCI6Im9yZ18wMSIsInJldmlzaW9uIjoyLCJ0YXJnZXQiOnsiX3RhZyI6InB1bGxfcmVxdWVzdCIsImRlbGV0ZUJyYW5jaEFmdGVyIjpmYWxzZSwiaG9zdCI6ImdpdGh1Yi5jb20iLCJtZXJnZU1ldGhvZCI6InNxdWFzaCIsIm51bWJlciI6MjEyLCJyZXBvIjoiR0xEUm9nZXIvdDNjb2RlIn0sInRhcmdldERpZ2VzdCI6IjlmODZkMDgxODg0YzdkNjU5YTJmZWFhMGM1NWFkMDE1YTNiZjRmMWIyYjBiODIyY2QxNWQ2YzE1YjBmMDBhMDgiLCJ2IjoxfR",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "invalid UTF-8",
+      "signingInput": "eyJhbGciOiJFUzI1NiIsImtpZCI6IlkwWmtYVmM2ZU5meHYzeFZOSFpKcDF4N20za1FxYjJPOHM1dkIxYVdjOUUiLCJ0eXAiOiJraW4tZ3JhbnQrandzIn0.eyL_IjoxfQ",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "typ is not kin-grant+jws",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"dpop+jwt\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "alg is not ES256",
+      "header": "{\"alg\":\"none\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "header carries a jwk",
+      "header": "{\"alg\":\"ES256\",\"jwk\":{\"kty\":\"EC\"},\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "header with whitespace",
+      "header": "{\n \"alg\": \"ES256\",\n \"kid\": \"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\n \"typ\": \"kin-grant+jws\"\n}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "header keys out of order",
+      "header": "{\"typ\":\"kin-grant+jws\",\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "duplicate payload key",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"delete_branch\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "payload with whitespace",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\n \"actionId\": \"act_01JD7Z0000000000000000000\",\n \"approver\": {\n  \"humanId\": \"h_owner\",\n  \"kid\": \"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"\n },\n \"base\": \"main\",\n \"decision\": \"approve\",\n \"exp\": 1798762190,\n \"headSha\": \"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\n \"iat\": 1798761590,\n \"jti\": \"ZGV2aWNlLWp0aS0xNi1i\",\n \"kind\": \"merge_pull_request\",\n \"mergeMethod\": \"squash\",\n \"nonce\": \"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\n \"orgId\": \"org_01\",\n \"revision\": 2,\n \"target\": {\n  \"_tag\": \"pull_request\",\n  \"deleteBranchAfter\": false,\n  \"host\": \"github.com\",\n  \"mergeMethod\": \"squash\",\n  \"number\": 212,\n  \"repo\": \"GLDRoger/t3code\"\n },\n \"targetDigest\": \"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\n \"v\": 1\n}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "float",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2.0,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "leading zero",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":02,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "negative zero",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":-0,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "integer beyond 2^53",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":9007199254740993,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "escaped slash",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"ma\\/in\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "uppercase \\u escape",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"ma\\u001Fin\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "\\u escape for a printable character",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"m\\u0061in\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "null value",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":null,\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "array value",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":[\"main\"],\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "unknown payload field",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"note\":\"hi\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "unknown target field",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"extra\":1,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "v is 2",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":2}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "decision is reject",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"reject\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "kind without a template",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"deploy\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "kind does not match the target",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"delete_branch\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "merge without headSha",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "merge without base",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "mergeMethod differs from the target",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"merge\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "uppercase headSha",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"A1B2C3D4E5F60718293A4B5C6D7E8F9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "delete_branch carrying base",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"delete_branch\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"branch\",\"host\":\"github.com\",\"ref\":\"x\",\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "set_level carrying headSha",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"set_level\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"level\",\"agentId\":\"l\",\"level\":\"L1\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "level L4",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"set_level\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"level\",\"agentId\":\"l\",\"level\":\"L4\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "exp more than 900 s after iat",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762500,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "exp not after iat",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798761590,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "iat 301 s ahead of the device clock",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762000,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761901,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "host is not github.com",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"gitlab.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "repo slug with a space",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLD Roger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "repo slug without an owner",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "number is zero",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":0,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a shown field that is only control characters",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"\\u0007‮\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "empty kid",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "short thumbprint",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"register_approver_key\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"device_key\",\"attested\":true,\"hardware\":\"secure_enclave\",\"thumbprint\":\"abc\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "nested too deep",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h\",\"kid\":\"k\",\"x\":{\"y\":{}}},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "approver with an extra field",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"role\":\"owner\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "number as a string",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":\"212\",\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "negative revision",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":-1,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "target without deleteBranchAfter",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "uppercase targetDigest",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9F86D081884C7D659A2FEAA0C55AD015A3BF4F1B2B0B822CD15D6C15B0F00A08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "empty jti",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a kid with K, the same bytes in header and approver",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"K0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"K0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "prompt": "Merge GLDRoger/t3code #212 (a1b2c3d4e5f60718293a4b5c6d7e8f9012345678) into \"main\" by squashing"
+    },
+    {
+      "name": "approver.kid differs from the header kid",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"other\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "approver.kid is canonically equivalent to the header kid but not the same bytes (U+212A for K)",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"K0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"K0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"base\":\"main\",\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"merge_pull_request\",\"mergeMethod\":\"squash\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"pull_request\",\"deleteBranchAfter\":false,\"host\":\"github.com\",\"mergeMethod\":\"squash\",\"number\":212,\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "an agentId with a space is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"set_level\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"level\",\"agentId\":\"tech lead\",\"level\":\"L0\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a chatId with a slash is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"set_level\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"level\",\"agentId\":\"tech-lead\",\"chatId\":\"chat/7\",\"level\":\"L2\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a path with a space is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"change_rules\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"content\",\"path\":\"rules .md\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    },
+    {
+      "name": "a ref with a quote is refused",
+      "header": "{\"alg\":\"ES256\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\",\"typ\":\"kin-grant+jws\"}",
+      "payload": "{\"actionId\":\"act_01JD7Z0000000000000000000\",\"approver\":{\"humanId\":\"h_owner\",\"kid\":\"Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E\"},\"decision\":\"approve\",\"exp\":1798762190,\"headSha\":\"a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\",\"iat\":1798761590,\"jti\":\"ZGV2aWNlLWp0aS0xNi1i\",\"kind\":\"delete_branch\",\"nonce\":\"c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA\",\"orgId\":\"org_01\",\"revision\":2,\"target\":{\"_tag\":\"branch\",\"host\":\"github.com\",\"ref\":\"kin/\\\"fix\",\"repo\":\"GLDRoger/t3code\"},\"targetDigest\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"v\":1}",
+      "error": "E_NOT_A_GRANT"
+    }
+  ]
+}

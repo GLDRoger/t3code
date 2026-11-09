@@ -140,7 +140,7 @@ export const kinClient = {
   }),
   registerPush: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:register-push",
-    tag: KIN_PUSH_METHODS.registerDevice,
+    tag: KIN_PUSH_WS_METHODS.registerDevice,
   }),
 };
 ```
@@ -179,14 +179,14 @@ KinPendingAction (view) = { orgId, pendingActionId, kind: "merge" | ..., status:
   expiresAt? }
 ```
 
-Mobile-owned data (**new**, `features/chats/notifications/kinPushPayload.ts`, decoded with Effect Schema):
+Push data, shared with the sender as `KinPushData` in `packages/contracts/src/kinPush.ts` and decoded by `features/chats/notifications/kinPushPayload.ts`:
 
 ```ts
 export const KinPushData = Schema.Struct({
   kin: Schema.Literal(1),
   orgId: KinOrgId,
-  chatId: Schema.String,
-  widgetId: Schema.optional(Schema.String),
+  chatId: Schema.optional(KinChatId), // approvals with no chat have none
+  widgetId: Schema.optional(KinWidgetId),
   revision: Schema.optional(Schema.Number),
   pendingActionId: Schema.optional(Schema.String),
   deepLink: Schema.String, // must match /kin/... ; anything else is dropped
@@ -254,7 +254,7 @@ Every screen handles the same seven states. Each state's copy is fixed below.
 3. `prTitle` on its own line, plain text, limited to 2 lines.
 4. Facts list, one line each:
    - Repository: `GLDRoger/t3code`
-   - Commit: first 7 characters of `headSha`, with the full SHA in the accessibility label and on long-press copy
+   - Commit: the full 40-character `headSha`, as the approval prompt shows it (approvals spec, section 5). It may wrap to a second line but is never cut; long-press copies it
    - Merge method: Squash
    - Changes: 4 files, +120 −30
    - Checks: 12 passed, 0 failed, 1 pending, with each required check underneath
@@ -274,12 +274,19 @@ Hiding the buttons is a convenience, not the protection (DESIGN 9.3). The server
 
 ### Notifications with action buttons
 
-**Sending (backend, this spec).** T3's relay can't carry Kin's pushes (see Design corrections). `apps/server/src/kin/push/KinPushSender.ts` (**new**) sends APNs pushes directly from the Kin server, over HTTP/2 with token auth. The `.p8` key is in the Kin host's keychain via `ServerSecretStore` (`apps/server/src/auth/ServerSecretStore.ts`).
+**Sending (backend, this spec).** T3's relay can't carry Kin's pushes (see Design corrections). `apps/server/src/kin/push/KinPushSender.ts` sends APNs pushes directly from the Kin server, over HTTP/2 with token auth. The `.p8` key is a file on the Kin host outside the repo, named by `KIN_APNS_KEY_FILE`, with `KIN_APNS_KEY_ID`, `KIN_APNS_TEAM_ID` and `KIN_APNS_TOPIC` (the Kin bundle id), in the same environment as `KIN_ENABLED`. If any is missing or the key won't load, push is off: Kin still starts, nothing is sent, the server logs why, and `registerDevice` answers `sending: "unconfigured"`.
 
-- Device tokens are registered through `kin.push.registerDevice` (**new**, contracts in `packages/contracts/src/kinPush.ts`).
-- The payload carries `aps.category` and `KinPushData`. Its text stays short and contains no PR body or agent free text, for example "Merge #212 is waiting on you".
-- The sender skips a push when the device holds a live subscription to that chat and the app is in the foreground. Upstream owns the foreground handler, so this check has to happen on the server.
-- Approval pushes go only to the approvers' devices (DESIGN 9.3).
+- Device tokens are registered through `kin.push.registerDevice` and removed through `kin.push.unregisterDevice` (contracts in `packages/contracts/src/kinPush.ts`, `orchestration:read`). A row is per org and token, owned by the person, session and DPoP key (`proof_key_thumbprint`) that last registered it. The phone registers on every connect, which moves the row to its current session. A person keeps at most 10 tokens per org; registering an 11th drops the one registered longest ago. Rows go away on unregister, when APNs says the token is dead, and when a T3 session revocation reaches them by the approver keys' rule (approvals spec section 4, `revokedBySession`): the registering session was revoked before it expired, or a session of the row's `proof_key_thumbprint` was individually revoked before it expired. An expired session doesn't remove its rows, because a live socket outlives the session it connected with.
+- A relay phone's DPoP session renews hourly under a new id while its socket keeps the first one, so the proof key join is what reaches a revoked relay phone. "Sign out other devices" never marks the caller's own key, so the caller's phone keeps its pushes. Unlike approver keys, an owner's repair (`--repair-proof-key`) restores a phone's pushes, since the phone registers again on connect.
+- A 410 drops the token only when Apple's `timestamp` is later than the row's `updated_at`, since a phone that registered again since then has a working token. `BadDeviceToken` drops it with a warning naming the APNs environment it was sent to. `DeviceTokenNotForTopic` means `KIN_APNS_TOPIC` is wrong, so it's logged as an error and the token stays. `InvalidProviderToken` is a key or id misconfiguration: it's logged as an error and the provider token is kept. `ExpiredProviderToken` signs a new provider token and retries once, but only if the current one is at least 20 minutes old, since APNs throttles faster renewal.
+- Pushes go out four devices at a time. A request APNs doesn't answer within 10 seconds, or one that errors, ends that HTTP/2 connection. A connection idle for 5 minutes is replaced before use. No answer, a 500 or a 503 retries once on a new connection; a 429 is logged and the push dropped.
+- A token registered by one person moves to another only once that revocation rule would remove its row, or the session that registered it is gone; otherwise `registerDevice` refuses with `not_member`.
+- The payload carries `aps.category` and `KinPushData` under the `body` key, which is what expo-notifications returns as `content.data` for a remote push. `chatId` is optional, because an approval such as adding a key has no chat. `deepLink` names the sending host, `/kin/<environmentId>/<orgId>/chats/<chatId>` or `/kin/<environmentId>/<orgId>/actions/<actionId>`, because every host shares org id `kin-default`. Its text is fixed per kind and contains no PR body or agent free text, for example "Merge #212 is waiting on you".
+- The sender skips a device whose session has a live `kin.push.watch({ chatId })` stream. Upstream owns the foreground handler, so this check has to happen on the server. MOB-11 opens it while a chat is on screen with `watchKinChatForPush` (`@t3tools/client-runtime/kin-push`) and ends it when the chat leaves the screen or the app the foreground. The stream sends a beat every 15 seconds, and each pull refreshes the mark. The RPC server pulls only after the client acks the last beat, so a half-open socket stops suppressing within 45 seconds, whatever the chat's traffic. Until a client opens it, nothing is suppressed: the failure mode is an extra push, not a lost one.
+- Approval pushes go only to the devices of people with an `active` approver key (DESIGN 9.3), read after session revocations. Approval cards in chat never push on their own.
+- Callers pass ids only, `notify({ _tag: "approval", actionId } | { _tag: "message", messageId } | { _tag: "widget", widgetId })`, after their transaction commits, because `notify` reads what the commit wrote. It sends in a fiber owned by the sender's layer, so a request handler can `yield*` it and return; the request ending doesn't cancel the push. The sender reads recipients from the database: approvers, the chat's people other than the author for messages (muted members skipped), and the widget's `awaiting` people who are still in the chat. Message pushes set `apns-collapse-id` per chat, so a busy chat shows one banner. Not wired yet: APPR-3's `request_action` and `registerKey` call `approval` after creating an action, and lane A calls `message` after a post and `widget` when a deferral changes phase or a card starts waiting on someone.
+
+**Test push (dev only).** Nishchay creates an APNs auth key (Keys, Apple Push Notifications service) in the team that signs the Kin build, then, on the Kin host with a development build installed, runs `cd apps/server && KIN_APNS_KEY_FILE=… KIN_APNS_KEY_ID=… KIN_APNS_TEAM_ID=… KIN_APNS_TOPIC=<bundle id> node scripts/kin-push-test.ts <device token> development`. The token comes from `Notifications.getDevicePushTokenAsync()` on the phone. APNs answering 200 and the banner showing is MOB-10's last "done when".
 
 **Receiving (`features/chats/notifications/installKinNotifications.ts`, new).**
 
@@ -345,7 +352,7 @@ Upstream files touched, one hook each:
 - No widget kind falls back to a WebView in phase 1. Generated widgets (phase 2) go through `makeMcpAppHost`, and Kin adds its own real-tap gate on actions (Design correction 9).
 - Push payloads hold ids and short fixed text only. Apple sees them.
 - Deep links from notifications are checked (`/kin/` prefix, schema decode) before navigation. Route params are treated as untrusted: a `KinApproval` link for an action the viewer can't approve shows the read-only card.
-- The `.p8` APNs key stays in the server secret store, never in the repo or logs.
+- The `.p8` APNs key stays in a file on the Kin host, never in the repo or logs. Device tokens are never logged; logs use a 12-character hash.
 
 ## Tests and acceptance criteria
 
@@ -473,7 +480,7 @@ Commands, from `apps/mobile`: `vp run typecheck` and `vp test run --project unit
 
 ## Open questions
 
-- Which Apple Developer team signs the Kin build, and who creates its APNs key? Android FCM waits until someone uses Android.
+- Which Apple Developer team signs the Kin build, and who creates its APNs key? Its App ID also needs the App Attest capability, or approval keys can't be activated (approvals spec, section 4). Android FCM waits until someone uses Android.
 - Is "Kin" the right label for the entry row, or should it carry the lead's name?
 - Should the Waiting on you banner also show on T3's Home list when the Kin row is scrolled away (for example, as a pinned header)?
 - Does phase 1 need folded agent talk, given there is one agent in a direct chat?

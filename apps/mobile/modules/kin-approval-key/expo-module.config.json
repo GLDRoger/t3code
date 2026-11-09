@@ -1,0 +1,10 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["KinApprovalKeyModule"],
+    "podspecPath": "ios/KinApprovalKey.podspec"
+  },
+  "android": {
+    "modules": ["expo.modules.kinapprovalkey.KinApprovalKeyModule"]
+  }
+}

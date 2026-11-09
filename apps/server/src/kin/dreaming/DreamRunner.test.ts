@@ -54,6 +54,8 @@ type Behavior =
   | "token"
   | "failed-turn"
   | "contradiction"
+  /** The owner presses stop while the extract turn runs; the turn itself completes. */
+  | "paused"
   | { readonly hold: Deferred.Deferred<void> };
 
 const newClaim = (body = "Invented report ships Friday.\n") =>
@@ -91,6 +93,8 @@ const fixture = <A, E>(
     readonly root: string;
     readonly behave: (behavior: Behavior) => void;
     readonly turns: Array<DreamSession.DreamTurn>;
+    /** `kin_dream_runs.thread_id` as each turn saw it while running. */
+    readonly turnThreads: Array<string | null>;
     readonly notices: Array<string>;
     readonly refuseBudget: () => void;
     readonly hooks: RunnerHooks;
@@ -107,6 +111,7 @@ const fixture = <A, E>(
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const vcs = yield* Vcs.VcsProcess;
+    const db = yield* SqlClient.SqlClient;
     const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
     const source = `${root}/seed`;
     const remote = `${root}/remote.git`;
@@ -158,13 +163,20 @@ const fixture = <A, E>(
     let budgetAllowed = true;
     const hooks: RunnerHooks = { beforeDelete: Effect.void, removed: () => Effect.void };
     const turns: Array<DreamSession.DreamTurn> = [];
+    const turnThreads: Array<string | null> = [];
     const notices: Array<string> = [];
     const session = Layer.succeed(DreamSession.DreamSession, {
       run: (turn) =>
         Effect.gen(function* () {
           turns.push(turn);
           const threadId = ThreadId.make(`kin-dream:${turn.dreamId}:${turn.turn}`);
+          const [recorded] = yield* db<{
+            threadId: string | null;
+          }>`SELECT thread_id AS "threadId" FROM kin_dream_runs WHERE org_id = ${orgId} AND dream_id = ${turn.dreamId} ORDER BY dream_id`;
+          turnThreads.push(recorded?.threadId ?? null);
           const current = behavior;
+          if (current === "paused")
+            yield* db`INSERT INTO kin_org_state (org_id, paused, paused_at, paused_by) VALUES (${orgId}, 1, 0, 'owner')`;
           if (typeof current === "object") {
             yield* Deferred.succeed(current.hold, undefined);
             return yield* Effect.never;
@@ -312,6 +324,7 @@ const fixture = <A, E>(
           behavior = next;
         },
         turns,
+        turnThreads,
         notices,
         refuseBudget: () => {
           budgetAllowed = false;
@@ -504,10 +517,11 @@ it.live.each([
   { behavior: "secret", failure: "The secret scan found" },
   { behavior: "token", failure: "a live T3 credential" },
   { behavior: "failed-turn", failure: "The dream session failed" },
+  { behavior: "paused", failure: "Kin was paused during the dream" },
 ] as const)(
   "a $behavior dream fails, pushes nothing and tells the owner",
   ({ behavior, failure }) =>
-    fixture(({ git, remote, root, main, behave, notices }) =>
+    fixture(({ git, remote, root, main, behave, notices, turns, turnThreads }) =>
       Effect.gen(function* () {
         behave(behavior);
         const runner = yield* DreamRunner.DreamRunner;
@@ -523,6 +537,10 @@ it.live.each([
         expect(notices).toHaveLength(1);
         expect(notices[0]).toContain("merged nothing");
         expect(notices[0]).not.toContain("ghp_");
+        // The stop switch's fan-out finds the running turn's thread.
+        expect(turnThreads).toEqual(
+          turns.map((turn) => DreamSession.dreamThreadId(turn.dreamId, turn.turn)),
+        );
       }),
     ),
 );

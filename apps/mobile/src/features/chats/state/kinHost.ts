@@ -23,6 +23,9 @@ export type KinProbe =
 const isKinChatError = Schema.is(KinChatError);
 const isAuthorizationError = Schema.is(EnvironmentAuthorizationError);
 
+const defectMessage = (defect: unknown) =>
+  typeof defect === "string" ? defect : defect instanceof Error ? defect.message : "";
+
 export function classifyKinProbe(
   result: AsyncResult.AsyncResult<KinOrgsListResult, unknown>,
 ): KinProbe {
@@ -41,8 +44,15 @@ export function classifyKinProbe(
       return { _tag: "error", message: error.message, transient: error.reason === "unavailable" };
     }
   }
-  // A server without the Kin RPCs answers `Exit.die("Unknown request tag: ...")`.
-  if (failures.length === 0 && Cause.hasDies(result.cause)) return { _tag: "notKin" };
+  if (failures.length === 0 && Cause.hasDies(result.cause)) {
+    // A server without the Kin RPCs answers `Exit.die("Unknown request tag: ...")`.
+    const unknownTag = result.cause.reasons
+      .filter(Cause.isDieReason)
+      .some((reason) => defectMessage(reason.defect).includes("Unknown request tag"));
+    if (unknownTag) return { _tag: "notKin" };
+    // Any other defect, such as a decode failure, is a broken Kin host, not a missing one.
+    return { _tag: "error", message: Cause.pretty(result.cause), transient: false };
+  }
   if (Cause.hasInterruptsOnly(result.cause)) return { _tag: "pending" };
   // Transport loss, an unreachable environment, or a timeout says nothing about Kin.
   return { _tag: "error", message: Cause.pretty(result.cause), transient: true };

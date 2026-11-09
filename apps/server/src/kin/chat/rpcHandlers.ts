@@ -1,4 +1,4 @@
-import { KinChatError, KinChatAndBudgetRpcs } from "@t3tools/contracts";
+import { KinChatAndBudgetRpcs, KinChatError } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -8,6 +8,7 @@ import * as RpcGroup from "effect/rpc/RpcGroup";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { KinServer } from "../layer.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
+import { KinStop } from "../lead/KinStop.ts";
 import { KinIdentity } from "./KinIdentity.ts";
 import { KinChatService } from "./KinChatService.ts";
 
@@ -33,6 +34,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
     return {
       identity: Context.get(kin.value.services.value, KinIdentity),
       budget: Context.get(kin.value.services.value, KinBudget),
+      stop: Context.get(kin.value.services.value, KinStop),
       chat: Context.get(kin.value.services.value, KinChatService),
     };
   });
@@ -56,6 +58,35 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
       services.pipe(
         Effect.flatMap(({ identity, budget }) =>
           identity.resolve(session).pipe(Effect.flatMap((people) => budget.set(people, input))),
+        ),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.org.get": (input) =>
+      services.pipe(
+        Effect.flatMap(({ identity, stop }) =>
+          identity
+            .resolve(session)
+            .pipe(Effect.flatMap((people) => stop.view(people, input.orgId))),
+        ),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.org.pause": (input) =>
+      services.pipe(
+        Effect.flatMap(({ identity, stop }) =>
+          identity.resolve(session).pipe(Effect.flatMap((people) => stop.pause(people, input))),
+        ),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.org.resume": (input) =>
+      services.pipe(
+        Effect.flatMap(({ identity, stop }) =>
+          identity.resolve(session).pipe(Effect.flatMap((people) => stop.resume(people, input))),
         ),
         Effect.tapError(logInfra),
         Effect.mapError(mapError),
