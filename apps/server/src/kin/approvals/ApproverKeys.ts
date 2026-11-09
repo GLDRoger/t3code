@@ -33,6 +33,8 @@ import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Base64Url from "effect/encoding/Base64Url";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { proofKeyRevoked, revokedBySession } from "../auth/ProofKeySessions.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
@@ -173,7 +175,10 @@ export class ApproverKeys extends Context.Service<
     /** The `register_approver_key` handler's step, only after a verified grant. */
     readonly activateByGrant: (ref: KeyRef) => Effect.Effect<boolean, KinApprovalError>;
     /** Revokes keys whose T3 session was revoked. Returns how many. */
-    readonly reconcileSessions: () => Effect.Effect<number, KinApprovalError>;
+    /** One org, or every org at startup: sessions are environment-local (the `kin_auth_*` exception). */
+    readonly reconcileSessions: (
+      orgId: KinOrgId | undefined,
+    ) => Effect.Effect<number, KinApprovalError>;
   }
 >()("t3/kin/approvals/ApproverKeys") {}
 
@@ -192,10 +197,17 @@ const make = Effect.gen(function* () {
   >();
   const slot = (ref: KeyRef) => `${ref.orgId}\u0000${ref.thumbprint}`;
 
+  // Callers see a plain refusal; the cause is logged through the persistence error shape.
   const internal = (operation: string) => (cause: unknown) =>
     isKinApprovalError(cause)
-      ? cause
-      : new KinApprovalError({ reason: "unavailable", message: `${operation} failed.` });
+      ? Effect.fail(cause)
+      : Effect.logWarning(`${operation} failed`, toPersistenceSqlError(operation)(cause)).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new KinApprovalError({ reason: "unavailable", message: `${operation} failed.` }),
+            ),
+          ),
+        );
 
   const personIn = (caller: KinKeyCaller, orgId: KinOrgId) => {
     const person = caller.people.find((candidate) => candidate.orgId === orgId);
@@ -246,20 +258,22 @@ const make = Effect.gen(function* () {
   // Reading its table here keeps auth free of Kin hooks, and runs before every key is trusted.
   // Relay sessions renew under new ids, so the DPoP key's own revocations count too (spec section 4).
   const reconcileSessions = Effect.fn("ApproverKeys.reconcileSessions")(
-    function* () {
+    function* (orgId: KinOrgId | undefined) {
       const rows = yield* sql<{ org_id: KinOrgId; thumbprint: KinKeyThumbprint }>`
         SELECT k.org_id, k.thumbprint FROM kin_approver_keys k
-        WHERE k.state != 'revoked' AND ${revokedBySession(
-          sql,
-          { sessionId: sql`k.session_id`, proofKey: sql`k.proof_key_thumbprint` },
-          { since: sql`k.created_at` },
-        )}`;
+        WHERE k.state != 'revoked' AND ${orgId === undefined ? sql`1 = 1` : sql`k.org_id = ${orgId}`}
+          AND ${revokedBySession(
+            sql,
+            { sessionId: sql`k.session_id`, proofKey: sql`k.proof_key_thumbprint` },
+            { since: sql`k.created_at` },
+          )}
+        ORDER BY k.org_id, k.thumbprint`;
       for (const row of rows) {
         yield* revokeRow({ orgId: row.org_id, thumbprint: row.thumbprint }, "session_revoked");
       }
       return rows.length;
     },
-    Effect.mapError(internal("ApproverKeys.reconcileSessions")),
+    Effect.catch(internal("ApproverKeys.reconcileSessions")),
   );
 
   const keyChallenge = Effect.fn("ApproverKeys.keyChallenge")(function* (caller: KinKeyCaller) {
@@ -314,7 +328,7 @@ const make = Effect.gen(function* () {
       )
         return yield* fail("bad_challenge", "Ask for a new key challenge on this connection.");
       const challenge = new Uint8Array(Buffer.from(input.challenge, "base64url"));
-      yield* reconcileSessions();
+      yield* reconcileSessions(input.orgId);
       // Mobile keeps one DPoP key per install, so a repaired revocation must not lock it out.
       const proofKey = caller.session.proofKeyThumbprint;
       if (proofKey !== undefined) {
@@ -389,13 +403,14 @@ const make = Effect.gen(function* () {
             // `KinIdentity.resolve` yields only the org owner until CHAT-11 adds roles (spec, Interfaces).
             startedByRole: "owner",
             chain: [{ kind: "approver_key", id: thumbprint, authorRole: "owner" }],
+            ceilingBelowOwner: false,
           },
           source: yield* decodeEventId(`approver_key:${thumbprint}:${input.challenge}`),
         });
       }
       return { key, code };
     },
-    Effect.mapError(internal("ApproverKeys.registerKey")),
+    Effect.catch(internal("ApproverKeys.registerKey")),
   );
 
   const isLocalDesktop = Effect.fn("ApproverKeys.isLocalDesktop")(function* (caller: KinKeyCaller) {
@@ -419,7 +434,7 @@ const make = Effect.gen(function* () {
           "not_local",
           "Confirm the first approver key in the desktop app on the Kin host.",
         );
-      yield* reconcileSessions();
+      yield* reconcileSessions(input.orgId);
       const ref = { orgId: input.orgId, thumbprint: input.thumbprint };
       const row = yield* select(ref);
       if (row === undefined) return yield* fail("not_found", "No such approver key.");
@@ -455,18 +470,18 @@ const make = Effect.gen(function* () {
       confirmations.delete(slot(ref));
       return yield* toKey(active);
     },
-    Effect.mapError(internal("ApproverKeys.confirmKey")),
+    Effect.catch(internal("ApproverKeys.confirmKey")),
   );
 
   const listKeys = Effect.fn("ApproverKeys.listKeys")(
     function* (caller: KinKeyCaller, input: KinApprovalsOrgInput) {
       yield* personIn(caller, input.orgId);
-      yield* reconcileSessions();
+      yield* reconcileSessions(input.orgId);
       const rows = yield* sql<KeyRow>`SELECT * FROM kin_approver_keys
         WHERE org_id = ${input.orgId} ORDER BY created_at, thumbprint`;
       return { keys: yield* Effect.forEach(rows, toKey) };
     },
-    Effect.mapError(internal("ApproverKeys.listKeys")),
+    Effect.catch(internal("ApproverKeys.listKeys")),
   );
 
   const revokeKey = Effect.fn("ApproverKeys.revokeKey")(
@@ -479,16 +494,16 @@ const make = Effect.gen(function* () {
       const revoked = yield* revokeRow(input, "key_revoked");
       return yield* toKey(revoked ?? row);
     },
-    Effect.mapError(internal("ApproverKeys.revokeKey")),
+    Effect.catch(internal("ApproverKeys.revokeKey")),
   );
 
   const get = Effect.fn("ApproverKeys.get")(
     function* (ref: KeyRef) {
-      yield* reconcileSessions();
+      yield* reconcileSessions(ref.orgId);
       const row = yield* select(ref);
       return row === undefined ? Option.none() : Option.some(yield* toKey(row));
     },
-    Effect.mapError(internal("ApproverKeys.get")),
+    Effect.catch(internal("ApproverKeys.get")),
   );
 
   const requireActive = Effect.fn("ApproverKeys.requireActive")(function* (ref: KeyRef) {
@@ -502,7 +517,7 @@ const make = Effect.gen(function* () {
 
   const activateByGrant = Effect.fn("ApproverKeys.activateByGrant")(
     function* (ref: KeyRef) {
-      yield* reconcileSessions();
+      yield* reconcileSessions(ref.orgId);
       const now = yield* Clock.currentTimeMillis;
       const rows = yield* sql`UPDATE kin_approver_keys
         SET state = 'active', confirmed_at = ${now}
@@ -512,10 +527,10 @@ const make = Effect.gen(function* () {
       if (rows.length > 0) confirmations.delete(slot(ref));
       return rows.length > 0;
     },
-    Effect.mapError(internal("ApproverKeys.activateByGrant")),
+    Effect.catch(internal("ApproverKeys.activateByGrant")),
   );
 
-  yield* reconcileSessions().pipe(
+  yield* reconcileSessions(undefined).pipe(
     Effect.catch((error) => Effect.logError("Kin approver key reconciliation failed.", error)),
   );
 

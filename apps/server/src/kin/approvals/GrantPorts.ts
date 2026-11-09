@@ -3,7 +3,6 @@ import {
   KinPersonId,
   type KinActionKind,
   type KinActionTarget,
-  type KinAuditEntry,
   type KinOrgId,
   type KinResolvedTarget,
 } from "@t3tools/contracts";
@@ -13,21 +12,30 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
-/** The same input as APPR-10's `KinAudit.append`, which this port forwards to once #41 lands. */
-export type KinAuditAppendInput = Omit<KinAuditEntry, "id" | "seq" | "at" | "prevHash" | "hash">;
+import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { KinAudit, type KinAuditAppendInput } from "./Audit.ts";
 
+/** The verifier's rejection trace: the refusal is already decided, so a lost entry is only logged. */
 export class KinGrantAudit extends Context.Service<
   KinGrantAudit,
   { readonly append: (input: KinAuditAppendInput) => Effect.Effect<void> }
 >()("t3/kin/approvals/GrantPorts/KinGrantAudit") {}
 
-// Until APPR-10 (#41) provides the hash-chained table, entries go to the server log.
-export const auditLogLayer = Layer.succeed(
+export const auditLayer = Layer.effect(
   KinGrantAudit,
-  KinGrantAudit.of({
-    append: Effect.fn("KinGrantAudit.append")(function* (entry) {
-      yield* Effect.logWarning("Kin approvals audit", entry);
-    }),
+  Effect.gen(function* () {
+    const audit = yield* KinAudit;
+    return KinGrantAudit.of({
+      append: Effect.fn("KinGrantAudit.append")(function* (entry) {
+        yield* audit
+          .append(entry)
+          .pipe(
+            Effect.catch((error) =>
+              Effect.logWarning(`Kin audit: ${entry.event} not written`, error),
+            ),
+          );
+      }),
+    });
   }),
 );
 
@@ -58,8 +66,17 @@ export const orgRolesLayer = Layer.effect(
             WHERE org_id = ${ref.orgId} AND person_id = ${ref.personId}`;
           return rows.length > 0;
         },
-        Effect.mapError(
-          () => new KinApprovalError({ reason: "unavailable", message: "Org roles unavailable." }),
+        Effect.catch((cause) =>
+          Effect.logWarning(
+            "KinOrgRoles.isOwner failed",
+            toPersistenceSqlError("KinOrgRoles.isOwner")(cause),
+          ).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new KinApprovalError({ reason: "unavailable", message: "Org roles unavailable." }),
+              ),
+            ),
+          ),
         ),
       ),
     });

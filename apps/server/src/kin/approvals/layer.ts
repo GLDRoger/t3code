@@ -3,6 +3,7 @@ import * as FetchHttpClient from "effect/http/FetchHttpClient";
 
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as ApproverKeys from "./ApproverKeys.ts";
+import * as Audit from "./Audit.ts";
 import * as AttestationTrust from "./attestation/AttestationTrust.ts";
 import * as GrantPorts from "./GrantPorts.ts";
 import * as GrantVerifier from "./GrantVerifier.ts";
@@ -16,8 +17,9 @@ export const layer = GrantVerifier.layer.pipe(
       AttestationTrust.layer.pipe(Layer.provide(FetchHttpClient.layer)),
       GrantPorts.orgRolesLayer,
       GrantPorts.liveTargetsUnconfiguredLayer,
-      GrantPorts.auditLogLayer,
+      GrantPorts.auditLayer,
     ),
   ),
+  Layer.provide(Audit.layer),
   Layer.provide(KinPersistence.layer),
 );

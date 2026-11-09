@@ -1,9 +1,17 @@
 import { assert, it } from "@effect/vitest";
-import { AuthSessionId, AuthStandardClientScopes, KinActionId, KinOrgId } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  AuthSessionId,
+  AuthStandardClientScopes,
+  KinActionId,
+  KinOrgId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 
+import { requiredScopeForRpcMethod } from "../../auth/RpcAuthorization.ts";
+import * as Sqlite from "../../persistence/Sqlite.ts";
 import { connectionOf, makeKinApprovalHandlers } from "./rpcHandlers.ts";
 
 it.effect("reads the call's socket and headers from the upgrade request", () =>
@@ -49,5 +57,12 @@ it.effect("key and grant methods refuse as disabled when Kin is off", () =>
     assert.include(yield* handlers["kin.approvals.challenge"]({ actionId }).pipe(Effect.flip), {
       reason: "disabled",
     });
-  }),
+  }).pipe(Effect.provide(Sqlite.layerMemory)),
+);
+
+it.each(["kin.approvals.challenge", "kin.approvals.submitGrant", "kin.approvals.reject"])(
+  "%s needs orchestration:operate",
+  (method) => {
+    assert.strictEqual(requiredScopeForRpcMethod(method), AuthOrchestrationOperateScope);
+  },
 );

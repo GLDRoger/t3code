@@ -1,5 +1,10 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Digest is effectful; the sink compares in one synchronous step.
+import * as NodeCrypto from "node:crypto";
+
 import {
   CanonicalUtcTimestamp,
+  CommandId,
+  KIN_GITHUB_APP_SOURCE,
   canonicalTimeZone,
   NonNegativeInt,
   KinOrgId,
@@ -13,10 +18,12 @@ import {
   KinTriggerSubject,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -28,6 +35,7 @@ import {
   PersistenceSqlError,
   toPersistenceSqlError,
 } from "../../persistence/Errors.ts";
+import { KIN_COMMAND_PREFIX, KIN_TASK_PREFIX } from "./taskIds.ts";
 
 export class KinTriggerFireConflict extends Schema.TaggedError<KinTriggerFireConflict>()(
   "KinTriggerFireConflict",
@@ -46,7 +54,15 @@ export class KinTriggerFireConflict extends Schema.TaggedError<KinTriggerFireCon
 
 export class KinWebhookSourceConflict extends Schema.TaggedError<KinWebhookSourceConflict>()(
   "KinWebhookSourceConflict",
-  { orgId: KinOrgId, reason: Schema.Literals(["unknown_source", "identity_conflict"]) },
+  {
+    orgId: KinOrgId,
+    reason: Schema.Literals([
+      "unknown_source",
+      "identity_conflict",
+      "task_active",
+      "app_source_taken",
+    ]),
+  },
 ) {}
 
 const sourceColumns = `source_id AS id, org_id AS "orgId", repo,
@@ -77,19 +93,89 @@ const decodeInboxRow = Schema.decodeUnknownEffect(
 );
 const Scope = Schema.Struct({ orgId: KinOrgId, id: KinTriggerId });
 
+export const githubAppCommandId = (orgId: KinOrgId) =>
+  CommandId.make(`${KIN_COMMAND_PREFIX}webhook:${orgId}:${KIN_GITHUB_APP_SOURCE}`);
+// Upstream names a task created by commandId `scheduled-task:${commandId}`.
+export const githubAppTaskId = (orgId: KinOrgId) =>
+  ScheduledTaskId.make(`scheduled-task:${githubAppCommandId(orgId)}`);
+export const KIN_WEBHOOK_TASK_PREFIX = `${KIN_TASK_PREFIX}webhook:`;
+export const GITHUB_REPLAY_KEY = "{{headers.x-github-delivery}}";
+// Exactly this, no coalesce window: a held delivery would outlive a re-key.
+export const GITHUB_DEDUPE = { replayKey: GITHUB_REPLAY_KEY };
+export const GITHUB_EVENTS = [
+  "pull_request",
+  "pull_request_review",
+  "pull_request_review_comment",
+  "issue_comment",
+  "issues",
+  "check_suite",
+  "workflow_run",
+  "push",
+];
+
+const secretDigest = (secret: Redacted.Redacted<string>) =>
+  NodeCrypto.createHash("sha256").update(Redacted.value(secret)).digest();
+
+// Cross-org on purpose: one GitHub App has one hook config, so its source is host-wide.
+export const appSourceHeldElsewhere = (sql: SqlClient.SqlClient, orgId: KinOrgId) =>
+  sql`SELECT 1 FROM kin_webhook_sources WHERE repo = ${KIN_GITHUB_APP_SOURCE}
+    AND org_id <> ${orgId} LIMIT 1`.pipe(Effect.map((rows) => rows.length > 0));
+
+// Shared with the upstream contract test: a direct delivery marks its task running and a
+// queued one holds a pending row until its launch returns.
+export const inFlightDeliveries = (sql: SqlClient.SqlClient, taskId: string) =>
+  sql`SELECT 1 FROM scheduled_tasks WHERE task_id = ${taskId} AND last_run_status = 'running'
+    UNION ALL SELECT 1 FROM scheduled_task_webhook_pending
+    WHERE task_id = ${taskId} AND state IN ('dispatching', 'running')`;
+
 export class KinTriggerStore extends Context.Service<
   KinTriggerStore,
   {
     readonly registerSource: (
       source: KinWebhookSource,
     ) => Effect.Effect<KinWebhookSource, StoreError | KinWebhookSourceConflict>;
+    /** Refuses while the upstream task is enabled or a delivery is dispatching, so none falls through to a real launch. */
     readonly unregisterSource: (
       orgId: KinOrgId,
       id: KinWebhookSourceId,
+    ) => Effect.Effect<void, StoreError | KinWebhookSourceConflict>;
+    /** Binds the source to the secret Kin just saved upstream and to the time of this bind. */
+    readonly bindSecret: (
+      orgId: KinOrgId,
+      id: KinWebhookSourceId,
+      secret: Redacted.Redacted<string>,
     ) => Effect.Effect<void, StoreError>;
+    /**
+     * True only for the bound secret and a delivery received after the bind, so one verified
+     * against an earlier secret refuses. False when nothing is bound, as before K019.
+     */
+    readonly acceptsDelivery: (
+      orgId: KinOrgId,
+      id: KinWebhookSourceId,
+      delivery: { readonly secret: Redacted.Redacted<string>; readonly receivedAt: number },
+    ) => Effect.Effect<boolean, StoreError>;
+    readonly getSource: (
+      orgId: KinOrgId,
+      id: KinWebhookSourceId,
+    ) => Effect.Effect<KinWebhookSource | undefined, StoreError>;
     readonly sourceByTaskId: (
       id: ScheduledTaskId,
     ) => Effect.Effect<KinWebhookSource | undefined, StoreError>;
+    readonly listSources: (
+      orgId: KinOrgId,
+    ) => Effect.Effect<ReadonlyArray<KinWebhookSource>, StoreError>;
+    /** Records what `trigger_reconcile` saw; false when the status was no longer `from`. */
+    readonly setSourceStatus: (
+      orgId: KinOrgId,
+      id: KinWebhookSourceId,
+      from: KinWebhookSource["status"],
+      to: KinWebhookSource["status"],
+    ) => Effect.Effect<boolean, StoreError>;
+    /** True when the task's current secret is the one bound to the source. */
+    readonly secretMatchesTask: (
+      orgId: KinOrgId,
+      id: KinWebhookSourceId,
+    ) => Effect.Effect<boolean, StoreError>;
     readonly put: (trigger: Omit<KinTrigger, "lastFireId">) => Effect.Effect<void, StoreError>;
     readonly get: (
       orgId: KinOrgId,
@@ -179,16 +265,23 @@ const make = Effect.gen(function* () {
     registerSource: Effect.fn("KinTriggerStore.registerSource")(
       function* (source) {
         const value = yield* decodeSource(source);
+        const projection = yield* threads
+          .getThreadProjection(value.inboxThreadId)
+          .pipe(
+            Effect.mapError(
+              () => new KinWebhookSourceConflict({ orgId: value.orgId, reason: "unknown_source" }),
+            ),
+          );
         return yield* sql.withTransaction(
           Effect.gen(function* () {
-            const projection = yield* threads
-              .getThreadProjection(value.inboxThreadId)
-              .pipe(
-                Effect.mapError(
-                  () =>
-                    new KinWebhookSourceConflict({ orgId: value.orgId, reason: "unknown_source" }),
-                ),
-              );
+            if (
+              value.repo === KIN_GITHUB_APP_SOURCE &&
+              (yield* appSourceHeldElsewhere(sql, value.orgId))
+            )
+              return yield* new KinWebhookSourceConflict({
+                orgId: value.orgId,
+                reason: "app_source_taken",
+              });
             const owned = yield* sql`
             SELECT t.task_id FROM scheduled_tasks t
             WHERE t.task_id = ${value.scheduledTaskId}
@@ -251,9 +344,62 @@ const make = Effect.gen(function* () {
     ),
     unregisterSource: Effect.fn("KinTriggerStore.unregisterSource")(
       function* (orgId, id) {
-        yield* sql`DELETE FROM kin_webhook_sources WHERE org_id = ${orgId} AND source_id = ${id}`;
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const [source] = yield* sql<{
+              readonly taskId: string;
+              readonly enabled: number | null;
+            }>`
+              SELECT s.scheduled_task_id AS "taskId", t.enabled FROM kin_webhook_sources s
+              LEFT JOIN scheduled_tasks t ON t.task_id = s.scheduled_task_id
+              WHERE s.org_id = ${orgId} AND s.source_id = ${id}
+            `;
+            if (source === undefined) return;
+            if (source.enabled === 1 || (yield* inFlightDeliveries(sql, source.taskId)).length > 0)
+              return yield* new KinWebhookSourceConflict({ orgId, reason: "task_active" });
+            yield* sql`DELETE FROM kin_webhook_sources WHERE org_id = ${orgId} AND source_id = ${id}`;
+          }),
+        );
       },
-      Effect.mapError(toPersistenceOrDecodeError("KinTriggerStore.unregisterSource")),
+      Effect.mapError((cause) =>
+        isSourceConflict(cause)
+          ? cause
+          : toPersistenceOrDecodeError("KinTriggerStore.unregisterSource")(cause),
+      ),
+    ),
+    bindSecret: Effect.fn("KinTriggerStore.bindSecret")(
+      function* (orgId, id, secret) {
+        const now = yield* Clock.currentTimeMillis;
+        yield* sql`UPDATE kin_webhook_sources
+          SET secret_sha256 = ${secretDigest(secret).toString("hex")}, secret_bound_at = ${now}
+          WHERE org_id = ${orgId} AND source_id = ${id}`;
+      },
+      Effect.mapError(toPersistenceSqlError("KinTriggerStore.bindSecret")),
+    ),
+    acceptsDelivery: Effect.fn("KinTriggerStore.acceptsDelivery")(
+      function* (orgId, id, delivery) {
+        const [row] = yield* sql<{
+          readonly hash: string | null;
+          readonly boundAt: number | null;
+        }>`
+          SELECT secret_sha256 AS hash, secret_bound_at AS "boundAt" FROM kin_webhook_sources
+          WHERE org_id = ${orgId} AND source_id = ${id}`.pipe(NodeSqliteClient.readOnly);
+        // Same millisecond refuses too: it may have been verified just before the save.
+        if (row?.hash == null || row.boundAt == null || delivery.receivedAt <= row.boundAt)
+          return false;
+        const bound = Buffer.from(row.hash, "hex");
+        const given = secretDigest(delivery.secret);
+        return bound.length === given.length && NodeCrypto.timingSafeEqual(bound, given);
+      },
+      Effect.mapError(toPersistenceSqlError("KinTriggerStore.acceptsDelivery")),
+    ),
+    getSource: Effect.fn("KinTriggerStore.getSource")(
+      function* (orgId, id) {
+        const [row] = yield* sql`SELECT ${sql.literal(sourceColumns)} FROM kin_webhook_sources
+          WHERE org_id = ${orgId} AND source_id = ${id}`.pipe(NodeSqliteClient.readOnly);
+        return row === undefined ? undefined : yield* decodeSource(row);
+      },
+      Effect.mapError(toPersistenceOrDecodeError("KinTriggerStore.getSource")),
     ),
     sourceByTaskId: Effect.fn("KinTriggerStore.sourceByTaskId")(
       function* (id) {
@@ -263,6 +409,38 @@ const make = Effect.gen(function* () {
         return row === undefined ? undefined : yield* decodeSource(row);
       },
       Effect.mapError(toPersistenceOrDecodeError("KinTriggerStore.sourceByTaskId")),
+    ),
+    listSources: Effect.fn("KinTriggerStore.listSources")(
+      function* (orgId) {
+        const rows = yield* sql`SELECT ${sql.literal(sourceColumns)} FROM kin_webhook_sources
+          WHERE org_id = ${orgId} ORDER BY source_id`.pipe(NodeSqliteClient.readOnly);
+        return yield* Effect.forEach(rows, (row) => decodeSource(row));
+      },
+      Effect.mapError(toPersistenceOrDecodeError("KinTriggerStore.listSources")),
+    ),
+    setSourceStatus: Effect.fn("KinTriggerStore.setSourceStatus")(
+      function* (orgId, id, from, to) {
+        const rows = yield* sql`UPDATE kin_webhook_sources SET status = ${to}
+          WHERE org_id = ${orgId} AND source_id = ${id} AND status = ${from}
+          RETURNING source_id`;
+        return rows.length === 1;
+      },
+      Effect.mapError(toPersistenceSqlError("KinTriggerStore.setSourceStatus")),
+    ),
+    secretMatchesTask: Effect.fn("KinTriggerStore.secretMatchesTask")(
+      function* (orgId, id) {
+        const [row] = yield* sql<{
+          readonly hash: string | null;
+          readonly secret: string | null;
+        }>`SELECT s.secret_sha256 AS hash, t.webhook_secret AS secret FROM kin_webhook_sources s
+          JOIN scheduled_tasks t ON t.task_id = s.scheduled_task_id
+          WHERE s.org_id = ${orgId} AND s.source_id = ${id}`.pipe(NodeSqliteClient.readOnly);
+        if (row?.hash == null || row.secret == null) return false;
+        const bound = Buffer.from(row.hash, "hex");
+        const given = secretDigest(Redacted.make(row.secret));
+        return bound.length === given.length && NodeCrypto.timingSafeEqual(bound, given);
+      },
+      Effect.mapError(toPersistenceSqlError("KinTriggerStore.secretMatchesTask")),
     ),
     put: Effect.fn("KinTriggerStore.put")(
       function* (trigger) {

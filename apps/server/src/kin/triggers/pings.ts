@@ -8,6 +8,7 @@ import {
   KinPersonId,
   KinTriggerSettings,
   KinWaitingId,
+  type MemoryItemHead,
 } from "@t3tools/contracts";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Clock from "effect/Clock";
@@ -63,7 +64,8 @@ type Error =
 export class KinPings extends Context.Service<
   KinPings,
   {
-    readonly put: (input: Request) => Effect.Effect<Request, Error>;
+    /** Pass `item` when calling inside a write transaction: reading memory there inverts the lock order. */
+    readonly put: (input: Request, item?: MemoryItemHead) => Effect.Effect<Request, Error>;
     readonly sweep: (orgId: KinOrgId) => Effect.Effect<void, Error>;
   }
 >()("t3/kin/triggers/pings/KinPings") {}
@@ -101,7 +103,7 @@ function isQuiet(now: number, zone: string, hours: { readonly from: string; read
     : hours.from > hours.to && (time >= hours.from || time < hours.to);
 }
 
-function quoted(value: string) {
+export function quoted(value: string) {
   const content = Array.from(value.replace(/[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/gu, " "))
     .slice(0, 500)
     .join("");
@@ -173,11 +175,16 @@ const make = Effect.gen(function* () {
       });
   });
   return KinPings.of({
-    put: Effect.fn("KinPings.put")(function* (input) {
+    put: Effect.fn("KinPings.put")(function* (input, known) {
       const r = yield* decodeRequest(input).pipe(Effect.mapError(() => invalid));
-      const item = yield* memory
-        .readItemQuietly(r.orgId, r.itemId)
-        .pipe(Effect.catchTags({ MemoryNotFound: () => missing }));
+      if (known !== undefined && (known.orgId !== r.orgId || known.id !== r.itemId))
+        return yield* invalid;
+      const head =
+        known ??
+        (yield* memory.readItemQuietly(r.orgId, r.itemId).pipe(
+          Effect.map((item) => item.head),
+          Effect.catchTags({ MemoryNotFound: () => missing }),
+        ));
       const json = yield* encodeRequest(r).pipe(Effect.mapError(() => invalid));
       return yield* transaction(
         Effect.gen(function* () {
@@ -186,11 +193,7 @@ const make = Effect.gen(function* () {
           const rows =
             yield* sql<Row>`SELECT * FROM kin_ping_items WHERE org_id = ${r.orgId} AND person = ${r.person} AND item_id = ${r.itemId} ORDER BY item_id`;
           const previous = rows[0];
-          if (
-            previous?.stopped_at != null &&
-            item.head.status === "open" &&
-            item.head.invalid_at === null
-          ) {
+          if (previous?.stopped_at != null && head.status === "open" && head.invalid_at === null) {
             yield* sql`DELETE FROM kin_ping_deliveries WHERE org_id = ${r.orgId} AND person = ${r.person} AND item_id = ${r.itemId}`;
             yield* sql`DELETE FROM kin_ping_escalations WHERE org_id = ${r.orgId} AND item_id = ${r.itemId} AND waiting_id IN
             (SELECT waiting_id FROM kin_waiting WHERE org_id = ${r.orgId} AND resolved_at IS NOT NULL ORDER BY waiting_id)`;
@@ -207,6 +210,9 @@ const make = Effect.gen(function* () {
     }),
     sweep: Effect.fn("KinPings.sweep")(
       function* (orgId) {
+        const rows =
+          yield* sql<Row>`SELECT * FROM kin_ping_items WHERE org_id = ${orgId} AND stopped_at IS NULL ORDER BY person, item_id`;
+        if (rows.length === 0) return;
         const now = yield* Clock.currentTimeMillis;
         const zone = yield* cache.ownerTimeZone(orgId);
         const day = ownerDay(now, zone);
@@ -217,8 +223,6 @@ const make = Effect.gen(function* () {
         const hours =
           defaultHours._tag === "Some" ? defaultHours.value : { from: "21:00", to: "08:00" };
         const people = yield* memory.query(orgId, { kind: "person", excludeInvalid: true });
-        const rows =
-          yield* sql<Row>`SELECT * FROM kin_ping_items WHERE org_id = ${orgId} AND stopped_at IS NULL ORDER BY person, item_id`;
         const candidates: Array<{
           row: Row;
           request: Request;
@@ -272,6 +276,7 @@ const make = Effect.gen(function* () {
           }
           candidates.push(result.success);
         }
+        if (candidates.length === 0) return;
         yield* transaction(
           Effect.gen(function* () {
             const batches = new Map<string, typeof candidates>();

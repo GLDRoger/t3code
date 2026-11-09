@@ -42,9 +42,25 @@ export type RepoSlug = typeof RepoSlug.Type;
 // The approval key refuses to show anything outside this set (approvals spec section 5),
 // so the server refuses it before a card exists.
 const SHOWN_PATH = /^[A-Za-z0-9._/+-]{1,255}$/;
-export const BranchName = pattern(SHOWN_PATH, "a branch name of letters, digits and . _ - / +");
+// Downstream code builds GitHub URLs and file paths from these, so no segment may climb or be empty.
+const segmentsOf = (value: string) => value.split("/");
+// git check-ref-format: no empty, dot-led or `.lock` component, no `..`, no trailing dot.
+const isRefName = (value: string) =>
+  !value.includes("..") &&
+  !value.endsWith(".") &&
+  segmentsOf(value).every(
+    (part) => part !== "" && !part.startsWith(".") && !part.endsWith(".lock"),
+  );
+const isRelativePath = (value: string) =>
+  segmentsOf(value).every((part) => part !== "" && part !== "." && part !== "..");
+export const BranchName = pattern(
+  SHOWN_PATH,
+  "a branch name of letters, digits and . _ - / +",
+).check(Schema.makeFilter(isRefName, { expected: "a valid git branch name" }));
 export type BranchName = typeof BranchName.Type;
-export const KinContentPath = pattern(SHOWN_PATH, "a path of letters, digits and . _ - / +");
+export const KinContentPath = pattern(SHOWN_PATH, "a path of letters, digits and . _ - / +").check(
+  Schema.makeFilter(isRelativePath, { expected: "a relative path without . or .. segments" }),
+);
 export type KinContentPath = typeof KinContentPath.Type;
 /** RFC 7638 SHA-256 thumbprint of a P-256 JWK, base64url without padding. */
 export const KinKeyThumbprint = pattern(/^[A-Za-z0-9_-]{43}$/, "a base64url JWK thumbprint");
@@ -171,6 +187,8 @@ export const KinProvenance = Schema.Struct({
       authorRole: KinProvenanceRole,
     }),
   ),
+  /** Some event in the wake-up's batch is below owner, whichever event the lead cited. */
+  ceilingBelowOwner: Schema.Boolean,
   afterNonOwnerMessage: Schema.optional(
     Schema.Struct({ humanId: KinPersonId, messageId: KinMessageId }),
   ),
@@ -350,6 +368,8 @@ export const KinAuditEvent = Schema.Literals([
   "grant_accepted",
   "grant_rejected",
   "action_rejected",
+  "action_cancelled",
+  "action_expired",
   "action_voided",
   "execution_started",
   "execution_finished",
@@ -444,7 +464,9 @@ export const KinApproverKeyAttestation = Schema.Union([
   Schema.Struct({
     format: Schema.Literal("android-key"),
     /** Base64 DER certificates, leaf first. */
-    certificateChain: Schema.Array(Base64Blob).check(Schema.isMaxLength(10)),
+    certificateChain: Schema.Array(Schema.String.check(Schema.isMaxLength(8192))).check(
+      Schema.isMaxLength(10),
+    ),
   }),
   Schema.Struct({
     format: Schema.Literal("apple-app-attest"),
@@ -491,8 +513,14 @@ export const KinAuditListInput = Schema.Struct({
   limit: PositiveInt.check(Schema.isLessThanOrEqualTo(200)),
 });
 export type KinAuditListInput = typeof KinAuditListInput.Type;
+/** A stored row that no longer decodes; `kin.audit.verify` reports where the chain breaks. */
+export const KinAuditCorruptEntry = Schema.Struct({
+  seq: PositiveInt,
+  corrupt: Schema.Literal(true),
+});
+export type KinAuditCorruptEntry = typeof KinAuditCorruptEntry.Type;
 export const KinAuditListResult = Schema.Struct({
-  entries: Schema.Array(KinAuditEntry),
+  entries: Schema.Array(Schema.Union([KinAuditEntry, KinAuditCorruptEntry])),
   hasMore: Schema.Boolean,
 });
 export type KinAuditListResult = typeof KinAuditListResult.Type;

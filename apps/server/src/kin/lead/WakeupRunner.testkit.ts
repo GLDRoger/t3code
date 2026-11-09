@@ -41,6 +41,7 @@ import * as Budget from "./KinBudget.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
+import * as KinStop from "./KinStop.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinIssuedTokens from "../mcp/KinIssuedTokens.ts";
@@ -127,6 +128,8 @@ type HarnessOptions = {
   readonly settings?: Parameters<typeof ServerSettings.layerTest>[0];
   /** Runtime requests are opened with this capability instead of `live`. */
   readonly requestCapability?: "not_resumable";
+  /** Each turn stays open until it is interrupted, then ends `interrupted`. */
+  readonly untilInterrupted?: boolean;
 };
 
 export function harness(options: HarnessOptions = {}) {
@@ -147,6 +150,10 @@ export function orchestrationHarness(options: HarnessOptions = {}) {
       Effect.gen(function* () {
         const now = yield* DateTime.now;
         const events = yield* PubSub.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
+        const open = new Map<
+          string,
+          Parameters<ProviderAdapter.ProviderAdapterV2SessionRuntime["startTurn"]>[0]
+        >();
         const runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
           instanceId,
           driver,
@@ -221,6 +228,10 @@ export function orchestrationHarness(options: HarnessOptions = {}) {
                   },
                 },
               });
+            if (options.untilInterrupted) {
+              open.set(id, input);
+              return;
+            }
             if (options.approval !== undefined)
               yield* PubSub.publish(events, {
                 type: "runtime_request.updated",
@@ -302,7 +313,37 @@ export function orchestrationHarness(options: HarnessOptions = {}) {
           }),
           compactThread: (input) => runtime.startTurn(input),
           steerTurn: () => Effect.void,
-          interruptTurn: () => Effect.void,
+          interruptTurn: Effect.fn("test.interruptTurn")(function* ({ providerTurnId }) {
+            const turn = open.get(providerTurnId);
+            if (turn === undefined) return;
+            open.delete(providerTurnId);
+            const time = yield* DateTime.now;
+            yield* PubSub.publish(events, {
+              type: "provider_turn.updated",
+              driver,
+              providerTurn: {
+                id: providerTurnId,
+                providerThreadId: turn.providerThread.id,
+                nodeId: turn.rootNodeId,
+                runAttemptId: turn.attemptId,
+                nativeTurnRef: null,
+                ordinal: turn.runOrdinal,
+                status: "interrupted",
+                startedAt: time,
+                completedAt: time,
+              },
+            });
+            yield* PubSub.publish(events, {
+              type: "turn.terminal",
+              driver,
+              providerThreadId: turn.providerThread.id,
+              providerTurnId,
+              runOrdinal: turn.runOrdinal,
+              status: "interrupted",
+              failure: null,
+              threadDisposition: "reusable",
+            });
+          }),
           respondToRuntimeRequest: (response) =>
             options.approval === undefined
               ? Effect.void
@@ -367,6 +408,14 @@ export function orchestrationHarness(options: HarnessOptions = {}) {
   );
   const kin = Layer.mergeAll(
     KinEventQueue.layer,
+    KinStop.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          KinEventQueue.layer,
+          Hub.layer.pipe(Layer.provideMerge(KinChatRepository.layer)),
+        ),
+      ),
+    ),
     Budget.layer.pipe(
       Layer.provide(
         Layer.mergeAll(

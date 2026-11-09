@@ -94,7 +94,12 @@ const eventSamples = {
     pendingActionId: "action-1",
     outcome: "executed",
   },
-  resume: { ...event, _tag: "resume", pausedAt: at },
+  resume: {
+    ...event,
+    _tag: "resume",
+    pausedAt: at,
+    expired: { count: 1, events: [{ eventId: "event-0", tag: "github", receivedAt: at }] },
+  },
 } satisfies Record<Kin.KinEvent["_tag"], unknown>;
 
 const samples = {
@@ -167,6 +172,7 @@ const samples = {
     values: [{ orgId: "org-1" }, { orgId: "org-1", reason: "Stop" }],
   },
   KinOrgResumeInput: { schema: Kin.KinOrgResumeInput, values: [{ orgId: "org-1" }] },
+  KinOrgGetInput: { schema: Kin.KinOrgGetInput, values: [{ orgId: "org-1" }] },
 } satisfies Record<string, { schema: Schema.Codec<unknown>; values: ReadonlyArray<unknown> }>;
 
 describe("Kin lead contracts", () => {

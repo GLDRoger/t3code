@@ -26,12 +26,9 @@ import * as Schema from "effect/Schema";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { ApproverKeys, type KinKeyCaller } from "./ApproverKeys.ts";
-import {
-  KinGrantAudit,
-  KinLiveTargets,
-  KinOrgRoles,
-  type KinAuditAppendInput,
-} from "./GrantPorts.ts";
+import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import type { KinAuditAppendInput } from "./Audit.ts";
+import { KinGrantAudit, KinLiveTargets, KinOrgRoles } from "./GrantPorts.ts";
 import { KinPendingActions, kinTargetDigest } from "./PendingActions.ts";
 
 // Each kind of rejection gets its own budget per session and org a minute, so junk can't use up
@@ -110,6 +107,8 @@ type Seen = {
   orgId?: KinOrgId;
   claimedOrgId?: KinOrgId;
   claim?: Pick<KinAuditAppendInput, "actionId" | "kind" | "grantJti" | "keyThumbprint" | "headSha">;
+  /** The refusal is already on the audit chain. */
+  audited?: boolean;
 };
 
 export class GrantVerifier extends Context.Service<
@@ -142,10 +141,17 @@ const make = Effect.gen(function* () {
   const scope = yield* Effect.scope;
   const junkWindows = new Map<string, { used: number; skipped: number }>();
 
-  const internal = (cause: unknown) =>
+  // Callers see a plain refusal; the cause is logged through the persistence error shape.
+  const internal = (operation: string) => (cause: unknown) =>
     isKinApprovalError(cause)
-      ? cause
-      : new KinApprovalError({ reason: "unavailable", message: "Kin approvals failed." });
+      ? Effect.fail(cause)
+      : Effect.logWarning(`${operation} failed`, toPersistenceSqlError(operation)(cause)).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new KinApprovalError({ reason: "unavailable", message: "Kin approvals failed." }),
+            ),
+          ),
+        );
 
   /** The action by id in one of the caller's own orgs: the client never names the org. */
   const actionFor = Effect.fn("GrantVerifier.actionFor")(function* (
@@ -279,8 +285,13 @@ const make = Effect.gen(function* () {
       compact,
       iat: payload.iat,
       exp: payload.exp,
+      sessionId: caller.session.sessionId,
     });
-    if (result._tag !== "approved") return yield* reject(result._tag);
+    if (result._tag !== "approved") {
+      // `approve` already wrote this refusal's `grant_rejected` on the action's own chain.
+      seen.audited = true;
+      return yield* reject(result._tag);
+    }
     return { action, grant: result.grant };
   });
 
@@ -346,23 +357,13 @@ const make = Effect.gen(function* () {
     input: KinApprovalsSubmitGrantInput,
   ) {
     const seen: Seen = {};
-    const { action, grant } = yield* check(caller, input.compact, seen).pipe(
-      Effect.mapError(internal),
-      Effect.tapError((error) => recordRejection(caller, seen, error)),
+    // `grant_accepted` is written by `approve`, in the transaction that approves.
+    const { action } = yield* check(caller, input.compact, seen).pipe(
+      Effect.catch(internal("GrantVerifier.submitGrant")),
+      Effect.tapError((error) =>
+        seen.audited ? Effect.void : recordRejection(caller, seen, error),
+      ),
     );
-    const { headSha } = recordFacts(action);
-    yield* audit.append({
-      orgId: action.orgId,
-      event: "grant_accepted",
-      actionId: action.id,
-      kind: action.kind,
-      target: action.target,
-      ...(headSha === undefined ? {} : { headSha }),
-      grantJti: grant.jti,
-      keyThumbprint: grant.keyThumbprint,
-      sessionId: caller.session.sessionId,
-      provenance: action.provenance,
-    });
     return { actionId: action.id, state: "approved" as const };
   });
 
@@ -386,79 +387,73 @@ const make = Effect.gen(function* () {
     return key;
   });
 
-  const challenge = Effect.fn("GrantVerifier.challenge")(function* (
-    caller: KinKeyCaller,
-    input: KinApprovalsActionInput,
-  ) {
-    const { action: found, person } = yield* actionFor(caller, input.actionId);
-    const now = yield* Clock.currentTimeMillis;
-    if (found.state !== "awaiting_approval" || DateTime.toEpochMillis(found.expiresAt) <= now)
-      return yield* fail("invalid_state", "This action isn't waiting for approval.");
-    let action = found;
-    let resolved = found.resolved;
-    if (pinsHead(found.kind)) {
-      resolved = yield* readLive(found);
-      // Rotate only on what check 9 compares; checks or size moving would only void a good grant.
-      if (headOf({ ...found, resolved }) !== headOf(found)) {
-        const refreshed = yield* refreshWith(found, resolved);
-        if (Option.isNone(refreshed)) return yield* fail("stale", REJECTION_MESSAGES.stale);
-        action = refreshed.value;
+  const challenge = Effect.fn("GrantVerifier.challenge")(
+    function* (caller: KinKeyCaller, input: KinApprovalsActionInput) {
+      const { action: found, person } = yield* actionFor(caller, input.actionId);
+      const now = yield* Clock.currentTimeMillis;
+      if (found.state !== "awaiting_approval" || DateTime.toEpochMillis(found.expiresAt) <= now)
+        return yield* fail("invalid_state", "This action isn't waiting for approval.");
+      let action = found;
+      let resolved = found.resolved;
+      if (pinsHead(found.kind)) {
+        resolved = yield* readLive(found);
+        // Rotate only on what check 9 compares; checks or size moving would only void a good grant.
+        if (headOf({ ...found, resolved }) !== headOf(found)) {
+          const refreshed = yield* refreshWith(found, resolved);
+          if (Option.isNone(refreshed)) return yield* fail("stale", REJECTION_MESSAGES.stale);
+          action = refreshed.value;
+        }
       }
-    }
-    const key = yield* signingKey(caller, person);
-    const facts = recordFacts(action);
-    const payload = yield* decodeUnsigned({
-      v: 1,
-      orgId: action.orgId,
-      actionId: action.id,
-      revision: action.revision,
-      nonce: action.nonce,
-      ...facts,
-      approver: { humanId: key.humanId, kid: key.thumbprint },
-      decision: "approve",
-    });
-    return { payload, resolved };
-  }, Effect.mapError(internal));
-
-  const rejectAction = Effect.fn("GrantVerifier.reject")(function* (
-    caller: KinKeyCaller,
-    input: KinApprovalsRejectInput,
-  ) {
-    const { action } = yield* actionFor(caller, input.actionId);
-    if (
-      action.state === "awaiting_approval" &&
-      DateTime.toEpochMillis(action.expiresAt) <= (yield* Clock.currentTimeMillis)
-    ) {
-      const expired = yield* actions.transition({
+      const key = yield* signingKey(caller, person);
+      const facts = recordFacts(action);
+      const payload = yield* decodeUnsigned({
+        v: 1,
         orgId: action.orgId,
         actionId: action.id,
         revision: action.revision,
-        to: "expired",
-        reason: "expired",
+        nonce: action.nonce,
+        ...facts,
+        approver: { humanId: key.humanId, kid: key.thumbprint },
+        decision: "approve",
       });
-      // An approve that landed first wins; say so rather than claim it expired.
-      if (!expired) return yield* fail("stale", "This action already changed; refresh the card.");
-      return yield* fail("invalid_state", "This action expired.");
-    }
-    const won = yield* actions.transition({
-      orgId: action.orgId,
-      actionId: action.id,
-      revision: input.revision,
-      to: "rejected",
-      reason: "owner_rejected",
-    });
-    if (!won) return yield* fail("stale", "This action already changed; refresh the card.");
-    yield* audit.append({
-      orgId: action.orgId,
-      event: "action_rejected",
-      actionId: action.id,
-      kind: action.kind,
-      target: action.target,
-      sessionId: caller.session.sessionId,
-      provenance: action.provenance,
-    });
-    return { actionId: action.id, state: "rejected" as const };
-  }, Effect.mapError(internal));
+      return { payload, resolved };
+    },
+    Effect.catch(internal("GrantVerifier.challenge")),
+  );
+
+  const rejectAction = Effect.fn("GrantVerifier.reject")(
+    function* (caller: KinKeyCaller, input: KinApprovalsRejectInput) {
+      const { action } = yield* actionFor(caller, input.actionId);
+      if (
+        action.state === "awaiting_approval" &&
+        DateTime.toEpochMillis(action.expiresAt) <= (yield* Clock.currentTimeMillis)
+      ) {
+        const expired = yield* actions.transition({
+          orgId: action.orgId,
+          actionId: action.id,
+          revision: action.revision,
+          to: "expired",
+          reason: "expired",
+          sessionId: caller.session.sessionId,
+        });
+        // An approve that landed first wins; say so rather than claim it expired.
+        if (!expired) return yield* fail("stale", "This action already changed; refresh the card.");
+        return yield* fail("invalid_state", "This action expired.");
+      }
+      const won = yield* actions.transition({
+        orgId: action.orgId,
+        actionId: action.id,
+        revision: input.revision,
+        to: "rejected",
+        reason: "owner_rejected",
+        sessionId: caller.session.sessionId,
+      });
+      // `transition` writes `action_rejected` in the same transaction.
+      if (!won) return yield* fail("stale", "This action already changed; refresh the card.");
+      return { actionId: action.id, state: "rejected" as const };
+    },
+    Effect.catch(internal("GrantVerifier.reject")),
+  );
 
   return GrantVerifier.of({ challenge, submitGrant, reject: rejectAction });
 });

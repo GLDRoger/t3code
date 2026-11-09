@@ -15,6 +15,7 @@ import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import { KinServer } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatToolkit, handlers } from "./KinChatToolkit.ts";
+import * as KinApprovalsMcp from "../approvals/mcp.ts";
 import * as KinIssuedTokens from "./KinIssuedTokens.ts";
 
 export class KinAgentSessions extends Context.Service<
@@ -27,14 +28,14 @@ type Auth = (
   effect: Effect.Effect<
     HttpServerResponse.HttpServerResponse,
     Types.unhandled,
-    McpInvocationContext | KinServer
+    McpInvocationContext | KinServer | KinIdentity
   >,
 ) => Effect.Effect<
   HttpServerResponse.HttpServerResponse,
   Types.unhandled,
   HttpServerRequest.HttpServerRequest
 >;
-const auth = HttpRouter.middleware<{ provides: McpInvocationContext | KinServer }>()(
+const auth = HttpRouter.middleware<{ provides: McpInvocationContext | KinServer | KinIdentity }>()(
   Effect.gen(function* () {
     const registry = yield* KinAgentSessions;
     const kin = yield* KinServer;
@@ -43,7 +44,7 @@ const auth = HttpRouter.middleware<{ provides: McpInvocationContext | KinServer 
       effect: Effect.Effect<
         HttpServerResponse.HttpServerResponse,
         Types.unhandled,
-        McpInvocationContext | KinServer
+        McpInvocationContext | KinServer | KinIdentity
       >,
     ) {
       const request = yield* HttpServerRequest.HttpServerRequest;
@@ -56,6 +57,7 @@ const auth = HttpRouter.middleware<{ provides: McpInvocationContext | KinServer 
       return yield* effect.pipe(
         Effect.provideService(McpInvocationContext, scope),
         Effect.provideService(KinServer, kin),
+        Effect.provideService(KinIdentity, identity),
       );
     }) satisfies Auth;
   }),
@@ -89,6 +91,7 @@ export const transport = (base: typeof McpHttpServer.layer) =>
           ? endpoint(
               Layer.mergeAll(
                 registration,
+                KinApprovalsMcp.registration,
                 KinLead.layerMcp.pipe(
                   Layer.provide(Layer.succeedContext(kin.services.value)),
                   Layer.provide(SqlitePersistence.layerConfig),

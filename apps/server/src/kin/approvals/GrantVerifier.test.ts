@@ -33,15 +33,15 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import { layerKinAuthTest } from "../auth/ProofKeySessions.testkit.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { ApproverKeys, layer as approverKeysLayer, type KinKeyCaller } from "./ApproverKeys.ts";
+import { KinAudit, make as makeAudit, type KinAuditAppendInput } from "./Audit.ts";
 import { KinAttestationTrust } from "./attestation/AttestationTrust.ts";
 import { androidChain, makeTrustFixture, newKey } from "./attestation/testFixtures.ts";
 import {
   BOOTSTRAP_OWNER,
-  KinGrantAudit,
+  auditLayer as grantAuditLayer,
   KinLiveTargets,
   KinOrgRoles,
   orgRolesLayer,
-  type KinAuditAppendInput,
 } from "./GrantPorts.ts";
 import { GrantVerifier, layer as grantVerifierLayer } from "./GrantVerifier.ts";
 import {
@@ -98,6 +98,8 @@ const prFacts = (headSha: string, base = "main"): KinResolvedTarget => ({
   checks: [{ name: "ci", required: true, status: "passed" }],
 });
 
+const DECISION_EVENTS = new Set(["grant_accepted", "grant_rejected", "action_rejected"]);
+
 /** One test's world: an in-memory database, a recorded audit and a scriptable GitHub. */
 function harness() {
   const audit: Array<KinAuditAppendInput> = [];
@@ -120,15 +122,33 @@ function harness() {
         }),
       ),
   });
-  const auditLayer = Layer.succeed(KinGrantAudit, {
-    append: (entry) => Effect.sync(() => void audit.push(entry)),
-  });
+  // The real chain, recording the grant decisions whichever writer appended them.
+  const recordingAudit = Layer.effect(
+    KinAudit,
+    Effect.gen(function* () {
+      const real = yield* makeAudit;
+      return KinAudit.of({
+        ...real,
+        append: (entry) =>
+          real
+            .append(entry)
+            .pipe(
+              Effect.tap(() =>
+                DECISION_EVENTS.has(entry.event)
+                  ? Effect.sync(() => void audit.push(entry))
+                  : Effect.void,
+              ),
+            ),
+      });
+    }),
+  );
   const trust = Layer.succeed(KinAttestationTrust, { load: () => Effect.succeed(fixture.trust) });
   const on = <A, E, R>(database: Layer.Layer<A, E, R>) =>
     grantVerifierLayer.pipe(
       Layer.provideMerge(approverKeysLayer),
       Layer.provideMerge(pendingActionsLayer),
-      Layer.provide(Layer.mergeAll(trust, roles, live, auditLayer)),
+      Layer.provide(Layer.mergeAll(trust, roles, live, grantAuditLayer)),
+      Layer.provideMerge(recordingAudit),
       Layer.provideMerge(Layer.provideMerge(KinPersistence.layer, database)),
     );
   const layer = on(Sqlite.layerMemory);
@@ -211,7 +231,12 @@ const requestMerge = (
       targetDigest: kinTargetDigest("merge_pull_request", target, resolved),
       reason: "CI is green.",
       requestedBy: { agentId: "lead", threadId: "thread-lead" },
-      provenance: { startedBy: "github", startedByRole: "none", chain: [] },
+      provenance: {
+        startedBy: "github",
+        startedByRole: "none",
+        chain: [],
+        ceilingBelowOwner: true,
+      },
       source: decodeEventId(`evt-${number}`),
     } as unknown as KinPendingActionCreateInput;
     return (yield* actions.create(input)).action;
@@ -857,6 +882,14 @@ describe("GrantVerifier", () => {
       const held = yield* sql`SELECT 1 FROM kin_grants WHERE action_id IN (
         SELECT action_id FROM kin_pending_actions WHERE state = 'awaiting_approval')`;
       assert.strictEqual(held.length, 0);
+      // `approve` records its own refusals; the verifier doesn't write them a second time. The
+      // race's own writer re-runs on later reads and has no session, so it is left out.
+      assert.deepStrictEqual(
+        h.audit
+          .filter((entry) => entry.event === "grant_rejected" && entry.sessionId !== undefined)
+          .map((entry) => entry.result),
+        ["replayed", "stale", "revoked_key", "revoked_key"],
+      );
     }).pipe(Effect.provide(h.layer));
   });
 
@@ -1140,10 +1173,25 @@ describe("GrantVerifier", () => {
     const handlerImporters = importers("kin/approvals/rpcHandlers.ts");
     assert.deepStrictEqual(handlerImporters, ["kin/rpcHandlers.ts"]);
     assert.deepStrictEqual(importers("kin/rpcHandlers.ts"), ["ws.ts"]);
+    // request_action's tool is the one approvals module the model reaches, and it only requests.
+    const approvalsImports = (file: string) =>
+      imports(file).filter((target) => target.startsWith("kin/approvals/"));
     assert.deepStrictEqual(
-      files.filter(
+      [...new Set(files.filter(modelFacing).flatMap(approvalsImports))],
+      ["kin/approvals/mcp.ts"],
+    );
+    const fromTool = new Set<string>();
+    const pending = ["kin/approvals/mcp.ts"];
+    for (let file = pending.pop(); file !== undefined; file = pending.pop()) {
+      for (const target of approvalsImports(file)) {
+        if (!fromTool.has(target)) pending.push(target);
+        fromTool.add(target);
+      }
+    }
+    assert.deepStrictEqual(
+      [...fromTool].filter(
         (file) =>
-          modelFacing(file) && imports(file).some((target) => target.startsWith("kin/approvals/")),
+          file === "kin/approvals/GrantVerifier.ts" || file === "kin/approvals/rpcHandlers.ts",
       ),
       [],
     );

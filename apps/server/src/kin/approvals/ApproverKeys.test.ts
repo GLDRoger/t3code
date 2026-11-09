@@ -28,6 +28,7 @@ import {
   type KinKeyCaller,
   type KinKeyConnection,
 } from "./ApproverKeys.ts";
+import * as Audit from "./Audit.ts";
 import { KinAttestationTrust } from "./attestation/AttestationTrust.ts";
 import { androidChain, makeTrustFixture } from "./attestation/testFixtures.ts";
 import { makeRegisterApproverKeyHandler } from "./handlers/registerApproverKey.ts";
@@ -45,6 +46,7 @@ const trustLayer = Layer.succeed(KinAttestationTrust, {
 const database = Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory);
 const layer = approverKeysLayer.pipe(
   Layer.provideMerge(pendingActionsLayer),
+  Layer.provideMerge(Audit.layer),
   Layer.provide(trustLayer),
   Layer.provideMerge(database),
 );
@@ -52,6 +54,7 @@ const layer = approverKeysLayer.pipe(
 // Real T3 auth with Kin's proof key hooks, so revocations write what #54 writes.
 const relayLayer = approverKeysLayer.pipe(
   Layer.provideMerge(pendingActionsLayer),
+  Layer.provideMerge(Audit.layer),
   Layer.provide(trustLayer),
   Layer.provideMerge(KinPersistence.layer),
   Layer.provideMerge(layerKinAuthTest("kin-approver-keys-")),
@@ -168,7 +171,7 @@ const mergeRequest = (source: string) =>
     targetDigest: "1".repeat(64),
     reason: "CI is green.",
     requestedBy: { agentId: "lead", threadId: "thread-lead" },
-    provenance: { startedBy: "github", startedByRole: "none", chain: [] },
+    provenance: { startedBy: "github", startedByRole: "none", chain: [], ceilingBelowOwner: true },
     source: decodeEventId(source),
   }) as unknown as KinPendingActionCreateInput;
 
@@ -482,6 +485,10 @@ describe("ApproverKeys", () => {
       if (approved._tag !== "approved") return;
       const handler = yield* makeRegisterApproverKeyHandler;
       assert.strictEqual(yield* handler.reconcile(action), "not_done");
+      // The stored key must still be what the card described.
+      yield* sql`UPDATE kin_approver_keys SET hardware = 'strongbox' WHERE thumbprint = ${second.key.thumbprint}`;
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(handler.run(action, approved.grant))));
+      yield* sql`UPDATE kin_approver_keys SET hardware = 'tee' WHERE thumbprint = ${second.key.thumbprint}`;
       assert.strictEqual(yield* handler.run(action, approved.grant), "succeeded");
       assert.strictEqual(yield* handler.reconcile(action), "done");
       assert.strictEqual((yield* keys.requireActive(second.key)).state, "active");
