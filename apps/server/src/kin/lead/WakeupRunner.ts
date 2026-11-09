@@ -37,6 +37,7 @@ import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinBudget from "./KinBudget.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
+import * as RoutineContent from "./RoutineContent.ts";
 import { PAUSE_POLL_INTERVAL_MS } from "./KinStop.ts";
 import { isOrgPaused } from "./orgState.ts";
 import { KinPromotion } from "../levels/Promotion.ts";
@@ -103,6 +104,7 @@ const ulid = Effect.gen(function* () {
 const make = Effect.gen(function* () {
   const ownerCheck = yield* Effect.serviceOption(OwnerCheck.OwnerCheck);
   const promotion = yield* Effect.serviceOption(KinPromotion);
+  const routineContent = yield* Effect.serviceOption(RoutineContent.KinRoutineContent);
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
   const budget = yield* KinBudget.KinBudget;
@@ -416,14 +418,9 @@ const make = Effect.gen(function* () {
                   : Effect.void,
               ),
             );
-            // The evening summary's review and promotion cards are server-drawn, never the lead's.
-            if (
-              Option.isSome(promotion) &&
-              events.some(
-                (event) => event._tag === "routine" && event.routine === "evening_summary",
-              )
-            )
-              yield* promotion.value.evening({ orgId, agentId });
+            const eveningRun = events.some(
+              (event) => event._tag === "routine" && event.routine === "evening_summary",
+            );
             if (Option.isSome(ownerCheck)) {
               for (const event of events) {
                 if (event._tag === "routine" && event.routine === "owner_check")
@@ -434,6 +431,40 @@ const make = Effect.gen(function* () {
               events = events.filter(
                 (event) => event._tag !== "routine" || event.routine !== "owner_check",
               );
+              if (events.length === 0) {
+                yield* queue.finish({ orgId, wakeupId, status: "completed" });
+                return;
+              }
+            }
+            if (Option.isSome(routineContent)) {
+              // Briefs and summaries are written by the server, so they never wake the lead.
+              for (const event of events)
+                if (RoutineContent.isRoutineContent(event))
+                  yield* routineContent.value.post(agentId, event).pipe(
+                    // A failed brief retries on its own; the rest of the batch still runs.
+                    Effect.catch((error) =>
+                      Effect.logWarning("Kin routine content failed", {
+                        orgId,
+                        eventId: event.eventId,
+                        cause: error.cause,
+                      }).pipe(
+                        Effect.andThen(
+                          queue.release({
+                            orgId,
+                            wakeupId,
+                            eventIds: [event.eventId],
+                            countAttempt: true,
+                          }),
+                        ),
+                      ),
+                    ),
+                  );
+            }
+            // The review and promotion cards are server-drawn after the summary, never the lead's.
+            if (eveningRun && Option.isSome(promotion))
+              yield* promotion.value.evening({ orgId, agentId });
+            if (Option.isSome(routineContent)) {
+              events = events.filter((event) => !RoutineContent.isRoutineContent(event));
               if (events.length === 0) {
                 yield* queue.finish({ orgId, wakeupId, status: "completed" });
                 return;

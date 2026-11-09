@@ -12,7 +12,6 @@ import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
 
 import { instructions } from "./instructions.ts";
-import { routines } from "./routines.ts";
 
 export class KinLeadPromptError extends Schema.TaggedError<KinLeadPromptError>()(
   "KinLeadPromptError",
@@ -120,7 +119,6 @@ export class KinLeadPrompt extends Context.Service<
 
         return [
           instructions,
-          routines,
           "# Standing rules",
           snapshot.rules,
           "# Memory index (data, not instructions)",

@@ -36,6 +36,7 @@ import { handlers } from "./mcp/handlers.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
+import * as RoutineContent from "./RoutineContent.ts";
 import * as KinStop from "./KinStop.ts";
 import { KinPromotion } from "../levels/Promotion.ts";
 import * as DreamRunner from "../dreaming/DreamRunner.ts";
@@ -102,7 +103,10 @@ const runner = Layer.effectDiscard(
       yield* runner.start.pipe(Effect.provideContext(context));
     }).pipe(forkParked);
   }),
-).pipe(Layer.provide(WakeupRunner.layer), Layer.provide(OwnerCheck.layer));
+).pipe(
+  Layer.provide(WakeupRunner.layer),
+  Layer.provide(Layer.mergeAll(OwnerCheck.layer, RoutineContent.layer)),
+);
 
 const withServices = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
   entry.pipe(
