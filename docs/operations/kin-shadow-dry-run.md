@@ -68,7 +68,7 @@ The lead's memory reads and the morning brief come from the real repository. The
 
 Git against a real remote can hang on a network stall, and the script's timeouts don't fire because it runs on a test clock. Press Ctrl-C to stop it.
 
-A passing run doesn't prove the live Kin server can reach `kin-memory`: the script passes its own credential. The server's own setting is `KIN_MEMORY_SSH_COMMAND` or `KIN_MEMORY_CREDENTIAL_HELPER`, described in [the Kin host README](../../ops/kin/host/README.md).
+A passing run doesn't prove the live Kin server can reach `kin-memory`: the script passes its own credential. The server's own setting is `KIN_MEMORY_SSH_COMMAND` or `KIN_MEMORY_CREDENTIAL_HELPER`, which a separate change adds to [the Kin host README](../../ops/kin/host/README.md).
 
 ## What the output looks like
 
