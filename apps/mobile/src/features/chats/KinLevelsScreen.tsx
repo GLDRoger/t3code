@@ -103,12 +103,21 @@ function KinLevelsBody(props: {
   }
   if (AsyncResult.isFailure(result)) {
     const cause = Cause.squash(result.cause);
-    if (isKinChatError(cause) && (cause.reason === "not_allowed" || cause.reason === "not_found")) {
+    if (isKinChatError(cause) && cause.reason === "not_found") {
       return (
         <EmptyState
           variant="plain"
-          title="Only the lead's owner can see its levels."
-          detail="Ask whoever set up this lead."
+          title="This agent has no levels."
+          detail="Levels belong to a lead. Open them from your lead's chat."
+        />
+      );
+    }
+    if (isKinChatError(cause) && cause.reason === "not_allowed") {
+      return (
+        <EmptyState
+          variant="plain"
+          title="Only a lead's owner can see its levels."
+          detail="These show for a lead you own. Ask whoever set up this one."
         />
       );
     }
@@ -120,6 +129,7 @@ function KinLevelsBody(props: {
             tone="secondary"
             size="compact"
             label="Retry"
+            loading={result.waiting}
             onPress={() => appAtomRegistry.refresh(atom)}
           />
         </View>
@@ -135,7 +145,7 @@ function KinLevelsBody(props: {
   const name = agentNames.get(input.agentId) ?? "This lead";
 
   const apply = async (change: KinLevelChange) => {
-    if (pending !== null) return;
+    if (pending !== null || result.waiting) return;
     setPending(change.key);
     setNotice(null);
     const target = {
@@ -147,12 +157,15 @@ function KinLevelsBody(props: {
       change.kind === "lower"
         ? await lower({ environmentId, input: target })
         : await raise({ environmentId, input: target });
-    setPending(null);
     const failure = kinLevelsFailure(outcome);
     if (failure !== null) {
+      setPending(null);
       setNotice({ text: kinLevelsFailureText(failure), error: true });
       return;
     }
+    // Refresh first: the rows stay disabled while it is waiting, so no tap sends a stale level.
+    appAtomRegistry.refresh(atom);
+    setPending(null);
     setNotice({
       text:
         change.kind === "lower"
@@ -160,7 +173,6 @@ function KinLevelsBody(props: {
           : `Raise to ${change.level} requested. It applies once you sign the approval.`,
       error: false,
     });
-    appAtomRegistry.refresh(atom);
   };
 
   const press = (change: KinLevelChange, row: KinLevelsRow) => {
@@ -168,7 +180,9 @@ function KinLevelsBody(props: {
     // Lowering applies at once, and getting back up takes a signed raise.
     Alert.alert(
       `Lower ${row.key === "lead" ? name : row.title} to ${change.level}?`,
-      "This applies now. Raising it again needs your signed approval.",
+      row.key === "lead"
+        ? "This applies now. Raising it again takes another trial and your signed approval."
+        : "This applies now. Raising it again needs your signed approval.",
       [
         { text: "Cancel", style: "cancel" },
         { text: change.label, style: "destructive", onPress: () => void apply(change) },
@@ -199,7 +213,11 @@ function KinLevelsBody(props: {
               label={change.label}
               accessibilityHint={change.blocked ?? undefined}
               loading={pending === change.key}
-              disabled={change.blocked !== null || (pending !== null && pending !== change.key)}
+              disabled={
+                change.blocked !== null ||
+                result.waiting ||
+                (pending !== null && pending !== change.key)
+              }
               onPress={() => press(change, row)}
             />
           ))}

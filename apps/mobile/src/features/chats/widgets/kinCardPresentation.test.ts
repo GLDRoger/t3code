@@ -453,6 +453,8 @@ describe("levels cards", () => {
         chats: [
           { chatId: "c0", level: "L0", levelSince: "2026-11-03T09:00:00.000Z" },
           { chatId: "c1", level: "L1", levelSince: "2026-11-03T09:00:00.000Z" },
+          // Kept from before the lead was lowered, so the lead's L1 applies.
+          { chatId: "c2", level: "L2", levelSince: "2026-11-01T09:00:00.000Z" },
         ],
         promotion: stats({ from: "L1", to: "L2", eligible: true }),
         pendingRaises: [
@@ -470,7 +472,9 @@ describe("levels cards", () => {
     expect(view.chats.map(changes)).toEqual([
       [["Raise to L1", "A raise is already waiting."]],
       [["Lower to L0", null]],
+      [["Lower to L0", null]],
     ]);
+    expect(view.chats.map((row) => row.level)).toEqual(["L0", "L1", "L1"]);
     expect(view.pending.map((p) => p.text)).toEqual([
       "Chat c0 to L1: waiting for your signed approval.",
     ]);

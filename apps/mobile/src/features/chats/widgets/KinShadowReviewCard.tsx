@@ -3,12 +3,14 @@ import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime"
 import type { EnvironmentId, KinShadowVerdict } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { memo, useState } from "react";
-import { View } from "react-native";
+import { Alert, View } from "react-native";
 
 import { AppText as Text } from "../../../components/ui/AppText";
 import { Chip } from "../../../components/ui/Chip";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
+import { kinDirectory } from "../state/kinScreenState";
+import { useKinHostAt } from "../state/useKinHost";
 import {
   KIN_VERDICTS,
   kinLevelsFailureText,
@@ -25,6 +27,11 @@ export const KinShadowReviewCard = memo(function KinShadowReviewCard(props: {
   const { review, environmentId } = props;
   const canReview = useAtomValue(kinClient.review.permissionAtom(environmentId));
   const send = useAtomCommand(kinClient.review, { reportFailure: false });
+  const host = useKinHostAt(environmentId);
+  const lead =
+    kinDirectory(host._tag === "unpaired" ? { _tag: "none" } : host).agentNames.get(
+      review.agentId,
+    ) ?? "the lead";
   const [local, setLocal] = useState<{
     readonly revision: number;
     readonly verdicts: ReadonlyMap<string, KinShadowVerdict>;
@@ -65,6 +72,25 @@ export const KinShadowReviewCard = memo(function KinShadowReviewCard(props: {
         error: false,
       });
     }
+  };
+
+  const press = (
+    entry: KinShadowReviewEntryView,
+    verdict: KinShadowVerdict,
+    shown: KinShadowVerdict | null,
+  ) => {
+    const lowersTo = review.harmfulLowersTo;
+    if (verdict !== "harmful" || shown === "harmful" || entry.level === "L0" || lowersTo === null)
+      return void choose(entry, verdict);
+    // The host lowers the lead at once; getting back up takes a new trial and a signed raise.
+    Alert.alert(
+      "Mark this Harmful?",
+      `Marking this Harmful moves ${lead} down to ${lowersTo} now.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Mark Harmful", style: "destructive", onPress: () => void choose(entry, verdict) },
+      ],
+    );
   };
 
   return (
@@ -119,7 +145,7 @@ export const KinShadowReviewCard = memo(function KinShadowReviewCard(props: {
                     accessibilityLabel={`Mark ${option.label}`}
                     selected={shown === option.verdict}
                     disabled={pending !== null || (option.verdict === "fine" && entry.truncated)}
-                    onPress={() => void choose(entry, option.verdict)}
+                    onPress={() => press(entry, option.verdict, shown)}
                   />
                 ))}
               </View>

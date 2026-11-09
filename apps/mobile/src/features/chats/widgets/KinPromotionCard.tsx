@@ -27,6 +27,7 @@ export const KinPromotionCard = memo(function KinPromotionCard(props: {
   // Raise and shadow memory need settings:write; Another week needs orchestration:operate.
   const canRaise = useAtomValue(kinClient.raise.permissionAtom(environmentId));
   const canDefer = useAtomValue(kinClient.deferPromotion.permissionAtom(environmentId));
+  const canChooseMemory = useAtomValue(kinClient.shadowMemory.permissionAtom(environmentId));
   const raise = useAtomCommand(kinClient.raise, { reportFailure: false });
   const defer = useAtomCommand(kinClient.deferPromotion, { reportFailure: false });
   const shadowMemory = useAtomCommand(kinClient.shadowMemory, { reportFailure: false });
@@ -65,7 +66,8 @@ export const KinPromotionCard = memo(function KinPromotionCard(props: {
     if (!failed) appAtomRegistry.refresh(kinClient.levels({ environmentId, input: lead }));
   };
 
-  const allowed = (id: KinPromotionActionId) => (id === "defer" ? canDefer : canRaise);
+  const allowed = (id: KinPromotionActionId) =>
+    id === "defer" ? canDefer : id === "raise" ? canRaise : canChooseMemory;
   const actions = promotion.actions.filter((action) => allowed(action.id));
 
   return (

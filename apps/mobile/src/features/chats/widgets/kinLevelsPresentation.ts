@@ -75,6 +75,8 @@ export interface KinShadowReviewEntryView {
   readonly entryId: string;
   /** "kin_chat_post at L0" and what it would have reached. */
   readonly heading: string;
+  /** The level the lead acted at; Harmful above L0 lowers the lead. */
+  readonly level: KinLevel;
   readonly target: string | null;
   /** Shown whole, line breaks kept; the server already spelled out hidden characters. */
   readonly preview: string;
@@ -85,10 +87,13 @@ export interface KinShadowReviewEntryView {
 
 export interface KinShadowReviewCardView {
   readonly orgId: KinWidget["orgId"];
+  readonly agentId: KinShadowReviewCard["agentId"];
   readonly revision: number;
   readonly title: string;
   readonly summary: string;
   readonly entries: ReadonlyArray<KinShadowReviewEntryView>;
+  /** Where a Harmful verdict on an entry above L0 moves the lead; null at L0. */
+  readonly harmfulLowersTo: KinLevel | null;
   readonly more: string | null;
   readonly trial: ReadonlyArray<string>;
   readonly closed: boolean;
@@ -101,6 +106,7 @@ export function kinShadowReviewView(
   const hidden = card.total - card.entries.length;
   return {
     orgId: widget.orgId,
+    agentId: card.agentId,
     revision: widget.revision,
     title: clamp(card.title, 200) || "Trial review",
     summary:
@@ -114,6 +120,7 @@ export function kinShadowReviewView(
       return {
         entryId: entry.entryId,
         heading,
+        level: entry.level,
         target,
         preview,
         truncated: entry.truncated,
@@ -127,6 +134,7 @@ export function kinShadowReviewView(
         ]),
       };
     }),
+    harmfulLowersTo: below(card.promotion.from),
     more: hidden > 0 ? `${hidden} more after these.` : null,
     trial: kinTrialLines(card.promotion),
     closed: widget.closedAt !== null,
@@ -418,26 +426,30 @@ export function kinLevelsScreenView(
       key: raise.actionId,
       text: `${raise.chatId === null ? "Lead" : chatTitle(raise.chatId)} to ${raise.level}: ${RAISE_STATE[raise.state]}.`,
     })),
-    chats: view.chats.map((chat) => ({
-      key: chat.chatId,
-      title: chatTitle(chat.chatId),
-      level: chat.level,
-      since: `Since ${sinceFormat.format(new Date(chat.levelSince))}`,
-      changes: [
-        ...(rank(chat.level) < rank(view.level)
-          ? [
-              {
-                key: `raise:${chat.chatId}`,
-                kind: "raise" as const,
-                chatId: chat.chatId,
-                level: view.level,
-                label: `Raise to ${view.level}`,
-                blocked: raising(chat.chatId) ? "A raise is already waiting." : null,
-              },
-            ]
-          : []),
-        ...lower(chat.chatId, chat.level),
-      ],
-    })),
+    chats: view.chats.map((chat) => {
+      // A cap above the lead doesn't apply: the chat runs at the lead's level.
+      const level = rank(chat.level) < rank(view.level) ? chat.level : view.level;
+      return {
+        key: chat.chatId,
+        title: chatTitle(chat.chatId),
+        level,
+        since: `Since ${sinceFormat.format(new Date(level === chat.level ? chat.levelSince : view.levelSince))}`,
+        changes: [
+          ...(level !== view.level
+            ? [
+                {
+                  key: `raise:${chat.chatId}`,
+                  kind: "raise" as const,
+                  chatId: chat.chatId,
+                  level: view.level,
+                  label: `Raise to ${view.level}`,
+                  blocked: raising(chat.chatId) ? "A raise is already waiting." : null,
+                },
+              ]
+            : []),
+          ...lower(chat.chatId, level),
+        ],
+      };
+    }),
   };
 }
