@@ -1,7 +1,10 @@
+import { environmentSessionGenerationAtom } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import { Atom } from "effect/reactivity";
 import { AppState } from "react-native";
 
+import { connectionAtomRuntime } from "../../../connection/runtime";
 import { writeFileAtomically } from "../../../lib/atomic-file";
 import { uuidv4 } from "../../../lib/uuid";
 import { appAtomRegistry } from "../../../state/atom-registry";
@@ -50,16 +53,21 @@ const connectedEnvironments = (): ReadonlySet<EnvironmentId> => {
   return connected;
 };
 
+// One key per connected environment and session, so a reconnect reads as new even when the
+// presentation never leaves "connected".
+const connectedSessionsAtom = Atom.make((get): string => {
+  const keys: string[] = [];
+  for (const [environmentId, presentation] of get(environmentPresentations.presentationsAtom)) {
+    if (presentation.connection.phase !== "connected") continue;
+    const generation = get(environmentSessionGenerationAtom(connectionAtomRuntime, environmentId));
+    keys.push(`${environmentId}\u0000${generation}`);
+  }
+  return keys.join("\n");
+}).pipe(Atom.withLabel("kin:outbox:sessions"));
+
 const retry = createKinOutboxRetry({
   isForeground: () => AppState.currentState === "active",
-  deliver: async () => {
-    await kinOutbox.load();
-    const connected = connectedEnvironments();
-    const waiting = [...kinOutbox.waitingEnvironments()].filter((id) => connected.has(id));
-    await Promise.all(waiting.map((environmentId) => kinOutbox.deliver(environmentId)));
-    const stillConnected = connectedEnvironments();
-    return [...kinOutbox.waitingEnvironments()].some((id) => stillConnected.has(id));
-  },
+  deliver: () => kinOutbox.deliverConnected(connectedEnvironments),
 });
 
 /** Delivers waiting sends for every connected environment, retrying with backoff. */
@@ -69,21 +77,15 @@ export const deliverKinOutbox = (): Promise<void> => retry.run();
 export const clearKinOutboxEnvironment = (environmentId: EnvironmentId): Promise<void> =>
   kinOutbox.clearEnvironment(environmentId);
 
-/** Loads the persisted outbox and sends it whenever an environment comes back or the app wakes. */
+/** Loads the persisted outbox and sends it whenever a host comes back or the app wakes. */
 export function startKinOutbox(): () => void {
-  let previous: ReadonlySet<EnvironmentId> = new Set();
   const unsubscribe = appAtomRegistry.subscribe(
-    environmentPresentations.presentationsAtom,
-    () => {
-      const connected = connectedEnvironments();
-      const reconnected = [...connected].some((id) => !previous.has(id));
-      previous = connected;
-      if (reconnected) void retry.reconnected();
-    },
+    connectedSessionsAtom,
+    (keys) => void retry.sessionsChanged(new Set(keys === "" ? [] : keys.split("\n"))),
     { immediate: true },
   );
   const appState = AppState.addEventListener("change", (state) => {
-    if (state === "active") void retry.reconnected();
+    if (state === "active") void retry.resume();
     else retry.pause();
   });
   return () => {

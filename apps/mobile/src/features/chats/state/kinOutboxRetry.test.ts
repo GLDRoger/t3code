@@ -33,12 +33,16 @@ function setup() {
 }
 
 describe("createKinOutboxRetry", () => {
-  it("backs off from 5 s, doubling up to a minute, and starts over on reconnect", async () => {
+  it("backs off from 5 s, doubling up to a minute, and starts over on a new session", async () => {
     using t = setup();
-    await t.retry.run();
+    // Sends queued meanwhile go out at once but don't grow the wait.
+    for (let i = 0; i < 4; i++) await t.retry.run();
     for (const ms of [5_000, 10_000, 20_000, 40_000, 60_000, 60_000]) await t.expectNextAfter(ms);
 
-    await t.retry.reconnected();
+    await t.retry.sessionsChanged(new Set(["env:1"]));
+    // The same session again changes nothing.
+    await t.retry.sessionsChanged(new Set(["env:1"]));
+    expect(t.attempts()).toBe(11);
     await t.expectNextAfter(5_000);
     await t.expectNextAfter(10_000);
   });

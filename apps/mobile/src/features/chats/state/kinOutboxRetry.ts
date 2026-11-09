@@ -3,7 +3,8 @@ export const KIN_RETRY_MAX_MS = 60_000;
 
 /**
  * Retries sends that failed while the host still reads as connected: 5 s, doubling, capped at a
- * minute. A reconnect starts over at 5 s; nothing is scheduled while the app is in the background.
+ * minute. Only a failed retry grows the wait, so queuing more sends doesn't. A new connected
+ * session sends at once and starts over at 5 s; nothing is scheduled in the background.
  */
 export function createKinOutboxRetry(options: {
   /** Delivers what's waiting; resolves true while a connected environment still has sends left. */
@@ -12,6 +13,7 @@ export function createKinOutboxRetry(options: {
 }) {
   let delay = KIN_RETRY_BASE_MS;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let sessions: ReadonlySet<string> = new Set();
 
   const cancel = () => {
     if (timer === null) return;
@@ -19,30 +21,41 @@ export function createKinOutboxRetry(options: {
     timer = null;
   };
 
-  const run = async (): Promise<void> => {
+  const attempt = async (retrying: boolean): Promise<void> => {
     cancel();
     const stillWaiting = await options.deliver();
     if (!stillWaiting) {
       delay = KIN_RETRY_BASE_MS;
       return;
     }
+    if (retrying) delay = Math.min(delay * 2, KIN_RETRY_MAX_MS);
     if (timer !== null || !options.isForeground()) return;
     timer = setTimeout(() => {
       timer = null;
-      void run();
+      void attempt(true);
     }, delay);
-    delay = Math.min(delay * 2, KIN_RETRY_MAX_MS);
+  };
+
+  const restart = () => {
+    delay = KIN_RETRY_BASE_MS;
+    return attempt(false);
   };
 
   return {
-    /** Sends now, then backs off if anything is left. */
-    run,
-    /** An environment came back: start the backoff over. */
-    reconnected: () => {
-      delay = KIN_RETRY_BASE_MS;
-      return run();
+    /** Sends now, then retries with the current wait if anything is left. */
+    run: () => attempt(false),
+    /**
+     * The connected sessions, one key per environment and session. A key not seen before is a
+     * host that came back, so sends go out at once with the wait reset.
+     */
+    sessionsChanged: (next: ReadonlySet<string>): Promise<void> => {
+      const fresh = [...next].some((key) => !sessions.has(key));
+      sessions = next;
+      return fresh ? restart() : Promise.resolve();
     },
-    /** The app left the foreground. `run` again when it returns. */
+    /** The app came back to the foreground. */
+    resume: restart,
+    /** The app left the foreground. `resume` when it returns. */
     pause: cancel,
   };
 }

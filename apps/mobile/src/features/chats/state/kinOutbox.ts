@@ -300,10 +300,29 @@ export function createKinOutbox(options: KinOutboxOptions) {
     await persist();
   };
 
+  const waitingEnvironments = (): ReadonlySet<EnvironmentId> =>
+    new Set(
+      [...entries.values()]
+        .filter((entry) => entry.state === "waiting")
+        .map((entry) => entry.environmentId),
+    );
+
+  /** Delivers what waits for each connected environment; true while one still has sends left. */
+  const deliverConnected = async (
+    connected: () => ReadonlySet<EnvironmentId>,
+  ): Promise<boolean> => {
+    await load();
+    const before = connected();
+    await Promise.all([...waitingEnvironments()].filter((id) => before.has(id)).map(deliver));
+    const after = connected();
+    return [...waitingEnvironments()].some((id) => after.has(id));
+  };
+
   return {
     load,
     enqueue,
     deliver,
+    deliverConnected,
     discard,
     forgetEchoed,
     clearEnvironment,
@@ -311,13 +330,6 @@ export function createKinOutbox(options: KinOutboxOptions) {
       chatAtom(chatKey(environmentId, chatId)),
     /** True while the environment holds as many unsent messages as the outbox takes. */
     fullAtom,
-    /** Environments with sends still waiting, for the reconnect trigger. */
-    waitingEnvironments: (): ReadonlySet<EnvironmentId> =>
-      new Set(
-        [...entries.values()]
-          .filter((entry) => entry.state === "waiting")
-          .map((entry) => entry.environmentId),
-      ),
     /** Resolves once every queued save has reached storage. */
     flushWrites: () => writes.catch(() => undefined),
   };

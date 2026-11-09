@@ -19,6 +19,7 @@ import {
   type KinOutboxStorage,
   type KinSendOutcome,
 } from "./kinOutbox";
+import { createKinOutboxRetry } from "./kinOutboxRetry";
 
 const ENV = "env-kin" as EnvironmentId;
 const CHAT = KIN_FIXTURE_CHAT_ID;
@@ -246,6 +247,45 @@ describe("kinOutbox", () => {
       await outbox.deliver(ENV);
       expect(chat()[0]?.state).toBe("sent");
       expect(host.calls).toEqual(["client-1"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("sends at once when the host comes back on a new session, with the backoff reset", async () => {
+    vi.useFakeTimers();
+    try {
+      const { host, outbox } = setup();
+      const retry = createKinOutboxRetry({
+        deliver: () => outbox.deliverConnected(() => new Set([ENV])),
+        isForeground: () => true,
+      });
+      const connect = (session: number) => retry.sessionsChanged(new Set([`${ENV}:${session}`]));
+      await connect(1);
+      // Connected but failing: each queued send tries once, and the retries back off to a minute.
+      for (const body of ["one", "two", "three"]) {
+        await outbox.enqueue({ environmentId: ENV, chatId: CHAT, body });
+        await retry.run();
+      }
+      await vi.advanceTimersByTimeAsync(5_000 + 10_000 + 20_000 + 40_000);
+      expect(host.calls.length).toBe(3 + 4);
+
+      // The host restarts on a new session, read as connected throughout. Nothing waits out
+      // the minute.
+      host.setOnline(true);
+      await connect(2);
+      expect([...host.rows.values()].map((row) => row.body)).toEqual(["one", "two", "three"]);
+      expect(host.calls.length).toBe(7 + 3);
+
+      // Failing again starts over at 5 s.
+      host.setOnline(false);
+      await outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: "four" });
+      await retry.run();
+      const calls = host.calls.length;
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(host.calls.length).toBe(calls);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(host.calls.length).toBe(calls + 1);
     } finally {
       vi.useRealTimers();
     }
