@@ -31,13 +31,39 @@ const fail = (error: unknown) => AsyncResult.failure(Cause.fail(error));
 
 describe("classifyKinProbe", () => {
   it.each([
-    ["pending", AsyncResult.initial(true), "pending"],
-    ["an identity", AsyncResult.success(withIdentity), "ready"],
-    ["an empty me", AsyncResult.success(orgs([])), "noIdentity"],
-    ["Kin turned off", fail(new KinChatError({ reason: "disabled", message: "off" })), "notKin"],
-    ["a Kin outage", fail(new KinChatError({ reason: "unavailable", message: "down" })), "error"],
-    ["a plain T3 server", AsyncResult.failure(Cause.die(new Error("unknown method"))), "notKin"],
-    ["a Kin refusal", fail(new KinChatError({ reason: "not_allowed", message: "no" })), "error"],
+    ["pending", AsyncResult.initial(true), { _tag: "pending" }],
+    ["an identity", AsyncResult.success(withIdentity), { _tag: "ready" }],
+    ["an empty me", AsyncResult.success(orgs([])), { _tag: "noIdentity" }],
+    [
+      "Kin turned off",
+      fail(new KinChatError({ reason: "disabled", message: "off" })),
+      { _tag: "notKin" },
+    ],
+    [
+      "a Kin outage",
+      fail(new KinChatError({ reason: "unavailable", message: "down" })),
+      { _tag: "error", transient: true },
+    ],
+    [
+      "a plain T3 server",
+      AsyncResult.failure(Cause.die("Unknown request tag: kin.orgs.list")),
+      { _tag: "notKin" },
+    ],
+    [
+      "a plain T3 server's decoded defect",
+      AsyncResult.failure(Cause.die(new Error("Unknown request tag: kin.orgs.list"))),
+      { _tag: "notKin" },
+    ],
+    [
+      "a decode failure",
+      AsyncResult.failure(Cause.die(new Error('Expected string, got undefined at ["me"]'))),
+      { _tag: "error", transient: false },
+    ],
+    [
+      "a Kin refusal",
+      fail(new KinChatError({ reason: "not_allowed", message: "no" })),
+      { _tag: "error", transient: false },
+    ],
     [
       "a lost transport",
       fail(
@@ -45,12 +71,12 @@ describe("classifyKinProbe", () => {
           reason: new RpcClientError.RpcClientDefect({ message: "socket closed", cause: null }),
         }),
       ),
-      "error",
+      { _tag: "error", transient: true },
     ],
     [
       "an unreachable environment",
       fail(new EnvironmentRpcUnavailableError({ environmentId: "env-a", message: "offline" })),
-      "error",
+      { _tag: "error", transient: true },
     ],
     [
       "a missing scope",
@@ -60,12 +86,12 @@ describe("classifyKinProbe", () => {
           requiredScope: "orchestration:read",
         }),
       ),
-      "unauthorized",
+      { _tag: "unauthorized" },
     ],
-  ] as const)("classifies %s", (_name, result, tag) => {
+  ] as const)("classifies %s", (_name, result, expected) => {
     expect(
-      classifyKinProbe(result as AsyncResult.AsyncResult<KinOrgsListResult, unknown>)._tag,
-    ).toBe(tag);
+      classifyKinProbe(result as AsyncResult.AsyncResult<KinOrgsListResult, unknown>),
+    ).toMatchObject(expected);
   });
 });
 

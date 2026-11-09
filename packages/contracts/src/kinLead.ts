@@ -72,6 +72,18 @@ export const MemoryItemKind = Schema.Literals([
 export type MemoryItemKind = typeof MemoryItemKind.Type;
 export const MemoryTrust = Schema.Literals(["owner", "member", "external", "agent"]);
 export type MemoryTrust = typeof MemoryTrust.Type;
+export const GithubRepoSlug = Schema.String.check(
+  Schema.isPattern(/^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/),
+);
+/** A memory item's GitHub condition, such as "when this PR merges". */
+export const MemoryItemCondition = Schema.Struct({
+  event: TrimmedNonEmptyString,
+  action: TrimmedNonEmptyString,
+  merged: Schema.optional(Schema.Boolean),
+  number: Schema.Int.check(Schema.isGreaterThan(0)),
+  repo: Schema.optional(GithubRepoSlug),
+});
+export type MemoryItemCondition = typeof MemoryItemCondition.Type;
 export const MemoryItemFrontMatter = Schema.Struct({
   id: KinMemoryItemId,
   kind: MemoryItemKind,
@@ -82,6 +94,7 @@ export const MemoryItemFrontMatter = Schema.Struct({
   chat: Schema.optional(KinChatId),
   source_event: Schema.optional(KinEventId),
   on_due: Schema.optional(Schema.Literals(["remind", "start", "ask", "chase"])),
+  on: Schema.optional(MemoryItemCondition),
   owner: Schema.optional(TrimmedNonEmptyString),
   tz: Schema.optional(
     Schema.UndefinedOr(TimeZone).pipe(Schema.catchDecoding(() => Effect.succeedSome(undefined))),
@@ -148,6 +161,10 @@ export const KinDeferralCard = Schema.Struct({
   dueAt: Schema.toEncoded(CanonicalUtcTimestamp),
   onDue: Schema.Literals(["remind", "start", "ask", "chase"]),
   text: Schema.String,
+  // Absent on the confirm card ([Change] [Just remind me]); heads_up and asked offer
+  // [Start now] [Monday] [Cancel]; started offers nothing.
+  phase: Schema.optional(Schema.Literals(["heads_up", "asked", "started"])),
+  graceEndsAt: Schema.optional(Schema.toEncoded(CanonicalUtcTimestamp)),
 });
 export type KinDeferralCard = typeof KinDeferralCard.Type;
 
@@ -242,7 +259,21 @@ export const KinEvent = Schema.Union([
     pendingActionId: TrimmedNonEmptyString,
     outcome: Schema.Literals(["executed", "rejected", "expired", "failed"]),
   }),
-  Schema.TaggedStruct("resume", { ...EventBase, pausedAt: CanonicalUtcTimestamp }),
+  Schema.TaggedStruct("resume", {
+    ...EventBase,
+    pausedAt: CanonicalUtcTimestamp,
+    // Events queued more than 24 hours before the resume are expired, not replayed.
+    expired: Schema.Struct({
+      count: NonNegativeInt,
+      events: Schema.Array(
+        Schema.Struct({
+          eventId: KinEventId,
+          tag: TrimmedNonEmptyString,
+          receivedAt: CanonicalUtcTimestamp,
+        }),
+      ).check(Schema.isMaxLength(50)),
+    }),
+  }),
 ]);
 export type KinEvent = typeof KinEvent.Type;
 
@@ -298,3 +329,5 @@ export const KinOrgPauseInput = Schema.Struct({
 export type KinOrgPauseInput = typeof KinOrgPauseInput.Type;
 export const KinOrgResumeInput = Schema.Struct({ orgId: KinOrgId });
 export type KinOrgResumeInput = typeof KinOrgResumeInput.Type;
+export const KinOrgGetInput = Schema.Struct({ orgId: KinOrgId });
+export type KinOrgGetInput = typeof KinOrgGetInput.Type;

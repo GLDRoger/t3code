@@ -65,6 +65,9 @@ export class DreamSession extends Context.Service<
   }
 >()("t3/kin/dreaming/DreamSession") {}
 
+export const dreamThreadId = (dreamId: string, turn: DreamTurn["turn"]) =>
+  ThreadId.make(`${threadPrefix}${dreamId}:${turn}`);
+
 const timeoutMs = 900_000;
 const isRefused = Schema.is(DreamRefused);
 
@@ -100,7 +103,7 @@ export const layer = Layer.effect(
           title: `Kin dreams · ${turn.orgId}`,
         });
         const key = `${turn.dreamId}:${turn.turn}`;
-        const threadId = ThreadId.make(`${threadPrefix}${key}`);
+        const threadId = dreamThreadId(turn.dreamId, turn.turn);
         const messageId = MessageId.make(`kin-dream-msg:${key}`);
         const sent = yield* launch.launch({
           commandId: CommandId.make(`kin-dream:${key}`),

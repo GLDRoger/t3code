@@ -6,6 +6,7 @@ import {
   type SupervisorConnectionState,
 } from "@t3tools/client-runtime/connection";
 import type { RpcSession } from "@t3tools/client-runtime/rpc";
+import { EnvironmentQueryStore } from "@t3tools/client-runtime/state/query-persistence";
 import { queryPersistenceKey } from "@t3tools/client-runtime/state/runtime";
 import {
   EnvironmentId,
@@ -30,6 +31,7 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
 
 import { MobileDatabase } from "../../../persistence/mobile-database";
+import { KIN_CACHE_MAX_PAYLOAD_BYTES, syncKinCacheIdentity, withKinCache } from "./kinCache";
 import { KinChatState, type KinInboxState } from "./kinInboxModel";
 import {
   isKinRetryable,
@@ -170,6 +172,33 @@ describe("Kin streams", () => {
   ] as const)("retries a %s Kin error: %s", (reason, retryable) => {
     expect(isKinRetryable(kinError(reason))).toBe(retryable);
   });
+
+  it.effect("drops the cache when the host maps this session to another person", () =>
+    Effect.gen(function* () {
+      const rows = new Map([
+        ["kin|index", JSON.stringify({ identity: "p1", keys: ["inbox"] })],
+        ["kin|v1:inbox", "p1's inbox"],
+      ]);
+      yield* syncKinCacheIdentity(environmentId, "p2").pipe(
+        Effect.provideService(MobileDatabase, fakeDatabase(rows)),
+      );
+      expect([...rows.keys()]).toEqual(["kin|index"]);
+      expect(JSON.parse(rows.get("kin|index") ?? "")).toEqual({ identity: "p2", keys: [] });
+    }),
+  );
+
+  it.effect("skips a payload past the byte cap, even when its length is under it", () =>
+    Effect.gen(function* () {
+      const rows = new Map<string, string>();
+      // Three UTF-8 bytes per character: half the cap in length, 1.5 times it in bytes.
+      const payload = "€".repeat(KIN_CACHE_MAX_PAYLOAD_BYTES / 2);
+      yield* EnvironmentQueryStore.use((store) => store!.save(environmentId, "big", payload)).pipe(
+        withKinCache,
+        Effect.provideService(MobileDatabase, fakeDatabase(rows)),
+      );
+      expect(rows.size).toBe(0);
+    }),
+  );
 
   it.effect(
     "backs off 1 s doubling to 30 s, starts over once events flow, and ends on a refusal",
