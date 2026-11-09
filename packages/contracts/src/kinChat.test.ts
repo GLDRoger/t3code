@@ -117,6 +117,29 @@ const waiting = {
   resolution: null,
 };
 const summary = { ...chat, members: [member], lastMessage: message, unread: 1 };
+const reaction = {
+  orgId: "org-1",
+  chatId: "chat-1",
+  messageId: "message-1",
+  memberId: "member-1",
+  emoji: "👍",
+  createdAt: at,
+  removedAt: null,
+};
+const presence = {
+  agentId: "agent-1",
+  wakeupId: "wakeup-1",
+  state: "working",
+  label: "Checking memory",
+  startedAt: at,
+  since: at,
+};
+const draft = { draftId: "item-1", agentId: "agent-1", text: "Here is" };
+const choiceOptions = [
+  { optionId: "yes", label: "Ship it", kind: "yes" },
+  { optionId: "no", label: "Wait", kind: "no" },
+];
+const choice = { question: "Ship today?", detail: null, options: choiceOptions, answer: null };
 const send = { chatId: "chat-1", clientMessageId: "client-1", body: "Hello" };
 
 type SchemaName = {
@@ -134,6 +157,7 @@ const samples = {
   KinMessageId: ["message-1"],
   KinWidgetId: ["widget-1"],
   KinWaitingId: ["waiting-1"],
+  KinWakeupId: ["wakeup-1"],
   KinChatKind: Kin.KinChatKind.literals,
   KinRole: Kin.KinRole.literals,
   KinAgentRole: Kin.KinAgentRole.literals,
@@ -143,6 +167,26 @@ const samples = {
   KinWidgetClass: Kin.KinWidgetClass.literals,
   KinNativeCardType: Kin.KinNativeCardType.literals,
   KinWaitingReason: Kin.KinWaitingReason.literals,
+  KinReactionEmoji: Kin.KinReactionEmoji.literals,
+  KinReaction: [reaction, { ...reaction, emoji: "❤️", removedAt: at }],
+  KinChoiceOption: [...choiceOptions, { optionId: "later", label: "Later" }],
+  KinChoiceCardState: [
+    choice,
+    {
+      ...choice,
+      detail: "Two PRs are open.",
+      answer: {
+        optionId: "yes",
+        personId: "person-1",
+        via: "reaction",
+        emoji: "👍",
+        answeredAt: at,
+      },
+    },
+  ],
+  KinPresenceState: Kin.KinPresenceState.literals,
+  KinPresence: [presence, { ...presence, wakeupId: null, state: "seen", label: null }],
+  KinDraft: [draft],
   KinOrg: [org],
   KinPerson: [person, { ...person, githubLogin: "owner" }],
   KinAgent: [agent],
@@ -179,6 +223,35 @@ const samples = {
     { _tag: "widget", widget },
     { _tag: "member", member },
     { _tag: "read", memberId: "member-1", seq: 1 },
+    {
+      _tag: "backlog",
+      messages: [message],
+      widgets: [widget],
+      lastSeq: 1,
+      reactions: [reaction],
+      presence: [presence],
+      drafts: [draft],
+    },
+    { _tag: "draft", draftId: "item-1", agentId: "agent-1", offset: 0, text: "Here" },
+    {
+      _tag: "draft",
+      draftId: "item-1",
+      agentId: "agent-1",
+      offset: 4,
+      text: " is",
+      end: { messageId: "message-1" },
+    },
+    {
+      _tag: "draft",
+      draftId: "item-2",
+      agentId: "agent-1",
+      offset: 0,
+      text: "",
+      end: { messageId: null },
+    },
+    { _tag: "presence", agentId: "agent-1", presence },
+    { _tag: "presence", agentId: "agent-1", presence: null },
+    { _tag: "reaction", reaction },
   ],
   KinOrgsListInput: [{}],
   KinOrgsListResult: [
@@ -204,7 +277,10 @@ const samples = {
     { chatId: "chat-1", afterSeq: 1, afterChangeSeq: 2 },
   ],
   KinChatHistoryInput: [{ chatId: "chat-1", beforeSeq: 2, limit: 100 }],
-  KinChatHistoryResult: [{ messages: [message], widgets: [widget], hasMore: false }],
+  KinChatHistoryResult: [
+    { messages: [message], widgets: [widget], hasMore: false },
+    { messages: [message], widgets: [widget], hasMore: false, reactions: [reaction] },
+  ],
   KinMessagesSendInput: [send, { ...send, mentions: ["member-2"], replyTo: "message-1" }],
   KinMessagesMarkReadInput: [{ chatId: "chat-1", seq: 1 }],
   KinMessagesMarkReadResult: [{}],
@@ -218,6 +294,12 @@ const samples = {
       clientActionId: "action-2",
     },
   ],
+  KinMessagesReactInput: [
+    { messageId: "message-1", emoji: "👍", on: true },
+    { messageId: "message-1", emoji: "👀", on: false },
+  ],
+  KinLeadInterruptInput: [{ orgId: "org-1", wakeupId: "wakeup-1" }],
+  KinLeadInterruptResult: [{ interrupted: true }, { interrupted: false }],
   KinChatError: [
     "not_found",
     "not_allowed",
@@ -280,6 +362,20 @@ describe("Kin chat contracts", () => {
       },
     },
   ])("rejects NUL text %#", ({ schema, value }) => {
+    const codec: Schema.Codec<unknown> = schema;
+    expect(() => Schema.decodeSync(codec)(value)).toThrow();
+  });
+
+  it.each([
+    { schema: Kin.KinMessagesReactInput, value: { messageId: "m", emoji: "🎉", on: true } },
+    { schema: Kin.KinChoiceCardState, value: { ...choice, options: choiceOptions.slice(0, 1) } },
+    {
+      schema: Kin.KinChoiceCardState,
+      value: { ...choice, options: [...choiceOptions, ...choiceOptions, ...choiceOptions] },
+    },
+    { schema: Kin.KinChoiceCardState, value: { ...choice, question: "x".repeat(241) } },
+    { schema: Kin.KinPresence, value: { ...presence, label: "x".repeat(61) } },
+  ])("rejects out-of-range values %#", ({ schema, value }) => {
     const codec: Schema.Codec<unknown> = schema;
     expect(() => Schema.decodeSync(codec)(value)).toThrow();
   });

@@ -11,7 +11,13 @@ import {
 } from "./kinLead.ts";
 import { KinApprovalRpcs, KIN_APPROVAL_RPC_SCOPES } from "./kinApprovals.ts";
 import { KinLevelRpcs, KIN_LEVEL_RPC_SCOPES } from "./kinLevels.ts";
-import { KinChatError, KinChatRpcs, KIN_CHAT_RPC_SCOPES } from "./kinChat.ts";
+import {
+  KinChatError,
+  KinChatRpcs,
+  KinLeadInterruptInput,
+  KinLeadInterruptResult,
+  KIN_CHAT_RPC_SCOPES,
+} from "./kinChat.ts";
 import { KinPushRpcs, KIN_PUSH_RPC_SCOPES } from "./kinPush.ts";
 import {
   KinGithubWebhookOrgInput,
@@ -40,6 +46,14 @@ const KinOrgRpcs = [
   Rpc.make("kin.org.resume", {
     payload: KinOrgResumeInput,
     success: KinOrgState,
+    error: KinError,
+  }),
+] as const;
+// Owner-only: stops one wake-up, never the org; kin.org.pause is the stop switch.
+const KinLeadRpcs = [
+  Rpc.make("kin.lead.interrupt", {
+    payload: KinLeadInterruptInput,
+    success: KinLeadInterruptResult,
     error: KinError,
   }),
 ] as const;
@@ -82,6 +96,7 @@ export const KinChatAndBudgetRpcs = [
   ...KinChatRpcs,
   ...KinBudgetRpcs,
   ...KinOrgRpcs,
+  ...KinLeadRpcs,
   ...KinTimeZoneRpcs,
 ] as const;
 export const KinRpcs = [
@@ -102,6 +117,7 @@ export const KIN_RPC_SCOPES = {
   // Stopping agent work is an orchestration operation, as force-stopping a thread is.
   "kin.org.pause": AuthOrchestrationOperateScope,
   "kin.org.resume": AuthOrchestrationOperateScope,
+  "kin.lead.interrupt": AuthOrchestrationOperateScope,
   "kin.triggers.getTimeZone": AuthOrchestrationReadScope,
   "kin.triggers.setTimeZone": AuthSettingsWriteScope,
   "kin.webhooks.github.setup": AuthSettingsWriteScope,
@@ -116,6 +132,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.org.get": "kin-org",
   "kin.org.pause": "kin-org",
   "kin.org.resume": "kin-org",
+  "kin.lead.interrupt": "kin-org",
   "kin.orgs.list": "kin-chat",
   "kin.chats.subscribe": "kin-chat",
   "kin.chats.createDirect": "kin-chat",
@@ -124,6 +141,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.messages.send": "kin-chat",
   "kin.messages.markRead": "kin-chat",
   "kin.widgets.act": "kin-chat",
+  "kin.messages.react": "kin-chat",
   "kin.approvals.list": "kin-approvals",
   "kin.approvals.get": "kin-approvals",
   "kin.approvals.challenge": "kin-approvals",

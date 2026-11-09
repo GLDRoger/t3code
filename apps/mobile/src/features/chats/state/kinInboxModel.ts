@@ -256,6 +256,10 @@ export function applyKinChatEvent(state: KinChatState, event: KinChatStreamEvent
       if (event.seq <= held) return state;
       return { ...state, reads: { ...state.reads, [event.memberId]: event.seq } };
     }
+    case "draft":
+    case "presence":
+    case "reaction":
+      return state;
   }
 }
 
