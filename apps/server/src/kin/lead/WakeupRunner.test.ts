@@ -208,7 +208,7 @@ describe("WakeupRunner", () => {
       yield* Fiber.join(yield* run());
       assert.deepStrictEqual(
         yield* sql`SELECT model, status FROM kin_wakeups WHERE org_id = ${orgId} ORDER BY wakeup_id`,
-        [{ model: "gpt-5.1-codex-mini", status: "completed" }],
+        [{ model: "claude-haiku-4-5", status: "completed" }],
       );
       assert.deepStrictEqual(
         yield* sql`SELECT event_id, state, attempts FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`,
@@ -323,6 +323,29 @@ describe("WakeupRunner", () => {
       );
     }).pipe(Effect.provide(harness({ piUsage: true })), provideDeterministicTestRuntime),
   );
+  it.effect("never launches a lead whose stored model is on a non-Claude instance", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const models = JSON.stringify({
+        strong: { instanceId: "claudeAgent", model: "claude-opus-4-6" },
+        cheap: { instanceId: "codex", model: "gpt-5.5" },
+      });
+      yield* sql`UPDATE kin_leads SET models_json = ${models} WHERE agent_id = ${agentId}`;
+      yield* (yield* KinEventQueue.KinEventQueue).enqueue(event("codex-lead"));
+      const exit = yield* Fiber.await(yield* run());
+      assert.strictEqual(exit._tag, "Failure");
+      assert.include(String(exit), "Kin leads run only on Claude");
+      assert.deepStrictEqual(
+        yield* sql`SELECT status, thread_id FROM kin_wakeups WHERE org_id = ${orgId}`,
+        [{ status: "failed", thread_id: null }],
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT thread_id FROM kin_leads WHERE agent_id = ${agentId}`,
+        [{ thread_id: null }],
+      );
+    }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
+  );
   it.effect(
     "charges failed provider turns from the exact usage recorded on the failed wake-up",
     () =>
@@ -367,7 +390,7 @@ describe("WakeupRunner", () => {
           model: string;
         }>`SELECT thread_id, tokens_json, wakeup_id, model FROM kin_wakeups ORDER BY started_at`;
         assert.strictEqual(rows.length, 2);
-        assert.isTrue(rows.every((row) => row.model === "gpt-5.1-codex"));
+        assert.isTrue(rows.every((row) => row.model === "claude-opus-4-6"));
         assert.strictEqual(rows[0]?.thread_id, rows[1]?.thread_id);
         assert.match(rows[0]!.wakeup_id, /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/);
         const threads = yield* ThreadManagement.ThreadManagementService;
@@ -1056,8 +1079,8 @@ describe("WakeupRunner", () => {
             projectId: ProjectId.make("kin:org"),
             title: "Lead",
             modelSelection: {
-              instanceId: ProviderInstanceId.make("codex"),
-              model: "gpt-5.1-codex",
+              instanceId: ProviderInstanceId.make("claudeAgent"),
+              model: "claude-opus-4-6",
             },
             runtimeMode: "full-access",
             interactionMode: "default",

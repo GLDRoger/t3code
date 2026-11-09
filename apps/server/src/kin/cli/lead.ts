@@ -42,7 +42,7 @@ const decodeModel = Schema.decodeUnknownEffect(ModelSelection);
 const modelFlag = (name: "strong" | "cheap") =>
   Flag.String(name).pipe(
     Flag.withDescription(
-      `The lead's ${name} model as <provider instance id>:<model>, for example \`codex:gpt-5.5\`.`,
+      `The lead's ${name} model as <provider instance id>:<model>, on a Claude instance, for example \`claudeAgent:claude-sonnet-4-6\`.`,
     ),
   );
 
@@ -51,7 +51,7 @@ const parseModel = Effect.fn("kin.lead.parseModel")(function* (
   value: string,
 ) {
   const invalid = new KinLeadCliError({
-    message: `--${flag} must be <provider instance id>:<model>, for example codex:gpt-5.5.`,
+    message: `--${flag} must be <provider instance id>:<model>, for example claudeAgent:claude-sonnet-4-6.`,
   });
   const split = value.indexOf(":");
   if (split < 1) return yield* invalid;
@@ -84,6 +84,7 @@ const runOnHost = Effect.fn("kin.lead.runOnHost")(
       Effect.tapError((error) => (isRefusal(error) ? Console.error(error.message) : Effect.void)),
       Effect.provide(
         provision.layer.pipe(
+          Layer.provideMerge(provision.settingsLayer),
           Layer.provideMerge(EnvironmentAuth.layerRuntime),
           Layer.provide(ServerConfig.layer(config)),
           Layer.provide(

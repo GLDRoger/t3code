@@ -5,6 +5,7 @@ import {
   KinAgentId,
   KinPersonId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -15,11 +16,22 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
+import * as ServerSettings from "../../serverSettings.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as KinLevels from "./KinLevels.ts";
 import * as Provision from "./KinLeadProvision.ts";
 
-const layer = Provision.layer.pipe(Layer.provideMerge(Sqlite.layerMemory));
+const layer = Provision.layer.pipe(
+  Layer.provideMerge(Sqlite.layerMemory),
+  Layer.provideMerge(
+    ServerSettings.layerTest({
+      providerInstances: {
+        [ProviderInstanceId.make("work")]: { driver: ProviderDriverKind.make("claudeAgent") },
+        [ProviderInstanceId.make("mine")]: { driver: ProviderDriverKind.make("codex") },
+      },
+    }),
+  ),
+);
 const session = (scopes: AuthenticatedSession["scopes"]): Provision.LeadOwner => ({
   _tag: "session",
   session: {
@@ -35,8 +47,9 @@ const input = (who: Provision.LeadOwner = owner, workerProjects = [project]) => 
   owner: who,
   name: "Ada",
   models: {
-    strong: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.5" },
-    cheap: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.5-mini" },
+    // The default Claude instance, and a custom one that settings name as Claude.
+    strong: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "claude-opus-4-6" },
+    cheap: { instanceId: ProviderInstanceId.make("work"), model: "claude-haiku-4-5" },
   },
   workerProjects,
 });
@@ -96,26 +109,41 @@ describe("KinLeadProvision", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("refuses anyone but the host's Kin owner, and unknown worker projects", () =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org-b', 'B', '2026-11-09T00:00:00.000Z')`;
-      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+  it.effect(
+    "refuses anyone but the host's Kin owner, unknown worker projects and non-Claude models",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org-b', 'B', '2026-11-09T00:00:00.000Z')`;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
         VALUES ('person-b', 'org-b', 'b', 'B', '2026-11-09T00:00:00.000Z')`;
-      const before = yield* counts;
-      assert.strictEqual(
-        yield* refusal(
-          Provision.create(input({ _tag: "person", personId: KinPersonId.make("person-b") })),
-        ),
-        "not_owner",
-      );
-      assert.strictEqual(
-        yield* refusal(Provision.create(input(session(AuthStandardClientScopes.slice(1))))),
-        "not_owner",
-      );
-      assert.strictEqual(yield* refusal(Provision.create(input())), "unknown_project");
-      assert.deepStrictEqual(yield* counts, before);
-    }).pipe(Effect.provide(layer)),
+        const before = yield* counts;
+        assert.strictEqual(
+          yield* refusal(
+            Provision.create(input({ _tag: "person", personId: KinPersonId.make("person-b") })),
+          ),
+          "not_owner",
+        );
+        assert.strictEqual(
+          yield* refusal(Provision.create(input(session(AuthStandardClientScopes.slice(1))))),
+          "not_owner",
+        );
+        assert.strictEqual(yield* refusal(Provision.create(input())), "unknown_project");
+        // Only Claude sessions get LeadIsolation's no-shell tools, so either model elsewhere is refused.
+        for (const [role, instanceId] of [
+          ["strong", "codex"],
+          ["cheap", "mine"],
+          ["cheap", "missing"],
+        ] as const) {
+          const models = { ...input().models };
+          models[role] = { instanceId: ProviderInstanceId.make(instanceId), model: "gpt-5.5" };
+          assert.strictEqual(
+            yield* refusal(Provision.create({ ...input(owner, []), models })),
+            "not_claude",
+          );
+        }
+        assert.deepStrictEqual(yield* counts, before);
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect("refuses a second live lead in the org", () =>

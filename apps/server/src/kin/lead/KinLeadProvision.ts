@@ -19,6 +19,7 @@ import * as SqlError from "effect/sql/SqlError";
 
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { toPersistenceDecodeError, toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { ServerSettingsService, layer as serverSettingsLayer } from "../../serverSettings.ts";
 import * as JudgeShadow from "../floor/JudgeShadow.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
@@ -26,6 +27,7 @@ import * as ChatService from "../chat/KinChatService.ts";
 import { KinIdentity, KinIdentityConfig, type PersonIdentity } from "../chat/KinIdentity.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinLevels from "./KinLevels.ts";
+import { nonClaudeLeadModel } from "./leadModels.ts";
 
 // Host-operator only: the `kin lead` CLI is the one caller. No RPC, MCP tool or agent reaches it.
 
@@ -39,6 +41,7 @@ export class KinLeadProvisionError extends Schema.TaggedError<KinLeadProvisionEr
       "not_found",
       "retired",
       "conflict",
+      "not_claude",
     ]),
     message: Schema.String,
   },
@@ -150,6 +153,11 @@ export const create = Effect.fn("KinLeadProvision.create")(function* (input: Cre
   const sql = yield* SqlClient.SqlClient;
   const repo = yield* Repository.KinChatRepository;
   const chats = yield* ChatService.KinChatService;
+  const notClaude = nonClaudeLeadModel(
+    yield* (yield* ServerSettingsService).getSettings,
+    input.models,
+  );
+  if (notClaude !== undefined) return yield* refuse("not_claude", notClaude);
   const person: PersonIdentity = yield* ownerFor(input.owner);
   const { orgId } = person;
   return yield* transaction(
@@ -267,4 +275,10 @@ export const layer = Layer.mergeAll(
   Layer.provide(KinPersistence.layer),
 );
 
-export type Requirements = Layer.Success<typeof layer> | SqlClient.SqlClient;
+/** Settings name each provider instance's driver; the CLI reads this host's file. */
+export const settingsLayer = serverSettingsLayer;
+
+export type Requirements =
+  | Layer.Success<typeof layer>
+  | SqlClient.SqlClient
+  | ServerSettingsService;

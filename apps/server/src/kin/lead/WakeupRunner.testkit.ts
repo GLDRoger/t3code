@@ -68,7 +68,7 @@ export const agentId = KinAgentId.make("lead");
 const timestamp = "2026-11-08T00:00:00.000Z";
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeEvent = Schema.decodeSync(KinEvent);
-const selection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.1-codex" };
+const selection = { instanceId: ProviderInstanceId.make("claudeAgent"), model: "claude-opus-4-6" };
 const project = {
   id: ProjectId.make("kin:org"),
   title: "Kin · Org",
@@ -96,7 +96,7 @@ export const seed = Effect.gen(function* () {
   yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at) VALUES ('owner-chat', 'org', 'team_group', 0, ${timestamp})`;
   const models = yield* encodeJson({
     strong: selection,
-    cheap: { ...selection, model: "gpt-5.1-codex-mini" },
+    cheap: { ...selection, model: "claude-haiku-4-5" },
   });
   yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id) VALUES ('lead', 'org', 'Lead', 0, ${models}, '[]', 'owner-chat')`;
 });
@@ -126,7 +126,7 @@ type HarnessOptions = {
   /** Each turn opens a command approval and ends only once it is answered. */
   readonly approval?: Deferred.Deferred<ProviderApprovalDecision | undefined>;
   readonly runtimeModes?: Array<RuntimeMode>;
-  /** The fake provider registers as the default Claude instance instead of Codex. */
+  /** `false` registers the fake provider as the default Codex instance instead of Claude. */
   readonly claude?: boolean;
   readonly settings?: Parameters<typeof ServerSettings.layerTest>[0];
   /** Runtime requests are opened with this capability instead of `live`. */
@@ -158,8 +158,9 @@ export function orchestrationStack(options: HarnessOptions = {}) {
 function parts(options: HarnessOptions) {
   const database: Database = options.database ?? defaultDatabase;
   let nativeOrdinal = 0;
-  const driver = ProviderDriverKind.make(options.claude ? "claudeAgent" : "codex");
-  const instanceId = options.claude ? ProviderInstanceId.make("claudeAgent") : selection.instanceId;
+  const claude = options.claude ?? true;
+  const driver = ProviderDriverKind.make(claude ? "claudeAgent" : "codex");
+  const instanceId = ProviderInstanceId.make(claude ? "claudeAgent" : "codex");
   const adapter: ProviderAdapter.ProviderAdapterV2["Service"] = {
     instanceId,
     driver,
