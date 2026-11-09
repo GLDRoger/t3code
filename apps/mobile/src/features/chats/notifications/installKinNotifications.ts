@@ -24,6 +24,7 @@ import { kinClient } from "../state/kinClient";
 import { kinHostAtom } from "../state/useKinHost";
 import { KIN_NOTIFICATION_CATEGORIES } from "./kinCategories";
 import { kinNotificationRoute } from "./kinPushPayload";
+import { createKinPushRefusals } from "./kinPushRegistration";
 
 // A refusal is final for this response; anything else (a dropped socket) waits for a connect.
 const isFinalRefusal = Schema.is(Schema.Union([KinChatError, EnvironmentAuthorizationError]));
@@ -103,6 +104,7 @@ function createTokenRegistration() {
   let registered: string | null = null;
   let token: string | null = null;
   let permissionAsked = false;
+  const refusals = createKinPushRefusals();
   const apsEnvironment =
     resolveApsEnvironment(Constants.expoConfig?.extra?.appVariant) === "sandbox"
       ? "development"
@@ -135,16 +137,25 @@ function createTokenRegistration() {
     if (registered === key) return;
     registered = key;
     const current = token;
+    const orgs = host.probe.orgs.me
+      .map(({ orgId }) => ({ environmentId, orgId, token: current }))
+      .filter((target) => !refusals.isRefused(target));
     const results = await Promise.all(
-      host.probe.orgs.me.map(({ orgId }) =>
-        runAtomCommand(appAtomRegistry, kinClient.registerPush, {
+      orgs.map(async (target) => {
+        const result = await runAtomCommand(appAtomRegistry, kinClient.registerPush, {
           environmentId,
-          input: { orgId, token: current, platform: "ios", apsEnvironment },
-        }),
-      ),
+          input: { orgId: target.orgId, token: current, platform: "ios", apsEnvironment },
+        });
+        if (result._tag === "Success") return true;
+        const failure = squashAtomCommandFailure(result);
+        if (refusals.note(target, failure)) {
+          console.warn("Kin push: this device is registered to someone else", target.orgId);
+        }
+        return refusals.isRefused(target);
+      }),
     );
     // A failed org retries on the next host change instead of waiting for a new session.
-    if (results.some((result) => result._tag !== "Success") && registered === key) {
+    if (results.includes(false) && registered === key) {
       registered = null;
     }
   };
