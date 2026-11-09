@@ -32,7 +32,12 @@ import {
 } from "./kinChatFeed";
 import type { KinHost } from "./kinHost";
 import { kinSentences } from "./kinScreenState";
-import { applyKinChatHistory, emptyKinChat, type KinChatState } from "./kinInboxModel";
+import {
+  applyKinChatEvent,
+  applyKinChatHistory,
+  emptyKinChat,
+  type KinChatState,
+} from "./kinInboxModel";
 
 const all = makeKinFixtureMessages(500);
 const viewer: KinFeedViewer = {
@@ -104,6 +109,47 @@ describe("paging", () => {
   });
 });
 
+// The stream merge keeps the highest revision too: `kinInboxModel.test.ts`.
+describe("in-place widget updates", () => {
+  const atRevision = (revision: number, status: string) =>
+    ({
+      widgetId: "w1",
+      messageId: "m1",
+      type: "task",
+      revision,
+      state: { status },
+    }) as unknown as KinWidget;
+  const withWidget = (state: KinChatState, widget: KinWidget): KinChatState => ({
+    ...state,
+    widgets: [widget],
+  });
+  const status = (state: KinChatState) => {
+    expect(state.widgets).toHaveLength(1);
+    return (state.widgets[0]!.state as { status: string }).status;
+  };
+
+  it("an earlier page's older copy never overwrites the stream's, and a newer one wins", () => {
+    const live = withWidget(emptyKinChat, atRevision(3, "done"));
+    expect(status(mergeKinFeed(live, withWidget(emptyKinChat, atRevision(2, "working"))))).toBe(
+      "done",
+    );
+    expect(status(mergeKinFeed(live, withWidget(emptyKinChat, atRevision(4, "failed"))))).toBe(
+      "failed",
+    );
+  });
+
+  it("after a reset, a page read before it can't bring back a stale revision", () => {
+    const earlier = withWidget(emptyKinChat, atRevision(2, "working"));
+    let live = withWidget(emptyKinChat, atRevision(3, "done"));
+    live = applyKinChatEvent(live, { _tag: "reset", lastSeq: 400 });
+    live = applyKinChatHistory(live, {
+      messages: [],
+      widgets: [atRevision(3, "done")],
+      hasMore: true,
+    });
+    expect(status(mergeKinFeed(live, earlier))).toBe("done");
+  });
+});
 const localIso = (day: number, hour: number) => new Date(2026, 10, day, hour).toISOString();
 
 // Days are covered on their own below; these cases read the rows within one day.
@@ -340,9 +386,9 @@ describe("message labels", () => {
       "Tech lead, agent. Message deleted. 9:30.",
     ],
     [
-      "a card this build can't draw",
-      row({ body: "", widgetId: "w1" as KinMessage["widgetId"] }),
-      "Tech lead, agent. This card needs a newer version of Kin. 9:30.",
+      "a card with a caption, which the card itself labels",
+      row({ body: "Started", widgetId: "w1" as KinMessage["widgetId"] }),
+      "Tech lead, agent. Started. 9:30.",
     ],
     [
       "a body ending in an ellipsis",

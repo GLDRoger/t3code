@@ -503,6 +503,7 @@ function KinChatFeed(props: {
     if (echoedKey !== "") kinOutbox.forgetEchoed(new Set(echoedKey.split("\n")));
   }, [echoedKey]);
   const { messages } = mergeKinFeed(streamed, { ...emptyKinChat, messages: acked });
+  const widgets = new Map(streamed.widgets.map((widget) => [widget.widgetId, widget]));
   const feedRows = buildKinFeedRows(messages, props.viewer, expandedRuns, new Date(dayStartMs));
   const rows: ReadonlyArray<KinChatRow> =
     pending.length === 0
@@ -618,6 +619,8 @@ function KinChatFeed(props: {
     });
   };
 
+  const onLinkPress = (href: string) => void openLink(href);
+
   const renderItem = ({ item }: { readonly item: KinChatRow }) => {
     switch (item.type) {
       case "message":
@@ -625,7 +628,9 @@ function KinChatFeed(props: {
           <KinMessageBubble
             row={item}
             markdownStyle={markdownStyle}
-            onLinkPress={(href) => void openLink(href)}
+            onLinkPress={onLinkPress}
+            widget={item.message.widgetId === null ? undefined : widgets.get(item.message.widgetId)}
+            environmentId={props.environmentId}
           />
         );
       case "system":
@@ -743,7 +748,8 @@ function KinChatFeed(props: {
         keyExtractor={(row) => row.key}
         getItemType={(row) => (row.type === "message" ? (row.own ? "own" : "other") : row.type)}
         renderItem={renderItem}
-        extraData={markdownStyle}
+        // Both reach rows only through renderItem, which the list doesn't watch.
+        extraData={[streamed.widgets, markdownStyle]}
         estimatedItemSize={72}
         drawDistance={500}
         // UIKit insets the feed under the bar, which LegendList can't see: without this a short

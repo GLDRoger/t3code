@@ -398,7 +398,6 @@ export function kinMessageLabel(row: MessageRow, time: string): string {
   if (deleted) parts.push("Message deleted");
   else {
     parts.push(kinPlainText(message.body));
-    if (message.widgetId !== null) parts.push("This card needs a newer version of Kin");
   }
   parts.push(time);
   if (message.status === "suggested") parts.push("Suggestion, not sent yet");

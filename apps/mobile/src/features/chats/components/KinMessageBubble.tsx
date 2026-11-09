@@ -1,3 +1,4 @@
+import type { EnvironmentId, KinWidget } from "@t3tools/contracts";
 import { Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../../components/ui/AppText";
@@ -15,6 +16,7 @@ import {
 } from "../state/kinChatFeed";
 import type { KinOutboxEntry } from "../state/kinOutbox";
 import { kinSentences } from "../state/kinScreenState";
+import { KinWidgetView } from "../widgets/KinWidgetView";
 
 type MessageRow = Extract<KinFeedRow, { readonly type: "message" }>;
 type SystemRow = Extract<KinFeedRow, { readonly type: "system" }>;
@@ -29,6 +31,10 @@ export function KinMessageBubble(props: {
   /** `useMarkdownPreviewStyles().nativeTextStyle`, read once by the screen. */
   readonly markdownStyle: NativeMarkdownTextStyle;
   readonly onLinkPress: (href: string) => void;
+  /** The widget `row.message.widgetId` points at, if the feed holds it. */
+  readonly widget: KinWidget | undefined;
+  /** The environment hosting the chat. */
+  readonly environmentId: EnvironmentId;
 }) {
   const { row } = props;
   const { message } = row;
@@ -37,6 +43,8 @@ export function KinMessageBubble(props: {
   const hasBody = !deleted && message.body.trim().length > 0;
   // The bubble reads as one element, so its links are reachable as VoiceOver actions.
   const links = hasBody ? kinMessageLinks(message.body) : [];
+  const hasCard = !deleted && message.widgetId !== null;
+  const hasBubble = !hasCard || hasBody || suggested || message.editedAt !== null;
 
   return (
     <View className={cn("gap-1 px-4 pb-1.5", row.own ? "items-end" : "items-start")}>
@@ -50,51 +58,56 @@ export function KinMessageBubble(props: {
           {row.authorLabel} · {formatTime(message.createdAt)}
         </Text>
       ) : null}
-      <View
-        accessible
-        accessibilityLabel={kinMessageLabel(row, formatTime(message.createdAt))}
-        accessibilityActions={links.map((link, index) => ({
-          name: `link-${index}`,
-          label: `Open ${link.label}`,
-        }))}
-        onAccessibilityAction={(event) => {
-          const link = links[Number(event.nativeEvent.actionName.slice("link-".length))];
-          if (link !== undefined) props.onLinkPress(link.href);
-        }}
-        className={cn(
-          "max-w-[85%] gap-1 rounded-[20px] px-3.5 py-2.5",
-          // The thread composer's surface: `card-alt` vanishes into the light screen.
-          row.own ? "bg-user-bubble" : "bg-composer-surface",
-          suggested && "border border-dashed border-border",
-        )}
-      >
-        {hasBody ? (
-          <SelectableMarkdownText
-            markdown={message.body}
-            textStyle={props.markdownStyle}
-            preserveSoftBreaks
-            onLinkPress={props.onLinkPress}
+      {hasBubble ? (
+        <View
+          accessible
+          accessibilityLabel={kinMessageLabel(row, formatTime(message.createdAt))}
+          accessibilityActions={links.map((link, index) => ({
+            name: `link-${index}`,
+            label: `Open ${link.label}`,
+          }))}
+          onAccessibilityAction={(event) => {
+            const link = links[Number(event.nativeEvent.actionName.slice("link-".length))];
+            if (link !== undefined) props.onLinkPress(link.href);
+          }}
+          className={cn(
+            "max-w-[85%] gap-1 rounded-[20px] px-3.5 py-2.5",
+            // The thread composer's surface: `card-alt` vanishes into the light screen.
+            row.own ? "bg-user-bubble" : "bg-composer-surface",
+            suggested && "border border-dashed border-border",
+          )}
+        >
+          {hasBody ? (
+            <SelectableMarkdownText
+              markdown={message.body}
+              textStyle={props.markdownStyle}
+              preserveSoftBreaks
+              onLinkPress={props.onLinkPress}
+            />
+          ) : deleted ? (
+            <Text textRole="body" className="italic text-foreground-muted">
+              Message deleted
+            </Text>
+          ) : null}
+          {suggested || message.editedAt !== null ? (
+            <Text
+              textRole="caption"
+              className={row.own ? "text-user-bubble-foreground-muted" : "text-foreground-muted"}
+            >
+              {suggested ? "Suggestion, not sent yet" : "Edited"}
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
+      {hasCard ? (
+        <View className="w-[85%]">
+          <KinWidgetView
+            widget={props.widget}
+            environmentId={props.environmentId}
+            onOpenLink={props.onLinkPress}
           />
-        ) : deleted ? (
-          <Text textRole="body" className="italic text-foreground-muted">
-            Message deleted
-          </Text>
-        ) : null}
-        {message.widgetId !== null ? (
-          // MOB-6 replaces this with the native card for the widget.
-          <Text textRole="footnote" className="text-foreground-muted">
-            This card needs a newer version of Kin.
-          </Text>
-        ) : null}
-        {suggested || message.editedAt !== null ? (
-          <Text
-            textRole="caption"
-            className={row.own ? "text-user-bubble-foreground-muted" : "text-foreground-muted"}
-          >
-            {suggested ? "Suggestion, not sent yet" : "Edited"}
-          </Text>
-        ) : null}
-      </View>
+        </View>
+      ) : null}
     </View>
   );
 }
