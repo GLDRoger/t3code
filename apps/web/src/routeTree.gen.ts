@@ -21,6 +21,8 @@ import { Route as ChatUsageRouteImport } from './routes/_chat.usage'
 import { Route as ChatSettingsRouteImport } from './routes/_chat.settings'
 import { Route as ChatPullRequestsRouteImport } from './routes/_chat.pull-requests'
 import { Route as ChatNewRouteImport } from './routes/_chat.new'
+import { Route as ChatKinRouteImport } from './routes/_chat.kin'
+import { Route as ChatKinIndexRouteImport } from './routes/_chat.kin.index'
 import { Route as ThreadsEnvironmentIdThreadIdRouteImport } from './routes/threads.$environmentId.$threadId'
 import { Route as ChatSettingsWorktreesRouteImport } from './routes/_chat.settings.worktrees'
 import { Route as ChatSettingsVoiceRouteImport } from './routes/_chat.settings.voice'
@@ -51,6 +53,7 @@ import { Route as ChatSettingsAccessRouteImport } from './routes/_chat.settings.
 import { Route as ChatSettingsAboutRouteImport } from './routes/_chat.settings.about'
 import { Route as ChatDraftDraftIdRouteImport } from './routes/_chat.draft.$draftId'
 import { Route as ChatEnvironmentIdThreadIdRouteImport } from './routes/_chat.$environmentId.$threadId'
+import { Route as ChatKinEnvironmentIdOrgIdChatIdRouteImport } from './routes/_chat.kin.$environmentId.$orgId.$chatId'
 
 const WelcomeRoute = WelcomeRouteImport.update({
   id: '/welcome',
@@ -110,6 +113,16 @@ const ChatNewRoute = ChatNewRouteImport.update({
   id: '/new',
   path: '/new',
   getParentRoute: () => ChatRoute,
+} as any)
+const ChatKinRoute = ChatKinRouteImport.update({
+  id: '/kin',
+  path: '/kin',
+  getParentRoute: () => ChatRoute,
+} as any)
+const ChatKinIndexRoute = ChatKinIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => ChatKinRoute,
 } as any)
 const ThreadsEnvironmentIdThreadIdRoute =
   ThreadsEnvironmentIdThreadIdRouteImport.update({
@@ -267,6 +280,12 @@ const ChatEnvironmentIdThreadIdRoute =
     path: '/$environmentId/$threadId',
     getParentRoute: () => ChatRoute,
   } as any)
+const ChatKinEnvironmentIdOrgIdChatIdRoute =
+  ChatKinEnvironmentIdOrgIdChatIdRouteImport.update({
+    id: '/$environmentId/$orgId/$chatId',
+    path: '/$environmentId/$orgId/$chatId',
+    getParentRoute: () => ChatKinRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof ChatIndexRoute
@@ -275,6 +294,7 @@ export interface FileRoutesByFullPath {
   '/guest': typeof GuestRoute
   '/pair': typeof PairRoute
   '/welcome': typeof WelcomeRoute
+  '/kin': typeof ChatKinRouteWithChildren
   '/new': typeof ChatNewRoute
   '/pull-requests': typeof ChatPullRequestsRoute
   '/settings': typeof ChatSettingsRouteWithChildren
@@ -310,6 +330,8 @@ export interface FileRoutesByFullPath {
   '/settings/voice': typeof ChatSettingsVoiceRoute
   '/settings/worktrees': typeof ChatSettingsWorktreesRoute
   '/threads/$environmentId/$threadId': typeof ThreadsEnvironmentIdThreadIdRoute
+  '/kin/': typeof ChatKinIndexRoute
+  '/kin/$environmentId/$orgId/$chatId': typeof ChatKinEnvironmentIdOrgIdChatIdRoute
 }
 export interface FileRoutesByTo {
   '/connect': typeof ConnectRoute
@@ -353,6 +375,8 @@ export interface FileRoutesByTo {
   '/settings/voice': typeof ChatSettingsVoiceRoute
   '/settings/worktrees': typeof ChatSettingsWorktreesRoute
   '/threads/$environmentId/$threadId': typeof ThreadsEnvironmentIdThreadIdRoute
+  '/kin': typeof ChatKinIndexRoute
+  '/kin/$environmentId/$orgId/$chatId': typeof ChatKinEnvironmentIdOrgIdChatIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -362,6 +386,7 @@ export interface FileRoutesById {
   '/guest': typeof GuestRoute
   '/pair': typeof PairRoute
   '/welcome': typeof WelcomeRoute
+  '/_chat/kin': typeof ChatKinRouteWithChildren
   '/_chat/new': typeof ChatNewRoute
   '/_chat/pull-requests': typeof ChatPullRequestsRoute
   '/_chat/settings': typeof ChatSettingsRouteWithChildren
@@ -398,6 +423,8 @@ export interface FileRoutesById {
   '/_chat/settings/voice': typeof ChatSettingsVoiceRoute
   '/_chat/settings/worktrees': typeof ChatSettingsWorktreesRoute
   '/threads/$environmentId/$threadId': typeof ThreadsEnvironmentIdThreadIdRoute
+  '/_chat/kin/': typeof ChatKinIndexRoute
+  '/_chat/kin/$environmentId/$orgId/$chatId': typeof ChatKinEnvironmentIdOrgIdChatIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -408,6 +435,7 @@ export interface FileRouteTypes {
     | '/guest'
     | '/pair'
     | '/welcome'
+    | '/kin'
     | '/new'
     | '/pull-requests'
     | '/settings'
@@ -443,6 +471,8 @@ export interface FileRouteTypes {
     | '/settings/voice'
     | '/settings/worktrees'
     | '/threads/$environmentId/$threadId'
+    | '/kin/'
+    | '/kin/$environmentId/$orgId/$chatId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/connect'
@@ -486,6 +516,8 @@ export interface FileRouteTypes {
     | '/settings/voice'
     | '/settings/worktrees'
     | '/threads/$environmentId/$threadId'
+    | '/kin'
+    | '/kin/$environmentId/$orgId/$chatId'
   id:
     | '__root__'
     | '/_chat'
@@ -494,6 +526,7 @@ export interface FileRouteTypes {
     | '/guest'
     | '/pair'
     | '/welcome'
+    | '/_chat/kin'
     | '/_chat/new'
     | '/_chat/pull-requests'
     | '/_chat/settings'
@@ -530,6 +563,8 @@ export interface FileRouteTypes {
     | '/_chat/settings/voice'
     | '/_chat/settings/worktrees'
     | '/threads/$environmentId/$threadId'
+    | '/_chat/kin/'
+    | '/_chat/kin/$environmentId/$orgId/$chatId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -628,6 +663,20 @@ declare module '@tanstack/react-router' {
       fullPath: '/new'
       preLoaderRoute: typeof ChatNewRouteImport
       parentRoute: typeof ChatRoute
+    }
+    '/_chat/kin': {
+      id: '/_chat/kin'
+      path: '/kin'
+      fullPath: '/kin'
+      preLoaderRoute: typeof ChatKinRouteImport
+      parentRoute: typeof ChatRoute
+    }
+    '/_chat/kin/': {
+      id: '/_chat/kin/'
+      path: '/'
+      fullPath: '/kin/'
+      preLoaderRoute: typeof ChatKinIndexRouteImport
+      parentRoute: typeof ChatKinRoute
     }
     '/threads/$environmentId/$threadId': {
       id: '/threads/$environmentId/$threadId'
@@ -839,8 +888,28 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatEnvironmentIdThreadIdRouteImport
       parentRoute: typeof ChatRoute
     }
+    '/_chat/kin/$environmentId/$orgId/$chatId': {
+      id: '/_chat/kin/$environmentId/$orgId/$chatId'
+      path: '/$environmentId/$orgId/$chatId'
+      fullPath: '/kin/$environmentId/$orgId/$chatId'
+      preLoaderRoute: typeof ChatKinEnvironmentIdOrgIdChatIdRouteImport
+      parentRoute: typeof ChatKinRoute
+    }
   }
 }
+
+interface ChatKinRouteChildren {
+  ChatKinIndexRoute: typeof ChatKinIndexRoute
+  ChatKinEnvironmentIdOrgIdChatIdRoute: typeof ChatKinEnvironmentIdOrgIdChatIdRoute
+}
+
+const ChatKinRouteChildren: ChatKinRouteChildren = {
+  ChatKinIndexRoute: ChatKinIndexRoute,
+  ChatKinEnvironmentIdOrgIdChatIdRoute: ChatKinEnvironmentIdOrgIdChatIdRoute,
+}
+
+const ChatKinRouteWithChildren =
+  ChatKinRoute._addFileChildren(ChatKinRouteChildren)
 
 interface ChatSettingsRouteChildren {
   ChatSettingsAboutRoute: typeof ChatSettingsAboutRoute
@@ -907,6 +976,7 @@ const ChatSettingsRouteWithChildren = ChatSettingsRoute._addFileChildren(
 )
 
 interface ChatRouteChildren {
+  ChatKinRoute: typeof ChatKinRouteWithChildren
   ChatNewRoute: typeof ChatNewRoute
   ChatPullRequestsRoute: typeof ChatPullRequestsRoute
   ChatSettingsRoute: typeof ChatSettingsRouteWithChildren
@@ -917,6 +987,7 @@ interface ChatRouteChildren {
 }
 
 const ChatRouteChildren: ChatRouteChildren = {
+  ChatKinRoute: ChatKinRouteWithChildren,
   ChatNewRoute: ChatNewRoute,
   ChatPullRequestsRoute: ChatPullRequestsRoute,
   ChatSettingsRoute: ChatSettingsRouteWithChildren,
