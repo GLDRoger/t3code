@@ -265,7 +265,7 @@ Owner-only approval has a gap: when the owner is on a flight and production is d
 
 ## 10. Permission levels
 
-L0 shadow (writes only to the owner's summary) → L1 comment and ping → L2 start workers and open draft PRs → L3 merge low-risk changes after an owner grant or delegation (docs, dependency bumps; never auth, security or migrations). Set per lead and per chat. Section 9 applies at every level.
+L0 shadow (talks only in the owner's direct chat; everything else goes to the owner's summary) → L1 comment and ping → L2 start workers and open draft PRs → L3 merge low-risk changes after an owner grant or delegation (docs, dependency bumps; never auth, security or migrations). Set per lead and per chat. Section 9 applies at every level.
 
 ## 10a. Organizations
 

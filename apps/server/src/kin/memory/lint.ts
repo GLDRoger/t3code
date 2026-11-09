@@ -27,6 +27,9 @@ const codeowners = ".github/CODEOWNERS";
 export const kinOnlyPaths = ["/commitments/", "/deferrals/", "/claims/", "/journal/", "/INDEX.md"];
 const kinOnlyRoots = kinOnlyPaths.map((pattern) => pattern.slice(1).replace(/\/$/, ""));
 const regularModes = ["100644", "100755"];
+/** CODEOWNERS denies by default: every path outside Kin's own folders waits for owner review. */
+export const isOwnerReviewedPath = (path: string) =>
+  !kinOnlyRoots.includes(path.split("/")[0] ?? "");
 
 export const isLintedPath = (path: string) =>
   path === "rules.md" ||

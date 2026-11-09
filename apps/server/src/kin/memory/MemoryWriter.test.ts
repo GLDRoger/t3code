@@ -52,6 +52,9 @@ it.live.each([
   "P7-crash",
   "P8-lost-writer",
   "P9-shadow",
+  "shadow-merge",
+  "shadow-discard",
+  "shadow-owner-path",
   "P10-lost-git-dir",
   "sha256",
   "owner-keep",
@@ -179,10 +182,12 @@ it.live.each([
         >)
       | undefined;
     let failBranch = false;
+    const memoryRuns: Array<Vcs.VcsProcessInput> = [];
     const interceptedGit = Layer.succeed(
       Vcs.VcsProcess,
       Vcs.VcsProcess.of({
         run: Effect.fn("WriterTest.objectSwap")(function* (input) {
+          if (input.operation === "Memory.gitHardened") memoryRuns.push(input);
           if (
             attack &&
             input.args.includes("cat-file") &&
@@ -218,6 +223,7 @@ it.live.each([
     const config = Layer.succeed(MemoryConfig, {
       baseDirectory: root,
       credentialHelper: "fixture-server-helper",
+      sshCommand: "ssh -i /fixture/kin-memory-key",
       repositories: [{ orgId, repoUrl: remote, path: "state" }],
     });
     const synced: Array<ReadonlyArray<MemoryItemHead>> = [];
@@ -482,6 +488,25 @@ it.live.each([
           }),
         );
         expect(helper.trim()).toBe("fixture-server-helper");
+        yield* writer.stage(orgId, "wake1", {
+          path: "claims/credentials.md",
+          content: fixtureItem({ kind: "claim" }),
+        });
+        yield* writer.commitWakeup(orgId, "wake1", "completed");
+        const remoteRuns = memoryRuns.filter((run) => run.args.includes(remote));
+        expect(
+          new Set(
+            remoteRuns.map((run) =>
+              run.args.find((arg) => /^(clone|fetch|ls-remote|push)$/.test(arg)),
+            ),
+          ),
+        ).toStrictEqual(new Set(["clone", "fetch", "ls-remote", "push"]));
+        for (const run of remoteRuns) {
+          expect(run.args).toContain("credential.helper=fixture-server-helper");
+          expect(run.env?.GIT_SSH_COMMAND).toBe(
+            "ssh -i /fixture/kin-memory-key -F none -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none",
+          );
+        }
         return;
       }
       if (scenario === "review-default" || scenario === "review-null") {
@@ -520,6 +545,100 @@ it.live.each([
             _tag: "MemoryCheckoutInvalid",
             operation: "validate",
           });
+        return;
+      }
+      if (scenario.startsWith("shadow-")) {
+        const remoteHead = (branch: string) =>
+          git(root, [`--git-dir=${remote}`, "rev-parse", `refs/heads/${branch}`]);
+        for (const bad of ["x/../../main", "a b"]) {
+          const refused = yield* writer
+            .settleShadow(orgId, KinAgentId.make(bad), { _tag: "discard" })
+            .pipe(Effect.flip);
+          expect(refused).toMatchObject({
+            _tag: "MemoryWriteRejected",
+            reason: "Invalid agent id",
+          });
+        }
+        yield* writer.stage(orgId, "wake1", {
+          path: "deferrals/def-001.md",
+          content: fixtureItem(),
+          sourceEventId: "owner",
+        });
+        if (scenario === "shadow-owner-path")
+          yield* writer.stage(orgId, "wake1", {
+            path: "decisions/dec-001.md",
+            content: fixtureItem({ id: "dec-001", kind: "decision" }),
+            sourceEventId: "owner",
+          });
+        const shadowed = yield* writer.commitWakeup(orgId, "wake1", "completed");
+        const main = yield* remoteHead("main");
+        expect(yield* remoteHead(`kin/shadow/${agentId}`)).toBe(shadowed.commit);
+        const { paths } = yield* writer.settleShadow(orgId, agentId, { _tag: "preview" });
+        // Previewing writes nothing.
+        expect(yield* remoteHead("main")).toBe(main);
+        expect(yield* remoteHead(`kin/shadow/${agentId}`)).toBe(shadowed.commit);
+        if (scenario === "shadow-owner-path") {
+          expect(paths).toContain("decisions/dec-001.md");
+          const refused = yield* writer
+            .settleShadow(orgId, agentId, { _tag: "keep", paths })
+            .pipe(Effect.flip);
+          expect(refused._tag).toBe("MemorySyncConflict");
+          expect(refused._tag === "MemorySyncConflict" && refused.reason).toContain(
+            "decisions/dec-001.md",
+          );
+          expect(yield* remoteHead("main")).toBe(main);
+          expect(yield* remoteHead(`kin/shadow/${agentId}`)).toBe(shadowed.commit);
+          // Start clean stays available.
+          yield* writer.settleShadow(orgId, agentId, { _tag: "discard" });
+          expect(yield* remoteHead(`kin/shadow/${agentId}`)).toBe(main);
+          return;
+        }
+        expect(paths).toHaveLength(2);
+        const keep = scenario === "shadow-merge";
+        if (keep) {
+          // Keep commits only the list the owner was shown.
+          const stale = yield* writer
+            .settleShadow(orgId, agentId, { _tag: "keep", paths: paths.slice(1) })
+            .pipe(Effect.flip);
+          expect(stale._tag).toBe("MemorySyncConflict");
+          expect(yield* remoteHead("main")).toBe(main);
+        }
+        expect(
+          yield* writer.settleShadow(
+            orgId,
+            agentId,
+            keep ? { _tag: "keep", paths } : { _tag: "discard" },
+          ),
+        ).toEqual({ kept: keep ? 2 : 0, paths: keep ? paths : [] });
+        const settled = yield* remoteHead("main");
+        expect(settled === main).toBe(!keep);
+        // Either way the next L0 trial starts from main, not the old shadow week.
+        expect(yield* remoteHead(`kin/shadow/${agentId}`)).toBe(settled);
+        const files = yield* git(root, [
+          `--git-dir=${remote}`,
+          "ls-tree",
+          "-r",
+          "--name-only",
+          settled,
+        ]);
+        expect(files.includes("deferrals/def-001.md")).toBe(keep);
+        if (keep) {
+          expect(
+            yield* git(root, [`--git-dir=${remote}`, "log", "-1", "--format=%B", settled]),
+          ).toContain(`Kin-Shadow: ${shadowed.commit}`);
+          expect(yield* git(root, [`--git-dir=${remote}`, "show", `${settled}:rules.md`])).toBe(
+            "Invented rules",
+          );
+        }
+        // Settling again changes nothing.
+        expect(
+          yield* writer.settleShadow(
+            orgId,
+            agentId,
+            keep ? { _tag: "keep", paths: [] } : { _tag: "discard" },
+          ),
+        ).toEqual({ kept: 0, paths: [] });
+        expect(yield* remoteHead("main")).toBe(settled);
         return;
       }
       if (scenario === "P8-lost-writer" || scenario === "P9-shadow") {

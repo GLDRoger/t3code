@@ -20,6 +20,7 @@ const tableNames = [
   "kin_budget",
   "kin_budget_charges",
   "kin_budget_limits",
+  "kin_chat_levels",
   "kin_chat_members",
   "kin_chats",
   "kin_cursor",
@@ -123,6 +124,7 @@ describe("Kin migrations", () => {
           { migration_id: 19, name: "WebhookSecretHash" },
           { migration_id: 20, name: "Approvals" },
           { migration_id: 21, name: "PushDevices" },
+          { migration_id: 22, name: "ChatLevels" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
@@ -143,6 +145,7 @@ describe("Kin migrations", () => {
           ["kin_grants", ["accepted_at", "consumed_at"]],
           ["kin_executions", ["started_at", "finished_at"]],
           ["kin_push_devices", ["created_at", "updated_at"]],
+          ["kin_chat_levels", ["level_since"]],
         ] as const) {
           const columns = yield* sql<{ name: string; type: string }>`
             SELECT name, type FROM pragma_table_info(${table})
@@ -195,6 +198,7 @@ describe("Kin migrations", () => {
           { migration_id: 19, name: "WebhookSecretHash" },
           { migration_id: 20, name: "Approvals" },
           { migration_id: 21, name: "PushDevices" },
+          { migration_id: 22, name: "ChatLevels" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -293,6 +297,7 @@ describe("Kin migrations", () => {
         [19, "WebhookSecretHash"],
         [20, "Approvals"],
         [21, "PushDevices"],
+        [22, "ChatLevels"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -347,6 +352,7 @@ describe("Kin migrations", () => {
       yield* sql`DROP TABLE kin_budget_charges`;
       yield* sql`ALTER TABLE kin_events DROP COLUMN budget_deferred`;
       for (const table of [
+        "kin_chat_levels",
         "kin_push_devices",
         "kin_executions",
         "kin_grants",
@@ -378,6 +384,7 @@ describe("Kin migrations", () => {
         [19, "WebhookSecretHash"],
         [20, "Approvals"],
         [21, "PushDevices"],
+        [22, "ChatLevels"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,
@@ -424,6 +431,7 @@ describe("Kin migrations", () => {
         { migration_id: 19, name: "WebhookSecretHash" },
         { migration_id: 20, name: "Approvals" },
         { migration_id: 21, name: "PushDevices" },
+        { migration_id: 22, name: "ChatLevels" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);
@@ -441,7 +449,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 21");
+      assert.include(String(exit), "below the latest applied migration 22");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -450,11 +458,11 @@ describe("Kin migrations", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runKinMigrations();
-      // What a database looks like after running another branch's K021.
-      yield* sql`UPDATE kin_sql_migrations SET name = 'Budget' WHERE migration_id = 21`;
+      // What a database looks like after running another branch's K022.
+      yield* sql`UPDATE kin_sql_migrations SET name = 'Budget' WHERE migration_id = 22`;
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
-      assert.include(String(exit), "21_PushDevices");
+      assert.include(String(exit), "22_ChatLevels");
       assert.include(String(exit), "share a number");
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
