@@ -70,33 +70,35 @@ const setup = Effect.gen(function* () {
 });
 
 describe("command permissions", () => {
-  it.effect("guards Kin budget mutations with the destination settings grant", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const registry = yield* setup;
-        const permissions = createCommandPermissions(runtime, "kin.budget.set");
-        registry.set(sessions(env), AsyncResult.success(grant(true)));
-        expect(registry.get(permissions.permissionAtom(env))).toBe(false);
-        expect((yield* permissions.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
-          "EnvironmentAuthorizationError",
-        );
-        registry.set(
-          sessions(env),
-          AsyncResult.success({
-            ...grant(false),
-            scopes: [AuthSettingsWriteScope],
-            permissions: [AuthSettingsWriteScope],
-          }),
-        );
-        expect(registry.get(permissions.permissionAtom(env))).toBe(true);
-        yield* permissions.authorize(registry, env);
-        registry.set(sessions(other), AsyncResult.success(grant(false)));
-        expect(registry.get(permissions.permissionAtom(other))).toBe(false);
-        expect((yield* permissions.authorize(registry, other).pipe(Effect.flip))._tag).toBe(
-          "EnvironmentAuthorizationError",
-        );
-      }),
-    ),
+  it.effect.each(["kin.budget.set", "kin.triggers.setTimeZone"] as const)(
+    "guards the Kin owner setting %s with the destination settings grant",
+    (method) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const registry = yield* setup;
+          const permissions = createCommandPermissions(runtime, method);
+          registry.set(sessions(env), AsyncResult.success(grant(true)));
+          expect(registry.get(permissions.permissionAtom(env))).toBe(false);
+          expect((yield* permissions.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
+            "EnvironmentAuthorizationError",
+          );
+          registry.set(
+            sessions(env),
+            AsyncResult.success({
+              ...grant(false),
+              scopes: [AuthSettingsWriteScope],
+              permissions: [AuthSettingsWriteScope],
+            }),
+          );
+          expect(registry.get(permissions.permissionAtom(env))).toBe(true);
+          yield* permissions.authorize(registry, env);
+          registry.set(sessions(other), AsyncResult.success(grant(false)));
+          expect(registry.get(permissions.permissionAtom(other))).toBe(false);
+          expect((yield* permissions.authorize(registry, other).pipe(Effect.flip))._tag).toBe(
+            "EnvironmentAuthorizationError",
+          );
+        }),
+      ),
   );
   it.effect.each(Object.values(KIN_PUSH_WS_METHODS))(
     "requires the destination read grant for %s",

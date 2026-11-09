@@ -15,6 +15,7 @@ import type { KinLevelGate } from "./lead/LevelGate.ts";
 import type { KinPromotion } from "./levels/Promotion.ts";
 import type { KinPromotionCards } from "./lead/KinLevels.ts";
 import type { KinGithubWebhookLock } from "./triggers/githubWebhooks.ts";
+import type { KinOwnerTimeZone } from "./triggers/ownerTimeZone.ts";
 import type { KinPushDevices } from "./push/KinPushDevices.ts";
 import type { KinPushPresence } from "./push/KinPushPresence.ts";
 import type { KinPushSender } from "./push/KinPushSender.ts";
@@ -26,6 +27,7 @@ export type Services =
   | KinEventQueue
   | KinChatHub
   | KinStop
+  | KinOwnerTimeZone
   | KinLevelGate
   | KinShadowSummary
   | KinPromotion

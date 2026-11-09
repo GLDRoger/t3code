@@ -182,3 +182,8 @@ export const KinTriggerSettings = Schema.Struct({
   quietHours: Schema.Struct({ from: TimeOfDay, to: TimeOfDay }),
 });
 export type KinTriggerSettings = typeof KinTriggerSettings.Type;
+
+export const KinOwnerTimeZoneGetInput = Schema.Struct({ orgId: KinOrgId });
+export type KinOwnerTimeZoneGetInput = typeof KinOwnerTimeZoneGetInput.Type;
+export const KinOwnerTimeZone = Schema.Struct({ orgId: KinOrgId, timeZone: TimeZone });
+export type KinOwnerTimeZone = typeof KinOwnerTimeZone.Type;

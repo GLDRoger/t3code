@@ -673,7 +673,7 @@ it.effect("drops a failed waiting read without ending the chat list stream", () 
 );
 
 it.effect(
-  "serves budget settings to the owner and refuses non-owner and foreign organizations",
+  "serves budget and time zone settings to the owner and refuses non-owner and foreign organizations",
   () =>
     Effect.gen(function* () {
       const { person, repo } = yield* seed;
@@ -741,10 +741,19 @@ it.effect(
           ),
         ),
       );
-      assert.strictEqual(
-        (yield* readOnly["kin.budget.set"](input).pipe(Effect.flip))._tag,
-        "EnvironmentAuthorizationError",
-      );
+      const zone = { orgId: person.orgId, timeZone: "Asia/Kolkata" };
+      assert.deepStrictEqual(yield* client["kin.triggers.getTimeZone"]({ orgId: person.orgId }), {
+        ...zone,
+        timeZone: "UTC",
+      });
+      assert.include(yield* memberClient["kin.triggers.setTimeZone"](zone).pipe(Effect.flip), {
+        reason: "not_allowed",
+      });
+      for (const denied of [
+        readOnly["kin.budget.set"](input),
+        readOnly["kin.triggers.setTimeZone"](zone),
+      ])
+        assert.strictEqual((yield* denied.pipe(Effect.flip))._tag, "EnvironmentAuthorizationError");
     }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 
