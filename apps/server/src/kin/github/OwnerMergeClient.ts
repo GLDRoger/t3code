@@ -14,6 +14,7 @@ import { CredentialHygienePass } from "../approvals/CredentialHygiene.ts";
 import {
   GITHUB_PAT_NOT_ACCESSIBLE,
   gitHubAnswer,
+  OWNER_WRITE_TIMEOUT,
   gitHubJson,
   gitHubStatus,
   isGitHubRateLimit,
@@ -457,7 +458,7 @@ const make = Effect.gen(function* () {
     readonly token: Redacted.Redacted<string>;
     readonly body?: unknown;
   }) =>
-    gitHubAnswer({ client, ...input }).pipe(
+    gitHubAnswer({ client, ...input, timeout: OWNER_WRITE_TIMEOUT }).pipe(
       Effect.map((answer) => ({ answer })),
       Effect.orElseSucceed(() => ({ answer: undefined })),
     );

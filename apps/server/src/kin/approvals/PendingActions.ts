@@ -248,27 +248,13 @@ export class KinPendingActions extends Context.Service<
     readonly approvedWithGrant: (
       orgId?: KinOrgId,
     ) => Effect.Effect<ReadonlyArray<KinActionWithGrant>, Errors>;
-    /** `executing` actions and the grant their claim consumed: startup reconciliation's work. */
-    readonly executingWithGrant: () => Effect.Effect<ReadonlyArray<KinActionWithGrant>, Errors>;
+    /** `executing` actions, the grant their claim consumed, and when the claim was made. */
+    readonly executingWithGrant: () => Effect.Effect<
+      ReadonlyArray<KinActionWithGrant & { readonly startedAt: number }>,
+      Errors
+    >;
     /** Every action `approve` moves to `approved`, published after its transaction commits. */
     readonly approvals: Effect.Effect<PubSub.Subscription<ActionRef>, never, Scope.Scope>;
-    /**
-     * The executor's single claim: the `kin_executions` insert plus `approved → executing`. Refused
-     * while the org's stop switch is on, in the same statement.
-     */
-    readonly claim: (
-      input: RevisionRef & { readonly grantId: KinGrant["id"] },
-    ) => Effect.Effect<boolean, Errors>;
-    readonly finish: (
-      input: ActionRef & {
-        readonly outcome: "succeeded" | "failed" | "interrupted";
-        readonly githubRequestId?: string;
-        readonly mergeCommitSha?: string;
-        readonly error?: string;
-        /** Startup reconciliation decided the outcome, not a live run. */
-        readonly reconciled?: boolean;
-      },
-    ) => Effect.Effect<boolean, Errors>;
     /** Expires unapproved actions past `expiresAt` and voids approvals whose grant lapsed. */
     readonly sweep: () => Effect.Effect<
       { readonly expired: ReadonlyArray<ActionRef>; readonly voided: ReadonlyArray<ActionRef> },
@@ -276,6 +262,38 @@ export class KinPendingActions extends Context.Service<
     >;
   }
 >()("t3/kin/approvals/PendingActions/KinPendingActions") {}
+
+/**
+ * The executor's writes: the claim, the recorded outcome, and the key re-check between them.
+ * `approvals/layer.ts` provides it to `ActionExecutor.layer` alone, so no other service's context
+ * holds it, and the reachability guard in `ActionExecutor.test.ts` fails if another module names it.
+ */
+export class KinExecutionLedger extends Context.Service<
+  KinExecutionLedger,
+  {
+    /**
+     * The single claim: the `kin_executions` insert plus `approved → executing`. Refused while the
+     * org's stop switch is on, in the same statement.
+     */
+    readonly claim: (
+      input: RevisionRef & { readonly grantId: KinGrant["id"] },
+    ) => Effect.Effect<boolean, Errors>;
+    /** Whether the key that signed a claimed action's grant still passes check 10's key test. */
+    readonly signingKeyUsable: (ref: ActionRef) => Effect.Effect<boolean, Errors>;
+    readonly finish: (
+      input: ActionRef & {
+        readonly outcome: "succeeded" | "failed" | "interrupted";
+        readonly githubRequestId?: string;
+        readonly mergeCommitSha?: string;
+        readonly error?: string;
+        /** Appended to the audit entry's result, such as why a head branch was kept. */
+        readonly note?: string;
+        /** Startup reconciliation decided the outcome, not a live run. */
+        readonly reconciled?: boolean;
+      },
+    ) => Effect.Effect<boolean, Errors>;
+  }
+>()("t3/kin/approvals/PendingActions/KinExecutionLedger") {}
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -609,18 +627,20 @@ const make = Effect.gen(function* () {
 
   const executingWithGrant = Effect.fn("KinPendingActions.executingWithGrant")(
     function* () {
-      const rows = yield* sql<ActionRow & GrantRow>`SELECT a.*, ${grantColumns}
+      const rows = yield* sql<ActionRow & GrantRow & { e_started_at: number }>`SELECT a.*,
+          ${grantColumns}, e.started_at AS e_started_at
         FROM kin_pending_actions a
         JOIN kin_executions e ON e.org_id = a.org_id AND e.action_id = a.action_id
         JOIN kin_grants g ON g.grant_id = e.grant_id
         WHERE a.state = 'executing' AND e.finished_at IS NULL
         ORDER BY e.started_at, a.action_id`;
-      return yield* withGrant(rows);
+      const found = yield* withGrant(rows);
+      return found.map((item, index) => ({ ...item, startedAt: rows[index]!.e_started_at }));
     },
     Effect.mapError(toError("KinPendingActions.executingWithGrant")),
   );
 
-  const claim = Effect.fn("KinPendingActions.claim")(
+  const claim = Effect.fn("KinExecutionLedger.claim")(
     function* (input: RevisionRef & { readonly grantId: KinGrant["id"] }) {
       const now = yield* Clock.currentTimeMillis;
       return yield* sql
@@ -665,16 +685,32 @@ const make = Effect.gen(function* () {
         )
         .pipe(Effect.catchTags({ Rollback: () => Effect.succeed(false) }));
     },
-    Effect.mapError(toError("KinPendingActions.claim")),
+    Effect.mapError(toError("KinExecutionLedger.claim")),
   );
 
-  const finish = Effect.fn("KinPendingActions.finish")(
+  const claimedKeyUsable = Effect.fn("KinExecutionLedger.signingKeyUsable")(
+    function* (ref: ActionRef) {
+      const rows = yield* sql`SELECT 1 FROM kin_executions e JOIN kin_grants g
+        ON g.grant_id = e.grant_id
+        WHERE e.org_id = ${ref.orgId} AND e.action_id = ${ref.actionId}
+          AND ${signingKeyUsable({
+            orgId: sql`g.org_id`,
+            keyThumbprint: sql`g.key_thumbprint`,
+            approverHumanId: sql`g.approver_human_id`,
+          })}`;
+      return rows.length > 0;
+    },
+    Effect.mapError(toError("KinExecutionLedger.signingKeyUsable")),
+  );
+
+  const finish = Effect.fn("KinExecutionLedger.finish")(
     function* (
       input: ActionRef & {
         readonly outcome: "succeeded" | "failed" | "interrupted";
         readonly githubRequestId?: string;
         readonly mergeCommitSha?: string;
         readonly error?: string;
+        readonly note?: string;
         readonly reconciled?: boolean;
       },
     ) {
@@ -715,17 +751,18 @@ const make = Effect.gen(function* () {
                     keyThumbprint: signer.key_thumbprint,
                     ...(signer.device_label === null ? {} : { deviceLabel: signer.device_label }),
                   }),
-              result:
+              result: `${
                 input.outcome === "succeeded"
                   ? (input.mergeCommitSha ?? "succeeded")
-                  : `${input.outcome}: ${input.error ?? "no reason given"}`,
+                  : `${input.outcome}: ${input.error ?? "no reason given"}`
+              }${input.note === undefined ? "" : `; ${input.note}`}`,
             });
             return true;
           }),
         )
         .pipe(Effect.catchTags({ Rollback: () => Effect.succeed(false) }));
     },
-    Effect.mapError(toError("KinPendingActions.finish")),
+    Effect.mapError(toError("KinExecutionLedger.finish")),
   );
 
   const sweep = Effect.fn("KinPendingActions.sweep")(
@@ -770,20 +807,21 @@ const make = Effect.gen(function* () {
     Effect.mapError(toError("KinPendingActions.sweep")),
   );
 
-  return KinPendingActions.of({
-    create,
-    get,
-    refresh,
-    transition,
-    approve,
-    heldGrant,
-    approvedWithGrant,
-    executingWithGrant,
-    approvals: PubSub.subscribe(approvedHub),
-    claim,
-    finish,
-    sweep,
-  });
+  return {
+    actions: KinPendingActions.of({
+      create,
+      get,
+      refresh,
+      transition,
+      approve,
+      heldGrant,
+      approvedWithGrant,
+      executingWithGrant,
+      approvals: PubSub.subscribe(approvedHub),
+      sweep,
+    }),
+    ledger: KinExecutionLedger.of({ claim, signingKeyUsable: claimedKeyUsable, finish }),
+  };
 });
 
 const isDecodeError = Schema.is(PersistenceDecodeError);
@@ -796,4 +834,13 @@ function toError(operation: string) {
         : toPersistenceSqlError(operation)(cause);
 }
 
-export const layer = Layer.effect(KinPendingActions, make);
+export const layer = Layer.effect(
+  KinPendingActions,
+  Effect.map(make, ({ actions }) => actions),
+);
+
+/** Only `approvals/layer.ts` provides this, and only to the executor. */
+export const ledgerLayer = Layer.effect(
+  KinExecutionLedger,
+  Effect.map(make, ({ ledger }) => ledger),
+);
