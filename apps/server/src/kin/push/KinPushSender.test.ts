@@ -565,40 +565,71 @@ describe("KinPushDevices", () => {
     }).pipe(Effect.provide(build(apns)));
   });
 
-  it.effect("hands a token to another person only once its session is revoked or gone", () => {
-    const apns = makeApns();
-    return Effect.gen(function* () {
-      const { sql, devices } = yield* seed;
-      const takeover = devices.register(caller("sess-member", member), {
-        orgId,
-        token: ownerPhone,
-        platform: "ios",
-        apsEnvironment: "development",
-      });
-      const owners = sql<{ person_id: string }>`
+  it.effect(
+    "hands a token to another person only once its session is revoked, gone, or expired and re-paired",
+    () => {
+      const apns = makeApns();
+      return Effect.gen(function* () {
+        const { sql, devices } = yield* seed;
+        const phoneKey = "p".repeat(43);
+        const registerFrom = (from: KinPushCaller) =>
+          devices.register(from, {
+            orgId,
+            token: ownerPhone,
+            platform: "ios",
+            apsEnvironment: "development",
+          });
+        const takeover = registerFrom(caller("sess-member", member));
+        const repair = registerFrom(
+          caller("sess-member", member, { proofKeyThumbprint: phoneKey }),
+        );
+        const owners = sql<{ person_id: string }>`
         SELECT person_id FROM kin_push_devices WHERE token = ${ownerPhone}`;
-      const refused = yield* Effect.exit(takeover);
-      assert.isTrue(
-        Exit.isFailure(refused) &&
-          (refused.cause.reasons[0] as { error?: KinPushError }).error?.reason === "not_member",
-      );
-      assert.deepStrictEqual(yield* owners, [{ person_id: owner }]);
-      for (const release of [
-        sql`UPDATE auth_sessions SET revoked_at = ${T} WHERE session_id = 'sess-owner-phone'`,
-        sql`DELETE FROM auth_sessions WHERE session_id = 'sess-owner-phone'`,
-      ]) {
-        yield* sql`UPDATE kin_push_devices SET person_id = ${owner},
+        const refuses = (attempt: typeof takeover) =>
+          Effect.gen(function* () {
+            const refused = yield* Effect.exit(attempt);
+            assert.isTrue(
+              Exit.isFailure(refused) &&
+                (refused.cause.reasons[0] as { error?: KinPushError }).error?.reason ===
+                  "registered_to_someone_else",
+            );
+            assert.deepStrictEqual(yield* owners, [{ person_id: owner }]);
+          });
+        yield* refuses(takeover);
+        // Two keyless callers never share a proof key, even after expiry.
+        yield* sql`UPDATE auth_sessions SET expires_at = ${T} WHERE session_id = 'sess-owner-phone'`;
+        yield* refuses(takeover);
+        yield* sql`UPDATE auth_sessions SET expires_at = '2026-12-07T00:00:00.000Z'
+        WHERE session_id = 'sess-owner-phone'`;
+        yield* sql`UPDATE kin_push_devices SET proof_key_thumbprint = ${phoneKey}
+        WHERE token = ${ownerPhone}`;
+        // The same proof key can't take a device whose session is still live.
+        yield* refuses(repair);
+        yield* sql`UPDATE auth_sessions SET expires_at = ${T} WHERE session_id = 'sess-owner-phone'`;
+        // Expiry alone doesn't free it for another key.
+        yield* refuses(takeover);
+        yield* refuses(
+          registerFrom(caller("sess-member", member, { proofKeyThumbprint: "q".repeat(43) })),
+        );
+        yield* repair;
+        assert.deepStrictEqual(yield* owners, [{ person_id: member }]);
+        for (const release of [
+          sql`UPDATE auth_sessions SET revoked_at = ${T} WHERE session_id = 'sess-owner-phone'`,
+          sql`DELETE FROM auth_sessions WHERE session_id = 'sess-owner-phone'`,
+        ]) {
+          yield* sql`UPDATE kin_push_devices SET person_id = ${owner},
           session_id = 'sess-owner-phone' WHERE token = ${ownerPhone}`;
-        yield* sql`INSERT OR REPLACE INTO auth_sessions (session_id, subject, scopes, method,
+          yield* sql`INSERT OR REPLACE INTO auth_sessions (session_id, subject, scopes, method,
             issued_at, expires_at)
           VALUES ('sess-owner-phone', 'x', '[]', 'bearer-access-token', ${T},
             '2026-12-07T00:00:00.000Z')`;
-        yield* release;
-        yield* takeover;
-        assert.deepStrictEqual(yield* owners, [{ person_id: member }]);
-      }
-    }).pipe(Effect.provide(build(apns)));
-  });
+          yield* release;
+          yield* takeover;
+          assert.deepStrictEqual(yield* owners, [{ person_id: member }]);
+        }
+      }).pipe(Effect.provide(build(apns)));
+    },
+  );
 
   /** A relay phone: a DPoP session that renews under a new id with the same proof key. */
   const relay = (personId: KinPersonId, proofKeyThumbprint: string, ttl: Duration.Duration) =>
@@ -695,7 +726,8 @@ describe("KinPushDevices", () => {
         const refused = yield* Effect.exit(takeover);
         assert.isTrue(
           Exit.isFailure(refused) &&
-            (refused.cause.reasons[0] as { error?: KinPushError }).error?.reason === "not_member",
+            (refused.cause.reasons[0] as { error?: KinPushError }).error?.reason ===
+              "registered_to_someone_else",
         );
         yield* sessions.revoke(
           (yield* relay(owner, "relay-a", Duration.hours(1))).session.sessionId,
