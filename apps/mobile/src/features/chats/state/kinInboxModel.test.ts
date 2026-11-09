@@ -209,6 +209,8 @@ describe("kin chat feed", () => {
     expect(state.contiguousSeq).toBe(3);
     state = applyKinChatEvent(state, backlog([message(5), message(6)], 6));
     expect(state.contiguousSeq).toBe(6);
+    // A resumed backlog with nothing new keeps the state, so the stream emits no view.
+    expect(applyKinChatEvent(state, backlog([], 6))).toBe(state);
   });
 
   it("replaces messages and widgets a resumed backlog changed, and keeps its change cursor", () => {
