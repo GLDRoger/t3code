@@ -399,7 +399,7 @@ The builder takes item heads (optionally marked `misleading` by the caller), las
 
 GitHub then blocks a bad auto-merge even if Kin's classifier is wrong.
 
-**Daytime lead writes (decided).** Because `main` requires PRs, LEAD's daytime memory writes land as PRs that Kin auto-merges once `memory-check` passes; a write touching an owner path waits for the owner's review like any other PR. APPR-8 (#44) and APPR-11 (#46) have merged; the TRIG-15 follow-up is the `MemoryWriter` PR path and adding the memory repo to APPR-11's `KIN_REPOS` with `kind: "memory"` (approvals spec section 10, memory repo mode; lane A and lane C coordinate on #12).
+**Daytime lead writes (decided).** Because `main` requires PRs, LEAD's daytime memory writes and the owner's Keep land as PRs that Kin merges itself once `memory-check` passes; changes to an owner path go to a separate PR that waits for the owner's review and that Kin never merges. A passing `memory-check` alone isn't trusted (see the memory repo README, Workflow permissions): Kin merges only a PR whose head is the commit it pushed, with REST `sha` pinned to it, after every `memory-check` check run on that commit traced back to a `pull_request` run of `.github/workflows/memory-check.yml` on it. GitHub's auto-merge would accept any workflow's check, so it isn't used. The writer side is in the lead spec (Memory writes). `MemoryPullRequests` needs the Kin App and the memory repo in `KIN_GITHUB_REPOS`; without the App, writes to `main` are refused unless `KIN_MEMORY_DIRECT_PUSH=true`, which suits only a memory repo without this ruleset. The ruleset itself comes from `KIN_REPOS` with `kind: "memory"` (#85).
 
 ### Secret scan before memory commits (gap 5)
 

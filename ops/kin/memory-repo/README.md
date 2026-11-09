@@ -16,7 +16,7 @@ Templates for the private memory repo (`kin-memory`). This public repo holds onl
 
 To pick up new lint or scanner rules, bump `T3CODE_REF` in a reviewed PR. The lint code and the gitleaks config always come from that commit, never from the PR's own files, which the job reads only as data.
 
-The ruleset on `main` (PRs required, code-owner review, `memory-check` required, no bypass for Kin's bot) comes in the TRIG-15 follow-up with the `MemoryWriter` PR path. `scripts/kin-rulesets.ts` applies it once the memory repo is in `KIN_REPOS` with `kind: "memory"`, which accepts this file's owner-less Kin lines.
+`scripts/kin-rulesets.ts` applies the ruleset on `main` (PRs required, code-owner review, `memory-check` required, no bypass for Kin's bot) from `KIN_REPOS`, where the memory repo has `kind: "memory"`, which accepts this file's owner-less Kin lines. Kin's own writes then reach `main` as PRs from `kin/write/<agent>/<id>` branches that it merges itself, and changes to owner paths as `…-review` PRs it leaves for you. That needs the Kin App installed on this repo and the repo in `KIN_GITHUB_REPOS`. Without the App, Kin refuses to write `main`; `KIN_MEMORY_DIRECT_PUSH=true` makes it push directly, which this ruleset rejects.
 
 ### The owner's own changes
 
@@ -30,7 +30,7 @@ Nothing automates this yet: Kin has no code that adds the same-tree commit or op
 
 ### Workflow permissions
 
-`memory-check` is pinned to the GitHub Actions App (15368), which trusts any Actions workflow in the repo, not just `memory-check.yml`. A workflow pushed to any branch could post a passing `memory-check` on another PR. The repo's read-only workflow-permissions setting doesn't stop this: anyone with write access, which includes the memory deploy key that agents can read, can raise a workflow's own `permissions:`. A ruleset `workflows` rule would close the gap, but it exists only in organization rulesets, and `GLDRoger` is a user account. So a passing `memory-check` alone is not trusted: before merging a PR, Kin checks that it merges the SHA it pushed itself, and that the passing check came from a `pull_request` run of `.github/workflows/memory-check.yml` on that SHA (TRIG-15 writer PR path). Never grant the Kin App Workflows permission on this repo.
+`memory-check` is pinned to the GitHub Actions App (15368), which trusts any Actions workflow in the repo, not just `memory-check.yml`. A workflow pushed to any branch could post a passing `memory-check` on another PR. The repo's read-only workflow-permissions setting doesn't stop this: anyone with write access, which includes the memory deploy key that agents can read, can raise a workflow's own `permissions:`. A ruleset `workflows` rule would close the gap, but it exists only in organization rulesets, and `GLDRoger` is a user account. So a passing `memory-check` alone is not trusted: before merging a PR, Kin checks that its head is the SHA Kin pushed and merges with `sha` pinned to it, and refuses unless every `memory-check` check run on that SHA belongs to a `pull_request` run of `.github/workflows/memory-check.yml` on it. A `memory-check` job in any other workflow closes the PR. For the same reason Kin doesn't use GitHub's auto-merge. Never grant the Kin App Workflows permission on this repo.
 
 ### Before switching it on
 
