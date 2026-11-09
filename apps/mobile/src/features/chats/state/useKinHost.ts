@@ -8,13 +8,14 @@ import { environmentCatalog } from "../../../connection/catalog";
 import { connectionAtomRuntime } from "../../../connection/runtime";
 import * as MobileSecureStorage from "../../../persistence/mobile-secure-storage";
 import { environmentPresentations } from "../../../state/presentation";
-import { kinClient, markKinHostKnown } from "./kinClient";
+import { kinCachedOrgsAtom, kinClient, markKinHostKnown } from "./kinClient";
 import {
   classifyKinProbe,
   kinHostIdToSave,
   resolveKinHost,
   resolveKinHostAt,
   type KinHost,
+  type KinRouteHost,
   type KinHostCandidate,
 } from "./kinHost";
 
@@ -46,6 +47,9 @@ const kinHostCandidates = (get: Atom.AtomContext): ReadonlyArray<KinHostCandidat
 const kinProbe = (get: Atom.AtomContext) => (environmentId: EnvironmentId) =>
   classifyKinProbe(get(kinClient.orgs({ environmentId, input: {} })));
 
+const kinCachedOrgs = (get: Atom.AtomContext) => (environmentId: EnvironmentId) =>
+  AsyncResult.getOrElse(get(kinCachedOrgsAtom(environmentId)), () => null);
+
 export const kinHostAtom: Atom.Atom<KinHost> = Atom.make((get): KinHost => {
   if (!get(environmentCatalog.catalogValueAtom).isReady) return { _tag: "searching" };
   const saved = get(savedKinHostAtom);
@@ -58,22 +62,24 @@ export const kinHostAtom: Atom.Atom<KinHost> = Atom.make((get): KinHost => {
     candidates,
     savedHostId,
     probe: kinProbe(get),
+    cachedOrgs: kinCachedOrgs(get),
   });
 }).pipe(Atom.withLabel("kin:host"));
 
 const kinHostAtAtom = Atom.family((environmentId: EnvironmentId) =>
-  Atom.make((get): KinHost => {
+  Atom.make((get): KinRouteHost => {
     if (!get(environmentCatalog.catalogValueAtom).isReady) return { _tag: "searching" };
     return resolveKinHostAt({
       candidates: kinHostCandidates(get),
       environmentId,
       probe: kinProbe(get),
+      cachedOrgs: kinCachedOrgs(get),
     });
   }).pipe(Atom.withLabel(`kin:host:${environmentId}`)),
 );
 
-/** The Kin host a route names, connected or not; `none` when it left the catalog or isn't Kin. */
-export function useKinHostAt(environmentId: EnvironmentId): KinHost {
+/** The Kin host a route names, connected or not; `unpaired` when it left the catalog. */
+export function useKinHostAt(environmentId: EnvironmentId): KinRouteHost {
   return useAtomValue(kinHostAtAtom(environmentId));
 }
 

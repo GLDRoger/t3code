@@ -11,6 +11,7 @@ import {
   KinTriggerId,
   KinWidgetId,
   type MemoryItemHead,
+  kinDeferralWidgetId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -49,7 +50,7 @@ export interface DeferralPlan {
 
 export const deferralTriggerId = (itemId: string, phase: DeferralPhase) =>
   KinTriggerId.make(`deferral:${itemId}:${phase}`);
-export const deferralWidgetId = (orgId: string, itemId: string) => `deferral:${orgId}:${itemId}`;
+export const deferralWidgetId = kinDeferralWidgetId;
 /** The due fire's id: starting is keyed by it, so taps and replays share one start. */
 const deferralStartKey = (itemId: string, dueAt: number) =>
   `${deferralTriggerId(itemId, "due")}:${dueAt}`;

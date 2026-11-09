@@ -213,14 +213,19 @@ export function applyKinChatEvent(state: KinChatState, event: KinChatStreamEvent
       // The server sent everything visible to this viewer through `lastSeq`, so seqs it skipped
       // (suggestions shown to others) are not gaps.
       const filled = Math.max(state.contiguousSeq, event.lastSeq);
-      return {
-        ...state,
-        messages,
-        widgets: mergeWidgets(state.widgets, event.widgets),
-        contiguousSeq: advanceContiguous(messages, filled),
-        // Only a fully applied backlog moves it; live events keep this snapshot cursor.
-        changeSeq: event.lastChangeSeq ?? state.changeSeq,
-      };
+      const widgets = mergeWidgets(state.widgets, event.widgets);
+      const contiguousSeq = advanceContiguous(messages, filled);
+      // Only a fully applied backlog moves it; live events keep this snapshot cursor.
+      const changeSeq = event.lastChangeSeq ?? state.changeSeq;
+      if (
+        messages === state.messages &&
+        widgets === state.widgets &&
+        contiguousSeq === state.contiguousSeq &&
+        changeSeq === state.changeSeq
+      ) {
+        return state;
+      }
+      return { ...state, messages, widgets, contiguousSeq, changeSeq };
     }
     case "reset":
       return {

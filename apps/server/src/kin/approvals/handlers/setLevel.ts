@@ -21,7 +21,7 @@ const refusal = (error: KinLevels.KinLevelRefused) => refuse(REFUSALS[error.reas
 
 /**
  * Raises a lead's level, or a chat's cap, once the owner's grant for the `set_level` action is
- * verified and claimed. Shaped as spec section 6's `KinActionHandler`; APPR-9 registers it.
+ * verified and claimed. `approvals/layer.ts` registers it with the executor.
  */
 export const makeSetLevelHandler = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -58,5 +58,6 @@ export const makeSetLevelHandler = Effect.gen(function* () {
     return (yield* reached(action)) ? ("done" as const) : ("not_done" as const);
   });
 
-  return { kind: "set_level" as const, precheck, run, reconcile };
+  // A local write with no GitHub credential, so the hygiene check doesn't gate it.
+  return { kind: "set_level" as const, credentialCheck: false, precheck, run, reconcile };
 });

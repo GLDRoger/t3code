@@ -31,14 +31,16 @@ import * as Kin from "../layer.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { KinAudit, kinAuditHash, layer as auditLayer } from "./Audit.ts";
 import {
+  KinExecutionLedger,
   KinPendingActions,
   layer as pendingActionsLayer,
+  ledgerLayer,
   type KinPendingActionCreateInput,
 } from "./PendingActions.ts";
 import { makeKinApprovalHandlers } from "./rpcHandlers.ts";
 
 const database = Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory);
-const layer = pendingActionsLayer.pipe(
+const layer = Layer.merge(pendingActionsLayer, ledgerLayer).pipe(
   Layer.provideMerge(auditLayer),
   Layer.provideMerge(database),
 );
@@ -335,7 +337,7 @@ describe("KinPendingActions audit trail", () => {
   it.effect("a merge leaves a complete trail: request, grant, device, SHA and merge commit", () =>
     Effect.gen(function* () {
       const audit = yield* seed;
-      const actions = yield* KinPendingActions;
+      const actions = { ...(yield* KinPendingActions), ...(yield* KinExecutionLedger) };
       const { action } = yield* actions.create(request);
       yield* actions.create(request); // replayed webhook: no second entry
       const refreshed = Option.getOrThrow(
@@ -410,7 +412,7 @@ describe("KinPendingActions audit trail", () => {
   it.effect("terminal moves, the sweep and reconciliation each leave their own entry", () =>
     Effect.gen(function* () {
       const audit = yield* seed;
-      const actions = yield* KinPendingActions;
+      const actions = { ...(yield* KinPendingActions), ...(yield* KinExecutionLedger) };
       const create = (source: string) =>
         actions
           .create({ ...request, source: decodeEventId(source) })
