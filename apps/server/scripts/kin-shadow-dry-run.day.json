@@ -1,0 +1,213 @@
+{
+  "day": "2026-11-09",
+  "lead": {
+    "name": "Fixture Lead"
+  },
+  "people": [
+    {
+      "personId": "sam",
+      "handle": "sam",
+      "displayName": "Sam"
+    }
+  ],
+  "groups": [
+    {
+      "chatId": "team",
+      "members": ["sam"]
+    }
+  ],
+  "workerProjects": ["fixture-project"],
+  "github": {
+    "reviews": [
+      {
+        "repo": "example-org/app",
+        "number": 7,
+        "title": "Add request rate limits",
+        "url": "https://github.com/example-org/app/pull/7"
+      }
+    ],
+    "ciRed": []
+  },
+  "memory": {
+    "rules.md": "Invented standing rules for the dry run.\n",
+    "INDEX.md": "As of 2026-11-08T00:00:00.000Z\n",
+    "deferrals/def-rate-limits.md": "---\nid: \"def-rate-limits\"\nkind: \"deferral\"\ntitle: \"Start the rate-limit work\"\nstatus: \"open\"\ndue: \"2026-11-09T10:00Z\"\non_due: \"remind\"\nowner: \"fixture-lead\"\nrecorded_at: \"2026-11-02T09:00:00.000Z\"\nvalid_from: \"2026-11-02T09:00:00.000Z\"\ninvalid_at: null\nsuperseded_by: null\nreview_by: \"2026-12-01\"\nsource: \"https://example.invalid/messages/seed\"\nsaid_by: \"owner\"\ntrust: \"owner\"\nlinks: []\n---\nInvented deferral: start the rate-limit work on Monday.\n",
+    "commitments/com-docs.md": "---\nid: \"com-docs\"\nkind: \"commitment\"\ntitle: \"Docs for the public API\"\nstatus: \"open\"\ndue: \"2026-11-12T17:00Z\"\nowner: \"fixture-lead\"\nrecorded_at: \"2026-11-02T09:00:00.000Z\"\nvalid_from: \"2026-11-02T09:00:00.000Z\"\ninvalid_at: null\nsuperseded_by: null\nreview_by: \"2026-12-01\"\nsource: \"https://example.invalid/messages/seed\"\nsaid_by: \"sam\"\ntrust: \"member\"\nlinks: []\n---\nInvented commitment: Sam writes the API docs.\n"
+  },
+  "events": [
+    {
+      "_tag": "routine",
+      "id": "brief",
+      "at": "2026-11-09T08:30:00.000Z",
+      "routine": "morning_brief"
+    },
+    {
+      "_tag": "message",
+      "id": "owner-morning",
+      "at": "2026-11-09T09:05:00.000Z",
+      "chat": "owner",
+      "from": "owner",
+      "body": "Morning. What needs me today?",
+      "lead": [
+        {
+          "tool": "memory_search",
+          "arguments": {
+            "kind": "deferral"
+          }
+        },
+        {
+          "tool": "kin_chat_post",
+          "arguments": {
+            "chatId": "$ownerChat",
+            "clientMessageId": "reply-owner-morning",
+            "intent": "answer",
+            "body": "Rate limits start today at 10:00, and Sam's PR example-org/app#7 is waiting for your review."
+          }
+        },
+        {
+          "tool": "kin_journal",
+          "arguments": {
+            "saw": ["Owner asked what needs them today"],
+            "did": ["Listed today's deferral and the open review"],
+            "skipped": []
+          }
+        },
+        {
+          "tool": "kin_end",
+          "arguments": {
+            "summary": "Answered the owner's morning question"
+          }
+        }
+      ]
+    },
+    {
+      "_tag": "message",
+      "id": "sam-review",
+      "at": "2026-11-09T10:15:00.000Z",
+      "chat": "team",
+      "from": "sam",
+      "body": "Can someone review example-org/app#7? I'd like it merged before lunch.",
+      "lead": [
+        {
+          "tool": "kin_chat_post",
+          "arguments": {
+            "chatId": "$chat",
+            "clientMessageId": "reply-sam-review",
+            "intent": "answer",
+            "body": "I've asked the owner to review #7 before lunch."
+          }
+        },
+        {
+          "tool": "request_action",
+          "arguments": {
+            "kind": "merge_pull_request",
+            "reason": "Sam asked for #7 to be merged before lunch.",
+            "sourceEventId": "$event",
+            "target": {
+              "_tag": "pull_request",
+              "host": "github.com",
+              "repo": "example-org/app",
+              "number": 7,
+              "mergeMethod": "squash",
+              "deleteBranchAfter": true
+            }
+          }
+        },
+        {
+          "tool": "memory_write",
+          "arguments": {
+            "op": "create",
+            "sourceEventId": "$event",
+            "item": {
+              "id": "com-review-7",
+              "kind": "commitment",
+              "title": "Review example-org/app#7 before lunch",
+              "body": "Sam asked for a review of #7 before lunch.",
+              "status": "open",
+              "due": "2026-11-09T12:00Z",
+              "recorded_at": "2026-11-09T10:15:00.000Z",
+              "valid_from": "2026-11-09T10:15:00.000Z",
+              "invalid_at": null,
+              "superseded_by": null,
+              "source": "chat",
+              "said_by": "sam",
+              "trust": "member",
+              "links": ["example-org/app#7"]
+            }
+          }
+        },
+        {
+          "tool": "kin_journal",
+          "arguments": {
+            "saw": ["Sam asked for a review of #7"],
+            "did": ["Drafted a reply", "Drafted a merge request for the owner"],
+            "skipped": []
+          }
+        },
+        {
+          "tool": "kin_end",
+          "arguments": {
+            "summary": "Handled Sam's review request"
+          }
+        }
+      ]
+    },
+    {
+      "_tag": "github",
+      "id": "ci-failed-7",
+      "at": "2026-11-09T13:40:00.000Z",
+      "eventName": "check_suite",
+      "repo": "example-org/app",
+      "summary": "CI failed on example-org/app#7",
+      "lead": [
+        {
+          "tool": "kin_delegate",
+          "arguments": {
+            "kind": "build",
+            "title": "Fix CI on #7",
+            "goal": "Make the failing check on example-org/app#7 pass.",
+            "brief": "The check_suite on #7 failed after the last push.",
+            "projectId": "fixture-project",
+            "sourceEventId": "$event"
+          }
+        },
+        {
+          "tool": "kin_end",
+          "arguments": {
+            "summary": "Would start a worker for the CI failure"
+          }
+        }
+      ]
+    },
+    {
+      "_tag": "watchdog",
+      "id": "docs-check",
+      "at": "2026-11-09T15:00:00.000Z",
+      "finding": "The API docs commitment is due Thursday with no update.",
+      "lead": [
+        {
+          "tool": "kin_defer",
+          "arguments": {
+            "what": "Ask Sam how the API docs are going",
+            "due": "2026-11-11T09:00:00Z",
+            "onDue": "remind",
+            "chatId": "$ownerChat",
+            "sourceEventId": "$event"
+          }
+        },
+        {
+          "tool": "kin_end",
+          "arguments": {
+            "summary": "Deferred a check on the docs"
+          }
+        }
+      ]
+    },
+    {
+      "_tag": "routine",
+      "id": "summary",
+      "at": "2026-11-09T18:30:00.000Z",
+      "routine": "evening_summary"
+    }
+  ]
+}

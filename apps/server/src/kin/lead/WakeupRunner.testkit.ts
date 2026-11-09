@@ -84,7 +84,10 @@ const project = {
   updatedAt: timestamp,
   deletedAt: null,
 };
-const database = KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory));
+const defaultDatabase = KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory));
+type Database = NonNullable<
+  NonNullable<Parameters<typeof ProviderReplayHarness.layerWithRegistry>[2]>["databaseLayer"]
+>;
 export const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_orgs VALUES ('org', 'Org', ${timestamp})`;
@@ -130,6 +133,10 @@ type HarnessOptions = {
   readonly requestCapability?: "not_resumable";
   /** Each turn stays open until it is interrupted, then ends `interrupted`. */
   readonly untilInterrupted?: boolean;
+  /** Replaces the in-memory database, for example with a file in a state directory. */
+  readonly database?: Database;
+  /** Runs inside each turn before it completes, as the provider's tool calls would. */
+  readonly onTurn?: (input: { readonly threadId: ThreadId }) => Effect.Effect<void>;
 };
 
 export function harness(options: HarnessOptions = {}) {
@@ -138,6 +145,18 @@ export function harness(options: HarnessOptions = {}) {
 
 /** The fake-provider orchestration stack without the wake-up runner. */
 export function orchestrationHarness(options: HarnessOptions = {}) {
+  const { stack, kin, database } = parts(options);
+  return Layer.mergeAll(kin, stack).pipe(Layer.provideMerge(database));
+}
+
+/** The fake-provider orchestration stack alone, for callers that bring Kin's own services. */
+export function orchestrationStack(options: HarnessOptions = {}) {
+  const { stack, database } = parts(options);
+  return stack.pipe(Layer.provideMerge(database));
+}
+
+function parts(options: HarnessOptions) {
+  const database: Database = options.database ?? defaultDatabase;
   let nativeOrdinal = 0;
   const driver = ProviderDriverKind.make(options.claude ? "claudeAgent" : "codex");
   const instanceId = options.claude ? ProviderInstanceId.make("claudeAgent") : selection.instanceId;
@@ -195,6 +214,7 @@ export function orchestrationHarness(options: HarnessOptions = {}) {
             options.runtimeModes?.push(input.runtimePolicy.runtimeMode);
             if (options.entered !== undefined) yield* Deferred.succeed(options.entered, undefined);
             if (options.hold !== undefined) yield* Deferred.await(options.hold);
+            if (options.onTurn !== undefined) yield* options.onTurn({ threadId: input.threadId });
             const time = yield* DateTime.now;
             const id = ProviderTurnId.make(`turn-${input.runOrdinal}`);
             if (!options.piUsage)
@@ -444,8 +464,7 @@ export function orchestrationHarness(options: HarnessOptions = {}) {
       ensureCheckouts: () => Effect.succeed({ writer: "/private/tmp", read: "/private/tmp" }),
     }),
   );
-  const services = Layer.mergeAll(
-    kin,
+  const stack = Layer.mergeAll(
     launch,
     management,
     projectLayer,
@@ -469,6 +488,10 @@ export function orchestrationHarness(options: HarnessOptions = {}) {
         ),
       ),
     ),
-  ).pipe(Layer.provideMerge(database));
-  return Layer.merge(services, (options.writer ?? Layer.empty).pipe(Layer.provide(database)));
+  );
+  return {
+    database,
+    stack,
+    kin: Layer.merge(kin, (options.writer ?? Layer.empty).pipe(Layer.provide(database))),
+  };
 }
