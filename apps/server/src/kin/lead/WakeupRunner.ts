@@ -28,6 +28,7 @@ import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import * as KinIdentity from "../chat/KinIdentity.ts";
 import * as Floor from "../floor/KinFloor.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
@@ -38,6 +39,7 @@ import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinBudget from "./KinBudget.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
+import { nonClaudeLeadModel } from "./leadModels.ts";
 import * as RoutineContent from "./RoutineContent.ts";
 import { PAUSE_POLL_INTERVAL_MS } from "./KinStop.ts";
 import { isOrgPaused } from "./orgState.ts";
@@ -121,6 +123,7 @@ const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
   const launch = yield* ThreadLaunchService.ThreadLaunchService;
   const threads = yield* ThreadManagementService.ThreadManagementService;
+  const settings = yield* ServerSettingsService;
   const paused = (orgId: KinOrgId) =>
     isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
   const threadActivity = Effect.fn("WakeupRunner.threadActivity")(function* (orgId: KinOrgId) {
@@ -378,6 +381,10 @@ const make = Effect.gen(function* () {
               yield* queue.finish({ orgId, wakeupId, status: "failed" });
               return yield* retire(current);
             }
+            // Provisioning refuses these too; a row written another way still never launches.
+            const notClaude = nonClaudeLeadModel(yield* settings.getSettings, current.models);
+            if (notClaude !== undefined)
+              return yield* new KinWakeupError({ orgId, agentId, cause: notClaude });
             let cheapOnly = false;
             for (const priority of new Set(events.map((item) => item.priority))) {
               const admission = yield* budget.admit(orgId, priority);
