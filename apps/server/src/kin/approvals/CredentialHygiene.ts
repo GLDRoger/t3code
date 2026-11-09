@@ -12,9 +12,10 @@ import { KinGitHubScope } from "../github/KinGitHubScope.ts";
 import * as OwnerMergeClient from "../github/OwnerMergeClient.ts";
 
 /**
- * Agent CLIs inherit the server's environment, so any of these hands them a GitHub credential.
- * `SSH_AUTH_SOCK` reaches every key the SSH agent holds, and the SSH probe sees only the first one
- * GitHub accepts.
+ * Agent CLIs inherit the server's environment, so any of these hands them a GitHub credential or
+ * a way to one the probe can't see: a token, an SSH agent (the probe sees only the first key GitHub
+ * accepts), a program git or ssh asks for a password, an ssh command, or git config from outside
+ * the files the probe checks.
  */
 const ENV_TOKEN_NAMES = [
   "GH_TOKEN",
@@ -22,9 +23,18 @@ const ENV_TOKEN_NAMES = [
   "GH_ENTERPRISE_TOKEN",
   "GITHUB_ENTERPRISE_TOKEN",
   "SSH_AUTH_SOCK",
+  "GIT_ASKPASS",
+  "SSH_ASKPASS",
+  "GIT_SSH",
+  "GIT_SSH_COMMAND",
+  "GIT_CONFIG_PARAMETERS",
+  "GIT_CONFIG_COUNT",
 ];
 
-/** The probe the live layer (`GitHubIdentityProbe.ts`) runs for `T3GitHubIdentities.ssh`, without `SSH_AUTH_SOCK`. */
+/**
+ * The probe the live layer (`GitHubIdentityProbe.ts`) runs for `T3GitHubIdentities.ssh`, with
+ * `-F <validated config>` added and without `SSH_AUTH_SOCK`.
+ */
 export const GITHUB_SSH_PROBE = [
   "ssh",
   "-T",
@@ -32,6 +42,11 @@ export const GITHUB_SSH_PROBE = [
   "BatchMode=yes",
   "-o",
   "StrictHostKeyChecking=yes",
+  // A shared connection would answer each per-key probe as whoever opened it.
+  "-o",
+  "ControlMaster=no",
+  "-o",
+  "ControlPath=none",
   // A `~/.ssh/config` block can turn key auth off for the probe while agents turn it back on.
   "-o",
   "PubkeyAuthentication=yes",
@@ -92,7 +107,7 @@ export interface T3GitHubIdentities {
   readonly gitCredential: Option.Option<string>;
   /**
    * The combined stdout and stderr of each SSH probe: `GITHUB_SSH_PROBE` as is, then once per
-   * private key (each `IdentityFile` `ssh -G` lists, and every key in `~/.ssh`) with
+   * private key (each `IdentityFile` the SSH configs name, and every key in `~/.ssh`) with
    * `-o IdentitiesOnly=yes -i <key>` added, since GitHub greets only the first key it accepts. The
    * check parses them; any answer it can't read fails it.
    */

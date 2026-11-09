@@ -72,11 +72,13 @@ describe("T3GitHubCredential", () => {
         }),
       );
       assert.deepStrictEqual(stored.account, Option.some("kin-bot"));
-      assert.deepInclude(yield* (yield* slotOver({})).read, {
-        saved: Option.none(),
-        app: Option.none(),
-        account: Option.none(),
-      });
+      for (const empty of [{}, { signIns: { "github.com": "" } }]) {
+        assert.deepInclude(yield* (yield* slotOver(empty)).read, {
+          saved: Option.none(),
+          app: Option.none(),
+          account: Option.none(),
+        });
+      }
     }).pipe(Effect.scoped),
   );
 

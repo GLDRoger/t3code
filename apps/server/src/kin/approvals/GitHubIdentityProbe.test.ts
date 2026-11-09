@@ -19,11 +19,13 @@ import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Redacted from "effect/Redacted";
 import type * as Scope from "effect/Scope";
+import * as Tracer from "effect/Tracer";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 import * as TestClock from "effect/testing/TestClock";
 
 import { VcsProcess, type VcsProcessInput, type VcsProcessOutput } from "../../vcs/VcsProcess.ts";
+import { credentialCheckBody } from "../chat/executionNotices.ts";
 import * as OwnerMergeClient from "../github/OwnerMergeClient.ts";
 import { fakeGitHub, memoryKeychain, scopeLayer } from "../github/testFakes.ts";
 import * as CredentialHygiene from "./CredentialHygiene.ts";
@@ -34,6 +36,7 @@ const ORG = "org_kin" as KinOrgId;
 const NOW = Date.UTC(2026, 10, 9);
 const DAY = 24 * 60 * 60 * 1000;
 const APP_TOKEN = "ghu_t3_app_token";
+const SAVED_TOKEN = "ghp_t3_saved_token";
 const GH_TOKEN = "gho_gh_keyring_token";
 const OWNER_TOKEN = "gho_owner_token";
 const GIT_PASSWORD = "gho_git_helper_password_never_logged";
@@ -52,6 +55,45 @@ const HELPER_PROMPTS_OFF =
   "f() { exit 1 get: -c: line 1: syntax error: unexpected end of file\nfatal: could not read Username for 'https://github.com': terminal prompts disabled";
 const NO_HELPER_PROMPTS_OFF =
   "fatal: could not read Username for 'https://github.com': terminal prompts disabled";
+
+/** A Kin host's `~/.ssh/config` using every allowed directive. */
+const USER_SSH_CONFIG = [
+  "# Kin bot",
+  "Host github.com",
+  "  HostName github.com",
+  "  User git",
+  "  Port 22",
+  "  IdentityFile ~/.ssh/id_ed25519 # the bot's key",
+  "  IdentitiesOnly yes",
+  "  IdentityAgent none",
+  "  AddKeysToAgent no",
+  "  ControlMaster no",
+  "  ControlPath none",
+  "  StrictHostKeyChecking yes",
+  "  UserKnownHostsFile ~/.ssh/known_hosts",
+  "Host *",
+  "  ServerAliveInterval=30",
+  "  ServerAliveCountMax 3",
+  "  ConnectTimeout 10",
+  '  COMPRESSION "no"',
+  "Include config.d/*.conf",
+].join("\n");
+/** macOS's `/etc/ssh` as shipped, with relative includes. */
+const SYSTEM_SSH = {
+  ssh_config: "Include ssh_config.d/*\nHost *\n  SendEnv LANG LC_*\nInclude crypto.conf\n",
+  "ssh_config.d/100-macos.conf": "Host *\n  SendEnv LANG\n",
+  "crypto.conf": [
+    "Ciphers ^aes128-gcm@openssh.com",
+    "KexAlgorithms ^ecdh-sha2-nistp256",
+    "MACs ^hmac-sha2-256",
+    "HostKeyAlgorithms ^ssh-ed25519",
+    "PubkeyAcceptedAlgorithms ^ssh-ed25519",
+    "CASignatureAlgorithms ^ssh-ed25519",
+    "HostbasedAcceptedAlgorithms ^ssh-ed25519",
+    "HashKnownHosts yes",
+    "GSSAPIAuthentication no",
+  ].join("\n"),
+};
 
 type Run = Effect.Effect<VcsProcessOutput, VcsError>;
 const answer = (input: {
@@ -94,19 +136,40 @@ const ghStatus = (...logins: ReadonlyArray<string>) =>
   });
 const gitFill = (password: string) =>
   answer({ stdout: `protocol=https\nhost=github.com\nusername=x\npassword=${password}\n` });
-/** `ssh -G git@github.com` as OpenSSH prints it: identity files unexpanded. */
-const sshG = (...extra: ReadonlyArray<string>) =>
+
+/** `git config --list --show-origin -z`; a null value is a bare boolean key. */
+type GitEntry = readonly [key: string, value: string | null, origin?: string];
+const GIT_FILE = "file:/Users/kin/.gitconfig";
+const gitList = (...entries: ReadonlyArray<GitEntry>) =>
   answer({
-    stdout: [
-      "user git",
-      "hostname github.com",
-      "port 22",
-      ...extra,
-      "identityfile ~/.ssh/id_rsa",
-      "identityfile ~/.ssh/id_ed25519",
-      "addkeystoagent false",
-    ].join("\n"),
+    stdout: entries
+      .map(
+        ([key, value, origin]) =>
+          `${origin ?? GIT_FILE}\0${key}${value === null ? "" : `\n${value}`}\0`,
+      )
+      .join(""),
   });
+/** A Kin host's git config, with a key from every allowed group. */
+const BOT_GIT: ReadonlyArray<GitEntry> = [
+  ["credential.helper", "osxkeychain", "file:/Library/Developer/CommandLineTools/gitconfig"],
+  ["user.name", "kin-bot"],
+  ["user.email", "kin-bot@users.noreply.github.com"],
+  ["core.autocrlf", "input"],
+  ["core.bare", null],
+  ["init.defaultbranch", "main"],
+  ["color.ui", "auto"],
+  ["alias.st", "status"],
+  ["pull.rebase", "true"],
+  ["push.autosetupremote", "true"],
+  ["fetch.prune", "true"],
+  ["merge.conflictstyle", "zdiff3"],
+  ["diff.algorithm", "histogram"],
+  ["filter.lfs.process", "git-lfs filter-process"],
+  ["filter.lfs.required", "true"],
+  // `VcsProcess` adds this to every run.
+  ["safe.barerepository", "explicit", "command line:"],
+];
+
 const session = (
   token: string,
   input: { readonly expiresAt?: number | null; readonly refreshUntil?: number | null } = {},
@@ -129,37 +192,60 @@ const stored = (
 /** The machine the probe looks at. Each test changes what one source answers. */
 interface Machine {
   t3: T3GitHubCredential.T3StoredCredentials | "uninstalled";
+  /** The server's environment; `<home>` stands for the home directory. */
   env: Record<string, string>;
+  /** Whether the passwd entry names the home directory. */
+  passwdHome: boolean;
   /** The login `GET /user` names for each token; a number is the status, `hang` never answers. */
   users: Record<string, string | number>;
   gh: Run;
   /** `gh auth token`, for the `--user` account or the active one. */
   ghToken: (account: string | undefined) => Run;
-  gitHelpers: Run;
+  gitConfig: Run;
   git: Run;
-  sshConfig: Run;
   /** Answers one SSH probe; `key` is the `-i` file, or undefined for the probe as is. */
   ssh: (key: string | undefined) => Run;
   /** Files under the home directory, by relative path. */
   files: Record<string, string>;
+  /** Files under the system SSH folder, by relative path. */
+  system: Record<string, string>;
 }
 
 const botMachine = (): Machine => ({
   t3: stored({ app: session(APP_TOKEN) }),
   env: {},
+  passwdHome: true,
   users: { [APP_TOKEN]: "kin-bot", [GH_TOKEN]: "kin-bot", [GIT_PASSWORD]: "kin-bot" },
   gh: ghStatus("kin-bot"),
-  ghToken: () => answer({ stdout: `${GH_TOKEN}\n` }),
-  gitHelpers: answer({ stdout: "credential.helper osxkeychain\n" }),
+  ghToken: (account) =>
+    account === undefined
+      ? answer({ stdout: `${GH_TOKEN}\n` })
+      : answer({
+          exitCode: 1,
+          stderr: `no oauth token found for github.com account ${account}\n`,
+        }),
+  gitConfig: gitList(...BOT_GIT),
   git: gitFill(GIT_PASSWORD),
-  sshConfig: sshG(),
   ssh: (key) => answer({ stderr: key === undefined ? sshHi("kin-bot") : SSH_DENIED }),
   files: {
     ".ssh/id_ed25519": KEY,
     ".ssh/id_ed25519.pub": "ssh-ed25519 AAAA kin-bot",
-    ".ssh/config": "Host *\n",
+    ".ssh/config": USER_SSH_CONFIG,
     ".ssh/known_hosts": "github.com ssh-ed25519 AAAA\n",
   },
+  system: SYSTEM_SSH,
+});
+
+/** `botMachine` with `lines` added to `~/.ssh/config`. */
+const withSshConfig = (...lines: ReadonlyArray<string>): Partial<Machine> => ({
+  files: { ...botMachine().files, ".ssh/config": [USER_SSH_CONFIG, ...lines].join("\n") },
+});
+/** `botMachine` with `lines` added to `/etc/ssh/ssh_config`. */
+const withSystemConfig = (...lines: ReadonlyArray<string>): Partial<Machine> => ({
+  system: { ...SYSTEM_SSH, ssh_config: [SYSTEM_SSH.ssh_config, ...lines].join("\n") },
+});
+const withGit = (...entries: ReadonlyArray<GitEntry>): Partial<Machine> => ({
+  gitConfig: gitList(...BOT_GIT, ...entries),
 });
 
 /** A fake `ssh-keygen -y -P ""`, answering by the file's contents as OpenSSH does. */
@@ -183,18 +269,28 @@ const keygen = (fs: FileSystem.FileSystem, file: string): Run =>
     }),
   );
 
+const writeFiles = (root: string, files: Record<string, string>) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    for (const [name, text] of Object.entries(files)) {
+      yield* fs.makeDirectory(path.dirname(path.join(root, name)), { recursive: true });
+      yield* fs.writeFileString(path.join(root, name), text);
+    }
+  });
+
 /** Builds the live probe over `machine` in a fresh home, and the check over that probe. */
 const probe = (machine: Machine) =>
   Effect.gen(function* () {
     yield* TestClock.setTime(NOW);
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const home = yield* fs.makeTempDirectoryScoped();
+    const root = yield* fs.makeTempDirectoryScoped();
+    const home = path.join(root, "home");
+    const etc = path.join(root, "etc", "ssh");
     yield* fs.makeDirectory(path.join(home, ".ssh", "sockets"), { recursive: true });
-    for (const [name, text] of Object.entries(machine.files)) {
-      yield* fs.makeDirectory(path.dirname(path.join(home, name)), { recursive: true });
-      yield* fs.writeFileString(path.join(home, name), text);
-    }
+    yield* writeFiles(home, machine.files);
+    yield* writeFiles(etc, machine.system);
     const runs: Array<VcsProcessInput> = [];
     const vcs = VcsProcess.of({
       run: (input) => {
@@ -205,9 +301,8 @@ const probe = (machine: Machine) =>
           const user = input.args.find((arg) => arg.startsWith("--user="));
           return machine.ghToken(user?.slice("--user=".length));
         }
-        if (input.command === "git") return first === "config" ? machine.gitHelpers : machine.git;
+        if (input.command === "git") return first === "config" ? machine.gitConfig : machine.git;
         if (input.command === "ssh-keygen") return keygen(fs, input.args.at(-1) ?? "");
-        if (first === "-G") return machine.sshConfig;
         const key = input.args.indexOf("-i");
         return machine.ssh(key === -1 ? undefined : input.args[key + 1]);
       },
@@ -236,14 +331,18 @@ const probe = (machine: Machine) =>
       T3GitHubCredential.T3GitHubCredential,
     );
     if (machine.t3 !== "uninstalled") yield* slot.install(Effect.succeed(machine.t3));
+    const env = Object.fromEntries(
+      Object.entries(machine.env).map(([name, value]) => [name, value.replace("<home>", home)]),
+    );
     const identity = yield* GitHubIdentityProbe.make.pipe(
       Effect.provideService(VcsProcess, vcs),
-      Effect.provideService(HostProcess.HomeDirectory, home),
-      Effect.provideService(HostProcess.Environment, machine.env),
+      Effect.provideService(HostProcess.PasswdHomeDirectory, machine.passwdHome ? home : null),
+      Effect.provideService(HostProcess.Environment, env),
       Effect.provideService(HostProcess.Username, "kin"),
       Effect.provideService(HostProcess.UserId, 501),
+      Effect.provideService(GitHubIdentityProbe.SystemSshConfig, path.join(etc, "ssh_config")),
       Effect.provideService(T3GitHubCredential.T3GitHubCredential, slot),
-      Effect.provide(github),
+      Effect.provide(Layer.mergeAll(github, scopeLayer())),
     );
     const keychain = memoryKeychain({
       [`kin-owner-merge/${ORG}`]: JSON.stringify({
@@ -271,13 +370,31 @@ const run = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | Path.Path
   effect.pipe(Effect.scoped, Effect.provide(NodeServices.layer));
 
 const argv = (input: VcsProcessInput) => [input.command, ...input.args];
+const SSH_PROBE_OPTIONS = [
+  "-T",
+  "-o",
+  "BatchMode=yes",
+  "-o",
+  "StrictHostKeyChecking=yes",
+  "-o",
+  "ControlMaster=no",
+  "-o",
+  "ControlPath=none",
+  "-o",
+  "PubkeyAuthentication=yes",
+  "-o",
+  "ConnectTimeout=10",
+];
 
 describe("GitHubIdentityProbe", () => {
   it.effect("reports every source, and the check passes with only the bot's login", () =>
     run(
       Effect.gen(function* () {
         const path = yield* Path.Path;
-        const { identities, check, runs, home } = yield* probe(botMachine());
+        const { identities, check, runs, home } = yield* probe({
+          ...botMachine(),
+          env: { HOME: "<home>/" },
+        });
         const found = yield* identities;
         const probed = [...runs];
         assert.deepStrictEqual(found, {
@@ -292,12 +409,14 @@ describe("GitHubIdentityProbe", () => {
         assert.deepInclude(yield* check, { passed: true, failures: [] });
 
         const ssh = path.join(home, ".ssh");
+        const config = path.join(ssh, "config");
         assert.sameDeepMembers(probed.map(argv), [
           ["gh", "auth", "token", "--hostname", "github.com"],
+          // The owner's login: a token for it means the owner is signed in to gh.
+          ["gh", "auth", "token", "--hostname", "github.com", "--user=Nishchay"],
           ["gh", "auth", "status", "--hostname", "github.com", "--json", "hosts"],
-          ["git", "config", "--get-regexp", "^credential(\\..+)?\\.helper$"],
+          ["git", "config", "--list", "--show-origin", "-z"],
           ["git", "credential", "fill"],
-          ["ssh", "-G", "git@github.com"],
           // Every file in ~/.ssh is offered to ssh-keygen; only loadable private keys are probed.
           ...["config", "id_ed25519", "id_ed25519.pub", "known_hosts"].map((name) => [
             "ssh-keygen",
@@ -307,9 +426,13 @@ describe("GitHubIdentityProbe", () => {
             "-f",
             path.join(ssh, name),
           ]),
-          [...CredentialHygiene.GITHUB_SSH_PROBE],
+          // Only the validated config, with no shared connection and no agent (`SSH_AUTH_SOCK`).
+          ["ssh", "-F", config, ...SSH_PROBE_OPTIONS, "git@github.com"],
           [
-            ...CredentialHygiene.GITHUB_SSH_PROBE.slice(0, -1),
+            "ssh",
+            "-F",
+            config,
+            ...SSH_PROBE_OPTIONS,
             "-o",
             "IdentitiesOnly=yes",
             "-i",
@@ -345,16 +468,17 @@ describe("GitHubIdentityProbe", () => {
   it.effect("reads no login from sources that have none", () =>
     run(
       Effect.gen(function* () {
-        const { identities, check, requests } = yield* probe({
+        const { identities, check, requests, runs } = yield* probe({
           ...botMachine(),
           // Both of the app session's tokens have lapsed, so GitHub accepts neither.
           t3: stored({ app: session(APP_TOKEN, { expiresAt: NOW - 2, refreshUntil: NOW - 1 }) }),
           ghToken: () => answer({ exitCode: 1, stderr: "no oauth token found for github.com\n" }),
           gh: missing("gh"),
-          gitHelpers: answer({ exitCode: 1 }),
+          gitConfig: gitList(["user.name", "kin-bot"]),
           git: answer({ exitCode: 128, stderr: NO_HELPER_PROMPTS_OFF }),
           ssh: () => answer({ stderr: SSH_DENIED }),
           files: {},
+          system: {},
         });
         assert.deepStrictEqual(yield* identities, {
           t3: [],
@@ -364,6 +488,11 @@ describe("GitHubIdentityProbe", () => {
         });
         assert.deepInclude(yield* check, { passed: true, identities: [] });
         assert.deepStrictEqual(requests, []);
+        // Without a `~/.ssh/config`, the probe reads none at all.
+        assert.include(
+          runs.map((input) => argv(input).join(" ")),
+          ["ssh", "-F", "none", ...SSH_PROBE_OPTIONS, "git@github.com"].join(" "),
+        );
       }),
     ),
   );
@@ -379,6 +508,27 @@ describe("GitHubIdentityProbe", () => {
       }),
     ),
   );
+
+  it.effect.each([
+    ["git is not installed", { gitConfig: missing("git") }],
+    [
+      "a later empty helper resets the list, as `gh auth setup-git` writes it",
+      withGit(
+        ["credential.https://github.com.helper", ""],
+        ["credential.https://github.com.helper", "!gh auth git-credential"],
+      ),
+    ],
+  ] as const)("passes when %s", ([, change]) =>
+    run(
+      Effect.gen(function* () {
+        const { check } = yield* probe({ ...botMachine(), ...change } as Machine);
+        assert.deepInclude(yield* check, { passed: true, failures: [] });
+      }),
+    ),
+  );
+
+  const ownerOn = (suffix: string) => (key: string | undefined) =>
+    answer({ stderr: key?.endsWith(suffix) === true ? sshHi("Nishchay") : SSH_DENIED });
 
   it.effect.each([
     [
@@ -397,7 +547,14 @@ describe("GitHubIdentityProbe", () => {
     [
       "the gh account Settings picks",
       {
-        t3: stored({ app: session(APP_TOKEN), account: Option.some("Nishchay") }),
+        t3: stored({ app: session(APP_TOKEN), account: Option.some("kin-bot-2") }),
+        ghToken: (account: string | undefined) =>
+          answer({ stdout: account === "kin-bot-2" ? OWNER_TOKEN : GH_TOKEN }),
+      },
+    ],
+    [
+      "a gh token held for the owner's login",
+      {
         ghToken: (account: string | undefined) =>
           answer({ stdout: account === "Nishchay" ? OWNER_TOKEN : GH_TOKEN }),
       },
@@ -414,48 +571,69 @@ describe("GitHubIdentityProbe", () => {
     [
       "one key in ~/.ssh",
       {
-        ssh: (key: string | undefined) =>
-          answer({
-            stderr: key?.endsWith("owner_ed25519") === true ? sshHi("Nishchay") : SSH_DENIED,
-          }),
+        ssh: ownerOn("owner_ed25519"),
         files: { ...botMachine().files, ".ssh/owner_ed25519": KEY },
       },
     ],
     [
       "a key with a note before its header",
       {
-        ssh: (key: string | undefined) =>
-          answer({ stderr: key?.endsWith("owner_rsa") === true ? sshHi("Nishchay") : SSH_DENIED }),
+        ssh: ownerOn("owner_rsa"),
         files: { ...botMachine().files, ".ssh/owner_rsa": KEY_AFTER_NOTE },
       },
     ],
     [
       "a key in a folder of ~/.ssh",
+      { ssh: ownerOn("work/owner"), files: { ...botMachine().files, ".ssh/work/owner": KEY } },
+    ],
+    [
+      "a key two folders down in ~/.ssh",
+      { ssh: ownerOn("a/b/owner"), files: { ...botMachine().files, ".ssh/a/b/owner": KEY } },
+    ],
+    [
+      "a key outside ~/.ssh under a host alias",
       {
-        ssh: (key: string | undefined) =>
-          answer({ stderr: key?.endsWith("work/owner") === true ? sshHi("Nishchay") : SSH_DENIED }),
-        files: { ...botMachine().files, ".ssh/work/owner": KEY },
+        ssh: ownerOn("keys/github_kin_501"),
+        files: {
+          ...withSshConfig(
+            "Host github-owner",
+            "  HostName github.com",
+            "  IdentityFile %d/keys/github_%u_%i",
+          ).files,
+          "keys/github_kin_501": KEY,
+        },
       },
     ],
     [
-      "a key outside ~/.ssh that ~/.ssh/config names for github.com",
+      "a key an included file names",
       {
-        sshConfig: sshG("identityfile %d/keys/github_%r_%u"),
-        ssh: (key: string | undefined) =>
-          answer({
-            stderr: key?.endsWith("keys/github_git_kin") === true ? sshHi("Nishchay") : SSH_DENIED,
-          }),
-        files: { ...botMachine().files, "keys/github_git_kin": KEY },
+        ssh: ownerOn("keys/included"),
+        files: {
+          ...botMachine().files,
+          ".ssh/config.d/owner.conf": "Host ssh.github.com\n  IdentityFile ~/keys/included\n",
+          "keys/included": KEY,
+        },
+      },
+    ],
+    [
+      "a key the system SSH config names",
+      {
+        ssh: ownerOn("keys/system"),
+        files: { ...botMachine().files, "keys/system": KEY },
+        system: {
+          ...SYSTEM_SSH,
+          "ssh_config.d/200-owner.conf": "Host *\n  IdentityFile %d/keys/system\n",
+        },
       },
     ],
   ] as const)("fails as owner_identity when %s is the owner", ([, change]) =>
     run(
       Effect.gen(function* () {
+        const machine = { ...botMachine(), ...change } as Machine;
         const { check } = yield* probe({
-          ...botMachine(),
-          ...change,
+          ...machine,
           users: { ...botMachine().users, [OWNER_TOKEN]: "Nishchay" },
-        } as Machine);
+        });
         const report = yield* check;
         assert.isFalse(report.passed);
         assert.include(report.failures, "owner_identity");
@@ -464,6 +642,14 @@ describe("GitHubIdentityProbe", () => {
   );
 
   it.effect.each([
+    // The host's environment.
+    ["$HOME isn't the passwd home", { env: { HOME: "/Users/someone-else" } }, "home: $HOME isn't"],
+    [
+      "the passwd entry names no home",
+      { passwdHome: false },
+      "home: the passwd entry names no home",
+    ],
+    // T3.
     ["T3's reader isn't installed", { t3: "uninstalled" }, "t3: the reader isn't installed"],
     [
       "GitHub refuses T3's credential",
@@ -490,6 +676,12 @@ describe("GitHubIdentityProbe", () => {
       { ghToken: () => answer({ exitCode: 1, stderr: "error connecting to keyring" }) },
       "t3: gh auth token exited 1",
     ],
+    [
+      "gh auth token prints nothing",
+      { ghToken: () => answer({ stdout: "\n" }) },
+      "t3: gh auth token printed no token",
+    ],
+    // gh.
     ["gh can't be started", { gh: spawnFailure("gh", "PermissionDenied") }, "VcsProcessSpawnError"],
     [
       "gh is too old for --json",
@@ -522,23 +714,25 @@ describe("GitHubIdentityProbe", () => {
       "gh: an account isn't a GitHub login",
     ],
     ["gh times out", { gh: Effect.fail(timeout("gh")) }, "gh: VcsProcessTimeoutError"],
+    // git: the process and the helper.
     [
       "git can't be started",
-      { gitHelpers: spawnFailure("git", "PermissionDenied") },
+      { gitConfig: spawnFailure("git", "PermissionDenied") },
       "git_credential: VcsProcessSpawnError",
     ],
     [
       "git config fails",
-      { gitHelpers: answer({ exitCode: 128, stderr: "fatal: bad config" }) },
+      { gitConfig: answer({ exitCode: 128, stderr: "fatal: bad config" }) },
       "git_credential: git config exited 128",
     ],
     [
+      "git config's list is cut short",
+      { gitConfig: answer({ stdout: `${GIT_FILE}\0user.name\nkin-bot` }) },
+      "git_credential: git config --list was unreadable",
+    ],
+    [
       "more than one credential helper is configured",
-      {
-        gitHelpers: answer({
-          stdout: "credential.helper store\ncredential.https://github.com.helper osxkeychain\n",
-        }),
-      },
+      withGit(["credential.https://github.com.helper", "store"]),
       "git_credential: more than one credential helper",
     ],
     [
@@ -561,35 +755,162 @@ describe("GitHubIdentityProbe", () => {
       { users: { ...botMachine().users, [GIT_PASSWORD]: 502 } },
       "git_credential: ",
     ],
+    // git: keys outside the allowlist. A subsection can hold a URL with a token, so it never shows.
+    ...(
+      [
+        ["include.path", "include.path"],
+        ["includeif.gitdir:~/work/.path", "includeif.*.path"],
+        ["http.extraheader", "http.extraheader"],
+        ["http.https://github.com/.extraheader", "http.*.extraheader"],
+        ["url.https://ghp_secret@github.com/.insteadof", "url.*.insteadof"],
+        ["credential.username", "credential.username"],
+        ["credential.https://github.com.username", "credential.*.username"],
+        ["credential.https://gitlab.com.helper", "credential.*.helper"],
+        ["core.askpass", "core.askpass"],
+        ["core.sshcommand", "core.sshcommand"],
+        ["core.gitproxy", "core.gitproxy"],
+        ["core.fsmonitor", "core.fsmonitor"],
+        ["core.hookspath", "core.hookspath"],
+        ["gpg.program", "gpg.program"],
+        ["gpg.ssh.program", "gpg.*.program"],
+        ["commit.gpgsign", "commit.gpgsign"],
+        ["ghp_0123456789abcdef0123456789abcdef01234567.x", "an unrecognised key"],
+      ] as const
+    ).map(
+      ([key, shown]) =>
+        [
+          `git config sets ${key}`,
+          withGit([key, "x"]),
+          `git_credential: git config sets ${shown}`,
+        ] as const,
+    ),
     [
-      "~/.ssh/config sets an IdentityAgent",
+      "git config comes from GIT_CONFIG_PARAMETERS",
+      withGit(["user.name", "kin-bot", "command line:"]),
+      "git_credential: git config is set from the environment",
+    ],
+    [
+      "git config comes from somewhere other than a file",
+      withGit(["user.name", "kin-bot", "blob:HEAD:.gitconfig"]),
+      "git_credential: git config comes from an unexpected source",
+    ],
+    // SSH: directives outside the allowlist, in any case and either form.
+    ...(
+      [
+        ['Match exec "test -d ~/owner"', "Match"],
+        ["Match host github.com", "Match"],
+        ["ProxyCommand nc %h %p", "ProxyCommand"],
+        ["PROXYCOMMAND=nc %h %p", "ProxyCommand"],
+        ["ProxyJump bastion", "ProxyJump"],
+        ["PKCS11Provider /usr/lib/opensc.so", "PKCS11Provider"],
+        ["SecurityKeyProvider internal", "SecurityKeyProvider"],
+        ["CertificateFile ~/.ssh/owner-cert.pub", "CertificateFile"],
+        ["KnownHostsCommand /bin/cat", "KnownHostsCommand"],
+        ["LocalCommand id", "LocalCommand"],
+        ["PermitLocalCommand yes", "PermitLocalCommand"],
+        ["CanonicalizeHostname yes", "canonicalizehostname"],
+        ["SendEnv LANG", "sendenv"],
+        ["ghp_0123456789abcdef0123456789abcdef01234567", "an unrecognised directive"],
+      ] as const
+    ).map(
+      ([line, name]) =>
+        [
+          `~/.ssh/config has ${line}`,
+          withSshConfig(line),
+          `ssh: ~/.ssh/config sets ${name}`,
+        ] as const,
+    ),
+    ...(
+      [
+        ["ControlMaster auto", "ControlMaster"],
+        ["ControlPath ~/.ssh/sockets/%C", "ControlPath"],
+        [
+          "IdentityAgent ~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock",
+          "IdentityAgent",
+        ],
+        ["IdentityAgent SSH_AUTH_SOCK", "IdentityAgent"],
+        ["AddKeysToAgent yes", "AddKeysToAgent"],
+      ] as const
+    ).map(
+      ([line, name]) =>
+        [
+          `~/.ssh/config has ${line}`,
+          withSshConfig(line),
+          `ssh: ~/.ssh/config sets ${name} to a value other than the allowed one`,
+        ] as const,
+    ),
+    [
+      "an included file has a forbidden directive",
+      { files: { ...botMachine().files, ".ssh/config.d/work.conf": "ProxyJump bastion\n" } },
+      "ssh: ~/.ssh/config sets ProxyJump",
+    ],
+    [
+      "a file included without a glob has a forbidden directive",
       {
-        sshConfig: sshG(
-          "identityagent /Users/kin/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock",
-        ),
+        files: {
+          ...withSshConfig("Include work").files,
+          ".ssh/work": "Host *\n  IdentityAgent /tmp/agent\n",
+        },
       },
-      "ssh: an IdentityAgent is configured",
+      "ssh: ~/.ssh/config sets IdentityAgent",
     ],
     [
-      "~/.ssh/config sets a PKCS#11 provider",
-      { sshConfig: sshG("pkcs11provider /usr/lib/opensc.so") },
-      "ssh: a PKCS#11 provider is configured",
+      "the system SSH config has Match",
+      withSystemConfig("Match exec true"),
+      "ssh: the system SSH config sets Match",
     ],
     [
-      "an IdentityFile has a token the probe can't expand",
-      { sshConfig: sshG("identityfile ~/.ssh/%C") },
-      "ssh: an IdentityFile can't be expanded",
+      "a file the system SSH config includes has ProxyCommand",
+      { system: { ...SYSTEM_SSH, "ssh_config.d/50-proxy.conf": "ProxyCommand nc %h %p\n" } },
+      "ssh: the system SSH config sets ProxyCommand",
+    ],
+    ["a line has no directive", withSshConfig("= yes"), "ssh: ~/.ssh/config can't be parsed"],
+    [
+      "an Include includes itself",
+      withSshConfig("Include config"),
+      "ssh: ~/.ssh/config includes too many files",
     ],
     [
-      "an IdentityFile names another user's home",
-      { sshConfig: sshG("identityfile ~nishchay/.ssh/id") },
-      "ssh: an IdentityFile can't be expanded",
+      "an Include uses a token",
+      withSshConfig("Include %d/.ssh/more"),
+      "ssh: an Include names a path the probe can't expand",
     ],
     [
-      "ssh -G fails",
-      { sshConfig: answer({ exitCode: 255, stderr: "line 2: Bad configuration option" }) },
-      "ssh: ssh -G exited 255",
+      "an Include names another user's home",
+      withSshConfig("Include ~nishchay/.ssh/config"),
+      "ssh: an Include names a path the probe can't expand",
     ],
+    [
+      "an Include globs a folder",
+      withSshConfig("Include */config"),
+      "ssh: an Include names a path the probe can't expand",
+    ],
+    [
+      "an Include names a folder",
+      { files: { ...withSshConfig("Include keys").files, ".ssh/keys/k": KEY } },
+      "ssh: ~/.ssh/config includes something that isn't a small file",
+    ],
+    [
+      "~/.ssh/config is too large to check",
+      withSshConfig(`# ${"x".repeat(64 * 1024)}`),
+      "ssh: ~/.ssh/config includes something that isn't a small file",
+    ],
+    ...(
+      [
+        ["~/.ssh/github_%h", "a host token"],
+        ["/keys/${USER}/id", "an environment variable"],
+        ["~nishchay/.ssh/id", "another user's home"],
+        ["keys/id", "a relative path"],
+      ] as const
+    ).map(
+      ([file, what]) =>
+        [
+          `an IdentityFile uses ${what}`,
+          withSshConfig(`IdentityFile ${file}`),
+          "ssh: ~/.ssh/config has an IdentityFile the probe can't expand",
+        ] as const,
+    ),
+    // SSH: keys and probes.
     [
       "a key needs a passphrase",
       { files: { ...botMachine().files, ".ssh/owner_ed25519": PASSPHRASE_KEY } },
@@ -624,6 +945,7 @@ describe("GitHubIdentityProbe", () => {
         assert.strictEqual(error._tag, "T3GitHubIdentityError");
         // The fixed reason, so a case can't pass by failing for some other reason.
         assert.include(String(error.cause), reason);
+        assert.notInclude(String(error.cause), "ghp_");
         const checked = yield* Effect.forkChild(check);
         yield* TestClock.adjust("1 minute");
         assert.deepInclude(yield* Fiber.join(checked), {
@@ -635,16 +957,16 @@ describe("GitHubIdentityProbe", () => {
   );
 
   it.effect.each([
-    // With no identity file from `ssh -G`, only the listing touches ~/.ssh.
-    ["~/.ssh can't be listed", ".ssh", answer({ stdout: "user git\nhostname github.com\n" })],
-    ["a key can't be read", ".ssh/id_ed25519", sshG()],
-  ] as const)("fails closed when %s", ([reason, locked, sshConfig]) =>
+    // Search-only, so `~/.ssh/config` still reads but the folder can't be listed.
+    ["~/.ssh can't be listed", ".ssh", 0o100],
+    ["a key can't be read", ".ssh/id_ed25519", 0o000],
+  ] as const)("fails closed when %s", ([reason, locked, mode]) =>
     run(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const { identities, home } = yield* probe({ ...botMachine(), sshConfig });
-        yield* fs.chmod(path.join(home, locked), 0o000);
+        const { identities, home } = yield* probe(botMachine());
+        yield* fs.chmod(path.join(home, locked), mode);
         const error = yield* identities.pipe(Effect.flip);
         yield* fs.chmod(path.join(home, locked), 0o700);
         assert.strictEqual(error._tag, "T3GitHubIdentityError");
@@ -653,30 +975,81 @@ describe("GitHubIdentityProbe", () => {
     ),
   );
 
-  it.effect("never puts the helper's password in a log, error or report", () => {
+  it.effect("never puts a credential in a log, error, span, report, audit entry or chat", () => {
     const logged: Array<string> = [];
     const logger = Logger.make(({ message, cause }) => {
       logged.push(JSON.stringify(message), String(cause));
     });
+    const spans: Array<Tracer.NativeSpan> = [];
+    const tracer = Tracer.make({
+      span: (options) => {
+        const span = new Tracer.NativeSpan(options);
+        spans.push(span);
+        return span;
+      },
+    });
+    const secrets = [GIT_PASSWORD, GH_TOKEN, APP_TOKEN, SAVED_TOKEN, OWNER_TOKEN];
     return run(
       Effect.gen(function* () {
         const seen: Array<string> = [];
-        for (const users of [
-          botMachine().users,
-          { [APP_TOKEN]: "kin-bot", [GH_TOKEN]: "kin-bot" },
-          { ...botMachine().users, [GIT_PASSWORD]: 500 },
-        ]) {
-          const { identities, check, requests } = yield* probe({ ...botMachine(), users });
+        const t3 = stored({
+          saved: Option.some(Redacted.make(SAVED_TOKEN)),
+          app: session(APP_TOKEN),
+        });
+        const users = {
+          ...botMachine().users,
+          [SAVED_TOKEN]: "kin-bot",
+          [OWNER_TOKEN]: "Nishchay",
+        };
+        const ghToken = (account: string | undefined) =>
+          answer({ stdout: account === "Nishchay" ? OWNER_TOKEN : GH_TOKEN });
+        for (const [index, change] of [
+          {},
+          // Each credential refused in turn, so its error path runs too.
+          { users: { ...users, [GIT_PASSWORD]: 500 } },
+          { users: { ...users, [GH_TOKEN]: 401 } },
+          { users: { ...users, [SAVED_TOKEN]: 401 } },
+          { users: { ...users, [OWNER_TOKEN]: 502 } },
+        ].entries()) {
+          const { identities, check, requests } = yield* probe({
+            ...botMachine(),
+            t3,
+            users,
+            ghToken,
+            ...change,
+          });
           const result = yield* Effect.result(identities);
-          seen.push(JSON.stringify(result), String(result), JSON.stringify(yield* check));
+          const report = yield* check;
+          seen.push(
+            JSON.stringify(result),
+            String(result),
+            JSON.stringify(report),
+            // What the executor writes to the audit log and posts to the owner's chat.
+            report.failures.join(","),
+            credentialCheckBody(ORG, report),
+          );
           yield* Effect.logWarning("probe", result);
-          // It does reach GitHub, as a bearer token and nowhere else.
-          assert.include(requests, `Bearer ${GIT_PASSWORD}`);
+          // Each does reach GitHub, as a bearer token and nowhere else.
+          if (index === 0) {
+            for (const secret of secrets) assert.include(requests, `Bearer ${secret}`);
+          }
         }
+        for (const span of spans) {
+          seen.push(
+            span.name,
+            JSON.stringify([...span.attributes]),
+            JSON.stringify(span.events),
+            span.status._tag === "Ended" ? String(span.status.exit) : "",
+          );
+        }
+        assert.isAbove(spans.length, 0);
         const haystack = [...seen, ...logged].join("\n");
-        assert.include(haystack, "git_credential");
-        assert.notInclude(haystack, GIT_PASSWORD);
-      }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false }))),
+        assert.include(haystack, "owner_identity");
+        for (const secret of secrets) assert.notInclude(haystack, secret);
+      }).pipe(
+        Effect.withTracer(tracer),
+        Effect.provide(Logger.layer([logger], { mergeWithExisting: false })),
+      ),
     );
   });
 });

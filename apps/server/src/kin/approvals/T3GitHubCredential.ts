@@ -1,5 +1,6 @@
 import { requireSettingsSecretLiteral } from "@t3tools/contracts";
 import * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
+import type { HostCredentialSettings } from "@t3tools/source-control-core/shared/definition";
 import { GitHubAppSession } from "@t3tools/source-control-github/server/driver";
 import * as GitHubClient from "@t3tools/source-control-github/shared/definition";
 import * as Context from "effect/Context";
@@ -93,13 +94,19 @@ const readStored = Effect.fn("T3GitHubCredential.read")(function* (
   // Settings that don't decode read as empty elsewhere; here that would hide a token.
   const github = decodeSettings(raw ?? {});
   if (Option.isNone(github)) return yield* fail("the GitHub settings can't be decoded");
-  const { tokens, signIns, hosts } = github.value;
+  // Every credential field upstream keeps: a new one fails to compile here until it is read.
+  const { tokens, signIns, hosts } = {
+    tokens: github.value.tokens,
+    signIns: github.value.signIns,
+    hosts: github.value.hosts,
+  } satisfies Record<keyof HostCredentialSettings, unknown>;
   const token = yield* requireSettingsSecretLiteral(tokens[HOST], settings.secretProviders).pipe(
     Effect.catch(() => fail("the saved token's secret can't be resolved")),
   );
-  const rawSession = signIns[HOST];
-  const session = rawSession === undefined ? Option.none() : decodeSession(rawSession);
-  if (rawSession !== undefined && Option.isNone(session)) {
+  // An empty sign-in is signed out, as upstream reads it.
+  const signIn = signIns[HOST]?.trim() ?? "";
+  const session = signIn === "" ? Option.none() : decodeSession(signIn);
+  if (signIn !== "" && Option.isNone(session)) {
     return yield* fail("the app sign-in can't be decoded");
   }
   return {

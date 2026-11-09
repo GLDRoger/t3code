@@ -55,7 +55,7 @@ const FAILURE_TEXT: Record<CredentialHygieneFailure, (report: CredentialHygieneR
   };
 
 /** Plain text for the owner's chat when the credential check's result changes (spec section 12). */
-const credentialCheckBody = (orgId: KinOrgId, report: CredentialHygieneReport) => {
+export const credentialCheckBody = (orgId: KinOrgId, report: CredentialHygieneReport) => {
   if (report.passed) {
     return report.warnings.includes("merge_token_expiring")
       ? `Your merge token expires within 7 days. Save a new one with \`node scripts/kin-github-app.ts --merge-token --kin-org ${orgId}\` on the Kin host.`

@@ -220,6 +220,25 @@ describe("CredentialHygiene", () => {
       { identity: bot, env: { GITHUB_TOKEN: "x" } },
       ["env_token"],
     ],
+    ...(
+      [
+        "GH_ENTERPRISE_TOKEN",
+        "GITHUB_ENTERPRISE_TOKEN",
+        "GIT_ASKPASS",
+        "SSH_ASKPASS",
+        "GIT_SSH",
+        "GIT_SSH_COMMAND",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+      ] as const
+    ).map(
+      (name) =>
+        [
+          `${name} in the environment`,
+          { identity: bot, env: { [name]: "x" } },
+          ["env_token"],
+        ] as const,
+    ),
     [
       "T3 using an environment token",
       { identity: { t3: [{ login: "kin-bot", source: "env" }] } },
