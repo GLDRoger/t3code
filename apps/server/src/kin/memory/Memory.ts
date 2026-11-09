@@ -554,12 +554,12 @@ const make = Effect.gen(function* () {
       return { writer: paths.writer, read: paths.read };
     }
     yield* io(orgId, "mkdir", fs.makeDirectory(paths.root, { recursive: true }));
+    yield* removeStaleClones(orgId, paths.root);
     if (yield* io(orgId, "exists", fs.exists(paths.writer))) {
       yield* validateWriter(orgId, paths, false);
     } else {
       // The remote can still hold the old history until the purge's push lands.
       yield* refuseDuringPurge(orgId, "clone");
-      yield* removeStaleClones(orgId, paths.root);
       yield* io(
         orgId,
         "clone",

@@ -710,8 +710,17 @@ it.live(
       yield* Effect.gen(function* () {
         const memory = yield* Memory.Memory;
         yield* memory.prepareWakeup(orgA);
+        yield* fs.makeDirectory(`${root}/state/a/memory-read.next-stale1/read`, {
+          recursive: true,
+        });
+        yield* memory.prepareWakeup(orgA);
         const { read } = yield* memory.ensureCheckouts(orgA);
         expect(yield* fs.exists(`${read}/journal/2026/99.md`)).toBe(true);
+        expect(
+          (yield* fs.readDirectory(`${root}/state/a`)).filter((entry) =>
+            entry.startsWith("memory-read.next-"),
+          ),
+        ).toEqual([]);
       }).pipe(
         Effect.provide(
           memoryTestLayer.pipe(
