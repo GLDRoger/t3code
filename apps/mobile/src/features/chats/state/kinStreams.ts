@@ -264,6 +264,14 @@ export function kinInboxStream(input: KinChatsSubscribeInput) {
   );
 }
 
+const kinCachedPartChanged = (a: KinChatState, b: KinChatState) =>
+  a.messages !== b.messages ||
+  a.widgets !== b.widgets ||
+  a.contiguousSeq !== b.contiguousSeq ||
+  a.changeSeq !== b.changeSeq ||
+  a.reads !== b.reads ||
+  a.needsHistoryReload !== b.needsHistoryReload;
+
 /** Reads one page of `kin.chat.history`; the client wires in its scope-checked command. */
 export type KinReadHistory<E, R> = (
   input: KinChatHistoryInput,
@@ -295,7 +303,8 @@ export function makeKinChatStream<E, R>(readHistory: KinReadHistory<E, R>) {
           shownClosed = false;
           const savedAt = nowIso();
           shownAt = savedAt;
-          if (next !== state) {
+          // Drafts and presence are never cached, so their frames don't schedule a save.
+          if (next !== state && kinCachedPartChanged(state, next)) {
             const trimmed = trimKinChatForCache(next);
             // A reset empties the feed until history refills it; keep the cached messages.
             if (trimmed.messages.length > 0 || !savedMessages) {

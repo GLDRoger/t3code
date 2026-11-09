@@ -25,6 +25,7 @@ import { KinWidgetView } from "../widgets/KinWidgetView";
 type MessageRow = Extract<KinFeedRow, { readonly type: "message" }>;
 type SystemRow = Extract<KinFeedRow, { readonly type: "system" }>;
 type DayRow = Extract<KinFeedRow, { readonly type: "day" }>;
+type DraftRow = Extract<KinFeedRow, { readonly type: "draft" }>;
 
 const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 const formatTime = (iso: string) => timeFormat.format(new Date(iso));
@@ -121,6 +122,50 @@ export function KinMessageBubble(props: {
           />
         </View>
       ) : null}
+    </View>
+  );
+}
+
+/**
+ * A reply still streaming, laid out exactly as its message will be: the list keeps this row's
+ * key and slot when the message lands, so nothing moves or flashes.
+ */
+export function KinDraftBubble(props: {
+  readonly row: DraftRow;
+  readonly markdownStyle: NativeMarkdownTextStyle;
+  readonly onLinkPress: (href: string) => void;
+}) {
+  const { row } = props;
+  return (
+    <View className="items-start gap-1 px-4 pb-1.5">
+      {row.showAuthor ? (
+        <Text
+          textRole="caption"
+          className="px-1 pt-2 font-t3-medium text-foreground-muted"
+          importantForAccessibility="no"
+          accessibilityElementsHidden
+        >
+          {row.authorLabel} · {formatTime(row.draft.startedAt)}
+        </Text>
+      ) : null}
+      <View
+        accessible
+        accessibilityLabel={kinSentences([
+          `${row.authorLabel}, agent`,
+          kinPlainText(row.draft.text),
+          "Still writing",
+        ])}
+        className="max-w-[85%] gap-1 rounded-[20px] bg-composer-surface px-3.5 py-2.5"
+      >
+        <SelectableMarkdownText
+          markdown={kinBodyMarkdown(row.draft.text)}
+          textStyle={props.markdownStyle}
+          preserveSoftBreaks
+          onLinkPress={props.onLinkPress}
+          renderImage={renderImageAsText}
+          resolveImageSource={kinImageSource}
+        />
+      </View>
     </View>
   );
 }
