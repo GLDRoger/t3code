@@ -8,6 +8,7 @@ import {
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -111,6 +112,19 @@ describe("KinPendingActions", () => {
       } as unknown as KinPendingActionCreateInput);
       assert.isFalse(withExtra.created);
       assert.strictEqual(withExtra.action.id, first.action.id);
+      // Key registration's requester id is reserved, so an agent can't pose as the phone.
+      for (const requestedBy of [
+        { agentId: "kin-approver-keys", threadId: "thread-lead" },
+        { agentId: "kin-approver-keys", threadId: "kin-approver-keys" },
+      ]) {
+        const posing = yield* Effect.exit(
+          actions.create({
+            ...request("webhook-delivery-2"),
+            requestedBy,
+          } as unknown as KinPendingActionCreateInput),
+        );
+        assert.isTrue(Exit.isFailure(posing));
+      }
 
       const twice = yield* Effect.all(
         [

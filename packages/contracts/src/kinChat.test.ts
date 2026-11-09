@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 
 import * as Kin from "./kinChat.ts";
+import { KinCheckRun } from "./kinApprovals.ts";
 
 const at = "2026-11-07T00:00:00.000Z";
 const person = {
@@ -266,6 +267,7 @@ describe("Kin chat contracts", () => {
       schema: Kin.KinTaskCardState,
       value: { ...task, [field]: "a\u0000b" },
     })),
+    { schema: KinCheckRun, value: { name: "a\u0000b", required: true, status: "passed" } },
   ])("rejects NUL text %#", ({ schema, value }) => {
     const codec: Schema.Codec<unknown> = schema;
     expect(() => Schema.decodeSync(codec)(value)).toThrow();

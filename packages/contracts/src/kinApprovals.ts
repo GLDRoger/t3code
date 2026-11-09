@@ -221,11 +221,16 @@ export const KinPendingAction = Schema.Struct({
 });
 export type KinPendingAction = typeof KinPendingAction.Type;
 
+// 43 characters carry 258 bits; the last two must be zero, so a key has one spelling and one thumbprint.
+const P256Coordinate = pattern(
+  /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/,
+  "a canonical base64url P-256 coordinate",
+);
 export const KinApproverPublicJwk = Schema.Struct({
   kty: Schema.Literal("EC"),
   crv: Schema.Literal("P-256"),
-  x: pattern(/^[A-Za-z0-9_-]{43}$/, "a base64url P-256 coordinate"),
-  y: pattern(/^[A-Za-z0-9_-]{43}$/, "a base64url P-256 coordinate"),
+  x: P256Coordinate,
+  y: P256Coordinate,
 });
 export type KinApproverPublicJwk = typeof KinApproverPublicJwk.Type;
 
@@ -454,19 +459,31 @@ export const KinApprovalsKeyChallengeResult = Schema.Struct({
   expiresAt: CanonicalUtcTimestamp,
 });
 export type KinApprovalsKeyChallengeResult = typeof KinApprovalsKeyChallengeResult.Type;
+const Base64Blob = Schema.String.check(Schema.isMaxLength(16_384));
+export const KinApproverKeyAttestation = Schema.Union([
+  Schema.Struct({
+    format: Schema.Literal("android-key"),
+    /** Base64 DER certificates, leaf first. */
+    certificateChain: Schema.Array(Schema.String.check(Schema.isMaxLength(8192))).check(
+      Schema.isMaxLength(10),
+    ),
+  }),
+  Schema.Struct({
+    format: Schema.Literal("apple-app-attest"),
+    /** Base64 SHA-256 of the App Attest key's public key. */
+    keyId: Base64Blob,
+    /** Base64 CBOR from `DCAppAttestService.attestKey` over `sha256(challenge ‖ 0x04 ‖ x ‖ y)`. */
+    attestationObject: Base64Blob,
+  }),
+]);
+export type KinApproverKeyAttestation = typeof KinApproverKeyAttestation.Type;
 export const KinApprovalsRegisterKeyInput = Schema.Struct({
   orgId: KinOrgId,
   publicJwk: KinApproverPublicJwk,
   platform: KinApproverKeyPlatform,
   challenge: Base64UrlString,
-  // Base64 DER certificates, leaf first. Required on Android; the server derives `hardware`.
-  attestation: Schema.optional(
-    Schema.Struct({
-      certificateChain: Schema.Array(Schema.String.check(Schema.isMaxLength(8192))).check(
-        Schema.isMaxLength(10),
-      ),
-    }),
-  ),
+  // Without one the key is stored unattested and can never be activated. The server derives `hardware`.
+  attestation: Schema.optional(KinApproverKeyAttestation),
   deviceLabel: KinTrimmedText.check(Schema.isMaxLength(80)),
 });
 export type KinApprovalsRegisterKeyInput = typeof KinApprovalsRegisterKeyInput.Type;
@@ -527,6 +544,7 @@ export class KinApprovalError extends Schema.TaggedError<KinApprovalError>()("Ki
       "bad_challenge",
       "bad_code",
       "not_local",
+      "unattested",
     ]),
   ]),
   message: Schema.String,

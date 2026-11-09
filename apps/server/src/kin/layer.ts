@@ -9,6 +9,7 @@ import * as Layer from "effect/Layer";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as Option from "effect/Option";
 import * as KinChat from "./chat/layer.ts";
+import * as KinApprovals from "./approvals/layer.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
 
 import { KinServer, type Services } from "./KinServer.ts";
@@ -34,7 +35,7 @@ const enabled = Layer.effect(
       subscribeForViewer: Option.some(hub.subscribeForViewer),
     };
   }),
-).pipe(Layer.provide(Layer.merge(KinChat.layer, GithubWebhooks.lockLayer)));
+).pipe(Layer.provide(Layer.mergeAll(KinChat.layer, KinApprovals.layer, GithubWebhooks.lockLayer)));
 const disabled = Layer.succeed(KinServer, {
   taskCardUpdater: Layer.empty,
   services: Option.none(),
