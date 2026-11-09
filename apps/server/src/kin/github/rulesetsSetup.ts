@@ -17,10 +17,11 @@ import * as Keychain from "./Keychain.ts";
 import * as KinGitHubApp from "./KinGitHubApp.ts";
 import {
   KIN_CODEOWNERS_PATH,
-  KIN_REPO_REQUIRED_CHECKS,
+  KIN_REPOS,
   codeownersProblems,
   diffRuleset,
   kinRulesets,
+  type KinRepoKind,
   type KinRuleset,
 } from "./KinRulesets.ts";
 import { KinGitHubScope } from "./KinGitHubScope.ts";
@@ -150,6 +151,7 @@ type VerifiedOwner = Effect.Success<ReturnType<typeof verifyOwnerCredential>>;
 export const checkCodeowners = Effect.fn("kinRulesets.checkCodeowners")(function* (
   target: RepoTarget,
   defaultBranch: string,
+  kind: KinRepoKind,
 ) {
   const client = yield* HttpClient.HttpClient;
   const ref = `ref=${encodeURIComponent(defaultBranch)}`;
@@ -176,7 +178,7 @@ export const checkCodeowners = Effect.fn("kinRulesets.checkCodeowners")(function
   });
   return [
     ...syntax.body.errors.map((error) => `line ${error.line}: GitHub reports ${error.kind}`),
-    ...codeownersProblems(content, target.owner),
+    ...codeownersProblems(content, target.owner, kind),
   ];
 });
 
@@ -234,27 +236,36 @@ const driftLines = (desired: ReadonlyArray<KinRuleset>, live: ReadonlyMap<string
     };
   });
 
-const codeownersLines = (problems: ReadonlyArray<string>, owner: string) =>
+const codeownersLines = (problems: ReadonlyArray<string>, owner: string, kind: KinRepoKind) =>
   problems.length === 0
-    ? [`CODEOWNERS: ok (@${owner} owns every path)`]
+    ? [`CODEOWNERS: ok (@${owner} owns every path${kind === "memory" ? " but Kin's own" : ""})`]
     : ["CODEOWNERS: FAIL", ...problems.map((problem) => `  FAIL ${problem}`)];
+
+interface ApplyInput {
+  readonly requiredChecks: ReadonlyArray<string>;
+  readonly kind: KinRepoKind;
+}
+interface CheckInput extends ApplyInput {
+  readonly rulesets: boolean;
+}
 
 const checkVerified = Effect.fn("kinRulesets.checkVerified")(function* (
   target: RepoTarget,
   { login, defaultBranch }: VerifiedOwner,
-  input: { readonly requiredChecks: ReadonlyArray<string>; readonly rulesets: boolean },
+  input: CheckInput,
 ) {
-  const problems = yield* checkCodeowners(target, defaultBranch);
+  const problems = yield* checkCodeowners(target, defaultBranch, input.kind);
   const lines = [
     `${target.repo} (default branch ${defaultBranch}), checked as ${login}`,
-    ...codeownersLines(problems, target.owner),
+    ...codeownersLines(problems, target.owner, input.kind),
   ];
   let ok = problems.length === 0;
+  const desired = kinRulesets(input.requiredChecks, input.kind);
   const live = input.rulesets
-    ? yield* readRulesets(target, kinRulesets(input.requiredChecks))
+    ? yield* readRulesets(target, desired)
     : new Map<string, RulesetDetail>();
   if (input.rulesets) {
-    for (const result of driftLines(kinRulesets(input.requiredChecks), live)) {
+    for (const result of driftLines(desired, live)) {
       ok &&= result.ok;
       lines.push(...result.lines);
     }
@@ -266,7 +277,7 @@ const checkVerified = Effect.fn("kinRulesets.checkVerified")(function* (
 /** `--check` and `--codeowners`: nothing is written. */
 export const checkRepo = Effect.fn("kinRulesets.check")(function* (
   target: RepoTarget,
-  input: { readonly requiredChecks: ReadonlyArray<string>; readonly rulesets: boolean },
+  input: CheckInput,
 ) {
   const { ok, lines } = yield* checkVerified(target, yield* verifyOwnerCredential(target), input);
   return { ok, lines } satisfies RulesetsResult;
@@ -275,21 +286,21 @@ export const checkRepo = Effect.fn("kinRulesets.check")(function* (
 /** Apply: creates or replaces each ruleset by name, writes nothing when it already matches. */
 export const applyRepo = Effect.fn("kinRulesets.apply")(function* (
   target: RepoTarget,
-  input: { readonly requiredChecks: ReadonlyArray<string> },
+  input: ApplyInput,
 ) {
   const client = yield* HttpClient.HttpClient;
   const { login, defaultBranch } = yield* verifyOwnerCredential(target);
-  const problems = yield* checkCodeowners(target, defaultBranch);
+  const problems = yield* checkCodeowners(target, defaultBranch, input.kind);
   const lines = [
     `${target.repo} (default branch ${defaultBranch}), applying as ${login}`,
-    ...codeownersLines(problems, target.owner),
+    ...codeownersLines(problems, target.owner, input.kind),
   ];
   // Without CODEOWNERS, require_code_owner_review is met by anyone's approval.
   if (problems.length > 0) {
     lines.push("FAIL: fix CODEOWNERS on the default branch first; no ruleset was changed.");
     return { ok: false, lines } satisfies RulesetsResult;
   }
-  const desired = kinRulesets(input.requiredChecks);
+  const desired = kinRulesets(input.requiredChecks, input.kind);
   const before = yield* readRulesets(target, desired);
   for (const ruleset of desired) {
     const live = before.get(ruleset.name);
@@ -342,10 +353,7 @@ export function scratchRepoProblem(repo: string, kinRepos: ReadonlyArray<string>
 }
 
 /** The repositories test 23 must never touch: `KIN_GITHUB_REPOS` and the known Kin ones. */
-export const kinRepos = (scoped: ReadonlyArray<string>) => [
-  ...scoped,
-  ...Object.keys(KIN_REPO_REQUIRED_CHECKS),
-];
+export const kinRepos = (scoped: ReadonlyArray<string>) => [...scoped, ...Object.keys(KIN_REPOS)];
 
 /**
  * Security test 23 on a scratch repository. The owner is checked once, and the repository GitHub
@@ -378,6 +386,7 @@ export const runTest23 = Effect.fn("kinRulesets.test23Run")(function* <E, R>(inp
   const desired = kinRulesets(input.requiredChecks);
   const check = yield* checkVerified(target, owner, {
     requiredChecks: input.requiredChecks,
+    kind: "code",
     rulesets: true,
   });
   if (!check.ok) {
@@ -422,6 +431,7 @@ export const runTest23 = Effect.fn("kinRulesets.test23Run")(function* <E, R>(inp
   // The change probes sent the desired bodies, so drift here means something else wrote to them.
   const after = yield* checkVerified(target, owner, {
     requiredChecks: input.requiredChecks,
+    kind: "code",
     rulesets: true,
   });
   const ok = probes.ok && after.ok;
@@ -539,19 +549,23 @@ export const kinRulesetsCommand = Command.make(
           `--owner ${owner} differs from KIN_GITHUB_OWNER_LOGIN (${scope.ownerLogin}), which ${input.test23 ? "test 23" : repo} must use.`,
         );
       }
-      const known = Object.entries(KIN_REPO_REQUIRED_CHECKS).find(
+      const known = Object.entries(KIN_REPOS).find(
         ([slug]) => slug.toLowerCase() === repo.toLowerCase(),
       )?.[1];
-      const requiredChecks = input.statusCheck.length > 0 ? input.statusCheck : (known ?? []);
+      const requiredChecks =
+        input.statusCheck.length > 0 ? input.statusCheck : (known?.requiredChecks ?? []);
+      const kind = known?.kind ?? "code";
       if (requiredChecks.length === 0 && !input.codeowners) {
         return yield* refuse(
           `${repo} has no default required checks; pass --status-check <context>.`,
         );
       }
       const target = { repo, owner, token: yield* ownerToken } satisfies RepoTarget;
-      if (input.codeowners) return yield* checkRepo(target, { requiredChecks, rulesets: false });
-      if (input.check) return yield* checkRepo(target, { requiredChecks, rulesets: true });
-      if (!input.test23) return yield* applyRepo(target, { requiredChecks });
+      if (input.codeowners) {
+        return yield* checkRepo(target, { requiredChecks, kind, rulesets: false });
+      }
+      if (input.check) return yield* checkRepo(target, { requiredChecks, kind, rulesets: true });
+      if (!input.test23) return yield* applyRepo(target, { requiredChecks, kind });
       const appConfig = Option.match(input.appId, {
         onNone: () => KinGitHubApp.KinGitHubAppConfig.layer,
         onSome: (appId) => Layer.succeed(KinGitHubApp.KinGitHubAppConfig, { appId }),

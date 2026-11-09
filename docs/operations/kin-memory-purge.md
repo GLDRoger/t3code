@@ -22,3 +22,11 @@ Delete the marker by hand only when `reconcile` keeps answering `unknown` and yo
 Then confirm with `git log --branches --tags -p` on a fresh clone, and `git ls-remote` for refs outside heads, tags and pulls, whether the purged content is still on the remote. If it is, run the purge again from a new owner-approved action; if it's gone, the next wake-up clones the rewritten history.
 
 Last, resume the org's queue. Until LEAD-11 builds the org pause there is no operator path to resume it: the purge can't run then either, because `KinPurgeQueue.pause` fails by default, so a stuck marker can only come from a host running LEAD-11's pause.
+
+## The ruleset window
+
+`kin-main` on the memory repo has no bypass actors and blocks force-pushes, so a purge's push needs an owner window. Do it with your own credential on your own device, never with an owner credential stored on the Kin host:
+
+1. Set `kin-main` to `enforcement: disabled` (repo Settings, Rules, Rulesets).
+2. Let the purge push.
+3. Re-apply with `node scripts/kin-rulesets.ts --repo GLDRoger/kin-memory`, then run it with `--check`. The queue resumes only once `--check` passes; a leftover `disabled` shows as drift.
