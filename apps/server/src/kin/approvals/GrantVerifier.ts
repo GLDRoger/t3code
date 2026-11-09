@@ -46,10 +46,6 @@ const auditBucket = (
       ? "junk"
       : "names_key";
 
-// A jti is 16+ random bytes (spec section 5): 22 unpadded base64url characters. Kept out of the
-// shared decoder so it stays byte-for-byte with the device's parser.
-const MIN_JTI_CHARS = 22;
-
 const isKinApprovalError = Schema.is(KinApprovalError);
 const decodeUnsigned = Schema.decodeUnknownEffect(KinGrantUnsignedPayload);
 
@@ -210,7 +206,6 @@ const make = Effect.gen(function* () {
       keyThumbprint: header.kid,
       ...(payload.headSha === undefined ? {} : { headSha: payload.headSha }),
     };
-    if (payload.jti.length < MIN_JTI_CHARS) return yield* reject("malformed");
 
     // 2. An active key in the grant's org, after session revocations.
     const key = yield* keys.requireActive({ orgId: payload.orgId, thumbprint: header.kid });
