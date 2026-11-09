@@ -1,4 +1,6 @@
+import type * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
 import type * as Layer from "effect/Layer";
+import type { ProjectStoreV2 } from "../orchestration-v2/ProjectStore.ts";
 import type { OrchestratorV2 } from "../orchestration-v2/Orchestrator.ts";
 import * as Context from "effect/Context";
 import * as Option from "effect/Option";
@@ -9,7 +11,6 @@ import { KinBudget } from "./lead/KinBudget.ts";
 import { KinEventQueue } from "./lead/KinEventQueue.ts";
 import { ApproverKeys } from "./approvals/ApproverKeys.ts";
 import { GrantVerifier } from "./approvals/GrantVerifier.ts";
-import type { T3GitHubCredential } from "./approvals/T3GitHubCredential.ts";
 import { KinStop } from "./lead/KinStop.ts";
 import type { KinShadowSummary } from "./lead/KinLevels.ts";
 import type { KinLevelGate } from "./lead/LevelGate.ts";
@@ -34,7 +35,6 @@ export type Services =
   | KinGithubWebhookLock
   | ApproverKeys
   | GrantVerifier
-  | T3GitHubCredential
   | KinPushDevices
   | KinPushPresence
   | KinPushSender;
@@ -43,6 +43,15 @@ export class KinServer extends Context.Service<
   KinServer,
   {
     readonly taskCardUpdater: Layer.Layer<never, never, OrchestratorV2>;
+    /**
+     * Installs T3's own credential reader into the executor's slot. The slot stays out of
+     * `services`, so nothing holding them can install a reader that hides T3's tokens first.
+     */
+    readonly t3GitHubCredential: Layer.Layer<
+      never,
+      never,
+      SourceControlHost.SourceControlHost | ProjectStoreV2
+    >;
     readonly services: Option.Option<Context.Context<Services>>;
     readonly subscribeForViewer: Option.Option<KinChatHub["Service"]["subscribeForViewer"]>;
   }

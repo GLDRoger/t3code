@@ -313,6 +313,9 @@ const REMOTE_PLAIN = new Set([
   "partialclonefilter",
 ]);
 const GIT_TRUE = /^(true|yes|on|1)$/i;
+/** git takes a URL wherever it takes a remote's name, so these may hold only a name. */
+const REMOTE_NAME_KEYS = new Set(["remote", "pushremote"]);
+const isRemoteName = (value: string | null) => value !== null && /^[A-Za-z0-9._-]+$/.test(value);
 
 /**
  * Checks a repository's own config (`--local`, or `--worktree`) against the stricter repository
@@ -338,11 +341,13 @@ export const checkRepoGitConfig = (
       if (CORE_REFUSED.has(key)) return refused;
     } else if (key === "extensions.worktreeconfig") {
       worktreeConfig = value === null || GIT_TRUE.test(value.trim());
+    } else if (section === "remote" && !subsection) {
+      if (key !== "remote.pushdefault" || !isRemoteName(value)) return refused;
     } else if (section === "remote") {
-      // `remote.pushDefault` names a remote and has no subsection.
       const url = name === "url" || name === "pushurl";
-      if (subsection && (url ? urlCarriesCredential(value) : !REMOTE_PLAIN.has(name)))
-        return refused;
+      if (url ? urlCarriesCredential(value) : !REMOTE_PLAIN.has(name)) return refused;
+    } else if (section === "branch" && subsection && REMOTE_NAME_KEYS.has(name)) {
+      if (!isRemoteName(value)) return refused;
     } else if (section === "submodule" && subsection) {
       if (name === "url" ? urlCarriesCredential(value) : name !== "active") return refused;
     } else if (
@@ -371,6 +376,9 @@ const ENV_EXCEPTIONS = new Set([
   "T3CODE_DEV_AUTH_TOKEN",
 ]);
 
+const shownEnvName = (name: string) =>
+  /^[A-Za-z0-9_]{1,64}$/.test(name) ? name : "a variable with an unusual name";
+
 /** The forbidden variables `env` sets to something, by name, sorted. Values are never read out. */
 export const forbiddenEnvNames = (env: Readonly<Record<string, string | undefined>>) =>
   Object.entries(env)
@@ -380,5 +388,19 @@ export const forbiddenEnvNames = (env: Readonly<Record<string, string | undefine
         ENV_REFUSED.test(name) &&
         !ENV_EXCEPTIONS.has(name.toUpperCase()),
     )
-    .map(([name]) => (/^[A-Za-z0-9_]{1,64}$/.test(name) ? name : "a variable with an unusual name"))
+    .map(([name]) => shownEnvName(name))
+    .toSorted();
+
+/**
+ * Variables a provider instance may not change from the server's, since the probe ran with the
+ * server's: `PATH` picks another ssh, git or gh, `HOME` and `XDG_*` another git and gh config, and
+ * `BASH_ENV`, `ENV` and `ZDOTDIR` a shell startup file that can export a token.
+ */
+const PROVIDER_ENV_REFUSED = /^(PATH|HOME|XDG_.*|BASH_ENV|ENV|ZDOTDIR)$/i;
+
+/** Which of the variables a provider instance changes it may not, by name, sorted. */
+export const refusedProviderEnvChanges = (names: ReadonlyArray<string>) =>
+  names
+    .filter((name) => PROVIDER_ENV_REFUSED.test(name))
+    .map(shownEnvName)
     .toSorted();

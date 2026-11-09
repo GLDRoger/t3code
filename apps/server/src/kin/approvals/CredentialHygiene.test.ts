@@ -9,7 +9,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { describe } from "vite-plus/test";
 
 import * as OwnerMergeClient from "../github/OwnerMergeClient.ts";
-import { fakeGitHub, memoryKeychain, scopeLayer } from "../github/testFakes.ts";
+import { BOT_ID, fakeGitHub, memoryKeychain, scopeLayer } from "../github/testFakes.ts";
 import * as CredentialHygiene from "./CredentialHygiene.ts";
 
 const ORG = "org_kin" as KinOrgId;
@@ -21,9 +21,15 @@ const SSH_DENIED = "git@github.com: Permission denied (publickey).";
 
 type Identity =
   | {
-      readonly t3?: ReadonlyArray<{ readonly login: string; readonly source: string }>;
+      /** Without an `id`, the bot's login has the bot's id and any other login another one. */
+      readonly t3?: ReadonlyArray<{
+        readonly login: string;
+        readonly source: string;
+        readonly id?: number;
+      }>;
       readonly gh?: ReadonlyArray<string>;
       readonly git?: Option.Option<string>;
+      readonly gitId?: number;
       readonly ssh?: ReadonlyArray<string>;
       readonly gitFor?: ReadonlyArray<string>;
       readonly providers?: ReadonlyArray<{
@@ -37,6 +43,8 @@ const setup = (input: {
   readonly identity: Identity;
   readonly env?: Record<string, string>;
   readonly mergeToken?: { readonly login: string; readonly expiresAt: number } | null;
+  /** Null leaves `KIN_GITHUB_BOT_ID` unset. */
+  readonly botId?: number | null;
 }) => {
   const state = {
     identity: input.identity,
@@ -68,18 +76,26 @@ const setup = (input: {
           // Takes a second, so a check that starts meanwhile shares it.
           return Effect.sleep("1 second");
         }).pipe(
-          Effect.andThen(() =>
-            state.identity === "unreachable"
+          Effect.andThen(() => {
+            const found = state.identity;
+            return found === "unreachable"
               ? Effect.fail(new CredentialHygiene.T3GitHubIdentityError({ cause: "offline" }))
               : Effect.succeed({
-                  t3: state.identity.t3 ?? [],
-                  ghAccounts: state.identity.gh ?? [],
-                  gitCredential: state.identity.git ?? Option.none(),
-                  gitCredentialFor: state.identity.gitFor ?? [],
-                  ssh: state.identity.ssh ?? [SSH_DENIED],
-                  providerEnvironments: state.identity.providers ?? [],
-                }),
-          ),
+                  t3: (found.t3 ?? []).map(({ login, source, id }) => ({
+                    login,
+                    source,
+                    id: id ?? idOf(login),
+                  })),
+                  ghAccounts: found.gh ?? [],
+                  gitCredential: Option.map(found.git ?? Option.none(), (login) => ({
+                    login,
+                    id: found.gitId ?? idOf(login),
+                  })),
+                  gitCredentialFor: found.gitFor ?? [],
+                  ssh: found.ssh ?? [SSH_DENIED],
+                  providerEnvironments: found.providers ?? [],
+                });
+          }),
         ),
     }),
   );
@@ -89,10 +105,12 @@ const setup = (input: {
     Layer.provide(keychain.layer),
     Layer.provide(fakeGitHub(() => ({ status: 500 })).layer),
     Layer.provide(Layer.succeed(HostProcess.Environment, input.env ?? {})),
-    Layer.provide(scopeLayer()),
+    Layer.provide(scopeLayer(input.botId === undefined ? {} : { botId: input.botId })),
   );
   return { state, layer };
 };
+
+const idOf = (login: string) => (login.toLowerCase() === "kin-bot" ? BOT_ID : 9001);
 
 const bot: Identity = {
   t3: [{ login: "kin-bot", source: "gh" }],
@@ -227,6 +245,18 @@ describe("CredentialHygiene", () => {
       { identity: { t3: [{ login: "someone-else", source: "app" }] } },
       ["non_bot_identity"],
     ],
+    // A login can be renamed and registered again, so a token must name the bot's account id.
+    [
+      "a T3 credential with the bot's login on another account",
+      { identity: { ...bot, t3: [{ login: "kin-bot", source: "gh", id: 1 }] } },
+      ["non_bot_identity"],
+    ],
+    [
+      "the git helper's credential with the bot's login on another account",
+      { identity: { ...bot, gitId: 1 } },
+      ["non_bot_identity"],
+    ],
+    ["KIN_GITHUB_BOT_ID unset", { identity: bot, botId: null }, ["identity_unknown"]],
     ["GH_TOKEN in the environment", { identity: bot, env: { GH_TOKEN: "ghp_x" } }, ["env_token"]],
     [
       "GITHUB_TOKEN in the environment",
@@ -265,6 +295,15 @@ describe("CredentialHygiene", () => {
       ["env_token"],
     ],
     ["the identity unreachable", { identity: "unreachable" }, ["identity_unknown"]],
+    // Another config or startup file than the one the probe read.
+    ...(["HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "BASH_ENV", "ENV", "ZDOTDIR"] as const).map(
+      (name) =>
+        [
+          `a provider instance's environment changing ${name}`,
+          { identity: { ...bot, providers: [{ instance: "codex", names: [name] }] } },
+          ["env_token"],
+        ] as const,
+    ),
     [
       "a provider instance's environment with a token",
       { identity: { ...bot, providers: [{ instance: "codex", names: ["GH_TOKEN"] }] } },
@@ -331,18 +370,21 @@ describe("CredentialHygiene", () => {
           providers: [
             // The server's own GH_TOKEN is named once, under the server.
             { instance: "codex", names: ["GH_TOKEN", "SSH_AUTH_SOCK"] },
-            { instance: "claude", names: ["PATH"] },
+            { instance: "claude", names: ["PATH", "XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR"] },
           ],
+          t3: [{ login: "kin-bot", source: "gh", id: 1 }],
         },
         env: { GH_TOKEN: "ghp_secret_value", PATH: "/bin" },
       });
       const report = yield* check.pipe(Effect.provide(layer));
-      assert.deepStrictEqual(report.failures, ["env_token", "owner_identity"]);
+      assert.deepStrictEqual(report.failures, ["env_token", "owner_identity", "non_bot_identity"]);
       assert.deepStrictEqual(report.reasons, [
         "the server's environment sets GH_TOKEN",
         "the git credential helper holds a password for the owner's login",
         `provider instance "codex"'s environment sets SSH_AUTH_SOCK`,
         `provider instance "claude"'s environment changes PATH`,
+        `provider instance "claude"'s environment changes XDG_CONFIG_HOME`,
+        "t3: the bot's login belongs to an account other than KIN_GITHUB_BOT_ID",
       ]);
       assert.notInclude(JSON.stringify(report), "ghp_secret_value");
       // The helper is asked about the owner's login and the merge token's, in both cases.

@@ -80,6 +80,7 @@ import { GitVcsDriver } from "../../vcs/GitVcsDriver.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { DocumentText } from "../../provider/DocumentText.ts";
 import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
+import * as T3GitHubCredential from "../approvals/T3GitHubCredential.ts";
 const decodeToolList = Schema.decodeUnknownSync(
   Schema.fromJsonString(
     Schema.Struct({
@@ -270,6 +271,12 @@ it.effect.each([true, false])(
         assert.isTrue(enabled);
         const identity = Context.get(kin.services.value, KinIdentity);
         const chatService = Context.get(kin.services.value, KinChatService);
+        // Nothing holding Kin's services can install a reader that hides T3's tokens.
+        assert.isTrue(
+          Option.isNone(
+            Context.getOption(kin.services.value, T3GitHubCredential.T3GitHubCredential),
+          ),
+        );
         const [person] = yield* identity.resolve({
           sessionId: AuthSessionId.make("owner"),
           subject: "browser",

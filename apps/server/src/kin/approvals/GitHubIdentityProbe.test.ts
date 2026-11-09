@@ -26,7 +26,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { VcsProcess, type VcsProcessInput, type VcsProcessOutput } from "../../vcs/VcsProcess.ts";
 import { credentialCheckBody } from "../chat/executionNotices.ts";
 import * as OwnerMergeClient from "../github/OwnerMergeClient.ts";
-import { fakeGitHub, memoryKeychain, scopeLayer } from "../github/testFakes.ts";
+import { BOT_ID, fakeGitHub, memoryKeychain, scopeLayer } from "../github/testFakes.ts";
 import * as CredentialHygiene from "./CredentialHygiene.ts";
 import * as GitHubIdentityProbe from "./GitHubIdentityProbe.ts";
 import * as T3GitHubCredential from "./T3GitHubCredential.ts";
@@ -200,8 +200,13 @@ interface Machine {
   env: Record<string, string>;
   /** Whether the passwd entry names the home directory. */
   passwdHome: boolean;
-  /** The login `GET /user` names for each token; a number is the status, `hang` never answers. */
-  users: Record<string, string | number>;
+  /**
+   * Who `GET /user` names for each token: a login (the bot's has `BOT_ID`, any other another
+   * id), or a login and id; a number is the status, `hang` never answers.
+   */
+  users: Record<string, string | number | { readonly login: string; readonly id: number }>;
+  /** Null leaves `KIN_GITHUB_BOT_ID` unset. */
+  botId?: number | null;
   gh: Run;
   /** `gh auth token`, for the `--user` account or the active one. */
   ghToken: (account: string | undefined) => Run;
@@ -382,12 +387,17 @@ const probe = (machine: Machine) =>
         requests.push(request.headers.authorization);
         const user = machine.users[request.headers.authorization?.replace(/^Bearer /, "") ?? ""];
         if (user === "hang") return Effect.never;
-        const body = typeof user === "string" ? { login: user } : { message: "Bad credentials" };
+        const body =
+          typeof user === "string"
+            ? { login: user, id: user === "kin-bot" ? BOT_ID : 9001 }
+            : typeof user === "object"
+              ? user
+              : { message: "Bad credentials" };
         return Effect.succeed(
           HttpClientResponse.fromWeb(
             request,
             new Response(JSON.stringify(body), {
-              status: typeof user === "string" ? 200 : (user ?? 401),
+              status: typeof user === "number" ? user : user === undefined ? 401 : 200,
               headers: { "content-type": "application/json" },
             }),
           ),
@@ -433,7 +443,7 @@ const probe = (machine: Machine) =>
         Layer.provide(keychain.layer),
         Layer.provide(fakeGitHub(() => ({ status: 500 })).layer),
         Layer.provide(Layer.succeed(HostProcess.Environment, {})),
-        Layer.provide(scopeLayer()),
+        Layer.provide(scopeLayer(machine.botId === undefined ? {} : { botId: machine.botId })),
       ),
     );
     const check = Context.get(hygiene, CredentialHygiene.CredentialHygiene).check(ORG);
@@ -505,11 +515,11 @@ describe("GitHubIdentityProbe", () => {
         const probed = [...runs];
         assert.deepStrictEqual(found, {
           t3: [
-            { login: "kin-bot", source: "app" },
-            { login: "kin-bot", source: "gh" },
+            { login: "kin-bot", id: BOT_ID, source: "app" },
+            { login: "kin-bot", id: BOT_ID, source: "gh" },
           ],
           ghAccounts: ["kin-bot"],
-          gitCredential: Option.some("kin-bot"),
+          gitCredential: Option.some({ login: "kin-bot", id: BOT_ID }),
           gitCredentialFor: [],
           ssh: [sshHi("kin-bot"), SSH_DENIED],
           providerEnvironments: [{ instance: "codex", names: ["CODEX_HOME"] }],
@@ -645,7 +655,11 @@ describe("GitHubIdentityProbe", () => {
         const early = yield* Effect.forkChild(identities);
         yield* TestClock.adjust("5 seconds");
         yield* slot.install(Effect.succeed(stored({ app: session(APP_TOKEN) })));
-        assert.deepInclude((yield* Fiber.join(early)).t3, { login: "kin-bot", source: "app" });
+        assert.deepInclude((yield* Fiber.join(early)).t3, {
+          login: "kin-bot",
+          id: BOT_ID,
+          source: "app",
+        });
       }),
     ),
   );
@@ -663,6 +677,7 @@ describe("GitHubIdentityProbe", () => {
         ["remote.origin.prune", "true"],
         ["remote.pushdefault", "origin"],
         ["branch.main.remote", "origin"],
+        ["branch.main.pushremote", "fork.v2"],
         ["branch.main.merge", "refs/heads/main"],
         ["submodule.lib.url", "git@github.com:kin/lib.git"],
         ["submodule.lib.active", "true"],
@@ -832,6 +847,50 @@ describe("GitHubIdentityProbe", () => {
   );
 
   it.effect.each([
+    [
+      "the token saved in Settings",
+      { t3: stored({ saved: Option.some(Redacted.make(OWNER_TOKEN)) }) },
+    ],
+    [
+      "a gh token held for another account",
+      {
+        ghToken: (account: string | undefined) =>
+          answer({ stdout: account === "Nishchay" ? OWNER_TOKEN : GH_TOKEN }),
+      },
+    ],
+    ["the git credential helper", { git: gitFill(OWNER_TOKEN) }],
+  ] as const)(
+    "fails as non_bot_identity when %s names the bot's login on another account",
+    ([, change]) =>
+      run(
+        Effect.gen(function* () {
+          const machine = { ...botMachine(), ...change } as Machine;
+          // A renamed bot whose login someone registered again: only the id tells them apart.
+          const { check } = yield* probe({
+            ...machine,
+            users: { ...botMachine().users, [OWNER_TOKEN]: { login: "Kin-Bot", id: 7 } },
+          });
+          const report = yield* check;
+          assert.deepInclude(report, { passed: false, failures: ["non_bot_identity"] });
+          assert.match(report.reasons[0] ?? "", /^(t3|git_credential): the bot's login belongs/);
+        }),
+      ),
+  );
+
+  it.effect("fails closed while KIN_GITHUB_BOT_ID is unset, even with only the bot's logins", () =>
+    run(
+      Effect.gen(function* () {
+        const { check } = yield* probe({ ...botMachine(), botId: null });
+        assert.deepInclude(yield* check, {
+          passed: false,
+          failures: ["identity_unknown"],
+          reasons: ["KIN_GITHUB_BOT_ID isn't set"],
+        });
+      }),
+    ),
+  );
+
+  it.effect.each([
     // The host's environment.
     ["$HOME isn't the passwd home", { env: { HOME: "/Users/someone-else" } }, "home: $HOME isn't"],
     [
@@ -935,6 +994,15 @@ describe("GitHubIdentityProbe", () => {
       { git: answer({ stdout: "username=kin-bot\n" }) },
       "git_credential: the helper answered without a password",
     ],
+    // git's HTTPS transport sends these through curl, and `git credential fill` never sees them.
+    ...([".netrc", "_netrc"] as const).map(
+      (name) =>
+        [
+          `~/${name} exists`,
+          { files: { ...botMachine().files, [name]: "machine github.com login x password y\n" } },
+          "git_credential: ~/.netrc exists",
+        ] as const,
+    ),
     [
       "the helper's password is refused",
       { users: { [APP_TOKEN]: "kin-bot", [GH_TOKEN]: "kin-bot" } },
@@ -1206,6 +1274,13 @@ describe("GitHubIdentityProbe", () => {
         ["remote.origin.vcs", "owner", "remote.*.vcs"],
         ["submodule.lib.url", "https://ghp_secret@github.com/kin/lib", "submodule.*.url"],
         ["submodule.lib.update", "!owner", "submodule.*.update"],
+        // git takes a URL wherever it takes a remote's name.
+        ["branch.main.remote", "http://owner:ghp_secret@127.0.0.1/r", "branch.*.remote"],
+        ["branch.main.pushremote", "https://ghp_secret@github.com/k/a", "branch.*.pushremote"],
+        ["branch.main.remote", "git@github.com:kin/app.git", "branch.*.remote"],
+        ["branch.main.remote", null, "branch.*.remote"],
+        ["remote.pushdefault", "https://x:ghp_secret@github.com/k/a", "remote.pushdefault"],
+        ["remote.pushdefault", null, "remote.pushdefault"],
         ["gc.auto", "0", "gc.auto"],
       ] as const
     ).map(

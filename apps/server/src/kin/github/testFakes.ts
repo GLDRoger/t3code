@@ -9,10 +9,15 @@ import type { RepoSlug } from "@t3tools/contracts";
 import * as Keychain from "./Keychain.ts";
 import { KinGitHubScope } from "./KinGitHubScope.ts";
 
+/** The fake bot account's numeric id, which `scopeLayer` sets as `KIN_GITHUB_BOT_ID`. */
+export const BOT_ID = 4242;
+
 export const scopeLayer = (
   scope: {
     readonly ownerLogin?: string;
     readonly botLogin?: string;
+    /** Null leaves `KIN_GITHUB_BOT_ID` unset. */
+    readonly botId?: number | null;
     readonly repos?: ReadonlyArray<string>;
   } = {},
 ) =>
@@ -21,6 +26,7 @@ export const scopeLayer = (
     KinGitHubScope.of({
       ownerLogin: scope.ownerLogin ?? "Nishchay",
       botLogin: scope.botLogin ?? "kin-bot",
+      botId: Option.fromNullishOr(scope.botId === undefined ? BOT_ID : scope.botId),
       repos: (scope.repos ?? ["GLDRoger/t3code"]) as ReadonlyArray<RepoSlug>,
     }),
   );

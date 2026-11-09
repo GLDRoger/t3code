@@ -74,12 +74,14 @@ const isMissingCommand = (error: { readonly _tag: string; readonly cause?: unkno
 
 const isNotFound = (error: PlatformError.PlatformError) => error.reason._tag === "NotFound";
 
-const GitHubUser = Schema.Struct({ login: Schema.String });
+// The id names the account for good: a login can be renamed and registered again.
+const GitHubUser = Schema.Struct({ login: Schema.String, id: Schema.Int });
 const GhAuthStatus = Schema.fromJsonString(
   Schema.Struct({
     hosts: Schema.Record(Schema.String, Schema.Array(Schema.Struct({ login: Schema.String }))),
   }),
 );
+type GitHubUserAnswer = { readonly login: string; readonly id: number };
 const decodeGhAuthStatus = Schema.decodeUnknownOption(GhAuthStatus);
 
 /**
@@ -153,9 +155,9 @@ export const make = Effect.gen(function* () {
       Effect.mapError((error) =>
         error._tag === "T3GitHubIdentityError" ? error : unreadable(source, error.message),
       ),
-      Effect.map((response) => response.body.login.trim()),
+      Effect.map((response) => ({ login: response.body.login.trim(), id: response.body.id })),
       Effect.filterOrFail(
-        (login) => login !== "",
+        (user) => user.login !== "",
         () => unreadable(source, "GET /user named no login"),
       ),
     );
@@ -225,7 +227,7 @@ export const make = Effect.gen(function* () {
       if (Option.isSome(token)) tokens.push({ source: "gh", token: token.value });
     }
     return yield* Effect.forEach(tokens, ({ source, token }) =>
-      loginOf("t3", token).pipe(Effect.map((login) => ({ login, source }))),
+      loginOf("t3", token).pipe(Effect.map((user) => ({ ...user, source }))),
     );
   });
 
@@ -301,6 +303,26 @@ export const make = Effect.gen(function* () {
     }),
   );
 
+  /**
+   * git's HTTPS transport sends `~/.netrc` (or `_netrc`) through curl with no helper configured,
+   * and `git credential fill` never sees it, so any such file fails.
+   */
+  const netrcAbsent = Effect.forEach(
+    [".netrc", "_netrc"],
+    (name) =>
+      fs.stat(path.join(home, name)).pipe(
+        Effect.flatMap(() => Effect.fail(unreadable("git_credential", "~/.netrc exists"))),
+        Effect.catch((error) =>
+          error._tag === "T3GitHubIdentityError"
+            ? Effect.fail(error)
+            : isNotFound(error)
+              ? Effect.void
+              : Effect.fail(unreadable("git_credential", "~/.netrc can't be read")),
+        ),
+      ),
+    { discard: true },
+  );
+
   const fill = (username?: string) =>
     run({
       operation: "KinGitHubIdentity.gitCredential",
@@ -331,14 +353,15 @@ export const make = Effect.gen(function* () {
   const gitCredential = Effect.fn("KinGitHubIdentity.gitCredential")(function* (
     ownerLogins: ReadonlyArray<string>,
   ) {
+    yield* netrcAbsent;
     const helpers = yield* gitHelpers;
-    if (helpers === null) return { login: Option.none<string>(), ownerHeld: [] };
+    if (helpers === null) return { login: Option.none<GitHubUserAnswer>(), ownerHeld: [] };
     // `git credential fill` answers with the first helper's credential and hides the rest.
     if (helpers > 1) {
       return yield* unreadable("git_credential", "more than one credential helper is configured");
     }
     const answer = yield* fill();
-    let login = Option.none<string>();
+    let login = Option.none<GitHubUserAnswer>();
     if (answer.exitCode !== 0) {
       // With a helper configured, prompts being off also covers a crashed, locked or refusing one.
       if (!answer.promptsOff || helpers !== 0) {

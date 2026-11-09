@@ -375,13 +375,20 @@ export const make = Effect.gen(function* () {
       SELECT org_id AS "orgId" FROM kin_orgs ORDER BY org_id`.pipe(
       Effect.mapError(toPersistenceSqlError("KinActionExecutor.checkCredentials")),
     );
-    // Whether the host was failing when it last ran: an execution only starts on a pass.
+    // Whether the host was failing when it last ran, and why: an execution only starts on a pass.
     const lastCredentialEvent = (orgId: KinOrgId) =>
-      sql<{ readonly seq: number; readonly event: string }>`
-        SELECT seq, event FROM kin_audit
+      sql<{
+        readonly seq: number;
+        readonly event: string;
+        readonly result: string | null;
+        readonly held: number;
+      }>`
+        SELECT seq, event, json_extract(entry_json, '$.result') AS result,
+          json_extract(entry_json, '$.actionId') IS NOT NULL AS held
+        FROM kin_audit
         WHERE org_id = ${orgId} AND event IN ('credential_check_failed', 'execution_started')
         ORDER BY seq DESC LIMIT 1`.pipe(
-        Effect.map(([row]) => (row?.event === "credential_check_failed" ? row.seq : undefined)),
+        Effect.map(([row]) => (row?.event === "credential_check_failed" ? row : undefined)),
         Effect.mapError(toPersistenceSqlError("KinActionExecutor.checkCredentials")),
       );
     return yield* Effect.forEach(orgs, (row) =>
@@ -389,7 +396,14 @@ export const make = Effect.gen(function* () {
         const orgId = KinOrgId.make(row.orgId);
         const report = yield* hygiene.check(orgId);
         const result = [...report.failures, ...report.warnings, ...report.reasons].join(",");
-        const previous = reportedChecks.get(orgId);
+        let previous = reportedChecks.get(orgId);
+        // After a restart, a failure this check already reported (not an action's hold) stays quiet.
+        if (previous === undefined && !report.passed) {
+          const last = yield* lastCredentialEvent(orgId);
+          if (last !== undefined && !last.held && last.result === failureResult(report)) {
+            previous = result;
+          }
+        }
         reportedChecks.set(orgId, result);
         // An org with no merge token hasn't set GitHub up for Kin, so there is no one to tell.
         if (previous === result || report.failures.includes("merge_token_missing")) {
@@ -404,7 +418,7 @@ export const make = Effect.gen(function* () {
           yield* notices.credentialCheck({ orgId, report });
         } else {
           // After a restart, the audit log remembers a failure the owner hasn't heard the end of.
-          const failedAt = yield* lastCredentialEvent(orgId);
+          const failedAt = (yield* lastCredentialEvent(orgId))?.seq;
           if (previous !== undefined || failedAt !== undefined) {
             yield* notices.credentialCheck({
               orgId,

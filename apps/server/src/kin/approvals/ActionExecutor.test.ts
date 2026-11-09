@@ -34,6 +34,7 @@ import * as KinBotReads from "../github/KinBotReads.ts";
 import * as KinGitHubApp from "../github/KinGitHubApp.ts";
 import * as OwnerMergeClient from "../github/OwnerMergeClient.ts";
 import {
+  BOT_ID,
   fakeGitHub,
   memoryKeychain,
   scopeLayer,
@@ -311,7 +312,7 @@ function harness(
           checks.failing
             ? Effect.fail(new CredentialHygiene.T3GitHubIdentityError({ cause: "probe failed" }))
             : Effect.succeed({
-                t3: [{ login: "kin-bot", source: "app" }],
+                t3: [{ login: "kin-bot", id: BOT_ID, source: "app" }],
                 ghAccounts: ["kin-bot"],
                 gitCredential: Option.none(),
                 gitCredentialFor: [],
@@ -1314,7 +1315,7 @@ describe("KinActionExecutor", () => {
     },
   );
 
-  it.effect("tells only orgs with a merge token, and says it passes again after a restart", () => {
+  it.effect("tells only orgs with a merge token, and only of changes across restarts", () => {
     const { checks, credentialNotices, deps } = harness();
     return Effect.gen(function* () {
       const { sql } = yield* seed;
@@ -1326,9 +1327,13 @@ describe("KinActionExecutor", () => {
       assert.deepStrictEqual(credentialNotices.sent, [{ orgId, failures: ["identity_unknown"] }]);
       const others = yield* sql`SELECT seq FROM kin_audit WHERE org_id = 'org_02'`;
       assert.lengthOf(others, 0);
-      const [failure] = (yield* auditEntries).filter(
+      // Restarted while still failing: the owner already heard, so no second notice or entry.
+      for (const _ of [1, 2]) yield* (yield* ActionExecutor.make).checkCredentials;
+      assert.lengthOf(credentialNotices.sent, 1);
+      const [failure, ...again] = (yield* auditEntries).filter(
         (entry) => entry.event === "credential_check_failed",
       );
+      assert.lengthOf(again, 0);
 
       // Restarted after the fix: each new executor says it passes again, under one notice id.
       checks.failing = false;

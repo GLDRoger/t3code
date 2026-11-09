@@ -14,7 +14,7 @@ import {
   CredentialHygieneFailure,
   type CredentialHygieneReport,
 } from "./CredentialHygieneReport.ts";
-import { forbiddenEnvNames } from "./HostConfigAllowlist.ts";
+import { forbiddenEnvNames, refusedProviderEnvChanges } from "./HostConfigAllowlist.ts";
 
 /**
  * The probe the live layer (`GitHubIdentityProbe.ts`) runs for `T3GitHubIdentities.ssh`, with
@@ -82,18 +82,23 @@ export class T3GitHubIdentityError extends Schema.TaggedError<T3GitHubIdentityEr
  */
 export interface T3GitHubIdentities {
   /**
-   * Every credential T3 holds for github.com, each named by `GET /user`: the token saved in
-   * Settings, the app sign-in, `GH_TOKEN`/`GITHUB_TOKEN` and `gh auth token`, whether or not the
-   * host is enabled. `source` is where it came from; `"env"` fails the check.
+   * Every credential T3 holds for github.com, each named by `GET /user` (its login and account
+   * id): the token saved in Settings, the app sign-in, `GH_TOKEN`/`GITHUB_TOKEN` and
+   * `gh auth token`, whether or not the host is enabled. `source` is where it came from; `"env"`
+   * fails the check.
    */
-  readonly t3: ReadonlyArray<{ readonly login: string; readonly source: string }>;
+  readonly t3: ReadonlyArray<{
+    readonly login: string;
+    readonly id: number;
+    readonly source: string;
+  }>;
   /** Every account `gh auth status --hostname github.com` lists, active or not. */
   readonly ghAccounts: ReadonlyArray<string>;
   /**
-   * The login behind `git credential fill` for `https://github.com` (`GET /user` with the
-   * helper's password, never logged). None when no helper answers.
+   * The login and account id behind `git credential fill` for `https://github.com` (`GET /user`
+   * with the helper's password, never logged). None when no helper answers.
    */
-  readonly gitCredential: Option.Option<string>;
+  readonly gitCredential: Option.Option<{ readonly login: string; readonly id: number }>;
   /** The owner logins asked about that the git helper also holds a password for. */
   readonly gitCredentialFor: ReadonlyArray<string>;
   /**
@@ -250,6 +255,17 @@ const make = Effect.gen(function* () {
       ),
     ];
 
+    // A login can be renamed and registered again; the id can't. Without one, nothing to compare.
+    if (Option.isNone(scope.botId)) {
+      failures.add("identity_unknown");
+      reasons.push("KIN_GITHUB_BOT_ID isn't set");
+    }
+    const tokenBacked: Array<{
+      readonly source: string;
+      readonly login: string;
+      readonly id: number;
+    }> = [];
+
     const probed = yield* probe(askAbout).pipe(Effect.result);
     let t3Login: string | null = null;
     const found: Array<CredentialHygieneReport["identities"][number]> = [];
@@ -260,30 +276,31 @@ const make = Effect.gen(function* () {
       const { t3, ghAccounts, gitCredential, gitCredentialFor, ssh, providerEnvironments } =
         probed.success;
       t3Login = t3[0]?.login ?? null;
-      for (const { login, source } of t3) {
+      for (const { login, id, source } of t3) {
         if (source === "env") failures.add("env_token");
         found.push({ source: "t3", login });
+        tokenBacked.push({ source: "t3", login, id });
       }
       for (const login of ghAccounts) found.push({ source: "gh", login });
       if (Option.isSome(gitCredential)) {
-        found.push({ source: "git_credential", login: gitCredential.value });
+        found.push({ source: "git_credential", login: gitCredential.value.login });
+        tokenBacked.push({ source: "git_credential", ...gitCredential.value });
       }
       if (gitCredentialFor.length > 0) {
         failures.add("owner_identity");
         reasons.push("the git credential helper holds a password for the owner's login");
       }
       for (const { instance, names } of providerEnvironments) {
+        const shown = /^[A-Za-z0-9_-]{1,64}$/.test(instance) ? `"${instance}"` : "an instance";
         const own = forbiddenEnvNames(Object.fromEntries(names.map((name) => [name, "set"])));
         for (const name of own.filter((name) => !envNames.includes(name))) {
           failures.add("env_token");
-          const shown = /^[A-Za-z0-9_-]{1,64}$/.test(instance) ? `"${instance}"` : "an instance";
           reasons.push(`provider instance ${shown}'s environment sets ${name}`);
         }
-        // Agents would then run another ssh, git or gh than the ones this probe asked.
-        if (names.includes("PATH")) {
+        // Agents would then run another program, config or startup file than the probe read.
+        for (const name of refusedProviderEnvChanges(names)) {
           failures.add("env_token");
-          const shown = /^[A-Za-z0-9_-]{1,64}$/.test(instance) ? `"${instance}"` : "an instance";
-          reasons.push(`provider instance ${shown}'s environment changes PATH`);
+          reasons.push(`provider instance ${shown}'s environment changes ${name}`);
         }
       }
       // The probe as is always runs, so no answer means the live layer skipped SSH.
@@ -311,6 +328,14 @@ const make = Effect.gen(function* () {
       const normalized = login.toLowerCase();
       if (ownerLogins.has(normalized)) failures.add("owner_identity");
       else if (normalized !== bot) failures.add("non_bot_identity");
+    }
+    // SSH greets by login only; every token names its account id too.
+    for (const { source, login, id } of tokenBacked) {
+      if (login.toLowerCase() !== bot || Option.isNone(scope.botId) || id === scope.botId.value) {
+        continue;
+      }
+      failures.add("non_bot_identity");
+      reasons.push(`${source}: the bot's login belongs to an account other than KIN_GITHUB_BOT_ID`);
     }
 
     const report: CredentialHygieneReport = {
