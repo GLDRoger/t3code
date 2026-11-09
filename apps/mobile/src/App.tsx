@@ -32,6 +32,7 @@ import {
   pruneIncomingShareImports,
   startIncomingShareInbox,
 } from "./features/sharing/IncomingShareProvider";
+import { installKinNotifications } from "./features/chats/notifications/installKinNotifications";
 import {
   installAgentNotificationNavigation,
   setAgentNotificationPathname,
@@ -193,6 +194,7 @@ const appServiceDisposers = [
   installThreadOutboxDelivery(),
   installComposerAttachmentUploads(),
   startIncomingShareInbox(),
+  installKinNotifications(linkToAppPath),
   installAgentNotificationNavigation(linkToAppPath),
   installAppShortcuts(linkToAppPath),
   installAppUpdateChecks(),

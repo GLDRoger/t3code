@@ -6,14 +6,18 @@ import {
   environmentSessionGenerationAtom,
 } from "@t3tools/client-runtime/state/runtime";
 import { persistQuery } from "@t3tools/client-runtime/state/query-persistence";
+import { watchKinChatForPush } from "@t3tools/client-runtime/kin-push";
 import {
   KIN_CHAT_WS_METHODS,
+  KIN_PUSH_WS_METHODS,
   KinOrgsListResult,
   type EnvironmentId,
   type KinOrgsListInput,
+  type KinPushWatchInput,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 import { Atom, AsyncResult, AtomRegistry } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../../../connection/runtime";
@@ -140,5 +144,15 @@ export const kinClient = {
     label: "kin:widget-action",
     tag: KIN_CHAT_WS_METHODS.widgetsAct,
     concurrency: { mode: "singleFlight", key: ({ input }) => input.clientActionId },
+  }),
+  registerPush: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:register-push",
+    tag: KIN_PUSH_WS_METHODS.registerDevice,
+  }),
+  /** Mounted while a chat is on screen: the host skips this device's pushes for it. */
+  pushWatch: createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {
+    label: "kin:push-watch",
+    subscribe: ({ chatId }: KinPushWatchInput) => Stream.fromEffect(watchKinChatForPush(chatId)),
+    idleTtlMs: 0,
   }),
 };

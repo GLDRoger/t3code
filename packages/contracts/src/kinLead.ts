@@ -168,6 +168,26 @@ export const KinDeferralCard = Schema.Struct({
 });
 export type KinDeferralCard = typeof KinDeferralCard.Type;
 
+/** What a deferral card's buttons post as `actionId`, each with the item id as `value`. */
+export const KIN_DEFERRAL_CARD_ACTIONS = [
+  "change",
+  "remind",
+  "start_now",
+  "monday",
+  "cancel",
+] as const;
+export type KinDeferralCardAction = (typeof KIN_DEFERRAL_CARD_ACTIONS)[number];
+
+export const kinDeferralWidgetId = (orgId: string, itemId: string) => `deferral:${orgId}:${itemId}`;
+
+/** The item a deferral card's widget id names, or null for any other widget. */
+export function kinDeferralItemIdFromWidgetId(orgId: string, widgetId: string): string | null {
+  const prefix = kinDeferralWidgetId(orgId, "");
+  return widgetId.startsWith(prefix) && widgetId.length > prefix.length
+    ? widgetId.slice(prefix.length)
+    : null;
+}
+
 const EventBase = {
   orgId: KinOrgId,
   eventId: KinEventId,

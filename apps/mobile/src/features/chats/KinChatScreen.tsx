@@ -4,6 +4,7 @@ import { View } from "react-native";
 import { AppBar } from "../../components/ui/AppBar";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ScreenContent } from "../../components/ui/ScreenContent";
+import { KinChatPushWatch } from "./notifications/KinChatPushWatch";
 
 type KinChatParams = {
   readonly environmentId: string;
@@ -12,10 +13,11 @@ type KinChatParams = {
 };
 
 /** Placeholder until MOB-4's feed, so the chat list, Waiting on you and links can open a chat. */
-export function KinChatScreen(_props: StaticScreenProps<KinChatParams>) {
+export function KinChatScreen({ route }: StaticScreenProps<KinChatParams>) {
   const navigation = useNavigation();
   return (
     <View collapsable={false} className="flex-1 bg-screen">
+      <KinChatPushWatch environmentId={route.params.environmentId} chatId={route.params.chatId} />
       <AppBar title="Chat" onBack={() => navigation.goBack()} />
       <ScreenContent surface="screen">
         <View className="flex-1 justify-center p-4">
