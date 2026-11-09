@@ -4,6 +4,7 @@ import {
   authScopeRequiredResponse,
   type EnvironmentId,
   type ClientGuardedRpcTag,
+  KIN_CHAT_WS_METHODS,
   KIN_PUSH_WS_METHODS,
   ORCHESTRATION_V2_WS_METHODS,
   WS_METHODS,
@@ -73,6 +74,8 @@ export type EnvironmentSubscriptionRpcTag =
   | typeof WS_METHODS.subscribeProjectClones
   | typeof WS_METHODS.terminalAttach
   | typeof WS_METHODS.terminalObserve
+  | typeof KIN_CHAT_WS_METHODS.chatsSubscribe
+  | typeof KIN_CHAT_WS_METHODS.chatSubscribe
   | typeof KIN_PUSH_WS_METHODS.watch;
 
 export type EnvironmentStreamCommandRpcTag =
