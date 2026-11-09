@@ -1109,6 +1109,7 @@ describe("WakeupRunner", () => {
           Layer.mock(KinIdentity.KinIdentity)({
             owner: { _tag: "person", orgId, personId: KinPersonId.make("owner") },
             isAgentThread: () => false,
+            isLeadThread: () => false,
           }),
         ),
         Layer.provide(

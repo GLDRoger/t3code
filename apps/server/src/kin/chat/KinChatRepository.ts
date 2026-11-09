@@ -165,6 +165,10 @@ const widgetColumns = `org_id AS "orgId", chat_id AS "chatId", widget_id AS "wid
 const WaitingRow = KinWaitingItem;
 const waitingColumns = `waiting_id AS "waitingId", org_id AS "orgId", person_id AS "personId", chat_id AS "chatId", message_id AS "messageId", widget_id AS "widgetId", reason AS "reason", created_at AS "createdAt", resolved_at AS "resolvedAt", resolution AS "resolution"`;
 const AgentThreadRow = KinAgentThread;
+const ActiveAgentThreadRow = Schema.Struct({
+  ...KinAgentThread.fields,
+  role: KinAgent.fields.role,
+});
 const agentThreadColumns = `org_id AS "orgId", thread_id AS "threadId", agent_id AS "agentId", started_at AS "startedAt", ended_at AS "endedAt"`;
 const ReadStateRow = KinReadState;
 const readStateColumns = `org_id AS "orgId", chat_id AS "chatId", member_id AS "memberId", last_read_seq AS "lastReadSeq", updated_at AS "updatedAt"`;
@@ -225,7 +229,7 @@ export class KinChatRepository extends Context.Service<
       threadId: ThreadId,
     ) => Effect.Effect<Option.Option<KinAgentThread>, RepositoryError>;
     readonly listActiveAgentThreads: () => Effect.Effect<
-      ReadonlyArray<KinAgentThread>,
+      ReadonlyArray<typeof ActiveAgentThreadRow.Type>,
       RepositoryError
     >;
     readonly listAllOrgs: () => Effect.Effect<ReadonlyArray<KinOrg>, RepositoryError>;
@@ -696,12 +700,12 @@ const make = Effect.gen(function* () {
       function* () {
         return yield* SqlSchema.findAll({
           Request: Schema.Unknown,
-          Result: AgentThreadRow,
+          Result: ActiveAgentThreadRow,
           execute: () =>
-            sql`SELECT ${sql.literal(agentThreadColumns)} FROM kin_agent_threads
- WHERE ended_at IS NULL AND EXISTS (SELECT 1 FROM kin_agents a
- WHERE a.org_id = kin_agent_threads.org_id AND a.agent_id = kin_agent_threads.agent_id AND a.retired_at IS NULL)
- ORDER BY org_id, thread_id`,
+            sql`SELECT t.org_id AS "orgId", t.thread_id AS "threadId", t.agent_id AS "agentId", t.started_at AS "startedAt", t.ended_at AS "endedAt", a.role AS "role"
+ FROM kin_agent_threads t JOIN kin_agents a ON a.org_id = t.org_id AND a.agent_id = t.agent_id
+ WHERE t.ended_at IS NULL AND a.retired_at IS NULL
+ ORDER BY t.org_id, t.thread_id`,
         })(undefined).pipe(NodeSqliteClient.readOnly);
       },
       Effect.mapError(toRepositoryError("KinChatRepository.listActiveAgentThreads")),

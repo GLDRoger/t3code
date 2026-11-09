@@ -26,6 +26,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import {
   HttpEffect,
@@ -77,6 +78,13 @@ import { GitVcsDriver } from "../../vcs/GitVcsDriver.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { DocumentText } from "../../provider/DocumentText.ts";
 import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
+const decodeToolList = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      result: Schema.Struct({ tools: Schema.Array(Schema.Struct({ name: Schema.String })) }),
+    }),
+  ),
+);
 const serverConfig = ServerConfig.layerTest(process.cwd(), { prefix: "t3-agent-context-budget-" });
 const toolHandlerServices = Layer.mergeAll(
   VcsProcess.layer,
@@ -296,12 +304,17 @@ it.effect.each([true, false])(
           {},
           initialized.headers["mcp-session-id"],
         );
-        const toolListText = yield* Effect.promise(() => HttpServerResponse.toWeb(toolList).text());
-        assert.include(toolListText, "kin_chat_read");
-        assert.include(toolListText, "request_action");
-        assert.notInclude(toolListText, "schedule_task");
-        assert.notInclude(toolListText, "t3_thread_launch");
-        assert.notInclude(toolListText, "create_threads");
+        const toolNames = decodeToolList(
+          yield* Effect.promise(() => HttpServerResponse.toWeb(toolList).text()),
+        ).result.tools.map((tool) => tool.name);
+        assert.includeMembers(toolNames, [
+          "kin_chat_read",
+          "request_action",
+          "kin_delegate",
+          "kin_end",
+        ]);
+        for (const name of ["schedule_task", "t3_thread_launch", "create_threads"])
+          assert.notInclude(toolNames, name);
         assert.strictEqual(
           (yield* request("/mcp", issued.config.authorizationHeader, "initialize", initialize))
             .status,

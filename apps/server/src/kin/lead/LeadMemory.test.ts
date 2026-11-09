@@ -257,39 +257,41 @@ it.live(
           level: "L1",
         });
         const server = yield* McpServer.McpServer;
-        const visible = Effect.sync(() =>
-          server.tools
-            .filter(({ annotations }) =>
-              Context.getOrUndefined(
-                annotations,
-                McpSchema.EnabledWhen,
-              )?.(client.initializePayload),
-            )
-            .map(({ tool }) => tool.name),
-        );
-        assert.sameMembers(
-          yield* visible.pipe(Effect.provideService(McpInvocationContext, scope)),
-          [
-            "kin_delegate",
-            "kin_follow_up",
-            "kin_worker_stop",
-            "memory_search",
-            "memory_read",
-            "memory_write",
-            "kin_defer",
-            "kin_journal",
-            "kin_end",
-          ],
-        );
+        // Replace the fiber context with only what the /kin/mcp endpoint provides when tools/list runs.
+        const visible = (invocation: McpInvocationScope) =>
+          Effect.sync(() =>
+            server.tools
+              .filter(({ annotations }) =>
+                Context.getOrUndefined(
+                  annotations,
+                  McpSchema.EnabledWhen,
+                )?.(client.initializePayload),
+              )
+              .map(({ tool }) => tool.name),
+          ).pipe(
+            Effect.updateContext((_: Context.Context<never>) =>
+              Context.make(McpInvocationContext, invocation).pipe(
+                Context.add(KinIdentity, identity),
+              ),
+            ),
+          );
+        assert.sameMembers(yield* visible(scope), [
+          "kin_delegate",
+          "kin_follow_up",
+          "kin_worker_stop",
+          "memory_search",
+          "memory_read",
+          "memory_write",
+          "kin_defer",
+          "kin_journal",
+          "kin_end",
+        ]);
         for (const thread of [
           undefined,
           { ...scope.thread!, subagent: true },
           { ...scope.thread!, threadId: ThreadId.make("ordinary") },
         ]) {
-          assert.deepStrictEqual(
-            yield* visible.pipe(Effect.provideService(McpInvocationContext, { ...scope, thread })),
-            [],
-          );
+          assert.deepStrictEqual(yield* visible({ ...scope, thread }), []);
           assert.strictEqual(
             (yield* service.search({ ...scope, thread }, {}).pipe(Effect.flip)).reason,
             "not_allowed",
@@ -303,12 +305,7 @@ it.live(
           threadId: workerThread,
         });
         assert.deepStrictEqual(
-          yield* visible.pipe(
-            Effect.provideService(McpInvocationContext, {
-              ...scope,
-              thread: { ...scope.thread!, threadId: workerThread },
-            }),
-          ),
+          yield* visible({ ...scope, thread: { ...scope.thread!, threadId: workerThread } }),
           [],
         );
         const memory = yield* Memory.Memory;
@@ -327,6 +324,7 @@ it.live(
           .callTool({ name: "memory_read", arguments: { id: "a-item" } })
           .pipe(
             Effect.provideService(McpInvocationContext, scope),
+            Effect.provideService(KinIdentity, identity),
             Effect.provideService(McpSchema.McpServerClient, client),
           );
         assert.isFalse(toolRead.isError);
