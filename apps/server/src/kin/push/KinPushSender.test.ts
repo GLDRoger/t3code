@@ -596,6 +596,11 @@ describe("KinPushDevices", () => {
             assert.deepStrictEqual(yield* owners, [{ person_id: owner }]);
           });
         yield* refuses(takeover);
+        // Two keyless callers never share a proof key, even after expiry.
+        yield* sql`UPDATE auth_sessions SET expires_at = ${T} WHERE session_id = 'sess-owner-phone'`;
+        yield* refuses(takeover);
+        yield* sql`UPDATE auth_sessions SET expires_at = '2026-12-07T00:00:00.000Z'
+        WHERE session_id = 'sess-owner-phone'`;
         yield* sql`UPDATE kin_push_devices SET proof_key_thumbprint = ${phoneKey}
         WHERE token = ${ownerPhone}`;
         // The same proof key can't take a device whose session is still live.

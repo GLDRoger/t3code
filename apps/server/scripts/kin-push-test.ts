@@ -30,6 +30,10 @@ const decodeData = Schema.decodeEffect(KinPushData);
 
 const program = Effect.gen(function* () {
   const [rawToken, rawEnvironmentId, rawEnvironment = "development"] = process.argv.slice(2);
+  if (rawEnvironmentId === "development" || rawEnvironmentId === "production")
+    return yield* new KinPushTestError({
+      message: "The second argument is the host environment id; the APNs environment is third.",
+    });
   const token = yield* decodeToken(rawToken?.toLowerCase());
   const environmentId = yield* decodeEnvironmentId(rawEnvironmentId);
   const environment = yield* decodeEnvironment(rawEnvironment);
