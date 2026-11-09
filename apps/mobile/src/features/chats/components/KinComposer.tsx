@@ -27,6 +27,9 @@ const EDITOR_INSET = 6;
 
 const lengthFormat = new Intl.NumberFormat();
 
+/** The space under the Send row while the keyboard is up, and the least it gets without one. */
+export const KIN_COMPOSER_GUTTER = 12;
+
 /** Puts an unsent body back in the draft, ahead of anything typed since. */
 function restoreDraft(draftKey: string, body: string) {
   const typed = getComposerDraftSnapshot(draftKey).text;
@@ -49,6 +52,8 @@ export function KinComposer(props: {
   readonly chatId: KinChatId;
   readonly environmentId: EnvironmentId;
   readonly recipient: string;
+  /** Space under the Send row: the bottom safe area, at least `KIN_COMPOSER_GUTTER`. */
+  readonly bottomInset: number;
   /** Called once the message is in the outbox, so the feed can show the end. */
   readonly onSend: () => void;
 }) {
@@ -89,7 +94,10 @@ export function KinComposer(props: {
   };
 
   return (
-    <View className="gap-1 border-t border-border bg-screen px-3 pt-2 pb-3">
+    <View
+      className="gap-1 border-t border-border bg-screen px-3 pt-2"
+      style={{ paddingBottom: props.bottomInset }}
+    >
       {hint === null ? null : (
         <Text
           textRole="caption"

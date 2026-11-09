@@ -275,7 +275,9 @@ describe("kinOutbox", () => {
   });
 
   it("refuses a body over the limit and a send past the cap, queuing neither", async () => {
-    const { outbox, chat, full } = setup(makeHost(), makeStorage(), undefined, { maxEntries: 2 });
+    const { host, outbox, chat, full } = setup(makeHost(), makeStorage(), undefined, {
+      maxEntries: 2,
+    });
     const long = "x".repeat(KIN_MESSAGE_MAX_LENGTH + 1);
     expect(await outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: long })).toEqual({
       _tag: "too_long",
@@ -290,6 +292,12 @@ describe("kinOutbox", () => {
     });
     expect(chat().map((entry) => entry.body)).toEqual(["one", "two"]);
     await outbox.discard(chat()[0]!.clientMessageId);
+    expect(full()).toBe(false);
+    // A sent message waiting for its echo no longer counts toward the cap.
+    host.setOnline(true);
+    await outbox.deliver(ENV);
+    await outbox.enqueue({ environmentId: ENV, chatId: CHAT, body: "three" });
+    expect(chat().map((entry) => entry.state)).toEqual(["sent", "waiting"]);
     expect(full()).toBe(false);
   });
 

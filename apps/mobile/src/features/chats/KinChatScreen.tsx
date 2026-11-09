@@ -25,6 +25,7 @@ import { Atom, type AsyncResult } from "effect/reactivity";
 import { useEffect, useRef, useState } from "react";
 import { View } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppBar } from "../../components/ui/AppBar";
 import { Button } from "../../components/ui/Button";
@@ -41,7 +42,12 @@ import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useMarkdownPreviewStyles } from "../files/FileMarkdownPreview";
-import { editKinOutboxEntry, KinComposer, kinDraftKey } from "./components/KinComposer";
+import {
+  editKinOutboxEntry,
+  KIN_COMPOSER_GUTTER,
+  KinComposer,
+  kinDraftKey,
+} from "./components/KinComposer";
 import { KinFoldLine } from "./components/KinFoldLine";
 import {
   KinDayLine,
@@ -428,6 +434,9 @@ function KinChatFeed(props: {
   const reduceMotion = useReduceMotionEnabled();
   const barOverlap = useBarOverlap();
   const markdownStyle = useMarkdownPreviewStyles().nativeTextStyle;
+  // Clears the home indicator; the keyboard offset gives that space back while the keyboard is up.
+  const composerInset = Math.max(useSafeAreaInsets().bottom, KIN_COMPOSER_GUTTER);
+  const keyboardOffset = KIN_COMPOSER_GUTTER - composerInset;
   const openLink = useOpenPullRequest();
   const [heldPaging, setPaging] = useState<KinPaging>(initialKinPaging);
   const [expandedRuns, setExpandedRuns] = useState<ReadonlySet<string>>(new Set());
@@ -544,7 +553,7 @@ function KinChatFeed(props: {
     );
     if (seq > 0) transition({ type: "seen", seq });
   };
-  const seenPairs: ViewabilityConfigCallbackPairs<KinFeedRow> = SEEN_ROW_CONFIGS.map(
+  const seenPairs: ViewabilityConfigCallbackPairs<KinChatRow> = SEEN_ROW_CONFIGS.map(
     (viewabilityConfig) => ({ viewabilityConfig, onViewableItemsChanged: markSeen }),
   );
 
@@ -600,6 +609,7 @@ function KinChatFeed(props: {
       chatId={props.chatId}
       environmentId={props.environmentId}
       recipient={props.title}
+      bottomInset={composerInset}
       onSend={jumpToEnd}
     />
   );
@@ -655,7 +665,12 @@ function KinChatFeed(props: {
   // After a reset the feed is empty until the latest page reloads; that's not an empty chat.
   if (rows.length === 0 && earlierPage === null && !live.needsHistoryReload) {
     return (
-      <KeyboardAvoidingView automaticOffset behavior="padding" className="flex-1">
+      <KeyboardAvoidingView
+        automaticOffset
+        behavior="padding"
+        keyboardVerticalOffset={keyboardOffset}
+        className="flex-1"
+      >
         <View className="flex-1 justify-center p-4">
           {header}
           <EmptyState
@@ -677,7 +692,12 @@ function KinChatFeed(props: {
   }
 
   return (
-    <KeyboardAvoidingView automaticOffset behavior="padding" className="flex-1">
+    <KeyboardAvoidingView
+      automaticOffset
+      behavior="padding"
+      keyboardVerticalOffset={keyboardOffset}
+      className="flex-1"
+    >
       <View className="flex-1">
         <LegendList
           ref={listRef}
