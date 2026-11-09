@@ -124,7 +124,7 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         if (request.method === "POST" && path === "/pulls") {
           if (scenario === "hang") {
             yield* Deferred.succeed(silenced, undefined);
-            return { status: 0, hang: true };
+            return { status: 0, hang: true as const };
           }
           const number = pulls.size + 1;
           pulls.set(number, { branch: body!.head!, state: "open", base: body!.base! });
@@ -278,7 +278,7 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         if (checks) {
           if (scenario === "stall-body") {
             yield* Deferred.succeed(silenced, undefined);
-            return { status: 200, stallBody: true };
+            return { status: 200, stallBody: true as const };
           }
           const check = (id: number, suite: number) => ({
             id,
@@ -568,23 +568,20 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         expect(notices.map((notice) => notice.reason)).toContainEqual(
           "Memory changes on paths you review were not opened as a PR: Kin could not record the commit it pushed (MemoryPullRequests.recordReview)",
         );
-        const sweepRefusal = Effect.gen(function* () {
-          const error = yield* refused(writer.sweepPullRequests(orgId));
-          return error.reason;
-        });
+        const sweepRefusal = refused(writer.sweepPullRequests(orgId));
         yield* sql`DROP TRIGGER no_insert`;
         yield* sql`INSERT INTO kin_memory_review_pulls (org_id, branch, head)
           VALUES (${orgId}, 'kin/write/gone-review', ${original})
           ON CONFLICT (org_id, branch) DO NOTHING`;
         yield* sql`CREATE TRIGGER no_delete BEFORE DELETE ON kin_memory_review_pulls
           BEGIN SELECT RAISE(ABORT, 'fixture'); END`;
-        expect(yield* sweepRefusal).toBe(
-          "Kin could not update its record of review PRs (MemoryPullRequests.forgetReview)",
-        );
+        expect(yield* sweepRefusal).toMatchObject({
+          reason: "Kin could not update its record of review PRs (MemoryPullRequests.forgetReview)",
+        });
         yield* sql`ALTER TABLE kin_memory_review_pulls RENAME TO kin_memory_review_pulls_gone`;
-        expect(yield* sweepRefusal).toBe(
-          "Kin could not read its record of review PRs (MemoryPullRequests.records)",
-        );
+        expect(yield* sweepRefusal).toMatchObject({
+          reason: "Kin could not read its record of review PRs (MemoryPullRequests.records)",
+        });
         return;
       }
 
