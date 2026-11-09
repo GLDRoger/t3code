@@ -371,11 +371,13 @@ const make = Effect.gen(function* () {
         AND r.chat_id = json_extract(e.json, '$.chatId') AND r.opened_by = json_extract(e.json, '$.messageId')
       JOIN kin_chats c ON c.org_id = r.org_id AND c.chat_id = r.chat_id AND c.kind = 'direct'
       JOIN kin_floor_grants g ON g.org_id = r.org_id AND g.run_id = r.run_id AND g.agent_id = e.agent_id
-        AND g.consumed_at IS NULL AND g.expires_at > ${now}
+        AND g.expires_at > ${now}
       JOIN kin_chat_members m ON m.org_id = r.org_id AND m.chat_id = r.chat_id AND m.principal_kind = 'agent'
         AND m.agent_id = e.agent_id AND m.left_at IS NULL
       WHERE e.org_id = ${ctx.orgId} AND e.agent_id = ${ctx.agentId} AND e.wakeup_id = ${ctx.wakeupId}
-        AND e.tag IN ('chat.message', 'widget.action')
+        AND e.tag = 'chat.message'
+        AND NOT EXISTS (SELECT 1 FROM kin_messages x WHERE x.org_id = r.org_id AND x.chat_id = r.chat_id
+          AND x.floor_run_id = r.run_id AND x.author_kind = 'agent' AND x.author_agent_id = e.agent_id)
       ORDER BY r.chat_id`;
     for (const row of pending) {
       if (row.mutedUntil !== null && Date.parse(row.mutedUntil) > now) continue;
@@ -391,7 +393,7 @@ const make = Effect.gen(function* () {
         continue;
       return yield* new KinChatError({
         reason: "invalid_state",
-        message: `Reply to the owner with kin_chat_post in chat ${row.chatId} before kin_end. Your plain text is never shown.`,
+        message: `Reply in chat ${row.chatId} with kin_chat_post before kin_end. Your plain text is never shown.`,
       });
     }
   });

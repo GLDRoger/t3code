@@ -507,7 +507,7 @@ it.live(
           .end(scope, { summary: "Finished fixture" })
           .pipe(Effect.flip);
         assert.strictEqual(unanswered.reason, "invalid_state");
-        assert.include(unanswered.message, `kin_chat_post in chat ${chat.chatId}`);
+        assert.include(unanswered.message, `Reply in chat ${chat.chatId} with kin_chat_post`);
         const lead = yield* identity.resolveAgent(scope);
         yield* chats.send(lead, {
           chatId: chat.chatId,
@@ -515,6 +515,8 @@ it.live(
           clientMessageId: "fixture-reply",
           intent: "answer",
         });
+        // The lead's message in the run is the reply, even if a grant stays usable after it.
+        yield* sql`UPDATE kin_floor_grants SET consumed_at = NULL WHERE org_id = ${orgId}`;
         yield* service.end(scope, { summary: "Finished fixture" });
         yield* service.end(scope, { summary: "Finished fixture" });
         assert.strictEqual(
@@ -537,6 +539,10 @@ it.live(
           (yield* service.end(scope, { summary: "Finished fixture" }).pipe(Effect.flip)).reason,
           "invalid_state",
         );
+        // A muted lead can't post, so it may end.
+        yield* sql`UPDATE kin_chat_members SET muted_until = '2100-01-01T00:00:00.000Z' WHERE org_id = ${orgId} AND chat_id = ${chat.chatId} AND agent_id = ${agentId}`;
+        yield* service.end(scope, { summary: "Finished fixture" });
+        yield* sql`UPDATE kin_chat_members SET muted_until = NULL WHERE org_id = ${orgId} AND chat_id = ${chat.chatId} AND agent_id = ${agentId}`;
         yield* sql`UPDATE kin_floor_grants SET expires_at = 0 WHERE org_id = ${orgId} AND consumed_at IS NULL`;
         assert.include(
           yield* chats
