@@ -38,6 +38,11 @@ function registerCategories(): void {
   }
 }
 
+const kinHostEnvironment = () => {
+  const host = appAtomRegistry.get(kinHostAtom);
+  return host._tag === "host" ? host.environmentId : null;
+};
+
 const isConnected = (environmentId: EnvironmentId) =>
   appAtomRegistry.get(environmentPresentations.presentationsAtom).get(environmentId)?.connection
     .phase === "connected";
@@ -48,6 +53,14 @@ function createActionDelivery() {
   const inFlight = new Set<string>();
   const flush = () => {
     for (const [key, target] of pending) {
+      const hostEnvironment = kinHostEnvironment();
+      if (hostEnvironment === null) continue;
+      // Any host holding this phone's token can send a push; only the Kin host's own buttons act.
+      if (hostEnvironment !== target.environmentId) {
+        pending.delete(key);
+        console.warn("Dropped a Kin notification action for another host");
+        continue;
+      }
       if (inFlight.has(key) || !isConnected(target.environmentId)) continue;
       inFlight.add(key);
       void runAtomCommand(appAtomRegistry, kinClient.widgetAction, target, {
@@ -67,13 +80,20 @@ function createActionDelivery() {
       });
     }
   };
-  const unsubscribe = appAtomRegistry.subscribe(environmentPresentations.presentationsAtom, flush);
+  const unsubscribePresentations = appAtomRegistry.subscribe(
+    environmentPresentations.presentationsAtom,
+    flush,
+  );
+  const unsubscribeHost = appAtomRegistry.subscribe(kinHostAtom, flush);
   return {
     post: (environmentId: EnvironmentId, input: KinWidgetsActInput) => {
       pending.set(input.clientActionId, { environmentId, input });
       flush();
     },
-    dispose: unsubscribe,
+    dispose: () => {
+      unsubscribePresentations();
+      unsubscribeHost();
+    },
   };
 }
 
@@ -114,11 +134,18 @@ function createTokenRegistration() {
     const key = `${environmentId}\u0000${generation}\u0000${token}`;
     if (registered === key) return;
     registered = key;
-    for (const { orgId } of host.probe.orgs.me) {
-      void runAtomCommand(appAtomRegistry, kinClient.registerPush, {
-        environmentId,
-        input: { orgId, token, platform: "ios", apsEnvironment },
-      });
+    const current = token;
+    const results = await Promise.all(
+      host.probe.orgs.me.map(({ orgId }) =>
+        runAtomCommand(appAtomRegistry, kinClient.registerPush, {
+          environmentId,
+          input: { orgId, token: current, platform: "ios", apsEnvironment },
+        }),
+      ),
+    );
+    // A failed org retries on the next host change instead of waiting for a new session.
+    if (results.some((result) => result._tag !== "Success") && registered === key) {
+      registered = null;
     }
   };
   const run = () => {
@@ -137,10 +164,7 @@ function createTokenRegistration() {
   };
 }
 
-/**
- * Kin's buttons, taps and APNs token. Install it before the agent notification router: that
- * one clears the cold-start response, and this one reads it synchronously first.
- */
+/** Kin's buttons, taps and APNs token. Installed before the agent router, which clears the cold-start response. */
 export function installKinNotifications(navigate: (href: string) => void): () => void {
   registerCategories();
   const delivery = createActionDelivery();
@@ -153,8 +177,13 @@ export function installKinNotifications(navigate: (href: string) => void): () =>
     if (route.act !== null) delivery.post(route.environmentId, route.act);
   };
   const subscription = Notifications.addNotificationResponseReceivedListener(handleResponse);
-  const coldStart = Notifications.getLastNotificationResponse();
-  if (coldStart !== null) handleResponse(coldStart);
+  try {
+    const coldStart = Notifications.getLastNotificationResponse();
+    if (coldStart !== null) handleResponse(coldStart);
+  } catch (cause) {
+    // A build without the native module throws here; that must not stop the app's other services.
+    console.warn("Reading the Kin cold-start notification failed", cause);
+  }
   const disposeRegistration = createTokenRegistration();
 
   return () => {

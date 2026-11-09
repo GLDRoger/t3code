@@ -69,6 +69,18 @@ describe("kinNotificationRoute", () => {
     ["an unknown kind", { ...deferral, deepLink: "/kin/env-1/kin-default/settings/x" }],
     ["another org's link", { ...deferral, deepLink: "/kin/env-1/other-org/chats/chat-1" }],
     ["a link to another chat", { ...deferral, deepLink: "/kin/env-1/kin-default/chats/chat-2" }],
+    ["a dot segment", { ...deferral, deepLink: "/kin/../kin-default/chats/chat-1" }],
+    ["an encoded dot segment", { ...deferral, deepLink: "/kin/%2E%2E/kin-default/chats/chat-1" }],
+    ["a trailing segment", { ...deferral, deepLink: `${chatLink}/extra` }],
+    [
+      "a link to another approval",
+      {
+        kin: 1,
+        orgId: "kin-default",
+        pendingActionId: "act-1",
+        deepLink: "/kin/env-1/kin-default/actions/act-2",
+      },
+    ],
     ["a missing version", { ...deferral, kin: undefined }],
     ["malformed JSON", '{"kin":1,'],
     ["an upstream agent push", { environmentId: "env-1", threadId: "thread-1" }],
@@ -121,6 +133,12 @@ describe("kinNotificationRoute", () => {
       "monday",
       "kin.deferral.heads_up",
       { ...deferral, widgetId: "task:1" },
+    ],
+    [
+      "a deferral widget with no item",
+      "monday",
+      "kin.deferral.heads_up",
+      { ...deferral, widgetId: "deferral:kin-default:" },
     ],
     [
       "a push without a revision",

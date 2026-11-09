@@ -42,7 +42,7 @@ function pushData(raw: unknown): KinPushData | null {
 const decodeSegment = (segment: string): string | null => {
   try {
     const decoded = decodeURIComponent(segment);
-    return decoded.length > 0 ? decoded : null;
+    return decoded.length > 0 && decoded !== "." && decoded !== ".." ? decoded : null;
   } catch {
     return null;
   }
