@@ -461,6 +461,18 @@ it.effect("a chat's own level caps the lead's: min(lead, chat), from stored rows
     assert.include(resultOf(yield* post("group-1", "capped")), { shadowed: true });
     // The owner's direct chat posts at L0, whichever level makes it L0.
     assert.include(resultOf(yield* post(chat.chatId, "owner")), { authorRole: "member" });
+    // Cards follow the same cap: a capped group's cards are refused before any lookup.
+    const capped = "Below L1 the lead can't change cards in this chat.";
+    const card = (chatId: string) =>
+      call("kin_widget_upsert", {
+        chatId,
+        widgetId: "widget-1",
+        revision: 1,
+        type: "task",
+        state: taskState,
+      });
+    assert.include(errorOf(yield* card("group-1")), { reason: "not_allowed", message: capped });
+    assert.notInclude(JSON.stringify(errorOf(yield* card(chat.chatId))), capped);
     // A chat level above the lead's never raises it.
     yield* sql`UPDATE kin_leads SET level = 'L0' WHERE agent_id = ${agentId}`;
     yield* sql`UPDATE kin_chat_levels SET level = 'L3' WHERE agent_id = ${agentId}`;
@@ -500,6 +512,25 @@ it.effect.each(["L0", "L1"] as const)(
         [{ n: 1 }],
       );
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("the shadow summary goes only to a direct chat, whatever kin_leads names", () =>
+  Effect.gen(function* () {
+    const { person, sql } = yield* seed(false, "L0");
+    yield* otherChats(sql, person.orgId);
+    yield* sql`UPDATE kin_leads SET owner_chat_id = 'group-1' WHERE agent_id = ${agentId}`;
+    const result = yield* call("kin_chat_post", {
+      chatId: "group-1",
+      body: "Draft for the team",
+      intent: "answer",
+      clientMessageId: "draft",
+    });
+    assert.include(resultOf(result), { shadowed: true });
+    assert.deepStrictEqual(
+      yield* sql`SELECT COUNT(*) AS n FROM kin_widgets WHERE type = 'shadow_summary' ORDER BY n`,
+      [{ n: 0 }],
+    );
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect("at L0 a post L1 would refuse is refused, not recorded for review", () =>

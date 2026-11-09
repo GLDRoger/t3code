@@ -230,8 +230,13 @@ const make = Effect.gen(function* () {
     if (row === undefined) return yield* missing();
     return yield* decodeWorker(row);
   });
-  const levelOf = (ctx: Lead) =>
-    KinLevels.effectiveLevel(ctx).pipe(
+  // The level of the chat the worker's card lives in, so a chat's own cap holds there too.
+  const levelOf = (ctx: Lead, chatId: KinChatId | null) =>
+    KinLevels.effectiveLevel({
+      orgId: ctx.orgId,
+      agentId: ctx.agentId,
+      chatId: chatId ?? undefined,
+    }).pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
       Effect.catchTags({ KinLevelRefused: () => Effect.fail(denied()) }),
     );
@@ -363,7 +368,11 @@ const make = Effect.gen(function* () {
           return yield* denied("Review workers need reviewOf, and only review workers take it.");
         const author =
           input.reviewOf === undefined ? undefined : yield* worker(ctx.orgId, input.reviewOf);
-        return { config, event, author, level: yield* levelOf(ctx) };
+        const chatId =
+          event._tag === "chat.message" || event._tag === "widget.action"
+            ? event.chatId
+            : config.ownerChatId;
+        return { config, event, author, chatId, level: yield* levelOf(ctx, chatId) };
       }),
     );
     const modelSelection = yield* selection(input.model, plan.config.models);
@@ -407,10 +416,7 @@ const make = Effect.gen(function* () {
       `wk-${(yield* hash({ wakeupId: ctx.wakeupId, input })).slice(0, 32)}`,
     );
     const threadId = ThreadId.make(`kin-worker-${workerId}`);
-    const chatId =
-      plan.event._tag === "chat.message" || plan.event._tag === "widget.action"
-        ? plan.event.chatId
-        : plan.config.ownerChatId;
+    const chatId = plan.chatId;
     const ordinal = yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* lead(scope);
@@ -512,7 +518,7 @@ const make = Effect.gen(function* () {
           return yield* denied(
             "Review workers take no follow-ups. Start a new review with kin_delegate.",
           );
-        return { config, worker: stored, level: yield* levelOf(ctx) };
+        return { config, worker: stored, level: yield* levelOf(ctx, stored.chatId) };
       }),
     );
     if (!KinLevels.atLeast(plan.level, "L2"))
