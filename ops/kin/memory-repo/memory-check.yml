@@ -37,17 +37,16 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # Plain git, not actions/checkout: its cleanup walks t3code's .repos gitlinks, which have no
+      # .gitmodules entry, and fails. Public repo, pinned SHA, no credentials.
       - name: Checkout t3code
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          repository: GLDRoger/t3code
-          ref: ${{ env.T3CODE_REF }}
-          path: t3code
-          persist-credentials: false
-          sparse-checkout: |
-            /*
-            !/.repos/
-          sparse-checkout-cone-mode: false
+        run: |
+          set -euo pipefail
+          git init -q t3code
+          git -C t3code sparse-checkout set --no-cone '/*' '!/.repos/'
+          git -C t3code fetch -q --depth 1 https://github.com/GLDRoger/t3code "$T3CODE_REF"
+          git -C t3code checkout -q FETCH_HEAD
+          [[ "$(git -C t3code rev-parse HEAD)" == "$T3CODE_REF" ]]
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1.15.0
