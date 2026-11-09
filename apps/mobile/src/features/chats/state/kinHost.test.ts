@@ -104,7 +104,11 @@ const pending: KinProbe = { _tag: "pending" };
 
 const resolve = (
   probes: Record<string, KinProbe>,
-  options: { savedHostId?: EnvironmentId | null; offline?: ReadonlyArray<EnvironmentId> } = {},
+  options: {
+    savedHostId?: EnvironmentId | null;
+    offline?: ReadonlyArray<EnvironmentId>;
+    cached?: Record<string, KinOrgsListResult>;
+  } = {},
 ) =>
   resolveKinHost({
     candidates: [a, b, c].map((environmentId) => ({
@@ -113,6 +117,7 @@ const resolve = (
     })),
     savedHostId: options.savedHostId === undefined ? null : options.savedHostId,
     probe: (environmentId) => probes[environmentId] ?? notKin,
+    cachedOrgs: (environmentId) => options.cached?.[environmentId] ?? null,
   });
 
 describe("resolveKinHost", () => {
@@ -140,6 +145,18 @@ describe("resolveKinHost", () => {
       _tag: "host",
       environmentId: c,
       connected: false,
+      probe: pending,
+    });
+  });
+
+  it.each([
+    ["the saved directory", { [c]: withIdentity }, ready],
+    ["a saved directory without an identity", { [c]: orgs([]) }, pending],
+    ["no saved directory", {}, pending],
+  ])("reads an offline saved host's identity from %s", (_name, cached, probe) => {
+    expect(resolve({}, { savedHostId: c, offline: [c], cached })).toMatchObject({
+      connected: false,
+      probe,
     });
   });
 
@@ -188,6 +205,7 @@ describe("resolveKinHostAt", () => {
       candidates: [a, b].map((id) => ({ environmentId: id, connected: !offline.includes(id) })),
       environmentId,
       probe: (id) => probes[id] ?? notKin,
+      cachedOrgs: (id) => (id === a ? withIdentity : null),
     });
 
   it("uses the route's host, not the first or saved Kin host", () => {
@@ -203,11 +221,13 @@ describe("resolveKinHostAt", () => {
       _tag: "host",
       environmentId: a,
       connected: false,
+      probe: ready,
     });
+    expect(at(b, { [b]: ready }, [b])).toMatchObject({ connected: false, probe: pending });
   });
 
-  it("has no host when the route's environment left the catalog or isn't Kin", () => {
-    expect(at(EnvironmentId.make("gone"), { [a]: ready })).toEqual({ _tag: "none" });
+  it("tells an unpaired route environment from one that isn't Kin", () => {
+    expect(at(EnvironmentId.make("gone"), { [a]: ready })).toEqual({ _tag: "unpaired" });
     expect(at(b, { [a]: ready })).toEqual({ _tag: "none" });
     expect(at(a, { [a]: pending })).toMatchObject({ environmentId: a, probe: pending });
   });

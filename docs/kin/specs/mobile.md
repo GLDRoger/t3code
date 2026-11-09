@@ -26,7 +26,7 @@ All paths are under `apps/mobile/src` unless noted. Each was read for this spec.
 - `components/ComposerEditor.tsx` is the reusable editor. It is keyed by an arbitrary `draftKey` (`state/use-composer-drafts.ts`, `useComposerDraft(draftKey)`), and draft pruning only removes keys prefixed with an environment id (`removeComposerDraftsForEnvironment`). A `kin:` prefix is safe.
 - `native/SelectableMarkdownText.tsx` renders message markdown. `components/RelativeTime.tsx` renders times. `components/ProviderIcon.tsx` draws provider marks.
 - `features/threads/PendingApprovalCard.tsx` is T3's provider-approval card. It is the visual reference for Kin's approval card (`rounded-[20px] border border-border bg-card-alt p-4`, uppercase eyebrow, full-width `Button`s with `primary` and `danger` tones). Kin doesn't reuse it: its data is a provider runtime request.
-- `features/threads/CustomSnoozeSheet.tsx` is a date and time picker with `onSnooze(snoozedUntil: string)`. Kin reuses it for "Change" on a deferral.
+- `features/threads/CustomSnoozeSheet.tsx` is a date and time picker with `onSnooze(snoozedUntil: string)`. Kin doesn't use it: a deferral's **Change** hands the item to the lead, which asks the owner.
 - UI kit in `components/ui/`: `AppText` (`textRole`), `Button` (`tone: primary | secondary | danger | text | contrast`), `EmptyState` (`card | plain`), `ErrorBanner`, `Notice`, `LoadingStrip`, `ListRow`, `Toast`, `Sheet`, `Dialog`.
 
 **Theming.** Uniwind (Tailwind classes) with tokens generated into `generated-uniwind-themes.css`: `bg-screen`, `bg-card`, `bg-card-alt`, `border-border`, `text-foreground`, `text-foreground-secondary`, `text-foreground-muted`, `bg-primary`, `text-primary-foreground`, `bg-secondary`, `text-warning-foreground`, `bg-danger`, `bg-user-bubble`, `text-user-bubble-foreground`. Fonts are DM Sans via `font-sans`, `font-t3-medium` and `font-t3-bold` (`global.css`). Shape and motion constants are in `lib/designTokens.ts` (`MOBILE_SHAPE`, `MOBILE_MOTION`). Kin adds no tokens.
@@ -74,8 +74,8 @@ All Kin code lives in `apps/mobile/src/features/chats/`. It reaches upstream thr
 | `KinChat`     | `kin/:environmentId/:orgId/chats/:chatId`            | `pageRoute({ duoMinimize: "onScrollUp" })` | Direct chat                                       |
 | `KinApproval` | `kin/:environmentId/:orgId/actions/:pendingActionId` | `sheetRoute({ detent: 0.75 })`             | Approval detail (also opened from a notification) |
 
-2. **Entry row.** `features/home/HomeScreen.tsx` renders `<KinHomeEntry />` as the first child of `v2ListHeader`. That is one import and one line. The row reads "Kin" with the latest preview, or "Waiting on you · 2" in the highlighted style when anything waits. A tap pushes `KinChats`. It renders nothing when no connected environment hosts a Kin organization, so upstream T3 users see no change.
-3. **Notifications.** `App.tsx` adds `installKinNotifications(linkToAppPath),` to `appServiceDisposers`, plus its import.
+2. **Entry row.** `features/home/HomeScreen.tsx` renders `<KinHomeEntry />` in `v2ListHeader`, right after Android's top spacer and before the iOS filters (above the spacer it would sit under the Android bar). That is one import and one line. The row reads "Kin" with the latest preview, or "Waiting on you · 2" in the highlighted style when anything waits. A tap pushes `KinChats`. It renders nothing when no connected environment hosts a Kin organization, so upstream T3 users see no change. It lives in the thread list's header, so it doesn't show where Home skips the list: with no environment, and on Android with no threads.
+3. **App services.** `App.tsx` adds `installKin(linkToAppPath),` to `appServiceDisposers`, plus its import. It starts the outbox and the notification listener, and sits before upstream's notification router so Kin reads the cold-start response first.
 
 Why not a fourth workspace tab: it isn't a one-line hook. A `"kin"` tab needs edits in `navigation-tab-order.ts` (order and labels), `navigation-tabs.ts` (icon), `workspace-tabs-state.ts` (`initialWorkspaceTabsState`), `WorkspaceExtraTab.tsx` (render), `WorkspaceToolbar.ios.tsx` (`SEARCH_LABELS`), `workspace-tab-navigation.ts` (the `tab !== "usage"` column rule), and `createWorkspaceStackNavigator.ios.tsx` (its hard-coded tab list), along with their tests. Revisit in phase 3, when Kin is the main surface.
 
@@ -100,7 +100,7 @@ Atoms are built on `connectionAtomRuntime`. As built in MOB-1 (`kinClient`): `or
 
 - Every `kin.*` method, reads included, is in `CLIENT_GUARDED_RPC_SCOPES`, so `createEnvironmentRpcQueryAtomFamily` refuses them. `orgs` and `history` are query atoms that run the method through `createEnvironmentRpcCommand`'s scope check.
 - `inbox` and `chat` (built in `state/kinStreams.ts`) fold their streams in `state/kinInboxModel.ts` and emit `KinSynced<State>` (`{ value, live, savedAt }`), only when the state changes. `chat` resubscribes with `afterSeq` = the highest contiguous seq held and `afterChangeSeq` = the last backlog's `lastChangeSeq`, both read at each (re)subscription. The backlog then carries missed messages plus older messages and widgets changed while away, applied by id. A changed message older than the oldest one held is dropped, not inserted, so "Load earlier" never skips the seqs between it and the window. Live events never move `afterChangeSeq`. A `reset` drops the held feed and re-reads the latest page with `history`.
-- A `member` event with `leftAt` ends the `chat` stream with `left: true`, drops that chat's cache entry, and removes the chat from `inbox`. That removal reaches `inbox` only through an open chat stream; otherwise the host's next snapshot drops it. `KinChatError` `unavailable` is the only retryable Kin error: both streams resubscribe after 1 s, doubling to 30 s, and start over once events flow or a new session comes up, which also ends the wait. Any other `KinChatError` on the chat stream is final and ends it with `closed` set to that reason instead of failing the atom; `not_found` and `not_allowed` also drop its cache entry. Neither `left` nor `closed` is cached.
+- A `member` event with `leftAt` ends the `chat` stream with `left: true`, drops that chat's cache entry, and removes the chat from `inbox`. That removal reaches `inbox` only through an open chat stream; otherwise the host's next snapshot drops it. `KinChatError` `unavailable` is the only retryable Kin error: both streams resubscribe after 1 s, doubling to 30 s, and start over once events flow or a new session comes up, which also ends the wait. `disabled` holds until the host restarts: the chat stream shows `closed: "disabled"`, the inbox keeps its value, and both resubscribe on the next session, so a chat reopens when Kin comes back. Any other `KinChatError` on the chat stream is final and ends it with `closed` set to that reason instead of failing the atom; `not_found` and `not_allowed` also drop its cache entry. Neither `left` nor `closed` is cached.
 - The Kin streams are scope-checked on the server only. The client checks scopes for `orgs`, `history` and the commands.
 
 The original sketch:
@@ -164,8 +164,10 @@ KinMessage = { orgId, chatId, messageId, seq, author: KinAuthor, sentAt,
   text?: string, widget?: KinWidget, clientMessageId?: string }
 KinAuthor = { _tag: "human"; userId; displayName } | { _tag: "agent"; agentId; displayName }
 KinWidget = { widgetId, revision, kind: "task" | "approval" | "deferral" | ..., data }
-KinWaitingItem = { orgId, chatId, widgetId, kind: "approval" | "deferral" | "decision" | "question",
-  title, dueAt?, createdAt }
+KinWaitingItem = { waitingId, orgId, personId, chatId, messageId?, widgetId?,
+  reason: "approval" | "decision" | "question" | "suggestion" | "mention",
+  createdAt, resolvedAt?, resolution? }
+// No title yet: the banner names kinds of item until lane A adds a title field to the contract.
 // viewer context, from the inbox snapshot: { viewerUserId, viewerRole }
 // approvals spec
 KinPendingAction (view) = { orgId, pendingActionId, kind: "merge" | ..., status:
@@ -195,19 +197,19 @@ export const KinPushData = Schema.Struct({
 
 Every screen handles the same seven states. Each state's copy is fixed below.
 
-| State                   | Chat list                                                                                         | Direct chat                                                                 | Waiting on you                                                         |
-| ----------------------- | ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| Loading (no cache)      | 6 skeleton rows                                                                                   | `LoadingStrip` at the top, no bubbles                                       | 3 skeleton cards                                                       |
-| Loaded, cached, offline | Rows plus a `Notice`: "Offline. Last updated 9:41."                                               | Same notice; composer still accepts text, which is queued                   | Same notice; buttons disabled with "Reconnect to answer"               |
-| Empty                   | `EmptyState`: "No chats yet" / "Your lead's chat appears here once Kin is set up."                | "Say hello to your lead. It reads every message here."                      | "Nothing is waiting on you." (plain variant)                           |
-| No Kin host             | Hidden entry row; deep link shows "Kin isn't set up on this environment" with "Open environments" | Same                                                                        | Same                                                                   |
-| Error                   | `ErrorBanner` with the RPC message and Retry (`refresh()`)                                        | Same, above the list                                                        | Same                                                                   |
-| Not authorized          | "This device can't read Kin chats. Pair it again from the Mac."                                   | Same                                                                        | Same                                                                   |
-| Many items              | `LegendList` with `recycleItems`; chats sorted by waiting first, then `last.sentAt`               | Paged history: 50 per page, "Load earlier" at top, list anchored to the end | Sorted by `dueAt`, then `createdAt`; org label once there are two orgs |
+| State                   | Chat list                                                                                         | Direct chat                                                                                         | Waiting on you                                                         |
+| ----------------------- | ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Loading (no cache)      | 6 skeleton rows                                                                                   | `LoadingStrip` at the top, no bubbles                                                               | 3 skeleton cards                                                       |
+| Loaded, cached, offline | Rows plus a `Notice`: "Offline. Last updated 9:41."                                               | Same notice; composer still accepts text, which is queued                                           | Same notice; buttons disabled with "Reconnect to answer"               |
+| Empty                   | `EmptyState`: "No chats yet" / "Your lead's chat appears here once Kin is set up."                | "Say hello to <agent>. It reads every message here." for a direct chat; "No messages yet" otherwise | "Nothing is waiting on you." (plain variant)                           |
+| No Kin host             | Hidden entry row; deep link shows "Kin isn't set up on this environment" with "Open environments" | Same                                                                                                | Same                                                                   |
+| Error                   | `ErrorBanner` with the RPC message and Retry (`refresh()`)                                        | Same, above the list                                                                                | Same                                                                   |
+| Not authorized          | "This device can't read Kin chats. Pair it again from the Mac."                                   | Same                                                                                                | Same                                                                   |
+| Many items              | `LegendList` with `recycleItems`; chats sorted by waiting first, then `last.sentAt`               | Paged history: 50 per page, "Load earlier" at top, list anchored to the end                         | Sorted by `dueAt`, then `createdAt`; org label once there are two orgs |
 
 **Chat list (`KinChatsScreen`, new).** Matches the mockup.
 
-- **Waiting on you** sits at the top as one full-width banner: `bg-primary`, `text-primary-foreground`, radius `MOBILE_SHAPE.group`. It names up to two items ("Merge #212 · Pick a caching option") and shows a count. A tap opens `KinWaiting`. With nothing waiting, the banner is not rendered; nothing else in the list is ever highlighted (DESIGN 8.1).
+- **Waiting on you** sits at the top as one full-width banner: `bg-primary`, `text-primary-foreground`, radius `MOBILE_SHAPE.group`. It names up to two kinds of item, oldest first, then the rest ("1 approval · 2 questions · 1 more"), and shows a count. Waiting items have no title in the contract yet; naming items ("Merge #212") needs that field from lane A. A tap opens `KinWaiting`. With nothing waiting, the banner is not rendered; nothing else in the list is ever highlighted (DESIGN 8.1).
 - Each row shows the avatar, title, time (`RelativeTime`), a one-line preview prefixed with the author ("Lead: Payments test fixed"), and an unread count badge.
 - **Avatars** (DESIGN 8.7): an agent gets an outlined rounded square (`rounded-[12px]`, 1.5 pt `border-primary`, `text-primary`). A person gets a filled circle (`rounded-full bg-secondary`). Both are 40 pt, with initials. A shared `KinAvatar` component draws both.
 - The footer row reads "Ask anything. It goes to the right team." In phase 1 it opens the direct chat with the lead. The router arrives in phase 3.
@@ -217,15 +219,18 @@ Every screen handles the same seven states. Each state's copy is fixed below.
 - The header shows the lead's avatar, its name, and a subtitle of live status from widgets ("Working on 2 tasks"). Status never comes from message text (DESIGN 8.2).
 - **Bubbles.** The owner's own messages sit on the right (`bg-user-bubble`). Others sit on the left, with a small author line. Text renders through `SelectableMarkdownText`. Links open through the existing link handling.
 - **Folded agent talk** (DESIGN 8.3) renders as one dashed-border line: "QA and Tech lead disagreed on retries. **Settled on a fixed timeout.** 4 messages". A tap expands it. Phase 1 shows it if the server sends it.
-- **Composer (`KinComposer`).** It wraps `ComposerEditor` with `draftKey = kin:${orgId}:${chatId}`, plus a send `Button`. The placeholder is "Message Tech lead". There are no model, attachment or slash controls in phase 1.
-- **Sending.** Send creates a `clientMessageId` (`lib/uuid.ts`) and shows the bubble at once as "Sending". When the server echoes it on the stream, the bubble settles. If the send fails, the bubble shows "Not sent. Tap to retry". Offline sends wait in a Kin outbox (`features/chats/state/kinOutbox.ts`, persisted, keyed by `clientMessageId`) and go out on reconnect. The server dedupes by `clientMessageId`.
-- New messages arrive on the stream. While the reader is at the end, the list follows; otherwise a "New messages" pill appears.
+- **Composer (`KinComposer`).** It wraps `ComposerEditor` with `draftKey = kin:${environmentId}:${orgId}:${chatId}`, plus a send `Button`. The placeholder is "Message Tech lead". There are no model, attachment or slash controls in phase 1.
+- **Sending.** Send creates a `clientMessageId` (`lib/uuid.ts`) and shows the bubble at once as "Sending". When the stream carries a message with that `clientMessageId` (returned only to its author), the pending bubble gives way to it, even if the send reply was lost, so the author sees one bubble. Offline sends wait in a Kin outbox (`features/chats/state/kinOutbox.ts`, persisted, keyed by `clientMessageId`) and go out on reconnect. The server dedupes by `clientMessageId`, so anything short of a typed refusal (no connection, Kin `unavailable`, no reply within 30 s, a reply that fails to decode) waits and resends under the same id. A refusal (`KinChatError` other than `unavailable`, or `EnvironmentAuthorizationError`) can't succeed on resend: the bubble shows "Not sent: <reason>" with Edit, which moves the body back to the draft and drops the entry.
+- **Outbox keying.** The outbox is keyed by environment and chat, not by person. That holds while an org has one person per device. Once orgs have more than one person, key entries by person too, so one person's unsent messages never go out under another's session.
+- New messages arrive on the stream, live or in a reconnect backlog. While the reader is at the end, the list follows; otherwise a "New messages" pill counts others' messages past the latest one the reader has had on screen.
 
 **Waiting on you (`KinWaitingScreen`, new).** A list of the same native cards the chat shows, each with its buttons. Each card links to its message in the chat: "Open in chat" scrolls to it.
 
 ### Native cards (`features/chats/widgets/`, new)
 
-`KinWidgetView` switches on `widget.kind`. An unknown kind renders "This card needs a newer version of Kin." and never falls back to HTML. Every card uses the `PendingApprovalCard` frame and `Button`s. Button labels are plain words (DESIGN 8.6).
+`KinWidgetView` switches on `widget.kind`. A kind this build can't draw renders "This card can't be shown here yet." and never falls back to HTML. The server-drawn `shadow_summary` and `routine` cards render as plain text: a title and one line per row, with row links opening only over http(s).
+
+**Message bodies are untrusted.** Agents write them, so a bubble never loads or opens an image (image syntax becomes the text "Image: alt" before parsing) and opens only http(s) links. A link's accessibility action names its real host whenever the link text doesn't. Every card uses the `PendingApprovalCard` frame and `Button`s. Button labels are plain words (DESIGN 8.6).
 
 **A click posts a structured action, not text.** `widgetAction({ orgId, chatId, widgetId, revision, actionId, clientActionId })`. While the action is in flight, the button shows a spinner and the other buttons are disabled. The server rejects an action whose `revision` is stale. The card then shows "This card changed. Check it again." and re-renders from the newer revision.
 
@@ -239,11 +244,22 @@ Every screen handles the same seven states. Each state's copy is fixed below.
   - The thread was deleted: the thread screen shows its not-found state.
 - A PR chip, if present, opens the PR with the existing `useOpenPullRequest` (`native/useOpenPullRequest.ts`).
 
-**Deferral card.** Data: `{ what, dueAt, onDue: "remind" | "start" | "ask" | "chase", phase: "confirmed" | "heads_up" | "done" | "cancelled", graceEndsAt? }`.
+**Deferral card.** Data: `KinDeferralCard` in `packages/contracts/src/kinLead.ts`: `{ itemId, title, dueAt, onDue: "remind" | "start" | "ask" | "chase", text, phase?, graceEndsAt? }`. The phase picks the buttons, which mirror `actionsFor` in `apps/server/src/kin/triggers/deferrals.ts`. Every button posts `value: itemId` (TRIG-7, TRIG-8).
 
-- In the `confirmed` phase it reads "Deferred to Fri 13 Nov, 9:00. I'll start then." with buttons **Change** and **Just remind me**. **Change** opens `CustomSnoozeSheet`, and `onSnooze(iso)` posts `actionId: "change"` with `{ dueAt: iso }`.
-- In the `heads_up` phase it reads "Starting rate limiting at 9:00", followed by the server's recheck line ("Issue #88 is still open."), with buttons **Start now**, **Monday** and **Cancel**. A countdown reads "Starts in 24 min unless you stop it".
-- All times are in the device timezone, written as "Fri 13 Nov, 9:00" (`Intl.DateTimeFormat`).
+| Phase               | Reads                                                                                                                                   | Buttons                                                                  |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| none (confirm)      | "Deferred to Fri 13 Nov, 9:00. I'll start then.", the server's `text` when it adds something, "Due in 3 days"                           | **Change**, **Just remind me** (hidden when `onDue` is already `remind`) |
+| `heads_up`          | "Starting at 9:00." and "Starting in 12 min". Inside the grace window (`graceEndsAt`): "This was due at 9:00." then "Starting at 9:30." | **Start now**, **Monday**, **Cancel**                                    |
+| `asked`             | Titled "Needs your decision". The server's `text`, which names what changed: why Kin won't start on its own, or that it's late          | **Start now**, **Monday**, **Cancel**                                    |
+| `started`           | "Started."                                                                                                                              | none                                                                     |
+| closed (`closedAt`) | "Closed."                                                                                                                               | none                                                                     |
+
+- **Change** writes nothing on the server: it hands the item to the lead, which asks the owner what to change. The card says "Sent. Your lead will ask what to change." and its buttons stay usable. Every other button rewrites or closes the card, so its buttons stay off until the next revision.
+- The host may refuse **Start now** with `stopped`, `workers_blocked` or `below_l2`. The card's copy for each is in `KIN_START_NOW_REFUSALS`; it shows once the owner-tap dispatcher reports refusals back.
+- Taps stay refused while `deferralCardActionsReady` is false. The card then shows "Kin didn't take that answer. Tell your lead in the chat instead."
+- Notices belong to the revision they were raised on and disappear when the card changes. A retry of the same action on the same revision after a dropped send reuses its `clientActionId`.
+- The countdown follows the shared minute tick, never a timer of its own.
+- All times are in the device timezone, written as "Fri 13 Nov, 9:00". They are built from whole `Intl.DateTimeFormat` strings, because Hermes leaves `hour` and `minute` out of `formatToParts`.
 
 **Approval card.** It renders **only** from `kinClient.pendingAction({ pendingActionId })`, the server's pending action. The widget carries nothing but `pendingActionId`. Any agent-supplied text is shown last, quoted and labelled, and never as a title or a button. The exact content, top to bottom:
 
@@ -290,23 +306,23 @@ Hiding the buttons is a convenience, not the protection (DESIGN 9.3). The server
 
 - It registers categories once at install, with `Notifications.setNotificationCategoryAsync`:
 
-| Category id              | Actions (identifier: title)                                              | Action `options` (set on each action)                          |
-| ------------------------ | ------------------------------------------------------------------------ | -------------------------------------------------------------- |
-| `kin.approval`           | `open: Review`                                                           | `opensAppToForeground: true`, `isAuthenticationRequired: true` |
-| `kin.deferral.confirmed` | `change: Change`, `remind: Just remind me`                               | foreground                                                     |
-| `kin.deferral.heads_up`  | `start: Start now`, `monday: Monday`, `cancel: Cancel` (`isDestructive`) | foreground, auth required                                      |
-| `kin.message`            | none (tap opens chat)                                                    | n/a                                                            |
+| Category id              | Actions (identifier: title)                                                  | Action `options` (set on each action)                          |
+| ------------------------ | ---------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `kin.approval`           | `review: Review`                                                             | `opensAppToForeground: true`, `isAuthenticationRequired: true` |
+| `kin.deferral.confirmed` | `change: Change`, `remind: Just remind me`                                   | foreground                                                     |
+| `kin.deferral.heads_up`  | `start_now: Start now`, `monday: Monday`, `cancel: Cancel` (`isDestructive`) | foreground, auth required                                      |
+| `kin.message`            | none (tap opens chat)                                                        | n/a                                                            |
 
 - There is no "Approve" action on the notification. Approving needs the in-app biometric prompt and signature (approvals spec), so the lock screen offers **Review**, which opens `KinApproval`.
 - In phase 1 every action opens the app. Background actions are not reliable when the app has been killed.
-- It adds its own `addNotificationResponseReceivedListener` and reads `getLastNotificationResponseAsync()` synchronously at install, so the cold-start tap is seen before upstream's consumer clears it. It decodes `KinPushData` and drops anything that fails or whose `deepLink` doesn't start with `/kin/`. Then it navigates with `linkToAppPath(deepLink)`.
+- It adds its own `addNotificationResponseReceivedListener` and reads the synchronous `getLastNotificationResponse()` at install, so the cold-start tap is seen before upstream's consumer clears it. It decodes `KinPushData` and drops anything that fails or whose `deepLink` isn't `/kin/<environmentId>/<orgId>/(chats|actions)/<id>` with ids matching the push. A button acts only when the link names the current Kin host. Then it navigates with `linkToAppPath(deepLink)`.
 - For an action id other than the default, it also posts `widgetAction` with a `clientActionId` derived from the notification identifier plus the action id, so a replayed response can't act twice. Upstream's thread router ignores these responses, because they carry no `/threads/` link.
 - It registers the APNs token from `Notifications.getDevicePushTokenAsync()` with `kinClient.registerPush`. It reuses the existing permission prompt (`notificationPermissions.ts`) and never asks twice.
 
 ### Accessibility
 
 - Every row and card is one accessibility element with a full label. A row reads "Tech lead, agent. Payments test fixed, PR 212 ready. 9:30. 3 unread." The shape of an avatar is not the only signal: the label says "agent" or "person".
-- The Waiting on you banner has `accessibilityRole="button"` and the label "Waiting on you, 2 items: Merge 212, Pick a caching option".
+- The Waiting on you banner has `accessibilityRole="button"` and the label "Waiting on you, 4 items: 1 approval, 2 questions, and 1 more".
 - Card buttons are at least 44 pt tall. Destructive buttons say what they do ("Cancel deferral" in the accessibility label).
 - The approval card's facts list reads in order. The commit's label spells out the full SHA. Status changes are announced with `AccessibilityInfo.announceForAccessibility` ("Merged").
 - Text uses `AppText` with `textRole`, so Dynamic Type applies. Rows grow instead of truncating at the accessibility sizes, and previews may wrap to 2 lines.
@@ -317,7 +333,7 @@ Hiding the buttons is a convenience, not the protection (DESIGN 9.3). The server
 
 New, all under `apps/mobile/src/features/chats/` unless noted:
 
-- `routes.tsx`: `KIN_SCREENS` (the four routes above)
+- `routes.tsx`: `KIN_SCREENS` (the four routes above; MOB-2 adds `KinChats`, `KinWaiting` and a placeholder `KinChat` the list can open; MOB-4 fills `KinChat` and `KinApproval` arrives with its screen)
 - `KinHomeEntry.tsx`, `KinChatsScreen.tsx`, `KinChatScreen.tsx`, `KinWaitingScreen.tsx`, `KinApprovalRouteScreen.tsx`
 - `components/KinAvatar.tsx`, `KinChatRow.tsx`, `KinWaitingBanner.tsx`, `KinMessageBubble.tsx`, `KinFoldLine.tsx`, `KinComposer.tsx`, `KinScreenState.tsx` (the state table as one component)
 - `widgets/KinWidgetView.tsx`, `KinTaskCard.tsx`, `KinDeferralCard.tsx`, `KinApprovalCard.tsx`, `kinCardPresentation.ts` (pure copy and format functions, unit-tested)
@@ -327,16 +343,20 @@ New, all under `apps/mobile/src/features/chats/` unless noted:
 
 Upstream files touched, one hook each:
 
-| File                                                 | Hook                                                                                                                                                                      |
-| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `apps/mobile/src/Stack.tsx`                          | `import { KIN_SCREENS } from "./features/chats/routes";` and `...KIN_SCREENS,` in `screens`                                                                               |
-| `apps/mobile/src/features/home/HomeScreen.tsx`       | `import { KinHomeEntry } ...` and `<KinHomeEntry />` first in `v2ListHeader`                                                                                              |
-| `apps/mobile/src/App.tsx`                            | `import { installKinNotifications } ...` and `installKinNotifications(linkToAppPath),` in `appServiceDisposers`                                                           |
-| `packages/client-runtime/src/rpc/client.ts`          | add Kin stream tags to `EnvironmentSubscriptionRpcTag` (one line per tag; may be done by the chat spec)                                                                   |
-| `apps/mobile/index.ts`                               | `import "./src/features/chats/state/kinDevLogEntry";` (MOB-1, dev only: with `EXPO_PUBLIC_KIN_DEV_LOG=1` it logs the host and inbox). Remove it once MOB-2 lands screens. |
-| `apps/mobile/src/persistence/mobile-database.ts`     | `"kin",` in `ClientCacheKind`                                                                                                                                             |
-| `apps/mobile/vite.config.ts`                         | `"src/features/chats/**/*.test.tsx",` in `reactTests` (only if Kin adds component tests)                                                                                  |
-| `apps/mobile/src/features/threads/McpAppWebView.tsx` | `export` on `function outerDocument` (TRIG-19)                                                                                                                            |
+| File                                                              | Hook                                                                                                                                                          |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/mobile/src/Stack.tsx`                                       | `import { KIN_SCREENS } from "./features/chats/routes";` and `...KIN_SCREENS,` in `screens`                                                                   |
+| `apps/mobile/src/features/home/HomeScreen.tsx`                    | `import { KinHomeEntry } ...` and `<KinHomeEntry />` after `{listHeader}` in `v2ListHeader`                                                                   |
+| `apps/mobile/src/App.tsx`                                         | `import { installKin } ...` and `installKin(linkToAppPath),` in `appServiceDisposers`, before `installAgentNotificationNavigation` (outbox and notifications) |
+| `apps/mobile/src/connection/platform.ts`                          | `import { clearKinOutboxEnvironment } ...` and its call in `layerEnvironmentOwnedDataCleanup`, beside the thread outbox                                       |
+| `apps/mobile/src/components/ComposerEditor.tsx`                   | `pasteContext?: boolean` prop: `false` keeps pasted context as plain text, since Kin sends text only                                                          |
+| `apps/mobile/src/features/development/ComponentCatalogScreen.tsx` | a "Kin" page rendering `<KinChatsCatalog />` (dev builds only)                                                                                                |
+| `apps/mobile/src/persistence/mobile-database.ts`                  | `"kin",` in `ClientCacheKind`                                                                                                                                 |
+| `apps/mobile/src/features/threads/McpAppWebView.tsx`              | `export` on `function outerDocument` (TRIG-19)                                                                                                                |
+| `apps/mobile/app.config.ts`, `apps/mobile/.swiftlint.yml`         | the `withKinApprovalKey` plugin and its options; `modules/kin-approval-key/ios` in `included` (approvals spec)                                                |
+| `packages/client-runtime/src/rpc/client.ts`                       | Kin stream tags in `EnvironmentSubscriptionRpcTag` (one line per tag)                                                                                         |
+| `packages/client-runtime/package.json`                            | the `./kin-push` export                                                                                                                                       |
+| `apps/mobile/vite.config.ts`                                      | `"src/features/chats/**/*.test.tsx",` in `reactTests` (only if Kin adds component tests; none yet)                                                            |
 
 ## Interfaces to other specs
 
@@ -360,7 +380,8 @@ Commands, from `apps/mobile`: `vp run typecheck` and `vp test run --project unit
 - `kinInboxModel.test.ts`: waiting chats sort first, backlog changes replace held messages and widgets by id, contiguous-seq and change-cursor tracking, `leftAt` removal, reset and history. The author's `KinMessage` carries its `clientMessageId`, which the outbox (MOB-5) uses to replace the pending bubble.
 - `kinHost.test.ts`: probe classification (including a transport error and a defect) and host choice.
 - `kinStreams.test.ts`: across a session swap, the cached value comes first with `live: false`, the second subscription's `afterSeq` and `afterChangeSeq` come from the current state, no history page is re-read, `unavailable` backs off and resubscribes while other refusals close the chat, and a `left` event ends the chat, drops its cache entry and reaches the inbox.
-- `kinCardPresentation.test.ts`: the approval title template, the SHA short form, the checks summary, every `status` line, owner vs member eyebrow, Approve disabled while checks are pending, deferral time format across timezones.
+- `kinCardPresentation.test.ts`: the approval title template, the SHA short form, the checks summary, every `status` line, owner vs member eyebrow, Approve disabled while checks are pending.
+- `kinDeferralPresentation.test.ts`: each phase's buttons and lines, grace-window copy, deferral time format across timezones and without `formatToParts`, countdown boundaries, one posted action per tap, `clientActionId` reuse on retry, and notices tied to a revision.
 - `kinPushPayload.test.ts`: valid payloads route; `/threads/...`, `//evil`, query strings and malformed JSON are dropped; an action response produces one `widgetAction` per notification id.
 - `KinPushSender.test.ts`: category per widget kind; approval pushes only reach approver devices; skipped when a foreground subscription exists.
 - Upstream tests still pass: `dependency-graph.test.ts`, `reactCompilerCoverage.test.ts`, `notificationNavigation.test.ts`.
@@ -418,10 +439,10 @@ Commands, from `apps/mobile`: `vp run typecheck` and `vp test run --project unit
 
 **MOB-7 Deferral card** (UI)
 
-- What: the `confirmed` and `heads_up` phases, the countdown, and Change through `CustomSnoozeSheet`.
-- Files: `widgets/KinDeferralCard.tsx`.
-- Depends on: MOB-6, TRIG-7.
-- Done when: Change, Just remind me, Start now, Monday and Cancel each post one action, and a stale revision shows "This card changed".
+- What: the deferral card in every phase (confirm, `heads_up`, `asked`, `started`, closed), its countdown, and its refusal copy.
+- Files: `widgets/KinDeferralCard.tsx`, `widgets/kinDeferralPresentation.ts`.
+- Depends on: MOB-6, TRIG-7, TRIG-8.
+- Done when: each phase shows the server's buttons for it, each tap posts one action, and a stale revision shows "This card changed".
 
 **MOB-8 Approval card and sheet** (UI)
 
