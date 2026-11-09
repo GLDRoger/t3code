@@ -105,7 +105,7 @@ it.effect("starts configured Kin with the real prompt and the runner's pinned me
           ThreadId.make(wakeup!.thread_id),
         );
       assert.strictEqual(projection.messages.length, 1);
-      assert.include(projection.messages[0]!.text, "instructions-version: 1");
+      assert.include(projection.messages[0]!.text, "instructions-version: 2");
       assert.include(projection.messages[0]!.text, "Fixture standing rules");
       assert.include(projection.messages[0]!.text, "Fixture memory index");
       yield* Deferred.succeed(hold, undefined);

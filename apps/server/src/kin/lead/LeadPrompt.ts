@@ -110,6 +110,13 @@ export class KinLeadPrompt extends Context.Service<
               ),
           );
         }
+        const agent = yield* chat.getAgent({ orgId, agentId }).pipe(
+          Effect.map(Option.getOrUndefined),
+          Effect.catch((cause) =>
+            Effect.logWarning("Kin lead name unavailable", cause).pipe(Effect.as(undefined)),
+          ),
+        );
+        const leadName = agent?.displayName.trim() || fallbackLeadName;
         const now = yield* Clock.currentTimeMillis;
         const zone = yield* cache.readOwnerTimeZone(orgId);
         const ownerTime =
@@ -130,6 +137,7 @@ export class KinLeadPrompt extends Context.Service<
           `Wake-up: ${encoded(input.wakeupId)}`,
           `Organization: ${encoded(orgId)}`,
           `Lead: ${encoded(agentId)}`,
+          `Lead name: ${encoded(leadName, true)}`,
           ...(input.budgetContext === undefined ? [] : [`Budget: ${input.budgetContext}`]),
           "# Events",
           boundedEvents(events),
@@ -140,6 +148,7 @@ export class KinLeadPrompt extends Context.Service<
   ).pipe(Layer.provide(MemoryCache.layer));
 }
 
+const fallbackLeadName = "Lead";
 const messageBodyLimit = 8_000;
 const textFieldLimit = 2_000;
 const eventsLimit = 60_000;
