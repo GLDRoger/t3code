@@ -14,6 +14,7 @@ import {
   kinDirectory,
   kinHomeLabel,
   kinHomeSubtitle,
+  kinInboxListRows,
   kinInboxNotice,
   kinInboxScreenState,
   kinInitials,
@@ -172,6 +173,13 @@ describe("kinHomeSubtitle", () => {
     expect(kinHomeSubtitle(readyState(true), view)).toBe("No messages yet");
   });
 
+  it("says how many chats are working when nothing waits, and only while connected", () => {
+    const working = { ...inbox, chats: [{ ...inbox.chats[0]!, working: true }] };
+    const view = selectKinInboxView(working);
+    expect(kinHomeSubtitle(readyState(true), view)).toBe("Working · 1");
+    expect(kinHomeSubtitle(readyState(false), view)).toBe("Offline");
+  });
+
   it("says Offline once the host disconnects", () => {
     expect(kinHomeSubtitle(readyState(false), selectKinInboxView(inbox))).toBe("Offline");
   });
@@ -232,6 +240,22 @@ describe("chat list rows", () => {
       },
       waitingCount,
     }) as never;
+
+  it("heads each fold with its count, and drops headers when nothing waits or works", () => {
+    const folded = (chatId: string, fold: string) => ({ ...(row({ chatId }) as object), fold });
+    const listed = (rows: ReadonlyArray<object>, folds: object) =>
+      kinInboxListRows({ rows, folds } as never, directory).map((item) =>
+        item.type === "fold" ? item.accessibilityLabel : item.key,
+      );
+    expect(
+      listed([folded("a", "needsYou"), folded("b", "rest"), folded("c", "rest")], {
+        needsYou: 1,
+        working: 0,
+        rest: 2,
+      }),
+    ).toEqual(["Needs you, 1 chat", "a", "Unread and done, 2 chats", "b", "c"]);
+    expect(listed([folded("b", "rest")], { needsYou: 0, working: 0, rest: 1 })).toEqual(["b"]);
+  });
 
   it("names a direct chat after its agent and reads as the spec's label", () => {
     const view = kinChatRowView(row({}), directory);

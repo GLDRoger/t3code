@@ -35,6 +35,7 @@ import * as Hub from "./KinChatHub.ts";
 import * as Repository from "./KinChatRepository.ts";
 import * as Identity from "./KinIdentity.ts";
 import * as Service from "./KinChatService.ts";
+import * as Presence from "../reply/KinPresence.ts";
 
 const decodeKinOrgId = Schema.decodeSync(KinOrgId);
 const decodeKinPersonId = Schema.decodeSync(KinPersonId);
@@ -48,6 +49,10 @@ const database = authorityLayer;
 const repositories = Layer.provideMerge(Repository.layer, database);
 const dependencies = Layer.provideMerge(Hub.layer, repositories);
 const layer = Layer.provideMerge(Service.layer, dependencies).pipe(Layer.provideMerge(environment));
+const presenceLayer = Layer.provideMerge(
+  Service.layer,
+  Layer.provideMerge(Presence.layer, dependencies),
+).pipe(Layer.provideMerge(environment));
 const identityLayer = Identity.KinIdentity.layer.pipe(
   Layer.provide(
     Layer.succeed(Identity.KinIdentityConfig, {
@@ -1253,5 +1258,28 @@ describe("KinChatService", () => {
         yield* repo.addMember(member);
         assert.deepStrictEqual(yield* repo.listOpenWaiting(other), []);
       }).pipe(Effect.provide(layer)),
+  );
+  it.effect("marks a chat working in the list while its agent's run is live", () =>
+    Effect.gen(function* () {
+      const { service, person, chat } = yield* seed();
+      const presence = yield* Presence.KinPresence;
+      const updates = yield* Stream.toQueue(service.subscribeChats([person], {}), {
+        capacity: "unbounded",
+      });
+      const initial = yield* Queue.take(updates);
+      assert.strictEqual(initial._tag, "snapshot");
+      if (initial._tag !== "snapshot") return;
+      assert.isFalse(initial.chats.find((row) => row.chatId === chat.chatId)?.working);
+      const line = { agentId, wakeupId: null, label: null, startedAt: timestamp, since: timestamp };
+      const working = Effect.map(Queue.take(updates), (event) =>
+        event._tag === "chat" ? event.chat.working : event._tag,
+      );
+      // "seen" leaves the row as it was, so the list sends nothing for it.
+      yield* presence.set(person.orgId, chat.chatId, { ...line, state: "seen" });
+      yield* presence.set(person.orgId, chat.chatId, { ...line, state: "thinking" });
+      assert.strictEqual(yield* working, true);
+      yield* presence.clear(person.orgId, chat.chatId, agentId);
+      assert.strictEqual(yield* working, false);
+    }).pipe(Effect.provide(presenceLayer)),
   );
 });

@@ -13,7 +13,7 @@ import type { AsyncResult } from "effect/reactivity";
 
 import type { KinSynced } from "./kinStreams";
 import type { KinHost } from "./kinHost";
-import type { KinInboxRow, KinInboxState, KinInboxView } from "./kinInboxModel";
+import type { KinInboxFold, KinInboxRow, KinInboxState, KinInboxView } from "./kinInboxModel";
 
 /** What a Kin screen reading the inbox shows. */
 export type KinInboxScreenState =
@@ -125,6 +125,8 @@ export function kinHomeSubtitle(
   view: KinInboxView | null,
 ): string | null {
   if (view !== null && view.waitingCount > 0) return `Waiting on you · ${view.waitingCount}`;
+  if (view !== null && view.folds.working > 0 && state._tag === "ready" && state.connected)
+    return `Working · ${view.folds.working}`;
   switch (state._tag) {
     case "offline":
       return "Offline";
@@ -244,6 +246,63 @@ export function kinChatRowView(row: KinInboxRow, directory: KinDirectory): KinCh
     sentAt: chat.lastMessageAt,
     unread: chat.unread,
   };
+}
+
+const FOLD_TITLES: Record<KinInboxFold, string> = {
+  needsYou: "Needs you",
+  working: "Working",
+  rest: "Unread and done",
+};
+
+export type KinInboxListRow =
+  | {
+      readonly type: "fold";
+      readonly key: string;
+      readonly title: string;
+      readonly count: number;
+      readonly accessibilityLabel: string;
+    }
+  | {
+      readonly type: "chat";
+      readonly key: string;
+      readonly view: KinChatRowView;
+      /** A divider under it: the next row is another chat, not a fold header or the end. */
+      readonly divider: boolean;
+    };
+
+/**
+ * The chat list with a header over each fold that has chats. With nothing waiting or working,
+ * the folds would say nothing, so the list stays plain.
+ */
+export function kinInboxListRows(
+  view: KinInboxView,
+  directory: KinDirectory,
+): ReadonlyArray<KinInboxListRow> {
+  const headed = view.folds.needsYou + view.folds.working > 0;
+  const rows: Array<KinInboxListRow> = [];
+  let fold: KinInboxFold | null = null;
+  for (const row of view.rows) {
+    if (headed && row.fold !== fold) {
+      fold = row.fold;
+      const count = view.folds[fold];
+      rows.push({
+        type: "fold",
+        key: `fold:${fold}`,
+        title: FOLD_TITLES[fold],
+        count,
+        accessibilityLabel: `${FOLD_TITLES[fold]}, ${count} ${count === 1 ? "chat" : "chats"}`,
+      });
+    }
+    const last = rows[rows.length - 1];
+    if (last?.type === "chat") rows[rows.length - 1] = { ...last, divider: true };
+    rows.push({
+      type: "chat",
+      key: row.chat.chatId,
+      view: kinChatRowView(row, directory),
+      divider: false,
+    });
+  }
+  return rows;
 }
 
 /** "Tech lead, agent. Payments test fixed, PR 212 ready. 9:30. 3 unread." */
