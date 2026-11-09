@@ -1448,7 +1448,7 @@ describe("KinActionExecutor", () => {
     },
   );
 
-  it.effect("on a configured host, the identity probe APPR-16 adds holds every GitHub kind", () => {
+  it.effect("a configured host holds GitHub kinds on the missing identity probe", () => {
     const lapses: Array<string> = [];
     const github = fakeGitHub(() => ({ status: 404, body: { message: "Not Found" } }));
     const platform = Layer.mergeAll(
