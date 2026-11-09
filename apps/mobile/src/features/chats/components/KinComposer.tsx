@@ -30,7 +30,7 @@ const lengthFormat = new Intl.NumberFormat();
 /** The space under the Send row while the keyboard is up, and the least it gets without one. */
 export const KIN_COMPOSER_GUTTER = 12;
 /** The composer's height above `bottomInset` with one line and no hint, until it's measured. */
-export const KIN_COMPOSER_COLLAPSED_HEIGHT = 53;
+export const KIN_COMPOSER_COLLAPSED_HEIGHT = 57;
 
 /** Puts an unsent body back in the draft, ahead of anything typed since. */
 function restoreDraft(draftKey: string, body: string) {
@@ -58,6 +58,7 @@ export function KinComposer(props: {
   readonly bottomInset: number;
   /** Called once the message is in the outbox, so the feed can show the end. */
   readonly onSend: () => void;
+  readonly onFocusChange?: (focused: boolean) => void;
 }) {
   const draftKey = kinDraftKey(props.environmentId, props.orgId, props.chatId);
   const draft = useComposerDraft(draftKey);
@@ -120,6 +121,8 @@ export function KinComposer(props: {
             placeholder={`Message ${props.recipient}`}
             onSubmit={() => void send()}
             onChangeText={(text) => setComposerDraftText(draftKey, text)}
+            onFocus={() => props.onFocusChange?.(true)}
+            onBlur={() => props.onFocusChange?.(false)}
             contentInsetVertical={EDITOR_INSET}
             singleLineCentered={contentHeight <= EDITOR_MIN_HEIGHT - 2 * EDITOR_INSET}
             scrollEnabled={Platform.OS === "android" || editorHeight >= EDITOR_MAX_HEIGHT}

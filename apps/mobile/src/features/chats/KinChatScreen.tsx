@@ -23,8 +23,8 @@ import * as Schema from "effect/Schema";
 import { Atom, type AsyncResult } from "effect/reactivity";
 import { KeyboardAwareLegendList, useKeyboardChatComposerInset } from "@legendapp/list/keyboard";
 import { useEffect, useRef, useState, type ComponentPropsWithRef } from "react";
-import { Platform, View, type ViewInstance } from "react-native";
-import { KeyboardAvoidingView, KeyboardStickyView } from "react-native-keyboard-controller";
+import { AppState, Platform, View, type ViewInstance } from "react-native";
+import { KeyboardStickyView, useKeyboardState } from "react-native-keyboard-controller";
 import Animated from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -461,6 +461,30 @@ function KinChatFeed(props: {
     usesNativeAutomaticInsets: Platform.OS === "ios",
     bottomContentInset: estimatedComposerInset,
   });
+  // Android can lose IME hide callbacks on backgrounding, as in the thread feed: hold the composer
+  // down on resume until the keyboard reports again or the composer is focused.
+  const keyboardVisible = useKeyboardState((state) => state.isVisible);
+  const keyboardHeight = useKeyboardState((state) => state.height);
+  const [keyboardSuspect, setKeyboardSuspect] = useState(false);
+  const composerFocused = useRef(false);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes to AppState on Android to mark keyboard state suspect when the app resumes
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") setKeyboardSuspect(!composerFocused.current);
+    });
+    return () => subscription.remove();
+  }, []);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- clears the suspect flag whenever the native keyboard reports a visibility or height change
+  useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- Any native keyboard report clears the suspect flag set when the app resumed.
+    setKeyboardSuspect(false);
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Any keyboard visibility or height report clears the suspect flag set when the app resumed.
+  }, [keyboardVisible, keyboardHeight]);
+  const onComposerFocus = (focused: boolean) => {
+    composerFocused.current = focused;
+    if (focused) setKeyboardSuspect(false);
+  };
   const openLink = useOpenPullRequest();
   const [heldPaging, setPaging] = useState<KinPaging>(initialKinPaging);
   const [expandedRuns, setExpandedRuns] = useState<ReadonlySet<string>>(new Set());
@@ -635,6 +659,7 @@ function KinChatFeed(props: {
       recipient={props.title}
       bottomInset={composerInset}
       onSend={jumpToEnd}
+      onFocusChange={onComposerFocus}
     />
   );
 
@@ -687,33 +712,21 @@ function KinChatFeed(props: {
     );
 
   // After a reset the feed is empty until the latest page reloads; that's not an empty chat.
-  if (rows.length === 0 && earlierPage === null && !live.needsHistoryReload) {
-    return (
-      <KeyboardAvoidingView
-        automaticOffset
-        behavior="padding"
-        keyboardVerticalOffset={-keyboardOffset}
-        className="flex-1"
-      >
-        <View className="flex-1 justify-center p-4">
-          {header}
-          <EmptyState
-            variant="plain"
-            title={
-              props.agentName === null ? "No messages yet" : `Say hello to ${props.agentName}.`
-            }
-            detail={
-              props.agentName === null
-                ? "Messages in this chat show up here."
-                : "It reads every message here."
-            }
-          />
-        </View>
-        {noticeBar}
-        {composer}
-      </KeyboardAvoidingView>
-    );
-  }
+  // Inside the list, so the first send keeps the same tree and the composer keeps the keyboard.
+  const empty =
+    rows.length === 0 && earlierPage === null && !live.needsHistoryReload ? (
+      <View className="p-4">
+        <EmptyState
+          variant="plain"
+          title={props.agentName === null ? "No messages yet" : `Say hello to ${props.agentName}.`}
+          detail={
+            props.agentName === null
+              ? "Messages in this chat show up here."
+              : "It reads every message here."
+          }
+        />
+      </View>
+    ) : null;
 
   return (
     <View className="flex-1">
@@ -760,8 +773,10 @@ function KinChatFeed(props: {
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
         ListHeaderComponent={header}
+        ListEmptyComponent={empty}
       />
       <KeyboardStickyView
+        enabled={!keyboardSuspect}
         pointerEvents="box-none"
         style={{ position: "absolute", bottom: 0, left: 0, right: 0 }}
         offset={{ closed: 0, opened: keyboardOffset }}
