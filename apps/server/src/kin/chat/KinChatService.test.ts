@@ -1,3 +1,4 @@
+import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { environment } from "./TaskCard.testkit.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import { CommandId } from "@t3tools/contracts";
@@ -99,6 +100,7 @@ const seed = Effect.fn("test.seed")(function* (notice = false) {
   const repo = yield* Repository.KinChatRepository;
   const service = yield* Service.KinChatService;
   const identity = yield* Identity.KinIdentity.pipe(Effect.provide(identityLayer));
+  yield* pairSession(session.sessionId);
   const [person] = yield* identity.resolve(session);
   assert.isDefined(person);
   yield* repo.insertAgent({

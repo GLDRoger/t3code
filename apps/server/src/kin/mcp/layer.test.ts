@@ -1,3 +1,4 @@
+import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { ProviderInstanceRegistry } from "../../provider/ProviderInstanceRegistry.ts";
 import { authorityLayerWithDatabase, startAgentWakeup } from "../chat/WakeupAuthority.testkit.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
@@ -262,6 +263,9 @@ it.effect.each([true, false])(
         assert.isTrue(enabled);
         const identity = Context.get(kin.services.value, KinIdentity);
         const chatService = Context.get(kin.services.value, KinChatService);
+        yield* pairSession(AuthSessionId.make("owner")).pipe(
+          Effect.provideService(SqlClient.SqlClient, Context.get(services, SqlClient.SqlClient)),
+        );
         const [person] = yield* identity.resolve({
           sessionId: AuthSessionId.make("owner"),
           subject: "browser",

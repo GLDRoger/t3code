@@ -28,6 +28,7 @@ import ExecutionWriteStarted from "./migrations/K023_ExecutionWriteStarted.ts";
 import MemoryReviewPulls from "./migrations/K024_MemoryReviewPulls.ts";
 import FloorGrantWakeup from "./migrations/K025_FloorGrantWakeup.ts";
 import Reactions from "./migrations/K026_Reactions.ts";
+import AuthorityBinding from "./migrations/K027_AuthorityBinding.ts";
 
 const table = "kin_sql_migrations";
 const run = Migrator.make({});
@@ -58,6 +59,7 @@ const loader = Migrator.fromRecord({
   "24_MemoryReviewPulls": MemoryReviewPulls,
   "25_FloorGrantWakeup": FloorGrantWakeup,
   "26_Reactions": Reactions,
+  "27_AuthorityBinding": AuthorityBinding,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

@@ -1,3 +1,5 @@
+import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
+import { kinSecretsTest } from "../lead/layer.testkit.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startAgentWakeup } from "../chat/WakeupAuthority.testkit.ts";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -72,6 +74,7 @@ const client = McpSchema.McpServerClient.of({
 });
 const runtime = (config: Record<string, unknown>) =>
   Kin.layer.pipe(
+    Layer.provide(kinSecretsTest),
     Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(config))),
     Layer.provideMerge(environment),
   );
@@ -151,6 +154,7 @@ const seed = Effect.fn("test.seed")(function* (notice = false, level = "L1") {
   const services = Option.getOrThrow(kin.services);
   const identity = Context.get(services, KinIdentity);
   const chatService = Context.get(services, KinChatService);
+  yield* pairSession(AuthSessionId.make("owner"));
   const [person] = yield* identity.resolve({
     sessionId: AuthSessionId.make("owner"),
     subject: "browser",

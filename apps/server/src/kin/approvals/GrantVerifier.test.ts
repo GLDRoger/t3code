@@ -44,6 +44,7 @@ import {
   orgRolesLayer,
 } from "./GrantPorts.ts";
 import { GrantVerifier, layer as grantVerifierLayer } from "./GrantVerifier.ts";
+import * as KeySeal from "./KeySeal.ts";
 import {
   KinExecutionLedger,
   KinPendingActions,
@@ -149,7 +150,7 @@ function harness() {
     grantVerifierLayer.pipe(
       Layer.provideMerge(approverKeysLayer),
       Layer.provideMerge(Layer.merge(pendingActionsLayer, ledgerLayer)),
-      Layer.provide(Layer.mergeAll(trust, roles, live, grantAuditLayer)),
+      Layer.provide(Layer.mergeAll(trust, roles, live, grantAuditLayer, KeySeal.layerTest())),
       Layer.provideMerge(recordingAudit),
       Layer.provideMerge(Layer.provideMerge(KinPersistence.layer, database)),
     );
@@ -1041,18 +1042,47 @@ describe("GrantVerifier", () => {
     }).pipe(Effect.provide(h.relayLayer));
   });
 
-  it.effect("an active key the server never attested can't sign", () => {
+  it.effect("an active key the server never attested and sealed can't sign", () => {
     const h = harness();
     return Effect.gen(function* () {
       const { grants, actions, ownerKey, sql } = yield* enrol;
       const action = yield* requestMerge(actions, 212, h.github);
       const compact = yield* signFor(grants, ownerPhone, action, signerOf(ownerKey));
-      // No path stores this row; it stands for a database edited behind the server's back.
+      // No path stores these rows; they stand for a database edited behind the server's back.
       yield* sql`UPDATE kin_approver_keys SET attested = 0 WHERE thumbprint = ${ownerKey.key.thumbprint}`;
       assert.strictEqual(
         reasonOf(yield* Effect.exit(grants.submitGrant(ownerPhone, { compact }))),
         "unknown_key",
       );
+
+      yield* sql`UPDATE kin_approver_keys SET attested = 1 WHERE thumbprint = ${ownerKey.key.thumbprint}`;
+
+      // A key of its own, inserted as active and attested, with no seal or another key's seal.
+      const forger = newKey();
+      const jwk = forger.publicKey.export({ format: "jwk" });
+      const forgedJwk = { kty: "EC", crv: "P-256", x: jwk.x!, y: jwk.y! } as const;
+      const kid = computeDpopJwkThumbprint(forgedJwk);
+      const [real] = yield* sql<{ seal: string }>`SELECT seal FROM kin_approver_keys
+        WHERE org_id = ${orgId} AND thumbprint = ${ownerKey.key.thumbprint}`;
+      for (const seal of [null, real!.seal]) {
+        yield* sql`DELETE FROM kin_approver_keys WHERE org_id = ${orgId} AND thumbprint = ${kid}`;
+        yield* sql`INSERT INTO kin_approver_keys (thumbprint, org_id, public_jwk_json, human_id,
+            device_label, platform, hardware, attested, session_id, state, created_at, confirmed_at, seal)
+          VALUES (${kid}, ${orgId}, ${stableStringify(forgedJwk)}, ${owner}, 'Pixel 9', 'android',
+            'strongbox', 1, 'sess-phone', 'active', ${NOW}, ${NOW}, ${seal})`;
+        const forged = yield* signFor(grants, ownerPhone, action, {
+          privateKey: forger.privateKey,
+          kid,
+        });
+        assert.strictEqual(
+          reasonOf(yield* Effect.exit(grants.submitGrant(ownerPhone, { compact: forged }))),
+          "unknown_key",
+        );
+      }
+      assert.strictEqual((yield* stateOf(actions, action)).state, "awaiting_approval");
+      // The key the server registered and sealed still signs.
+      yield* grants.submitGrant(ownerPhone, { compact });
+      assert.strictEqual((yield* stateOf(actions, action)).state, "approved");
     }).pipe(Effect.provide(h.layer));
   });
 
@@ -1098,10 +1128,24 @@ describe("GrantVerifier", () => {
       // caller's org: an unproven claim can't write into a chain it doesn't belong to.
       yield* sql`INSERT INTO kin_orgs (org_id, name, created_at)
         VALUES ('org_02', 'Other', '2026-11-07T00:00:00.000Z')`;
-      yield* sql`INSERT INTO kin_approver_keys SELECT thumbprint, 'org_02', public_jwk_json,
-          human_id, device_label, platform, hardware, attested, NULL, NULL, state, created_at,
-          confirmed_at, revoked_at
-        FROM kin_approver_keys WHERE thumbprint = ${ownerKey.key.thumbprint}`;
+      const [copied] = yield* sql<{
+        public_jwk_json: string;
+        human_id: string;
+        hardware: string;
+      }>`SELECT public_jwk_json, human_id, hardware
+        FROM kin_approver_keys WHERE org_id = ${orgId} AND thumbprint = ${ownerKey.key.thumbprint}`;
+      const seal = (yield* KeySeal.KinKeySeal.pipe(Effect.provide(KeySeal.layerTest()))).seal({
+        orgId: "org_02",
+        thumbprint: ownerKey.key.thumbprint,
+        publicJwkJson: copied!.public_jwk_json,
+        humanId: copied!.human_id,
+        hardware: copied!.hardware,
+      });
+      yield* sql`INSERT INTO kin_approver_keys (thumbprint, org_id, public_jwk_json, human_id,
+          device_label, platform, hardware, attested, state, created_at, confirmed_at, seal)
+        SELECT thumbprint, 'org_02', public_jwk_json, human_id, device_label, platform, hardware,
+          attested, state, created_at, confirmed_at, ${seal}
+        FROM kin_approver_keys WHERE org_id = ${orgId} AND thumbprint = ${ownerKey.key.thumbprint}`;
       const elsewhere = yield* signFor(grants, ownerPhone, action, forger, (p) => ({
         ...p,
         orgId: "org_02",

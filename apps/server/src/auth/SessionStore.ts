@@ -539,6 +539,14 @@ const make = Effect.gen(function* () {
           (cause) => new SessionCredentialIssueError({ sessionId: devAuth.sessionId, cause }),
         ),
       );
+    // The operator configured this credential, so Kin treats it like a paired one.
+    yield* (yield* SessionHooks)
+      .recordPairedSession(devAuth.sessionId, { method: "reusable-dev-token" })
+      .pipe(
+        Effect.mapError(
+          (cause) => new SessionCredentialIssueError({ sessionId: devAuth.sessionId, cause }),
+        ),
+      );
   }
 
   const emitUpsert = (clientSession: AuthClientSession) =>

@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -20,4 +21,10 @@ export const dormantLeadDependencies = Layer.mergeAll(
   Layer.mock(ServerEnvironment.ServerEnvironment)({
     getEnvironmentId: Effect.succeed(EnvironmentId.make("env_kin")),
   }),
+).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
+
+/** What Kin's approver key seal reads its secret through: a throwaway server home. */
+export const kinSecretsTest = Layer.mergeAll(
+  ServerConfig.layerTest(process.cwd(), { prefix: "kin-secrets-" }),
+  NodeCrypto.layer,
 ).pipe(Layer.provideMerge(NodeServices.layer));

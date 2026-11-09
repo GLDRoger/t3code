@@ -1,3 +1,4 @@
+import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { assert, describe, it } from "@effect/vitest";
 import {
   AuthSessionId,
@@ -32,6 +33,8 @@ const layer = Provision.layer.pipe(
     }),
   ),
 );
+// The owner's phone, paired; `session(...)` stands for it.
+const paired = Layer.effectDiscard(pairSession("phone")).pipe(Layer.provideMerge(layer));
 const session = (scopes: AuthenticatedSession["scopes"]): Provision.LeadOwner => ({
   _tag: "session",
   session: {
@@ -106,7 +109,7 @@ describe("KinLeadProvision", () => {
       });
       assert.deepStrictEqual(again, { _tag: "existing", lead });
       assert.deepStrictEqual(yield* counts, before);
-    }).pipe(Effect.provide(layer)),
+    }).pipe(Effect.provide(paired)),
   );
 
   it.effect(
@@ -143,7 +146,7 @@ describe("KinLeadProvision", () => {
           );
         }
         assert.deepStrictEqual(yield* counts, before);
-      }).pipe(Effect.provide(layer)),
+      }).pipe(Effect.provide(paired)),
   );
 
   it.effect("refuses a second live lead in the org", () =>
@@ -177,7 +180,7 @@ describe("KinLeadProvision", () => {
       const before = yield* counts;
       assert.strictEqual(yield* refusal(Provision.create(input(owner, []))), "lead_exists");
       assert.deepStrictEqual(yield* counts, before);
-    }).pipe(Effect.provide(layer)),
+    }).pipe(Effect.provide(paired)),
   );
 
   it.effect("retires a lead, lists it as retired, and lets a new lead follow", () =>
@@ -201,7 +204,7 @@ describe("KinLeadProvision", () => {
       assert.strictEqual(next._tag, "created");
       assert.notStrictEqual(next.lead.agentId, agentId);
       assert.deepStrictEqual(yield* Provision.list(), [retired.lead, next.lead]);
-    }).pipe(Effect.provide(layer)),
+    }).pipe(Effect.provide(paired)),
   );
 
   it.effect(
@@ -248,6 +251,6 @@ describe("KinLeadProvision", () => {
         );
         const [after] = yield* Provision.list();
         assert.deepStrictEqual(after?.workerProjects, [project]);
-      }).pipe(Effect.provide(layer)),
+      }).pipe(Effect.provide(paired)),
   );
 });

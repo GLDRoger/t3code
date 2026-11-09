@@ -2,13 +2,11 @@ import {
   KinApprovalError,
   KinGrantUnsignedPayload,
   type AuthSessionId,
-  type KinActionKind,
   type KinApprovalsActionInput,
   type KinApprovalsChallengeResult,
   type KinApprovalsDecisionResult,
   type KinApprovalsRejectInput,
   type KinApprovalsSubmitGrantInput,
-  type KinGrantPayload,
   type KinGrantRejectionReason,
   type KinOrgId,
   type KinPendingAction,
@@ -30,6 +28,7 @@ import { ApproverKeys, type KinKeyCaller } from "./ApproverKeys.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import type { KinAuditAppendInput } from "./Audit.ts";
 import { KinGrantAudit, KinLiveTargets, KinOrgRoles } from "./GrantPorts.ts";
+import { grantMatchesRecord, pinsHead, recordFacts } from "./grantFacts.ts";
 import { KinPendingActions, kinTargetDigest } from "./PendingActions.ts";
 
 // Each kind of rejection gets its own budget per session and org a minute, so junk can't use up
@@ -68,31 +67,6 @@ const REJECTION_MESSAGES = {
 } as const satisfies Record<KinGrantRejectionReason, string>;
 
 const reject = (reason: KinGrantRejectionReason) => fail(reason, REJECTION_MESSAGES[reason]);
-
-const pinsHead = (kind: KinActionKind) => kind === "merge_pull_request" || kind === "delete_branch";
-
-/** The facts a grant must copy from the server's record (check 7), absent ones dropped. */
-const recordFacts = (action: KinPendingAction) => ({
-  kind: action.kind,
-  target: action.target,
-  targetDigest: action.targetDigest,
-  headSha:
-    pinsHead(action.kind) && action.resolved._tag !== "none" ? action.resolved.headSha : undefined,
-  base:
-    action.kind === "merge_pull_request" && action.resolved._tag === "pull_request"
-      ? action.resolved.base
-      : undefined,
-  mergeMethod: action.target._tag === "pull_request" ? action.target.mergeMethod : undefined,
-});
-
-const grantFacts = (payload: KinGrantPayload) => ({
-  kind: payload.kind,
-  target: payload.target,
-  targetDigest: payload.targetDigest,
-  headSha: payload.headSha,
-  base: payload.base,
-  mergeMethod: payload.mergeMethod,
-});
 
 const headOf = (action: KinPendingAction) => {
   const resolved = action.resolved;
@@ -208,7 +182,8 @@ const make = Effect.gen(function* () {
       ...(payload.headSha === undefined ? {} : { headSha: payload.headSha }),
     };
 
-    // 2. An active key in the grant's org, after session revocations.
+    // 2. An active key in the grant's org, after session revocations. `attested` also needs the
+    // seal the server wrote when it activated the key, so a row put straight into SQLite fails.
     const key = yield* keys.requireActive({ orgId: payload.orgId, thumbprint: header.kid });
     if (!key.attested) return yield* reject("unknown_key");
 
@@ -258,8 +233,7 @@ const make = Effect.gen(function* () {
     const action = found.value;
 
     // 7. What was signed is what the server recorded.
-    if (stableStringify(grantFacts(payload)) !== stableStringify(recordFacts(action)))
-      return yield* reject("target_mismatch");
+    if (!grantMatchesRecord(payload, action)) return yield* reject("target_mismatch");
 
     // 8.
     if (!verified.ok) return yield* reject("time_window");

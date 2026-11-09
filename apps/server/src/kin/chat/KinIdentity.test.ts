@@ -26,6 +26,9 @@ import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import type { McpThreadInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as Repository from "./KinChatRepository.ts";
 import * as Identity from "./KinIdentity.ts";
+import * as EnvironmentAuth from "../../auth/EnvironmentAuth.ts";
+import * as SessionStore from "../../auth/SessionStore.ts";
+import { layerKinAuthTest, pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { startWakeupRun, authorityLayer } from "./WakeupAuthority.testkit.ts";
 
 const database = authorityLayer;
@@ -68,6 +71,7 @@ const caller = (thread = threadId, subagent = false): McpThreadInvocationScope =
 });
 const seedAgent = Effect.fn("test.seedAgent")(function* (scope?: Scope.Scope) {
   const identity = yield* scope === undefined ? start : startInScope(scope);
+  yield* pairSession(session.sessionId);
   const [owner] = yield* identity.resolve(session);
   assert.isDefined(owner);
   const repository = yield* Repository.KinChatRepository;
@@ -83,6 +87,36 @@ const seedAgent = Effect.fn("test.seedAgent")(function* (scope?: Scope.Scope) {
 });
 
 describe("KinIdentity", () => {
+  it.effect("only a session a pairing credential was exchanged for resolves to the owner", () =>
+    Effect.gen(function* () {
+      const auth = yield* EnvironmentAuth.EnvironmentAuth;
+      const sessions = yield* SessionStore.SessionStore;
+      const identity = yield* Identity.KinIdentity;
+      // What `t3 auth session issue` runs: the standard scopes, but no pairing behind it.
+      const minted = yield* auth.issueSession();
+      assert.deepStrictEqual(yield* identity.resolve(yield* sessions.verify(minted.token)), []);
+      // What `t3 pair` and a phone opening its link run.
+      const link = yield* auth.createPairingLink({ subject: "one-time-token" });
+      const exchanged = yield* auth.exchangeBootstrapCredentialForAccessToken(
+        link.credential,
+        undefined,
+        { deviceType: "mobile" },
+      );
+      assert.deepStrictEqual(
+        yield* identity.resolve(yield* sessions.verify(exchanged.access_token)),
+        [identity.owner],
+      );
+    }).pipe(
+      Effect.provide(
+        Identity.KinIdentity.layer.pipe(
+          Layer.provide(Layer.succeed(Identity.KinIdentityConfig, config)),
+          Layer.provideMerge(Repository.layer),
+          Layer.provideMerge(layerKinAuthTest("kin-identity-")),
+        ),
+      ),
+    ),
+  );
+
   it.effect("keeps callers waiting for the registry lock interruptible", () =>
     Effect.gen(function* () {
       const repository = yield* Repository.KinChatRepository;
@@ -246,6 +280,7 @@ describe("KinIdentity", () => {
       Effect.gen(function* () {
         yield* TestClock.setTime(1_000);
         const [first, second] = yield* Effect.all([start, start], { concurrency: "unbounded" });
+        yield* pairSession(session.sessionId);
         const repository = yield* Repository.KinChatRepository;
         const orgs = yield* repository.listAllOrgs();
         assert.lengthOf(orgs, 1);

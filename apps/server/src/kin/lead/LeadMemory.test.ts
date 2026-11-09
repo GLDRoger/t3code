@@ -1,3 +1,5 @@
+import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
+import { kinSecretsTest } from "./layer.testkit.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -81,6 +83,7 @@ const registration = McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers)
   ),
 );
 const runtime = Kin.layer.pipe(
+  Layer.provide(kinSecretsTest),
   Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
   Layer.provideMerge(environment),
   Layer.provideMerge(authorityLayer),
@@ -155,6 +158,7 @@ it.live(
       const services = Option.getOrThrow(kin.services);
       const identity = Context.get(services, KinIdentity);
       const chats = Context.get(services, KinChatService);
+      yield* pairSession(AuthSessionId.make("owner"));
       const [person] = yield* identity.resolve({
         sessionId: AuthSessionId.make("owner"),
         subject: "browser",

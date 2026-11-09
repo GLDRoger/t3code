@@ -16,6 +16,7 @@ const tableNames = [
   "kin_approver_keys",
   "kin_audit",
   "kin_auth_key_repairs",
+  "kin_auth_paired_sessions",
   "kin_auth_session_keys",
   "kin_budget",
   "kin_budget_charges",
@@ -131,6 +132,7 @@ describe("Kin migrations", () => {
           { migration_id: 24, name: "MemoryReviewPulls" },
           { migration_id: 25, name: "FloorGrantWakeup" },
           { migration_id: 26, name: "Reactions" },
+          { migration_id: 27, name: "AuthorityBinding" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
@@ -140,6 +142,7 @@ describe("Kin migrations", () => {
           ["kin_triggers", ["next_run_at", "created_at", "updated_at"]],
           ["kin_auth_session_keys", ["created_at", "repaired_at"]],
           ["kin_auth_key_repairs", ["created_at", "consumed_at"]],
+          ["kin_auth_paired_sessions", ["created_at"]],
           ["kin_trigger_fires", ["fired_at"]],
           ["kin_dream_runs", ["material_from", "material_until", "started_at", "ended_at"]],
           ["kin_trigger_inbox", ["received_at", "consumed_at"]],
@@ -166,7 +169,10 @@ describe("Kin migrations", () => {
           [{ name: "org_id" }, { name: "source_id" }],
         );
         for (const { name } of before.filter(
-          (row) => !["kin_auth_session_keys", "kin_auth_key_repairs"].includes(row.name),
+          (row) =>
+            !["kin_auth_session_keys", "kin_auth_key_repairs", "kin_auth_paired_sessions"].includes(
+              row.name,
+            ),
         )) {
           const columns = yield* sql<{ name: string; notnull: number }>`
           SELECT name, "notnull" FROM pragma_table_info(${name})
@@ -210,6 +216,7 @@ describe("Kin migrations", () => {
           { migration_id: 24, name: "MemoryReviewPulls" },
           { migration_id: 25, name: "FloorGrantWakeup" },
           { migration_id: 26, name: "Reactions" },
+          { migration_id: 27, name: "AuthorityBinding" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -314,6 +321,7 @@ describe("Kin migrations", () => {
         [24, "MemoryReviewPulls"],
         [25, "FloorGrantWakeup"],
         [26, "Reactions"],
+        [27, "AuthorityBinding"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -346,6 +354,7 @@ describe("Kin migrations", () => {
       yield* sql`ALTER TABLE kin_webhook_sources DROP COLUMN secret_bound_at`;
       yield* sql`DROP TABLE kin_dream_runs`;
       yield* sql`DROP TABLE kin_deferral_runs`;
+      yield* sql`DROP TABLE kin_auth_paired_sessions`;
       yield* sql`DROP TABLE kin_auth_key_repairs`;
       yield* sql`DROP TABLE kin_auth_session_keys`;
       yield* sql`DROP TABLE kin_worker_charges`;
@@ -407,6 +416,7 @@ describe("Kin migrations", () => {
         [24, "MemoryReviewPulls"],
         [25, "FloorGrantWakeup"],
         [26, "Reactions"],
+        [27, "AuthorityBinding"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,
@@ -458,11 +468,46 @@ describe("Kin migrations", () => {
         { migration_id: 24, name: "MemoryReviewPulls" },
         { migration_id: 25, name: "FloorGrantWakeup" },
         { migration_id: 26, name: "Reactions" },
+        { migration_id: 27, name: "AuthorityBinding" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT org_id FROM kin_orgs`, [{ org_id: "org" }]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("K027 keeps the sessions of paired devices and leaves out CLI-issued ones", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DROP TABLE kin_auth_paired_sessions`;
+      yield* sql`ALTER TABLE kin_approver_keys DROP COLUMN seal`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 27`;
+      for (const [id, subject, method, ip, revoked] of [
+        ["phone", "one-time-token", "bearer-access-token", "100.64.0.7", null],
+        ["desktop", "desktop-bootstrap", "bearer-access-token", "127.0.0.1", null],
+        ["browser", "one-time-token", "browser-session-cookie", "192.168.1.20", null],
+        ["relay", "cloud-connect", "dpop-access-token", null, null],
+        ["cli", "cli-issued-session", "bearer-access-token", null, null],
+        ["cli-renamed", "one-time-token", "bearer-access-token", null, null],
+        ["mcp", "mcp-client", "bearer-access-token", "127.0.0.1", null],
+        ["signed-out", "one-time-token", "bearer-access-token", "100.64.0.8", timestamp],
+      ] as const) {
+        yield* sql`INSERT INTO auth_sessions (session_id, subject, method, scopes,
+            client_ip_address, issued_at, expires_at, revoked_at)
+          VALUES (${id}, ${subject}, ${method}, '[]', ${ip}, ${timestamp},
+            '2026-12-07T00:00:00.000Z', ${revoked})`;
+      }
+      assert.deepStrictEqual(yield* runKinMigrations(), [[27, "AuthorityBinding"]]);
+      assert.deepStrictEqual(
+        yield* sql`SELECT session_id, via FROM kin_auth_paired_sessions ORDER BY session_id`,
+        [
+          { session_id: "browser", via: "migration" },
+          { session_id: "desktop", via: "migration" },
+          { session_id: "phone", via: "migration" },
+          { session_id: "relay", via: "migration" },
+        ],
+      );
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect("refuses to start when a registered migration sits below the latest applied one", () =>
@@ -475,7 +520,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 26");
+      assert.include(String(exit), "below the latest applied migration 27");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

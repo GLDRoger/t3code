@@ -22,6 +22,11 @@ export class SessionHooks extends Context.Reference<{
       readonly pairingLinkId?: string;
     },
   ) => Effect.Effect<boolean, PersistenceSqlError>;
+  /** A session a pairing credential was exchanged for; only these can resolve to a Kin person. */
+  readonly recordPairedSession: (
+    sessionId: AuthSessionId,
+    grant: { readonly method: string; readonly pairingLinkId?: string },
+  ) => Effect.Effect<void, PersistenceSqlError>;
 }>("kin/auth/SessionHooks", {
   defaultValue: () => ({
     recordRepair: () =>
@@ -33,5 +38,6 @@ export class SessionHooks extends Context.Reference<{
       ),
     wrap: () => (store) => store,
     checkExchange: () => Effect.succeed(true),
+    recordPairedSession: () => Effect.void,
   }),
 }) {}

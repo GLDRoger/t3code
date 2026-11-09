@@ -1,3 +1,4 @@
+import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { assert, it } from "@effect/vitest";
 import {
   AuthSessionId,
@@ -55,6 +56,7 @@ it.effect("a wake-up's memory changes post one card, and only the owner can undo
     const identity = Context.get(services, KinIdentity);
     const repo = yield* Repository.KinChatRepository;
     const sql = yield* SqlClient.SqlClient;
+    yield* pairSession(session.sessionId);
     const [owner] = yield* identity.resolve(session);
     assert.isDefined(owner);
     const { orgId } = owner;
