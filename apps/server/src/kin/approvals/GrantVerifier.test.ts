@@ -1191,7 +1191,12 @@ describe("GrantVerifier", () => {
     assert.deepStrictEqual(
       [...fromTool].filter(
         (file) =>
-          file === "kin/approvals/GrantVerifier.ts" || file === "kin/approvals/rpcHandlers.ts",
+          [
+            "kin/approvals/GrantVerifier.ts",
+            "kin/approvals/rpcHandlers.ts",
+            "kin/approvals/ApproverKeys.ts",
+            "kin/approvals/layer.ts",
+          ].includes(file) || file.startsWith("kin/approvals/handlers/"),
       ),
       [],
     );
