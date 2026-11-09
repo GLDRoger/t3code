@@ -29,6 +29,7 @@ import {
 } from "./Memory.ts";
 import { parseFrontMatter, MemoryItemError } from "./frontMatter.ts";
 import { journalEntry, MemoryJournalError, type JournalContext } from "./journal.ts";
+import { kinShapeFailure } from "./lint.ts";
 import { KinSecretScan, KinSecretScanError } from "./secretScan.ts";
 
 export const LEAD_ENDED_WITHOUT_KIN_END = "Lead ended without calling kin_end.";
@@ -363,6 +364,8 @@ const make = Effect.gen(function* () {
       (!(generated && relative === "INDEX.md") && ![...folders, "journal"].includes(parts[0] ?? ""))
     )
       return yield* new MemoryWriteRejected({ reason: "Disallowed memory path" });
+    const shape = kinShapeFailure(relative);
+    if (shape !== undefined) return yield* new MemoryWriteRejected({ reason: shape });
     let current = writer;
     for (const part of parts) {
       current += `/${part}`;

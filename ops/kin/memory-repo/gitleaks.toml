@@ -1,0 +1,81 @@
+# Generated from apps/server/src/kin/memory/secretScan.ts; do not edit.
+# Regenerate: node apps/server/src/kin/memory/gitleaksConfig.ts > ops/kin/memory-repo/gitleaks.toml
+title = "kin-memory"
+
+[[rules]]
+id = "github-token"
+description = "KinSecretScan github-token"
+regex = '''(?:gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82})'''
+
+[[rules]]
+id = "anthropic-key"
+description = "KinSecretScan anthropic-key"
+regex = '''sk-ant-[A-Za-z0-9_-]{40,200}'''
+
+[[rules]]
+id = "openai-key"
+description = "KinSecretScan openai-key"
+regex = '''sk-(?:(?:proj|svcacct|admin)-[A-Za-z0-9_-]{32,200}|[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20})'''
+
+[[rules.allowlists]]
+regexTarget = "secret"
+regexes = ['''^[^A-Z]*$''']
+
+[[rules]]
+id = "aws-access-key"
+description = "KinSecretScan aws-access-key"
+regex = '''(?:AKIA|ASIA)[A-Z0-9]{16}'''
+
+[[rules]]
+id = "slack-token"
+description = "KinSecretScan slack-token"
+regex = '''xox[abposr]-[A-Za-z0-9-]{20,200}'''
+
+[[rules]]
+id = "stripe-key"
+description = "KinSecretScan stripe-key"
+regex = '''[rs]k_live_[A-Za-z0-9]{24,200}'''
+
+[[rules]]
+id = "google-key"
+description = "KinSecretScan google-key"
+regex = '''AIza[A-Za-z0-9_-]{35}'''
+
+[[rules]]
+id = "pem-private-key"
+description = "KinSecretScan pem-private-key"
+regex = '''-----BEGIN (?:[A-Z0-9]+ ){0,8}PRIVATE KEY(?: BLOCK)?-----'''
+
+[[rules]]
+id = "jwt"
+description = "KinSecretScan jwt"
+regex = '''eyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{8,}'''
+
+[[rules]]
+id = "url-password"
+description = "KinSecretScan url-password"
+regex = '''(?i:\b[a-z][a-z0-9+.-]{0,31}:\/\/[^\s\v\p{Z}\x{feff}/:@]{1,512}:([^\s\v\p{Z}\x{feff}/@]{1,512})@)'''
+secretGroup = 1
+
+[[rules.allowlists]]
+regexTarget = "secret"
+regexes = ['''^\$\{[^}]+\}$''']
+
+[[rules]]
+id = "secret-assignment"
+description = "KinSecretScan secret-assignment"
+regex = '''(?i:\b[A-Za-z0-9_]{0,64}(?:password|secret|token|api[_-]?key|access[_-]?key)[A-Za-z0-9_]{0,64}["']?[\s\v\p{Z}\x{feff}]{0,32}[:=][\s\v\p{Z}\x{feff}]{0,32}["']?([^\s\v\p{Z}\x{feff}"';#]{20,512}))'''
+secretGroup = 1
+entropy = 3.5
+
+[[rules.allowlists]]
+regexTarget = "secret"
+regexes = [
+  '''(?i:^[a-f0-9]{40}(?:[a-f0-9]{24})?$)''',
+  '''(?i:^https?:\/\/)''',
+  '''^projects\/[^/]+\/(?:locations\/[^/]+\/)?secrets\/''',
+]
+
+[[rules.allowlists]]
+regexTarget = "match"
+regexes = ['''(?i:^[^:=]*token_scopes[\s\v\p{Z}\x{feff}]*[:=])''']
