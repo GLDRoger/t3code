@@ -9,8 +9,6 @@ import {
   KinEventId,
   ThreadId,
   type AuthSessionId,
-  type Hex64,
-  type KinActionKind,
   type KinApprovalsConfirmKeyInput,
   type KinApprovalsKeyChallengeResult,
   type KinApprovalsKeyInput,
@@ -47,7 +45,11 @@ import {
   verifyAppleAppAttest,
   type AttestationResult,
 } from "./attestation/verify.ts";
-import { KIN_APPROVER_KEYS_REQUESTER, KinPendingActions } from "./PendingActions.ts";
+import {
+  KIN_APPROVER_KEYS_REQUESTER,
+  KinPendingActions,
+  kinTargetDigest,
+} from "./PendingActions.ts";
 
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 const CONFIRM_TTL_MS = 10 * 60 * 1000;
@@ -120,10 +122,6 @@ export const kinKeyConfirmationCode = (thumbprint: string, challenge: Uint8Array
   const digest = NodeCrypto.createHash("sha256").update(thumbprint).update(challenge).digest();
   return String(digest.readUInt32BE(0) % 1_000_000).padStart(6, "0");
 };
-
-/** `sha256(stableStringify({kind, target, headSha?, base?}))`, approvals spec section 3. */
-const kinTargetDigest = (kind: KinActionKind, target: KinActionTarget): Hex64 =>
-  NodeCrypto.createHash("sha256").update(stableStringify({ kind, target })).digest("hex");
 
 const toKey = (row: KeyRow) =>
   decodeKey({
@@ -402,7 +400,7 @@ const make = Effect.gen(function* () {
           kind: "register_approver_key",
           target,
           resolved: { _tag: "none" },
-          targetDigest: kinTargetDigest("register_approver_key", target),
+          targetDigest: kinTargetDigest("register_approver_key", target, { _tag: "none" }),
           reason: `Add approver key for "${input.deviceLabel}".`,
           requestedBy: SERVER_REQUESTER,
           provenance: {
