@@ -910,13 +910,19 @@ function KinChatFeed(props: {
     />
   );
 
+  const sendingSample = useRef(false);
   const sendSample = (body: string) => {
+    if (sendingSample.current) return;
+    sendingSample.current = true;
     void kinOutbox
       .enqueue({ environmentId: props.environmentId, chatId: props.chatId, body })
       .then((queued) => {
         if (queued._tag !== "queued") return;
         jumpToEnd();
         void deliverKinOutbox();
+      })
+      .finally(() => {
+        sendingSample.current = false;
       });
   };
   const startSample = (body: string) => {
