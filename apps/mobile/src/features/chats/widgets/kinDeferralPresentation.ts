@@ -319,7 +319,10 @@ export function createKinCardActions<
   ) => Promise<{ readonly ok: true } | { readonly ok: false; readonly cause: unknown }>;
   readonly newId: () => string;
   readonly toInput: (view: Target, actionId: Action, clientActionId: string) => KinWidgetsActInput;
+  /** What a refusal says; the generic card text by default. */
+  readonly failureNotice?: (cause: KinChatError, actionId: Action) => KinCardNotice;
 }) {
+  const failureNotice = options.failureNotice ?? ((cause) => kinActionFailureNotice(cause));
   let busy = false;
   let unsettled: { readonly key: string; readonly clientActionId: string } | null = null;
   return async (
@@ -342,7 +345,7 @@ export function createKinCardActions<
       const result = await options.post(options.toInput(view, actionId, clientActionId));
       if (result.ok) return { status: "sent" };
       return isKinChatError(result.cause)
-        ? { status: "failed", notice: kinActionFailureNotice(result.cause, actionId) }
+        ? { status: "failed", notice: failureNotice(result.cause, actionId) }
         : transportFailure();
     } catch {
       return transportFailure();

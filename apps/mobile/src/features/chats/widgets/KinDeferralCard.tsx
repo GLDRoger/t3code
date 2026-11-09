@@ -14,6 +14,7 @@ import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
 import {
   createKinCardActions,
+  kinActionFailureNotice,
   kinDeferralActInput,
   kinCardStatusAfter,
   kinDeferralCountdown,
@@ -50,6 +51,7 @@ export const KinDeferralCard = memo(function KinDeferralCard(props: {
     if (actions.current === null)
       actions.current = createKinCardActions({
         toInput: kinDeferralActInput,
+        failureNotice: kinActionFailureNotice,
         newId: uuidv4,
         post: async (input) => {
           const result = await post({ environmentId, input });
