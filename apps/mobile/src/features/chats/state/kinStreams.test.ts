@@ -115,7 +115,7 @@ function fakeDatabase(rows: Map<string, string>) {
 
 function fakeSession(streams: {
   readonly chat: (input: KinChatSubscribeInput) => Stream.Stream<KinChatStreamEvent, KinChatError>;
-  readonly inbox: Stream.Stream<KinChatListEvent>;
+  readonly inbox: Stream.Stream<KinChatListEvent, KinChatError>;
 }): RpcSession {
   return {
     client: {
@@ -323,12 +323,79 @@ describe("Kin streams", () => {
         ),
       );
       const provide = yield* provider(activeSession, rows);
+      // `disabled` waits for Kin to come back instead of ending.
       const views = yield* makeKinChatStream(() => Effect.never)({ chatId }).pipe(
+        Stream.takeUntil((view) => view.value.closed !== null),
         Stream.runCollect,
         provide,
       );
       expect(views.at(-1)?.value.closed).toBe(reason);
       expect(rows.has(`kin|${chatRowKey}`)).toBe(kept);
+    }),
+  );
+
+  it.effect("waits out Kin turned off and resubscribes both streams on the next session", () =>
+    Effect.gen(function* () {
+      const subscribed = yield* Queue.unbounded<KinChatSubscribeInput>();
+      const chatViews = yield* Queue.unbounded<KinSynced<KinChatState>>();
+      const inboxViews = yield* Queue.unbounded<KinSynced<KinInboxState>>();
+      const kinOff = fakeSession({
+        chat: (input) =>
+          Stream.fromEffect(Queue.offer(subscribed, input)).pipe(
+            Stream.drain,
+            Stream.concat(Stream.fail(kinError("disabled"))),
+          ),
+        inbox: Stream.fail(kinError("disabled")),
+      });
+      const activeSession = yield* SubscriptionRef.make<Option.Option<RpcSession>>(
+        Option.some(kinOff),
+      );
+      const provide = yield* provider(activeSession, new Map());
+      const chatFiber = yield* makeKinChatStream(() => Effect.never)({ chatId }).pipe(
+        Stream.runForEach((view) => Queue.offer(chatViews, view)),
+        provide,
+        Effect.forkChild,
+      );
+      const inboxFiber = yield* kinInboxStream({}).pipe(
+        Stream.runForEach((view) => Queue.offer(inboxViews, view)),
+        provide,
+        Effect.forkChild,
+      );
+      expect(yield* Queue.take(subscribed)).toEqual({ chatId });
+      expect((yield* Queue.take(chatViews)).value.closed).toBe("disabled");
+
+      // The host restarts with Kin: an empty backlog still reopens the chat.
+      yield* SubscriptionRef.set(
+        activeSession,
+        Option.some(
+          fakeSession({
+            chat: (input) =>
+              Stream.fromEffect(Queue.offer(subscribed, input)).pipe(
+                Stream.drain,
+                Stream.concat(
+                  Stream.make({
+                    _tag: "backlog",
+                    messages: [],
+                    widgets: [],
+                    lastSeq: 0,
+                    lastChangeSeq: 0,
+                  } as unknown as KinChatStreamEvent),
+                ),
+                Stream.concat(Stream.never),
+              ),
+            inbox: Stream.make({
+              _tag: "snapshot",
+              chats: [summary("c1")],
+              waiting: [],
+            } as unknown as KinChatListEvent).pipe(Stream.concat(Stream.never)),
+          }),
+        ),
+      );
+      expect(yield* Queue.take(subscribed)).toEqual({ chatId });
+      expect((yield* Queue.take(chatViews)).value.closed).toBe(null);
+      expect((yield* Queue.take(inboxViews)).value.chats.map((c) => c.chatId)).toEqual(["c1"]);
+      yield* Fiber.interrupt(chatFiber);
+      yield* Fiber.interrupt(inboxFiber);
     }),
   );
 
