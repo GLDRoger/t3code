@@ -32,8 +32,8 @@ export interface KinDeferralGithubReaderShape {
   ) => Effect.Effect<Omit<GithubLinkState, "link">, KinDeferralGithubError>;
 }
 
-// Kin has no GitHub client yet, so production reads fail and every recheck with
-// GitHub links reports "couldn't verify", which asks instead of starting.
+// githubReaders.ts replaces this when the Kin App is configured. Without it every read fails,
+// so a recheck with GitHub links reports "couldn't verify", which asks instead of starting.
 export const KinDeferralGithubReader = Context.Reference<KinDeferralGithubReaderShape>(
   "t3/kin/triggers/deferralGithub/KinDeferralGithubReader",
   {
