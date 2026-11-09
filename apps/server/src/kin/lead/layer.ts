@@ -128,7 +128,10 @@ const withServices = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
                 yield* Effect.logWarning("Kin memory recovery requires operator attention", notice);
                 const leads = yield* sql<{
                   chatId: string;
-                }>`SELECT DISTINCT owner_chat_id AS "chatId" FROM kin_leads WHERE org_id = ${notice.orgId}`;
+                }>`SELECT DISTINCT l.owner_chat_id AS "chatId" FROM kin_leads l
+                  JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+                    AND a.retired_at IS NULL
+                  WHERE l.org_id = ${notice.orgId} ORDER BY l.owner_chat_id`;
                 for (const lead of leads) {
                   const message = yield* chat.insertMessage({
                     orgId: notice.orgId,

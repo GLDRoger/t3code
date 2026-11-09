@@ -1731,5 +1731,21 @@ describe("KinActionExecutor", () => {
     // No RPC or MCP surface carries the executor's service. A tag forged with its key string finds
     // nothing, since no shared context holds it (the production layer test checks the output).
     assert.notInclude(source("kin/KinServer.ts"), "KinActionExecutor");
+
+    // Creating or retiring a lead is the host operator's: only the `kin lead` CLI reaches it, and
+    // nothing the server runs (RPC, MCP, agent toolkits, routes, schedules) reaches that CLI.
+    assert.deepStrictEqual(importers("kin/lead/KinLeadProvision.ts"), ["kin/cli/lead.ts"]);
+    assert.deepStrictEqual(importers("kin/cli/lead.ts"), ["binCli.ts"]);
+    const served = new Set<string>();
+    const pending = ["server.ts"];
+    for (let file = pending.pop(); file !== undefined; file = pending.pop()) {
+      for (const target of graph.get(file) ?? []) {
+        if (served.has(target)) continue;
+        served.add(target);
+        pending.push(target);
+      }
+    }
+    assert.isTrue(served.size > 100);
+    assert.notInclude([...served], "kin/cli/lead.ts");
   });
 });

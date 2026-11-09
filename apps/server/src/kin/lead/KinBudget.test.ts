@@ -44,6 +44,13 @@ describe("KinBudget", () => {
         yield* seed;
         const budget = yield* Budget.KinBudget;
         const sql = yield* SqlClient.SqlClient;
+        // A retired lead that sorts first must not receive the notice.
+        const at = "1970-01-01T00:00:00.000Z";
+        yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at, retired_at)
+          VALUES ('a-retired', ${orgId}, 'Old', 'lead', 'owner', ${at}, ${at})`;
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at) VALUES ('retired-chat', ${orgId}, 'team_group', 0, ${at})`;
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+          SELECT 'a-retired', org_id, 'Old', level_since, models_json, worker_projects_json, 'retired-chat' FROM kin_leads WHERE org_id = ${orgId}`;
         yield* budget.set(owner, { orgId, limits: { leadUnits: 100, workerUnits: 10 } });
         for (const [remaining, allowed] of [
           [100, [true, true, true, true, true]],
@@ -70,10 +77,9 @@ describe("KinBudget", () => {
         yield* sql`UPDATE kin_budget SET worker_units = 10 WHERE org_id = ${orgId}`;
         assert.isFalse(yield* budget.admitWorker(orgId));
         yield* budget.admit(orgId, "P0");
-        assert.strictEqual(
-          (yield* sql`SELECT message_id FROM kin_messages WHERE org_id = ${orgId} ORDER BY message_id`)
-            .length,
-          1,
+        assert.deepStrictEqual(
+          yield* sql`SELECT chat_id FROM kin_messages WHERE org_id = ${orgId} ORDER BY message_id`,
+          [{ chat_id: "owner-chat" }],
         );
         assert.deepStrictEqual(
           yield* sql`SELECT exhausted_notified_at FROM kin_budget WHERE org_id = ${orgId} ORDER BY day`,
