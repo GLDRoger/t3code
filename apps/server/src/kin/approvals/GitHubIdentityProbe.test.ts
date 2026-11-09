@@ -480,12 +480,14 @@ describe("GitHubIdentityProbe", () => {
           t3: stored({
             app: session(APP_TOKEN),
             projectRoots: ["<root>/repo", "<root>/plain", "<root>/gone"],
-            providerEnvironments: [{ instance: "codex", names: ["PATH", "CODEX_HOME"] }],
+            providerEnvironments: [{ instance: "codex", names: ["CODEX_HOME"] }],
           }),
           repos: {
             repo: {
               local: gitList(
                 ["core.repositoryformatversion", "0", "file:.git/config"],
+                ["user.email", "bot@example.com", "file:.git/config"],
+                ["extensions.objectformat", "sha256", "file:.git/config"],
                 ["remote.origin.url", "git@github.com:kin/app.git", "file:.git/config"],
                 ["extensions.worktreeconfig", "true", "file:.git/config"],
               ),
@@ -510,7 +512,7 @@ describe("GitHubIdentityProbe", () => {
           gitCredential: Option.some("kin-bot"),
           gitCredentialFor: [],
           ssh: [sshHi("kin-bot"), SSH_DENIED],
-          providerEnvironments: [{ instance: "codex", names: ["PATH", "CODEX_HOME"] }],
+          providerEnvironments: [{ instance: "codex", names: ["CODEX_HOME"] }],
         });
         assert.deepInclude(yield* check, { passed: true, failures: [], reasons: [] });
 
@@ -1204,7 +1206,6 @@ describe("GitHubIdentityProbe", () => {
         ["remote.origin.vcs", "owner", "remote.*.vcs"],
         ["submodule.lib.url", "https://ghp_secret@github.com/kin/lib", "submodule.*.url"],
         ["submodule.lib.update", "!owner", "submodule.*.update"],
-        ["user.email", "owner@example.com", "user.email"],
         ["gc.auto", "0", "gc.auto"],
       ] as const
     ).map(

@@ -345,7 +345,14 @@ export const checkRepoGitConfig = (
         return refused;
     } else if (section === "submodule" && subsection) {
       if (name === "url" ? urlCarriesCredential(value) : name !== "active") return refused;
-    } else if (section !== "branch" && key !== "lfs.repositoryformatversion") {
+    } else if (
+      // A repository's own commit identity and storage format pick no credential.
+      section !== "branch" &&
+      section !== "user" &&
+      key !== "extensions.objectformat" &&
+      key !== "extensions.refstorage" &&
+      key !== "lfs.repositoryformatversion"
+    ) {
       return refused;
     }
   }

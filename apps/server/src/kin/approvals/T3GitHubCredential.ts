@@ -47,9 +47,9 @@ export interface T3StoredCredentials {
   /** The gh account Settings picks for T3's personal credential. */
   readonly account: Option.Option<string>;
   /**
-   * Each provider instance's environment as `mergeProviderInstanceEnvironment` builds it over the
-   * server's, by the names it sets to something (a secret reference counts as set). Agents and the
-   * terminal, which opens any instance's environment, enabled or not, inherit these.
+   * The variables each provider instance's environment adds to or changes from the server's, as
+   * `mergeProviderInstanceEnvironment` builds it, by name (a secret reference counts as set).
+   * Agents and the terminal, which opens any instance's environment, enabled or not, inherit these.
    */
   readonly providerEnvironments: ReadonlyArray<{
     readonly instance: string;
@@ -138,7 +138,10 @@ const readStored = Effect.fn("T3GitHubCredential.read")(function* (
       ).pipe(
         Effect.map((env) => ({
           instance,
-          names: Object.keys(env).filter((name) => (env[name]?.trim() ?? "") !== ""),
+          // Only what the instance adds or changes: the server's own environment is checked as is.
+          names: Object.keys(env).filter(
+            (name) => (env[name]?.trim() ?? "") !== "" && env[name] !== serverEnv[name],
+          ),
         })),
       ),
   );

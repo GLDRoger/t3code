@@ -104,8 +104,8 @@ export interface T3GitHubIdentities {
    */
   readonly ssh: ReadonlyArray<string>;
   /**
-   * The variables each provider instance's environment sets, by name: agents and the terminal
-   * inherit these on top of the server's.
+   * The variables each provider instance's environment adds to or changes from the server's, by
+   * name: agents and the terminal inherit these on top of the server's.
    */
   readonly providerEnvironments: ReadonlyArray<{
     readonly instance: string;
@@ -278,6 +278,12 @@ const make = Effect.gen(function* () {
           failures.add("env_token");
           const shown = /^[A-Za-z0-9_-]{1,64}$/.test(instance) ? `"${instance}"` : "an instance";
           reasons.push(`provider instance ${shown}'s environment sets ${name}`);
+        }
+        // Agents would then run another ssh, git or gh than the ones this probe asked.
+        if (names.includes("PATH")) {
+          failures.add("env_token");
+          const shown = /^[A-Za-z0-9_-]{1,64}$/.test(instance) ? `"${instance}"` : "an instance";
+          reasons.push(`provider instance ${shown}'s environment changes PATH`);
         }
       }
       // The probe as is always runs, so no answer means the live layer skipped SSH.

@@ -122,9 +122,10 @@ describe("T3GitHubCredential", () => {
       ).pipe(Effect.provideService(HostProcess.Environment, { PATH: "/bin", HOME_TOOL: "x" }));
       const stored = yield* slot.read;
       assert.deepStrictEqual(stored.providerEnvironments, [
-        { instance: "codex", names: ["PATH", "GITHUB_PERSONAL_ACCESS_TOKEN", "SSH_AUTH_SOCK"] },
-        // Disabled instances count: the terminal opens any instance's environment.
-        { instance: "claude", names: ["PATH", "HOME_TOOL"] },
+        { instance: "codex", names: ["GITHUB_PERSONAL_ACCESS_TOKEN", "SSH_AUTH_SOCK"] },
+        // Disabled instances count: the terminal opens any instance's environment. This one
+        // changes nothing the server's environment doesn't already set.
+        { instance: "claude", names: [] },
       ]);
       assert.deepStrictEqual(stored.projectRoots, ["/work/app", "/work/site"]);
       assert.notInclude(JSON.stringify(stored.providerEnvironments), "ghp_secret_value");

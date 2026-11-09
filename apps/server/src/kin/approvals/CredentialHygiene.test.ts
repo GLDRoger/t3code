@@ -267,7 +267,7 @@ describe("CredentialHygiene", () => {
     ["the identity unreachable", { identity: "unreachable" }, ["identity_unknown"]],
     [
       "a provider instance's environment with a token",
-      { identity: { ...bot, providers: [{ instance: "codex", names: ["PATH", "GH_TOKEN"] }] } },
+      { identity: { ...bot, providers: [{ instance: "codex", names: ["GH_TOKEN"] }] } },
       ["env_token"],
     ],
     [
@@ -330,7 +330,7 @@ describe("CredentialHygiene", () => {
           gitFor: ["Nishchay"],
           providers: [
             // The server's own GH_TOKEN is named once, under the server.
-            { instance: "codex", names: ["GH_TOKEN", "SSH_AUTH_SOCK", "PATH"] },
+            { instance: "codex", names: ["GH_TOKEN", "SSH_AUTH_SOCK"] },
             { instance: "claude", names: ["PATH"] },
           ],
         },
@@ -342,6 +342,7 @@ describe("CredentialHygiene", () => {
         "the server's environment sets GH_TOKEN",
         "the git credential helper holds a password for the owner's login",
         `provider instance "codex"'s environment sets SSH_AUTH_SOCK`,
+        `provider instance "claude"'s environment changes PATH`,
       ]);
       assert.notInclude(JSON.stringify(report), "ghp_secret_value");
       // The helper is asked about the owner's login and the merge token's, in both cases.
