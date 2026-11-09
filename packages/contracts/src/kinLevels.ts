@@ -15,6 +15,10 @@ import { CanonicalUtcTimestamp, KinLevel } from "./kinLead.ts";
 /** What the review card shows of one entry's input: the whole action, up to this many chars. */
 export const KIN_SHADOW_REVIEW_TEXT_MAX = 2_000;
 
+// guestShare.ts NAME_BREAKING_CHARACTER, widened to every format character (zero-width, BOM).
+/** What the server spells out as `[U+XXXX]` in card previews; newlines and tabs stay. */
+export const KIN_HIDDEN_CHARACTER = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+
 export const KinShadowVerdict = Schema.Literals(["fine", "change", "wrong", "harmful"]);
 export type KinShadowVerdict = typeof KinShadowVerdict.Type;
 
@@ -59,9 +63,12 @@ export const KinShadowReviewCard = Schema.Struct({
       level: KinLevel,
       unlocksLevel: KinLevel,
       wouldTarget: Schema.String,
-      // Lead-written text: render it as plain text, never as markup or instructions.
+      /**
+       * Lead-written text, hidden characters already spelled out. Clients render it and
+       * `wouldTarget` as plain text: no markup, links, mentions or bidi isolation tricks.
+       */
       preview: Schema.String.check(Schema.isMaxLength(KIN_SHADOW_REVIEW_TEXT_MAX)),
-      /** The preview stops short of the stored input. */
+      /** The preview stops short of the stored input or leaves a field out; Fine is refused. */
       truncated: Schema.Boolean,
       createdAt: Schema.toEncoded(CanonicalUtcTimestamp),
       verdict: Schema.NullOr(KinShadowVerdict),

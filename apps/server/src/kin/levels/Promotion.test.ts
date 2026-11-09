@@ -171,14 +171,14 @@ const seed = Effect.gen(function* () {
     });
   const entries = (
     ids: ReadonlyArray<string>,
-    options: { readonly level?: string; readonly unlocks?: string } = {},
+    options: { readonly level?: string; readonly unlocks?: string; readonly at?: number } = {},
   ) =>
     Effect.forEach(
       ids,
       (id) => sql`INSERT INTO kin_shadow_entries
           (entry_id, org_id, agent_id, wakeup_id, level, unlocks_level, tool, input_json, would_target, created_at)
         VALUES (${id}, ${orgId}, ${agentId}, 'wake', ${options.level ?? "L0"}, ${options.unlocks ?? "L1"},
-          'kin_chat_post', ${JSON.stringify({ body: `Draft ${id}` })}, ${group}, ${DAY})`,
+          'kin_chat_post', ${JSON.stringify({ body: `Draft ${id}` })}, ${group}, ${options.at ?? DAY})`,
       { discard: true },
     );
   const handlers = yield* makeKinHandlers(session);
@@ -322,6 +322,42 @@ it.effect("the review card shows each action in full and lists unreviewed entrie
       ],
       ["follow-up", "kin_follow_up", { workerId: "worker-1", brief: "Also add a test" }],
       [
+        "delegate-all",
+        "kin_delegate",
+        {
+          kind: "review",
+          title: "Review login",
+          goal: "Find bugs",
+          brief: "",
+          projectId: "project-1",
+          baseRef: "origin/main",
+          reviewOf: "worker-1",
+          memoryItemIds: ["memory-1", "memory-2"],
+          quoted: [{ role: "owner", name: "Sam", text: "Ship it" }],
+        },
+      ],
+      [
+        "follow-up-quoted",
+        "kin_follow_up",
+        {
+          workerId: "worker-1",
+          brief: "Again",
+          quoted: [{ role: "github", name: "", text: "CI failed" }],
+        },
+      ],
+      [
+        "post",
+        "kin_chat_post",
+        {
+          chatId: "group",
+          body: "ok \u202Egnp.exe\u200B\nnext",
+          intent: "decision",
+          mentions: ["member-2"],
+          replyTo: "message-1",
+        },
+      ],
+      ["opaque", "kin_chat_post", { body: "Hi", mentions: "everyone" }],
+      [
         "request",
         "request_action",
         {
@@ -353,7 +389,7 @@ it.effect("the review card shows each action in full and lists unreviewed entrie
       return decodeReview(card.state);
     });
     let card = yield* read;
-    assert.deepInclude(card, { total: 59, unreviewed: 59 });
+    assert.deepInclude(card, { total: 63, unreviewed: 63 });
     assert.strictEqual(card.entries.length, 50);
     const shown = (id: string) => card.entries.find((entry) => entry.entryId === id);
     assert.deepInclude(shown("a-delegate"), {
@@ -362,22 +398,79 @@ it.effect("the review card shows each action in full and lists unreviewed entrie
       truncated: false,
     });
     assert.strictEqual(shown("a-follow-up")?.preview, "Worker: worker-1\nBrief: Also add a test");
+    assert.deepInclude(shown("a-delegate-all"), {
+      preview:
+        "review: Review login\nProject: project-1\nBase: origin/main\nReviews: worker-1\nGoal: Find bugs\nMemory: memory-1, memory-2\nQuoted (owner, Sam): Ship it",
+      truncated: false,
+    });
+    assert.strictEqual(
+      shown("a-follow-up-quoted")?.preview,
+      "Worker: worker-1\nBrief: Again\nQuoted (github): CI failed",
+    );
+    // Direction overrides and invisible characters are spelled out, never applied.
+    assert.deepInclude(shown("a-post"), {
+      preview:
+        "ok [U+202E]gnp.exe[U+200B]\nnext\nIntent: decision\nMentions: member-2\nReply to: message-1",
+      truncated: false,
+    });
+    assert.deepInclude(shown("a-opaque"), { preview: "Hi", truncated: true });
     assert.strictEqual(
       shown("a-request")?.preview,
       "merge_pull_request: acme/app#12, merge method squash, then delete the branch\nReason: Checks are green",
     );
     assert.deepInclude(shown("a-long"), { truncated: true });
     assert.strictEqual(shown("a-long")?.preview.length, 2_000);
+    // Fine vouches for the whole action, so an action the card cut short can't be marked Fine.
+    for (const entryId of ["a-long", "a-opaque"]) {
+      assert.include(
+        yield* client["kin.levels.review"]({ orgId: lead.orgId, entryId, verdict: "fine" }).pipe(
+          Effect.flip,
+        ),
+        { reason: "invalid_state" },
+      );
+      assert.include(
+        yield* client["kin.levels.review"]({ orgId: lead.orgId, entryId, verdict: "harmful" }),
+        { verdict: "harmful" },
+      );
+    }
     // Reviewing what the card shows brings the rest of the backlog onto it.
     for (const entry of card.entries)
-      yield* client["kin.levels.review"]({
-        orgId: lead.orgId,
-        entryId: entry.entryId,
-        verdict: "fine",
-      });
+      if (!entry.truncated)
+        yield* client["kin.levels.review"]({
+          orgId: lead.orgId,
+          entryId: entry.entryId,
+          verdict: "fine",
+        });
     card = yield* read;
-    assert.deepInclude(card, { total: 59, unreviewed: 9 });
-    assert.deepStrictEqual(card.entries.filter((entry) => entry.verdict === null).length, 9);
+    assert.deepInclude(card, { total: 63, unreviewed: 13 });
+    assert.deepStrictEqual(card.entries.filter((entry) => entry.verdict === null).length, 13);
+  }).pipe(Effect.provide(root)),
+);
+
+it.effect("every trial day with unreviewed entries gets a card, late entries included", () =>
+  Effect.gen(function* () {
+    const { lead, client, entries, services, widget } = yield* seed;
+    const promotion = Context.get(services, KinPromotion);
+    const total = (day: string) =>
+      Effect.map(widget(`shadow-review:${agentId}:${day}`), (card) =>
+        card === undefined ? undefined : decodeReview(card.state).total,
+      );
+    // 1970-01-02 had no evening run: the routine was off, or the org paused.
+    yield* entries(["skipped"]);
+    yield* TestClock.adjust(`${3 * 24 + 10} hours`);
+    yield* entries(["today"], { at: 3 * DAY + 9 * 3_600_000 });
+    yield* client["kin.levels.get"](lead);
+    assert.strictEqual(yield* total("1970-01-02"), 1);
+    // Today's card waits for the evening summary.
+    assert.isUndefined(yield* total("1970-01-04"));
+    yield* TestClock.adjust("2 hours");
+    yield* promotion.evening(lead);
+    assert.strictEqual(yield* total("1970-01-04"), 1);
+    // An entry made after that evening's card lands on it at the next evening.
+    yield* entries(["late"], { at: 3 * DAY + 20 * 3_600_000 });
+    yield* TestClock.adjust("1 day");
+    yield* promotion.evening(lead);
+    assert.strictEqual(yield* total("1970-01-04"), 2);
   }).pipe(Effect.provide(root)),
 );
 

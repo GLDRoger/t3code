@@ -50,7 +50,7 @@ import { KinChatService } from "../chat/KinChatService.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
-import { describe } from "../lead/LevelGate.ts";
+import { describe, plainText } from "../lead/LevelGate.ts";
 import { isOwnerReviewedPath } from "../memory/lint.ts";
 
 const DAY_MS = 86_400_000;
@@ -104,7 +104,7 @@ export class KinPromotion extends Context.Service<
       people: ReadonlyArray<PersonIdentity>,
       input: KinLevelsShadowMemoryInput,
     ) => Effect.Effect<KinLevelsView, KinChatError>;
-    /** The evening summary's cards: today's review card and, when eligible, the promotion card. */
+    /** The evening summary's cards: review cards for today and open trial days, then promotion. */
     readonly evening: (lead: Lead) => Effect.Effect<void>;
     readonly attachShadowMemory: (
       settle: KinShadowSettle,
@@ -136,6 +136,10 @@ const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 const refused = (reason: KinChatError["reason"], message: string) =>
   new KinChatError({ reason, message });
 const notAllowed = refused("not_allowed", "Only the lead's owner can change its level.");
+const notShownInFull = refused(
+  "invalid_state",
+  "This action was too long to show in full, so it can't be marked Fine as is. Choose another verdict.",
+);
 const notFound = refused("not_found", "Kin record not found.");
 const unavailable = refused("unavailable", "Kin is unavailable.");
 const LEVEL_REFUSALS: Record<KinLevels.KinLevelRefused["reason"], KinChatError> = {
@@ -295,7 +299,7 @@ const make = Effect.gen(function* () {
       Effect.map(({ levelSince, ...promotion }) => ({ promotion, levelSince })),
     );
 
-  /** The review card for the owner-local day holding `at`; `create` only from the evening. */
+  /** The review card for the owner-local day holding `at`; `create` for the evening or a past day. */
   const drawReview = Effect.fn("KinPromotion.drawReview")(function* (
     lead: Lead,
     at: number,
@@ -362,7 +366,7 @@ const make = Effect.gen(function* () {
               tool: row.tool,
               level: row.level,
               unlocksLevel: row.unlocksLevel,
-              wouldTarget: row.wouldTarget,
+              wouldTarget: plainText(row.wouldTarget),
               preview: shown.text,
               truncated: shown.truncated,
               createdAt: iso(row.createdAt),
@@ -382,6 +386,34 @@ const make = Effect.gen(function* () {
       waiting: false,
       closed: false,
     });
+  });
+
+  /**
+   * Every trial day with unreviewed entries gets its card, so none block eligibility out of reach.
+   * Today's card is only updated: the evening summary posts it.
+   */
+  const drawBacklog = Effect.fn("KinPromotion.drawBacklog")(function* (lead: Lead) {
+    const { promotion, levelSince } = yield* stats(lead);
+    if (promotion.to === null || promotion.unreviewed === 0) return;
+    const zone = yield* cache.ownerTimeZone(lead.orgId);
+    const now = yield* Clock.currentTimeMillis;
+    const dayStart = (at: number) =>
+      DateTime.startOf(DateTime.makeZonedUnsafe(at, { timeZone: zone }), "day");
+    const today = DateTime.toEpochMillis(dayStart(now));
+    let cursor = levelSince;
+    // One card per owner-local day of the trial, at most.
+    for (let day = 0; day <= Math.ceil((now - levelSince) / DAY_MS) + 1; day++) {
+      const [next] = yield* run(
+        "KinPromotion.backlog",
+        sql<{ createdAt: number }>`SELECT created_at AS "createdAt" FROM kin_shadow_entries
+          WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}
+            AND unlocks_level = ${promotion.to} AND created_at >= ${cursor} AND verdict IS NULL
+          ORDER BY created_at, entry_id LIMIT 1`,
+      );
+      if (next === undefined) return;
+      yield* drawReview(lead, next.createdAt, next.createdAt < today);
+      cursor = DateTime.toEpochMillis(DateTime.add(dayStart(next.createdAt), { days: 1 }));
+    }
   });
 
   const readPromotion = Effect.fn("KinPromotion.readPromotion")(function* (
@@ -517,7 +549,11 @@ const make = Effect.gen(function* () {
 
   const bestEffort = (what: string) =>
     Effect.catchCause((cause) => Effect.logWarning(`Kin ${what} failed`, { cause }));
-  const refreshCards = (lead: Lead) => refresh(lead).pipe(bestEffort("promotion card refresh"));
+  const refreshCards = (lead: Lead) =>
+    drawBacklog(lead).pipe(
+      bestEffort("review backlog"),
+      Effect.andThen(refresh(lead).pipe(bestEffort("promotion card refresh"))),
+    );
 
   const openRaises = Effect.fn("KinPromotion.openRaises")(function* (lead: Lead) {
     const rows = yield* run(
@@ -598,6 +634,7 @@ const make = Effect.gen(function* () {
   const promotion = KinPromotion.of({
     view: Effect.fn("KinPromotion.get")(function* (people, input) {
       yield* asOwner(people, input);
+      yield* drawBacklog(input).pipe(bestEffort("review backlog"));
       return yield* view(input);
     }, Effect.catch(toChatError)),
 
@@ -607,14 +644,30 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const [entry] = yield* run(
             "KinPromotion.entry",
-            sql<{ agentId: string; level: string; verdict: string | null; createdAt: number }>`
-                SELECT agent_id AS "agentId", level, verdict, created_at AS "createdAt"
+            sql<{
+              agentId: string;
+              level: string;
+              verdict: string | null;
+              createdAt: number;
+              tool: string;
+              json: string;
+            }>`SELECT agent_id AS "agentId", level, verdict, created_at AS "createdAt", tool,
+                  input_json AS json
                 FROM kin_shadow_entries WHERE org_id = ${input.orgId} AND entry_id = ${input.entryId}
                 ORDER BY entry_id`,
           );
           if (entry === undefined) return yield* notFound;
           const lead = { orgId: input.orgId, agentId: KinAgentId.make(entry.agentId) };
           yield* asOwner(people, lead);
+          // Fine vouches for the whole action, so it needs the whole action on the card.
+          if (input.verdict === "fine") {
+            const parsed = yield* decodeJson(entry.json).pipe(Effect.option);
+            if (
+              Option.isNone(parsed) ||
+              describe(entry.tool, parsed.value, KIN_SHADOW_REVIEW_TEXT_MAX).truncated
+            )
+              return yield* notShownInFull;
+          }
           const updated = yield* run(
             "KinPromotion.verdict",
             sql`UPDATE kin_shadow_entries SET verdict = ${input.verdict},
@@ -818,10 +871,11 @@ const make = Effect.gen(function* () {
     }, Effect.catch(toChatError)),
 
     evening: Effect.fn("KinPromotion.evening")(function* (lead) {
+      yield* drawBacklog(lead).pipe(bestEffort("review backlog"));
       yield* drawReview(lead, yield* Clock.currentTimeMillis, true).pipe(
         bestEffort("evening review card"),
       );
-      yield* refreshCards(lead);
+      yield* refresh(lead).pipe(bestEffort("promotion card refresh"));
     }),
 
     attachShadowMemory: Effect.fn("KinPromotion.attachShadowMemory")(function* (next) {
