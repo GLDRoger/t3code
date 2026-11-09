@@ -263,6 +263,12 @@ const layerEnvironmentOwnedDataCleanup = Layer.succeed(
         [
           Effect.promise(() => clearThreadOutboxEnvironment(environmentId)),
           Effect.promise(() => clearComposerDraftsEnvironment(environmentId)),
+          // Lazy: the Kin outbox reaches the connection runtime, which imports this module.
+          Effect.promise(() =>
+            import("../features/chats/state/kinOutboxDelivery").then((kin) =>
+              kin.clearKinOutboxEnvironment(environmentId),
+            ),
+          ),
           Effect.sync(() => clearThreadComposerErrorsForEnvironment(environmentId)),
         ],
         { concurrency: "unbounded", discard: true },

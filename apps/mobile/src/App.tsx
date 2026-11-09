@@ -93,6 +93,7 @@ import {
 } from "./lib/rootNavigation";
 import { pruneNewTaskFlowStates } from "./features/threads/new-task-flow-state";
 import { pruneNewTaskBranchCheckouts } from "./features/threads/NewTaskDraftRouteScreen";
+import { startKinOutbox } from "./features/chats/state/kinOutboxDelivery";
 import { installAppUpdateChecks } from "./features/updates/app-updates";
 
 import "../global.css";
@@ -191,6 +192,7 @@ const appServiceDisposers = [
   installSubscriptionUsageRefresh(),
   installPermissionUpdateNotice(),
   installThreadOutboxDelivery(),
+  startKinOutbox(),
   installComposerAttachmentUploads(),
   startIncomingShareInbox(),
   installAgentNotificationNavigation(linkToAppPath),

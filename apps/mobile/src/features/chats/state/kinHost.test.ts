@@ -226,8 +226,8 @@ describe("resolveKinHostAt", () => {
     expect(at(b, { [b]: ready }, [b])).toMatchObject({ connected: false, probe: pending });
   });
 
-  it("has no host when the route's environment left the catalog or isn't Kin", () => {
-    expect(at(EnvironmentId.make("gone"), { [a]: ready })).toEqual({ _tag: "none" });
+  it("tells an unpaired route environment from one that isn't Kin", () => {
+    expect(at(EnvironmentId.make("gone"), { [a]: ready })).toEqual({ _tag: "unpaired" });
     expect(at(b, { [a]: ready })).toEqual({ _tag: "none" });
     expect(at(a, { [a]: pending })).toMatchObject({ environmentId: a, probe: pending });
   });

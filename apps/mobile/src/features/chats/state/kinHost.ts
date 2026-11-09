@@ -76,6 +76,9 @@ export type KinHost =
       readonly probe: KinProbe;
     };
 
+/** A route's host; `unpaired` when this device's catalog doesn't hold the route's environment. */
+export type KinRouteHost = KinHost | { readonly _tag: "unpaired" };
+
 const isTransient = (probe: KinProbe) => probe._tag === "error" && probe.transient;
 
 /**
@@ -136,9 +139,9 @@ export function resolveKinHostAt(input: {
   readonly probe: (environmentId: EnvironmentId) => KinProbe;
   readonly environmentId: EnvironmentId;
   readonly cachedOrgs?: (environmentId: EnvironmentId) => KinOrgsListResult | null;
-}): KinHost {
+}): KinRouteHost {
   const candidate = input.candidates.find((c) => c.environmentId === input.environmentId);
-  if (candidate === undefined) return { _tag: "none" };
+  if (candidate === undefined) return { _tag: "unpaired" };
   if (!candidate.connected) {
     return {
       _tag: "host",
