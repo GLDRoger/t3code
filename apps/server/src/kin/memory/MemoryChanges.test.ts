@@ -135,7 +135,7 @@ it.effect("a wake-up's memory changes post one card, and only the owner can undo
 
     const { card } = yield* memory.undo([owner], input);
     assert.strictEqual(card.items[0]?.undo, "undone");
-    assert.deepInclude(undone[0], { itemId: "short", branch: "kin/shadow/lead" });
+    assert.deepInclude(undone[0], { itemId: input.itemId, branch: "kin/shadow/lead" });
     // A second tap is answered from the card, not the writer.
     yield* memory.undo([owner], input);
     assert.strictEqual(undone.length, 1);
