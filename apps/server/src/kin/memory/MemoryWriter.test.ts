@@ -52,6 +52,8 @@ it.live.each([
   "P7-crash",
   "P8-lost-writer",
   "P9-shadow",
+  "shadow-merge",
+  "shadow-discard",
   "P10-lost-git-dir",
   "sha256",
   "owner-keep",
@@ -520,6 +522,44 @@ it.live.each([
             _tag: "MemoryCheckoutInvalid",
             operation: "validate",
           });
+        return;
+      }
+      if (scenario === "shadow-merge" || scenario === "shadow-discard") {
+        const remoteHead = (branch: string) =>
+          git(root, [`--git-dir=${remote}`, "rev-parse", `refs/heads/${branch}`]);
+        yield* writer.stage(orgId, "wake1", {
+          path: "deferrals/def-001.md",
+          content: fixtureItem(),
+          sourceEventId: "owner",
+        });
+        const shadowed = yield* writer.commitWakeup(orgId, "wake1", "completed");
+        const main = yield* remoteHead("main");
+        expect(yield* remoteHead(`kin/shadow/${agentId}`)).toBe(shadowed.commit);
+        const keep = scenario === "shadow-merge";
+        expect(yield* writer.settleShadow(orgId, agentId, keep)).toEqual({ kept: keep ? 2 : 0 });
+        const settled = yield* remoteHead("main");
+        expect(settled === main).toBe(!keep);
+        // Either way the next L0 trial starts from main, not the old shadow week.
+        expect(yield* remoteHead(`kin/shadow/${agentId}`)).toBe(settled);
+        const files = yield* git(root, [
+          `--git-dir=${remote}`,
+          "ls-tree",
+          "-r",
+          "--name-only",
+          settled,
+        ]);
+        expect(files.includes("deferrals/def-001.md")).toBe(keep);
+        if (keep) {
+          expect(
+            yield* git(root, [`--git-dir=${remote}`, "log", "-1", "--format=%B", settled]),
+          ).toContain(`Kin-Shadow: ${shadowed.commit}`);
+          expect(yield* git(root, [`--git-dir=${remote}`, "show", `${settled}:rules.md`])).toBe(
+            "Invented rules",
+          );
+        }
+        // Settling again changes nothing.
+        expect(yield* writer.settleShadow(orgId, agentId, keep)).toEqual({ kept: 0 });
+        expect(yield* remoteHead("main")).toBe(settled);
         return;
       }
       if (scenario === "P8-lost-writer" || scenario === "P9-shadow") {

@@ -131,6 +131,7 @@ describe("WakeupRunner", () => {
           dreamBase: () => Effect.die("unused"),
           commitDream: () => Effect.die("unused"),
           deleteDreamBranch: () => Effect.die("unused"),
+          settleShadow: () => Effect.die("unused"),
           stage: (_org, wakeup) =>
             Effect.sync(() => {
               assert.isTrue(owner === undefined || owner === wakeup);
@@ -221,6 +222,7 @@ describe("WakeupRunner", () => {
                 dreamBase: () => Effect.die("unused"),
                 commitDream: () => Effect.die("unused"),
                 deleteDreamBranch: () => Effect.die("unused"),
+                settleShadow: () => Effect.die("unused"),
                 discard: () => Effect.void,
                 appendJournal: (_org, _wakeup, lines) =>
                   Effect.sync(() =>

@@ -39,6 +39,7 @@ import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import { PAUSE_POLL_INTERVAL_MS } from "./KinStop.ts";
 import { isOrgPaused } from "./orgState.ts";
+import { KinPromotion } from "./Promotion.ts";
 
 const ownerCheckDispatcherReady = false;
 
@@ -101,6 +102,7 @@ const ulid = Effect.gen(function* () {
 
 const make = Effect.gen(function* () {
   const ownerCheck = yield* Effect.serviceOption(OwnerCheck.OwnerCheck);
+  const promotion = yield* Effect.serviceOption(KinPromotion);
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
   const budget = yield* KinBudget.KinBudget;
@@ -414,6 +416,14 @@ const make = Effect.gen(function* () {
                   : Effect.void,
               ),
             );
+            // The evening summary's review and promotion cards are server-drawn, never the lead's.
+            if (
+              Option.isSome(promotion) &&
+              events.some(
+                (event) => event._tag === "routine" && event.routine === "evening_summary",
+              )
+            )
+              yield* promotion.value.evening({ orgId, agentId });
             if (Option.isSome(ownerCheck)) {
               for (const event of events) {
                 if (event._tag === "routine" && event.routine === "owner_check")

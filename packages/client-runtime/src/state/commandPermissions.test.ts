@@ -17,6 +17,7 @@ import {
   AuthSourceControlWriteScope,
   ThreadId,
   EnvironmentId,
+  KIN_LEVEL_WS_METHODS,
   KIN_PUSH_WS_METHODS,
   ORCHESTRATION_V2_WS_METHODS,
   ScheduledTaskId,
@@ -122,6 +123,42 @@ describe("command permissions", () => {
           );
         }),
       ),
+  );
+  it.effect.each([
+    [KIN_LEVEL_WS_METHODS.get, AuthOrchestrationReadScope],
+    [KIN_LEVEL_WS_METHODS.review, AuthOrchestrationOperateScope],
+    [KIN_LEVEL_WS_METHODS.deferPromotion, AuthOrchestrationOperateScope],
+    [KIN_LEVEL_WS_METHODS.lower, AuthSettingsWriteScope],
+    [KIN_LEVEL_WS_METHODS.raise, AuthSettingsWriteScope],
+    [KIN_LEVEL_WS_METHODS.shadowMemory, AuthSettingsWriteScope],
+  ] as const)("guards %s with the destination %s grant", ([method, scope]) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        const command = createEnvironmentRpcCommand(runtime, {
+          label: method,
+          tag: method,
+          execute: () => Effect.die("unused"),
+        });
+        const others = [
+          AuthOrchestrationReadScope,
+          AuthOrchestrationOperateScope,
+          AuthSettingsWriteScope,
+        ].filter((other) => other !== scope);
+        registry.set(
+          sessions(env),
+          AsyncResult.success({ ...grant(false), scopes: others, permissions: others }),
+        );
+        expect(registry.get(command.permissionAtom(env))).toBe(false);
+        registry.set(
+          sessions(env),
+          AsyncResult.success({ ...grant(false), scopes: [scope], permissions: [scope] }),
+        );
+        expect(registry.get(command.permissionAtom(env))).toBe(true);
+        registry.set(sessions(other), AsyncResult.success(grant(false)));
+        expect(registry.get(command.permissionAtom(other))).toBe(false);
+      }),
+    ),
   );
   it.effect("guards the Kin stop switch with the destination operate grant", () =>
     Effect.scoped(

@@ -30,6 +30,7 @@ import {
 } from "./Memory.ts";
 import { parseFrontMatter, MemoryItemError } from "./frontMatter.ts";
 import { journalEntry, MemoryJournalError, type JournalContext } from "./journal.ts";
+import { mergeMemoryFiles } from "./merge.ts";
 import { kinShapeFailure } from "./lint.ts";
 import { KinSecretScan, KinSecretScanError } from "./secretScan.ts";
 
@@ -162,6 +163,15 @@ export class MemoryWriter extends Context.Service<
       },
     ) => Effect.Effect<{ commit: string }, Failure>;
     readonly deleteDreamBranch: (orgId: KinOrgId, branch: string) => Effect.Effect<void, Failure>;
+    /**
+     * The owner's choice once a lead leaves L0: `keep` commits the shadow branch's changes onto
+     * the default branch; either way `kin/shadow/<agentId>` then restarts from the default branch.
+     */
+    readonly settleShadow: (
+      orgId: KinOrgId,
+      agentId: KinAgentId,
+      keep: boolean,
+    ) => Effect.Effect<{ readonly kept: number }, Failure>;
   }
 >()("t3/kin/memory/MemoryWriter") {}
 const dreamBranch = /^dream\/\d{4}-\d{2}-\d{2}$/;
@@ -1010,6 +1020,108 @@ const make = Effect.gen(function* () {
           ]);
           if (advertised)
             yield* git(orgId, writer, ["push", "--", repo.repoUrl, `:refs/heads/${branch}`]);
+        }),
+      ),
+    ),
+    settleShadow: Effect.fn("MemoryWriter.settleShadow")((orgId, agentId, keep) =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          if (!/^[a-zA-Z0-9_-]+$/.test(agentId))
+            return yield* new MemoryWriteRejected({ reason: "Invalid agent id" });
+          const { writer } = yield* validate(orgId);
+          yield* refuseDuringPurge(orgId);
+          const repo = yield* repoFor(orgId);
+          const main = config.defaultBranch ?? "main";
+          const shadow = `kin/shadow/${agentId}`;
+          const mainHead = yield* branchHead(orgId, writer, main);
+          const shadowHead = yield* branchHead(orgId, writer, shadow);
+          const conflict = (reason: string) =>
+            new MemorySyncConflict({ orgId, operation: "push", reason });
+          let head = mainHead;
+          let kept = 0;
+          if (keep && shadowHead !== mainHead) {
+            const base = yield* git(orgId, writer, ["merge-base", mainHead, shadowHead]).pipe(
+              Effect.mapError(() => conflict("The shadow branch shares no history with main")),
+            );
+            const entries = (commit: string) =>
+              readTree(orgId, writer, commit).pipe(
+                Effect.provideService(FileSystem.FileSystem, fs),
+                Effect.provideService(VcsProcess, vcs),
+                Effect.map((all) => new Map(all.map((entry) => [entry.relative, entry]))),
+              );
+            const mainFiles = yield* filesAt(orgId, writer, mainHead);
+            const merged = mergeMemoryFiles(
+              yield* filesAt(orgId, writer, base),
+              yield* filesAt(orgId, writer, shadowHead),
+              mainFiles,
+              yield* entries(base),
+              yield* entries(shadowHead),
+              yield* entries(mainHead),
+            );
+            if (merged === undefined)
+              return yield* conflict("Shadow memory conflicts with the default branch");
+            // The writer never deletes, so a deletion means the shadow branch was edited by hand.
+            if ([...mainFiles.keys()].some((file) => !merged.files.has(file)))
+              return yield* conflict("Shadow memory deletes files on the default branch");
+            const changes = new Map(
+              [...merged.files].filter(
+                ([file, bytes]) => file !== "INDEX.md" && !mainFiles.get(file)?.equals(bytes),
+              ),
+            );
+            if (changes.size > 0) {
+              kept = changes.size;
+              const regular = yield* regularPaths(orgId, writer, mainHead);
+              const combined = new Map(
+                [...mainFiles, ...changes]
+                  .filter(([path]) => regular.has(path) || changes.has(path))
+                  .map(([path, bytes]) => [path, bytes.toString("utf8")]),
+              );
+              changes.set("INDEX.md", Buffer.from(yield* indexFor(orgId, combined)));
+              const findings = yield* scanner.scan({
+                orgId,
+                files: [...changes].map(([path, content]) => ({ path, content })),
+              });
+              if (findings.length) return yield* new MemorySecretBlocked({ orgId, findings });
+              const commit = yield* writeCommit(
+                orgId,
+                writer,
+                mainHead,
+                mainFiles,
+                changes,
+                `kin(${agentId}): keep shadow memory\n\nKin-Shadow: ${shadowHead}\n`,
+              );
+              yield* git(orgId, writer, ["update-ref", `refs/heads/${main}`, commit, mainHead]);
+              yield* memory.record(orgId, main, mainHead, commit);
+              yield* git(orgId, writer, [
+                "push",
+                "--",
+                repo.repoUrl,
+                `${commit}:refs/heads/${main}`,
+              ]).pipe(Effect.mapError(() => conflict("Push rejected; retry or reconcile remote")));
+              yield* memory.rebuildCache(orgId).pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning("Could not refresh memory cache after commit", {
+                    orgId,
+                    errorTag: error._tag,
+                  }),
+                ),
+              );
+              head = commit;
+            }
+          }
+          // A later trial at L0 starts from what the lead reads at L1, not the old shadow week.
+          if (shadowHead !== head) {
+            yield* git(orgId, writer, ["update-ref", `refs/heads/${shadow}`, head, shadowHead]);
+            yield* memory.record(orgId, shadow, shadowHead, head);
+            yield* git(orgId, writer, [
+              "push",
+              "--",
+              repo.repoUrl,
+              `+${head}:refs/heads/${shadow}`,
+            ]).pipe(Effect.mapError(() => conflict("Shadow branch push rejected")));
+          }
+          return { kept };
         }),
       ),
     ),

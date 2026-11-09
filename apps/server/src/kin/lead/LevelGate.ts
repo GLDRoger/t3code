@@ -66,7 +66,7 @@ const text = (value: unknown) => (typeof value === "string" ? value : "");
 const clip = (value: string) =>
   value.length <= PREVIEW_MAX ? value : `${value.slice(0, PREVIEW_MAX - 1)}…`;
 /** One plain-text line per entry; the input is the lead's own, so it is shown, never trusted. */
-const preview = (tool: string, input: unknown) => {
+export const preview = (tool: string, input: unknown) => {
   switch (tool) {
     case "kin_chat_post":
       return clip(text(field(input, "body")));
