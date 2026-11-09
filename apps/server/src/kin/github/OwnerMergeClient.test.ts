@@ -1,7 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import type { KinOrgId } from "@t3tools/contracts";
-import * as ConfigProvider from "effect/ConfigProvider";
 import * as DateTime from "effect/DateTime";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -80,15 +80,18 @@ const withHygiene = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       CredentialHygiene.layer.pipe(
         Layer.provide(
           Layer.succeed(CredentialHygiene.T3GitHubIdentity, {
-            identities: Effect.succeed({
-              t3: [],
-              ghAccounts: [],
-              gitCredential: Option.none(),
-              ssh: ["git@github.com: Permission denied (publickey)."],
-            }),
+            identities: () =>
+              Effect.succeed({
+                t3: [],
+                ghAccounts: [],
+                gitCredential: Option.none(),
+                gitCredentialFor: [],
+                ssh: ["git@github.com: Permission denied (publickey)."],
+                providerEnvironments: [],
+              }),
           }),
         ),
-        Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+        Layer.provide(Layer.succeed(HostProcess.Environment, {})),
         Layer.provide(scopeLayer({ repos: REPOS })),
       ),
     ),

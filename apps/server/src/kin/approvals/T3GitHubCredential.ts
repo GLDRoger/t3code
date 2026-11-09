@@ -1,4 +1,6 @@
 import { requireSettingsSecretLiteral } from "@t3tools/contracts";
+import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
 import type { HostCredentialSettings } from "@t3tools/source-control-core/shared/definition";
 import { GitHubAppSession } from "@t3tools/source-control-github/server/driver";
@@ -10,6 +12,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+
+import { ProjectStoreV2 } from "../../orchestration-v2/ProjectStore.ts";
 
 const HOST = "github.com";
 /** How long a read waits for the server to install the reader before failing closed. */
@@ -42,6 +46,17 @@ export interface T3StoredCredentials {
   }>;
   /** The gh account Settings picks for T3's personal credential. */
   readonly account: Option.Option<string>;
+  /**
+   * Each provider instance's environment as `mergeProviderInstanceEnvironment` builds it over the
+   * server's, by the names it sets to something (a secret reference counts as set). Agents and the
+   * terminal, which opens any instance's environment, enabled or not, inherit these.
+   */
+  readonly providerEnvironments: ReadonlyArray<{
+    readonly instance: string;
+    readonly names: ReadonlyArray<string>;
+  }>;
+  /** Every project's workspace root, where agents run git with that repository's own config. */
+  readonly projectRoots: ReadonlyArray<string>;
 }
 type ReadT3Credential = Effect.Effect<T3StoredCredentials, T3GitHubCredentialError>;
 
@@ -85,6 +100,8 @@ const decodeSession = Schema.decodeUnknownOption(Schema.fromJsonString(GitHubApp
 /** Reads Settings directly: the request policy would refresh the app session and spend its token. */
 const readStored = Effect.fn("T3GitHubCredential.read")(function* (
   host: SourceControlHost.SourceControlHost["Service"],
+  projects: ProjectStoreV2["Service"],
+  serverEnv: NodeJS.ProcessEnv,
 ) {
   const fail = (reason: string) => Effect.fail(new T3GitHubCredentialError({ reason }));
   const settings = yield* host.settings
@@ -109,6 +126,26 @@ const readStored = Effect.fn("T3GitHubCredential.read")(function* (
   if (signIn !== "" && Option.isNone(session)) {
     return yield* fail("the app sign-in can't be decoded");
   }
+  // Built-in instances without an entry, and project overrides, set no variables.
+  const providerEnvironments = yield* Effect.forEach(
+    Object.entries(settings.providerInstances),
+    ([instance, config]) =>
+      mergeProviderInstanceEnvironment(
+        (config.environment ?? []).map((variable) =>
+          typeof variable.value === "string" ? variable : { ...variable, value: "secret" },
+        ),
+        serverEnv,
+      ).pipe(
+        Effect.map((env) => ({
+          instance,
+          names: Object.keys(env).filter((name) => (env[name]?.trim() ?? "") !== ""),
+        })),
+      ),
+  );
+  const projectRoots = yield* projects.list().pipe(
+    Effect.map((rows) => rows.map((row) => row.workspaceRoot)),
+    Effect.catch(() => fail("the project list can't be read")),
+  );
   return {
     saved: token.trim() === "" ? Option.none() : Option.some(Redacted.make(token.trim())),
     app: Option.map(session, (value) => ({
@@ -118,12 +155,20 @@ const readStored = Effect.fn("T3GitHubCredential.read")(function* (
       refreshTokenExpiresAt: value.refreshTokenExpiresAt,
     })),
     account: Option.fromNullishOr(hosts[HOST]?.account),
+    providerEnvironments,
+    projectRoots,
   } satisfies T3StoredCredentials;
 });
 
 export const installLayer = Layer.effectDiscard(
   Effect.gen(function* () {
     const slot = yield* T3GitHubCredential;
-    yield* slot.install(readStored(yield* SourceControlHost.SourceControlHost));
+    yield* slot.install(
+      readStored(
+        yield* SourceControlHost.SourceControlHost,
+        yield* ProjectStoreV2,
+        yield* HostProcess.Environment,
+      ),
+    );
   }),
 );

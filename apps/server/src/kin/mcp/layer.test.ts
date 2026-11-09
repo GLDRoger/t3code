@@ -54,6 +54,7 @@ import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { PreviewAutomationBroker } from "../../mcp/PreviewAutomationBroker.ts";
 import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import { OrchestrationEventStore } from "../../persistence/OrchestrationEventStore.ts";
+import { ProjectStoreV2 } from "../../orchestration-v2/ProjectStore.ts";
 import { ProviderAdapterRegistryV2 } from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import { ThreadLaunchService } from "../../orchestration-v2/ThreadLaunchService.ts";
 import { ThreadManagementService } from "../../orchestration-v2/ThreadManagementService.ts";
@@ -98,6 +99,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(ProjectCloneTracker)({}),
   Layer.mock(ProjectService)({}),
   Layer.mock(ProjectSetupScriptRunner)({}),
+  Layer.mock(ProjectStoreV2)({}),
   Layer.mock(ProviderAdapterRegistryV2)({}),
   Layer.mock(ProviderInstanceRegistry)({}),
   Layer.mock(ProviderRegistry)({}),

@@ -1,6 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import type { KinOrgId } from "@t3tools/contracts";
-import * as ConfigProvider from "effect/ConfigProvider";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -25,6 +25,11 @@ type Identity =
       readonly gh?: ReadonlyArray<string>;
       readonly git?: Option.Option<string>;
       readonly ssh?: ReadonlyArray<string>;
+      readonly gitFor?: ReadonlyArray<string>;
+      readonly providers?: ReadonlyArray<{
+        readonly instance: string;
+        readonly names: ReadonlyArray<string>;
+      }>;
     }
   | "unreachable";
 
@@ -33,7 +38,11 @@ const setup = (input: {
   readonly env?: Record<string, string>;
   readonly mergeToken?: { readonly login: string; readonly expiresAt: number } | null;
 }) => {
-  const state = { identity: input.identity, probes: 0 };
+  const state = {
+    identity: input.identity,
+    probes: 0,
+    ownerLogins: [] as ReadonlyArray<string>,
+  };
   const mergeToken =
     input.mergeToken === undefined
       ? { login: "Nishchay", expiresAt: NOW + 30 * DAY }
@@ -52,22 +61,26 @@ const setup = (input: {
   const identity = Layer.succeed(
     CredentialHygiene.T3GitHubIdentity,
     CredentialHygiene.T3GitHubIdentity.of({
-      identities: Effect.suspend(() => {
-        state.probes += 1;
-        // Takes a second, so a check that starts meanwhile shares it.
-        return Effect.sleep("1 second");
-      }).pipe(
-        Effect.andThen(() =>
-          state.identity === "unreachable"
-            ? Effect.fail(new CredentialHygiene.T3GitHubIdentityError({ cause: "offline" }))
-            : Effect.succeed({
-                t3: state.identity.t3 ?? [],
-                ghAccounts: state.identity.gh ?? [],
-                gitCredential: state.identity.git ?? Option.none(),
-                ssh: state.identity.ssh ?? [SSH_DENIED],
-              }),
+      identities: ({ ownerLogins }) =>
+        Effect.suspend(() => {
+          state.probes += 1;
+          state.ownerLogins = ownerLogins;
+          // Takes a second, so a check that starts meanwhile shares it.
+          return Effect.sleep("1 second");
+        }).pipe(
+          Effect.andThen(() =>
+            state.identity === "unreachable"
+              ? Effect.fail(new CredentialHygiene.T3GitHubIdentityError({ cause: "offline" }))
+              : Effect.succeed({
+                  t3: state.identity.t3 ?? [],
+                  ghAccounts: state.identity.gh ?? [],
+                  gitCredential: state.identity.git ?? Option.none(),
+                  gitCredentialFor: state.identity.gitFor ?? [],
+                  ssh: state.identity.ssh ?? [SSH_DENIED],
+                  providerEnvironments: state.identity.providers ?? [],
+                }),
+          ),
         ),
-      ),
     }),
   );
   const layer = CredentialHygiene.layer.pipe(
@@ -75,7 +88,7 @@ const setup = (input: {
     Layer.provide(OwnerMergeClient.layer),
     Layer.provide(keychain.layer),
     Layer.provide(fakeGitHub(() => ({ status: 500 })).layer),
-    Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: input.env ?? {} }))),
+    Layer.provide(Layer.succeed(HostProcess.Environment, input.env ?? {})),
     Layer.provide(scopeLayer()),
   );
   return { state, layer };
@@ -230,6 +243,13 @@ describe("CredentialHygiene", () => {
         "GIT_SSH_COMMAND",
         "GIT_CONFIG_PARAMETERS",
         "GIT_CONFIG_COUNT",
+        // Patterns, not a list: anything git, gh or ssh reads, and any token.
+        "GITHUB_PERSONAL_ACCESS_TOKEN",
+        "GIT_TEMPLATE_DIR",
+        "GIT_EDITOR",
+        "SSH_CONNECTION",
+        "OPENAI_API_TOKEN",
+        "github_token",
       ] as const
     ).map(
       (name) =>
@@ -245,6 +265,16 @@ describe("CredentialHygiene", () => {
       ["env_token"],
     ],
     ["the identity unreachable", { identity: "unreachable" }, ["identity_unknown"]],
+    [
+      "a provider instance's environment with a token",
+      { identity: { ...bot, providers: [{ instance: "codex", names: ["PATH", "GH_TOKEN"] }] } },
+      ["env_token"],
+    ],
+    [
+      "the git helper holding a password for the owner's login",
+      { identity: { ...bot, gitFor: ["nishchay"] } },
+      ["owner_identity"],
+    ],
     ["no merge token", { identity: bot, mergeToken: null }, ["merge_token_missing"]],
     [
       "an expired merge token",
@@ -291,6 +321,63 @@ describe("CredentialHygiene", () => {
       assert.strictEqual(state.probes, 3);
     }).pipe(Effect.provide(layer));
   });
+
+  it.effect("says why in fixed words, naming sources and variables but never values", () =>
+    Effect.gen(function* () {
+      const { state, layer } = setup({
+        identity: {
+          ...bot,
+          gitFor: ["Nishchay"],
+          providers: [
+            // The server's own GH_TOKEN is named once, under the server.
+            { instance: "codex", names: ["GH_TOKEN", "SSH_AUTH_SOCK", "PATH"] },
+            { instance: "claude", names: ["PATH"] },
+          ],
+        },
+        env: { GH_TOKEN: "ghp_secret_value", PATH: "/bin" },
+      });
+      const report = yield* check.pipe(Effect.provide(layer));
+      assert.deepStrictEqual(report.failures, ["env_token", "owner_identity"]);
+      assert.deepStrictEqual(report.reasons, [
+        "the server's environment sets GH_TOKEN",
+        "the git credential helper holds a password for the owner's login",
+        `provider instance "codex"'s environment sets SSH_AUTH_SOCK`,
+      ]);
+      assert.notInclude(JSON.stringify(report), "ghp_secret_value");
+      // The helper is asked about the owner's login and the merge token's, in both cases.
+      assert.deepStrictEqual(state.ownerLogins, ["Nishchay", "nishchay"]);
+
+      const unreachable = setup({ identity: "unreachable" });
+      const failed = yield* Effect.gen(function* () {
+        yield* TestClock.setTime(NOW);
+        const hygiene = yield* CredentialHygiene.CredentialHygiene;
+        return yield* settled(hygiene.requirePassing(ORG)).pipe(Effect.flip);
+      }).pipe(Effect.provide(unreachable.layer));
+      // The live layer's `source: reason`, kept rather than dropped.
+      assert.deepStrictEqual(failed.reasons, ["offline"]);
+    }),
+  );
+
+  it.effect("passes with variables T3 sets itself and ones that pick no credential", () =>
+    Effect.gen(function* () {
+      const report = yield* check;
+      assert.deepInclude(report, { passed: true, failures: [], reasons: [], envTokenNames: [] });
+    }).pipe(
+      Effect.provide(
+        setup({
+          identity: bot,
+          env: {
+            GIT_TERMINAL_PROMPT: "0",
+            T3_MCP_BEARER_TOKEN: "t3_x",
+            T3CODE_DEV_AUTH_TOKEN: "t3_dev",
+            GH_TOKEN: " ",
+            PATH: "/usr/bin",
+            HOME: "/Users/kin",
+          },
+        }).layer,
+      ),
+    ),
+  );
 
   it.effect("names environment tokens without their values", () =>
     Effect.gen(function* () {

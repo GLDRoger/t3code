@@ -50,7 +50,7 @@ const FAILURE_TEXT: Record<CredentialHygieneFailure, (report: CredentialHygieneR
     env_token: (report) =>
       report.envTokenNames.length > 0
         ? `${report.envTokenNames.join(", ")} ${report.envTokenNames.length === 1 ? "is" : "are"} set in the server's environment`
-        : "T3 takes its GitHub token from the server's environment",
+        : "an environment agents inherit can hand them a GitHub credential",
     owner_identity: () => "a GitHub login on this machine is yours",
     non_bot_identity: () => "a GitHub login on this machine isn't the bot's",
     identity_unknown: () => "Kin couldn't read every GitHub login on this machine",
@@ -65,10 +65,11 @@ export const credentialCheckBody = (orgId: KinOrgId, report: CredentialHygieneRe
       ? `Your merge token expires within 7 days. Save a new one with \`node scripts/kin-github-app.ts --merge-token --kin-org ${orgId}\` on the Kin host.`
       : "The credential check passes again, so approved actions can run.";
   }
-  const reasons = report.failures.map((failure) => FAILURE_TEXT[failure](report));
+  const failures = report.failures.map((failure) => FAILURE_TEXT[failure](report));
   const logins = report.identities.map(({ source, login }) => `${login} (${source})`);
   return [
-    `Approved actions won't run until the credential check passes: ${reasons.join("; ")}.`,
+    `Approved actions won't run until the credential check passes: ${failures.join("; ")}.`,
+    ...(report.reasons.length > 0 ? [`Why: ${report.reasons.join("; ")}.`] : []),
     ...(logins.length > 0 ? [`GitHub logins found: ${logins.join(", ")}.`] : []),
     "Kin checks again before each action and every hour.",
   ].join("\n");

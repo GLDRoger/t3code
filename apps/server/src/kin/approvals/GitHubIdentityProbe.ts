@@ -1,6 +1,5 @@
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Clock from "effect/Clock";
-import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -22,12 +21,14 @@ import {
 } from "./CredentialHygiene.ts";
 import {
   checkGitConfig,
+  checkRepoGitConfig,
   expandIdentityFile,
   parseGitConfigList,
   parseSshConfig,
+  sshConfigPaths,
   sshViolation,
 } from "./HostConfigAllowlist.ts";
-import { T3GitHubCredential } from "./T3GitHubCredential.ts";
+import { T3GitHubCredential, type T3StoredCredentials } from "./T3GitHubCredential.ts";
 
 const HOST = "github.com";
 const PROCESS_TIMEOUT_MS = 15_000;
@@ -41,6 +42,7 @@ const SSH_DIR_DEPTH = 2;
 const MAX_KEY_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_SSH_CONFIG_FILES = 32;
 const MAX_SSH_CONFIG_BYTES = 64 * 1024;
+const MAX_PROJECT_ROOTS = 64;
 const GLOB = /[*?[]/;
 // Below `VcsProcess`'s four slots for non-git commands, which T3's own gh runs share.
 const SSH_CONCURRENCY = 2;
@@ -81,23 +83,17 @@ const GhAuthStatus = Schema.fromJsonString(
 const decodeGhAuthStatus = Schema.decodeUnknownOption(GhAuthStatus);
 
 /**
- * `GITHUB_SSH_PROBE` reading only the user config the probe validated (`none` without one). With
- * `key`, ssh offers it before any other, so GitHub answers for that key.
+ * `GITHUB_SSH_PROBE` with the ssh on PATH, reading only the user config the probe validated
+ * (`none` without one). With `key`, ssh offers it before any other, so GitHub answers for that key.
  */
-const sshProbe = (config: string, key?: string) => [
-  "ssh",
+const sshProbe = (ssh: string, config: string, key?: string) => [
+  ssh,
   "-F",
   config,
   ...GITHUB_SSH_PROBE.slice(1, -1),
   ...(key === undefined ? [] : ["-o", "IdentitiesOnly=yes", "-i", key]),
   ...GITHUB_SSH_PROBE.slice(-1),
 ];
-
-/** The system-wide SSH config, which agents' ssh reads after `~/.ssh/config`. */
-export const SystemSshConfig = Context.Reference<string>(
-  "t3/kin/approvals/GitHubIdentityProbe/SystemSshConfig",
-  { defaultValue: () => "/etc/ssh/ssh_config" },
-);
 
 /**
  * The live `T3GitHubIdentity` (spec section 12). It reports what each source answers and leaves
@@ -115,7 +111,6 @@ export const make = Effect.gen(function* () {
   const environment = yield* HostProcess.Environment;
   const username = yield* HostProcess.Username;
   const userId = yield* HostProcess.UserId;
-  const systemSshConfig = yield* SystemSshConfig;
 
   // From the filesystem root, outside any repository, so no repository config picks the helper.
   const cwd = path.parse(path.resolve(home || "/")).root;
@@ -199,10 +194,7 @@ export const make = Effect.gen(function* () {
     );
 
   /** Every credential T3 holds, whichever it would pick and whether or not the host is enabled. */
-  const t3 = Effect.gen(function* () {
-    const stored = yield* t3Credential.read.pipe(
-      Effect.mapError((error) => unreadable("t3", error.reason)),
-    );
+  const t3 = Effect.fn("KinGitHubIdentity.t3")(function* (stored: T3StoredCredentials) {
     const now = yield* Clock.currentTimeMillis;
     const tokens: Array<{ readonly source: string; readonly token: Redacted.Redacted<string> }> =
       [];
@@ -309,36 +301,126 @@ export const make = Effect.gen(function* () {
     }),
   );
 
-  // The password stays in this pipeline: it is wrapped at once, sent to GitHub and dropped.
-  const gitCredential = Effect.gen(function* () {
+  const fill = (username?: string) =>
+    run({
+      operation: "KinGitHubIdentity.gitCredential",
+      command: "git",
+      args: ["credential", "fill"],
+      stdin: `protocol=https\nhost=${HOST}\n${username === undefined ? "" : `username=${username}\n`}\n`,
+      env: GIT_ENV,
+      timeoutMs: PROCESS_TIMEOUT_MS,
+    }).pipe(
+      Effect.mapError((error) => unreadable("git_credential", error._tag)),
+      Effect.map((output) => {
+        const line = output.stdout.split("\n").find((entry) => entry.startsWith("password="));
+        const password = line?.slice("password=".length).replace(/\r$/, "") ?? "";
+        return {
+          exitCode: output.exitCode,
+          // git falls back to a terminal prompt, which is off, when no helper answers.
+          promptsOff: /terminal prompts disabled/i.test(output.stderr),
+          password: password === "" ? Option.none() : Option.some(Redacted.make(password)),
+        };
+      }),
+    );
+
+  /**
+   * The login behind `git credential fill` for github.com, and which of `ownerLogins` the helper
+   * also holds a password for: one helper can keep several accounts, and answers for the one asked.
+   * The passwords stay in this pipeline: each is wrapped at once and only the first goes to GitHub.
+   */
+  const gitCredential = Effect.fn("KinGitHubIdentity.gitCredential")(function* (
+    ownerLogins: ReadonlyArray<string>,
+  ) {
     const helpers = yield* gitHelpers;
-    if (helpers === null) return Option.none<string>();
+    if (helpers === null) return { login: Option.none<string>(), ownerHeld: [] };
     // `git credential fill` answers with the first helper's credential and hides the rest.
     if (helpers > 1) {
       return yield* unreadable("git_credential", "more than one credential helper is configured");
     }
-    const output = yield* run({
-      operation: "KinGitHubIdentity.gitCredential",
+    const answer = yield* fill();
+    let login = Option.none<string>();
+    if (answer.exitCode !== 0) {
+      // With a helper configured, prompts being off also covers a crashed, locked or refusing one.
+      if (!answer.promptsOff || helpers !== 0) {
+        return yield* unreadable("git_credential", `git credential fill exited ${answer.exitCode}`);
+      }
+    } else if (Option.isNone(answer.password)) {
+      return yield* unreadable("git_credential", "the helper answered without a password");
+    } else {
+      login = Option.some(yield* loginOf("git_credential", answer.password.value));
+    }
+    const ownerHeld: Array<string> = [];
+    for (const username of ownerLogins) {
+      if (!GITHUB_LOGIN.test(username)) {
+        return yield* unreadable("git_credential", "an owner login isn't a GitHub login");
+      }
+      const held = yield* fill(username);
+      // Asked for one account, prompts being off means the helper has none for it.
+      if (held.exitCode !== 0 && held.promptsOff) continue;
+      if (held.exitCode !== 0) {
+        return yield* unreadable("git_credential", `git credential fill exited ${held.exitCode}`);
+      }
+      if (Option.isNone(held.password)) {
+        return yield* unreadable("git_credential", "the helper answered without a password");
+      }
+      ownerHeld.push(username);
+    }
+    return { login, ownerHeld };
+  });
+
+  const repoConfig = (root: string, scope: "--local" | "--worktree") =>
+    run({
+      operation: "KinGitHubIdentity.repoConfig",
       command: "git",
-      args: ["credential", "fill"],
-      stdin: `protocol=https\nhost=${HOST}\n\n`,
+      args: ["-C", root, "config", "--list", "--show-origin", "-z", scope],
       env: GIT_ENV,
       timeoutMs: PROCESS_TIMEOUT_MS,
-    }).pipe(Effect.mapError((error) => unreadable("git_credential", error._tag)));
-    if (output.exitCode !== 0) {
-      // git falls back to a terminal prompt, which is off, when no helper answers. With a helper
-      // configured that also covers a crashed, locked or refusing one, so it can't mean none.
-      if (/terminal prompts disabled/i.test(output.stderr) && helpers === 0) {
-        return Option.none<string>();
+    }).pipe(Effect.mapError((error) => unreadable("git_repo", error._tag)));
+
+  /**
+   * Each project's own git config, which agents working there read on top of the host's, checked
+   * against the repository allowlist. A folder that's gone or isn't a repository has none.
+   */
+  const repositories = Effect.fn("KinGitHubIdentity.repositories")(function* (
+    roots: ReadonlyArray<string>,
+  ) {
+    if (roots.length > MAX_PROJECT_ROOTS) {
+      return yield* unreadable("git_repo", `more than ${MAX_PROJECT_ROOTS} projects`);
+    }
+    for (const root of roots) {
+      const info = yield* fs.stat(root).pipe(
+        Effect.asSome,
+        Effect.catch((error) =>
+          isNotFound(error)
+            ? Effect.succeedNone
+            : Effect.fail(unreadable("git_repo", `${root} can't be read`)),
+        ),
+      );
+      if (Option.isNone(info) || info.value.type !== "Directory") continue;
+      const scopes = ["--local", "--worktree"] as const;
+      for (const scope of scopes) {
+        const output = yield* repoConfig(root, scope);
+        if (
+          scope === "--local" &&
+          output.exitCode !== 0 &&
+          /--local can only be used inside a git repository/.test(output.stderr)
+        ) {
+          break;
+        }
+        if (output.exitCode !== 0) {
+          return yield* unreadable("git_repo", `git config in ${root} exited ${output.exitCode}`);
+        }
+        const entries = parseGitConfigList(output.stdout);
+        if (entries === null) {
+          return yield* unreadable("git_repo", `git config in ${root} was unreadable`);
+        }
+        const checked = checkRepoGitConfig(entries);
+        if (checked._tag === "refused") {
+          return yield* unreadable("git_repo", `${root}: ${checked.reason}`);
+        }
+        if (!checked.worktreeConfig) break;
       }
-      return yield* unreadable("git_credential", `git credential fill exited ${output.exitCode}`);
     }
-    const line = output.stdout.split("\n").find((entry) => entry.startsWith("password="));
-    const password = line?.slice("password=".length).replace(/\r$/, "") ?? "";
-    if (password === "") {
-      return yield* unreadable("git_credential", "the helper answered without a password");
-    }
-    return Option.some(yield* loginOf("git_credential", Redacted.make(password)));
   });
 
   /** The files an `Include` pattern names, globbing its last path segment as ssh does. */
@@ -353,7 +435,7 @@ export const make = Effect.gen(function* () {
     if (tilde.startsWith("~") || /%|\$\{/.test(full) || GLOB.test(dir) || name.includes("[")) {
       return yield* unreadable("ssh", "an Include names a path the probe can't expand");
     }
-    if (!GLOB.test(name)) return [full];
+    if (!GLOB.test(name)) return { glob: false, files: [full] };
     const matcher = new RegExp(
       `^${name
         .replace(/[.+^$(){}|\\\]]/g, "\\$&")
@@ -370,10 +452,11 @@ export const make = Effect.gen(function* () {
         ),
       );
     // Like glob(3), `*` doesn't match a leading dot.
-    return names
+    const files = names
       .filter((entry) => (name.startsWith(".") || !entry.startsWith(".")) && matcher.test(entry))
       .toSorted()
       .map((entry) => path.join(dir, entry));
+    return { glob: true, files };
   });
 
   /**
@@ -382,15 +465,21 @@ export const make = Effect.gen(function* () {
    */
   const readSshConfig = Effect.fn("KinGitHubIdentity.readSshConfig")(function* (
     top: string,
-    system: boolean,
+    options: {
+      readonly system: boolean;
+      /** Where relative includes resolve: `~/.ssh` for the user's config, ssh's own for the system's. */
+      readonly base: string;
+      readonly mustExist: boolean;
+    },
   ) {
+    const { system, base } = options;
     const label = system ? "the system SSH config" : "~/.ssh/config";
-    // Relative includes resolve against `~/.ssh` for the user's config and `/etc/ssh` for the system's.
-    const base = system ? path.dirname(top) : path.join(home, ".ssh");
     const identityFiles: Array<string> = [];
+    const files: Array<string> = [];
     let read = 0;
     const visit = Effect.fn("KinGitHubIdentity.readSshConfigFile")(function* (
       file: string,
+      mustExist: boolean,
     ): Effect.fn.Return<boolean, T3GitHubIdentityError> {
       const info = yield* fs.stat(file).pipe(
         Effect.asSome,
@@ -400,8 +489,13 @@ export const make = Effect.gen(function* () {
             : Effect.fail(unreadable("ssh", `${label} can't be read`)),
         ),
       );
-      // ssh skips an Include that matches nothing.
-      if (Option.isNone(info)) return false;
+      // ssh skips a glob that matches nothing; a missing named file may be one ssh finds elsewhere.
+      if (Option.isNone(info)) {
+        return mustExist
+          ? yield* unreadable("ssh", `${label} names a file that doesn't exist`)
+          : false;
+      }
+      files.push(file);
       read += 1;
       // Each nested level reads a file, so this bounds the depth too.
       if (read > MAX_SSH_CONFIG_FILES) {
@@ -437,16 +531,15 @@ export const make = Effect.gen(function* () {
         }
         if (directive.keyword === "include") {
           for (const pattern of directive.args) {
-            for (const target of yield* includeTargets(pattern, base)) {
-              yield* visit(target);
-            }
+            const targets = yield* includeTargets(pattern, base);
+            for (const target of targets.files) yield* visit(target, !targets.glob);
           }
         }
       }
       return true;
     });
-    const exists = yield* visit(top);
-    return exists ? identityFiles : null;
+    const exists = yield* visit(top, options.mustExist);
+    return { exists, identityFiles, files };
   });
 
   const isRegularFile = (file: string) =>
@@ -532,7 +625,7 @@ export const make = Effect.gen(function* () {
   const sshAnswer = (argv: ReadonlyArray<string>) =>
     run({
       operation: "KinGitHubIdentity.ssh",
-      command: argv[0] ?? "ssh",
+      command: argv[0]!,
       args: argv.slice(1),
       env: SSH_ENV,
       timeoutMs: SSH_TIMEOUT_MS,
@@ -543,21 +636,81 @@ export const make = Effect.gen(function* () {
       ),
     );
 
+  /**
+   * The ssh agents run: the first on PATH, as an absolute path. Homebrew, MacPorts and Nix builds
+   * each read their own system config, so the probe asks this one which files it reads.
+   */
+  const resolveSsh = Effect.gen(function* () {
+    for (const dir of (environment.PATH ?? "").split(":")) {
+      // An agent in another folder would find a different ssh.
+      if (!path.isAbsolute(dir)) return yield* unreadable("ssh", "PATH has a relative folder");
+      const candidate = path.join(dir, "ssh");
+      const info = yield* fs.stat(candidate).pipe(Effect.option);
+      if (Option.isSome(info) && info.value.type === "File" && (info.value.mode & 0o111) !== 0) {
+        return candidate;
+      }
+    }
+    return yield* unreadable("ssh", "ssh isn't on PATH");
+  });
+
+  /** The files `ssh -v -G` reads, from its path lines only: its other output is never kept. */
+  const sshConfigFiles = (ssh: string) =>
+    run({
+      operation: "KinGitHubIdentity.sshConfigFiles",
+      command: ssh,
+      args: ["-v", "-G", "git@github.com"],
+      env: SSH_ENV,
+      timeoutMs: PROCESS_TIMEOUT_MS,
+    }).pipe(
+      Effect.mapError((error) => unreadable("ssh", error._tag)),
+      Effect.flatMap((output) => {
+        if (output.exitCode !== 0) {
+          return Effect.fail(unreadable("ssh", `ssh -G exited ${output.exitCode}`));
+        }
+        const files = sshConfigPaths(output.stderr);
+        // Every ssh reads a system config, so none listed means the output wasn't understood.
+        if (files.length === 0) return Effect.fail(unreadable("ssh", "ssh -G named no config"));
+        if (files.length > MAX_SSH_CONFIG_FILES) {
+          return Effect.fail(unreadable("ssh", "ssh -G named too many config files"));
+        }
+        return Effect.succeed(files);
+      }),
+    );
+
   const ssh = Effect.gen(function* () {
+    const sshPath = yield* resolveSsh;
     const userConfig = path.join(home, ".ssh", "config");
-    const fromUser = yield* readSshConfig(userConfig, false);
-    // Agents' ssh reads this after the user's config; the probe's `-F` skips it, so its keys go by `-i`.
-    const fromSystem = yield* readSshConfig(systemSshConfig, true);
-    const named = [...(fromUser ?? []), ...(fromSystem ?? [])];
+    const fromUser = yield* readSshConfig(userConfig, {
+      system: false,
+      base: path.join(home, ".ssh"),
+      mustExist: false,
+    });
+    // Asked only after the user's config passed, since `-G` evaluates it.
+    const reported = yield* sshConfigFiles(sshPath);
+    const seen = new Set(fromUser.files);
+    const systemFiles = reported.filter((file) => !seen.has(file));
+    const named = [...fromUser.identityFiles];
+    for (const file of systemFiles) {
+      if (seen.has(file)) continue;
+      // Agents' ssh reads these after the user's config; the probe's `-F` skips them, so their
+      // keys go by `-i`. Relative includes resolve against the main system config's folder.
+      const fromSystem = yield* readSshConfig(file, {
+        system: true,
+        base: path.dirname(systemFiles[0]!),
+        mustExist: true,
+      });
+      for (const read of fromSystem.files) seen.add(read);
+      named.push(...fromSystem.identityFiles);
+    }
     const files = [...new Set([...named, ...(yield* sshDirFiles)])];
     const usable = yield* Effect.forEach(files, isUsableKey, { concurrency: SSH_CONCURRENCY });
     const keys = files.filter((_, index) => usable[index]);
     if (keys.length > MAX_SSH_KEYS) {
       return yield* unreadable("ssh", `more than ${MAX_SSH_KEYS} private keys`);
     }
-    const config = fromUser === null ? "none" : userConfig;
-    const plain = yield* sshAnswer(sshProbe(config));
-    const perKey = yield* Effect.forEach(keys, (key) => sshAnswer(sshProbe(config, key)), {
+    const config = fromUser.exists ? userConfig : "none";
+    const plain = yield* sshAnswer(sshProbe(sshPath, config));
+    const perKey = yield* Effect.forEach(keys, (key) => sshAnswer(sshProbe(sshPath, config, key)), {
       concurrency: SSH_CONCURRENCY,
     });
     return [plain, ...perKey];
@@ -565,15 +718,30 @@ export const make = Effect.gen(function* () {
 
   return T3GitHubIdentity.of({
     // T3's credentials first: until the server installs its reader, nothing is spawned.
-    identities: Effect.gen(function* () {
+    identities: Effect.fn("KinGitHubIdentity.identities")(function* ({ ownerLogins }) {
       yield* homeMatches;
-      const t3Identities = yield* t3;
+      const stored = yield* t3Credential.read.pipe(
+        Effect.mapError((error) => unreadable("t3", error.reason)),
+      );
+      const t3Identities = yield* t3(stored);
       const rest = yield* Effect.all(
-        { ghAccounts, gitCredential, ssh },
+        {
+          ghAccounts,
+          git: gitCredential(ownerLogins),
+          repositories: repositories(stored.projectRoots),
+          ssh,
+        },
         { concurrency: "unbounded" },
       );
-      return { t3: t3Identities, ...rest } satisfies T3GitHubIdentities;
-    }).pipe(Effect.withSpan("KinGitHubIdentity.identities")),
+      return {
+        t3: t3Identities,
+        ghAccounts: rest.ghAccounts,
+        gitCredential: rest.git.login,
+        gitCredentialFor: rest.git.ownerHeld,
+        ssh: rest.ssh,
+        providerEnvironments: stored.providerEnvironments,
+      } satisfies T3GitHubIdentities;
+    }),
   });
 });
 

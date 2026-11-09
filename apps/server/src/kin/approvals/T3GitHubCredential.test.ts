@@ -5,6 +5,7 @@ import {
   type ServerSettings,
 } from "@t3tools/contracts";
 import * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -14,6 +15,7 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
+import { ProjectStoreV2 } from "../../orchestration-v2/ProjectStore.ts";
 import * as T3GitHubCredential from "./T3GitHubCredential.ts";
 
 const session = (accessToken: string) =>
@@ -27,8 +29,20 @@ const session = (accessToken: string) =>
 const isSettingsError = Schema.is(ServerSettingsError);
 
 /** The slot with the server's reader installed over Settings that read as `github`. */
-const slotOver = (github: unknown | ServerSettingsError) =>
+const slotOver = (
+  github: unknown | ServerSettingsError,
+  rest: {
+    readonly providerInstances?: unknown;
+    readonly projectRoots?: ReadonlyArray<string> | "unreadable";
+  } = {},
+) =>
   Effect.gen(function* () {
+    const projects = ProjectStoreV2.of({
+      list: () =>
+        rest.projectRoots === "unreadable"
+          ? Effect.die("unused")
+          : Effect.succeed((rest.projectRoots ?? []).map((workspaceRoot) => ({ workspaceRoot }))),
+    } as unknown as ProjectStoreV2["Service"]);
     const host = SourceControlHost.SourceControlHost.of({
       settings: {
         getWithSecrets: () =>
@@ -36,6 +50,9 @@ const slotOver = (github: unknown | ServerSettingsError) =>
             ? Effect.fail(github)
             : Effect.succeed({
                 ...DEFAULT_SERVER_SETTINGS,
+                ...(rest.providerInstances === undefined
+                  ? {}
+                  : { providerInstances: rest.providerInstances }),
                 sourceControlHosts: { github },
               } as unknown as ServerSettings),
       },
@@ -44,6 +61,7 @@ const slotOver = (github: unknown | ServerSettingsError) =>
       T3GitHubCredential.installLayer.pipe(
         Layer.provideMerge(T3GitHubCredential.slotLayer),
         Layer.provide(Layer.succeed(SourceControlHost.SourceControlHost, host)),
+        Layer.provide(Layer.succeed(ProjectStoreV2, projects)),
       ),
     );
     return Context.get(context, T3GitHubCredential.T3GitHubCredential);
@@ -82,6 +100,37 @@ describe("T3GitHubCredential", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("reads what each provider instance's environment sets, and every project root", () =>
+    Effect.gen(function* () {
+      const slot = yield* slotOver(
+        {},
+        {
+          providerInstances: {
+            codex: {
+              driver: "codex",
+              environment: [
+                { name: "GITHUB_PERSONAL_ACCESS_TOKEN", value: "ghp_secret_value" },
+                { name: "SSH_AUTH_SOCK", value: { provider: "vault", reference: "ssh#sock" } },
+                // Blank clears what the server's environment sets.
+                { name: "HOME_TOOL", value: " " },
+              ],
+            },
+            claude: { driver: "claudeAgent", enabled: false },
+          },
+          projectRoots: ["/work/app", "/work/site"],
+        },
+      ).pipe(Effect.provideService(HostProcess.Environment, { PATH: "/bin", HOME_TOOL: "x" }));
+      const stored = yield* slot.read;
+      assert.deepStrictEqual(stored.providerEnvironments, [
+        { instance: "codex", names: ["PATH", "GITHUB_PERSONAL_ACCESS_TOKEN", "SSH_AUTH_SOCK"] },
+        // Disabled instances count: the terminal opens any instance's environment.
+        { instance: "claude", names: ["PATH", "HOME_TOOL"] },
+      ]);
+      assert.deepStrictEqual(stored.projectRoots, ["/work/app", "/work/site"]);
+      assert.notInclude(JSON.stringify(stored.providerEnvironments), "ghp_secret_value");
+    }).pipe(Effect.scoped),
+  );
+
   it.effect.each([
     [
       "Settings can't be read",
@@ -111,6 +160,8 @@ describe("T3GitHubCredential", () => {
         saved: Option.none(),
         app: Option.none(),
         account: Option.none(),
+        providerEnvironments: [],
+        projectRoots: [],
       } satisfies T3GitHubCredential.T3StoredCredentials;
       // A read at startup, before the server installs the reader, gets the reader's answer.
       const early = yield* Effect.forkChild(slot.read);

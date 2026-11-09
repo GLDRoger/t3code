@@ -1,7 +1,8 @@
 /**
- * What the Kin host's SSH and git config may contain (spec section 12). Anything else fails the
- * identity probe closed: listing every place a credential can hide can't be finished, so the probe
- * proves the setup is minimal instead. Reasons name a directive or key, never its value.
+ * What the Kin host's SSH config, git config and environment may contain (spec section 12).
+ * Anything else fails the identity probe closed: listing every place a credential can hide can't
+ * be finished, so the probe proves the setup is minimal instead. Reasons name a directive, key or
+ * variable, never its value.
  */
 
 export interface SshDirective {
@@ -41,7 +42,7 @@ const SSH_ALLOWED: Record<string, (args: ReadonlyArray<string>) => boolean> = {
 };
 
 /**
- * What distro system configs ship, allowed in `/etc/ssh` only. macOS: `SendEnv` and the crypto
+ * What distro system configs ship, allowed in system files only. macOS: `SendEnv` and the crypto
  * policy's algorithm lists; Debian and Ubuntu: `HashKnownHosts` and `GSSAPIAuthentication`
  * (GitHub takes no GSSAPI login). Algorithm lists and forwarded locale variables add no identity.
  */
@@ -58,31 +59,62 @@ const SSH_SYSTEM_ALLOWED = new Set([
   "gssapiauthentication",
 ]);
 
-/** Spellings for reasons; any other directive is named only if it can't be a pasted secret. */
-const SSH_NAMES = [
-  "AddKeysToAgent",
-  "CertificateFile",
-  "ControlMaster",
-  "ControlPath",
-  "ControlPersist",
-  "IdentityAgent",
-  "KnownHostsCommand",
-  "LocalCommand",
-  "Match",
-  "PermitLocalCommand",
-  "PKCS11Provider",
-  "ProxyCommand",
-  "ProxyJump",
-  "RemoteCommand",
-  "SecurityKeyProvider",
-];
+/** ssh_config's keywords, for naming one in a reason. Anything else could be a pasted secret. */
+const SSH_KEYWORDS = `
+  AddKeysToAgent AddressFamily BatchMode BindAddress BindInterface CASignatureAlgorithms
+  CanonicalDomains CanonicalizeFallbackLocal CanonicalizeHostname CanonicalizeMaxDots
+  CanonicalizePermittedCNAMEs CertificateFile ChannelTimeout CheckHostIP Ciphers
+  ClearAllForwardings Compression ConnectTimeout ConnectionAttempts ControlMaster ControlPath
+  ControlPersist DynamicForward EnableEscapeCommandline EnableSSHKeysign EscapeChar
+  ExitOnForwardFailure FingerprintHash ForkAfterAuthentication ForwardAgent ForwardX11
+  ForwardX11Timeout ForwardX11Trusted GSSAPIAuthentication GSSAPIDelegateCredentials
+  GatewayPorts GlobalKnownHostsFile HashKnownHosts Host HostKeyAlgorithms HostKeyAlias HostName
+  HostbasedAcceptedAlgorithms HostbasedAuthentication IPQoS IdentitiesOnly IdentityAgent
+  IdentityFile IgnoreUnknown Include KbdInteractiveAuthentication KbdInteractiveDevices
+  KexAlgorithms KnownHostsCommand LocalCommand LocalForward LogLevel LogVerbose MACs Match
+  NoHostAuthenticationForLocalhost NoHostAuthenticationForProxyCommand NumberOfPasswordPrompts
+  ObscureKeystrokeTiming PKCS11Provider PasswordAuthentication PermitLocalCommand
+  PermitRemoteOpen Port PreferredAuthentications ProxyCommand ProxyJump ProxyUseFdpass
+  PubkeyAcceptedAlgorithms PubkeyAuthentication RefuseConnection RekeyLimit RemoteCommand
+  RemoteForward RequestTTY RequiredRSASize RevokedHostKeys SecurityKeyProvider SendEnv
+  ServerAliveCountMax ServerAliveInterval SessionType SetEnv StdinNull StreamLocalBindMask
+  StreamLocalBindUnlink StrictHostKeyChecking SyslogFacility TCPKeepAlive Tag Tunnel
+  TunnelDevice UpdateHostKeys UseKeychain User UserKnownHostsFile VerifyHostKeyDNS
+  VersionAddendum VisualHostKey WarnWeakCrypto XAuthLocation
+`
+  .split(/\s+/)
+  .filter((name) => name !== "");
 const sshName = (keyword: string) =>
-  SSH_NAMES.find((name) => name.toLowerCase() === keyword) ??
-  (/^[a-z]{1,32}$/.test(keyword) ? keyword : "an unrecognised directive");
+  SSH_KEYWORDS.find((name) => name.toLowerCase() === keyword) ?? "an unrecognised directive";
 
 /**
- * Splits a config file as ssh's `readconf.c` does: `keyword args` or `keyword=args`, double quotes
- * group an argument, and a `#` token ends the line. Null when a line has no keyword.
+ * A line's arguments: whitespace splits them, a double-quoted argument may hold spaces, and a `#`
+ * argument ends the line. Null on single quotes, backslashes, or a quote or `#` inside an
+ * argument, which ssh's `argv_split` reads in ways this doesn't follow.
+ */
+const splitSshArgs = (text: string): Array<string> | null => {
+  const args: Array<string> = [];
+  for (let index = 0; index < text.length;) {
+    if (/\s/.test(text[index]!)) {
+      index += 1;
+      continue;
+    }
+    if (text[index] === "#") break;
+    const quoted = text[index] === '"';
+    const end = quoted ? text.indexOf('"', index + 1) : text.slice(index).search(/\s|$/) + index;
+    if (end === -1) return null;
+    const arg = quoted ? text.slice(index + 1, end) : text.slice(index, end);
+    if (/['\\]/.test(arg) || (!quoted && /["#]/.test(arg))) return null;
+    index = quoted ? end + 1 : end;
+    if (quoted && index < text.length && !/\s/.test(text[index]!)) return null;
+    args.push(arg);
+  }
+  return args;
+};
+
+/**
+ * Splits a config file as ssh's `readconf.c` does: `keyword args` or `keyword=args`, with
+ * `splitSshArgs` for the arguments. Null when a line can't be read that way.
  */
 export const parseSshConfig = (text: string): ReadonlyArray<SshDirective> | null => {
   const directives: Array<SshDirective> = [];
@@ -91,11 +123,8 @@ export const parseSshConfig = (text: string): ReadonlyArray<SshDirective> | null
     if (line === "" || line.startsWith("#")) continue;
     const match = /^([^\s="]+)(?:\s*=\s*|\s+|$)(.*)$/.exec(line);
     if (match === null) return null;
-    const args: Array<string> = [];
-    for (const token of match[2]!.matchAll(/"([^"]*)"|(\S+)/g)) {
-      if (token[2]?.startsWith("#") === true) break;
-      args.push(token[1] ?? token[2]!);
-    }
+    const args = splitSshArgs(match[2]!);
+    if (args === null) return null;
     directives.push({ keyword: match[1]!.toLowerCase(), args });
   }
   return directives;
@@ -112,6 +141,10 @@ export const sshViolation = (directive: SshDirective, system: boolean): string |
     ? `sets ${name}`
     : `sets ${name} to a value other than the allowed one`;
 };
+
+/** Pulls the files ssh read from `ssh -v -G` output, using only its `Reading configuration data` lines. */
+export const sshConfigPaths = (output: string): ReadonlyArray<string> =>
+  [...output.matchAll(/^debug1: Reading configuration data (\/.*)$/gm)].map((match) => match[1]!);
 
 /**
  * Expands an `IdentityFile` as ssh would for the server's OS user. Only `~/`, `%d`, `%u`, `%i` and
@@ -167,7 +200,11 @@ export const parseGitConfigList = (stdout: string): ReadonlyArray<GitConfigEntry
 };
 
 const HELPER_KEYS = new Set(["credential.helper", "credential.https://github.com.helper"]);
-// Each runs a program for transport or on every repository command, outside what the probe sees.
+/**
+ * Refused because each decides how git authenticates or reaches a server (`askPass`, `sshCommand`,
+ * `gitProxy`) or runs a program on ordinary commands the agent didn't ask for (`fsmonitor`,
+ * `hooksPath`), so a credential could be picked without the agent choosing one.
+ */
 const CORE_REFUSED = new Set([
   "core.askpass",
   "core.sshcommand",
@@ -175,14 +212,19 @@ const CORE_REFUSED = new Set([
   "core.fsmonitor",
   "core.hookspath",
 ]);
-/** Allowed keys, matched from the start of the key. */
+/**
+ * Allowed keys in every scope git reads from `/`, matched from the start of the key. None picks a
+ * credential. Some run a program the agent asks for (`core.pager`, `diff.external`,
+ * `merge.*.driver`, `!` aliases, the LFS filter); they're allowed because the agent could run that
+ * program anyway, not because they run nothing.
+ */
 const GIT_ALLOWED: ReadonlyArray<RegExp> = [
   // Commit identity.
   /^user\./,
-  // Local repository behaviour; its transport and hook keys are refused above.
+  // Local repository behaviour; the keys above are refused.
   /^core\./,
-  // New repository and output defaults.
-  /^init\./,
+  // `init.templateDir` would copy its config and hooks into every new repository.
+  /^init\.defaultbranch$/,
   /^color\./,
   // Shorthands for commands the agent could run anyway.
   /^alias\./,
@@ -202,25 +244,34 @@ const gitKeyName = (key: string) => {
   return /^[a-z0-9-]{1,32}(\.\*)?\.[a-z0-9-]{1,32}$/.test(shown) ? shown : "an unrecognised key";
 };
 
+type GitConfigVerdict<Allowed> =
+  | { readonly _tag: "refused"; readonly reason: string }
+  | ({ readonly _tag: "allowed" } & Allowed);
+
+/** The origin check every scope shares: files only, plus what `VcsProcess` sets on every run. */
+const originRefusal = ({ origin, key, value }: GitConfigEntry): string | null | undefined => {
+  if (origin === "command line:") {
+    // The check fails on any other `GIT_CONFIG_*` variable, so only `VcsProcess` sets these.
+    return key === "safe.barerepository" && value === "explicit"
+      ? null
+      : "git config is set from the environment";
+  }
+  return origin.startsWith("file:") ? undefined : "git config comes from an unexpected source";
+};
+
 /**
  * Checks every entry git reads from `/`, in order: a forbidden key's reason, or how many credential
  * helpers git would call for `https://github.com` (an empty value resets the list, as in git).
  */
 export const checkGitConfig = (
   entries: ReadonlyArray<GitConfigEntry>,
-):
-  | { readonly _tag: "refused"; readonly reason: string }
-  | { readonly _tag: "allowed"; readonly helpers: number } => {
+): GitConfigVerdict<{ readonly helpers: number }> => {
   let helpers = 0;
-  for (const { origin, key, value } of entries) {
-    if (origin === "command line:") {
-      // `VcsProcess` sets this on every run; the check fails on any other `GIT_CONFIG_*` variable.
-      if (key === "safe.barerepository" && value === "explicit") continue;
-      return { _tag: "refused", reason: "git config is set from the environment" };
-    }
-    if (!origin.startsWith("file:")) {
-      return { _tag: "refused", reason: "git config comes from an unexpected source" };
-    }
+  for (const entry of entries) {
+    const refusal = originRefusal(entry);
+    if (refusal === null) continue;
+    if (refusal !== undefined) return { _tag: "refused", reason: refusal };
+    const { key, value } = entry;
     if (HELPER_KEYS.has(key)) {
       helpers = value === null || value.trim() === "" ? 0 : helpers + 1;
       continue;
@@ -231,3 +282,96 @@ export const checkGitConfig = (
   }
   return { _tag: "allowed", helpers };
 };
+
+/**
+ * Whether a remote or submodule URL could carry a credential: any `<transport>::` remote helper
+ * (`ext::` runs a command, `fd::` uses an open socket), or userinfo on an HTTP or FTP URL, or a
+ * password on any other. `git@github.com:o/r` and `ssh://git@github.com/o/r` name only the ssh user.
+ */
+const urlCarriesCredential = (value: string | null) => {
+  if (value === null) return true;
+  const url = value.trim();
+  if (/^[A-Za-z][A-Za-z0-9+.-]*::/.test(url)) return true;
+  const parsed = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^/?#]*)/.exec(url);
+  if (parsed === null) return false;
+  const at = parsed[2]!.lastIndexOf("@");
+  if (at === -1) return false;
+  return /^(https?|ftps?)$/i.test(parsed[1]!) || parsed[2]!.slice(0, at).includes(":");
+};
+
+/** `remote.<name>.*` keys that only shape fetch and push: no program, helper or proxy. */
+const REMOTE_PLAIN = new Set([
+  "fetch",
+  "push",
+  "mirror",
+  "skipdefaultupdate",
+  "skipfetchall",
+  "tagopt",
+  "prune",
+  "prunetags",
+  "promisor",
+  "partialclonefilter",
+]);
+const GIT_TRUE = /^(true|yes|on|1)$/i;
+
+/**
+ * Checks a repository's own config (`--local`, or `--worktree`) against the stricter repository
+ * allowlist: whether git reads a `config.worktree` too, or the first forbidden key's reason.
+ */
+export const checkRepoGitConfig = (
+  entries: ReadonlyArray<GitConfigEntry>,
+): GitConfigVerdict<{ readonly worktreeConfig: boolean }> => {
+  let worktreeConfig = false;
+  for (const entry of entries) {
+    const refusal = originRefusal(entry);
+    if (refusal === null) continue;
+    if (refusal !== undefined) return { _tag: "refused", reason: refusal };
+    const { key, value } = entry;
+    const refused = {
+      _tag: "refused",
+      reason: `repository config sets ${gitKeyName(key)}`,
+    } as const;
+    const section = key.slice(0, key.indexOf("."));
+    const name = key.slice(key.lastIndexOf(".") + 1);
+    const subsection = key.indexOf(".") !== key.lastIndexOf(".");
+    if (section === "core") {
+      if (CORE_REFUSED.has(key)) return refused;
+    } else if (key === "extensions.worktreeconfig") {
+      worktreeConfig = value === null || GIT_TRUE.test(value.trim());
+    } else if (section === "remote") {
+      // `remote.pushDefault` names a remote and has no subsection.
+      const url = name === "url" || name === "pushurl";
+      if (subsection && (url ? urlCarriesCredential(value) : !REMOTE_PLAIN.has(name)))
+        return refused;
+    } else if (section === "submodule" && subsection) {
+      if (name === "url" ? urlCarriesCredential(value) : name !== "active") return refused;
+    } else if (section !== "branch" && key !== "lfs.repositoryformatversion") {
+      return refused;
+    }
+  }
+  return { _tag: "allowed", worktreeConfig };
+};
+
+// Variables git, gh and ssh read, and tokens for anything: each can pick a credential.
+const ENV_REFUSED = /^(GH|GITHUB|GIT|SSH)_|_TOKEN$/i;
+/**
+ * Allowed despite the pattern. `GIT_TERMINAL_PROMPT` only turns git's prompt on or off. T3 sets the
+ * other two itself: they authenticate to T3, never to GitHub.
+ */
+const ENV_EXCEPTIONS = new Set([
+  "GIT_TERMINAL_PROMPT",
+  "T3_MCP_BEARER_TOKEN",
+  "T3CODE_DEV_AUTH_TOKEN",
+]);
+
+/** The forbidden variables `env` sets to something, by name, sorted. Values are never read out. */
+export const forbiddenEnvNames = (env: Readonly<Record<string, string | undefined>>) =>
+  Object.entries(env)
+    .filter(
+      ([name, value]) =>
+        (value?.trim() ?? "") !== "" &&
+        ENV_REFUSED.test(name) &&
+        !ENV_EXCEPTIONS.has(name.toUpperCase()),
+    )
+    .map(([name]) => (/^[A-Za-z0-9_]{1,64}$/.test(name) ? name : "a variable with an unusual name"))
+    .toSorted();

@@ -26,7 +26,7 @@ import {
 } from "./ActionHandlers.ts";
 import { KinAudit } from "./Audit.ts";
 import { CredentialHygiene } from "./CredentialHygiene.ts";
-import type { CredentialHygieneReport } from "./CredentialHygieneReport.ts";
+import { type CredentialHygieneReport, failureResult } from "./CredentialHygieneReport.ts";
 import { KinExecutionNotices, type KinExecutionOutcome } from "./ExecutionNotices.ts";
 import { KinOrgRoles } from "./GrantPorts.ts";
 import { KinExecutionLedger, KinPendingActions, type ActionRef } from "./PendingActions.ts";
@@ -226,7 +226,7 @@ export const make = Effect.gen(function* () {
           (error) =>
             new KinExecError({
               reason: "credential_check_failed",
-              detail: error.failures.join(","),
+              detail: failureResult(error),
             }),
         ),
       );
@@ -298,7 +298,7 @@ export const make = Effect.gen(function* () {
     // Checked before the claim too, so a misconfigured host holds the grant instead of spending it.
     const check = yield* hygiene.check(action.orgId);
     if (!check.passed) {
-      const failures = check.failures.join(",");
+      const failures = failureResult(check);
       if (auditedHolds.get(action.id) !== failures) {
         auditedHolds.set(action.id, failures);
         yield* audit
@@ -368,7 +368,7 @@ export const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const orgId = KinOrgId.make(row.orgId);
         const report = yield* hygiene.check(orgId);
-        const result = [...report.failures, ...report.warnings].join(",");
+        const result = [...report.failures, ...report.warnings, ...report.reasons].join(",");
         const previous = reportedChecks.get(orgId);
         reportedChecks.set(orgId, result);
         // An org with no merge token hasn't set GitHub up for Kin, so there is no one to tell.
@@ -377,7 +377,7 @@ export const make = Effect.gen(function* () {
         }
         if (!report.passed) {
           yield* audit
-            .append({ orgId, event: "credential_check_failed", result: report.failures.join(",") })
+            .append({ orgId, event: "credential_check_failed", result: failureResult(report) })
             .pipe(Effect.catch((error) => Effect.logWarning("Kin audit not written", error)));
           yield* notices.credentialCheck({ orgId, report });
         } else if (report.warnings.length > 0) {

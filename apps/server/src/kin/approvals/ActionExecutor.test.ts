@@ -14,7 +14,7 @@ import {
 } from "@t3tools/contracts";
 import { encodeGrantSigningInput } from "@t3tools/shared/kinGrant";
 import * as Clock from "effect/Clock";
-import * as ConfigProvider from "effect/ConfigProvider";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -265,25 +265,28 @@ function harness(
     Layer.provide(Layer.mergeAll(app, github.layer, keychain.layer, scope)),
   );
   const identity = Layer.succeed(CredentialHygiene.T3GitHubIdentity, {
-    identities: Effect.suspend(() => {
-      checks.count += 1;
-      return checks.during?.(checks.count) ?? Effect.void;
-    }).pipe(
-      Effect.andThen(() =>
-        checks.failing
-          ? Effect.fail(new CredentialHygiene.T3GitHubIdentityError({ cause: "probe failed" }))
-          : Effect.succeed({
-              t3: [{ login: "kin-bot", source: "app" }],
-              ghAccounts: ["kin-bot"],
-              gitCredential: Option.none(),
-              ssh: ["git@github.com: Permission denied (publickey)."],
-            }),
+    identities: () =>
+      Effect.suspend(() => {
+        checks.count += 1;
+        return checks.during?.(checks.count) ?? Effect.void;
+      }).pipe(
+        Effect.andThen(() =>
+          checks.failing
+            ? Effect.fail(new CredentialHygiene.T3GitHubIdentityError({ cause: "probe failed" }))
+            : Effect.succeed({
+                t3: [{ login: "kin-bot", source: "app" }],
+                ghAccounts: ["kin-bot"],
+                gitCredential: Option.none(),
+                gitCredentialFor: [],
+                ssh: ["git@github.com: Permission denied (publickey)."],
+                providerEnvironments: [],
+              }),
+        ),
       ),
-    ),
   });
   const hygiene = CredentialHygiene.layer.pipe(
     Layer.provide(identity),
-    Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+    Layer.provide(Layer.succeed(HostProcess.Environment, {})),
     Layer.provide(scope),
   );
   const handlers = Layer.effect(
@@ -790,7 +793,8 @@ describe("KinActionExecutor", () => {
       );
       assert.deepStrictEqual(
         failed.map((entry) => entry.result),
-        ["identity_unknown"],
+        // The probe's fixed reason rides along, so the owner can see which source failed.
+        ["identity_unknown: probe failed"],
       );
       // Both holds within the minute shared one probe.
       assert.strictEqual(checks.count, 1);
@@ -1026,7 +1030,7 @@ describe("KinActionExecutor", () => {
         );
         assert.deepStrictEqual(
           failed.map((entry) => [entry.actionId, entry.result]),
-          [[undefined, "identity_unknown"]],
+          [[undefined, "identity_unknown: probe failed"]],
         );
         assert.deepStrictEqual(credentialNotices.sent, [
           { orgId, failures: ["identity_unknown"] },

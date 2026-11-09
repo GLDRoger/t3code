@@ -7,7 +7,6 @@ import {
   VcsProcessTimeoutError,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -40,6 +39,7 @@ const SAVED_TOKEN = "ghp_t3_saved_token";
 const GH_TOKEN = "gho_gh_keyring_token";
 const OWNER_TOKEN = "gho_owner_token";
 const GIT_PASSWORD = "gho_git_helper_password_never_logged";
+const SSH_G_SECRET = "ssh_g_output_never_kept";
 // What the fake `ssh-keygen -y -P ""` answers depends only on these contents.
 const KEY =
   "-----BEGIN OPENSSH PRIVATE KEY-----\nnot a real key\n-----END OPENSSH PRIVATE KEY-----\n";
@@ -186,8 +186,12 @@ const stored = (
   saved: Option.none(),
   app: Option.none(),
   account: Option.none(),
+  providerEnvironments: [],
+  projectRoots: [],
   ...input,
 });
+/** What the check asks the git helper about: the owner's login and the merge token's, both cases. */
+const OWNER_LOGINS = ["Nishchay", "nishchay"];
 
 /** The machine the probe looks at. Each test changes what one source answers. */
 interface Machine {
@@ -203,6 +207,12 @@ interface Machine {
   ghToken: (account: string | undefined) => Run;
   gitConfig: Run;
   git: Run;
+  /** `git credential fill` asked for one username. */
+  gitFor: (username: string) => Run;
+  /** Each project's `git config --local` and `--worktree`, by folder under the temp root. */
+  repos: Record<string, { readonly local: Run; readonly worktree?: Run }>;
+  /** `ssh -v -G`; by default it names `~/.ssh/config` and the system config when they exist. */
+  sshG?: (paths: { readonly home: string; readonly etc: string }) => Run;
   /** Answers one SSH probe; `key` is the `-i` file, or undefined for the probe as is. */
   ssh: (key: string | undefined) => Run;
   /** Files under the home directory, by relative path. */
@@ -226,6 +236,8 @@ const botMachine = (): Machine => ({
         }),
   gitConfig: gitList(...BOT_GIT),
   git: gitFill(GIT_PASSWORD),
+  gitFor: () => answer({ exitCode: 128, stderr: NO_HELPER_PROMPTS_OFF }),
+  repos: {},
   ssh: (key) => answer({ stderr: key === undefined ? sshHi("kin-bot") : SSH_DENIED }),
   files: {
     ".ssh/id_ed25519": KEY,
@@ -247,6 +259,31 @@ const withSystemConfig = (...lines: ReadonlyArray<string>): Partial<Machine> => 
 const withGit = (...entries: ReadonlyArray<GitEntry>): Partial<Machine> => ({
   gitConfig: gitList(...BOT_GIT, ...entries),
 });
+/** `botMachine` with one project whose own `git config --local` lists `entries`. */
+const withRepo = (...entries: ReadonlyArray<GitEntry>): Partial<Machine> => ({
+  t3: stored({ app: session(APP_TOKEN), projectRoots: ["<root>/repo"] }),
+  repos: {
+    repo: {
+      local: gitList(
+        ...entries.map(([key, value, origin]): GitEntry => [
+          key,
+          value,
+          origin ?? "file:.git/config",
+        ]),
+      ),
+    },
+  },
+});
+/** `ssh -v -G` naming `files` (under the temp root) after the user's config. */
+const sshReads =
+  (...files: ReadonlyArray<string>) =>
+  ({ home }: { readonly home: string }) =>
+    answer({
+      stderr: [
+        `debug1: Reading configuration data ${home}/.ssh/config`,
+        ...files.map((file) => `debug1: Reading configuration data ${home}/../${file}`),
+      ].join("\n"),
+    });
 
 /** A fake `ssh-keygen -y -P ""`, answering by the file's contents as OpenSSH does. */
 const keygen = (fs: FileSystem.FileSystem, file: string): Run =>
@@ -288,9 +325,30 @@ const probe = (machine: Machine) =>
     const root = yield* fs.makeTempDirectoryScoped();
     const home = path.join(root, "home");
     const etc = path.join(root, "etc", "ssh");
+    const bin = path.join(root, "bin");
     yield* fs.makeDirectory(path.join(home, ".ssh", "sockets"), { recursive: true });
     yield* writeFiles(home, machine.files);
     yield* writeFiles(etc, machine.system);
+    // The ssh agents would run; the fake runner answers for it.
+    yield* writeFiles(bin, { ssh: "#!/bin/sh\n" });
+    yield* fs.chmod(path.join(bin, "ssh"), 0o755);
+    for (const repo of Object.keys(machine.repos)) {
+      yield* fs.makeDirectory(path.join(root, repo), { recursive: true });
+    }
+    const sshG =
+      machine.sshG?.({ home, etc }) ??
+      answer({
+        stdout: "user git\nhostname github.com\n",
+        stderr: [
+          "OpenSSH_10.5p1, LibreSSL 3.3.6",
+          ...(".ssh/config" in machine.files
+            ? [`debug1: Reading configuration data ${path.join(home, ".ssh", "config")}`]
+            : []),
+          ...("ssh_config" in machine.system
+            ? [`debug1: Reading configuration data ${path.join(etc, "ssh_config")}`]
+            : []),
+        ].join("\n"),
+      });
     const runs: Array<VcsProcessInput> = [];
     const vcs = VcsProcess.of({
       run: (input) => {
@@ -301,8 +359,18 @@ const probe = (machine: Machine) =>
           const user = input.args.find((arg) => arg.startsWith("--user="));
           return machine.ghToken(user?.slice("--user=".length));
         }
-        if (input.command === "git") return first === "config" ? machine.gitConfig : machine.git;
+        if (input.command === "git") {
+          if (first === "-C") {
+            const repo = machine.repos[path.relative(root, input.args[1] ?? "")];
+            if (repo === undefined) return answer({ exitCode: 128, stderr: "no such repo" });
+            return input.args.at(-1) === "--worktree" ? (repo.worktree ?? answer({})) : repo.local;
+          }
+          if (first === "config") return machine.gitConfig;
+          const username = /^username=(.*)$/m.exec(input.stdin ?? "")?.[1];
+          return username === undefined ? machine.git : machine.gitFor(username);
+        }
         if (input.command === "ssh-keygen") return keygen(fs, input.args.at(-1) ?? "");
+        if (input.args.includes("-G")) return sshG;
         const key = input.args.indexOf("-i");
         return machine.ssh(key === -1 ? undefined : input.args[key + 1]);
       },
@@ -330,9 +398,16 @@ const probe = (machine: Machine) =>
       yield* Layer.build(T3GitHubCredential.slotLayer),
       T3GitHubCredential.T3GitHubCredential,
     );
-    if (machine.t3 !== "uninstalled") yield* slot.install(Effect.succeed(machine.t3));
+    if (machine.t3 !== "uninstalled") {
+      const t3 = machine.t3;
+      const projectRoots = t3.projectRoots.map((dir) => dir.replace("<root>", root));
+      yield* slot.install(Effect.succeed({ ...t3, projectRoots }));
+    }
     const env = Object.fromEntries(
-      Object.entries(machine.env).map(([name, value]) => [name, value.replace("<home>", home)]),
+      Object.entries({ PATH: "<bin>", ...machine.env }).map(([name, value]) => [
+        name,
+        value.replace("<home>", home).replace("<bin>", bin).replace("<root>", root),
+      ]),
     );
     const identity = yield* GitHubIdentityProbe.make.pipe(
       Effect.provideService(VcsProcess, vcs),
@@ -340,7 +415,6 @@ const probe = (machine: Machine) =>
       Effect.provideService(HostProcess.Environment, env),
       Effect.provideService(HostProcess.Username, "kin"),
       Effect.provideService(HostProcess.UserId, 501),
-      Effect.provideService(GitHubIdentityProbe.SystemSshConfig, path.join(etc, "ssh_config")),
       Effect.provideService(T3GitHubCredential.T3GitHubCredential, slot),
       Effect.provide(Layer.mergeAll(github, scopeLayer())),
     );
@@ -358,12 +432,21 @@ const probe = (machine: Machine) =>
         Layer.provide(OwnerMergeClient.layer),
         Layer.provide(keychain.layer),
         Layer.provide(fakeGitHub(() => ({ status: 500 })).layer),
-        Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+        Layer.provide(Layer.succeed(HostProcess.Environment, {})),
         Layer.provide(scopeLayer()),
       ),
     );
     const check = Context.get(hygiene, CredentialHygiene.CredentialHygiene).check(ORG);
-    return { identities: identity.identities, check, runs, home, requests, slot };
+    return {
+      identities: identity.identities({ ownerLogins: OWNER_LOGINS }),
+      check,
+      runs,
+      home,
+      root,
+      bin,
+      requests,
+      slot,
+    };
   });
 
 const run = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | Path.Path | Scope.Scope>) =>
@@ -391,9 +474,30 @@ describe("GitHubIdentityProbe", () => {
     run(
       Effect.gen(function* () {
         const path = yield* Path.Path;
-        const { identities, check, runs, home } = yield* probe({
+        const { identities, check, runs, home, root, bin } = yield* probe({
           ...botMachine(),
           env: { HOME: "<home>/" },
+          t3: stored({
+            app: session(APP_TOKEN),
+            projectRoots: ["<root>/repo", "<root>/plain", "<root>/gone"],
+            providerEnvironments: [{ instance: "codex", names: ["PATH", "CODEX_HOME"] }],
+          }),
+          repos: {
+            repo: {
+              local: gitList(
+                ["core.repositoryformatversion", "0", "file:.git/config"],
+                ["remote.origin.url", "git@github.com:kin/app.git", "file:.git/config"],
+                ["extensions.worktreeconfig", "true", "file:.git/config"],
+              ),
+              worktree: gitList(["core.sparsecheckout", "true", "file:.git/config.worktree"]),
+            },
+            plain: {
+              local: answer({
+                exitCode: 128,
+                stderr: "fatal: --local can only be used inside a git repository",
+              }),
+            },
+          },
         });
         const found = yield* identities;
         const probed = [...runs];
@@ -404,19 +508,41 @@ describe("GitHubIdentityProbe", () => {
           ],
           ghAccounts: ["kin-bot"],
           gitCredential: Option.some("kin-bot"),
+          gitCredentialFor: [],
           ssh: [sshHi("kin-bot"), SSH_DENIED],
+          providerEnvironments: [{ instance: "codex", names: ["PATH", "CODEX_HOME"] }],
         });
-        assert.deepInclude(yield* check, { passed: true, failures: [] });
+        assert.deepInclude(yield* check, { passed: true, failures: [], reasons: [] });
 
         const ssh = path.join(home, ".ssh");
         const config = path.join(ssh, "config");
+        const sshBin = path.join(bin, "ssh");
+        const repoConfig = (repo: string, scope: string) => [
+          "git",
+          "-C",
+          path.join(root, repo),
+          "config",
+          "--list",
+          "--show-origin",
+          "-z",
+          scope,
+        ];
         assert.sameDeepMembers(probed.map(argv), [
           ["gh", "auth", "token", "--hostname", "github.com"],
           // The owner's login: a token for it means the owner is signed in to gh.
           ["gh", "auth", "token", "--hostname", "github.com", "--user=Nishchay"],
           ["gh", "auth", "status", "--hostname", "github.com", "--json", "hosts"],
           ["git", "config", "--list", "--show-origin", "-z"],
+          // Once as is, then once per owner username.
           ["git", "credential", "fill"],
+          ["git", "credential", "fill"],
+          ["git", "credential", "fill"],
+          // Each project's own config; `--worktree` only where it's turned on.
+          repoConfig("repo", "--local"),
+          repoConfig("repo", "--worktree"),
+          repoConfig("plain", "--local"),
+          // Which files the ssh on PATH reads.
+          [sshBin, "-v", "-G", "git@github.com"],
           // Every file in ~/.ssh is offered to ssh-keygen; only loadable private keys are probed.
           ...["config", "id_ed25519", "id_ed25519.pub", "known_hosts"].map((name) => [
             "ssh-keygen",
@@ -427,9 +553,9 @@ describe("GitHubIdentityProbe", () => {
             path.join(ssh, name),
           ]),
           // Only the validated config, with no shared connection and no agent (`SSH_AUTH_SOCK`).
-          ["ssh", "-F", config, ...SSH_PROBE_OPTIONS, "git@github.com"],
+          [sshBin, "-F", config, ...SSH_PROBE_OPTIONS, "git@github.com"],
           [
-            "ssh",
+            sshBin,
             "-F",
             config,
             ...SSH_PROBE_OPTIONS,
@@ -457,10 +583,20 @@ describe("GitHubIdentityProbe", () => {
           // Output past the cap fails the run instead of being cut short.
           assert.strictEqual(input.outputMode, "error");
           assert.strictEqual(input.maxOutputBytes, 64 * 1024);
-          assert.deepStrictEqual(input.env, envs[input.command as keyof typeof envs]);
+          assert.deepStrictEqual(
+            input.env,
+            envs[path.basename(input.command) as keyof typeof envs],
+          );
         }
-        const git = probed.find((input) => input.args[0] === "credential");
-        assert.strictEqual(git?.stdin, "protocol=https\nhost=github.com\n\n");
+        const fills = probed.filter((input) => input.args[0] === "credential");
+        assert.deepStrictEqual(
+          fills.map((input) => input.stdin),
+          [
+            "protocol=https\nhost=github.com\n\n",
+            "protocol=https\nhost=github.com\nusername=Nishchay\n\n",
+            "protocol=https\nhost=github.com\nusername=nishchay\n\n",
+          ],
+        );
       }),
     ),
   );
@@ -468,7 +604,8 @@ describe("GitHubIdentityProbe", () => {
   it.effect("reads no login from sources that have none", () =>
     run(
       Effect.gen(function* () {
-        const { identities, check, requests, runs } = yield* probe({
+        const path = yield* Path.Path;
+        const { identities, check, requests, runs, bin } = yield* probe({
           ...botMachine(),
           // Both of the app session's tokens have lapsed, so GitHub accepts neither.
           t3: stored({ app: session(APP_TOKEN, { expiresAt: NOW - 2, refreshUntil: NOW - 1 }) }),
@@ -478,20 +615,22 @@ describe("GitHubIdentityProbe", () => {
           git: answer({ exitCode: 128, stderr: NO_HELPER_PROMPTS_OFF }),
           ssh: () => answer({ stderr: SSH_DENIED }),
           files: {},
-          system: {},
+          system: { ssh_config: "" },
         });
         assert.deepStrictEqual(yield* identities, {
           t3: [],
           ghAccounts: [],
           gitCredential: Option.none(),
+          gitCredentialFor: [],
           ssh: [SSH_DENIED],
+          providerEnvironments: [],
         });
         assert.deepInclude(yield* check, { passed: true, identities: [] });
         assert.deepStrictEqual(requests, []);
         // Without a `~/.ssh/config`, the probe reads none at all.
         assert.include(
           runs.map((input) => argv(input).join(" ")),
-          ["ssh", "-F", "none", ...SSH_PROBE_OPTIONS, "git@github.com"].join(" "),
+          [path.join(bin, "ssh"), "-F", "none", ...SSH_PROBE_OPTIONS, "git@github.com"].join(" "),
         );
       }),
     ),
@@ -511,6 +650,46 @@ describe("GitHubIdentityProbe", () => {
 
   it.effect.each([
     ["git is not installed", { gitConfig: missing("git") }],
+    [
+      "a project's own config has only repository keys",
+      withRepo(
+        ["core.bare", "false"],
+        ["core.logallrefupdates", null],
+        ["remote.origin.url", "https://github.com/kin/app.git"],
+        ["remote.origin.pushurl", "ssh://git@github.com/kin/app.git"],
+        ["remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
+        ["remote.origin.prune", "true"],
+        ["remote.pushdefault", "origin"],
+        ["branch.main.remote", "origin"],
+        ["branch.main.merge", "refs/heads/main"],
+        ["submodule.lib.url", "git@github.com:kin/lib.git"],
+        ["submodule.lib.active", "true"],
+        ["lfs.repositoryformatversion", "0"],
+        ["extensions.worktreeconfig", "false"],
+      ),
+    ],
+    [
+      "a project folder is gone or isn't a repository",
+      {
+        t3: stored({ app: session(APP_TOKEN), projectRoots: ["<root>/gone", "<root>/plain"] }),
+        repos: {
+          plain: {
+            local: answer({
+              exitCode: 128,
+              stderr: "fatal: --local can only be used inside a git repository",
+            }),
+          },
+        },
+      },
+    ],
+    [
+      "ssh is in a later PATH folder, and a Homebrew system config ssh names is allowed",
+      {
+        env: { PATH: "<root>/empty:<bin>" },
+        sshG: sshReads("brew/ssh_config"),
+        files: { ...botMachine().files, "../brew/ssh_config": "Host *\n  SendEnv LANG\n" },
+      },
+    ],
     [
       "a later empty helper resets the list, as `gh auth setup-git` writes it",
       withGit(
@@ -561,6 +740,15 @@ describe("GitHubIdentityProbe", () => {
     ],
     ["an inactive gh account", { gh: ghStatus("kin-bot", "Nishchay") }],
     ["the git credential helper", { git: gitFill(OWNER_TOKEN) }],
+    [
+      "the git helper's second account, asked for by username",
+      {
+        gitFor: (username: string) =>
+          username === "Nishchay"
+            ? gitFill(OWNER_TOKEN)
+            : answer({ exitCode: 128, stderr: NO_HELPER_PROMPTS_OFF }),
+      },
+    ],
     [
       "SSH without a key",
       {
@@ -808,8 +996,8 @@ describe("GitHubIdentityProbe", () => {
         ["KnownHostsCommand /bin/cat", "KnownHostsCommand"],
         ["LocalCommand id", "LocalCommand"],
         ["PermitLocalCommand yes", "PermitLocalCommand"],
-        ["CanonicalizeHostname yes", "canonicalizehostname"],
-        ["SendEnv LANG", "sendenv"],
+        ["CanonicalizeHostname yes", "CanonicalizeHostname"],
+        ["SendEnv LANG", "SendEnv"],
         ["ghp_0123456789abcdef0123456789abcdef01234567", "an unrecognised directive"],
       ] as const
     ).map(
@@ -910,6 +1098,152 @@ describe("GitHubIdentityProbe", () => {
           "ssh: ~/.ssh/config has an IdentityFile the probe can't expand",
         ] as const,
     ),
+    // SSH: arguments ssh's argv_split reads differently, which fail closed instead.
+    ...(
+      [
+        ["Include 'config.d/owner conf'", "single quotes"],
+        ["Include config.d/owner\\ conf", "a backslash"],
+        ['IdentityFile "~/.ssh/a"b', "a quote that runs on"],
+        ['IdentityFile a"b', "a quote inside an argument"],
+        ['Include "config.d/owner', "an unterminated quote"],
+        ["IdentityFile ~/.ssh/a#b", "a # inside an argument"],
+      ] as const
+    ).map(
+      ([line, what]) =>
+        [
+          `~/.ssh/config uses ${what}`,
+          withSshConfig(line),
+          "ssh: ~/.ssh/config can't be parsed",
+        ] as const,
+    ),
+    [
+      "an Include without a glob names a file that doesn't exist",
+      withSshConfig("Include owner.conf"),
+      "ssh: ~/.ssh/config names a file that doesn't exist",
+    ],
+    [
+      "a directive ssh doesn't know, which could be a pasted secret",
+      withSshConfig("supersecretpassword"),
+      "ssh: ~/.ssh/config sets an unrecognised directive",
+    ],
+    // SSH: the ssh on PATH, and the system config it reads.
+    ["ssh isn't on PATH", { env: { PATH: "<root>/empty" } }, "ssh: ssh isn't on PATH"],
+    [
+      "PATH has a relative folder before ssh",
+      { env: { PATH: "bin:<bin>" } },
+      "ssh: PATH has a relative folder",
+    ],
+    [
+      "the system config the ssh on PATH reads has ProxyCommand",
+      {
+        sshG: sshReads("brew/ssh_config"),
+        files: { ...botMachine().files, "../brew/ssh_config": "ProxyCommand nc %h %p\n" },
+      },
+      "ssh: the system SSH config sets ProxyCommand",
+    ],
+    [
+      "a file ssh reads doesn't exist",
+      { sshG: sshReads("brew/ssh_config") },
+      "ssh: the system SSH config names a file that doesn't exist",
+    ],
+    [
+      "ssh -G names no config file",
+      { sshG: () => answer({ stderr: "OpenSSH_10.5p1" }) },
+      "ssh: ssh -G named no config",
+    ],
+    [
+      "ssh -G fails",
+      { sshG: () => answer({ exitCode: 255, stderr: "Bad configuration option" }) },
+      "ssh: ssh -G exited 255",
+    ],
+    // git: the helper asked for the owner's username.
+    [
+      "the helper fails when asked for the owner's username",
+      { gitFor: () => answer({ exitCode: 1, stderr: "keychain locked" }) },
+      "git_credential: git credential fill exited 1",
+    ],
+    // git: keys only the repository allowlist refuses in the host's config.
+    ...(
+      [
+        ["init.templatedir", "init.templatedir"],
+        ["remote.origin.pushurl", "remote.*.pushurl"],
+        ["url.core.example.com.insteadof", "url.*.insteadof"],
+        ["url.user.example.com.insteadof", "url.*.insteadof"],
+        ["filter.crypt.clean", "filter.*.clean"],
+      ] as const
+    ).map(
+      ([key, shown]) =>
+        [
+          `git config sets ${key}`,
+          withGit([key, "x"]),
+          `git_credential: git config sets ${shown}`,
+        ] as const,
+    ),
+    // git: a project's own config. A URL with a token never shows.
+    ...(
+      [
+        ["credential.helper", "store", "credential.helper"],
+        ["http.extraheader", "AUTHORIZATION: bearer ghp_x", "http.extraheader"],
+        ["url.https://ghp_x@github.com/.insteadof", "https://github.com/", "url.*.insteadof"],
+        ["include.path", "../owner.gitconfig", "include.path"],
+        ["includeif.onbranch:main.path", "x", "includeif.*.path"],
+        ["core.sshcommand", "ssh -i ~/owner", "core.sshcommand"],
+        ["core.askpass", "/bin/owner", "core.askpass"],
+        ["remote.origin.url", "https://x:ghp_secret@github.com/kin/app", "remote.*.url"],
+        ["remote.origin.url", "https://ghp_secret@github.com/kin/app", "remote.*.url"],
+        ["remote.origin.pushurl", "ssh://git:ghp_secret@github.com/k/a", "remote.*.pushurl"],
+        ["remote.origin.url", "ext::sh -c owner", "remote.*.url"],
+        ["remote.origin.url", "fd::7", "remote.*.url"],
+        ["remote.origin.url", null, "remote.*.url"],
+        ["remote.origin.uploadpack", "owner-upload", "remote.*.uploadpack"],
+        ["remote.origin.vcs", "owner", "remote.*.vcs"],
+        ["submodule.lib.url", "https://ghp_secret@github.com/kin/lib", "submodule.*.url"],
+        ["submodule.lib.update", "!owner", "submodule.*.update"],
+        ["user.email", "owner@example.com", "user.email"],
+        ["gc.auto", "0", "gc.auto"],
+      ] as const
+    ).map(
+      ([key, value, shown]) =>
+        [
+          `a project's own config sets ${key} to ${value ?? "nothing"}`,
+          withRepo([key, value]),
+          `git_repo: `,
+          `repository config sets ${shown}`,
+        ] as const,
+    ),
+    [
+      "a project's worktree config sets a helper",
+      {
+        ...withRepo(["extensions.worktreeconfig", "true"]),
+        repos: {
+          repo: {
+            local: gitList(["extensions.worktreeconfig", "true", "file:.git/config"]),
+            worktree: gitList(["credential.helper", "store", "file:.git/config.worktree"]),
+          },
+        },
+      },
+      "repository config sets credential.helper",
+    ],
+    [
+      "a project's git can't read it",
+      {
+        ...withRepo(),
+        repos: {
+          repo: { local: answer({ exitCode: 128, stderr: "fatal: detected dubious ownership" }) },
+        },
+      },
+      "exited 128",
+    ],
+    [
+      "there are more projects than the probe reads",
+      {
+        t3: stored({
+          app: session(APP_TOKEN),
+          projectRoots: Array.from({ length: 65 }, (_, index) => `<root>/p${index}`),
+        }),
+      },
+      "git_repo: more than 64 projects",
+    ],
     // SSH: keys and probes.
     [
       "a key needs a passphrase",
@@ -935,7 +1269,7 @@ describe("GitHubIdentityProbe", () => {
       { ssh: () => Effect.fail(timeout("ssh")) },
       "ssh: VcsProcessTimeoutError",
     ],
-  ] as const)("fails closed when %s", ([, change, reason]) =>
+  ] as const)("fails closed when %s", ([, change, ...reasons]) =>
     run(
       Effect.gen(function* () {
         const { identities, check } = yield* probe({ ...botMachine(), ...change } as Machine);
@@ -944,14 +1278,28 @@ describe("GitHubIdentityProbe", () => {
         const error = yield* Fiber.join(flipped);
         assert.strictEqual(error._tag, "T3GitHubIdentityError");
         // The fixed reason, so a case can't pass by failing for some other reason.
-        assert.include(String(error.cause), reason);
+        for (const reason of reasons) assert.include(String(error.cause), reason);
         assert.notInclude(String(error.cause), "ghp_");
         const checked = yield* Effect.forkChild(check);
         yield* TestClock.adjust("1 minute");
-        assert.deepInclude(yield* Fiber.join(checked), {
-          passed: false,
-          failures: ["identity_unknown"],
+        const report = yield* Fiber.join(checked);
+        assert.deepInclude(report, { passed: false, failures: ["identity_unknown"] });
+        // The same reason reaches the report, and so the audit entry and the owner's chat.
+        assert.deepStrictEqual(report.reasons, [String(error.cause)]);
+        assert.include(credentialCheckBody(ORG, report), String(error.cause));
+      }),
+    ),
+  );
+
+  it.effect("asks ssh which files it reads only after the user's config passes", () =>
+    run(
+      Effect.gen(function* () {
+        const { identities, runs } = yield* probe({
+          ...botMachine(),
+          ...withSshConfig("ProxyJump bastion"),
         });
+        yield* identities.pipe(Effect.flip);
+        assert.isFalse(runs.some((input) => input.args.includes("-G")));
       }),
     ),
   );
@@ -988,7 +1336,7 @@ describe("GitHubIdentityProbe", () => {
         return span;
       },
     });
-    const secrets = [GIT_PASSWORD, GH_TOKEN, APP_TOKEN, SAVED_TOKEN, OWNER_TOKEN];
+    const secrets = [GIT_PASSWORD, GH_TOKEN, APP_TOKEN, SAVED_TOKEN, OWNER_TOKEN, SSH_G_SECRET];
     return run(
       Effect.gen(function* () {
         const seen: Array<string> = [];
@@ -1003,6 +1351,17 @@ describe("GitHubIdentityProbe", () => {
         };
         const ghToken = (account: string | undefined) =>
           answer({ stdout: account === "Nishchay" ? OWNER_TOKEN : GH_TOKEN });
+        // A helper holding the owner's account too, and `ssh -G` printing config values.
+        const gitFor = () => gitFill(OWNER_TOKEN);
+        const sshG = ({ home, etc }: { readonly home: string; readonly etc: string }) =>
+          answer({
+            stdout: `identityfile ~/.ssh/${SSH_G_SECRET}\n`,
+            stderr: [
+              `debug1: ${SSH_G_SECRET}`,
+              `debug1: Reading configuration data ${home}/.ssh/config`,
+              `debug1: Reading configuration data ${etc}/ssh_config`,
+            ].join("\n"),
+          });
         for (const [index, change] of [
           {},
           // Each credential refused in turn, so its error path runs too.
@@ -1016,6 +1375,8 @@ describe("GitHubIdentityProbe", () => {
             t3,
             users,
             ghToken,
+            gitFor,
+            sshG,
             ...change,
           });
           const result = yield* Effect.result(identities);
@@ -1031,7 +1392,9 @@ describe("GitHubIdentityProbe", () => {
           yield* Effect.logWarning("probe", result);
           // Each does reach GitHub, as a bearer token and nowhere else.
           if (index === 0) {
-            for (const secret of secrets) assert.include(requests, `Bearer ${secret}`);
+            for (const secret of secrets.filter((value) => value !== SSH_G_SECRET)) {
+              assert.include(requests, `Bearer ${secret}`);
+            }
           }
         }
         for (const span of spans) {

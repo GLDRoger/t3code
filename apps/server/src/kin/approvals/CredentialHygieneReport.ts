@@ -17,6 +17,11 @@ export type CredentialHygieneFailure = typeof CredentialHygieneFailure.Type;
 export interface CredentialHygieneReport {
   readonly passed: boolean;
   readonly failures: ReadonlyArray<CredentialHygieneFailure>;
+  /**
+   * Why, in fixed words that name a source, file, directive, key, variable or provider instance,
+   * never a value. Shown to the owner and written to the audit log.
+   */
+  readonly reasons: ReadonlyArray<string>;
   readonly warnings: ReadonlyArray<"merge_token_expiring">;
   /** Credential variables set in the server's environment. Names only, never values. */
   readonly envTokenNames: ReadonlyArray<string>;
@@ -29,3 +34,12 @@ export interface CredentialHygieneReport {
   }>;
   readonly checkedAt: number;
 }
+
+/** The audit entry's `result` for a failing check: the failures, then their reasons. */
+export const failureResult = (report: {
+  readonly failures: ReadonlyArray<string>;
+  readonly reasons: ReadonlyArray<string>;
+}) =>
+  report.reasons.length === 0
+    ? report.failures.join(",")
+    : `${report.failures.join(",")}: ${report.reasons.join("; ")}`;

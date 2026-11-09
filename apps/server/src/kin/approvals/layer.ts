@@ -76,6 +76,7 @@ const handlers = Layer.effect(
 
 // Without the GitHub App and scope configured, the GitHub kinds have no handler but stay held
 // until their grants lapse, and the hygiene check can't pass, so nothing else runs either.
+const UNCONFIGURED = "the GitHub App and scope aren't configured";
 const unconfigured = Layer.mergeAll(
   Layer.effect(
     ActionHandlers.KinActionHandlers,
@@ -90,6 +91,7 @@ const unconfigured = Layer.mergeAll(
         return yield* Effect.succeed<CredentialHygieneReport>({
           passed: false,
           failures: ["identity_unknown", "merge_token_missing"],
+          reasons: [UNCONFIGURED],
           warnings: [],
           envTokenNames: [],
           t3Login: null,
@@ -100,6 +102,7 @@ const unconfigured = Layer.mergeAll(
       requirePassing: Effect.fn("CredentialHygiene.unconfiguredRequirePassing")(function* () {
         return yield* new CredentialHygiene.CredentialHygieneFailedError({
           failures: ["identity_unknown", "merge_token_missing"],
+          reasons: [UNCONFIGURED],
         });
       }),
     }),
