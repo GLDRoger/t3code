@@ -656,7 +656,7 @@ describe("KinActionExecutor", () => {
           checks.during = (count) => (count === 2 ? change : Effect.void);
           const ref = yield* approvedMerge(source);
           const result = yield* executor.execute(ref);
-          checks.during = undefined;
+          delete checks.during;
           assert.deepInclude(result, { _tag: "finished", outcome: "failed" });
           return (yield* stateOf(ref)).reason ?? "";
         });
