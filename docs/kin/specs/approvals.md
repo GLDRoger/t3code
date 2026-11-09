@@ -70,7 +70,7 @@ request_action({
 - The tool is listed only for registered Kin agent threads, so `McpClientCaller` (outside OAuth clients), subagents and worker or ordinary threads never reach the handler. The handler takes the caller only from `KinIdentity.resolveAgent` and refuses with `not_a_lead` unless that agent has the `lead` role and a `kin_leads` row and is in a running wake-up.
 - The server, not the agent, fills everything else: `orgId` from the caller, `provenance` from the claimed events of the caller's running wake-up (`sourceEventId` must be one of them, else `invalid_state`), and the PR's head SHA, base, title, diff size and checks from GitHub. The agent names a PR; it can't name a SHA, and undeclared input fields are dropped.
 - The named repo must match one of the lead's worker projects' repositories, case-insensitively, and is stored in that project's spelling, so `ACME/app` and `acme/app` are one action. T3's GitHub credential can read more than the lead's repos, so this is the boundary. An unlisted repo and a missing PR get the same `not_found`, so the tool can't probe for private repos.
-- Until the executor's handler registry (APPR-9) lands, only `merge_pull_request` is accepted; every other kind fails `unsupported_kind` (after the owner-only check in section 8).
+- `request_action` accepts a kind only when it can resolve that kind's target itself. Today that is `merge_pull_request` alone; every other kind fails `unsupported_kind` (after the owner-only check in section 8), even where the executor has a handler (`delete_branch`, `register_approver_key`), until the server can resolve its target.
 - It returns immediately. It never waits for the approval and never returns a token.
 
 Targets:
@@ -145,16 +145,16 @@ export const KinPendingAction = Schema.Struct({
 
 Transitions (every one is a compare-and-set `UPDATE … WHERE id = ? AND state = ? AND revision = ?`; zero rows changed means someone else won and the caller stops):
 
-| From                | To                                          | When                                                                                |
-| ------------------- | ------------------------------------------- | ----------------------------------------------------------------------------------- |
-| —                   | `awaiting_approval`                         | `request_action` inserts; card posted                                               |
-| `awaiting_approval` | `awaiting_approval` (revision+1, new nonce) | PR head or base changes (webhook from triggers spec, or re-read at card open)       |
-| `awaiting_approval` | `approved`                                  | A grant passes every check in section 5; grant row inserted in the same transaction |
-| `awaiting_approval` | `rejected` / `cancelled` / `expired`        | Owner taps Reject; lead withdraws; `expiresAt` passes                               |
-| `approved`          | `executing`                                 | Executor claims it (single claim, section 6)                                        |
-| `approved`          | `voided`                                    | Grant expires before claim, head moved, signing key revoked, stop switch on         |
-| `executing`         | `succeeded` / `failed`                      | GitHub answers                                                                      |
-| `executing`         | `succeeded` / `interrupted`                 | Restart finds it mid-flight; reconciliation decides (section 6)                     |
+| From                | To                                          | When                                                                                                                                             |
+| ------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| —                   | `awaiting_approval`                         | `request_action` inserts; card posted                                                                                                            |
+| `awaiting_approval` | `awaiting_approval` (revision+1, new nonce) | PR head or base changes (webhook from triggers spec, or re-read at card open)                                                                    |
+| `awaiting_approval` | `approved`                                  | A grant passes every check in section 5; grant row inserted in the same transaction                                                              |
+| `awaiting_approval` | `rejected` / `cancelled` / `expired`        | Owner taps Reject; lead withdraws; `expiresAt` passes                                                                                            |
+| `approved`          | `executing`                                 | Executor claims it (single claim, section 6)                                                                                                     |
+| `approved`          | `voided`                                    | Grant lapses before claim (the stop switch or a failing credential check holds it until then), key revoked, approver no longer owner, no handler |
+| `executing`         | `succeeded` / `failed`                      | GitHub answers; a precheck, credential or stop-switch failure after the claim is `failed`                                                        |
+| `executing`         | `succeeded` / `interrupted`                 | Restart finds it mid-flight; reconciliation decides (section 6)                                                                                  |
 
 Storage (new, SQLite, Kin's own migration track in `apps/server/src/kin/persistence/` (`KinMigrations.ts`, one `migrations/K00N_*.ts` file per change) with its own `Migrator` table `kin_sql_migrations`; owned with the chat spec so all Kin tables share one runner):
 
@@ -292,31 +292,42 @@ Every refused grant writes `grant_rejected` with its reason, the sending session
 
 ### 6. The action executor
 
-`apps/server/src/kin/approvals/ActionExecutor.ts` (new). One fiber per org, one action at a time per repo.
+`apps/server/src/kin/approvals/ActionExecutor.ts`. One action at a time per org. Its worker takes each action `PendingActions.approve` publishes, and every minute sweeps expiries and retries actions the stop switch or the credential check is holding.
 
 ```ts
-interface KinActionHandler<K extends KinActionKind> {
-  readonly kind: K;
+// apps/server/src/kin/approvals/ActionHandlers.ts
+interface KinActionHandler {
+  readonly kind: KinActionKind;
   readonly precheck: (a: KinPendingAction) => Effect<void, KinExecError>; // re-read live state
-  readonly run: (a: KinPendingAction, g: KinGrant) => Effect<KinOutcome, KinExecError>;
+  readonly run: (a: KinPendingAction, c: KinExecutionContext) => Effect<KinOutcome, KinExecError>;
   readonly reconcile: (
     a: KinPendingAction,
-  ) => Effect<"done" | "not_done" | "unknown", KinExecError>;
+  ) => Effect<
+    "done" | "not_done" | "unknown" | { _tag: "done"; outcome: KinOutcome },
+    KinExecError
+  >;
 }
+// c.grant: the stored KinGrant; c.payload: the signed KinGrantPayload, decoded from c.grant.compact;
+// c.pass: a CredentialHygienePass from just before run, which OwnerMergeClient needs.
 ```
 
-Handlers register through `KinActionHandlers` (a Context service). This spec ships `merge_pull_request`, `delete_branch` and `register_approver_key`; the lead spec registers `set_level` and `change_rules`; the triggers spec registers `memory_purge`. Kinds with no handler fail `unsupported_kind` at `request_action`, before any card is shown.
+A `run` that can't tell whether its side effect landed (no answer, a 5xx, an unreadable 200) fails `unknown_outcome`; the executor then reconciles at once and never calls `run` again.
+
+Handlers register through `KinActionHandlers` (a Context service, built from one list in `approvals/layer.ts`). This spec ships `merge_pull_request`, `delete_branch` and `register_approver_key`; the lead spec registers `set_level` and `change_rules`; the triggers spec registers `memory_purge`. An approved action whose kind has no handler is voided (`unsupported_kind`) without a claim.
 
 Run order for an `approved` action:
 
-1. Stop switch (lead spec) off; org not paused → else stay `approved` until the grant lapses, then `voided`.
-2. Grant still alive, key still active, approver still owner.
-3. **Claim:** `INSERT INTO kin_executions(action_id, …)` and CAS `approved → executing` in one transaction. A failed insert means it already ran or is running: refuse.
-4. `precheck` with the bot token: PR open, `head.sha == grant.headSha`, `base.ref == grant.base`, method allowed by the repo, not a merge-queue repo (phase 1 refuses merge queues: `merge_queue_unsupported`).
-5. `run` with the owner's merge credential: `PUT /repos/{owner}/{repo}/pulls/{n}/merge` with `{sha: grant.headSha, merge_method}`. The `sha` field makes GitHub refuse with 409 if the head moved after step 4. The executor calls REST directly through a small client in `apps/server/src/kin/github/OwnerMergeClient.ts`, **not** `PullRequestService.runAction`, because that path doesn't pin the head and picks its own credential.
-6. Record outcome, audit entry, and post the result to the chat (task card update).
+1. Stop switch (lead spec) off → else stay `approved` until the grant lapses, then the sweep voids it.
+2. Approver still owner (`KinOrgRoles`), and `CredentialHygiene.requirePassing` passes → else stay `approved` (one `credential_check_failed` entry per action and failure set) until the grant lapses. Checking before the claim keeps a misconfigured host from spending the grant.
+3. **Claim:** `INSERT INTO kin_executions(action_id, …)` and CAS `approved → executing` in one transaction. The insert also requires the grant unconsumed and alive, the signing key usable, and the org not paused. A failed insert means it already ran, is running or may not run: refuse.
+4. `precheck` with the bot's read-only `server` token: PR open, `head.sha == grant.headSha`, `base.ref == grant.base`, and no `merge_queue` rule on the base (`GET /repos/{o}/{r}/rules/branches/{base}`; phase 1 refuses merge queues: `merge_queue_unsupported`). Whether the repo allows the method is left to GitHub, whose 405 ends the action `failed: not_mergeable`. Any failure from here on is `failed`: the grant is spent.
+5. A fresh hygiene pass, then the stop switch again, immediately before the side effect.
+6. `run` with the owner's merge credential: `PUT /repos/{owner}/{repo}/pulls/{n}/merge` with `{sha: grant.headSha, merge_method}`. The `sha` field makes GitHub refuse with 409 if the head moved after step 4 (`failed: head_moved`). The executor calls REST directly through `apps/server/src/kin/github/OwnerMergeClient.ts`, **not** `PullRequestService.runAction`, because that path doesn't pin the head and picks its own credential. With `deleteBranchAfter`, a same-repo head branch still at the merged SHA is then deleted; a failed delete doesn't change the outcome.
+7. Record outcome (`kin_executions`, `execution_finished` with the grant's `jti`, key thumbprint and the key's `deviceLabel`), and post the result as a system notice to the requesting lead's owner chat.
 
-**Crash in the middle.** On startup the executor scans `executing` rows. For each it calls `reconcile`: for a merge, `GET /pulls/{n}`; `merged == true` and `merge_commit_sha` present → `succeeded`; still open → `interrupted`; GitHub unreachable → retry with backoff, state unchanged. `interrupted` is terminal: the grant is spent, and the owner gets a card "The merge didn't finish. Approve again?" that creates a new pending action. One grant, one attempt, always.
+`delete_branch` runs the same steps. Its precheck refuses the default branch and a branch whose head isn't the approved SHA; `DELETE /git/refs/heads/{ref}` takes no expected SHA, so a push between the precheck and the delete is deleted with the branch.
+
+**Crash in the middle.** On startup the executor scans `executing` rows. For each it calls `reconcile`: for a merge, `GET /pulls/{n}`; `merged == true` and `merge_commit_sha` present → `succeeded` (`execution_reconciled`); not merged → `interrupted`; GitHub unreachable → retry every 30 s, state unchanged. A branch deletion is done when the ref is gone. `interrupted` is terminal: the grant is spent, and the owner's notice says to approve a new request. One grant, one attempt, always. (A card that creates the new pending action in one tap is mobile work, not built yet.)
 
 **Owner's merge credential.** A fine-grained personal access token from the owner, limited to the Kin repos, with **Contents: Read and write** and **Metadata: Read** only. GitHub's permission table puts `PUT /pulls/{n}/merge` and `DELETE /git/refs/{ref}` under Contents: write, and `POST /pulls/{n}/reviews` under Pull requests: write, so this token **can merge and delete branches but can't approve a PR**. It lives in the OS keychain via `@napi-rs/keyring` (`AsyncEntry("kin-owner-merge", "<orgId>")`), is read per execution, and is never logged, put in an environment variable, or passed to a child process. Expiry is set to 90 days; a card warns 7 days before.
 
@@ -520,7 +531,7 @@ At startup and hourly, the executor checks every GitHub identity reachable from 
 
 A merge token in its last 7 days passes with the `merge_token_expiring` warning, which drives the expiry card. `requirePassing` returns a `CredentialHygienePass`, which `OwnerMergeClient.token` requires (section 6). The merge token itself is probed once, at `save` (section 10); the hourly check reads only its stored login and expiry. GitHub lets the owner widen a fine-grained token's permissions without changing its value, so a token widened after `save` (for example to Pull requests: write) goes unnoticed until it's saved again. Rerunning the read-only probes in the hourly check is a follow-up.
 
-The identity probe is the `T3GitHubIdentity` port. `@t3tools/source-control-github` exports only its driver, so `GitHubRequestPolicy.credential` can't be reached from `apps/server` without a one-line export there. APPR-9 adds that export and the live layer when it wires the executor. The port's `identities` has a required field per source (`t3`, `ghAccounts`, `gitCredential`, `ssh`), so the live layer must report all four. It reads `gh` accounts from `gh auth status --hostname github.com`, and the git helper's login from `git credential fill` for `https://github.com` followed by `GET /user` with the returned password, never logging it. For `ssh` it runs `ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes git@github.com` (`GITHUB_SSH_PROBE`) with a timeout, then the same once per private key in `~/.ssh` with `-o IdentitiesOnly=yes -i <key>`, and reports each answer's combined output; the check parses them , so the live layer can't misread one, and an empty list fails. A deploy key's greeting names `owner/repo`, which fails as `non_bot_identity`. Keys behind another `Host` alias in `~/.ssh/config` aren't probed. A source it can't read fails the probe, which fails the check closed (`identity_unknown`).
+The identity probe is the `T3GitHubIdentity` port. `@t3tools/source-control-github` exports only its driver, so `GitHubRequestPolicy.credential` can't be reached from `apps/server` without a one-line export there. APPR-9 wires the executor with `identityUnavailableLayer`, which fails every probe, so no privileged action runs on a real host until APPR-16 adds that export and the live layer. The port's `identities` has a required field per source (`t3`, `ghAccounts`, `gitCredential`, `ssh`), so the live layer must report all four. It reads `gh` accounts from `gh auth status --hostname github.com`, and the git helper's login from `git credential fill` for `https://github.com` followed by `GET /user` with the returned password, never logging it. For `ssh` it runs `ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes git@github.com` (`GITHUB_SSH_PROBE`) with a timeout, then the same once per private key in `~/.ssh` with `-o IdentitiesOnly=yes -i <key>`, and reports each answer's combined output; the check parses them , so the live layer can't misread one, and an empty list fails. A deploy key's greeting names `owner/repo`, which fails as `non_bot_identity`. Keys behind another `Host` alias in `~/.ssh/config` aren't probed. A source it can't read fails the probe, which fails the check closed (`identity_unknown`).
 
 The check only sees what the server's OS user is set up with. An agent running as that user can still read anything that user can: it can find an SSH agent socket on disk and set `SSH_AUTH_SOCK` itself, read the merge token and the App's private key from the keychain (open question 4), or use credentials outside these sources. The real fix is a separate executor OS user.
 
@@ -634,6 +645,8 @@ Acceptance for phase 1: on `GLDRoger/t3code`, the lead requests a merge of a bot
 **APPR-8 GitHub App and credentials.** `scripts/kin-github-app.ts` (manifest with the permission table), `KinGitHubApp.ts` (installation tokens, narrowing), `Keychain.ts`, owner merge token setup and expiry warning, `CredentialHygiene.ts`. Depends on: APPR-1. Done when: test 18 passes and `scripts/kin-github-app.ts --check` prints the App's permissions matching the table. Owner: backend.
 
 **APPR-9 Executor.** `ActionExecutor.ts`, handler registry, `merge_pull_request` and `delete_branch` handlers via `OwnerMergeClient.ts` (REST with `sha`), stop-switch check, startup reconciliation, result posting. Depends on: APPR-4, APPR-8, LEAD-11. Done when: tests 10–12 and 19 pass against a recorded GitHub fake, and one real merge on a scratch repo succeeds. Owner: backend.
+
+**APPR-16 Live GitHub identity probe.** The `T3GitHubIdentity` live layer (section 12) and the one-line `GitHubRequestPolicy` export from `@t3tools/source-control-github`, replacing `identityUnavailableLayer` in `approvals/layer.ts`; the hourly hygiene check with the owner's card. Depends on: APPR-8, APPR-9. Done when: on the Kin host, `CredentialHygiene.check` passes with only the bot's login and fails for each source given the owner's login. Owner: backend.
 
 **APPR-10 Audit.** `Audit.ts` with hash chain, `kin.audit.list`/`verify`, entries from every step above. Depends on: APPR-2. Done when: test 20 passes and the acceptance merge shows a complete trail. Owner: backend.
 
