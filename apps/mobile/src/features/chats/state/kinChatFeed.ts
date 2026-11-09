@@ -23,6 +23,7 @@ import {
   type KinChatState,
 } from "./kinInboxModel";
 import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks";
+import { kinReplyKey, type KinHeldDraft } from "./kinLive";
 import { kinSentences } from "./kinScreenState";
 import type { KinSynced } from "./kinStreams";
 
@@ -169,6 +170,14 @@ export type KinFeedRow =
       readonly authorKind: "agent" | "person";
       readonly showAuthor: boolean;
     }
+  /** A reply still streaming. Its key is its durable message's, so the bubble stays in place. */
+  | {
+      readonly type: "draft";
+      readonly key: string;
+      readonly draft: KinHeldDraft;
+      readonly authorLabel: string;
+      readonly showAuthor: boolean;
+    }
   | { readonly type: "system"; readonly key: string; readonly message: KinMessage }
   /** Starts each local day; `label` is relative to the day the rows were built on. */
   | { readonly type: "day"; readonly key: string; readonly label: string }
@@ -203,6 +212,12 @@ const foldRunId = (message: KinMessage) =>
 
 type MessageRow = Extract<KinFeedRow, { readonly type: "message" }>;
 
+// A bridged reply shares its draft's key, so the list keeps the bubble when the message lands.
+const messageRowKey = (message: KinMessage) =>
+  message.author._tag === "agent" && message.clientMessageId?.startsWith("reply:")
+    ? message.clientMessageId
+    : message.messageId;
+
 // Rows for unchanged messages keep their identity, so one new message doesn't redraw every bubble.
 const messageRows = new WeakMap<KinMessage, MessageRow>();
 
@@ -217,7 +232,7 @@ function messageRow(message: KinMessage, fields: Omit<MessageRow, "type" | "key"
   ) {
     return held;
   }
-  const row: MessageRow = { type: "message", key: message.messageId, message, ...fields };
+  const row: MessageRow = { type: "message", key: messageRowKey(message), message, ...fields };
   messageRows.set(message, row);
   return row;
 }
@@ -234,18 +249,25 @@ function dayRow(first: KinMessage, day: string, now: Date): DayRow {
   return row;
 }
 
+// Agents by agent id, so a draft (which names only its agent) groups with the messages before it.
 const authorKey = (message: KinMessage) =>
-  message.author._tag === "system" ? "system" : message.author.memberId;
+  message.author._tag === "system"
+    ? "system"
+    : message.author._tag === "agent"
+      ? `agent:${message.author.agentId}`
+      : message.author.memberId;
 
 /**
- * Feed rows, oldest first. Two or more consecutive agent messages from one floor run fold into
- * one line (chat spec, interface rule 3); an expanded run lists its messages after that line.
+ * Feed rows, oldest first, then streaming drafts. A floor run of two or more consecutive agent
+ * messages from more than one agent folds into one line (chat spec, interface rule 3); an
+ * expanded run lists its messages after that line. One agent's run shows as grouped bubbles.
  */
 export function buildKinFeedRows(
   messages: ReadonlyArray<KinMessage>,
   viewer: KinFeedViewer,
   expandedRuns: ReadonlySet<string>,
   now: Date = new Date(),
+  drafts: ReadonlyArray<KinHeldDraft> = [],
 ): ReadonlyArray<KinFeedRow> {
   const visible = messages.filter((message) => message.status !== "dismissed");
   const rows: KinFeedRow[] = [];
@@ -288,12 +310,12 @@ export function buildKinFeedRows(
     if (runId !== null) {
       while (end < visible.length && foldRunId(visible[end]!) === runId) end += 1;
     }
-    if (runId === null || end - index < 2) {
-      pushMessage(first);
-      index += 1;
+    const run = visible.slice(index, end);
+    if (runId === null || new Set(run.map(authorKey)).size < 2) {
+      run.forEach(pushMessage);
+      index = end;
       continue;
     }
-    const run = visible.slice(index, end);
     startDay(first);
     const authors = [...new Set(run.map((message) => kinAuthorLabel(message, viewer)))];
     const decision =
@@ -319,6 +341,23 @@ export function buildKinFeedRows(
     previousAuthor = null;
     if (expanded) run.forEach(pushMessage);
     index = end;
+  }
+  for (const draft of drafts) {
+    const day = kinLocalDayKey(draft.startedAt);
+    if (day !== previousDay) {
+      previousDay = day;
+      previousAuthor = null;
+      rows.push({ type: "day", key: `day:${day}`, label: kinDayLabel(draft.startedAt, now) });
+    }
+    const author = `agent:${draft.agentId}`;
+    rows.push({
+      type: "draft",
+      key: kinReplyKey(draft.draftId),
+      draft,
+      authorLabel: viewer.agentNames.get(draft.agentId) ?? "Agent",
+      showAuthor: previousAuthor !== author,
+    });
+    previousAuthor = author;
   }
   return rows;
 }
@@ -453,6 +492,7 @@ export function kinRowSeq(row: KinFeedRow): number {
     case "fold":
       return row.lastSeq;
     case "day":
+    case "draft":
       return 0;
   }
 }

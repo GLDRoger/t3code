@@ -1,6 +1,7 @@
 import {
   KinChatSummary,
   KinMessage,
+  KinPresence,
   KinWaitingItem,
   KinWidget,
   type KinChatId,
@@ -8,7 +9,16 @@ import {
   type KinChatStreamEvent,
   type KinChatHistoryResult,
 } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+
+import {
+  applyKinDraft,
+  applyKinLiveBacklog,
+  applyKinPresence,
+  KinHeldDraft,
+  settleKinDrafts,
+} from "./kinLive";
 
 export const KIN_CACHED_MESSAGE_LIMIT = 50;
 
@@ -129,6 +139,10 @@ export const KinChatState = Schema.Struct({
       "floor_closed",
     ]),
   ),
+  /** Streaming replies, oldest first; hub-only, never cached. */
+  drafts: Schema.Array(KinHeldDraft).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
+  /** What each working agent is doing; hub-only, never cached. */
+  presence: Schema.Array(KinPresence).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
 });
 export type KinChatState = typeof KinChatState.Type;
 
@@ -141,6 +155,8 @@ export const emptyKinChat: KinChatState = {
   needsHistoryReload: false,
   left: false,
   closed: null,
+  drafts: [],
+  presence: [],
 };
 
 /** Every Kin refusal but `unavailable`, which the stream retries. */
@@ -206,7 +222,11 @@ function advanceContiguous(messages: ReadonlyArray<KinMessage>, from: number): n
   return seq;
 }
 
-export function applyKinChatEvent(state: KinChatState, event: KinChatStreamEvent): KinChatState {
+export function applyKinChatEvent(
+  state: KinChatState,
+  event: KinChatStreamEvent,
+  now: string = new Date().toISOString(),
+): KinChatState {
   switch (event._tag) {
     case "backlog": {
       const messages = mergeMessages(state.messages, event.messages, streamFloor(state));
@@ -217,15 +237,20 @@ export function applyKinChatEvent(state: KinChatState, event: KinChatStreamEvent
       const contiguousSeq = advanceContiguous(messages, filled);
       // Only a fully applied backlog moves it; live events keep this snapshot cursor.
       const changeSeq = event.lastChangeSeq ?? state.changeSeq;
+      const live = applyKinLiveBacklog(state, event, messages, now);
       if (
         messages === state.messages &&
         widgets === state.widgets &&
         contiguousSeq === state.contiguousSeq &&
-        changeSeq === state.changeSeq
+        changeSeq === state.changeSeq &&
+        live.drafts.length === 0 &&
+        live.presence.length === 0 &&
+        state.drafts.length === 0 &&
+        state.presence.length === 0
       ) {
         return state;
       }
-      return { ...state, messages, widgets, contiguousSeq, changeSeq };
+      return { ...state, messages, widgets, contiguousSeq, changeSeq, ...live };
     }
     case "reset":
       return {
@@ -243,6 +268,7 @@ export function applyKinChatEvent(state: KinChatState, event: KinChatStreamEvent
         ...state,
         messages,
         contiguousSeq: advanceContiguous(messages, state.contiguousSeq),
+        drafts: settleKinDrafts(state.drafts, [event.message]),
       };
     }
     case "widget": {
@@ -256,8 +282,25 @@ export function applyKinChatEvent(state: KinChatState, event: KinChatStreamEvent
       if (event.seq <= held) return state;
       return { ...state, reads: { ...state.reads, [event.memberId]: event.seq } };
     }
-    case "draft":
-    case "presence":
+    case "draft": {
+      const drafts = applyKinDraft(state.drafts, state.messages, event, now);
+      return drafts === state.drafts ? state : { ...state, drafts };
+    }
+    case "presence": {
+      const presence = applyKinPresence(state.presence, event);
+      // A run that ended without its durable message can't finish its draft.
+      const drafts =
+        event.presence === null
+          ? state.drafts.filter((draft) => draft.agentId !== event.agentId)
+          : state.drafts;
+      if (presence === state.presence && drafts.length === state.drafts.length) return state;
+      return {
+        ...state,
+        presence,
+        drafts: drafts.length === state.drafts.length ? state.drafts : drafts,
+      };
+    }
+    // Reactions show with R1-REACT-UI.
     case "reaction":
       return state;
   }
@@ -288,5 +331,7 @@ export function trimKinChatForCache(state: KinChatState): KinChatState {
     widgets: state.widgets.filter((widget) => kept.has(widget.messageId)),
     left: false,
     closed: null,
+    drafts: [],
+    presence: [],
   };
 }

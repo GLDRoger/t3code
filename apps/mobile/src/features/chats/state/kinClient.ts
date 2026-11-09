@@ -159,6 +159,12 @@ export const kinClient = {
     tag: KIN_CHAT_WS_METHODS.messagesSend,
     concurrency: { mode: "singleFlight", key: ({ input }) => input.clientMessageId },
   }),
+  /** Owner-only Stop on a lead's current wake-up, from its presence line. */
+  leadInterrupt: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:lead:interrupt",
+    tag: "kin.lead.interrupt",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.wakeupId },
+  }),
   markRead: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:mark-read",
     tag: KIN_CHAT_WS_METHODS.messagesMarkRead,

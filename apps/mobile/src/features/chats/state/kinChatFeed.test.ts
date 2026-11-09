@@ -1,4 +1,4 @@
-import type { EnvironmentId, KinMessage, KinWidget } from "@t3tools/contracts";
+import type { EnvironmentId, KinMessage, KinPresence, KinWidget } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
@@ -8,6 +8,7 @@ import {
   KIN_FIXTURE_AGENT,
   KIN_FIXTURE_CHAT_ID,
   KIN_FIXTURE_OWNER,
+  KIN_FIXTURE_QA,
   makeKinFixtureMessages,
   readKinFixtureHistory,
 } from "./kinChatFixtures";
@@ -35,6 +36,7 @@ import {
   type KinFeedViewer,
 } from "./kinChatFeed";
 import type { KinHost } from "./kinHost";
+import { KIN_SLOW_START_AFTER_MS, kinPresenceLine, kinPresenceNeedsClock } from "./kinLive";
 import { kinSentences } from "./kinScreenState";
 import {
   applyKinChatEvent,
@@ -296,16 +298,123 @@ describe("rows", () => {
 
   it("puts a fold under the day its run starts on", () => {
     const run = { floorRunId: "r" };
+    const qa = {
+      ...all[1]!.author,
+      agentId: KIN_FIXTURE_QA,
+      memberId: "member-qa",
+    } as KinMessage["author"];
     const rows = buildKinFeedRows(
       [
         agentMessage(1, { createdAt: localIso(7, 9) }),
         agentMessage(2, { ...run, createdAt: localIso(8, 9) }),
-        agentMessage(3, { ...run, createdAt: localIso(8, 10) }),
+        agentMessage(3, { ...run, author: qa, createdAt: localIso(8, 10) }),
       ],
       viewer,
       new Set(),
     );
     expect(rows.map((row) => row.type)).toEqual(["day", "message", "day", "fold"]);
+  });
+});
+
+describe("streaming replies", () => {
+  const reply = (seq: number, draftId: string, body: string) =>
+    agentMessage(seq, { floorRunId: "r", clientMessageId: `reply:${draftId}`, body });
+  const draft = (draftId: string, text: string) => ({
+    draftId,
+    agentId: KIN_FIXTURE_AGENT,
+    text,
+    startedAt: localIso(8, 9),
+  });
+  const shape = (rows: ReadonlyArray<KinFeedRow>) =>
+    rows.map((row) =>
+      row.type === "message" || row.type === "draft" ? [row.key, row.showAuthor] : row.type,
+    );
+
+  it("shows one agent's messages from a run as grouped bubbles, not a fold", () => {
+    const rows = messageRows(
+      [ownMessage(1), reply(2, "a", "First."), reply(3, "b", "Second.")],
+      viewer,
+      new Set(),
+    );
+    expect(shape(rows)).toEqual([
+      ["fixture-1", false],
+      ["reply:a", true],
+      ["reply:b", false],
+    ]);
+  });
+
+  it("keeps a draft's key and author line when its message lands, so the bubble stays put", () => {
+    const before = [ownMessage(1), reply(2, "a", "First.")];
+    const streaming = messageRows(before, viewer, new Set(), new Date(2026, 10, 8, 12), [
+      draft("b", "Sec"),
+    ]);
+    const landed = messageRows([...before, reply(3, "b", "Second.")], viewer, new Set());
+    expect(shape(streaming)).toEqual(shape(landed));
+    expect(streaming[2]).toMatchObject({ type: "draft", authorLabel: "Tech lead" });
+    expect(kinRowSeq(streaming[2]!)).toBe(0);
+    // The first reply of a turn carries the author line while streaming and after.
+    expect(
+      shape(
+        messageRows([ownMessage(1)], viewer, new Set(), new Date(2026, 10, 8, 12), [
+          draft("a", "Fi"),
+        ]),
+      ),
+    ).toEqual([
+      ["fixture-1", false],
+      ["reply:a", true],
+    ]);
+  });
+});
+
+describe("kinPresenceLine", () => {
+  const start = Date.parse("2026-11-08T09:00:00.000Z");
+  const iso = (ms: number) => new Date(start + ms).toISOString();
+  const presence = (overrides: Partial<KinPresence> = {}): KinPresence => ({
+    agentId: KIN_FIXTURE_AGENT,
+    wakeupId: "w1" as KinPresence["wakeupId"],
+    state: "thinking",
+    label: null,
+    startedAt: iso(0),
+    since: iso(0),
+    ...overrides,
+  });
+  const text = (p: KinPresence, at: number) => kinPresenceLine(p, start + at)?.text;
+
+  it("names each state in one static line; a note or tool label wins", () => {
+    expect(kinPresenceLine(undefined, start)).toBeNull();
+    expect(text(presence(), 0)).toBe("Thinking…");
+    expect(text(presence({ state: "writing" }), 0)).toBe("Writing…");
+    expect(text(presence({ state: "working" }), 0)).toBe("Working…");
+    expect(text(presence({ state: "working", label: "Checking memory" }), 0)).toBe(
+      "Checking memory",
+    );
+    expect(text(presence({ state: "working", label: "x".repeat(80) }), 0)).toHaveLength(60);
+    expect(kinPresenceNeedsClock(presence({ state: "working" }))).toBe(false);
+  });
+
+  it("shows a slow start's wait after 20 s, announcing it once", () => {
+    const starting = presence({ state: "starting", since: iso(5_000) });
+    expect(text(starting, KIN_SLOW_START_AFTER_MS - 1)).toBe("Starting…");
+    expect(text(starting, KIN_SLOW_START_AFTER_MS)).toBe("Starting · 0:20");
+    expect(text(starting, 35_000)).toBe("Starting · 0:35");
+    expect(kinPresenceLine(starting, start + 20_000)?.announcement).toBe(
+      kinPresenceLine(starting, start + 35_000)?.announcement,
+    );
+    expect(kinPresenceNeedsClock(starting)).toBe(true);
+  });
+
+  it("counts a stall's minutes from the last output, never under 2", () => {
+    const stalled = presence({ state: "stalled", since: iso(60_000) });
+    expect(kinPresenceLine(stalled, start + 60_000)).toMatchObject({
+      text: "No output for 2 min",
+      stalled: true,
+      subtitle: "No output",
+    });
+    expect(text(stalled, 60_000 + 5 * 60_000 + 59_000)).toBe("No output for 5 min");
+    expect(kinPresenceLine(stalled, start + 60_000)?.announcement).toBe(
+      kinPresenceLine(stalled, start + 600_000)?.announcement,
+    );
+    expect(kinPresenceNeedsClock(stalled)).toBe(true);
   });
 });
 

@@ -3,11 +3,14 @@ import type {
   KinChatHistoryInput,
   KinChatHistoryResult,
   KinChatId,
+  KinChatStreamEvent,
   KinMemberId,
   KinMessage,
   KinMessageId,
   KinOrgId,
   KinPersonId,
+  KinPresence,
+  KinWakeupId,
   ThreadId,
 } from "@t3tools/contracts";
 
@@ -117,4 +120,74 @@ export function readKinFixtureHistory(
   const older = all.filter((message) => message.seq < input.beforeSeq);
   const messages = older.slice(-input.limit);
   return { messages, widgets: [], hasMore: older.length > messages.length };
+}
+
+const FIXTURE_REPLY =
+  "Found it. The flake is the shared clock in `payments.test.ts`: two tests advance it at once.\n\n- freeze the clock per test\n- drop the 2 s sleep\n\nI'll open the PR once checks pass.";
+
+/**
+ * A scripted lead turn for the fixture chat, as the reply bridge would stream it after `seq`:
+ * presence through thinking, a tool label and writing, the reply in 250 ms deltas, its durable
+ * message, then a stall that offers Stop.
+ */
+export function kinFixtureReplyScript(
+  seq: number,
+  startMs: number,
+): ReadonlyArray<{ readonly atMs: number; readonly event: KinChatStreamEvent }> {
+  const iso = (ms: number) => new Date(startMs + ms).toISOString();
+  const wakeupId = `fixture-wakeup-${seq}` as KinWakeupId;
+  const draftId = `fixture-item-${seq}`;
+  const presence = (atMs: number, state: KinPresence["state"], label: string | null = null) => ({
+    atMs,
+    event: {
+      _tag: "presence",
+      agentId: KIN_FIXTURE_AGENT,
+      presence: {
+        agentId: KIN_FIXTURE_AGENT,
+        wakeupId,
+        state,
+        label,
+        startedAt: iso(0),
+        since: iso(atMs),
+      },
+    } as const,
+  });
+  const words = FIXTURE_REPLY.split(/(?<=\s)/);
+  const deltas = [];
+  let offset = 0;
+  for (let index = 0; index < words.length; index += 3) {
+    const text = words.slice(index, index + 3).join("");
+    deltas.push({
+      atMs: 4_000 + deltas.length * 250,
+      event: { _tag: "draft", draftId, agentId: KIN_FIXTURE_AGENT, offset, text } as const,
+    });
+    offset += text.length;
+  }
+  const doneMs = 4_000 + deltas.length * 250 + 500;
+  const message: KinMessage = {
+    ...fixtureMessage(seq + 1),
+    messageId: `fixture-reply-${seq}` as KinMessageId,
+    clientMessageId: `reply:${draftId}`,
+    body: FIXTURE_REPLY,
+    createdAt: iso(doneMs),
+  };
+  return [
+    presence(0, "thinking"),
+    presence(1_500, "working", "Checking memory"),
+    presence(3_500, "writing"),
+    ...deltas,
+    { atMs: doneMs, event: { _tag: "message", message } },
+    {
+      atMs: doneMs,
+      event: {
+        _tag: "draft",
+        draftId,
+        agentId: KIN_FIXTURE_AGENT,
+        offset,
+        text: "",
+        end: { messageId: message.messageId },
+      },
+    },
+    presence(doneMs + 1_000, "stalled"),
+  ];
 }

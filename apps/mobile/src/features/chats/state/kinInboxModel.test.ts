@@ -1,4 +1,7 @@
 import type {
+  KinAgentId,
+  KinPresence,
+  KinWakeupId,
   KinChatId,
   KinChatMember,
   KinChatSummary,
@@ -329,5 +332,85 @@ describe("kin chat feed", () => {
     expect(cached.messages[0]!.seq).toBe(11);
     expect(cached.widgets.map((w) => w.widgetId)).toEqual(["late"]);
     expect(cached.contiguousSeq).toBe(messages.length);
+    expect(trimKinChatForCache({ ...state, drafts: [draft], presence: [thinking] })).toMatchObject({
+      drafts: [],
+      presence: [],
+    });
+  });
+});
+
+const LEAD = "lead" as KinAgentId;
+const lead = {
+  _tag: "agent",
+  agentId: LEAD,
+  memberId: "lm",
+  ownerPersonId: "owner",
+  threadId: "t",
+} as KinMessage["author"];
+const draft = { draftId: "d1", agentId: LEAD, text: "Hi", startedAt: at(1) };
+const thinking: KinPresence = {
+  agentId: LEAD,
+  wakeupId: "w1" as KinWakeupId,
+  state: "thinking",
+  label: null,
+  startedAt: at(0),
+  since: at(0),
+};
+const delta = (offset: number, text: string, draftId = "d1") =>
+  ({ _tag: "draft", draftId, agentId: LEAD, offset, text }) as const;
+
+describe("kin streaming reply", () => {
+  it("grows a draft by matching offsets and ignores a delta that doesn't fit", () => {
+    let state = applyKinChatEvent(emptyKinChat, delta(3, "lost start"), at(1));
+    expect(state.drafts).toEqual([]);
+    state = applyKinChatEvent(state, delta(0, "Hi"), at(1));
+    state = applyKinChatEvent(state, delta(2, " there"), at(2));
+    // A gap or a replay holds the text as is, until the message or a backlog brings it all.
+    expect(applyKinChatEvent(state, delta(3, "x"), at(3))).toBe(state);
+    expect(applyKinChatEvent(state, delta(2, " there"), at(3))).toBe(state);
+    expect(state.drafts).toEqual([{ ...draft, text: "Hi there", startedAt: at(1) }]);
+  });
+
+  it("swaps the draft for its durable message once, and a late delta can't bring it back", () => {
+    let state = applyKinChatEvent(emptyKinChat, delta(0, "Hi"), at(1));
+    const reply = message(1, { author: lead, body: "Hi there", clientMessageId: "reply:d1" });
+    state = applyKinChatEvent(state, { _tag: "message", message: reply });
+    expect(state.drafts).toEqual([]);
+    expect(state.messages).toEqual([reply]);
+    expect(applyKinChatEvent(state, delta(0, "Hi"), at(2))).toBe(state);
+    // Without a reply id, the same agent's message grown from the draft settles it.
+    state = applyKinChatEvent(state, delta(0, "Next", "d2"), at(2));
+    state = applyKinChatEvent(state, {
+      _tag: "message",
+      message: message(2, { author: lead, body: "Next one" }),
+    });
+    expect(state.drafts).toEqual([]);
+    // `end` drops a draft whose text was never posted.
+    state = applyKinChatEvent(state, delta(0, "Draft", "d3"), at(3));
+    state = applyKinChatEvent(state, { ...delta(5, "", "d3"), end: { messageId: null } }, at(3));
+    expect(state.drafts).toEqual([]);
+  });
+
+  it("takes drafts and presence from a backlog, and drops a draft whose run ended", () => {
+    let state = applyKinChatEvent(emptyKinChat, delta(0, "Hi"), at(1));
+    state = applyKinChatEvent(
+      state,
+      {
+        ...backlog([], 0),
+        drafts: [
+          { draftId: "d1", agentId: LEAD, text: "Hi there" },
+          { draftId: "d2", agentId: LEAD, text: "Also" },
+        ],
+        presence: [thinking],
+      },
+      at(5),
+    );
+    expect(state.drafts.map((d) => [d.text, d.startedAt])).toEqual([
+      ["Hi there", at(1)],
+      ["Also", at(5)],
+    ]);
+    expect(state.presence).toEqual([thinking]);
+    state = applyKinChatEvent(state, { _tag: "presence", agentId: LEAD, presence: null });
+    expect(state).toMatchObject({ drafts: [], presence: [] });
   });
 });
