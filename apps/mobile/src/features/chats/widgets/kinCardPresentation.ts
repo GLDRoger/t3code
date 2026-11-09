@@ -101,10 +101,7 @@ export function kinTaskCardView(
     open,
     unknownEnvironment: state.threadId !== null && !known,
     pullRequests,
-    accessibilityLabel: parts
-      .filter((part) => part !== null)
-      .map((part) => (/[.!?…]$/.test(part) ? part : `${part}.`))
-      .join(" "),
+    accessibilityLabel: kinSentences(parts),
   };
 }
 

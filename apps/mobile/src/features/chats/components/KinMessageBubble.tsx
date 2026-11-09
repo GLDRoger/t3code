@@ -118,7 +118,12 @@ export function KinSystemLine(props: { readonly row: SystemRow }) {
 /** Starts a day in the feed: "Today", "Yesterday", or its date. */
 export function KinDayLine(props: { readonly row: DayRow }) {
   return (
-    <View className="items-center px-8 pb-1 pt-4" accessibilityRole="header">
+    <View
+      accessible
+      accessibilityRole="header"
+      accessibilityLabel={props.row.label}
+      className="items-center px-8 pb-1 pt-4"
+    >
       <Text textRole="caption" className="font-t3-medium text-foreground-muted">
         {props.row.label}
       </Text>

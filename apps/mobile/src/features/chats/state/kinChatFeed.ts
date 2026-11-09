@@ -366,7 +366,7 @@ export function kinPlainText(markdown: string): string {
         .trim(),
     )
     .filter((line) => line.length > 0)
-    .map((line) => (/[.!?:;,]$/.test(line) ? line : `${line}.`))
+    .map((line) => (/[.!?…:;,]$/.test(line) ? line : `${line}.`))
     .join(" ");
 }
 
@@ -386,22 +386,28 @@ export function kinMessageLinks(markdown: string): ReadonlyArray<KinMessageLink>
   return links.filter((link, index) => links.findIndex((l) => l.href === link.href) === index);
 }
 
-const sentence = (text: string) => (/[.!?]$/.test(text) ? text : `${text}.`);
+/** One VoiceOver label from its parts, each read as a sentence without doubling its end mark. */
+export function kinSentences(parts: ReadonlyArray<string | null>): string {
+  return parts
+    .map((part) => part?.trim() ?? "")
+    .filter((part) => part.length > 0)
+    .map((part) => (/[.!?…]$/.test(part) ? part : `${part}.`))
+    .join(" ");
+}
 
 /** The bubble's one VoiceOver label: "Tech lead, agent. Payments test fixed. 9:30." */
 export function kinMessageLabel(row: MessageRow, time: string): string {
   const { message } = row;
   const deleted = message.status === "deleted";
-  const parts = [row.own ? "You." : `${row.authorLabel}, ${row.authorKind}.`];
-  if (deleted) parts.push("Message deleted.");
+  const parts = [row.own ? "You" : `${row.authorLabel}, ${row.authorKind}`];
+  if (deleted) parts.push("Message deleted");
   else {
-    const body = kinPlainText(message.body);
-    if (body.length > 0) parts.push(sentence(body));
+    parts.push(kinPlainText(message.body));
   }
-  parts.push(`${time}.`);
-  if (message.status === "suggested") parts.push("Suggestion, not sent yet.");
-  else if (message.editedAt !== null && !deleted) parts.push("Edited.");
-  return parts.join(" ");
+  parts.push(time);
+  if (message.status === "suggested") parts.push("Suggestion, not sent yet");
+  else if (message.editedAt !== null && !deleted) parts.push("Edited");
+  return kinSentences(parts);
 }
 
 // Follow-the-end
