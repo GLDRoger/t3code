@@ -5,19 +5,22 @@ import {
   createEnvironmentSubscriptionAtomFamily,
   environmentSessionGenerationAtom,
 } from "@t3tools/client-runtime/state/runtime";
+import { persistQuery } from "@t3tools/client-runtime/state/query-persistence";
 import {
   KIN_CHAT_WS_METHODS,
+  KinOrgsListResult,
   type EnvironmentId,
   type KinChatHistoryInput,
   type KinOrgsListInput,
 } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import { AsyncResult, AtomRegistry } from "effect/reactivity";
+import * as Option from "effect/Option";
+import { Atom, AsyncResult, AtomRegistry } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../../../connection/runtime";
 import { appAtomRegistry } from "../../../state/atom-registry";
-import { syncKinCacheIdentity } from "./kinCache";
+import { syncKinCacheIdentity, withKinCache } from "./kinCache";
 import {
   KIN_CHAT_LABEL,
   KIN_INBOX_LABEL,
@@ -76,6 +79,22 @@ const readHistory = guardedRead(historyRead);
 /** A dropped connection can leave a read pending; "Load earlier" fails after this and offers Retry. */
 export const KIN_HISTORY_PAGE_TIMEOUT = Duration.seconds(20);
 
+// Saved with the chats it names, and cleared with them when the identity changes.
+const orgsCache = persistQuery(KinOrgsListResult);
+const ORGS_CACHE_KEY = "orgs";
+
+/** The directory from a host's last `kin.orgs.list` answer, for reading its cache offline. */
+export const kinCachedOrgsAtom = Atom.family((environmentId: EnvironmentId) =>
+  connectionAtomRuntime
+    .atom(
+      Effect.gen(function* () {
+        const cached = yield* withKinCache(orgsCache.load(environmentId, ORGS_CACHE_KEY));
+        return Option.getOrNull(cached);
+      }),
+    )
+    .pipe(Atom.withLabel(`kin:orgs-cache:${environmentId}`)),
+);
+
 export const kinClient = {
   /** Orgs, their agents, and the viewer's person per org. An empty `me` means no identity. */
   orgs: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
@@ -85,6 +104,8 @@ export const kinClient = {
       const result = yield* retryKinProbe(readOrgs(input), () => knownKinHosts.has(environmentId));
       markKinHostKnown(environmentId);
       yield* syncKinCacheIdentity(environmentId, result.me[0]?.personId ?? null);
+      yield* withKinCache(orgsCache.save(environmentId, ORGS_CACHE_KEY, result));
+      appAtomRegistry.refresh(kinCachedOrgsAtom(environmentId));
       return result;
     }),
     staleTimeMs: 60_000,
