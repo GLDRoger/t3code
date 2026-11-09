@@ -273,7 +273,7 @@ export const KinGrantPayload = Schema.Struct({
 
 `kin.approvals.submitGrant({compact})` checks, in this order, and stops at the first failure with a typed reason:
 
-1. Decode header and payload; `alg`, `typ`, no `jwk`; each part's bytes equal `stableStringify(JSON.parse(bytes))`; `jti` is at least 16 bytes (22 base64url characters) → `malformed`.
+1. Decode header and payload; `alg`, `typ`, no `jwk`; each part's bytes equal `stableStringify(JSON.parse(bytes))`; `jti` is at least 16 bytes (22 base64url characters) and `nonce` is 32 bytes (43 characters) → `malformed`. The device parsers refuse the same.
 2. `kid` is an `active` and attested key in `payload.orgId`, and `payload.approver.kid` equals it → `unknown_key` / `revoked_key`. An unattested key never activates, so one found active means the database was edited; it fails `unknown_key`.
 3. Signature verifies with `p256.verify(sig, sha256(signingInput), key, {prehash: false, format: "compact", lowS: true})` → `bad_signature`. Unlike `verifyDpopProof`, `lowS: true` is required: the device always sends low-S, and ECDSA's `(r, n − s)` twin of a signature would otherwise also verify. Never identify or deduplicate a grant by its compact string; `jti` is its identity, and `compact` is kept for audit only.
 4. `approver.humanId` equals the key's `humanId`, and that person currently meets a `requiredApprovers` entry (phase 1: holds the owner role in the org) → `not_owner`.

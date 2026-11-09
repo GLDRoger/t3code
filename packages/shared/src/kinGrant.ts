@@ -18,6 +18,9 @@ import { stableStringify } from "./relaySigning.ts";
 
 const MAX_COMPACT_LENGTH = 16_384;
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
+// Spec section 5: a jti is 16+ random bytes, a nonce exactly 32. The device parsers check the same.
+const JTI = /^[A-Za-z0-9_-]{22,}$/;
+const NONCE = /^[A-Za-z0-9_-]{43}$/;
 const strict = { onExcessProperty: "error" } as const;
 const decodeHeader = Schema.decodeUnknownExit(KinGrantHeader, strict);
 const decodePayload = Schema.decodeUnknownExit(KinGrantPayload, strict);
@@ -69,6 +72,7 @@ export function decodeKinGrant(compact: string): DecodedKinGrant | null {
   const payload = decodePayload(canonicalJson(payloadPart));
   const signature = strictBase64Url(signaturePart);
   if (Exit.isFailure(header) || Exit.isFailure(payload) || signature?.length !== 64) return null;
+  if (!JTI.test(payload.value.jti) || !NONCE.test(payload.value.nonce)) return null;
   const signingInput = `${headerPart}.${payloadPart}`;
   // A schema that trims or otherwise transforms a value would make the decoded grant differ from
   // the signed bytes; one signed string must have exactly one meaning.
