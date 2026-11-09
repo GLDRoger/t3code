@@ -23,6 +23,7 @@ import {
   kinMessageLabel,
   kinMessageLinks,
   kinMarkReadRearms,
+  kinRowSeq,
   kinSeqToMarkRead,
   kinUnseenCount,
   mergeKinFeed,
@@ -174,6 +175,8 @@ describe("rows", () => {
     });
     expect(fold.type === "fold" && fold.authors).toEqual(["Tech lead", "Agent"]);
     expect(fold.key).toBe("fold:run-0");
+    // On screen, a folded run counts as seen through its last message.
+    expect(kinRowSeq(fold)).toBe(24);
   });
 
   it("keeps a deleted agent message inside its run's fold", () => {

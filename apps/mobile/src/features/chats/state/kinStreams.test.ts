@@ -339,10 +339,20 @@ describe("Kin streams", () => {
       const subscribed = yield* Queue.unbounded<KinChatSubscribeInput>();
       const chatViews = yield* Queue.unbounded<KinSynced<KinChatState>>();
       const inboxViews = yield* Queue.unbounded<KinSynced<KinInboxState>>();
+      // Kin turns off after the chat has gone live.
       const kinOff = fakeSession({
         chat: (input) =>
           Stream.fromEffect(Queue.offer(subscribed, input)).pipe(
             Stream.drain,
+            Stream.concat(
+              Stream.make({
+                _tag: "backlog",
+                messages: [message(1)],
+                widgets: [],
+                lastSeq: 1,
+                lastChangeSeq: 3,
+              } as unknown as KinChatStreamEvent),
+            ),
             Stream.concat(Stream.fail(kinError("disabled"))),
           ),
         inbox: Stream.fail(kinError("disabled")),
@@ -362,9 +372,10 @@ describe("Kin streams", () => {
         Effect.forkChild,
       );
       expect(yield* Queue.take(subscribed)).toEqual({ chatId });
+      expect((yield* Queue.take(chatViews)).value.contiguousSeq).toBe(1);
       expect((yield* Queue.take(chatViews)).value.closed).toBe("disabled");
 
-      // The host restarts with Kin: an empty backlog still reopens the chat.
+      // The host restarts with Kin: a backlog that changes nothing still reopens the chat.
       yield* SubscriptionRef.set(
         activeSession,
         Option.some(
@@ -377,9 +388,13 @@ describe("Kin streams", () => {
                     _tag: "backlog",
                     messages: [],
                     widgets: [],
-                    lastSeq: 0,
-                    lastChangeSeq: 0,
+                    lastSeq: 1,
+                    lastChangeSeq: 3,
                   } as unknown as KinChatStreamEvent),
+                ),
+                // Without a reopen view for the backlog, this message's view would come first.
+                Stream.concat(
+                  Stream.make({ _tag: "message", message: message(2) } as KinChatStreamEvent),
                 ),
                 Stream.concat(Stream.never),
               ),
@@ -391,8 +406,12 @@ describe("Kin streams", () => {
           }),
         ),
       );
-      expect(yield* Queue.take(subscribed)).toEqual({ chatId });
-      expect((yield* Queue.take(chatViews)).value.closed).toBe(null);
+      expect(yield* Queue.take(subscribed)).toEqual({ chatId, afterSeq: 1, afterChangeSeq: 3 });
+      expect((yield* Queue.take(chatViews)).value).toMatchObject({
+        closed: null,
+        contiguousSeq: 1,
+      });
+      expect((yield* Queue.take(chatViews)).value.contiguousSeq).toBe(2);
       expect((yield* Queue.take(inboxViews)).value.chats.map((c) => c.chatId)).toEqual(["c1"]);
       yield* Fiber.interrupt(chatFiber);
       yield* Fiber.interrupt(inboxFiber);
