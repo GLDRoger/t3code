@@ -433,7 +433,7 @@ const make = Effect.gen(function* () {
           return yield* Effect.fail("stale_card" as const);
         const result = { chatId: tap.chatId, itemId: card.itemId, action: action.actionId };
         if (action.actionId === "change") return result;
-        const item = yield* memory.readItemQuietly(orgId, card.itemId);
+        const item = yield* memory.readItemQuietly(orgId, card.itemId, "triggers");
         if (item.head.kind !== "deferral" || item.head.status !== "open")
           return yield* Effect.fail("not_open" as const);
         const { orgId: _org, path, ...frontMatter } = item.head;

@@ -308,7 +308,7 @@ const make = Effect.gen(function* () {
       return yield* denied();
     if (input.op !== "supersede" && input.supersedes !== undefined) return yield* denied();
     const current = yield* memory
-      .readItemQuietly(ctx.orgId, fields.id)
+      .readItemQuietly(ctx.orgId, fields.id, { lead: ctx.agentId })
       .pipe(Effect.asSome, Effect.catchTags({ MemoryNotFound: () => Effect.succeedNone }));
     if (input.op === "update" || input.op === "invalidate") {
       if (current._tag === "None") return yield* missing();
@@ -400,20 +400,24 @@ const make = Effect.gen(function* () {
   return LeadMemory.of({
     search: Effect.fn("LeadMemory.search")(function* (scope, input) {
       const ctx = yield* resolve(scope);
-      return yield* memory.query(ctx.orgId, {
-        ...(input.kind === undefined ? {} : { kind: input.kind }),
-        ...(input.status === undefined ? {} : { status: input.status }),
-        ...(input.dueBefore === undefined ? {} : { dueBefore: input.dueBefore }),
-        ...(input.dueAfter === undefined ? {} : { dueAfter: input.dueAfter }),
-        ...(input.reviewOverdue === undefined ? {} : { reviewOverdue: input.reviewOverdue }),
-        ...(input.saidBy === undefined ? {} : { saidBy: input.saidBy }),
-        ...(input.linksTo === undefined ? {} : { linksTo: input.linksTo }),
-        limit: input.limit ?? 50,
-      });
+      return yield* memory.query(
+        ctx.orgId,
+        {
+          ...(input.kind === undefined ? {} : { kind: input.kind }),
+          ...(input.status === undefined ? {} : { status: input.status }),
+          ...(input.dueBefore === undefined ? {} : { dueBefore: input.dueBefore }),
+          ...(input.dueAfter === undefined ? {} : { dueAfter: input.dueAfter }),
+          ...(input.reviewOverdue === undefined ? {} : { reviewOverdue: input.reviewOverdue }),
+          ...(input.saidBy === undefined ? {} : { saidBy: input.saidBy }),
+          ...(input.linksTo === undefined ? {} : { linksTo: input.linksTo }),
+          limit: input.limit ?? 50,
+        },
+        { lead: ctx.agentId },
+      );
     }, Effect.mapError(failure)),
     read: Effect.fn("LeadMemory.read")(function* (scope, input) {
       const ctx = yield* resolve(scope);
-      const item = yield* memory.readItem(ctx.orgId, input.id);
+      const item = yield* memory.readItem(ctx.orgId, input.id, { lead: ctx.agentId });
       const now = DateTime.toEpochMillis(yield* DateTime.now);
       return {
         ...item,

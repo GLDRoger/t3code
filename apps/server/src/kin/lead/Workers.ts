@@ -398,7 +398,7 @@ const make = Effect.gen(function* () {
       reviewRefs !== undefined
         ? []
         : yield* Effect.forEach(input.memoryItemIds ?? [], (id) =>
-            memory.readItemQuietly(ctx.orgId, id).pipe(
+            memory.readItemQuietly(ctx.orgId, id, { lead: ctx.agentId }).pipe(
               Effect.map((item) => ({ id, title: item.head.title, body: item.body })),
               Effect.mapError(() => missing()),
             ),

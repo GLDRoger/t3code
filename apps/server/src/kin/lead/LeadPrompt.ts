@@ -52,7 +52,7 @@ export class KinLeadPrompt extends Context.Service<
             reason: "Event is outside the wake-up scope",
           });
         const snapshot = yield* memory
-          .readPromptSnapshot(orgId, memoryHead)
+          .readPromptSnapshot(orgId, memoryHead, { lead: agentId })
           .pipe(
             Effect.mapError(
               (cause) =>

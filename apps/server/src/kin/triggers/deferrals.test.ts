@@ -641,9 +641,10 @@ it.effect("chases through the real memory lock without reading memory inside the
           );
         return Memory.Memory.of({
           ...memory,
-          query: (org, q) => spy("query", memory.query(org, q)),
-          readItem: (org, id) => spy("readItem", memory.readItem(org, id)),
-          readItemQuietly: (org, id) => spy("readItemQuietly", memory.readItemQuietly(org, id)),
+          query: (org, q, view) => spy("query", memory.query(org, q, view)),
+          readItem: (org, id, view) => spy("readItem", memory.readItem(org, id, view)),
+          readItemQuietly: (org, id, view) =>
+            spy("readItemQuietly", memory.readItemQuietly(org, id, view)),
         });
       }),
     ).pipe(
@@ -680,6 +681,36 @@ it.effect("chases through the real memory lock without reading memory inside the
       const pings = yield* sql`SELECT person FROM kin_ping_items
         WHERE org_id = ${orgId} AND item_id = 'def-c' ORDER BY person`;
       assert.deepStrictEqual(pings, [{ person: "owner-a" }]);
+
+      // An L0 lead's deferral lives only on its shadow branch, and still arms and reminds.
+      yield* sql`UPDATE kin_leads SET level = 'L0' WHERE org_id = ${orgId}`;
+      const remindAt = Date.parse("2026-11-14T03:30:00.000Z");
+      repository.files.set(
+        "deferrals/def-s.md",
+        fixtureItem({
+          id: "def-s",
+          title: "Invented stretch",
+          due: "2026-11-14T09:00+05:30",
+          on_due: "remind",
+          chat: "chat-a",
+          links: [],
+        }),
+      );
+      yield* memory.anchor(orgId, "kin/shadow/lead-a", repository.commit());
+      assert.isFalse(
+        (yield* memory.query(orgId, { kind: "deferral" })).some((item) => item.id === "def-s"),
+      );
+      assert.equal((yield* runOf("def-s"))?.state, "armed");
+      const [due] = yield* sql<{ nextRunAt: number }>`SELECT next_run_at AS "nextRunAt"
+        FROM kin_triggers WHERE org_id = ${orgId} AND trigger_id = 'deferral:def-s:due'`;
+      assert.equal(due?.nextRunAt, remindAt);
+      yield* tick(remindAt);
+      assert.equal((yield* runOf("def-s"))?.state, "reminded");
+      const reminders = yield* sql<{ chatId: string; body: string }>`SELECT chat_id AS "chatId",
+        body FROM kin_messages WHERE org_id = ${orgId} AND body LIKE '%stretch%' ORDER BY seq`;
+      assert.deepStrictEqual(reminders, [
+        { chatId: "chat-a", body: "Reminder: Invented stretch." },
+      ]);
       assert.deepStrictEqual(writing, []);
     }).pipe(Effect.provide(layerFor([], { memory: spied })));
   }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),

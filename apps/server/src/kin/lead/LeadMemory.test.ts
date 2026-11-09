@@ -3,6 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   AuthSessionId,
+  CommandId,
   AuthStandardClientScopes,
   EnvironmentId,
   KinAgentId,
@@ -25,9 +26,11 @@ import { McpSchema, McpServer } from "effect/ai";
 import { McpInvocationContext, type McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
+import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as Threads from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Vcs from "../../vcs/VcsProcess.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
@@ -37,6 +40,7 @@ import * as Cache from "../memory/MemoryCache.ts";
 import { MemoryConfig } from "../memory/MemoryConfig.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import * as Scan from "../memory/secretScan.ts";
+import * as TriggerService from "../triggers/KinTriggerService.ts";
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import * as Lead from "./LeadMemory.ts";
 import { KinWorkers } from "./Workers.ts";
@@ -222,7 +226,15 @@ it.live(
             notices.push(notice.reason);
           }),
       });
-      const memoryLayer = Memory.layer.pipe(Layer.provide(recovery));
+      const memoryLayer = Memory.layer.pipe(
+        Layer.provide(recovery),
+        Layer.provide(
+          TriggerService.syncHooksLayer.pipe(
+            Layer.provide(TriggerService.layer),
+            Layer.provide(KinChatRepository.layer),
+          ),
+        ),
+      );
       const writer = Writer.layer.pipe(
         Layer.provideMerge(Lead.authority),
         Layer.provide(Cache.layer),
@@ -641,6 +653,49 @@ it.live(
             yield* sql`ALTER TABLE kin_events_saved RENAME TO kin_events`;
           }),
         );
+
+        // At L0 the lead writes and reads its shadow branch, and its deferral arms from there.
+        yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'restart-wakeup'`;
+        yield* (yield* Orchestrator.OrchestratorV2).dispatch({
+          type: "run.interrupt",
+          commandId: CommandId.make("interrupt:fixture-wakeup"),
+          threadId,
+          runId: run.id,
+        });
+        const shadowRun = yield* startWakeupRun(threadId, "shadow-wakeup");
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids) SELECT 'shadow-wakeup', org_id, agent_id, thread_id, ${shadowRun.id}, model, started_at, 'running', event_ids FROM kin_wakeups WHERE wakeup_id = 'fixture-wakeup'`;
+        yield* sql`UPDATE kin_events SET wakeup_id = 'shadow-wakeup' WHERE wakeup_id = 'restart-wakeup'`;
+        yield* sql`UPDATE kin_leads SET level = 'L0' WHERE agent_id = ${agentId}`;
+        const reminder = yield* service.defer(scope, {
+          ...deferred,
+          what: "Invented stretch",
+          due: "2026-11-09T21:39:12+05:30",
+          onDue: "remind",
+        });
+        const shadowCommit = yield* writerService.commitWakeup(orgId, "shadow-wakeup", "completed");
+        const shadow = `kin/shadow/${agentId}`;
+        assert.strictEqual(yield* git(remote, ["rev-parse", shadow]), shadowCommit.commit);
+        assert.notInclude(
+          yield* git(remote, ["ls-tree", "-r", "--name-only", "main"]),
+          reminder.itemId,
+        );
+        const openDeferrals = (status: "open" | "done") =>
+          service
+            .search(scope, { kind: "deferral", status })
+            .pipe(Effect.map((items) => items.map((item) => item.id)));
+        assert.include(yield* openDeferrals("open"), reminder.itemId);
+        assert.strictEqual(
+          (yield* service.read(scope, { id: reminder.itemId })).head.title,
+          "Invented stretch",
+        );
+        const armed = () =>
+          sql<{ nextRunAt: number | null }>`SELECT next_run_at AS "nextRunAt" FROM kin_triggers
+            WHERE org_id = ${orgId} AND trigger_id = ${`deferral:${reminder.itemId}:due`}`;
+        assert.deepStrictEqual(yield* armed(), [{ nextRunAt: Date.parse("2026-11-09T16:09:12Z") }]);
+        // After a raise the lead reads the default branch; the reminder stays armed until Keep or Start clean.
+        yield* sql`UPDATE kin_leads SET level = 'L1' WHERE agent_id = ${agentId}`;
+        assert.notInclude(yield* openDeferrals("open"), reminder.itemId);
+        assert.deepStrictEqual(yield* armed(), [{ nextRunAt: Date.parse("2026-11-09T16:09:12Z") }]);
       }).pipe(Effect.provide(toolkit));
     }).pipe(
       Effect.provide(

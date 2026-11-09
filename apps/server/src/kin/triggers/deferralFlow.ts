@@ -138,7 +138,7 @@ const make = Effect.gen(function* () {
       Effect.map((rows) => rows[0]),
     );
   const readItem = (orgId: KinOrgId, itemId: KinMemoryItemId) =>
-    memory.readItemQuietly(orgId, itemId).pipe(
+    memory.readItemQuietly(orgId, itemId, "triggers").pipe(
       Effect.map((item): MemoryItemHead | undefined => item.head),
       Effect.catchTags({
         MemoryNotFound: () => Effect.undefined,
