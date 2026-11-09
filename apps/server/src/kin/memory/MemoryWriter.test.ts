@@ -582,6 +582,10 @@ it.live.each([
         "/claims/a.md",
         "claims/.git/a.md",
         "claims/../../a.md",
+        // Paths memory-check refuses in Kin's unowned folders.
+        "deferrals/a.b.md",
+        "deferrals/nested/a.md",
+        "deferrals/CLAUDE.md",
       ]) {
         expect(
           (yield* writer
