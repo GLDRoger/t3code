@@ -18,6 +18,7 @@ import {
   type KinApprovalsRegisterKeyResult,
   type KinKeyThumbprint,
   type KinOrgId,
+  type KinPersonId,
 } from "@t3tools/contracts";
 import { computeDpopJwkThumbprint } from "@t3tools/shared/dpop";
 import { isLocalLoopbackHost } from "@t3tools/shared/hostClassification";
@@ -179,6 +180,10 @@ export class ApproverKeys extends Context.Service<
     readonly reconcileSessions: (
       orgId: KinOrgId | undefined,
     ) => Effect.Effect<number, KinApprovalError>;
+    /** People holding an `active` key in the org: the only ones approval pushes reach. */
+    readonly activeApprovers: (
+      orgId: KinOrgId,
+    ) => Effect.Effect<ReadonlyArray<KinPersonId>, KinApprovalError>;
   }
 >()("t3/kin/approvals/ApproverKeys") {}
 
@@ -530,6 +535,16 @@ const make = Effect.gen(function* () {
     Effect.catch(internal("ApproverKeys.activateByGrant")),
   );
 
+  const activeApprovers = Effect.fn("ApproverKeys.activeApprovers")(
+    function* (orgId: KinOrgId) {
+      yield* reconcileSessions(orgId);
+      const rows = yield* sql<{ human_id: KinPersonId }>`SELECT DISTINCT human_id
+        FROM kin_approver_keys WHERE org_id = ${orgId} AND state = 'active' ORDER BY human_id`;
+      return rows.map((row) => row.human_id);
+    },
+    Effect.catch(internal("ApproverKeys.activeApprovers")),
+  );
+
   yield* reconcileSessions(undefined).pipe(
     Effect.catch((error) => Effect.logError("Kin approver key reconciliation failed.", error)),
   );
@@ -544,6 +559,7 @@ const make = Effect.gen(function* () {
     requireActive,
     activateByGrant,
     reconcileSessions,
+    activeApprovers,
   });
 });
 

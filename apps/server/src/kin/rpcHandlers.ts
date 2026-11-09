@@ -6,6 +6,7 @@ import type { AuthenticatedSession } from "../auth/EnvironmentAuth.ts";
 import { makeKinApprovalHandlers } from "./approvals/rpcHandlers.ts";
 import { makeKinChatHandlers } from "./chat/rpcHandlers.ts";
 import { KinServer } from "./KinServer.ts";
+import { makeKinPushHandlers } from "./push/rpcHandlers.ts";
 import { makeKinWebhookHandlers } from "./triggers/webhookRpcHandlers.ts";
 
 const group = RpcGroup.make(...KinRpcs);
@@ -20,6 +21,7 @@ export const makeKinHandlers = Effect.fn("makeKinHandlers")(function* (
       session,
       Option.flatMap(kin, (kin) => kin.services),
     )),
+    ...(yield* makeKinPushHandlers(session)),
     ...(yield* makeKinWebhookHandlers(session)),
   });
 });

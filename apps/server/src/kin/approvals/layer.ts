@@ -9,11 +9,12 @@ import * as GrantPorts from "./GrantPorts.ts";
 import * as GrantVerifier from "./GrantVerifier.ts";
 import * as PendingActions from "./PendingActions.ts";
 
+// Push routing reads pending actions, so they stay in the layer's output.
 export const layer = GrantVerifier.layer.pipe(
   Layer.provideMerge(ApproverKeys.layer),
+  Layer.provideMerge(PendingActions.layer),
   Layer.provide(
     Layer.mergeAll(
-      PendingActions.layer,
       AttestationTrust.layer.pipe(Layer.provide(FetchHttpClient.layer)),
       GrantPorts.orgRolesLayer,
       GrantPorts.liveTargetsUnconfiguredLayer,

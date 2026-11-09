@@ -77,5 +77,6 @@ export * from "./kinChat.ts";
 export * from "./kinLead.ts";
 export * from "./kinTriggers.ts";
 export * from "./kinApprovals.ts";
+export * from "./kinPush.ts";
 
 export * from "./kinRpcs.ts";

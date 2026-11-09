@@ -11,6 +11,7 @@ import {
 } from "./kinLead.ts";
 import { KinApprovalRpcs, KIN_APPROVAL_RPC_SCOPES } from "./kinApprovals.ts";
 import { KinChatError, KinChatRpcs, KIN_CHAT_RPC_SCOPES } from "./kinChat.ts";
+import { KinPushRpcs, KIN_PUSH_RPC_SCOPES } from "./kinPush.ts";
 import {
   KinGithubWebhookOrgInput,
   KinGithubWebhookSecretInput,
@@ -66,10 +67,12 @@ export const KinRpcs = [
   ...KinChatAndBudgetRpcs,
   ...KinApprovalRpcs,
   ...KinGithubWebhookRpcs,
+  ...KinPushRpcs,
 ] as const;
 export const KIN_RPC_SCOPES = {
   ...KIN_CHAT_RPC_SCOPES,
   ...KIN_APPROVAL_RPC_SCOPES,
+  ...KIN_PUSH_RPC_SCOPES,
   "kin.budget.get": AuthOrchestrationReadScope,
   "kin.budget.set": AuthSettingsWriteScope,
   "kin.org.get": AuthOrchestrationReadScope,
@@ -108,6 +111,9 @@ export const KIN_RPC_AGGREGATES = {
   "kin.approvals.revokeKey": "kin-approvals",
   "kin.audit.list": "kin-approvals",
   "kin.audit.verify": "kin-approvals",
+  "kin.push.registerDevice": "kin-push",
+  "kin.push.unregisterDevice": "kin-push",
+  "kin.push.watch": "kin-push",
   "kin.webhooks.github.setup": "kin-webhooks",
   "kin.webhooks.github.setSecret": "kin-webhooks",
   "kin.webhooks.github.rotate": "kin-webhooks",

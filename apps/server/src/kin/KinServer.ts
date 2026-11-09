@@ -11,6 +11,9 @@ import { ApproverKeys } from "./approvals/ApproverKeys.ts";
 import { GrantVerifier } from "./approvals/GrantVerifier.ts";
 import { KinStop } from "./lead/KinStop.ts";
 import type { KinGithubWebhookLock } from "./triggers/githubWebhooks.ts";
+import type { KinPushDevices } from "./push/KinPushDevices.ts";
+import type { KinPushPresence } from "./push/KinPushPresence.ts";
+import type { KinPushSender } from "./push/KinPushSender.ts";
 
 export type Services =
   | KinIdentity
@@ -21,7 +24,10 @@ export type Services =
   | KinStop
   | KinGithubWebhookLock
   | ApproverKeys
-  | GrantVerifier;
+  | GrantVerifier
+  | KinPushDevices
+  | KinPushPresence
+  | KinPushSender;
 
 export class KinServer extends Context.Service<
   KinServer,

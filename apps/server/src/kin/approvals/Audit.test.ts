@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   AuthSessionId,
   AuthStandardClientScopes,
+  EnvironmentId,
   KinActionId,
   KinEventId,
   KinKeyThumbprint,
@@ -25,6 +26,7 @@ import * as TestClock from "effect/testing/TestClock";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as Kin from "../layer.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { KinAudit, kinAuditHash, layer as auditLayer } from "./Audit.ts";
@@ -528,6 +530,12 @@ describe("kin.audit RPCs", () => {
         Effect.provide(
           Kin.layer.pipe(
             Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+            // Push deep links name the host environment.
+            Layer.provide(
+              Layer.mock(ServerEnvironment.ServerEnvironment)({
+                getEnvironmentId: Effect.succeed(EnvironmentId.make("env_kin")),
+              }),
+            ),
           ),
         ),
       );

@@ -39,6 +39,7 @@ import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
 import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { McpInvocationContext, type McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
+import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as Kin from "../layer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
@@ -153,6 +154,12 @@ const layerWith = <E, R>(pullRequestFacts: Layer.Layer<KinPullRequestFacts, E, R
     Layer.provideMerge(
       Kin.layer.pipe(
         Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+        // Push deep links name the host environment.
+        Layer.provide(
+          Layer.mock(ServerEnvironment.ServerEnvironment)({
+            getEnvironmentId: Effect.succeed(EnvironmentId.make("env_kin")),
+          }),
+        ),
       ),
     ),
     Layer.provideMerge(Layer.mergeAll(KinChatRepository.layer, KinEventQueue.layer)),

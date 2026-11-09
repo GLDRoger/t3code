@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 
 import * as Kin from "./kinChat.ts";
 import { KinCheckRun } from "./kinApprovals.ts";
+import { KinPushRegisterDeviceInput } from "./kinPush.ts";
 
 const at = "2026-11-07T00:00:00.000Z";
 const person = {
@@ -268,6 +269,16 @@ describe("Kin chat contracts", () => {
       value: { ...task, [field]: "a\u0000b" },
     })),
     { schema: KinCheckRun, value: { name: "a\u0000b", required: true, status: "passed" } },
+    {
+      schema: KinPushRegisterDeviceInput,
+      value: {
+        orgId: "org",
+        token: "a".repeat(64),
+        platform: "ios",
+        apsEnvironment: "production",
+        deviceLabel: "a\u0000b",
+      },
+    },
   ])("rejects NUL text %#", ({ schema, value }) => {
     const codec: Schema.Codec<unknown> = schema;
     expect(() => Schema.decodeSync(codec)(value)).toThrow();

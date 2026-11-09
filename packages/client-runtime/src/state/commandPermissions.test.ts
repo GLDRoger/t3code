@@ -17,6 +17,7 @@ import {
   AuthSourceControlWriteScope,
   ThreadId,
   EnvironmentId,
+  KIN_PUSH_WS_METHODS,
   ORCHESTRATION_V2_WS_METHODS,
   ScheduledTaskId,
   WS_METHODS,
@@ -95,6 +96,32 @@ describe("command permissions", () => {
         );
       }),
     ),
+  );
+  it.effect.each(Object.values(KIN_PUSH_WS_METHODS))(
+    "requires the destination read grant for %s",
+    (method) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const registry = yield* setup;
+          const push = createCommandPermissions(runtime, method);
+          registry.set(sessions(env), AsyncResult.success(grant(true)));
+          expect(registry.get(push.permissionAtom(env))).toBe(false);
+          registry.set(
+            sessions(env),
+            AsyncResult.success({
+              ...grant(false),
+              scopes: [AuthOrchestrationReadScope],
+              permissions: [AuthOrchestrationReadScope],
+            }),
+          );
+          expect(registry.get(push.permissionAtom(env))).toBe(true);
+          yield* push.authorize(registry, env);
+          registry.set(sessions(other), AsyncResult.success(grant(false)));
+          expect((yield* push.authorize(registry, other).pipe(Effect.flip))._tag).toBe(
+            "EnvironmentAuthorizationError",
+          );
+        }),
+      ),
   );
   it.effect("guards the Kin stop switch with the destination operate grant", () =>
     Effect.scoped(
