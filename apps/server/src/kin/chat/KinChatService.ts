@@ -11,6 +11,7 @@ import {
   KinWaitingId,
   KinWidgetId,
   KinOwnerCheckCard,
+  KinDeferralCard,
   KinMessagesSendInput,
   KinWidgetsActInput,
   KinAgentIntent,
@@ -51,6 +52,7 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { validateState } from "../widgets/registry.ts";
 import { deferralCardActions, deferralCardActionsReady } from "../widgets/deferralCard.ts";
 import * as ChoiceCard from "../widgets/choiceCard.ts";
+import { undoDeferral } from "../triggers/KinTriggerService.ts";
 import * as Hub from "./KinChatHub.ts";
 import { KinPresence } from "../reply/KinPresence.ts";
 import * as Repository from "./KinChatRepository.ts";
@@ -199,6 +201,7 @@ const decodeWaitingId = Schema.decodeEffect(KinWaitingId);
 const decodeSend = Schema.decodeEffect(KinMessagesSendInput);
 const decodeIntent = Schema.decodeEffect(KinAgentIntent);
 const decodeOwnerCheckCard = Schema.decodeUnknownEffect(KinOwnerCheckCard);
+const decodeDeferralCard = Schema.decodeUnknownEffect(KinDeferralCard);
 const decodeAct = Schema.decodeEffect(KinWidgetsActInput);
 const encodeAction = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const invalidState = new KinChatError({ reason: "invalid_state", message: "Invalid chat input." });
@@ -1217,14 +1220,15 @@ const make = Effect.gen(function* () {
         )
           return yield* invalidState;
       }
-      if (widget.type === "deferral") {
-        if (member.role !== "owner") return yield* notAllowed;
-        if (
+      // Any writing member of the card's chat may undo; the other taps wait on the dispatcher.
+      if (
+        widget.type === "deferral" &&
+        request.actionId !== "undo" &&
+        (member.role !== "owner" ||
           !deferralCardActionsReady ||
-          !deferralCardActions.some((action) => action === request.actionId)
-        )
-          return yield* notAllowed;
-      }
+          !deferralCardActions.some((action) => action === request.actionId))
+      )
+        return yield* notAllowed;
       const choice =
         widget.type === "choice" ? yield* ChoiceCard.readChoice(widget, request) : null;
       const body = yield* encodeAction({
@@ -1255,6 +1259,36 @@ const make = Effect.gen(function* () {
           message: "Widget revision changed.",
         });
       if (widget.closedAt !== null) return yield* invalidState;
+      if (widget.type === "deferral" && request.actionId === "undo") {
+        const card = yield* decodeDeferralCard(widget.state).pipe(
+          Effect.mapError(() => invalidState),
+        );
+        if (card.phase !== undefined || card.itemId !== request.value) return yield* invalidState;
+        const undone = yield* undoDeferral({
+          orgId: identity.orgId,
+          itemId: card.itemId,
+          dueAt: Date.parse(card.dueAt),
+          now: yield* Clock.currentTimeMillis,
+        }).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.mapError(toPersistenceSqlError("KinChatService.undoDeferral")),
+        );
+        if (!undone)
+          return yield* new KinChatError({
+            reason: "invalid_state",
+            message: "Too late to undo: Kin already acted on this deferral.",
+          });
+        const at = yield* now;
+        const closed = yield* repo.updateWidget({
+          ...widget,
+          expectedRevision: widget.revision,
+          closedAt: at,
+          updatedAt: at,
+        });
+        yield* sql.afterCommit(
+          hub.publish({ type: "widget.updated", orgId: identity.orgId, widget: closed }),
+        );
+      }
       const answer =
         choice === null
           ? null

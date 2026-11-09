@@ -160,7 +160,7 @@ export const KinDeferralCard = Schema.Struct({
   dueAt: Schema.toEncoded(CanonicalUtcTimestamp),
   onDue: Schema.Literals(["remind", "start", "ask", "chase"]),
   text: Schema.String,
-  // Absent on the confirm card ([Change] [Just remind me]); heads_up and asked offer
+  // Absent on the confirm card ([Undo] [Change] [Just remind me]); heads_up and asked offer
   // [Start now] [Monday] [Cancel]; started offers nothing.
   phase: Schema.optional(Schema.Literals(["heads_up", "asked", "started"])),
   graceEndsAt: Schema.optional(Schema.toEncoded(CanonicalUtcTimestamp)),
@@ -169,6 +169,7 @@ export type KinDeferralCard = typeof KinDeferralCard.Type;
 
 /** What a deferral card's buttons post as `actionId`, each with the item id as `value`. */
 export const KIN_DEFERRAL_CARD_ACTIONS = [
+  "undo",
   "change",
   "remind",
   "start_now",
