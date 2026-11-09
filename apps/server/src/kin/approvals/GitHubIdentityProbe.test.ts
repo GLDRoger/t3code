@@ -1162,6 +1162,11 @@ describe("GitHubIdentityProbe", () => {
       { gitFor: () => answer({ exitCode: 1, stderr: "keychain locked" }) },
       "git_credential: git credential fill exited 1",
     ],
+    [
+      "the helper answers for the owner's username without a password",
+      { gitFor: () => answer({ stdout: "protocol=https\nhost=github.com\nusername=Nishchay\n" }) },
+      "git_credential: the helper answered without a password",
+    ],
     // git: keys only the repository allowlist refuses in the host's config.
     ...(
       [
@@ -1287,6 +1292,24 @@ describe("GitHubIdentityProbe", () => {
         // The same reason reaches the report, and so the audit entry and the owner's chat.
         assert.deepStrictEqual(report.reasons, [String(error.cause)]);
         assert.include(credentialCheckBody(ORG, report), String(error.cause));
+      }),
+    ),
+  );
+
+  it.effect("runs the first executable ssh on PATH for every probe", () =>
+    run(
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const { identities, runs, bin } = yield* probe({
+          ...botMachine(),
+          env: { PATH: "<root>/noexec:<bin>" },
+          // Not executable, so ssh wouldn't run it.
+          files: { ...botMachine().files, "../noexec/ssh": "#!/bin/sh\n" },
+        });
+        yield* identities;
+        const ssh = runs.filter((input) => path.basename(input.command) === "ssh");
+        assert.isAbove(ssh.length, 2);
+        for (const input of ssh) assert.strictEqual(input.command, path.join(bin, "ssh"));
       }),
     ),
   );
