@@ -3,7 +3,7 @@ import {
   LegendList,
   type LegendListRef,
   type OnViewableItemsChangedInfo,
-  type ViewabilityConfig,
+  type ViewabilityConfigCallbackPairs,
 } from "@legendapp/list/react-native";
 import {
   StackActions,
@@ -376,8 +376,12 @@ function KinChatStateView(props: {
 }
 
 const offlineTime = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
-// A row half on screen counts as seen, so a message peeking under the edge still lights the pill.
-const SEEN_ROW_CONFIG: ViewabilityConfig = { itemVisiblePercentThreshold: 50 };
+// A row counts as seen once half of it shows, or once it fills half the screen: a message taller
+// than two screens never shows half of itself. A row peeking under the edge still lights the pill.
+const SEEN_ROW_CONFIGS = [
+  { id: "kin-seen-row", itemVisiblePercentThreshold: 50 },
+  { id: "kin-seen-area", viewAreaCoveragePercentThreshold: 50 },
+] as const;
 
 function KinChatFeed(props: {
   readonly chatId: KinChatId;
@@ -490,13 +494,17 @@ function KinChatFeed(props: {
   };
 
   const checkEnd = () => {
-    transition({ type: "end-check", isAtEnd: listRef.current?.getState().isAtEnd ?? true });
+    const isAtEnd = listRef.current?.getState().isAtEnd ?? true;
+    if (isAtEnd !== follow.atEnd) transition({ type: "end-check", isAtEnd });
   };
 
   const markSeen = ({ viewableItems }: OnViewableItemsChangedInfo<KinFeedRow>) => {
     const seq = Math.max(0, ...viewableItems.map((token) => kinRowSeq(token.item)));
     if (seq > 0) transition({ type: "seen", seq });
   };
+  const seenPairs: ViewabilityConfigCallbackPairs<KinFeedRow> = SEEN_ROW_CONFIGS.map(
+    (viewabilityConfig) => ({ viewabilityConfig, onViewableItemsChanged: markSeen }),
+  );
 
   const jumpToEnd = () => {
     transition({ type: "jump-to-end" });
@@ -622,8 +630,7 @@ function KinChatFeed(props: {
           }
           maintainVisibleContentPosition={followsEnd ? false : { data: true, size: true }}
           onScroll={checkEnd}
-          viewabilityConfig={SEEN_ROW_CONFIG}
-          onViewableItemsChanged={markSeen}
+          viewabilityConfigCallbackPairs={seenPairs}
           onScrollBeginDrag={() => transition({ type: "drag-begin" })}
           onScrollEndDrag={checkEnd}
           onMomentumScrollEnd={checkEnd}
