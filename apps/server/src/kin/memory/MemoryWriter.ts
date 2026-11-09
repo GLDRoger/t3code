@@ -361,11 +361,11 @@ const make = Effect.gen(function* () {
           p.includes(":"),
       ) ||
       /[\x00-\x1f]/.test(relative) ||
-      (!(generated && relative === "INDEX.md") &&
-        ![...folders, "journal"].includes(parts[0] ?? "")) ||
-      kinShapeFailure(relative) !== undefined
+      (!(generated && relative === "INDEX.md") && ![...folders, "journal"].includes(parts[0] ?? ""))
     )
       return yield* new MemoryWriteRejected({ reason: "Disallowed memory path" });
+    const shape = kinShapeFailure(relative);
+    if (shape !== undefined) return yield* new MemoryWriteRejected({ reason: shape });
     let current = writer;
     for (const part of parts) {
       current += `/${part}`;
