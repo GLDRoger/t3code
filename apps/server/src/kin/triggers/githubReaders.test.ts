@@ -125,6 +125,7 @@ const setup = (
     KinGitHubApp.KinGitHubApp.of({
       app: Effect.die("unused"),
       installations: Effect.die("unused"),
+      patchHookConfig: () => Effect.die("unused"),
       installationToken: (input) => {
         mints.push(input);
         return Effect.succeed({

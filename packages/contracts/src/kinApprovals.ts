@@ -374,6 +374,7 @@ export const KinAuditEvent = Schema.Literals([
   "execution_started",
   "execution_finished",
   "execution_reconciled",
+  "execution_held",
   "key_registered",
   "key_confirmed",
   "key_revoked",

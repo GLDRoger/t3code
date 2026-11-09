@@ -78,6 +78,31 @@ export const effectiveLevel = Effect.fn("KinLevels.effectiveLevel")(function* (i
   return atLeast(chat, lead) ? lead : chat;
 });
 
+/**
+ * Records a new lead at L0, the only level a lead starts at. The owner chat must be a direct chat
+ * in the same org. False when the agent already has a lead row.
+ */
+export const insertLeadAtL0 = Effect.fn("KinLevels.insertLeadAtL0")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+  readonly name: string;
+  readonly since: number;
+  readonly modelsJson: string;
+  readonly workerProjectsJson: string;
+  readonly ownerChatId: KinChatId;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const inserted = yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since,
+      models_json, worker_projects_json, owner_chat_id)
+    SELECT ${input.agentId}, ${input.orgId}, ${input.name}, 'L0', ${input.since}, ${input.modelsJson},
+      ${input.workerProjectsJson}, c.chat_id
+    FROM kin_chats c WHERE c.org_id = ${input.orgId} AND c.chat_id = ${input.ownerChatId} AND c.kind = 'direct'
+    ON CONFLICT (agent_id) DO NOTHING RETURNING agent_id`.pipe(
+    Effect.mapError(toPersistenceSqlError("KinLevels.insertLeadAtL0")),
+  );
+  return inserted.length > 0;
+});
+
 export interface ShadowEntry {
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;

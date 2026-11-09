@@ -1,3 +1,4 @@
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
@@ -155,6 +156,12 @@ export const repoPath = (repo: string) => {
   return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
 };
 
+/**
+ * Owner writes give up after this, and the caller treats the silence as "may have landed".
+ * GitHub's own edge gives up on a request after about 10 seconds.
+ */
+export const OWNER_WRITE_TIMEOUT: Duration.Input = "30 seconds";
+
 export interface GitHubAnswer {
   readonly status: number;
   readonly headers: Readonly<Record<string, string | undefined>>;
@@ -171,6 +178,8 @@ export const gitHubAnswer = Effect.fn("KinGitHub.answer")(function* (input: {
   readonly path: string;
   readonly token: Redacted.Redacted<string>;
   readonly body?: unknown;
+  /** For the whole answer, body included. A timeout fails like a lost connection: `transport`. */
+  readonly timeout?: Duration.Input;
 }) {
   yield* Effect.annotateCurrentSpan({ "kin.github.operation": input.operation });
   const fail = () => new KinGitHubRequestError({ operation: input.operation, stage: "transport" });
@@ -178,8 +187,17 @@ export const gitHubAnswer = Effect.fn("KinGitHub.answer")(function* (input: {
   if (input.body !== undefined) {
     request = yield* HttpClientRequest.bodyJson(request, input.body).pipe(Effect.mapError(fail));
   }
-  const response = yield* input.client.execute(request).pipe(Effect.mapError(fail));
-  const body: unknown = yield* response.json.pipe(Effect.orElseSucceed(() => null));
+  const answered = Effect.gen(function* () {
+    const response = yield* input.client.execute(request).pipe(Effect.mapError(fail));
+    const body: unknown = yield* response.json.pipe(Effect.orElseSucceed(() => null));
+    return { response, body };
+  });
+  // The timeout covers the body too: a stalled body is as silent as no answer.
+  const { response, body } = yield* input.timeout === undefined
+    ? answered
+    : answered.pipe(
+        Effect.timeoutOrElse({ duration: input.timeout, orElse: () => Effect.fail(fail()) }),
+      );
   const message =
     typeof body === "object" &&
     body !== null &&

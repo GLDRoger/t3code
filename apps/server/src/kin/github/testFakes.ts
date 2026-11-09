@@ -54,6 +54,10 @@ export interface RecordedRequest {
 }
 
 export interface FakeAnswer {
+  /** Never answers, like a connection GitHub leaves open. */
+  readonly hang?: true;
+  /** Sends the status and headers, then never the body. */
+  readonly stallBody?: true;
   readonly status: number;
   readonly body?: unknown;
   readonly headers?: Record<string, string>;
@@ -77,13 +81,21 @@ export const fakeGitHub = (route: (request: RecordedRequest) => FakeAnswer) => {
       };
       requests.push(recorded);
       const answer = route(recorded);
+      if (answer.hang === true) return Effect.never;
       return Effect.succeed(
         HttpClientResponse.fromWeb(
           request,
-          new Response(answer.body === undefined ? null : JSON.stringify(answer.body), {
-            status: answer.status,
-            headers: { "content-type": "application/json", ...answer.headers },
-          }),
+          new Response(
+            answer.stallBody === true
+              ? new ReadableStream()
+              : answer.body === undefined
+                ? null
+                : JSON.stringify(answer.body),
+            {
+              status: answer.status,
+              headers: { "content-type": "application/json", ...answer.headers },
+            },
+          ),
         ),
       );
     }),

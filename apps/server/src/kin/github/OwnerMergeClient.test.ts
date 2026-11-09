@@ -4,6 +4,7 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
@@ -153,7 +154,11 @@ describe("OwnerMergeClient", () => {
       yield* TestClock.adjust("60 seconds");
       assert.isTrue(Exit.isSuccess(yield* client.token(fresh).pipe(Effect.exit)));
       yield* TestClock.adjust("1 millis");
-      assert.isTrue(Exit.hasDies(yield* client.token(fresh).pipe(Effect.exit)));
+      // Typed, so the executor ends the action `failed`: nothing was sent.
+      assert.deepInclude(yield* client.token(fresh).pipe(Effect.flip), {
+        _tag: "OwnerMergePassStaleError",
+        ageMs: 60_001,
+      });
       assert.throws(() => {
         (fresh.report as { checkedAt: unknown }).checkedAt = NOW + DAY;
       });
@@ -360,6 +365,59 @@ describe("OwnerMergeClient", () => {
       const error = yield* save().pipe(Effect.flip);
       assert.deepInclude(error, { _tag: "OwnerMergeTokenRefusedError", reason: "no_repos" });
       assert.strictEqual(keychain.items.size, 0);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("writes only to the Kin repositories, with the exact SHA", () => {
+    const { requests, layer } = setup(narrowToken(inThirtyDays));
+    return Effect.gen(function* () {
+      yield* save();
+      const client = yield* OwnerMergeClient.OwnerMergeClient;
+      const fresh = yield* withHygiene(pass);
+      const before = requests.length;
+      for (const answer of [
+        yield* client.merge(fresh, {
+          repo: "someone/else",
+          number: 1,
+          sha: "a".repeat(40),
+          mergeMethod: "squash",
+        }),
+        yield* client.deleteBranch(fresh, { repo: "someone/else", branch: "main" }),
+      ]) {
+        assert.deepInclude(answer, { _tag: "refused", reason: "denied" });
+      }
+      assert.strictEqual(requests.length, before);
+      yield* client.merge(fresh, {
+        repo: REPOS[0]!,
+        number: 7,
+        sha: "a".repeat(40),
+        mergeMethod: "merge",
+      });
+      assert.deepInclude(requests.at(-1), {
+        method: "PUT",
+        path: `/repos/${REPOS[0]}/pulls/7/merge`,
+        authorization: `Bearer ${Redacted.value(TOKEN)}`,
+        body: { sha: "a".repeat(40), merge_method: "merge" },
+      });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("a write whose answer body never arrives may have landed", () => {
+    const merge = `/repos/${REPOS[0]}/pulls/7/merge`;
+    const { layer } = setup((request) =>
+      request.path === merge
+        ? { status: 200, stallBody: true }
+        : narrowToken(inThirtyDays)(request),
+    );
+    return Effect.gen(function* () {
+      yield* save();
+      const client = yield* OwnerMergeClient.OwnerMergeClient;
+      const fresh = yield* withHygiene(pass);
+      const running = yield* client
+        .merge(fresh, { repo: REPOS[0]!, number: 7, sha: "a".repeat(40), mergeMethod: "merge" })
+        .pipe(Effect.forkChild);
+      yield* TestClock.adjust("30 seconds");
+      assert.deepStrictEqual(yield* Fiber.join(running), { _tag: "unknown" });
     }).pipe(Effect.provide(layer));
   });
 

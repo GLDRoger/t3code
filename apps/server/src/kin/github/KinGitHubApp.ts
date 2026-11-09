@@ -141,6 +141,16 @@ export class KinGitHubApp extends Context.Service<
       readonly permissions: KinGitHubPermissionSet;
       readonly holder: KinGitHubTokenHolder;
     }) => Effect.Effect<KinInstallationToken, KinGitHubAppError>;
+    /**
+     * `PATCH /app/hook/config`, signed with the App JWT: points the App's own webhook (the
+     * triggers spec's `github.app_hook.configure`). The secret is sent and never logged.
+     */
+    readonly patchHookConfig: (body: {
+      readonly url: string;
+      readonly content_type: "json";
+      readonly insecure_ssl: "0";
+      readonly secret?: Redacted.Redacted<string>;
+    }) => Effect.Effect<void, KinGitHubAppError>;
   }
 >()("t3/kin/github/KinGitHubApp") {}
 
@@ -316,7 +326,30 @@ const make = Effect.gen(function* () {
     } satisfies KinInstallationToken;
   });
 
-  return KinGitHubApp.of({ app, installations, installationToken });
+  const patchHookConfig = Effect.fn("KinGitHubApp.patchHookConfig")(function* (body: {
+    readonly url: string;
+    readonly content_type: "json";
+    readonly insecure_ssl: "0";
+    readonly secret?: Redacted.Redacted<string>;
+  }) {
+    yield* gitHubJson({
+      client,
+      operation: "apps.updateWebhookConfig",
+      method: "PATCH",
+      path: "/app/hook/config",
+      token: yield* jwt,
+      body: {
+        url: body.url,
+        content_type: body.content_type,
+        insecure_ssl: body.insecure_ssl,
+        ...(body.secret === undefined ? {} : { secret: Redacted.value(body.secret) }),
+      },
+      // GitHub echoes the config with the secret masked; nothing in it is needed.
+      schema: Schema.Unknown,
+    });
+  });
+
+  return KinGitHubApp.of({ app, installations, installationToken, patchHookConfig });
 });
 
 export const layer = Layer.effect(KinGitHubApp, make);

@@ -45,9 +45,11 @@ import {
 } from "./GrantPorts.ts";
 import { GrantVerifier, layer as grantVerifierLayer } from "./GrantVerifier.ts";
 import {
+  KinExecutionLedger,
   KinPendingActions,
   kinTargetDigest,
   layer as pendingActionsLayer,
+  ledgerLayer,
   type KinPendingActionCreateInput,
 } from "./PendingActions.ts";
 
@@ -146,7 +148,7 @@ function harness() {
   const on = <A, E, R>(database: Layer.Layer<A, E, R>) =>
     grantVerifierLayer.pipe(
       Layer.provideMerge(approverKeysLayer),
-      Layer.provideMerge(pendingActionsLayer),
+      Layer.provideMerge(Layer.merge(pendingActionsLayer, ledgerLayer)),
       Layer.provide(Layer.mergeAll(trust, roles, live, grantAuditLayer)),
       Layer.provideMerge(recordingAudit),
       Layer.provideMerge(Layer.provideMerge(KinPersistence.layer, database)),
@@ -176,7 +178,7 @@ const seed = Effect.gen(function* () {
   return {
     sql,
     keys: yield* ApproverKeys,
-    actions: yield* KinPendingActions,
+    actions: { ...(yield* KinPendingActions), ...(yield* KinExecutionLedger) },
     grants: yield* GrantVerifier,
   };
 });

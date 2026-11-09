@@ -24,6 +24,7 @@ import WebhookSecretHash from "./migrations/K019_WebhookSecretHash.ts";
 import Approvals from "./migrations/K020_Approvals.ts";
 import PushDevices from "./migrations/K021_PushDevices.ts";
 import ChatLevels from "./migrations/K022_ChatLevels.ts";
+import ExecutionWriteStarted from "./migrations/K023_ExecutionWriteStarted.ts";
 
 const table = "kin_sql_migrations";
 const run = Migrator.make({});
@@ -50,6 +51,7 @@ const loader = Migrator.fromRecord({
   "20_Approvals": Approvals,
   "21_PushDevices": PushDevices,
   "22_ChatLevels": ChatLevels,
+  "23_ExecutionWriteStarted": ExecutionWriteStarted,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

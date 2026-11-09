@@ -267,6 +267,12 @@ const services = Layer.mergeAll(KinTriggerStore.layer, KinTriggerInbox.layer).pi
 const ownerSecret = Redacted.make("owner-secret-from-github-app");
 
 describe("KinGithubWebhooks", () => {
+  it.effect("keeps the App hook gate closed unless something opens it", () =>
+    Effect.gen(function* () {
+      assert.isFalse(yield* GithubWebhooks.AppHookConfigureGate);
+    }),
+  );
+
   it.effect(
     "creates the App source unbound and signed, then routes signed deliveries to the inbox only",
     () =>
