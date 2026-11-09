@@ -34,6 +34,8 @@ export const KinWidgetId = TrimmedNonEmptyString.pipe(Schema.brand("KinWidgetId"
 export type KinWidgetId = typeof KinWidgetId.Type;
 export const KinWaitingId = TrimmedNonEmptyString.pipe(Schema.brand("KinWaitingId"));
 export type KinWaitingId = typeof KinWaitingId.Type;
+export const KinWakeupId = TrimmedNonEmptyString.pipe(Schema.brand("KinWakeupId"));
+export type KinWakeupId = typeof KinWakeupId.Type;
 
 // Markdown keeps its whitespace, so this checks non-blank without trimming.
 const isNonBlankBody = Schema.makeFilter((value: string) => value.trim().length > 0, {
@@ -175,8 +177,89 @@ export const KinNativeCardType = Schema.Literals([
   "checklist",
   "form",
   "date",
+  "choice",
 ]);
 export type KinNativeCardType = typeof KinNativeCardType.Type;
+
+/** The fixed reaction set: two yes, two no, two feelings. */
+export const KIN_REACTION_EMOJI = ["👍", "✅", "👎", "❌", "❤️", "👀"] as const;
+export const KinReactionEmoji = Schema.Literals(KIN_REACTION_EMOJI);
+export type KinReactionEmoji = typeof KinReactionEmoji.Type;
+export const KIN_YES_REACTIONS = ["👍", "✅"] as const satisfies ReadonlyArray<KinReactionEmoji>;
+export const KIN_NO_REACTIONS = ["👎", "❌"] as const satisfies ReadonlyArray<KinReactionEmoji>;
+
+export const KinReaction = Schema.Struct({
+  orgId: KinOrgId,
+  chatId: KinChatId,
+  messageId: KinMessageId,
+  memberId: KinMemberId,
+  emoji: KinReactionEmoji,
+  createdAt: IsoDateTime,
+  // Set when the member withdrew it; stream consumers drop the reaction.
+  removedAt: Schema.NullOr(IsoDateTime),
+});
+export type KinReaction = typeof KinReaction.Type;
+
+export const KinChoiceOption = Schema.Struct({
+  optionId: KinTrimmedText.check(Schema.isMaxLength(40)),
+  label: KinTrimmedText.check(Schema.isMaxLength(80)),
+  // Marks the yes/no pair a 👍/👎 reaction can answer.
+  kind: Schema.optional(Schema.Literals(["yes", "no"])),
+});
+export type KinChoiceOption = typeof KinChoiceOption.Type;
+/** A `choice` card's buttons post `actionId: "choose"` with the option id as `value`. */
+export const KIN_CHOICE_CARD_ACTION = "choose";
+export const KinChoiceCardState = Schema.Struct({
+  question: KinTrimmedText.check(Schema.isMaxLength(240)),
+  detail: Schema.NullOr(KinText.check(Schema.isMaxLength(2000))),
+  options: Schema.Array(KinChoiceOption).check(Schema.isMinLength(2), Schema.isMaxLength(4)),
+  // The first answer settles the card.
+  answer: Schema.NullOr(
+    Schema.Struct({
+      optionId: KinTrimmedText,
+      personId: KinPersonId,
+      via: Schema.Literals(["tap", "reaction"]),
+      emoji: Schema.NullOr(KinReactionEmoji),
+      answeredAt: IsoDateTime,
+    }),
+  ),
+});
+export type KinChoiceCardState = typeof KinChoiceCardState.Type;
+
+export const KinPresenceState = Schema.Literals([
+  "seen",
+  "starting",
+  "thinking",
+  "working",
+  "writing",
+  "stalled",
+  "paused",
+  "deferred",
+]);
+export type KinPresenceState = typeof KinPresenceState.Type;
+/**
+ * One agent's live status line in a chat. Never persisted. Clients render it statically and
+ * keep their own elapsed timer from `startedAt` (wake-up start) and `since` (state start; for
+ * `stalled`, the last output).
+ */
+export const KinPresence = Schema.Struct({
+  agentId: KinAgentId,
+  wakeupId: Schema.NullOr(KinWakeupId),
+  state: KinPresenceState,
+  // A fixed label ("Checking memory"), a short note from the agent, or a refusal
+  // ("Couldn't post: notice limit"), at most 60 characters.
+  label: Schema.NullOr(KinText.check(Schema.isMaxLength(60))),
+  startedAt: IsoDateTime,
+  since: IsoDateTime,
+});
+export type KinPresence = typeof KinPresence.Type;
+/** An agent reply still streaming. `text` in a backlog is the whole draft so far. */
+export const KinDraft = Schema.Struct({
+  draftId: TrimmedNonEmptyString,
+  agentId: KinAgentId,
+  text: KinText,
+});
+export type KinDraft = typeof KinDraft.Type;
 
 export const KinWidget = Schema.Struct({
   orgId: KinOrgId,
@@ -263,6 +346,10 @@ export const KinChatStreamEvent = Schema.Union([
     widgets: Schema.Array(KinWidget),
     lastSeq: NonNegativeInt,
     lastChangeSeq: Schema.optional(NonNegativeInt),
+    // Live reactions on the backlog's messages; absent from servers without reactions.
+    reactions: Schema.optional(Schema.Array(KinReaction)),
+    presence: Schema.optional(Schema.Array(KinPresence)),
+    drafts: Schema.optional(Schema.Array(KinDraft)),
   }),
   Schema.TaggedStruct("reset", {
     lastSeq: NonNegativeInt,
@@ -272,6 +359,20 @@ export const KinChatStreamEvent = Schema.Union([
   Schema.TaggedStruct("widget", { widget: KinWidget }),
   Schema.TaggedStruct("member", { member: KinChatMember }),
   Schema.TaggedStruct("read", { memberId: KinMemberId, seq: NonNegativeInt }),
+  // Appends `text` at `offset`. A client whose draft length isn't `offset` ignores the
+  // deltas until `end`, the durable message, or the next backlog.
+  Schema.TaggedStruct("draft", {
+    draftId: TrimmedNonEmptyString,
+    agentId: KinAgentId,
+    offset: NonNegativeInt,
+    text: KinText,
+    // On the last event: the message it became (sent before this event), or null when the
+    // text was not posted. Drop the draft either way.
+    end: Schema.optional(Schema.Struct({ messageId: Schema.NullOr(KinMessageId) })),
+  }),
+  // Sent on state change only; null clears the agent's line.
+  Schema.TaggedStruct("presence", { agentId: KinAgentId, presence: Schema.NullOr(KinPresence) }),
+  Schema.TaggedStruct("reaction", { reaction: KinReaction }),
 ]);
 export type KinChatStreamEvent = typeof KinChatStreamEvent.Type;
 
@@ -313,6 +414,7 @@ export const KinChatHistoryResult = Schema.Struct({
   messages: Schema.Array(KinMessage),
   widgets: Schema.Array(KinWidget),
   hasMore: Schema.Boolean,
+  reactions: Schema.optional(Schema.Array(KinReaction)),
 });
 export type KinChatHistoryResult = typeof KinChatHistoryResult.Type;
 export const KIN_MESSAGE_BODY_MAX_LENGTH = 16_000;
@@ -336,6 +438,21 @@ export const KinWidgetsActInput = Schema.Struct({
   clientActionId: TrimmedNonEmptyString,
 });
 export type KinWidgetsActInput = typeof KinWidgetsActInput.Type;
+/** Adds (`on: true`) or withdraws the caller's reaction. Agents can't react. */
+export const KinMessagesReactInput = Schema.Struct({
+  messageId: KinMessageId,
+  emoji: KinReactionEmoji,
+  on: Schema.Boolean,
+});
+export type KinMessagesReactInput = typeof KinMessagesReactInput.Type;
+/** Owner-only Stop on a wake-up, from its presence line. */
+export const KinLeadInterruptInput = Schema.Struct({ orgId: KinOrgId, wakeupId: KinWakeupId });
+export type KinLeadInterruptInput = typeof KinLeadInterruptInput.Type;
+export const KinLeadInterruptResult = Schema.Struct({
+  // False when the wake-up had already ended.
+  interrupted: Schema.Boolean,
+});
+export type KinLeadInterruptResult = typeof KinLeadInterruptResult.Type;
 
 export class KinChatError extends Schema.TaggedError<KinChatError>()("KinChatError", {
   reason: Schema.Literals([
@@ -363,6 +480,7 @@ export const KIN_CHAT_WS_METHODS = {
   messagesSend: "kin.messages.send",
   messagesMarkRead: "kin.messages.markRead",
   widgetsAct: "kin.widgets.act",
+  messagesReact: "kin.messages.react",
 } as const;
 
 export const KinChatRpcs = [
@@ -408,6 +526,11 @@ export const KinChatRpcs = [
     success: KinMessage,
     error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
   }),
+  Rpc.make(KIN_CHAT_WS_METHODS.messagesReact, {
+    payload: KinMessagesReactInput,
+    success: KinReaction,
+    error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
+  }),
 ] as const;
 
 export const KIN_CHAT_RPC_SCOPES = {
@@ -419,6 +542,7 @@ export const KIN_CHAT_RPC_SCOPES = {
   [KIN_CHAT_WS_METHODS.messagesSend]: AuthOrchestrationOperateScope,
   [KIN_CHAT_WS_METHODS.messagesMarkRead]: AuthOrchestrationReadScope,
   [KIN_CHAT_WS_METHODS.widgetsAct]: AuthOrchestrationOperateScope,
+  [KIN_CHAT_WS_METHODS.messagesReact]: AuthOrchestrationOperateScope,
 } as const satisfies Record<
   (typeof KIN_CHAT_WS_METHODS)[keyof typeof KIN_CHAT_WS_METHODS],
   AuthEnvironmentScope
