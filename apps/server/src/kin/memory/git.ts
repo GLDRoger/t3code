@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
 import { MemoryConfig } from "./MemoryConfig.ts";
+import { SSH_HARDENING } from "./purgePush.ts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import { VcsProcess } from "../../vcs/VcsProcess.ts";
@@ -96,7 +97,9 @@ export const memoryGit = Effect.fn("Memory.gitHardened")(function* (
           GIT_ASKPASS: "",
           GCM_INTERACTIVE: "never",
           ...env,
-          ...(config?.sshCommand ? { GIT_SSH_COMMAND: config.sshCommand } : {}),
+          ...(config?.sshCommand
+            ? { GIT_SSH_COMMAND: `${config.sshCommand} ${SSH_HARDENING}` }
+            : {}),
         },
         ...(stdin === undefined ? {} : { stdin }),
         ...(onStdoutChunk === undefined ? {} : { onStdoutChunk }),
