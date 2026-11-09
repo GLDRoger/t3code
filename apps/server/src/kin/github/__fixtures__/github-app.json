@@ -1,0 +1,67 @@
+{
+  "app": {
+    "id": 123456,
+    "slug": "kin-gldroger",
+    "node_id": "A_kwDOAAAAAAAAAAAA",
+    "client_id": "Iv23liFakeClientId",
+    "owner": { "login": "GLDRoger", "id": 1, "type": "User" },
+    "name": "Kin",
+    "description": "",
+    "external_url": "https://github.com/GLDRoger/t3code",
+    "html_url": "https://github.com/apps/kin-gldroger",
+    "created_at": "2026-11-08T10:00:00Z",
+    "updated_at": "2026-11-08T10:00:00Z",
+    "permissions": {
+      "actions": "read",
+      "checks": "read",
+      "contents": "write",
+      "issues": "write",
+      "metadata": "read",
+      "pull_requests": "write",
+      "statuses": "read"
+    },
+    "events": [
+      "check_run",
+      "check_suite",
+      "issue_comment",
+      "pull_request",
+      "pull_request_review",
+      "push",
+      "status"
+    ],
+    "installations_count": 1
+  },
+  "installations": [
+    {
+      "id": 77,
+      "account": { "login": "GLDRoger", "id": 1, "type": "User" },
+      "repository_selection": "selected",
+      "access_tokens_url": "https://api.github.com/app/installations/77/access_tokens",
+      "repositories_url": "https://api.github.com/installation/repositories",
+      "app_id": 123456,
+      "app_slug": "kin-gldroger",
+      "target_type": "User",
+      "permissions": {
+        "actions": "read",
+        "checks": "read",
+        "contents": "write",
+        "issues": "write",
+        "metadata": "read",
+        "pull_requests": "write",
+        "statuses": "read"
+      },
+      "events": [
+        "check_run",
+        "check_suite",
+        "issue_comment",
+        "pull_request",
+        "pull_request_review",
+        "push",
+        "status"
+      ],
+      "created_at": "2026-11-08T10:05:00Z",
+      "updated_at": "2026-11-08T10:05:00Z",
+      "suspended_at": null
+    }
+  ]
+}

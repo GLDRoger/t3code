@@ -63,6 +63,22 @@ it.effect.each([
     text: fixtureItem({ quiet_hours: { from: "25:99", to: "morning" } }),
     valid: true,
   },
+  {
+    name: "GitHub condition",
+    text: fixtureItem({
+      on: { event: "pull_request", action: "closed", merged: true, number: 212 },
+    }),
+    valid: true,
+  },
+  ...[
+    { event: "pull_request", action: "closed", number: 0 },
+    { event: "pull_request", action: "closed", number: 212, repo: "not a repo" },
+    { event: "pull_request", action: "closed", number: 212, when: "soon" },
+  ].map((on) => ({
+    name: `invalid condition ${JSON.stringify(on)}`,
+    text: fixtureItem({ on }),
+    valid: false,
+  })),
   { name: "invalid schema", text: fixtureItem({ trust: "administrator" }), valid: false },
   {
     name: "duplicate key",
@@ -85,6 +101,13 @@ it.effect.each([
       }
       if (text.includes("Invalid/Zone")) expect(result.success.frontMatter.tz).toBeUndefined();
       if (text.includes("25:99")) expect(result.success.frontMatter.quiet_hours).toBeUndefined();
+      if (text.includes("pull_request"))
+        expect(result.success.frontMatter.on).toEqual({
+          event: "pull_request",
+          action: "closed",
+          merged: true,
+          number: 212,
+        });
       expect(result.success.body).toBe("Invented fixture body.\n");
     } else {
       expect(result.failure._tag).toBe("MemoryItemError");

@@ -64,6 +64,7 @@ it.live.each([
   "credentials",
   "read-during-record",
   "deferral-card-remind",
+  "deferral-card-monday",
   "deferral-plain-remind",
   "deferral-card-other-item",
   "H3-packed-ref",
@@ -280,22 +281,32 @@ it.live.each([
                           itemId: scenario === "owner-other-item-keep" ? "other-item" : "def-001",
                           action: scenario === "owner-drop-keep" ? "drop" : "keep",
                         }
-                      : scenario === "deferral-card-remind" ||
-                          scenario === "deferral-card-other-item"
+                      : scenario === "deferral-card-monday"
                         ? {
                             saidBy: "fixture-owner",
                             trust: "owner",
                             source: "fixture-owner-message",
                             kind: "deferral_card",
-                            itemId:
-                              scenario === "deferral-card-other-item" ? "other-item" : "def-001",
-                            action: "remind",
+                            itemId: "def-001",
+                            action: "monday",
+                            due: "2026-11-16T09:00:00.000+05:30",
                           }
-                        : {
-                            saidBy: "fixture-owner",
-                            trust: "owner",
-                            source: "fixture-owner-message",
-                          },
+                        : scenario === "deferral-card-remind" ||
+                            scenario === "deferral-card-other-item"
+                          ? {
+                              saidBy: "fixture-owner",
+                              trust: "owner",
+                              source: "fixture-owner-message",
+                              kind: "deferral_card",
+                              itemId:
+                                scenario === "deferral-card-other-item" ? "other-item" : "def-001",
+                              action: "remind",
+                            }
+                          : {
+                              saidBy: "fixture-owner",
+                              trust: "owner",
+                              source: "fixture-owner-message",
+                            },
                   ],
                   [
                     "member",
@@ -651,6 +662,25 @@ it.live.each([
           })
           .pipe(Effect.result);
         expect(result._tag === "Failure" && result.failure._tag).toBe("MemoryConflict");
+        return;
+      }
+      if (scenario === "deferral-card-monday") {
+        const stage = (fields: Record<string, unknown>) =>
+          writer
+            .stage(orgId, "wake1", {
+              path: "deferrals/def-001.md",
+              content: fixtureItem(fields),
+              sourceEventId: "owner",
+            })
+            .pipe(Effect.result);
+        for (const forged of [
+          { due: "2026-11-17T09:00:00.000+05:30" },
+          { due: "2026-11-16T09:00:00.000+05:30", on_due: "remind" },
+        ]) {
+          const result = yield* stage(forged);
+          expect(result._tag === "Failure" && result.failure._tag).toBe("MemoryConflict");
+        }
+        expect((yield* stage({ due: "2026-11-16T09:00:00.000+05:30" }))._tag).toBe("Success");
         return;
       }
       if (scenario === "deferral-card-remind") {

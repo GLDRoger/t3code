@@ -538,6 +538,10 @@
     "./provider-instance-ids": {
       "types": "./src/providerInstanceIds.ts",
       "default": "./src/providerInstanceIds.ts"
+    },
+    "./kin-push": {
+      "types": "./src/kinPush.ts",
+      "default": "./src/kinPush.ts"
     }
   },
   "scripts": {
