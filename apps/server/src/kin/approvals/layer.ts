@@ -1,3 +1,4 @@
+import type { KinGrant, KinPendingAction } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -25,23 +26,42 @@ import * as GrantVerifier from "./GrantVerifier.ts";
 import { makeDeleteBranchHandler } from "./handlers/deleteBranch.ts";
 import { makeMergePullRequestHandler } from "./handlers/mergePullRequest.ts";
 import { makeRegisterApproverKeyHandler } from "./handlers/registerApproverKey.ts";
+import { makeSetLevelHandler } from "./handlers/setLevel.ts";
 import * as PendingActions from "./PendingActions.ts";
 
 const refused = (error: { readonly message: string }) =>
   new ActionHandlers.KinExecError({ reason: "refused", detail: error.message });
 
-/** APPR-5's handler takes the stored grant only and reports a bare success. */
-const registerApproverKeyHandler = Effect.map(
-  makeRegisterApproverKeyHandler,
-  (handler): ActionHandlers.KinActionHandler => ({
+/** APPR-5's and LEAD-12's handlers take the stored grant only and report a bare success. */
+const grantOnly = <R>(
+  make: Effect.Effect<
+    {
+      readonly kind: ActionHandlers.KinActionHandler["kind"];
+      readonly precheck: (
+        action: KinPendingAction,
+      ) => Effect.Effect<void, { readonly message: string }>;
+      readonly run: (
+        action: KinPendingAction,
+        grant: KinGrant,
+      ) => Effect.Effect<unknown, { readonly message: string }>;
+      readonly reconcile: (
+        action: KinPendingAction,
+      ) => Effect.Effect<"done" | "not_done" | "unknown", { readonly message: string }>;
+    },
+    never,
+    R
+  >,
+) =>
+  Effect.map(make, (handler): ActionHandlers.KinActionHandler => ({
     kind: handler.kind,
     precheck: (action) => handler.precheck(action).pipe(Effect.mapError(refused)),
     run: (action, { grant }) =>
       handler.run(action, grant).pipe(Effect.as({}), Effect.mapError(refused)),
     reconcile: (action) =>
       handler.reconcile(action).pipe(Effect.orElseSucceed(() => "unknown" as const)),
-  }),
-);
+  }));
+const registerApproverKeyHandler = grantOnly(makeRegisterApproverKeyHandler);
+const setLevelHandler = grantOnly(makeSetLevelHandler);
 
 // The bot App reads, the owner merge token writes, and the hygiene check gates both.
 const github = Layer.mergeAll(KinBotReads.layer, CredentialHygiene.layer).pipe(
@@ -69,6 +89,7 @@ const handlers = Layer.effect(
   ActionHandlers.KinActionHandlers,
   Effect.all([
     registerApproverKeyHandler,
+    setLevelHandler,
     makeMergePullRequestHandler,
     makeDeleteBranchHandler,
   ]).pipe(Effect.map(ActionHandlers.make)),
@@ -80,8 +101,8 @@ const UNCONFIGURED = "the GitHub App and scope aren't configured";
 const unconfigured = Layer.mergeAll(
   Layer.effect(
     ActionHandlers.KinActionHandlers,
-    Effect.map(registerApproverKeyHandler, (handler) =>
-      ActionHandlers.make([handler], ["merge_pull_request", "delete_branch"]),
+    Effect.map(Effect.all([registerApproverKeyHandler, setLevelHandler]), (local) =>
+      ActionHandlers.make(local, ["merge_pull_request", "delete_branch"]),
     ),
   ),
   Layer.succeed(
@@ -121,14 +142,19 @@ const executorDeps = handlers.pipe(
   ),
 );
 
+const executor = ActionExecutor.layer.pipe(
+  Layer.provide(Layer.merge(executorDeps, PendingActions.ledgerLayer)),
+);
+
 /**
  * Push routing reads pending actions, so they stay in the layer's output. The executor needs a
  * `KinExecutionNotices` from outside, since the chat it posts to can't be imported here.
  */
 export const layer = Layer.mergeAll(
   GrantVerifier.layer,
-  // The ledger (claim and finish) goes to the executor alone, never into the layer's output.
-  ActionExecutor.layer.pipe(Layer.provide(Layer.merge(executorDeps, PendingActions.ledgerLayer))),
+  // Built for its worker only. Context lookups go by key string, so anything in this output
+  // reaches every service holding `kin.services`; the executor, ledger and handlers stay out.
+  Layer.empty.pipe(Layer.provide(executor)),
 ).pipe(
   Layer.provideMerge(ApproverKeys.layer),
   Layer.provideMerge(PendingActions.layer),

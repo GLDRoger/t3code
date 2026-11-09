@@ -35,13 +35,16 @@ export const outcomeOf = (
 };
 
 /** Token reads fail before anything is sent, so they are definite failures. */
-export const tokenFailure = (
-  error: OwnerMergeClient.OwnerMergeTokenMissingError | { readonly _tag: "KinKeychainError" },
-) =>
-  new KinExecError({
-    reason: error._tag === "OwnerMergeTokenMissingError" ? "merge_token_missing" : "unavailable",
-    detail: error._tag === "OwnerMergeTokenMissingError" ? error.message : "keychain unavailable",
-  });
+export const tokenFailure = (error: OwnerMergeClient.OwnerMergeTokenError) => {
+  switch (error._tag) {
+    case "OwnerMergeTokenMissingError":
+      return new KinExecError({ reason: "merge_token_missing", detail: error.message });
+    case "OwnerMergePassStaleError":
+      return new KinExecError({ reason: "credential_check_failed", detail: error.message });
+    case "KinKeychainError":
+      return new KinExecError({ reason: "unavailable", detail: "keychain unavailable" });
+  }
+};
 
 export const githubUnavailable = (what: string) =>
   new KinExecError({ reason: "unavailable", detail: `could not read ${what} from GitHub` });

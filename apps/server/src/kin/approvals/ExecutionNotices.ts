@@ -28,5 +28,10 @@ export class KinExecutionNotices extends Context.Service<
       /** For "passes again": the `seq` of the failure it ends, so one failure gets one notice. */
       readonly recoveredFrom?: number;
     }) => Effect.Effect<void>;
+    /** An approval whose grant lapsed while the executor held it; `holdReason` says why. */
+    readonly lapsed: (input: {
+      readonly action: KinPendingAction;
+      readonly holdReason: string;
+    }) => Effect.Effect<void>;
   }
 >()("t3/kin/approvals/ExecutionNotices/KinExecutionNotices") {}

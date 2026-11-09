@@ -13,6 +13,7 @@ import * as KinApprovals from "./approvals/layer.ts";
 import * as T3GitHubCredential from "./approvals/T3GitHubCredential.ts";
 import * as ExecutionNotices from "./chat/executionNotices.ts";
 import * as KinPush from "./push/layer.ts";
+import * as Promotion from "./levels/Promotion.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
 
 import { KinServer, type Services } from "./KinServer.ts";
@@ -41,16 +42,12 @@ const enabled = Layer.effect(
 ).pipe(
   Layer.provide(
     Layer.mergeAll(
-      KinChat.layer,
-      KinPush.layer.pipe(
-        Layer.provideMerge(
-          KinApprovals.layer.pipe(
-            Layer.provide(ExecutionNotices.layer.pipe(Layer.provide(KinChat.layer))),
-          ),
-        ),
+      // Promotion asks for set_level through the same pending actions the executor watches.
+      Layer.mergeAll(KinPush.layer, Promotion.layer).pipe(
+        Layer.provideMerge(KinApprovals.layer.pipe(Layer.provide(ExecutionNotices.layer))),
       ),
       GithubWebhooks.lockLayer,
-    ),
+    ).pipe(Layer.provideMerge(KinChat.layer)),
   ),
 );
 const disabled = Layer.succeed(KinServer, {

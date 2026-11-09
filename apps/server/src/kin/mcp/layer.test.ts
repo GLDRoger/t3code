@@ -284,8 +284,9 @@ it.effect.each([true, false])(
             .status,
           403,
         );
-        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
-          VALUES (${agentId}, ${person.orgId}, 'Lead', 0, '{}', '[]', ${chat.chatId})`;
+        // L1: this lead posts for real (an L0 lead's posts are shadow entries).
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, models_json, worker_projects_json, owner_chat_id)
+          VALUES (${agentId}, ${person.orgId}, 'Lead', 'L1', 0, '{}', '[]', ${chat.chatId})`;
         yield* startAgentWakeup({ orgId: person.orgId, agentId, threadId }).pipe(
           Effect.provide(services),
         );

@@ -156,7 +156,11 @@ describe("OwnerMergeClient", () => {
       yield* TestClock.adjust("60 seconds");
       assert.isTrue(Exit.isSuccess(yield* client.token(fresh).pipe(Effect.exit)));
       yield* TestClock.adjust("1 millis");
-      assert.isTrue(Exit.hasDies(yield* client.token(fresh).pipe(Effect.exit)));
+      // Typed, so the executor ends the action `failed`: nothing was sent.
+      assert.deepInclude(yield* client.token(fresh).pipe(Effect.flip), {
+        _tag: "OwnerMergePassStaleError",
+        ageMs: 60_001,
+      });
       assert.throws(() => {
         (fresh.report as { checkedAt: unknown }).checkedAt = NOW + DAY;
       });

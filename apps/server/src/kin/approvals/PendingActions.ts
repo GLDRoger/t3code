@@ -47,6 +47,12 @@ const GRANT_ACCEPTED_TTL_MS = 15 * 60 * 1000;
 
 /** `registerKey`'s requester: the phone asked, not an agent, so no agent may use this id. */
 export const KIN_APPROVER_KEYS_REQUESTER = "kin-approver-keys";
+/** The owner's promotion card asked, never a lead: `set_level` has no other requester. */
+export const KIN_PROMOTION_REQUESTER = "kin-promotion";
+const RESERVED_REQUESTERS = new Map<string, KinActionKind>([
+  [KIN_APPROVER_KEYS_REQUESTER, "register_approver_key"],
+  [KIN_PROMOTION_REQUESTER, "set_level"],
+]);
 const CreateInput = Schema.Struct({
   orgId: KinOrgId,
   kind: KinActionKind,
@@ -59,12 +65,16 @@ const CreateInput = Schema.Struct({
   source: KinEventId,
 }).check(
   Schema.makeFilter(
-    ({ kind, requestedBy: { agentId, threadId } }) =>
-      (agentId !== KIN_APPROVER_KEYS_REQUESTER && threadId !== KIN_APPROVER_KEYS_REQUESTER) ||
-      (kind === "register_approver_key" &&
-        agentId === KIN_APPROVER_KEYS_REQUESTER &&
-        threadId === KIN_APPROVER_KEYS_REQUESTER),
-    { expected: `a requester other than the reserved ${KIN_APPROVER_KEYS_REQUESTER}` },
+    ({ kind, requestedBy: { agentId, threadId } }) => {
+      const byAgent = RESERVED_REQUESTERS.get(agentId);
+      const byThread = RESERVED_REQUESTERS.get(threadId);
+      if (kind === "set_level")
+        return agentId === KIN_PROMOTION_REQUESTER && threadId === KIN_PROMOTION_REQUESTER;
+      return (
+        (byAgent === undefined && byThread === undefined) || (byAgent === kind && byThread === kind)
+      );
+    },
+    { expected: "a reserved requester only for its own kind, and set_level only from promotion" },
   ),
 );
 export type KinPendingActionCreateInput = typeof CreateInput.Type;
@@ -248,9 +258,12 @@ export class KinPendingActions extends Context.Service<
     readonly approvedWithGrant: (
       orgId?: KinOrgId,
     ) => Effect.Effect<ReadonlyArray<KinActionWithGrant>, Errors>;
-    /** `executing` actions, the grant their claim consumed, and when the claim was made. */
+    /**
+     * `executing` actions, the grant their claim consumed, and when the side effect was sent;
+     * null when it never was.
+     */
     readonly executingWithGrant: () => Effect.Effect<
-      ReadonlyArray<KinActionWithGrant & { readonly startedAt: number }>,
+      ReadonlyArray<KinActionWithGrant & { readonly writeStartedAt: number | null }>,
       Errors
     >;
     /** Every action `approve` moves to `approved`, published after its transaction commits. */
@@ -280,6 +293,10 @@ export class KinExecutionLedger extends Context.Service<
     ) => Effect.Effect<boolean, Errors>;
     /** Whether the key that signed a claimed action's grant still passes check 10's key test. */
     readonly signingKeyUsable: (ref: ActionRef) => Effect.Effect<boolean, Errors>;
+    /** Records `at` right before the side effect; false when the claim isn't open to write. */
+    readonly writeStarting: (
+      input: ActionRef & { readonly at: number },
+    ) => Effect.Effect<boolean, Errors>;
     readonly finish: (
       input: ActionRef & {
         readonly outcome: "succeeded" | "failed" | "interrupted";
@@ -627,15 +644,18 @@ const make = Effect.gen(function* () {
 
   const executingWithGrant = Effect.fn("KinPendingActions.executingWithGrant")(
     function* () {
-      const rows = yield* sql<ActionRow & GrantRow & { e_started_at: number }>`SELECT a.*,
-          ${grantColumns}, e.started_at AS e_started_at
+      const rows = yield* sql<ActionRow & GrantRow & { e_write_started_at: number | null }>`
+        SELECT a.*, ${grantColumns}, e.write_started_at AS e_write_started_at
         FROM kin_pending_actions a
         JOIN kin_executions e ON e.org_id = a.org_id AND e.action_id = a.action_id
         JOIN kin_grants g ON g.grant_id = e.grant_id
         WHERE a.state = 'executing' AND e.finished_at IS NULL
         ORDER BY e.started_at, a.action_id`;
       const found = yield* withGrant(rows);
-      return found.map((item, index) => ({ ...item, startedAt: rows[index]!.e_started_at }));
+      return found.map((item, index) => ({
+        ...item,
+        writeStartedAt: rows[index]!.e_write_started_at,
+      }));
     },
     Effect.mapError(toError("KinPendingActions.executingWithGrant")),
   );
@@ -701,6 +721,17 @@ const make = Effect.gen(function* () {
       return rows.length > 0;
     },
     Effect.mapError(toError("KinExecutionLedger.signingKeyUsable")),
+  );
+
+  const writeStarting = Effect.fn("KinExecutionLedger.writeStarting")(
+    function* (input: ActionRef & { readonly at: number }) {
+      const rows = yield* sql`UPDATE kin_executions SET write_started_at = ${input.at}
+        WHERE org_id = ${input.orgId} AND action_id = ${input.actionId}
+          AND finished_at IS NULL AND write_started_at IS NULL
+        RETURNING action_id`;
+      return rows.length > 0;
+    },
+    Effect.mapError(toError("KinExecutionLedger.writeStarting")),
   );
 
   const finish = Effect.fn("KinExecutionLedger.finish")(
@@ -820,7 +851,12 @@ const make = Effect.gen(function* () {
       approvals: PubSub.subscribe(approvedHub),
       sweep,
     }),
-    ledger: KinExecutionLedger.of({ claim, signingKeyUsable: claimedKeyUsable, finish }),
+    ledger: KinExecutionLedger.of({
+      claim,
+      signingKeyUsable: claimedKeyUsable,
+      writeStarting,
+      finish,
+    }),
   };
 });
 

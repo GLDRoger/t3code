@@ -132,6 +132,29 @@ describe("KinPendingActions", () => {
         );
         assert.isTrue(Exit.isFailure(posing));
       }
+      // set_level comes only from the owner's promotion card, never from a lead or another kind.
+      const level = { _tag: "level", agentId: "lead", level: "L1" };
+      for (const [kind, target, requestedBy] of [
+        ["set_level", level, { agentId: "lead", threadId: "thread-lead" }],
+        ["set_level", level, { agentId: "kin-promotion", threadId: "thread-lead" }],
+        ["set_level", level, { agentId: "kin-approver-keys", threadId: "kin-approver-keys" }],
+        [
+          "merge_pull_request",
+          request("x").target,
+          { agentId: "kin-promotion", threadId: "kin-promotion" },
+        ],
+      ] as const) {
+        const posing = yield* Effect.exit(
+          actions.create({
+            ...request("webhook-delivery-3"),
+            kind,
+            target,
+            resolved: { _tag: "none" },
+            requestedBy,
+          } as unknown as KinPendingActionCreateInput),
+        );
+        assert.isTrue(Exit.isFailure(posing), `${kind} from ${requestedBy.agentId}`);
+      }
 
       const twice = yield* Effect.all(
         [
