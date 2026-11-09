@@ -58,6 +58,19 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
         : { widgetId: result.widgetId, messageId: result.messageId };
     }, Effect.mapError(failure)),
   ),
+  kin_react: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.react")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      const wakeupId = KinWakeupId.make(lead.wakeupId);
+      const lane = yield* laneFor({ orgId: lead.orgId, agentId: lead.agentId, wakeupId });
+      if (Option.isNone(lane))
+        return yield* new KinChatError({ reason: "not_found", message: "Kin record not found." });
+      return yield* (yield* KinLevelGate).react(
+        { ...lead, wakeupId },
+        { ...input, chatId: lane.value.chatId },
+      );
+    }, Effect.mapError(failure)),
+  ),
   memory_search: McpToolAccess.reads(
     Effect.fn("KinLeadToolkit.search")(function* (input) {
       return yield* (yield* LeadMemory).search(yield* McpInvocationContext, input);

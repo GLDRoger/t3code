@@ -307,6 +307,7 @@ describe("Kin streams", () => {
           chat: {
             messages: [message(1)],
             widgets: [],
+            reactions: [],
             contiguousSeq: 1,
             changeSeq: 0,
             reads: {},
@@ -476,6 +477,7 @@ describe("Kin streams", () => {
           chat: {
             messages: [message(1), message(2)],
             widgets: [],
+            reactions: [],
             contiguousSeq: 2,
             changeSeq: 7,
             drafts: [],

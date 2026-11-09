@@ -68,6 +68,14 @@ const eventSamples = {
     messageId: "message-1",
     actionId: "approve",
   },
+  "chat.reaction": {
+    ...event,
+    _tag: "chat.reaction",
+    chatId: "chat-1",
+    messageId: "message-1",
+    emoji: "👍",
+    provenance: { _tag: "human", personId: "person-1", memberId: "member-1" },
+  },
   github: {
     ...event,
     _tag: "github",

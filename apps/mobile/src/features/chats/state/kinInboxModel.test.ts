@@ -6,6 +6,8 @@ import type {
   KinChatMember,
   KinChatSummary,
   KinMessage,
+  KinReaction,
+  KinReactionEmoji,
   KinWaitingItem,
   KinWidget,
 } from "@t3tools/contracts";
@@ -23,6 +25,7 @@ import {
   trimKinChatForCache,
   type KinChatState,
 } from "./kinInboxModel";
+import { kinReactionChips, kinReactionToggle } from "./kinReactions";
 
 const at = (minute: number) => `2026-11-08T09:${String(minute).padStart(2, "0")}:00.000Z`;
 
@@ -314,6 +317,60 @@ describe("kin chat feed", () => {
     let state = applyKinChatEvent(emptyKinChat, { _tag: "read", memberId: "me" as never, seq: 5 });
     state = applyKinChatEvent(state, { _tag: "read", memberId: "me" as never, seq: 3 });
     expect(state.reads).toEqual({ me: 5 });
+  });
+
+  it("holds live reactions and shows one chip per emoji, with the viewer's own toggling off", () => {
+    const reaction = (
+      memberId: string,
+      emoji: KinReactionEmoji,
+      minute: number,
+      removedAt: string | null = null,
+    ) =>
+      ({
+        orgId: "org",
+        chatId: "c1",
+        messageId: "m1",
+        memberId,
+        emoji,
+        createdAt: at(minute),
+        removedAt,
+      }) as KinReaction;
+    let state = applyKinChatEvent(emptyKinChat, {
+      ...backlog([message(1)], 1),
+      reactions: [reaction("me", "👍", 1), reaction("lead-member", "❤️", 1)],
+    });
+    state = applyKinChatEvent(state, {
+      _tag: "reaction",
+      reaction: reaction("lead-member", "👍", 2),
+    });
+    // A withdrawal older than the held copy (a re-add raced it) is ignored.
+    state = applyKinChatEvent(state, {
+      _tag: "reaction",
+      reaction: reaction("lead-member", "❤️", 0, at(3)),
+    });
+    const names = (memberId: string) => (memberId === "lead-member" ? "Ada" : null);
+    const chips = kinReactionChips(state.reactions, "m1", "me", names);
+    expect(chips).toEqual([
+      { emoji: "👍", count: 2, mine: true, label: "thumbs up, 2, you and Ada" },
+      { emoji: "❤️", count: 1, mine: false, label: "heart, 1, Ada" },
+    ]);
+    expect(kinReactionToggle(chips, "m1" as never, "👍")).toEqual({
+      messageId: "m1",
+      emoji: "👍",
+      on: false,
+    });
+    expect(kinReactionToggle(chips, "m1" as never, "❤️")).toMatchObject({ on: true });
+    state = applyKinChatEvent(state, {
+      _tag: "reaction",
+      reaction: reaction("me", "👍", 1, at(4)),
+    });
+    expect(kinReactionChips(state.reactions, "m1", "me", names)[0]).toMatchObject({
+      count: 1,
+      mine: false,
+    });
+    // A backlog without reactions (an older host, or a checkpoint) keeps the held set.
+    expect(applyKinChatEvent(state, backlog([message(2)], 2)).reactions).toBe(state.reactions);
+    expect(applyKinChatEvent(state, { ...backlog([], 2), reactions: [] }).reactions).toEqual([]);
   });
 
   it("caches the latest messages and only the widgets they anchor", () => {

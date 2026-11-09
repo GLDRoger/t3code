@@ -1,8 +1,16 @@
-import type { EnvironmentId, KinPersonId, KinWidget } from "@t3tools/contracts";
+import {
+  KIN_REACTION_EMOJI,
+  type EnvironmentId,
+  type KinPersonId,
+  type KinReactionEmoji,
+  type KinWidget,
+} from "@t3tools/contracts";
 import { Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../../components/ui/AppText";
+import { Chip } from "../../../components/ui/Chip";
 import * as Dialog from "../../../components/ui/Dialog";
+import { Menu } from "../../../components/ui/Menu";
 import { cn } from "../../../lib/cn";
 import {
   SelectableMarkdownText,
@@ -19,6 +27,12 @@ import {
   type KinFeedRow,
 } from "../state/kinChatFeed";
 import type { KinOutboxEntry } from "../state/kinOutbox";
+import {
+  KIN_REACTION_HINT,
+  KIN_REACTION_HINT_LABEL,
+  KIN_REACTION_NAMES,
+  type KinReactionChip,
+} from "../state/kinReactions";
 import { kinSentences } from "../state/kinScreenState";
 import { KinWidgetView } from "../widgets/KinWidgetView";
 
@@ -48,8 +62,13 @@ export function KinMessageBubble(props: {
   /** The environment hosting the chat. */
   readonly environmentId: EnvironmentId;
   readonly viewerPersonId: KinPersonId | null;
+  readonly reactions: ReadonlyArray<KinReactionChip>;
+  /** Toggles the viewer's reaction; null where they can't react, such as a privileged card. */
+  readonly onReact: ((emoji: KinReactionEmoji) => void) | null;
+  /** "React 👍/👎 to answer" on the lead's latest message, for its owner. */
+  readonly showReplyHint: boolean;
 }) {
-  const { row } = props;
+  const { row, onReact } = props;
   const { message } = row;
   const deleted = message.status === "deleted";
   const suggested = message.status === "suggested";
@@ -58,8 +77,16 @@ export function KinMessageBubble(props: {
   const links = hasBody ? kinMessageLinks(message.body) : [];
   const hasCard = !deleted && message.widgetId !== null;
   const hasBubble = !hasCard || hasBody || suggested || message.editedAt !== null;
+  const mine = new Set(props.reactions.flatMap((chip) => (chip.mine ? [chip.emoji] : [])));
+  const reactActions =
+    onReact === null || deleted
+      ? []
+      : KIN_REACTION_EMOJI.map((emoji) => ({
+          name: `react-${emoji}`,
+          label: `${mine.has(emoji) ? "Remove" : "React"} ${KIN_REACTION_NAMES[emoji]}`,
+        }));
 
-  return (
+  const content = (
     <View className={cn("gap-1 px-4 pb-1.5", row.own ? "items-end" : "items-start")}>
       {row.showAuthor ? (
         <Text
@@ -75,12 +102,21 @@ export function KinMessageBubble(props: {
         <View
           accessible
           accessibilityLabel={kinMessageLabel(row, formatTime(message.createdAt))}
-          accessibilityActions={links.map((link, index) => ({
-            name: `link-${index}`,
-            label: `Open ${link.label}`,
-          }))}
+          accessibilityActions={[
+            ...links.map((link, index) => ({
+              name: `link-${index}`,
+              label: `Open ${link.label}`,
+            })),
+            ...reactActions,
+          ]}
           onAccessibilityAction={(event) => {
-            const link = links[Number(event.nativeEvent.actionName.slice("link-".length))];
+            const name = event.nativeEvent.actionName;
+            if (name.startsWith("react-")) {
+              const emoji = KIN_REACTION_EMOJI.find((candidate) => name === `react-${candidate}`);
+              if (emoji !== undefined) onReact?.(emoji);
+              return;
+            }
+            const link = links[Number(name.slice("link-".length))];
             if (link !== undefined) props.onLinkPress(link.href);
           }}
           className={cn(
@@ -124,7 +160,54 @@ export function KinMessageBubble(props: {
           />
         </View>
       ) : null}
+      {props.reactions.length > 0 ? (
+        <View className={cn("flex-row flex-wrap gap-1.5 px-1", row.own && "justify-end")}>
+          {props.reactions.map((chip) => (
+            <Chip
+              key={chip.emoji}
+              size="small"
+              label={`${chip.emoji} ${chip.count}`}
+              selected={chip.mine}
+              disabled={onReact === null}
+              accessibilityLabel={
+                onReact === null
+                  ? chip.label
+                  : `${chip.label}. ${chip.mine ? "Remove your reaction" : "Add yours"}`
+              }
+              onPress={onReact === null ? undefined : () => onReact(chip.emoji)}
+            />
+          ))}
+        </View>
+      ) : null}
+      {props.showReplyHint ? (
+        <Text
+          textRole="caption"
+          className="px-1 text-foreground-muted"
+          accessibilityLabel={KIN_REACTION_HINT_LABEL}
+        >
+          {KIN_REACTION_HINT}
+        </Text>
+      ) : null}
     </View>
+  );
+  if (onReact === null || deleted) return content;
+  return (
+    <Menu
+      title="React"
+      shouldOpenOnLongPress
+      actions={KIN_REACTION_EMOJI.map((emoji) => ({
+        id: emoji,
+        title: `${emoji}  ${KIN_REACTION_NAMES[emoji]}`,
+        state: mine.has(emoji) ? ("on" as const) : ("off" as const),
+      }))}
+      onPressAction={({ nativeEvent }) => {
+        const emoji = KIN_REACTION_EMOJI.find((candidate) => candidate === nativeEvent.event);
+        if (emoji !== undefined) onReact(emoji);
+      }}
+    >
+      {/* The bubble inside stays the VoiceOver element; this only takes the long press. */}
+      <Pressable accessible={false}>{content}</Pressable>
+    </Menu>
   );
 }
 

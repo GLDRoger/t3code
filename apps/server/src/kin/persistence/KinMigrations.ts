@@ -27,6 +27,7 @@ import ChatLevels from "./migrations/K022_ChatLevels.ts";
 import ExecutionWriteStarted from "./migrations/K023_ExecutionWriteStarted.ts";
 import MemoryReviewPulls from "./migrations/K024_MemoryReviewPulls.ts";
 import FloorGrantWakeup from "./migrations/K025_FloorGrantWakeup.ts";
+import Reactions from "./migrations/K026_Reactions.ts";
 
 const table = "kin_sql_migrations";
 const run = Migrator.make({});
@@ -56,6 +57,7 @@ const loader = Migrator.fromRecord({
   "23_ExecutionWriteStarted": ExecutionWriteStarted,
   "24_MemoryReviewPulls": MemoryReviewPulls,
   "25_FloorGrantWakeup": FloorGrantWakeup,
+  "26_Reactions": Reactions,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

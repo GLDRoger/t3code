@@ -150,6 +150,7 @@ export function mergeKinFeed(live: KinChatState, earlier: KinChatState): KinChat
     widgets: live.widgets,
     hasMore: false,
   });
+  // Reactions stay the stream's: its backlog carries the chat's whole live set, older pages too.
   return { ...live, messages: merged.messages, widgets: merged.widgets };
 }
 

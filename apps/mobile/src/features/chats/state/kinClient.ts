@@ -174,6 +174,15 @@ export const kinClient = {
     tag: KIN_CHAT_WS_METHODS.widgetsAct,
     concurrency: { mode: "singleFlight", key: ({ input }) => input.clientActionId },
   }),
+  /** Toggles the viewer's reaction; one in flight per message and emoji. */
+  react: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:react",
+    tag: KIN_CHAT_WS_METHODS.messagesReact,
+    concurrency: {
+      mode: "singleFlight",
+      key: ({ input }) => `${input.messageId}|${input.emoji}`,
+    },
+  }),
   /** A lead's levels, trial counts and open raises. Owner only; the host refuses anyone else. */
   levels: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:levels",

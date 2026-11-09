@@ -13,10 +13,12 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
+import { liveReactions } from "../chat/reactions.ts";
 
 import { SILENT_REPLY } from "../reply/classify.ts";
 
@@ -57,6 +59,7 @@ export class KinLeadPrompt extends Context.Service<
       const memory = yield* Memory.Memory;
       const chat = yield* Chat.KinChatRepository;
       const cache = yield* MemoryCache.MemoryCache;
+      const sql = yield* SqlClient.SqlClient;
       const quoteEvents = Effect.fnUntraced(function* (
         input: Pick<KinLeadPromptInput, "orgId" | "agentId" | "events">,
       ) {
@@ -73,6 +76,29 @@ export class KinLeadPrompt extends Context.Service<
             DateTime.toEpochMillis(left.receivedAt) - DateTime.toEpochMillis(right.receivedAt),
         )) {
           const eventQuote = quote("event data", event, true);
+          if (event._tag === "chat.reaction") {
+            const stored = yield* chat.getMessage({ orgId, messageId: event.messageId }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new KinLeadPromptError({
+                    orgId,
+                    reason: "Could not read event message",
+                    cause,
+                  }),
+              ),
+            );
+            if (Option.isNone(stored) || stored.value.chatId !== event.chatId)
+              return yield* new KinLeadPromptError({
+                orgId,
+                reason: "Event message is missing or belongs to another chat",
+              });
+            const body = spoken(stored.value);
+            // The chat service raises this event only for the owner's reaction.
+            events.push(
+              `${eventQuote}\n\nOwner reacted ${event.emoji} to your message ${encoded(body.length <= REACTED_EXCERPT ? body : `${body.slice(0, REACTED_EXCERPT)}…`)} (a reaction, not text). ${REACTION_MEANING}`,
+            );
+            continue;
+          }
           if (event._tag !== "chat.message" && event._tag !== "widget.action") {
             fromOwner = false;
             events.push(eventQuote);
@@ -160,9 +186,34 @@ export class KinLeadPrompt extends Context.Service<
             limit: RECENT_MESSAGES,
             viewerMemberId: member.value.memberId,
           });
-          return page.messages.filter(
+          const messages = page.messages.filter(
             (message) => message.status === "posted" && !quoted.has(message.messageId),
           );
+          // Reactions are context: who reacted what, by role, never as instructions.
+          const roles = new Map(
+            (yield* chat.listMembers({ orgId, chatId })).map((row) => [
+              row.memberId,
+              row.memberId === member.value.memberId
+                ? "you"
+                : row.principal._tag === "agent"
+                  ? "agent"
+                  : row.role,
+            ]),
+          );
+          const reactions = new Map<string, Array<string>>();
+          for (const reaction of yield* liveReactions({
+            orgId,
+            chatId,
+            messageIds: messages.map((message) => message.messageId),
+          }).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
+            reactions.set(reaction.messageId, [
+              ...(reactions.get(reaction.messageId) ?? []),
+              `${roles.get(reaction.memberId) ?? "member"} ${reaction.emoji}`,
+            ]);
+          return messages.map((message) => ({
+            message,
+            reactions: reactions.get(message.messageId)?.toSorted() ?? [],
+          }));
         });
         const { events } = yield* quoteEvents(input);
         const snapshot = yield* memory
@@ -236,6 +287,9 @@ export class KinLeadPrompt extends Context.Service<
 const fallbackLeadName = "Lead";
 const RECENT_MESSAGES = 20;
 const RECENT_BODY_LIMIT = 1_000;
+const REACTED_EXCERPT = 280;
+const REACTION_MEANING =
+  "👍 or ✅ means yes or agreement and 👎 or ❌ means no, for a single yes/no question or proposal only. If your message asked more than that, ask in text.";
 const RECENT_LIMIT = 8_000;
 const INDEX_MAX_LINES = 200;
 
@@ -254,8 +308,14 @@ const spoken = (message: KinMessage) =>
       })
     : message.body;
 
-function boundedRecent(messages: ReadonlyArray<KinMessage>, self: KinAgentId): string {
-  const rows = messages.map((message) => {
+function boundedRecent(
+  messages: ReadonlyArray<{
+    readonly message: KinMessage;
+    readonly reactions: ReadonlyArray<string>;
+  }>,
+  self: KinAgentId,
+): string {
+  const rows = messages.map(({ message, reactions }) => {
     const body = spoken(message);
     return {
       from:
@@ -271,6 +331,7 @@ function boundedRecent(messages: ReadonlyArray<KinMessage>, self: KinAgentId): s
       at: message.createdAt,
       body:
         body.length <= RECENT_BODY_LIMIT ? body : `${body.slice(0, RECENT_BODY_LIMIT)}…[truncated]`,
+      ...(reactions.length === 0 ? {} : { reactions }),
     };
   });
   let start = 0;

@@ -254,7 +254,7 @@ const make = Effect.gen(function* () {
           const claimed = yield* sql<{ messageId: string }>`
             SELECT json_extract(json, '$.messageId') AS "messageId" FROM kin_events
             WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND state = 'claimed'
-              AND tag IN ('chat.message', 'widget.action') ORDER BY event_id`;
+              AND tag IN ('chat.message', 'widget.action', 'chat.reaction') ORDER BY event_id`;
           yield* floor.renew({
             orgId,
             agentId,
@@ -681,7 +681,9 @@ const make = Effect.gen(function* () {
                   agentId,
                   until: row.startedAt + WAKEUP_DEADLINE_MS,
                   messageIds: events.flatMap((event) =>
-                    event._tag === "chat.message" || event._tag === "widget.action"
+                    event._tag === "chat.message" ||
+                    event._tag === "widget.action" ||
+                    event._tag === "chat.reaction"
                       ? [event.messageId]
                       : [],
                   ),

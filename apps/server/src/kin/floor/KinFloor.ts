@@ -210,7 +210,7 @@ const make = Effect.gen(function* () {
       }>`
       SELECT COUNT(e.event_id) AS total, json_array_length(w.event_ids) AS expected,
         COALESCE(SUM(CASE WHEN e.tag IN ('routine', 'github', 'deferral.due', 'worker.report', 'watchdog', 'action.resolved', 'resume') THEN 1 ELSE 0 END), 0) AS notices,
-        COALESCE(SUM(CASE WHEN e.tag IN ('chat.message', 'widget.action') THEN 1 ELSE 0 END), 0) AS replies
+        COALESCE(SUM(CASE WHEN e.tag IN ('chat.message', 'widget.action', 'chat.reaction') THEN 1 ELSE 0 END), 0) AS replies
       FROM kin_wakeups w JOIN kin_events e ON e.org_id = w.org_id AND e.agent_id = w.agent_id
         AND e.wakeup_id = w.wakeup_id AND e.event_id IN (SELECT value FROM json_each(w.event_ids))
       WHERE w.org_id = ${identity.orgId} AND w.agent_id = ${identity.agentId}

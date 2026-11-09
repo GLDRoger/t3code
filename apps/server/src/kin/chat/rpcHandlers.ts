@@ -19,10 +19,6 @@ const disabled = new KinChatError({
   reason: "disabled",
   message: "Kin is not running on this host.",
 });
-const notYet = new KinChatError({
-  reason: "unavailable",
-  message: "This server doesn't support that yet.",
-});
 const isKinChatError = Schema.is(KinChatError);
 const mapError = (error: unknown) => (isKinChatError(error) ? error : unavailable);
 const logInfra = (error: unknown) =>
@@ -183,8 +179,13 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
         Effect.mapError(mapError),
         Effect.catchDefect(defect),
       ),
-    // Reactions land with R1-REACT.
-    "kin.messages.react": () => Effect.fail(notYet),
+    "kin.messages.react": (input) =>
+      viewer.pipe(
+        Effect.flatMap(({ chat, people }) => chat.react(people, input)),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
     "kin.lead.interrupt": (input) =>
       services.pipe(
         Effect.flatMap(({ identity, stop }) =>

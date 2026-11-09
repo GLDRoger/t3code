@@ -4,6 +4,7 @@ import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import * as TaskCard from "../widgets/taskCard.ts";
 import {
+  KIN_CHOICE_CARD_ACTION,
   KinChatError,
   KinChatId,
   KinMemberId,
@@ -12,8 +13,10 @@ import {
   KinWidgetId,
   KinOwnerCheckCard,
   KinDeferralCard,
+  KinMessagesReactInput,
   KinMessagesSendInput,
   KinWidgetsActInput,
+  KinChoiceCardState,
   KinAgentIntent,
   type KinAuthor,
   type KinAgentId,
@@ -33,6 +36,8 @@ import {
   type KinMessagesMarkReadInput,
   type KinPersonId,
   type KinOrgId,
+  type KinReaction,
+  type KinReactionEmoji,
   type KinWaitingItem,
   type KinWidget,
 } from "@t3tools/contracts";
@@ -57,6 +62,7 @@ import * as Hub from "./KinChatHub.ts";
 import { KinPresence } from "../reply/KinPresence.ts";
 import * as Repository from "./KinChatRepository.ts";
 import type { AgentIdentity, PersonIdentity } from "./KinIdentity.ts";
+import * as Reactions from "./reactions.ts";
 
 type Identity = PersonIdentity | AgentIdentity;
 type Viewers = ReadonlyArray<PersonIdentity>;
@@ -160,6 +166,15 @@ export class KinChatService extends Context.Service<
       input: KinWidgetsActInput,
     ) => Effect.Effect<KinMessage, ServiceError>;
     /** Posts a lead's choice card under the same floor and flood rules as its text replies. */
+    /**
+     * Turns the caller's reaction on or off. An owner's 👍/👎 answers a yes/no choice card like a
+     * tap, and on the lead's latest message wakes it as a soft reply. Privileged cards refuse.
+     */
+    readonly react: (
+      identity: Caller,
+      // `chatId` pins the message to one chat: `kin_react` passes its wake-up's lane.
+      input: KinMessagesReactInput & { readonly chatId?: KinChatId },
+    ) => Effect.Effect<KinReaction, ServiceError>;
     readonly ask: (
       identity: AgentIdentity,
       input: ChoiceCard.AskInput & {
@@ -203,6 +218,12 @@ const decodeIntent = Schema.decodeEffect(KinAgentIntent);
 const decodeOwnerCheckCard = Schema.decodeUnknownEffect(KinOwnerCheckCard);
 const decodeDeferralCard = Schema.decodeUnknownEffect(KinDeferralCard);
 const decodeAct = Schema.decodeEffect(KinWidgetsActInput);
+const decodeReact = Schema.decodeEffect(KinMessagesReactInput);
+const decodeChoice = Schema.decodeUnknownEffect(KinChoiceCardState);
+/** Cards a reaction may land on; every other type (approval, level, review, deferral) refuses. */
+const REACTABLE_WIDGETS = new Set(["choice", "task", "routine"]);
+/** Matches the choice card's window and the wake-up catch-up: older messages are not worth a wake. */
+const SOFT_REPLY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const encodeAction = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const invalidState = new KinChatError({ reason: "invalid_state", message: "Invalid chat input." });
 const notFound = new KinChatError({ reason: "not_found", message: "Kin record not found." });
@@ -440,6 +461,122 @@ const make = Effect.gen(function* () {
     }
     return message;
   });
+  // A tap, or an owner's yes/no reaction mapped to its option: the same checks and compare-and-set.
+  const actOn = Effect.fn("KinChatService.actOn")(function* (
+    identity: PersonIdentity,
+    member: KinChatMember,
+    widget: KinWidget,
+    request: KinWidgetsActInput,
+    reaction: { readonly emoji: KinReactionEmoji } | null,
+  ) {
+    const choice = widget.type === "choice" ? yield* ChoiceCard.readChoice(widget, request) : null;
+    const body = yield* encodeAction({
+      widgetId: request.widgetId,
+      revision: request.revision,
+      actionId: request.actionId,
+      ...(request.value === undefined ? {} : { value: request.value }),
+      ...(choice === null ? {} : { text: choice.text }),
+    }).pipe(Effect.mapError(() => invalidState));
+    const previous = yield* repo.findClientMessage({
+      ...member,
+      kind: "act",
+      clientId: request.clientActionId,
+    });
+    if (Option.isSome(previous)) {
+      if (
+        previous.value.author._tag !== "human" ||
+        previous.value.author.personId !== identity.personId ||
+        previous.value.widgetId !== request.widgetId ||
+        previous.value.body !== body
+      )
+        return yield* notAllowed;
+      return previous.value;
+    }
+    if (widget.revision !== request.revision)
+      return yield* new KinChatError({
+        reason: "widget_changed",
+        message: "Widget revision changed.",
+      });
+    if (widget.closedAt !== null) return yield* invalidState;
+    if (widget.type === "deferral" && request.actionId === "undo") {
+      const card = yield* decodeDeferralCard(widget.state).pipe(
+        Effect.mapError(() => invalidState),
+      );
+      if (card.phase !== undefined || card.itemId !== request.value) return yield* invalidState;
+      const undone = yield* undoDeferral({
+        orgId: identity.orgId,
+        itemId: card.itemId,
+        dueAt: Date.parse(card.dueAt),
+        now: yield* Clock.currentTimeMillis,
+      }).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.mapError(toPersistenceSqlError("KinChatService.undoDeferral")),
+      );
+      if (!undone)
+        return yield* new KinChatError({
+          reason: "invalid_state",
+          message: "Too late to undo: Kin already acted on this deferral.",
+        });
+      const at = yield* now;
+      const closed = yield* repo.updateWidget({
+        ...widget,
+        expectedRevision: widget.revision,
+        closedAt: at,
+        updatedAt: at,
+      });
+      yield* sql.afterCommit(
+        hub.publish({ type: "widget.updated", orgId: identity.orgId, widget: closed }),
+      );
+    }
+    const answer =
+      choice === null
+        ? null
+        : yield* ChoiceCard.settleChoice(widget, choice, {
+            personId: identity.personId,
+            now: yield* Clock.currentTimeMillis,
+            emoji: reaction?.emoji ?? null,
+          });
+    const message = yield* post(identity, member, {
+      chatId: widget.chatId,
+      kind: "widget_action",
+      body,
+      intent: null,
+      mentions: [],
+      replyTo: widget.messageId,
+      widgetId: widget.widgetId,
+      clientId: { kind: "act", id: request.clientActionId },
+    });
+    for (const item of yield* repo.listOpenWaiting(identity))
+      if (item.widgetId === widget.widgetId) yield* resolve(item, "acted");
+    if (answer !== null) {
+      // Compare-and-set on the revision the tap saw: the first answer settles the card.
+      const answered = yield* repo.updateWidget({
+        ...widget,
+        state: answer,
+        awaiting: [],
+        expectedRevision: widget.revision,
+        updatedAt: yield* now,
+      });
+      for (const item of yield* repo.waitingForWidget(answered)) yield* resolve(item, "answered");
+      yield* sql.afterCommit(
+        hub.publish({ type: "widget.updated", orgId: identity.orgId, widget: answered }),
+      );
+    }
+    return message;
+  });
+  const isLatestLeadMessage = Effect.fn("KinChatService.isLatestLeadMessage")(
+    function* (message: KinMessage) {
+      if (message.author._tag !== "agent") return false;
+      const rows = yield* sql<{ messageId: string }>`SELECT m.message_id AS "messageId"
+        FROM kin_messages m JOIN kin_leads l ON l.org_id = m.org_id AND l.agent_id = m.author_agent_id
+        WHERE m.org_id = ${message.orgId} AND m.chat_id = ${message.chatId}
+          AND m.author_kind = 'agent' AND m.author_agent_id = ${message.author.agentId}
+          AND m.status = 'posted'
+        ORDER BY m.seq DESC LIMIT 1`;
+      return rows[0]?.messageId === message.messageId;
+    },
+    Effect.mapError(toPersistenceSqlError("KinChatService.isLatestLeadMessage")),
+  );
   const summary = Effect.fn("KinChatService.summary")(function* (
     identity: PersonIdentity,
     chatId: KinChatId,
@@ -617,6 +754,11 @@ const make = Effect.gen(function* () {
                 lastChangeSeq: resumed.lastChangeSeq,
                 messages: resumed.messages,
                 widgets: resumed.widgets,
+                // The chat's live reactions in full, so a resumed client drops withdrawn ones.
+                reactions: yield* Reactions.liveReactions({
+                  orgId: identity.orgId,
+                  chatId: input.chatId,
+                }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
                 ...(Option.isSome(presence)
                   ? presence.value.snapshot(identity.orgId, input.chatId)
                   : {}),
@@ -694,6 +836,13 @@ const make = Effect.gen(function* () {
                     return event.chatId === input.chatId
                       ? Option.some<KinChatStreamEvent>({ _tag: "draft", ...event.draft })
                       : Option.none();
+                  case "reaction.updated":
+                    return event.chatId === input.chatId
+                      ? Option.some<KinChatStreamEvent>({
+                          _tag: "reaction",
+                          reaction: event.reaction,
+                        })
+                      : Option.none();
                   case "read.updated":
                     return event.chatId === input.chatId
                       ? Option.some<KinChatStreamEvent>({
@@ -754,6 +903,8 @@ const make = Effect.gen(function* () {
           const live = Stream.mergeAll(streams, { concurrency: "unbounded" }).pipe(
             Stream.mapEffect(({ viewer, event }) =>
               Effect.gen(function* (): Effect.fn.Return<KinChatListEvent, ServiceError> {
+                // Reactions don't change a chat's row.
+                if (event.type === "reaction.updated") return yield* notFound;
                 if (event.type === "waiting.updated")
                   return yield* requireRecord(repo.getWaiting(event.item)).pipe(
                     Effect.map((item) => ({ _tag: "waiting" as const, item })),
@@ -918,11 +1069,19 @@ const make = Effect.gen(function* () {
       function* (identity, input) {
         identity = yield* identityFor(identity, input);
         const member = yield* memberFor(identity, input.chatId);
-        return yield* repo.history({
+        const page = yield* repo.history({
           ...input,
           orgId: identity.orgId,
           viewerMemberId: member.memberId,
         });
+        return {
+          ...page,
+          reactions: yield* Reactions.liveReactions({
+            orgId: identity.orgId,
+            chatId: input.chatId,
+            messageIds: page.messages.map((message) => message.messageId),
+          }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+        };
       },
       (effect) => transaction(effect).pipe(NodeSqliteClient.readOnly),
     ),
@@ -1229,100 +1388,142 @@ const make = Effect.gen(function* () {
           !deferralCardActions.some((action) => action === request.actionId))
       )
         return yield* notAllowed;
-      const choice =
-        widget.type === "choice" ? yield* ChoiceCard.readChoice(widget, request) : null;
-      const body = yield* encodeAction({
-        widgetId: request.widgetId,
-        revision: request.revision,
-        actionId: request.actionId,
-        ...(request.value === undefined ? {} : { value: request.value }),
-        ...(choice === null ? {} : { text: choice.text }),
+      return yield* actOn(identity, member, widget, request, null);
+    }, transaction),
+    react: Effect.fn("KinChatService.react")(function* (caller, input) {
+      const request = yield* decodeReact({
+        messageId: input.messageId,
+        emoji: input.emoji,
+        on: input.on,
       }).pipe(Effect.mapError(() => invalidState));
-      const previous = yield* repo.findClientMessage({
-        ...member,
-        kind: "act",
-        clientId: request.clientActionId,
-      });
-      if (Option.isSome(previous)) {
-        if (
-          previous.value.author._tag !== "human" ||
-          previous.value.author.personId !== identity.personId ||
-          previous.value.widgetId !== request.widgetId ||
-          previous.value.body !== body
-        )
-          return yield* notAllowed;
-        return previous.value;
-      }
-      if (widget.revision !== request.revision)
-        return yield* new KinChatError({
-          reason: "widget_changed",
-          message: "Widget revision changed.",
-        });
-      if (widget.closedAt !== null) return yield* invalidState;
-      if (widget.type === "deferral" && request.actionId === "undo") {
-        const card = yield* decodeDeferralCard(widget.state).pipe(
-          Effect.mapError(() => invalidState),
-        );
-        if (card.phase !== undefined || card.itemId !== request.value) return yield* invalidState;
-        const undone = yield* undoDeferral({
-          orgId: identity.orgId,
-          itemId: card.itemId,
-          dueAt: Date.parse(card.dueAt),
-          now: yield* Clock.currentTimeMillis,
-        }).pipe(
-          Effect.provideService(SqlClient.SqlClient, sql),
-          Effect.mapError(toPersistenceSqlError("KinChatService.undoDeferral")),
-        );
-        if (!undone)
-          return yield* new KinChatError({
-            reason: "invalid_state",
-            message: "Too late to undo: Kin already acted on this deferral.",
-          });
-        const at = yield* now;
-        const closed = yield* repo.updateWidget({
-          ...widget,
-          expectedRevision: widget.revision,
-          closedAt: at,
-          updatedAt: at,
-        });
-        yield* sql.afterCommit(
-          hub.publish({ type: "widget.updated", orgId: identity.orgId, widget: closed }),
-        );
-      }
-      const answer =
-        choice === null
+      let identity: Identity | undefined = "_tag" in caller ? caller : undefined;
+      if (identity === undefined)
+        for (const candidate of caller as Viewers)
+          if (
+            Option.isSome(yield* repo.getMessage({ ...candidate, messageId: request.messageId }))
+          ) {
+            identity = candidate;
+            break;
+          }
+      if (identity === undefined) return yield* notFound;
+      const message = yield* requireRecord(
+        repo.getMessage({ orgId: identity.orgId, messageId: request.messageId }),
+      );
+      if (input.chatId !== undefined && message.chatId !== input.chatId) return yield* notFound;
+      // Membership of the message's own chat: a non-member, or another org's caller, gets not_found.
+      const member = yield* memberFor(identity, message.chatId);
+      yield* canWrite(identity, member);
+      if (message.status !== "posted") return yield* notAllowed;
+      const widget =
+        message.widgetId === null
           ? null
-          : yield* ChoiceCard.settleChoice(widget, choice, {
-              personId: identity.personId,
-              now: yield* Clock.currentTimeMillis,
-            });
-      const message = yield* post(identity, member, {
-        chatId: widget.chatId,
-        kind: "widget_action",
-        body,
-        intent: null,
-        mentions: [],
-        replyTo: widget.messageId,
-        widgetId: widget.widgetId,
-        clientId: { kind: "act", id: request.clientActionId },
-      });
-      for (const item of yield* repo.listOpenWaiting(identity))
-        if (item.widgetId === widget.widgetId) yield* resolve(item, "acted");
-      if (answer !== null) {
-        // Compare-and-set on the revision the tap saw: the first answer settles the card.
-        const answered = yield* repo.updateWidget({
-          ...widget,
-          state: answer,
-          awaiting: [],
-          expectedRevision: widget.revision,
-          updatedAt: yield* now,
+          : yield* requireRecord(
+              repo.getWidget({ orgId: identity.orgId, widgetId: message.widgetId }),
+            );
+      // A reaction never grants anything: approval, level, review and other cards refuse it.
+      if (
+        (widget !== null &&
+          (widget.chatId !== message.chatId || !REACTABLE_WIDGETS.has(widget.type))) ||
+        (yield* repo.approvalAtMessage(message))
+      )
+        return yield* new KinChatError({
+          reason: "not_allowed",
+          message: "This card can't take reactions.",
         });
-        for (const item of yield* repo.waitingForWidget(answered)) yield* resolve(item, "answered");
-        yield* sql.afterCommit(
-          hub.publish({ type: "widget.updated", orgId: identity.orgId, widget: answered }),
+      const nowMs = yield* Clock.currentTimeMillis;
+      const key = {
+        orgId: identity.orgId,
+        chatId: message.chatId,
+        messageId: message.messageId,
+        memberId: member.memberId,
+        emoji: request.emoji,
+      };
+      const held = (yield* Reactions.liveReactions({
+        ...key,
+        messageIds: [message.messageId],
+      }).pipe(Effect.provideService(SqlClient.SqlClient, sql))).find(
+        (row) => row.memberId === member.memberId && row.emoji === request.emoji,
+      );
+      // A retried add or remove changes nothing and answers nothing.
+      if (request.on === (held !== undefined))
+        return (
+          held ??
+          ({
+            ...key,
+            createdAt: DateTime.formatIso(DateTime.makeUnsafe(nowMs)),
+            removedAt: DateTime.formatIso(DateTime.makeUnsafe(nowMs)),
+          } satisfies KinReaction)
         );
+      let answered = false;
+      if (request.on && identity._tag === "person" && widget?.type === "choice") {
+        const card = yield* decodeChoice(widget.state).pipe(Effect.mapError(() => invalidState));
+        const option = Reactions.reactionOption(card, request.emoji);
+        if (option !== undefined) {
+          if (card.answer !== null)
+            return yield* new KinChatError({
+              reason: "widget_changed",
+              message: "This question was already answered.",
+            });
+          yield* actOn(
+            identity,
+            member,
+            widget,
+            {
+              widgetId: widget.widgetId,
+              revision: widget.revision,
+              actionId: KIN_CHOICE_CARD_ACTION,
+              value: option.optionId,
+              clientActionId: `reaction:${message.messageId}:${request.emoji}`,
+            },
+            { emoji: request.emoji },
+          );
+          answered = true;
+        }
       }
-      return message;
+      const chat = yield* requireRecord(repo.getChat(member));
+      // The owner's yes/no on the lead's latest message, in their direct chat, is a soft reply.
+      const woke =
+        request.on &&
+        !answered &&
+        identity._tag === "person" &&
+        member.role === "owner" &&
+        chat.kind === "direct" &&
+        message.author._tag === "agent" &&
+        Reactions.reactionAnswer(request.emoji) !== null &&
+        nowMs - Date.parse(message.createdAt) < SOFT_REPLY_WINDOW_MS &&
+        (yield* isLatestLeadMessage(message)) &&
+        !(yield* Reactions.recentlyWoke({ ...key, now: nowMs }).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        ));
+      if (woke && identity._tag === "person")
+        // The lead answers this turn under its own floor run, as it would a message.
+        yield* floor.open(
+          {
+            ...message,
+            author: { _tag: "human", personId: identity.personId, memberId: member.memberId },
+            authorRole: member.role,
+            mentions: [],
+            body: "",
+          },
+          chat,
+        );
+      const { reaction, changed } = yield* Reactions.setReaction({
+        ...key,
+        on: request.on,
+        now: nowMs,
+        woke,
+      }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      if (reaction === null) return yield* notFound;
+      if (changed)
+        yield* hub.publish({
+          type: "reaction.updated",
+          orgId: identity.orgId,
+          chatId: message.chatId,
+          reaction,
+          woke,
+          by: authorFor(identity, member),
+        });
+      return reaction;
     }, transaction),
     ask: Effect.fn("KinChatService.ask")(function* (identity, input) {
       const member = yield* memberFor(identity, input.chatId);

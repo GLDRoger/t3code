@@ -3,7 +3,14 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
 import { assert, describe, it } from "@effect/vitest";
-import { KinEvent, KinMessage, KinOrgId } from "@t3tools/contracts";
+import {
+  KinChatId,
+  KinEvent,
+  KinMemberId,
+  KinMessage,
+  KinMessageId,
+  KinOrgId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
@@ -174,35 +181,72 @@ const post = (org: string, messageId: string, options: Parameters<typeof message
   });
 
 describe("ChatWake", () => {
-  it.effect("wakes the lead once for each owner message and widget tap in its chat", () =>
-    Effect.gen(function* () {
-      yield* seed("a");
-      const { results, settle } = yield* start();
-      yield* post("a", "m1");
-      yield* post("a", "m1");
-      yield* post("a", "tap", { seq: 2, tap: "approve" });
-      yield* settle;
-      assert.deepStrictEqual(
-        results.map((result) => result.duplicate),
-        [false, true, false],
-      );
-      const stored = yield* storedEvents();
-      assert.deepStrictEqual(
-        stored.map(({ event, priority }) => [event._tag, event.dedupeKey, priority]),
-        [
-          ["chat.message", "chat-message:m1:lead-a", "P0"],
-          ["widget.action", "widget-action:tap:lead-a", "P0"],
-        ],
-      );
-      const event = stored[0]!.event;
-      assert.strictEqual(event.agentId, "lead-a");
-      assert.match(event.eventId, /^chat-message-[a-f0-9]{32}$/);
-      assert.deepStrictEqual(event.provenance, message("a", "m1").author);
-      assert.strictEqual(
-        stored[1]!.event._tag === "widget.action" && stored[1]!.event.actionId,
-        "approve",
-      );
-    }).pipe(Effect.provide(services)),
+  it.effect(
+    "wakes the lead once for each owner message, widget tap and soft reaction in its chat",
+    () =>
+      Effect.gen(function* () {
+        yield* seed("a");
+        yield* storeMessage(message("a", "lead-latest", { seq: 3, agent: true }));
+        const { results, settle } = yield* start();
+        const hub = yield* Hub.KinChatHub;
+        const reaction = (emoji: "👍" | "❤️", woke: boolean, removedAt: string | null = null) =>
+          hub.publish({
+            type: "reaction.updated",
+            orgId: KinOrgId.make("a"),
+            chatId: KinChatId.make("chat-a"),
+            reaction: {
+              orgId: KinOrgId.make("a"),
+              chatId: KinChatId.make("chat-a"),
+              messageId: KinMessageId.make("lead-latest"),
+              memberId: KinMemberId.make("owner-member-a"),
+              emoji,
+              createdAt,
+              removedAt,
+            },
+            woke,
+            by: message("a", "m1").author,
+          });
+        yield* post("a", "m1");
+        yield* post("a", "m1");
+        yield* post("a", "tap", { seq: 2, tap: "approve" });
+        // Only the chat service decides a reaction is a soft reply; the rest are context.
+        yield* reaction("❤️", false);
+        yield* reaction("👍", true);
+        yield* settle;
+        assert.deepStrictEqual(
+          results.map((result) => result.duplicate),
+          [false, true, false, false],
+        );
+        const stored = yield* storedEvents();
+        assert.deepStrictEqual(
+          stored.map(({ event, priority }) => [event._tag, event.dedupeKey, priority]),
+          [
+            ["chat.message", "chat-message:m1:lead-a", "P0"],
+            ["chat.reaction", `chat-reaction:lead-latest:owner-member-a:👍:${createdAt}`, "P0"],
+            ["widget.action", "widget-action:tap:lead-a", "P0"],
+          ],
+        );
+        // Withdrawn before a wake-up claims it: the wake-up is cancelled.
+        yield* reaction("👍", false, createdAt);
+        yield* settle;
+        const sql = yield* SqlClient.SqlClient;
+        assert.deepStrictEqual(
+          yield* sql`SELECT tag, state FROM kin_events WHERE org_id = 'a' ORDER BY event_id`,
+          [
+            { tag: "chat.message", state: "queued" },
+            { tag: "chat.reaction", state: "expired" },
+            { tag: "widget.action", state: "queued" },
+          ],
+        );
+        const event = stored[0]!.event;
+        assert.strictEqual(event.agentId, "lead-a");
+        assert.match(event.eventId, /^chat-message-[a-f0-9]{32}$/);
+        assert.deepStrictEqual(event.provenance, message("a", "m1").author);
+        assert.strictEqual(
+          stored[2]!.event._tag === "widget.action" && stored[2]!.event.actionId,
+          "approve",
+        );
+      }).pipe(Effect.provide(services)),
   );
 
   it.effect("never wakes a lead for its own posts or after retirement, live or on catch-up", () =>
