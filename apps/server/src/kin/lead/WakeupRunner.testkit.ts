@@ -25,6 +25,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -137,6 +138,12 @@ type HarnessOptions = {
   readonly database?: Database;
   /** Runs inside each turn before it completes, as the provider's tool calls would. */
   readonly onTurn?: (input: { readonly threadId: ThreadId }) => Effect.Effect<void>;
+  /** Each turn reports itself running, then completes only once this does. */
+  readonly holdRunning?: Deferred.Deferred<void>;
+  /** Messages the provider received as steers into a running turn. */
+  readonly providerSteers?: Queue.Queue<{ readonly runId: string; readonly messageId: string }>;
+  /** Completes when the runner builds steer text, under the lock its send holds. */
+  readonly steering?: Deferred.Deferred<void>;
 };
 
 export function harness(options: HarnessOptions = {}) {
@@ -329,11 +336,22 @@ function parts(options: HarnessOptions) {
                 threadDisposition: "reusable",
               });
             });
+            if (options.holdRunning !== undefined)
+              return yield* Deferred.await(options.holdRunning).pipe(
+                Effect.andThen(finish),
+                Effect.forkDetach,
+              );
             if (options.approval === undefined) return yield* finish;
             yield* Deferred.await(options.approval).pipe(Effect.andThen(finish), Effect.forkDetach);
           }),
           compactThread: (input) => runtime.startTurn(input),
-          steerTurn: () => Effect.void,
+          steerTurn: (input) =>
+            options.providerSteers === undefined
+              ? Effect.void
+              : Queue.offer(options.providerSteers, {
+                  runId: input.runId,
+                  messageId: input.message.messageId,
+                }).pipe(Effect.asVoid),
           interruptTurn: Effect.fn("test.interruptTurn")(function* ({ providerTurnId }) {
             const turn = open.get(providerTurnId);
             if (turn === undefined) return;
@@ -457,7 +475,13 @@ function parts(options: HarnessOptions) {
         }),
       ),
     ),
-    Layer.succeed(KinLeadPrompt, { build: () => Effect.succeed("Wake up") }),
+    Layer.succeed(KinLeadPrompt, {
+      build: () => Effect.succeed("Wake up"),
+      steer: () =>
+        options.steering === undefined
+          ? Effect.succeed("Steered")
+          : Deferred.succeed(options.steering, undefined).pipe(Effect.as("Steered")),
+    }),
     Layer.mock(Memory.Memory)({
       prepareWakeup:
         options.prepare ??

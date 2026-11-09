@@ -38,8 +38,10 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Budget from "./KinBudget.ts";
@@ -93,6 +95,19 @@ const resolveAgent = Effect.fn("test.resolveAgent")(function* (threadId: ThreadI
   assert.isDefined(scope);
   return yield* identity.resolveAgent(scope!);
 });
+// A human message in the lead's lane, the chat its notices and replies go to.
+const laneMessage = (id: string) =>
+  decodeEvent({
+    _tag: "chat.message",
+    orgId,
+    agentId,
+    eventId: id,
+    receivedAt: "2026-11-08T00:00:00.000Z",
+    dedupeKey: id,
+    provenance: { _tag: "human", personId: "owner", memberId: "owner-member" },
+    chatId: "owner-chat",
+    messageId: id,
+  });
 const run = Effect.fn("test.run")(function* () {
   const runner = yield* WakeupRunner.WakeupRunner;
   const fiber = yield* runner.runOnce(orgId, agentId).pipe(Effect.forkChild);
@@ -853,6 +868,115 @@ describe("WakeupRunner", () => {
     }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
   );
 
+  it.effect("steers a second message in the lane into the running turn, in the same wake-up", () =>
+    Effect.gen(function* () {
+      const holdRunning = yield* Deferred.make<void>();
+      const providerSteers = yield* Queue.unbounded<{ runId: string; messageId: string }>();
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const sql = yield* SqlClient.SqlClient;
+        yield* queue.enqueue(laneMessage("ask"));
+        const running = yield* threads.streamDomainEvents.pipe(
+          Stream.filter(
+            (event) => event.type === "provider-turn.updated" && event.payload.status === "running",
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
+        const fiber = yield* run();
+        yield* Fiber.join(running);
+        yield* queue.enqueue(laneMessage("again"));
+        const steered = yield* Queue.take(providerSteers);
+        yield* Deferred.succeed(holdRunning, undefined);
+        yield* Fiber.join(fiber);
+        const [wakeup, ...others] = yield* sql<{ wakeupId: string; runId: string; status: string }>`
+          SELECT wakeup_id AS "wakeupId", run_id AS "runId", status FROM kin_wakeups ORDER BY wakeup_id`;
+        assert.lengthOf(others, 0);
+        assert.strictEqual(wakeup!.status, "completed");
+        assert.deepStrictEqual(steered, {
+          runId: wakeup!.runId,
+          messageId: KinIdentity.steerMessageId(KinWakeupId.make(wakeup!.wakeupId), 1),
+        });
+        assert.deepStrictEqual(
+          yield* sql`SELECT event_id, state, wakeup_id FROM kin_events ORDER BY event_id`,
+          ["again", "ask"].map((id) => ({
+            event_id: id,
+            state: "done",
+            wakeup_id: wakeup!.wakeupId,
+          })),
+        );
+      }).pipe(Effect.scoped, Effect.provide(harness({ holdRunning, providerSteers })));
+    }).pipe(provideDeterministicTestRuntime),
+  );
+
+  it.effect("adopts a steer that lands after the turn, and lets its Kin tool calls through", () =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const hold = yield* Deferred.make<void>();
+      const steering = yield* Deferred.make<void>();
+      const calls: Array<string> = [];
+      let check: (threadId: ThreadId) => Effect.Effect<void> = () => Effect.void;
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const sql = yield* SqlClient.SqlClient;
+        const services = yield* Effect.context<
+          KinIdentity.KinIdentity | McpSessionRegistry.McpSessionRegistry
+        >();
+        check = (threadId) =>
+          resolveAgent(threadId).pipe(
+            Effect.provideContext(services),
+            Effect.match({
+              onFailure: (error) => calls.push(error.message),
+              onSuccess: () => calls.push("allowed"),
+            }),
+          );
+        yield* queue.enqueue(laneMessage("ask"));
+        const fiber = yield* run();
+        yield* Deferred.await(entered);
+        // The turn has not started streaming, so the steer cannot join it.
+        yield* queue.enqueue(laneMessage("again"));
+        yield* Deferred.await(steering);
+        yield* Deferred.succeed(hold, undefined);
+        yield* Fiber.join(fiber);
+        const [wakeup, ...others] = yield* sql<{
+          wakeupId: string;
+          threadId: string;
+          status: string;
+        }>`
+          SELECT wakeup_id AS "wakeupId", thread_id AS "threadId", status FROM kin_wakeups ORDER BY wakeup_id`;
+        assert.lengthOf(others, 0);
+        assert.strictEqual(wakeup!.status, "completed");
+        const wakeupId = KinWakeupId.make(wakeup!.wakeupId);
+        const runs = (yield* threads.getThreadProjection(ThreadId.make(wakeup!.threadId))).runs;
+        assert.deepStrictEqual(
+          runs.map((entry) => [entry.userMessageId, entry.status]),
+          [
+            [KinIdentity.wakeupMessageId(wakeupId), "completed"],
+            [KinIdentity.steerMessageId(wakeupId, 1), "completed"],
+          ],
+        );
+        // Both runs' Kin MCP calls resolve to the lead; before adoption the second was refused.
+        assert.deepStrictEqual(calls, ["allowed", "allowed"]);
+        assert.deepStrictEqual(
+          yield* sql`SELECT event_id, state FROM kin_events ORDER BY event_id`,
+          [
+            { event_id: "again", state: "done" },
+            { event_id: "ask", state: "done" },
+          ],
+        );
+      }).pipe(
+        Effect.provide(
+          harness({ entered, hold, steering, onTurn: ({ threadId }) => check(threadId) }),
+        ),
+      );
+    }).pipe(provideDeterministicTestRuntime),
+  );
+
   it.effect("defers claims while an interrupted run's provider turn is unfinished", () =>
     Effect.gen(function* () {
       yield* seed;
@@ -1233,7 +1357,7 @@ describe("WakeupRunner", () => {
             Layer.mock(ProjectService.ProjectService)({}),
             Layer.mock(ServerSettings.ServerSettingsService)({}),
             Layer.mock(KinIssuedTokens.KinIssuedTokens)({}),
-            Layer.succeed(KinLeadPrompt, { build: () => Effect.succeed("unused") }),
+            Layer.mock(KinLeadPrompt)({ build: () => Effect.succeed("unused") }),
             Layer.effect(MemoryConfig.MemoryConfig, Effect.die("invalid memory config")),
             Layer.mock(VcsProcess.VcsProcess)({}),
             NodeServices.layer,
