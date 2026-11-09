@@ -1,8 +1,25 @@
-import { leftBoundary, rightBoundary, secretExceptions, secretRules } from "./secretScan.ts";
+import { secretExceptions, secretRules } from "./secretScan.ts";
 
-// RE2 caps counted repeats at 1000 and has no lookarounds, so bounds widen and boundaries become groups.
+const space = String.raw`\s\v\p{Z}\x{feff}`;
+
+// RE2 caps counted repeats at 1000, has no lookarounds and its \s misses \v and Unicode spaces.
+// Boundaries are dropped rather than emulated: a consuming boundary would hide an adjacent match.
 const re2 = (pattern: RegExp) => {
-  const source = pattern.source.replace(/\{(\d+),(\d+)\}/g, (all, min: string, max: string) =>
+  let source = "";
+  let inClass = false;
+  for (let index = 0; index < pattern.source.length; index++) {
+    const char = pattern.source[index]!;
+    if (char === "\\") {
+      const next = pattern.source[++index]!;
+      if (next === "S") throw new Error(`\\S has no RE2 translation: ${pattern.source}`);
+      source += next === "s" ? (inClass ? space : `[${space}]`) : `\\${next}`;
+      continue;
+    }
+    if (char === "[") inClass = true;
+    else if (char === "]") inClass = false;
+    source += char;
+  }
+  source = source.replace(/\{(\d+),(\d+)\}/g, (all, min: string, max: string) =>
     Number(max) > 1000 ? `{${min},}` : all,
   );
   return pattern.flags.includes("i") ? `(?i:${source})` : source;
@@ -15,14 +32,13 @@ const literal = (value: string) => {
 
 const rule = ([id, pattern]: (typeof secretRules)[number]) => {
   const groups = (new RegExp(`${pattern.source}|`).exec("")?.length ?? 1) - 1;
-  const right = rightBoundary(id);
   const exception = secretExceptions[id];
   return [
     "[[rules]]",
     `id = "${id}"`,
     `description = "KinSecretScan ${id}"`,
-    `regex = ${literal(`(?:^|[^${leftBoundary}])(${re2(pattern)})${right === undefined ? "" : `(?:[^${right}]|$)`}`)}`,
-    `secretGroup = ${groups > 0 ? 2 : 1}`,
+    `regex = ${literal(re2(pattern))}`,
+    ...(groups > 0 ? ["secretGroup = 1"] : []),
     ...(exception?.minEntropy === undefined ? [] : [`entropy = ${exception.minEntropy}`]),
     ...(["secret", "match"] as const).flatMap((target) => {
       const patterns = exception?.[target]?.map((p) => literal(re2(p)));

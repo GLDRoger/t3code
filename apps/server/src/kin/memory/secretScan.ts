@@ -51,7 +51,7 @@ export const secretRules = [
     /\b[A-Za-z0-9_]{0,64}(?:password|secret|token|api[_-]?key|access[_-]?key)[A-Za-z0-9_]{0,64}["']?\s{0,32}[:=]\s{0,32}["']?([^\s"';#]{20,512})/i,
   ],
 ] as const;
-export const leftBoundary = "A-Za-z0-9";
+const leftBoundary = "A-Za-z0-9";
 /** Matches each rule drops, as `memory-check`'s gitleaks allowlists do. Patterns must stay RE2-compatible. */
 export const secretExceptions: Partial<
   Record<
@@ -76,7 +76,7 @@ export const secretExceptions: Partial<
   },
 };
 /** The characters a match may not be followed by, or undefined when the rule has no right boundary. */
-export const rightBoundary = (id: (typeof secretRules)[number][0]) =>
+const rightBoundary = (id: (typeof secretRules)[number][0]) =>
   id === "url-password" || id === "secret-assignment" || id === "jwt"
     ? undefined
     : id === "github-token" || id === "aws-access-key" || id === "stripe-key" || id === "google-key"

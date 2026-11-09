@@ -7,7 +7,7 @@ import * as Path from "effect/Path";
 import type { PlatformError } from "effect/PlatformError";
 import { Argument, Command } from "effect/cli";
 
-import { isLintedPath, lintMemoryFiles } from "./lint.ts";
+import { formatLintFailure, isLintedPath, lintMemoryFiles } from "./lint.ts";
 import { folders } from "./Memory.ts";
 
 // Symlinks are skipped, as `Memory.load` reads only regular blobs; following one could read outside the checkout.
@@ -19,7 +19,10 @@ export const readMemoryDirectory = Effect.fn("MemoryLint.readDirectory")(functio
     function* (relative) {
       for (const entry of yield* fs.readDirectoryEntries(path.join(root, relative))) {
         const child = relative ? `${relative}/${entry.name}` : entry.name;
-        if (entry.type === "Directory" && (relative || folders.includes(entry.name)))
+        if (
+          entry.type === "Directory" &&
+          (relative || folders.includes(entry.name) || entry.name === ".github")
+        )
           yield* visit(child);
         else if (entry.type === "File" && isLintedPath(child))
           files.push({ path: child, content: yield* fs.readFile(path.join(root, child)) });
@@ -35,8 +38,7 @@ const lintCommand = Command.make(
   { directory: Argument.String("directory") },
   Effect.fn("MemoryLint.cli")(function* ({ directory }) {
     const failures = yield* lintMemoryFiles(yield* readMemoryDirectory(directory));
-    for (const failure of failures)
-      yield* Console.log(`${failure.path}:${failure.line} ${failure.reason}`);
+    for (const failure of failures) yield* Console.log(formatLintFailure(failure));
     if (failures.length > 0) process.exitCode = 1;
   }),
 ).pipe(Command.withDescription("Check a Kin memory checkout against the server's item schema."));

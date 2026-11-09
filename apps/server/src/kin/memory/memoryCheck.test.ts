@@ -26,6 +26,15 @@ const plants: Record<(typeof secretRules)[number][0], string> = {
   "url-password": "postgres://demo:Hunter2Hunter2xyz@db.example.invalid",
   "secret-assignment": "api_key = " + body,
 };
+const decoy = ["sk-", "proj-"].join("") + "a".repeat(40);
+// Each hides a real token behind an allowed match or a space RE2's \s misses.
+const hidden = [
+  ["decoy-space", `${decoy} ${plants["openai-key"]}`, "openai-key"],
+  ["decoy-newline", `${decoy}\n${plants["openai-key"]}`, "openai-key"],
+  ["url-decoy", "postgres://a:${X}@postgres://u:Hunter2Hunter2xyz@db.invalid", "url-password"],
+  ["nbsp-assignment", `api_key\u00a0=\u00a0${body}`, "secret-assignment"],
+  ["vtab-assignment", `api_key\v=\v${body}`, "secret-assignment"],
+] as const;
 const nearMisses = [
   ["gh", "p_short"].join(""),
   ["sk-", "proj-"].join("") + "lowercase".repeat(5),
@@ -58,10 +67,29 @@ const Workflow = Schema.Struct({
 const decodeWorkflow = Schema.decodeUnknownEffect(Workflow);
 const decodeReport = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
-    Schema.Array(Schema.Struct({ File: Schema.String, RuleID: Schema.String })),
+    Schema.Array(
+      Schema.Struct({ File: Schema.String, RuleID: Schema.String, StartLine: Schema.Number }),
+    ),
   ),
 );
 const gitleaks = NodeChildProcess.spawnSync("gitleaks", ["version"]).status === 0;
+const needsGitleaks = (name: string) =>
+  gitleaks
+    ? name
+    : `SKIPPED, gitleaks is not on PATH, so this proof did not run (CI never runs it): ${name}`;
+const scanFlags = (config: string, root: string) => [
+  "--config",
+  config,
+  "--gitleaks-ignore-path",
+  `${root}/no-ignores`,
+  "--ignore-gitleaks-allow",
+  "--redact",
+  "--no-banner",
+  "--report-format",
+  "json",
+  "--report-path",
+  `${root}/report.json`,
+];
 
 const opsFile = (name: string) =>
   Effect.gen(function* () {
@@ -78,38 +106,95 @@ it.effect("the committed gitleaks config is generated from the scanner rules", (
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
-it.live.skipIf(!gitleaks)("gitleaks flags each planted token and no near miss", () =>
+it.live.skipIf(!gitleaks)(needsGitleaks("gitleaks flags each planted token and no near miss"), () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const root = yield* fs.makeTempDirectoryScoped();
     yield* fs.makeDirectory(`${root}/memory/decisions`, { recursive: true });
     for (const [id, token] of Object.entries(plants))
       yield* fs.writeFileString(`${root}/memory/decisions/${id}.md`, `note ${token} end\n`);
+    for (const [name, text] of hidden)
+      yield* fs.writeFileString(`${root}/memory/decisions/${name}.md`, `note ${text} end\n`);
     yield* fs.writeFileString(`${root}/memory/decisions/near.md`, `${nearMisses.join("\n")}\n`);
     yield* fs.writeFileString(`${root}/no-ignores`, "");
     const result = NodeChildProcess.spawnSync("gitleaks", [
       "dir",
-      "--config",
-      yield* opsFile("gitleaks.toml"),
-      "--gitleaks-ignore-path",
-      `${root}/no-ignores`,
-      "--ignore-gitleaks-allow",
-      "--redact",
-      "--no-banner",
-      "--report-format",
-      "json",
-      "--report-path",
-      `${root}/report.json`,
+      ...scanFlags(yield* opsFile("gitleaks.toml"), root),
       `${root}/memory`,
     ]);
     expect(result.status).toBe(1);
     const report = yield* decodeReport(yield* fs.readFileString(`${root}/report.json`));
     expect(report.map((f) => `${f.File.split("/").at(-1)} ${f.RuleID}`).sort()).toEqual(
-      Object.keys(plants)
-        .map((id) => `${id}.md ${id}`)
-        .sort(),
+      [
+        ...Object.keys(plants).map((id) => `${id}.md ${id}`),
+        ...hidden.map(([name, , id]) => `${name}.md ${id}`),
+      ].sort(),
     );
+    const newline = report.find((f) => f.File.endsWith("decoy-newline.md"));
+    expect(newline?.StartLine).toBe(2);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.live.skipIf(!gitleaks)(
+  needsGitleaks("memory-check's history scans see a token that only a merge resolution held"),
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const repo = `${root}/memory`;
+      yield* fs.makeDirectory(`${repo}/decisions`, { recursive: true });
+      yield* fs.writeFileString(`${root}/no-ignores`, "");
+      const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+      const git = (...args: ReadonlyArray<string>) => {
+        const run = NodeChildProcess.spawnSync(
+          "git",
+          ["-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@invalid", ...args],
+          { env, encoding: "utf8" },
+        );
+        expect(run.status, run.stderr).toBe(0);
+        return run.stdout.trim();
+      };
+      git("init", "-q", "-b", "main");
+      yield* fs.writeFileString(`${repo}/decisions/base.md`, "base\n");
+      git("add", "-A");
+      git("commit", "-q", "-m", "base");
+      const base = git("rev-parse", "HEAD");
+      git("checkout", "-q", "-b", "side");
+      yield* fs.writeFileString(`${repo}/decisions/side.md`, "side\n");
+      git("add", "-A");
+      git("commit", "-q", "-m", "side");
+      git("checkout", "-q", "main");
+      yield* fs.writeFileString(`${repo}/decisions/main.md`, "main\n");
+      git("add", "-A");
+      git("commit", "-q", "-m", "main");
+      git("merge", "-q", "--no-ff", "--no-commit", "side");
+      yield* fs.writeFileString(`${repo}/decisions/merge.md`, `note ${plants["github-token"]}\n`);
+      git("add", "-A");
+      git("commit", "-q", "-m", "merge");
+      yield* fs.remove(`${repo}/decisions/merge.md`);
+      git("add", "-A");
+      git("commit", "-q", "-m", "remove");
+      const head = git("rev-parse", "HEAD");
+      const text = yield* fs.readFileString(yield* opsFile("memory-check.yml"));
+      const scans = text.split("\n").filter((line) => line.includes(`"$bin/gitleaks" git`));
+      expect(scans).toHaveLength(2);
+      for (const scan of scans) {
+        const logOpts = /--log-opts="([^"]+)"/.exec(scan)?.[1];
+        const result = NodeChildProcess.spawnSync("gitleaks", [
+          "git",
+          ...scanFlags(yield* opsFile("gitleaks.toml"), root),
+          ...(logOpts === undefined
+            ? []
+            : [`--log-opts=${logOpts.replace("$BASE", base).replace("$HEAD", head)}`]),
+          repo,
+        ]);
+        expect(result.status, scan).toBe(1);
+        const report = yield* decodeReport(yield* fs.readFileString(`${root}/report.json`));
+        expect(report.map((f) => `${f.File} ${f.RuleID}`)).toContain(
+          "decisions/merge.md github-token",
+        );
+      }
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 it.effect("memory-check only reads the memory repo and pins what it runs", () =>

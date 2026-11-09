@@ -392,13 +392,13 @@ The builder takes item heads (optionally marked `misleading` by the caller), las
 
 **Memory repo guard rails** (in `kin-memory`, outside this fork; templates in [`ops/kin/memory-repo/`](../../../ops/kin/memory-repo/README.md)):
 
-- A `CODEOWNERS` file that gives `/rules.md`, `/decisions/`, `/people/`, `/objectives/` and `/.github/` to `@<owner>`, one path per line. `/.github/` stops a PR from dropping the owner rule or the check itself.
+- A `CODEOWNERS` file that denies by default: `* @<owner>` first, then owner-less lines for only the paths Kin writes alone (`/commitments/`, `/deferrals/`, `/claims/`, `/journal/`, `/INDEX.md`). GitHub applies the last matching line, so `rules.md`, `decisions/`, `people/`, `objectives/`, `.github/` and any root file a lead turn would load from the read checkout (`CLAUDE.md`, `AGENTS.md`, `.claude/`, `.mcp.json`, `.codex/`) stay with the owner. `.github/` stops a PR from dropping the owner rule or the check itself. The lint fails when the file is missing, still names `@OWNER`, or differs from that shape.
 - A ruleset on `main` that requires PRs and code-owner review, with no bypass for Kin's bot.
 - A required check `.github/workflows/memory-check.yml` that runs schema lint and gitleaks. The lint is `apps/server/src/kin/memory/lintCli.ts`, which uses the server's own front-matter parser; the gitleaks config is generated from `KinSecretScan`'s rules. Both come from a pinned commit of this repo, never from the PR.
 
 GitHub then blocks a bad auto-merge even if Kin's classifier is wrong.
 
-**Daytime lead writes (decided).** Because `main` requires PRs, LEAD's daytime memory writes land as PRs that Kin auto-merges once `memory-check` passes; a write touching an owner path waits for the owner's review like any other PR. The `MemoryWriter` change and applying the ruleset wait on APPR-8's GitHub client (lane A and lane C coordinate on #12).
+**Daytime lead writes (decided).** Because `main` requires PRs, LEAD's daytime memory writes land as PRs that Kin auto-merges once `memory-check` passes; a write touching an owner path waits for the owner's review like any other PR. APPR-8 (#44) and APPR-11 (#46) have merged; the TRIG-15 follow-up is the `MemoryWriter` PR path and running APPR-11's rulesets in a memory-repo mode, since its CODEOWNERS check expects every line to name the owner (lane A and lane C coordinate on #12).
 
 ### Secret scan before memory commits (gap 5)
 

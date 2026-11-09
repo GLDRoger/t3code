@@ -2,9 +2,10 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 
 import { fixtureItem } from "./__fixtures__/items.ts";
-import { lintMemoryFiles } from "./lint.ts";
+import { formatLintFailure, lintMemoryFiles } from "./lint.ts";
 import { readMemoryDirectory } from "./lintCli.ts";
 
 const encode = (text: string) => new TextEncoder().encode(text);
@@ -13,7 +14,18 @@ const tree = (files: Record<string, string | Uint8Array>) =>
     path,
     content: typeof content === "string" ? encode(content) : content,
   }));
-const rules = { "rules.md": "Invented rules\n" };
+const owners = [
+  "* @invented-owner",
+  "/commitments/",
+  "/deferrals/",
+  "/claims/",
+  "/journal/",
+  "/INDEX.md",
+];
+const codeowners = (...lines: ReadonlyArray<string>) => ({
+  ".github/CODEOWNERS": `${lines.join("\n")}\n`,
+});
+const rules = { "rules.md": "Invented rules\n", ...codeowners(...owners) };
 const planted = "Invented-private-detail";
 
 it.effect.each([
@@ -25,8 +37,63 @@ it.effect.each([
   },
   {
     name: "a missing rules.md",
-    files: { "deferrals/def-001.md": fixtureItem() },
+    files: { ...codeowners(...owners), "deferrals/def-001.md": fixtureItem() },
     failures: ["rules.md:1 Missing rules.md"],
+  },
+  {
+    name: "a missing CODEOWNERS",
+    files: { "rules.md": "Invented rules\n" },
+    failures: [".github/CODEOWNERS:1 Missing .github/CODEOWNERS"],
+  },
+  {
+    name: "CODEOWNERS with comments, co-owners and CRLF",
+    files: {
+      ...rules,
+      ".github/CODEOWNERS": `# owner\r\n* @invented-owner @co-owner # all\r\n${owners.slice(1).join("\r\n")}\r\n`,
+    },
+    failures: [],
+  },
+  {
+    name: "a CODEOWNERS placeholder",
+    files: { ...rules, ...codeowners("* @OWNER", ...owners.slice(1)) },
+    failures: [".github/CODEOWNERS:1 CODEOWNERS still names the @OWNER placeholder"],
+  },
+  {
+    name: "a CODEOWNERS without the * line first",
+    files: { ...rules, ...codeowners(...owners.slice(1), owners[0]!) },
+    failures: [
+      ".github/CODEOWNERS:1 CODEOWNERS must start with * and the owner",
+      ".github/CODEOWNERS:6 CODEOWNERS may only leave Kin's own paths unowned after the * line",
+      ".github/CODEOWNERS:1 CODEOWNERS lacks the /commitments/ line",
+    ],
+  },
+  {
+    name: "a CODEOWNERS * line without an owner",
+    files: { ...rules, ...codeowners("*", ...owners.slice(1)) },
+    failures: [".github/CODEOWNERS:1 CODEOWNERS must start with * and the owner"],
+  },
+  {
+    name: "CODEOWNERS freeing a path the lead would load",
+    files: { ...rules, ...codeowners(...owners, "/CLAUDE.md", `/${planted}/ @kin-bot`) },
+    failures: [
+      ".github/CODEOWNERS:7 CODEOWNERS may only leave Kin's own paths unowned after the * line",
+      ".github/CODEOWNERS:8 CODEOWNERS may only leave Kin's own paths unowned after the * line",
+    ],
+  },
+  {
+    name: "a CODEOWNERS missing a Kin path",
+    files: { ...rules, ...codeowners(...owners.filter((line) => line !== "/journal/")) },
+    failures: [".github/CODEOWNERS:1 CODEOWNERS lacks the /journal/ line"],
+  },
+  {
+    name: "an unresolved alias",
+    files: { ...rules, "decisions/dec-001.md": "---\nid: *PLANTED_alias\n---\n" },
+    failures: ["decisions/dec-001.md:1 Malformed memory item"],
+  },
+  {
+    name: "a control character in a path",
+    files: { ...rules, "claims/a\n::error::\u202e.md": "x".repeat(256 * 1024 + 1) },
+    failures: ["claims/a\\u{a}::error::\\u{202e}.md:1 Larger than 262144 bytes"],
   },
   {
     name: "a missing required key",
@@ -64,7 +131,7 @@ it.effect.each([
   },
   {
     name: "invalid UTF-8 rules",
-    files: { "rules.md": new Uint8Array([0xff, 0xfe]) },
+    files: { ...rules, "rules.md": new Uint8Array([0xff, 0xfe]) },
     failures: ["rules.md:1 Not valid UTF-8"],
   },
   {
@@ -75,13 +142,31 @@ it.effect.each([
 ])("lint reports $name", ({ files, failures }) =>
   Effect.gen(function* () {
     const result = yield* lintMemoryFiles(tree(files));
-    const lines = result.map((f) => `${f.path}:${f.line} ${f.reason}`);
+    const lines = result.map(formatLintFailure);
     expect(lines).toEqual(failures);
-    expect(lines.join("\n")).not.toContain(planted);
+    expect(lines.join("\n")).not.toMatch(new RegExp(`${planted}|PLANTED`));
   }),
 );
 
-it.layer(NodeServices.layer)((it) =>
+it.layer(NodeServices.layer)((it) => {
+  it.effect("the CODEOWNERS template passes only once the owner is filled in", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const here = yield* path.fromFileUrl(new URL(".", import.meta.url));
+      const template = yield* fs.readFileString(
+        path.join(here, "../../../../../ops/kin/memory-repo/CODEOWNERS.template"),
+      );
+      const lint = (text: string) =>
+        lintMemoryFiles(tree({ ...rules, ".github/CODEOWNERS": text })).pipe(
+          Effect.map((failures) => failures.map(formatLintFailure)),
+        );
+      expect(yield* lint(template)).toEqual([
+        ".github/CODEOWNERS:5 CODEOWNERS still names the @OWNER placeholder",
+      ]);
+      expect(yield* lint(template.replace("* @OWNER", "* @invented-owner"))).toEqual([]);
+    }),
+  );
   it.effect("reads item folders and root files without following symlinks", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -90,6 +175,9 @@ it.layer(NodeServices.layer)((it) =>
       yield* fs.writeFileString(`${outside}/secret.md`, fixtureItem());
       yield* fs.makeDirectory(`${root}/deferrals/nested`, { recursive: true });
       yield* fs.makeDirectory(`${root}/journal`);
+      yield* fs.makeDirectory(`${root}/.github/workflows`, { recursive: true });
+      yield* fs.writeFileString(`${root}/.github/CODEOWNERS`, "* @invented-owner\n");
+      yield* fs.writeFileString(`${root}/.github/workflows/memory-check.yml`, "name: x\n");
       yield* fs.writeFileString(`${root}/rules.md`, "Invented rules\n");
       yield* fs.writeFileString(`${root}/deferrals/nested/def-001.md`, fixtureItem());
       yield* fs.writeFileString(`${root}/journal/2026-11-01.md`, "journal\n");
@@ -97,9 +185,10 @@ it.layer(NodeServices.layer)((it) =>
       yield* fs.symlink(outside, `${root}/people`);
       const files = yield* readMemoryDirectory(root);
       expect(files.map((file) => file.path).sort()).toEqual([
+        ".github/CODEOWNERS",
         "deferrals/nested/def-001.md",
         "rules.md",
       ]);
     }).pipe(Effect.scoped),
-  ),
-);
+  );
+});

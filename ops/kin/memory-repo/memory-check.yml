@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      # A GLDRoger/t3code commit that contains ops/kin/memory-repo. Bump it deliberately.
+      # A GLDRoger/t3code commit on kin or main that contains ops/kin/memory-repo. Bump it deliberately.
       T3CODE_REF: "<t3code commit SHA>"
       GITLEAKS_VERSION: "8.30.1"
       GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
@@ -50,7 +50,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1.15.0
         with:
           working-directory: t3code
           version-file: pnpm-workspace.yaml
@@ -87,8 +87,9 @@ jobs:
             --ignore-gitleaks-allow --redact --no-banner --exit-code 1)
           "$bin/gitleaks" dir "${flags[@]}" memory
           # New commits only; a missing or zero base (first push, rewritten history) scans everything.
+          # -m diffs merges against each parent, so a token only a merge resolution held is seen too.
           if [[ "$BASE" =~ ^[0-9a-f]{40}$ && ! "$BASE" =~ ^0+$ ]] && git -C memory cat-file -e "$BASE^{commit}" 2>/dev/null; then
-            "$bin/gitleaks" git "${flags[@]}" --log-opts="$BASE..$HEAD" memory
+            "$bin/gitleaks" git "${flags[@]}" --log-opts="-m $BASE..$HEAD" memory
           else
-            "$bin/gitleaks" git "${flags[@]}" memory
+            "$bin/gitleaks" git "${flags[@]}" --log-opts="-m --all" memory
           fi

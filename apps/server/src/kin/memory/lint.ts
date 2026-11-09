@@ -16,8 +16,12 @@ export interface LintFailure {
 const orgId = KinOrgId.make("memory-lint");
 const formatIssue = SchemaIssue.makeFormatterStandardSchemaV1();
 
+const codeowners = ".github/CODEOWNERS";
+const kinOnlyPaths = ["/commitments/", "/deferrals/", "/claims/", "/journal/", "/INDEX.md"];
+
 export const isLintedPath = (path: string) =>
   path === "rules.md" ||
+  path === codeowners ||
   path === "INDEX.md" ||
   (path.endsWith(".md") && folders.some((folder) => path.startsWith(`${folder}/`)));
 
@@ -26,9 +30,39 @@ const keyLine = (text: string, key: string) => {
   return index === -1 ? 1 : index + 1;
 };
 
+// Deny by default: the owner owns everything but Kin's own paths, which is exactly the template.
+const codeownersFailures = (text: string) => {
+  const failures: Array<{ line: number; reason: string }> = [];
+  const rules = text.split(/\r?\n/).flatMap((raw, index) => {
+    const tokens = raw.trim().split(/\s+/);
+    const end = tokens.findIndex((token) => token.startsWith("#"));
+    const [pattern, ...owners] = end === -1 ? tokens : tokens.slice(0, end);
+    return pattern ? [{ line: index + 1, pattern, owners }] : [];
+  });
+  for (const rule of rules)
+    if (rule.owners.some((owner) => owner.toLowerCase() === "@owner"))
+      failures.push({ line: rule.line, reason: "CODEOWNERS still names the @OWNER placeholder" });
+  const [first, ...rest] = rules;
+  if (first?.pattern !== "*" || first.owners.length === 0)
+    failures.push({ line: first?.line ?? 1, reason: "CODEOWNERS must start with * and the owner" });
+  for (const rule of rest)
+    if (!kinOnlyPaths.includes(rule.pattern) || rule.owners.length > 0)
+      failures.push({
+        line: rule.line,
+        reason: "CODEOWNERS may only leave Kin's own paths unowned after the * line",
+      });
+  for (const path of kinOnlyPaths)
+    if (!rest.some((rule) => rule.pattern === path))
+      failures.push({ line: 1, reason: `CODEOWNERS lacks the ${path} line` });
+  return failures;
+};
+
+const dateField =
+  /^Invalid (recorded_at|valid_from|invalid_at|review_by|due); date-times require an explicit offset$/;
+
 // Reasons never quote the file: YAML and schema messages embed the offending source.
 const describe = (error: MemoryItemError, text: string): { line: number; reason: string } => {
-  const field = /^Invalid (\w+);/.exec(error.reason)?.[1];
+  const field = dateField.exec(error.reason)?.[1];
   if (field) return { line: keyLine(text, field), reason: error.reason };
   if (error.reason === "Unknown field in on condition")
     return { line: keyLine(text, "on"), reason: error.reason };
@@ -46,11 +80,22 @@ const describe = (error: MemoryItemError, text: string): { line: number; reason:
     const line = problem instanceof YAMLError ? (problem.linePos?.[0].line ?? 0) + 1 : 1;
     return {
       line,
-      reason: error.reason.startsWith("Malformed YAML;") ? error.reason : "Malformed YAML",
+      reason:
+        error.reason === "Malformed YAML; links containing # must be quoted"
+          ? error.reason
+          : "Malformed YAML",
     };
   }
-  return { line: 1, reason: error.reason };
+  return {
+    line: 1,
+    reason:
+      error.reason === "Missing front matter delimiters" ? error.reason : "Malformed memory item",
+  };
 };
+
+// Paths come from the checkout: a newline could forge a log line or a workflow command.
+export const formatLintFailure = (failure: LintFailure) =>
+  `${failure.path.replace(/[\p{Cc}\p{Cf}\u2028\u2029\\]/gu, (char) => `\\u{${char.codePointAt(0)!.toString(16)}}`)}:${failure.line} ${failure.reason}`;
 
 /** Checks memory files the way `Memory.load` reads them, so CI rejects what the server would skip. */
 export const lintMemoryFiles = Effect.fn("MemoryLint.lint")(function* (
@@ -60,6 +105,8 @@ export const lintMemoryFiles = Effect.fn("MemoryLint.lint")(function* (
   const ids = new Map<string, string>();
   if (!files.some((file) => file.path === "rules.md"))
     failures.push({ path: "rules.md", line: 1, reason: "Missing rules.md" });
+  if (!files.some((file) => file.path === codeowners))
+    failures.push({ path: codeowners, line: 1, reason: `Missing ${codeowners}` });
   for (const file of [...files].sort((a, b) => a.path.localeCompare(b.path))) {
     if (!isLintedPath(file.path)) continue;
     if (file.content.byteLength > maxBlobBytes) {
@@ -72,6 +119,10 @@ export const lintMemoryFiles = Effect.fn("MemoryLint.lint")(function* (
     }).pipe(Effect.result);
     if (text._tag === "Failure") {
       failures.push({ path: file.path, line: 1, reason: text.failure });
+      continue;
+    }
+    if (file.path === codeowners) {
+      failures.push(...codeownersFailures(text.success).map((f) => ({ path: file.path, ...f })));
       continue;
     }
     if (!folders.some((folder) => file.path.startsWith(`${folder}/`))) continue;
