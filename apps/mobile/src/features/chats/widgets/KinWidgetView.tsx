@@ -9,6 +9,7 @@ import { KIN_MISSING_CARD_TEXT, KIN_UNKNOWN_CARD_TEXT, kinCardView } from "./kin
 import { KinChoiceCard } from "./KinChoiceCard";
 import { KinDeferralCard } from "./KinDeferralCard";
 import { KinDigestCard } from "./KinDigestCard";
+import { KinMemoryChangesCard } from "./KinMemoryChangesCard";
 import { KinPromotionCard } from "./KinPromotionCard";
 import { KinShadowReviewCard } from "./KinShadowReviewCard";
 import { KinTaskCard } from "./KinTaskCard";
@@ -47,6 +48,8 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
       return <KinShadowReviewCard review={view.review} environmentId={props.environmentId} />;
     case "promotion":
       return <KinPromotionCard promotion={view.promotion} environmentId={props.environmentId} />;
+    case "memory_changes":
+      return <KinMemoryChangesCard changes={view.changes} environmentId={props.environmentId} />;
     case "missing":
     case "unknown":
       return (

@@ -14,6 +14,8 @@ import type { KinShadowSummary } from "./lead/KinLevels.ts";
 import type { KinLevelGate } from "./lead/LevelGate.ts";
 import type { KinPromotion } from "./levels/Promotion.ts";
 import type { KinPromotionCards } from "./lead/KinLevels.ts";
+import type { KinMemoryChanges } from "./memory/MemoryChanges.ts";
+import type { MemoryChangeHooks } from "./memory/MemoryWriter.ts";
 import type { KinGithubWebhookLock } from "./triggers/githubWebhooks.ts";
 import type { KinOwnerTimeZone } from "./triggers/ownerTimeZone.ts";
 import type { KinPushDevices } from "./push/KinPushDevices.ts";
@@ -33,6 +35,8 @@ export type Services =
   | KinShadowSummary
   | KinPromotion
   | KinPromotionCards
+  | KinMemoryChanges
+  | MemoryChangeHooks
   | KinGithubWebhookLock
   | ApproverKeys
   | GrantVerifier
