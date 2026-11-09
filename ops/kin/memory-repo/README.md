@@ -18,13 +18,36 @@ To pick up new lint or scanner rules, bump `T3CODE_REF` in a reviewed PR. The li
 
 The ruleset on `main` (PRs required, code-owner review, `memory-check` required, no bypass for Kin's bot) comes in the TRIG-15 follow-up with the `MemoryWriter` PR path. `scripts/kin-rulesets.ts` applies it once the memory repo is in `KIN_REPOS` with `kind: "memory"`, which accepts this file's owner-less Kin lines.
 
+### The owner's own changes
+
+The owner is the only code owner, and GitHub never lets an author approve their own PR, so a PR the owner opens on an owned path (a `T3CODE_REF` bump, a hand edit to `rules.md`) can never merge. Use the code repo's sync flow ([approvals spec, section 10](../../../docs/kin/specs/approvals.md#10-github-the-bot-app-the-owners-review-rulesets)) instead:
+
+1. The owner pushes a branch with the change, using their own credential, never the Kin host's.
+2. The bot adds one same-tree commit on top (`POST /git/commits` with the owner's tree and commit as its only parent, then the ref update) and opens the PR, after checking that `head^` is the SHA the owner pushed and `head^{tree}` is its tree.
+3. The owner approves as code owner, which counts because the bot authored the PR, and squash-merges in the GitHub UI.
+
+Nothing automates this yet: Kin has no code that adds the same-tree commit or opens the PR, for this repo or the code repo. When the diff touches `.github/workflows` (every `T3CODE_REF` bump does), check by hand that GitHub accepts the bot's same-tree commit, because the App has no Workflows permission. With `require_last_push_approval` off here, the bot opening the PR is what makes the approval count, so if GitHub refuses that commit, the bot can open the PR from the owner's head as it is.
+
+### Workflow permissions
+
+`memory-check` is pinned to the GitHub Actions App (15368), which trusts any Actions workflow in the repo, not just `memory-check.yml`. A workflow that anyone pushes could post a passing `memory-check` on another PR. So keep the repo's Actions workflow permissions read-only, and never grant the Kin App Workflows permission on this repo. A ruleset `workflows` rule that requires `memory-check.yml` from a pinned ref is planned to close the gap.
+
+### Before switching it on
+
+The memory mode is tested only against a fake GitHub. In memory mode on a scratch repo, check:
+
+- [ ] A PR that touches only `journal/` shows `mergeable_state: "clean"` once `memory-check` passes, with no review.
+- [ ] A PR that touches `decisions/` shows `blocked` until the owner approves.
+- [ ] After the owner approves, a bot push that changes `decisions/` dismisses the approval.
+- [ ] A rename from `decisions/x.md` into `journal/` stays gated on the owner's review.
+
 ## Cost
 
 Each run checks out `t3code` at the pinned commit without `.repos/`, installs the server's dependencies with `vp install --frozen-lockfile --ignore-scripts --filter=t3...` and runs the lint with Node. The install dominates: 881 packages, which took 19 s from an empty store on a fast connection, so budget about a minute per run on a hosted runner, plus Vite+ and Node setup. Nothing is cached between runs, so a PR can't seed a cache the check later trusts. Gitleaks is a 7 MB release binary, checked against its sha256 before it runs, and scans the tree plus the new commits in seconds.
 
 ## Things to know
 
-- GitHub runs a PR's own copy of this workflow, so a PR could rewrite the check. The `*` line in `CODEOWNERS`, which also covers `.github/`, is what stops that: such a PR needs the owner's review. An org ruleset that requires this workflow from a pinned ref would remove the gap; consider it with the ruleset.
+- GitHub runs a PR's own copy of this workflow, so a PR could rewrite the check. The `*` line in `CODEOWNERS`, which also covers `.github/`, is what stops that: such a PR needs the owner's review. A ruleset `workflows` rule that requires this workflow from a pinned ref would remove the gap; it is planned (see Workflow permissions above).
 - A `.gitleaksignore` anywhere in the memory repo fails the check, because gitleaks would honour it. `gitleaks:allow` comments are ignored.
 - A false positive the owner allowed in `kin_secret_allow` still fails gitleaks, which has no allowlist. Reword the text; whether the owner may merge past the check is settled with the ruleset.
 - `CODEOWNERS` denies by default, so a new root file such as `CLAUDE.md`, `AGENTS.md`, `.claude/`, `.mcp.json` or `.codex/` needs the owner's review before the lead's read checkout loads it. The lint fails if the file still names `@OWNER` or frees any path beyond Kin's own.

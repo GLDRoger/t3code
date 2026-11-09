@@ -474,6 +474,16 @@ describe("kin-rulesets CODEOWNERS", () => {
       memoryCodeowners.replace("/journal/", "/journal/ @priya"),
       ['line 9: "/journal/" is owned by @priya, not only @GLDRoger'],
     ],
+    ...["/commitments/", "/deferrals/", "/claims/", "/journal/"].flatMap((folder, index) =>
+      [folder.slice(0, -1), `${folder}**`].map(
+        (nearMiss) =>
+          [
+            "memory",
+            memoryCodeowners.replace(folder, nearMiss),
+            [`line ${index + 6}: "${nearMiss}" is owned by no one, not only @GLDRoger`],
+          ] as const,
+      ),
+    ),
   ] as const)("judges %s %j", (kind, content, problems) => {
     assert.deepStrictEqual(codeownersProblems(content, "GLDRoger", kind), problems);
   });
