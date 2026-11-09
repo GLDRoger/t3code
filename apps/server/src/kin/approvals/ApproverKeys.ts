@@ -405,6 +405,7 @@ const make = Effect.gen(function* () {
             // `KinIdentity.resolve` yields only the org owner until CHAT-11 adds roles (spec, Interfaces).
             startedByRole: "owner",
             chain: [{ kind: "approver_key", id: thumbprint, authorRole: "owner" }],
+            ceilingBelowOwner: false,
           },
           source: yield* decodeEventId(`approver_key:${thumbprint}:${input.challenge}`),
         });

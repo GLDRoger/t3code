@@ -23,9 +23,13 @@ import {
   layer as pendingActionsLayer,
   type KinPendingActionCreateInput,
 } from "./PendingActions.ts";
+import * as Audit from "./Audit.ts";
 
 const database = Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory);
-const layer = pendingActionsLayer.pipe(Layer.provideMerge(database));
+const layer = pendingActionsLayer.pipe(
+  Layer.provideMerge(Audit.layer),
+  Layer.provideMerge(database),
+);
 
 const decodeEventId = Schema.decodeSync(KinEventId);
 const owner = Schema.decodeSync(KinPersonId)("h_owner");
@@ -60,7 +64,7 @@ const request = (source: string, number = 212) =>
     targetDigest: digest("1"),
     reason: "CI is green.",
     requestedBy: { agentId: "lead", threadId: "thread-lead" },
-    provenance: { startedBy: "github", startedByRole: "none", chain: [] },
+    provenance: { startedBy: "github", startedByRole: "none", chain: [], ceilingBelowOwner: true },
     source: decodeEventId(source),
   }) as unknown as KinPendingActionCreateInput;
 
@@ -221,6 +225,10 @@ describe("KinPendingActions", () => {
       );
       assert.strictEqual(voided.state, "voided");
       assert.strictEqual(voided.stateReason, "key_revoked");
+      // A voided action whose grant is still live never runs.
+      if (approved._tag === "approved")
+        assert.isFalse(yield* actions.claim({ ...ref, grantId: approved.grant.id }));
+      assert.strictEqual(yield* count("kin_executions"), 0);
 
       const other = (yield* actions.create(request("delivery-2"))).action;
       const otherRef = { orgId: other.orgId, actionId: other.id, revision: 0 };

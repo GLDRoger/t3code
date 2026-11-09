@@ -1,5 +1,8 @@
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as Routines from "../triggers/routines.ts";
+import * as DeferralFlow from "../triggers/deferralFlow.ts";
+import * as GithubEvents from "../triggers/githubEvents.ts";
+import * as Watchdogs from "../triggers/watchdogs.ts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as TriggerScheduler from "../triggers/KinTriggerScheduler.ts";
 import * as TriggerStore from "../triggers/KinTriggerStore.ts";
@@ -13,6 +16,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Option from "effect/Option";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import * as Config from "effect/Config";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -31,6 +35,7 @@ import { handlers } from "./mcp/handlers.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
+import * as KinStop from "./KinStop.ts";
 import * as DreamRunner from "../dreaming/DreamRunner.ts";
 import * as DreamSession from "../dreaming/DreamSession.ts";
 import * as Workers from "./Workers.ts";
@@ -58,7 +63,12 @@ export function containStartup<A, E, R>(layer: Layer.Layer<A, E, R>) {
   );
 }
 
-const routineRuntime = Routines.layer.pipe(
+const routineRuntime = Layer.mergeAll(
+  Routines.layer,
+  DeferralFlow.layer,
+  GithubEvents.consumerLayer,
+  Watchdogs.runtimeLayer,
+).pipe(
   Layer.provideMerge(TriggerScheduler.layer),
   Layer.provideMerge(Layer.mergeAll(TriggerStore.layer, TriggerInbox.layer)),
   // Kin builds in its contained startup scope; orchestration runtime does not expose its scheduler.
@@ -73,10 +83,14 @@ const dreamRuntime = DreamRunner.layer.pipe(
 const runner = Layer.effectDiscard(
   Effect.gen(function* () {
     const runner = yield* WakeupRunner.WakeupRunner;
+    const stop = yield* KinStop.KinStop;
     yield* Effect.gen(function* () {
       const context = yield* Layer.build(routineRuntime);
       yield* Layer.build(dreamRuntime.pipe(Layer.provide(Layer.succeedContext(context)))).pipe(
         Effect.catchCause((cause) => Effect.logError("Kin dreams unavailable", { cause })),
+      );
+      yield* stop.attach(
+        yield* KinStop.makeFanOut(Context.getOption(context, Routines.KinRoutines)),
       );
       yield* runner.start.pipe(Effect.provideContext(context));
     }).pipe(forkParked);
