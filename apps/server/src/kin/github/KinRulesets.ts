@@ -1,13 +1,27 @@
 // Pure: the approvals spec section 10 rulesets and CODEOWNERS rule. Apply, `--check` and the
 // tests all read `kinRulesets`, so there is one definition of what GitHub should hold.
+import { kinOnlyPaths } from "../memory/lint.ts";
 
 /**
- * Required status check contexts per Kin repository; other repos pass `--status-check`. Its keys
- * count as Kin repositories even when `KIN_GITHUB_REPOS` leaves them out.
+ * `code` repos hold Kin's source; a `memory` repo is the deny-by-default memory repo (triggers
+ * spec, memory repo guard rails), where PRs touching only Kin's own paths merge without review.
  */
-export const KIN_REPO_REQUIRED_CHECKS: Readonly<Record<string, ReadonlyArray<string>>> = {
+export type KinRepoKind = "code" | "memory";
+
+export interface KinRepo {
+  readonly kind: KinRepoKind;
+  readonly requiredChecks: ReadonlyArray<string>;
+}
+
+/**
+ * Kin repositories with their kind and required status check contexts; other repos pass
+ * `--status-check` and are `code`. Its keys count as Kin repositories even when
+ * `KIN_GITHUB_REPOS` leaves them out.
+ */
+export const KIN_REPOS: Readonly<Record<string, KinRepo>> = {
   // ci.yml's `Check` job fails unless every other CI job passed or was skipped as not needed.
-  "GLDRoger/t3code": ["Check"],
+  "GLDRoger/t3code": { kind: "code", requiredChecks: ["Check"] },
+  "GLDRoger/kin-memory": { kind: "memory", requiredChecks: ["memory-check"] },
 };
 
 /**
@@ -35,58 +49,94 @@ export interface KinRuleset {
   readonly rules: ReadonlyArray<KinRulesetRule>;
 }
 
-/** @public The rulesets for one repository, given its required status check contexts. */
-export const kinRulesets = (requiredChecks: ReadonlyArray<string>): ReadonlyArray<KinRuleset> => [
-  {
-    name: "kin-main",
-    target: "branch",
-    enforcement: "active",
-    bypass_actors: [],
-    conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
-    rules: [
-      { type: "deletion" },
-      { type: "non_fast_forward" },
-      {
-        type: "pull_request",
-        parameters: {
-          required_approving_review_count: 1,
-          require_code_owner_review: true,
-          dismiss_stale_reviews_on_push: true,
-          // Stale dismissal ignores diff-neutral pushes, so a bot commit added then reverted would
-          // keep the owner's approval. Upstream syncs end with a bot push for this (spec section 10).
-          require_last_push_approval: true,
-          required_review_thread_resolution: true,
-          // `merge` is for the owner's upstream syncs; the executor squashes bot PRs.
-          allowed_merge_methods: ["squash", "merge"],
-        },
-      },
-      {
-        type: "required_status_checks",
-        parameters: {
-          strict_required_status_checks_policy: true,
-          do_not_enforce_on_create: false,
-          required_status_checks: requiredChecks.map((context) => ({
-            context,
-            integration_id: GITHUB_ACTIONS_INTEGRATION_ID,
-          })),
-        },
-      },
-    ],
+const requiredStatusChecks = (requiredChecks: ReadonlyArray<string>): KinRulesetRule => ({
+  type: "required_status_checks",
+  parameters: {
+    strict_required_status_checks_policy: true,
+    do_not_enforce_on_create: false,
+    required_status_checks: requiredChecks.map((context) => ({
+      context,
+      integration_id: GITHUB_ACTIONS_INTEGRATION_ID,
+    })),
   },
-  {
-    name: "kin-release",
-    target: "tag",
-    enforcement: "active",
-    bypass_actors: [],
-    // `*` stops at `/`, so `v*/**` covers tags like `v1/rc`.
-    conditions: { ref_name: { include: ["refs/tags/v*", "refs/tags/v*/**"], exclude: [] } },
-    rules: [
-      { type: "creation" },
-      { type: "update", parameters: { update_allows_fetch_and_merge: false } },
-      { type: "deletion" },
-    ],
-  },
-];
+});
+
+const defaultBranch = {
+  name: "kin-main",
+  target: "branch",
+  enforcement: "active",
+  bypass_actors: [],
+  conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
+} as const;
+
+/** @public The rulesets for one repository, given its kind and required status check contexts. */
+export const kinRulesets = (
+  requiredChecks: ReadonlyArray<string>,
+  kind: KinRepoKind = "code",
+): ReadonlyArray<KinRuleset> =>
+  kind === "memory"
+    ? [
+        {
+          ...defaultBranch,
+          rules: [
+            { type: "deletion" },
+            { type: "non_fast_forward" },
+            {
+              type: "pull_request",
+              parameters: {
+                // Zero, so a PR touching only CODEOWNERS' owner-less Kin paths merges on
+                // `memory-check` alone; code-owner review still gates every other path.
+                required_approving_review_count: 0,
+                require_code_owner_review: true,
+                dismiss_stale_reviews_on_push: true,
+                // Squash only, so an unreviewed commit can't land in history behind an approval
+                // that a diff-neutral push kept, which is what last-push approval guards against.
+                require_last_push_approval: false,
+                required_review_thread_resolution: true,
+                allowed_merge_methods: ["squash"],
+              },
+            },
+            requiredStatusChecks(requiredChecks),
+          ],
+        },
+      ]
+    : [
+        {
+          ...defaultBranch,
+          rules: [
+            { type: "deletion" },
+            { type: "non_fast_forward" },
+            {
+              type: "pull_request",
+              parameters: {
+                required_approving_review_count: 1,
+                require_code_owner_review: true,
+                dismiss_stale_reviews_on_push: true,
+                // Stale dismissal ignores diff-neutral pushes, so a bot commit added then reverted would
+                // keep the owner's approval. Upstream syncs end with a bot push for this (spec section 10).
+                require_last_push_approval: true,
+                required_review_thread_resolution: true,
+                // `merge` is for the owner's upstream syncs; the executor squashes bot PRs.
+                allowed_merge_methods: ["squash", "merge"],
+              },
+            },
+            requiredStatusChecks(requiredChecks),
+          ],
+        },
+        {
+          name: "kin-release",
+          target: "tag",
+          enforcement: "active",
+          bypass_actors: [],
+          // `*` stops at `/`, so `v*/**` covers tags like `v1/rc`.
+          conditions: { ref_name: { include: ["refs/tags/v*", "refs/tags/v*/**"], exclude: [] } },
+          rules: [
+            { type: "creation" },
+            { type: "update", parameters: { update_allows_fetch_and_merge: false } },
+            { type: "deletion" },
+          ],
+        },
+      ];
 
 /** The fields of a GitHub ruleset that `diffRuleset` reads. */
 export interface LiveRuleset {
@@ -191,9 +241,14 @@ export function diffRuleset(
 /**
  * Why `content` (the default branch's `.github/CODEOWNERS`) fails to make `owner` the sole code
  * owner of every path; empty when it passes. A `*` rule must exist, and every rule must name
- * exactly the owner, so no later rule can hand a path to someone else or to no one.
+ * exactly the owner, so no later rule can hand a path to someone else or to no one. In a `memory`
+ * repo, Kin's own paths (`kinOnlyPaths`) may name no one instead, as the template does.
  */
-export function codeownersProblems(content: string, owner: string): ReadonlyArray<string> {
+export function codeownersProblems(
+  content: string,
+  owner: string,
+  kind: KinRepoKind = "code",
+): ReadonlyArray<string> {
   const problems: Array<string> = [];
   const expected = `@${owner}`.toLowerCase();
   let coversAll = false;
@@ -209,6 +264,7 @@ export function codeownersProblems(content: string, owner: string): ReadonlyArra
     const [pattern, ...owners] = commentAt === -1 ? tokens : tokens.slice(0, commentAt);
     if (pattern === undefined) return;
     if (pattern === "*") coversAll = true;
+    if (kind === "memory" && owners.length === 0 && kinOnlyPaths.includes(pattern)) return;
     if (owners.length !== 1 || owners[0]!.toLowerCase() !== expected) {
       problems.push(
         `line ${index + 1}: "${pattern}" is owned by ${owners.length === 0 ? "no one" : owners.join(" ")}, not only @${owner}`,

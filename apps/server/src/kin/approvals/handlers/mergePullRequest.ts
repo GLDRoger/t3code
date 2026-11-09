@@ -1,11 +1,19 @@
 import type { KinPendingAction } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinBotReads } from "../../github/KinBotReads.ts";
 import { OwnerMergeClient } from "../../github/OwnerMergeClient.ts";
+import { isOrgPaused } from "../../lead/orgState.ts";
 import { KinExecError, type KinActionHandler } from "../ActionHandlers.ts";
-import { githubUnavailable, outcomeOf, requireBinding, tokenFailure } from "./ownerWrite.ts";
+import {
+  githubUnavailable,
+  outcomeOf,
+  requireBinding,
+  requirePass,
+  tokenFailure,
+} from "./ownerWrite.ts";
 
 const partsOf = Effect.fnUntraced(function* (action: KinPendingAction) {
   if (
@@ -21,6 +29,7 @@ const partsOf = Effect.fnUntraced(function* (action: KinPendingAction) {
 export const makeMergePullRequestHandler = Effect.gen(function* () {
   const reads = yield* KinBotReads;
   const owner = yield* OwnerMergeClient;
+  const sql = yield* SqlClient.SqlClient;
 
   const precheck = Effect.fn("mergePullRequest.precheck")(function* (action: KinPendingAction) {
     const { target, resolved } = yield* partsOf(action);
@@ -59,6 +68,12 @@ export const makeMergePullRequestHandler = Effect.gen(function* () {
     if (yield* reads.isBaseOfOpenPull(branch)) return "base of an open pull request";
     const head = yield* reads.branchHead(branch);
     if (Option.isNone(head) || head.value !== resolved.headSha) return "moved";
+    // The stop switch, again right before this second write.
+    const paused = yield* isOrgPaused(action.orgId).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.orElseSucceed(() => true),
+    );
+    if (paused) return "Kin was paused";
     const answer = yield* owner.deleteBranch(pass, branch);
     return answer._tag;
   });
@@ -66,23 +81,26 @@ export const makeMergePullRequestHandler = Effect.gen(function* () {
   const run: KinActionHandler["run"] = Effect.fn("mergePullRequest.run")(
     function* (action, context) {
       const { target, resolved } = yield* partsOf(action);
-      yield* requireBinding(action, context, resolved.headSha);
+      const headSha = yield* requireBinding(action, context, resolved.headSha);
+      const pass = yield* requirePass(context);
       const answer = yield* owner
-        .merge(context.pass, {
+        .merge(pass, {
           repo: target.repo,
           number: target.number,
-          sha: resolved.headSha,
+          sha: headSha,
           mergeMethod: target.mergeMethod,
         })
         .pipe(Effect.mapError(tokenFailure));
       const outcome = yield* outcomeOf(answer);
       if (!target.deleteBranchAfter) return outcome;
-      const deleted = yield* deleteHead(action, context.pass).pipe(
+      const deleted = yield* deleteHead(action, pass).pipe(
         Effect.catch((error) =>
           Effect.succeed(
-            error._tag === "KinGitHubRequestError" && error.stage === "transport"
-              ? ("GitHub didn't answer" as const)
-              : ("couldn't check it on GitHub" as const),
+            error._tag === "OwnerMergePassStaleError"
+              ? ("the credential check went stale before the delete" as const)
+              : error._tag === "KinGitHubRequestError" && error.stage === "transport"
+                ? ("GitHub didn't answer" as const)
+                : ("couldn't check it on GitHub" as const),
           ),
         ),
       );
@@ -111,5 +129,11 @@ export const makeMergePullRequestHandler = Effect.gen(function* () {
     },
   );
 
-  return { kind: "merge_pull_request", precheck, run, reconcile } satisfies KinActionHandler;
+  return {
+    kind: "merge_pull_request",
+    credentialCheck: true,
+    precheck,
+    run,
+    reconcile,
+  } satisfies KinActionHandler;
 });

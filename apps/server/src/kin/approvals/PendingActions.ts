@@ -629,6 +629,7 @@ const make = Effect.gen(function* () {
   const grantColumns = sql`g.grant_id, g.revision AS g_revision, g.jti, g.approver_human_id,
     g.key_thumbprint, g.compact, g.iat_s, g.exp_s, g.accepted_at, g.consumed_at`;
 
+  // Without an org, both scans are host-wide on purpose: the worker serves every org.
   const approvedWithGrant = Effect.fn("KinPendingActions.approvedWithGrant")(
     function* (orgId?: KinOrgId) {
       const rows = yield* sql<ActionRow & GrantRow>`SELECT a.*, ${grantColumns}
@@ -648,7 +649,7 @@ const make = Effect.gen(function* () {
         SELECT a.*, ${grantColumns}, e.write_started_at AS e_write_started_at
         FROM kin_pending_actions a
         JOIN kin_executions e ON e.org_id = a.org_id AND e.action_id = a.action_id
-        JOIN kin_grants g ON g.grant_id = e.grant_id
+        JOIN kin_grants g ON g.grant_id = e.grant_id AND g.org_id = e.org_id
         WHERE a.state = 'executing' AND e.finished_at IS NULL
         ORDER BY e.started_at, a.action_id`;
       const found = yield* withGrant(rows);
@@ -711,7 +712,7 @@ const make = Effect.gen(function* () {
   const claimedKeyUsable = Effect.fn("KinExecutionLedger.signingKeyUsable")(
     function* (ref: ActionRef) {
       const rows = yield* sql`SELECT 1 FROM kin_executions e JOIN kin_grants g
-        ON g.grant_id = e.grant_id
+        ON g.grant_id = e.grant_id AND g.org_id = e.org_id
         WHERE e.org_id = ${ref.orgId} AND e.action_id = ${ref.actionId}
           AND ${signingKeyUsable({
             orgId: sql`g.org_id`,
@@ -767,7 +768,8 @@ const make = Effect.gen(function* () {
               key_thumbprint: KinKeyThumbprint;
               device_label: string | null;
             }>`SELECT g.jti, g.key_thumbprint, k.device_label
-              FROM kin_executions e JOIN kin_grants g ON g.grant_id = e.grant_id
+              FROM kin_executions e
+              JOIN kin_grants g ON g.grant_id = e.grant_id AND g.org_id = e.org_id
               LEFT JOIN kin_approver_keys k
                 ON k.org_id = g.org_id AND k.thumbprint = g.key_thumbprint
               WHERE e.org_id = ${input.orgId} AND e.action_id = ${input.actionId}`;

@@ -66,8 +66,8 @@ export interface KinExecutionContext {
   readonly grant: KinGrant;
   /** The owner-signed payload, decoded from `grant.compact` (already verified at submission). */
   readonly payload: Effect.Effect<KinGrantPayload, KinExecError>;
-  /** A credential hygiene pass from just before `run`; the owner merge token needs it. */
-  readonly pass: CredentialHygienePass;
+  /** A hygiene pass from just after the claim, for kinds with `credentialCheck`. */
+  readonly pass: Option.Option<CredentialHygienePass>;
 }
 
 /**
@@ -76,6 +76,8 @@ export interface KinExecutionContext {
  */
 export interface KinActionHandler {
   readonly kind: KinActionKind;
+  /** Runs only on a passing credential hygiene check: every kind that writes to GitHub. */
+  readonly credentialCheck: boolean;
   /** Re-reads live state after the claim; any failure ends the action `failed`. */
   readonly precheck: (action: KinPendingAction) => Effect.Effect<void, KinExecError>;
   /** The side effect. The stop switch was checked just before the executor called it. */

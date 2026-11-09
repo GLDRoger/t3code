@@ -4,6 +4,7 @@ import * as DateTime from "effect/DateTime";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
@@ -401,6 +402,25 @@ describe("OwnerMergeClient", () => {
         authorization: `Bearer ${Redacted.value(TOKEN)}`,
         body: { sha: "a".repeat(40), merge_method: "merge" },
       });
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("a write whose answer body never arrives may have landed", () => {
+    const merge = `/repos/${REPOS[0]}/pulls/7/merge`;
+    const { layer } = setup((request) =>
+      request.path === merge
+        ? { status: 200, stallBody: true }
+        : narrowToken(inThirtyDays)(request),
+    );
+    return Effect.gen(function* () {
+      yield* save();
+      const client = yield* OwnerMergeClient.OwnerMergeClient;
+      const fresh = yield* withHygiene(pass);
+      const running = yield* client
+        .merge(fresh, { repo: REPOS[0]!, number: 7, sha: "a".repeat(40), mergeMethod: "merge" })
+        .pipe(Effect.forkChild);
+      yield* TestClock.adjust("30 seconds");
+      assert.deepStrictEqual(yield* Fiber.join(running), { _tag: "unknown" });
     }).pipe(Effect.provide(layer));
   });
 

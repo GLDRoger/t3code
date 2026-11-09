@@ -37,6 +37,7 @@ const grantOnly = <R>(
   make: Effect.Effect<
     {
       readonly kind: ActionHandlers.KinActionHandler["kind"];
+      readonly credentialCheck: boolean;
       readonly precheck: (
         action: KinPendingAction,
       ) => Effect.Effect<void, { readonly message: string }>;
@@ -54,6 +55,7 @@ const grantOnly = <R>(
 ) =>
   Effect.map(make, (handler): ActionHandlers.KinActionHandler => ({
     kind: handler.kind,
+    credentialCheck: handler.credentialCheck,
     precheck: (action) => handler.precheck(action).pipe(Effect.mapError(refused)),
     run: (action, { grant }) =>
       handler.run(action, grant).pipe(Effect.as({}), Effect.mapError(refused)),
@@ -63,40 +65,50 @@ const grantOnly = <R>(
 const registerApproverKeyHandler = grantOnly(makeRegisterApproverKeyHandler);
 const setLevelHandler = grantOnly(makeSetLevelHandler);
 
-// The bot App reads, the owner merge token writes, and the hygiene check gates both.
-const github = Layer.mergeAll(KinBotReads.layer, CredentialHygiene.layer).pipe(
-  Layer.provideMerge(OwnerMergeClient.layer),
-  // Its process runner and filesystem are the server's, by layer memoization.
-  Layer.provide(
-    GitHubIdentityProbe.layer.pipe(
-      Layer.provide(VcsProcess.layer),
-      Layer.provide(NodeServices.layer),
-    ),
-  ),
-  Layer.provide(KinGitHubApp.layer),
-  Layer.provideMerge(
-    Layer.mergeAll(
-      KinGitHubApp.KinGitHubAppConfig.layer,
-      KinGitHubScope.layer,
-      FetchHttpClient.layer,
-      // Like the fetch client above: the keychain's Secret Service probe needs a spawner.
-      Keychain.layer.pipe(Layer.provide(NodeServices.layer)),
-    ),
-  ),
+/** The GitHub host the GitHub kinds run against; tests swap in fakes. */
+const githubPlatform = Layer.mergeAll(
+  KinGitHubApp.KinGitHubAppConfig.layer,
+  KinGitHubScope.layer,
+  FetchHttpClient.layer,
+  // Like the fetch client above: the keychain's Secret Service probe needs a spawner.
+  Keychain.layer.pipe(Layer.provide(NodeServices.layer)),
+);
+type GitHubPlatform = Layer.Success<typeof githubPlatform>;
+
+// Its process runner and filesystem are the server's, by layer memoization.
+const liveIdentity = GitHubIdentityProbe.layer.pipe(
+  Layer.provide(VcsProcess.layer),
+  Layer.provide(NodeServices.layer),
 );
 
-const handlers = Layer.effect(
-  ActionHandlers.KinActionHandlers,
-  Effect.all([
-    registerApproverKeyHandler,
-    setLevelHandler,
-    makeMergePullRequestHandler,
-    makeDeleteBranchHandler,
-  ]).pipe(Effect.map(ActionHandlers.make)),
-).pipe(Layer.provideMerge(github));
+// The bot App reads, the owner merge token writes, and the hygiene check gates both.
+const github = <E, R, IE, IR>(
+  platform: Layer.Layer<GitHubPlatform, E, R>,
+  identity: Layer.Layer<CredentialHygiene.T3GitHubIdentity, IE, IR>,
+) =>
+  Layer.mergeAll(KinBotReads.layer, CredentialHygiene.layer).pipe(
+    Layer.provideMerge(OwnerMergeClient.layer),
+    Layer.provide(identity),
+    Layer.provide(KinGitHubApp.layer),
+    Layer.provideMerge(platform),
+  );
+
+const handlers = <E, R, IE, IR>(
+  platform: Layer.Layer<GitHubPlatform, E, R>,
+  identity: Layer.Layer<CredentialHygiene.T3GitHubIdentity, IE, IR>,
+) =>
+  Layer.effect(
+    ActionHandlers.KinActionHandlers,
+    Effect.all([
+      registerApproverKeyHandler,
+      setLevelHandler,
+      makeMergePullRequestHandler,
+      makeDeleteBranchHandler,
+    ]).pipe(Effect.map(ActionHandlers.make)),
+  ).pipe(Layer.provideMerge(github(platform, identity)));
 
 // Without the GitHub App and scope configured, the GitHub kinds have no handler but stay held
-// until their grants lapse, and the hygiene check can't pass, so nothing else runs either.
+// until their grants lapse, and the hygiene check can't pass, so only set_level runs.
 const UNCONFIGURED = "the GitHub App and scope aren't configured";
 const unconfigured = Layer.mergeAll(
   Layer.effect(
@@ -130,32 +142,46 @@ const unconfigured = Layer.mergeAll(
   ),
 );
 
-const executorDeps = handlers.pipe(
-  Layer.catchCause((cause) =>
-    unconfigured.pipe(
-      Layer.tap(() =>
-        Effect.logWarning("Kin executor: GitHub isn't configured; privileged actions won't run.", {
-          cause: Cause.pretty(cause).slice(0, 500),
-        }),
+/**
+ * The executor and its worker, with nothing in the output: context lookups go by key string, so
+ * anything here would reach every service holding `kin.services`. Built on top of the layer that
+ * supplies `KinPendingActions`, so it takes the very approvals that instance publishes.
+ */
+export const makeExecutorLayer = <E, R, IE, IR>(
+  platform: Layer.Layer<GitHubPlatform, E, R>,
+  identity: Layer.Layer<CredentialHygiene.T3GitHubIdentity, IE, IR>,
+) =>
+  Layer.empty.pipe(
+    Layer.provide(
+      ActionExecutor.layer.pipe(
+        Layer.provide(
+          Layer.merge(
+            handlers(platform, identity).pipe(
+              Layer.catchCause((cause) =>
+                unconfigured.pipe(
+                  Layer.tap(() =>
+                    Effect.logWarning(
+                      "Kin executor: GitHub isn't configured; privileged actions won't run.",
+                      { cause: Cause.pretty(cause).slice(0, 500) },
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            PendingActions.ledgerLayer,
+          ),
+        ),
+        Layer.provide(GrantPorts.orgRolesLayer),
+        Layer.provide(Audit.layer),
+        Layer.provide(KinPersistence.layer),
       ),
     ),
-  ),
-);
+  );
 
-const executor = ActionExecutor.layer.pipe(
-  Layer.provide(Layer.merge(executorDeps, PendingActions.ledgerLayer)),
-);
+export const executorLayer = makeExecutorLayer(githubPlatform, liveIdentity);
 
-/**
- * Push routing reads pending actions, so they stay in the layer's output. The executor needs a
- * `KinExecutionNotices` from outside, since the chat it posts to can't be imported here.
- */
-export const layer = Layer.mergeAll(
-  GrantVerifier.layer,
-  // Built for its worker only. Context lookups go by key string, so anything in this output
-  // reaches every service holding `kin.services`; the executor, ledger and handlers stay out.
-  Layer.empty.pipe(Layer.provide(executor)),
-).pipe(
+/** Push routing and Promotion read pending actions, so they stay in the output. */
+export const layer = GrantVerifier.layer.pipe(
   Layer.provideMerge(ApproverKeys.layer),
   Layer.provideMerge(PendingActions.layer),
   // In Kin's services too: the server installs T3's credential reader into this one slot.

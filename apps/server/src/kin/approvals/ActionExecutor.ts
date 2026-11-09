@@ -247,15 +247,19 @@ export const make = Effect.gen(function* () {
       );
     // Everything but the live read happens first, so nothing sits between that read and the write.
     const steps = Effect.gen(function* () {
-      const pass = yield* hygiene.requirePassing(action.orgId).pipe(
-        Effect.mapError(
-          (error) =>
-            new KinExecError({
-              reason: "credential_check_failed",
-              detail: failureResult(error),
-            }),
-        ),
-      );
+      const pass = handler.credentialCheck
+        ? Option.some(
+            yield* hygiene.requirePassing(action.orgId).pipe(
+              Effect.mapError(
+                (error) =>
+                  new KinExecError({
+                    reason: "credential_check_failed",
+                    detail: failureResult(error),
+                  }),
+              ),
+            ),
+          )
+        : Option.none();
       const usable = yield* ledger
         .signingKeyUsable(refOf(action))
         .pipe(Effect.mapError(() => new KinExecError({ reason: "unavailable", detail: "keys" })));
@@ -327,8 +331,11 @@ export const make = Effect.gen(function* () {
     if (Option.isNone(owner)) return yield* held(action, "roles_unavailable");
     if (!owner.value) return yield* voided("approver_not_owner");
     // Checked before the claim too, so a misconfigured host holds the grant instead of spending it.
-    const check = yield* hygiene.check(action.orgId);
-    if (!check.passed) return yield* held(action, "credential_check_failed", failureResult(check));
+    if (handler.value.credentialCheck) {
+      const check = yield* hygiene.check(action.orgId);
+      if (!check.passed)
+        return yield* held(action, "credential_check_failed", failureResult(check));
+    }
     // 3. The claim: one `kin_executions` row, whatever races or restarts.
     const claimed = yield* ledger.claim({
       orgId: action.orgId,
