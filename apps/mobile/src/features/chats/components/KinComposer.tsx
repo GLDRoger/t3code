@@ -6,6 +6,7 @@ import { Platform, View } from "react-native";
 import { ComposerEditor } from "../../../components/ComposerEditor";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { IconButton } from "../../../components/ui/IconButton";
+import { useScaledTextRole } from "../../settings/appearance/useScaledTextRole";
 import type { ComposerEditorHandle } from "../../../native/T3ComposerEditor.types";
 import {
   clearComposerDraftContent,
@@ -20,9 +21,10 @@ import { deliverKinOutbox, kinOutbox } from "../state/kinOutboxDelivery";
 export const kinDraftKey = (environmentId: EnvironmentId, orgId: string, chatId: string) =>
   `kin:${environmentId}:${orgId}:${chatId}`;
 
-// The native editor has no intrinsic height: it grows with its text from one line to this cap.
+// The native editor has no intrinsic height: it grows with its text from one line to four.
+// iOS reports at most four lines of content, so a taller cap would never turn scrolling on.
 const EDITOR_MIN_HEIGHT = 36;
-const EDITOR_MAX_HEIGHT = 140;
+const EDITOR_MAX_LINES = 4;
 const EDITOR_INSET = 6;
 
 const lengthFormat = new Intl.NumberFormat();
@@ -65,9 +67,10 @@ export function KinComposer(props: {
   const editorRef = useRef<ComposerEditorHandle>(null);
   const full = useAtomValue(kinOutbox.fullAtom(props.environmentId));
   const [contentHeight, setContentHeight] = useState(0);
-  const editorHeight = Math.min(
-    EDITOR_MAX_HEIGHT,
-    Math.max(EDITOR_MIN_HEIGHT, Math.ceil(contentHeight) + 2 * EDITOR_INSET),
+  const maxContentHeight = useScaledTextRole("body").lineHeight * EDITOR_MAX_LINES;
+  const editorHeight = Math.max(
+    EDITOR_MIN_HEIGHT,
+    Math.ceil(Math.min(maxContentHeight, contentHeight)) + 2 * EDITOR_INSET,
   );
   const length = draft.text.trim().length;
   const tooLong = length > KIN_MESSAGE_MAX_LENGTH;
@@ -125,7 +128,7 @@ export function KinComposer(props: {
             onBlur={() => props.onFocusChange?.(false)}
             contentInsetVertical={EDITOR_INSET}
             singleLineCentered={contentHeight <= EDITOR_MIN_HEIGHT - 2 * EDITOR_INSET}
-            scrollEnabled={Platform.OS === "android" || editorHeight >= EDITOR_MAX_HEIGHT}
+            scrollEnabled={Platform.OS === "android" || contentHeight >= maxContentHeight}
             onContentSizeChange={(size) => setContentHeight(size.height)}
             style={{ height: editorHeight }}
           />
