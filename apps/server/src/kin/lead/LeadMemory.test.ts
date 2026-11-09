@@ -291,6 +291,7 @@ it.live(
           "kin_delegate",
           "kin_follow_up",
           "kin_worker_stop",
+          "kin_ask",
           "memory_search",
           "memory_read",
           "memory_write",

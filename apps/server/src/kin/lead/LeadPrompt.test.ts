@@ -406,6 +406,54 @@ it.effect.each([
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect("quotes a choice tap as the owner's words, not its JSON", () =>
+  Effect.gen(function* () {
+    const repo = yield* seed;
+    yield* repo.addMember({
+      orgId,
+      chatId,
+      memberId,
+      principal: { _tag: "person", personId },
+      role: "owner",
+      joinedAt: timestamp,
+      leftAt: null,
+      mutedUntil: null,
+    });
+    yield* repo.insertMessage({
+      orgId,
+      chatId,
+      messageId: KinMessageId.make("tap"),
+      author: { _tag: "human", personId, memberId },
+      kind: "widget_action",
+      body: JSON.stringify({
+        widgetId: "choice:card",
+        revision: 1,
+        actionId: "choose",
+        value: "option-1",
+        text: 'Chose "Ship it" on "Release today?"',
+      }),
+      intent: null,
+      mentions: [],
+      replyTo: null,
+      widgetId: null,
+      floorRunId: null,
+      status: "posted",
+      sentBy: null,
+      createdAt: timestamp,
+      editedAt: null,
+      clientMessageId: null,
+    });
+    const prompt = yield* KinLeadPrompt;
+    const built = yield* prompt.build({
+      ...input,
+      events: [{ ...event("tap"), _tag: "widget.action", actionId: "choose" }],
+    });
+    const quoted = built.split("> BEGIN QUOTE: owner message")[1] ?? "";
+    expect(quoted).toContain('Chose \\"Ship it\\" on \\"Release today?\\"');
+    expect(quoted).not.toContain("option-1");
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect("bounds the encoded events section and drops oldest events visibly", () =>
   Effect.gen(function* () {
     const prompt = yield* KinLeadPrompt;

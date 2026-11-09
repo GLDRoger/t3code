@@ -138,7 +138,7 @@ export class KinLeadPrompt extends Context.Service<
                   role: message.authorRole,
                   chatId: message.chatId,
                   messageId: message.messageId,
-                  body: message.body,
+                  body: spoken(message),
                   kind: message.kind,
                   status: message.status,
                   widgetId: message.widgetId,
@@ -216,24 +216,37 @@ const INDEX_MAX_LINES = 200;
 const indexLines = (index: string) =>
   index.trim() === "" ? 0 : index.trimEnd().split("\n").length;
 
+const decodeTapText = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Struct({ text: Schema.String })),
+);
+/** A choice tap reads as the words it stands for (`Chose "Yes" on "…"`), not its JSON. */
+const spoken = (message: KinMessage) =>
+  message.kind === "widget_action"
+    ? Option.match(decodeTapText(message.body), {
+        onNone: () => message.body,
+        onSome: (tap) => tap.text,
+      })
+    : message.body;
+
 function boundedRecent(messages: ReadonlyArray<KinMessage>, self: KinAgentId): string {
-  const rows = messages.map((message) => ({
-    from:
-      message.author._tag === "agent"
-        ? message.author.agentId === self
-          ? "you"
-          : "agent (untrusted)"
-        : message.author._tag === "system"
-          ? "system"
-          : message.authorRole === "owner"
-            ? "owner"
-            : `${message.authorRole} (untrusted)`,
-    at: message.createdAt,
-    body:
-      message.body.length <= RECENT_BODY_LIMIT
-        ? message.body
-        : `${message.body.slice(0, RECENT_BODY_LIMIT)}…[truncated]`,
-  }));
+  const rows = messages.map((message) => {
+    const body = spoken(message);
+    return {
+      from:
+        message.author._tag === "agent"
+          ? message.author.agentId === self
+            ? "you"
+            : "agent (untrusted)"
+          : message.author._tag === "system"
+            ? "system"
+            : message.authorRole === "owner"
+              ? "owner"
+              : `${message.authorRole} (untrusted)`,
+      at: message.createdAt,
+      body:
+        body.length <= RECENT_BODY_LIMIT ? body : `${body.slice(0, RECENT_BODY_LIMIT)}…[truncated]`,
+    };
+  });
   let start = 0;
   while (start < rows.length - 1 && encoded(rows.slice(start)).length > RECENT_LIMIT) start++;
   return quote("recent chat", rows.slice(start));

@@ -147,6 +147,35 @@ const capBody = (text: string) =>
     ? text
     : `${text.slice(0, KIN_MESSAGE_BODY_MAX_LENGTH - OVERFLOW_SUFFIX.length)}${OVERFLOW_SUFFIX}`;
 
+/** The lane of a running wake-up, from its stored events; `kin_ask` posts its card there too. */
+export const laneFor = Effect.fn("KinReplyBridge.lane")(
+  function* (input: {
+    readonly orgId: KinOrgId;
+    readonly agentId: KinAgentId;
+    readonly wakeupId: KinWakeupId;
+  }) {
+    const sql = yield* SqlClient.SqlClient;
+    const [lead] = yield* sql<{ ownerChatId: string; name: string }>`
+      SELECT owner_chat_id AS "ownerChatId", name FROM kin_leads
+      WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} ORDER BY agent_id`;
+    const [human] = yield* sql<{ chatId: string | null }>`
+      SELECT json_extract(json, '$.chatId') AS "chatId" FROM kin_events
+      WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND wakeup_id = ${input.wakeupId}
+        AND tag IN ('chat.message', 'widget.action')
+      ORDER BY priority, received_at, event_id LIMIT 1`;
+    const chatId = human?.chatId ?? lead?.ownerChatId;
+    if (chatId === undefined || chatId === null) return Option.none<Lane>();
+    return Option.some<Lane>({
+      chatId: KinChatId.make(chatId),
+      mode: human?.chatId === undefined || human.chatId === null ? "notice" : "reply",
+      leadName: lead?.name ?? "Lead",
+    });
+  },
+  Effect.catchCause((cause) =>
+    Effect.logWarning("Kin reply lane unavailable", { cause }).pipe(Effect.as(Option.none<Lane>())),
+  ),
+);
+
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const threads = yield* ThreadManagement.ThreadManagementService;
@@ -187,34 +216,11 @@ const make = Effect.gen(function* () {
     });
   });
 
-  const lane = Effect.fn("KinReplyBridge.lane")(
-    function* (input: {
-      readonly orgId: KinOrgId;
-      readonly agentId: KinAgentId;
-      readonly wakeupId: KinWakeupId;
-    }) {
-      const [lead] = yield* sql<{ ownerChatId: string; name: string }>`
-        SELECT owner_chat_id AS "ownerChatId", name FROM kin_leads
-        WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} ORDER BY agent_id`;
-      const [human] = yield* sql<{ chatId: string | null }>`
-        SELECT json_extract(json, '$.chatId') AS "chatId" FROM kin_events
-        WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND wakeup_id = ${input.wakeupId}
-          AND tag IN ('chat.message', 'widget.action')
-        ORDER BY priority, received_at, event_id LIMIT 1`;
-      const chatId = human?.chatId ?? lead?.ownerChatId;
-      if (chatId === undefined || chatId === null) return Option.none<Lane>();
-      return Option.some<Lane>({
-        chatId: KinChatId.make(chatId),
-        mode: human?.chatId === undefined || human.chatId === null ? "notice" : "reply",
-        leadName: lead?.name ?? "Lead",
-      });
-    },
-    Effect.catchCause((cause) =>
-      Effect.logWarning("Kin reply lane unavailable", { cause }).pipe(
-        Effect.as(Option.none<Lane>()),
-      ),
-    ),
-  );
+  const lane = (input: {
+    readonly orgId: KinOrgId;
+    readonly agentId: KinAgentId;
+    readonly wakeupId: KinWakeupId;
+  }) => laneFor(input).pipe(Effect.provideService(SqlClient.SqlClient, sql));
 
   // The bridge's identity comes from stored rows, never from anything the model wrote.
   const agent = (wake: Wake) =>
