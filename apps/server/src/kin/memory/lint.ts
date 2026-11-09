@@ -34,15 +34,14 @@ export const isLintedPath = (path: string) =>
   (path.endsWith(".md") && folders.some((folder) => path.startsWith(`${folder}/`)));
 
 // CODEOWNERS cannot negate a pattern, so nothing but Kin's own shapes may live under its paths.
-// Agent instruction files would be loaded by any agent that reads the folder.
-const agentFiles = /^(claude|agents?|gemini)$/i;
+// Agent instruction files would be loaded by any agent that reads the folder; keep this in step
+// with the providers' nested context-file names. User-configured names are out of reach.
+const agentFiles = /^(claude|agents?|gemini|grok|crush|qwen|warp|skill)$/i;
 const itemPath = /^(?:commitments|deferrals|claims)\/([a-zA-Z0-9][a-zA-Z0-9_-]{0,199})\.md$/;
 const journalPath = /^journal\/\d{4}\/(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\.md$/;
 
-const entryFailure = ({ path, mode }: MemoryTreeEntry) => {
-  if (mode === "120000") return "Symlinks are not allowed";
-  if (mode === "160000") return "Submodules are not allowed";
-  if (!regularModes.includes(mode)) return "Not a regular file";
+/** The shape check alone, for Kin's writers: a path they write must also pass `memory-check`. */
+export const kinShapeFailure = (path: string) => {
   const [root, ...rest] = path.split("/");
   if (!kinOnlyRoots.includes(root ?? "")) return undefined;
   if (root === "INDEX.md") return rest.length ? "INDEX.md must be a file" : undefined;
@@ -51,6 +50,13 @@ const entryFailure = ({ path, mode }: MemoryTreeEntry) => {
   const item = itemPath.exec(path)?.[1];
   if (journalPath.test(path) || (item !== undefined && !agentFiles.test(item))) return undefined;
   return "Kin's unowned folders only hold item and journal files";
+};
+
+const entryFailure = ({ path, mode }: MemoryTreeEntry) => {
+  if (mode === "120000") return "Symlinks are not allowed";
+  if (mode === "160000") return "Submodules are not allowed";
+  if (!regularModes.includes(mode)) return "Not a regular file";
+  return kinShapeFailure(path);
 };
 
 const keyLine = (text: string, key: string) => {

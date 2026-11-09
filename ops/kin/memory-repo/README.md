@@ -12,7 +12,7 @@ Templates for the private memory repo (`kin-memory`). This public repo holds onl
 
 1. Copy `CODEOWNERS.template` to `.github/CODEOWNERS` and replace `@OWNER` with the owner's GitHub login.
 2. Copy `memory-check.yml` to `.github/workflows/` and set `T3CODE_REF` to a full `GLDRoger/t3code` commit SHA that contains this folder. The job fails until it is set. Confirm the commit is on `kin` or `main` (`git branch -r --contains <sha>`): GitHub serves commits from any fork PR under the repo's name, so an unmerged SHA could carry someone else's lint.
-3. Open both as one PR and check that `memory-check` passes.
+3. Open both as one PR and check that `memory-check` passes. It lints the whole merged tree, so files already on `main` count too: memory written before these guard rails may hold paths the lint now refuses (nested items, names with dots). Move or rename those in the same PR.
 
 To pick up new lint or scanner rules, bump `T3CODE_REF` in a reviewed PR. The lint code and the gitleaks config always come from that commit, never from the PR's own files, which the job reads only as data.
 
@@ -31,4 +31,4 @@ Each run checks out `t3code` at the pinned commit without `.repos/`, installs th
 - CODEOWNERS can't carve a path back out of Kin's owner-less lines, so the lint does it: under those paths it allows only `commitments/`, `deferrals/` and `claims/` items one level deep (`<id>.md`, never `CLAUDE.md`, `AGENTS.md` or `GEMINI.md`), `journal/YYYY/MM-DD.md` and a root `INDEX.md` file. It reads git's index, so a `.claude/` folder, a symlink or a submodule fails it rather than being skipped; paths the owner reviews stay free-form.
 - Gitleaks matches the scanner's patterns but not its Unicode folding, wrapped-token joining or word boundaries, so it can flag both more and less than the scanner. It adds its own decoding and covers every commit in the PR, merge resolutions included.
 - Gitleaks scans file contents, not file paths. A token in a file or folder name passes this check; only `KinSecretScan` catches it, on Kin's own writes.
-- Other known gitleaks misses, left as they are: a token glued to a decoy with `-`, a value an allowed `secret-assignment` match swallows (`secret=https://x/?db_password=…`, `token_scopes=read&api_key=…`), and a token split across lines or hidden with zero-width or fullwidth characters.
+- Other known gitleaks misses, left as they are: a value an allowed `secret-assignment` match swallows (`secret=https://x/?db_password=…`, `token_scopes=read&api_key=…`), and a token split across lines or hidden with zero-width or fullwidth characters.
