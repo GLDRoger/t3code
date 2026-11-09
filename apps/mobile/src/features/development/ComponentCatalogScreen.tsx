@@ -28,6 +28,7 @@ import { SliderRow } from "../../components/ui/SliderRow";
 import * as Dialog from "../../components/ui/Dialog";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { MOBILE_THEME_IDS } from "../../lib/mobileTheme";
+import { KinChatsCatalog } from "../chats/KinChatsCatalog";
 
 const CHOICES = [
   { value: "overview", label: "Overview" },
@@ -94,6 +95,7 @@ export function ComponentCatalogScreen() {
             { value: "controls", label: "Controls" },
             { value: "forms", label: "Forms" },
             { value: "feedback", label: "Feedback" },
+            { value: "kin", label: "Kin" },
           ]}
           selected={page}
           onSelect={setPage}
@@ -271,6 +273,7 @@ export function ComponentCatalogScreen() {
             </View>
           </View>
         ) : null}
+        {page === "kin" ? <KinChatsCatalog /> : null}
       </ScreenScrollView>
       {page === "feedback" && notice ? (
         <View

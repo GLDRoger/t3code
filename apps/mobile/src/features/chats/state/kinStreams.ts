@@ -54,7 +54,7 @@ const chatCache = persistQuery(Schema.Struct({ chat: KinChatState, savedAt: Sche
 
 const isKinChatError = Schema.is(KinChatError);
 
-/** `unavailable` is the host's only retryable Kin error; every other reason, `disabled` included, is final. */
+/** `unavailable` is the host's only retryable Kin error; `disabled` waits for the next session. */
 export const isKinRetryable = (error: unknown): boolean =>
   isKinChatError(error) && error.reason === "unavailable";
 const isKinRefusal = (
@@ -69,21 +69,64 @@ export const KIN_RETRY_MAX_DELAY = Duration.seconds(30);
 const kinRetryDelay = (attempt: number) =>
   Duration.min(Duration.times(KIN_RETRY_BASE_DELAY, 2 ** attempt), KIN_RETRY_MAX_DELAY);
 
+/** Waits for the next connected session after the current one. */
+const nextSession = EnvironmentSupervisor.EnvironmentSupervisor.pipe(
+  Effect.flatMap((supervisor) =>
+    SubscriptionRef.changes(supervisor.session).pipe(
+      Stream.drop(1),
+      Stream.filter(Option.isSome),
+      Stream.runHead,
+    ),
+  ),
+);
+
 /** Sleeps `delay`, cut short by the next connected session. True when a session ended it. */
 const sleepUntilNextSession = (delay: Duration.Duration) =>
-  EnvironmentSupervisor.EnvironmentSupervisor.pipe(
-    Effect.flatMap((supervisor) =>
-      Effect.race(
-        Effect.sleep(delay).pipe(Effect.as(false)),
-        SubscriptionRef.changes(supervisor.session).pipe(
-          Stream.drop(1),
-          Stream.filter(Option.isSome),
-          Stream.runHead,
-          Effect.as(true),
+  Effect.race(Effect.sleep(delay).pipe(Effect.as(false)), nextSession.pipe(Effect.as(true)));
+
+const isKinDisabled = (error: unknown): error is KinChatError =>
+  isKinChatError(error) && error.reason === "disabled";
+
+/** The next change of session: the current one ended, replaced or not. */
+const sessionEnded = EnvironmentSupervisor.EnvironmentSupervisor.pipe(
+  Effect.flatMap((supervisor) =>
+    SubscriptionRef.changes(supervisor.session).pipe(Stream.drop(1), Stream.runHead),
+  ),
+);
+
+/**
+ * Kin is turned off until the host restarts, so after `disabled` the stream shows `onDisabled`.
+ * That answer holds only for its session: when the session ends the stream shows `onSessionEnd`,
+ * then resubscribes on the next connected session instead of ending.
+ */
+function resubscribeWhenKinReturns<A, E, R>(
+  stream: Stream.Stream<A, E, R>,
+  onDisabled: Stream.Stream<A>,
+  onSessionEnd: Stream.Stream<A>,
+): Stream.Stream<A, E, R | EnvironmentSupervisor.EnvironmentSupervisor> {
+  const run = (): Stream.Stream<A, E, R | EnvironmentSupervisor.EnvironmentSupervisor> =>
+    stream.pipe(
+      Stream.catchIf(isKinDisabled, () =>
+        onDisabled.pipe(
+          Stream.concat(
+            Stream.fromEffect(sessionEnded).pipe(
+              Stream.flatMap((next) =>
+                onSessionEnd.pipe(
+                  Stream.concat(
+                    Option.exists(next, Option.isSome)
+                      ? Stream.empty
+                      : Stream.fromEffect(nextSession).pipe(Stream.drain),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Stream.concat(Stream.suspend(run)),
         ),
       ),
-    ),
-  );
+    );
+  return run();
+}
 
 /**
  * Resubscribes after `unavailable`: 1 s, doubling to 30 s, starting over once events flow again
@@ -187,7 +230,11 @@ export function kinInboxStream(input: KinChatsSubscribeInput) {
         unknown,
         EnvironmentSupervisor.EnvironmentSupervisor
       > = Stream.merge(
-        retryWhileKinUnavailable(subscribe(KIN_CHAT_WS_METHODS.chatsSubscribe, input)),
+        resubscribeWhenKinReturns(
+          retryWhileKinUnavailable(subscribe(KIN_CHAT_WS_METHODS.chatsSubscribe, input)),
+          Stream.empty,
+          Stream.empty,
+        ),
         Stream.fromPubSub(leftChats(environmentId)).pipe(
           Stream.map((chatId) => ({ _tag: "left", chatId }) as const),
         ),
@@ -231,6 +278,7 @@ export function makeKinChatStream<E, R>(readHistory: KinReadHistory<E, R>) {
         const cached = yield* withKinCache(chatCache.load(environmentId, key));
         let state = Option.match(cached, { onNone: () => emptyKinChat, onSome: (c) => c.chat });
         let live = false;
+        let shownAt = Option.match(cached, { onNone: () => null, onSome: (c) => c.savedAt });
         let savedMessages = Option.exists(cached, (c) => c.chat.messages.length > 0);
         const saver = yield* throttledSave((value: { chat: KinChatState; savedAt: string }) =>
           withKinCache(chatCache.save(environmentId, key, value)),
@@ -240,9 +288,13 @@ export function makeKinChatStream<E, R>(readHistory: KinReadHistory<E, R>) {
           return withKinCache(removeKinCacheEntry(environmentId, key));
         });
 
+        // Set while a `disabled` or session-ended view shows, so the next event shows live.
+        let shownClosed = false;
         const step = (next: KinChatState): ReadonlyArray<KinSynced<KinChatState>> => {
-          if (next === state && live) return [];
+          if (next === state && live && !shownClosed) return [];
+          shownClosed = false;
           const savedAt = nowIso();
+          shownAt = savedAt;
           if (next !== state) {
             const trimmed = trimKinChatForCache(next);
             // A reset empties the feed until history refills it; keep the cached messages.
@@ -281,7 +333,12 @@ export function makeKinChatStream<E, R>(readHistory: KinReadHistory<E, R>) {
           return views;
         });
 
-        const updates = retryWhileKinUnavailable(
+        const closedView = (reason: KinChatClosedReason): KinSynced<KinChatState> => ({
+          value: { ...state, closed: reason },
+          live: true,
+          savedAt: nowIso(),
+        });
+        const subscription = retryWhileKinUnavailable(
           subscribeDynamic(KIN_CHAT_WS_METHODS.chatSubscribe, () =>
             Effect.sync(() =>
               state.contiguousSeq > 0 || state.messages.length > 0
@@ -293,20 +350,28 @@ export function makeKinChatStream<E, R>(readHistory: KinReadHistory<E, R>) {
                 : { chatId: input.chatId },
             ),
           ).pipe(Stream.mapEffect(onEvent), Stream.flattenIterable),
+        );
+        const updates = resubscribeWhenKinReturns(
+          subscription,
+          Stream.sync(() => {
+            shownClosed = true;
+            return closedView("disabled");
+          }),
+          // Kin may be back on the next session; show the feed as last received until it answers.
+          Stream.sync(() => ({ value: state, live: false, savedAt: shownAt })),
         ).pipe(
           Stream.catchIf(isKinRefusal, (error) =>
             Stream.fromEffect(
               Effect.gen(function* () {
                 if (error.reason === "not_found" || error.reason === "not_allowed") yield* forget;
-                return {
-                  value: { ...state, closed: error.reason },
-                  live: true,
-                  savedAt: nowIso(),
-                } satisfies KinSynced<KinChatState>;
+                return closedView(error.reason);
               }),
             ),
           ),
-          Stream.takeUntil((view) => view.value.left || view.value.closed !== null),
+          Stream.takeUntil(
+            (view) =>
+              view.value.left || (view.value.closed !== null && view.value.closed !== "disabled"),
+          ),
         );
         return Option.match(cached, {
           onNone: () => updates,

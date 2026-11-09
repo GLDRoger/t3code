@@ -41,6 +41,8 @@ export type ComposerEditorProps = NativeComposerEditorProps & {
   readonly draftKey?: string | null;
   readonly hidden?: boolean;
   readonly environmentId?: EnvironmentId;
+  /** False keeps pasted context as plain text, for composers whose send carries text only. */
+  readonly pasteContext?: boolean;
   readonly onOpenMention?: (path: string) => void;
   readonly onOpenAttachment?: (attachment: ComposerDocumentAttachment) => void;
   readonly chipsInert?: boolean;
@@ -51,6 +53,7 @@ export function ComposerEditor({
   draftKey,
   hidden,
   environmentId,
+  pasteContext: acceptsContext = true,
   onOpenMention,
   onOpenAttachment,
   chipsInert,
@@ -88,6 +91,7 @@ export function ComposerEditor({
   ) => {
     if (
       !draftKey ||
+      !acceptsContext ||
       appAtomRegistry.get(composerContextImportsAtom)[draftKey] ||
       props.readOnly ||
       props.editable === false
