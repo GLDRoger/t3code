@@ -7,7 +7,13 @@ import {
   SelectableMarkdownText,
   type NativeMarkdownTextStyle,
 } from "../../../native/SelectableMarkdownText";
-import { kinMessageLabel, kinMessageLinks, type KinFeedRow } from "../state/kinChatFeed";
+import {
+  kinMessageLabel,
+  kinMessageLinks,
+  kinPlainText,
+  kinSentences,
+  type KinFeedRow,
+} from "../state/kinChatFeed";
 import type { KinOutboxEntry } from "../state/kinOutbox";
 
 type MessageRow = Extract<KinFeedRow, { readonly type: "message" }>;
@@ -137,7 +143,7 @@ export function KinPendingBubble(props: {
             : undefined
         }
         accessibilityRole={failed ? "button" : undefined}
-        accessibilityLabel={`You: ${entry.body}. ${status}.`}
+        accessibilityLabel={kinSentences([`You: ${kinPlainText(entry.body)}`, status])}
         accessibilityHint={failed ? "Edit it in the message box." : undefined}
         className={cn(
           "max-w-[85%] rounded-[20px] bg-user-bubble px-3.5 py-2.5",
@@ -174,7 +180,12 @@ export function KinPendingBubble(props: {
 /** Starts a day in the feed: "Today", "Yesterday", or its date. */
 export function KinDayLine(props: { readonly row: DayRow }) {
   return (
-    <View className="items-center px-8 pb-1 pt-4" accessibilityRole="header">
+    <View
+      accessible
+      accessibilityRole="header"
+      accessibilityLabel={props.row.label}
+      className="items-center px-8 pb-1 pt-4"
+    >
       <Text textRole="caption" className="font-t3-medium text-foreground-muted">
         {props.row.label}
       </Text>

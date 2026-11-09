@@ -23,6 +23,7 @@ import {
   kinMessageLabel,
   kinMessageLinks,
   kinMarkReadRearms,
+  kinSentences,
   kinSeqToMarkRead,
   kinUnseenCount,
   mergeKinFeed,
@@ -340,8 +341,28 @@ describe("message labels", () => {
       row({ body: "", widgetId: "w1" as KinMessage["widgetId"] }),
       "Tech lead, agent. This card needs a newer version of Kin. 9:30.",
     ],
+    [
+      "a body ending in an ellipsis",
+      row({ body: "Checking the logs…" }),
+      "Tech lead, agent. Checking the logs… 9:30.",
+    ],
   ])("%s", (_name, messageRow, label) => {
     expect(kinMessageLabel(messageRow, "9:30")).toBe(label);
+  });
+
+  it.each([
+    ["adds a period", ["Task: Fix CI", "Working"], "Task: Fix CI. Working."],
+    [
+      "keeps a period",
+      ["Exactly once.", "Waiting for connection"],
+      "Exactly once. Waiting for connection.",
+    ],
+    ["keeps a question mark", ["Why is CI red?", "Working"], "Why is CI red? Working."],
+    ["keeps an exclamation mark", ["Shipped!", "Done"], "Shipped! Done."],
+    ["keeps an ellipsis", ["Thinking…", "Waiting"], "Thinking… Waiting."],
+    ["trims before checking the end", ["Sent. ", null, "  ", "9:30"], "Sent. 9:30."],
+  ])("kinSentences %s", (_name, parts, label) => {
+    expect(kinSentences(parts)).toBe(label);
   });
 
   it("lists each link once, markdown and bare, for the bubble's actions", () => {
