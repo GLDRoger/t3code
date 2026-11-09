@@ -46,6 +46,7 @@ import * as DreamRunner from "../dreaming/DreamRunner.ts";
 import * as DreamSession from "../dreaming/DreamSession.ts";
 import * as Workers from "./Workers.ts";
 import * as WorkerTracker from "./WorkerTracker.ts";
+import * as ChatWake from "./ChatWake.ts";
 
 export class KinLeadStartupError extends Schema.TaggedError<KinLeadStartupError>()(
   "KinLeadStartupError",
@@ -255,7 +256,7 @@ const toolkit = LeadMemory.layer.pipe(
   ),
 );
 
-export const layer = withServices(runner);
+export const layer = withServices(Layer.merge(runner, ChatWake.layer));
 const tracker = Layer.effectDiscard(
   Effect.gen(function* () {
     const tracker = yield* WorkerTracker.WorkerTracker;
@@ -263,7 +264,7 @@ const tracker = Layer.effectDiscard(
   }),
 ).pipe(Layer.provide(WorkerTracker.layer));
 const production = withServices(
-  Layer.mergeAll(runner, registration, tracker).pipe(
+  Layer.mergeAll(runner, ChatWake.layer, registration, tracker).pipe(
     Layer.provideMerge(Workers.layer),
     Layer.provideMerge(toolkit),
   ),

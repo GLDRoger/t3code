@@ -29,6 +29,7 @@ import * as ThreadManagementService from "../../orchestration-v2/ThreadManagemen
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import * as KinIdentity from "../chat/KinIdentity.ts";
+import * as Floor from "../floor/KinFloor.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as Routines from "../triggers/routines.ts";
@@ -42,6 +43,8 @@ import { PAUSE_POLL_INTERVAL_MS } from "./KinStop.ts";
 import { isOrgPaused } from "./orgState.ts";
 import { KinPromotion } from "../levels/Promotion.ts";
 
+/** How long one wake-up may run before it is interrupted. */
+const WAKEUP_DEADLINE_MS = 900_000;
 const ownerCheckDispatcherReady = false;
 
 export class KinWakeupError extends Schema.TaggedError<KinWakeupError>()("KinWakeupError", {
@@ -113,6 +116,7 @@ const make = Effect.gen(function* () {
   const hooks = yield* Effect.serviceOption(KinWakeupHooks);
   const prompt = yield* KinLeadPrompt;
   const identity = yield* KinIdentity.KinIdentity;
+  const floor = yield* Floor.KinFloor;
   const registry = yield* KinLeadRegistry.KinLeadRegistry;
   const projects = yield* ProjectService.ProjectService;
   const launch = yield* ThreadLaunchService.ThreadLaunchService;
@@ -187,7 +191,10 @@ const make = Effect.gen(function* () {
       if (row.threadId === null || row.runId === null) return;
       const threadId = row.threadId;
       const runId = row.runId;
-      const remaining = Math.max(0, row.startedAt + 900_000 - (yield* Clock.currentTimeMillis));
+      const remaining = Math.max(
+        0,
+        row.startedAt + WAKEUP_DEADLINE_MS - (yield* Clock.currentTimeMillis),
+      );
       const result = yield* threads.waitForThread({
         projectId,
         threadId: row.threadId,
@@ -499,6 +506,18 @@ const make = Effect.gen(function* () {
                   yield* sql`SELECT 1 FROM kin_agents WHERE org_id = ${orgId} AND agent_id = ${agentId} AND retired_at IS NULL`;
                 if (active === undefined)
                   return yield* new KinWakeupError({ orgId, agentId, cause: "retired" });
+                // The post-time grant may have lapsed while these events waited to be claimed;
+                // it now lasts as long as the wake-up may run, so a slow first reply still lands.
+                yield* floor.renew({
+                  orgId,
+                  agentId,
+                  until: row.startedAt + WAKEUP_DEADLINE_MS,
+                  messageIds: events.flatMap((event) =>
+                    event._tag === "chat.message" || event._tag === "widget.action"
+                      ? [event.messageId]
+                      : [],
+                  ),
+                });
                 yield* identity.registerAgentThread({ orgId, agentId, threadId });
                 yield* sql`UPDATE kin_leads SET thread_id = ${threadId} WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
                 yield* sql`UPDATE kin_wakeups SET thread_id = ${threadId}, model = ${modelSelection.model}
@@ -760,4 +779,4 @@ const make = Effect.gen(function* () {
   return WakeupRunner.of({ runOnce, recover, start });
 });
 
-export const layer = Layer.effect(WakeupRunner, make);
+export const layer = Layer.effect(WakeupRunner, make).pipe(Layer.provide(Floor.layer));

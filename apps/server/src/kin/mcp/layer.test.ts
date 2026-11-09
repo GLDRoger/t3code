@@ -194,8 +194,8 @@ it.effect.each([true, false])(
           ),
         );
         const http = yield* HttpRouter.toHttpEffect(routes);
-        // The wake-up runner and the worker tracker.
-        assert.strictEqual(runnerStarts, enabled ? 2 : 0);
+        // The wake-up runner, the chat wake bridge and the worker tracker.
+        assert.strictEqual(runnerStarts, enabled ? 3 : 0);
         const services = yield* Deferred.await(ready);
         const kin = Context.get(services, Kin.KinServer);
         const registry = Context.get(services, McpSessions.McpSessionRegistry);
