@@ -1,4 +1,4 @@
-import type { KinGrant, KinOrgId, KinPendingAction } from "@t3tools/contracts";
+import { KinOrgId, type KinGrant, type KinPendingAction } from "@t3tools/contracts";
 import { decodeKinGrant } from "@t3tools/shared/kinGrant";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -11,7 +11,11 @@ import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import type { PersistenceDecodeError, PersistenceSqlError } from "../../persistence/Errors.ts";
+import {
+  type PersistenceDecodeError,
+  type PersistenceSqlError,
+  toPersistenceSqlError,
+} from "../../persistence/Errors.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
 import {
   KinActionHandlers,
@@ -20,7 +24,7 @@ import {
   type KinOutcome,
 } from "./ActionHandlers.ts";
 import { KinAudit } from "./Audit.ts";
-import { CredentialHygiene } from "./CredentialHygiene.ts";
+import { CredentialHygiene, type CredentialHygieneReport } from "./CredentialHygiene.ts";
 import { KinOrgRoles } from "./GrantPorts.ts";
 import { KinPendingActions, type ActionRef } from "./PendingActions.ts";
 
@@ -28,6 +32,8 @@ import { KinPendingActions, type ActionRef } from "./PendingActions.ts";
 const TICK_INTERVAL = "1 minute";
 /** Reconciliation that can't read GitHub retries until it can; it never re-runs the action. */
 const RECONCILE_RETRY = Schedule.spaced("30 seconds");
+/** Spec section 12: the credential check also runs at startup and this often. */
+const CREDENTIAL_CHECK_INTERVAL = "1 hour";
 
 export type KinExecutionOutcome = "succeeded" | "failed" | "interrupted";
 
@@ -40,6 +46,11 @@ export class KinExecutionNotices extends Context.Service<
       readonly outcome: KinExecutionOutcome;
       readonly mergeCommitSha?: string;
       readonly error?: string;
+    }) => Effect.Effect<void>;
+    /** Tells the owner the credential check's result changed: failing, warning, or passing again. */
+    readonly credentialCheck: (input: {
+      readonly orgId: KinOrgId;
+      readonly report: CredentialHygieneReport;
     }) => Effect.Effect<void>;
   }
 >()("t3/kin/approvals/ActionExecutor/KinExecutionNotices") {}
@@ -71,6 +82,14 @@ export class KinActionExecutor extends Context.Service<
     readonly execute: (ref: ActionRef) => Effect.Effect<KinExecuteResult, Errors>;
     /** One reconciliation attempt for an action left `executing`. */
     readonly reconcile: (ref: ActionRef) => Effect.Effect<KinReconcileResult, Errors>;
+    /**
+     * The credential check for every org. A changed result is audited when failing and posted to
+     * the owner. The worker runs it at startup and hourly.
+     */
+    readonly checkCredentials: Effect.Effect<
+      ReadonlyArray<{ readonly orgId: KinOrgId; readonly report: CredentialHygieneReport }>,
+      Errors
+    >;
     /** Expiry sweep, then every approved action. The worker runs it at startup and each minute. */
     readonly tick: Effect.Effect<
       ReadonlyArray<{ readonly ref: ActionRef; readonly result: KinExecuteResult }>,
@@ -101,6 +120,8 @@ export const make = Effect.gen(function* () {
   };
   // One `credential_check_failed` entry per held action and failure set, not one per tick.
   const auditedHolds = new Map<string, string>();
+  // The last result each org's owner was told about, so an unchanged hourly result stays quiet.
+  const reportedChecks = new Map<KinOrgId, string>();
 
   const paused = (orgId: KinOrgId) =>
     isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
@@ -289,6 +310,34 @@ export const make = Effect.gen(function* () {
     );
   });
 
+  const checkCredentials = Effect.gen(function* () {
+    const orgs = yield* sql<{ readonly orgId: string }>`
+      SELECT org_id AS "orgId" FROM kin_orgs ORDER BY org_id`.pipe(
+      Effect.mapError(toPersistenceSqlError("KinActionExecutor.checkCredentials")),
+    );
+    return yield* Effect.forEach(orgs, (row) =>
+      Effect.gen(function* () {
+        const orgId = KinOrgId.make(row.orgId);
+        const report = yield* hygiene.check(orgId);
+        const result = [...report.failures, ...report.warnings].join(",");
+        if ((reportedChecks.get(orgId) ?? "") !== result) {
+          reportedChecks.set(orgId, result);
+          if (!report.passed) {
+            yield* audit
+              .append({
+                orgId,
+                event: "credential_check_failed",
+                result: report.failures.join(","),
+              })
+              .pipe(Effect.catch((error) => Effect.logWarning("Kin audit not written", error)));
+          }
+          yield* notices.credentialCheck({ orgId, report });
+        }
+        return { orgId, report };
+      }),
+    );
+  }).pipe(Effect.withSpan("KinActionExecutor.checkCredentials"));
+
   const tick = Effect.gen(function* () {
     yield* pending.sweep();
     const approved = yield* pending.approvedWithGrant();
@@ -302,12 +351,13 @@ export const make = Effect.gen(function* () {
     );
   }).pipe(Effect.withSpan("KinActionExecutor.tick"));
 
-  return KinActionExecutor.of({ execute, reconcile, tick });
+  return KinActionExecutor.of({ execute, reconcile, checkCredentials, tick });
 });
 
 /**
  * The executor with its worker: startup reconciliation of `executing` rows (retried with backoff
- * while GitHub can't be read), then every approval as it lands, plus a minute tick for held ones.
+ * while GitHub can't be read), then every approval as it lands, plus a minute tick for held ones
+ * and the hourly credential check.
  */
 export const layer = Layer.effect(
   KinActionExecutor,
@@ -356,6 +406,10 @@ export const layer = Layer.effect(
         ).pipe(Effect.forkScoped),
       ),
       Effect.forever,
+      Effect.forkScoped,
+    );
+    yield* logged("credential check failed", executor.checkCredentials).pipe(
+      Effect.repeat(Schedule.spaced(CREDENTIAL_CHECK_INTERVAL)),
       Effect.forkScoped,
     );
     yield* logged("tick failed", executor.tick.pipe(Effect.flatMap(settle))).pipe(

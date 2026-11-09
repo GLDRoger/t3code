@@ -39,6 +39,9 @@ import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import * as McpSessions from "../../mcp/McpSessionRegistry.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
+import * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
+import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as Kin from "../layer.ts";
 import { ServerActivation } from "../../serverActivation.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
@@ -112,6 +115,13 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(ServerSecretStore)({}),
   ServerSettings.layerTest(),
   Layer.mock(SourceControlRepositoryService)({}),
+  // Kin installs T3's GitHub credential reader on these; nothing here reads it.
+  Layer.succeed(
+    SourceControlHost.SourceControlHost,
+    {} as SourceControlHost.SourceControlHost["Service"],
+  ),
+  SourceControlRateLimit.layer,
+  FetchHttpClient.layer,
   Layer.mock(ThreadLaunchService)({}),
   Layer.mock(ThreadManagementService)({
     getThreadShell: (id) => Effect.succeed(liveThreadShell(id)),

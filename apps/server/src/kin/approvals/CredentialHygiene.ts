@@ -24,7 +24,7 @@ const ENV_TOKEN_NAMES = [
   "SSH_AUTH_SOCK",
 ];
 
-/** @public The probe APPR-9's live layer runs for `T3GitHubIdentities.ssh`, without `SSH_AUTH_SOCK`. */
+/** The probe the live layer (`GitHubIdentityProbe.ts`) runs for `T3GitHubIdentities.ssh`, without `SSH_AUTH_SOCK`. */
 export const GITHUB_SSH_PROBE = [
   "ssh",
   "-T",
@@ -73,7 +73,7 @@ export class T3GitHubIdentityError extends Schema.TaggedError<T3GitHubIdentityEr
 
 /**
  * Every github.com login reachable from the server's OS user, and so from every agent CLI it
- * spawns. Each field is required so the live layer (APPR-9) can't skip a source; a source it
+ * spawns. Each field is required so the live layer can't skip a source; a source it
  * can't read fails the whole probe.
  */
 export interface T3GitHubIdentities {
@@ -101,19 +101,6 @@ export class T3GitHubIdentity extends Context.Service<
   T3GitHubIdentity,
   { readonly identities: Effect.Effect<T3GitHubIdentities, T3GitHubIdentityError> }
 >()("t3/kin/approvals/CredentialHygiene/T3GitHubIdentity") {}
-
-/**
- * Until the live probe lands (spec section 12: `gh`, the git credential helper, SSH and T3's own
- * credential), no identity can be read, so every check fails `identity_unknown` and nothing runs.
- */
-export const identityUnavailableLayer = Layer.succeed(
-  T3GitHubIdentity,
-  T3GitHubIdentity.of({
-    identities: Effect.fail(
-      new T3GitHubIdentityError({ cause: "the live GitHub identity probe is not installed" }),
-    ),
-  }),
-);
 
 export const CredentialHygieneFailure = Schema.Literals([
   "env_token",

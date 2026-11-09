@@ -20,6 +20,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -153,6 +154,11 @@ function harness() {
     }),
   });
   const notices: Array<{ readonly actionId: string; readonly outcome: string }> = [];
+  // What the owner is told about the credential check; `posted` lets a test await each one.
+  const credentialNotices: {
+    readonly sent: Array<{ readonly orgId: string; readonly failures: ReadonlyArray<string> }>;
+    posted?: (failures: ReadonlyArray<string>) => Effect.Effect<unknown>;
+  } = { sent: [] };
   const noticed = Deferred.makeUnsafe<void>();
   // Each credential check runs `during` with its count; `failing` makes the identity unreadable.
   const checks: {
@@ -214,6 +220,10 @@ function harness() {
   const notifications = Layer.succeed(
     ActionExecutor.KinExecutionNotices,
     ActionExecutor.KinExecutionNotices.of({
+      credentialCheck: ({ orgId: org, report }) =>
+        Effect.sync(() =>
+          credentialNotices.sent.push({ orgId: org, failures: report.failures }),
+        ).pipe(Effect.andThen(credentialNotices.posted?.(report.failures) ?? Effect.void)),
       finished: ({ action, outcome }) =>
         Effect.sync(() => void notices.push({ actionId: action.id, outcome })).pipe(
           Effect.andThen(Deferred.succeed(noticed, undefined)),
@@ -235,7 +245,17 @@ function harness() {
   const layer = Layer.effect(ActionExecutor.KinActionExecutor, ActionExecutor.make).pipe(
     Layer.provideMerge(deps),
   );
-  return { world, requests: github.requests, notices, noticed, checks, mints, layer, deps };
+  return {
+    world,
+    requests: github.requests,
+    notices,
+    credentialNotices,
+    noticed,
+    checks,
+    mints,
+    layer,
+    deps,
+  };
 }
 
 const seed = Effect.gen(function* () {
@@ -629,6 +649,41 @@ describe("KinActionExecutor", () => {
       assert.deepStrictEqual(writes(requests), []);
     }).pipe(Effect.provide(deps));
   });
+
+  it.effect(
+    "the worker checks credentials at startup and hourly, telling the owner of changes",
+    () => {
+      const { checks, credentialNotices, deps } = harness();
+      return Effect.gen(function* () {
+        yield* seed;
+        const posted = yield* Queue.unbounded<ReadonlyArray<string>>();
+        credentialNotices.posted = (failures) => Queue.offer(posted, failures);
+        checks.failing = true;
+        yield* Effect.gen(function* () {
+          yield* ActionExecutor.KinActionExecutor;
+          assert.deepStrictEqual(yield* Queue.take(posted), ["identity_unknown"]);
+          // An unchanged hour stays quiet; the next one that passes says so.
+          yield* TestClock.adjust("1 hour");
+          assert.strictEqual(checks.count, 2);
+          checks.failing = false;
+          yield* TestClock.adjust("1 hour");
+          assert.deepStrictEqual(yield* Queue.take(posted), []);
+        }).pipe(Effect.provide(ActionExecutor.layer), Effect.scoped);
+        assert.strictEqual(checks.count, 3);
+        assert.deepStrictEqual(credentialNotices.sent, [
+          { orgId, failures: ["identity_unknown"] },
+          { orgId, failures: [] },
+        ]);
+        const failed = (yield* auditEntries).filter(
+          (entry) => entry.event === "credential_check_failed",
+        );
+        assert.deepStrictEqual(
+          failed.map((entry) => [entry.actionId, entry.result]),
+          [[undefined, "identity_unknown"]],
+        );
+      }).pipe(Effect.provide(deps));
+    },
+  );
 
   it.effect("the worker executes an approval as it lands", () => {
     const { requests, noticed, deps } = harness();

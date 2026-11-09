@@ -9,6 +9,7 @@ import { KinBudget } from "./lead/KinBudget.ts";
 import { KinEventQueue } from "./lead/KinEventQueue.ts";
 import { ApproverKeys } from "./approvals/ApproverKeys.ts";
 import { GrantVerifier } from "./approvals/GrantVerifier.ts";
+import type { T3GitHubCredential } from "./approvals/T3GitHubCredential.ts";
 import { KinStop } from "./lead/KinStop.ts";
 import type { KinGithubWebhookLock } from "./triggers/githubWebhooks.ts";
 import type { KinPushDevices } from "./push/KinPushDevices.ts";
@@ -25,6 +26,7 @@ export type Services =
   | KinGithubWebhookLock
   | ApproverKeys
   | GrantVerifier
+  | T3GitHubCredential
   | KinPushDevices
   | KinPushPresence
   | KinPushSender;

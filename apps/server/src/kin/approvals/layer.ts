@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 
+import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import * as Keychain from "../github/Keychain.ts";
 import * as KinBotReads from "../github/KinBotReads.ts";
 import * as KinGitHubApp from "../github/KinGitHubApp.ts";
@@ -16,6 +17,8 @@ import * as ApproverKeys from "./ApproverKeys.ts";
 import * as Audit from "./Audit.ts";
 import * as AttestationTrust from "./attestation/AttestationTrust.ts";
 import * as CredentialHygiene from "./CredentialHygiene.ts";
+import * as GitHubIdentityProbe from "./GitHubIdentityProbe.ts";
+import * as T3GitHubCredential from "./T3GitHubCredential.ts";
 import * as GrantPorts from "./GrantPorts.ts";
 import * as GrantVerifier from "./GrantVerifier.ts";
 import { makeDeleteBranchHandler } from "./handlers/deleteBranch.ts";
@@ -42,7 +45,13 @@ const registerApproverKeyHandler = Effect.map(
 // The bot App reads, the owner merge token writes, and the hygiene check gates both.
 const github = Layer.mergeAll(KinBotReads.layer, CredentialHygiene.layer).pipe(
   Layer.provideMerge(OwnerMergeClient.layer),
-  Layer.provide(CredentialHygiene.identityUnavailableLayer),
+  // Its process runner and filesystem are the server's, by layer memoization.
+  Layer.provide(
+    GitHubIdentityProbe.layer.pipe(
+      Layer.provide(VcsProcess.layer),
+      Layer.provide(NodeServices.layer),
+    ),
+  ),
   Layer.provide(KinGitHubApp.layer),
   Layer.provideMerge(
     Layer.mergeAll(
@@ -116,6 +125,8 @@ export const layer = Layer.mergeAll(
 ).pipe(
   Layer.provideMerge(ApproverKeys.layer),
   Layer.provideMerge(PendingActions.layer),
+  // In Kin's services too: the server installs T3's credential reader into this one slot.
+  Layer.provideMerge(T3GitHubCredential.slotLayer),
   Layer.provide(
     Layer.mergeAll(
       AttestationTrust.layer.pipe(Layer.provide(FetchHttpClient.layer)),
