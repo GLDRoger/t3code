@@ -82,7 +82,14 @@ it.effect.each([
         assert.strictEqual(leadOpened, lead);
         return;
       }
-      assert.deepStrictEqual(leadOpened, { ...lead, settingSources: ["user"] });
+      assert.deepStrictEqual(leadOpened, {
+        ...lead,
+        settingSources: ["user"],
+        disallowedTools: [...(lead.disallowedTools ?? []), ...LeadIsolation.leadBlockedTools],
+      });
+      // A dream keeps the edit tools its checkout needs.
+      assert.deepStrictEqual(dreamOpened?.tools, DreamIsolation.dreamTools);
+      assert.isFalse((dreamOpened?.disallowedTools ?? []).includes("Edit"));
       assert.isDefined(leadOpened?.mcpServers?.kin);
     }).pipe(
       Effect.provide(
