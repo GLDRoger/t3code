@@ -28,7 +28,7 @@ import { ErrorBanner } from "../../components/ui/ErrorBanner";
 import { LoadingStrip } from "../../components/ui/LoadingStrip";
 import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
-import { useContentTopInset } from "../../components/ui/useBarInset";
+import { useBarOverlap, useContentTopInset } from "../../components/ui/useBarInset";
 import { useReduceMotionEnabled } from "../../lib/appState";
 import { useLocalDayStartMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
@@ -384,6 +384,7 @@ function KinChatFeed(props: {
   const dayStartMs = useLocalDayStartMs();
   const lastRequest = useRef(0);
   const reduceMotion = useReduceMotionEnabled();
+  const barOverlap = useBarOverlap();
   const markdownStyle = useMarkdownPreviewStyles().nativeTextStyle;
   const openLink = useOpenPullRequest();
   const [heldPaging, setPaging] = useState<KinPaging>(initialKinPaging);
@@ -579,6 +580,9 @@ function KinChatFeed(props: {
         extraData={markdownStyle}
         estimatedItemSize={72}
         drawDistance={500}
+        // UIKit insets the feed under the bar, which LegendList can't see: without this a short
+        // chat's end-alignment spacer overfills and pushes its newest messages below the fold.
+        contentInsetStartAdjustment={barOverlap}
         alignItemsAtEnd
         initialScrollAtEnd
         maintainScrollAtEnd={
