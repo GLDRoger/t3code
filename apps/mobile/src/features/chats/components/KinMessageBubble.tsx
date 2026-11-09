@@ -10,6 +10,7 @@ import {
   type NativeMarkdownTextStyle,
 } from "../../../native/SelectableMarkdownText";
 import {
+  kinBodyMarkdown,
   kinImageSource,
   kinImageText,
   kinMessageLabel,
@@ -89,7 +90,7 @@ export function KinMessageBubble(props: {
         >
           {hasBody ? (
             <SelectableMarkdownText
-              markdown={message.body}
+              markdown={kinBodyMarkdown(message.body)}
               textStyle={props.markdownStyle}
               preserveSoftBreaks
               onLinkPress={props.onLinkPress}

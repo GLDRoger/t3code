@@ -230,7 +230,7 @@ Every screen handles the same seven states. Each state's copy is fixed below.
 
 `KinWidgetView` switches on `widget.kind`. A kind this build can't draw renders "This card can't be shown here yet." and never falls back to HTML. The server-drawn `shadow_summary` and `routine` cards render as plain text: a title and one line per row, with row links opening only over http(s).
 
-**Message bodies are untrusted.** Agents write them, so a bubble never loads an image (each shows as its alt text) and opens only http(s) links. A link's accessibility action names its real host whenever the link text doesn't. Every card uses the `PendingApprovalCard` frame and `Button`s. Button labels are plain words (DESIGN 8.6).
+**Message bodies are untrusted.** Agents write them, so a bubble never loads or opens an image (image syntax becomes the text "Image: alt" before parsing) and opens only http(s) links. A link's accessibility action names its real host whenever the link text doesn't. Every card uses the `PendingApprovalCard` frame and `Button`s. Button labels are plain words (DESIGN 8.6).
 
 **A click posts a structured action, not text.** `widgetAction({ orgId, chatId, widgetId, revision, actionId, clientActionId })`. While the action is in flight, the button shows a spinner and the other buttons are disabled. The server rejects an action whose `revision` is stale. The card then shows "This card changed. Check it again." and re-renders from the newer revision.
 

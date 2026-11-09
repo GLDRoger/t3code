@@ -409,6 +409,20 @@ export function kinLinkToOpen(href: string): string | null {
  */
 export const kinImageSource = () => ({ uri: "" });
 
+const MARKDOWN_IMAGE = /!\[([^\]]*)\](?:\([^)]*\)|\[[^\]]*\])/g;
+const HTML_IMAGE = /<img\b[^>]*>/gi;
+
+/**
+ * The body a bubble renders: images become text before parsing, so no build (even one without
+ * the native parser) can load or open an agent's image URL.
+ */
+export const kinBodyMarkdown = (body: string) =>
+  body
+    .replace(MARKDOWN_IMAGE, (_match, alt: string) =>
+      alt.trim() ? `Image: ${alt.trim()}` : "Image",
+    )
+    .replace(HTML_IMAGE, "Image");
+
 /** A standalone image block, drawn as text in its place. */
 export const kinImageText = (image: MarkdownImageRequest) =>
   image.alt?.trim() ? `Image: ${image.alt.trim()}` : "Image";
