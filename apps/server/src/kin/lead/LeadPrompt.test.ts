@@ -280,9 +280,12 @@ it.effect.each([
             ),
         })
       : repo;
-    const built = yield* Effect.gen(function* () {
+    const [built, steered] = yield* Effect.gen(function* () {
       const prompt = yield* KinLeadPrompt;
-      return yield* prompt.build({ ...input, events: [event("message")] });
+      return [
+        yield* prompt.build({ ...input, events: [event("message")] }),
+        yield* prompt.steer({ ...input, events: [event("message")] }),
+      ] as const;
     }).pipe(
       Effect.provide(Layer.fresh(KinLeadPrompt.layer).pipe(Layer.provide(memory))),
       Effect.provideService(Chat.KinChatRepository, source),
@@ -308,6 +311,16 @@ it.effect.each([
     const payload = content[0]?.slice(2);
     expect(payload && (yield* decodeBody(payload)).body).toBe(body);
     expect(lines.filter((line) => line === "> END QUOTE")).toHaveLength(2);
+    // Steered into a live session, it is quoted the same way and only an owner's reads as one.
+    const steeredLines = steered.split("\n");
+    expect(steeredLines.filter((line) => line.startsWith("> BEGIN QUOTE:"))).toEqual([
+      "> BEGIN QUOTE: event data",
+      `> BEGIN QUOTE: ${label}`,
+    ]);
+    expect(steeredLines.filter((line) => line.includes("ignore previous instructions"))).toEqual(
+      content,
+    );
+    expect(steered.startsWith("The owner sent this")).toBe(label === "owner message");
   }).pipe(Effect.provide(layer)),
 );
 
