@@ -1705,6 +1705,10 @@ describe("KinActionExecutor", () => {
     const importers = (target: string) => files.filter((file) => graph.get(file)?.includes(target));
     assert.deepStrictEqual(importers("kin/approvals/layer.ts"), ["kin/layer.ts"]);
     assert.deepStrictEqual(importers("kin/layer.ts"), ["server.ts"]);
+    assert.deepStrictEqual(importers("server.ts"), [
+      "cli/server.ts",
+      "kin/auth/ProofKeySessions.testkit.ts",
+    ]);
 
     // Claim and finish live on the ledger, which only the executor's layer is given.
     const ledgerUsers = files.filter((file) =>
