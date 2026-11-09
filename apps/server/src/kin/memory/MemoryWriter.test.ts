@@ -182,10 +182,12 @@ it.live.each([
         >)
       | undefined;
     let failBranch = false;
+    const memoryRuns: Array<Vcs.VcsProcessInput> = [];
     const interceptedGit = Layer.succeed(
       Vcs.VcsProcess,
       Vcs.VcsProcess.of({
         run: Effect.fn("WriterTest.objectSwap")(function* (input) {
+          if (input.operation === "Memory.gitHardened") memoryRuns.push(input);
           if (
             attack &&
             input.args.includes("cat-file") &&
@@ -221,6 +223,7 @@ it.live.each([
     const config = Layer.succeed(MemoryConfig, {
       baseDirectory: root,
       credentialHelper: "fixture-server-helper",
+      sshCommand: "ssh -i /fixture/kin-memory-key",
       repositories: [{ orgId, repoUrl: remote, path: "state" }],
     });
     const synced: Array<ReadonlyArray<MemoryItemHead>> = [];
@@ -485,6 +488,23 @@ it.live.each([
           }),
         );
         expect(helper.trim()).toBe("fixture-server-helper");
+        yield* writer.stage(orgId, "wake1", {
+          path: "claims/credentials.md",
+          content: fixtureItem({ kind: "claim" }),
+        });
+        yield* writer.commitWakeup(orgId, "wake1", "completed");
+        const remoteRuns = memoryRuns.filter((run) => run.args.includes(remote));
+        expect(
+          new Set(
+            remoteRuns.map((run) =>
+              run.args.find((arg) => /^(clone|fetch|ls-remote|push)$/.test(arg)),
+            ),
+          ),
+        ).toStrictEqual(new Set(["clone", "fetch", "ls-remote", "push"]));
+        for (const run of remoteRuns) {
+          expect(run.args).toContain("credential.helper=fixture-server-helper");
+          expect(run.env?.GIT_SSH_COMMAND).toBe("ssh -i /fixture/kin-memory-key");
+        }
         return;
       }
       if (scenario === "review-default" || scenario === "review-null") {

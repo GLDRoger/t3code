@@ -39,6 +39,30 @@ export XDG_RUNTIME_DIR=/run/user/$(id -u)
 
 Owner overrides such as `T3CODE_LAN=true` go in `~/.t3/service.env`, which the unit reads and the backup copies. The unit reads it before `kin-server.env`, so it can't change `PATH`, the build or the Node version.
 
+## Memory repo access
+
+Memory git ignores the system and global git config, so the host's credential helpers and `GIT_SSH_COMMAND` don't reach it. Give it a credential through `~/.t3/service.env`, which only memory git reads. Without one, cloning a private memory repo fails and every wake-up fails with it.
+
+**SSH (use this for now).** Add a deploy key with write access to the memory repo only, and keep the private key outside `~/.ssh`:
+
+```bash
+install -d -m 700 ~/.config/kin
+ssh-keygen -t ed25519 -N '' -C kin-memory -f ~/.config/kin/kin-memory-deploy-key
+chmod 600 ~/.config/kin/kin-memory-deploy-key
+```
+
+Then in `~/.t3/service.env`:
+
+```bash
+KIN_MEMORY_SSH_COMMAND="ssh -i /home/kin/.config/kin/kin-memory-deploy-key -o IdentitiesOnly=yes"
+```
+
+Point `KIN_MEMORY_REPOSITORIES` at the SSH URL (`git@github.com:<owner>/<memory repo>.git`), make sure `~/.ssh/known_hosts` holds GitHub's host key, and restart `kin-server`. The key stays out of `~/.ssh` because the approvals credential check tries every key there against GitHub, and a deploy key's greeting names a repo instead of the bot, so the check fails with `non_bot_identity` and privileged actions stop. Agents run as `kin` and can still read the file, which is why the key gets access to the memory repo and nothing else.
+
+**HTTPS.** Set `KIN_MEMORY_CREDENTIAL_HELPER` to a git credential helper's name or absolute path, with an `https://` repo URL. There is no GitHub App installation-token helper yet, so this route has nothing to point at until one is written.
+
+Both values must name a credential, never hold it: the server refuses to start Kin when the helper is an inline `!` script or the SSH command contains shell syntax, and it never logs either value.
+
 ## Link the laptop and phone
 
 Use `connect link`, not `up --connect`. On Linux with systemd, `up` installs the upstream background service: it downloads the pinned upstream release that matches the version and writes `~/.config/systemd/user/t3.service`. That would be a second server on kin's state.

@@ -487,7 +487,7 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
 
 - `git`, `gh`, `git-filter-repo` and `gitleaks` from the distribution or their release binaries.
 - Node 26 (the repo's `engines`) through `mise`, which the host already uses, and `vp`.
-- A dedicated `kin` user (`sudo useradd -m kin`). The Kin server runs as this user, never as the owner's account. Its only GitHub credential is the GitHub App's, so agents never see the owner's `gh` login (lead spec, security notes).
+- A dedicated `kin` user (`sudo useradd -m kin`). The Kin server runs as this user, never as the owner's account. Its only GitHub credentials are the GitHub App's and a memory repo deploy key kept outside `~/.ssh` and passed to memory git alone through `KIN_MEMORY_SSH_COMMAND` ([host README](../../../ops/kin/host/README.md#memory-repo-access)), so agents never see the owner's `gh` login (lead spec, security notes).
 - The providers' CLIs (Claude Code, Codex) installed for the `kin` user and signed in to the owner's plans.
 - As `kin`: clone `GLDRoger/t3code` to `~/t3code`, `git switch kin`, `cp .env.example .env` (it holds the production relay URL), then `ops/kin/host/update.sh`, which makes the first build.
 - `sudo ops/kin/host/setup.sh` creates the user, turns on linger, masks sleep, installs and enables the units, and prints a pass/fail checklist of everything above. It is safe to re-run, and `--dry-run` shows every action. Steps: [`ops/kin/host/README.md`](../../../ops/kin/host/README.md).

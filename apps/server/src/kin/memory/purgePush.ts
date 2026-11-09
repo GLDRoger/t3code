@@ -82,9 +82,9 @@ const pushFailure = (stdout: string, stderr: string): KinPurgePushError["reason"
 };
 
 // A helper name or absolute path, never an inline `!` script that could carry the secret itself.
-const isCredentialHelperReference = (helper: string) =>
+export const isCredentialHelperReference = (helper: string) =>
   /^(?:[A-Za-z0-9][A-Za-z0-9._-]*|\/[A-Za-z0-9._/-]+)$/.test(helper);
-const isSshCommandReference = (command: string) => /^[A-Za-z0-9 ._/=,:@+-]+$/.test(command);
+export const isSshCommandReference = (command: string) => /^[A-Za-z0-9 ._/=,:@+-]+$/.test(command);
 /** `file://` carries no credential; https needs the helper and SSH the owner's command. */
 const remoteKind = (url: string) =>
   /^https:\/\//i.test(url)
