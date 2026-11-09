@@ -437,9 +437,9 @@ it.effect("at L0 kin_chat_post posts nothing, records a shadow entry and updates
         entry.preview,
       ]),
       [
-        ["group-1", "Rate limiting moves to Friday."],
+        ["group-1", "Rate limiting moves to Friday.\nIntent: decision"],
         ["project-1", "code: Forged"],
-        ["other-direct", "Done."],
+        ["other-direct", "Done.\nIntent: answer"],
       ],
     );
     assert.isFalse(state.entries.some((entry: object) => "ceilingBelowOwner" in entry));

@@ -78,8 +78,9 @@ it.effect("starts configured Kin with the real prompt and the runner's pinned me
       yield* seed;
       yield* (yield* KinEventQueue.KinEventQueue).enqueue({
         ...event("real-prompt"),
-        _tag: "routine",
-        routine: "morning_brief",
+        _tag: "watchdog",
+        finding: "Review requested three days ago",
+        itemIds: [],
       });
       yield* Layer.build(
         Layer.fresh(KinLead.layerServer).pipe(
