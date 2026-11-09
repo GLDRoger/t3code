@@ -16,7 +16,7 @@ import {
 } from "../threads/thread-list-v2-row-appearance";
 
 import { selectKinInboxView } from "./state/kinInboxModel";
-import { kinHomeSubtitle } from "./state/kinScreenState";
+import { kinHomeLabel, kinHomeSubtitle } from "./state/kinScreenState";
 import { useKinInbox } from "./state/useKinInbox";
 
 /** Home's Kin row, first in the thread list. Renders nothing unless an environment hosts Kin. */
@@ -72,9 +72,7 @@ export function KinHomeEntry() {
     <View style={appearance.swipeContainerStyle}>
       <RowPressable
         accessibilityRole="button"
-        accessibilityLabel={["Kin", subtitle, unreadCount > 0 ? `${unreadCount} unread` : null]
-          .filter(Boolean)
-          .join(". ")}
+        accessibilityLabel={kinHomeLabel(subtitle, unreadCount)}
         accessibilityHint="Opens your Kin chats"
         className={appearance.className}
         interactionClassName={appearance.interactionClassName}
