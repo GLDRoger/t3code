@@ -32,6 +32,7 @@ import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as KinLevels from "./KinLevels.ts";
 
 type PostInput = KinMessagesSendInput & { readonly intent: KinAgentIntent };
+type WidgetInput = Parameters<KinChatService["Service"]["upsertWidget"]>[1];
 
 /**
  * `kin_chat_post` behind the lead's level: below L1 it records a shadow entry and posts nothing,
@@ -44,6 +45,10 @@ export class KinLevelGate extends Context.Service<
       agent: AgentIdentity,
       input: PostInput,
     ) => Effect.Effect<KinMessage | KinShadowResult, KinChatError>;
+    readonly upsertWidget: (
+      agent: AgentIdentity,
+      input: WidgetInput,
+    ) => Effect.Effect<KinWidget, KinChatError>;
   }
 >()("t3/kin/lead/LevelGate/KinLevelGate") {}
 
@@ -103,9 +108,12 @@ const make = Effect.gen(function* () {
       const day = DateTime.formatIsoDate(local);
       yield* sql.withTransaction(
         Effect.gen(function* () {
+          // The card goes only to a direct chat, whatever kin_leads names: it previews every entry.
           const [lead] = yield* sql<{ name: string; ownerChatId: string }>`
             SELECT l.name, l.owner_chat_id AS "ownerChatId" FROM kin_leads l
             JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+            JOIN kin_chats c ON c.org_id = l.org_id AND c.chat_id = l.owner_chat_id
+              AND c.kind = 'direct'
             WHERE l.org_id = ${orgId} AND l.agent_id = ${agentId}
               AND a.role = 'lead' AND a.retired_at IS NULL
             ORDER BY l.agent_id`;
@@ -320,7 +328,41 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  return { gate: KinLevelGate.of({ post }), summary: KinLevels.KinShadowSummary.of({ refresh }) };
+  // Below L1 a lead edits cards only in its owner's direct chat, like its posts.
+  const upsertWidget = Effect.fn("KinLevelGate.upsertWidget")(
+    function* (agent: AgentIdentity, input: WidgetInput) {
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const level = yield* KinLevels.effectiveLevel({
+            orgId: agent.orgId,
+            agentId: agent.agentId,
+            chatId: input.chatId,
+          });
+          if (!KinLevels.atLeast(level, "L1") && !(yield* isOwnerChat(agent, input.chatId)))
+            return yield* refused("Below L1 the lead can't change cards in this chat.");
+          return yield* chat.upsertWidget(agent, input);
+        }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+      );
+    },
+    Effect.catch((error) =>
+      error._tag === "KinChatError"
+        ? Effect.fail(error)
+        : error._tag === "KinLevelRefused"
+          ? Effect.fail(refused("Chat operation not allowed."))
+          : Effect.logError("Kin level-gated widget upsert failed", error).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new KinChatError({ reason: "unavailable", message: "Kin is unavailable." }),
+                ),
+              ),
+            ),
+    ),
+  );
+
+  return {
+    gate: KinLevelGate.of({ post, upsertWidget }),
+    summary: KinLevels.KinShadowSummary.of({ refresh }),
+  };
 });
 
 export const layer = Layer.effectContext(

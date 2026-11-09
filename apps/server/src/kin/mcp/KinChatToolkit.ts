@@ -110,9 +110,9 @@ export const agentServices = Effect.gen(function* () {
   const identity = Context.get(kin.services.value, KinIdentity);
   const agent = yield* identity.resolveAgent(yield* McpInvocationContext);
   // Only chat operations cross this boundary; trusted waiting and streaming paths stay private.
-  const { send, read, upsertWidget } = Context.get(kin.services.value, KinChatService);
-  // Agent posts go through the lead's level; WS sends from people never do.
-  const { post } = Context.get(kin.services.value, KinLevelGate);
+  const { send, read } = Context.get(kin.services.value, KinChatService);
+  // Agent posts and card edits go through the lead's level; WS calls from people never do.
+  const { post, upsertWidget } = Context.get(kin.services.value, KinLevelGate);
   return { agent, post, send, read, upsertWidget };
 }).pipe(
   Effect.mapError((error) =>
