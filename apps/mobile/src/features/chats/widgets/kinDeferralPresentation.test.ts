@@ -9,6 +9,8 @@ import {
   KIN_UNDO_TOO_LATE_TEXT,
   KIN_START_NOW_REFUSALS,
   createKinCardActions,
+  kinActionFailureNotice,
+  kinDeferralActInput,
   formatKinDeferralClock,
   formatKinDeferralTime,
   kinCardStatusAfter,
@@ -210,6 +212,8 @@ describe("createKinCardActions", () => {
     const posted: KinWidgetsActInput[] = [];
     let id = 0;
     const act = createKinCardActions({
+      toInput: kinDeferralActInput,
+      failureNotice: kinActionFailureNotice,
       newId: () => `client-${++id}`,
       post: (input) => {
         posted.push(input);

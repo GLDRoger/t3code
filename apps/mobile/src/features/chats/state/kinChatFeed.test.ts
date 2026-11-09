@@ -247,6 +247,27 @@ describe("rows", () => {
     ]);
   });
 
+  it("shows a choice tap as the owner's words instead of its JSON and card", () => {
+    const tap = {
+      ...all.find((m) => m.author._tag === "human")!,
+      kind: "widget_action",
+      widgetId: "choice:card",
+      body: JSON.stringify({
+        actionId: "choose",
+        value: "option-1",
+        text: 'Chose "Ship it" on "Ship?"',
+      }),
+    } as KinMessage;
+    const other = { ...tap, messageId: "other-tap", body: '{"actionId":"keep"}' } as KinMessage;
+    const [shown, kept] = messageRows([tap, other], viewer, new Set());
+    expect(shown).toMatchObject({
+      message: { body: 'Chose "Ship it" on "Ship?"', widgetId: null },
+    });
+    expect(kept).toMatchObject({
+      message: { body: '{"actionId":"keep"}', widgetId: "choice:card" },
+    });
+  });
+
   it("hides dismissed suggestions and draws system messages as their own rows", () => {
     const rows = messageRows(
       [

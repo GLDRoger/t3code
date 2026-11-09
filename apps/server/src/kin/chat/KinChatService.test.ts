@@ -25,6 +25,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
@@ -267,6 +268,99 @@ describe("KinChatService", () => {
             })
             .pipe(Effect.flip),
           { reason: "not_allowed" },
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "settles a choice card on its first tap and refuses stale, foreign and expired taps",
+    () =>
+      Effect.gen(function* () {
+        const { repo, service, person, agent, chat } = yield* seed();
+        const ask = {
+          chatId: chat.chatId,
+          clientMessageId: "ask-1",
+          question: "Ship today?",
+          options: [
+            { label: "Ship it", kind: "yes" as const },
+            { label: "Wait", kind: "no" as const },
+          ],
+        };
+        const card = yield* service.ask(agent, ask);
+        assert.deepStrictEqual(card.awaiting, [person.personId]);
+        assert.deepStrictEqual(yield* service.ask(agent, ask), card);
+        const later = yield* service.ask(agent, { ...ask, clientMessageId: "ask-2" });
+        assert.include(
+          yield* service
+            .upsertWidget(agent, {
+              chatId: chat.chatId,
+              widgetId: card.widgetId,
+              revision: 1,
+              type: "choice",
+              state: card.state,
+            })
+            .pipe(Effect.flip),
+          { reason: "not_allowed" },
+        );
+        const tap = (clientActionId: string, revision = 1, widgetId = card.widgetId) => ({
+          widgetId,
+          revision,
+          actionId: "choose",
+          value: "option-1",
+          clientActionId,
+        });
+        const outsider = { ...person, personId: decodeKinPersonId("outsider") };
+        yield* repo.insertPerson({
+          ...outsider,
+          handle: "outsider",
+          displayName: "Outsider",
+          githubLogin: null,
+          createdAt: timestamp,
+        });
+        assert.include(yield* service.act(outsider, tap("outsider")).pipe(Effect.flip), {
+          reason: "not_found",
+        });
+        yield* repo.addMember({
+          ...chat,
+          memberId: decodeKinMemberId("late-member"),
+          principal: { _tag: "person", personId: outsider.personId },
+          role: "member",
+          joinedAt: timestamp,
+          leftAt: null,
+          mutedUntil: null,
+        });
+        assert.include(yield* service.act(outsider, tap("member")).pipe(Effect.flip), {
+          reason: "not_allowed",
+        });
+        assert.include(
+          yield* service.act(person, { ...tap("bad"), value: "option-9" }).pipe(Effect.flip),
+          { reason: "invalid_state" },
+        );
+
+        const message = yield* service.act(person, tap("tap-1"));
+        assert.include(JSON.parse(message.body), { text: 'Chose "Ship it" on "Ship today?"' });
+        assert.deepStrictEqual(yield* service.act(person, tap("tap-1")), message);
+        const answered = Option.getOrThrow(yield* repo.getWidget(card));
+        assert.strictEqual(answered.revision, 2);
+        assert.deepStrictEqual(answered.awaiting, []);
+        assert.include((answered.state as { answer: object }).answer, {
+          optionId: "option-1",
+          personId: person.personId,
+          via: "tap",
+        });
+        assert.notInclude(
+          (yield* repo.listOpenWaiting(person)).map((item) => item.widgetId),
+          card.widgetId,
+        );
+        for (const stale of [tap("tap-2"), tap("tap-3", 2)])
+          assert.include(yield* service.act(person, stale).pipe(Effect.flip), {
+            reason: "widget_changed",
+          });
+
+        yield* TestClock.adjust("24 hours");
+        assert.include(
+          yield* service.act(person, tap("late", 1, later.widgetId)).pipe(Effect.flip),
+          { reason: "invalid_state", message: "This question expired." },
         );
       }).pipe(Effect.provide(layer)),
   );

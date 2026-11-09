@@ -11,6 +11,7 @@ import {
   AuthStandardClientScopes,
   EnvironmentId,
   KinAgentId,
+  KinChatId,
   KinMessageId,
   KinMemberId,
   KinOrgId,
@@ -39,6 +40,7 @@ import * as Kin from "../layer.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
+import { KinLevelGate } from "../lead/LevelGate.ts";
 import { KinChatToolkit, handlers, agentServices } from "./KinChatToolkit.ts";
 
 const threadId = ThreadId.make("lead-thread");
@@ -449,6 +451,44 @@ it.effect("at L0 kin_chat_post posts nothing, records a shadow entry and updates
       .pipe(Effect.flip);
     assert.include(forged, { reason: "invalid_state" });
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "at L0 a kin_ask card posts only in the owner's direct chat and is shadowed elsewhere",
+  () =>
+    Effect.gen(function* () {
+      const { chat, person, sql } = yield* seed(false, "L0");
+      yield* otherChats(sql, person.orgId);
+      const services = Option.getOrThrow((yield* Kin.KinServer).services);
+      const agent = yield* Context.get(services, KinIdentity).resolveAgent(scope);
+      const gate = Context.get(services, KinLevelGate);
+      const ask = (chatId: string) =>
+        gate.ask(agent, {
+          chatId: KinChatId.make(chatId),
+          clientMessageId: `ask-${chatId}`,
+          question: "Ship today?",
+          options: [{ label: "Yes" }, { label: "No" }],
+        });
+      assert.include(yield* ask("group-1"), { shadowed: true });
+      assert.include(yield* ask("other-direct"), { shadowed: true });
+      assert.include(yield* ask(chat.chatId), { type: "choice", chatId: chat.chatId });
+      assert.deepStrictEqual(
+        yield* sql<{
+          chatId: string;
+          type: string;
+        }>`SELECT chat_id AS "chatId", type FROM kin_widgets
+        WHERE org_id = ${person.orgId} AND type = 'choice' ORDER BY widget_id`,
+        [{ chatId: chat.chatId, type: "choice" }],
+      );
+      assert.deepStrictEqual(
+        yield* sql<{ tool: string; target: string }>`SELECT tool, would_target AS target
+        FROM kin_shadow_entries WHERE org_id = ${person.orgId} ORDER BY created_at, would_target`,
+        [
+          { tool: "kin_ask", target: "group-1" },
+          { tool: "kin_ask", target: "other-direct" },
+        ],
+      );
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect("a chat's own level caps the lead's: min(lead, chat), from stored rows only", () =>

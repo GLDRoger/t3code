@@ -209,6 +209,11 @@ export const KinChoiceOption = Schema.Struct({
 export type KinChoiceOption = typeof KinChoiceOption.Type;
 /** A `choice` card's buttons post `actionId: "choose"` with the option id as `value`. */
 export const KIN_CHOICE_CARD_ACTION = "choose";
+/**
+ * An unanswered choice card stops taking taps this long after it was posted (its revision-1
+ * `updatedAt`): the same day-long window after which Kin stops waking a lead for old messages.
+ */
+export const KIN_CHOICE_CARD_TTL_MS = 24 * 60 * 60 * 1000;
 export const KinChoiceCardState = Schema.Struct({
   question: KinTrimmedText.check(Schema.isMaxLength(240)),
   detail: Schema.NullOr(KinText.check(Schema.isMaxLength(2000))),

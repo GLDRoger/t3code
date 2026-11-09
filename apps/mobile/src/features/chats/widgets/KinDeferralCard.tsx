@@ -14,6 +14,8 @@ import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
 import {
   createKinCardActions,
+  kinActionFailureNotice,
+  kinDeferralActInput,
   kinCardStatusAfter,
   kinDeferralCountdown,
   visibleKinCardStatus,
@@ -38,7 +40,8 @@ export const KinDeferralCard = memo(function KinDeferralCard(props: {
   const { deferral, environmentId } = props;
   const canAct = useAtomValue(kinClient.widgetAction.permissionAtom(environmentId));
   const post = useAtomCommand(kinClient.widgetAction, { reportFailure: false });
-  const actions = useRef<ReturnType<typeof createKinCardActions>>(null);
+  const actions =
+    useRef<ReturnType<typeof createKinCardActions<KinDeferralCardView, KinDeferralActionId>>>(null);
   const [pending, setPending] = useState<KinDeferralActionId | null>(null);
   const [lastStatus, setLastStatus] = useState<KinCardStatus | null>(null);
   const status = visibleKinCardStatus(lastStatus, deferral.revision);
@@ -47,6 +50,8 @@ export const KinDeferralCard = memo(function KinDeferralCard(props: {
     if (pending !== null) return;
     if (actions.current === null)
       actions.current = createKinCardActions({
+        toInput: kinDeferralActInput,
+        failureNotice: kinActionFailureNotice,
         newId: uuidv4,
         post: async (input) => {
           const result = await post({ environmentId, input });

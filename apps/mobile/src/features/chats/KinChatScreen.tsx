@@ -769,6 +769,7 @@ function KinChatFeed(props: {
             onLinkPress={onLinkPress}
             widget={item.message.widgetId === null ? undefined : widgets.get(item.message.widgetId)}
             environmentId={props.environmentId}
+            viewerPersonId={props.viewer.personId}
           />
         );
       case "system":

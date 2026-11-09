@@ -1,4 +1,4 @@
-import type { EnvironmentId, KinWidget } from "@t3tools/contracts";
+import type { EnvironmentId, KinPersonId, KinWidget } from "@t3tools/contracts";
 import { Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../../components/ui/AppText";
@@ -47,6 +47,7 @@ export function KinMessageBubble(props: {
   readonly widget: KinWidget | undefined;
   /** The environment hosting the chat. */
   readonly environmentId: EnvironmentId;
+  readonly viewerPersonId: KinPersonId | null;
 }) {
   const { row } = props;
   const { message } = row;
@@ -118,6 +119,7 @@ export function KinMessageBubble(props: {
           <KinWidgetView
             widget={props.widget}
             environmentId={props.environmentId}
+            viewerPersonId={props.viewerPersonId}
             onOpenLink={props.onLinkPress}
           />
         </View>

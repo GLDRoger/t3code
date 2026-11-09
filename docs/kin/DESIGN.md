@@ -151,7 +151,7 @@ Pinging people: at most one ping per person per item per day, then escalate to t
 
 ## 7. Widgets
 
-1. **Native cards:** approval, decision, task, deferral, poll, checklist, short form, date picker. Defined by a schema, drawn by the app.
+1. **Native cards:** approval, decision, task, deferral, choice, poll, checklist, short form, date picker. Defined by a schema, drawn by the app.
 2. **Generated:** agent-written HTML through the `McpAppWebView` bridge. Sandboxed; no network except bridge calls; actions only on a real tap.
 3. **Live:** cards or HTML fed by data the server pushes (PR and CI state, deploys, objective progress, running tasks).
 
