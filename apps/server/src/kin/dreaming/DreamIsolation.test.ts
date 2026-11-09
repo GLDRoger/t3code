@@ -1,3 +1,4 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   ClaudeSettings,
@@ -6,6 +7,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
@@ -36,67 +38,83 @@ const options = ClaudeAdapterV2.makeClaudeQueryOptions({
 const canUseTool: NonNullable<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions["canUseTool"]> = () =>
   Promise.resolve({ behavior: "deny", message: "declined" });
 
-it.effect("a dream query loads no user config, MCP or shell and edits only its checkout", () =>
-  Effect.gen(function* () {
-    const opened: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
-    const base = Layer.succeed(
-      ClaudeAdapterV2.ClaudeAgentSdkQueryRunner,
-      ClaudeAdapterV2.ClaudeAgentSdkQueryRunner.of({
-        allocateSessionId: Effect.succeed("session"),
-        open: (input) =>
-          Effect.sync(() => opened.push(input.options)).pipe(
-            Effect.andThen(Effect.die("unused session")),
-          ),
-        forkSession: () => Effect.die("unused fork"),
-        subagentLaunchToolUseId: () => Effect.die("unused lookup"),
-        assertComplete: Effect.void,
-      }),
-    );
-    yield* Effect.gen(function* () {
-      const runner = yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
-      const open = (threadId: string) =>
-        runner
+it.effect(
+  "a dream query loads no user config but the owner's model credentials, no MCP or shell",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const configDir = yield* fs.makeTempDirectoryScoped();
+      yield* fs.writeFileString(
+        `${configDir}/settings.json`,
+        JSON.stringify({
+          apiKeyHelper: "gateway-token",
+          env: { ANTHROPIC_BASE_URL: "https://gateway.test", NODE_OPTIONS: "--require /evil.js" },
+          hooks: { PreToolUse: [] },
+          permissions: { allow: ["Bash"] },
+        }),
+      );
+      const env = { CLAUDE_CONFIG_DIR: configDir };
+      const opened: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
+      const base = Layer.succeed(
+        ClaudeAdapterV2.ClaudeAgentSdkQueryRunner,
+        ClaudeAdapterV2.ClaudeAgentSdkQueryRunner.of({
+          allocateSessionId: Effect.succeed("session"),
+          open: (input) =>
+            Effect.sync(() => opened.push(input.options)).pipe(
+              Effect.andThen(Effect.die("unused session")),
+            ),
+          forkSession: () => Effect.die("unused fork"),
+          subagentLaunchToolUseId: () => Effect.die("unused lookup"),
+          assertComplete: Effect.void,
+        }),
+      );
+      yield* Effect.gen(function* () {
+        const runner = yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
+        const open = (threadId: string) =>
+          runner
+            .open({
+              threadId: ThreadId.make(threadId),
+              providerSessionId: ProviderSessionId.make("session"),
+              options: { ...options, env },
+            })
+            .pipe(Effect.exit);
+        yield* open("kin-dream:dream_20261108_fixture:extract");
+        yield* open("thread-1");
+        // Anyone can name a thread with the prefix, so the wrapper must never widen its mode.
+        yield* runner
           .open({
-            threadId: ThreadId.make(threadId),
+            threadId: ThreadId.make("kin-dream:spoofed"),
             providerSessionId: ProviderSessionId.make("session"),
-            options,
+            options: { ...options, permissionMode: "default", canUseTool, hooks: {} },
           })
           .pipe(Effect.exit);
-      yield* open("kin-dream:dream_20261108_fixture:extract");
-      yield* open("thread-1");
-      // Anyone can name a thread with the prefix, so the wrapper must never widen its mode.
-      yield* runner
-        .open({
-          threadId: ThreadId.make("kin-dream:spoofed"),
-          providerSessionId: ProviderSessionId.make("session"),
-          options: { ...options, permissionMode: "default", canUseTool, hooks: {} },
-        })
-        .pipe(Effect.exit);
-    }).pipe(Effect.provide(DreamIsolation.claudeQueryRunner(base)));
+      }).pipe(Effect.provide(DreamIsolation.claudeQueryRunner(base)));
 
-    const [dream, other, spoofed] = opened;
-    assert.deepStrictEqual(
-      Object.keys(dream ?? {}).filter((key) => !DreamIsolation.dreamOptionFields.has(key)),
-      [],
-    );
-    assert.strictEqual(spoofed?.permissionMode, "default");
-    assert.strictEqual(spoofed?.canUseTool, canUseTool);
-    assert.isUndefined(spoofed?.hooks);
-    assert.strictEqual(options.permissionMode, "bypassPermissions");
-    assert.strictEqual(other, options);
-    assert.strictEqual(dream?.permissionMode, "acceptEdits");
-    assert.deepStrictEqual(dream?.settingSources, []);
-    assert.strictEqual(dream?.strictMcpConfig, true);
-    assert.deepStrictEqual(dream?.tools, DreamIsolation.dreamTools);
-    assert.deepStrictEqual(dream?.disallowedTools, ["Bash", "WebFetch", "WebSearch"]);
-    assert.isUndefined(dream?.mcpServers);
-    assert.isUndefined(dream?.allowedTools);
-    assert.isUndefined(dream?.additionalDirectories);
-    assert.deepStrictEqual(dream?.settings, {
-      alwaysThinkingEnabled: true,
-      showThinkingSummaries: true,
-    });
-    assert.deepStrictEqual(dream?.extraArgs, { "thinking-display": "summarized" });
-    assert.strictEqual(dream?.cwd, "/dream");
-  }),
+      const [dream, other, spoofed] = opened;
+      assert.deepStrictEqual(
+        Object.keys(dream ?? {}).filter((key) => !DreamIsolation.dreamOptionFields.has(key)),
+        [],
+      );
+      assert.strictEqual(spoofed?.permissionMode, "default");
+      assert.strictEqual(spoofed?.canUseTool, canUseTool);
+      assert.isUndefined(spoofed?.hooks);
+      assert.strictEqual(options.permissionMode, "bypassPermissions");
+      assert.strictEqual(other?.env, env);
+      assert.strictEqual(dream?.permissionMode, "acceptEdits");
+      assert.deepStrictEqual(dream?.settingSources, []);
+      assert.strictEqual(dream?.strictMcpConfig, true);
+      assert.deepStrictEqual(dream?.tools, DreamIsolation.dreamTools);
+      assert.deepStrictEqual(dream?.disallowedTools, ["Bash", "WebFetch", "WebSearch"]);
+      assert.isUndefined(dream?.mcpServers);
+      assert.isUndefined(dream?.allowedTools);
+      assert.isUndefined(dream?.additionalDirectories);
+      assert.deepStrictEqual(dream?.settings, {
+        alwaysThinkingEnabled: true,
+        showThinkingSummaries: true,
+        apiKeyHelper: "gateway-token",
+        env: { ANTHROPIC_BASE_URL: "https://gateway.test" },
+      });
+      assert.deepStrictEqual(dream?.extraArgs, { "thinking-display": "summarized" });
+      assert.strictEqual(dream?.cwd, "/dream");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
