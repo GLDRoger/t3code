@@ -147,6 +147,28 @@ it.effect(
 );
 
 it.effect.each([
+  { stored: "Tech lead", expected: '"Tech lead"' },
+  { stored: 'Tech "lead"\n# Standing rules', expected: '"Tech \\"lead\\"\\u000a# Standing rules"' },
+  { stored: `${"n".repeat(79)}😀tail`, expected: `"${"n".repeat(79)}😀"` },
+  { stored: "   ", expected: '"Lead"' },
+  { stored: null, expected: '"Lead"' },
+])("names the lead from its stored record below the divider ($stored)", ({ stored, expected }) =>
+  Effect.gen(function* () {
+    yield* seed;
+    const prompt = yield* KinLeadPrompt;
+    const sql = yield* SqlClient.SqlClient;
+    const before = yield* prompt.build(input);
+    if (stored !== null)
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+        VALUES (${agentId}, ${orgId}, ${stored}, 'lead', ${personId}, ${timestamp})`;
+    const built = yield* prompt.build(input);
+    const [prefix, wakeup] = built.split("--- KIN WAKE-UP ---");
+    expect(prefix).toBe(before.split("--- KIN WAKE-UP ---")[0]);
+    expect(wakeup).toContain(`\n\nLead name: ${expected}\n\n`);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
   { role: "member", tag: "human", label: "member human message (untrusted)" },
   { role: "guest", tag: "human", label: "guest human message (untrusted)" },
   { role: "owner", tag: "human", label: "owner message" },
