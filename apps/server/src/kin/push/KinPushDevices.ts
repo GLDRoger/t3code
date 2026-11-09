@@ -13,6 +13,7 @@ import {
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -124,7 +125,8 @@ const make = Effect.gen(function* () {
       return yield* sql.withTransaction(
         Effect.gen(function* () {
           // A phone re-registers on every connect, which also moves the row to its current session.
-          // Someone else's token moves only once reconcile would drop it, or its session is gone.
+          // Someone else's token moves only once reconcile would drop it, its session is gone, or
+          // the same proof key re-pairs after that session expired. `auth_sessions` keeps expired rows.
           const saved = yield* sql`INSERT INTO kin_push_devices ${sql.insert({
             org_id: input.orgId,
             token: input.token,
@@ -147,9 +149,15 @@ const make = Effect.gen(function* () {
           updated_at = excluded.updated_at
         WHERE kin_push_devices.person_id = excluded.person_id OR ${revoked} OR NOT EXISTS (
           SELECT 1 FROM auth_sessions WHERE session_id = kin_push_devices.session_id)
+          OR (kin_push_devices.proof_key_thumbprint = excluded.proof_key_thumbprint AND NOT EXISTS (
+            SELECT 1 FROM auth_sessions WHERE session_id = kin_push_devices.session_id
+              AND expires_at > ${DateTime.formatIso(DateTime.makeUnsafe(now))}))
         RETURNING token`;
           if (saved.length === 0)
-            return yield* fail("not_member", "This device is registered to someone else.");
+            return yield* fail(
+              "registered_to_someone_else",
+              "This device is registered to someone else.",
+            );
           yield* sql`DELETE FROM kin_push_devices
         WHERE org_id = ${input.orgId} AND person_id = ${person.personId} AND token != ${input.token}
           AND token NOT IN (
