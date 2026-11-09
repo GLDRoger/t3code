@@ -60,7 +60,11 @@ const root = Kin.layer.pipe(
   Layer.provide(dormantLeadDependencies),
   Layer.provideMerge(Chat.layer),
   Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
-  Layer.provideMerge(PendingActions.layer.pipe(Layer.provideMerge(Audit.layer))),
+  Layer.provideMerge(
+    Layer.merge(PendingActions.layer, PendingActions.ledgerLayer).pipe(
+      Layer.provideMerge(Audit.layer),
+    ),
+  ),
   Layer.provideMerge(Sqlite.layerMemory),
 );
 const probe = WsRpcGroup.omit(
@@ -135,7 +139,10 @@ const seed = Effect.gen(function* () {
     yield* sql`INSERT INTO kin_approver_keys (thumbprint, org_id, public_jwk_json, human_id,
         device_label, platform, hardware, attested, state, created_at)
       VALUES (${thumbprint}, ${orgId}, '{}', ${human}, 'Pixel 9', 'android', 'tee', 1, 'active', 0)`;
-  const pending = yield* PendingActions.KinPendingActions;
+  const pending = {
+    ...(yield* PendingActions.KinPendingActions),
+    ...(yield* PendingActions.KinExecutionLedger),
+  };
   let jti = 0;
   /** Signs the action as `human`, then claims it as the executor would unless `claim` is false. */
   const sign = (
@@ -659,6 +666,24 @@ it.effect("a raise applies only through the claimed set_level action its own own
     assert.isTrue((yield* client["kin.levels.get"](lead)).promotion.eligible);
     assert.include(yield* raiseByGrant(second), notGranted);
     assert.strictEqual(yield* level, "L0");
+  }).pipe(Effect.provide(root)),
+);
+
+it.effect("the executor applies an approved raise on a host without GitHub configured", () =>
+  Effect.gen(function* () {
+    const ctx = yield* seed;
+    const { lead, client, widget, level, pending, sign } = ctx;
+    yield* eligible(ctx);
+    const { actionId } = yield* client["kin.levels.raise"]({ ...lead, level: "L1" });
+    // Approved only: the production worker claims and runs it, with no credential check.
+    yield* sign(actionId, { claim: false });
+    yield* TestClock.adjust("1 second");
+    assert.deepInclude(Option.getOrThrow(yield* pending.get({ orgId: lead.orgId, actionId })), {
+      state: "succeeded",
+    });
+    assert.strictEqual(yield* level, "L1");
+    const card = yield* widget(`promotion:${agentId}:L1`);
+    assert.deepInclude(card && decodePromotion(card.state), { status: "raised" });
   }).pipe(Effect.provide(root)),
 );
 

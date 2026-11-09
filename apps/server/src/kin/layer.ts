@@ -10,6 +10,7 @@ import * as HttpRouter from "effect/http/HttpRouter";
 import * as Option from "effect/Option";
 import * as KinChat from "./chat/layer.ts";
 import * as KinApprovals from "./approvals/layer.ts";
+import * as ExecutionNotices from "./chat/executionNotices.ts";
 import * as KinPush from "./push/layer.ts";
 import * as Promotion from "./levels/Promotion.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
@@ -40,8 +41,16 @@ const enabled = Layer.effect(
 ).pipe(
   Layer.provide(
     Layer.mergeAll(
-      // Promotion asks for set_level through the same pending actions the executor watches.
-      Layer.mergeAll(KinPush.layer, Promotion.layer).pipe(Layer.provideMerge(KinApprovals.layer)),
+      // On top of Promotion and approvals: the executor takes approvals from their pending
+      // actions instance, and a raise redraws Promotion's card.
+      KinApprovals.executorLayer.pipe(
+        Layer.provide(ExecutionNotices.layer),
+        Layer.provideMerge(
+          Layer.mergeAll(KinPush.layer, Promotion.layer).pipe(
+            Layer.provideMerge(KinApprovals.layer),
+          ),
+        ),
+      ),
       GithubWebhooks.lockLayer,
     ).pipe(Layer.provideMerge(KinChat.layer)),
   ),

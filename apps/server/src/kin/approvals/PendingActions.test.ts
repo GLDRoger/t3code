@@ -20,13 +20,15 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import {
   KinPendingActions,
   kinIdempotencyKey,
+  KinExecutionLedger,
   layer as pendingActionsLayer,
+  ledgerLayer,
   type KinPendingActionCreateInput,
 } from "./PendingActions.ts";
 import * as Audit from "./Audit.ts";
 
 const database = Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory);
-const layer = pendingActionsLayer.pipe(
+const layer = Layer.merge(pendingActionsLayer, ledgerLayer).pipe(
   Layer.provideMerge(Audit.layer),
   Layer.provideMerge(database),
 );
@@ -76,7 +78,8 @@ const seed = Effect.gen(function* () {
   yield* sql`INSERT INTO kin_approver_keys (thumbprint, org_id, public_jwk_json, human_id,
       device_label, platform, hardware, attested, state, created_at)
     VALUES (${kid}, 'org_01', '{}', ${owner}, 'Pixel 9', 'android', 'tee', 1, 'active', 0)`;
-  return yield* KinPendingActions;
+  // The executor's ledger alongside, so these tests can claim and finish directly.
+  return { ...(yield* KinPendingActions), ...(yield* KinExecutionLedger) };
 });
 
 const grant = (action: KinPendingAction, jti: string, iat = 0, exp = 600) => ({
