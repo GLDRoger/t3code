@@ -54,7 +54,7 @@ function grantFor(kid: string, overrides: Partial<KinGrantPayload> = {}) {
     orgId: "org_01",
     actionId: "act_01JD7Z00000000000000000000",
     revision: 2,
-    nonce: "c2VydmVyLW5vbmNlLTMyLWJ5dGVzLWJhc2U2NHVybA",
+    nonce: "a2luLXNlcnZlci1ub25jZS1vZi0zMi1ieXRlcy1iNjQ",
     jti: "ZGV2aWNlLWp0aS0xNi1ieXRlcw",
     kind: "merge_pull_request",
     targetDigest: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
