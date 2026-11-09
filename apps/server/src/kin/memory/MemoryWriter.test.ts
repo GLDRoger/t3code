@@ -503,7 +503,9 @@ it.live.each([
         ).toStrictEqual(new Set(["clone", "fetch", "ls-remote", "push"]));
         for (const run of remoteRuns) {
           expect(run.args).toContain("credential.helper=fixture-server-helper");
-          expect(run.env?.GIT_SSH_COMMAND).toBe("ssh -i /fixture/kin-memory-key");
+          expect(run.env?.GIT_SSH_COMMAND).toBe(
+            "ssh -i /fixture/kin-memory-key -F none -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none",
+          );
         }
         return;
       }

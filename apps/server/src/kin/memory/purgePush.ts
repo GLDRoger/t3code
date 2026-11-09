@@ -84,7 +84,16 @@ const pushFailure = (stdout: string, stderr: string): KinPurgePushError["reason"
 // A helper name or absolute path, never an inline `!` script that could carry the secret itself.
 export const isCredentialHelperReference = (helper: string) =>
   /^(?:[A-Za-z0-9][A-Za-z0-9._-]*|\/[A-Za-z0-9._/-]+)$/.test(helper);
-export const isSshCommandReference = (command: string) => /^[A-Za-z0-9 ._/=,:@+-]+$/.test(command);
+// Options that run commands, load another config or weaken host checks win over the hardening below.
+const sshOverride =
+  /(?:^|\s)-(?:[FJSEWw]|o\s*(?:ProxyCommand|ProxyJump|ProxyUseFdpass|LocalCommand|PermitLocalCommand|KnownHostsCommand|Include|StrictHostKeyChecking|UserKnownHostsFile|GlobalKnownHostsFile|IdentityAgent|ControlPath|ControlMaster|RemoteCommand|BatchMode)\b)/i;
+/** `ssh` (or an absolute path to it) with plain arguments, so the command names a key, never holds one. */
+export const isSshCommandReference = (command: string) =>
+  /^[A-Za-z0-9 ._/=,:@+-]+$/.test(command) &&
+  /^(?:ssh|\/[A-Za-z0-9._/-]*\/ssh)(?:\s|$)/.test(command) &&
+  !sshOverride.test(command);
+/** Appended to every owner SSH command: no host config, no prompts, no agent keys. */
+export const SSH_HARDENING = "-F none -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none";
 /** `file://` carries no credential; https needs the helper and SSH the owner's command. */
 const remoteKind = (url: string) =>
   /^https:\/\//i.test(url)
@@ -165,9 +174,7 @@ export const gitPushLayer = (owner: {
               SSH_AUTH_SOCK: undefined,
               GCM_INTERACTIVE: "never",
               // Without an owner SSH command, refuse SSH instead of using the host's keys or agent.
-              GIT_SSH_COMMAND: sshCommand
-                ? `${sshCommand} -F none -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none`
-                : "false",
+              GIT_SSH_COMMAND: sshCommand ? `${sshCommand} ${SSH_HARDENING}` : "false",
             },
             allowNonZeroExit: true,
             maxOutputBytes: 16 * 1024 * 1024,

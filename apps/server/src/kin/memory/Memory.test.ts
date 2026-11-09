@@ -605,7 +605,15 @@ it.effect.each([
     },
   },
   { env: { KIN_MEMORY_CREDENTIAL_HELPER: helperScript }, refused: helperScript },
-  { env: { KIN_MEMORY_SSH_COMMAND: sshInjection }, refused: sshInjection },
+  ...[
+    sshInjection,
+    "ssh -o ProxyCommand=/fixture/pwn.sh",
+    "ssh -oLocalCommand=/x -o PermitLocalCommand=yes",
+    "ssh -F /fixture/hostile-config",
+    "ssh -o StrictHostKeyChecking=no",
+    "sshpass -p fixture ssh",
+    "/fixture/any-program",
+  ].map((value) => ({ env: { KIN_MEMORY_SSH_COMMAND: value }, refused: value })),
 ])("derives production memory config from the server state directory and env %#", (row) =>
   Effect.gen(function* () {
     const server = yield* ServerConfig.ServerConfig;
