@@ -99,7 +99,7 @@ The lead starts at L0 with a direct chat to you. Models are `<provider instance 
 Running it again changes nothing and prints the existing lead. A host has one live lead, so a second one is refused until you retire the first. It's safe while `kin-server` runs; a phone that's already open shows the new chat once it reconnects.
 
 - `kin lead list` shows every lead with its level, owner chat and whether it's retired.
-- `kin lead retire <agent id>` retires one. Its rows and chat stay. The server expires its queued events and stops its thread within a minute, or at its next start if it's stopped. After that, `kin lead create` makes a new lead.
+- `kin lead retire <agent id>` retires one. Its rows and chat stay. Its Kin tool calls are refused at once. A running server expires its queued events and ends its thread once any current wake-up finishes (up to 15 minutes; pause Kin to halt it sooner), or at its next start if it's stopped. After that, `kin lead create` makes a new lead.
 
 ## Update
 

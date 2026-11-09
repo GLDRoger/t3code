@@ -139,7 +139,8 @@ export const create = Effect.fn("KinLeadProvision.create")(function* (input: Cre
     sql,
     "KinLeadProvision.create",
     Effect.gen(function* () {
-      // Material, budget notices and routines each read one lead per org.
+      // Material, budget notices and routines each read one lead per org. Writable transactions
+      // open with BEGIN IMMEDIATE, so this read-then-insert can't race another create.
       const [live] = yield* leadsIn(orgId, { liveOnly: true });
       if (live !== undefined) {
         if (live.ownerPersonId === person.personId)

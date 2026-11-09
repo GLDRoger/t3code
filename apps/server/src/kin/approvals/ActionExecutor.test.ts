@@ -1734,7 +1734,6 @@ describe("KinActionExecutor", () => {
 
     // Creating or retiring a lead is the host operator's: only the `kin lead` CLI reaches it, and
     // nothing the server runs (RPC, MCP, agent toolkits, routes, schedules) reaches that CLI.
-    const importers = (target: string) => files.filter((file) => graph.get(file)?.includes(target));
     assert.deepStrictEqual(importers("kin/lead/KinLeadProvision.ts"), ["kin/cli/lead.ts"]);
     assert.deepStrictEqual(importers("kin/cli/lead.ts"), ["binCli.ts"]);
     const served = new Set<string>();

@@ -168,6 +168,10 @@ describe("KinStop", () => {
       const sql = yield* SqlClient.SqlClient;
       const queue = yield* KinEventQueue.KinEventQueue;
       const stop = yield* KinStop.KinStop;
+      // A retired lead's old chat gets no pause or resume notices.
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at, retired_at) VALUES ('old-lead', 'org', 'Old', 'lead', 'owner', '1970-01-01T00:00:00.000Z', '1970-01-01T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at) VALUES ('old-chat', 'org', 'team_group', 0, '1970-01-01T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id) VALUES ('old-lead', 'org', 'Old', 0, '{}', '[]', 'old-chat')`;
       const paused = yield* stop.pause(owner, { orgId });
       assert.isTrue(yield* stop.isPaused(orgId));
       yield* queue.enqueue(event("old"));

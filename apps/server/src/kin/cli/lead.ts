@@ -218,7 +218,7 @@ const retireCommand = Command.make("retire", {
         if (flags.json) return yield* Console.log(encodeJson(result));
         yield* Console.log(
           result._tag === "retired"
-            ? `Retired ${result.lead.name} (${result.lead.agentId}). A running server stops its thread within a minute, a stopped one when it next starts.`
+            ? `Retired ${result.lead.name} (${result.lead.agentId}). Its tool calls stop now; a running server ends its thread after the current wake-up (up to 15 minutes; pause Kin to halt it now), a stopped one when it next starts.`
             : `${result.lead.name} (${result.lead.agentId}) was already retired at ${result.lead.retiredAt}.`,
         );
       }),
