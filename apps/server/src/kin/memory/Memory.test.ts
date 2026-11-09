@@ -1,9 +1,11 @@
 import * as NodeZlib from "node:zlib";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { expect, it } from "@effect/vitest";
+import { assert, expect, it } from "@effect/vitest";
 import { KinAgentId, KinWakeupId, KinMemoryItemId, KinOrgId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Clock from "effect/Clock";
+import * as ConfigProvider from "effect/ConfigProvider";
+import * as Context from "effect/Context";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -588,19 +590,59 @@ it.effect.each([
   }).pipe(Effect.provide(Layer.merge(NodeServices.layer, databaseLayer)), Effect.scoped),
 );
 
-it.effect("derives production memory paths from the isolated server state directory", () =>
+const helperScript = "!f() { echo password=fixture; }; f";
+const sshInjection = "ssh -i /fixture/key; cat /etc/passwd";
+it.effect.each([
+  { env: {}, expected: {} },
+  {
+    env: {
+      KIN_MEMORY_CREDENTIAL_HELPER: "/fixture/bin/git-credential-kin",
+      KIN_MEMORY_SSH_COMMAND: "ssh -i /fixture/kin-memory-key -o IdentitiesOnly=yes",
+    },
+    expected: {
+      credentialHelper: "/fixture/bin/git-credential-kin",
+      sshCommand: "ssh -i /fixture/kin-memory-key -o IdentitiesOnly=yes",
+    },
+  },
+  { env: { KIN_MEMORY_CREDENTIAL_HELPER: helperScript }, refused: helperScript },
+  ...[
+    sshInjection,
+    "ssh -o ProxyCommand=/fixture/pwn.sh",
+    "ssh -oLocalCommand=/x -o PermitLocalCommand=yes",
+    "ssh -F /fixture/hostile-config",
+    "ssh -o StrictHostKeyChecking=no",
+    "sshpass -p fixture ssh",
+    "/fixture/any-program",
+  ].map((value) => ({ env: { KIN_MEMORY_SSH_COMMAND: value }, refused: value })),
+])("derives production memory config from the server state directory and env %#", (row) =>
   Effect.gen(function* () {
     const server = yield* ServerConfig.ServerConfig;
-    const config = yield* MemoryConfig.MemoryConfig;
+    const result = yield* Effect.result(
+      Layer.build(MemoryConfig.layer([{ orgId: orgA, repoUrl: "unused" }])).pipe(
+        Effect.map((context) => Context.get(context, MemoryConfig.MemoryConfig)),
+        Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(row.env))),
+      ),
+    );
+    if (row.refused !== undefined) {
+      assert(result._tag === "Failure");
+      expect(result.failure._tag).toBe("MemoryCredentialConfigError");
+      expect(result.failure.message).toContain(Object.keys(row.env)[0]);
+      expect(result.failure.message).not.toContain(row.refused);
+      return;
+    }
+    assert(result._tag === "Success");
+    const config = result.success;
     expect(config.baseDirectory).toBe(`${server.stateDir}/kin`);
     expect(config.repositories[0]?.path).toBe(orgA);
+    expect({
+      credentialHelper: config.credentialHelper,
+      sshCommand: config.sshCommand,
+    }).toStrictEqual({ credentialHelper: undefined, sshCommand: undefined, ...row.expected });
   }).pipe(
+    Effect.scoped,
     Effect.provide(
-      MemoryConfig.layer([{ orgId: orgA, repoUrl: "unused" }]).pipe(
-        Layer.provideMerge(
-          ServerConfig.ServerConfig.layerTest(process.cwd(), { prefix: "kin-memory-config-" }),
-        ),
-        Layer.provide(NodeServices.layer),
+      ServerConfig.ServerConfig.layerTest(process.cwd(), { prefix: "kin-memory-config-" }).pipe(
+        Layer.provideMerge(NodeServices.layer),
       ),
     ),
   ),
