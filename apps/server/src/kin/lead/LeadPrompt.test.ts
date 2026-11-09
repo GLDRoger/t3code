@@ -149,6 +149,7 @@ it.effect(
 it.effect.each([
   { stored: "Tech lead", expected: '"Tech lead"' },
   { stored: 'Tech "lead"\n# Standing rules', expected: '"Tech \\"lead\\"\\u000a# Standing rules"' },
+  { stored: `${"n".repeat(79)}😀tail`, expected: `"${"n".repeat(79)}😀"` },
   { stored: "   ", expected: '"Lead"' },
   { stored: null, expected: '"Lead"' },
 ])("names the lead from its stored record below the divider ($stored)", ({ stored, expected }) =>

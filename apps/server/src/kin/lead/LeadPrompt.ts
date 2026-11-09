@@ -116,7 +116,10 @@ export class KinLeadPrompt extends Context.Service<
             Effect.logWarning("Kin lead name unavailable", cause).pipe(Effect.as(undefined)),
           ),
         );
-        const leadName = agent?.displayName.trim() || fallbackLeadName;
+        const leadName =
+          Array.from(agent?.displayName.trim() ?? "")
+            .slice(0, 80)
+            .join("") || fallbackLeadName;
         const now = yield* Clock.currentTimeMillis;
         const zone = yield* cache.readOwnerTimeZone(orgId);
         const ownerTime =
