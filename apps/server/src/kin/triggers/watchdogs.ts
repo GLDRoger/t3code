@@ -86,8 +86,8 @@ export interface KinWatchdogGithubReaderShape {
   ) => Effect.Effect<ReadonlyArray<GithubItemState>, KinWatchdogGithubError>;
 }
 
-// No credentialed GitHub client exists yet (APPR-8), so the GitHub watchdogs stay off and
-// `github_recheck` requests wait in the inbox until a reader backs this.
+// githubReaders.ts replaces this when the Kin App is configured. Without it the GitHub watchdogs
+// stay off and `github_recheck` requests wait in the inbox.
 export const KinWatchdogGithubReader = Context.Reference<KinWatchdogGithubReaderShape | null>(
   "t3/kin/triggers/watchdogs/KinWatchdogGithubReader",
   { defaultValue: () => null },

@@ -34,7 +34,7 @@ import {
   type DeferralPhase,
   type DeferralPlan,
 } from "./deferrals.ts";
-import { type GithubLinkState, readGithubLinks } from "./deferralGithub.ts";
+import { type GithubLinkState, readGithubLinks, readGithubLinkSets } from "./deferralGithub.ts";
 
 export class KinTriggerSyncError extends Schema.TaggedError<KinTriggerSyncError>()(
   "KinTriggerSyncError",
@@ -300,14 +300,22 @@ const make = Effect.gen(function* () {
       if (pending.length === 0) return;
       const timeZone = yield* cache.ownerTimeZone(orgId);
       const now = yield* Clock.currentTimeMillis;
+      // Every read happens before any write, so the memory lock waits on GitHub at most once.
+      const github = yield* readGithubLinkSets(
+        orgId,
+        pending.map(([, item, plan]) => (plan.armed && item !== undefined ? item.links : [])),
+      );
       const failures: Array<KinTriggerSyncError> = [];
-      for (const [itemId, item, plan] of pending)
-        yield* (
-          plan.armed && item !== undefined
-            ? readGithubLinks(orgId, item.links)
-            : Effect.succeed(null)
+      for (const [index, [itemId, item, plan]] of pending.entries())
+        yield* apply(
+          orgId,
+          itemId,
+          item,
+          plan,
+          timeZone,
+          now,
+          plan.armed && item !== undefined ? (github[index] ?? null) : null,
         ).pipe(
-          Effect.flatMap((github) => apply(orgId, itemId, item, plan, timeZone, now, github)),
           wrap(orgId),
           Effect.catch((error) => {
             failures.push(error);

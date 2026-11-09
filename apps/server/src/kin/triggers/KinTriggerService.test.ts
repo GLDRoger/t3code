@@ -9,6 +9,7 @@ import {
   type MemoryItemHead,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -82,10 +83,15 @@ const card = Effect.fn("test.deferralCard")(function* (org: string) {
 it.effect("arms from front matter, re-arms on edits, and re-syncs without writes", () => {
   let reads = 0;
   const reader = {
-    read: () =>
+    readRepo: (_org: KinOrgId, _repo: string, numbers: ReadonlyArray<number>) =>
       Effect.sync(() => {
         reads++;
-        return { state: "open" as const, assignees: [], linkedPrs: [] };
+        return new Map(
+          numbers.map((number) => [
+            number,
+            { state: "open" as const, assignees: [], linkedPrs: [] },
+          ]),
+        );
       }),
   };
   const linked = (overrides: Partial<MemoryItemHead> = {}) =>
@@ -310,6 +316,40 @@ it.effect("syncs each head once, retries failures, and isolates failing items", 
     );
   }).pipe(Effect.provide(layer)),
 );
+
+it.effect("reads GitHub once per repo within one budget and asks for what it couldn't read", () => {
+  const calls: Array<readonly [string, ReadonlyArray<number>]> = [];
+  const reader = {
+    readRepo: (_org: KinOrgId, repo: string, numbers: ReadonlyArray<number>) =>
+      Effect.suspend(() => {
+        calls.push([repo, numbers]);
+        return Effect.never;
+      }),
+  };
+  const items = Array.from({ length: 20 }, (_, index) =>
+    deferral({
+      id: KinMemoryItemId.make(`def-${index + 1}`),
+      path: `deferrals/def-${index + 1}.md`,
+      links: [`https://github.com/acme/api/issues/${index + 1}`],
+    }),
+  );
+  return Effect.gen(function* () {
+    const { sql, service } = yield* setup();
+    const sync = yield* service.syncOrg(orgId, items).pipe(Effect.forkChild);
+    yield* TestClock.adjust("10 seconds");
+    assert.isDefined(sync.pollUnsafe(), "the whole sync fits in one 10 s budget");
+    yield* Fiber.join(sync);
+    assert.deepEqual(calls, [["acme/api", Array.from({ length: 20 }, (_, index) => index + 1)]]);
+    const runs = yield* sql<{ state: string; snapshot: string }>`
+      SELECT state, snapshot_json AS snapshot FROM kin_deferral_runs
+      WHERE org_id = ${orgId} ORDER BY item_id`;
+    assert.lengthOf(runs, 20);
+    for (const run of runs) {
+      assert.equal(run.state, "armed");
+      assert.include(run.snapshot, '"github":null');
+    }
+  }).pipe(Effect.provideService(KinDeferralGithubReader, reader), Effect.provide(layer));
+});
 
 it.effect("refuses deferral cards from the model and taps until the dispatcher lands", () =>
   Effect.gen(function* () {
