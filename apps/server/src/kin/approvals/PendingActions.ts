@@ -29,12 +29,14 @@ import * as Schema from "effect/Schema";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Base64Url from "effect/encoding/Base64Url";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as Statement from "effect/sql/Statement";
 
 import {
   PersistenceDecodeError,
   type PersistenceSqlError,
   toPersistenceSqlError,
 } from "../../persistence/Errors.ts";
+import { revokedBySession } from "../auth/ProofKeySessions.ts";
 import { KinAudit } from "./Audit.ts";
 
 const AWAITING_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -82,11 +84,13 @@ const decodeActionId = Schema.decodeEffect(KinActionId);
 
 type ActionRef = { readonly orgId: KinOrgId; readonly actionId: KinActionId };
 type RevisionRef = ActionRef & { readonly revision: number };
+type GrantRef = ActionRef & { readonly jti: string; readonly approverHumanId: KinPersonId };
 
 export type KinApproveResult =
   | { readonly _tag: "approved"; readonly grant: KinGrant }
   | { readonly _tag: "replayed" }
-  | { readonly _tag: "stale" };
+  | { readonly _tag: "stale" }
+  | { readonly _tag: "revoked_key" };
 
 type Errors = PersistenceSqlError | PersistenceDecodeError;
 
@@ -104,6 +108,23 @@ export const kinIdempotencyKey = (input: {
         kind: input.kind,
         target: input.target,
         source: input.source,
+      }),
+    )
+    .digest("hex");
+
+/** `sha256(stableStringify({kind, target, headSha, base}))`, approvals spec section 3. */
+export const kinTargetDigest = (
+  kind: KinActionKind,
+  target: KinActionTarget,
+  resolved: KinResolvedTarget,
+): Hex64 =>
+  NodeCrypto.createHash("sha256")
+    .update(
+      stableStringify({
+        kind,
+        target,
+        headSha: resolved._tag === "none" ? undefined : resolved.headSha,
+        base: resolved._tag === "pull_request" ? resolved.base : undefined,
       }),
     )
     .digest("hex");
@@ -174,6 +195,7 @@ const auditFacts = (row: FactsRow) =>
   );
 
 class Rollback extends Schema.TaggedError<Rollback>()("Rollback", {}) {}
+class KeyUnusable extends Schema.TaggedError<KeyUnusable>()("KeyUnusable", {}) {}
 
 export class KinPendingActions extends Context.Service<
   KinPendingActions,
@@ -212,6 +234,8 @@ export class KinPendingActions extends Context.Service<
         readonly deviceLabel?: string;
       },
     ) => Effect.Effect<KinApproveResult, Errors>;
+    /** Whether the org already holds this `jti`, or this approver's grant for the action. */
+    readonly heldGrant: (ref: GrantRef) => Effect.Effect<boolean, Errors>;
     /** The executor's single claim: the `kin_executions` insert plus `approved → executing`. */
     readonly claim: (
       input: RevisionRef & { readonly grantId: KinGrant["id"] },
@@ -355,6 +379,7 @@ const make = Effect.gen(function* () {
             WHERE org_id = ${input.orgId} AND action_id = ${input.actionId}
               AND state = ${from} AND revision = ${input.revision}
               AND (${input.to} != 'expired' OR expires_at <= ${now})
+              AND (${input.to} NOT IN ('rejected', 'cancelled') OR expires_at > ${now})
             RETURNING action_id, kind, resolved_json`;
           if (row === undefined) return false;
           yield* audit.append({
@@ -369,6 +394,33 @@ const make = Effect.gen(function* () {
       );
     },
     Effect.mapError(toError("KinPendingActions.transition")),
+  );
+
+  const selectHeld = (ref: GrantRef) =>
+    sql`SELECT 1 FROM kin_grants
+      WHERE org_id = ${ref.orgId} AND (jti = ${ref.jti} OR (action_id = ${ref.actionId}
+        AND approver_human_id = ${ref.approverHumanId}))`.pipe(
+      Effect.map((rows) => rows.length > 0),
+    );
+
+  // A revoke can land while check 9 reads GitHub, so check 10 re-reads the key in its own write,
+  // and so does `claim`, since a revoke between them only voids the action on the next key read.
+  const signingKeyUsable = (input: {
+    readonly orgId: KinOrgId | Statement.Fragment;
+    readonly keyThumbprint: KinKeyThumbprint | Statement.Fragment;
+    readonly approverHumanId: KinPersonId | Statement.Fragment;
+  }) => sql`EXISTS (SELECT 1 FROM kin_approver_keys k
+    WHERE k.org_id = ${input.orgId} AND k.thumbprint = ${input.keyThumbprint}
+      AND k.human_id = ${input.approverHumanId} AND k.state = 'active' AND k.attested = 1
+      AND NOT ${revokedBySession(
+        sql,
+        { sessionId: sql`k.session_id`, proofKey: sql`k.proof_key_thumbprint` },
+        { since: sql`k.created_at` },
+      )})`;
+
+  const heldGrant = Effect.fn("KinPendingActions.heldGrant")(
+    selectHeld,
+    Effect.mapError(toError("KinPendingActions.heldGrant")),
   );
 
   const approve = Effect.fn("KinPendingActions.approve")(
@@ -406,20 +458,21 @@ const make = Effect.gen(function* () {
               ON CONFLICT DO NOTHING
               RETURNING grant_id`;
             if (inserted === undefined) {
-              const [seen] = yield* sql`SELECT 1 FROM kin_grants
-                WHERE org_id = ${input.orgId} AND (jti = ${input.jti} OR (action_id = ${input.actionId}
-                  AND approver_human_id = ${input.approverHumanId}))`;
-              return seen === undefined
-                ? { _tag: "stale" as const }
-                : { _tag: "replayed" as const };
+              return (yield* selectHeld(input))
+                ? { _tag: "replayed" as const }
+                : { _tag: "stale" as const };
             }
             const [won] = yield* sql<FactsRow>`UPDATE kin_pending_actions
               SET state = 'approved', updated_at = ${now}
               WHERE org_id = ${input.orgId} AND action_id = ${input.actionId}
                 AND state = 'awaiting_approval' AND revision = ${input.revision}
                 AND nonce = ${input.nonce} AND expires_at > ${now} AND ${input.exp} * 1000 > ${now}
+                AND ${signingKeyUsable(input)}
               RETURNING action_id, kind, resolved_json`;
-            if (won === undefined) return yield* new Rollback();
+            if (won === undefined) {
+              const [usable] = yield* sql`SELECT 1 WHERE ${signingKeyUsable(input)}`;
+              return yield* usable === undefined ? new KeyUnusable() : new Rollback();
+            }
             yield* audit.append({
               orgId: input.orgId,
               event: "grant_accepted",
@@ -443,7 +496,12 @@ const make = Effect.gen(function* () {
             return { _tag: "approved" as const, grant };
           }),
         )
-        .pipe(Effect.catchTags({ Rollback: () => Effect.succeed({ _tag: "stale" as const }) }));
+        .pipe(
+          Effect.catchTags({
+            Rollback: () => Effect.succeed({ _tag: "stale" as const }),
+            KeyUnusable: () => Effect.succeed({ _tag: "revoked_key" as const }),
+          }),
+        );
       // A refused grant still leaves a trace (spec section 11), but only on the chain of the org
       // that owns the action: an unknown org or action stays `stale` and writes nothing.
       if (result._tag !== "approved") {
@@ -487,6 +545,11 @@ const make = Effect.gen(function* () {
                 AND action_id = ${input.actionId} AND revision = ${input.revision}
                 AND consumed_at IS NULL
                 AND MIN(exp_s * 1000, accepted_at + ${GRANT_ACCEPTED_TTL_MS}) > ${now}
+                AND ${signingKeyUsable({
+                  orgId: sql`kin_grants.org_id`,
+                  keyThumbprint: sql`kin_grants.key_thumbprint`,
+                  approverHumanId: sql`kin_grants.approver_human_id`,
+                })}
               ON CONFLICT DO NOTHING
               RETURNING action_id`;
             if (claimed.length === 0) return false;
@@ -600,7 +663,17 @@ const make = Effect.gen(function* () {
     Effect.mapError(toError("KinPendingActions.sweep")),
   );
 
-  return KinPendingActions.of({ create, get, refresh, transition, approve, claim, finish, sweep });
+  return KinPendingActions.of({
+    create,
+    get,
+    refresh,
+    transition,
+    approve,
+    heldGrant,
+    claim,
+    finish,
+    sweep,
+  });
 });
 
 const isDecodeError = Schema.is(PersistenceDecodeError);
