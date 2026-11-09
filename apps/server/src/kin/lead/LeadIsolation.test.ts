@@ -23,9 +23,13 @@ const optionsAt = (cwd: string) =>
     mcpServers: { kin: { type: "http", url: "http://127.0.0.1/kin" } },
   });
 
-it.effect.each([true, false])(
-  "a Kin lead loads user settings only with KIN_ENABLED=%s",
-  (enabled) =>
+it.effect.each([
+  [true, true],
+  [true, false],
+  [false, true],
+])(
+  "a Kin lead loads user settings only (KIN_ENABLED=%s, lead wrapper outside=%s)",
+  ([enabled, leadOutside]) =>
     Effect.gen(function* () {
       const { stateDir } = yield* ServerConfig.ServerConfig;
       const opened: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
@@ -61,7 +65,10 @@ it.effect.each([true, false])(
             .pipe(Effect.exit);
       }).pipe(
         Effect.provide(
-          LeadIsolation.claudeQueryRunner(DreamIsolation.claudeQueryRunner(base)).pipe(
+          (leadOutside
+            ? LeadIsolation.claudeQueryRunner(DreamIsolation.claudeQueryRunner(base))
+            : DreamIsolation.claudeQueryRunner(LeadIsolation.claudeQueryRunner(base))
+          ).pipe(
             Layer.provide(
               ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: enabled })),
             ),

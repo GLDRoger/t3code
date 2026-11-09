@@ -597,7 +597,10 @@ it.live.each([
             .pipe(Effect.result),
         ).toMatchObject({
           _tag: "Failure",
-          failure: { _tag: "MemoryWriteRejected", reason: "Disallowed memory path" },
+          failure: {
+            _tag: "MemoryWriteRejected",
+            reason: expect.stringContaining("Disallowed memory path"),
+          },
         });
       yield* fs.symlink(source, `${paths.writer}/people`);
       expect(

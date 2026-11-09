@@ -355,7 +355,10 @@ const make = Effect.gen(function* () {
       relative === "rules.md" ||
       (relative === "INDEX.md" && !generated)
     )
-      return yield* new MemoryWriteRejected({ reason: "Disallowed memory path" });
+      return yield* new MemoryWriteRejected({
+        reason:
+          "Disallowed memory path: names are ASCII letters, digits, . _ -, and agent config or Windows device names are reserved",
+      });
     let current = writer;
     for (const part of parts) {
       current += `/${part}`;

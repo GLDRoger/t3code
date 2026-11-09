@@ -4,6 +4,10 @@ import { isCheckoutPath } from "./checkoutPaths.ts";
 
 it.each([
   ["rules.md", true],
+  ["people/CON.md", false],
+  ["people/nul.md", false],
+  ["people/com1.md", false],
+  ["people/console.md", true],
   ["INDEX.md", true],
   ["deferrals/def-001.md", true],
   ["people/demo_owner.md", true],

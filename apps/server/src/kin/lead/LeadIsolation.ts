@@ -37,7 +37,18 @@ export const claudeQueryRunner = <E, R>(
             (within(kinDirectory, path.resolve(cwd)) ||
               within(yield* real(kinDirectory), yield* real(cwd)));
           return yield* runner.open(
-            isKin ? { ...input, options: { ...input.options, settingSources: ["user"] } } : input,
+            isKin
+              ? {
+                  ...input,
+                  options: {
+                    ...input.options,
+                    // Narrow, never widen: a dream's `[]` stays `[]` whichever wrapper runs first.
+                    settingSources: (
+                      input.options.settingSources ?? ["user", "project", "local"]
+                    ).filter((source) => source === "user"),
+                  },
+                }
+              : input,
           );
         }),
       });
