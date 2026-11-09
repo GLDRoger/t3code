@@ -22,6 +22,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as Chat from "../chat/KinChatRepository.ts";
 import { startWakeupRun, authorityLayer } from "../chat/WakeupAuthority.testkit.ts";
 import * as Memory from "../memory/Memory.ts";
+import { instructions } from "./instructions.ts";
 import { KinLeadPrompt, type KinLeadPromptInput } from "./LeadPrompt.ts";
 
 const decodeEvent = Schema.decodeSync(KinEvent);
@@ -135,6 +136,9 @@ it.effect(
       });
       const prefix = (text: string) => text.split("--- KIN WAKE-UP ---")[0];
       expect(prefix(first)).toBe(prefix(second));
+      // The instructions ride in the session's system prompt (LeadIsolation), never per wake-up.
+      expect(first.startsWith("# Standing rules\n\n")).toBe(true);
+      expect(first).not.toContain(instructions.split("\n")[0]);
       expect(second.split("--- KIN WAKE-UP ---")[1]).toContain("Budget: 62% of today left");
       expect(first).toContain("1970-01-01T00:00:00.000Z");
       expect(second).toContain("1970-01-01T01:00:00.000Z");

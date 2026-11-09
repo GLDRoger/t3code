@@ -7,6 +7,7 @@ import { ServerConfig } from "../../config.ts";
 import * as ClaudeAdapterV2 from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { KinEnabled, layer as kinEnabledLayer } from "../KinEnabled.ts";
 import { threadPrefix as dreamThreadPrefix } from "../dreaming/DreamIsolation.ts";
+import { instructions } from "./instructions.ts";
 
 /** A lead's only built-in tools. Kin's MCP tools arrive separately, through `mcpServers`. */
 export const leadTools = ["Read", "Grep", "Glob"];
@@ -49,12 +50,43 @@ const leadSecretReadRules = (config: {
   "Read(~/.config/gh/**)",
 ];
 
+/**
+ * The lead instructions are the stable head of every wake-up, so they sit in the system prompt
+ * where the prompt cache reuses them. Leads reuse one session across wake-ups, and a recorded
+ * (`snapshot`) prompt would keep an old instructions version until compaction, so it renders fresh.
+ */
+const leadSystemPrompt = (
+  systemPrompt: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions["systemPrompt"],
+): NonNullable<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions["systemPrompt"]> => {
+  if (systemPrompt === undefined || typeof systemPrompt === "string" || Array.isArray(systemPrompt))
+    return {
+      type: "custom",
+      prompt: [...(systemPrompt === undefined ? [] : [systemPrompt].flat()), instructions],
+      snapshot: false,
+    };
+  if (systemPrompt.type === "custom")
+    return {
+      ...systemPrompt,
+      prompt: [...[systemPrompt.prompt].flat(), instructions],
+      snapshot: false,
+    };
+  return {
+    ...systemPrompt,
+    append:
+      systemPrompt.append === undefined
+        ? instructions
+        : `${systemPrompt.append}\n\n${instructions}`,
+    snapshot: false,
+  };
+};
+
 const leadOptions = (
   options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions,
   denied: ReadonlyArray<string>,
 ) => {
   const { tools, settings, env } = options;
   return {
+    systemPrompt: leadSystemPrompt(options.systemPrompt),
     tools: Array.isArray(tools) ? tools.filter((tool) => leadTools.includes(tool)) : leadTools,
     disallowedTools: [...new Set([...(options.disallowedTools ?? []), ...denied])],
     // The user's own MCP servers and plugins could hand a lead a shell again.
