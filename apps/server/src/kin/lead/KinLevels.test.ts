@@ -123,6 +123,29 @@ it.effect("a shadow entry needs the caller's running wake-up and is idempotent b
       yield* sql`SELECT org_id, wakeup_id, tool, would_target FROM kin_shadow_entries ORDER BY entry_id`,
       [{ org_id: orgId, wakeup_id: "wakeup", tool: "kin_chat_post", would_target: group }],
     );
+    // The caller's own refusal gates only new entries: a retry is never refused by it.
+    const refusedByCaller = Effect.fail("refused by caller" as const);
+    assert.deepStrictEqual(yield* KinLevels.recordShadow(entry, refusedByCaller), {
+      ...first,
+      created: false,
+    });
+    const keyed = (clientMessageId: string) => ({ ...entry, key: { clientMessageId } });
+    assert.strictEqual(
+      yield* KinLevels.recordShadow(keyed("new"), refusedByCaller).pipe(Effect.flip),
+      "refused by caller",
+    );
+    // Lead-chosen keys can't grow one wake-up's entries without bound.
+    for (let n = 1; n < KinLevels.MAX_SHADOW_ENTRIES_PER_WAKEUP; n++)
+      yield* KinLevels.recordShadow(keyed(`n-${n}`));
+    assert.include(yield* KinLevels.recordShadow(keyed("over")).pipe(Effect.flip), {
+      _tag: "KinLevelRefused",
+      reason: "limit",
+    });
+    assert.deepStrictEqual(yield* KinLevels.recordShadow(entry), { ...first, created: false });
+    assert.deepStrictEqual(
+      yield* sql`SELECT COUNT(*) AS n FROM kin_shadow_entries WHERE org_id = ${orgId} ORDER BY n`,
+      [{ n: KinLevels.MAX_SHADOW_ENTRIES_PER_WAKEUP }],
+    );
   }).pipe(Effect.provide(layer)),
 );
 

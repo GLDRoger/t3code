@@ -182,6 +182,7 @@ const factsDuring = (
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       return KinPullRequestFacts.of({
+        canonical: ({ target }) => Effect.succeed({ ...target, repo: "acme/app" }),
         read: ({ target }) =>
           during(sql).pipe(
             Effect.orDie,
@@ -583,7 +584,7 @@ it.effect("a merge the lead pins on the owner is flagged when a webhook shared t
 
 it.effect("a repo outside the lead's worker projects is refused like a missing PR", () =>
   Effect.gen(function* () {
-    const { eventIds, rows } = yield* seed(["owner"]);
+    const { eventIds, rows, shadows, sql } = yield* seed(["owner"]);
     const named = (repo: string, number: number) => {
       const input = merge(eventIds.owner);
       input.target = { ...input.target, repo, number };
@@ -593,6 +594,15 @@ it.effect("a repo outside the lead's worker projects is refused like a missing P
     assert.include(outside, { reason: "not_found" });
     assert.deepStrictEqual(refusal(yield* call(named("acme/app", 404))), outside);
     assert.lengthOf(yield* rows, 0);
+    // Below L3 the same mapping runs locally: no entry for a repo L3 would refuse, and the
+    // project's spelling of the repo, so one PR keys one entry.
+    yield* sql`UPDATE kin_leads SET level = 'L0' WHERE agent_id = ${agentId}`;
+    assert.deepStrictEqual(refusal(yield* call(named("other/secret", 7))), outside);
+    assert.include(success(yield* call(named("ACME/App", 7))), { shadowed: true });
+    assert.deepStrictEqual(
+      (yield* shadows).map((entry) => entry.would_target),
+      ["acme/app#7"],
+    );
   }).pipe(Effect.provide(layer)),
 );
 
@@ -615,7 +625,7 @@ it.effect("a lead retired or a wake-up ended while GitHub answers gets no card",
 
 it.effect("one PR gets one waiting card, and one lead a bounded number", () =>
   Effect.gen(function* () {
-    const { eventIds, rows, sql } = yield* seed(["owner", "github"]);
+    const { eventIds, rows, shadows, sql } = yield* seed(["owner", "github"]);
     const first = success(yield* call(merge(eventIds.owner))) as { actionId: string };
     assert.deepStrictEqual(success(yield* call(merge(eventIds.owner))), first);
     // Another method, delete flag or cited event for the same PR is not a second card.
@@ -635,7 +645,7 @@ it.effect("one PR gets one waiting card, and one lead a bounded number", () =>
     assert.lengthOf(yield* rows, 1);
     // Once decided, the PR can be asked about again.
     yield* sql`UPDATE kin_pending_actions SET state = 'rejected' WHERE action_id = ${first.actionId}`;
-    success(yield* call(merge(eventIds.github)));
+    const second = success(yield* call(merge(eventIds.github))) as { actionId: string };
     const numbered = (number: number) =>
       merge(eventIds.owner, { target: { ...merge(eventIds.owner).target, number } });
     for (let number = 100; number < 100 + MAX_OPEN_ACTIONS_PER_LEAD - 1; number++)
@@ -643,6 +653,12 @@ it.effect("one PR gets one waiting card, and one lead a bounded number", () =>
     const capped = refusal(yield* call(numbered(999))) as { reason: string };
     assert.strictEqual(capped.reason, "invalid_state");
     assert.lengthOf(yield* rows, MAX_OPEN_ACTIONS_PER_LEAD + 1);
+    // A lowered lead meets the same cap: no entry for a request L3 would refuse.
+    yield* sql`UPDATE kin_leads SET level = 'L0' WHERE agent_id = ${agentId}`;
+    assert.deepStrictEqual(refusal(yield* call(numbered(999))), capped);
+    assert.lengthOf(yield* shadows, 0);
+    yield* sql`UPDATE kin_pending_actions SET state = 'rejected' WHERE action_id = ${second.actionId}`;
+    assert.include(success(yield* call(numbered(999))), { shadowed: true });
   }).pipe(Effect.provide(layerWith(factsDuring(() => Effect.void)))),
 );
 
@@ -693,15 +709,20 @@ it.effect("below L3 the owner-only ceiling and the set_level ban still refuse, u
         assert.lengthOf(yield* shadows, 0);
         assert.lengthOf(yield* rows, 0);
       }).pipe(Effect.provide(layerWith(githubUnread)));
+    // The ban comes before provenance and kind checks, so it is the answer whoever asked.
     yield* Effect.gen(function* () {
-      const { eventIds, shadows } = yield* seed(["owner"], "L0");
+      const { eventIds, shadows } = yield* seed(["owner", "member"], "L0");
       const raise = {
         kind: "set_level",
         target: { _tag: "level", agentId, level: "L3" },
         reason: "The owner said I am ready.",
         sourceEventId: eventIds.owner,
       };
-      assert.include(refusal(yield* call(raise)), { reason: "unsupported_kind" });
+      assert.include(refusal(yield* call(raise)), {
+        reason: "unsupported_kind",
+        message:
+          "Leads can never request a level change; the owner raises a level from the promotion card.",
+      });
       assert.lengthOf(yield* shadows, 0);
     }).pipe(Effect.provide(layerWith(githubUnread)));
   }),

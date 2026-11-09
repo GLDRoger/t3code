@@ -22,10 +22,12 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
-import { KinChatService } from "../chat/KinChatService.ts";
+import { KinChatService, mayWrite } from "../chat/KinChatService.ts";
 import type { AgentIdentity } from "../chat/KinIdentity.ts";
+import * as Floor from "../floor/KinFloor.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as KinLevels from "./KinLevels.ts";
 
@@ -82,6 +84,7 @@ const make = Effect.gen(function* () {
   const repo = yield* Repository.KinChatRepository;
   const hub = yield* Hub.KinChatHub;
   const cache = yield* MemoryCache.MemoryCache;
+  const floor = yield* Floor.KinFloor;
 
   // The runner's summary of the owner-local day; best effort, so a failed refresh never undoes
   // the shadow entry it reports (the next entry or wake-up rebuilds it).
@@ -131,7 +134,11 @@ const make = Effect.gen(function* () {
             total: count?.n ?? 0,
             entries: yield* Effect.forEach(rows.toReversed(), (row) =>
               Effect.map(decodeJson(row.json), (parsed) => {
-                const ceiling = field(field(parsed, "provenance"), "ceilingBelowOwner");
+                // Only request_action stores the server's provenance; other inputs are the lead's.
+                const ceiling =
+                  row.tool === "request_action"
+                    ? field(field(parsed, "provenance"), "ceilingBelowOwner")
+                    : undefined;
                 return {
                   entryId: row.entryId,
                   tool: row.tool,
@@ -191,7 +198,8 @@ const make = Effect.gen(function* () {
     Effect.catchCause((cause) => Effect.logWarning("Kin shadow summary refresh failed", { cause })),
   );
 
-  const refused = (message: string) => new KinChatError({ reason: "not_allowed", message });
+  const refused = (message: string, reason: KinChatError["reason"] = "not_allowed") =>
+    new KinChatError({ reason, message });
   const post = Effect.fn("KinLevelGate.post")(
     function* (agent: AgentIdentity, input: PostInput) {
       const result = yield* sql.withTransaction(
@@ -213,25 +221,52 @@ const make = Effect.gen(function* () {
               reason: "not_found",
               message: "Kin record not found.",
             });
-          return yield* KinLevels.recordShadow({
-            orgId: agent.orgId,
-            agentId: agent.agentId,
-            threadId: agent.threadId,
-            level,
-            unlocksLevel: "L1",
-            tool: "kin_chat_post",
-            // Keyed like a real post: the same clientMessageId with other content is refused.
-            key: { chatId: input.chatId, clientMessageId: input.clientMessageId },
-            input: {
+          // The real post's cheap refusals come first, so the review holds only posts L1 would make.
+          if (!mayWrite(member.value, true, yield* Clock.currentTimeMillis))
+            return yield* refused("Chat operation not allowed.");
+          const notice = yield* floor.noticeOnly(agent);
+          // Shadowed notices count toward the hourly limit as the posts they stand for. The reply
+          // path's floor check is not repeated: it consumes the grant it checks.
+          const admit = Effect.gen(function* () {
+            if (!notice) return;
+            const since = (yield* Clock.currentTimeMillis) - Floor.NOTICE_WINDOW_MS;
+            const [shadowed] = yield* sql<{ n: number }>`
+              SELECT COUNT(*) AS n FROM kin_shadow_entries
+              WHERE org_id = ${agent.orgId} AND agent_id = ${agent.agentId} AND created_at > ${since}
+                AND tool = 'kin_chat_post' AND would_target = ${input.chatId}
+                AND json_extract(input_json, '$.notice') = 1
+              ORDER BY n`.pipe(
+              Effect.mapError(toPersistenceSqlError("KinLevelGate.shadowedNotices")),
+            );
+            yield* floor.admitNotice(agent, {
               chatId: input.chatId,
-              clientMessageId: input.clientMessageId,
-              body: input.body,
               intent: input.intent,
-              mentions: input.mentions ?? [],
-              replyTo: input.replyTo ?? null,
-            },
-            wouldTarget: input.chatId,
+              earlier: shadowed?.n ?? 0,
+            });
           });
+          return yield* KinLevels.recordShadow(
+            {
+              orgId: agent.orgId,
+              agentId: agent.agentId,
+              threadId: agent.threadId,
+              level,
+              unlocksLevel: "L1",
+              tool: "kin_chat_post",
+              // Keyed like a real post: the same clientMessageId with other content is refused.
+              key: { chatId: input.chatId, clientMessageId: input.clientMessageId },
+              input: {
+                chatId: input.chatId,
+                clientMessageId: input.clientMessageId,
+                body: input.body,
+                intent: input.intent,
+                mentions: input.mentions ?? [],
+                replyTo: input.replyTo ?? null,
+                ...(notice ? { notice: true } : {}),
+              },
+              wouldTarget: input.chatId,
+            },
+            admit,
+          );
         }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       );
       if (!("shadowed" in result)) return result;
@@ -248,7 +283,10 @@ const make = Effect.gen(function* () {
                   ? "Kin wake-up is not running."
                   : error.reason === "conflict"
                     ? "This clientMessageId was already used for a different post."
-                    : "Chat operation not allowed.",
+                    : error.reason === "limit"
+                      ? KinLevels.SHADOW_LIMIT_MESSAGE
+                      : "Chat operation not allowed.",
+                error.reason === "limit" ? "limit" : "not_allowed",
               ),
             )
           : Effect.logError("Kin level-gated post failed", error).pipe(
@@ -270,4 +308,4 @@ export const layer = Layer.effectContext(
       Context.make(KinLevelGate, gate).pipe(Context.add(KinLevels.KinShadowSummary, summary)),
     ),
   ),
-).pipe(Layer.provide(MemoryCache.layer));
+).pipe(Layer.provide(Layer.merge(MemoryCache.layer, Floor.layer)));

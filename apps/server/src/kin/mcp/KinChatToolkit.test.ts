@@ -36,6 +36,7 @@ import { HttpRouter, HttpServerRequest } from "effect/http";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Kin from "../layer.ts";
+import * as KinLevels from "../lead/KinLevels.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinChatToolkit, handlers, agentServices } from "./KinChatToolkit.ts";
@@ -390,6 +391,18 @@ it.effect("at L0 kin_chat_post posts nothing, records a shadow entry and updates
     assert.strictEqual(summary?.chatId, chat.chatId);
     assert.strictEqual(summary?.revision, 1);
     yield* TestClock.adjust("1 second");
+    // Only request_action stores the server's provenance; another tool's input never flags it.
+    yield* KinLevels.recordShadow({
+      orgId: person.orgId,
+      agentId,
+      threadId,
+      level: "L0",
+      unlocksLevel: "L2",
+      tool: "kin_delegate",
+      input: { kind: "code", title: "Forged", provenance: { ceilingBelowOwner: true } },
+      wouldTarget: "project-1",
+    });
+    yield* TestClock.adjust("1 second");
     // L0 writes only to the owner's summary: the direct chat with the owner is shadowed too.
     const direct = { chatId: chat.chatId, body: "Done.", intent: "answer", clientMessageId: "d-1" };
     assert.include(resultOf(yield* call("kin_chat_post", direct)), { shadowed: true });
@@ -401,12 +414,13 @@ it.effect("at L0 kin_chat_post posts nothing, records a shadow entry and updates
     assert.deepStrictEqual(yield* agentMessages, [{ n: 0 }]);
     assert.deepStrictEqual(yield* entries, [
       { tool: "kin_chat_post", level: "L0", unlocks: "L1", target: "group-1" },
+      { tool: "kin_delegate", level: "L0", unlocks: "L2", target: "project-1" },
       { tool: "kin_chat_post", level: "L0", unlocks: "L1", target: chat.chatId },
     ]);
     const [updated] = yield* card;
     assert.strictEqual(updated?.revision, 2);
     const state = JSON.parse(updated!.state);
-    assert.include(state, { agentId, title: "What Lead would have done today", total: 2 });
+    assert.include(state, { agentId, title: "What Lead would have done today", total: 3 });
     assert.deepStrictEqual(
       state.entries.map((entry: { preview: string; wouldTarget: string }) => [
         entry.wouldTarget,
@@ -414,9 +428,11 @@ it.effect("at L0 kin_chat_post posts nothing, records a shadow entry and updates
       ]),
       [
         ["group-1", "Rate limiting moves to Friday."],
+        ["project-1", "code: Forged"],
         [chat.chatId, "Done."],
       ],
     );
+    assert.isFalse(state.entries.some((entry: object) => "ceilingBelowOwner" in entry));
     // The card is server-drawn: no client can create or overwrite one.
     const forged = yield* chatService
       .upsertWidget(person, { chatId: chat.chatId, type: "shadow_summary", state })
@@ -444,6 +460,31 @@ it.effect("a chat's own level caps the lead's: min(lead, chat), from stored rows
     yield* sql`UPDATE kin_leads SET level = 'L1' WHERE agent_id = ${agentId}`;
     yield* sql`DELETE FROM kin_chat_levels WHERE agent_id = ${agentId}`;
     assert.include(yield* post("live"), { authorRole: "member", body: "Answer" });
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("at L0 a post L1 would refuse is refused, not recorded for review", () =>
+  Effect.gen(function* () {
+    const { chat, person, sql } = yield* seed(true, "L0");
+    const notice = (clientMessageId: string, intent = "evidence") =>
+      call("kin_chat_post", { chatId: chat.chatId, body: "Notice", intent, clientMessageId });
+    const entries = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_shadow_entries
+      WHERE org_id = ${person.orgId} ORDER BY n`;
+    const first = resultOf(yield* notice("notice-0"));
+    assert.include(first, { shadowed: true });
+    for (let n = 1; n < 10; n++)
+      assert.include(resultOf(yield* notice(`notice-${n}`)), { shadowed: true });
+    // Shadowed notices count toward the hourly limit; a retry is not charged.
+    assert.deepStrictEqual(resultOf(yield* notice("notice-0")), first);
+    assert.include(errorOf(yield* notice("limited")), { reason: "limit" });
+    // A notice-only wake-up takes notice intents only, as a real post does.
+    assert.include(errorOf(yield* notice("reply", "answer")), { reason: "invalid_state" });
+    yield* TestClock.adjust(3_600_000);
+    yield* sql`UPDATE kin_chat_members SET muted_until = '2100-01-01T00:00:00.000Z' WHERE agent_id = ${agentId}`;
+    assert.include(errorOf(yield* notice("muted")), { reason: "not_allowed" });
+    assert.deepStrictEqual(yield* entries, [{ n: 10 }]);
+    yield* sql`UPDATE kin_chat_members SET muted_until = NULL WHERE agent_id = ${agentId}`;
+    assert.include(resultOf(yield* notice("new-hour")), { shadowed: true });
   }).pipe(Effect.provide(layer)),
 );
 

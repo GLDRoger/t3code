@@ -254,7 +254,17 @@ const make = Effect.gen(function* () {
       wouldTarget: target,
     }).pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
-      Effect.catchTags({ KinLevelRefused: () => Effect.fail(denied()) }),
+      Effect.catchTags({
+        KinLevelRefused: (error) =>
+          Effect.fail(
+            error.reason === "limit"
+              ? new KinChatError({
+                  reason: "limit",
+                  message: KinLevels.SHADOW_LIMIT_MESSAGE,
+                })
+              : denied(),
+          ),
+      }),
     );
     if (entry.created) yield* summary.refresh({ orgId: ctx.orgId, agentId: ctx.agentId });
     return { shadowed: true as const, entryId: entry.entryId };
