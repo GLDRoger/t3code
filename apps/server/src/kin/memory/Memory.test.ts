@@ -678,45 +678,64 @@ const fixtureRepository = Effect.fn("Test.fixtureRepository")(function* () {
   return { root, source, git, commit };
 });
 
-it.live("materializes a large journal checkout in one blob read", () =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const vcs = yield* VcsProcess.VcsProcess;
-    const { root, source, commit } = yield* fixtureRepository();
-    yield* fs.makeDirectory(`${source}/journal/2026`, { recursive: true });
-    for (let day = 0; day < 100; day++)
-      yield* fs.writeFileString(`${source}/journal/2026/${day}.md`, `Invented entry ${day}\n`);
-    yield* commit(source);
-    let largestBatch = 0;
-    const counted = Layer.succeed(
-      VcsProcess.VcsProcess,
-      VcsProcess.VcsProcess.of({
-        run: (input) => {
-          if (input.args.includes("--batch"))
-            largestBatch = Math.max(largestBatch, input.stdin?.trim().split("\n").length ?? 0);
-          return vcs.run(input);
-        },
-      }),
-    );
-    yield* Effect.gen(function* () {
-      const memory = yield* Memory.Memory;
-      yield* memory.prepareWakeup(orgA);
-      const { read } = yield* memory.ensureCheckouts(orgA);
-      expect(yield* fs.exists(`${read}/journal/2026/99.md`)).toBe(true);
-    }).pipe(
-      Effect.provide(
-        memoryTestLayer.pipe(
-          Layer.provide(configLayer(`${root}/state`, source)),
-          Layer.provide(counted),
-          Layer.provide(NodeServices.layer),
+it.live(
+  "materializes a large journal checkout in one blob read, staged on the state filesystem",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const vcs = yield* VcsProcess.VcsProcess;
+      const { root, source, commit } = yield* fixtureRepository();
+      const crossDevice = Layer.succeed(FileSystem.FileSystem, {
+        ...fs,
+        rename: (from: string, to: string) =>
+          from.startsWith(`${root}/state/`) === to.startsWith(`${root}/state/`)
+            ? fs.rename(from, to)
+            : Effect.die(new Error(`EXDEV: rename ${from} -> ${to}`)),
+      });
+      yield* fs.makeDirectory(`${source}/journal/2026`, { recursive: true });
+      for (let day = 0; day < 100; day++)
+        yield* fs.writeFileString(`${source}/journal/2026/${day}.md`, `Invented entry ${day}\n`);
+      yield* commit(source);
+      let largestBatch = 0;
+      const counted = Layer.succeed(
+        VcsProcess.VcsProcess,
+        VcsProcess.VcsProcess.of({
+          run: (input) => {
+            if (input.args.includes("--batch"))
+              largestBatch = Math.max(largestBatch, input.stdin?.trim().split("\n").length ?? 0);
+            return vcs.run(input);
+          },
+        }),
+      );
+      yield* Effect.gen(function* () {
+        const memory = yield* Memory.Memory;
+        yield* memory.prepareWakeup(orgA);
+        yield* fs.makeDirectory(`${root}/state/a/memory-read.next-stale1/read`, {
+          recursive: true,
+        });
+        yield* memory.prepareWakeup(orgA);
+        const { read } = yield* memory.ensureCheckouts(orgA);
+        expect(yield* fs.exists(`${read}/journal/2026/99.md`)).toBe(true);
+        expect(
+          (yield* fs.readDirectory(`${root}/state/a`)).filter((entry) =>
+            entry.startsWith("memory-read.next-"),
+          ),
+        ).toEqual([]);
+      }).pipe(
+        Effect.provide(
+          memoryTestLayer.pipe(
+            Layer.provide(configLayer(`${root}/state`, source)),
+            Layer.provide(counted),
+            Layer.provide(crossDevice),
+            Layer.provide(NodeServices.layer),
+          ),
         ),
-      ),
-    );
-    expect(largestBatch).toBeGreaterThanOrEqual(100);
-  }).pipe(
-    Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer, databaseLayer)),
-    Effect.scoped,
-  ),
+      );
+      expect(largestBatch).toBeGreaterThanOrEqual(100);
+    }).pipe(
+      Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer, databaseLayer)),
+      Effect.scoped,
+    ),
 );
 
 it.live.each([

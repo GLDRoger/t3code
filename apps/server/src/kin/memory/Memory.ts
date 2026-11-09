@@ -467,7 +467,7 @@ const make = Effect.gen(function* () {
     root: string,
   ) {
     for (const entry of yield* io(orgId, "clones", fs.readDirectory(root)))
-      if (/^memory\.clone-[A-Za-z0-9]+$/.test(entry))
+      if (/^memory(?:\.clone|-read\.next)-[A-Za-z0-9]+$/.test(entry))
         yield* io(
           orgId,
           "recoverClone",
@@ -554,12 +554,12 @@ const make = Effect.gen(function* () {
       return { writer: paths.writer, read: paths.read };
     }
     yield* io(orgId, "mkdir", fs.makeDirectory(paths.root, { recursive: true }));
+    yield* removeStaleClones(orgId, paths.root);
     if (yield* io(orgId, "exists", fs.exists(paths.writer))) {
       yield* validateWriter(orgId, paths, false);
     } else {
       // The remote can still hold the old history until the purge's push lands.
       yield* refuseDuringPurge(orgId, "clone");
-      yield* removeStaleClones(orgId, paths.root);
       yield* io(
         orgId,
         "clone",
@@ -1364,7 +1364,14 @@ const make = Effect.gen(function* () {
       "readSnapshot",
       Effect.scoped(
         Effect.gen(function* () {
-          const read = path.join(yield* fs.makeTempDirectoryScoped(), "read");
+          // Staged beside the target: the system temp dir can be another filesystem (EXDEV).
+          const read = path.join(
+            yield* fs.makeTempDirectoryScoped({
+              directory: path.dirname(paths.read),
+              prefix: "memory-read.next-",
+            }),
+            "read",
+          );
           yield* fs.makeDirectory(read);
           for (const [index, { relative }] of kept.entries()) {
             const target = path.join(read, relative);
