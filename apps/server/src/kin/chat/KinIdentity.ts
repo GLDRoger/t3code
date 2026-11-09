@@ -1,5 +1,6 @@
 import {
   AuthStandardClientScopes,
+  type AuthSessionId,
   KinChatError,
   TrimmedNonEmptyString,
   KinAgentId,
@@ -83,6 +84,7 @@ export class KinIdentity extends Context.Service<
   {
     /** The org owner bootstrapped at startup; the only person allowed owner-only actions. */
     readonly owner: PersonIdentity;
+    /** The owner, for a session with the standard scopes that a pairing credential was exchanged for. */
     readonly resolve: (
       session: AuthenticatedSession,
     ) => Effect.Effect<ReadonlyArray<PersonIdentity>>;
@@ -121,14 +123,31 @@ export class KinIdentity extends Context.Service<
       const active = new Set(rows.map((row) => row.threadId));
       const leads = new Set(rows.filter((row) => row.role === "lead").map((row) => row.threadId));
       const lock = yield* Semaphore.make(1);
+      // A session stays paired for its whole life, so a hit never needs reading again.
+      const paired = new Set<AuthSessionId>();
+      const isPaired = (sessionId: AuthSessionId) =>
+        paired.has(sessionId)
+          ? Effect.succeed(true)
+          : sql`SELECT 1 FROM kin_auth_paired_sessions WHERE session_id = ${sessionId}`.pipe(
+              Effect.map((rows) => rows.length > 0),
+              Effect.tap((found) =>
+                Effect.sync(() => {
+                  if (found) paired.add(sessionId);
+                }),
+              ),
+              Effect.catch((cause) =>
+                Effect.logWarning(
+                  "Kin couldn't read paired sessions; treating the session as no person.",
+                  toPersistenceSqlError("KinIdentity.isPaired")(cause),
+                ).pipe(Effect.as(false)),
+              ),
+            );
       return KinIdentity.of({
         owner: { _tag: "person", orgId: owner.orgId, personId: owner.personId },
-        resolve: Effect.fn("KinIdentity.resolve")(function (session) {
-          return Effect.succeed(
-            AuthStandardClientScopes.every((scope) => session.scopes.includes(scope))
-              ? [{ _tag: "person", orgId: owner.orgId, personId: owner.personId }]
-              : [],
-          );
+        resolve: Effect.fn("KinIdentity.resolve")(function* (session) {
+          if (!AuthStandardClientScopes.every((scope) => session.scopes.includes(scope))) return [];
+          if (!(yield* isPaired(session.sessionId))) return [];
+          return [{ _tag: "person", orgId: owner.orgId, personId: owner.personId }];
         }),
         resolveAgent: Effect.fn("KinIdentity.resolveAgent")(function* (scope) {
           const caller = scope.thread;

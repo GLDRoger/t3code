@@ -1,3 +1,4 @@
+import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import * as JudgeShadow from "../floor/JudgeShadow.ts";
 import { dormantLeadDependencies } from "../lead/layer.testkit.ts";
 import { assert, it } from "@effect/vitest";
@@ -86,6 +87,7 @@ const seed = Effect.gen(function* () {
   const identity = Context.get(context, KinIdentity);
   const chat = Context.get(context, KinChatService);
   const repo = Context.get(context, Repository.KinChatRepository);
+  yield* pairSession(session.sessionId);
   const person = (yield* identity.resolve(session))[0];
   assert.isDefined(person);
   const agentId = KinAgentId.make("lead");

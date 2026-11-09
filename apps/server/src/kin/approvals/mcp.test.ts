@@ -1,3 +1,5 @@
+import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
+import { kinSecretsTest } from "../lead/layer.testkit.ts";
 import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
 import { assert, it } from "@effect/vitest";
 import {
@@ -154,6 +156,7 @@ const layerWith = <E, R>(pullRequestFacts: Layer.Layer<KinPullRequestFacts, E, R
     Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
     Layer.provideMerge(
       Kin.layer.pipe(
+        Layer.provide(kinSecretsTest),
         Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
         // Push deep links name the host environment.
         Layer.provide(
@@ -268,6 +271,7 @@ const seed = (sources: ReadonlyArray<Source>, level = "L3") =>
     const repo = yield* KinChatRepository.KinChatRepository;
     const queue = yield* KinEventQueue.KinEventQueue;
     const sql = yield* SqlClient.SqlClient;
+    yield* pairSession(AuthSessionId.make("owner"));
     const [owner] = yield* identity.resolve({
       sessionId: AuthSessionId.make("owner"),
       subject: "browser",

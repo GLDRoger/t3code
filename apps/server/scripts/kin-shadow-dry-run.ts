@@ -58,6 +58,7 @@ import { KinChatService } from "../src/kin/chat/KinChatService.ts";
 import * as KinChatRepository from "../src/kin/chat/KinChatRepository.ts";
 import { KinIdentity } from "../src/kin/chat/KinIdentity.ts";
 import { environment } from "../src/kin/chat/TaskCard.testkit.ts";
+import * as ServerConfig from "../src/config.ts";
 import * as Kin from "../src/kin/layer.ts";
 import { KinShadowSummary } from "../src/kin/lead/KinLevels.ts";
 import * as KinEventQueue from "../src/kin/lead/KinEventQueue.ts";
@@ -179,16 +180,17 @@ interface DryRunReport {
 }
 
 const orgId = KinOrgId.make("kin-default");
-const instanceId = ProviderInstanceId.make("codex");
+// The default Claude instance: leads run only on Claude.
+const instanceId = ProviderInstanceId.make("claudeAgent");
 // Workers read only these fields to pick a model; at L0 no provider ever starts.
-const codexInstance = {
+const leadInstance = {
   instanceId,
-  driverKind: ProviderDriverKind.make("codex"),
+  driverKind: ProviderDriverKind.make("claudeAgent"),
   enabled: true,
 } as Pick<ProviderInstance, "instanceId" | "driverKind" | "enabled"> as ProviderInstance;
 const providers = Layer.mock(ProviderInstanceRegistry)({
   getInstance: Effect.fn("KinDryRun.getInstance")((id) =>
-    Effect.succeed(id === instanceId ? codexInstance : undefined),
+    Effect.succeed(id === instanceId ? leadInstance : undefined),
   ),
 });
 const ownerSession = {
@@ -461,6 +463,13 @@ export const runDryRun = Effect.fn("KinDryRun.run")(
     });
     const kinServer = Kin.layer.pipe(
       Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+      // The approver key seal's secret stays in this run's scratch home.
+      Layer.provide(
+        Layer.mergeAll(
+          ServerConfig.layerTest(stateDir, path.join(stateDir, "seal-home")),
+          NodeCrypto.layer,
+        ).pipe(Layer.provideMerge(NodeServices.layer)),
+      ),
       Layer.provideMerge(environment),
       Layer.provideMerge(stack),
     );
@@ -479,6 +488,9 @@ export const runDryRun = Effect.fn("KinDryRun.run")(
       const repo = yield* KinChatRepository.KinChatRepository;
       const sql = yield* SqlClient.SqlClient;
 
+      // The scratch database's owner, as a pairing exchange records it.
+      yield* sql`INSERT INTO kin_auth_paired_sessions (session_id, via, created_at)
+        VALUES (${ownerSession.sessionId}, 'kin-dry-run', ${start}) ON CONFLICT (session_id) DO NOTHING`;
       const [owner] = yield* identity.resolve(ownerSession);
       if (owner === undefined || owner._tag !== "person")
         return yield* new KinDryRunError({ message: "No owner identity." });

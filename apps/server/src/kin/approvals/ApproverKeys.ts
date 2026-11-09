@@ -40,6 +40,7 @@ import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { proofKeyRevoked, revokedBySession } from "../auth/ProofKeySessions.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinAttestationTrust } from "./attestation/AttestationTrust.ts";
+import { KinKeySeal } from "./KeySeal.ts";
 import {
   verifyAndroidKeyAttestation,
   verifyAppleAppAttest,
@@ -95,6 +96,7 @@ type KeyRow = {
   readonly created_at: number;
   readonly confirmed_at: number | null;
   readonly revoked_at: number | null;
+  readonly seal: string | null;
 };
 
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
@@ -123,7 +125,16 @@ export const kinKeyConfirmationCode = (thumbprint: string, challenge: Uint8Array
   return String(digest.readUInt32BE(0) % 1_000_000).padStart(6, "0");
 };
 
-const toKey = (row: KeyRow) =>
+const sealFields = (row: KeyRow) => ({
+  orgId: row.org_id,
+  thumbprint: row.thumbprint,
+  publicJwkJson: row.public_jwk_json,
+  humanId: row.human_id,
+  hardware: row.hardware,
+});
+
+/** `attested` holds for an active key only while the seal written at activation verifies. */
+const toKeyWith = (row: KeyRow, sealed: boolean) =>
   decodeKey({
     orgId: row.org_id,
     thumbprint: row.thumbprint,
@@ -132,7 +143,7 @@ const toKey = (row: KeyRow) =>
     deviceLabel: row.device_label,
     platform: row.platform,
     hardware: row.hardware,
-    attested: row.attested === 1,
+    attested: row.attested === 1 && (row.state !== "active" || sealed),
     ...(row.session_id === null ? {} : { sessionId: row.session_id }),
     state: row.state,
     createdAt: iso(row.created_at),
@@ -190,6 +201,7 @@ export class ApproverKeys extends Context.Service<
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const trust = yield* KinAttestationTrust;
+  const seal = yield* KinKeySeal;
   const actions = yield* KinPendingActions;
   // Single-use, session-bound, short-lived: memory is enough, and a restart only means retrying.
   const challenges = new Map<
@@ -201,6 +213,40 @@ const make = Effect.gen(function* () {
     { readonly code: string; readonly expiresAt: number; attempts: number }
   >();
   const slot = (ref: KeyRef) => `${ref.orgId}\u0000${ref.thumbprint}`;
+
+  const toKey = Effect.fn("ApproverKeys.toKey")(function* (row: KeyRow) {
+    if (row.state !== "active" || row.attested !== 1) return yield* toKeyWith(row, false);
+    const sealed = seal.verify(sealFields(row), row.seal);
+    // Only a write that skipped the server, such as one straight into SQLite, leaves this.
+    if (!sealed)
+      yield* Effect.logWarning("Kin approver key's seal doesn't verify; it can't sign.", {
+        orgId: row.org_id,
+        thumbprint: row.thumbprint,
+      });
+    return yield* toKeyWith(row, sealed);
+  });
+
+  /** The UPDATE that makes a pending attested key active, sealing exactly the row it read. */
+  const activate = Effect.fn("ApproverKeys.activate")(function* (
+    row: KeyRow,
+    now: number,
+    onlyFirst: boolean,
+  ) {
+    const [active] = yield* sql<KeyRow>`UPDATE kin_approver_keys
+        SET state = 'active', confirmed_at = ${now}, seal = ${seal.seal(sealFields(row))}
+        WHERE org_id = ${row.org_id} AND thumbprint = ${row.thumbprint}
+          AND state = 'pending' AND attested = 1
+          AND public_jwk_json = ${row.public_jwk_json} AND human_id = ${row.human_id}
+          AND hardware = ${row.hardware}
+          AND ${
+            onlyFirst
+              ? sql`NOT EXISTS (SELECT 1 FROM kin_approver_keys
+                  WHERE org_id = ${row.org_id} AND state = 'active')`
+              : sql`1 = 1`
+          }
+        RETURNING *`;
+    return active;
+  });
 
   // Callers see a plain refusal; the cause is logged through the persistence error shape.
   const internal = (operation: string) => (cause: unknown) =>
@@ -238,7 +284,7 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
         const [row] = yield* sql<KeyRow>`UPDATE kin_approver_keys
-          SET state = 'revoked', revoked_at = ${now}
+          SET state = 'revoked', revoked_at = ${now}, seal = NULL
           WHERE org_id = ${ref.orgId} AND thumbprint = ${ref.thumbprint} AND state != 'revoked'
           RETURNING *`;
         if (row === undefined) return undefined;
@@ -372,6 +418,7 @@ const make = Effect.gen(function* () {
         created_at: now,
         confirmed_at: null,
         revoked_at: null,
+        seal: null,
       };
       const key = yield* toKey(row);
       // An attestation is bound to the challenge given when the key was made, so a key never
@@ -463,13 +510,7 @@ const make = Effect.gen(function* () {
         if (pending.attempts >= MAX_CODE_ATTEMPTS) confirmations.delete(slot(ref));
         return yield* fail("bad_code", "The code doesn't match the phone.");
       }
-      const [active] = yield* sql<KeyRow>`UPDATE kin_approver_keys
-        SET state = 'active', confirmed_at = ${now}
-        WHERE org_id = ${ref.orgId} AND thumbprint = ${ref.thumbprint}
-          AND state = 'pending' AND attested = 1
-          AND NOT EXISTS (SELECT 1 FROM kin_approver_keys
-            WHERE org_id = ${ref.orgId} AND state = 'active')
-        RETURNING *`;
+      const active = yield* activate(row, now, true);
       if (active === undefined)
         return yield* fail("invalid_state", "Another key was confirmed first.");
       confirmations.delete(slot(ref));
@@ -524,13 +565,11 @@ const make = Effect.gen(function* () {
     function* (ref: KeyRef) {
       yield* reconcileSessions(ref.orgId);
       const now = yield* Clock.currentTimeMillis;
-      const rows = yield* sql`UPDATE kin_approver_keys
-        SET state = 'active', confirmed_at = ${now}
-        WHERE org_id = ${ref.orgId} AND thumbprint = ${ref.thumbprint}
-          AND state = 'pending' AND attested = 1
-        RETURNING thumbprint`;
-      if (rows.length > 0) confirmations.delete(slot(ref));
-      return rows.length > 0;
+      const row = yield* select(ref);
+      if (row === undefined || row.state !== "pending" || row.attested !== 1) return false;
+      const active = yield* activate(row, now, false);
+      if (active !== undefined) confirmations.delete(slot(ref));
+      return active !== undefined;
     },
     Effect.catch(internal("ApproverKeys.activateByGrant")),
   );
@@ -548,6 +587,28 @@ const make = Effect.gen(function* () {
   yield* reconcileSessions(undefined).pipe(
     Effect.catch((error) => Effect.logError("Kin approver key reconciliation failed.", error)),
   );
+
+  // Keys active before the seal shipped were activated by this server; seal them once. Later
+  // starts never do, so a row written into SQLite afterwards stays unsealed.
+  const adoptLegacyKeys = Effect.gen(function* () {
+    const rows = yield* sql<KeyRow>`SELECT * FROM kin_approver_keys
+      WHERE state = 'active' AND attested = 1 AND seal IS NULL ORDER BY org_id, thumbprint`;
+    for (const row of rows) {
+      yield* sql`UPDATE kin_approver_keys SET seal = ${seal.seal(sealFields(row))}
+        WHERE org_id = ${row.org_id} AND thumbprint = ${row.thumbprint} AND seal IS NULL`;
+    }
+    return rows.length;
+  });
+  yield* seal
+    .adoptOnce(adoptLegacyKeys)
+    .pipe(
+      Effect.catchCause((cause) =>
+        Effect.logError(
+          "Kin couldn't seal existing approver keys; it retries at the next start.",
+          cause,
+        ),
+      ),
+    );
 
   return ApproverKeys.of({
     keyChallenge,

@@ -1,3 +1,5 @@
+import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
+import { kinSecretsTest } from "../lead/layer.testkit.ts";
 import { assert, it } from "@effect/vitest";
 import {
   AuthSessionId,
@@ -40,6 +42,7 @@ const agentId = KinAgentId.make("lead");
 const rescueRunId = RunId.make("rescue-run");
 
 const layer = Kin.layer.pipe(
+  Layer.provide(kinSecretsTest),
   Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
   Layer.provideMerge(environment),
   Layer.provideMerge(authorityLayer),
@@ -152,6 +155,7 @@ const setup = Effect.fn("test.setup")(function* (input: {
   const identity = Context.get(services, KinIdentity);
   const chats = Context.get(services, KinChatService);
   const sql = yield* SqlClient.SqlClient;
+  yield* pairSession(AuthSessionId.make("owner"));
   const [person] = yield* identity.resolve({
     sessionId: AuthSessionId.make("owner"),
     subject: "browser",

@@ -1,3 +1,4 @@
+import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { authorityLayer, startWakeupRun } from "./WakeupAuthority.testkit.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import { environment } from "./TaskCard.testkit.ts";
@@ -91,6 +92,7 @@ const seed = Effect.gen(function* () {
   const repo = yield* KinChatRepository;
   const identity = yield* KinIdentity;
   const service = yield* KinChatService;
+  yield* pairSession(AuthSessionId.make("owner"));
   const person = (yield* identity.resolve({
     sessionId: AuthSessionId.make("owner"),
     subject: "browser",

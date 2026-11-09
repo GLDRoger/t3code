@@ -29,6 +29,7 @@ import {
   type KinKeyConnection,
 } from "./ApproverKeys.ts";
 import * as Audit from "./Audit.ts";
+import * as KeySeal from "./KeySeal.ts";
 import { KinAttestationTrust } from "./attestation/AttestationTrust.ts";
 import { androidChain, makeTrustFixture } from "./attestation/testFixtures.ts";
 import { makeRegisterApproverKeyHandler } from "./handlers/registerApproverKey.ts";
@@ -47,7 +48,7 @@ const database = Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory);
 const layer = approverKeysLayer.pipe(
   Layer.provideMerge(pendingActionsLayer),
   Layer.provideMerge(Audit.layer),
-  Layer.provide(trustLayer),
+  Layer.provide(Layer.merge(trustLayer, KeySeal.layerTest())),
   Layer.provideMerge(database),
 );
 
@@ -55,7 +56,7 @@ const layer = approverKeysLayer.pipe(
 const relayLayer = approverKeysLayer.pipe(
   Layer.provideMerge(pendingActionsLayer),
   Layer.provideMerge(Audit.layer),
-  Layer.provide(trustLayer),
+  Layer.provide(Layer.merge(trustLayer, KeySeal.layerTest())),
   Layer.provideMerge(KinPersistence.layer),
   Layer.provideMerge(layerKinAuthTest("kin-approver-keys-")),
 );
@@ -206,6 +207,35 @@ const confirmFirst = (keys: ApproverKeys["Service"]) =>
   });
 
 describe("ApproverKeys", () => {
+  it.effect("keys active before the seal shipped are sealed on the first start only", () =>
+    Effect.gen(function* () {
+      const { keys, sql } = yield* seed;
+      const legacy = yield* confirmFirst(keys);
+      const later = yield* registerAndroid(keys);
+      assert.isTrue(yield* keys.activateByGrant(later.key));
+      // As every active key was before K027: no seal.
+      yield* sql`UPDATE kin_approver_keys SET seal = NULL WHERE org_id = ${orgId}`;
+      const upgraded = yield* Layer.build(KeySeal.layerTest({ adopted: false }));
+      // A fresh build per call, as a restart would be.
+      const start = Layer.fresh(approverKeysLayer).pipe(
+        Layer.provideMerge(pendingActionsLayer),
+        Layer.provideMerge(Audit.layer),
+        Layer.provide(Layer.merge(trustLayer, Layer.succeedContext(upgraded))),
+      );
+      const attested = (thumbprint: (typeof legacy)["key"]["thumbprint"]) =>
+        ApproverKeys.use((started) => started.get({ orgId, thumbprint })).pipe(
+          Effect.map((key) => Option.getOrThrow(key).attested),
+          Effect.provide(start),
+        );
+      assert.isTrue(yield* attested(legacy.key.thumbprint));
+      // A row written into SQLite after that start stays unsealed through the next one.
+      yield* sql`UPDATE kin_approver_keys SET seal = NULL
+        WHERE org_id = ${orgId} AND thumbprint = ${later.key.thumbprint}`;
+      assert.isFalse(yield* attested(later.key.thumbprint));
+      assert.isTrue(yield* attested(legacy.key.thumbprint));
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("the first approver key can't be confirmed from a remote session", () =>
     Effect.gen(function* () {
       const { keys } = yield* seed;

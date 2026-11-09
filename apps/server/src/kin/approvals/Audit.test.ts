@@ -1,3 +1,5 @@
+import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
+import { kinSecretsTest } from "../lead/layer.testkit.ts";
 import { assert, describe, it } from "@effect/vitest";
 import {
   AuthSessionId,
@@ -531,6 +533,7 @@ describe("kin.audit RPCs", () => {
       const kin = yield* Kin.KinServer.pipe(
         Effect.provide(
           Kin.layer.pipe(
+            Layer.provide(kinSecretsTest),
             Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
             // Push deep links name the host environment.
             Layer.provide(
@@ -548,6 +551,7 @@ describe("kin.audit RPCs", () => {
           { sessionId, subject: "browser", method: "browser-session-cookie", scopes },
           kinServices,
         );
+      yield* pairSession(sessionId);
       const ownerHandlers = yield* handlersFor(AuthStandardClientScopes);
       assert.deepStrictEqual(yield* ownerHandlers["kin.audit.verify"]({ orgId: defaultOrg }), {
         ok: true,

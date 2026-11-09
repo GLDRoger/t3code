@@ -17,5 +17,6 @@ export const authHooks = Effect.gen(function* () {
         );
       if (!allowed) return yield* new EnvironmentAuth.ServerAuthInvalidCredentialError({});
     }),
+    recordPairedSession: hooks.recordPairedSession,
   };
 });
