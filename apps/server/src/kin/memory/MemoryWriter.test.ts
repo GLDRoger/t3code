@@ -54,6 +54,7 @@ it.live.each([
   "P9-shadow",
   "shadow-merge",
   "shadow-discard",
+  "shadow-owner-path",
   "P10-lost-git-dir",
   "sha256",
   "owner-keep",
@@ -524,19 +525,69 @@ it.live.each([
           });
         return;
       }
-      if (scenario === "shadow-merge" || scenario === "shadow-discard") {
+      if (scenario.startsWith("shadow-")) {
         const remoteHead = (branch: string) =>
           git(root, [`--git-dir=${remote}`, "rev-parse", `refs/heads/${branch}`]);
+        for (const bad of ["x/../../main", "a b"]) {
+          const refused = yield* writer
+            .settleShadow(orgId, KinAgentId.make(bad), { _tag: "discard" })
+            .pipe(Effect.flip);
+          expect(refused).toMatchObject({
+            _tag: "MemoryWriteRejected",
+            reason: "Invalid agent id",
+          });
+        }
         yield* writer.stage(orgId, "wake1", {
           path: "deferrals/def-001.md",
           content: fixtureItem(),
           sourceEventId: "owner",
         });
+        if (scenario === "shadow-owner-path")
+          yield* writer.stage(orgId, "wake1", {
+            path: "decisions/dec-001.md",
+            content: fixtureItem({ id: "dec-001", kind: "decision" }),
+            sourceEventId: "owner",
+          });
         const shadowed = yield* writer.commitWakeup(orgId, "wake1", "completed");
         const main = yield* remoteHead("main");
         expect(yield* remoteHead(`kin/shadow/${agentId}`)).toBe(shadowed.commit);
+        const { paths } = yield* writer.settleShadow(orgId, agentId, { _tag: "preview" });
+        // Previewing writes nothing.
+        expect(yield* remoteHead("main")).toBe(main);
+        expect(yield* remoteHead(`kin/shadow/${agentId}`)).toBe(shadowed.commit);
+        if (scenario === "shadow-owner-path") {
+          expect(paths).toContain("decisions/dec-001.md");
+          const refused = yield* writer
+            .settleShadow(orgId, agentId, { _tag: "keep", paths })
+            .pipe(Effect.flip);
+          expect(refused._tag).toBe("MemorySyncConflict");
+          expect(refused._tag === "MemorySyncConflict" && refused.reason).toContain(
+            "decisions/dec-001.md",
+          );
+          expect(yield* remoteHead("main")).toBe(main);
+          expect(yield* remoteHead(`kin/shadow/${agentId}`)).toBe(shadowed.commit);
+          // Start clean stays available.
+          yield* writer.settleShadow(orgId, agentId, { _tag: "discard" });
+          expect(yield* remoteHead(`kin/shadow/${agentId}`)).toBe(main);
+          return;
+        }
+        expect(paths).toHaveLength(2);
         const keep = scenario === "shadow-merge";
-        expect(yield* writer.settleShadow(orgId, agentId, keep)).toEqual({ kept: keep ? 2 : 0 });
+        if (keep) {
+          // Keep commits only the list the owner was shown.
+          const stale = yield* writer
+            .settleShadow(orgId, agentId, { _tag: "keep", paths: paths.slice(1) })
+            .pipe(Effect.flip);
+          expect(stale._tag).toBe("MemorySyncConflict");
+          expect(yield* remoteHead("main")).toBe(main);
+        }
+        expect(
+          yield* writer.settleShadow(
+            orgId,
+            agentId,
+            keep ? { _tag: "keep", paths } : { _tag: "discard" },
+          ),
+        ).toEqual({ kept: keep ? 2 : 0, paths: keep ? paths : [] });
         const settled = yield* remoteHead("main");
         expect(settled === main).toBe(!keep);
         // Either way the next L0 trial starts from main, not the old shadow week.
@@ -558,7 +609,13 @@ it.live.each([
           );
         }
         // Settling again changes nothing.
-        expect(yield* writer.settleShadow(orgId, agentId, keep)).toEqual({ kept: 0 });
+        expect(
+          yield* writer.settleShadow(
+            orgId,
+            agentId,
+            keep ? { _tag: "keep", paths: [] } : { _tag: "discard" },
+          ),
+        ).toEqual({ kept: 0, paths: [] });
         expect(yield* remoteHead("main")).toBe(settled);
         return;
       }

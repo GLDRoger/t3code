@@ -1,4 +1,7 @@
 import {
+  KIN_SHADOW_CHANGES_MAX,
+  KIN_SHADOW_REVIEW_TEXT_MAX,
+  KinActionTarget,
   KinChatError,
   KinChatId,
   KinEventId,
@@ -19,6 +22,7 @@ import {
   type KinLevelsShadowMemoryInput,
   type KinLevelsView,
   type KinOrgId,
+  type KinPromotionStats,
   type KinShadowVerdict,
   type KinWidget,
 } from "@t3tools/contracts";
@@ -46,18 +50,25 @@ import { KinChatService } from "../chat/KinChatService.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
-import { preview } from "../lead/LevelGate.ts";
+import { describe } from "../lead/LevelGate.ts";
+import { isOwnerReviewedPath } from "../memory/lint.ts";
 
 const DAY_MS = 86_400_000;
 const REVIEW_ENTRIES = 50;
 const OPEN_ACTION_STATES = ["awaiting_approval", "approved", "executing"];
 
-/** The writer's keep-or-discard, attached by the lead runtime that owns the memory writer. */
+/** The writer's preview, keep or discard, attached by the lead runtime that owns the writer. */
 export type KinShadowSettle = (
   orgId: KinOrgId,
   agentId: KinAgentId,
-  keep: boolean,
-) => Effect.Effect<unknown, { readonly _tag: string; readonly message: string }>;
+  choice:
+    | { readonly _tag: "preview" }
+    | { readonly _tag: "discard" }
+    | { readonly _tag: "keep"; readonly paths: ReadonlyArray<string> },
+) => Effect.Effect<
+  { readonly paths: ReadonlyArray<string> },
+  { readonly _tag: string; readonly reason?: string | undefined }
+>;
 
 type Lead = { readonly orgId: KinOrgId; readonly agentId: KinAgentId };
 
@@ -111,6 +122,15 @@ const decodeReview = Schema.decodeUnknownEffect(KinShadowReviewCard);
 const encodeReview = Schema.encodeEffect(KinShadowReviewCard);
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeLevel = Schema.decodeUnknownEffect(KinLevel);
+const decodeTarget = Schema.decodeUnknownEffect(Schema.fromJsonString(KinActionTarget));
+type OpenRaiseState = "awaiting_approval" | "approved" | "executing";
+const isOpenRaiseState = (state: string): state is OpenRaiseState =>
+  OPEN_ACTION_STATES.includes(state);
+
+const promotionTitle = (name: string, stats: KinPromotionStats) =>
+  stats.eligible
+    ? `${name} is ready for ${stats.to}: ${stats.fine} of ${stats.reviewed} reviewed would have gone out unchanged, none harmful, none unreviewed.`
+    : `${name}'s trial for ${stats.to ?? stats.from}: ${stats.fine} of ${stats.reviewed} reviewed would have gone out unchanged, ${stats.harmful === 0 ? "none" : stats.harmful} harmful, ${stats.unreviewed} unreviewed.`;
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
 const refused = (reason: KinChatError["reason"], message: string) =>
@@ -295,6 +315,14 @@ const make = Effect.gen(function* () {
     );
     const total = count?.n ?? 0;
     if (total === 0) return;
+    const [open] = yield* run(
+      "KinPromotion.reviewUnreviewed",
+      sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_shadow_entries
+        WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}
+          AND created_at >= ${from} AND created_at < ${until} AND verdict IS NULL
+        ORDER BY n`,
+    );
+    const unreviewed = open?.n ?? 0;
     const owner = yield* ownerChat(lead);
     if (owner === undefined) return;
     // Unreviewed entries first, so the newest day's backlog never hides behind reviewed ones.
@@ -317,25 +345,30 @@ const make = Effect.gen(function* () {
         ORDER BY verdict IS NOT NULL, created_at, entry_id LIMIT ${REVIEW_ENTRIES}`,
     );
     const { promotion } = yield* stats(lead);
-    const title = `Review what ${owner.name} would have done today`;
+    const title = `Review what ${owner.name} would have done today: ${total - unreviewed} of ${total} reviewed, ${unreviewed} unreviewed`;
     const card = yield* decodeReview({
       agentId: lead.agentId,
       title,
       day,
       total,
+      unreviewed,
       entries: yield* Effect.forEach(
         rows.toSorted((a, b) => a.createdAt - b.createdAt || (a.entryId < b.entryId ? -1 : 1)),
         (row) =>
-          Effect.map(decodeJson(row.json), (parsed) => ({
-            entryId: row.entryId,
-            tool: row.tool,
-            level: row.level,
-            unlocksLevel: row.unlocksLevel,
-            wouldTarget: row.wouldTarget,
-            preview: preview(row.tool, parsed),
-            createdAt: iso(row.createdAt),
-            verdict: row.verdict,
-          })),
+          Effect.map(decodeJson(row.json), (parsed) => {
+            const shown = describe(row.tool, parsed, KIN_SHADOW_REVIEW_TEXT_MAX);
+            return {
+              entryId: row.entryId,
+              tool: row.tool,
+              level: row.level,
+              unlocksLevel: row.unlocksLevel,
+              wouldTarget: row.wouldTarget,
+              preview: shown.text,
+              truncated: shown.truncated,
+              createdAt: iso(row.createdAt),
+              verdict: row.verdict,
+            };
+          }),
       ),
       promotion,
     });
@@ -386,6 +419,26 @@ const make = Effect.gen(function* () {
     return Option.isSome(action) && OPEN_ACTION_STATES.includes(action.value.state);
   });
 
+  /** What Keep would commit, for the card; null when the writer can't list it now. */
+  const listShadow = Effect.fn("KinPromotion.listShadow")(function* (lead: Lead) {
+    if (settle === undefined) return null;
+    return yield* settle(lead.orgId, lead.agentId, { _tag: "preview" }).pipe(
+      Effect.map(({ paths }) => {
+        const ownerReviewed = paths.filter(isOwnerReviewedPath);
+        return {
+          paths: paths.slice(0, KIN_SHADOW_CHANGES_MAX),
+          truncated: paths.length > KIN_SHADOW_CHANGES_MAX,
+          ownerReviewed: ownerReviewed.slice(0, KIN_SHADOW_CHANGES_MAX),
+        };
+      }),
+      Effect.catch((error) =>
+        Effect.logWarning("Kin shadow memory list failed", { errorTag: error._tag }).pipe(
+          Effect.as(null),
+        ),
+      ),
+    );
+  });
+
   /** Lead spec step 3: one card in the owner's direct chat once the lead is eligible. */
   const refresh = Effect.fn("KinPromotion.refresh")(function* (lead: Lead) {
     const { promotion } = yield* stats(lead);
@@ -397,29 +450,41 @@ const make = Effect.gen(function* () {
       lead.orgId,
       promotionWidgetId(lead.agentId, promotion.from),
     );
-    if (reached?.status === "awaiting_approval")
+    if (reached?.status === "awaiting_approval") {
+      const fromL0 = reached.stats.from === "L0";
       yield* putPromotion(lead, {
         ...reached,
         status: "raised",
-        shadowMemory: reached.stats.from === "L0" ? "pending" : null,
+        shadowMemory: fromL0 ? "pending" : null,
+        shadowChanges: fromL0 ? yield* listShadow(lead) : null,
       });
+    } else if (
+      reached?.status === "raised" &&
+      reached.shadowMemory === "pending" &&
+      reached.shadowChanges === null
+    ) {
+      const listed = yield* listShadow(lead);
+      if (listed !== null) yield* putPromotion(lead, { ...reached, shadowChanges: listed });
+    }
     if (promotion.to === null) return;
     const to = promotion.to;
+    const title = promotionTitle(owner.name, promotion);
     const ready = {
       agentId: lead.agentId,
-      title: `${owner.name} is ready for ${to}: ${promotion.fine} of ${promotion.reviewed} would have gone out unchanged, none harmful.`,
+      title,
       stats: promotion,
       status: "ready" as const,
       actionId: null,
       deferredUntil: null,
       shadowMemory: null,
+      shadowChanges: null,
     };
     const card = yield* readPromotion(lead.orgId, promotionWidgetId(lead.agentId, to));
     if (card === undefined) {
       if (promotion.eligible) yield* putPromotion(lead, ready);
       return;
     }
-    const updated = { ...card, stats: promotion };
+    const updated = { ...card, title, stats: promotion };
     switch (card.status) {
       case "awaiting_approval":
         if (yield* actionOpen(lead.orgId, card.actionId)) return yield* putPromotion(lead, updated);
@@ -443,7 +508,9 @@ const make = Effect.gen(function* () {
         // The lead is back below this card's level: its shadow-memory choice no longer applies.
         return yield* putPromotion(
           lead,
-          promotion.eligible ? ready : { ...updated, status: "closed", shadowMemory: null },
+          promotion.eligible
+            ? ready
+            : { ...updated, status: "closed", shadowMemory: null, shadowChanges: null },
         );
     }
   });
@@ -451,6 +518,49 @@ const make = Effect.gen(function* () {
   const bestEffort = (what: string) =>
     Effect.catchCause((cause) => Effect.logWarning(`Kin ${what} failed`, { cause }));
   const refreshCards = (lead: Lead) => refresh(lead).pipe(bestEffort("promotion card refresh"));
+
+  const openRaises = Effect.fn("KinPromotion.openRaises")(function* (lead: Lead) {
+    const rows = yield* run(
+      "KinPromotion.openRaises",
+      sql<{ actionId: KinActionId; revision: number; state: string; targetJson: string }>`
+        SELECT action_id AS "actionId", revision, state, target_json AS "targetJson"
+        FROM kin_pending_actions
+        WHERE org_id = ${lead.orgId} AND kind = 'set_level'
+          AND json_extract(target_json, '$.agentId') = ${lead.agentId}
+          AND state IN ('awaiting_approval', 'approved', 'executing')
+        ORDER BY created_at, action_id`,
+    );
+    return yield* Effect.forEach(rows, (row) =>
+      decodeTarget(row.targetJson).pipe(
+        Effect.map((target) =>
+          target._tag === "level" && isOpenRaiseState(row.state)
+            ? [{ ...row, state: row.state, chatId: target.chatId ?? null, level: target.level }]
+            : [],
+        ),
+      ),
+    ).pipe(Effect.map((all) => all.flat()));
+  });
+
+  /**
+   * A lower level withdraws the raises it overtook: the lead's own and every chat's above a new
+   * lead level, or that chat's above a new chat cap. An executing raise is refused by its handler.
+   */
+  const closeRaises = Effect.fn("KinPromotion.closeRaises")(function* (
+    lead: Lead,
+    lowered: { readonly chatId?: KinChatId | undefined; readonly level: KinLevel },
+  ) {
+    for (const raise of yield* openRaises(lead)) {
+      if (raise.state === "executing" || KinLevels.atLeast(lowered.level, raise.level)) continue;
+      if (lowered.chatId !== undefined && raise.chatId !== lowered.chatId) continue;
+      yield* pending.transition({
+        orgId: lead.orgId,
+        actionId: raise.actionId,
+        revision: raise.revision,
+        to: raise.state === "approved" ? "voided" : "cancelled",
+        reason: "level_lowered",
+      });
+    }
+  });
 
   const view = Effect.fn("KinPromotion.view")(function* (lead: Lead) {
     const { promotion, levelSince } = yield* stats(lead);
@@ -476,6 +586,12 @@ const make = Effect.gen(function* () {
         ),
       ),
       promotion,
+      pendingRaises: (yield* openRaises(lead)).map(({ actionId, chatId, level, state }) => ({
+        actionId,
+        chatId,
+        level,
+        state,
+      })),
     } satisfies KinLevelsView;
   });
 
@@ -531,6 +647,10 @@ const make = Effect.gen(function* () {
           return { ...done, loweredTo: below };
         }),
       );
+      if (reviewed.loweredTo !== null)
+        yield* closeRaises(reviewed.lead, { level: reviewed.loweredTo }).pipe(
+          bestEffort("raise withdrawal"),
+        );
       yield* drawReview(reviewed.lead, reviewed.createdAt, false).pipe(
         bestEffort("review card refresh"),
       );
@@ -541,62 +661,66 @@ const make = Effect.gen(function* () {
     lower: Effect.fn("KinPromotion.lower")(function* (people, input) {
       yield* asOwner(people, input);
       yield* withSql(KinLevels.lower(input));
+      yield* closeRaises(input, input).pipe(bestEffort("raise withdrawal"));
       yield* refreshCards(input);
       return yield* view(input);
     }, Effect.catch(toChatError)),
 
     raise: Effect.fn("KinPromotion.raise")(function* (people, input) {
       const person = yield* asOwner(people, input);
-      yield* withSql(KinLevels.checkRaise(input));
       const chatKey = input.chatId ?? "";
-      const sameTarget = sql`kind = 'set_level' AND org_id = ${input.orgId}
-          AND json_extract(target_json, '$.agentId') = ${input.agentId}
-          AND json_extract(target_json, '$.level') = ${input.level}
-          AND IFNULL(json_extract(target_json, '$.chatId'), '') = ${chatKey}`;
-      const [open] = yield* run(
-        "KinPromotion.openRaise",
-        sql<{ actionId: KinActionId }>`SELECT action_id AS "actionId" FROM kin_pending_actions
-            WHERE ${sameTarget} AND state IN ('awaiting_approval', 'approved', 'executing')
-            ORDER BY created_at DESC, action_id LIMIT 1`,
+      // The lead, chat membership and eligibility are checked in the write that creates the row.
+      const actionId = yield* transaction(
+        Effect.gen(function* () {
+          yield* withSql(KinLevels.checkRaise(input));
+          const sameTarget = sql`kind = 'set_level' AND org_id = ${input.orgId}
+              AND json_extract(target_json, '$.agentId') = ${input.agentId}
+              AND json_extract(target_json, '$.level') = ${input.level}
+              AND IFNULL(json_extract(target_json, '$.chatId'), '') = ${chatKey}`;
+          const [open] = yield* run(
+            "KinPromotion.openRaise",
+            sql<{ actionId: KinActionId }>`SELECT action_id AS "actionId" FROM kin_pending_actions
+                WHERE ${sameTarget} AND state IN ('awaiting_approval', 'approved', 'executing')
+                ORDER BY created_at DESC, action_id LIMIT 1`,
+          );
+          if (open !== undefined) return open.actionId;
+          // A closed request (rejected, expired) gets a fresh one; a double tap lands on one row.
+          const [count] = yield* run(
+            "KinPromotion.raiseCount",
+            sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_pending_actions WHERE ${sameTarget}
+                ORDER BY n`,
+          );
+          const owner = yield* ownerChat(input);
+          const target = {
+            _tag: "level" as const,
+            agentId: input.agentId,
+            ...(input.chatId === undefined ? {} : { chatId: input.chatId }),
+            level: input.level,
+          };
+          const created = yield* pending.create({
+            orgId: input.orgId,
+            kind: "set_level",
+            target,
+            resolved: { _tag: "none" },
+            targetDigest: kinTargetDigest("set_level", target, { _tag: "none" }),
+            reason: `Raise ${owner?.name ?? "the lead"} to ${input.level}${input.chatId === undefined ? "" : " in this chat"}, from the owner's promotion card.`,
+            requestedBy: {
+              agentId: KinAgentId.make(KIN_PROMOTION_REQUESTER),
+              threadId: ThreadId.make(KIN_PROMOTION_REQUESTER),
+            },
+            provenance: {
+              startedBy: { humanId: person.personId },
+              startedByRole: "owner",
+              chain: [],
+              ceilingBelowOwner: false,
+            },
+            source: KinEventId.make(
+              `promotion:${input.agentId}:${chatKey || "lead"}:${input.level}:${count?.n ?? 0}`,
+            ),
+          });
+          return created.action.id;
+        }),
       );
-      let actionId = open?.actionId;
-      if (actionId === undefined) {
-        // A closed request (rejected, expired) gets a fresh one; a double tap lands on one row.
-        const [count] = yield* run(
-          "KinPromotion.raiseCount",
-          sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_pending_actions WHERE ${sameTarget}
-              ORDER BY n`,
-        );
-        const owner = yield* ownerChat(input);
-        const target = {
-          _tag: "level" as const,
-          agentId: input.agentId,
-          ...(input.chatId === undefined ? {} : { chatId: input.chatId }),
-          level: input.level,
-        };
-        const created = yield* pending.create({
-          orgId: input.orgId,
-          kind: "set_level",
-          target,
-          resolved: { _tag: "none" },
-          targetDigest: kinTargetDigest("set_level", target, { _tag: "none" }),
-          reason: `Raise ${owner?.name ?? "the lead"} to ${input.level}${input.chatId === undefined ? "" : " in this chat"}, from the owner's promotion card.`,
-          requestedBy: {
-            agentId: KinAgentId.make(KIN_PROMOTION_REQUESTER),
-            threadId: ThreadId.make(KIN_PROMOTION_REQUESTER),
-          },
-          provenance: {
-            startedBy: { humanId: person.personId },
-            startedByRole: "owner",
-            chain: [],
-            ceilingBelowOwner: false,
-          },
-          source: KinEventId.make(
-            `promotion:${input.agentId}:${chatKey || "lead"}:${input.level}:${count?.n ?? 0}`,
-          ),
-        });
-        actionId = created.action.id;
-      }
       if (input.chatId === undefined) {
         const card = yield* readPromotion(
           input.orgId,
@@ -645,17 +769,49 @@ const make = Effect.gen(function* () {
         );
       if (settle === undefined)
         return yield* refused("unavailable", "Kin memory isn't running on this host.");
-      yield* settle(input.orgId, input.agentId, input.choice === "keep").pipe(
-        Effect.mapError((error) =>
-          error._tag === "MemorySyncConflict" || error._tag === "MemorySecretBlocked"
-            ? refused("invalid_state", `Shadow memory wasn't kept: ${error.message}`)
-            : unavailable,
+      const card = yield* readPromotion(input.orgId, promotionWidgetId(input.agentId, "L1"));
+      const pendingCard = card?.shadowMemory === "pending" ? card : undefined;
+      const notKept = (message: string) =>
+        refused("invalid_state", `Shadow memory wasn't kept: ${message}`);
+      const relist = Effect.gen(function* () {
+        if (pendingCard === undefined) return;
+        const listed = yield* listShadow(input);
+        yield* putPromotion(input, { ...pendingCard, shadowChanges: listed });
+      }).pipe(bestEffort("shadow memory list"));
+      let choice: Parameters<KinShadowSettle>[2] = { _tag: "discard" };
+      if (input.choice === "keep") {
+        // The owner's tap is the review, so Keep commits only a list the card showed in full.
+        const shown = pendingCard?.shadowChanges ?? null;
+        if (shown === null) {
+          yield* relist;
+          return yield* notKept(
+            "check the changed paths on the promotion card, then choose again.",
+          );
+        }
+        if (shown.ownerReviewed.length > 0)
+          return yield* notKept(
+            `it changes paths you review in a pull request (${shown.ownerReviewed.slice(0, 5).join(", ")}). Start clean instead.`,
+          );
+        if (shown.truncated)
+          return yield* notKept(
+            "it changes more paths than the card can list. Start clean instead.",
+          );
+        choice = { _tag: "keep", paths: shown.paths };
+      }
+      yield* settle(input.orgId, input.agentId, choice).pipe(
+        Effect.catch((error) =>
+          error._tag === "MemorySyncConflict"
+            ? relist.pipe(Effect.andThen(Effect.fail(notKept(`${error.reason ?? "it changed"}.`))))
+            : Effect.fail(
+                error._tag === "MemorySecretBlocked"
+                  ? notKept("it contains what looks like a secret. Start clean instead.")
+                  : unavailable,
+              ),
         ),
       );
-      const card = yield* readPromotion(input.orgId, promotionWidgetId(input.agentId, "L1"));
-      if (card?.shadowMemory === "pending")
+      if (pendingCard !== undefined)
         yield* putPromotion(input, {
-          ...card,
+          ...pendingCard,
           shadowMemory: input.choice === "keep" ? "kept" : "discarded",
         });
       return yield* view(input);

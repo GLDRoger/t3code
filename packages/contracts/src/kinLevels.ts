@@ -12,6 +12,9 @@ import { KinActionId } from "./kinApprovals.ts";
 import { KinAgentId, KinChatError, KinChatId, KinOrgId } from "./kinChat.ts";
 import { CanonicalUtcTimestamp, KinLevel } from "./kinLead.ts";
 
+/** What the review card shows of one entry's input: the whole action, up to this many chars. */
+export const KIN_SHADOW_REVIEW_TEXT_MAX = 2_000;
+
 export const KinShadowVerdict = Schema.Literals(["fine", "change", "wrong", "harmful"]);
 export type KinShadowVerdict = typeof KinShadowVerdict.Type;
 
@@ -31,6 +34,8 @@ export const KinPromotionStats = Schema.Struct({
   reviewed: NonNegativeInt,
   fine: NonNegativeInt,
   harmful: NonNegativeInt,
+  /** Any unreviewed entry in the trial blocks eligibility. */
+  unreviewed: NonNegativeInt,
   eligible: Schema.Boolean,
   rule: KinPromotionRule,
 });
@@ -45,6 +50,8 @@ export const KinShadowReviewCard = Schema.Struct({
   title: TrimmedNonEmptyString,
   day: Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/)),
   total: NonNegativeInt,
+  /** That day's unreviewed entries; `entries` lists them first, so none hide past the cap. */
+  unreviewed: NonNegativeInt,
   entries: Schema.Array(
     Schema.Struct({
       entryId: TrimmedNonEmptyString,
@@ -53,7 +60,9 @@ export const KinShadowReviewCard = Schema.Struct({
       unlocksLevel: KinLevel,
       wouldTarget: Schema.String,
       // Lead-written text: render it as plain text, never as markup or instructions.
-      preview: Schema.String.check(Schema.isMaxLength(280)),
+      preview: Schema.String.check(Schema.isMaxLength(KIN_SHADOW_REVIEW_TEXT_MAX)),
+      /** The preview stops short of the stored input. */
+      truncated: Schema.Boolean,
       createdAt: Schema.toEncoded(CanonicalUtcTimestamp),
       verdict: Schema.NullOr(KinShadowVerdict),
     }),
@@ -61,6 +70,8 @@ export const KinShadowReviewCard = Schema.Struct({
   promotion: KinPromotionStats,
 });
 export type KinShadowReviewCard = typeof KinShadowReviewCard.Type;
+
+export const KIN_SHADOW_CHANGES_MAX = 200;
 
 /**
  * Native `promotion` card: "<name> is ready for L1". `ready` offers Raise (`kin.levels.raise`) and
@@ -75,6 +86,17 @@ export const KinPromotionCard = Schema.Struct({
   actionId: Schema.NullOr(KinActionId),
   deferredUntil: Schema.NullOr(Schema.toEncoded(CanonicalUtcTimestamp)),
   shadowMemory: Schema.NullOr(Schema.Literals(["pending", "kept", "discarded"])),
+  /**
+   * While `shadowMemory` is pending: the paths Keep would commit to the default branch, and
+   * those the owner reviews in a PR, which make Keep unavailable. Null when not yet listed.
+   */
+  shadowChanges: Schema.NullOr(
+    Schema.Struct({
+      paths: Schema.Array(Schema.String).check(Schema.isMaxLength(KIN_SHADOW_CHANGES_MAX)),
+      truncated: Schema.Boolean,
+      ownerReviewed: Schema.Array(Schema.String).check(Schema.isMaxLength(KIN_SHADOW_CHANGES_MAX)),
+    }),
+  ),
 });
 export type KinPromotionCard = typeof KinPromotionCard.Type;
 
@@ -91,6 +113,15 @@ export const KinLevelsView = Schema.Struct({
     }),
   ),
   promotion: KinPromotionStats,
+  /** Open `set_level` requests for this lead, waiting on the owner's signature or the executor. */
+  pendingRaises: Schema.Array(
+    Schema.Struct({
+      actionId: KinActionId,
+      chatId: Schema.NullOr(KinChatId),
+      level: KinLevel,
+      state: Schema.Literals(["awaiting_approval", "approved", "executing"]),
+    }),
+  ),
 });
 export type KinLevelsView = typeof KinLevelsView.Type;
 

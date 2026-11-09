@@ -31,7 +31,7 @@ import {
 import { parseFrontMatter, MemoryItemError } from "./frontMatter.ts";
 import { journalEntry, MemoryJournalError, type JournalContext } from "./journal.ts";
 import { mergeMemoryFiles } from "./merge.ts";
-import { kinShapeFailure } from "./lint.ts";
+import { isOwnerReviewedPath, kinShapeFailure } from "./lint.ts";
 import { KinSecretScan, KinSecretScanError } from "./secretScan.ts";
 
 export const LEAD_ENDED_WITHOUT_KIN_END = "Lead ended without calling kin_end.";
@@ -70,6 +70,12 @@ export class MemoryWriterAuthority extends Context.Service<
     ) => Effect.Effect<WakeupContext, MemoryWriteRejected | PersistenceSqlError>;
   }
 >()("t3/kin/memory/MemoryWriter/MemoryWriterAuthority") {}
+export type ShadowChoice =
+  | { readonly _tag: "preview" }
+  | { readonly _tag: "discard" }
+  /** `paths` is the list the owner was shown; Keep refuses when the changes differ from it. */
+  | { readonly _tag: "keep"; readonly paths: ReadonlyArray<string> };
+
 export class MemoryWriteRejected extends Schema.TaggedError<MemoryWriteRejected>()(
   "MemoryWriteRejected",
   {
@@ -166,12 +172,13 @@ export class MemoryWriter extends Context.Service<
     /**
      * The owner's choice once a lead leaves L0: `keep` commits the shadow branch's changes onto
      * the default branch; either way `kin/shadow/<agentId>` then restarts from the default branch.
+     * `preview` only lists the changed paths.
      */
     readonly settleShadow: (
       orgId: KinOrgId,
       agentId: KinAgentId,
-      keep: boolean,
-    ) => Effect.Effect<{ readonly kept: number }, Failure>;
+      choice: ShadowChoice,
+    ) => Effect.Effect<{ readonly kept: number; readonly paths: ReadonlyArray<string> }, Failure>;
   }
 >()("t3/kin/memory/MemoryWriter") {}
 const dreamBranch = /^dream\/\d{4}-\d{2}-\d{2}$/;
@@ -1023,7 +1030,7 @@ const make = Effect.gen(function* () {
         }),
       ),
     ),
-    settleShadow: Effect.fn("MemoryWriter.settleShadow")((orgId, agentId, keep) =>
+    settleShadow: Effect.fn("MemoryWriter.settleShadow")((orgId, agentId, choice) =>
       locked(
         orgId,
         Effect.gen(function* () {
@@ -1038,9 +1045,9 @@ const make = Effect.gen(function* () {
           const shadowHead = yield* branchHead(orgId, writer, shadow);
           const conflict = (reason: string) =>
             new MemorySyncConflict({ orgId, operation: "push", reason });
-          let head = mainHead;
-          let kept = 0;
-          if (keep && shadowHead !== mainHead) {
+          const shadowChanges = Effect.gen(function* () {
+            const mainFiles = yield* filesAt(orgId, writer, mainHead);
+            if (shadowHead === mainHead) return { mainFiles, changes: new Map<string, Buffer>() };
             const base = yield* git(orgId, writer, ["merge-base", mainHead, shadowHead]).pipe(
               Effect.mapError(() => conflict("The shadow branch shares no history with main")),
             );
@@ -1050,7 +1057,6 @@ const make = Effect.gen(function* () {
                 Effect.provideService(VcsProcess, vcs),
                 Effect.map((all) => new Map(all.map((entry) => [entry.relative, entry]))),
               );
-            const mainFiles = yield* filesAt(orgId, writer, mainHead);
             const merged = mergeMemoryFiles(
               yield* filesAt(orgId, writer, base),
               yield* filesAt(orgId, writer, shadowHead),
@@ -1069,6 +1075,25 @@ const make = Effect.gen(function* () {
                 ([file, bytes]) => file !== "INDEX.md" && !mainFiles.get(file)?.equals(bytes),
               ),
             );
+            return { mainFiles, changes };
+          });
+          if (choice._tag === "preview")
+            return { kept: 0, paths: [...(yield* shadowChanges).changes.keys()].toSorted() };
+          let head = mainHead;
+          let kept = 0;
+          let paths: ReadonlyArray<string> = [];
+          if (choice._tag === "keep") {
+            const { mainFiles, changes } = yield* shadowChanges;
+            paths = [...changes.keys()].toSorted();
+            const shown = choice.paths.toSorted();
+            if (shown.length !== paths.length || paths.some((path, i) => path !== shown[i]))
+              return yield* conflict("Shadow memory changed since its paths were listed");
+            // Outside Kin's own folders the owner reviews every change in a PR (TRIG-15).
+            const reviewed = paths.filter(isOwnerReviewedPath);
+            if (reviewed.length > 0)
+              return yield* conflict(
+                `It changes paths you review in a pull request (${reviewed.slice(0, 5).join(", ")}${reviewed.length > 5 ? ", …" : ""}); start clean instead`,
+              );
             if (changes.size > 0) {
               kept = changes.size;
               const regular = yield* regularPaths(orgId, writer, mainHead);
@@ -1121,7 +1146,7 @@ const make = Effect.gen(function* () {
               `+${head}:refs/heads/${shadow}`,
             ]).pipe(Effect.mapError(() => conflict("Shadow branch push rejected")));
           }
-          return { kept };
+          return { kept, paths };
         }),
       ),
     ),

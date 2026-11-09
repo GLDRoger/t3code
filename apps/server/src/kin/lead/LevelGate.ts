@@ -63,28 +63,57 @@ const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unkno
 const field = (value: unknown, key: string): unknown =>
   typeof value === "object" && value !== null ? (value as Record<string, unknown>)[key] : undefined;
 const text = (value: unknown) => (typeof value === "string" ? value : "");
-const clip = (value: string) =>
-  value.length <= PREVIEW_MAX ? value : `${value.slice(0, PREVIEW_MAX - 1)}…`;
-/** One plain-text line per entry; the input is the lead's own, so it is shown, never trusted. */
-export const preview = (tool: string, input: unknown) => {
-  switch (tool) {
-    case "kin_chat_post":
-      return clip(text(field(input, "body")));
-    case "kin_delegate":
-      return clip(`${text(field(input, "kind"))}: ${text(field(input, "title"))}`);
-    case "kin_follow_up":
-      return clip(text(field(input, "brief")));
-    case "request_action": {
-      const target = field(input, "target");
-      const repo = text(field(target, "repo"));
-      const number = field(target, "number");
-      const named = repo === "" ? "" : ` ${repo}${typeof number === "number" ? `#${number}` : ""}`;
-      return clip(`${text(field(input, "kind"))}${named}: ${text(field(input, "reason"))}`);
-    }
+const lines = (...parts: ReadonlyArray<string>) => parts.filter((part) => part !== "").join("\n");
+const labelled = (label: string, value: string) => (value === "" ? "" : `${label}: ${value}`);
+const targetText = (target: unknown) => {
+  const repo = text(field(target, "repo"));
+  switch (field(target, "_tag")) {
+    case "pull_request":
+      return `${repo}#${String(field(target, "number"))}, merge method ${text(field(target, "mergeMethod"))}${field(target, "deleteBranchAfter") === true ? ", then delete the branch" : ""}`;
+    case "branch":
+      return `${repo} branch ${text(field(target, "ref"))}`;
     default:
-      return clip(tool);
+      return target === undefined ? "" : stableStringify(target);
   }
 };
+const modelText = (model: unknown) =>
+  typeof model === "string" || model === undefined
+    ? text(model)
+    : `${text(field(model, "model"))} (${text(field(model, "instanceId"))})`;
+const fullText = (tool: string, input: unknown) => {
+  switch (tool) {
+    case "kin_chat_post":
+      return text(field(input, "body"));
+    case "kin_delegate":
+      return lines(
+        `${text(field(input, "kind"))}: ${text(field(input, "title"))}`,
+        labelled("Project", text(field(input, "projectId"))),
+        labelled("Model", modelText(field(input, "model"))),
+        labelled("Goal", text(field(input, "goal"))),
+        labelled("Brief", text(field(input, "brief"))),
+      );
+    case "kin_follow_up":
+      return lines(
+        labelled("Worker", text(field(input, "workerId"))),
+        labelled("Brief", text(field(input, "brief"))),
+      );
+    case "request_action":
+      return lines(
+        `${text(field(input, "kind"))}: ${targetText(field(input, "target"))}`,
+        labelled("Reason", text(field(input, "reason"))),
+      );
+    default:
+      return tool;
+  }
+};
+/** Plain text of what the entry would have done; the input is the lead's own, so never trusted. */
+export const describe = (tool: string, input: unknown, max: number) => {
+  const full = fullText(tool, input);
+  return full.length <= max
+    ? { text: full, truncated: false }
+    : { text: `${full.slice(0, max - 1)}…`, truncated: true };
+};
+const preview = (tool: string, input: unknown) => describe(tool, input, PREVIEW_MAX).text;
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;

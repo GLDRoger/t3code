@@ -17,7 +17,6 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlError from "effect/sql/SqlError";
-import type * as Statement from "effect/sql/Statement";
 
 import { toPersistenceDecodeError, toPersistenceSqlError } from "../../persistence/Errors.ts";
 
@@ -267,13 +266,14 @@ export const promotionStats = Effect.fn("KinLevels.promotionStats")(function* (i
   const rows =
     to === null
       ? []
-      : yield* query("KinLevels.promotionStats")(sql<{ verdict: string; n: number }>`
+      : yield* query("KinLevels.promotionStats")(sql<{ verdict: string | null; n: number }>`
         SELECT verdict, COUNT(*) AS n FROM kin_shadow_entries
         WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId}
-          AND unlocks_level = ${to} AND verdict IS NOT NULL AND created_at >= ${lead.since}
+          AND unlocks_level = ${to} AND created_at >= ${lead.since}
         GROUP BY verdict ORDER BY verdict`);
-  const count = (verdict: string) => rows.find((row) => row.verdict === verdict)?.n ?? 0;
-  const reviewed = rows.reduce((sum, row) => sum + row.n, 0);
+  const count = (verdict: string | null) => rows.find((row) => row.verdict === verdict)?.n ?? 0;
+  const unreviewed = count(null);
+  const reviewed = rows.reduce((sum, row) => sum + row.n, 0) - unreviewed;
   const fine = count("fine");
   const harmful = count("harmful");
   const daysAtLevel = Math.max(
@@ -288,13 +288,15 @@ export const promotionStats = Effect.fn("KinLevels.promotionStats")(function* (i
     reviewed,
     fine,
     harmful,
-    // Integer percentages, so 16 of 20 meets 80% exactly.
+    unreviewed,
+    // Integer percentages, so 16 of 20 meets 80% exactly. Every entry in the trial is reviewed.
     eligible:
       to !== null &&
       daysAtLevel >= rule.minDays &&
       reviewed >= rule.minReviewed &&
       fine * 100 >= reviewed * Math.round(rule.minFineShare * 100) &&
-      harmful === 0,
+      harmful === 0 &&
+      unreviewed === 0,
     rule,
     levelSince: lead.since,
   };
@@ -385,24 +387,13 @@ export const raiseByGrant = Effect.fn("KinLevels.raiseByGrant")(function* (input
 }) {
   const sql = yield* SqlClient.SqlClient;
   const run = query("KinLevels.raiseByGrant");
-  // The action is set_level, claimed (executing, one open execution) under a consumed grant.
-  const claimed = (approver: string | Statement.Fragment) => sql`EXISTS (
-    SELECT 1 FROM kin_pending_actions p
-    JOIN kin_executions x ON x.org_id = p.org_id AND x.action_id = p.action_id
-      AND x.finished_at IS NULL
-    JOIN kin_grants g ON g.org_id = x.org_id AND g.grant_id = x.grant_id
-      AND g.action_id = p.action_id AND g.revision = p.revision AND g.consumed_at IS NOT NULL
-    WHERE p.org_id = ${input.orgId} AND p.action_id = ${input.actionId}
-      AND p.kind = 'set_level' AND p.state = 'executing' AND g.approver_human_id = ${approver})`;
   return yield* inTransaction("KinLevels.raiseByGrant")(
     Effect.gen(function* () {
-      const [action] = yield* run(sql<{ targetJson: string; approver: string }>`
-        SELECT p.target_json AS "targetJson", g.approver_human_id AS approver
-        FROM kin_pending_actions p
-        JOIN kin_executions x ON x.org_id = p.org_id AND x.action_id = p.action_id
-        JOIN kin_grants g ON g.org_id = x.org_id AND g.grant_id = x.grant_id
-        WHERE p.org_id = ${input.orgId} AND p.action_id = ${input.actionId}
-        ORDER BY p.action_id`);
+      // Only what was requested; whether it may apply is decided by the guarded write below.
+      const [action] = yield* run(sql<{ targetJson: string }>`
+        SELECT target_json AS "targetJson" FROM kin_pending_actions
+        WHERE org_id = ${input.orgId} AND action_id = ${input.actionId} AND kind = 'set_level'
+        ORDER BY action_id`);
       if (action === undefined) return yield* new KinLevelRefused({ reason: "not_granted" });
       const target = yield* decodeTarget(action.targetJson).pipe(
         Effect.mapError(toPersistenceDecodeError("KinLevels.raiseByGrant")),
@@ -410,16 +401,24 @@ export const raiseByGrant = Effect.fn("KinLevels.raiseByGrant")(function* (input
       if (target._tag !== "level") return yield* new KinLevelRefused({ reason: "not_granted" });
       const ref = { orgId: input.orgId, agentId: target.agentId };
       const lead = yield* activeLead(ref);
-      // The grant is the owner's authority over this lead; another person's grant never applies.
-      if (action.approver !== lead.owner)
-        return yield* new KinLevelRefused({ reason: "not_granted" });
+      // This target, claimed (executing, one open execution) under a consumed grant that the
+      // lead's own owner signed; another person's grant never applies.
+      const claimed = sql`EXISTS (
+        SELECT 1 FROM kin_pending_actions p
+        JOIN kin_executions x ON x.org_id = p.org_id AND x.action_id = p.action_id
+          AND x.finished_at IS NULL
+        JOIN kin_grants g ON g.org_id = x.org_id AND g.grant_id = x.grant_id
+          AND g.action_id = p.action_id AND g.revision = p.revision AND g.consumed_at IS NOT NULL
+        WHERE p.org_id = ${input.orgId} AND p.action_id = ${input.actionId}
+          AND p.kind = 'set_level' AND p.state = 'executing'
+          AND p.target_json = ${action.targetJson} AND g.approver_human_id = ${lead.owner})`;
       const now = yield* Clock.currentTimeMillis;
       const { from } = yield* checkRaise({ ...ref, chatId: target.chatId, level: target.level });
       if (target.chatId === undefined) {
         const updated = yield* run(sql`UPDATE kin_leads SET level = ${target.level},
             level_since = ${now}
           WHERE org_id = ${input.orgId} AND agent_id = ${target.agentId}
-            AND level = ${from} AND ${claimed(lead.owner)}
+            AND level = ${from} AND ${claimed}
           RETURNING agent_id`);
         if (updated.length === 0) return yield* new KinLevelRefused({ reason: "not_granted" });
         return { agentId: target.agentId, from, to: target.level };
@@ -429,12 +428,12 @@ export const raiseByGrant = Effect.fn("KinLevels.raiseByGrant")(function* (input
         target.level === lead.level
           ? yield* run(sql`DELETE FROM kin_chat_levels
               WHERE org_id = ${input.orgId} AND agent_id = ${target.agentId}
-                AND chat_id = ${target.chatId} AND ${claimed(lead.owner)}
+                AND chat_id = ${target.chatId} AND ${claimed}
               RETURNING chat_id`)
           : yield* run(sql`UPDATE kin_chat_levels SET level = ${target.level},
                 level_since = ${now}
               WHERE org_id = ${input.orgId} AND agent_id = ${target.agentId}
-                AND chat_id = ${target.chatId} AND level = ${from} AND ${claimed(lead.owner)}
+                AND chat_id = ${target.chatId} AND level = ${from} AND ${claimed}
               RETURNING chat_id`);
       if (written.length === 0) return yield* new KinLevelRefused({ reason: "not_granted" });
       return { agentId: target.agentId, from, to: target.level };
