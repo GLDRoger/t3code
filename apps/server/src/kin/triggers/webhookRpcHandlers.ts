@@ -91,5 +91,7 @@ export const makeKinWebhookHandlers = Effect.fn("makeKinWebhookHandlers")(functi
       run((webhooks, people) => webhooks.rotate(people, input)),
     "kin.webhooks.github.remove": (input) =>
       run((webhooks, people) => webhooks.remove(people, input).pipe(Effect.as({}))),
+    "kin.webhooks.github.status": (input) =>
+      run((webhooks, people) => webhooks.status(people, input)),
   });
 });

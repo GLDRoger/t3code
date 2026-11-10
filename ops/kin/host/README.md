@@ -209,6 +209,18 @@ then `sudo systemctl restart kin-worker-server`. `kin-worker run` copies the uni
 
 First it checks what the probes stand on: kin-server and kin-worker-server are running (`kill -0` on each MainPID), no unit has a `daemon-reload` pending, and the running server has every sandbox setting of `kin-worker run` (compared through a throwaway unit, in systemd's own form). Then, as kin-worker, inside the running server's mount namespace (`nsenter`), in a fresh sandbox and as a plain login, it tries to read Kin's database, list `secrets` and `~/.config/kin`, read `service.env`, kin's Claude and Codex logins, kin-server's process environment, `/run/user/<kin uid>` and its `bus`, kin's keyring and the owner's home. In the sandbox it tries `sudo`, binding `127.0.0.1:3773` and `[::1]:3773`, and cloud metadata, and checks DNS still works. It calls kin-server's `/mcp`, `/kin/mcp`, `/ws` and auth endpoints with no credential and expects 401 or 403. It fails on any other listener or abstract socket of kin's, a file of kin's outside `/home` that everyone can read, a mode other than 700 or an ACL on either home, a gateway key kin-worker shares with kin, a token in the worker's Claude settings, a GitHub token in kin-worker's `gh` or git credential store that is kin's or that GitHub says can push to a repo in `KIN_GITHUB_REPOS` or Kin's own, a link in the worker environment's database (read-only), a worker server listening anywhere but `127.0.0.1:3874` (`ss`, from root), a worker unit without its pause condition, a sudoers entry other than the one above, and a `KIN_WORKER_ENVIRONMENT_ID` that isn't kin-server's link to `127.0.0.1:3874`. `KIN_URL=http://127.0.0.1:<port>` points it at kin-server when that isn't on 3773.
 
+### GitHub events
+
+Kin hears about PRs, reviews, CI and pushes through the App's webhook, which needs T3 Connect linked ([Link the laptop and phone](#link-the-laptop-and-phone)). In a kin shell on a terminal (`ssh -t`), since the new secret is shown only there and only once:
+
+```bash
+KIN_ENABLED=true node ~/kin-current/apps/server/dist/bin.mjs kin github webhook setup --base-dir ~/.t3 --project <the lead's worker project>
+```
+
+Then on GitHub, Settings → Developer settings → GitHub Apps → the Kin App → Edit. Under General → Webhook, tick **Active**, paste the printed **Webhook URL** and **Secret**, and save. Under Permissions & events → Subscribe to events, tick Check suite, Issue comment, Issues, Pull request, Pull request review, Pull request review comment, Push and Workflow run, and save. GitHub's API can't set an App's events, so this step stays manual.
+
+To check, run `set -a; . ~/.t3/service.env; set +a`, then the same command with `status` in place of `setup --project …`. It shows the URL, whether the secret is set, the last delivery and any missing App events, and exits non-zero when deliveries can't arrive. Then in the App's Advanced → Recent Deliveries, Redeliver one and run `status` again: the last delivery should read `accepted`. A lost secret: `setup --new-secret`. A secret you chose: pipe it to `set-secret`. `rotate` issues a new URL and the old one stops at once, so paste the new one. `remove` turns events off; then untick Active.
+
 ### Running workers
 
 - `systemctl status kin-worker-server` and `journalctl -u kin-worker-server -f` (system units, as root).

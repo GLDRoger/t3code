@@ -447,6 +447,9 @@ export type KinMessagesSendInput = typeof KinMessagesSendInput.Type;
 export const KinMessagesMarkReadInput = Schema.Struct({ chatId: KinChatId, seq: NonNegativeInt });
 export type KinMessagesMarkReadInput = typeof KinMessagesMarkReadInput.Type;
 export const KinMessagesMarkReadResult = Schema.Struct({});
+/** Mutes or unmutes the caller's own notifications for one chat; the badge still counts it. */
+export const KinChatsMuteInput = Schema.Struct({ chatId: KinChatId, muted: Schema.Boolean });
+export type KinChatsMuteInput = typeof KinChatsMuteInput.Type;
 export type KinMessagesMarkReadResult = typeof KinMessagesMarkReadResult.Type;
 export const KinWidgetsActInput = Schema.Struct({
   widgetId: KinWidgetId,
@@ -493,6 +496,7 @@ export const KIN_CHAT_WS_METHODS = {
   orgsList: "kin.orgs.list",
   chatsSubscribe: "kin.chats.subscribe",
   chatsCreateDirect: "kin.chats.createDirect",
+  chatsMute: "kin.chats.mute",
   chatSubscribe: "kin.chat.subscribe",
   chatHistory: "kin.chat.history",
   messagesSend: "kin.messages.send",
@@ -516,6 +520,11 @@ export const KinChatRpcs = [
   Rpc.make(KIN_CHAT_WS_METHODS.chatsCreateDirect, {
     payload: KinChatsCreateDirectInput,
     success: KinChat,
+    error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(KIN_CHAT_WS_METHODS.chatsMute, {
+    payload: KinChatsMuteInput,
+    success: KinChatMember,
     error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
   }),
   Rpc.make(KIN_CHAT_WS_METHODS.chatSubscribe, {
@@ -553,9 +562,11 @@ export const KinChatRpcs = [
 
 // Chat is what a member's `kin:chat`-only session may use; membership is checked per chat.
 export const KIN_CHAT_RPC_SCOPES = {
-  [KIN_CHAT_WS_METHODS.orgsList]: AuthKinChatScope,
+[KIN_CHAT_WS_METHODS.orgsList]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.chatsSubscribe]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.chatsCreateDirect]: AuthKinChatScope,
+  // Only quiets the caller's own pushes, like marking a chat read.
+  [KIN_CHAT_WS_METHODS.chatsMute]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.chatSubscribe]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.chatHistory]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.messagesSend]: AuthKinChatScope,
