@@ -160,7 +160,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_end", {
     ...shared,
     description:
-      "Finish this wake-up's work with a summary, then stop. Does not commit or interrupt the run: the runner commits the journal and staged memory only after the run ends. Does not approve actions or change authority.",
+      "Finish this wake-up's work with a summary, then stop. Call it after your reply and write nothing after it: your reply is the text you wrote before this call. Does not commit or interrupt the run: the runner commits the journal and staged memory only after the run ends. Does not approve actions or change authority.",
     parameters: Lead.EndInput,
     success: Schema.Void,
   }).annotate(McpSchema.EnabledWhen, enabled),
