@@ -2,7 +2,6 @@ import {
   CommandId,
   KIN_GITHUB_APP_SOURCE,
   KinChatError,
-  KinChatId,
   KinMessageId,
   KinWebhookSourceId,
   ScheduledTaskError,
@@ -34,6 +33,7 @@ import * as ProjectService from "../../project/ProjectService.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
+import { ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import * as KinTriggerStore from "./KinTriggerStore.ts";
 
 export const KIN_SINK_PROMPT =
@@ -255,16 +255,13 @@ export const make = Effect.gen(function* () {
     );
 
   const needsConnect = Effect.fn("KinGithubWebhooks.needsConnect")(function* (orgId: KinOrgId) {
-    const [lead] = yield* sql<{ readonly chatId: string }>`
-      SELECT l.owner_chat_id AS "chatId" FROM kin_leads l
-      JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
-      WHERE l.org_id = ${orgId} AND a.retired_at IS NULL ORDER BY l.agent_id LIMIT 1`.pipe(
+    const lead = yield* liveLead(sql, orgId, { prefer: ENGINEERING_DOMAIN }).pipe(
       Effect.mapError(toPersistenceSqlError("KinGithubWebhooks.needsConnect")),
     );
     if (lead !== undefined)
       yield* chat.notice({
         orgId,
-        chatId: KinChatId.make(lead.chatId),
+        chatId: lead.ownerChatId,
         messageId: KinMessageId.make(`kin-github-connect:${orgId}`),
         body: CONNECT_NOTICE,
       });

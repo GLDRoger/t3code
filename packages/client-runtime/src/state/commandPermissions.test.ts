@@ -70,7 +70,7 @@ const setup = Effect.gen(function* () {
 });
 
 describe("command permissions", () => {
-  it.effect.each(["kin.budget.set", "kin.triggers.setTimeZone"] as const)(
+  it.effect.each(["kin.budget.set", "kin.triggers.setTimeZone", "kin.lead.create"] as const)(
     "guards the Kin owner setting %s with the destination settings grant",
     (method) =>
       Effect.scoped(

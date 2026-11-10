@@ -180,6 +180,12 @@ describe("KinPings", () => {
       const pings = yield* Pings.KinPings;
       const chat = yield* Chat.KinChatService;
       const sql = yield* SqlClient.SqlClient;
+      // Another live lead in the org, with its own owner chat, changes nothing here.
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+        VALUES ('growth', ${orgId}, 'Growth', 'lead', ${owner}, '2026-01-01T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at) VALUES ('growth-chat', ${orgId}, 'project_group', 'Growth', 0, '2026-01-01T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+        VALUES ('growth', ${orgId}, 'Growth', 0, '{}', '[]', 'growth-chat')`;
       yield* TestClock.setTime(Date.parse("2026-11-01T15:00:00Z"));
       yield* pings.put(request);
       yield* pings.put({ ...request, itemId: yield* decodeItem("second") });

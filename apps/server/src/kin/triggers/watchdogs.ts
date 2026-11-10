@@ -7,6 +7,7 @@ import {
   KinOrgId,
   KinPersonId,
   KinWatchdog,
+  type KinLeadDomain,
   type KinWebhookSource,
   type MemoryItemHead,
   type ScheduledTask,
@@ -30,6 +31,7 @@ import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as Chat from "../chat/KinChatService.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { CHIEF_OF_STAFF_DOMAIN, ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { indexIsStale } from "../memory/buildIndex.ts";
 import { memoryDateMillis } from "../memory/frontMatter.ts";
 import * as Memory from "../memory/Memory.ts";
@@ -198,19 +200,18 @@ const make = Effect.gen(function* () {
   // The RPC handlers own this lock; without it a re-key can briefly read as a foreign secret.
   const lock = yield* Effect.serviceOption(KinGithubWebhookLock);
 
-  const leadOf = Effect.fn("KinWatchdogs.lead")(function* (orgId: KinOrgId) {
-    const [row] = yield* sql<{ agentId: string; owner: string; chatId: string }>`SELECT
-      l.agent_id AS "agentId", a.owner_person_id AS owner, l.owner_chat_id AS "chatId"
-      FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
-      WHERE l.org_id = ${orgId} AND a.retired_at IS NULL ORDER BY l.agent_id LIMIT 1`.pipe(
-      NodeSqliteClient.readOnly,
-    );
+  // GitHub findings go to the engineering lead; overdue promises to the chief of staff.
+  const leadOf = Effect.fn("KinWatchdogs.lead")(function* (
+    orgId: KinOrgId,
+    prefer: KinLeadDomain = ENGINEERING_DOMAIN,
+  ) {
+    const row = yield* liveLead(sql, orgId, { prefer }).pipe(NodeSqliteClient.readOnly);
     return row === undefined
       ? undefined
       : ({
-          agentId: KinAgentId.make(row.agentId),
-          owner: KinPersonId.make(row.owner),
-          chatId: KinChatId.make(row.chatId),
+          agentId: row.agentId,
+          owner: row.ownerPersonId,
+          chatId: row.ownerChatId,
         } satisfies Lead);
   });
 
@@ -417,7 +418,7 @@ const make = Effect.gen(function* () {
   });
 
   const promiseOverdue = Effect.fn("KinWatchdogs.promiseOverdue")(function* (orgId: KinOrgId) {
-    const lead = yield* leadOf(orgId);
+    const lead = yield* leadOf(orgId, CHIEF_OF_STAFF_DOMAIN);
     if (lead === undefined) return;
     const now = yield* Clock.currentTimeMillis;
     for (const item of yield* openItems(orgId)) {

@@ -23,6 +23,7 @@ import { isSqlError } from "effect/sql/SqlError";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import * as KinLevels from "./KinLevels.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import * as Cache from "../memory/MemoryCache.ts";
@@ -183,11 +184,17 @@ export const authority = Layer.effect(
                   : `kin:event:${event.eventId}`,
             });
           }
+          // The lane's level, not the lead's: an owner-DM wake-up writes the default branch.
+          const level = yield* KinLevels.wakeupLevel({
+            orgId,
+            agentId: row.agentId,
+            wakeupId,
+          }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
           return {
             orgId,
             wakeupId,
             agentId: row.agentId,
-            level: row.level,
+            level,
             startedAt: DateTime.formatIso(DateTime.makeUnsafe(row.startedAt)),
             timeZone: yield* cache.ownerTimeZone(orgId),
             eventIds: [...sources.keys()],

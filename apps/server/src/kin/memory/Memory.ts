@@ -28,6 +28,7 @@ import * as Semaphore from "effect/Semaphore";
 
 import * as SqlClient from "effect/sql/SqlClient";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import * as KinLevels from "../lead/KinLevels.ts";
 import { isCheckoutPath, itemFolders } from "./checkoutPaths.ts";
 import { memoryGit as runMemoryGit } from "./git.ts";
 import { VcsProcess } from "../../vcs/VcsProcess.ts";
@@ -825,7 +826,10 @@ const make = Effect.gen(function* () {
       Effect.mapError(toPersistenceSqlError("Memory.view")),
       Effect.mapError((cause) => new MemoryError({ orgId, operation: "view", cause })),
     );
-  /** The branch `agentId` reads: its shadow branch at L0 once it has one, else the default branch. */
+  /**
+   * The branch `agentId` reads: its shadow branch at L0 once it has one, else the default branch.
+   * During a wake-up the level is the one in the chat it answers, as the writer's is.
+   */
   const leadBranch = Effect.fn("Memory.leadBranch")(function* (
     orgId: KinOrgId,
     agentId: KinAgentId,
@@ -833,11 +837,23 @@ const make = Effect.gen(function* () {
     const shadow = shadowBranch(agentId);
     const [row] = yield* sqlRead(
       orgId,
-      sql<{ level: string; head: string | null }>`SELECT l.level, h.head FROM kin_leads l
+      sql<{ level: string; head: string | null; wakeupId: string | null }>`SELECT l.level, h.head,
+          (SELECT w.wakeup_id FROM kin_wakeups w WHERE w.org_id = l.org_id
+            AND w.agent_id = l.agent_id AND w.status = 'running'
+            ORDER BY w.wakeup_id LIMIT 1) AS "wakeupId"
+        FROM kin_leads l
         LEFT JOIN kin_memory_heads h ON h.org_id = l.org_id AND h.branch = ${shadow}
         WHERE l.org_id = ${orgId} AND l.agent_id = ${agentId} ORDER BY l.agent_id`,
     );
-    return row?.level === "L0" && row.head !== null ? shadow : mainBranch;
+    if (row === undefined || row.head === null) return mainBranch;
+    const level =
+      row.wakeupId === null
+        ? row.level
+        : yield* KinLevels.wakeupLevel({ orgId, agentId, wakeupId: row.wakeupId }).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.orElseSucceed(() => row.level),
+          );
+    return level === "L0" ? shadow : mainBranch;
   });
   /**
    * The default branch with every active lead's own shadow changes on top, so a deferral made at

@@ -11,7 +11,7 @@ A lead is a T3 thread that Kin wakes up. Each wake-up:
 3. lets the lead act through Kin tools only (post, delegate, request an action, read and write memory),
 4. commits memory and the journal in one git commit, and exits.
 
-Only one wake-up runs per organization at a time. Every wake-up counts against a daily budget. One switch stops everything. A lead starts at L0 (shadow) and moves up a level only after the owner reviews what it would have done.
+An organization can have several leads, one per domain (engineering, growth, finance, and so on). Only one wake-up runs per organization at a time. Every wake-up counts against one daily budget for the organization. One switch stops everything. A lead starts at L0 (shadow) and moves up a level only after the owner reviews what it would have done. The exception is its own direct chat with the owner, where it works at L2 from creation.
 
 ## What exists in T3
 
@@ -66,13 +66,21 @@ export const KinLead = Schema.Struct({
 });
 ```
 
+`kin_leads` also stores `domain` (a lowercase slug, `engineering` for leads created before K030), `charter` (up to 1,000 characters, empty by default) and `created_by_person_id`. Only the owner changes a domain or charter, with `kin lead charter` on the host. Both go into every wake-up's prompt as quoted lines, and they grant nothing.
+
+#### Several leads
+
+`KinLeadProvision.create` is the only way to make a lead. It has two callers: `kin lead create --domain <slug> --charter <text>` on the host (the domain defaults to `engineering`), and the `kin.lead.create` RPC (`settings:write`, then a check that the session is a person of that org). Its input names a creator, a session or a person, and only the org's owner may create a lead in this version. A re-run by the same creator with the same name and domain returns the existing lead. When `--strong` and `--cheap` are omitted, the new lead copies the first live lead's models. Each new lead gets its own direct chat with the owner.
+
+Work that belongs to the organization rather than to one chat picks its lead in `orgLeads.liveLead`. In a chat, that is the chat's first-joined live lead, as the floor picks it. Otherwise it is the first lead created in a preferred domain, then the first lead created. Routines, the owner check, deferrals, the budget notice, promise watchdogs and dreaming prefer `chief-of-staff`. GitHub events, the connect prompt and the other watchdogs prefer `engineering`. Dream material credits each journal entry to the org's lead that wrote it, by the entry heading, and credits anything else to `kin`.
+
 ### KinEvent: what wakes the lead
 
 ```ts
 const EventBase = {
   orgId: KinOrgId,
   eventId: KinEventId, // ulid
-  agentId: KinAgentId, // the router (phase 3) picks; phase 1 has one lead
+  agentId: KinAgentId, // the chat's lead, or the one liveLead picks (Several leads)
   receivedAt: CanonicalUtcTimestamp,
   dedupeKey: Schema.NullOr(TrimmedNonEmptyString), // unique per org; replays are dropped
   provenance: KinAuthor, // server-verified; webhooks and timers are "system"
@@ -274,7 +282,9 @@ No wake-up timestamps or ids go above the divider (dates and item ids already in
 - Deferrals: confirm at once with a deferral card. When one comes due, recheck first; if anything changed, ask instead of starting.
 - Pinging people: at most one ping per person per item per day, batched, outside quiet hours, with a concrete next step.
 - Briefing workers: one goal, the facts they need, quoted member text kept quoted, and the report format (added by the tool).
-- Level: your level per chat is in the prompt. A tool that your level blocks records what you would have done. That is expected; carry on.
+- Several leads: your domain and charter are quoted lines in the prompt. Work inside them, and name the lead that owns another domain's request.
+- Level: your level per chat is in the prompt, and it can differ between chats. A tool that your level blocks records what you would have done. That is expected; carry on.
+- Group rules (`groupRules`) go into the cold part of the prompt only when the reply goes to a group chat. They cover answering only for your own domain, not trading messages with other agents, and keeping it to one message.
 - Do not use `delegate_task`, `t3_thread_send`, `schedule_task` or `create_threads`.
 
 ### Lead tools (`KinLeadToolkit`)
@@ -475,7 +485,7 @@ Events: owner message (#direct), 20 × github push GLDRoger/t3code
 
 ### Levels L0–L3 (DESIGN 10)
 
-Effective level for a call is `min(lead.level, chat.level)` for chat targets, and `lead.level` otherwise. `chat.level` is a field on `KinChat` (chat spec); its default is the lead's level.
+Effective level for a call is `min(base, cap)` when it targets a chat (a post, a reaction, the chat a worker's card goes to), and `lead.level` otherwise, as for `request_action`. `base` is the lead's level, raised to at least L2 in the lead's own direct chat with its owner: `kin_leads.owner_chat_id`, a `direct` chat whose `direct_key` is `<lead owner's person id>:<agentId>`. No other chat qualifies, including groups and other people's direct chats with the lead. `cap` is the chat's `kin_chat_levels` row, if there is one. Lowering the owner's direct chat adds a cap there. Raising it back to its base removes the cap. The owner's direct chat starts at L2, so it reaches L3 only through a signed grant, like any other raise. Privileged actions (`request_action`, L3) still need a signed grant at every level.
 
 | Tool                                          | L0 shadow     | L1 comment and ping | L2 workers and draft PRs | L3 low-risk merges                                     |
 | --------------------------------------------- | ------------- | ------------------- | ------------------------ | ------------------------------------------------------ |
@@ -493,7 +503,7 @@ L0 talks only to its owner: a `kin_chat_post` to the lead's direct chat with its
 
 Per-chat levels live in `kin_chat_levels (org_id, agent_id, chat_id)` (K022), the `set_level` target's `chatId`; no row means the lead's own level. `request_action` checks the level after the provenance gate, so `not_owner` and the ban on leads requesting `set_level` refuse at every level and record nothing. Below a kind's level (L3 for every privileged kind) it records the entry, with the server-computed provenance, before GitHub is read, and rechecks inside the write. Until APPR-13 classifies risk, an L3 merge request goes to the owner like any other.
 
-Memory at L0 goes to the shadow branch so the lead can keep track of its own deferrals during the shadow week while the default branch stays clean. Reads at L0 use the shadow branch: `memory_search`, `memory_read`, the read checkout and its `INDEX.md`, the prompt snapshot and the lead's routine content all take a `{ lead }` view that `Memory` resolves from the lead's `kin_leads` level, never from tool input. Dreaming, the owner check, watchdogs and pings read the default branch. After a raise from L0 the owner picks "Keep shadow memory" or "Start clean" (below); until then the shadow branch is left as it is, and the lead at L1 reads only the default branch.
+Memory follows the level of the running wake-up's lane chat (`KinLevels.wakeupLevel`). A wake-up in the owner's direct chat writes to the default branch, through the writer's PR with change cards. A wake-up at L0, such as one answering a group, writes to the shadow branch, so the lead keeps track of its own deferrals during the shadow week while the default branch stays clean. Reads at L0 use the shadow branch: `memory_search`, `memory_read`, the read checkout and its `INDEX.md`, the prompt snapshot and the lead's routine content all take a `{ lead }` view. `Memory` resolves that view from the running wake-up's level, or the lead's `kin_leads` level when nothing is running, never from tool input. Dreaming, the owner check, watchdogs and pings read the default branch. After a raise from L0 the owner picks "Keep shadow memory" or "Start clean" (below); until then the shadow branch is left as it is, and the lead at L1 reads only the default branch.
 
 ### Level promotion (gap 6)
 
@@ -522,7 +532,7 @@ T3 runs on the owner's subscriptions, so budget is counted in tokens, not money.
 
 `UsageLimitSources` (`apps/server/src/usage/UsageLimitSources.ts`) only reads cliproxy accounts, so plan headroom is not generally known. Kin uses its own counters. See open questions.
 
-Budget RPC payloads (wiring in LEAD-10 through `kinRpcs.ts`): `kin.budget.get` uses `KinBudgetGetInput { orgId }` and `kin.budget.set` uses `KinBudgetSetInput { orgId, limits: KinBudgetLimits }`; both return `KinBudget { orgId, day, leadUnits, workerUnits, limits }`. Setting limits is owner-only.
+Budget RPC payloads (wiring in LEAD-10 through `kinRpcs.ts`): `kin.budget.get` uses `KinBudgetGetInput { orgId }` and `kin.budget.set` uses `KinBudgetSetInput { orgId, limits: KinBudgetLimits }`; both return `KinBudget { orgId, day, leadUnits, workerUnits, limits, leads? }`, where `leads` lists each lead's units today, largest first. The figure and the limits stay per organization, and the exhaustion notice names each lead's share. Setting limits is owner-only.
 
 ### The stop switch (gap 3)
 

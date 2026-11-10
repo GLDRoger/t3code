@@ -1,6 +1,5 @@
 import {
   GithubRepoSlug,
-  KinAgentId,
   KinEvent,
   KinEventId,
   KinOrgId,
@@ -26,6 +25,7 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import { isPermanent } from "./routines.ts";
@@ -326,9 +326,7 @@ const make = Effect.gen(function* () {
     if (outcome._tag === "recheck") {
       yield* putRecheck(orgId, fire, outcome.reason, now);
     } else if (outcome._tag === "event") {
-      const [lead] = yield* sql<{ agent_id: string }>`SELECT l.agent_id FROM kin_leads l
-        JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
-        WHERE l.org_id = ${orgId} AND a.retired_at IS NULL ORDER BY l.agent_id LIMIT 1`;
+      const lead = yield* liveLead(sql, orgId, { prefer: ENGINEERING_DOMAIN });
       if (lead === undefined) {
         yield* Effect.logWarning("Kin GitHub event dropped: no active lead", {
           orgId,
@@ -338,7 +336,7 @@ const make = Effect.gen(function* () {
         const { event } = outcome;
         const base = {
           orgId,
-          agentId: KinAgentId.make(lead.agent_id),
+          agentId: lead.agentId,
           receivedAt: event.receivedAt,
           // GitHub text is outside input: LEAD stores it as `trust: external` and quotes it.
           provenance: { _tag: "system" },

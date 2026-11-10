@@ -1,5 +1,4 @@
 import {
-  KinAgentId,
   KinEvent,
   KinEventId,
   KinLeadRoutine,
@@ -21,6 +20,7 @@ import { PersistenceDecodeError, toPersistenceSqlError } from "../../persistence
 import { nextScheduledRunAt } from "../../scheduledTasks/Schedule.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as KinTriggerStore from "./KinTriggerStore.ts";
 import * as KinTriggerScheduler from "./KinTriggerScheduler.ts";
@@ -321,9 +321,8 @@ const make = Effect.gen(function* () {
                 const unconsumed =
                   yield* sql`SELECT fire_id FROM kin_trigger_inbox WHERE org_id = ${orgId} AND fire_id = ${fire.fireId} AND consumed_at IS NULL ORDER BY fire_id`;
                 if (unconsumed.length === 0) return;
-                const [lead] = yield* sql<{
-                  agent_id: string;
-                }>`SELECT l.agent_id FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id WHERE l.org_id = ${orgId} AND a.retired_at IS NULL ORDER BY l.agent_id LIMIT 1`;
+                // Org routines go to the chief of staff, else the org's first lead.
+                const lead = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
                 if (lead === undefined) {
                   yield* inbox.markConsumed(orgId, [fire.fireId]);
                   yield* sql`UPDATE kin_triggers SET enabled = 0, next_run_at = NULL WHERE org_id = ${orgId} AND trigger_id IN ('routine:morning_brief', 'routine:evening_summary', 'routine:owner_check')`;
@@ -368,7 +367,7 @@ const make = Effect.gen(function* () {
                     _tag: "routine",
                     eventId,
                     orgId,
-                    agentId: KinAgentId.make(lead.agent_id),
+                    agentId: lead.agentId,
                     receivedAt: iso(now),
                     provenance: { _tag: "system" },
                     dedupeKey: `routine:${orgId}:${fire.fireId}`,

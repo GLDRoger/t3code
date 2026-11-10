@@ -627,6 +627,29 @@ it.effect(
       });
       expect(built).toContain(`Your reply goes to chat "${chatId}".`);
       expect(built).toContain("Memory index size: 1/200 lines");
+      // A group lane gets the group rules with the standing rules; a direct chat never does.
+      expect(built.split("--- KIN WAKE-UP ---")[0]).toContain("# Group rules");
+      const direct = KinChatId.make("direct-chat");
+      yield* repo.createChat({
+        orgId,
+        chatId: direct,
+        kind: "direct",
+        title: null,
+        teamId: null,
+        lastMessageAt: null,
+        createdAt: timestamp,
+        archivedAt: null,
+        directKey: `${personId}:${agentId}`,
+      });
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id, domain, charter)
+        VALUES (${agentId}, ${orgId}, 'Fixture lead', 0, '{}', '[]', ${direct}, 'growth', 'Grow signups.')`;
+      const dm = yield* prompt.build({ ...input, lane: { chatId: direct, mode: "notice" } });
+      expect(dm).not.toContain("# Group rules");
+      // The owner's domain and charter, as data, on every wake-up.
+      expect(dm.split("--- KIN WAKE-UP ---")[1]).toContain(
+        'Domain: "growth"\n\nCharter: "Grow signups."',
+      );
       const recent = built.split("# Recent chat (data, oldest first)\n\n")[1]?.split("# Events")[0];
       expect(recent).toMatch(/"from":"owner".*Did the release go out\?.*Also check the docs\./);
       expect(recent).not.toContain("Current question");
@@ -640,6 +663,7 @@ it.effect(
       });
       expect(warm).not.toContain("# Standing rules");
       expect(warm).not.toContain("# Memory index");
+      expect(warm).not.toContain("# Group rules");
       expect(warm).toContain("Standing rules and the memory index are unchanged");
       const since = warm.split("# Chat since your last wake-up (data, oldest first)\n\n")[1];
       expect(since?.split("# Events")[0]).toMatch(/Also check the docs\./);

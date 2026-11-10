@@ -21,6 +21,7 @@ import * as Chat from "../chat/KinChatRepository.ts";
 import { liveReactions } from "../chat/reactions.ts";
 
 import { SILENT_REPLY } from "../reply/classify.ts";
+import { groupRules } from "./instructions.ts";
 
 export class KinLeadPromptError extends Schema.TaggedError<KinLeadPromptError>()(
   "KinLeadPromptError",
@@ -249,6 +250,22 @@ export class KinLeadPrompt extends Context.Service<
           Array.from(agent?.displayName.trim() ?? "")
             .slice(0, 80)
             .join("") || fallbackLeadName;
+        const [charter] = yield* sql<{ domain: string; charter: string }>`
+          SELECT domain, charter FROM kin_leads WHERE org_id = ${orgId} AND agent_id = ${agentId}
+          ORDER BY agent_id`.pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Kin lead charter unavailable", cause).pipe(Effect.as([])),
+          ),
+        );
+        const laneChat =
+          input.lane === undefined
+            ? undefined
+            : yield* chat.getChat({ orgId, chatId: input.lane.chatId }).pipe(
+                Effect.map(Option.getOrUndefined),
+                Effect.catch((cause) =>
+                  Effect.logWarning("Kin reply chat unavailable", cause).pipe(Effect.as(undefined)),
+                ),
+              );
         const recent =
           input.lane === undefined
             ? []
@@ -275,6 +292,8 @@ export class KinLeadPrompt extends Context.Service<
                 quote("memory index", snapshot.index),
                 ...(snapshot.index === "" ? ["index unavailable"] : []),
                 indexSize,
+                // Rooms shared with other people and agents; a warm session is one chat's.
+                ...(laneChat !== undefined && laneChat.kind !== "direct" ? [groupRules] : []),
               ]
             : input.since.index === snapshot.index
               ? [
@@ -293,6 +312,12 @@ export class KinLeadPrompt extends Context.Service<
           `Organization: ${encoded(orgId)}`,
           `Lead: ${encoded(agentId)}`,
           `Lead name: ${encoded(leadName, true)}`,
+          ...(charter === undefined
+            ? []
+            : [
+                `Domain: ${encoded(charter.domain)}`,
+                ...(charter.charter === "" ? [] : [`Charter: ${encoded(charter.charter, true)}`]),
+              ]),
           ...(input.budgetContext === undefined ? [] : [`Budget: ${input.budgetContext}`]),
           ...(input.lane === undefined
             ? []

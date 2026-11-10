@@ -25,6 +25,7 @@ import { nextScheduledRunAt } from "../../scheduledTasks/Schedule.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { VcsProcess } from "../../vcs/VcsProcess.ts";
 import * as KinBudget from "../lead/KinBudget.ts";
+import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
 import { isCheckoutPath } from "../memory/checkoutPaths.ts";
 import * as Memory from "../memory/Memory.ts";
@@ -159,11 +160,8 @@ const make = Effect.gen(function* () {
     const branch = `dream/${ownerDate}`;
     return yield* sql.withTransaction(
       Effect.gen(function* () {
-        const [lead] = yield* sql<{
-          models: string;
-        }>`SELECT l.models_json AS models FROM kin_leads l
-          JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
-          WHERE l.org_id = ${orgId} AND a.retired_at IS NULL ORDER BY l.agent_id LIMIT 1`;
+        // The org's memory is one repo, so one lead's models dream for all of them.
+        const lead = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
         if (lead === undefined) return yield* Effect.fail("No active lead for this organization");
         const [previous] = yield* sql<{
           until: number;

@@ -613,7 +613,8 @@ it.live(
           }),
         );
 
-        // At L0 the lead writes and reads its shadow branch, and its deferral arms from there.
+        // In a chat at L0 the lead writes and reads its shadow branch, and its deferral arms from
+        // there. The owner's DM works at L2 from creation, so the owner lowered it here.
         yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'restart-wakeup'`;
         yield* (yield* Orchestrator.OrchestratorV2).dispatch({
           type: "run.interrupt",
@@ -625,6 +626,7 @@ it.live(
         yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids) SELECT 'shadow-wakeup', org_id, agent_id, thread_id, ${shadowRun.id}, model, started_at, 'running', event_ids FROM kin_wakeups WHERE wakeup_id = 'fixture-wakeup'`;
         yield* sql`UPDATE kin_events SET wakeup_id = 'shadow-wakeup' WHERE wakeup_id = 'restart-wakeup'`;
         yield* sql`UPDATE kin_leads SET level = 'L0' WHERE agent_id = ${agentId}`;
+        yield* sql`INSERT INTO kin_chat_levels (org_id, agent_id, chat_id, level, level_since) VALUES (${orgId}, ${agentId}, ${chat.chatId}, 'L0', 0)`;
         const reminder = yield* service.defer(scope, {
           ...deferred,
           what: "Invented stretch",
@@ -651,8 +653,9 @@ it.live(
           sql<{ nextRunAt: number | null }>`SELECT next_run_at AS "nextRunAt" FROM kin_triggers
             WHERE org_id = ${orgId} AND trigger_id = ${`deferral:${reminder.itemId}:due`}`;
         assert.deepStrictEqual(yield* armed(), [{ nextRunAt: Date.parse("2026-11-09T16:09:12Z") }]);
-        // After a raise the lead reads the default branch; the reminder stays armed until Keep or Start clean.
-        yield* sql`UPDATE kin_leads SET level = 'L1' WHERE agent_id = ${agentId}`;
+        // Back at the DM's L2 the same L0 lead reads the default branch; the reminder stays armed
+        // until Keep or Start clean.
+        yield* sql`DELETE FROM kin_chat_levels WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
         assert.notInclude(yield* openDeferrals("open"), reminder.itemId);
         assert.deepStrictEqual(yield* armed(), [{ nextRunAt: Date.parse("2026-11-09T16:09:12Z") }]);
       }).pipe(Effect.provide(toolkit));
