@@ -57,6 +57,7 @@ it.effect.each([
           ["kin:lead", lead],
           ["thread-1", other],
           ["kin-dream:fixture:extract", dream],
+          ["kin-shared:lead", lead],
         ] as const)
           yield* runner
             .open({
@@ -77,7 +78,7 @@ it.effect.each([
           ),
         ),
       );
-      const [leadOpened, otherOpened, dreamOpened] = opened;
+      const [leadOpened, otherOpened, dreamOpened, sharedOpened] = opened;
       assert.strictEqual(otherOpened, other);
       assert.deepStrictEqual(dreamOpened?.settingSources, []);
       if (!enabled) {
@@ -115,6 +116,11 @@ it.effect.each([
       assert.deepStrictEqual(dreamOpened?.tools, DreamIsolation.dreamTools);
       assert.isFalse((dreamOpened?.disallowedTools ?? []).includes("Edit"));
       assert.isDefined(leadOpened?.mcpServers?.kin);
+      // A turn someone besides the owner reads can't open the memory checkout it runs in.
+      assert.deepStrictEqual(sharedOpened?.tools, []);
+      for (const tool of LeadIsolation.leadTools)
+        assert.include(sharedOpened?.disallowedTools ?? [], tool);
+      assert.isDefined(sharedOpened?.mcpServers?.kin);
     }).pipe(
       Effect.provide(
         ServerConfig.layerTest(process.cwd(), { prefix: "kin-lead-isolation-" }).pipe(

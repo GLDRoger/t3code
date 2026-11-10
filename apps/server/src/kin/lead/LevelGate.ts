@@ -18,11 +18,13 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import type { AgentIdentity } from "../chat/KinIdentity.ts";
+import { AUDIENCE_MOVED, SHARED_OTHER_CHAT, audienceChanged, turnAudience } from "./Audience.ts";
 import * as KinLevels from "./KinLevels.ts";
 
 type PostInput = KinMessagesSendInput & { readonly intent: KinAgentIntent };
 type WidgetInput = Parameters<KinChatService["Service"]["upsertWidget"]>[1];
 type AskInput = Parameters<KinChatService["Service"]["ask"]>[1];
+type ReadInput = Parameters<KinChatService["Service"]["read"]>[1];
 
 /**
  * A lead's posts, cards, questions and reactions behind its permission in the chat: below L1 it
@@ -50,6 +52,11 @@ export class KinLevelGate extends Context.Service<
         readonly emoji: KinReactionEmoji;
       },
     ) => Effect.Effect<KinReaction, KinChatError>;
+    /** `kin_chat_read`: a turn someone besides the owner reads reads only the chat it was asked in. */
+    readonly read: (
+      agent: AgentIdentity,
+      input: ReadInput,
+    ) => Effect.Effect<ReadonlyArray<KinMessage>, KinChatError>;
   }
 >()("t3/kin/lead/LevelGate/KinLevelGate") {}
 
@@ -74,6 +81,22 @@ const make = Effect.gen(function* () {
       return rows.length > 0;
     },
     Effect.mapError(toPersistenceSqlError("KinLevelGate.isOwnerChat")),
+  );
+
+  // The running wake-up of the calling lead thread; the reply bridge names its own.
+  const turnOf = Effect.fn("KinLevelGate.turnOf")(
+    function* (agent: AgentIdentity) {
+      if (agent.wakeupId !== undefined)
+        return { orgId: agent.orgId, agentId: agent.agentId, wakeupId: agent.wakeupId };
+      const [row] = yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId"
+        FROM kin_wakeups WHERE org_id = ${agent.orgId} AND agent_id = ${agent.agentId}
+          AND thread_id = ${agent.threadId} AND status = 'running'
+        ORDER BY wakeup_id`;
+      return row === undefined
+        ? undefined
+        : { orgId: agent.orgId, agentId: agent.agentId, wakeupId: row.wakeupId };
+    },
+    Effect.mapError(toPersistenceSqlError("KinLevelGate.turnOf")),
   );
 
   const notAllowed = new KinChatError({
@@ -113,6 +136,13 @@ const make = Effect.gen(function* () {
                 );
           if (!KinLevels.atLeast(level, "L1") && !(yield* isOwnerChat(agent, chatId)))
             return yield* notAllowed;
+          // A prompt built for the owner alone says nothing once someone else can read it.
+          const turn = yield* turnOf(agent);
+          if (
+            turn !== undefined &&
+            (yield* audienceChanged(turn).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
+          )
+            return yield* new KinChatError({ reason: "not_allowed", message: AUDIENCE_MOVED });
           return yield* allowed;
         }),
       )
@@ -132,7 +162,39 @@ const make = Effect.gen(function* () {
         ),
       );
 
+  const read = Effect.fn("KinLevelGate.read")(
+    function* (agent: AgentIdentity, input: ReadInput) {
+      const turn = yield* turnOf(agent);
+      if (turn === undefined) return yield* notAllowed;
+      const audience = yield* turnAudience(turn).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      if (audience !== "owner_only") {
+        const asked = yield* sql`SELECT 1 FROM kin_events
+          WHERE org_id = ${turn.orgId} AND agent_id = ${turn.agentId} AND wakeup_id = ${turn.wakeupId}
+            AND tag IN ('chat.message', 'widget.action', 'chat.reaction')
+            AND json_extract(json, '$.chatId') = ${input.chatId}
+          LIMIT 1`.pipe(Effect.mapError(toPersistenceSqlError("KinLevelGate.read")));
+        if (asked.length === 0)
+          return yield* new KinChatError({ reason: "not_allowed", message: SHARED_OTHER_CHAT });
+      }
+      return yield* chat.read(agent, input);
+    },
+    Effect.catchIf(
+      (error) => !isChatError(error),
+      (error) =>
+        Effect.logError("Kin gated read failed", error).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new KinChatError({ reason: "unavailable", message: "Kin is unavailable." }),
+            ),
+          ),
+        ),
+    ),
+  );
+
   return KinLevelGate.of({
+    read,
     post: Effect.fn("KinLevelGate.post")((agent, input) =>
       gated("gated post", agent, input.chatId, chat.send(agent, input)),
     ),

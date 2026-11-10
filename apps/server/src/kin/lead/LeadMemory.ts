@@ -26,6 +26,7 @@ import { isSqlError } from "effect/sql/SqlError";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { SHARED_NOTES, turnAudience } from "./Audience.ts";
 import * as KinLevels from "./KinLevels.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
@@ -331,6 +332,13 @@ const make = Effect.gen(function* () {
       Effect.provideService(KinIdentity, identity),
       Effect.provideService(SqlClient.SqlClient, sql),
     );
+  /** The lead's notes are the owner's: a turn someone else reads neither sees nor changes them. */
+  const notes = Effect.fn("LeadMemory.notes")(function* (scope: McpInvocationScope) {
+    const ctx = yield* resolve(scope);
+    const audience = yield* turnAudience(ctx).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    if (audience !== "owner_only") return yield* invalid(SHARED_NOTES);
+    return ctx;
+  });
   const checkSource = Effect.fn("LeadMemory.checkSource")(function* (
     ctx: Effect.Success<ReturnType<typeof resolve>>,
     eventId: string,
@@ -504,7 +512,7 @@ const make = Effect.gen(function* () {
   });
   return LeadMemory.of({
     search: Effect.fn("LeadMemory.search")(function* (scope, input) {
-      const ctx = yield* resolve(scope);
+      const ctx = yield* notes(scope);
       return yield* memory.query(
         ctx.orgId,
         {
@@ -521,7 +529,7 @@ const make = Effect.gen(function* () {
       );
     }, Effect.mapError(failure)),
     read: Effect.fn("LeadMemory.read")(function* (scope, input) {
-      const ctx = yield* resolve(scope);
+      const ctx = yield* notes(scope);
       const item = yield* memory.readItem(ctx.orgId, input.id, { lead: ctx.agentId });
       const now = DateTime.toEpochMillis(yield* DateTime.now);
       return {
@@ -531,12 +539,12 @@ const make = Effect.gen(function* () {
       };
     }, Effect.mapError(failure)),
     write: Effect.fn("LeadMemory.write")(function* (scope, input) {
-      const ctx = yield* resolve(scope);
+      const ctx = yield* notes(scope);
       return yield* locked(
         ctx.orgId,
         ctx.agentId,
         Effect.gen(function* () {
-          return yield* stage(yield* resolve(scope), input);
+          return yield* stage(yield* notes(scope), input);
         }),
       );
     }, Effect.mapError(failure)),
@@ -680,7 +688,7 @@ const make = Effect.gen(function* () {
       );
     }, Effect.mapError(failure)),
     journal: Effect.fn("LeadMemory.journal")(function* (scope, input) {
-      const ctx = yield* resolve(scope);
+      const ctx = yield* notes(scope);
       yield* writer.appendJournal(ctx.orgId, ctx.wakeupId, [
         ...input.saw.map((x) => `Saw: ${x}`),
         ...input.did.map((x) => `Did: ${x}`),
@@ -694,11 +702,15 @@ const make = Effect.gen(function* () {
         ctx.agentId,
         Effect.gen(function* () {
           const ctx = yield* resolve(scope, true);
+          // The turn still ends; only an owner-only turn's own words reach the journal.
+          const shared =
+            (yield* turnAudience(ctx).pipe(Effect.provideService(SqlClient.SqlClient, sql))) !==
+            "owner_only";
           yield* receipt(
             ctx,
             "end",
             input,
-            ended.get(agentKey(ctx.orgId, ctx.agentId)) === ctx.wakeupId
+            shared || ended.get(agentKey(ctx.orgId, ctx.agentId)) === ctx.wakeupId
               ? Effect.void
               : writer.appendJournal(ctx.orgId, ctx.wakeupId, [`Summary: ${input.summary}`]),
           );

@@ -7,6 +7,7 @@ import { ServerConfig } from "../../config.ts";
 import * as ClaudeAdapterV2 from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { KinEnabled, layer as kinEnabledLayer } from "../KinEnabled.ts";
 import { threadPrefix as dreamThreadPrefix } from "../dreaming/DreamIsolation.ts";
+import { SHARED_THREAD_PREFIX } from "./Audience.ts";
 import { instructions } from "./instructions.ts";
 
 /** A lead's only built-in tools. Kin's MCP tools arrive separately, through `mcpServers`. */
@@ -60,12 +61,17 @@ const leadSystemPrompt = { type: "custom" as const, prompt: instructions, snapsh
 const leadOptions = (
   options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions,
   denied: ReadonlyArray<string>,
+  shared: boolean,
 ) => {
   const { tools, settings, env } = options;
+  // A turn someone besides the owner reads gets no file tools: its cwd is the owner's memory.
+  const allowed = shared ? [] : leadTools;
   return {
     systemPrompt: leadSystemPrompt,
-    tools: Array.isArray(tools) ? tools.filter((tool) => leadTools.includes(tool)) : leadTools,
-    disallowedTools: [...new Set([...(options.disallowedTools ?? []), ...denied])],
+    tools: Array.isArray(tools) ? tools.filter((tool) => allowed.includes(tool)) : allowed,
+    disallowedTools: [
+      ...new Set([...(options.disallowedTools ?? []), ...denied, ...(shared ? leadTools : [])]),
+    ],
     // The user's own MCP servers and plugins could hand a lead a shell again.
     strictMcpConfig: true,
     // Kin tools load upfront: a lead that never searched for `kin_chat_post` could not reply.
@@ -120,7 +126,13 @@ export const claudeQueryRunner = <E, R>(
                       input.options.settingSources ?? ["user", "project", "local"]
                     ).filter((source) => source === "user"),
                     // Dreams edit their own checkout and already refuse the shell and the web.
-                    ...(isDream ? {} : leadOptions(input.options, denied)),
+                    ...(isDream
+                      ? {}
+                      : leadOptions(
+                          input.options,
+                          denied,
+                          input.threadId.startsWith(SHARED_THREAD_PREFIX),
+                        )),
                   },
                 }
               : input,

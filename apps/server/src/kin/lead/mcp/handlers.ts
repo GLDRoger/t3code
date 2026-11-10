@@ -122,25 +122,25 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
   kin_github_repos: McpToolAccess.reads(
     Effect.fn("KinLeadToolkit.githubRepos")(function* () {
       const lead = yield* resolveLead(yield* McpInvocationContext);
-      return yield* (yield* KinRepoReads).repos(lead.wakeupId);
+      return yield* (yield* KinRepoReads).repos(lead);
     }, Effect.mapError(failure)),
   ),
   kin_github_prs: McpToolAccess.reads(
     Effect.fn("KinLeadToolkit.githubPrs")(function* (input) {
       const lead = yield* resolveLead(yield* McpInvocationContext);
-      return githubQuote(yield* (yield* KinRepoReads).pulls(lead.wakeupId, input));
+      return githubQuote(yield* (yield* KinRepoReads).pulls(lead, input));
     }, Effect.mapError(failure)),
   ),
   kin_github_pr: McpToolAccess.reads(
     Effect.fn("KinLeadToolkit.githubPr")(function* (input) {
       const lead = yield* resolveLead(yield* McpInvocationContext);
-      return githubQuote(yield* (yield* KinRepoReads).pull(lead.wakeupId, input));
+      return githubQuote(yield* (yield* KinRepoReads).pull(lead, input));
     }, Effect.mapError(failure)),
   ),
   kin_github_runs: McpToolAccess.reads(
     Effect.fn("KinLeadToolkit.githubRuns")(function* (input) {
       const lead = yield* resolveLead(yield* McpInvocationContext);
-      return githubQuote(yield* (yield* KinRepoReads).runs(lead.wakeupId, input));
+      return githubQuote(yield* (yield* KinRepoReads).runs(lead, input));
     }, Effect.mapError(failure)),
   ),
   kin_end: McpToolAccess.actsAsCaller(
