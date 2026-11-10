@@ -39,7 +39,12 @@ export const kinOutbox = createKinOutbox({
   send: async (record) => {
     const result = await kinClient.send.run(appAtomRegistry, {
       environmentId: record.environmentId,
-      input: { chatId: record.chatId, clientMessageId: record.clientMessageId, body: record.body },
+      input: {
+        chatId: record.chatId,
+        clientMessageId: record.clientMessageId,
+        body: record.body,
+        ...(record.attachments === undefined ? {} : { attachments: record.attachments }),
+      },
     });
     return result._tag === "Success"
       ? { _tag: "sent", message: result.value }

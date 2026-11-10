@@ -3,6 +3,7 @@ import {
   EnvironmentAuthorizationError,
   EnvironmentId,
   KIN_MESSAGE_BODY_MAX_LENGTH,
+  KinAttachment,
   KinChatError,
   KinChatId,
   type KinMessage,
@@ -27,6 +28,8 @@ const KinOutboxRecord = Schema.Struct({
   chatId: KinChatId,
   clientMessageId: Schema.String,
   body: Schema.String,
+  /** Uploads the host already holds; the bytes never wait here. */
+  attachments: Schema.optional(Schema.Array(KinAttachment)),
   createdAt: Schema.String,
   /** Null while it waits to go out; why the host refused it for good otherwise. */
   error: Schema.NullOr(Schema.String),
@@ -94,6 +97,9 @@ const refusalReasons: Partial<Record<KinChatError["reason"], string>> = {
 export function classifyKinSendFailure(error: unknown): KinSendOutcome {
   if (isAuthorizationError(error)) return { _tag: "rejected", message: "not allowed here" };
   if (!isChatError(error) || error.reason === "unavailable") return { _tag: "offline" };
+  // The host says which file and why; an upload it no longer holds can't be sent again.
+  if (error.reason === "invalid_state" && error.message.startsWith("Attachment"))
+    return { _tag: "rejected", message: "an attachment is no longer available" };
   return { _tag: "rejected", message: refusalReasons[error.reason] ?? error.message };
 }
 
@@ -249,6 +255,7 @@ export function createKinOutbox(options: KinOutboxOptions) {
     readonly environmentId: EnvironmentId;
     readonly chatId: KinChatId;
     readonly body: string;
+    readonly attachments?: ReadonlyArray<KinAttachment>;
   }): Promise<
     | { readonly _tag: "queued"; readonly entry: KinOutboxEntry }
     | { readonly _tag: "full" }
@@ -262,6 +269,9 @@ export function createKinOutbox(options: KinOutboxOptions) {
       chatId: input.chatId,
       clientMessageId: options.makeId(),
       body: input.body,
+      ...(input.attachments === undefined || input.attachments.length === 0
+        ? {}
+        : { attachments: input.attachments }),
       createdAt: now().toISOString(),
       error: null,
       state: "waiting",

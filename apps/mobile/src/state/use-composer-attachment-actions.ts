@@ -25,7 +25,14 @@ export function useComposerAttachmentActions(props: {
   readonly draftKey: string | null;
   readonly serverConfig: ServerConfig | null | undefined;
   readonly locked?: boolean;
+  /** False keeps attachments out of the text, for a composer whose message has no context chips. */
+  readonly inlineReferences?: boolean;
 }) {
+  const inline = props.inlineReferences ?? true;
+  const existingCount = (key: string, insertion: ComposerDraftInsertion) =>
+    inline
+      ? countComposerDraftAttachmentsAfterSelection(key, insertion)
+      : getComposerDraftSnapshot(key).attachments.length;
   const reservedNames = useRef(new Map<string, Set<string>>());
   const capabilities = props.serverConfig?.environment.capabilities;
   const append = async (
@@ -42,7 +49,9 @@ export function useComposerAttachmentActions(props: {
       );
       return 0;
     }
-    return appendComposerDraftAttachments(key, attachments, { appendReference: true, insertion });
+    return inline
+      ? appendComposerDraftAttachments(key, attachments, { appendReference: true, insertion })
+      : appendComposerDraftAttachments(key, attachments);
   };
   // A picker may finish after its draft was discarded or the composer moved off it.
   const withDraftOperation = async (key: string, work: (signal: AbortSignal) => Promise<void>) => {
@@ -64,7 +73,7 @@ export function useComposerAttachmentActions(props: {
     const insertion = captureComposerDraftInsertion(key);
     await withDraftOperation(key, async (signal) => {
       const result = await pickComposerMedia({
-        existingCount: countComposerDraftAttachmentsAfterSelection(key, insertion),
+        existingCount: existingCount(key, insertion),
         maxVideoBytes: capabilities?.fileAttachments?.maxUploadBytes,
       });
       report(
@@ -85,7 +94,7 @@ export function useComposerAttachmentActions(props: {
     const insertion = captureComposerDraftInsertion(key);
     await withDraftOperation(key, async (signal) => {
       const result = await pickComposerFiles({
-        existingCount: countComposerDraftAttachmentsAfterSelection(key, insertion),
+        existingCount: existingCount(key, insertion),
         maxBytes,
       });
       report(
@@ -103,7 +112,7 @@ export function useComposerAttachmentActions(props: {
       try {
         const images = await convertPastedImagesToAttachments({
           uris,
-          existingCount: countComposerDraftAttachmentsAfterSelection(key, insertion),
+          existingCount: existingCount(key, insertion),
         });
         report("Could not paste images", null, await append(key, signal, images, insertion));
       } catch (error) {

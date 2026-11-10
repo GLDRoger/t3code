@@ -15,6 +15,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 
+import { kinAttachmentSummary } from "./kinAttachments.ts";
 import type { KinRouteHost } from "./kinHost.ts";
 import {
   applyKinChatHistory,
@@ -578,6 +579,7 @@ export function kinMessageLabel(row: MessageRow, time: string): string {
   if (deleted) parts.push("Message deleted");
   else {
     parts.push(kinPlainText(message.body));
+    if (message.attachments !== undefined) parts.push(kinAttachmentSummary(message.attachments));
   }
   parts.push(time);
   if (message.status === "suggested") parts.push("Suggestion, not sent yet");
