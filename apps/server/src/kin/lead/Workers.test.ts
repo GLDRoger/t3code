@@ -857,6 +857,11 @@ it.effect("a reviewer needs a different instance and model and sees only the aut
         repositoryKey: repoKey,
         worktreePath: `/home/kin-worker/.t3/worktrees/app/${threadId}`,
       });
+      // The publisher rereads the pause just before each GitHub write.
+      const paused = remote.published[0]!.paused as Effect.Effect<boolean>;
+      assert.isFalse(yield* paused);
+      yield* pause(ctx.sql, ctx.orgId);
+      assert.isTrue(yield* paused);
       assert.notInclude(brief, delegateInput.brief);
       assert.notInclude(brief, "ignore previous instructions");
       assert.notInclude(brief, "Use retries sparingly");

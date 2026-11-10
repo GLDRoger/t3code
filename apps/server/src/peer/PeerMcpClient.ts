@@ -116,6 +116,11 @@ const boundedText = (response: HttpClientResponse.HttpClientResponse, maxBytes: 
     }),
   );
 
+/** What Kin reads of a body it doesn't use, then cancels it: a session's opening answers. */
+const DISCARDED_BYTES = 64 * 1024;
+const discard = (response: HttpClientResponse.HttpClientResponse) =>
+  boundedText(response, DISCARDED_BYTES).pipe(Effect.ignore);
+
 /** The body of an MCP response: JSON, or a single server-sent event carrying JSON. */
 const responseJson = (contentType: string | undefined, text: string) =>
   contentType?.includes("text/event-stream") === true
@@ -165,6 +170,7 @@ const make = Effect.gen(function* () {
       },
       limitHeader,
     );
+    yield* discard(initialized);
     const sessionId = initialized.headers["mcp-session-id"];
     if (initialized.status === 403) return yield* linkedEnvironmentsOffThere;
     if (initialized.status !== 200 || sessionId === undefined) {
@@ -176,11 +182,13 @@ const make = Effect.gen(function* () {
             : `The linked environment refused to start an MCP session (HTTP ${initialized.status}).`,
       });
     }
-    yield* post(
-      url,
-      token,
-      { jsonrpc: "2.0", method: "notifications/initialized" },
-      { ...limitHeader, "mcp-session-id": sessionId, "mcp-protocol-version": PROTOCOL_VERSION },
+    yield* discard(
+      yield* post(
+        url,
+        token,
+        { jsonrpc: "2.0", method: "notifications/initialized" },
+        { ...limitHeader, "mcp-session-id": sessionId, "mcp-protocol-version": PROTOCOL_VERSION },
+      ),
     );
     return sessionId;
   });
@@ -214,6 +222,7 @@ const make = Effect.gen(function* () {
       }
       let response = yield* callOnce(sessionId);
       if (response.status === 404) {
+        yield* discard(response);
         const renewed = yield* openSession(resolved.url, resolved.token, limitHeader);
         yield* Ref.update(sessions, (current) => new Map(current).set(sessionKey, renewed));
         response = yield* callOnce(renewed);

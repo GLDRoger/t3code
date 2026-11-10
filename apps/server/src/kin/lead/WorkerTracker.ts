@@ -287,7 +287,12 @@ const make = Effect.gen(function* () {
       );
     if (worker.repositoryKey === null || worktreePath === null)
       return refused("the worker has no repository or worktree to publish from");
-    if (yield* isOrgPaused(worker.orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
+    // Unreadable counts as paused: a publish never outruns the owner's pause.
+    const paused = isOrgPaused(worker.orgId).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.orElseSucceed(() => true),
+    );
+    if (yield* paused)
       return refused("Kin is paused; ask the worker for a follow-up after the owner resumes");
     const pull = yield* publisher.value
       .publish({
@@ -295,6 +300,7 @@ const make = Effect.gen(function* () {
         repositoryKey: worker.repositoryKey,
         worktreePath,
         title: worker.title ?? "Kin worker",
+        paused,
       })
       .pipe(Effect.result);
     if (pull._tag === "Failure") {

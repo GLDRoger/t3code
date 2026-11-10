@@ -1,8 +1,6 @@
 import { type KinWorkerId, RepoSlug } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
-import * as Hex from "effect/encoding/Hex";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
@@ -61,6 +59,8 @@ export class KinWorkerPublish extends Context.Service<
       /** The worker's worktree there, as its server reports it. */
       readonly worktreePath: string;
       readonly title: string;
+      /** Read again just before each GitHub write; true stops the publish there. */
+      readonly paused: Effect.Effect<boolean>;
     }) => Effect.Effect<PublishedPullRequest, KinWorkerPublishRefused>;
   }
 >()("t3/kin/lead/workerPublish/KinWorkerPublish") {}
@@ -68,7 +68,14 @@ export class KinWorkerPublish extends Context.Service<
 // One argument for the ext transport, under the worker's home; kin-worker.sh checks it again.
 const safePath = /^\/[A-Za-z0-9._/-]+$/;
 const safeRef = /^[A-Za-z0-9._/-]+$/;
-const WORKFLOWS = ".github/workflows/";
+// The whole directory: workflows, and the composite actions they feed secrets to.
+const GITHUB_DIR = ".github";
+const touchesGitHubDir = (path: string) => {
+  const lower = path.toLowerCase();
+  return lower === GITHUB_DIR || lower.startsWith(`${GITHUB_DIR}/`);
+};
+/** The most a worker's fetch may add to Kin's disk; the transfer cap only bounds the wire. */
+const MAX_INCOMING_BYTES = 1024 * 1024 * 1024;
 
 const isRepoSlug = Schema.is(RepoSlug);
 const decodePull = Schema.decodeUnknownOption(
@@ -76,21 +83,37 @@ const decodePull = Schema.decodeUnknownOption(
 );
 const refuse = (reason: string) => new KinWorkerPublishRefused({ reason });
 
+// Kin's git sees only the git and ssh settings it sets, none from the server's environment.
+const scrubbedEnv = (): NodeJS.ProcessEnv =>
+  Object.fromEntries(
+    Object.keys(process.env)
+      .filter((name) => /^(GIT_|SSH_)/i.test(name))
+      .map((name) => [name, undefined]),
+  );
+
 export const make = Effect.fn("KinWorkerPublish.make")(function* (
   transport: KinWorkerPublishTransport,
+  options: { readonly maxIncomingBytes?: number } = {},
 ) {
+  const maxIncomingBytes = options.maxIncomingBytes ?? MAX_INCOMING_BYTES;
   const app = yield* KinGitHubApp;
   const client = yield* HttpClient.HttpClient;
   const vcs = yield* VcsProcess;
   const fs = yield* FileSystem.FileSystem;
-  const digest = yield* Digest.Digest;
   const { stateDir } = yield* ServerConfig;
+  // One scratch repository per publish lives here; a crash can leave one, so start empty.
+  const scratchRoot = `${stateDir}/kin-worker-publish`;
+  yield* fs.remove(scratchRoot, { recursive: true, force: true }).pipe(Effect.ignore);
 
   // Kin's own bare repository, named explicitly: its config, hooks and refs are Kin's alone.
   const git = (
     cwd: string,
     args: ReadonlyArray<string>,
-    options: { readonly env?: NodeJS.ProcessEnv; readonly ext?: boolean } = {},
+    options: {
+      readonly env?: NodeJS.ProcessEnv;
+      readonly ext?: boolean;
+      readonly raw?: boolean;
+    } = {},
   ) =>
     vcs
       .run({
@@ -111,18 +134,29 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
           ...args,
         ],
         env: {
+          ...scrubbedEnv(),
           GIT_CONFIG_NOSYSTEM: "1",
           GIT_CONFIG_GLOBAL: "/dev/null",
           GIT_TERMINAL_PROMPT: "0",
           GIT_ASKPASS: "",
           GIT_NO_REPLACE_OBJECTS: "1",
-          // Drops any config the server's own environment carries; `auth` sets its own.
           GIT_CONFIG_COUNT: "0",
           ...options.env,
         },
         timeoutMs: 120_000,
       })
-      .pipe(Effect.map((result) => result.stdout.trim()));
+      .pipe(Effect.map((result) => (options.raw === true ? result.stdout : result.stdout.trim())));
+
+  // Loose objects, packs and garbage, as this repository's own git counts them.
+  const diskBytes = (repo: string) =>
+    git(repo, ["count-objects", "-v"]).pipe(
+      Effect.map((out) =>
+        out
+          .split("\n")
+          .map((line) => /^(size|size-pack|size-garbage): (\d+)$/.exec(line)?.[2])
+          .reduce((total, kib) => total + (kib === undefined ? 0 : Number(kib) * 1024), 0),
+      ),
+    );
 
   const publish: KinWorkerPublish["Service"]["publish"] = Effect.fn("KinWorkerPublish.publish")(
     function* (input) {
@@ -170,19 +204,17 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
       if (typeof base !== "string" || !safeRef.test(base))
         return yield* refuse("GitHub didn't name the repository's default branch");
 
-      const name = Hex.encode(
-        yield* digest.digest(Digest.sha256, new TextEncoder().encode(repo.toLowerCase())),
-      ).slice(0, 32);
-      const cache = `${stateDir}/kin-worker-publish/${name}.git`;
       const failed = (step: string) => () => refuse(`git couldn't ${step}`);
-      if (!(yield* fs.exists(`${cache}/HEAD`).pipe(Effect.orElseSucceed(() => false)))) {
-        yield* fs
-          .makeDirectory(cache, { recursive: true })
-          .pipe(Effect.mapError(failed("make Kin's cache")));
-        yield* git(cache, ["init", "--bare", "--quiet", cache]).pipe(
-          Effect.mapError(failed("make Kin's cache")),
-        );
-      }
+      // A fresh bare repository for this publish only, removed when it ends however it ends.
+      yield* fs
+        .makeDirectory(scratchRoot, { recursive: true })
+        .pipe(Effect.mapError(failed("make Kin's scratch repository")));
+      const cache = yield* fs
+        .makeTempDirectoryScoped({ directory: scratchRoot, prefix: "publish-" })
+        .pipe(Effect.mapError(failed("make Kin's scratch repository")));
+      yield* git(cache, ["init", "--bare", "--quiet", cache]).pipe(
+        Effect.mapError(failed("make Kin's scratch repository")),
+      );
       yield* git(
         cache,
         [
@@ -195,6 +227,7 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
         ],
         { env: auth },
       ).pipe(Effect.mapError(failed(`fetch ${base} from GitHub`)));
+      const baseline = yield* diskBytes(cache).pipe(Effect.mapError(failed("measure Kin's copy")));
       yield* git(
         cache,
         [
@@ -207,6 +240,12 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
         ],
         { ext: true },
       ).pipe(Effect.mapError(failed(`fetch ${branch} from the worker environment`)));
+      const incomingBytes =
+        (yield* diskBytes(cache).pipe(Effect.mapError(failed("measure Kin's copy")))) - baseline;
+      if (incomingBytes > maxIncomingBytes)
+        return yield* refuse(
+          `${branch} takes more than ${Math.floor(maxIncomingBytes / 1024 / 1024)} MiB on disk`,
+        );
       const head = yield* git(cache, ["rev-parse", "--verify", `${incoming}^{commit}`]).pipe(
         Effect.mapError(failed("read the worker's branch")),
       );
@@ -215,17 +254,23 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
         Effect.mapError(failed("compare the branch")),
       );
       if (ahead === "0") return yield* refuse(`${branch} has no commits past ${base}`);
-      // Every commit, merges against each parent: GitHub refuses the App these paths anyway.
-      const paths = yield* git(cache, [
-        "log",
-        "--format=",
-        "--name-only",
-        "--no-renames",
-        "-m",
-        range,
-      ]).pipe(Effect.mapError(failed("list the branch's changes")));
-      if (paths.split("\n").some((path) => path.startsWith(WORKFLOWS)))
-        return yield* refuse(`${branch} changes ${WORKFLOWS}, which Kin never publishes`);
+      // Every commit, merges against each parent, raw NUL-separated paths. The App also lacks
+      // the `workflows` permission, so GitHub refuses a push that changes workflows anyway.
+      const paths = yield* git(
+        cache,
+        ["log", "--format=", "--name-only", "--no-renames", "--diff-merges=separate", "-z", range],
+        { raw: true },
+      ).pipe(Effect.mapError(failed("list the branch's changes")));
+      if (paths.split("\0").some(touchesGitHubDir))
+        return yield* refuse(`${branch} changes ${GITHUB_DIR}/, which Kin never publishes`);
+
+      const stopIfPaused = Effect.gen(function* () {
+        if (yield* input.paused)
+          return yield* refuse(
+            "Kin is paused; ask the worker for a follow-up after the owner resumes",
+          );
+      });
+      yield* stopIfPaused;
 
       // Kin's branch for this worker only, so a follow-up's rewrite replaces it.
       yield* git(
@@ -240,6 +285,7 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
         ],
         { env: auth },
       ).pipe(Effect.mapError(failed(`push ${branch} to GitHub`)));
+      yield* stopIfPaused;
 
       const owner = repo.split("/")[0]!;
       const listed = yield* call(
@@ -265,6 +311,7 @@ export const make = Effect.fn("KinWorkerPublish.make")(function* (
         return yield* refuse(`GitHub didn't open the draft PR (HTTP ${opened.status})`);
       return { url: pull.value.html_url, number: pull.value.number, sha: head };
     },
+    Effect.scoped,
   );
 
   return KinWorkerPublish.of({ publish });
