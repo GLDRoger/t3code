@@ -386,9 +386,11 @@ cmd_install() {
   checklist
 }
 
+# From kin's own home: the CLI makes its working directory, and the caller's may be one kin can't enter.
 as_kin() {
   sudo -u "$KIN_USER" -H env \
-    PATH="$KIN_HOME/.local/bin:$KIN_HOME/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin" "$@"
+    PATH="$KIN_HOME/.local/bin:$KIN_HOME/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin" \
+    /bin/sh -c 'cd "$HOME" && exec "$@"' sh "$@"
 }
 kin_cli() {
   local version
