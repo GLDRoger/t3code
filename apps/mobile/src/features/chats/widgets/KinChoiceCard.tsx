@@ -119,7 +119,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
         </Text>
       ) : !canAct ? (
         <Text textRole="footnote" className="text-foreground-muted">
-          This device can't answer Kin cards. Pair it again from the Mac.
+          This phone can't answer here. Pair it again with the computer that runs T3 Code.
         </Text>
       ) : (
         <>
