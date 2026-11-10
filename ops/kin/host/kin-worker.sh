@@ -3,6 +3,9 @@
 # Workers' shells run there, in a sandbox that has no kin home, no owner home and no /tmp of
 # kin's, so they can't read Kin's database, secrets, memory key or service.env, or run Kin's CLI.
 #
+#   sudo <root-owned clone>/ops/kin/host/kin-worker.sh setup [owner/repo ...]   everything, in
+#                                            one go: asks for the worker's two credentials on
+#                                            the terminal, and ends with `check`
 #   sudo <root-owned clone>/ops/kin/host/kin-worker.sh [install] [--dry-run]   set up or repair
 #   sudo kin-worker link                     (re)link kin-server; the timer runs it weekly
 #   sudo kin-worker check                    the isolation checks, as a transcript
@@ -13,7 +16,7 @@
 #   kin-worker upload-pack <path>            the worker's repository, read-only, for Kin to publish
 #   kin-worker may-start                     the unit's ExecCondition: no org of Kin's is paused
 #
-# `install` copies this script to /usr/local/sbin/kin-worker and never restarts kin-server.
+# `install` copies this script to /usr/local/sbin/kin-worker. Nothing here restarts kin-server.
 # Root never writes, chowns or chmods through a path under the worker's home: that work runs as
 # kin-worker (`worker_do`), so a symlink there reaches only what kin-worker could already change.
 set -euo pipefail
@@ -261,8 +264,7 @@ cmd_upload_pack() {
     -- /usr/bin/git upload-pack --timeout=60 "$path" | head -c "$UPLOAD_PACK_MAX_BYTES"
 }
 
-cmd_install() {
-  if [ "${1:-}" = --dry-run ]; then DRY_RUN=1; fi
+install_steps() {
   if [ "$DRY_RUN" -eq 0 ]; then
     [ "$(uname -s)" = Linux ] || die "needs Linux with systemd."
     need_root install
@@ -332,6 +334,11 @@ cmd_install() {
   else
     say "No Kin build at $KIN_HOME/kin-current yet: run update.sh as $KIN_USER, then this again."
   fi
+}
+
+cmd_install() {
+  if [ "${1:-}" = --dry-run ]; then DRY_RUN=1; fi
+  install_steps
   if [ "$DRY_RUN" -eq 1 ]; then
     say ""
     say "Dry run: nothing was changed."
@@ -420,6 +427,242 @@ cmd_link() {
   printf 'KIN_WORKER_ENVIRONMENT_ID=%s\n' "$id" >>"$env_file"
   say "Set KIN_WORKER_ENVIRONMENT_ID=$id in $env_file. Apply it at a quiet moment:"
   say "  sudo -u $KIN_USER XDG_RUNTIME_DIR=/run/user/$(id -u "$KIN_USER") systemctl --user restart kin-server"
+}
+
+# --- setup -----------------------------------------------------------------------------------
+
+# One secret from the terminal into SECRET. Echo goes off before the prompt shows, so a paste
+# that lands early isn't shown either. It stays in this shell: never printed, logged or put on a
+# command line. No terminal reads as skipped.
+SECRET=""
+TTY_SAVED=""
+ask_secret() {
+  SECRET=""
+  if ! { : >/dev/tty; } 2>/dev/null; then
+    say "No terminal to ask on (use ssh -t), so this was skipped."
+    return 0
+  fi
+  TTY_SAVED="$(stty -g </dev/tty)"
+  trap 'stty "$TTY_SAVED" </dev/tty' EXIT
+  stty -echo </dev/tty
+  printf '%s' "$1" >/dev/tty
+  IFS= read -r SECRET </dev/tty || true
+  stty "$TTY_SAVED" </dev/tty
+  trap - EXIT
+  printf '\n' >/dev/tty
+}
+
+# mise, the build's Node, Claude Code and Codex in kin-worker's own home, installed by kin-worker
+# inside the sandbox, so nothing of root's, kin's or the owner's is within the installers' reach.
+setup_tools() {
+  local version tool
+  version="$(node_version_of "$KIN_HOME/kin-current")"
+  [ -n "$version" ] || die "no engines.node in $KIN_HOME/kin-current/package.json."
+  if ! in_sandbox mise --version >/dev/null 2>&1; then
+    say "Installing mise for $WORKER_USER."
+    in_sandbox /bin/sh -c '/usr/bin/curl -fsSL https://mise.run | /bin/sh' >/dev/null ||
+      die "couldn't install mise as $WORKER_USER. Is https://mise.run reachable from the sandbox?"
+  fi
+  in_sandbox mise use --global "node@$version" >/dev/null ||
+    die "couldn't install Node $version as $WORKER_USER."
+  for tool in claude:@anthropic-ai/claude-code codex:@openai/codex; do
+    if in_sandbox "${tool%%:*}" --version >/dev/null 2>&1; then continue; fi
+    say "Installing ${tool#*:} for $WORKER_USER."
+    in_sandbox mise exec "node@$version" -- npm install --global --silent "${tool#*:}" ||
+      die "couldn't install ${tool#*:} as $WORKER_USER."
+  done
+  in_sandbox mise reshim
+  say "Tools are in $WORKER_HOME: mise, Node $version, Claude Code, Codex."
+}
+
+# The first credential: kin-worker's own Claude gateway key, written by kin-worker to a file only
+# it can read. A key already there stays. One that is kin's own is taken back out.
+setup_gateway_key() {
+  local wrote=0
+  if worker_do /usr/bin/test -s "$GATEWAY_KEY"; then
+    say "$WORKER_USER already has a gateway key; keeping it. To replace it: sudo kin-worker run -- rm $GATEWAY_KEY, then setup again."
+  else
+    ask_secret "Claude gateway key for $WORKER_USER alone, never kin's or yours (Enter to skip): "
+    if [ -z "$SECRET" ]; then
+      say "No gateway key yet: workers can't use Claude until setup is run again with one."
+      return 0
+    fi
+    if ! [[ "$SECRET" =~ ^[[:graph:]]+$ ]]; then
+      SECRET=""
+      die "that key has spaces or unprintable characters; nothing was written."
+    fi
+    # An empty file from an attempt that failed would block the new one.
+    worker_do /bin/rm -f "$GATEWAY_KEY"
+    printf '%s\n' "$SECRET" | worker_write_new "$GATEWAY_KEY" || {
+      SECRET=""
+      die "couldn't write the key as $WORKER_USER."
+    }
+    SECRET=""
+    wrote=1
+  fi
+  if ! own_gateway_key; then
+    if [ "$wrote" -eq 1 ]; then worker_do /bin/rm -f "$GATEWAY_KEY"; fi
+    die "$WORKER_USER's gateway key is kin's own, which a worker must never hold. Create one for $WORKER_USER alone (and remove an old one: sudo kin-worker run -- rm $GATEWAY_KEY), then setup again."
+  fi
+  if [ "$wrote" -eq 1 ]; then say "Wrote the key to $GATEWAY_KEY (mode 600, $WORKER_USER's)."; fi
+  if in_sandbox /usr/bin/timeout 90 claude -p ok >/dev/null 2>&1; then
+    say "Claude answers as $WORKER_USER."
+  else
+    say "Claude didn't answer as $WORKER_USER yet. Try: sudo kin-worker run -- claude -p ok"
+  fi
+}
+
+# The second credential, optional: Codex, on an account that is not the owner's.
+setup_codex() {
+  if in_sandbox codex login status >/dev/null 2>&1; then
+    say "Codex is signed in for $WORKER_USER."
+    return 0
+  fi
+  ask_secret "Codex API key for a separate account with a spending cap, never the owner's (Enter to skip Codex): "
+  if [ -z "$SECRET" ]; then
+    say "Codex skipped: workers use Claude only. To sign in later: sudo kin-worker run -- codex login"
+    return 0
+  fi
+  if printf '%s\n' "$SECRET" | /usr/local/sbin/kin-worker run -- codex login --with-api-key >/dev/null 2>&1; then
+    say "Codex is signed in for $WORKER_USER."
+  else
+    say "Codex didn't accept that key. To try again: sudo kin-worker run -- codex login --with-api-key < <key file>"
+  fi
+  SECRET=""
+}
+
+# Linked environments on kin-server, which watches its settings file: kin sets the one key in
+# its own file and every other setting stays as it was. A file it can't parse is left alone.
+enable_kin_links() {
+  as_user "$KIN_USER" /usr/bin/python3 -I -c 'import json, os, sys
+path = os.path.realpath(sys.argv[1])
+try:
+    with open(path) as handle:
+        data = json.load(handle)
+except FileNotFoundError:
+    data = {}
+if not isinstance(data, dict):
+    sys.exit(1)
+if data.get("linkedEnvironmentsEnabled") is True:
+    sys.exit(0)
+data["linkedEnvironmentsEnabled"] = True
+os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+scratch = path + ".kin-worker-setup"
+with os.fdopen(os.open(scratch, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as handle:
+    json.dump(data, handle, indent=2)
+    handle.write("\n")
+os.replace(scratch, path)' "$KIN_HOME/.t3/userdata/settings.json"
+}
+
+# Kin's memory repositories, as owner/repo. Workers get no checkout of those.
+memory_repos() {
+  cat "$KIN_HOME/.t3/service.env" "$KIN_HOME/.config/kin/kin-server.env" 2>/dev/null |
+    sed -n 's/^KIN_MEMORY_REPOSITORIES=//p' |
+    grep -oE 'github\.com[:/][A-Za-z0-9-]+/[A-Za-z0-9._-]+' |
+    sed -e 's#^github\.com[:/]##' -e 's/\.git$//' | sort -u
+}
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+checkout_origin() {
+  in_sandbox /usr/bin/git -C "$1" remote get-url origin 2>/dev/null |
+    sed -n 's#^.*github\.com[:/]\([^/]*/[^/]*\)$#\1#p' | sed 's/\.git$//'
+}
+# One repository: a checkout of kin-worker's, cloned by kin-worker in the sandbox with whatever
+# read access it has, and registered in the worker environment. Run again, it changes nothing.
+setup_project() {
+  local slug="$1" dir="$WORKER_HOME/projects/${1#*/}" origin added
+  origin="$(checkout_origin "$dir" || true)"
+  if [ -n "$origin" ] && [ "$(lower "$origin")" != "$(lower "$slug")" ]; then
+    # Another owner's repository of the same name already has that directory.
+    dir="$WORKER_HOME/projects/${slug%%/*}-${slug#*/}"
+    origin="$(checkout_origin "$dir" || true)"
+  fi
+  if [ -z "$origin" ]; then
+    if in_sandbox /usr/bin/test -e "$dir"; then
+      say "  ✗ $slug: $dir is there and isn't a checkout of it."
+      return 1
+    fi
+    if ! in_sandbox /usr/bin/env GIT_TERMINAL_PROMPT=0 /usr/bin/git clone --quiet "https://github.com/$slug" "$dir"; then
+      say "  ✗ $slug: couldn't clone it. A private repository needs kin-worker's read-only token first (README, \"Set up workers\")."
+      return 1
+    fi
+  elif [ "$(lower "$origin")" != "$(lower "$slug")" ]; then
+    say "  ✗ $slug: $dir is a checkout of $origin."
+    return 1
+  fi
+  added="$(in_sandbox t3 project add "$dir" --base-dir "$WORKER_HOME/.t3" 2>&1 || true)"
+  case "$added" in
+    *"Added project"*) say "  ✓ $slug at $dir" ;;
+    *"already exists"*) say "  ✓ $slug at $dir, already registered" ;;
+    *)
+      say "  ✗ $slug: it is at $dir, but registering it failed: $(printf '%s\n' "$added" | tail -n1)"
+      return 1
+      ;;
+  esac
+}
+# Every repository Kin publishes to (KIN_GITHUB_REPOS and Kin's own), plus any named on the
+# command line: the ones a lead's work can end in a pull request on.
+setup_projects() {
+  local slug skip repos missing=0
+  skip="$(memory_repos || true)"
+  repos="$({
+    kin_repos || true
+    printf '%s\n' "$@"
+  } | sed 's/[[:space:]]//g' | grep -E '^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$' | sort -u || true)"
+  if [ -z "$repos" ]; then
+    say "No repositories to clone: KIN_GITHUB_REPOS is empty. Name them: setup <owner>/<repo> ..."
+    return 0
+  fi
+  say "Projects in the worker environment:"
+  for slug in $repos; do
+    if grep -qixF "$slug" <<<"$skip"; then continue; fi
+    setup_project "$slug" || missing=1
+  done
+  if [ "$missing" -eq 1 ]; then say "Leads can't start work in the ✗ ones until they are fixed; run setup again then."; fi
+}
+
+# `setup [owner/repo ...]`: every step from a fresh host to a passing `check` that needs no
+# credential, and a prompt for the two that do. Safe to run again: each step keeps what is there.
+cmd_setup() {
+  local repos=() arg before
+  for arg in "$@"; do
+    case "$arg" in
+      --dry-run) DRY_RUN=1 ;;
+      -*) die "setup takes repositories as owner/repo, and --dry-run." ;;
+      *) repos+=("$arg") ;;
+    esac
+  done
+  if [ "$DRY_RUN" -eq 1 ]; then
+    install_steps
+    say "+ as $WORKER_USER, in the sandbox: install mise, the build's Node, Claude Code and Codex"
+    say "+ ask for $WORKER_USER's Claude gateway key, and optionally a Codex API key"
+    say "+ turn on Linked environments in kin's settings"
+    say "+ clone and register every repository in KIN_GITHUB_REPOS and Kin's own ${repos[*]:-}"
+    say "+ kin-worker link, then kin-worker check"
+    say ""
+    say "Dry run: nothing was changed."
+    return 0
+  fi
+  need_root setup
+  [ -f "$KIN_HOME/kin-current/apps/server/dist/bin.mjs" ] ||
+    die "no Kin build at $KIN_HOME/kin-current yet: run update.sh as $KIN_USER first (README, \"Install\")."
+  install_steps
+  setup_tools
+  setup_gateway_key
+  setup_codex
+  if enable_kin_links; then say "Linked environments are on for kin-server."; else
+    say "Couldn't turn on Linked environments in kin's settings. From any client: Settings → Labs → Linked environments."
+  fi
+  setup_projects ${repos[@]+"${repos[@]}"}
+  if [ "$(stat -c %d "$WORKER_HOME")" = "$(stat -c %d "$KIN_HOME")" ]; then
+    say "Note: $WORKER_HOME shares a filesystem with $KIN_HOME. Give $WORKER_USER a disk quota or its own filesystem, so a worker can't fill Kin's disk."
+  fi
+  systemctl is-active --quiet kin-worker-server.service || systemctl start kin-worker-server.service || true
+  before="$(service_env_value KIN_WORKER_ENVIRONMENT_ID)"
+  cmd_link
+  if [ "$(service_env_value KIN_WORKER_ENVIRONMENT_ID)" != "$before" ]; then
+    say "Leads can start workers once kin-server restarts with that id. Nothing here restarts it."
+  fi
+  checklist
 }
 
 # --- check -----------------------------------------------------------------------------------
@@ -528,12 +771,13 @@ print(json.load(open(sys.argv[1])).get("apiKeyHelper", ""))' "$settings" 2>/dev/
 env = json.load(open(sys.argv[1])).get("env", {})
 print(env.get("ANTHROPIC_API_KEY") or env.get("ANTHROPIC_AUTH_TOKEN") or "")' "$settings" 2>/dev/null || true)"
   fi
-  if [ -n "$key" ]; then printf '%s' "$key" | sha; fi
+  if [ -n "$key" ]; then printf '%s' "$key" | tr -d '\r\n' | sha; fi
 }
 # The worker's key is the file its settings' helper reads (settings_hold_no_token checks that).
+# Line ends are dropped on both sides: kin's key with a newline after it is still kin's key.
 own_gateway_key() {
   local mine theirs
-  mine="$(worker_do /bin/cat "$GATEWAY_KEY" 2>/dev/null | sha)"
+  mine="$(worker_do /bin/cat "$GATEWAY_KEY" 2>/dev/null | tr -d '\r\n' | sha)"
   theirs="$(kin_key_hash)"
   [ "$mine" != "$(printf '' | sha)" ] && [ "$mine" != "$theirs" ]
 }
@@ -738,6 +982,7 @@ cmd_check() {
 
 case "${1:-install}" in
   install) shift || true; cmd_install "$@" ;;
+  setup) shift; cmd_setup "$@" ;;
   --dry-run) cmd_install --dry-run ;;
   link) cmd_link ;;
   check) cmd_check ;;
@@ -745,6 +990,6 @@ case "${1:-install}" in
   node) shift; cmd_node "$@" ;;
   upload-pack) shift; cmd_upload_pack "$@" ;;
   may-start) cmd_may_start ;;
-  -h | --help) sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
-  *) die "unknown command: $1 (install, link, check, run)" ;;
+  -h | --help) sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown command: $1 (setup, install, link, check, run)" ;;
 esac
