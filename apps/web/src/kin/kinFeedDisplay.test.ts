@@ -23,6 +23,7 @@ function message(
     authorLabel: fields.author === "system" ? "Kin" : "Tech lead",
     authorKind: "agent",
     showAuthor: fields.showAuthor ?? !own,
+    continues: false,
     message: {
       messageId: key,
       author: { _tag: own ? "human" : (fields.author ?? "agent") },

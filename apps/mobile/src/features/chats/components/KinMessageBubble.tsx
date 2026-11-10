@@ -56,9 +56,14 @@ type DraftRow = Extract<KinFeedRow, { readonly type: "draft" }>;
 const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 const formatTime = (iso: string) => timeFormat.format(new Date(iso));
 
-// The thread feed's shapes: its user bubble, and agent text straight on the screen.
-const OWN_BUBBLE_CLASS_NAME = "max-w-[85%] rounded-[20px] bg-user-bubble px-4 py-2.5";
-const OTHER_MESSAGE_CLASS_NAME = "w-full px-1 py-1";
+// The viewer's message in the thread feed's user bubble; everyone else's on a quieter surface.
+// The width cap sits on the wrapper, so the long-press target is exactly the bubble.
+const OWN_WIDTH_CLASS_NAME = "max-w-[85%]";
+const OTHER_WIDTH_CLASS_NAME = "max-w-[88%]";
+const OWN_BUBBLE_CLASS_NAME = "rounded-[20px] bg-user-bubble px-4 py-2.5";
+const OTHER_BUBBLE_CLASS_NAME = "rounded-[20px] bg-grouped-card px-4 py-2.5";
+// Tight inside one author's run, a clear step between authors.
+const rowSpacing = (continues: boolean) => (continues ? "pt-0.5" : "pt-3");
 
 const renderImageAsText: MarkdownImageRenderer = (image) => (
   <Text textRole="body" className="italic text-foreground-muted">
@@ -90,7 +95,7 @@ function KinAttachments(props: {
 function KinAuthorLine(props: { readonly label: string; readonly avatar: KinAvatarView }) {
   return (
     <View
-      className="flex-row items-center gap-1.5 px-1 pt-2"
+      className="flex-row items-center gap-1.5 px-1"
       importantForAccessibility="no-hide-descendants"
       accessibilityElementsHidden
     >
@@ -102,7 +107,7 @@ function KinAuthorLine(props: { readonly label: string; readonly avatar: KinAvat
   );
 }
 
-/** One message, as in a thread: the viewer's own in the user bubble, everyone else's as plain text. */
+/** One message: the viewer's own in the user bubble on the right, everyone else's in a bubble on the left. */
 export function KinMessageBubble(props: {
   readonly row: MessageRow;
   /** `useMarkdownPreviewStyles().nativeTextStyle`, read once by the screen. */
@@ -175,7 +180,7 @@ export function KinMessageBubble(props: {
         const link = links[Number(name.slice("link-".length))];
         if (link !== undefined) props.onLinkPress(link.href);
       }}
-      className={cn("gap-1", row.own ? OWN_BUBBLE_CLASS_NAME : OTHER_MESSAGE_CLASS_NAME)}
+      className={cn("gap-1", row.own ? OWN_BUBBLE_CLASS_NAME : OTHER_BUBBLE_CLASS_NAME)}
     >
       {hasBody ? (
         <SelectableMarkdownText
@@ -212,7 +217,9 @@ export function KinMessageBubble(props: {
   ) : null;
 
   return (
-    <View className={cn("gap-1 px-4 pb-2", row.own ? "items-end" : "items-start")}>
+    <View
+      className={cn("gap-1 px-4", rowSpacing(row.continues), row.own ? "items-end" : "items-start")}
+    >
       {row.showAuthor && !props.direct && message.author._tag !== "system" ? (
         <KinAuthorLine label={row.authorLabel} avatar={kinAuthorAvatar(message.author)} />
       ) : null}
@@ -224,7 +231,7 @@ export function KinMessageBubble(props: {
         />
       ) : null}
       {bubble === null ? null : onOpenActions === null ? (
-        bubble
+        <View className={row.own ? OWN_WIDTH_CLASS_NAME : OTHER_WIDTH_CLASS_NAME}>{bubble}</View>
       ) : (
         // The bubble inside stays the VoiceOver element; this only takes the long press.
         <Pressable
@@ -233,7 +240,10 @@ export function KinMessageBubble(props: {
             void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
             onOpenActions();
           }}
-          className={cn("w-full", row.own ? "items-end" : "items-start")}
+          className={cn(
+            "active:opacity-60",
+            row.own ? OWN_WIDTH_CLASS_NAME : OTHER_WIDTH_CLASS_NAME,
+          )}
         >
           {bubble}
         </Pressable>
@@ -283,7 +293,7 @@ export function KinDraftBubble(props: {
 }) {
   const { row } = props;
   return (
-    <View className="items-start gap-1 px-4 pb-2">
+    <View className={cn("items-start gap-1 px-4", rowSpacing(row.continues))}>
       {row.showAuthor && !props.direct ? (
         <KinAuthorLine label={row.authorLabel} avatar={kinAgentAvatar(row.draft.agentId)} />
       ) : null}
@@ -294,7 +304,7 @@ export function KinDraftBubble(props: {
           kinPlainText(row.draft.text),
           "Still writing",
         ])}
-        className={cn("gap-1", OTHER_MESSAGE_CLASS_NAME)}
+        className={cn("gap-1", OTHER_WIDTH_CLASS_NAME, OTHER_BUBBLE_CLASS_NAME)}
       >
         <SelectableMarkdownText
           markdown={kinBodyMarkdown(row.draft.text)}
@@ -339,6 +349,8 @@ export function KinPendingBubble(props: {
   readonly environmentId: EnvironmentId;
   readonly onPressPreview: (source: FilePreviewSource) => void;
   readonly connected: boolean;
+  /** The row above is the viewer's own bubble. */
+  readonly continues: boolean;
   /** Puts the body back in the draft and drops the refused send. */
   readonly onEdit: () => void;
   readonly onDiscard: () => void;
@@ -361,7 +373,7 @@ export function KinPendingBubble(props: {
       onConfirm: props.onDiscard,
     });
   return (
-    <View className="items-end gap-1 px-4 pb-2">
+    <View className={cn("items-end gap-1 px-4", rowSpacing(props.continues))}>
       {attachments.length > 0 ? (
         <View className={failed ? undefined : "opacity-70"}>
           <KinAttachments
@@ -379,7 +391,7 @@ export function KinPendingBubble(props: {
           accessibilityRole={failed ? "button" : undefined}
           accessibilityLabel={kinSentences([`You: ${kinPlainText(entry.body)}`, status])}
           accessibilityHint={failed ? "Edit it in the message box." : undefined}
-          className={cn(OWN_BUBBLE_CLASS_NAME, !failed && "opacity-70")}
+          className={cn(OWN_WIDTH_CLASS_NAME, OWN_BUBBLE_CLASS_NAME, !failed && "opacity-70")}
         >
           <Text textRole="body" className="text-user-bubble-foreground">
             {entry.body}
@@ -428,7 +440,7 @@ export function KinDayLine(props: { readonly row: DayRow }) {
       accessible
       accessibilityRole="header"
       accessibilityLabel={props.row.label}
-      className="items-center px-8 pb-2 pt-5"
+      className="items-center px-8 pt-5"
     >
       <Text textRole="caption" className="text-foreground-muted">
         {props.row.label}

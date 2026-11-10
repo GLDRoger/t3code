@@ -40,18 +40,22 @@ const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute:
 export const formatKinMessageTime = (iso: string) => timeFormat.format(new Date(iso));
 const formatTime = formatKinMessageTime;
 
-const ROW = "mx-auto flex w-full max-w-3xl flex-col gap-1 px-4 pb-1.5";
-// As in a thread: the viewer's message in the user bubble, everyone else's as plain text.
+const ROW = "mx-auto flex w-full max-w-3xl flex-col gap-1 px-4";
+// Tight inside one author's run, a clear step between authors.
+const rowSpacing = (continues: boolean) => (continues ? "pt-0.5" : "pt-3");
+// The viewer's message in the thread's user bubble; everyone else's on a quieter surface.
 const BUBBLE =
   "min-w-0 max-w-[85%] rounded-2xl bg-message px-3.5 py-2 text-sm text-message-foreground";
-const PLAIN = "min-w-0 flex-1 px-1 py-0.5 text-sm text-foreground";
+// Dark accent is a 4% hover wash that vanishes on the black canvas, so dark takes the raised tone.
+const OTHER_BUBBLE =
+  "min-w-0 max-w-[85%] rounded-2xl bg-accent px-3.5 py-2 text-sm text-foreground dark:bg-card";
 
 /** Who and when, over the first bubble of a group. The bubble's own label reads both aloud. */
 function HeadLine(props: { readonly label: string; readonly avatar?: KinAvatarView | null }) {
   return (
     <p
       aria-hidden
-      className="flex items-center gap-1.5 px-1 pt-2 text-xs text-muted-foreground tabular-nums"
+      className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground tabular-nums"
     >
       {props.avatar == null ? null : <KinAvatar avatar={props.avatar} size="xs" />}
       {props.label}
@@ -104,7 +108,14 @@ export function KinMessageRow(props: {
   const canReact = onReact !== null && !deleted;
 
   return (
-    <div className={cn(ROW, "group/kin-message", row.own ? "items-end" : "items-start")}>
+    <div
+      className={cn(
+        ROW,
+        rowSpacing(row.continues),
+        "group/kin-message",
+        row.own ? "items-end" : "items-start",
+      )}
+    >
       {props.head === null ? null : (
         <HeadLine
           label={props.head}
@@ -132,7 +143,7 @@ export function KinMessageRow(props: {
           <div
             role="article"
             aria-label={kinMessageLabel(row, formatTime(message.createdAt))}
-            className={row.own ? BUBBLE : PLAIN}
+            className={row.own ? BUBBLE : OTHER_BUBBLE}
           >
             {hasBody ? (
               <KinBody markdown={message.body} environmentId={props.environmentId} />
@@ -222,7 +233,7 @@ export function KinDraftRow(props: {
 }) {
   const { row } = props;
   return (
-    <div className={cn(ROW, "items-start")}>
+    <div className={cn(ROW, rowSpacing(row.continues), "items-start")}>
       {row.showAuthor && !props.direct ? (
         <HeadLine label={row.authorLabel} avatar={kinAgentAvatar(row.draft.agentId)} />
       ) : null}
@@ -233,7 +244,7 @@ export function KinDraftRow(props: {
           kinPlainText(row.draft.text),
           "Still writing",
         ])}
-        className={PLAIN}
+        className={OTHER_BUBBLE}
       >
         <KinBody markdown={row.draft.text} environmentId={props.environmentId} />
       </div>
@@ -263,7 +274,7 @@ export function KinDayRow(props: { readonly label: string }) {
   return (
     <p
       role="separator"
-      className="mx-auto max-w-3xl px-4 pb-1 pt-4 text-center text-xs font-medium text-muted-foreground"
+      className="mx-auto max-w-3xl px-4 pt-4 text-center text-xs font-medium text-muted-foreground"
     >
       {props.label}
     </p>
@@ -308,6 +319,8 @@ export function KinPendingRow(props: {
   readonly connected: boolean;
   readonly environmentId: EnvironmentId;
   readonly previewKey: string;
+  /** The row above is the viewer's own bubble. */
+  readonly continues: boolean;
   /** Puts the body back in the composer and drops the refused send. */
   readonly onEdit: () => void;
   readonly onDiscard: () => void;
@@ -323,7 +336,7 @@ export function KinPendingRow(props: {
   const hasBody = entry.body.trim().length > 0;
   const label = kinSentences([`You: ${kinPlainText(kinMessageSummary(entry))}`, status]);
   return (
-    <div className={cn(ROW, "items-end")}>
+    <div className={cn(ROW, rowSpacing(props.continues), "items-end")}>
       {attachments.length === 0 ? null : (
         <div
           role={hasBody ? undefined : "article"}
