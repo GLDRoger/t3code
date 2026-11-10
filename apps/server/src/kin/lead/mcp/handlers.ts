@@ -7,8 +7,10 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
+import { KinRepoReads } from "../../github/KinRepoReads.ts";
 import { laneFor } from "../../reply/KinReplyBridge.ts";
 import { KinLevelGate } from "../LevelGate.ts";
+import { quote } from "../LeadPrompt.ts";
 import { LeadMemory, resolveLead } from "../LeadMemory.ts";
 import { KinWorkers } from "../Workers.ts";
 import { KinLeadToolkit } from "./tools.ts";
@@ -18,6 +20,8 @@ const failure = (error: unknown) =>
   isKinChatError(error)
     ? error
     : new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
+
+const githubQuote = (value: unknown) => ({ quoted: quote("GitHub data (untrusted)", value, true) });
 
 // Kin's service checks the persisted lead and wake-up, rather than T3 thread-control grants.
 export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
@@ -98,6 +102,30 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
     Effect.fn("KinLeadToolkit.journal")(function* (input) {
       return yield* (yield* LeadMemory).journal(yield* McpInvocationContext, input);
     }),
+  ),
+  kin_github_repos: McpToolAccess.reads(
+    Effect.fn("KinLeadToolkit.githubRepos")(function* () {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      return yield* (yield* KinRepoReads).repos(lead.wakeupId);
+    }, Effect.mapError(failure)),
+  ),
+  kin_github_prs: McpToolAccess.reads(
+    Effect.fn("KinLeadToolkit.githubPrs")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      return githubQuote(yield* (yield* KinRepoReads).pulls(lead.wakeupId, input));
+    }, Effect.mapError(failure)),
+  ),
+  kin_github_pr: McpToolAccess.reads(
+    Effect.fn("KinLeadToolkit.githubPr")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      return githubQuote(yield* (yield* KinRepoReads).pull(lead.wakeupId, input));
+    }, Effect.mapError(failure)),
+  ),
+  kin_github_runs: McpToolAccess.reads(
+    Effect.fn("KinLeadToolkit.githubRuns")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      return githubQuote(yield* (yield* KinRepoReads).runs(lead.wakeupId, input));
+    }, Effect.mapError(failure)),
   ),
   kin_end: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.end")(function* (input) {
