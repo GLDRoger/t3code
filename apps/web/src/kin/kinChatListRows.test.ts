@@ -79,13 +79,17 @@ describe("kinChatListRows", () => {
         author: { _tag: "human", personId: "owner" },
         kind: "widget_action",
         widgetId: "choice:1",
-        body: JSON.stringify({ widgetId: "choice:1", actionId: "choose", text: 'Chose "Yes"' }),
+        body: JSON.stringify({
+          widgetId: "choice:1",
+          actionId: "choose",
+          text: 'Chose "Yes" on "Ship?"',
+        }),
       },
       "You",
-      'Chose "Yes"',
+      "Yes",
     ],
     [
-      "a card tap without words",
+      "a card tap without words, as its action",
       {
         author: { _tag: "human", personId: "owner" },
         kind: "widget_action",
@@ -93,7 +97,7 @@ describe("kinChatListRows", () => {
         body: JSON.stringify({ widgetId: "task:1", actionId: "open" }),
       },
       "You",
-      "Answered",
+      "Open",
     ],
     [
       "a question card posted without a body",
