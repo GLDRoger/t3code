@@ -99,16 +99,8 @@ const inline = (label: string, rows: ReadonlyArray<RoutineRow>) =>
           rows.length > INLINE_ENTRIES ? `; +${rows.length - INLINE_ENTRIES} more` : ""
         }`,
       ];
-const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
 const late = (ms: number) =>
   ms < 3_600_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 3_600_000)} h`;
-const units = (value: number) =>
-  value >= 1_000_000
-    ? `${(value / 1_000_000).toFixed(1)}M`
-    : value >= 1_000
-      ? `${Math.round(value / 1_000)}k`
-      : `${Math.round(value)}`;
-
 function headerLines(routine: KinLeadRoutine, header: RoutineHeader) {
   const lateNote =
     header.lateByMs >= LATE_NOTE_MS && header.dueLabel !== null
@@ -156,25 +148,15 @@ function morningLines(facts: MorningFacts) {
                   .join("; ")})`
           }`,
         ]),
-    ...(facts.postponed === 0 && facts.yesterdayUnits === null
+    // Spend and memory upkeep are Kin's business; the owner hears only what was held back.
+    ...(facts.postponed === 0
       ? []
-      : [
-          `Budget: ${facts.postponed} postponed for budget${
-            facts.yesterdayUnits === null ? "" : `; yesterday ${units(facts.yesterdayUnits)} units`
-          }`,
-        ]),
-    ...inline("Past review date", facts.pastReview),
+      : [`Held over to stay within today's budget: ${facts.postponed}`]),
   ];
   return lines.length === 0 ? ["Nothing due, overdue or waiting on you."] : lines;
 }
 
 function eveningLines(facts: EveningFacts) {
-  const usage = [
-    facts.units === null ? undefined : `${units(facts.units)} units today`,
-    facts.cacheHitRate === null ? undefined : `cache hits ${Math.round(facts.cacheHitRate * 100)}%`,
-    facts.failedWakeups === 0 ? undefined : plural(facts.failedWakeups, "failed wake-up"),
-    facts.failedDreams === 0 ? undefined : plural(facts.failedDreams, "failed dream"),
-  ].filter((part) => part !== undefined);
   const lines = [
     ...inline("Done", facts.done),
     ...inline("Slipped or moved", facts.slipped),
@@ -185,7 +167,12 @@ function eveningLines(facts: EveningFacts) {
           `Open questions for you: ${facts.waiting.length}, oldest ${entry(facts.waiting[0] as RoutineRow)}`,
         ]),
     ...inline("Due tomorrow", facts.dueTomorrow),
-    ...(usage.length === 0 ? [] : [`Usage: ${usage.join("; ")}`]),
+    // A failed turn may have cost the owner an answer; usage, cache and dreams never do.
+    ...(facts.failedWakeups === 0
+      ? []
+      : [
+          `${facts.failedWakeups} ${facts.failedWakeups === 1 ? "reply" : "replies"} failed today; ask again if something went unanswered.`,
+        ]),
   ];
   return lines.length === 0 ? ["Nothing done, slipped, promised or due tomorrow."] : lines;
 }
