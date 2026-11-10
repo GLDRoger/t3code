@@ -1,0 +1,20 @@
+import type { OrchestrationV2TurnItem } from "@t3tools/contracts";
+import { expect, it } from "vite-plus/test";
+
+import { KinLeadToolkit } from "../lead/mcp/tools.ts";
+import { PHASE_LABELS, toolLabel } from "./classify.ts";
+
+const call = (toolName: string) =>
+  toolLabel({ type: "dynamic_tool", toolName: `mcp__kin__${toolName}` } as OrchestrationV2TurnItem);
+
+it("gives every lead tool a status a person would say, never Kin's own vocabulary", () => {
+  const silent = ["kin_react", "kin_journal", "kin_end"];
+  const labels = Object.keys(KinLeadToolkit.tools).map((name) => [name, call(name)] as const);
+  expect(labels.filter(([, label]) => label === null).map(([name]) => name)).toEqual(silent);
+  // A tool the table forgot reads as the generic line: add its own words instead.
+  expect(labels.filter(([, label]) => label === PHASE_LABELS.tool)).toEqual([]);
+  for (const label of [...labels.map(([, label]) => label ?? ""), ...Object.values(PHASE_LABELS)])
+    expect(label).not.toMatch(/memory|tool|level|worker|wake|queue|defer|widget|kin_|_/i);
+  expect(call("kin_hand_off")).toBe("Passing this on");
+  expect(call("something_new")).toBe(PHASE_LABELS.tool);
+});

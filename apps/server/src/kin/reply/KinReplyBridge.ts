@@ -128,6 +128,8 @@ type Wake = {
   latest: number;
   since: number;
   stall: Fiber.Fiber<void> | undefined;
+  // What the line reads once the model has the turn: its files, when the message brought some.
+  readonly opening: string;
   // What the line's timer counts from: the wake-up's start, then each posted reply.
   timerFrom: number;
   // The reply is settled or the wake-up ended: nothing may show a line for it again.
@@ -145,7 +147,7 @@ export class KinReplyBridge extends Context.Service<
       readonly agentId: KinAgentId;
       readonly wakeupId: KinWakeupId;
     }) => Effect.Effect<Option.Option<Lane>>;
-    /** A wake-up claimed its events and is preparing: its lane reads "Reading memory". */
+    /** A wake-up claimed its events and is preparing: its lane reads "Catching up". */
     readonly preparing: (input: {
       readonly orgId: KinOrgId;
       readonly agentId: KinAgentId;
@@ -160,6 +162,8 @@ export class KinReplyBridge extends Context.Service<
       readonly wakeupId: KinWakeupId;
       readonly threadId: ThreadId;
       readonly startedAt: number;
+      /** The messages it answers brought files: the line says it is looking at them. */
+      readonly attachments?: boolean;
     }) => Effect.Effect<void>;
     /**
      * After the wake-up's run ends: posts what the live stream did not, then, when the lane
@@ -527,7 +531,7 @@ const make = Effect.gen(function* () {
             event.payload.status === "running" &&
             wake.live.state === "starting"
           )
-            yield* show(wake, "thinking", PHASE_LABELS.thinking);
+            yield* show(wake, "thinking", wake.opening);
         }),
       )
       .pipe(
@@ -803,6 +807,7 @@ const make = Effect.gen(function* () {
       readonly wakeupId: KinWakeupId;
       readonly threadId: ThreadId;
       readonly startedAt: number;
+      readonly attachments?: boolean;
     }) {
       if (byWakeup.has(input.wakeupId)) return;
       const found = yield* lane(input);
@@ -828,6 +833,7 @@ const make = Effect.gen(function* () {
         latest: -1,
         since: input.startedAt,
         stall: undefined,
+        opening: input.attachments === true ? PHASE_LABELS.attachments : PHASE_LABELS.thinking,
         timerFrom: input.startedAt,
         done: false,
         stamped: new Set(),

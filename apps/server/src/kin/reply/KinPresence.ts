@@ -260,7 +260,7 @@ const waitingChats = Effect.fn("KinPresence.waitingChats")(
   Effect.mapError(toPersistenceSqlError("KinPresence.waitingChats")),
 );
 
-/** Which queue label a waiting message gets: "Queued" while the lead runs a wake-up. */
+/** Which label a waiting message gets: the queued one while the lead runs a wake-up. */
 export const queueLabel = Effect.fn("KinPresence.queueLabel")(
   function* (orgId: KinOrgId, agentId: KinAgentId) {
     const sql = yield* SqlClient.SqlClient;

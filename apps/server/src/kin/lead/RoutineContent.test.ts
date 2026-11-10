@@ -484,6 +484,24 @@ it.effect("a brief on a weekday other than Monday skips the week ahead and names
   ),
 );
 
+it.effect("a summary with nothing to report posts nothing and wakes nobody", () =>
+  withFixture(
+    [
+      [
+        "decisions/dec-color.md",
+        memoryFile("dec-color", { kind: "decision", title: "Use blue", on_due: null }),
+      ],
+    ],
+    Effect.gen(function* () {
+      const result = yield* runRoutine(routine("summary-empty", "evening_summary"));
+      assert.deepStrictEqual(result.messages, []);
+      assert.deepStrictEqual(result.widgets, []);
+      assert.strictEqual(result.eventState, "done");
+      assert.isTrue(result.wakeups.every((wakeup) => wakeup.threadId === null));
+    }),
+  ),
+);
+
 it.effect("posts to the owner chat as it stands when the write starts", () =>
   withFixture(
     [],
