@@ -3,6 +3,8 @@
 Status: draft v2, 7 Nov 2026. Owner: Nishchay Chandra.
 Base: `GLDRoger/t3code`, a fork of [T3 Code](https://github.com/pingdotgg/t3code). This version replaces v1 (lineages, houses, wills, keeper, chaos program, Bend). v1 is kept at the tag `archive/kin-lineages-2026-11-07`.
 
+**The end goal is in [VISION.md](VISION.md): run an entire company from the phone. Read it first.**
+
 Kin is a team of AI leads on top of T3 Code. People and agents share messaging-style chats on mobile and desktop. Leads answer PRs and questions, chase objectives, deferrals and promises, and send the actual work to Claude Code and Codex threads. Every T3 path below exists on upstream `main` as of 7 Nov 2026 unless it is marked **new**.
 
 The [specs](specs/) turn this design into tasks, and [PLAN.md](PLAN.md) orders them. Where a spec lists a design correction, the spec wins until this doc is updated.

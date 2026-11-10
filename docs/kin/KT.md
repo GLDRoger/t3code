@@ -1,5 +1,7 @@
 # Kin: handover brief
 
+> Start with [VISION.md](VISION.md), the owner's end goal. It overrides any summary that treats Kin as a single-owner assistant.
+
 Read this first if you're joining Kin, whether you're a person or an agent. It takes about 10 minutes. After it you should be able to pick up a task and ship it without asking anyone.
 
 ## What Kin is
