@@ -45,7 +45,7 @@ import * as Scan from "../memory/secretScan.ts";
 import * as TriggerService from "../triggers/KinTriggerService.ts";
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import { KinHandoff } from "./Handoff.ts";
-import { SHARED_NOTES } from "./Audience.ts";
+import { SHARED_NOTES, SHARED_REFUSAL } from "./Audience.ts";
 import * as Lead from "./LeadMemory.ts";
 import { KinWorkers } from "./Workers.ts";
 import * as KinRepoReads from "../github/KinRepoReads.ts";
@@ -183,7 +183,7 @@ it.live(
         clientMessageId: "fixture",
       });
       const run = yield* startWakeupRun(threadId, "fixture-wakeup");
-      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids) VALUES ('fixture-wakeup', ${orgId}, ${agentId}, ${threadId}, ${run.id}, 'fixture', 1794096000000, 'running', '["fixture-event"]')`;
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids, audience) VALUES ('fixture-wakeup', ${orgId}, ${agentId}, ${threadId}, ${run.id}, 'fixture', 1794096000000, 'running', '["fixture-event"]', 'owner_only')`;
       const event = {
         _tag: "chat.message",
         orgId,
@@ -526,21 +526,36 @@ it.live(
           chatId: chat.chatId,
           sourceEventId: "fixture-event",
         } as const;
-        // A teammate's message in the batch makes the turn shared: no notes either way, while
-        // reminders still work and keep the teammate's provenance.
+        // A teammate's message in the batch makes the turn shared: no notes, reminders or
+        // scheduled tasks, even cited from the owner's own message in the same batch.
         yield* sql`UPDATE kin_chat_members SET left_at = NULL WHERE member_id = 'fixture-member-membership'`;
         yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = 'fixture-wakeup' WHERE event_id = 'member-event'`;
-        for (const refused of [
-          service.search(scope, { kind: "claim" }),
-          service.read(scope, { id: KinMemoryItemId.make("a-item") }),
-          service.write(scope, {
-            ...input,
-            sourceEventId: "member-event",
-            item: { ...input.item, id: KinMemoryItemId.make("member-claim") },
-          }),
-          service.journal(scope, { saw: ["Invented teammate request"], did: [] }),
-        ])
-          assert.strictEqual((yield* refused.pipe(Effect.flip)).message, SHARED_NOTES);
+        const sharedRefusals = (notes: string) =>
+          Effect.gen(function* () {
+            for (const refused of [
+              service.search(scope, { kind: "claim" }),
+              service.read(scope, { id: KinMemoryItemId.make("a-item") }),
+              service.write(scope, {
+                ...input,
+                sourceEventId: "member-event",
+                item: { ...input.item, id: KinMemoryItemId.make("member-claim") },
+              }),
+              service.journal(scope, { saw: ["Invented teammate request"], did: [] }),
+            ])
+              assert.strictEqual((yield* refused.pipe(Effect.flip)).message, notes);
+            for (const refused of [
+              service.defer(scope, { ...deferred, what: "Member maintenance" }),
+              service.defer(scope, {
+                ...deferred,
+                what: "Member maintenance",
+                sourceEventId: "member-event",
+              }),
+              service.schedule(scope, scheduleInput),
+              service.cancel(scope, { itemId: first.itemId, sourceEventId: "fixture-event" }),
+            ])
+              assert.strictEqual((yield* refused.pipe(Effect.flip)).message, SHARED_REFUSAL);
+          });
+        yield* sharedRefusals(SHARED_NOTES);
         const sharedRead = yield* server
           .callTool({ name: "memory_read", arguments: { id: "a-item" } })
           .pipe(
@@ -550,21 +565,12 @@ it.live(
           );
         assert.isTrue(sharedRead.isError);
         assert.notInclude(JSON.stringify(sharedRead), "Invented");
-        const memberDeferral = yield* service.defer(scope, {
-          ...deferred,
-          what: "Member maintenance",
-          sourceEventId: "member-event",
-        });
-        // Only the owner's own message sets up a scheduled task, never a member's.
-        assert.strictEqual(
-          (yield* service
-            .schedule(scope, { ...scheduleInput, sourceEventId: "member-event" })
-            .pipe(Effect.flip)).reason,
-          "not_allowed",
-        );
-        // Without them the same lead's owner-only turn has its notes again.
+        // The teammate leaving, and its message leaving the batch, doesn't make it owner-only.
         yield* sql`UPDATE kin_chat_members SET left_at = '2026-11-08T00:00:00.000Z' WHERE member_id = 'fixture-member-membership'`;
         yield* sql`UPDATE kin_events SET state = 'queued', wakeup_id = NULL WHERE event_id = 'member-event'`;
+        yield* sharedRefusals(SHARED_NOTES);
+        // Go on as a turn the owner alone reads from the start.
+        yield* sql`UPDATE kin_wakeups SET shared_since = NULL WHERE wakeup_id = 'fixture-wakeup'`;
         assert.deepStrictEqual(
           (yield* service.search(scope, { kind: "claim" })).map((item) => item.id),
           ["a-item"],
@@ -587,17 +593,11 @@ it.live(
           (yield* service.write(scope, input).pipe(Effect.flip)).message,
           "Lead operation is not allowed.",
         );
-        // The teammate's reminder commits with its source in the batch, then leaves it again.
-        const attachMember = (wakeupId: string | null) =>
-          sql`UPDATE kin_events SET state = ${wakeupId === null ? "done" : "claimed"},
-            wakeup_id = ${wakeupId} WHERE event_id = 'member-event'`;
-        yield* attachMember("fixture-wakeup");
         const committed = yield* (yield* Writer.MemoryWriter).commitWakeup(
           orgId,
           "fixture-wakeup",
           "completed",
         );
-        yield* attachMember(null);
         const closed = yield* git(remote, ["show", `${committed.commit}:deferrals/close-me.md`]);
         assert.include(closed, "status: done");
         assert.include(closed, "source_event: original-event");
@@ -617,10 +617,6 @@ it.live(
           "show",
           `${committed.commit}:deferrals/${first.itemId}.md`,
         ]);
-        assert.include(
-          yield* git(remote, ["show", `${committed.commit}:deferrals/${memberDeferral.itemId}.md`]),
-          "trust: member",
-        );
         assert.include(content, "what: Invented maintenance");
         assert.include(content, "trust: owner");
         assert.include(content, `chat: ${chat.chatId}`);
@@ -642,7 +638,7 @@ it.live(
         const writerService = yield* Writer.MemoryWriter;
         yield* writerService.discard(orgId, "fixture-wakeup");
         yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'fixture-wakeup'`;
-        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids) SELECT 'restart-wakeup', org_id, agent_id, thread_id, run_id, model, started_at, 'running', event_ids FROM kin_wakeups WHERE wakeup_id = 'fixture-wakeup'`;
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids, audience) SELECT 'restart-wakeup', org_id, agent_id, thread_id, run_id, model, started_at, 'running', event_ids, audience FROM kin_wakeups WHERE wakeup_id = 'fixture-wakeup'`;
         yield* sql`UPDATE kin_events SET wakeup_id = 'restart-wakeup' WHERE wakeup_id = 'fixture-wakeup'`;
         yield* writerService.stage(orgId, "restart-wakeup", {
           path: "claims/lost-claim.md",
@@ -687,7 +683,7 @@ it.live(
           runId: run.id,
         });
         const shadowRun = yield* startWakeupRun(threadId, "shadow-wakeup");
-        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids) SELECT 'shadow-wakeup', org_id, agent_id, thread_id, ${shadowRun.id}, model, started_at, 'running', event_ids FROM kin_wakeups WHERE wakeup_id = 'fixture-wakeup'`;
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids, audience) SELECT 'shadow-wakeup', org_id, agent_id, thread_id, ${shadowRun.id}, model, started_at, 'running', event_ids, audience FROM kin_wakeups WHERE wakeup_id = 'fixture-wakeup'`;
         yield* sql`UPDATE kin_events SET wakeup_id = 'shadow-wakeup' WHERE wakeup_id = 'restart-wakeup'`;
         yield* sql`UPDATE kin_leads SET level = 'L0' WHERE agent_id = ${agentId}`;
         yield* sql`INSERT INTO kin_chat_levels (org_id, agent_id, chat_id, level, level_since) VALUES (${orgId}, ${agentId}, ${chat.chatId}, 'L0', 0)`;
@@ -732,7 +728,7 @@ it.live(
           runId: shadowRun.id,
         });
         const cancelRun = yield* startWakeupRun(threadId, "cancel-wakeup");
-        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids) SELECT 'cancel-wakeup', org_id, agent_id, thread_id, ${cancelRun.id}, model, started_at, 'running', event_ids FROM kin_wakeups WHERE wakeup_id = 'fixture-wakeup'`;
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids, audience) SELECT 'cancel-wakeup', org_id, agent_id, thread_id, ${cancelRun.id}, model, started_at, 'running', event_ids, audience FROM kin_wakeups WHERE wakeup_id = 'fixture-wakeup'`;
         yield* sql`UPDATE kin_events SET wakeup_id = 'cancel-wakeup' WHERE wakeup_id = 'shadow-wakeup'`;
         yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at) VALUES ('other-lead', ${orgId}, 'Other Lead', 'lead', ${person!.personId}, '2026-11-08T00:00:00.000Z')`;
         yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, thread_id, models_json, worker_projects_json, owner_chat_id) VALUES ('other-lead', ${orgId}, 'Other Lead', 'L2', 0, 'other-lead-thread', '{}', '[]', ${chat.chatId})`;

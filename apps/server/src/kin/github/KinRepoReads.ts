@@ -9,7 +9,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { HttpClient } from "effect/http";
 
-import { SHARED_GITHUB, turnAudience } from "../lead/Audience.ts";
+import { SHARED_GITHUB, effectiveAudience } from "../lead/Audience.ts";
 
 import { KinGithubRepoScope } from "../triggers/githubEvents.ts";
 import { gitHubAnswer, isGitHubRateLimit, repoPath } from "./githubRest.ts";
@@ -246,7 +246,7 @@ const make = Effect.gen(function* () {
   // The owner's repos are the owner's context; a turn someone else reads gets none of it,
   // including a reminder such a turn set up, whose stored origin keeps it shared.
   const spend = Effect.fnUntraced(function* (turn: KinReadTurn) {
-    const audience = yield* turnAudience(turn).pipe(
+    const audience = yield* effectiveAudience(turn).pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
     );
     const { wakeupId } = turn;

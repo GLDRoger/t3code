@@ -26,13 +26,13 @@ import { isSqlError } from "effect/sql/SqlError";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
-import { SHARED_NOTES, turnAudience } from "./Audience.ts";
+import { SHARED_NOTES, SHARED_REFUSAL, effectiveAudience } from "./Audience.ts";
 import * as KinLevels from "./KinLevels.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import * as Cache from "../memory/MemoryCache.ts";
 import { MemoryItemError, memoryDateMillis } from "../memory/frontMatter.ts";
-import { deferralOrigin } from "../triggers/deferrals.ts";
+import { deferralOrigin } from "../triggers/deferralOrigin.ts";
 import { cancelDeferralRun } from "../triggers/KinTriggerService.ts";
 import { scheduledTaskTriggerId } from "../widgets/scheduledTaskCard.ts";
 
@@ -332,11 +332,19 @@ const make = Effect.gen(function* () {
       Effect.provideService(KinIdentity, identity),
       Effect.provideService(SqlClient.SqlClient, sql),
     );
-  /** The lead's notes are the owner's: a turn someone else reads neither sees nor changes them. */
-  const notes = Effect.fn("LeadMemory.notes")(function* (scope: McpInvocationScope) {
+  /**
+   * The lead's notes, reminders and scheduled tasks are the owner's: a turn someone else reads
+   * neither sees nor changes them.
+   */
+  const notes = Effect.fn("LeadMemory.notes")(function* (
+    scope: McpInvocationScope,
+    refusal: string = SHARED_NOTES,
+  ) {
     const ctx = yield* resolve(scope);
-    const audience = yield* turnAudience(ctx).pipe(Effect.provideService(SqlClient.SqlClient, sql));
-    if (audience !== "owner_only") return yield* invalid(SHARED_NOTES);
+    const audience = yield* effectiveAudience(ctx).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+    if (audience !== "owner_only") return yield* invalid(refusal);
     return ctx;
   });
   const checkSource = Effect.fn("LeadMemory.checkSource")(function* (
@@ -549,7 +557,7 @@ const make = Effect.gen(function* () {
       );
     }, Effect.mapError(failure)),
     defer: Effect.fn("LeadMemory.defer")(function* (scope, input) {
-      const ctx = yield* resolve(scope);
+      const ctx = yield* notes(scope, SHARED_REFUSAL);
       return yield* locked(
         ctx.orgId,
         ctx.agentId,
@@ -606,7 +614,7 @@ const make = Effect.gen(function* () {
       );
     }, Effect.mapError(failure)),
     schedule: Effect.fn("LeadMemory.schedule")(function* (scope, input) {
-      const ctx = yield* resolve(scope);
+      const ctx = yield* notes(scope, SHARED_REFUSAL);
       return yield* locked(
         ctx.orgId,
         ctx.agentId,
@@ -677,7 +685,7 @@ const make = Effect.gen(function* () {
       );
     }, Effect.mapError(failure)),
     cancel: Effect.fn("LeadMemory.cancel")(function* (scope, input) {
-      const ctx = yield* resolve(scope);
+      const ctx = yield* notes(scope, SHARED_REFUSAL);
       return yield* locked(
         ctx.orgId,
         ctx.agentId,
@@ -704,8 +712,9 @@ const make = Effect.gen(function* () {
           const ctx = yield* resolve(scope, true);
           // The turn still ends; only an owner-only turn's own words reach the journal.
           const shared =
-            (yield* turnAudience(ctx).pipe(Effect.provideService(SqlClient.SqlClient, sql))) !==
-            "owner_only";
+            (yield* effectiveAudience(ctx).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            )) !== "owner_only";
           yield* receipt(
             ctx,
             "end",

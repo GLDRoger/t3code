@@ -24,7 +24,7 @@ import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
-import { turnAudience } from "./Audience.ts";
+import { effectiveAudience } from "./Audience.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import { resolveLead } from "./LeadMemory.ts";
 import { messageBodyLimit } from "./LeadPrompt.ts";
@@ -192,7 +192,7 @@ const make = Effect.gen(function* () {
     if (self === undefined) return yield* missing();
     const events = yield* wakeEvents(ctx);
     if (
-      (yield* turnAudience(ctx).pipe(Effect.provideService(SqlClient.SqlClient, sql))) ===
+      (yield* effectiveAudience(ctx).pipe(Effect.provideService(SqlClient.SqlClient, sql))) ===
       "owner_only"
     )
       return {

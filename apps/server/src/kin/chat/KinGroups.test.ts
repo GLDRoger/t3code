@@ -31,7 +31,7 @@ import * as Groups from "./KinGroups.ts";
 import * as Identity from "./KinIdentity.ts";
 import { environment } from "./TaskCard.testkit.ts";
 // After the chat service: the two import each other, and this order is the one that loads.
-import { deferralOrigin } from "../triggers/deferrals.ts";
+import { deferralOrigin } from "../triggers/deferralOrigin.ts";
 
 const at = "1970-01-01T00:00:00.000Z";
 const layer = Layer.mergeAll(Groups.layer, Service.layer, KinEventQueue.layer).pipe(

@@ -4,6 +4,7 @@ import MessageAttachments from "./migrations/K040_MessageAttachments.ts";
 import GroupLead from "./migrations/K041_GroupLead.ts";
 import ReactionWakes from "./migrations/K042_ReactionWakes.ts";
 import WakeupAudience from "./migrations/K043_WakeupAudience.ts";
+import WakeupSharedSince from "./migrations/K044_WakeupSharedSince.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -88,6 +89,7 @@ const loader = Migrator.fromRecord({
   "41_GroupLead": GroupLead,
   "42_ReactionWakes": ReactionWakes,
   "43_WakeupAudience": WakeupAudience,
+  "44_WakeupSharedSince": WakeupSharedSince,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

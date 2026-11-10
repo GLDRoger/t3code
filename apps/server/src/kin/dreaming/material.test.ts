@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import { KinOrgId } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -62,5 +63,90 @@ it.effect("attributes each journal entry to the lead that wrote it", () =>
     );
     assert.include(material.entries[1]?.text, "Launch post Friday.");
     assert.notInclude(material.entries[1]?.text, "Merged the fix.");
+  }).pipe(Effect.provide(layer)),
+);
+
+// Review of 0a2a431b26: a nightly dream read every chat, so a teammate's words and a lead's reply
+// to them could become the owner's memory.
+it.effect("leaves out what a teammate could read or steer: their chats and shared turns", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES (${orgId}, 'Org', ${at})`;
+    for (const person of ["owner", "teammate"])
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES (${person}, ${orgId}, ${person}, ${person}, ${at})`;
+    yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+      VALUES ('lead', ${orgId}, 'Lead', 'lead', 'owner', ${at})`;
+    for (const chat of ["dm", "team"])
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+        VALUES (${chat}, ${orgId}, 'team_group', 0, ${at})`;
+    yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+      VALUES ('lead', ${orgId}, 'Lead', 0, '{}', '[]', 'dm')`;
+    for (const [member, chat, kind, who, role] of [
+      ["dm-owner", "dm", "person", "owner", "owner"],
+      ["dm-lead", "dm", "agent", "lead", "member"],
+      ["team-owner", "team", "person", "owner", "owner"],
+      ["team-mate", "team", "person", "teammate", "member"],
+      ["team-lead", "team", "agent", "lead", "member"],
+    ] as const)
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, agent_id, role, joined_at)
+        VALUES (${member}, ${orgId}, ${chat}, ${kind}, ${kind === "person" ? who : null},
+          ${kind === "agent" ? who : null}, ${role}, ${at})`;
+    // The teammate has left, but was there to read it.
+    yield* sql`UPDATE kin_chat_members SET left_at = ${at} WHERE member_id = 'team-mate'`;
+    const hour = (h: number) => Date.parse(`2026-11-10T0${h}:00:00.000Z`);
+    for (const [id, audience, thread, start] of [
+      ["w-owner", "owner_only", "kin:one", 1],
+      ["w-shared", "shared", "kin-shared:two", 2],
+      // Built for the owner alone, then found readable by someone else mid-turn.
+      ["w-widened", "owner_only", "kin:three", 3],
+    ] as const)
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, ended_at,
+          status, event_ids, audience, shared_since)
+        VALUES (${id}, ${orgId}, 'lead', ${thread}, 'model', ${hour(start)}, ${hour(start) + 60_000},
+          'completed', '[]', ${audience}, ${id === "w-widened" ? hour(start) + 1 : null})`;
+    let seq = 0;
+    const say = (chat: string, member: string, body: string, minute: number, thread?: string) => {
+      seq++;
+      const createdAt = DateTime.formatIso(DateTime.makeUnsafe(minute));
+      return thread === undefined
+        ? sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+              author_member_id, author_role, kind, body, mentions_json, status, created_at)
+            VALUES (${`m${seq}`}, ${orgId}, ${chat}, ${seq},
+              'human', ${member === "team-mate" ? "teammate" : "owner"}, ${member},
+              ${member === "team-mate" ? "member" : "owner"}, 'text', ${body}, '[]', 'posted', ${createdAt})`
+        : sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_agent_id,
+              author_owner_person_id, author_thread_id, author_member_id, author_role, kind, body,
+              mentions_json, status, created_at)
+            VALUES (${`m${seq}`}, ${orgId}, ${chat}, ${seq}, 'agent', 'lead', 'owner', ${thread},
+              ${member}, 'member', 'text', ${body}, '[]', 'posted', ${createdAt})`;
+    };
+    yield* say("dm", "dm-owner", "Invented owner note", hour(1));
+    yield* say("dm", "dm-lead", "Invented private reply", hour(1) + 30_000, "kin:one");
+    yield* say("team", "team-mate", "Invented teammate ask", hour(2));
+    yield* say("team", "team-lead", "Invented team reply", hour(2) + 30_000, "kin-shared:two");
+    // A shared turn answering in the owner's chat, as a teammate's reminder does.
+    yield* say("dm", "dm-lead", "Invented shared reply", hour(3) + 30_000, "kin:three");
+    const entry = (wakeup: string, line: string) =>
+      `\n## 09:00 · wake-up ${wakeup} · lead · L2\n\nOutcome: completed\nEvents: e\n\n- ${line}\n`;
+    const material = yield* collectMaterial({
+      orgId,
+      from: 0,
+      until: Date.parse("2026-11-10T12:00:00.000Z"),
+      full: false,
+      timeZone: "UTC",
+      files: new Map([
+        [
+          "journal/2026/11-10.md",
+          entry("w-owner", "Invented owner journal") +
+            entry("w-shared", "Invented shared journal") +
+            entry("w-widened", "Invented widened journal"),
+        ],
+      ]),
+    });
+    assert.deepStrictEqual(
+      material.entries.map((entry) => entry.text.trim().split("\n").at(-1)),
+      ["- Invented owner journal", "Invented owner note", "Invented private reply"],
+    );
   }).pipe(Effect.provide(layer)),
 );

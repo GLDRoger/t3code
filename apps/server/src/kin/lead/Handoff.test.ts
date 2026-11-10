@@ -28,7 +28,8 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
-import { deferralOrigin } from "../triggers/deferrals.ts";
+import { deferralOrigin } from "../triggers/deferralOrigin.ts";
+import { recordAudience, turnAudience } from "./Audience.ts";
 import * as Handoff from "./Handoff.ts";
 import * as KinLevels from "./KinLevels.ts";
 
@@ -95,8 +96,12 @@ const setup = Effect.gen(function* () {
     clientMessageId: "ask",
   });
   /** The event a message in `chatId` becomes for `agentId`, claimed by its running wake-up. */
-  const claim = (eventId: string, agentId: KinAgentId, event: Record<string, unknown>) =>
-    sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
+  const claim = Effect.fn("HandoffTest.claim")(function* (
+    eventId: string,
+    agentId: KinAgentId,
+    event: Record<string, unknown>,
+  ) {
+    yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
       VALUES (${eventId}, ${orgId}, ${agentId}, 'chat.message', 'P0', ${JSON.stringify({
         _tag: "chat.message",
         orgId,
@@ -109,6 +114,10 @@ const setup = Effect.gen(function* () {
         messageId: message.messageId,
         ...event,
       })}, 0, 0, 'claimed', ${`${agentId}-wake`})`;
+    // As building the prompt for what it claimed records it.
+    const turn = { orgId, agentId, wakeupId: `${agentId}-wake` };
+    yield* recordAudience(turn, yield* turnAudience(turn));
+  });
   yield* claim("ask-event", chief, {});
   return { services, sql, orgId, owner, chats, chiefChat, techChat, message, claim, addLead };
 });

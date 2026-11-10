@@ -43,6 +43,7 @@ import { sourceControlDefinitions } from "../../sourceControl/sourceControlDefin
 import { KinGithubRepoScope } from "../triggers/githubEvents.ts";
 import { KinBudget } from "./KinBudget.ts";
 import * as KinLevels from "./KinLevels.ts";
+import { SHARED_REFUSAL, effectiveAudience, turnChat } from "./Audience.ts";
 import { isOrgPaused, STOP_REASON } from "./orgState.ts";
 import { resolveLead } from "./LeadMemory.ts";
 import { quote } from "./LeadPrompt.ts";
@@ -572,6 +573,13 @@ const make = Effect.gen(function* () {
     const ctx = yield* lead(scope);
     const plan = yield* sql.withTransaction(
       Effect.gen(function* () {
+        // The owner's notes never go to work started where someone else reads.
+        if (
+          (input.memoryItemIds?.length ?? 0) > 0 &&
+          (yield* effectiveAudience(ctx).pipe(Effect.provideService(SqlClient.SqlClient, sql))) !==
+            "owner_only"
+        )
+          return yield* denied(SHARED_REFUSAL);
         const config = yield* leadConfig(ctx);
         const event = yield* sourceEvent(ctx, input.sourceEventId);
         if ((input.kind === "review") !== (input.reviewOf !== undefined))
@@ -848,7 +856,20 @@ const make = Effect.gen(function* () {
     input: typeof StopInput.Type,
   ) {
     const ctx = yield* lead(scope);
-    const record = yield* sql.withTransaction(worker(ctx, input.workerId));
+    const record = yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const stored = yield* worker(ctx, input.workerId);
+        // Its own lead stops it, from an owner-only turn or from the chat that asked for it.
+        const here = yield* turnChat(ctx).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+        if (
+          stored.chatId !== here?.chatId &&
+          (yield* effectiveAudience(ctx).pipe(Effect.provideService(SqlClient.SqlClient, sql))) !==
+            "owner_only"
+        )
+          return yield* missing();
+        return stored;
+      }),
+    );
     if (record.environmentId === null || !bound(record))
       return { workerId: input.workerId, stopped: false };
     const environmentId = record.environmentId;

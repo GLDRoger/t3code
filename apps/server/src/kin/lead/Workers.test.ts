@@ -58,7 +58,8 @@ import { KinGithubRepoScope } from "../triggers/githubEvents.ts";
 import { KinBudget } from "./KinBudget.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import * as Registry from "./KinLeadRegistry.ts";
-import { recordAudience, turnAudience } from "./Audience.ts";
+import { SHARED_REFUSAL, recordAudience, turnAudience } from "./Audience.ts";
+import { sharedToolAllowed } from "./SharedTools.ts";
 import { KinLevelGate } from "./LevelGate.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
 import * as Publish from "./workerPublish.ts";
@@ -93,6 +94,8 @@ const delegateInput = {
   memoryItemIds: [KinMemoryItemId.make("decision-1")],
   sourceEventId: "lead-event",
 };
+// Asked from a chat the turn doesn't own alone, work starts without the owner's notes.
+const teamDelegate = { ...delegateInput, memoryItemIds: [] };
 /** A build worker's report as the lead gets it: Kin's own PR replaces any the worker claims. */
 const published = (body: typeof report) => ({
   ...body,
@@ -156,6 +159,9 @@ const setup = Effect.fn("WorkersTest.setup")(function* (level = "L2") {
     messageId: message.messageId,
   };
   yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id) VALUES ('lead-event', ${orgId}, ${leadId}, 'chat.message', 'P0', ${JSON.stringify(event)}, 0, 0, 'claimed', 'wake')`;
+  // What building the prompt records before the lead's tools run.
+  const turn = { orgId, agentId: leadId, wakeupId: "wake" };
+  yield* recordAudience(turn, yield* turnAudience(turn));
   const other = KinOrgId.make("other-org");
   yield* sql`INSERT INTO kin_orgs VALUES (${other}, 'Other', '1970-01-01T00:00:00.000Z')`;
   yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('other-owner', ${other}, 'other', 'Other', '1970-01-01T00:00:00.000Z')`;
@@ -938,7 +944,7 @@ it.effect.each([
         // The asking message came from the group.
         yield* ctx.sql`UPDATE kin_events SET json = json_set(json, '$.chatId', 'team')
           WHERE event_id = 'lead-event'`;
-        const result = yield* workers.delegate(scope, delegateInput).pipe(Effect.result);
+        const result = yield* workers.delegate(scope, teamDelegate).pipe(Effect.result);
         if (starts) {
           assert.strictEqual(result._tag, "Success");
           assert.lengthOf(remote.tools("t3_thread_launch"), 1);
@@ -960,7 +966,7 @@ it.effect("a chat that can't start work can't reach a worker started in one that
         yield* ctx.sql`UPDATE kin_events SET json = json_set(json, '$.chatId', 'team')
           WHERE event_id = 'lead-event'`;
         yield* askFrom(ctx.sql, "side-event", "side");
-        const started = yield* workers.delegate(scope, delegateInput);
+        const started = yield* workers.delegate(scope, teamDelegate);
         const followUp = (sourceEventId: string) =>
           workers.followUp(scope, { workerId: started.workerId, brief: "Go on.", sourceEventId });
         assert.include(yield* Effect.flip(followUp("side-event")), { reason: "not_allowed" });
@@ -975,7 +981,7 @@ it.effect("a chat that can't start work can't reach a worker started in one that
           VALUES (${ctx.orgId}, ${leadId}, 'team', 'L1', 0)`;
         yield* askFrom(ctx.sql, "dm-event", ctx.chat.chatId);
         const review = workers.delegate(scope, {
-          ...delegateInput,
+          ...teamDelegate,
           kind: "review",
           reviewOf: started.workerId,
           model: claude,
@@ -1044,7 +1050,7 @@ it.effect.each([
           Effect.provideService(SqlClient.SqlClient, ctx.sql),
         );
         const started = yield* workers
-          .delegate(scope, { ...delegateInput, sourceEventId: due!.eventId })
+          .delegate(scope, { ...teamDelegate, sourceEventId: due!.eventId })
           .pipe(Effect.result);
         const [owner] = yield* ctx.sql<{ personId: KinPersonId }>`SELECT owner_person_id AS
           "personId" FROM kin_agents WHERE agent_id = ${leadId}`;
@@ -1509,7 +1515,7 @@ it.effect(
         // every repository the owner has.
         yield* group(ctx.sql, ctx.orgId, "side", "teammate");
         yield* askFrom(ctx.sql, "side-event", "side");
-        const fromSide = { ...delegateInput, sourceEventId: "side-event" };
+        const fromSide = { ...teamDelegate, sourceEventId: "side-event" };
         const outside = yield* Effect.flip(
           workers.delegate(scope, { ...fromSide, project: "GLDRoger/t3code" }),
         );
@@ -1528,7 +1534,7 @@ it.effect(
 
         // Work the owner's chat started outside the list can't be continued from the teammate's.
         const owners = yield* workers.delegate(scope, {
-          ...delegateInput,
+          ...teamDelegate,
           project: "GLDRoger/t3code",
         });
         yield* ctx.sql`UPDATE kin_workers SET chat_id = 'side'
@@ -1606,12 +1612,12 @@ it.effect("a due deferral asked from someone else's chat holds the whole wake-up
       // Even the owner's own message in the same batch can't lend the deferral its reach.
       assert.include(
         yield* Effect.flip(
-          workers.delegate(scope, { ...delegateInput, project: "GLDRoger/t3code" }),
+          workers.delegate(scope, { ...teamDelegate, project: "GLDRoger/t3code" }),
         ),
         { reason: "not_allowed" },
       );
       assert.lengthOf(remote.tools("t3_thread_launch"), 0);
-      yield* workers.delegate(scope, delegateInput);
+      yield* workers.delegate(scope, teamDelegate);
       assert.lengthOf(remote.tools("t3_thread_launch"), 1);
     }),
   ),
@@ -1729,6 +1735,87 @@ it.effect("stopping a worker closes its card and a follow-up reopens the same ca
       assert.notStrictEqual(keys[0], keys[1]);
     }),
   ),
+);
+
+// Review of 0a2a431b26: the owner asking in a group a teammate reads could hand a worker the
+// owner's notes, and a teammate's turn could stop work started in the owner's direct chat.
+it.effect(
+  "from a group a teammate reads, work starts without notes and is stopped only there",
+  () =>
+    run(({ ctx, remote, workers }) =>
+      Effect.gen(function* () {
+        const own = yield* workers.delegate(scope, delegateInput);
+        assert.ok("workerId" in own);
+        const sql = ctx.sql;
+        const at = "1970-01-01T00:00:00.000Z";
+        yield* group(sql, ctx.orgId, "team", "owner");
+        const [lead] = yield* sql<{ personId: string }>`SELECT owner_person_id AS "personId"
+        FROM kin_agents WHERE agent_id = ${leadId}`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('team-mate', ${ctx.orgId}, 'team', 'person', 'teammate', 'member', ${at})`;
+        /** The next turn, answering only `who`'s message in the group, as its prompt recorded it. */
+        const turnOn = Effect.fn("WorkersTest.turnOn")(function* (
+          eventId: string,
+          who: { readonly personId: string; readonly memberId: string },
+        ) {
+          yield* sql`UPDATE kin_events SET state = 'done', wakeup_id = NULL WHERE wakeup_id = 'wake'`;
+          yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+            author_member_id, author_role, kind, body, mentions_json, status, created_at)
+          VALUES (${eventId}, ${ctx.orgId}, 'team',
+            (SELECT COALESCE(MAX(seq), 0) + 1 FROM kin_messages WHERE chat_id = 'team'), 'human',
+            ${who.personId}, ${who.memberId}, 'member', 'text', 'Invented ask', '[]', 'posted', ${at})`;
+          yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
+          VALUES (${eventId}, ${ctx.orgId}, ${leadId}, 'chat.message', 'P0', ${JSON.stringify({
+            _tag: "chat.message",
+            orgId: ctx.orgId,
+            agentId: leadId,
+            eventId,
+            receivedAt: at,
+            dedupeKey: null,
+            provenance: { _tag: "human", ...who },
+            chatId: "team",
+            messageId: eventId,
+          })}, 0, 0, 'claimed', 'wake')`;
+          yield* sql`UPDATE kin_wakeups SET audience = NULL, event_ids = json_array(${eventId})
+          WHERE wakeup_id = 'wake'`;
+          const turn = { orgId: ctx.orgId, agentId: leadId, wakeupId: "wake" };
+          yield* recordAudience(turn, yield* turnAudience(turn));
+          return turn;
+        });
+        // The owner asks in the group while the teammate stays silent.
+        const asked = yield* turnOn("owner-in-team", {
+          personId: lead!.personId,
+          memberId: "team-owner",
+        });
+        const launches = remote.tools("t3_thread_launch").length;
+        assert.strictEqual(
+          (yield* Effect.flip(
+            workers.delegate(scope, { ...delegateInput, sourceEventId: "owner-in-team" }),
+          )).message,
+          SHARED_REFUSAL,
+        );
+        assert.lengthOf(remote.tools("t3_thread_launch"), launches);
+        assert.isFalse(yield* sharedToolAllowed(asked, "kin_delegate", delegateInput));
+        assert.isTrue(yield* sharedToolAllowed(asked, "kin_delegate", teamDelegate));
+        const started = yield* workers.delegate(scope, {
+          ...teamDelegate,
+          sourceEventId: "owner-in-team",
+        });
+        assert.ok("workerId" in started);
+        assert.lengthOf(remote.tools("t3_thread_launch"), launches + 1);
+        // Then a turn the teammate set off, naming the owner's worker by its id.
+        const mate = yield* turnOn("mate-in-team", { personId: "teammate", memberId: "team-mate" });
+        const interrupts = remote.tools("t3_thread_interrupt").length;
+        assert.isFalse(
+          yield* sharedToolAllowed(mate, "kin_worker_stop", { workerId: own.workerId }),
+        );
+        assert.strictEqual(
+          (yield* Effect.flip(workers.stop(scope, { workerId: own.workerId }))).reason,
+          "not_found",
+        );
+        assert.lengthOf(remote.tools("t3_thread_interrupt"), interrupts);
+      }),
+    ),
 );
 
 it.effect(

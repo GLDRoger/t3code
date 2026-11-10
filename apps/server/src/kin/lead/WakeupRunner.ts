@@ -42,7 +42,12 @@ import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinBudget from "./KinBudget.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
-import { SHARED_THREAD_PREFIX, audienceChanged, recordedAudience } from "./Audience.ts";
+import {
+  SHARED_THREAD_PREFIX,
+  audienceChanged,
+  effectiveAudience,
+  recordedAudience,
+} from "./Audience.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import { nonClaudeLeadModel } from "./leadModels.ts";
 import * as RoutineContent from "./RoutineContent.ts";
@@ -187,6 +192,11 @@ const make = Effect.gen(function* () {
   const paused = (orgId: KinOrgId) =>
     isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
   const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
+  const sharedTurn = (row: typeof RunningRow.Type) =>
+    effectiveAudience(row).pipe(
+      provideSql,
+      Effect.map((audience) => audience === "shared"),
+    );
   const threadActivity = Effect.fn("WakeupRunner.threadActivity")(function* (orgId: KinOrgId) {
     const rows = yield* sql<{
       threadId: string;
@@ -438,7 +448,10 @@ const make = Effect.gen(function* () {
             rootRunId: runId,
             rescueUntil: status === "completed" ? deadline() : null,
           });
-        if (Option.isSome(writer)) {
+        // A turn someone else could read leaves nothing in memory, not even its journal entry.
+        if (Option.isSome(writer) && (yield* sharedTurn(row)))
+          yield* writer.value.discard(row.orgId, row.wakeupId);
+        else if (Option.isSome(writer)) {
           const ended =
             yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId} AND call_key = 'end'`;
           if (ended.length === 0)
@@ -989,7 +1002,9 @@ const make = Effect.gen(function* () {
             if (projection === undefined || run === undefined) {
               const receipts =
                 yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId} LIMIT 1`;
-              if (receipts.length > 0 && Option.isSome(writer)) {
+              if (receipts.length > 0 && Option.isSome(writer) && (yield* sharedTurn(row)))
+                yield* writer.value.discard(row.orgId, row.wakeupId);
+              else if (receipts.length > 0 && Option.isSome(writer)) {
                 yield* writer.value.commitWakeup(row.orgId, row.wakeupId, "failed").pipe(
                   Effect.tap(
                     ({ commit }) =>

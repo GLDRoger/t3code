@@ -1,13 +1,15 @@
 import {
   KinChatError,
   type KinAgentIntent,
-  type KinChatId,
+  KinChatId,
   type KinMessage,
-  type KinMessageId,
+  KinMessageId,
   type KinMessagesSendInput,
   type KinReaction,
   type KinReactionEmoji,
   type KinWidget,
+  KinAgentId,
+  KinOrgId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -18,7 +20,15 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import type { AgentIdentity } from "../chat/KinIdentity.ts";
-import { AUDIENCE_MOVED, SHARED_OTHER_CHAT, audienceChanged, turnAudience } from "./Audience.ts";
+import {
+  AUDIENCE_MOVED,
+  PRIVATE_DESTINATION,
+  SHARED_ELSEWHERE,
+  SHARED_OTHER_CHAT,
+  askedIn,
+  destination,
+  effectiveAudience,
+} from "./Audience.ts";
 import * as KinLevels from "./KinLevels.ts";
 
 type PostInput = KinMessagesSendInput & { readonly intent: KinAgentIntent };
@@ -61,6 +71,14 @@ export class KinLevelGate extends Context.Service<
 >()("t3/kin/lead/LevelGate/KinLevelGate") {}
 
 const isChatError = Schema.is(KinChatError);
+type Turn = { readonly orgId: KinOrgId; readonly agentId: KinAgentId; readonly wakeupId: string };
+/** An owner-only turn tried to write where someone else reads; nothing is written there. */
+class PrivateDestination extends Schema.TaggedError<PrivateDestination>()("PrivateDestination", {
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+  wakeupId: Schema.String,
+}) {}
+const isPrivateDestination = Schema.is(PrivateDestination);
 const isLevelRefused = Schema.is(KinLevels.KinLevelRefused);
 
 const make = Effect.gen(function* () {
@@ -104,6 +122,27 @@ const make = Effect.gen(function* () {
     message: "You can't post in this chat. Nothing was sent.",
   });
 
+  // Said once per wake-up in the lead's owner chat, so a routine's lost post isn't silent.
+  const tellOwner = Effect.fn("KinLevelGate.tellOwner")(
+    function* (turn: Turn, chatId: KinChatId) {
+      const [row] = yield* sql<{ ownerChatId: string; name: string; title: string | null }>`
+        SELECT l.owner_chat_id AS "ownerChatId", l.name, c.title FROM kin_leads l
+        JOIN kin_chats c ON c.org_id = l.org_id AND c.chat_id = ${chatId}
+        WHERE l.org_id = ${turn.orgId} AND l.agent_id = ${turn.agentId}
+        ORDER BY l.agent_id`;
+      if (row === undefined) return;
+      yield* chat.notice({
+        orgId: turn.orgId,
+        chatId: KinChatId.make(row.ownerChatId),
+        messageId: KinMessageId.make(`kin-private-destination:${turn.wakeupId}`),
+        body: `${row.name} couldn't post in ${row.title ?? "a group"}: other people are in it.`,
+      });
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin could not tell the owner about a withheld post", { cause }),
+    ),
+  );
+
   /**
    * Runs `allowed` in one transaction with the check; refuses below L1 outside the owner's DM.
    * The level is the lower of the target chat's and the asking wake-up's, so a chat can't post
@@ -115,69 +154,102 @@ const make = Effect.gen(function* () {
     chatId: KinChatId,
     allowed: Effect.Effect<A, E>,
   ): Effect.Effect<A, KinChatError> =>
-    sql
-      .withTransaction(
-        Effect.gen(function* () {
-          const target = yield* KinLevels.effectiveLevel({
-            orgId: agent.orgId,
-            agentId: agent.agentId,
-            chatId,
-          }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
-          const level =
-            agent.wakeupId === undefined
-              ? target
-              : KinLevels.lowest(
-                  target,
-                  yield* KinLevels.wakeupLevel({
-                    orgId: agent.orgId,
-                    agentId: agent.agentId,
-                    wakeupId: agent.wakeupId,
-                  }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
-                );
-          if (!KinLevels.atLeast(level, "L1") && !(yield* isOwnerChat(agent, chatId)))
-            return yield* notAllowed;
-          // A prompt built for the owner alone says nothing once someone else can read it.
-          const turn = yield* turnOf(agent);
-          if (
-            turn !== undefined &&
-            (yield* audienceChanged(turn).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
+    // A turn found shared stays shared: settled before the write's transaction, which a
+    // refusal rolls back. The destination is checked again inside it.
+    turnOf(agent).pipe(
+      Effect.flatMap((turn) =>
+        turn === undefined
+          ? Effect.void
+          : effectiveAudience(turn).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+      ),
+      Effect.ignore,
+      Effect.andThen(
+        sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const target = yield* KinLevels.effectiveLevel({
+                orgId: agent.orgId,
+                agentId: agent.agentId,
+                chatId,
+              }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+              const level =
+                agent.wakeupId === undefined
+                  ? target
+                  : KinLevels.lowest(
+                      target,
+                      yield* KinLevels.wakeupLevel({
+                        orgId: agent.orgId,
+                        agentId: agent.agentId,
+                        wakeupId: agent.wakeupId,
+                      }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+                    );
+              if (!KinLevels.atLeast(level, "L1") && !(yield* isOwnerChat(agent, chatId)))
+                return yield* notAllowed;
+              // Authorised against the destination chat, in this transaction: a shared turn speaks
+              // only in its own chat, an owner-only prompt only where every human is the owner.
+              const turn = yield* turnOf(agent);
+              if (turn === undefined) return yield* notAllowed;
+              const where = yield* destination(turn, chatId).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+              );
+              if (where === "moved")
+                return yield* new KinChatError({
+                  reason: "not_allowed",
+                  message: AUDIENCE_MOVED,
+                });
+              if (where === "elsewhere")
+                return yield* new KinChatError({
+                  reason: "not_allowed",
+                  message: SHARED_ELSEWHERE,
+                });
+              if (where === "private") return yield* new PrivateDestination(turn);
+              return yield* allowed;
+            }),
           )
-            return yield* new KinChatError({ reason: "not_allowed", message: AUDIENCE_MOVED });
-          return yield* allowed;
-        }),
-      )
-      .pipe(
-        Effect.catch((error) =>
-          isChatError(error)
-            ? Effect.fail(error)
-            : isLevelRefused(error)
-              ? Effect.fail(notAllowed)
-              : Effect.logError(`Kin ${operation} failed`, error).pipe(
-                  Effect.andThen(
-                    Effect.fail(
-                      new KinChatError({ reason: "unavailable", message: "Kin is unavailable." }),
+          .pipe(
+            Effect.catch((error) =>
+              isPrivateDestination(error)
+                ? tellOwner(error, chatId).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        new KinChatError({ reason: "not_allowed", message: PRIVATE_DESTINATION }),
+                      ),
                     ),
-                  ),
-                ),
-        ),
-      );
+                  )
+                : isChatError(error)
+                  ? Effect.fail(error)
+                  : isLevelRefused(error)
+                    ? Effect.fail(notAllowed)
+                    : Effect.logError(`Kin ${operation} failed`, error).pipe(
+                        Effect.andThen(
+                          Effect.fail(
+                            new KinChatError({
+                              reason: "unavailable",
+                              message: "Kin is unavailable.",
+                            }),
+                          ),
+                        ),
+                      ),
+            ),
+          ),
+      ),
+    );
 
   const read = Effect.fn("KinLevelGate.read")(
     function* (agent: AgentIdentity, input: ReadInput) {
       const turn = yield* turnOf(agent);
       if (turn === undefined) return yield* notAllowed;
-      const audience = yield* turnAudience(turn).pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
-      );
-      if (audience !== "owner_only") {
-        const asked = yield* sql`SELECT 1 FROM kin_events
-          WHERE org_id = ${turn.orgId} AND agent_id = ${turn.agentId} AND wakeup_id = ${turn.wakeupId}
-            AND tag IN ('chat.message', 'widget.action', 'chat.reaction')
-            AND json_extract(json, '$.chatId') = ${input.chatId}
-          LIMIT 1`.pipe(Effect.mapError(toPersistenceSqlError("KinLevelGate.read")));
-        if (asked.length === 0)
-          return yield* new KinChatError({ reason: "not_allowed", message: SHARED_OTHER_CHAT });
-      }
+      const shared =
+        (yield* effectiveAudience(turn).pipe(Effect.provideService(SqlClient.SqlClient, sql))) ===
+        "shared";
+      if (
+        shared &&
+        !(yield* askedIn(turn, input.chatId).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.mapError(toPersistenceSqlError("KinLevelGate.read")),
+        ))
+      )
+        return yield* new KinChatError({ reason: "not_allowed", message: SHARED_OTHER_CHAT });
       return yield* chat.read(agent, input);
     },
     Effect.catchIf(

@@ -9,7 +9,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
-import { SHARED_GITHUB } from "../lead/Audience.ts";
+import { SHARED_GITHUB, recordAudience, turnAudience } from "../lead/Audience.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { repoScopeLayer } from "../triggers/githubEvents.ts";
 import * as KinGitHubApp from "./KinGitHubApp.ts";
@@ -144,6 +144,8 @@ const wakeups = Layer.effectDiscard(
       ["wake-1", asked("dm", "asked-dm", "owner", "dm-owner")],
       ["wake-2", asked("dm", "asked-dm", "owner", "dm-owner")],
       ["wake-shared", asked("room", "asked-room", "teammate", "room-teammate")],
+      // Answers the owner alone, but from before the audience was recorded.
+      ["wake-unrecorded", asked("dm", "asked-dm", "owner", "dm-owner")],
       [
         "wake-reminder",
         {
@@ -166,6 +168,9 @@ const wakeups = Layer.effectDiscard(
         VALUES (${wakeupId}, ${orgId}, ${agentId}, 'model', 0, 'completed', '[]')`;
       yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
         VALUES (${`event-${wakeupId}`}, ${orgId}, ${agentId}, ${event._tag}, 'P0', ${JSON.stringify(event)}, 0, 0, 'done', ${wakeupId})`;
+      // As building the turn's prompt records it.
+      if (wakeupId !== "wake-unrecorded")
+        yield* recordAudience(turn(wakeupId), yield* turnAudience(turn(wakeupId)));
     }
   }),
 ).pipe(Layer.provideMerge(KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory))));
@@ -194,7 +199,7 @@ const setup = (route: (request: RecordedRequest) => FakeAnswer | undefined = def
     }),
   );
   const layer = KinRepoReads.layer.pipe(
-    Layer.provide(Layer.mergeAll(app, github.layer, repoScopeLayer, wakeups)),
+    Layer.provideMerge(Layer.mergeAll(app, github.layer, repoScopeLayer, wakeups)),
     Layer.provide(
       ConfigProvider.layer(
         ConfigProvider.fromUnknown({
@@ -400,11 +405,15 @@ describe("KinRepoReads", () => {
       const { requests, mints, layer } = setup();
       return Effect.gen(function* () {
         const service = yield* reads;
+        const sql = yield* SqlClient.SqlClient;
+        // A turn found shared stays shared after the teammate leaves.
+        yield* sql`UPDATE kin_chat_members SET left_at = ${at} WHERE member_id = 'room-teammate'`;
         for (const wakeupId of [
           "wake-shared",
           "wake-reminder",
           "wake-room-reminder",
           "wake-unknown",
+          "wake-unrecorded",
         ])
           for (const failure of [
             yield* failureOf(service.repos(turn(wakeupId))),

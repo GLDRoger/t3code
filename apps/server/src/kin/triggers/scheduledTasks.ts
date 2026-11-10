@@ -40,7 +40,8 @@ import {
   scheduleOf,
   scheduledTaskTriggerId,
 } from "../widgets/scheduledTaskCard.ts";
-import { deferralOrigin, hex } from "./deferrals.ts";
+import { deferralOrigin } from "./deferralOrigin.ts";
+import { hex } from "./deferrals.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 
 /** A run more than this late (the host was off) is skipped; the next slot runs as usual. */
