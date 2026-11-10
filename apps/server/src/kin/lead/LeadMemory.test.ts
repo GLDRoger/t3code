@@ -134,7 +134,7 @@ it.live(
         }),
       );
       yield* fs.makeDirectory(`${seed}/deferrals`);
-      for (const id of ["close-me", "cancel-me", "invalidate-me"]) {
+      for (const id of ["close-me", "cancel-me", "invalidate-me", "foreign-me"]) {
         yield* fs.writeFileString(
           `${seed}/deferrals/${id}.md`,
           fixtureItem({
@@ -304,6 +304,7 @@ it.live(
           "memory_write",
           "kin_defer",
           "kin_schedule",
+          "kin_cancel",
           "kin_journal",
           "kin_github_repos",
           "kin_github_prs",
@@ -690,6 +691,58 @@ it.live(
         yield* sql`DELETE FROM kin_chat_levels WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
         assert.notInclude(yield* openDeferrals("open"), reminder.itemId);
         assert.deepStrictEqual(yield* armed(), [{ nextRunAt: Date.parse("2026-11-09T16:09:12Z") }]);
+
+        // The lead that set a reminder replaces it at once; another lead's item is refused.
+        yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'shadow-wakeup'`;
+        yield* (yield* Orchestrator.OrchestratorV2).dispatch({
+          type: "run.interrupt",
+          commandId: CommandId.make("interrupt:shadow-wakeup"),
+          threadId,
+          runId: shadowRun.id,
+        });
+        const cancelRun = yield* startWakeupRun(threadId, "cancel-wakeup");
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids) SELECT 'cancel-wakeup', org_id, agent_id, thread_id, ${cancelRun.id}, model, started_at, 'running', event_ids FROM kin_wakeups WHERE wakeup_id = 'fixture-wakeup'`;
+        yield* sql`UPDATE kin_events SET wakeup_id = 'cancel-wakeup' WHERE wakeup_id = 'shadow-wakeup'`;
+        yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at) VALUES ('other-lead', ${orgId}, 'Other Lead', 'lead', ${person!.personId}, '2026-11-08T00:00:00.000Z')`;
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, thread_id, models_json, worker_projects_json, owner_chat_id) VALUES ('other-lead', ${orgId}, 'Other Lead', 'L2', 0, 'other-lead-thread', '{}', '[]', ${chat.chatId})`;
+        yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state) VALUES ('original-event', ${orgId}, 'other-lead', 'chat.message', 'P0', ${JSON.stringify({ ...event, eventId: "original-event", agentId: "other-lead" })}, 0, 0, 'done')`;
+        const foreign = yield* service
+          .cancel(scope, {
+            itemId: KinMemoryItemId.make("foreign-me"),
+            sourceEventId: "fixture-event",
+          })
+          .pipe(Effect.flip);
+        assert.strictEqual(foreign.reason, "not_allowed");
+        assert.include(foreign.message, "Only the lead that set it up");
+        const foreignTrigger = yield* sql<{ enabled: number }>`SELECT enabled FROM kin_triggers
+          WHERE org_id = ${orgId} AND trigger_id = 'deferral:foreign-me:due'`;
+        assert.deepStrictEqual(foreignTrigger, [{ enabled: 1 }]);
+        const corrected = yield* decodeDefer({
+          ...deferred,
+          what: "Invented stretch, corrected",
+          due: "2026-11-09T21:40:12+05:30",
+          onDue: "remind",
+          replaces: reminder.itemId,
+        });
+        const replacement = yield* service.defer(scope, corrected);
+        assert.deepStrictEqual(yield* service.defer(scope, corrected), replacement);
+        // Stopped before the commit, so the wrong time can't fire meanwhile.
+        assert.deepStrictEqual(yield* armed(), [{ nextRunAt: null }]);
+        const stopped = yield* sql<{ state: string }>`SELECT state FROM kin_deferral_runs
+          WHERE org_id = ${orgId} AND item_id = ${reminder.itemId}`;
+        assert.deepStrictEqual(stopped, [{ state: "undone" }]);
+        // Cancelling it again is the same staged change, not a conflict.
+        yield* service.cancel(scope, { itemId: reminder.itemId, sourceEventId: "fixture-event" });
+        const cancelCommit = yield* writerService.commitWakeup(orgId, "cancel-wakeup", "completed");
+        assert.include(
+          yield* git(remote, ["show", `${cancelCommit.commit}:deferrals/${reminder.itemId}.md`]),
+          "status: cancelled",
+        );
+        assert.deepStrictEqual(yield* armed(), [{ nextRunAt: null }]);
+        const next = yield* sql<{ nextRunAt: number | null }>`SELECT next_run_at AS "nextRunAt"
+          FROM kin_triggers WHERE org_id = ${orgId}
+            AND trigger_id = ${`deferral:${replacement.itemId}:due`}`;
+        assert.deepStrictEqual(next, [{ nextRunAt: Date.parse("2026-11-09T16:10:12Z") }]);
       }).pipe(Effect.provide(toolkit));
     }).pipe(
       Effect.provide(

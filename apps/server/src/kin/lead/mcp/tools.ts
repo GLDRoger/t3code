@@ -101,22 +101,29 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("memory_write", {
     ...shared,
     description:
-      "Stage a memory create, update, supersession or invalidation for this wake-up. Source must be an event in the current batch; the server sets provenance. Never delete or write rules. Retry an item with exactly the same payload; changed retries, including create followed by update of the same item in one wake-up, are refused. Create deferrals only with kin_defer. For a stored deferral, update or invalidate may only set status to done/cancelled or invalid_at; keep all other fields unchanged. The server preserves chat, source_event, what and on_due. The runner commits after the run ends.",
+      "Stage a memory create, update, supersession or invalidation for this wake-up. Source must be an event in the current batch; the server sets provenance. Never delete or write rules. Retry an item with exactly the same payload; changed retries, including create followed by update of the same item in one wake-up, are refused. Create deferrals only with kin_defer, and cancel one with kin_cancel. For a stored deferral, update or invalidate may only set status to done/cancelled or invalid_at; keep all other fields unchanged. The server preserves chat, source_event, what and on_due. The runner commits after the run ends.",
     parameters: Lead.WriteInput,
     success: Lead.ItemResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_defer", {
     ...shared,
     description:
-      "Write an open deferral in this organization's memory. Supply what, an explicit due date or offset timestamp, onDue, chatId and current sourceEventId. Returns itemId; identical retries return the same item, changed retries are refused. Trigger arming is performed later by the cache, not this tool. Never use schedule_task.",
+      'Write an open deferral, such as a reminder, in this organization\'s memory. Supply what, an explicit due date or offset timestamp, onDue, chatId and current sourceEventId. A bare number with sleep, wait or pause is seconds: "sleep for 60" is due 60 seconds from now. If a duration is ambiguous in a way that matters, ask in one short line instead of guessing. When the owner corrects a time, pass the old item as replaces: it is cancelled and never fires, so only the corrected one stays. Returns itemId; identical retries return the same item, changed retries are refused. Trigger arming is performed later by the cache, not this tool. Never use schedule_task.',
     parameters: Lead.DeferInput,
     success: Lead.ItemResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_schedule", {
     ...shared,
     description:
-      "Set up a scheduled task: at each run you wake with its instruction, do the work with your normal tools and post the results. Only when the owner's own message in this batch asked for it; anything else is refused. Supply what (the instruction, in the owner's terms), at (HH:MM owner time), days (0 Sunday to 6 Saturday), chatId and that message's sourceEventId. The server keeps the owner's words with it and posts the task's card. Identical retries return the same item. For a single time, use kin_defer. Never use schedule_task.",
+      "Set up a scheduled task: at each run you wake with its instruction, do the work with your normal tools and post the results. Only when the owner's own message in this batch asked for it; anything else is refused. Supply what (the instruction, in the owner's terms), at (HH:MM owner time), days (0 Sunday to 6 Saturday), chatId and that message's sourceEventId. The server keeps the owner's words with it and posts the task's card. To change an existing task, pass it as replaces: it is cancelled and only the new one runs. Identical retries return the same item. For a single time, use kin_defer. Never use schedule_task.",
     parameters: Lead.ScheduleInput,
+    success: Lead.ItemResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("kin_cancel", {
+    ...shared,
+    description:
+      "Cancel an open deferral, reminder or scheduled task you set up, by itemId, with the current sourceEventId. It stops at once and never fires. Only from the chat it was set up in or the owner's direct chat; another lead's items are refused with not_allowed. To move one to a new time, use kin_defer with replaces instead.",
+    parameters: Lead.CancelInput,
     success: Lead.ItemResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_journal", {
