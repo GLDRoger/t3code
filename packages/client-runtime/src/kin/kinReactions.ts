@@ -38,10 +38,6 @@ export const KIN_PICKER_REACTIONS = [
   "💯",
 ] as const satisfies ReadonlyArray<KinReactionEmoji>;
 
-export const KIN_REACTION_HINT = "React 👍/👎 to answer";
-export const KIN_REACTION_HINT_LABEL = "React thumbs up or thumbs down to answer";
-const KIN_SOFT_REPLY_WINDOW_MS = 24 * 60 * 60 * 1000;
-
 const reactionKey = (reaction: Pick<KinReaction, "messageId" | "memberId" | "emoji">) =>
   `${reaction.messageId}|${reaction.memberId}|${reaction.emoji}`;
 
@@ -139,35 +135,3 @@ export const kinViewerMemberId = (
           member.principal._tag === "person" &&
           member.principal.personId === personId,
       )?.memberId ?? null);
-
-/**
- * The message whose hint row says a reaction answers it: the lead's latest message when it asks
- * something, for the owner of a direct chat. Mirrors the host's rule; the host still decides.
- */
-export function kinSoftReplyMessageId(
-  messages: ReadonlyArray<KinMessage>,
-  members: ReadonlyArray<KinChatMember>,
-  personId: string | null,
-  direct: boolean,
-  nowMs: number,
-): string | null {
-  if (!direct || personId === null) return null;
-  const owner = members.some(
-    (member) =>
-      member.leftAt === null &&
-      member.role === "owner" &&
-      member.principal._tag === "person" &&
-      member.principal.personId === personId,
-  );
-  if (!owner) return null;
-  for (let index = messages.length - 1; index >= 0; index--) {
-    const message = messages[index]!;
-    if (message.author._tag !== "agent" || message.status !== "posted") continue;
-    // The host stops taking it as a reply after a day.
-    return message.body.includes("?") &&
-      nowMs - Date.parse(message.createdAt) < KIN_SOFT_REPLY_WINDOW_MS
-      ? message.messageId
-      : null;
-  }
-  return null;
-}

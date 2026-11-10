@@ -226,7 +226,7 @@ function KinWaiting(props: {
   const banner = kinWaitingBannerView(props.waiting);
   if (banner === null) return null;
   return (
-    <div className="mb-1 flex flex-col rounded-lg border border-border">
+    <div className="mb-1 flex flex-col">
       <Button
         variant="ghost"
         size="sm-multiline"
@@ -245,7 +245,7 @@ function KinWaiting(props: {
         <Badge size="sm">{banner.count}</Badge>
       </Button>
       {open ? (
-        <ul className="flex flex-col border-t border-border p-1">
+        <ul className="flex flex-col p-1">
           {props.waiting.map((item) => {
             const row = kinWaitingRowView(item, props.chats, props.directory.agentNames);
             return (

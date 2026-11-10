@@ -5,12 +5,7 @@ import {
   type KinFeedRow,
 } from "@t3tools/client-runtime/kin/kinChatFeed";
 import type { KinOutboxEntry } from "@t3tools/client-runtime/kin/kinOutbox";
-import {
-  KIN_REACTION_HINT,
-  KIN_REACTION_HINT_LABEL,
-  KIN_REACTION_NAMES,
-  type KinReactionChip,
-} from "@t3tools/client-runtime/kin/kinReactions";
+import { KIN_REACTION_NAMES, type KinReactionChip } from "@t3tools/client-runtime/kin/kinReactions";
 import { kinSentences } from "@t3tools/client-runtime/kin/kinScreenState";
 import {
   KIN_REACTION_EMOJI,
@@ -37,7 +32,10 @@ export const formatKinMessageTime = (iso: string) => timeFormat.format(new Date(
 const formatTime = formatKinMessageTime;
 
 const ROW = "mx-auto flex w-full max-w-3xl flex-col gap-1 px-4 pb-1.5";
-const BUBBLE = "min-w-0 max-w-[85%] rounded-2xl px-3.5 py-2 text-sm";
+// As in a thread: the viewer's message in the user bubble, everyone else's as plain text.
+const BUBBLE =
+  "min-w-0 max-w-[85%] rounded-2xl bg-message px-3.5 py-2 text-sm text-message-foreground";
+const PLAIN = "min-w-0 flex-1 px-1 py-0.5 text-sm text-foreground";
 
 /** Who and when, over the first bubble of a group. The bubble's own label reads both aloud. */
 function HeadLine(props: { readonly label: string }) {
@@ -69,7 +67,6 @@ export function KinMessageRow(props: {
   readonly reactions: ReadonlyArray<KinReactionChip>;
   /** Toggles the viewer's reaction; null where they can't react, such as a privileged card. */
   readonly onReact: ((emoji: KinReactionEmoji) => void) | null;
-  readonly showReplyHint: boolean;
 }) {
   const { row, onReact } = props;
   const { message } = row;
@@ -89,11 +86,7 @@ export function KinMessageRow(props: {
           <div
             role="article"
             aria-label={kinMessageLabel(row, formatTime(message.createdAt))}
-            className={cn(
-              BUBBLE,
-              row.own ? "bg-message text-message-foreground" : "bg-muted text-foreground",
-              suggested && "border border-dashed border-border",
-            )}
+            className={row.own ? BUBBLE : PLAIN}
           >
             {hasBody ? (
               <KinBody markdown={message.body} environmentId={props.environmentId} />
@@ -141,11 +134,6 @@ export function KinMessageRow(props: {
             </Button>
           ))}
         </div>
-      ) : null}
-      {props.showReplyHint ? (
-        <p className="px-1 text-xs text-muted-foreground" aria-label={KIN_REACTION_HINT_LABEL}>
-          {KIN_REACTION_HINT}
-        </p>
       ) : null}
     </div>
   );
@@ -195,7 +183,7 @@ export function KinDraftRow(props: {
           kinPlainText(row.draft.text),
           "Still writing",
         ])}
-        className={cn(BUBBLE, "bg-muted text-foreground")}
+        className={PLAIN}
       >
         <KinBody markdown={row.draft.text} environmentId={props.environmentId} />
       </div>
@@ -293,11 +281,7 @@ export function KinPendingRow(props: {
       <div
         role="article"
         aria-label={kinSentences([`You: ${kinPlainText(entry.body)}`, status])}
-        className={cn(
-          BUBBLE,
-          "whitespace-pre-wrap bg-message text-message-foreground",
-          !failed && "opacity-70",
-        )}
+        className={cn(BUBBLE, "whitespace-pre-wrap", !failed && "opacity-70")}
       >
         {entry.body}
       </div>
