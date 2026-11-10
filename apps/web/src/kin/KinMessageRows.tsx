@@ -8,7 +8,13 @@ import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
 import { kinCardDraws } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import type { KinOutboxEntry } from "@t3tools/client-runtime/kin/kinOutbox";
 import { KIN_REACTION_NAMES, type KinReactionChip } from "@t3tools/client-runtime/kin/kinReactions";
-import { kinSentences } from "@t3tools/client-runtime/kin/kinScreenState";
+import { kinAuthorAvatar } from "@t3tools/client-runtime/kin/kinGroups";
+import {
+  kinAgentAvatar,
+  kinSentences,
+  type KinAvatarView,
+} from "@t3tools/client-runtime/kin/kinScreenState";
+import { KinAvatar } from "./KinAvatar";
 import {
   KIN_REACTION_EMOJI,
   type EnvironmentId,
@@ -41,9 +47,13 @@ const BUBBLE =
 const PLAIN = "min-w-0 flex-1 px-1 py-0.5 text-sm text-foreground";
 
 /** Who and when, over the first bubble of a group. The bubble's own label reads both aloud. */
-function HeadLine(props: { readonly label: string }) {
+function HeadLine(props: { readonly label: string; readonly avatar?: KinAvatarView | null }) {
   return (
-    <p aria-hidden className="px-1 pt-2 text-xs text-muted-foreground tabular-nums">
+    <p
+      aria-hidden
+      className="flex items-center gap-1.5 px-1 pt-2 text-xs text-muted-foreground tabular-nums"
+    >
+      {props.avatar == null ? null : <KinAvatar avatar={props.avatar} size="xs" />}
       {props.label}
     </p>
   );
@@ -64,6 +74,8 @@ function KinBody(props: { readonly markdown: string; readonly environmentId: Env
 export function KinMessageRow(props: {
   readonly row: MessageRow;
   readonly head: string | null;
+  /** A direct chat names nobody over a bubble, so it draws no author's face either. */
+  readonly direct: boolean;
   readonly widget: KinWidget | undefined;
   readonly environmentId: EnvironmentId;
   readonly viewerPersonId: KinPersonId | null;
@@ -93,7 +105,16 @@ export function KinMessageRow(props: {
 
   return (
     <div className={cn(ROW, "group/kin-message", row.own ? "items-end" : "items-start")}>
-      {props.head === null ? null : <HeadLine label={props.head} />}
+      {props.head === null ? null : (
+        <HeadLine
+          label={props.head}
+          avatar={
+            row.showAuthor && !props.direct && message.author._tag !== "system"
+              ? kinAuthorAvatar(message.author)
+              : null
+          }
+        />
+      )}
       {attachments.length === 0 ? null : (
         <div
           role={hasBubble ? undefined : "article"}
@@ -202,7 +223,9 @@ export function KinDraftRow(props: {
   const { row } = props;
   return (
     <div className={cn(ROW, "items-start")}>
-      {row.showAuthor && !props.direct ? <HeadLine label={row.authorLabel} /> : null}
+      {row.showAuthor && !props.direct ? (
+        <HeadLine label={row.authorLabel} avatar={kinAgentAvatar(row.draft.agentId)} />
+      ) : null}
       <div
         role="article"
         aria-label={kinSentences([

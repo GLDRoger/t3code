@@ -6,6 +6,7 @@ import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../components/Work
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { isElectron } from "../env";
 import { KinChatList } from "./KinChatList";
+import { KinGroupDialogHost } from "./KinGroupDialog";
 import { KinLeadDialogHost } from "./KinLeadDialog";
 import { KinNewLeadButton } from "./KinNewLeadButton";
 import { startKinOutbox } from "./kinOutbox";
@@ -17,6 +18,7 @@ export function KinPage() {
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">
       <Outlet />
       <KinLeadDialogHost />
+      <KinGroupDialogHost />
     </SidebarInset>
   );
 }

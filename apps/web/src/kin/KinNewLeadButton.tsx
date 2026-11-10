@@ -1,11 +1,13 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { KinHost } from "@t3tools/client-runtime/kin/kinHost";
 import { Atom } from "effect/reactivity";
-import { PlusIcon } from "lucide-react";
+import { PlusIcon, SparklesIcon, UsersIcon } from "lucide-react";
 
 import { SidebarHeaderIconButton } from "../components/sidebar/SidebarThreadHeader";
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { kinClient } from "./kinClient";
+import { kinGroupFormAtom } from "./kinGroupForm";
 import { kinLeadFormAtom, type KinLeadFormTarget } from "./kinLeadForm";
 import { useKinHost } from "./useKinHost";
 
@@ -24,7 +26,7 @@ export const noKinLeadPermissionAtom = Atom.make(false).pipe(Atom.withLabel("kin
 export const openKinLeadForm = (target: KinLeadFormTarget) =>
   appAtomRegistry.set(kinLeadFormAtom, target);
 
-/** Opens the new-lead form. Hidden where this browser may not create one. */
+/** The list's "+": a new group or a new lead. Hidden where this browser may make neither. */
 export function KinNewLeadButton() {
   const target = kinNewLeadTarget(useKinHost());
   if (target === null) return null;
@@ -32,11 +34,33 @@ export function KinNewLeadButton() {
 }
 
 function PermittedNewLeadButton(props: { readonly target: KinLeadFormTarget }) {
-  const allowed = useAtomValue(kinClient.leadCreate.permissionAtom(props.target.environmentId));
-  if (!allowed) return null;
+  const { environmentId, orgId } = props.target;
+  const canAddLead = useAtomValue(kinClient.leadCreate.permissionAtom(environmentId));
+  const canAddGroup = useAtomValue(kinClient.groupCreate.permissionAtom(environmentId));
+  if (!canAddLead && !canAddGroup) return null;
   return (
-    <SidebarHeaderIconButton label="New lead" onClick={() => openKinLeadForm(props.target)}>
-      <PlusIcon />
-    </SidebarHeaderIconButton>
+    <Menu>
+      <MenuTrigger render={<SidebarHeaderIconButton label="New group or lead" />}>
+        <PlusIcon />
+      </MenuTrigger>
+      <MenuPopup align="end">
+        {canAddGroup ? (
+          <MenuItem
+            onClick={() =>
+              appAtomRegistry.set(kinGroupFormAtom, { environmentId, orgId, chatId: null })
+            }
+          >
+            <UsersIcon />
+            New group
+          </MenuItem>
+        ) : null}
+        {canAddLead ? (
+          <MenuItem onClick={() => openKinLeadForm(props.target)}>
+            <SparklesIcon />
+            New lead
+          </MenuItem>
+        ) : null}
+      </MenuPopup>
+    </Menu>
   );
 }

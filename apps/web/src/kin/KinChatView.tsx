@@ -48,6 +48,7 @@ import {
   kinViewerMemberId,
 } from "@t3tools/client-runtime/kin/kinReactions";
 import {
+  kinAgentAvatar,
   kinAvatarView,
   kinChatMuted,
   kinChatTitle,
@@ -61,6 +62,7 @@ import {
   type EnvironmentId,
   type KinAttachment,
   type KinChatMember,
+  type KinChatMembersResult,
   type KinLeadsListResult,
   type KinPresence,
   type KinReactionEmoji,
@@ -70,7 +72,7 @@ import { Link } from "@tanstack/react-router";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { Atom, type AsyncResult } from "effect/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { ArrowDownIcon, ArrowLeftIcon, ChevronUpIcon } from "lucide-react";
 import {
   useEffect,
@@ -111,7 +113,16 @@ import {
   useKinComposerAttachments,
 } from "./KinComposerAttachments";
 import { kinClient } from "./kinClient";
+import { KinGroupSheet } from "./KinGroupSheet";
 import { KinLeadSheet } from "./KinLeadSheet";
+import {
+  kinApplyMention,
+  kinMemberNames,
+  kinMentionCandidates,
+  kinMentionQuery,
+  kinMentionsIn,
+  type KinMentionCandidate,
+} from "@t3tools/client-runtime/kin/kinGroups";
 import { deliverKinOutbox, kinOutbox, startKinOutbox } from "./kinOutbox";
 import { kinFeedDisplay } from "./kinFeedDisplay";
 import {
@@ -130,6 +141,8 @@ type ChatResult = AsyncResult.AsyncResult<KinSynced<KinChatState>, unknown> | nu
 type InboxResult = AsyncResult.AsyncResult<KinSynced<KinInboxState>, unknown> | null;
 type LeadsResult = AsyncResult.AsyncResult<KinLeadsListResult, unknown> | null;
 const noLeadsAtom: Atom.Atom<LeadsResult> = Atom.make<LeadsResult>(null);
+type GroupResult = AsyncResult.AsyncResult<KinChatMembersResult, unknown> | null;
+const noGroupAtom: Atom.Atom<GroupResult> = Atom.make<GroupResult>(null);
 const noChatAtom: Atom.Atom<ChatResult> = Atom.make<ChatResult>(null);
 const noInboxAtom: Atom.Atom<InboxResult> = Atom.make<InboxResult>(null);
 const decodeChatId = Schema.decodeUnknownOption(KinChatId);
@@ -201,6 +214,16 @@ export function KinChatView(props: {
     leads?._tag === "Success"
       ? (leads.value.leads.find((held) => held.agentId === ownedAgentId) ?? null)
       : null;
+  // A group's row carries only the viewer's own member; who else is in it is read by name.
+  const isGroup = summary !== undefined && summary.kind !== "direct";
+  const groupAtom: Atom.Atom<GroupResult> =
+    environmentId === null || chatId === null || !isGroup
+      ? noGroupAtom
+      : kinClient.chatMembers({ environmentId, input: { chatId } });
+  const groupResult = useAtomValue(groupAtom);
+  // What was last read stays up while a change is read again.
+  const group = groupResult === null ? null : Option.getOrNull(AsyncResult.value(groupResult));
+  const mentionable = kinMentionCandidates(group?.members ?? null);
   const [profileOpen, setProfileOpen] = useState(false);
   const nowMs = useNowMinuteMs();
   const muted =
@@ -240,8 +263,19 @@ export function KinChatView(props: {
         avatar={avatar}
         tasks={tasks}
         muted={muted}
-        onOpenProfile={lead === null ? null : () => setProfileOpen(true)}
+        onOpenProfile={lead === null && group === null ? null : () => setProfileOpen(true)}
       />
+      {group === null || environmentId === null || summary === undefined ? null : (
+        <KinGroupSheet
+          open={profileOpen}
+          onOpenChange={setProfileOpen}
+          group={group}
+          environmentId={environmentId}
+          orgId={summary.orgId}
+          personId={viewer.personId}
+          muted={muted}
+        />
+      )}
       {lead === null || avatar === null || environmentId === null || chatId === null ? null : (
         <KinLeadSheet
           open={profileOpen}
@@ -266,7 +300,10 @@ export function KinChatView(props: {
           connected={state.connected}
           error={state.error}
           onRetry={retry}
-          viewer={viewer}
+          viewer={
+            isGroup ? { ...viewer, memberNames: kinMemberNames(group?.members ?? null) } : viewer
+          }
+          mentionable={mentionable}
           unread={summary?.unread ?? null}
           presence={presence}
           stopLead={
@@ -281,7 +318,7 @@ export function KinChatView(props: {
                     .then((result) => result._tag === "Success")
           }
           charter={lead === null ? null : kinIntroCharter(lead.charter)}
-          members={summary?.members ?? []}
+          members={group?.members ?? summary?.members ?? []}
           direct={summary?.kind === "direct"}
           ownsLead={ownedAgentId !== null}
         />
@@ -330,7 +367,7 @@ function KinChatHeader(props: {
       ) : (
         <button
           type="button"
-          aria-label={`${props.title}: open profile`}
+          aria-label={`${props.title}: open details`}
           className="-mx-1.5 flex min-w-0 shrink items-center gap-3 rounded-md px-1.5 py-1 outline-none ring-ring [-webkit-app-region:no-drag] hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
           onClick={props.onOpenProfile}
         >
@@ -449,6 +486,8 @@ function KinChatFeed(props: {
   /** What the owner wrote this lead is for; the intro shows it before the first message. */
   readonly charter: string | null;
   readonly members: ReadonlyArray<KinChatMember>;
+  /** A group's leads, which the composer offers on `@`. */
+  readonly mentionable: ReadonlyArray<KinMentionCandidate>;
   readonly direct: boolean;
   readonly ownsLead: boolean;
 }) {
@@ -495,9 +534,7 @@ function KinChatFeed(props: {
     if (member === undefined) return null;
     return member.principal._tag === "agent"
       ? (props.viewer.agentNames.get(member.principal.agentId) ?? "Lead")
-      : member.role === "owner"
-        ? "Owner"
-        : "Member";
+      : (props.viewer.memberNames?.get(memberId) ?? (member.role === "owner" ? "Owner" : "Member"));
   };
   const dayStart = new Date(nowMs);
   dayStart.setHours(0, 0, 0, 0);
@@ -669,6 +706,8 @@ function KinChatFeed(props: {
       chatId: props.chatId,
       body,
       ...(attachments.length > 0 ? { attachments } : {}),
+      // Read from the text, so a resent message asks the lead it named the first time.
+      mentions: kinMentionsIn(body, props.mentionable),
     });
     if (queued._tag !== "queued") return false;
     jumpToEnd();
@@ -698,6 +737,7 @@ function KinChatFeed(props: {
           <KinMessageRow
             row={item}
             head={shown?.head ?? null}
+            direct={props.direct}
             widget={widget}
             environmentId={props.environmentId}
             viewerPersonId={props.viewer.personId}
@@ -889,6 +929,7 @@ function KinChatFeed(props: {
           recipient={props.title}
           textareaRef={composerRef}
           onSend={sendText}
+          mentionable={props.mentionable}
         />
       </div>
       <ExpandedImageDialogHost threadKey={previewKey} />
@@ -999,8 +1040,13 @@ function KinComposer(props: {
   readonly recipient: string;
   readonly textareaRef: React.RefObject<HTMLTextAreaElement | null>;
   readonly onSend: (body: string, attachments: ReadonlyArray<KinAttachment>) => Promise<boolean>;
+  /** The group's leads, offered on `@`; a message that names one is answered by it. */
+  readonly mentionable: ReadonlyArray<KinMentionCandidate>;
 }) {
   const { draftKey, environmentId, recipient, textareaRef, onSend } = props;
+  // Where the caret is, and the text the suggestions were last dismissed for.
+  const [caret, setCaret] = useState(0);
+  const [dismissed, setDismissed] = useState<string | null>(null);
   const atom = kinDraftAtom(draftKey);
   const text = useAtomValue(atom);
   const full = useAtomValue(kinOutbox.fullAtom(environmentId));
@@ -1052,7 +1098,32 @@ function KinComposer(props: {
   const dropsFiles = (event: DragEvent<HTMLFormElement>) =>
     files.canAttach && event.dataTransfer.types.includes("Files");
 
+  const mention = dismissed === text ? null : kinMentionQuery(text, caret, props.mentionable);
+  const pickMention = (name: string) => {
+    if (mention === null) return;
+    const next = kinApplyMention(text, mention.start, caret, name);
+    appAtomRegistry.set(atom, next.text);
+    setCaret(next.cursor);
+    // The caret moves once React has written the new text into the box.
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(next.cursor, next.cursor);
+    });
+  };
+
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (mention !== null && !event.nativeEvent.isComposing) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setDismissed(text);
+        return;
+      }
+      if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey)) {
+        event.preventDefault();
+        pickMention(mention.matches[0]!.name);
+        return;
+      }
+    }
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
     event.preventDefault();
     if (canSend) void send();
@@ -1064,6 +1135,25 @@ function KinComposer(props: {
         <p role="alert" className="px-1 text-xs text-destructive-foreground">
           {notice}
         </p>
+      )}
+      {mention === null ? null : (
+        <div role="listbox" aria-label="Leads you can ask" className="flex flex-wrap gap-1.5 px-1">
+          {mention.matches.map((lead, index) => (
+            <Button
+              key={lead.memberId}
+              role="option"
+              aria-selected={index === 0}
+              size="xs"
+              variant={index === 0 ? "outline" : "ghost"}
+              // Keeps the caret in the box, so the name lands where it was typed.
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => pickMention(lead.name)}
+            >
+              <KinAvatar avatar={kinAgentAvatar(lead.agentId)} size="xs" />
+              {lead.name}
+            </Button>
+          ))}
+        </div>
       )}
       <ComposerSurface.Shell>
         <ComposerSurface.Host>
@@ -1106,7 +1196,11 @@ function KinComposer(props: {
                   value={text}
                   aria-label={`Message ${recipient}`}
                   placeholder={`Message ${recipient}`}
-                  onChange={(event) => appAtomRegistry.set(atom, event.target.value)}
+                  onChange={(event) => {
+                    appAtomRegistry.set(atom, event.target.value);
+                    setCaret(event.target.selectionStart);
+                  }}
+                  onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
                   onKeyDown={onKeyDown}
                   onPaste={onPaste}
                 />
