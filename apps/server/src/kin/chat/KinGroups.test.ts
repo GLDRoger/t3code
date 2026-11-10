@@ -272,7 +272,7 @@ it.effect(
   "a group message wakes the leads it names, else the group's lead, and a lead's message wakes nobody",
   () =>
     Effect.gen(function* () {
-      const { groups, chats, queue, owner, orgId, tech, growth, priya, say, events, wake } =
+      const { groups, chats, queue, owner, orgId, tech, growth, priya, say, events, wake, sql } =
         yield* seed;
       const { chatId } = yield* groups.create([owner], {
         orgId,
@@ -327,7 +327,15 @@ it.effect(
       yield* say(owner, chatId, "Growth lead, the numbers please", [member("Growth lead")]);
       yield* say(priya, chatId, "Thanks, Tech lead");
       const late = yield* wake(growth);
-      assert.include(yield* say(late, chatId, "Signups are up 4%."), { status: "posted" });
+      const signups = yield* say(late, chatId, "Signups are up 4%. I can break them down.");
+      assert.include(signups, { status: "posted" });
+      // In a group, the owner's and a teammate's reactions are feedback and wake nobody.
+      yield* chats.react(owner, { messageId: signups.messageId, emoji: "👍", on: true });
+      yield* chats.react(priya, { messageId: signups.messageId, emoji: "👍", on: true });
+      assert.deepStrictEqual(
+        yield* sql`SELECT 1 FROM kin_reactions WHERE woke_at IS NOT NULL ORDER BY 1`,
+        [],
+      );
       // The owner picks who answers by default, and the next unnamed message goes there.
       assert.include(yield* groups.setLead([owner], { chatId, agentId: growth }), {
         leadAgentId: growth,

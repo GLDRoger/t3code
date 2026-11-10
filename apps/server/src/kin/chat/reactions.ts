@@ -66,9 +66,6 @@ export const reactionOption = (card: KinChoiceCardState, emoji: KinReactionEmoji
   return answer === "yes" ? yes[0] : no[0];
 };
 
-/** A lead message that asks something, so a yes/no reaction can answer it. */
-export const asksQuestion = (body: string) => body.includes("?");
-
 /** The reaction that asks the lead what was wrong with an ordinary message. */
 export const KIN_CLARIFY_REACTION = "👎" satisfies KinReactionEmoji;
 

@@ -10,6 +10,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  type KinReactionEmoji,
   ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -89,6 +90,8 @@ export const startAgentWakeup = Effect.fn("test.startAgentWakeup")(function* (in
   readonly agentId: KinAgentId;
   readonly threadId: ThreadId;
   readonly message?: KinMessage;
+  /** Wakes on this reaction to `message` instead of the message itself. */
+  readonly reaction?: KinReactionEmoji;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
@@ -127,7 +130,9 @@ export const startAgentWakeup = Effect.fn("test.startAgentWakeup")(function* (in
       ? { ...base, _tag: "routine", provenance: { _tag: "system" }, routine: "morning_brief" }
       : {
           ...base,
-          _tag: "chat.message",
+          ...(input.reaction === undefined
+            ? { _tag: "chat.message" }
+            : { _tag: "chat.reaction", emoji: input.reaction }),
           provenance: input.message.author,
           chatId: input.message.chatId,
           messageId: input.message.messageId,

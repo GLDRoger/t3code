@@ -1740,9 +1740,8 @@ const make = Effect.gen(function* () {
       const chat = yield* requireRecord(repo.getChat(member));
       const withSql = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
         effect.pipe(Effect.provideService(SqlClient.SqlClient, sql));
-      // In the owner's direct chat, a yes/no on the lead's latest question answers it and a 👎
-      // anywhere else asks what was wrong, once per message. Every other reaction is feedback
-      // the lead reads on its next wake-up.
+      // In the owner's direct chat, a yes/no on the lead's latest message and a 👎 anywhere wake
+      // the lead, once per message. Every other reaction is feedback it reads on its next wake-up.
       const woke =
         request.on &&
         !answered &&
@@ -1753,7 +1752,6 @@ const make = Effect.gen(function* () {
         nowMs - Date.parse(message.createdAt) < SOFT_REPLY_WINDOW_MS &&
         (request.emoji === Reactions.KIN_CLARIFY_REACTION ||
           (Reactions.reactionAnswer(request.emoji) !== null &&
-            Reactions.asksQuestion(message.body) &&
             (yield* isLatestLeadMessage(message)))) &&
         !(yield* withSql(Reactions.wokeOnMessage(message))) &&
         !(yield* withSql(Reactions.recentlyWoke({ ...key, now: nowMs })));

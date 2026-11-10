@@ -766,7 +766,7 @@ describe("KinChatService", () => {
   );
 
   it.effect(
-    "takes reactions as replies: 👍 answers a yes/no card once, wakes on the lead's latest question or a 👎, one per person per message, refuses privileged cards",
+    "takes reactions as replies: 👍 answers a yes/no card once, wakes on a yes/no to the lead's latest message or a 👎, one per person per message, refuses privileged cards",
     () =>
       Effect.gen(function* () {
         const { repo, service, person, agent, chat } = yield* seed();
@@ -820,7 +820,7 @@ describe("KinChatService", () => {
         const latest = yield* service.send(agent, {
           chatId: chat.chatId,
           clientMessageId: "lead-latest",
-          body: "Merged. Anything else?",
+          body: "Merged. I can tag the release too if you want.",
           intent: "answer",
         });
         const mine = (messageId: KinMessageId, kind: "person" | "agent" = "person") =>
@@ -834,7 +834,7 @@ describe("KinChatService", () => {
         yield* react(latest.messageId, "🎉");
         yield* react(latest.messageId, "❤️");
         assert.deepStrictEqual(yield* woke(), []);
-        // A yes on the latest question answers it, replacing the person's ❤️.
+        // A yes on the latest message answers it, question mark or not, replacing the ❤️.
         yield* react(latest.messageId, "👍");
         assert.deepStrictEqual(yield* mine(latest.messageId), [{ emoji: "👍" }]);
         assert.deepStrictEqual(yield* woke(), [{ messageId: latest.messageId, emoji: "👍" }]);
@@ -873,6 +873,10 @@ describe("KinChatService", () => {
         yield* service.react(agent, { messageId: older.messageId, emoji: "🎉", on: true });
         assert.deepStrictEqual(yield* mine(older.messageId, "agent"), [{ emoji: "🎉" }]);
         assert.deepStrictEqual(yield* mine(older.messageId), [{ emoji: "👍" }]);
+        // A 👎 on an older message still asks what was wrong.
+        yield* TestClock.adjust("30 seconds");
+        yield* react(older.messageId, "👎");
+        assert.deepStrictEqual((yield* woke()).at(-1), { messageId: older.messageId, emoji: "👎" });
         const history = yield* service.history(person, {
           chatId: chat.chatId,
           beforeSeq: plain.seq + 1,
