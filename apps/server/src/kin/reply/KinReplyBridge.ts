@@ -69,6 +69,20 @@ export type Lane = {
   readonly leadName: string;
 };
 
+export type FailedOutcome = "partway" | "retrying" | "gave_up";
+// Plain words with the lead's name: the inbox shows this as the chat's latest line.
+const failedNotices: Record<FailedOutcome, { prefix: string; body: (lead: string) => string }> = {
+  partway: { prefix: "kin-partway", body: (lead) => `${lead} stopped partway.` },
+  retrying: {
+    prefix: "kin-retrying",
+    body: (lead) => `${lead} couldn't start. Trying again in a moment.`,
+  },
+  gave_up: {
+    prefix: "kin-failed",
+    body: (lead) => `${lead} couldn't start. It won't try again on its own.`,
+  },
+};
+
 type Outcome = "posted" | "note" | "silent" | "empty" | "withheld" | "overflow";
 type Segment = {
   readonly id: TurnItemId;
@@ -136,11 +150,16 @@ export class KinReplyBridge extends Context.Service<
     }) => Effect.Effect<void>;
     /** A message was steered into the wake-up: re-reads its lane, which may now owe a reply. */
     readonly steered: (orgId: KinOrgId, wakeupId: KinWakeupId) => Effect.Effect<void>;
-    /** The wake-up failed after something visible, so its events are not retried. */
-    readonly partway: (input: {
+    /**
+     * The wake-up failed, in the lane read before the queue closed it: `partway` after
+     * something visible (not retried), `retrying` when it showed nothing and will run again,
+     * `gave_up` when that was its last try.
+     */
+    readonly failed: (input: {
       readonly orgId: KinOrgId;
-      readonly agentId: KinAgentId;
       readonly wakeupId: KinWakeupId;
+      readonly lane: Lane;
+      readonly outcome: FailedOutcome;
     }) => Effect.Effect<void>;
     /** Clears the wake-up's line; `seen` stays, or comes back, where a message still waits. */
     readonly end: (input: {
@@ -613,7 +632,7 @@ const make = Effect.gen(function* () {
         messageId: KinMessageId.make(`kin-no-reply:${wake.wakeupId}`),
         orgId: wake.orgId,
         chatId: wake.lane.chatId,
-        body: `${wake.lane.leadName} didn't reply. Send your message again to ask again.`,
+        body: `${wake.lane.leadName} didn't reply.`,
       });
     },
     Effect.catchCause((cause) => Effect.logWarning("Kin reply completion failed", { cause })),
@@ -631,22 +650,22 @@ const make = Effect.gen(function* () {
       yield* wake.lock.withPermits(1)(Effect.sync(() => (wake.lane = found.value)));
   });
 
-  const partway = Effect.fn("KinReplyBridge.partway")(
+  const failed = Effect.fn("KinReplyBridge.failed")(
     function* (input: {
       readonly orgId: KinOrgId;
-      readonly agentId: KinAgentId;
       readonly wakeupId: KinWakeupId;
+      readonly lane: Lane;
+      readonly outcome: FailedOutcome;
     }) {
-      const found = yield* lane(input);
-      if (Option.isNone(found)) return;
+      const notice = failedNotices[input.outcome];
       yield* chat.notice({
-        messageId: KinMessageId.make(`kin-partway:${input.wakeupId}`),
+        messageId: KinMessageId.make(`${notice.prefix}:${input.wakeupId}`),
         orgId: input.orgId,
-        chatId: found.value.chatId,
-        body: `${found.value.leadName} stopped partway. Send your message again to retry.`,
+        chatId: input.lane.chatId,
+        body: notice.body(input.lane.leadName),
       });
     },
-    Effect.catchCause((cause) => Effect.logWarning("Kin partway notice failed", { cause })),
+    Effect.catchCause((cause) => Effect.logWarning("Kin failure notice failed", { cause })),
   );
 
   // Chats where a human message to the agent is queued and ready: they keep showing `seen`.
@@ -741,7 +760,7 @@ const make = Effect.gen(function* () {
     begin,
     complete,
     steered,
-    partway,
+    failed,
     end,
   });
 });

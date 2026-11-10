@@ -219,8 +219,12 @@ const isSystem = (message: KinMessage) =>
 type SystemRow = Extract<KinFeedRow, { readonly type: "system" }>;
 
 // The host's notices for a reply that never came (KinReplyBridge); their ids carry the wake-up.
+const RETRY_NOTICES = ["kin-no-reply:", "kin-partway:", "kin-retrying:", "kin-failed:"];
 const retryNotice = (message: KinMessage) =>
-  message.messageId.startsWith("kin-no-reply:") || message.messageId.startsWith("kin-partway:");
+  RETRY_NOTICES.some((prefix) => message.messageId.startsWith(prefix));
+// "Trying again" stops offering Retry once the agent speaks: the host's own retry worked.
+const hostRetrying = (message: KinMessage) => message.messageId.startsWith("kin-retrying:");
+// Hosts before Retry asked the owner to resend in the notice itself.
 const RETRY_HINT = /\s*Send your message again[^.]*\.\s*$/;
 
 // A deleted message stays in its run, so deleting one doesn't split the fold in two.
@@ -316,6 +320,15 @@ export function buildKinFeedRows(
 
   let lastOwnText: string | null = null;
   const openRetries: number[] = [];
+  const closeRetries = (which: (row: SystemRow) => boolean) => {
+    for (let at = openRetries.length - 1; at >= 0; at--) {
+      const index = openRetries[at]!;
+      const row = rows[index] as SystemRow;
+      if (!which(row)) continue;
+      rows[index] = { ...row, retry: null };
+      openRetries.splice(at, 1);
+    }
+  };
 
   const pushMessage = (message: KinMessage) => {
     startDay(message);
@@ -339,10 +352,9 @@ export function buildKinFeedRows(
     if (own && message.kind === "text" && message.status === "posted") {
       lastOwnText = message.body;
       // Writing again answers the notice, so it stops offering to resend.
-      for (const index of openRetries.splice(0)) {
-        rows[index] = { ...(rows[index] as SystemRow), retry: null };
-      }
+      closeRetries(() => true);
     }
+    if (message.author._tag === "agent") closeRetries((row) => hostRetrying(row.message));
     const author = authorKey(message);
     rows.push(
       messageRow(message, {

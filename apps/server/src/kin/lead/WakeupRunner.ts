@@ -155,9 +155,32 @@ const make = Effect.gen(function* () {
     row: typeof RunningRow.Type,
     status: "completed" | "failed" | "timed_out",
   ) {
+    // Read first: finishing returns retried events to the queue, which drops their lane.
+    const lane =
+      status === "completed" || Option.isNone(bridge)
+        ? Option.none()
+        : yield* bridge.value.lane(row);
     const finished = yield* queue.finish({ orgId: row.orgId, wakeupId: row.wakeupId, status });
+    if (Option.isNone(bridge) || Option.isNone(lane)) return;
     // Something visible already happened, so a silent retry could repeat it; say so instead.
-    if (finished.stranded > 0 && Option.isSome(bridge)) yield* bridge.value.partway(row);
+    // Otherwise the person waiting hears at once that it is retrying, or has stopped.
+    const outcome =
+      finished.stranded > 0
+        ? "partway"
+        : lane.value.mode !== "reply"
+          ? undefined
+          : finished.failedEventIds.length > 0
+            ? "gave_up"
+            : finished.retried > 0
+              ? "retrying"
+              : undefined;
+    if (outcome !== undefined)
+      yield* bridge.value.failed({
+        orgId: row.orgId,
+        wakeupId: row.wakeupId,
+        lane: lane.value,
+        outcome,
+      });
   });
   const routineContent = yield* Effect.serviceOption(RoutineContent.KinRoutineContent);
   const sql = yield* SqlClient.SqlClient;

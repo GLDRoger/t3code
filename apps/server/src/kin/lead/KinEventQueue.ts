@@ -184,12 +184,15 @@ export class KinEventQueue extends Context.Service<
     /**
      * A failed wake-up's events are retried only when it did nothing anyone could see: no
      * message, shadow entry, staged memory, worker or action request. `stranded` counts the
-     * events that were not, so the runner owes the chat an honest notice.
+     * events that were not, so the runner owes the chat an honest notice; `retried` counts the
+     * events requeued for another try, and `failedEventIds` those that used their last.
      */
-    readonly finish: (
-      input: typeof FinishInput.Type,
-    ) => Effect.Effect<
-      { readonly failedEventIds: ReadonlyArray<KinEventId>; readonly stranded: number },
+    readonly finish: (input: typeof FinishInput.Type) => Effect.Effect<
+      {
+        readonly failedEventIds: ReadonlyArray<KinEventId>;
+        readonly stranded: number;
+        readonly retried: number;
+      },
       PersistenceSqlError | PersistenceDecodeError
     >;
     // LEAD-5 startup recovery calls this only after confirming the provider run stopped.
@@ -199,6 +202,10 @@ export class KinEventQueue extends Context.Service<
     ) => Effect.Effect<number, PersistenceSqlError | PersistenceDecodeError>;
   }
 >()("t3/kin/lead/KinEventQueue") {}
+
+/** A failed start that showed nothing retries soon, so the owner's "trying again" is true. */
+const FIRST_RETRY_MS = 15_000;
+const LATER_RETRY_MS = 60_000;
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -298,6 +305,16 @@ const make = Effect.gen(function* () {
       RETURNING event_id
     `;
           if (inserted.length > 0) {
+            // The person is waiting: a failed start still backing off in this chat joins them.
+            if (
+              (event._tag === "chat.message" || event._tag === "widget.action") &&
+              event.provenance._tag === "human"
+            )
+              yield* sql`UPDATE kin_events SET not_before = NULL
+                WHERE org_id = ${event.orgId} AND agent_id = ${event.agentId} AND state = 'queued'
+                  AND attempts > 0 AND budget_deferred = 0 AND not_before > ${now}
+                  AND tag IN ('chat.message', 'widget.action', 'chat.reaction')
+                  AND json_extract(json, '$.chatId') = ${event.chatId}`;
             yield* sql.afterCommit(notify(event.orgId));
             return { event, duplicate: false };
           }
@@ -570,7 +587,7 @@ const make = Effect.gen(function* () {
       const result = yield* sql.withTransaction(
         Effect.gen(function* () {
           const now = yield* Clock.currentTimeMillis;
-          const none = { failedEventIds: [], stranded: 0 };
+          const none = { failedEventIds: [], stranded: 0, retried: 0 };
           // Read before the row closes; every subquery stays inside this wake-up's org.
           const [visible] =
             input.status === "completed"
@@ -602,14 +619,15 @@ const make = Effect.gen(function* () {
             const rows = yield* sql`UPDATE kin_events SET attempts = attempts + 1, state = 'failed'
             WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed'
             RETURNING event_id`;
-            return { failedEventIds: [], stranded: rows.length };
+            return { failedEventIds: [], stranded: rows.length, retried: 0 };
           }
           const rows = yield* sql<{
             event_id: string;
             state: string;
           }>`UPDATE kin_events SET attempts = attempts + 1,
             state = CASE WHEN attempts + 1 >= 3 THEN 'failed' ELSE 'queued' END,
-            wakeup_id = NULL, not_before = ${now + 300_000}
+            wakeup_id = NULL,
+            not_before = ${now} + CASE WHEN attempts = 0 THEN ${FIRST_RETRY_MS} ELSE ${LATER_RETRY_MS} END
             WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed' RETURNING event_id, state`;
           return {
             failedEventIds: rows
@@ -617,6 +635,7 @@ const make = Effect.gen(function* () {
               .map((row) => KinEventId.make(row.event_id))
               .sort(),
             stranded: 0,
+            retried: rows.filter((row) => row.state === "queued").length,
           };
         }),
       );
