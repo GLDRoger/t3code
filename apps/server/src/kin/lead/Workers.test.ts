@@ -9,8 +9,11 @@ import {
   EventId,
   KinChatError,
   KinAgentId,
+  KinChatId,
+  KinEventId,
   KinMemoryItemId,
   KinOrgId,
+  type KinPersonId,
   KinWakeupId,
   KinWorkerId,
   NodeId,
@@ -44,14 +47,18 @@ import * as ThreadManagement from "../../orchestration-v2/ThreadManagementServic
 import * as EventStore from "../../persistence/OrchestrationEventStore.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
+import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
 import * as Memory from "../memory/Memory.ts";
+import * as Deferrals from "../triggers/deferrals.ts";
 import { KinBudget } from "./KinBudget.ts";
+import { KinEventQueue } from "./KinEventQueue.ts";
 import * as Registry from "./KinLeadRegistry.ts";
+import { KinLevelGate } from "./LevelGate.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
 import * as Publish from "./workerPublish.ts";
 import * as Workers from "./Workers.ts";
@@ -900,6 +907,92 @@ it.effect("a chat that can't start work can't reach a worker started in one that
         assert.include(refused, { reason: "not_allowed" });
         assert.match(refused.message, /^Starting work isn't open to you/);
         assert.lengthOf(remote.tools("t3_thread_launch"), 1);
+      }),
+    "L0",
+  ),
+);
+
+// A due deferral wakes in the owner chat, but works at the level of the chat that asked for it.
+it.effect.each([
+  ["a teammate's group can't start a worker or post where the lead could", "team", false],
+  ["the owner's DM still starts a worker and posts", "dm", true],
+] as const)("a deferral asked for in %s when due", ([, from, works]) =>
+  run(
+    ({ ctx, remote, workers }) =>
+      Effect.gen(function* () {
+        yield* group(ctx.sql, ctx.orgId, "team", "teammate");
+        yield* group(ctx.sql, ctx.orgId, "own", "owner");
+        // kin_defer's source event, from an earlier wake-up; the due wake-up holds only its event.
+        yield* askFrom(ctx.sql, "asked", from === "team" ? "team" : ctx.chat.chatId);
+        yield* ctx.sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids)
+          VALUES ('earlier', ${ctx.orgId}, ${leadId}, 'test', 0, 'completed', '["asked"]')`;
+        yield* ctx.sql`UPDATE kin_events SET state = 'done', wakeup_id = 'earlier'
+          WHERE event_id IN ('asked', 'lead-event')`;
+        yield* ctx.sql`INSERT INTO kin_deferral_runs
+          (org_id, item_id, state, due_at, on_due, snapshot_json, updated_at)
+          VALUES (${ctx.orgId}, 'def-1', 'armed', 0, 'start', '{}', 0)`;
+        const start = yield* Deferrals.makeDeferralStarter.pipe(
+          Effect.provideService(KinEventQueue, Context.get(ctx.services, KinEventQueue)),
+          Effect.provideService(KinChatRepository, Context.get(ctx.services, KinChatRepository)),
+        );
+        const itemId = KinMemoryItemId.make("def-1");
+        assert.isTrue(
+          yield* start({
+            orgId: ctx.orgId,
+            itemId,
+            dueAt: 0,
+            card: {
+              itemId,
+              title: "Fix the flaky test",
+              dueAt: "1970-01-01T00:00:00.000Z",
+              onDue: "start",
+              text: "",
+            },
+            provenance: { _tag: "system" },
+            at: 0,
+            now: 0,
+            from: "armed",
+            item: { chat: ctx.chat.chatId, source_event: KinEventId.make("asked") },
+          }),
+        );
+        const [due] = yield* ctx.sql<{ eventId: string }>`UPDATE kin_events
+          SET state = 'claimed', wakeup_id = 'wake' WHERE tag = 'deferral.due'
+          RETURNING event_id AS "eventId"`;
+        yield* ctx.sql`UPDATE kin_wakeups SET event_ids = json_array(${due!.eventId})
+          WHERE wakeup_id = 'wake'`;
+        const started = yield* workers
+          .delegate(scope, { ...delegateInput, sourceEventId: due!.eventId })
+          .pipe(Effect.result);
+        const [owner] = yield* ctx.sql<{ personId: KinPersonId }>`SELECT owner_person_id AS
+          "personId" FROM kin_agents WHERE agent_id = ${leadId}`;
+        const gate = Context.get(ctx.services, KinLevelGate);
+        const post = (chatId: KinChatId) =>
+          gate
+            .post(
+              {
+                _tag: "agent",
+                orgId: ctx.orgId,
+                agentId: leadId,
+                ownerPersonId: owner!.personId,
+                threadId: leadThread,
+                wakeupId: KinWakeupId.make("wake"),
+              },
+              { chatId, clientMessageId: `due:${chatId}`, body: "Done.", intent: "evidence" },
+            )
+            .pipe(Effect.result);
+        const posted = yield* post(KinChatId.make("own"));
+        if (works) {
+          assert.strictEqual(started._tag, "Success");
+          assert.lengthOf(remote.tools("t3_thread_launch"), 1);
+          assert.strictEqual(posted._tag, "Success");
+        } else {
+          const refused = Result.getOrThrow(Result.flip(started));
+          assert.match(refused.message, /^Starting work isn't open to you/);
+          assert.lengthOf(remote.calls, 0);
+          assert.include(Result.getOrThrow(Result.flip(posted)), { reason: "not_allowed" });
+        }
+        // Either way the lead can still tell its owner.
+        assert.strictEqual((yield* post(ctx.chat.chatId))._tag, "Success");
       }),
     "L0",
   ),

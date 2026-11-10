@@ -94,11 +94,49 @@ export const effectiveLevel = Effect.fn("KinLevels.effectiveLevel")(function* (i
   return atLeast(chat, base) ? base : chat;
 });
 
+export const lowest = (a: KinLevel, b: KinLevel) => (atLeast(a, b) ? b : a);
+
+/** The chat a due deferral was asked from, and the lead that was asked there. */
+export interface KinOrigin {
+  readonly agentId: KinAgentId;
+  readonly chatId: KinChatId;
+}
+
+/** `origin`'s level for the lead asked there; a lead retired since reads as L0. */
+export const originLevel = (orgId: KinOrgId, origin: KinOrigin) =>
+  effectiveLevel({ orgId, agentId: origin.agentId, chatId: origin.chatId }).pipe(
+    Effect.catchTags({ KinLevelRefused: () => Effect.succeed<KinLevel>("L0") }),
+  );
+
+/**
+ * The lowest level of the chats the wake-up's due deferrals were asked from, or undefined when
+ * none was asked from outside its owner chat. Read from the stored events only.
+ */
+export const originCap = Effect.fn("KinLevels.originCap")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+  readonly wakeupId: string;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const origins = yield* sql<{ agentId: KinAgentId; chatId: KinChatId }>`
+    SELECT DISTINCT json_extract(json, '$.origin.agentId') AS "agentId",
+      json_extract(json, '$.origin.chatId') AS "chatId" FROM kin_events
+    WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND wakeup_id = ${input.wakeupId}
+      AND tag = 'deferral.due' AND json_extract(json, '$.origin.chatId') IS NOT NULL
+    ORDER BY 1, 2`.pipe(Effect.mapError(toPersistenceSqlError("KinLevels.originCap")));
+  let cap: KinLevel | undefined;
+  for (const origin of origins) {
+    const level = yield* originLevel(input.orgId, origin);
+    cap = cap === undefined ? level : lowest(cap, level);
+  }
+  return cap;
+});
+
 /**
  * The level a running wake-up works at: its lead's level in the chat it answers, which is the
- * reply bridge's lane (its first chat event's chat, else the lead's owner chat). Memory follows
- * it: a wake-up in a chat its owner placed it in writes the default branch, an L0 one the shadow
- * branch.
+ * reply bridge's lane (its first chat event's chat, else the lead's owner chat), capped by
+ * `originCap`. Memory follows it: a wake-up in a chat its owner placed it in writes the default
+ * branch, an L0 one the shadow branch.
  */
 export const wakeupLevel = Effect.fn("KinLevels.wakeupLevel")(function* (input: {
   readonly orgId: KinOrgId;
@@ -113,11 +151,13 @@ export const wakeupLevel = Effect.fn("KinLevels.wakeupLevel")(function* (input: 
         ORDER BY e.priority, e.received_at, e.event_id LIMIT 1), l.owner_chat_id) AS "chatId"
     FROM kin_leads l WHERE l.org_id = ${input.orgId} AND l.agent_id = ${input.agentId}
     ORDER BY l.agent_id`.pipe(Effect.mapError(toPersistenceSqlError("KinLevels.wakeupLevel")));
-  return yield* effectiveLevel({
+  const level = yield* effectiveLevel({
     orgId: input.orgId,
     agentId: input.agentId,
     chatId: lane?.chatId == null ? undefined : KinChatId.make(lane.chatId),
   });
+  const cap = yield* originCap(input);
+  return cap === undefined ? level : lowest(level, cap);
 });
 
 /**

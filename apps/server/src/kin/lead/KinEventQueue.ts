@@ -72,10 +72,15 @@ const SteerInput = Schema.Struct({
 
 /**
  * An event's lane, the chat a wake-up answers: a human message's or card tap's own chat, else
- * the lead's direct chat with its owner. Derived from stored rows only, never model text.
+ * the lead's direct chat with its owner. A due deferral asked from another chat gets a lane of
+ * its own, so that chat's level never mixes with owner-chat events in one wake-up. Derived from
+ * stored rows only, never model text.
  */
 const LANE_OF = `CASE WHEN e.tag IN ('chat.message', 'widget.action', 'chat.reaction')
-  THEN json_extract(e.json, '$.chatId') ELSE l.owner_chat_id END`;
+  THEN json_extract(e.json, '$.chatId')
+  WHEN e.tag = 'deferral.due' AND json_extract(e.json, '$.origin.chatId') IS NOT NULL
+  THEN 'origin:' || json_extract(e.json, '$.origin.agentId') || ':' || json_extract(e.json, '$.origin.chatId')
+  ELSE l.owner_chat_id END`;
 
 /** An owner message waits only for the rest of its burst, and never longer than the cap. */
 const OWNER_BURST_MS = 300;

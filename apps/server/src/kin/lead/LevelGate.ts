@@ -81,7 +81,11 @@ const make = Effect.gen(function* () {
     message: "You can't post in this chat. Nothing was sent.",
   });
 
-  /** Runs `allowed` in one transaction with the check; refuses below L1 outside the owner's DM. */
+  /**
+   * Runs `allowed` in one transaction with the check; refuses below L1 outside the owner's DM.
+   * The level is the lower of the target chat's and the asking wake-up's, so a chat can't post
+   * through the lead where it couldn't itself.
+   */
   const gated = <A, E>(
     operation: string,
     agent: AgentIdentity,
@@ -91,11 +95,22 @@ const make = Effect.gen(function* () {
     sql
       .withTransaction(
         Effect.gen(function* () {
-          const level = yield* KinLevels.effectiveLevel({
+          const target = yield* KinLevels.effectiveLevel({
             orgId: agent.orgId,
             agentId: agent.agentId,
             chatId,
           }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+          const level =
+            agent.wakeupId === undefined
+              ? target
+              : KinLevels.lowest(
+                  target,
+                  yield* KinLevels.wakeupLevel({
+                    orgId: agent.orgId,
+                    agentId: agent.agentId,
+                    wakeupId: agent.wakeupId,
+                  }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+                );
           if (!KinLevels.atLeast(level, "L1") && !(yield* isOwnerChat(agent, chatId)))
             return yield* notAllowed;
           return yield* allowed;

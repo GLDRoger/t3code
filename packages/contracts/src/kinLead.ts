@@ -386,6 +386,9 @@ export const KinEvent = Schema.Union([
       }),
     ]),
     lateByMs: NonNegativeInt,
+    // The chat the deferral was asked from, when it isn't the running lead's owner chat. The
+    // server derives it from the item's source event; the wake-up works at no more than its level.
+    origin: Schema.optional(Schema.Struct({ agentId: KinAgentId, chatId: KinChatId })),
   }),
   Schema.TaggedStruct("routine", {
     ...EventBase,

@@ -28,6 +28,7 @@ import { PersistenceDecodeError, toPersistenceSqlError } from "../../persistence
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as Chat from "../chat/KinChatService.ts";
 import * as KinBudget from "../lead/KinBudget.ts";
+import type * as KinLevels from "../lead/KinLevels.ts";
 import * as LeadDelivery from "../lead/LeadDelivery.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
@@ -158,7 +159,13 @@ const make = Effect.gen(function* () {
     readonly now: number;
     readonly timeZone: string;
     /** Set when a wake-up can run now. */
-    readonly lead: { readonly agentId: KinAgentId; readonly ownerChatId: KinChatId } | undefined;
+    readonly lead:
+      | {
+          readonly agentId: KinAgentId;
+          readonly ownerChatId: KinChatId;
+          readonly origin: KinLevels.KinOrigin | undefined;
+        }
+      | undefined;
     readonly leadName: string | undefined;
     readonly fallbackChat: KinChatId | null;
   }) {
@@ -184,6 +191,7 @@ const make = Effect.gen(function* () {
         dedupeKey,
         subject: { type: "reminder", itemId },
         lateByMs: Math.max(0, now - fireAt),
+        ...(input.lead.origin === undefined ? {} : { origin: input.lead.origin }),
       });
       yield* deliveries.handOff(event, {
         orgId,
@@ -311,8 +319,7 @@ const make = Effect.gen(function* () {
       if (!(yield* workersConfigured)) gates.push("workers can't launch yet");
     }
     // A reminder is the lead's to write when a wake-up can run; budget is read outside the writer.
-    const reminderLead =
-      onDue === "remind" ? yield* deferralLead(sql, orgId, item?.chat) : undefined;
+    const reminderLead = onDue === "remind" ? yield* deferralLead(sql, orgId, item) : undefined;
     const reminderAdmitted =
       reminderLead === undefined
         ? false
@@ -366,7 +373,7 @@ const make = Effect.gen(function* () {
         });
 
         if (onDue === "start") {
-          const lead = yield* deferralLead(sql, orgId, item?.chat);
+          const lead = yield* deferralLead(sql, orgId, item);
           if (lead === undefined) reasons.push("there is no active lead");
           else if (!startsAtLevel(lead.level)) reasons.push("starting work isn't open to me here");
         }
@@ -413,7 +420,7 @@ const make = Effect.gen(function* () {
               at: Date.parse(fire.firedAt),
               now,
               from: run.state,
-              chatId: item?.chat,
+              item,
             });
             if (!started) return false;
           }

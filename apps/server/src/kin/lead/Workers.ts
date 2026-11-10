@@ -207,14 +207,18 @@ const make = Effect.gen(function* () {
     return yield* decodeWorker(row);
   });
   /**
-   * Whether every chat the work touches is open to it: the chat that asked and the chats of the
-   * workers it reaches. A chat's own cap holds there, and a weaker chat can't reach a worker
-   * placed in a stronger one.
+   * Whether every chat the work touches is open to it: the chat that asked, the chats its due
+   * deferrals were asked from, and the chats of the workers it reaches. A chat's own cap holds
+   * there, and a weaker chat can't reach a worker placed in a stronger one.
    */
   const open = Effect.fn("KinWorkers.open")(function* (
     ctx: Lead,
     chats: ReadonlyArray<KinChatId | null>,
   ) {
+    const cap = yield* KinLevels.originCap(ctx).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+    if (cap !== undefined && !KinLevels.atLeast(cap, "L2")) return false;
     for (const chatId of chats) {
       const level = yield* KinLevels.effectiveLevel({
         orgId: ctx.orgId,
