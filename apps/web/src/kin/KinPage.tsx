@@ -27,6 +27,7 @@ import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../components/Work
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { isElectron } from "../env";
 import { cn } from "../lib/utils";
+import { KinAvatar } from "./KinAvatar";
 import { ApproveOnPhone } from "./KinCards";
 import { startKinOutbox } from "./kinOutbox";
 import { useKinInbox } from "./useKinHost";
@@ -244,17 +245,7 @@ function KinChatRow(props: {
           props.active && "bg-accent",
         )}
       >
-        <span
-          aria-hidden
-          className={cn(
-            "flex size-9 shrink-0 items-center justify-center rounded-full text-xs font-medium",
-            view.avatar.kind === "agent"
-              ? "bg-primary/12 text-primary"
-              : "bg-secondary text-secondary-foreground",
-          )}
-        >
-          {view.avatar.initials}
-        </span>
+        <KinAvatar avatar={view.avatar} />
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="flex items-baseline gap-2">
             <span

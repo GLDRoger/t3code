@@ -259,7 +259,7 @@ export function kinDirectory(host: KinHost): KinDirectory {
 export interface KinChatRowView {
   readonly chatId: KinChatId;
   readonly title: string;
-  readonly avatar: { readonly kind: "agent" | "person"; readonly initials: string };
+  readonly avatar: KinAvatarView;
   /** "Lead" in "Lead: Payments test fixed". */
   readonly author: string | null;
   readonly preview: string;
@@ -267,14 +267,26 @@ export interface KinChatRowView {
   readonly unread: number;
 }
 
-/** First letters of the first two words: "Tech lead" is "TL". */
-export function kinInitials(name: string): string {
-  const letters = name
-    .split(/\s+/)
-    .filter((word) => word.length > 0)
-    .slice(0, 2)
-    .map((word) => Array.from(word)[0]!.toUpperCase());
-  return letters.length > 0 ? letters.join("") : "?";
+/**
+ * A blobatar is drawn from `seed`, an id rather than a name, so a rename keeps the face and web
+ * and mobile draw the same one.
+ */
+export interface KinAvatarView {
+  readonly kind: "agent" | "person" | "group";
+  readonly seed: string;
+}
+
+function kinAvatarView(
+  chat: KinChatSummary,
+  counterpart: KinChatSummary["members"][number] | null,
+): KinAvatarView {
+  if (chat.kind === "team_group" || chat.kind === "project_group") {
+    return { kind: "group", seed: `chat:${chat.chatId}` };
+  }
+  const principal = counterpart?.principal;
+  if (principal?._tag === "person") return { kind: "person", seed: `person:${principal.personId}` };
+  if (principal?._tag === "agent") return { kind: "agent", seed: `agent:${principal.agentId}` };
+  return { kind: "agent", seed: `chat:${chat.chatId}` };
 }
 
 /** Message markdown as one plain line. */
@@ -321,10 +333,7 @@ export function kinChatRowView(row: KinInboxRow, directory: KinDirectory): KinCh
   return {
     chatId: chat.chatId,
     title,
-    avatar: {
-      kind: counterpart?.principal._tag === "person" ? "person" : "agent",
-      initials: kinInitials(title),
-    },
+    avatar: kinAvatarView(chat, counterpart),
     author: last?.status === "deleted" ? null : author,
     preview,
     sentAt: chat.lastMessageAt,
