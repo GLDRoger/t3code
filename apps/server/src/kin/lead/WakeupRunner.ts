@@ -846,6 +846,7 @@ const make = Effect.gen(function* () {
                 wakeupId,
                 threadId,
                 startedAt: row.startedAt,
+                attachments: attachments.length > 0,
               });
             const commandId = CommandId.make(`kin-wakeup:${wakeupId}`);
             const messageId = MessageId.make(KinIdentity.wakeupMessageId(wakeupId));

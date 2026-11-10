@@ -38,6 +38,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinReactions";
 import { kinSentences } from "@t3tools/client-runtime/kin/kinScreenState";
 import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
+import { kinCardDraws } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { MessageAttachmentList } from "../../threads/ThreadFeed";
 import { KinWidgetView } from "../widgets/KinWidgetView";
 
@@ -110,7 +111,10 @@ export function KinMessageBubble(props: {
   const hasBody = !deleted && message.body.trim().length > 0;
   // The bubble reads as one element, so its links are reachable as VoiceOver actions.
   const links = hasBody ? kinMessageLinks(message.body) : [];
-  const hasCard = !deleted && message.widgetId !== null;
+  const hasCard =
+    !deleted &&
+    message.widgetId !== null &&
+    kinCardDraws(props.widget, props.environmentId, hasBody);
   const attachments = deleted ? [] : (message.attachments ?? []);
   // Files alone need no empty bubble under them.
   const hasBubble =
@@ -158,6 +162,7 @@ export function KinMessageBubble(props: {
           // A long press opens the sheet, whose Select text offers selection instead.
           selectable={onOpenActions === null}
           preserveSoftBreaks
+          inlineWebLinks
           onLinkPress={props.onLinkPress}
           renderImage={renderImageAsText}
           resolveImageSource={kinImageSource}
@@ -296,18 +301,7 @@ export function KinDraftBubble(props: {
   );
 }
 
-/** Kin's own bookkeeping from an older host, kept out of the way: one small centred line. */
-export function KinQuietLine(props: { readonly text: string }) {
-  return (
-    <View className="items-center px-8 py-1.5">
-      <Text textRole="caption" numberOfLines={1} className="text-center text-foreground-muted">
-        {props.text}
-      </Text>
-    </View>
-  );
-}
-
-/** A line from Kin itself, such as a member joining. */
+/** A line from Kin itself, such as a reply that failed. */
 export function KinSystemLine(props: {
   readonly row: SystemRow;
   /** Sends the owner's unanswered message again; null shows the line alone. */

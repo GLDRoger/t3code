@@ -21,6 +21,17 @@ export function indexIsStale(index: string, now: number): boolean {
   return !Number.isFinite(at) || at > now || now - at >= 36 * 60 * 60 * 1000;
 }
 
+/**
+ * A reminder that already went out, and any reminder or scheduled task that was cancelled, done
+ * or replaced, is no longer in hand: listed, the lead keeps bringing it up. Search still finds it.
+ */
+const settled = (item: IndexItem, due: number, now: number) =>
+  item.kind === "deferral" &&
+  (item.status !== "open" ||
+    item.invalid_at !== null ||
+    item.superseded_by !== null ||
+    (item.every === undefined && (item.on_due ?? "remind") === "remind" && due < now));
+
 export function buildIndex(
   items: ReadonlyArray<IndexItem>,
   readHistory: Readonly<Record<string, number>>,
@@ -58,6 +69,7 @@ export function buildIndex(
       reviewBy: dateOrder(item.review_by),
       recordedAt: memoryDateMillis(item.recorded_at),
     }))
+    .filter(({ item, due }) => !settled(item, due, now))
     .filter(
       ({ item, recordedAt }) =>
         now -

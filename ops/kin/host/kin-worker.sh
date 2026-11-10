@@ -272,13 +272,14 @@ cmd_upload_pack() {
 }
 
 # What this script itself stands on, checked before it changes anything: Bash 4.4 (mapfile,
-# empty arrays under `set -u`), GNU stat and sed, and systemd 249 (SocketBindDeny=).
+# empty arrays under `set -u`), a coreutils stat, GNU sed, and systemd 249 (SocketBindDeny=).
 MIN_SYSTEMD=249
 preflight() {
   [ "$(uname -s)" = Linux ] || die "needs Linux with systemd."
   [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 4 ]; } ||
     die "needs Bash 4.4 or later; this is Bash $BASH_VERSION."
-  stat --version 2>/dev/null | grep -q GNU || die "needs GNU stat (coreutils)."
+  # Asked by behaviour, not name: Ubuntu 25.10 ships uutils coreutils, whose stat takes the same -c.
+  [[ "$(stat -c '%u %a' / 2>/dev/null)" =~ ^0\ [0-7]+$ ]] || die "needs a stat that takes -c '%u %a' (GNU or uutils coreutils)."
   sed --version 2>/dev/null | grep -q 'GNU sed' || die "needs GNU sed."
   local version
   version="$(systemctl --version 2>/dev/null | sed -n '1s/^systemd \([0-9]*\).*/\1/p')"
@@ -385,9 +386,11 @@ cmd_install() {
   checklist
 }
 
+# From kin's own home: the CLI makes its working directory, and the caller's may be one kin can't enter.
 as_kin() {
   sudo -u "$KIN_USER" -H env \
-    PATH="$KIN_HOME/.local/bin:$KIN_HOME/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin" "$@"
+    PATH="$KIN_HOME/.local/bin:$KIN_HOME/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin" \
+    /bin/sh -c 'cd "$HOME" && exec "$@"' sh "$@"
 }
 kin_cli() {
   local version
@@ -490,9 +493,12 @@ cmd_link() {
   wait_for_worker_server
   local code linked id
   # The pairing code stays in this shell: it is never printed or logged.
-  code="$(cmd_run t3 pair --base-dir "$WORKER_HOME/.t3" --label kin-server </dev/null | sed -n 's/^Token: //p' | tail -n1)"
+  code="$(cmd_run t3 pair --base-dir "$WORKER_HOME/.t3" --label kin-server </dev/null | sed -n 's/^Token: //p' | tail -n1)" ||
+    die "the worker environment couldn't make a pairing code. Try: sudo kin-worker run t3 pair --base-dir $WORKER_HOME/.t3 --label kin-server"
   [ -n "$code" ] || die "the worker environment gave no pairing code."
-  linked="$(kin_cli environment link "$WORKER_URL" --pairing-code "$code" --access full-access --base-dir "$KIN_HOME/.t3")"
+  # The CLI prints its errors on stdout, so a failure is shown here: its first lines, never the code.
+  linked="$(kin_cli environment link "$WORKER_URL" --pairing-code "$code" --access full-access --base-dir "$KIN_HOME/.t3" 2>&1)" ||
+    die "kin-server couldn't link to the worker environment: $(printf '%s\n' "${linked//"$code"/(code)}" | head -n 4)"
   id="$(printf '%s\n' "$linked" | sed -n 's/^Linked .* (\([^)]*\)) with .*/\1/p' | head -n1)"
   # The id lands in kin's service.env, which systemd reads: nothing but an id may go there.
   [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || die "linking printed no usable environment id: $linked"

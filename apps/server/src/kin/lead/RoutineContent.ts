@@ -84,12 +84,15 @@ export interface PreparedRoutine {
 export class KinRoutineContent extends Context.Service<
   KinRoutineContent,
   {
-    /** Null when there is nothing to write: posted already, or no live lead. */
+    /** Null when there is nothing to write: posted already, no live lead, or no fact to report. */
     readonly prepare: (
       agentId: KinAgentId,
       event: RoutineEvent,
     ) => Effect.Effect<PreparedRoutine | null, KinRoutineContentError>;
-    /** Posts the server's line with the card; `note` is added to it, such as why Kin sent it. */
+    /**
+     * Posts the server's line with the card; `note` is added to it, such as why Kin sent it.
+     * A routine with no fact to report posts nothing.
+     */
     readonly post: (
       agentId: KinAgentId,
       event: RoutineEvent,
@@ -421,7 +424,8 @@ const make = Effect.gen(function* () {
           dayLabel: gathered.dayLabel(DateTime.toEpochMillis(fold.dueAt)),
         })),
       };
-      const { body, card } = renderRoutine(header, gathered.facts);
+      const { body, card, empty } = renderRoutine(header, gathered.facts);
+      if (empty) return null;
       return {
         widgetId,
         chatId: KinChatId.make(owner.chatId),
@@ -467,6 +471,7 @@ const make = Effect.gen(function* () {
         })),
       };
       const rendered = renderRoutine(header, gathered.facts);
+      if (rendered.empty) return null;
       const body = note === undefined ? rendered.body : `${rendered.body}\n\n${note}`;
       const state = yield* encodeCard(rendered.card);
       return yield* sql.withTransaction(

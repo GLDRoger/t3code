@@ -2,8 +2,9 @@ import { KinChatError, type EnvironmentId, type KinWidget } from "@t3tools/contr
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  kinCardDraws,
   kinCardView,
-  kinQuietCardLine,
+  kinIsBookkeeping,
   kinReminderCardView,
   kinScheduledTaskCardView,
 } from "./kinCardPresentation.ts";
@@ -67,7 +68,18 @@ describe("kinCardView", () => {
     expect(
       kinCardView(widget({ state: taskState({ status: "paused" }) }), HOST, known()).kind,
     ).toBe("unknown");
-    expect(kinCardView(widget({ state: { title: "no ids" } }), HOST, known()).kind).toBe("unknown");
+    // A card this build can't draw says what it would have, never something about the app.
+    const poll = widget({ type: "poll", state: { title: "  Lunch on\nFriday? ", options: [] } });
+    expect(kinCardView(poll, HOST, known())).toEqual({ kind: "unknown", text: "Lunch on Friday?" });
+    expect(kinCardView(widget({ type: "poll", state: { options: [] } }), HOST, known())).toEqual({
+      kind: "unknown",
+      text: null,
+    });
+    // Beside the message's own text the card adds nothing; with no words at all it isn't drawn.
+    expect(kinCardDraws(poll, HOST, false)).toBe(true);
+    expect(kinCardDraws(poll, HOST, true)).toBe(false);
+    expect(kinCardDraws(widget({ type: "poll", state: {} }), HOST, false)).toBe(false);
+    expect(kinCardDraws(widget(), HOST, true)).toBe(true);
     expect(kinCardView(widget({ type: "deferral" }), HOST, known()).kind).toBe("unknown");
     const deferral = {
       itemId: "def-1",
@@ -433,8 +445,15 @@ describe("memory change card", () => {
       },
     });
     const view = kinCardView(changes, HOST, known());
-    expect(kinQuietCardLine(changes)).toBe("Remembered: you prefer short replies and 1 more");
-    expect(kinQuietCardLine(widget({ type: "task", state: taskState() }))).toBeNull();
+    const note = (body: string, widgetId: string | null, tag = "system") =>
+      ({ author: { _tag: tag }, status: "posted", widgetId, body }) as never;
+    expect(kinIsBookkeeping(note("", changes.widgetId), changes)).toBe(true);
+    expect(kinIsBookkeeping(note("Forgot: the old office address", null), undefined)).toBe(true);
+    // What the owner must know, and what a lead wrote, always shows.
+    expect(kinIsBookkeeping(note("Tech lead stopped partway.", null), undefined)).toBe(false);
+    expect(kinIsBookkeeping(note("Forgot: to say hi", null, "agent"), undefined)).toBe(false);
+    const task = widget({ type: "task", state: taskState() });
+    expect(kinIsBookkeeping(note("", task.widgetId), task)).toBe(false);
     if (view.kind !== "memory_changes")
       throw new Error(`expected memory changes, got ${view.kind}`);
     expect(view.changes.items.map(({ line, undo }) => [line, undo])).toEqual([

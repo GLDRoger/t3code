@@ -308,7 +308,7 @@ it.effect("labels each phase of a wake-up once per change and clears when the re
         .snapshot(owner.orgId, direct.chatId)
         .presence.map((line) => [line.state, line.label, line.wakeupId]);
     // Begun, before the model starts: never `seen`.
-    assert.deepStrictEqual(shown(), [["starting", "Reading memory", wakeupId]]);
+    assert.deepStrictEqual(shown(), [["starting", "Catching up", wakeupId]]);
     const updates = yield* Queue.unbounded<string | null>();
     const all = yield* Context.get(services, KinChatHub).subscribeAll;
     yield* all.pipe(
@@ -363,13 +363,13 @@ it.effect("labels each phase of a wake-up once per change and clears when the re
     yield* bridge.end({ orgId: owner.orgId, agentId, wakeupId });
     assert.deepStrictEqual(shown(), []);
     // A wake-up's line wins over a queue line, and a queue line's relabel keeps its start.
-    yield* presence.queued(owner.orgId, direct.chatId, agentId, "Reading memory", 0);
-    yield* presence.queued(owner.orgId, direct.chatId, agentId, "Queued", 5_000);
+    yield* presence.queued(owner.orgId, direct.chatId, agentId, "Catching up", 0);
+    yield* presence.queued(owner.orgId, direct.chatId, agentId, "Finishing something else", 5_000);
     assert.deepStrictEqual(
       presence
         .snapshot(owner.orgId, direct.chatId)
         .presence.map((line) => [line.label, line.startedAt]),
-      [["Queued", "1970-01-01T00:00:00.000Z"]],
+      [["Finishing something else", "1970-01-01T00:00:00.000Z"]],
     );
     // A wake-up that ends before it begins drops the queue line where no message waits any more.
     yield* bridge.end({ orgId: owner.orgId, agentId, wakeupId: KinWakeupId.make("never-began") });
@@ -515,7 +515,7 @@ it.effect(
       assert.lengthOf(yield* posted, 1);
       const [reply] = yield* sql<{ messageId: KinMessageId }>`SELECT message_id AS "messageId"
         FROM kin_messages WHERE chat_id = ${direct.chatId} AND author_kind = 'agent' ORDER BY seq`;
-      const seen = (label: "Queued" | null) =>
+      const seen = (label: "Finishing something else" | null) =>
         all.pipe(
           Stream.filter(
             (event) =>
@@ -528,7 +528,7 @@ it.effect(
         );
       // While the wake-up still runs (its memory commit), the owner 👎s and withdraws it.
       // The wake-up still runs, so the reaction waits behind it.
-      const shown = yield* seen("Queued");
+      const shown = yield* seen("Finishing something else");
       yield* chats.react(owner, { messageId: reply!.messageId, emoji: "👎", on: true });
       assert.lengthOf(yield* Fiber.join(shown), 1);
       const gone = yield* seen(null);

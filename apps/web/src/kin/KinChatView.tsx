@@ -18,6 +18,7 @@ import {
   type KinFeedViewer,
   type KinPaging,
 } from "@t3tools/client-runtime/kin/kinChatFeed";
+import { kinFeedMessages } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import {
   initialKinFeedFollow,
   kinFollowsEnd,
@@ -99,7 +100,6 @@ import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
 import { Spinner } from "../components/ui/spinner";
-import { Textarea } from "../components/ui/textarea";
 import { isElectron } from "../env";
 import { cn } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -113,7 +113,7 @@ import {
 import { kinClient } from "./kinClient";
 import { KinLeadSheet } from "./KinLeadSheet";
 import { deliverKinOutbox, kinOutbox, startKinOutbox } from "./kinOutbox";
-import { kinFeedDisplay, kinIsBookkeeping, kinQuietWording } from "./kinFeedDisplay";
+import { kinFeedDisplay } from "./kinFeedDisplay";
 import {
   formatKinMessageTime,
   KinDayRow,
@@ -238,7 +238,6 @@ export function KinChatView(props: {
       <KinChatHeader
         title={title}
         avatar={avatar}
-        presence={presence}
         tasks={tasks}
         muted={muted}
         onOpenProfile={lead === null ? null : () => setProfileOpen(true)}
@@ -293,18 +292,16 @@ export function KinChatView(props: {
   );
 }
 
-/** Who the chat is with, and what they are doing: presence while a lead works, open tasks otherwise. */
+/** Who the chat is with, and their open tasks. What the lead is doing right now reads under the feed. */
 function KinChatHeader(props: {
   readonly title: string;
   readonly avatar: KinAvatarView | null;
-  readonly presence: KinPresence | undefined;
   readonly tasks: string | null;
   readonly muted: boolean;
   /** Opens the lead's profile; null for a chat that has none to show. */
   readonly onOpenProfile: (() => void) | null;
 }) {
-  const now = useKinPresenceNow(kinPresenceNeedsClock(props.presence));
-  const subtitle = kinPresenceLine(props.presence, now)?.subtitle ?? props.tasks;
+  const subtitle = props.tasks;
   const identity = (
     <>
       {props.avatar === null ? null : <KinAvatar avatar={props.avatar} size="sm" />}
@@ -504,10 +501,15 @@ function KinChatFeed(props: {
   };
   const dayStart = new Date(nowMs);
   dayStart.setHours(0, 0, 0, 0);
-  const feedRows = buildKinFeedRows(messages, props.viewer, expandedRuns, dayStart, live.drafts);
+  const feedRows = buildKinFeedRows(
+    kinFeedMessages(messages, widgets),
+    props.viewer,
+    expandedRuns,
+    dayStart,
+    live.drafts,
+  );
   const display = kinFeedDisplay({
     rows: feedRows,
-    widgets,
     direct: props.direct,
     formatTime: formatKinMessageTime,
   });
@@ -679,7 +681,6 @@ function KinChatFeed(props: {
       case "message": {
         const { message } = item;
         const shown = display.get(item.key);
-        if (shown?.quiet != null) return <KinSystemRow body={shown.quiet} onRetry={null} quiet />;
         const widget = message.widgetId === null ? undefined : widgets.get(message.widgetId);
         const chips = kinReactionChips(
           streamed.reactions,
@@ -719,8 +720,7 @@ function KinChatFeed(props: {
         // An unsent message is already a retry in flight.
         return (
           <KinSystemRow
-            body={kinQuietWording(item.text)}
-            quiet={kinIsBookkeeping(item.text)}
+            body={item.text}
             onRetry={retry === null || pending.length > 0 ? null : () => void sendText(retry)}
           />
         );
@@ -1098,11 +1098,11 @@ function KinComposer(props: {
                 draftKey={draftKey}
                 state={files}
               />
-              <div className="px-1 pt-2.5 sm:pt-3">
-                <Textarea
-                  unstyled
+              {/* The thread composer's editor box, so both composers are one size. */}
+              <div className="px-4 pt-3.5 pb-2 sm:pt-4">
+                <textarea
+                  className="-m-1 block field-sizing-content max-h-52 min-h-[calc(2lh+--spacing(2))] w-[calc(100%+--spacing(2))] resize-none overflow-y-auto bg-transparent p-1 text-sm leading-relaxed wrap-break-word text-foreground outline-none placeholder:text-placeholder"
                   ref={textareaRef}
-                  rows={2}
                   value={text}
                   aria-label={`Message ${recipient}`}
                   placeholder={`Message ${recipient}`}

@@ -100,31 +100,40 @@ export const isToolItem = (item: OrchestrationV2TurnItem) => TOOL_TYPES.has(item
 export const isEndCall = (item: OrchestrationV2TurnItem) =>
   item.type === "dynamic_tool" && /(?:^|__|\.)kin_end$/.test(item.toolName ?? "");
 
-// The presence line's only words. Each is fixed text: never tool arguments or model text.
+// The presence line's only words, as a colleague would say them: fixed text, never tool
+// arguments or model text, and never a tool's name or how Kin works inside.
 export const PHASE_LABELS = {
-  queued: "Queued",
-  preparing: "Reading memory",
+  queued: "Finishing something else",
+  preparing: "Catching up",
   thinking: "Thinking",
   writing: "Writing",
   tool: "Working",
+  attachments: "Looking at what you sent",
 } as const;
 // Null leaves the line as it was: the call is bookkeeping, not work the owner waits on.
 const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
-  [/(?:^|__|\.)(?:memory_search|memory_read|Read|Grep|Glob)$/, "Checking memory"],
-  [/(?:^|__|\.)memory_\w+$/, "Updating memory"],
+  [/(?:^|__|\.)(?:memory_search|memory_read|Read|Grep|Glob)$/, "Checking my notes"],
+  [/(?:^|__|\.)memory_\w+$/, "Making a note"],
   [/(?:^|__|\.)kin_defer$/, "Setting a reminder"],
-  [/(?:^|__|\.)kin_delegate$/, "Starting a worker"],
-  [/(?:^|__|\.)kin_follow_up$/, "Messaging a worker"],
-  [/(?:^|__|\.)kin_worker_stop$/, "Stopping a worker"],
-  [/(?:^|__|\.)kin_ask$/, "Preparing a question"],
-  [/(?:^|__|\.)kin_schedule$/, "Scheduling"],
-  [/(?:^|__|\.)kin_cancel$/, "Cancelling a reminder"],
+  [/(?:^|__|\.)kin_delegate$/, "Getting the work started"],
+  [/(?:^|__|\.)kin_follow_up$/, "Following up on the work"],
+  [/(?:^|__|\.)kin_worker_stop$/, "Stopping the work"],
+  [/(?:^|__|\.)kin_leads$/, "Checking who handles this"],
+  [/(?:^|__|\.)kin_hand_off$/, "Passing this on"],
+  [/(?:^|__|\.)kin_ask$/, "Writing a question"],
+  [/(?:^|__|\.)kin_schedule$/, "Setting up a schedule"],
+  [/(?:^|__|\.)kin_cancel$/, "Cancelling it"],
+  [/(?:^|__|\.)kin_github_repos$/, "Checking your repos"],
+  [/(?:^|__|\.)kin_github_prs?$/, "Checking pull requests"],
+  [/(?:^|__|\.)kin_github_runs$/, "Checking the builds"],
   [/(?:^|__|\.)kin_github_\w+$/, "Checking GitHub"],
-  [/(?:^|__|\.)request_action$/, "Preparing a request"],
+  [/(?:^|__|\.)kin_chat_read$/, "Reading the chat"],
+  [/(?:^|__|\.)kin_chat_post$/, "Writing"],
+  [/(?:^|__|\.)request_action$/, "Asking for your approval"],
   [/(?:^|__|\.)(?:kin_react|kin_journal|kin_end)$/, null],
 ];
 export function toolLabel(item: OrchestrationV2TurnItem): string | null {
-  if (item.type === "file_search") return "Checking memory";
+  if (item.type === "file_search") return "Checking my notes";
   const name = item.type === "dynamic_tool" ? (item.toolName ?? "") : (item.title ?? "");
   const found = TOOL_LABELS.find(([pattern]) => pattern.test(name));
   return found === undefined ? PHASE_LABELS.tool : found[1];

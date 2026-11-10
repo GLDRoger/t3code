@@ -1,3 +1,4 @@
+import { sessionUploadOwner } from "../../assets/AttachmentUpload.ts";
 import { KinChatAndBudgetRpcs, KinChatError } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -210,7 +211,9 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
       ),
     "kin.messages.send": (input) =>
       viewer.pipe(
-        Effect.flatMap(({ chat, people }) => chat.send(people, input)),
+        Effect.flatMap(({ chat, people }) =>
+          chat.send(people, { ...input, uploader: sessionUploadOwner(session) }),
+        ),
         Effect.tapError(logInfra),
         Effect.mapError(mapError),
         Effect.catchDefect(defect),

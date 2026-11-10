@@ -14,6 +14,7 @@ import * as Schema from "effect/Schema";
 import { OrchestratorRuntimeModeAboveCeilingError } from "../../../orchestration-v2/Orchestrator.ts";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
+import { mcpCallerUploadOwner } from "../attachment/handlers.ts";
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as Project from "../../../project/ProjectService.ts";
 import * as ProjectCloneTracker from "../../../project/ProjectCloneTracker.ts";
@@ -225,31 +226,34 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             )?.supportedRuntimeModes,
           });
         }
-        const result = yield* ThreadMessageIntake.launchThread({
-          commandId,
-          threadId,
-          projectId,
-          title: input.title,
-          modelSelection,
-          runtimeMode: startedRuntimeMode,
-          interactionMode,
-          workspaceStrategy: input.workspaceStrategy ?? { type: "root" },
-          ...(input.message === undefined && attachments.length === 0
-            ? {}
-            : {
-                initialMessage: {
-                  messageId,
-                  ...(caller === undefined ? {} : { senderThreadId: caller.id }),
-                  text: input.message ?? "",
-                  attachments,
-                },
-              }),
-          createdBy: "agent",
-          creationSource: "mcp",
-          ...(linkOrigin === undefined ? {} : { linkOrigin }),
-          // Kept only alongside linkOrigin: thread.create drops it otherwise.
-          ...(input.delegatedFrom === undefined ? {} : { delegatedFrom: input.delegatedFrom }),
-        }).pipe(
+        const result = yield* ThreadMessageIntake.launchThread(
+          {
+            commandId,
+            threadId,
+            projectId,
+            title: input.title,
+            modelSelection,
+            runtimeMode: startedRuntimeMode,
+            interactionMode,
+            workspaceStrategy: input.workspaceStrategy ?? { type: "root" },
+            ...(input.message === undefined && attachments.length === 0
+              ? {}
+              : {
+                  initialMessage: {
+                    messageId,
+                    ...(caller === undefined ? {} : { senderThreadId: caller.id }),
+                    text: input.message ?? "",
+                    attachments,
+                  },
+                }),
+            createdBy: "agent",
+            creationSource: "mcp",
+            ...(linkOrigin === undefined ? {} : { linkOrigin }),
+            // Kept only alongside linkOrigin: thread.create drops it otherwise.
+            ...(input.delegatedFrom === undefined ? {} : { delegatedFrom: input.delegatedFrom }),
+          },
+          yield* mcpCallerUploadOwner,
+        ).pipe(
           Effect.mapError((error) => {
             if (error._tag === "AttachmentClaimError") {
               return new OrchestratorMcpFailure({

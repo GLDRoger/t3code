@@ -285,7 +285,7 @@ export function KinChatsCatalog() {
       </View>
       <AppText className="text-lg font-t3-semibold">Kin lead details</AppText>
       <View className="gap-5 rounded-[24px] border border-border bg-screen p-4">
-        <KinLeadProfileView lead={LEAD_FIXTURE} />
+        <KinLeadProfileView lead={LEAD_FIXTURE} modelName="Claude Opus 4.6" />
       </View>
     </View>
   );

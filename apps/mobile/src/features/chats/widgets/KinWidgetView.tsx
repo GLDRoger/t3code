@@ -7,7 +7,6 @@ import { AppText as Text } from "../../../components/ui/AppText";
 import { environmentCatalog } from "../../../connection/catalog";
 import {
   KIN_MISSING_CARD_TEXT,
-  KIN_UNKNOWN_CARD_TEXT,
   kinCardView,
 } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { KinApprovalCard } from "./KinApprovalCard";
@@ -58,11 +57,18 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
         />
       );
     case "missing":
-    case "unknown":
       return (
         <View className="rounded-[20px] border border-border bg-card-alt px-4 py-3">
           <Text textRole="footnote" className="text-foreground-muted">
-            {view.kind === "missing" ? KIN_MISSING_CARD_TEXT : KIN_UNKNOWN_CARD_TEXT}
+            {KIN_MISSING_CARD_TEXT}
+          </Text>
+        </View>
+      );
+    case "unknown":
+      return view.text === null ? null : (
+        <View className="rounded-[20px] border border-border bg-card-alt px-4 py-3">
+          <Text textRole="footnote" className="text-foreground">
+            {view.text}
           </Text>
         </View>
       );

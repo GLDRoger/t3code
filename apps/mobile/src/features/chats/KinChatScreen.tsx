@@ -88,7 +88,6 @@ import {
   KinDraftBubble,
   KinMessageBubble,
   KinPendingBubble,
-  KinQuietLine,
   KinSystemLine,
 } from "./components/KinMessageBubble";
 import {
@@ -111,7 +110,7 @@ import {
   type KinFeedViewer,
   type KinPaging,
 } from "@t3tools/client-runtime/kin/kinChatFeed";
-import { kinQuietCardLine } from "@t3tools/client-runtime/kin/kinCardPresentation";
+import { kinFeedMessages } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { useLocalDayStartMs } from "./state/useLocalDayStartMs";
 import { kinClient, type KinSynced } from "./state/kinClient";
 import { splitKinOutbox, type KinOutboxEntry } from "@t3tools/client-runtime/kin/kinOutbox";
@@ -825,7 +824,7 @@ function KinChatFeed(props: {
         : "Member";
   };
   const feedRows = buildKinFeedRows(
-    messages,
+    kinFeedMessages(messages, widgets),
     props.viewer,
     expandedRuns,
     new Date(dayStartMs),
@@ -1022,8 +1021,6 @@ function KinChatFeed(props: {
       case "message": {
         const { message } = item;
         const widget = message.widgetId === null ? undefined : widgets.get(message.widgetId);
-        const quiet = kinQuietCardLine(widget);
-        if (quiet !== null) return <KinQuietLine text={quiet} />;
         const chips = kinReactionChips(
           streamed.reactions,
           message.messageId,

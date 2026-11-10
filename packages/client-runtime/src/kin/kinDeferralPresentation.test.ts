@@ -19,7 +19,7 @@ import {
   kinStartNowRefusalNotice,
   visibleKinCardStatus,
   type KinDeferralActionId,
-  kinDeferralQuietLine,
+  kinDeferralIsBookkeeping,
 } from "./kinDeferralPresentation.ts";
 
 const DUE = "2026-11-13T09:00:00.000Z";
@@ -143,18 +143,12 @@ describe("kinDeferralCardView", () => {
     );
   });
 
-  it("reads Kin's own note as one quiet line, but not a card that needs a decision", () => {
-    expect(kinDeferralQuietLine(deferral({ onDue: "remind" }), "UTC")).toBe(
-      "Reminder set for Fri 13 Nov, 9:00",
-    );
-    expect(kinDeferralQuietLine(deferral({ phase: "started" }), "UTC")).toBe(
-      "Scheduled for Fri 13 Nov, 9:00",
-    );
-    expect(kinDeferralQuietLine(deferral({ phase: "asked" }), "UTC")).toBeNull();
-    expect(kinDeferralQuietLine(deferral({ phase: "heads_up" }), "UTC")).toBeNull();
-    expect(kinDeferralQuietLine(deferral({ phase: "asked" }, { closedAt: DUE }), "UTC")).toBe(
-      "Scheduled for Fri 13 Nov, 9:00",
-    );
+  it("treats Kin's own note as bookkeeping, but not a card that needs a decision", () => {
+    expect(kinDeferralIsBookkeeping(deferral({ onDue: "remind" }))).toBe(true);
+    expect(kinDeferralIsBookkeeping(deferral({ phase: "started" }))).toBe(true);
+    expect(kinDeferralIsBookkeeping(deferral({ phase: "asked" }))).toBe(false);
+    expect(kinDeferralIsBookkeeping(deferral({ phase: "heads_up" }))).toBe(false);
+    expect(kinDeferralIsBookkeeping(deferral({ phase: "asked" }, { closedAt: DUE }))).toBe(true);
   });
 
   it("refuses state that isn't a deferral card", () => {

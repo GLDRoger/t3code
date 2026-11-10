@@ -82,6 +82,11 @@ export interface SelectableMarkdownTextProps {
   readonly fileContextMenu?: (href: string) => MarkdownFileContextMenu | undefined;
   readonly onFileContextMenuAction?: (href: string, actionId: string) => void;
   readonly linkCustomization?: (href: string) => MarkdownLinkCustomization | undefined;
+  /**
+   * Draws web links as plain inline links that wrap with their sentence, instead of the icon
+   * pill, which never breaks and so pushes a link in running text onto its own line.
+   */
+  readonly inlineWebLinks?: boolean;
   readonly contextClipboardFragment?: string;
   readonly renderImage?: MarkdownImageRenderer;
   readonly fileEmbedLabel?: (href: string, standalone: boolean) => string | null;

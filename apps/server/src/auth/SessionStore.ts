@@ -280,6 +280,13 @@ export class SessionCredentialIssueError extends Schema.TaggedError<SessionCrede
   }
 }
 
+export interface ActiveSession {
+  readonly sessionId: AuthSessionId;
+  readonly subject: string;
+  readonly method: ServerAuthSessionMethod;
+  readonly scopes: ReadonlyArray<AuthEnvironmentScope>;
+}
+
 export class SessionCredentialVerificationError extends Schema.TaggedError<SessionCredentialVerificationError>()(
   "SessionCredentialVerificationError",
   {
@@ -408,6 +415,10 @@ export class SessionStore extends Context.Service<
       ReadonlyArray<AuthClientSession>,
       SessionCredentialInternalError
     >;
+    /** The session by id while it is neither revoked nor expired, as a live socket keeps it. */
+    readonly getActive: (
+      sessionId: AuthSessionId,
+    ) => Effect.Effect<Option.Option<ActiveSession>, SessionCredentialVerificationError>;
     readonly streamChanges: Stream.Stream<SessionCredentialChange>;
     /** Completes when a live socket's session is revoked or expires without a renewal for its DPoP key. */
     readonly awaitInvalidation: (
@@ -589,6 +600,19 @@ const make = Effect.gen(function* () {
       }),
     );
   });
+
+  const getActive: SessionStore["Service"]["getActive"] = (sessionId) =>
+    loadActiveSession(sessionId).pipe(
+      Effect.map(
+        Option.map((active): ActiveSession => ({
+          sessionId: active.sessionId,
+          subject: active.subject,
+          method: active.method,
+          scopes: active.scopes,
+        })),
+      ),
+      Effect.mapError((cause) => new SessionCredentialVerificationError({ sessionId, cause })),
+    );
 
   const markConnected: SessionStore["Service"]["markConnected"] = (sessionId) =>
     Ref.modify(connectedSessionsRef, (current) => {
@@ -1116,6 +1140,7 @@ const make = Effect.gen(function* () {
     issueWebSocketToken,
     verifyWebSocketToken,
     listActive,
+    getActive,
     awaitInvalidation,
     get streamChanges() {
       return Stream.fromPubSub(changesPubSub);

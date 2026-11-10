@@ -1,3 +1,4 @@
+import type { PendingUploadOwner } from "../../assets/AttachmentUpload.ts";
 import * as Floor from "../floor/KinFloor.ts";
 import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
@@ -12,6 +13,7 @@ import {
   KinWidgetId,
   KinOwnerCheckCard,
   KinDeferralCard,
+  KIN_MEMORY_CHANGES_CARD,
   KinMessagesReactInput,
   KinMessagesSendInput,
   KinWidgetsActInput,
@@ -79,6 +81,8 @@ type ServiceError = Repository.RepositoryError;
 type SendInput = KinMessagesSendInput & {
   readonly intent?: KinAgentIntent;
   readonly floorGrant?: string | undefined;
+  /** The authenticated session sending, set by the transport; only its own uploads are claimed. */
+  readonly uploader?: PendingUploadOwner;
 };
 type WidgetUpsertInput = {
   readonly chatId: KinChatId;
@@ -262,6 +266,8 @@ const isKinChatError = Schema.is(KinChatError);
 const checkpointEvery = 100;
 /** The flood bound on one wake-up's posts in one chat, natural replies and kin_chat_post alike. */
 const PREVIEW_LOOKBACK = 20;
+const BOOKKEEPING_TEXT = /^(?:(?:Remembered|Forgot|Updated|Replaced|Memory): |Deferred to )/;
+const deferralCardOption = Schema.decodeUnknownOption(KinDeferralCard);
 export const KIN_WAKEUP_MESSAGE_LIMIT = 8;
 export const KIN_WAKEUP_CHAR_LIMIT = 32_000;
 /** A person's mute with no end: it lasts until they unmute. */
@@ -669,6 +675,19 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(toPersistenceSqlError("KinChatService.isLatestLeadMessage")),
   );
+  // Earlier versions posted Kin's own notes (a memory change, a reminder it set) as system rows.
+  // No feed draws them, so none is a chat's last line.
+  const isBookkeeping = Effect.fn("KinChatService.isBookkeeping")(function* (message: KinMessage) {
+    if (message.author._tag !== "system") return false;
+    if (message.widgetId === null) return BOOKKEEPING_TEXT.test(message.body);
+    const widget = yield* repo.getWidget({ orgId: message.orgId, widgetId: message.widgetId });
+    if (Option.isNone(widget)) return false;
+    if (widget.value.type === KIN_MEMORY_CHANGES_CARD) return true;
+    if (widget.value.type !== "deferral") return false;
+    const phase = Option.getOrUndefined(deferralCardOption(widget.value.state))?.phase;
+    // A card still asking the owner something is theirs to see.
+    return !(widget.value.closedAt === null && (phase === "heads_up" || phase === "asked"));
+  });
   const summary = Effect.fn("KinChatService.summary")(function* (
     identity: PersonIdentity,
     chatId: KinChatId,
@@ -682,8 +701,12 @@ const make = Effect.gen(function* () {
       limit: PREVIEW_LOOKBACK,
       viewerMemberId: member.memberId,
     });
-    const lastMessage =
-      history.messages.findLast((message) => message.status !== "dismissed") ?? null;
+    let lastMessage: KinMessage | null = null;
+    for (const message of history.messages.toReversed()) {
+      if (message.status === "dismissed" || (yield* isBookkeeping(message))) continue;
+      lastMessage = message;
+      break;
+    }
     const group = chat.kind !== "direct";
     const author =
       group &&
@@ -1239,19 +1262,20 @@ const make = Effect.gen(function* () {
           reason: "unavailable",
           message: "Attachments are unavailable.",
         });
+      if (input.uploader === undefined) return yield* invalidState;
       const store = attachmentStore.value;
-      const claimed = yield* store.claim(requested);
+      const claimed = yield* store.claim(requested, input.uploader);
       return yield* sendClaimed(identity, input, claimed.attachments).pipe(
         Effect.tap((message) =>
           message.attachments?.[0]?.id === claimed.attachments[0]?.id
             ? store.discardPending(requested)
-            : store.release(claimed.claimedPaths),
+            : store.release(claimed),
         ),
         // An interrupted send may still have committed; its files go only if no message has them.
         Effect.onError(() =>
           sent.pipe(
             Effect.flatMap((written) =>
-              Option.isNone(written) ? store.release(claimed.claimedPaths) : Effect.void,
+              Option.isNone(written) ? store.release(claimed) : Effect.void,
             ),
             Effect.ignore,
           ),

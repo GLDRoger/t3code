@@ -25,7 +25,27 @@ import {
   injectMcpAppThemeBootstrap,
   MCP_APP_MAX_HTML_BYTES,
 } from "@t3tools/shared/mcpApp";
-import { ORCHESTRATION_PROTOCOL_HEADER } from "@t3tools/contracts";
+import {
+  AuthKinChatScope,
+  AuthSessionId,
+  KinOrgId,
+  KinPersonId,
+  ORCHESTRATION_PROTOCOL_HEADER,
+} from "@t3tools/contracts";
+import * as Option from "effect/Option";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NativeAppIconResolver from "./assets/NativeAppIconResolver.ts";
+import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
+import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
+import { SourceControlDrivers } from "./sourceControl/builtInDrivers.ts";
+import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
+import * as AssetSigner from "./assets/AssetSigner.ts";
+import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
+import * as SessionStore from "./auth/SessionStore.ts";
+import { base64UrlEncode } from "./auth/utils.ts";
+import { KinChatService } from "./kin/chat/KinChatService.ts";
+import { KinIdentity } from "./kin/chat/KinIdentity.ts";
+import { KinServer, type Services as KinServices } from "./kin/KinServer.ts";
 
 import * as ServerConfig from "./config.ts";
 
@@ -853,4 +873,170 @@ describe("downloadContentDisposition", () => {
       `attachment; filename="bad_name.pdf"; filename*=UTF-8''bad%EF%BF%BDname.pdf`,
     );
   });
+});
+
+describe("Kin chat file URLs", () => {
+  const kinFileId = "kin-chat-00000000-0000-4000-8000-0000000000c1";
+  const threadFileId = "thread-1-00000000-0000-4000-8000-0000000000c2";
+  const orgId = KinOrgId.make("org");
+
+  it.effect("serve a chat's file only while the session it was minted for is in the chat", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.makeDirectory(config.attachmentsDir, { recursive: true });
+      yield* fs.writeFileString(`${config.attachmentsDir}/${kinFileId}.png`, "pixels");
+      yield* fs.writeFileString(`${config.attachmentsDir}/${threadFileId}.png`, "pixels");
+      const member = AuthSessionId.make("member-session");
+      const outsider = AuthSessionId.make("outsider-session");
+      // Sessions in force, and the people whose chat holds the file.
+      const active = new Set<string>([member, outsider]);
+      const inChat = new Set<string>([member]);
+      const signerContext = yield* Layer.build(
+        AssetSigner.layer.pipe(
+          Layer.provideMerge(ServerSecretStore.layer),
+          Layer.provide(NodeCrypto.layer),
+        ),
+      );
+      const kin = yield* Layer.build(
+        Layer.merge(
+          Layer.mock(KinIdentity)({
+            owner: { _tag: "person", orgId, personId: KinPersonId.make("owner") },
+            isAgentThread: () => false,
+            isLeadThread: () => false,
+            resolve: (session) =>
+              Effect.succeed([
+                { _tag: "person", orgId, personId: KinPersonId.make(session.sessionId) },
+              ]),
+          }),
+          Layer.mock(KinChatService)({
+            attachmentReadable: (people, attachmentId) =>
+              Effect.succeed(
+                attachmentId === kinFileId &&
+                  Array.isArray(people) &&
+                  people.some((person) => inChat.has(person.personId)),
+              ),
+          }),
+        ),
+      );
+      const layerRouteServices = Layer.mergeAll(
+        Layer.succeed(KinServer)({
+          taskCardUpdater: Layer.empty,
+          services: Option.some(kin as unknown as Context.Context<KinServices>),
+          subscribeForViewer: Option.none(),
+        }),
+        Layer.mock(SessionStore.SessionStore)({
+          cookieName: "test",
+          legacyCookieName: undefined,
+          getActive: (sessionId) =>
+            Effect.succeed(
+              active.has(sessionId)
+                ? Option.some({
+                    sessionId,
+                    subject: "teammate",
+                    method: "bearer-access-token" as const,
+                    scopes: [AuthKinChatScope],
+                  })
+                : Option.none(),
+            ),
+        }),
+        Layer.succeedContext(signerContext),
+        WorkspacePaths.layer,
+        NodeCrypto.layer,
+        // Reached only by other asset kinds.
+        Layer.mock(Orchestrator.OrchestratorV2)({}),
+        Layer.mock(NativeAppIconResolver.NativeAppIconResolver)({}),
+        Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({}),
+        Layer.succeed(SourceControlDrivers)([]),
+      );
+      const services = yield* Layer.build(
+        HttpRouter.serve(ServerHttp.layerAssetRoute, {
+          disableListenLog: true,
+          disableLogger: true,
+        }).pipe(
+          Layer.provideMerge(layerRouteServices),
+          Layer.provideMerge(ServerConfig.layer(config)),
+          Layer.provideMerge(Layer.succeed(FileSystem.FileSystem, fs)),
+          Layer.provideMerge(NodeHttpServer.layerTest),
+        ),
+      );
+      const client = Context.get(services, HttpClient.HttpClient);
+      const signer = Context.get(signerContext, AssetSigner.AssetSigner);
+      // A URL as the websocket mints it, or as one minted before URLs named their reader.
+      const mint = Effect.fn("test.mintKinUrl")(function* (
+        attachmentId: string,
+        reader?: AuthSessionId,
+      ) {
+        const payload = base64UrlEncode(
+          JSON.stringify({
+            version: 1,
+            kind: "attachment",
+            attachmentId,
+            ...(reader === undefined ? {} : { reader }),
+            mimeType: "image/png",
+            expiresAt: Date.UTC(2100, 0, 1),
+          }),
+        );
+        return `${ASSET_ROUTE_PREFIX}/${payload}.${yield* signer.sign(payload)}/photo.png`;
+      });
+      const fetch = Effect.fn("test.fetch")(function* (method: "GET" | "HEAD", url: string) {
+        const response = yield* client.execute(HttpClientRequest.make(method)(url));
+        return {
+          status: response.status,
+          body: yield* response.text,
+          cacheControl: response.headers["cache-control"],
+          contentType: response.headers["content-type"],
+        };
+      });
+      const missing = yield* fetch(
+        "GET",
+        yield* mint(`kin-chat-${"0".repeat(8)}-0000-4000-8000-000000000000`, member),
+      );
+      expect(missing).toMatchObject({ status: 404, body: "Not Found" });
+
+      const memberUrl = yield* mint(kinFileId, member);
+      expect(yield* fetch("GET", memberUrl)).toEqual({
+        status: 200,
+        body: "pixels",
+        cacheControl: "private, no-store",
+        contentType: "image/png",
+      });
+      expect(yield* fetch("HEAD", memberUrl)).toMatchObject({
+        status: 200,
+        body: "",
+        cacheControl: "private, no-store",
+      });
+      // A thread's file keeps its URL behaviour.
+      expect(yield* fetch("GET", yield* mint(threadFileId))).toMatchObject({
+        status: 200,
+        cacheControl: "private, max-age=3600",
+      });
+
+      const refused = [
+        // A session that is not in the chat, and a URL naming no session at all.
+        yield* mint(kinFileId, outsider),
+        yield* mint(kinFileId),
+      ];
+      for (const url of refused)
+        for (const method of ["GET", "HEAD"] as const)
+          expect(yield* fetch(method, url)).toEqual({
+            ...missing,
+            body: method === "GET" ? missing.body : "",
+          });
+
+      inChat.delete(member);
+      expect(yield* fetch("GET", memberUrl)).toEqual(missing);
+      expect((yield* fetch("HEAD", memberUrl)).status).toBe(404);
+      inChat.add(member);
+      expect((yield* fetch("GET", memberUrl)).status).toBe(200);
+      active.delete(member);
+      expect(yield* fetch("GET", memberUrl)).toEqual(missing);
+    }).pipe(
+      Effect.provide(
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-kin-asset-route-" }).pipe(
+          Layer.provideMerge(NodeServices.layer),
+        ),
+      ),
+    ),
+  );
 });

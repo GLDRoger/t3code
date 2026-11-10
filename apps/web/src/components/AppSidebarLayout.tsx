@@ -39,7 +39,7 @@ import {
 } from "../panelAnimations";
 import { BackgroundThreadAnnouncer } from "./BackgroundThreadAnnouncer";
 import { HistorySwipeNavigation } from "./HistorySwipeNavigation";
-import { kinListAt } from "../kin/kinListSwitch";
+import { kinListShownAt } from "../kin/kinListSwitch";
 import { KinSidebar } from "../kin/KinSidebar";
 import ThreadSidebar from "./Sidebar";
 import { SidebarBrandWidthProbe } from "./sidebar/SidebarChrome";
@@ -422,7 +422,7 @@ export function AppSidebarLayout({
   const { active: panelAnimationsActive, durationMs: panelAnimationDurationMs } =
     usePanelAnimationSettings();
   const pathname = useLocation({ select: (location) => location.pathname });
-  const kinListOpen = kinListAt(pathname) === "kin";
+  const kinListOpen = kinListShownAt(pathname) === "kin";
   const panelAnimationsSuppressed = usePanelNavigationSuppression(pathname);
   const routePanelAnimationsActive = panelAnimationsActive && !panelAnimationsSuppressed;
   const isMacosDesktop = isElectron && isMacPlatform(navigator.platform);

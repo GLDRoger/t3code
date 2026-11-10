@@ -4,6 +4,13 @@ import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { createPendingAttachmentId } from "../../attachmentStore.ts";
+import { deletePendingAttachment } from "../../assets/AttachmentUpload.ts";
+import {
+  recordTestUploadOwner,
+  TEST_UPLOAD_OWNER,
+  testUploadOwner,
+  withoutOwnerRecords,
+} from "../../assets/AttachmentUpload.testkit.ts";
 import * as ServerConfig from "../../config.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import * as AttachmentStore from "./KinAttachmentStore.ts";
@@ -33,6 +40,9 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
+import * as FileSystem from "effect/FileSystem";
+import * as Ref from "effect/Ref";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -72,12 +82,50 @@ const attachmentLayer = Layer.provideMerge(
     dependencies,
   ),
 ).pipe(Layer.provideMerge(environment));
+// Two claims of one upload both reach its size check before either goes on, as racing sends can.
+const pendingStatsMeet = Layer.effect(
+  FileSystem.FileSystem,
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const arrived = yield* Ref.make(0);
+    const both = yield* Deferred.make<void>();
+    return {
+      ...fileSystem,
+      stat: (path: string) =>
+        NodePath.basename(path).startsWith("pending-")
+          ? Ref.updateAndGet(arrived, (count) => count + 1).pipe(
+              Effect.flatMap((count) =>
+                count === 2 ? Deferred.succeed(both, undefined) : Effect.void,
+              ),
+              Effect.andThen(Deferred.await(both)),
+              Effect.andThen(fileSystem.stat(path)),
+            )
+          : fileSystem.stat(path),
+    };
+  }),
+);
+const racingAttachmentLayer = Layer.provideMerge(
+  Service.layer,
+  Layer.provideMerge(
+    AttachmentStore.layer.pipe(
+      Layer.provide(pendingStatsMeet),
+      Layer.provideMerge(DocumentText.layer),
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-kin-race-" })),
+      Layer.provideMerge(NodeServices.layer),
+    ),
+    dependencies,
+  ),
+).pipe(Layer.provideMerge(environment));
 // A one-pixel PNG is not needed: the store checks size and name, never pixels.
 const PHOTO_BYTES = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
-const uploadPhoto = Effect.fn("test.uploadPhoto")(function* (name: string) {
+const uploadPhoto = Effect.fn("test.uploadPhoto")(function* (
+  name: string,
+  owner = TEST_UPLOAD_OWNER,
+) {
   const config = yield* ServerConfig.ServerConfig;
   const id = createPendingAttachmentId();
   NodeFS.writeFileSync(NodePath.join(config.attachmentsDir, `${id}.png`), PHOTO_BYTES);
+  recordTestUploadOwner(config.attachmentsDir, id, owner);
   return {
     type: "image" as const,
     id,
@@ -88,7 +136,7 @@ const uploadPhoto = Effect.fn("test.uploadPhoto")(function* (name: string) {
 });
 const storedFiles = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
-  return NodeFS.readdirSync(config.attachmentsDir).toSorted();
+  return withoutOwnerRecords(NodeFS.readdirSync(config.attachmentsDir)).toSorted();
 });
 const presenceLayer = Layer.provideMerge(
   Service.layer,
@@ -185,6 +233,7 @@ describe("KinChatService", () => {
         body: "",
         clientMessageId: "photo",
         attachments: [photo],
+        uploader: TEST_UPLOAD_OWNER,
       };
       const message = yield* service.send(person, send);
       const [stored] = message.attachments ?? [];
@@ -238,6 +287,92 @@ describe("KinChatService", () => {
     }).pipe(Effect.provide(attachmentLayer)),
   );
 
+  it.effect("claims and deletes only the sender's own uploads", () =>
+    Effect.gen(function* () {
+      const { repo, service, identity, person, chat } = yield* seed();
+      const sql = yield* SqlClient.SqlClient;
+      const memberId = KinPersonId.make("suraj");
+      const memberSession = {
+        ...session,
+        sessionId: AuthSessionId.make("member-session"),
+        scopes: [AuthKinChatScope],
+      };
+      yield* repo.insertPerson({
+        orgId: person.orgId,
+        personId: memberId,
+        handle: "suraj",
+        displayName: "Suraj",
+        githubLogin: null,
+        createdAt: timestamp,
+      });
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at) VALUES (${memberSession.sessionId}, ${person.orgId}, ${memberId}, 0)`;
+      const members = yield* identity.resolve(memberSession);
+      yield* repo.insertAgent({
+        orgId: person.orgId,
+        agentId: KinAgentId.make("suraj-lead"),
+        ownerPersonId: memberId,
+        displayName: "Suraj lead",
+        role: "lead",
+        createdAt: timestamp,
+      });
+      const own = yield* service.createDirect(members, {
+        orgId: person.orgId,
+        agentId: KinAgentId.make("suraj-lead"),
+      });
+      const ownersUpload = yield* uploadPhoto("owner.png", testUploadOwner(session.sessionId));
+      const membersOwner = testUploadOwner(memberSession.sessionId);
+      assert.include(
+        yield* service
+          .send(members, {
+            chatId: own.chatId,
+            body: "",
+            clientMessageId: "taken",
+            attachments: [ownersUpload],
+            uploader: membersOwner,
+          })
+          .pipe(Effect.flip),
+        { reason: "invalid_state" },
+      );
+      yield* deletePendingAttachment(ownersUpload.id, membersOwner);
+      assert.deepStrictEqual(yield* storedFiles, [`${ownersUpload.id}.png`]);
+      const kept = yield* service.send(person, {
+        chatId: chat.chatId,
+        body: "",
+        clientMessageId: "kept",
+        attachments: [ownersUpload],
+        uploader: testUploadOwner(session.sessionId),
+      });
+      assert.match(kept.attachments![0]!.id, /^kin-chat-/);
+    }).pipe(Effect.provide(attachmentLayer)),
+  );
+
+  it.effect("lands one upload in at most one message when two sends race for it", () =>
+    Effect.gen(function* () {
+      const { service, person, chat } = yield* seed();
+      const sql = yield* SqlClient.SqlClient;
+      const upload = yield* uploadPhoto("race.png");
+      const send = (clientMessageId: string) =>
+        service.send(person, {
+          chatId: chat.chatId,
+          body: "",
+          clientMessageId,
+          attachments: [upload],
+          uploader: TEST_UPLOAD_OWNER,
+        });
+      const results = yield* Effect.forEach(
+        ["first", "second"],
+        (clientMessageId) => Effect.result(send(clientMessageId)),
+        { concurrency: "unbounded" },
+      );
+      assert.strictEqual(results.filter((result) => result._tag === "Success").length, 1);
+      const rows = yield* sql<{
+        attachment_id: string;
+      }>`SELECT attachment_id FROM kin_message_attachments`;
+      assert.strictEqual(rows.length, 1);
+      assert.deepStrictEqual(yield* storedFiles, [`${rows[0]!.attachment_id}.png`]);
+    }).pipe(Effect.provide(racingAttachmentLayer)),
+  );
+
   it.effect("hands a stored file only to people in its chat", () =>
     Effect.gen(function* () {
       const { repo, service, identity, person, chat } = yield* seed();
@@ -268,7 +403,7 @@ describe("KinChatService", () => {
         createdAt: timestamp,
       });
       const own = yield* service.createDirect(members, { orgId: person.orgId, agentId: ownAgent });
-      const send = { body: "", clientMessageId: "photo" };
+      const send = { body: "", clientMessageId: "photo", uploader: TEST_UPLOAD_OWNER };
       const ownersFile = (yield* service.send(person, {
         ...send,
         chatId: chat.chatId,
@@ -1569,6 +1704,35 @@ describe("KinChatService", () => {
         });
         yield* sql`UPDATE kin_messages SET status = 'dismissed'
         WHERE message_id = ${notice.message.messageId}`;
+        // Kin's own notes from earlier versions: a plain row, and a card about a memory change.
+        yield* service.notice({
+          orgId: person.orgId,
+          chatId: chat.chatId,
+          messageId: KinMessageId.make("old-note"),
+          body: "Forgot: the old office address",
+        });
+        const saved = yield* service.notice({
+          orgId: person.orgId,
+          chatId: chat.chatId,
+          messageId: KinMessageId.make("old-card"),
+          body: "Memory: 1 change",
+        });
+        const repo = yield* Repository.KinChatRepository;
+        yield* repo.insertWidget({
+          orgId: person.orgId,
+          chatId: chat.chatId,
+          widgetId: KinWidgetId.make("memory-changes:lead:1"),
+          messageId: saved.message.messageId,
+          widgetClass: "native",
+          type: "memory_changes",
+          state: { items: [], more: 0 },
+          source: null,
+          feed: null,
+          awaiting: [],
+          pinnedAt: null,
+          closedAt: null,
+          updatedAt: saved.message.createdAt,
+        });
         const list = Option.getOrThrow(yield* Stream.runHead(service.subscribeChats([person], {})));
         if (list._tag !== "snapshot") return assert.fail("Expected snapshot");
         const row = list.chats.find((candidate) => candidate.chatId === chat.chatId);

@@ -227,7 +227,7 @@ describe("ChatWake", () => {
           presence
             .snapshot(KinOrgId.make("a"), KinChatId.make("chat-a"))
             .presence.map((line) => [line.agentId, line.state, line.label, line.wakeupId]),
-          [["lead-a", "starting", "Reading memory", null]],
+          [["lead-a", "starting", "Catching up", null]],
         );
         const stored = yield* storedEvents();
         assert.deepStrictEqual(
@@ -296,7 +296,7 @@ describe("ChatWake", () => {
           });
         yield* reaction(null);
         yield* settle;
-        assert.deepStrictEqual(lines(), [["starting", "Queued"]]);
+        assert.deepStrictEqual(lines(), [["starting", "Finishing something else"]]);
         yield* reaction(createdAt);
         yield* settle;
         assert.deepStrictEqual(lines(), []);
