@@ -125,7 +125,7 @@ export function useEnrolApproverKey() {
     readonly replace: boolean;
   }): Promise<EnrolResult | null> => {
     const { environmentId, orgId } = input;
-    try {
+    return orDeviceFailure(async () => {
       if (input.replace) {
         await ApprovalKey.deleteKey();
         await clearApproverKeyRecord();
@@ -165,14 +165,23 @@ export function useEnrolApproverKey() {
       });
       appAtomRegistry.refresh(kinClient.approverKeys({ environmentId, input: { orgId } }));
       return { ok: true };
-    } catch (error) {
-      const code = deviceCodeOf(error);
-      const outcome = failedFrom(error, code);
-      return outcome._tag === "canceled"
-        ? null
-        : { ok: false, text: outcome.failure.text, keyExists: code === "E_KEY_EXISTS" };
-    }
+    });
   };
+}
+
+// Outside the hook: the React Compiler can't compile value blocks inside try/catch.
+async function orDeviceFailure(
+  run: () => Promise<EnrolResult | null>,
+): Promise<EnrolResult | null> {
+  try {
+    return await run();
+  } catch (error) {
+    const code = deviceCodeOf(error);
+    const outcome = failedFrom(error, code);
+    return outcome._tag === "canceled"
+      ? null
+      : { ok: false, text: outcome.failure.text, keyExists: code === "E_KEY_EXISTS" };
+  }
 }
 
 function hostText(cause: unknown) {
