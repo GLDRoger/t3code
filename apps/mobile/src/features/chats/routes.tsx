@@ -4,6 +4,8 @@ import { pageRoute, sheetRoute } from "../layout/route-options";
 import { KinApprovalsScreen } from "./approvals/KinApprovalsScreen";
 import { KinChatScreen } from "./KinChatScreen";
 import { KinChatsScreen } from "./KinChatsScreen";
+import { KinGroupFormScreen } from "./KinGroupFormScreen";
+import { KinGroupScreen } from "./KinGroupScreen";
 import { KinLeadFormScreen } from "./KinLeadFormScreen";
 import { KinLeadScreen } from "./KinLeadScreen";
 import { KinWaitingScreen } from "./KinWaitingScreen";
@@ -34,6 +36,15 @@ export const KIN_SCREENS = {
   // A full sheet, so the keyboard never covers the field being typed in.
   KinLeadForm: createNativeStackScreen({
     screen: KinLeadFormScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinGroup: createNativeStackScreen({
+    screen: KinGroupScreen,
+    linking: "kin/:environmentId/:orgId/groups/:chatId",
+    options: sheetRoute({ detent: 0.75 }),
+  }),
+  KinGroupForm: createNativeStackScreen({
+    screen: KinGroupFormScreen,
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
   }),
   KinApprovals: createNativeStackScreen({

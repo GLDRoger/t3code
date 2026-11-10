@@ -192,6 +192,13 @@ describe("kin inbox", () => {
     state = applyKinInboxEvent(state, { _tag: "left", chatId: "a" as KinChatId });
     expect(state.chats.map((c) => c.chatId)).toEqual(["b"]);
     expect(state.waiting.map((w) => w.waitingId)).toEqual(["w2"]);
+    // The host's row for a group the viewer was taken out of does the same; a mute does not.
+    const group = (leftAt: string | null) =>
+      chat("b", { kind: "team_group", members: [member(leftAt)] });
+    state = applyKinInboxEvent(state, { _tag: "chat", chat: group(null) });
+    expect(state.chats).toHaveLength(1);
+    state = applyKinInboxEvent(state, { _tag: "chat", chat: group(at(4)) });
+    expect(state).toEqual(emptyKinInbox);
   });
 
   it("replaces everything with a reconnect's fresh snapshot", () => {
@@ -324,7 +331,11 @@ describe("kin chat feed", () => {
 
   it("marks the chat left only for a member event with leftAt", () => {
     const state = applyKinChatEvent(emptyKinChat, backlog([], 0));
-    expect(applyKinChatEvent(state, { _tag: "member", member: member(null) }).left).toBe(false);
+    // Anyone else's change counts up, so the chat's details read its members again.
+    expect(applyKinChatEvent(state, { _tag: "member", member: member(null) })).toMatchObject({
+      left: false,
+      memberChanges: 1,
+    });
     expect(applyKinChatEvent(state, { _tag: "member", member: member(at(4)) }).left).toBe(true);
   });
 

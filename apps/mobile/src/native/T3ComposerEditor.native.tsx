@@ -114,6 +114,7 @@ interface NativeComposerEditorProps extends ViewProps {
   readonly onComposerSubmit?: (event: NativeSyntheticEvent<{ alternate: boolean }>) => void;
 }
 
+const NO_INLINE_TOKENS: ReturnType<typeof collectComposerInlineTokens> = [];
 const NativeView = requireNativeView<NativeComposerEditorProps>(NATIVE_MODULE_NAME);
 
 // A view command rejects with "Unable to find the view" when the composer's native view is
@@ -144,6 +145,7 @@ export function ComposerEditor({
   onContentSizeChange,
   onSubmit,
   contentInsetVertical = 0,
+  inlineTokens = true,
   ...props
 }: ComposerEditorProps) {
   const nativeRef = useRef<NativeComposerEditorRef>(null);
@@ -165,6 +167,7 @@ export function ComposerEditor({
     });
     setConfirmedTokens({ value: props.value, tokens });
   }
+  if (!inlineTokens) tokens = NO_INLINE_TOKENS;
   const theme = useUniwindTheme();
   const handlePaste = useNativePaste((uris) => onPasteImages?.(uris));
 

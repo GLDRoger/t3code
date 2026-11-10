@@ -72,25 +72,44 @@ export function KinChatsScreen() {
   );
 }
 
-/** The list's bar with New lead, for a viewer this host knows. */
+/** The list's bar with its "+": a new group or a new lead, for a viewer this host lets make them. */
 function KinChatsBar(props: { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId }) {
   const navigation = useNavigation();
-  const canCreate = useAtomValue(kinClient.leadCreate.permissionAtom(props.environmentId));
+  const canAddLead = useAtomValue(kinClient.leadCreate.permissionAtom(props.environmentId));
+  const canAddGroup = useAtomValue(kinClient.groupCreate.permissionAtom(props.environmentId));
+  const target = { environmentId: props.environmentId, orgId: props.orgId };
   return (
     <AppBar
       title="Kin"
       onBack={() => navigation.goBack()}
-      actions={
-        canCreate
+      menus={
+        canAddLead || canAddGroup
           ? [
               {
-                accessibilityLabel: "New lead",
+                title: "New",
                 icon: "plus",
-                onPress: () =>
-                  navigation.navigate("KinLeadForm", {
-                    environmentId: props.environmentId,
-                    orgId: props.orgId,
-                  }),
+                items: [
+                  ...(canAddGroup
+                    ? [
+                        {
+                          id: "group",
+                          title: "New group",
+                          icon: "person.2",
+                          onPress: () => navigation.navigate("KinGroupForm", target),
+                        },
+                      ]
+                    : []),
+                  ...(canAddLead
+                    ? [
+                        {
+                          id: "lead",
+                          title: "New lead",
+                          icon: "sparkles",
+                          onPress: () => navigation.navigate("KinLeadForm", target),
+                        },
+                      ]
+                    : []),
+                ],
               },
             ]
           : undefined

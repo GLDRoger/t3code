@@ -59,7 +59,14 @@ import {
   setComposerDraftText,
   useComposerDraft,
 } from "../../../state/use-composer-drafts";
+import {
+  kinApplyMention,
+  kinMentionQuery,
+  kinMentionsIn,
+  type KinMentionCandidate,
+} from "@t3tools/client-runtime/kin/kinGroups";
 import { KIN_MESSAGE_MAX_LENGTH } from "@t3tools/client-runtime/kin/kinOutbox";
+import { Chip } from "../../../components/ui/Chip";
 import { deliverKinOutbox, kinOutbox } from "../state/kinOutboxDelivery";
 
 /** Every Kin host uses the same org id, so the environment keeps two hosts' drafts apart. */
@@ -73,6 +80,7 @@ const EDITOR_MAX_LINES = 4;
 const EDITOR_INSET = 6;
 
 const lengthFormat = new Intl.NumberFormat();
+const NO_MENTIONS: ReadonlyArray<KinMentionCandidate> = [];
 
 /** The space under the Send row while the keyboard is up, and the least it gets without one. */
 export const KIN_COMPOSER_GUTTER = 12;
@@ -119,6 +127,8 @@ export function KinComposer(props: {
   readonly onFocusChange?: (focused: boolean) => void;
   /** Owned by the feed, so it can focus the editor after filling the draft. */
   readonly editorRef: RefObject<ComposerEditorHandle | null>;
+  /** The group's leads, offered on `@`; a message that names one is answered by it. */
+  readonly mentionable?: ReadonlyArray<KinMentionCandidate>;
 }) {
   const draftKey = kinDraftKey(props.environmentId, props.orgId, props.chatId);
   const draft = useComposerDraft(draftKey);
@@ -180,6 +190,11 @@ export function KinComposer(props: {
     serverConfig,
     states: uploadStates,
   });
+  const mentionable = props.mentionable ?? NO_MENTIONS;
+  const mention =
+    selection.start === selection.end
+      ? kinMentionQuery(draft.text, selection.end, mentionable)
+      : null;
   const length = draft.text.trim().length;
   const tooLong = length > KIN_MESSAGE_MAX_LENGTH;
   const canSend =
@@ -248,6 +263,7 @@ export function KinComposer(props: {
       chatId: props.chatId,
       body,
       attachments,
+      mentions: kinMentionsIn(body, mentionable),
     });
     if (queued._tag !== "queued") {
       restoreDraft(draftKey, body);
@@ -282,6 +298,26 @@ export function KinComposer(props: {
         >
           {hint}
         </Text>
+      )}
+      {mention === null || showsDictation ? null : (
+        <View
+          accessibilityRole="menu"
+          accessibilityLabel="Leads you can ask"
+          className="flex-row flex-wrap gap-2 px-1 pb-1"
+        >
+          {mention.matches.map((lead) => (
+            <Chip
+              key={lead.memberId}
+              label={`@${lead.name}`}
+              accessibilityLabel={`Ask ${lead.name}`}
+              onPress={() => {
+                const next = kinApplyMention(draft.text, mention.start, selection.end, lead.name);
+                setComposerDraftText(draftKey, next.text);
+                setSelection({ start: next.cursor, end: next.cursor });
+              }}
+            />
+          ))}
+        </View>
       )}
       <ComposerSurface
         animateLayout={false}
@@ -362,6 +398,7 @@ export function KinComposer(props: {
                 ref={editorRef}
                 draftKey={draftKey}
                 pasteContext={false}
+                inlineTokens={false}
                 multiline
                 value={draft.text}
                 placeholder={`Message ${props.recipient}`}

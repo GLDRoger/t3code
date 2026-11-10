@@ -2,13 +2,13 @@ import { Blobatar } from "@blobatar/react-native";
 import type { KinAvatarView } from "@t3tools/client-runtime/kin/kinScreenState";
 import { View } from "react-native";
 
-const SIZE = { small: 28, regular: 40, large: 48 } as const;
+const SIZE = { mini: 18, small: 28, regular: 40, large: 48 } as const;
 
 /** Who a chat is with: the blobatar for their stable id, with nothing drawn around it. */
 export function KinAvatar(props: {
   readonly avatar: KinAvatarView;
-  /** `small` sits beside a chat's title and status line; `large` heads a lead's details. */
-  readonly size?: "regular" | "small" | "large";
+  /** `mini` leads an author line; `small` sits beside a title; `large` heads a details sheet. */
+  readonly size?: "regular" | "mini" | "small" | "large";
 }) {
   return (
     <View accessible={false} importantForAccessibility="no-hide-descendants">
