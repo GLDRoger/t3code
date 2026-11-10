@@ -68,6 +68,7 @@ export interface SettingsSearchItem {
   readonly wslAvailableOnly?: boolean;
   readonly managedTunnelOnly?: boolean;
   readonly peerLinksOnly?: boolean;
+  readonly kinOnly?: boolean;
   readonly secondary?: boolean;
   readonly requiresThreadAutoSettlement?: boolean;
 }
@@ -82,6 +83,7 @@ export interface SettingsSearchAvailability {
   readonly hasThreadAutoSettlement: boolean;
   readonly managedTunnelActive?: boolean;
   readonly hasPeerLinkHost?: boolean;
+  readonly hasKinHost?: boolean;
 }
 
 export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
@@ -415,6 +417,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "composer-context",
     title: "Composer context",
     to: "/settings/appearance",
+  },
+  {
+    id: "kin-start-list",
+    kinOnly: true,
+    title: "Open to",
+    to: "/settings/general",
+    searchTerms: ["kin chats coding threads start launch open first default list switch"],
   },
   {
     id: "project-grouping",
@@ -1444,7 +1453,8 @@ export function filterAvailableSettingsSearchItems(
       (!item.wslAvailableOnly || availability.isWslSettingsRowVisible) &&
       (!item.requiresThreadAutoSettlement || availability.hasThreadAutoSettlement) &&
       (!item.managedTunnelOnly || availability.managedTunnelActive === true) &&
-      (!item.peerLinksOnly || availability.hasPeerLinkHost === true),
+      (!item.peerLinksOnly || availability.hasPeerLinkHost === true) &&
+      (!item.kinOnly || availability.hasKinHost === true),
   );
 }
 
