@@ -741,7 +741,12 @@ const SEEN_ROW_CONFIGS = [
 
 type KinChatRow =
   | KinFeedRow
-  | { readonly type: "pending"; readonly key: string; readonly entry: KinOutboxEntry };
+  | {
+      readonly type: "pending";
+      readonly key: string;
+      readonly entry: KinOutboxEntry;
+      readonly continues: boolean;
+    };
 
 function KinChatFeed(props: {
   readonly orgId: string;
@@ -888,15 +893,18 @@ function KinChatFeed(props: {
             ),
           );
         };
+  const lastFeedRow = feedRows.at(-1);
+  const endsOnOwn = lastFeedRow?.type === "message" && lastFeedRow.own;
   const rows: ReadonlyArray<KinChatRow> =
     pending.length === 0
       ? feedRows
       : [
           ...feedRows,
-          ...pending.map((entry) => ({
+          ...pending.map((entry, index) => ({
             type: "pending" as const,
             key: `pending:${entry.clientMessageId}`,
             entry,
+            continues: index > 0 || endsOnOwn,
           })),
         ];
   // LegendList grows an empty list to its frame, under both insets, which hid the intro under the
@@ -1124,6 +1132,7 @@ function KinChatFeed(props: {
             environmentId={props.environmentId}
             onPressPreview={setPreviewFile}
             connected={props.connected}
+            continues={item.continues}
             onEdit={() =>
               void editKinOutboxEntry(
                 kinDraftKey(props.environmentId, props.orgId, props.chatId),

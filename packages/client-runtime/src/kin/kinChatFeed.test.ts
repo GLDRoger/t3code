@@ -240,12 +240,14 @@ describe("rows", () => {
       viewer,
       new Set(),
     );
-    expect(rows.map((row) => row.type === "message" && [row.own, row.showAuthor])).toEqual([
-      [true, false],
-      [false, true],
-      [false, false],
-      [true, false],
-      [false, true],
+    expect(
+      rows.map((row) => row.type === "message" && [row.own, row.showAuthor, row.continues]),
+    ).toEqual([
+      [true, false, false],
+      [false, true, false],
+      [false, false, true],
+      [true, false, false],
+      [false, true, false],
     ]);
     // In a group a teammate's line carries their name once the members are known.
     const teammate = {
