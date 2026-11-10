@@ -20,6 +20,7 @@ import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as SecretRequests from "../../secrets/SecretRequests.ts";
 import * as KinTriggerSink from "../triggers/KinTriggerSink.ts";
 import * as KinTriggerStore from "../triggers/KinTriggerStore.ts";
+import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 
 const decodeEvent = Schema.decodeSync(OrchestrationV2DomainEventJson);
 
@@ -136,7 +137,8 @@ export const withScheduledTasks = Effect.fn("KinContract.withScheduledTasks")(fu
     }),
     Layer.mock(ThreadManagement.ThreadManagementService)({
       // A live destination, so binding passes the archived-thread check.
-      getThreadShell: () => Effect.succeed({ ...projection().thread, archivedAt: null }),
+      getThreadShell: (id) =>
+        Effect.succeed({ ...liveThreadShell(id), projectId: projection().thread.projectId }),
       // Only the input boundary is under contract; no orchestrator runs in this fixture.
       sendToThread: (input) =>
         Queue.offer(sends, input).pipe(Effect.andThen(Effect.die("send boundary reached"))),
