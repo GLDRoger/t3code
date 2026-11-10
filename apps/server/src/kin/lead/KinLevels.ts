@@ -20,7 +20,7 @@ import * as SqlError from "effect/sql/SqlError";
 
 import { toPersistenceDecodeError, toPersistenceSqlError } from "../../persistence/Errors.ts";
 
-// Approvals import this module, so it must not reach the chat service or the judge.
+// Approvals import this module, so it must not reach the chat service.
 
 const ORDER: ReadonlyArray<KinLevel> = ["L0", "L1", "L2", "L3"];
 export const atLeast = (level: KinLevel, required: KinLevel) =>

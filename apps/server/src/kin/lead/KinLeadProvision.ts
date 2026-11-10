@@ -20,7 +20,6 @@ import * as SqlError from "effect/sql/SqlError";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { toPersistenceDecodeError, toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { ServerSettingsService, layer as serverSettingsLayer } from "../../serverSettings.ts";
-import * as JudgeShadow from "../floor/JudgeShadow.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as ChatService from "../chat/KinChatService.ts";
@@ -268,8 +267,6 @@ export const layer = Layer.mergeAll(
   KinIdentity.layer.pipe(Layer.provide(KinIdentityConfig.layer)),
   ChatService.layer,
 ).pipe(
-  // Creating a direct chat posts nothing, so the floor judge never runs.
-  Layer.provide(JudgeShadow.layerOff),
   Layer.provideMerge(Hub.layer),
   Layer.provideMerge(Repository.layer),
   Layer.provide(KinPersistence.layer),

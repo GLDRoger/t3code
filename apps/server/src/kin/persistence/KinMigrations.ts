@@ -30,6 +30,7 @@ import FloorGrantWakeup from "./migrations/K025_FloorGrantWakeup.ts";
 import Reactions from "./migrations/K026_Reactions.ts";
 import AuthorityBinding from "./migrations/K027_AuthorityBinding.ts";
 import WakeupTimings from "./migrations/K028_WakeupTimings.ts";
+import DropJudgeLog from "./migrations/K029_DropJudgeLog.ts";
 
 const table = "kin_sql_migrations";
 const run = Migrator.make({});
@@ -62,6 +63,7 @@ const loader = Migrator.fromRecord({
   "26_Reactions": Reactions,
   "27_AuthorityBinding": AuthorityBinding,
   "28_WakeupTimings": WakeupTimings,
+  "29_DropJudgeLog": DropJudgeLog,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

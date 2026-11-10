@@ -21,7 +21,6 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Chat from "../chat/KinChatService.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
-import * as JudgeShadow from "../floor/JudgeShadow.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as Persistence from "../persistence/KinPersistence.ts";
 import { KinDeferralGithubReader } from "./deferralGithub.ts";
@@ -35,9 +34,7 @@ const dueAt = Date.parse("2026-11-13T03:30:00.000Z");
 
 const layer = TriggerService.syncHooksLayer.pipe(
   Layer.provideMerge(TriggerService.layer),
-  Layer.provideMerge(
-    Chat.layer.pipe(Layer.provide(JudgeShadow.layerOff), Layer.provideMerge(Hub.layer)),
-  ),
+  Layer.provideMerge(Chat.layer.pipe(Layer.provideMerge(Hub.layer))),
   Layer.provideMerge(Repository.layer),
   Layer.provideMerge(Persistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory))),
 );

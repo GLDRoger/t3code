@@ -26,7 +26,6 @@ import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as Chat from "../chat/KinChatService.ts";
-import * as JudgeShadow from "../floor/JudgeShadow.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
@@ -214,7 +213,7 @@ function services(harness: Harness) {
   );
   return Layer.mergeAll(
     memory,
-    Chat.layer.pipe(Layer.provide(JudgeShadow.layerOff), Layer.provideMerge(Hub.layer)),
+    Chat.layer.pipe(Layer.provideMerge(Hub.layer)),
     Layer.succeed(GithubEvents.KinGithubRepoScope, { repos: ["Owner/Repo"] }),
     Layer.succeed(Scheduler.Scheduler, {
       register: Effect.fn("KinWatchdogsTest.register")(function* <E, R>(
