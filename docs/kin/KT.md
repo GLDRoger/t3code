@@ -39,7 +39,7 @@ Kin code lives in its own files. Upstream files get a hook of a line or two at m
 ## How a message flows
 
 1. **Chat.** A client calls `kin.messages.send`. `KinChatService` checks membership, stores the message with the next sequence number, and calls `KinFloor.open`, which opens a floor run and grants a turn. In a direct chat that is the lead; in a group it is the mentioned agent, and with no mention it will be the group's lead (W3-1). After commit, `KinChatHub` publishes the message to every member's stream.
-2. **Queue.** `ChatWake` turns the message into a `chat.message` event in `KinEventQueue` (`kin_events`) and shows "seen" at once. Triggers, worker reports and approval results become events the same way. Code sets each event's priority; an owner message is P0.
+2. **Queue.** `ChatWake` turns the message into a `chat.message` event in `KinEventQueue` (`kin_events`) and shows the lead's working line ("Reading memory", or "Queued" behind a running wake-up) at once. Triggers, worker reports and approval results become events the same way. Code sets each event's priority; an owner message is P0.
 3. **Wake-up.** `WakeupRunner` waits briefly for a burst to finish, then claims a batch of events for one lead and one chat. It checks the stop switch and budget, prepares a read-only memory checkout, builds the prompt (`LeadPrompt`) and runs the lead as a T3 thread. A message that arrives during a wake-up is steered into it.
 4. **Lead.** The lead runs on Claude with no shell. It acts only through Kin's MCP tools: memory, deferrals, workers, cards, `request_action`. Its plain text is its reply.
 5. **Reply bridge.** `KinReplyBridge` reads the lead's text as it streams and posts it through `LevelGate`, so membership, the floor and permissions apply.

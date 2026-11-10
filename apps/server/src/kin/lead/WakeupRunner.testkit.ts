@@ -147,9 +147,6 @@ type HarnessOptions = {
   readonly steering?: Deferred.Deferred<void>;
   /** Every prompt the runner builds, in order. */
   readonly prompts?: Array<KinLeadPromptInput>;
-  readonly snapshot?: Memory.Memory["Service"]["readPromptSnapshot"];
-  /** Every provider process the fake adapter opens. */
-  readonly opened?: Array<string>;
   /** Called on every `readyLeads` pass the runner makes. */
   readonly onReadyLeads?: () => void;
   /** The project id bootstrap returns, read on each call. */
@@ -179,7 +176,6 @@ function parts(options: HarnessOptions) {
     planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
     openSession: (session) =>
       Effect.gen(function* () {
-        options.opened?.push(session.providerSessionId);
         const now = yield* DateTime.now;
         const events = yield* PubSub.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
         const open = new Map<
@@ -516,8 +512,7 @@ function parts(options: HarnessOptions) {
             read: "/private/tmp",
           })),
       ensureCheckouts: () => Effect.succeed({ writer: "/private/tmp", read: "/private/tmp" }),
-      readPromptSnapshot:
-        options.snapshot ?? (() => Effect.succeed({ rules: "rules", index: "index" })),
+      readPromptSnapshot: () => Effect.succeed({ rules: "rules", index: "index" }),
     }),
   );
   const stack = Layer.mergeAll(

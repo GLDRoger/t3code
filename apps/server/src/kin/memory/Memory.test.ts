@@ -168,9 +168,7 @@ it.live.each([
             };
             const first = yield* prompt.build(input);
             const second = yield* prompt.build(input);
-            expect(first.split("--- KIN WAKE-UP ---")[0]).toBe(
-              second.split("--- KIN WAKE-UP ---")[0],
-            );
+            expect(first.split("--- THIS TURN ---")[0]).toBe(second.split("--- THIS TURN ---")[0]);
             expect(first.includes("index unavailable")).toBe(unavailable);
             if (unavailable)
               expect(first).toContain('> BEGIN QUOTE: memory index\n> ""\n> END QUOTE');

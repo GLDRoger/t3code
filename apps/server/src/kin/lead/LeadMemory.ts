@@ -6,12 +6,14 @@ import {
   KinChatError,
   KinChatId,
   KinEvent,
+  KinEventId,
   KinMemoryItemId,
   MemoryItemEvery,
   MemoryItemFrontMatter,
   MemoryItemHead,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -29,6 +31,9 @@ import * as Memory from "../memory/Memory.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import * as Cache from "../memory/MemoryCache.ts";
 import { MemoryItemError, memoryDateMillis } from "../memory/frontMatter.ts";
+import { deferralOrigin } from "../triggers/deferrals.ts";
+import { cancelDeferralRun } from "../triggers/KinTriggerService.ts";
+import { scheduledTaskTriggerId } from "../widgets/scheduledTaskCard.ts";
 
 const text = Schema.String.check(Schema.isMaxLength(100_000));
 const date = Schema.String.check(
@@ -73,6 +78,7 @@ export const DeferInput = Schema.Struct({
   onDue: Schema.Literals(["remind", "start", "ask", "chase"]),
   chatId: KinChatId,
   sourceEventId: TrimmedNonEmptyString,
+  replaces: Schema.optional(KinMemoryItemId),
 });
 export const ScheduleInput = Schema.Struct({
   itemId: Schema.optional(itemId),
@@ -81,6 +87,11 @@ export const ScheduleInput = Schema.Struct({
   at: MemoryItemEvery.fields.at,
   days: MemoryItemEvery.fields.days,
   chatId: KinChatId,
+  sourceEventId: TrimmedNonEmptyString,
+  replaces: Schema.optional(KinMemoryItemId),
+});
+export const CancelInput = Schema.Struct({
+  itemId: KinMemoryItemId,
   sourceEventId: TrimmedNonEmptyString,
 });
 export const JournalInput = Schema.Struct({
@@ -170,6 +181,11 @@ export class LeadMemory extends Context.Service<
     readonly schedule: (
       scope: McpInvocationScope,
       input: typeof ScheduleInput.Type,
+    ) => Effect.Effect<typeof ItemResult.Type, KinChatError>;
+    /** Cancels an open deferral or scheduled task this lead set up; it stops firing at once. */
+    readonly cancel: (
+      scope: McpInvocationScope,
+      input: typeof CancelInput.Type,
     ) => Effect.Effect<typeof ItemResult.Type, KinChatError>;
     readonly journal: (
       scope: McpInvocationScope,
@@ -354,6 +370,71 @@ const make = Effect.gen(function* () {
       if (stored?.request_hash !== digest) return yield* reused(key);
     }
   });
+  /**
+   * Only the lead that set an item up cancels it, asked from the chat it was set up in or that
+   * lead's owner chat. The run stops in the same transaction as the checks; memory follows at commit.
+   */
+  const cancelOwn = Effect.fn("LeadMemory.cancelOwn")(function* (
+    ctx: Effect.Success<ReturnType<typeof resolve>>,
+    itemId: KinMemoryItemId,
+    sourceEventId: string,
+  ) {
+    yield* checkSource(ctx, sourceEventId);
+    // The view triggers arm from, so the lead cancels what would fire, whichever branch holds it.
+    const item = yield* memory.readItemQuietly(ctx.orgId, itemId, "triggers");
+    const head = item.head;
+    if (head.kind !== "deferral")
+      return yield* invalid(`${itemId} is not a deferral or scheduled task.`);
+    if (head.status !== "open" || head.invalid_at !== null || head.superseded_by !== null)
+      return yield* invalid(
+        `${itemId} is already ${head.status === "open" ? "closed" : head.status}.`,
+      );
+    const allowed = yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const [creator] =
+          head.source_event === undefined
+            ? []
+            : yield* sql<{ agentId: string }>`SELECT agent_id AS "agentId" FROM kin_events
+                WHERE org_id = ${ctx.orgId} AND event_id = ${head.source_event} ORDER BY event_id`;
+        if (creator?.agentId !== ctx.agentId) return false;
+        const [lead] = yield* sql<{ ownerChatId: string }>`SELECT owner_chat_id AS "ownerChatId"
+          FROM kin_leads WHERE org_id = ${ctx.orgId} AND agent_id = ${ctx.agentId} ORDER BY agent_id`;
+        if (lead === undefined) return false;
+        const asked = yield* deferralOrigin(
+          sql,
+          ctx.orgId,
+          { source_event: KinEventId.make(sourceEventId), chat: undefined },
+          { agentId: ctx.agentId, ownerChatId: KinChatId.make(lead.ownerChatId) },
+        );
+        if (asked !== undefined && asked.chatId !== head.chat) return false;
+        const now = yield* Clock.currentTimeMillis;
+        if (head.every === undefined)
+          yield* cancelDeferralRun({ orgId: ctx.orgId, itemId, now }).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          );
+        else
+          yield* sql`UPDATE kin_triggers SET enabled = 0, next_run_at = NULL,
+            updated_at = max(updated_at, ${now})
+            WHERE org_id = ${ctx.orgId} AND trigger_id = ${scheduledTaskTriggerId(itemId)}`;
+        return true;
+      }),
+    );
+    if (!allowed)
+      return yield* invalid(
+        "Only the lead that set it up can cancel or replace it, from the chat it was set up in or the owner's direct chat.",
+      );
+    const { orgId: _org, path, ...frontMatter } = head;
+    yield* receipt(
+      ctx,
+      `item:${itemId}`,
+      { cancel: itemId, sourceEventId },
+      writer.stage(ctx.orgId, ctx.wakeupId, {
+        path,
+        content: `---\n${stringify({ ...frontMatter, status: "cancelled" })}---\n${item.body}`,
+        sourceEventId,
+      }),
+    );
+  });
   const stage = Effect.fn("LeadMemory.stage")(function* (
     ctx: Effect.Success<ReturnType<typeof resolve>>,
     input: typeof WriteInput.Type,
@@ -479,6 +560,9 @@ const make = Effect.gen(function* () {
             KinMemoryItemId.make(
               `def-${(yield* hash({ wakeup: ctx.wakeupId, input })).slice(0, 32)}`,
             );
+          if (input.replaces === id) return yield* invalid("`replaces` names this same item.");
+          if (input.replaces !== undefined)
+            yield* cancelOwn(ctx, input.replaces, input.sourceEventId);
           const recorded = DateTime.formatIso(DateTime.makeUnsafe(ctx.startedAt));
           const fields = {
             id,
@@ -546,6 +630,9 @@ const make = Effect.gen(function* () {
             KinMemoryItemId.make(
               `sch-${(yield* hash({ wakeup: ctx.wakeupId, input })).slice(0, 32)}`,
             );
+          if (input.replaces === id) return yield* invalid("`replaces` names this same item.");
+          if (input.replaces !== undefined)
+            yield* cancelOwn(ctx, input.replaces, input.sourceEventId);
           const recorded = DateTime.formatIso(DateTime.makeUnsafe(ctx.startedAt));
           const fields = {
             id,
@@ -578,6 +665,17 @@ const make = Effect.gen(function* () {
             }),
           );
           return { itemId: id };
+        }),
+      );
+    }, Effect.mapError(failure)),
+    cancel: Effect.fn("LeadMemory.cancel")(function* (scope, input) {
+      const ctx = yield* resolve(scope);
+      return yield* locked(
+        ctx.orgId,
+        ctx.agentId,
+        Effect.gen(function* () {
+          yield* cancelOwn(yield* resolve(scope), input.itemId, input.sourceEventId);
+          return { itemId: input.itemId };
         }),
       );
     }, Effect.mapError(failure)),

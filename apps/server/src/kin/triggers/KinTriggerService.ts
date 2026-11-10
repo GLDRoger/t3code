@@ -82,9 +82,10 @@ const triggerCurrent = (runAt: number | undefined, row: StoredTrigger | undefine
     ? row === undefined || (!row.enabled && row.nextRunAt === null)
     : row?.enabled === true && row.runAt === runAt;
 
-// An owner's Undo holds until the item leaves `open` or moves to a new due time.
+// An Undo or a lead's cancel holds while the item is open at that due time; once memory
+// records the cancel, the run disarms and its card closes.
 const isUndone = (plan: DeferralPlan, stored: Stored | undefined) =>
-  stored?.run.state === "undone" && (!plan.armed || stored.run.dueAt === plan.dueAt);
+  stored?.run.state === "undone" && plan.armed && stored.run.dueAt === plan.dueAt;
 
 const isCurrent = (plan: DeferralPlan, stored: Stored | undefined) =>
   isUndone(plan, stored) ||
@@ -230,9 +231,10 @@ const make = Effect.gen(function* () {
       onDue: plan.onDue,
       text: confirmText(plan.dueAt, plan.onDue, timeZone),
     };
-    // Only kin_defer items name a chat; other deferrals arm without a card.
+    // Only kin_defer items name a chat; other deferrals arm without a card. A remind or ask
+    // only ever messages the owner, and the lead's own reply already said when, so no card.
     let chatId: KinChatId | null = null;
-    if (item.chat !== undefined) {
+    if (item.chat !== undefined && (plan.onDue === "start" || plan.onDue === "chase")) {
       const [chat] = yield* sql`SELECT 1 FROM kin_chats
         WHERE org_id = ${orgId} AND chat_id = ${item.chat} ORDER BY chat_id`;
       if (chat === undefined)
@@ -380,6 +382,29 @@ export const undoDeferral = Effect.fn("KinTriggerService.undoDeferral")(function
       AND trigger_id IN (${deferralTriggerId(itemId, "heads_up")}, ${deferralTriggerId(itemId, "due")})`;
   return true;
 });
+
+/**
+ * A lead's cancel, inside the caller's transaction: stops the run and its triggers now, so it
+ * never fires while the cancel waits for the wake-up's memory commit. False once it already fired.
+ */
+export const cancelDeferralRun = Effect.fn("KinTriggerService.cancelDeferralRun")(
+  function* (input: {
+    readonly orgId: KinOrgId;
+    readonly itemId: KinMemoryItemId;
+    readonly now: number;
+  }) {
+    const sql = yield* SqlClient.SqlClient;
+    const { orgId, itemId, now } = input;
+    const stopped = yield* sql`UPDATE kin_deferral_runs SET state = 'undone', updated_at = ${now}
+    WHERE org_id = ${orgId} AND item_id = ${itemId}
+      AND state IN ('armed', 'heads_up', 'grace', 'asked', 'snoozed') RETURNING item_id`;
+    if (stopped.length === 0) return false;
+    yield* sql`UPDATE kin_triggers SET enabled = 0, next_run_at = NULL,
+    updated_at = max(updated_at, ${now}) WHERE org_id = ${orgId}
+      AND trigger_id IN (${deferralTriggerId(itemId, "heads_up")}, ${deferralTriggerId(itemId, "due")})`;
+    return true;
+  },
+);
 
 export const layer = Layer.effect(KinTriggerService, make).pipe(Layer.provide(MemoryCache.layer));
 

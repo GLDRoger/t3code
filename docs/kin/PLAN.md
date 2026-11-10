@@ -22,12 +22,12 @@ The road from today's Kin to [VISION.md](VISION.md), in waves. The task ids (CHA
 
 ## Wave 0: make what exists work
 
-| Task              | Goal                                                   | Acceptance                                                                                                                                 |
-| ----------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| W0-1 Push live    | Lock-screen pushes for replies, reminders and cards    | With the app closed, a lead reply reaches a locked iPhone within 5 s and opens the right chat; a reminder does the same; no APNs refusals  |
-| W0-2 Latency      | Something visible in under 1 s, first words in seconds | Stage times recorded per wake-up; p50 first visible state < 1 s, first token < 8 s cold and < 4 s warm on the host. **Merged** (#133)      |
-| W0-3 Live checks  | Know what's broken on each surface and fix it          | Checklist run on iOS, web and desktop against a seeded dev server; every failure fixed or listed. **Merged** (#134)                        |
-| W0-4 Reply polish | Replies feel live and failures are visible             | Claude drafts stream; a failed wake-up shows a notice and a retry at once; refusals name their reason; the warm provider process is reused |
+| Task              | Goal                                                   | Acceptance                                                                                                                                |
+| ----------------- | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| W0-1 Push live    | Lock-screen pushes for replies, reminders and cards    | With the app closed, a lead reply reaches a locked iPhone within 5 s and opens the right chat; a reminder does the same; no APNs refusals |
+| W0-2 Latency      | Something visible in under 1 s, first words in seconds | Stage times recorded per wake-up; p50 first visible state < 1 s, first token < 8 s cold and < 4 s warm on the host. **Merged** (#133)     |
+| W0-3 Live checks  | Know what's broken on each surface and fix it          | Checklist run on iOS, web and desktop against a seeded dev server; every failure fixed or listed. **Merged** (#134)                       |
+| W0-4 Reply polish | Replies feel live and failures are visible             | Claude drafts stream; a failed wake-up shows a notice and a retry at once; refusals name their reason; the presence line names each phase |
 
 ## Wave 1: close the loop
 

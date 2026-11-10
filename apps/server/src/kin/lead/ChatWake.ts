@@ -1,5 +1,6 @@
 import {
   KinAgentId,
+  type KinChatId,
   KinEventId,
   KinMessageId,
   KinOrgId,
@@ -23,7 +24,7 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { forkParked } from "../../serverActivation.ts";
 import { KinChatHub, type KinChatHubEvent } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
-import { KinPresence, syncSeen } from "../reply/KinPresence.ts";
+import { KinPresence, queueLabel, syncQueued } from "../reply/KinPresence.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 
 const decodeTap = Schema.decodeUnknownEffect(
@@ -46,6 +47,17 @@ const make = Effect.gen(function* () {
   const repo = yield* KinChatRepository;
   const queue = yield* KinEventQueue;
   const presence = yield* Effect.serviceOption(KinPresence);
+  // The working line shows the moment a message is accepted, before any wake-up claims it.
+  const showQueued = Effect.fn("KinChatWake.showQueued")(
+    function* (orgId: KinOrgId, chatId: KinChatId, agentId: KinAgentId) {
+      if (Option.isNone(presence)) return;
+      const label = yield* queueLabel(orgId, agentId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      yield* presence.value.queued(orgId, chatId, agentId, label, yield* Clock.currentTimeMillis);
+    },
+    Effect.catchCause((cause) => Effect.logWarning("Kin queue line failed", { cause })),
+  );
 
   const wake = Effect.fn("KinChatWake.wake")(
     function* (message: KinMessage) {
@@ -111,21 +123,14 @@ const make = Effect.gen(function* () {
               ),
           }),
         );
-        // The first thing the sender sees, well before a wake-up claims the message.
-        if (queued && Option.isSome(presence))
-          yield* presence.value.seen(
-            message.orgId,
-            message.chatId,
-            agentId,
-            yield* Clock.currentTimeMillis,
-          );
+        if (queued) yield* showQueued(message.orgId, message.chatId, agentId);
       }
     },
     Effect.catchCause((cause) => Effect.logError("Kin chat wake-up failed", { cause })),
   );
 
   // A waking reaction (the chat service decides) becomes `chat.reaction`; withdrawing it before
-  // a wake-up claims it cancels the event and its `seen`. Other reactions are feedback only.
+  // a wake-up claims it cancels the event and its working line. Other reactions are feedback only.
   const react = Effect.fn("KinChatWake.react")(
     function* (event: Extract<KinChatHubEvent, { type: "reaction.updated" }>) {
       const { reaction } = event;
@@ -138,7 +143,7 @@ const make = Effect.gen(function* () {
         );
         if (Option.isSome(presence))
           for (const row of expired)
-            yield* syncSeen(presence.value, reaction.orgId, KinAgentId.make(row.agentId)).pipe(
+            yield* syncQueued(presence.value, reaction.orgId, KinAgentId.make(row.agentId)).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
             );
         return;
@@ -176,13 +181,7 @@ const make = Effect.gen(function* () {
               ),
           }),
         );
-      if (queued && Option.isSome(presence))
-        yield* presence.value.seen(
-          reaction.orgId,
-          reaction.chatId,
-          agentId,
-          yield* Clock.currentTimeMillis,
-        );
+      if (queued) yield* showQueued(reaction.orgId, reaction.chatId, agentId);
     },
     Effect.catchCause((cause) => Effect.logError("Kin reaction wake-up failed", { cause })),
   );

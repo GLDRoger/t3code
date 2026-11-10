@@ -50,6 +50,7 @@ import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import * as DreamRunner from "../dreaming/DreamRunner.ts";
 import * as DreamSession from "../dreaming/DreamSession.ts";
 import * as Workers from "./Workers.ts";
+import * as KinRepoReads from "../github/KinRepoReads.ts";
 import * as WorkerTracker from "./WorkerTracker.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
 import * as WorkerPublish from "./workerPublish.ts";
@@ -321,6 +322,26 @@ const workerPublish = Layer.unwrap(
     );
   }),
 );
+// A lead's GitHub read tools; without the Kin App they answer that GitHub isn't connected.
+const repoReads = Layer.unwrap(
+  Effect.gen(function* () {
+    if (Option.isNone(yield* Config.option(Config.String("KIN_GITHUB_APP_ID"))))
+      return KinRepoReads.notConnectedLayer;
+    return KinRepoReads.layer.pipe(
+      Layer.provide(Layer.mergeAll(GithubReaders.appLayer, GithubEvents.repoScopeLayer)),
+      Layer.catchCause((cause) =>
+        KinRepoReads.notConnectedLayer.pipe(
+          Layer.tap(() =>
+            Effect.logWarning(
+              "Kin lead GitHub reads are off: the Kin GitHub App is unavailable",
+              Cause.pretty(cause),
+            ),
+          ),
+        ),
+      ),
+    );
+  }),
+);
 // Workers run only in the linked worker environment; see workerEnvironment.ts.
 const workers = Workers.layer.pipe(
   Layer.provideMerge(WorkerTracker.layer.pipe(Layer.provide(workerPublish))),
@@ -336,6 +357,7 @@ const production = withServices(
   Layer.mergeAll(runner, ChatWake.layer, registration, tracker).pipe(
     Layer.provideMerge(workers),
     Layer.provideMerge(toolkit),
+    Layer.provide(repoReads),
   ),
 );
 
