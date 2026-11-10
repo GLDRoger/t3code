@@ -109,7 +109,7 @@ export class KinEventQueueWakeupConflict extends Schema.TaggedError<KinEventQueu
 ) {}
 export class KinEventQueueBusy extends Schema.TaggedError<KinEventQueueBusy>()(
   "KinEventQueueBusy",
-  { orgId: KinOrgId },
+  { orgId: KinOrgId, agentId: KinAgentId },
 ) {}
 const isUnknownAgent = Schema.is(KinEventQueueUnknownAgent);
 const isWakeupConflict = Schema.is(KinEventQueueWakeupConflict);
@@ -141,10 +141,11 @@ export class KinEventQueue extends Context.Service<
     >;
     readonly reconsiderBudget: (orgId: KinOrgId) => Effect.Effect<void, PersistenceSqlError>;
     readonly changes: (orgId: KinOrgId) => Effect.Effect<Effect.Effect<void>>;
-    readonly nextReady: (
+    /** Every lead with queued events, earliest first; a lead is claimable once `readyAt` passes. */
+    readonly readyLeads: (
       orgId: KinOrgId,
     ) => Effect.Effect<
-      { readonly agentId: KinAgentId; readonly readyAt: number } | undefined,
+      ReadonlyArray<{ readonly agentId: KinAgentId; readonly readyAt: number }>,
       PersistenceSqlError | PersistenceDecodeError
     >;
     readonly expireAgent: (
@@ -210,17 +211,24 @@ const LATER_RETRY_MS = 60_000;
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const laneOf = sql.literal(LANE_OF);
-  const organizations = new Map<
-    KinOrgId,
-    { gate: Semaphore.Semaphore; changed: Deferred.Deferred<void> }
-  >();
+  const organizations = new Map<KinOrgId, { changed: Deferred.Deferred<void> }>();
+  // One running wake-up per lead: the in-process gate is keyed like the claim index.
+  const gates = new Map<string, Semaphore.Semaphore>();
 
   const organization = (orgId: KinOrgId) => {
     const existing = organizations.get(orgId);
     if (existing !== undefined) return existing;
-    const entry = { gate: Semaphore.makeUnsafe(1), changed: Deferred.makeUnsafe<void>() };
+    const entry = { changed: Deferred.makeUnsafe<void>() };
     organizations.set(orgId, entry);
     return entry;
+  };
+  const gateFor = (orgId: KinOrgId, agentId: KinAgentId) => {
+    const key = `${orgId}\u0000${agentId}`;
+    const existing = gates.get(key);
+    if (existing !== undefined) return existing;
+    const gate = Semaphore.makeUnsafe(1);
+    gates.set(key, gate);
+    return gate;
   };
 
   const notify = Effect.fn("KinEventQueue.notify")(function* (orgId: KinOrgId) {
@@ -391,6 +399,7 @@ const make = Effect.gen(function* () {
     function* (input: ClaimInput) {
       yield* decodeClaimInput(input);
       const entry = organization(input.orgId);
+      const gate = gateFor(input.orgId, input.agentId);
       return yield* Effect.acquireRelease(
         Effect.interruptible(
           Effect.uninterruptibleMask((restore) =>
@@ -409,7 +418,7 @@ const make = Effect.gen(function* () {
                   );
                   continue;
                 }
-                yield* restore(entry.gate.take(1));
+                yield* restore(gate.take(1));
                 const events = yield* sql
                   .withTransaction(
                     Effect.gen(function* () {
@@ -423,13 +432,16 @@ const make = Effect.gen(function* () {
                           orgId: input.orgId,
                           wakeupId: input.wakeupId,
                         });
-                      // Cross-process exclusion rests on idx_kin_wakeups_running_org.
+                      // Cross-process exclusion rests on idx_kin_wakeups_running_lead.
                       const started = yield* sql`
                 INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids)
                 VALUES (${input.orgId}, ${input.wakeupId}, ${input.agentId}, ${input.model}, ${now}, 'running', '[]')
-                ON CONFLICT (org_id) WHERE status = 'running' DO NOTHING RETURNING wakeup_id`;
+                ON CONFLICT (org_id, agent_id) WHERE status = 'running' DO NOTHING RETURNING wakeup_id`;
                       if (started.length === 0)
-                        return yield* new KinEventQueueBusy({ orgId: input.orgId });
+                        return yield* new KinEventQueueBusy({
+                          orgId: input.orgId,
+                          agentId: input.agentId,
+                        });
                       const rows = yield* sql<{
                         json: string;
                         priority: "P0" | "P1" | "P2" | "P3";
@@ -470,7 +482,7 @@ const make = Effect.gen(function* () {
                     }),
                   )
                   .pipe(
-                    Effect.onError(() => entry.gate.release(1)),
+                    Effect.onError(() => gate.release(1)),
                     Effect.catchTags({ NoClaimableEvents: () => Effect.undefined }),
                   );
                 if (events !== undefined) return events;
@@ -478,7 +490,7 @@ const make = Effect.gen(function* () {
             }),
           ),
         ),
-        () => entry.gate.release(1),
+        () => gate.release(1),
       );
     },
     Effect.mapError((cause) =>
@@ -692,7 +704,7 @@ const make = Effect.gen(function* () {
       isUnknownAgent(cause) ? cause : toQueuePersistenceError("KinEventQueue.expireAgent")(cause),
     ),
   );
-  const nextReady = Effect.fn("KinEventQueue.nextReady")(
+  const readyLeads = Effect.fn("KinEventQueue.readyLeads")(
     function* (orgId: KinOrgId) {
       const now = yield* Clock.currentTimeMillis;
       const rows = yield* sql<{ agent_id: string }>`SELECT e.agent_id
@@ -723,9 +735,9 @@ const make = Effect.gen(function* () {
       );
       return candidates.toSorted(
         (a, b) => a.readyAt - b.readyAt || a.agentId.localeCompare(b.agentId),
-      )[0];
+      );
     },
-    Effect.mapError(toQueuePersistenceError("KinEventQueue.nextReady")),
+    Effect.mapError(toQueuePersistenceError("KinEventQueue.readyLeads")),
   );
   return KinEventQueue.of({
     reconsiderBudget: Effect.fn("KinEventQueue.reconsiderBudget")(function* (orgId) {
@@ -743,7 +755,7 @@ const make = Effect.gen(function* () {
     requeueUnfinished,
     changes,
     expireAgent,
-    nextReady,
+    readyLeads,
   });
 });
 
