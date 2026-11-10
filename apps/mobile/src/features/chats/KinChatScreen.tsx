@@ -29,7 +29,7 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { Atom, type AsyncResult } from "effect/reactivity";
-import { KeyboardAwareLegendList, useKeyboardChatComposerInset } from "@legendapp/list/keyboard";
+import { KeyboardAwareLegendList } from "@legendapp/list/keyboard";
 import { use, useEffect, useRef, useState, type ComponentPropsWithRef } from "react";
 import {
   AppState,
@@ -37,10 +37,10 @@ import {
   StyleSheet,
   useWindowDimensions,
   View,
-  type ViewInstance,
+  type LayoutChangeEvent,
 } from "react-native";
 import { KeyboardStickyView, useKeyboardState } from "react-native-keyboard-controller";
-import Animated from "react-native-reanimated";
+import Animated, { useSharedValue } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppBar } from "../../components/ui/AppBar";
@@ -52,7 +52,6 @@ import { LoadingStrip } from "../../components/ui/LoadingStrip";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { useBarOverlap, useContentTopInset } from "../../components/ui/useBarInset";
 import { useReduceMotionEnabled } from "../../lib/appState";
-import { deriveThreadFeedInitialContentInset } from "../../lib/layout";
 import { NativeScrollViewMarker } from "../../native/NativeScrollViewMarker";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { HeaderItemsWidthContext } from "../../native/header-items-width";
@@ -696,25 +695,11 @@ function KinChatFeed(props: {
   const composerInset = Math.max(safeBottom, KIN_COMPOSER_GUTTER);
   const keyboardOffset = composerInset - KIN_COMPOSER_GUTTER;
   // As in the thread feed: the composer overlays the feed, whose end inset tracks the composer's
-  // measured height and the keyboard. UIKit already adds the safe-area bottom to that inset.
-  const insetOvercount = Platform.OS === "ios" ? safeBottom : 0;
-  const composerOverlayRef = useRef<ViewInstance>(null);
-  const estimatedComposerInset = Math.max(
-    0,
-    KIN_COMPOSER_COLLAPSED_HEIGHT + composerInset - insetOvercount,
-  );
-  const { contentInsetEndAdjustment, onComposerLayout } = useKeyboardChatComposerInset(
-    listRef,
-    composerOverlayRef,
-    estimatedComposerInset,
-    -insetOvercount,
-    0,
-  );
-  const initialContentInset = deriveThreadFeedInitialContentInset({
-    platform: Platform.OS,
-    usesNativeAutomaticInsets: Platform.OS === "ios",
-    bottomContentInset: estimatedComposerInset,
-  });
+  // measured height, safe area included, and the keyboard.
+  const contentInsetEndAdjustment = useSharedValue(KIN_COMPOSER_COLLAPSED_HEIGHT + composerInset);
+  const onComposerLayout = (event: LayoutChangeEvent) => {
+    contentInsetEndAdjustment.set(event.nativeEvent.layout.height);
+  };
   // Android can lose IME hide callbacks on backgrounding, as in the thread feed: hold the composer
   // down on resume until the keyboard reports again or the composer is focused.
   const keyboardVisible = useKeyboardState((state) => state.isVisible);
@@ -1170,7 +1155,11 @@ function KinChatFeed(props: {
         // RN 0.81+ drops inset-area touches (facebook/react-native#54123).
         applyWorkaroundForContentInsetHitTestBug
         {...(Platform.OS === "ios" ? { ScrollViewComponent: KinFeedScrollView } : {})}
-        contentInsetAdjustmentBehavior="automatic"
+        // Manual insets, as in the thread feed: LegendList can't see the ones UIKit adds.
+        contentInsetAdjustmentBehavior="never"
+        automaticallyAdjustsScrollIndicatorInsets={Platform.OS === "ios"}
+        scrollIndicatorInsets={{ top: barOverlap, bottom: 0 }}
+        {...(barOverlap > 0 ? { contentInset: { top: barOverlap } } : {})}
         // The presence footer is the feed's last 32 pt, reserved even when empty.
         contentContainerStyle={{ paddingTop: 8, paddingBottom: 4 }}
         data={rows}
@@ -1197,18 +1186,9 @@ function KinChatFeed(props: {
         ]}
         estimatedItemSize={72}
         drawDistance={500}
-        // UIKit insets the feed under the bar, which LegendList can't see: without this a short
-        // chat's end-alignment spacer overfills and pushes its newest messages below the fold.
-        contentInsetStartAdjustment={barOverlap}
         contentInsetEndAdjustment={contentInsetEndAdjustment}
-        contentInsetEndStaticAdjustment={insetOvercount}
-        adjustedInsetCompensation={insetOvercount}
-        // Android's initial end scroll runs before the composer is measured without this seed.
-        {...(initialContentInset ? { contentInset: initialContentInset } : {})}
         keyboardOffset={keyboardOffset}
         keyboardLiftBehavior="whenAtEnd"
-        // As in the thread feed: RN clamps scrollTo to the raw inset, so end pins stop short of
-        // the safe area UIKit adds and the last row sits under the composer.
         scrollToOverflowEnabled
         alignItemsAtEnd
         initialScrollAtEnd
@@ -1244,7 +1224,7 @@ function KinChatFeed(props: {
         style={{ position: "absolute", bottom: 0, left: 0, right: 0 }}
         offset={{ closed: 0, opened: keyboardOffset }}
       >
-        <View ref={composerOverlayRef} onLayout={onComposerLayout} pointerEvents="box-none">
+        <View onLayout={onComposerLayout} pointerEvents="box-none">
           {unseen > 0 ? (
             // Out of the overlay's measured height, so the pill never moves the feed.
             <View
