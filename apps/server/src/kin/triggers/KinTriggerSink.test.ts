@@ -44,7 +44,14 @@ const orgB = KinOrgId.make("org-b");
 const decodeSource = Schema.decodeUnknownSync(KinWebhookSource);
 const decodeUnknownUpsert = Schema.decodeUnknownEffect(ScheduledTaskUpsertInput);
 const decodeFire = Schema.decodeEffect(KinTriggerFired);
-const configured = ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }));
+const configured = ConfigProvider.layer(
+  ConfigProvider.fromUnknown({
+    KIN_ENABLED: true,
+    KIN_MEMORY_REPOSITORIES: JSON.stringify([
+      { orgId: orgA, repoUrl: "https://github.com/owner/memory.git" },
+    ]),
+  }),
+);
 const database = KinPersistence.layer.pipe(
   Layer.provideMerge(Sqlite.layerMemory),
   Layer.provideMerge(configured),
@@ -131,6 +138,24 @@ describe("KinTriggerSink", () => {
               assert.deepStrictEqual(yield* store.registerSource(source(org)), source(org));
               yield* store.bindSecret(org, source(org).id, testSecret);
               yield* TestClock.adjust("1 second");
+              if (org === orgA) {
+                yield* waitForDispatch(
+                  service.triggerWebhook(
+                    signedRequest(
+                      task,
+                      "memory-loop",
+                      {
+                        repository: { full_name: "OWNER/Memory" },
+                        sender: { login: "human" },
+                        after: "abc",
+                      },
+                      "push",
+                    ),
+                  ),
+                );
+                assert.lengthOf(yield* inbox.listPending(org), 0);
+                assert.lengthOf(launches, 0);
+              }
               const first = yield* waitForDispatch(
                 service.triggerWebhook(request(task, "github-delivery")),
               );

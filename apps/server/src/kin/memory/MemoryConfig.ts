@@ -1,4 +1,4 @@
-import type { KinOrgId } from "@t3tools/contracts";
+import { KinOrgId } from "@t3tools/contracts";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -93,3 +93,16 @@ export const layer = (
       });
     }),
   );
+
+export const configuredRepositories = Config.schema(
+  Schema.fromJsonString(Schema.Array(Schema.Struct({ orgId: KinOrgId, repoUrl: Schema.String }))),
+  "KIN_MEMORY_REPOSITORIES",
+).pipe(Config.withDefault([]));
+
+export const configuredGithubMemoryRepo = Effect.fn("MemoryConfig.configuredGithubMemoryRepo")(
+  function* (orgId: KinOrgId) {
+    const repositories = yield* configuredRepositories;
+    const repo = repositories.find((entry) => entry.orgId === orgId);
+    return repo === undefined ? undefined : githubRepoOf(repo.repoUrl);
+  },
+);

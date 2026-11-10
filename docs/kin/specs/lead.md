@@ -631,7 +631,7 @@ Upstream files touched, one line each:
 
 ## Tests and acceptance criteria
 
-- Coalescing: 20 `github` events within 10 s produce one `kin_wakeups` row holding 20 event ids.
+- Coalescing: 20 relevant `github` events within the two-minute notice window produce one `kin_wakeups` row holding 20 event ids; memory-repository and untracked traffic never enter that queue.
 - One writer: two events 1 s apart in different lanes while a wake-up runs give two serial wake-ups, never overlapping (assert on `started_at` and `ended_at`); a human message in the running lane is steered into it instead.
 - Fresh session: the second wake-up's run has a different provider thread id from the first, and its prompt holds no text from the first run (`DeterministicRuntime`).
 - Warm session: direct-chat wake-ups less than 10 idle minutes apart share one provider thread for 10 wake-ups, keeping its idle process and each committing memory; the 11th, one after 10 idle minutes, one in another chat, one after a permission change and one after new rules each start fresh.
