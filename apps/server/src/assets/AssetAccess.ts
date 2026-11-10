@@ -13,6 +13,7 @@ import {
   AssetWorkspacePathValidationError,
   AssetWorkspaceResolutionError,
   AssetWorkspaceRootNormalizationError,
+  AuthSessionId,
   SOURCE_CONTROL_MEDIA_ASSET,
   ThreadId,
   ToolActivityNativeAppReference,
@@ -50,7 +51,12 @@ import * as Stream from "effect/Stream";
 import { base64UrlDecodeUtf8, base64UrlEncode } from "../auth/utils.ts";
 import * as AssetSigner from "./AssetSigner.ts";
 import { makeIsServerInternalPath } from "../auth/serverInternalPaths.ts";
-import { parseAttachmentFileExtension, resolveAttachmentPathById } from "../attachmentStore.ts";
+import {
+  isKinAttachmentId,
+  parseAttachmentFileExtension,
+  resolveAttachmentPathById,
+} from "../attachmentStore.ts";
+import { authorizeAttachmentServe } from "../kin/chat/attachmentAccess.ts";
 import * as ServerConfig from "../config.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
@@ -130,6 +136,8 @@ const AssetClaimsSchema = Schema.Union([
     version: Schema.Literal(1),
     kind: Schema.Literal("attachment"),
     attachmentId: Schema.String,
+    /** The session a Kin chat file's URL was minted for; each request re-checks it. */
+    reader: Schema.optionalKey(AuthSessionId),
     download: Schema.optionalKey(Schema.Boolean),
     fileName: Schema.optionalKey(Schema.String),
     mimeType: Schema.optionalKey(Schema.String),
@@ -188,6 +196,8 @@ export type ResolvedAsset =
       readonly mimeType?: string;
       readonly file?: OpenMediaFile;
       readonly renderIntent?: "mcp-app";
+      /** Authority is checked per request, so no cache may answer for it. */
+      readonly noStore?: boolean;
     }
   | {
       readonly kind: "bytes";
@@ -531,6 +541,8 @@ const finalizeWorkspaceFileAsset = Effect.fn("AssetAccess.finalizeWorkspaceFileA
 
 export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (input: {
   readonly resource: AssetResource;
+  /** The authenticated session asking; a Kin chat file's URL works only for it. */
+  readonly reader?: AuthSessionId;
   readonly workspaceRoot?: string;
   readonly projectFaviconPath?: string;
   /** Where a cloned project's checkout stands, while the clone tracker still knows it. */
@@ -651,6 +663,10 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
           resource: input.resource,
         });
       }
+      const reader = isKinAttachmentId(input.resource.attachmentId) ? input.reader : undefined;
+      if (isKinAttachmentId(input.resource.attachmentId) && reader === undefined) {
+        return yield* new AssetAttachmentNotFoundError({ resource: input.resource });
+      }
       const extension = parseAttachmentFileExtension(input.resource.attachmentId);
       const isGenericFile = extension !== null;
       const videoMimeType = input.resource.mimeType?.split(";", 1)[0]?.trim() ?? "";
@@ -669,6 +685,7 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
         version: 1,
         kind: "attachment",
         attachmentId: input.resource.attachmentId,
+        ...(reader !== undefined ? { reader } : {}),
         ...(isGenericFile && !isVideo && inlinePreviewMimeType === undefined
           ? { download: true }
           : {}),
@@ -893,6 +910,11 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
   if (!claims || claims.expiresAt <= (yield* Clock.currentTimeMillis)) return null;
 
   if (claims.kind === "attachment") {
+    const kinFile = isKinAttachmentId(claims.attachmentId);
+    // A refusal reads exactly as a missing file.
+    if (kinFile && !(yield* authorizeAttachmentServe(claims.reader, claims.attachmentId))) {
+      return null;
+    }
     const config = yield* ServerConfig.ServerConfig;
     const attachmentPath = resolveAttachmentPathById({
       attachmentsDir: config.attachmentsDir,
@@ -920,6 +942,7 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
           ...(claims.fileName !== undefined ? { fileName: claims.fileName } : {}),
           ...(claims.mimeType !== undefined ? { mimeType: claims.mimeType } : {}),
           ...(claims.renderIntent === "mcp-app" ? { renderIntent: "mcp-app" as const } : {}),
+          ...(kinFile ? { noStore: true } : {}),
         } satisfies ResolvedAsset)
       : null;
   }

@@ -21,6 +21,12 @@ import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { base64UrlEncode } from "../auth/utils.ts";
 import * as ServerConfig from "../config.ts";
 import {
+  recordTestUploadOwner,
+  TEST_UPLOAD_OWNER,
+  testUploadOwner,
+  withoutOwnerRecords,
+} from "./AttachmentUpload.testkit.ts";
+import {
   claimPendingAttachments,
   releaseClaimedAttachments,
 } from "../orchestration-v2/AttachmentClaims.ts";
@@ -92,12 +98,15 @@ describe("AttachmentUpload", () => {
             cells: [{ cell_type: "markdown", source: ["# Cargo\n", "Violet crates: 19"] }],
           }),
         );
-        const issued = yield* issueAttachmentUploadUrl({
-          type: "file",
-          name: "cargo.ipynb",
-          mimeType: "application/x-ipynb+json",
-          sizeBytes: bytes.length,
-        });
+        const issued = yield* issueAttachmentUploadUrl(
+          {
+            type: "file",
+            name: "cargo.ipynb",
+            mimeType: "application/x-ipynb+json",
+            sizeBytes: bytes.length,
+          },
+          TEST_UPLOAD_OWNER,
+        );
         const claims = yield* validateAttachmentUploadToken(
           issued.relativeUrl.slice(`${ATTACHMENT_UPLOAD_ROUTE_PREFIX}/`.length),
         );
@@ -116,6 +125,7 @@ describe("AttachmentUpload", () => {
         expect(NodeFS.readFileSync(path)).toEqual(Buffer.from(bytes));
         expect(NodeFS.readFileSync(`${path}.txt`, "utf8")).toContain("Violet crates: 19");
         const claimed = yield* claimPendingAttachments({
+          owner: TEST_UPLOAD_OWNER,
           threadId: "document-thread",
           attachments: [
             {
@@ -131,7 +141,7 @@ describe("AttachmentUpload", () => {
         expect(NodeFS.readFileSync(claimed.claimedPaths[1]!, "utf8")).toContain(
           "Violet crates: 19",
         );
-        yield* deletePendingAttachment(issued.attachmentId);
+        yield* deletePendingAttachment(issued.attachmentId, TEST_UPLOAD_OWNER);
         expect(NodeFS.existsSync(path)).toBe(false);
         expect(NodeFS.existsSync(`${path}.txt`)).toBe(false);
         expect(NodeFS.existsSync(claimed.claimedPaths[1]!)).toBe(true);
@@ -141,7 +151,7 @@ describe("AttachmentUpload", () => {
   );
   it.effect("rejects tampered and malformed upload tokens", () =>
     Effect.gen(function* () {
-      const issued = yield* issueAttachmentUploadUrl(uploadInput);
+      const issued = yield* issueAttachmentUploadUrl(uploadInput, TEST_UPLOAD_OWNER);
       const token = issued.relativeUrl.slice(`${ATTACHMENT_UPLOAD_ROUTE_PREFIX}/`.length);
       const [payload, signature] = token.split(".");
 
@@ -153,7 +163,7 @@ describe("AttachmentUpload", () => {
 
   it.effect("accepts unexpired image upload tokens issued before file support", () =>
     Effect.gen(function* () {
-      const issued = yield* issueAttachmentUploadUrl(uploadInput);
+      const issued = yield* issueAttachmentUploadUrl(uploadInput, TEST_UPLOAD_OWNER);
       const signer = yield* AssetSigner.AssetSigner;
       const encodedPayload = base64UrlEncode(
         yield* encodeLegacyAttachmentUploadClaims({
@@ -178,7 +188,7 @@ describe("AttachmentUpload", () => {
   it.effect("stores the expected bytes without leaving temporary files", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;
-      const issued = yield* issueAttachmentUploadUrl(uploadInput);
+      const issued = yield* issueAttachmentUploadUrl(uploadInput, TEST_UPLOAD_OWNER);
       const token = issued.relativeUrl.slice(`${ATTACHMENT_UPLOAD_ROUTE_PREFIX}/`.length);
       const claims = yield* validateAttachmentUploadToken(token);
       if (!claims) {
@@ -202,12 +212,15 @@ describe("AttachmentUpload", () => {
   it.effect("streams generic files to a path with their original extension", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;
-      const issued = yield* issueAttachmentUploadUrl({
-        type: "file",
-        name: "report.PDF",
-        mimeType: "application/pdf",
-        sizeBytes: 6,
-      });
+      const issued = yield* issueAttachmentUploadUrl(
+        {
+          type: "file",
+          name: "report.PDF",
+          mimeType: "application/pdf",
+          sizeBytes: 6,
+        },
+        TEST_UPLOAD_OWNER,
+      );
       const token = issued.relativeUrl.slice(`${ATTACHMENT_UPLOAD_ROUTE_PREFIX}/`.length);
       const claims = yield* validateAttachmentUploadToken(token);
       if (!claims) {
@@ -225,7 +238,7 @@ describe("AttachmentUpload", () => {
         NodeFS.readFileSync(NodePath.join(config.attachmentsDir, `${issued.attachmentId}.pdf`)),
       ).toEqual(Buffer.from([1, 2, 3, 4, 5, 6]));
 
-      yield* deletePendingAttachment(issued.attachmentId);
+      yield* deletePendingAttachment(issued.attachmentId, TEST_UPLOAD_OWNER);
       expect(NodeFS.readdirSync(config.attachmentsDir)).toEqual([]);
     }).pipe(Effect.provide(layerTest)),
   );
@@ -235,12 +248,15 @@ describe("AttachmentUpload", () => {
       const config = yield* ServerConfig.ServerConfig;
       const bytes = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"/>');
       for (const name of ["diagram", "diagram.bin"]) {
-        const issued = yield* issueAttachmentUploadUrl({
-          type: "file",
-          name,
-          mimeType: "image/svg+xml",
-          sizeBytes: bytes.length,
-        });
+        const issued = yield* issueAttachmentUploadUrl(
+          {
+            type: "file",
+            name,
+            mimeType: "image/svg+xml",
+            sizeBytes: bytes.length,
+          },
+          TEST_UPLOAD_OWNER,
+        );
         const token = issued.relativeUrl.slice(`${ATTACHMENT_UPLOAD_ROUTE_PREFIX}/`.length);
         const claims = yield* validateAttachmentUploadToken(token);
         if (!claims) throw new Error("Expected valid SVG upload claims.");
@@ -251,6 +267,7 @@ describe("AttachmentUpload", () => {
           NodeFS.readFileSync(NodePath.join(config.attachmentsDir, `${issued.attachmentId}.svg`)),
         ).toEqual(Buffer.from(bytes));
         const claimed = yield* claimPendingAttachments({
+          owner: TEST_UPLOAD_OWNER,
           threadId: "svg-upload-thread",
           attachments: [
             {
@@ -265,7 +282,7 @@ describe("AttachmentUpload", () => {
         expect(claimed.attachments[0]?.name).toBe(`${name}.svg`);
         expect(NodeFS.readFileSync(claimed.claimedPaths[0]!)).toEqual(Buffer.from(bytes));
         yield* releaseClaimedAttachments(claimed.claimedPaths);
-        yield* deletePendingAttachment(issued.attachmentId);
+        yield* deletePendingAttachment(issued.attachmentId, TEST_UPLOAD_OWNER);
       }
       expect(NodeFS.readdirSync(config.attachmentsDir)).toEqual([]);
     }).pipe(Effect.provide(layerTest)),
@@ -274,7 +291,7 @@ describe("AttachmentUpload", () => {
   it.effect("removes partial streamed uploads that exceed their signed size", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;
-      const issued = yield* issueAttachmentUploadUrl(uploadInput);
+      const issued = yield* issueAttachmentUploadUrl(uploadInput, TEST_UPLOAD_OWNER);
       const token = issued.relativeUrl.slice(`${ATTACHMENT_UPLOAD_ROUTE_PREFIX}/`.length);
       const claims = yield* validateAttachmentUploadToken(token);
       if (!claims) {
@@ -285,14 +302,14 @@ describe("AttachmentUpload", () => {
         ok: false,
         status: 400,
       });
-      expect(NodeFS.readdirSync(config.attachmentsDir)).toEqual([]);
+      expect(withoutOwnerRecords(NodeFS.readdirSync(config.attachmentsDir))).toEqual([]);
     }).pipe(Effect.provide(layerTest)),
   );
 
   it.effect("removes partial streamed uploads when the upload is interrupted", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;
-      const issued = yield* issueAttachmentUploadUrl(uploadInput);
+      const issued = yield* issueAttachmentUploadUrl(uploadInput, TEST_UPLOAD_OWNER);
       const token = issued.relativeUrl.slice(`${ATTACHMENT_UPLOAD_ROUTE_PREFIX}/`.length);
       const claims = yield* validateAttachmentUploadToken(token);
       if (!claims) {
@@ -315,7 +332,7 @@ describe("AttachmentUpload", () => {
       ).toHaveLength(1);
 
       yield* Fiber.interrupt(upload);
-      expect(NodeFS.readdirSync(config.attachmentsDir)).toEqual([]);
+      expect(withoutOwnerRecords(NodeFS.readdirSync(config.attachmentsDir))).toEqual([]);
     }).pipe(Effect.provide(layerTest)),
   );
 
@@ -327,10 +344,13 @@ describe("AttachmentUpload", () => {
       const claimedPath = NodePath.join(config.attachmentsDir, `thread-1-${uuid}.png`);
       NodeFS.writeFileSync(pendingPath, Buffer.from("pixels"));
       NodeFS.writeFileSync(claimedPath, Buffer.from("pixels"));
+      recordTestUploadOwner(config.attachmentsDir, `pending-${uuid}`);
 
-      yield* deletePendingAttachment(`pending-${uuid}`);
-      yield* deletePendingAttachment(`pending-${uuid}`);
-      yield* deletePendingAttachment(`thread-1-${uuid}`);
+      yield* deletePendingAttachment(`pending-${uuid}`, testUploadOwner("someone-else"));
+      expect(NodeFS.existsSync(pendingPath)).toBe(true);
+      yield* deletePendingAttachment(`pending-${uuid}`, TEST_UPLOAD_OWNER);
+      yield* deletePendingAttachment(`pending-${uuid}`, TEST_UPLOAD_OWNER);
+      yield* deletePendingAttachment(`thread-1-${uuid}`, TEST_UPLOAD_OWNER);
 
       expect(NodeFS.existsSync(pendingPath)).toBe(false);
       expect(NodeFS.existsSync(claimedPath)).toBe(true);

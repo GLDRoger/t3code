@@ -26,6 +26,7 @@ import { HttpClientRequest, HttpClientResponse, HttpServerResponse } from "effec
 import { vi } from "vite-plus/test";
 
 import * as AssetSigner from "./AssetSigner.ts";
+import * as SessionStore from "../auth/SessionStore.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
@@ -115,6 +116,8 @@ const layerTest = Layer.mergeAll(
       ),
   }),
   layerConfig,
+  // Kin files are covered over HTTP in http.test.ts; these cases never reach a session.
+  Layer.mock(SessionStore.SessionStore)({ cookieName: "test", legacyCookieName: undefined }),
   WorkspacePaths.layer,
   ProjectFaviconResolver.layer.pipe(
     Layer.provide(WorkspacePaths.layer),

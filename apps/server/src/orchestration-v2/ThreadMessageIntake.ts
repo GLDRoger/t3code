@@ -3,6 +3,7 @@ import { appendUserInputAttachmentPaths } from "../provider/userInputAttachments
 import type { ChatAttachment, OrchestrationV2Command } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import type { PendingUploadOwner } from "../assets/AttachmentUpload.ts";
 import { resolveAttachmentPath } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
 import * as Orchestrator from "./Orchestrator.ts";
@@ -82,9 +83,19 @@ const withGuestAttachments = Effect.fn("ThreadMessageIntake.withGuestAttachments
   return { ...command, attachments: message?.attachments ?? [] };
 });
 
+const commandAttachments = (command: OrchestrationV2Command): ReadonlyArray<ChatAttachment> => [
+  ...("attachments" in command ? (command.attachments ?? []) : []),
+  ...("attachmentsByQuestionId" in command
+    ? Object.values(command.attachmentsByQuestionId ?? {}).flat()
+    : []),
+];
+
+/** `owner` is the authenticated caller; only its own pending uploads are claimed. */
 export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(function* (
   incoming: OrchestrationV2Command,
+  owner: PendingUploadOwner,
 ) {
+  yield* AttachmentClaims.refuseKinAttachments(commandAttachments(incoming));
   const command =
     incoming.type === "message.dispatch" ? yield* withGuestAttachments(incoming) : incoming;
   const threads = yield* ThreadManagement.ThreadManagementService;
@@ -99,6 +110,7 @@ export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
         const claimed = yield* AttachmentClaims.claimPendingAttachments({
           threadId: command.threadId,
           attachments,
+          owner,
         });
         claimedPaths.push(...claimed.claimedPaths);
         Object.defineProperty(attachmentsByQuestionId, questionId, {
@@ -160,6 +172,7 @@ export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
   const claimed = yield* AttachmentClaims.claimPendingAttachments({
     threadId: command.threadId,
     attachments: command.attachments ?? [],
+    owner,
   });
   return yield* threads
     .dispatch({
@@ -194,9 +207,14 @@ export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
 
 export const sendToThread = Effect.fn("ThreadMessageIntake.sendToThread")(function* (
   input: ThreadManagement.ThreadManagementSendInput,
+  owner: PendingUploadOwner,
 ) {
   const threads = yield* ThreadManagement.ThreadManagementService;
-  const claimed = yield* AttachmentClaims.claimPendingAttachments(input);
+  const claimed = yield* AttachmentClaims.claimPendingAttachments({
+    threadId: input.threadId,
+    attachments: input.attachments,
+    owner,
+  });
   return yield* threads.sendToThread({ ...input, attachments: claimed.attachments }).pipe(
     Effect.tap((result) => releaseUnusedClaims(claimed.claimedPaths, result.message.attachments)),
     Effect.tapError((error) =>
@@ -209,9 +227,11 @@ export const sendToThread = Effect.fn("ThreadMessageIntake.sendToThread")(functi
 
 export const launchThread = Effect.fn("ThreadMessageIntake.launchThread")(function* (
   input: ThreadLaunch.ThreadLaunchInput,
+  owner: PendingUploadOwner,
 ) {
   const launches = yield* ThreadLaunch.ThreadLaunchService;
   yield* AttachmentClaims.validateAttachmentLimits(input.initialMessage?.attachments ?? []);
+  yield* AttachmentClaims.refuseKinAttachments(input.initialMessage?.attachments ?? []);
   if (!input.initialMessage?.attachments.some(AttachmentClaims.attachmentIsPendingUpload)) {
     return yield* launches.launch(input);
   }
@@ -223,6 +243,7 @@ export const launchThread = Effect.fn("ThreadMessageIntake.launchThread")(functi
   const claimed = yield* AttachmentClaims.claimPendingAttachments({
     threadId: input.threadId,
     attachments: input.initialMessage.attachments,
+    owner,
   });
   return yield* launches
     .launch({

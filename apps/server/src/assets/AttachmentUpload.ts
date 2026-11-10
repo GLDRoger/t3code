@@ -23,6 +23,7 @@ import {
   createPendingAttachmentId,
   parseThreadSegmentFromAttachmentId,
   PENDING_ATTACHMENT_THREAD_SEGMENT,
+  PENDING_UPLOAD_OWNER_SUFFIX,
   resolveAttachmentPathById,
   sweepStalePendingAttachments,
 } from "../attachmentStore.ts";
@@ -64,8 +65,39 @@ function decodeClaims(encodedPayload: string): AttachmentUploadClaims | null {
   }
 }
 
+/** Who may complete, claim or delete a pending upload: the session or MCP caller that asked for it. */
+export type PendingUploadOwner = `session:${string}` | `mcp:${string}`;
+
+export const sessionUploadOwner = (session: { readonly sessionId: string }): PendingUploadOwner =>
+  `session:${session.sessionId}`;
+export const mcpUploadOwner = (caller: string): PendingUploadOwner => `mcp:${caller}`;
+
+const pendingOwnerPath = (attachmentsDir: string, attachmentId: string) =>
+  parseThreadSegmentFromAttachmentId(attachmentId) === PENDING_ATTACHMENT_THREAD_SEGMENT
+    ? resolveAttachmentRelativePath({
+        attachmentsDir,
+        relativePath: `${attachmentId}${PENDING_UPLOAD_OWNER_SUFFIX}`,
+      })
+    : null;
+
+/** Whether `owner` asked for this pending upload. A missing record matches no one. */
+export const ownsPendingUpload = Effect.fn("AttachmentUpload.ownsPendingUpload")(function* (
+  attachmentId: string,
+  owner: PendingUploadOwner,
+) {
+  const config = yield* ServerConfig.ServerConfig;
+  const ownerPath = pendingOwnerPath(config.attachmentsDir, attachmentId);
+  if (!ownerPath) return false;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const recorded = yield* fileSystem
+    .readFileString(ownerPath)
+    .pipe(Effect.orElseSucceed(() => null));
+  return recorded === owner;
+});
+
 export const issueAttachmentUploadUrl = Effect.fn("AttachmentUpload.issueUrl")(function* (
   input: AttachmentCreateUploadUrlInput,
+  owner: PendingUploadOwner,
 ) {
   const config = yield* ServerConfig.ServerConfig;
   const nowMs = yield* Clock.currentTimeMillis;
@@ -93,6 +125,16 @@ export const issueAttachmentUploadUrl = Effect.fn("AttachmentUpload.issueUrl")(f
     attachmentType === "file" ? attachmentFileExtension(name) : undefined,
   );
   const expiresAt = nowMs + ATTACHMENT_UPLOAD_URL_TTL_MS;
+  const ownerPath = pendingOwnerPath(config.attachmentsDir, attachmentId);
+  if (!ownerPath) return yield* Effect.die(new Error("Pending upload ids resolve in the store."));
+  const fileSystem = yield* FileSystem.FileSystem;
+  // Written once, exclusively, before the URL exists; the pending sweep removes it with the upload.
+  yield* fileSystem
+    .makeDirectory(config.attachmentsDir, { recursive: true })
+    .pipe(
+      Effect.andThen(fileSystem.writeFileString(ownerPath, owner, { flag: "wx" })),
+      Effect.orDie,
+    );
   const encodedPayload = base64UrlEncode(
     encodeAttachmentUploadClaims({
       version: 1,
@@ -180,6 +222,10 @@ export const storeAttachmentUpload = Effect.fn("AttachmentUpload.store")(functio
   }
 
   const fileSystem = yield* FileSystem.FileSystem;
+  // An upload whose owner record is gone (swept or deleted) has no one to claim it.
+  const ownerPath = pendingOwnerPath(config.attachmentsDir, claims.attachmentId);
+  if (!ownerPath || !(yield* fileSystem.exists(ownerPath).pipe(Effect.orElseSucceed(() => false))))
+    return { ok: false, status: 404, detail: "Not Found" } satisfies StoreAttachmentUploadResult;
   const path = yield* Path.Path;
   let receivedBytes = 0;
   const bodyStream = body instanceof Uint8Array ? Stream.make(body) : body;
@@ -267,7 +313,17 @@ export const storeAttachmentUpload = Effect.fn("AttachmentUpload.store")(functio
   );
 });
 
+/** Deletes a pending upload for its owner; anyone else's request is a no-op, as for a missing file. */
 export const deletePendingAttachment = Effect.fn("AttachmentUpload.deletePending")(function* (
+  attachmentId: string,
+  owner: PendingUploadOwner,
+) {
+  if (!(yield* ownsPendingUpload(attachmentId, owner))) return;
+  yield* forgetPendingAttachment(attachmentId);
+});
+
+/** Removes a pending upload and its records, for server paths that already proved ownership. */
+export const forgetPendingAttachment = Effect.fn("AttachmentUpload.forgetPending")(function* (
   attachmentId: string,
 ) {
   if (parseThreadSegmentFromAttachmentId(attachmentId) !== PENDING_ATTACHMENT_THREAD_SEGMENT) {
@@ -275,15 +331,15 @@ export const deletePendingAttachment = Effect.fn("AttachmentUpload.deletePending
   }
 
   const config = yield* ServerConfig.ServerConfig;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const ownerPath = pendingOwnerPath(config.attachmentsDir, attachmentId);
   const attachmentPath = resolveAttachmentPathById({
     attachmentsDir: config.attachmentsDir,
     attachmentId,
   });
-  if (!attachmentPath) {
-    return;
+  if (attachmentPath) {
+    yield* fileSystem.remove(attachmentPath, { force: true }).pipe(Effect.orElseSucceed(() => {}));
+    yield* fileSystem.remove(`${attachmentPath}.txt`, { force: true }).pipe(Effect.ignore);
   }
-
-  const fileSystem = yield* FileSystem.FileSystem;
-  yield* fileSystem.remove(attachmentPath, { force: true }).pipe(Effect.orElseSucceed(() => {}));
-  yield* fileSystem.remove(`${attachmentPath}.txt`, { force: true }).pipe(Effect.ignore);
+  if (ownerPath) yield* fileSystem.remove(ownerPath, { force: true }).pipe(Effect.ignore);
 });

@@ -27,6 +27,9 @@ const ATTACHMENT_ID_PATTERN = new RegExp(
 );
 
 export const PENDING_ATTACHMENT_THREAD_SEGMENT = "pending";
+/** Kin's chat files share the directory; only Kin's own server paths may hand one out. */
+export const KIN_ATTACHMENT_ID_PREFIX = "kin-chat-";
+export const PENDING_UPLOAD_OWNER_SUFFIX = ".owner";
 const PENDING_ATTACHMENT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const PARTIAL_UPLOAD_MAX_AGE_MS = 60 * 60 * 1000;
 
@@ -66,6 +69,15 @@ function attachmentIdExtensionSuffix(extension: string | undefined): string {
 
 export function createPendingAttachmentId(extension?: string): string {
   return `${PENDING_ATTACHMENT_THREAD_SEGMENT}-${NodeCrypto.randomUUID()}${attachmentIdExtensionSuffix(extension)}`;
+}
+
+/** Matched on the name the file is found by, so case and `./` tricks name the same file. */
+export function isKinAttachmentId(attachmentId: string): boolean {
+  return (
+    normalizeAttachmentRelativePath(attachmentId)
+      ?.toLowerCase()
+      .startsWith(KIN_ATTACHMENT_ID_PREFIX) ?? false
+  );
 }
 
 export function parseAttachmentUuid(attachmentId: string): string | null {
