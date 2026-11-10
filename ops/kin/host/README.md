@@ -102,6 +102,37 @@ Running it again changes nothing and prints the existing lead. A host has one li
 - `kin lead projects <agent id> --worker-project <project id> ...` replaces a live lead's worker projects, keeping its chat and history; pass no `--worker-project` to clear them. Its next tool call sees the change: new and follow-up work in a removed project is refused, but a worker already running there keeps running until it ends or you stop it.
 - `kin lead retire <agent id>` retires one. Its rows and chat stay. Its Kin tool calls are refused at once. A running server expires its queued events and ends its thread once any current wake-up finishes (up to 15 minutes; pause Kin to halt it sooner), or at its next start if it's stopped. After that, `kin lead create` makes a new lead.
 
+## Reply latency
+
+Each wake-up logs one `Kin wake-up latency` line with every stage's ms since its first message was queued: claimed, memory prepared, provider launched, first token, reply posted, and whether it was warm. For p50 and p90 over the last 20 owner-message wake-ups, read the database without writing to it:
+
+```bash
+sqlite3 -readonly ~/.t3/userdata/statev2.sqlite "
+WITH w AS (
+  SELECT * FROM kin_wakeups
+  WHERE org_id = (SELECT org_id FROM kin_leads ORDER BY org_id LIMIT 1) AND enqueued_at IS NOT NULL
+    AND EXISTS (SELECT 1 FROM kin_events e WHERE e.org_id = kin_wakeups.org_id
+      AND e.wakeup_id = kin_wakeups.wakeup_id AND e.priority = 'P0' AND e.tag = 'chat.message')
+  ORDER BY started_at DESC LIMIT 20
+), s(warm, stage, ms) AS (
+  SELECT resumed, '1 claimed', started_at - enqueued_at FROM w
+  UNION ALL SELECT resumed, '2 prepared', prepared_at - enqueued_at FROM w
+  UNION ALL SELECT resumed, '3 launched', launched_at - enqueued_at FROM w
+  UNION ALL SELECT resumed, '4 first token', first_token_at - enqueued_at FROM w
+  UNION ALL SELECT resumed, '5 posted', posted_at - enqueued_at FROM w
+), r AS (
+  SELECT warm, stage, ms, ROW_NUMBER() OVER (PARTITION BY warm, stage ORDER BY ms) AS n,
+    COUNT(*) OVER (PARTITION BY warm, stage) AS c
+  FROM s WHERE ms IS NOT NULL
+)
+SELECT CASE warm WHEN 1 THEN 'warm' ELSE 'cold' END AS session, stage, c AS wakeups,
+  MAX(CASE WHEN n = (c + 1) / 2 THEN ms END) AS p50_ms,
+  MAX(CASE WHEN n = (9 * c + 9) / 10 THEN ms END) AS p90_ms
+FROM r GROUP BY warm, stage ORDER BY warm, stage;"
+```
+
+`seen` shows in the chat as soon as the message is queued, before any of these stages.
+
 ## Update
 
 In a kin shell: `~/t3code/ops/kin/host/update.sh`. It fetches `kin` and builds it in a fresh worktree, `~/kin-builds/<sha>`: `vp i`, then `(cd apps/server && vp test run kin-contract)`, then `vp run build:desktop`. The running build is never touched. Only after every step passes does it refresh the units and the Node version, switch `~/kin-current` to the new build and run `systemctl --user restart kin-server`. A failed step deletes the half-built worktree and the server keeps running the old build. It keeps the 3 newest builds.

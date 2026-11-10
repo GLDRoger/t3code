@@ -191,12 +191,21 @@ export class Memory extends Context.Service<
     /** Bumped whenever a history rewrite drops the checkouts; work staged under an older value is stale. */
     readonly historyGeneration: (orgId: KinOrgId) => Effect.Effect<number>;
     readonly ensureCheckouts: (orgId: KinOrgId) => Effect.Effect<MemoryPaths, MemoryFailure>;
-    /** Syncs the default branch and fills the read checkout with the waking lead's view. */
+    /**
+     * Validates the writer and fills the read checkout with the waking lead's view. The first
+     * wake-up after a start, and every one after a failed `syncCheckout`, syncs inline first.
+     */
     readonly prepareWakeup: (
       orgId: KinOrgId,
       wakeupId?: string,
       view?: LeadView,
     ) => Effect.Effect<{ head: string; indexAsOf: DateTime.Utc }, MemoryFailure>;
+    /**
+     * The writer's integrity check (`git fsck`) and default-branch sync with the remote, off the
+     * reply path. Skips an organization with no clone yet, or whose last sync failed: its next
+     * wake-up re-runs the sync and refuses to start until it passes.
+     */
+    readonly syncCheckout: (orgId: KinOrgId) => Effect.Effect<void, MemoryFailure>;
     readonly readPromptSnapshot: (
       orgId: KinOrgId,
       expectedHead: string,
@@ -355,6 +364,8 @@ const make = Effect.gen(function* () {
   const cache = yield* MemoryCache.MemoryCache;
   const locks = new Map<KinOrgId, Semaphore.Semaphore>();
   const initializedCheckouts = new Set<KinOrgId>();
+  // Whether the last sync passed; absent until the first one after start or a history rewrite.
+  const synced = new Map<KinOrgId, boolean>();
   const historyGenerations = new Map<KinOrgId, number>();
   const mainBranch = config.defaultBranch ?? "main";
   // Keyed by `snapshotKey`: each branch a lead reads has its own snapshot and blob cache.
@@ -634,7 +645,8 @@ const make = Effect.gen(function* () {
     let head: string;
     if (branch === mainBranch) {
       const pinned = pinnedHeads.get(orgId);
-      if (pinned === undefined) yield* validateWriter(orgId, paths, false);
+      // Bootstraps a missing writer, so reads before the first wake-up don't fail validation.
+      if (pinned === undefined) yield* ensureCheckouts(orgId);
       head = pinned ?? (yield* anchor(orgId, mainBranch));
       pinnedHeads.set(orgId, head);
     } else head = yield* anchor(orgId, branch);
@@ -1245,16 +1257,28 @@ const make = Effect.gen(function* () {
       });
     }
     pinnedHeads.delete(orgId);
+    synced.delete(orgId);
     forgetSnapshots(orgId);
   });
 
-  const prepare = Effect.fn("Memory.prepare")(function* (
+  const refuseUnfinishedOperation = Effect.fn("Memory.refuseUnfinishedOperation")(function* (
     orgId: KinOrgId,
-    wakeupId?: string,
-    view?: LeadView,
+    writer: string,
   ) {
-    const paths = yield* ensureCheckouts(orgId);
-    yield* validateWriter(orgId, yield* pathsFor(orgId));
+    for (const marker of ["rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD"]) {
+      if (yield* io(orgId, "sync", fs.exists(`${writer}/.git/${marker}`)))
+        return yield* new MemoryCheckoutInvalid({
+          orgId,
+          operation: "sync",
+          reason: "Unfinished Git operation",
+        });
+    }
+  });
+
+  // Callers have run `ensureCheckouts`.
+  const sync = Effect.fn("Memory.sync")(function* (orgId: KinOrgId, wakeupId?: string) {
+    const paths = yield* pathsFor(orgId);
+    yield* validateWriter(orgId, paths);
     yield* git(orgId, paths.writer, [
       "fsck",
       "--full",
@@ -1262,14 +1286,7 @@ const make = Effect.gen(function* () {
       "--no-reflogs",
       yield* anchor(orgId, config.defaultBranch ?? "main"),
     ]);
-    for (const marker of ["rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD"]) {
-      if (yield* io(orgId, "sync", fs.exists(`${paths.writer}/.git/${marker}`)))
-        return yield* new MemoryCheckoutInvalid({
-          orgId,
-          operation: "sync",
-          reason: "Unfinished Git operation",
-        });
-    }
+    yield* refuseUnfinishedOperation(orgId, paths.writer);
     const { repo } = yield* pathsFor(orgId);
     const branch = config.defaultBranch ?? "main";
     let head = yield* anchor(orgId, branch);
@@ -1505,6 +1522,25 @@ const make = Effect.gen(function* () {
         }
       }
     }
+  });
+  const checkedSync = (orgId: KinOrgId, wakeupId?: string) =>
+    sync(orgId, wakeupId).pipe(
+      Effect.tap(() => Effect.sync(() => synced.set(orgId, true))),
+      Effect.tapError(() => Effect.sync(() => synced.set(orgId, false))),
+    );
+
+  const prepare = Effect.fn("Memory.prepare")(function* (
+    orgId: KinOrgId,
+    wakeupId?: string,
+    view?: LeadView,
+  ) {
+    const paths = yield* ensureCheckouts(orgId);
+    if (synced.get(orgId) === true) {
+      yield* validateWriter(orgId, yield* pathsFor(orgId));
+      yield* refuseUnfinishedOperation(orgId, paths.writer);
+    } else yield* checkedSync(orgId, wakeupId);
+    const branch = config.defaultBranch ?? "main";
+    const head = yield* anchor(orgId, branch);
     // The read checkout holds the waking lead's view: its shadow branch at L0.
     const checkoutBranch = view === undefined ? branch : yield* leadBranch(orgId, view.lead);
     const checkoutHead = checkoutBranch === branch ? head : yield* anchor(orgId, checkoutBranch);
@@ -1615,6 +1651,7 @@ const make = Effect.gen(function* () {
       yield* removeStaleClones(orgId, paths.root);
     initializedCheckouts.delete(orgId);
     pinnedHeads.delete(orgId);
+    synced.delete(orgId);
     skipWarnedHeads.delete(orgId);
     checkoutBranches.delete(orgId);
     forgetSnapshots(orgId);
@@ -1672,6 +1709,21 @@ const make = Effect.gen(function* () {
     ),
     prepareWakeup: Effect.fn("Memory.prepareWakeup")((orgId, wakeupId, view) =>
       withWriterLock(orgId, locked(orgId, prepare(orgId, wakeupId, view))),
+    ),
+    syncCheckout: Effect.fn("Memory.syncCheckout")((orgId) =>
+      withWriterLock(
+        orgId,
+        locked(
+          orgId,
+          Effect.gen(function* () {
+            if (synced.get(orgId) === false) return;
+            const { writer } = yield* pathsFor(orgId);
+            if (!(yield* io(orgId, "exists", fs.exists(writer)))) return;
+            yield* ensureCheckouts(orgId);
+            yield* checkedSync(orgId);
+          }),
+        ),
+      ),
     ),
     readPromptSnapshot: Effect.fn("Memory.readPromptSnapshot")((orgId, expectedHead, view) =>
       locked(

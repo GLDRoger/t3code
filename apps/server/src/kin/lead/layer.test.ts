@@ -73,6 +73,7 @@ vi.mock("../memory/Memory.ts", async (importOriginal) => {
           readItemQuietly: () => Effect.die("unused"),
           rebuildIndex: () => Effect.die("unused"),
           rebuildCache: () => Effect.die("unused"),
+          syncCheckout: () => Effect.void,
         });
       }),
     ),

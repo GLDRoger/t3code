@@ -10,6 +10,7 @@ import {
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
 
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -22,6 +23,7 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { forkParked } from "../../serverActivation.ts";
 import { KinChatHub, type KinChatHubEvent } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
+import { KinPresence } from "../reply/KinPresence.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 
 const decodeTap = Schema.decodeUnknownEffect(
@@ -41,6 +43,7 @@ const make = Effect.gen(function* () {
   const hub = yield* KinChatHub;
   const repo = yield* KinChatRepository;
   const queue = yield* KinEventQueue;
+  const presence = yield* Effect.serviceOption(KinPresence);
 
   const wake = Effect.fn("KinChatWake.wake")(
     function* (message: KinMessage) {
@@ -94,14 +97,25 @@ const make = Effect.gen(function* () {
         const event: KinEvent = Option.isSome(actionId)
           ? { ...base, _tag: "widget.action", actionId: actionId.value }
           : { ...base, _tag: "chat.message" };
-        yield* queue.enqueue(event).pipe(
+        const queued = yield* queue.enqueue(event).pipe(
+          Effect.map((result) => !result.duplicate),
           Effect.catchTags({
-            KinEventQueueRetiredAgent: () => Effect.void,
-            KinEventQueueUnknownAgent: () => Effect.void,
+            KinEventQueueRetiredAgent: () => Effect.succeed(false),
+            KinEventQueueUnknownAgent: () => Effect.succeed(false),
             KinEventQueueConflict: (error) =>
-              Effect.logWarning("Kin chat wake-up conflicts with a stored event", error),
+              Effect.logWarning("Kin chat wake-up conflicts with a stored event", error).pipe(
+                Effect.as(false),
+              ),
           }),
         );
+        // The first thing the sender sees, well before a wake-up claims the message.
+        if (queued && Option.isSome(presence))
+          yield* presence.value.seen(
+            message.orgId,
+            message.chatId,
+            agentId,
+            yield* Clock.currentTimeMillis,
+          );
       }
     },
     Effect.catchCause((cause) => Effect.logError("Kin chat wake-up failed", { cause })),

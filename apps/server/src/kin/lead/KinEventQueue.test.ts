@@ -178,14 +178,21 @@ describe("KinEventQueue", () => {
           yield* queue.enqueue(yield* event(id!, tag!));
         const batch = yield* Effect.scoped(queue.claim(input("priority"))).pipe(Effect.forkChild);
         yield* TestClock.adjust("1 second");
-        for (const tag of ["chat.message", "widget.action", "resume"]) {
-          yield* queue.enqueue(yield* event(tag, tag));
-        }
-        yield* TestClock.adjust("1 second");
+        yield* queue.enqueue(yield* event("chat.message", "chat.message"));
+        yield* TestClock.adjust("200 millis");
+        for (const tag of ["widget.action", "resume"]) yield* queue.enqueue(yield* event(tag, tag));
+        yield* TestClock.adjust("200 millis");
         yield* queue.enqueue(yield* event("noisy"));
+        // An owner message waits only until its burst has been quiet for 300 ms.
+        yield* TestClock.adjust("299 millis");
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_wakeups`, []);
-        yield* TestClock.adjust("1 second");
+        yield* TestClock.adjust("1 millis");
         const events = yield* Fiber.join(batch);
+        assert.deepStrictEqual(
+          yield* sql`SELECT started_at - enqueued_at AS waited FROM kin_wakeups
+            WHERE org_id = 'a' AND wakeup_id = 'priority' ORDER BY wakeup_id`,
+          [{ waited: 1_700 }],
+        );
         assert.deepStrictEqual(
           events.map((entry) => entry.eventId),
           [

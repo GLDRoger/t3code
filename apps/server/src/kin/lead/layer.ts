@@ -116,9 +116,34 @@ const memoryPullRequestSweep = Effect.fn("KinMemoryPullRequests.sweepDue")(funct
   });
 });
 
+/** The writer's fsck and remote sync, off the reply path: at start, then every five minutes. */
+const memorySync = Effect.fn("KinMemory.syncDue")(function* (memory: Memory.Memory["Service"]) {
+  const { repositories } = yield* MemoryConfig.MemoryConfig;
+  let due = 0;
+  return Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    if (now < due) return;
+    due = now + 5 * 60_000;
+    yield* Effect.forEach(
+      repositories,
+      ({ orgId }) =>
+        memory.syncCheckout(orgId).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin memory sync failed; the next wake-up re-checks", {
+              orgId,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        ),
+      { discard: true },
+    );
+  });
+});
+
 const runner = Layer.effectDiscard(
   Effect.gen(function* () {
     const runner = yield* WakeupRunner.WakeupRunner;
+    const memory = yield* Memory.Memory;
     const stop = yield* KinStop.KinStop;
     const ownerTimeZone = yield* Effect.serviceOption(OwnerTimeZone.KinOwnerTimeZone);
     // The owner's keep-or-discard of shadow memory runs on this runtime's writer.
@@ -132,6 +157,10 @@ const runner = Layer.effectDiscard(
       yield* memoryChanges.value.attachWriter(writer.value.undoChange);
     yield* Effect.gen(function* () {
       const context = yield* Layer.build(routineRuntime);
+      yield* Context.get(context, Scheduler.Scheduler).register(
+        "kin-memory-sync",
+        yield* memorySync(memory),
+      );
       if (Option.isSome(writer))
         yield* Context.get(context, Scheduler.Scheduler).register(
           "kin-memory-pull-requests",
