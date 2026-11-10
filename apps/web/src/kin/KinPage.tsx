@@ -28,6 +28,7 @@ import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { isElectron } from "../env";
 import { cn } from "../lib/utils";
 import { KinAvatar } from "./KinAvatar";
+import { KinApproverKeyConfirm } from "./KinApproverKeys";
 import { ApproveOnPhone } from "./KinCards";
 import { startKinOutbox } from "./kinOutbox";
 import { useKinInbox } from "./useKinHost";
@@ -176,6 +177,7 @@ function KinChatList(props: {
         directory={props.directory}
         environmentId={state.environmentId}
       />
+      <KinApproverKeyConfirm environmentId={state.environmentId} />
     </div>
   );
   if (rows.length === 0) {
