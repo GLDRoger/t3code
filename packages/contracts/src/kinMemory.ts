@@ -6,10 +6,10 @@ import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinAgentId, KinChatError, KinOrgId, KinWidgetId } from "./kinChat.ts";
 import { KinMemoryItemId } from "./kinLead.ts";
 
-/** The widget `type` of the card the server posts after a wake-up changes memory. */
+/** The widget `type` of the memory change cards earlier versions posted after a wake-up. */
 export const KIN_MEMORY_CHANGES_CARD = "memory_changes";
-export const KIN_MEMORY_CHANGES_MAX = 20;
-export const KIN_MEMORY_CHANGE_TITLE_MAX = 120;
+const KIN_MEMORY_CHANGES_MAX = 20;
+const KIN_MEMORY_CHANGE_TITLE_MAX = 120;
 
 export const KinMemoryChangeKind = Schema.Literals([
   "created",

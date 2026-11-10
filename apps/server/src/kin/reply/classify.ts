@@ -96,6 +96,9 @@ const TOOL_TYPES: ReadonlySet<OrchestrationV2TurnItem["type"]> = new Set([
   "subagent",
 ]);
 export const isToolItem = (item: OrchestrationV2TurnItem) => TOOL_TYPES.has(item.type);
+/** The lead's `kin_end` call: the text before it is its reply, and it has nothing more to say. */
+export const isEndCall = (item: OrchestrationV2TurnItem) =>
+  item.type === "dynamic_tool" && /(?:^|__|\.)kin_end$/.test(item.toolName ?? "");
 
 // The presence line's only words. Each is fixed text: never tool arguments or model text.
 export const PHASE_LABELS = {

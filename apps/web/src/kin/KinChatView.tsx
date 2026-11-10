@@ -48,9 +48,12 @@ import {
   kinViewerMemberId,
 } from "@t3tools/client-runtime/kin/kinReactions";
 import {
+  kinAvatarView,
+  kinChatMuted,
   kinChatTitle,
   kinDirectAgentName,
   kinOwnedLeadAgentId,
+  type KinAvatarView,
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import type { KinSynced } from "@t3tools/client-runtime/kin/kinStreams";
 import {
@@ -59,6 +62,7 @@ import {
   KinChatId,
   type EnvironmentId,
   type KinChatMember,
+  type KinLeadsListResult,
   type KinPresence,
   type KinReactionEmoji,
   type KinWakeupId,
@@ -68,7 +72,7 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { Atom, type AsyncResult } from "effect/reactivity";
-import { ArrowDownIcon, ArrowLeftIcon, ChevronUpIcon } from "lucide-react";
+import { ArrowDownIcon, ArrowLeftIcon, BellOffIcon, ChevronUpIcon } from "lucide-react";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 
 import {
@@ -88,11 +92,16 @@ import { Button } from "../components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
 import { Spinner } from "../components/ui/spinner";
 import { Textarea } from "../components/ui/textarea";
+import { isElectron } from "../env";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
+import { KinAvatar } from "./KinAvatar";
 import { kinClient } from "./kinClient";
+import { KinLeadSheet } from "./KinLeadSheet";
 import { deliverKinOutbox, kinOutbox, startKinOutbox } from "./kinOutbox";
+import { kinFeedDisplay, kinIsBookkeeping, kinQuietWording } from "./kinFeedDisplay";
 import {
+  formatKinMessageTime,
   KinDayRow,
   KinDraftRow,
   KinFoldRow,
@@ -105,6 +114,8 @@ import { useKinHostAt } from "./useKinHost";
 
 type ChatResult = AsyncResult.AsyncResult<KinSynced<KinChatState>, unknown> | null;
 type InboxResult = AsyncResult.AsyncResult<KinSynced<KinInboxState>, unknown> | null;
+type LeadsResult = AsyncResult.AsyncResult<KinLeadsListResult, unknown> | null;
+const noLeadsAtom: Atom.Atom<LeadsResult> = Atom.make<LeadsResult>(null);
 const noChatAtom: Atom.Atom<ChatResult> = Atom.make<ChatResult>(null);
 const noInboxAtom: Atom.Atom<InboxResult> = Atom.make<InboxResult>(null);
 const decodeChatId = Schema.decodeUnknownOption(KinChatId);
@@ -125,6 +136,15 @@ function restoreDraft(key: string, body: string) {
   const atom = kinDraftAtom(key);
   const typed = appAtomRegistry.get(atom);
   appAtomRegistry.set(atom, typed.trim().length === 0 ? body : `${body}\n\n${typed}`);
+}
+
+/** A lead's charter as the empty chat's opening lines: whole when short, else cut at a word. */
+function kinIntroCharter(charter: string): string | null {
+  const text = charter.trim();
+  if (text === "") return null;
+  if (text.length <= 240) return text;
+  const cut = text.slice(0, 240);
+  return `${cut.slice(0, Math.max(cut.lastIndexOf(" "), 120)).replace(/[\s.,;:]+$/, "")}…`;
 }
 
 /** One Kin chat, from the route's environment, org and chat. */
@@ -158,7 +178,32 @@ export function KinChatView(props: {
       ? inbox.value.value.chats.find((chat) => chat.chatId === chatId)
       : undefined;
   const ownedAgentId = summary === undefined ? null : kinOwnedLeadAgentId(summary, viewer.personId);
+  // Only the viewer's own leads have a profile to open; a teammate's list is empty.
+  const leadsAtom: Atom.Atom<LeadsResult> =
+    environmentId === null || summary === undefined || ownedAgentId === null
+      ? noLeadsAtom
+      : kinClient.leads({ environmentId, input: { orgId: summary.orgId } });
+  const leads = useAtomValue(leadsAtom);
+  const lead =
+    leads?._tag === "Success"
+      ? (leads.value.leads.find((held) => held.agentId === ownedAgentId) ?? null)
+      : null;
+  const [profileOpen, setProfileOpen] = useState(false);
+  const nowMs = useNowMinuteMs();
+  const muted =
+    summary !== undefined &&
+    viewer.personId !== null &&
+    kinChatMuted(summary, new Set([viewer.personId]), nowMs);
   const title = summary === undefined ? "Chat" : kinChatTitle(summary, viewer.agentNames);
+  const avatar =
+    summary === undefined
+      ? null
+      : kinAvatarView(
+          summary,
+          summary.members.find(
+            (member) => member.leftAt === null && member.principal._tag === "agent",
+          ) ?? null,
+        );
 
   const retry = () => {
     if (environmentId === null) return;
@@ -177,7 +222,25 @@ export function KinChatView(props: {
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <KinChatHeader title={title} presence={presence} tasks={tasks} />
+      <KinChatHeader
+        title={title}
+        avatar={avatar}
+        presence={presence}
+        tasks={tasks}
+        muted={muted}
+        onOpenProfile={lead === null ? null : () => setProfileOpen(true)}
+      />
+      {lead === null || avatar === null || environmentId === null || chatId === null ? null : (
+        <KinLeadSheet
+          open={profileOpen}
+          onOpenChange={setProfileOpen}
+          lead={lead}
+          avatar={avatar}
+          environmentId={environmentId}
+          chatId={chatId}
+          muted={muted}
+        />
+      )}
       {state._tag === "ready" ? (
         <KinChatFeed
           // Paging, folds and follow belong to one chat.
@@ -205,6 +268,7 @@ export function KinChatView(props: {
                     })
                     .then((result) => result._tag === "Success")
           }
+          charter={lead === null ? null : kinIntroCharter(lead.charter)}
           members={summary?.members ?? []}
           direct={summary?.kind === "direct"}
           ownsLead={ownedAgentId !== null}
@@ -216,16 +280,32 @@ export function KinChatView(props: {
   );
 }
 
-/** The chat's title, with presence while the lead works and open tasks otherwise. */
+/** Who the chat is with, and what they are doing: presence while a lead works, open tasks otherwise. */
 function KinChatHeader(props: {
   readonly title: string;
+  readonly avatar: KinAvatarView | null;
   readonly presence: KinPresence | undefined;
   readonly tasks: string | null;
+  readonly muted: boolean;
+  /** Opens the lead's profile; null for a chat that has none to show. */
+  readonly onOpenProfile: (() => void) | null;
 }) {
   const now = useKinPresenceNow(kinPresenceNeedsClock(props.presence));
   const subtitle = kinPresenceLine(props.presence, now)?.subtitle ?? props.tasks;
+  const identity = (
+    <>
+      {props.avatar === null ? null : <KinAvatar avatar={props.avatar} size="sm" />}
+      <WorkspaceBreadcrumb ariaLabel="Chat" className="shrink">
+        <WorkspaceBreadcrumbItem current>
+          <h1 className="min-w-0">
+            <WorkspaceBreadcrumbText>{props.title}</WorkspaceBreadcrumbText>
+          </h1>
+        </WorkspaceBreadcrumbItem>
+      </WorkspaceBreadcrumb>
+    </>
+  );
   return (
-    <WorkspacePageHeader titlebarInset={false} className="border-b border-border">
+    <WorkspacePageHeader electron={isElectron} className="border-b border-border">
       <Button
         size="icon-sm"
         variant="ghost"
@@ -235,13 +315,21 @@ function KinChatHeader(props: {
       >
         <ArrowLeftIcon />
       </Button>
-      <WorkspaceBreadcrumb ariaLabel="Chat" className="shrink">
-        <WorkspaceBreadcrumbItem current>
-          <h2 className="min-w-0">
-            <WorkspaceBreadcrumbText>{props.title}</WorkspaceBreadcrumbText>
-          </h2>
-        </WorkspaceBreadcrumbItem>
-      </WorkspaceBreadcrumb>
+      {props.onOpenProfile === null ? (
+        identity
+      ) : (
+        <button
+          type="button"
+          aria-label={`${props.title}: open profile`}
+          className="-mx-1.5 flex min-w-0 shrink items-center gap-3 rounded-md px-1.5 py-1 outline-none ring-ring [-webkit-app-region:no-drag] hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
+          onClick={props.onOpenProfile}
+        >
+          {identity}
+        </button>
+      )}
+      {props.muted ? (
+        <BellOffIcon aria-label="Muted" className="size-3.5 shrink-0 text-muted-foreground" />
+      ) : null}
       {subtitle === null ? null : (
         <p className="min-w-0 flex-1 truncate text-sm text-muted-foreground">{subtitle}</p>
       )}
@@ -262,12 +350,12 @@ const STATE_COPY: Record<
     detail: "Connect to a T3 server that runs Kin.",
   },
   unpaired: {
-    title: "This browser isn't paired with that Mac",
-    detail: "Pair it again to open this chat.",
+    title: "This browser isn't connected to that server",
+    detail: "Pair it with the server that runs Kin to open this chat.",
   },
   unauthorized: {
     title: "This browser can't read Kin chats",
-    detail: "Pair it again from the Mac.",
+    detail: "Pair it again with the server that runs Kin.",
   },
   noIdentity: {
     title: "Kin doesn't know who you are on this server yet",
@@ -350,6 +438,8 @@ function KinChatFeed(props: {
   readonly unread: number | null;
   readonly presence: KinPresence | undefined;
   readonly stopLead: ((wakeupId: string) => Promise<boolean>) | null;
+  /** What the owner wrote this lead is for; the intro shows it before the first message. */
+  readonly charter: string | null;
   readonly members: ReadonlyArray<KinChatMember>;
   readonly direct: boolean;
   readonly ownsLead: boolean;
@@ -410,11 +500,20 @@ function KinChatFeed(props: {
   const dayStart = new Date(nowMs);
   dayStart.setHours(0, 0, 0, 0);
   const feedRows = buildKinFeedRows(messages, props.viewer, expandedRuns, dayStart, live.drafts);
+  const display = kinFeedDisplay({
+    rows: feedRows,
+    widgets,
+    direct: props.direct,
+    formatTime: formatKinMessageTime,
+  });
+  const shownRows = feedRows.some((row) => display.get(row.key)?.hidden === true)
+    ? feedRows.filter((row) => display.get(row.key)?.hidden !== true)
+    : feedRows;
   const rows: ReadonlyArray<KinChatRow> =
     pending.length === 0
-      ? feedRows
+      ? shownRows
       : [
-          ...feedRows,
+          ...shownRows,
           ...pending.map((entry) => ({
             type: "pending" as const,
             key: `pending:${entry.clientMessageId}`,
@@ -573,6 +672,8 @@ function KinChatFeed(props: {
     switch (item.type) {
       case "message": {
         const { message } = item;
+        const shown = display.get(item.key);
+        if (shown?.quiet != null) return <KinSystemRow body={shown.quiet} onRetry={null} quiet />;
         const widget = message.widgetId === null ? undefined : widgets.get(message.widgetId);
         const chips = kinReactionChips(
           streamed.reactions,
@@ -589,6 +690,7 @@ function KinChatFeed(props: {
         return (
           <KinMessageRow
             row={item}
+            head={shown?.head ?? null}
             widget={widget}
             environmentId={props.environmentId}
             viewerPersonId={props.viewer.personId}
@@ -616,7 +718,8 @@ function KinChatFeed(props: {
         // An unsent message is already a retry in flight.
         return (
           <KinSystemRow
-            body={item.text}
+            body={kinQuietWording(item.text)}
+            quiet={kinIsBookkeeping(item.text)}
             onRetry={retry === null || pending.length > 0 ? null : () => void sendText(retry)}
           />
         );
@@ -641,7 +744,7 @@ function KinChatFeed(props: {
       case "day":
         return <KinDayRow label={item.label} />;
       case "draft":
-        return <KinDraftRow row={item} environmentId={props.environmentId} />;
+        return <KinDraftRow row={item} environmentId={props.environmentId} direct={props.direct} />;
     }
   };
 
@@ -654,6 +757,7 @@ function KinChatFeed(props: {
     showIntro && props.agentName !== null ? (
       <KinIntro
         agentName={props.agentName}
+        charter={props.charter}
         onSend={(text) => void sendText(text)}
         onStart={(text) => {
           appAtomRegistry.set(kinDraftAtom(draftKey), text);
@@ -707,12 +811,12 @@ function KinChatFeed(props: {
           <Empty size="compact">
             <EmptyHeader>
               <EmptyTitle>
-                {props.agentName === null ? "No messages yet" : `Say hello to ${props.agentName}.`}
+                {props.agentName === null ? "No messages yet" : `Say hello to ${props.agentName}`}
               </EmptyTitle>
               <EmptyDescription>
                 {props.agentName === null
                   ? "Messages in this chat show up here."
-                  : "It reads every message here."}
+                  : "Your first message starts the chat."}
               </EmptyDescription>
             </EmptyHeader>
           </Empty>
@@ -737,7 +841,7 @@ function KinChatFeed(props: {
         }
         renderItem={renderItem}
         // Both reach rows only through renderItem, which the list doesn't watch.
-        extraData={[streamed.widgets, streamed.reactions, softReplyId, canReact]}
+        extraData={[streamed.widgets, streamed.reactions, softReplyId, canReact, display]}
         estimatedItemSize={72}
         recycleItems={false}
         alignItemsAtEnd
@@ -836,16 +940,17 @@ function KinPresenceLine(props: {
 /** First run in the owner's chat with their lead: what it does and a few asks to start with. */
 function KinIntro(props: {
   readonly agentName: string;
+  readonly charter: string | null;
   readonly onSend: (text: string) => void;
   readonly onStart: (text: string) => void;
 }) {
   return (
     <Empty size="compact">
       <EmptyHeader>
-        <EmptyTitle>What {props.agentName} does</EmptyTitle>
+        <EmptyTitle>Say hello to {props.agentName}</EmptyTitle>
         <EmptyDescription>
-          Tell it what you need in plain words. It answers, remembers what you ask it to, sets
-          reminders and hands bigger jobs to workers. When it needs a decision, it asks you here.
+          {props.charter ??
+            `Ask for what you need in plain words. ${props.agentName} replies here, and asks you when a decision is yours.`}
         </EmptyDescription>
       </EmptyHeader>
       <div className="flex flex-wrap justify-center gap-2">

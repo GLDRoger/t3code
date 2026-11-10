@@ -58,6 +58,7 @@ import {
   BugIcon,
   ChartNoAxesColumnIcon,
   MessagesSquareIcon,
+  UserRoundPlusIcon,
   CheckIcon,
   ChevronRightIcon,
   CornerLeftUpIcon,
@@ -95,6 +96,14 @@ import { useAtomValue } from "@effect/atom-react";
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { kinClient } from "../kin/kinClient";
+import { kinListSwitchHref } from "../kin/kinListSwitch";
+import {
+  kinNewLeadTarget,
+  noKinLeadPermissionAtom,
+  openKinLeadForm,
+} from "../kin/KinNewLeadButton";
+import { useKinHost } from "../kin/useKinHost";
 import { useKinListSwitch } from "../kin/useKinListSwitch";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
 import { copyThreadReference } from "../lib/copyThreadReference";
@@ -405,6 +414,12 @@ function OpenCommandPaletteDialog(props: {
   const navigate = useNavigate();
   const pathname = useLocation({ select: (location) => location.pathname });
   const kinListSwitch = useKinListSwitch();
+  const kinNewLead = kinNewLeadTarget(useKinHost());
+  const canCreateKinLead = useAtomValue(
+    kinNewLead === null
+      ? noKinLeadPermissionAtom
+      : kinClient.leadCreate.permissionAtom(kinNewLead.environmentId),
+  );
   const { openChildSearch, setOpen } = props;
   // Keyed by palette session: the intent and restored search only seed this
   // mount, and closing must not change what the closing palette shows.
@@ -1657,6 +1672,21 @@ function OpenCommandPaletteDialog(props: {
       shortcutCommand: "kin.switchList",
       run: async () => {
         kinListSwitch.switchList();
+      },
+    });
+  }
+
+  if (kinNewLead !== null && canCreateKinLead) {
+    actionItems.push({
+      kind: "action",
+      value: "action:kin-new-lead",
+      searchTerms: ["kin", "lead", "new", "create", "add", "agent", "teammate"],
+      title: "New lead",
+      icon: <UserRoundPlusIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        // The form lives on Kin's page, so it opens there.
+        await navigate({ href: kinListSwitchHref("threads") });
+        openKinLeadForm(kinNewLead);
       },
     });
   }

@@ -16,6 +16,7 @@ import {
   KIN_CHAT_WS_METHODS,
   type EnvironmentId,
   type KinChatHistoryInput,
+  type KinLeadsListInput,
   type KinOrgsListInput,
 } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
@@ -58,7 +59,13 @@ function guardedRead<Input, A, E>(command: {
     });
 }
 
+const leadsRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:leads:read",
+  tag: "kin.leads.list",
+});
+
 const readOrgs = guardedRead(orgsRead);
+const readLeads = guardedRead(leadsRead);
 const readHistory = guardedRead(historyRead);
 
 // Hosts that answered `kin.orgs.list` this run: their `unavailable` is an outage to wait out.
@@ -84,6 +91,31 @@ export const kinClient = {
     staleTimeMs: 60_000,
     refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
       environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  }),
+  /** The viewer's own leads: who each is, what it is for and what it has in hand. */
+  leads: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:leads",
+    execute: Effect.fn("KinWebClient.leads")(function* (input: KinLeadsListInput) {
+      return yield* readLeads(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
+      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  }),
+  leadCreate: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:lead:create",
+    tag: "kin.lead.create",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.name}` },
+  }),
+  leadUpdate: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:lead:update",
+    tag: "kin.lead.update",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.agentId },
+  }),
+  mute: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:mute",
+    tag: KIN_CHAT_WS_METHODS.chatsMute,
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.chatId },
   }),
   inbox: createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {
     label: KIN_INBOX_LABEL,

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   kinCardView,
+  kinQuietCardLine,
   kinReminderCardView,
   kinScheduledTaskCardView,
 } from "./kinCardPresentation.ts";
@@ -390,6 +391,11 @@ describe("digest cards", () => {
     expect(view.rows.map((r) => r.heading)).toEqual(["Overdue", null, "CI failing"]);
   });
 
+  it("reads a raw timestamp in a note as a time", () => {
+    const [noted] = digest(routine([row({ note: "review by 2026-11-09T16:09:12.531Z" })])).rows;
+    expect(noted!.note).toMatch(/^review by \w{3} \d+ Nov, \d+:\d{2}$/);
+  });
+
   it.each([
     ["a GitHub link", "https://github.com/o/r/pull/7", "Open"],
     ["another host, named", "https://ci.example/run/1", "Open · ci.example"],
@@ -414,22 +420,21 @@ describe("memory change card", () => {
       change,
       undo,
     });
-    const view = kinCardView(
-      widget({
-        type: "memory_changes",
-        state: {
-          agentId: "lead",
-          wakeupId: "wake-1",
-          branch: "kin/shadow/lead",
-          base: "a".repeat(40),
-          commit: "b".repeat(40),
-          items: [item("short", "created", null), item("repo", "updated", "stale")],
-          more: 1,
-        },
-      }),
-      HOST,
-      known(),
-    );
+    const changes = widget({
+      type: "memory_changes",
+      state: {
+        agentId: "lead",
+        wakeupId: "wake-1",
+        branch: "kin/shadow/lead",
+        base: "a".repeat(40),
+        commit: "b".repeat(40),
+        items: [item("short", "created", null), item("repo", "updated", "stale")],
+        more: 1,
+      },
+    });
+    const view = kinCardView(changes, HOST, known());
+    expect(kinQuietCardLine(changes)).toBe("Remembered: you prefer short replies and 1 more");
+    expect(kinQuietCardLine(widget({ type: "task", state: taskState() }))).toBeNull();
     if (view.kind !== "memory_changes")
       throw new Error(`expected memory changes, got ${view.kind}`);
     expect(view.changes.items.map(({ line, undo }) => [line, undo])).toEqual([

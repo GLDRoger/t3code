@@ -1,6 +1,6 @@
 import { NATIVE_WORKSPACE_COLUMNS_SUPPORTED } from "../native/NativeWorkspaceColumns";
 import Constants from "expo-constants";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Platform, View } from "react-native";
 
 import { AppText as Text } from "./ui/AppText";
@@ -22,6 +22,8 @@ export function CompactBrandTitle(
     readonly accessibilityLabel?: string;
     /** Fills the row and hides the stage badge when the full title does not fit. */
     readonly fit?: boolean;
+    /** Drawn after the wordmark and counted in its width, such as Kin's list switch mark. */
+    readonly trailing?: ReactNode;
   } = {},
 ) {
   const stageLabel = resolveMobileStageLabel(Constants.expoConfig?.extra?.appVariant);
@@ -78,6 +80,7 @@ export function CompactBrandTitle(
           </Text>
         </View>
       ) : null}
+      {props.trailing}
     </View>
   );
 

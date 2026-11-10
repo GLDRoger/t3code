@@ -168,9 +168,7 @@ it.live.each([
             };
             const first = yield* prompt.build(input);
             const second = yield* prompt.build(input);
-            expect(first.split("--- KIN WAKE-UP ---")[0]).toBe(
-              second.split("--- KIN WAKE-UP ---")[0],
-            );
+            expect(first.split("--- THIS TURN ---")[0]).toBe(second.split("--- THIS TURN ---")[0]);
             expect(first.includes("index unavailable")).toBe(unavailable);
             if (unavailable)
               expect(first).toContain('> BEGIN QUOTE: memory index\n> ""\n> END QUOTE');
@@ -1230,12 +1228,12 @@ it.live.each([
           const messages = yield* git(writer, ["log", "--format=%B", merged]);
           expect(messages).toContain("Events: fixture-earlier");
           expect(messages).toContain("Events: fixture-later");
-          const journalBefore = yield* git(writer, ["show", `${merged}:journal/day.md`]);
-          yield* git(writer, ["update-ref", "refs/heads/main", local, merged]);
-          yield* memory.record(orgA, "main", merged, local);
+          // The merge stays on this server for the lander; sync never pushes the default branch.
+          expect(yield* git(root, [`--git-dir=${remote}`, "rev-parse", "main"])).toBe(
+            yield* git(source, ["rev-parse", "HEAD"]),
+          );
           yield* memory.syncCheckout(orgA);
           expect((yield* memory.prepareWakeup(orgA)).head).toBe(merged);
-          expect(yield* git(writer, ["show", `${merged}:journal/day.md`])).toBe(journalBefore);
         }
       } else if (scenario === "H2-merge-swap") {
         expect(swapped).toBe(true);
@@ -1270,17 +1268,12 @@ it.live.each([
             "remote entry\nlocal entry",
           );
       } else if (scenario === "conflict") {
+        // This server keeps its own copy, which may hold commits GitHub never got.
         expect(result._tag).toBe("Success");
-        const backup = (yield* git(root, [
-          `--git-dir=${remote}`,
-          "for-each-ref",
-          "--format=%(objectname)",
-          `refs/heads/kin/conflict/${orgA}/`,
-        ])).trim();
-        expect(backup).toBe(local);
-        expect((yield* memory.prepareWakeup(orgA)).head).toBe(
-          yield* git(source, ["rev-parse", "HEAD"]),
-        );
+        expect((yield* memory.prepareWakeup(orgA)).head).toBe(local);
+        yield* memory.syncCheckout(orgA);
+        const told = messages.filter((message) => message.includes("could not combine"));
+        expect(told).toHaveLength(1);
       } else {
         expect(result._tag).toBe("Failure");
         if (result._tag === "Failure") expect(result.failure._tag).toBe("MemoryCheckoutInvalid");

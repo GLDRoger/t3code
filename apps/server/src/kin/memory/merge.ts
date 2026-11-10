@@ -32,6 +32,8 @@ export const mergeMemoryFiles = (
     const journal = file.startsWith("journal/");
     if (journal && (!bytes || !bytes.subarray(0, original.length).equals(original)))
       return undefined;
+    // Both sides made this change, as when the remote squash-merged a batch of local commits.
+    if (same(remote.get(file), bytes) && after?.mode === modes.get(file)) continue;
     if (same(remote.get(file), base.get(file)) && before?.mode === modes.get(file)) {
       if (bytes) {
         files.set(file, bytes);
@@ -46,7 +48,12 @@ export const mergeMemoryFiles = (
       after?.mode === modes.get(file) &&
       remote.get(file)?.subarray(0, original.length).equals(original)
     ) {
-      files.set(file, Buffer.concat([remote.get(file)!, bytes!.subarray(original.length)]));
+      const theirs = remote.get(file)!;
+      const ours = bytes!;
+      // One side already holds the other's entries when a landed batch is merged back.
+      if (ours.subarray(0, theirs.length).equals(theirs)) files.set(file, ours);
+      else if (!theirs.subarray(0, ours.length).equals(ours))
+        files.set(file, Buffer.concat([theirs, ours.subarray(original.length)]));
     } else return undefined;
   }
   return { files, modes };
