@@ -26,6 +26,7 @@ import {
   createPendingAttachmentId,
   resolveAttachmentPath,
 } from "../attachmentStore.ts";
+import { recordTestUploadOwner, TEST_UPLOAD_OWNER } from "../assets/AttachmentUpload.testkit.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import {
@@ -106,21 +107,25 @@ it.effect("claims question uploads and passes readable paths through the V2 requ
   Effect.gen(function* () {
     const config = yield* ServerConfig.ServerConfig;
     const id = ChatAttachmentId.make(createPendingAttachmentId()!);
+    recordTestUploadOwner(config.attachmentsDir, id);
     NodeFS.writeFileSync(
       NodePath.join(config.attachmentsDir, `${id}.png`),
       new Uint8Array([1, 2, 3]),
     );
     const captured: OrchestrationV2ServerCommand[] = [];
-    yield* dispatchCommand({
-      type: "runtime-request.respond",
-      commandId: CommandId.make("answer-1"),
-      threadId: ThreadId.make("thread-answer"),
-      requestId: RuntimeRequestId.make("request-1"),
-      answers: { q: ["Selected option"] },
-      attachmentsByQuestionId: {
-        q: [{ type: "image", id, name: "screen.png", mimeType: "image/png", sizeBytes: 3 }],
+    yield* dispatchCommand(
+      {
+        type: "runtime-request.respond",
+        commandId: CommandId.make("answer-1"),
+        threadId: ThreadId.make("thread-answer"),
+        requestId: RuntimeRequestId.make("request-1"),
+        answers: { q: ["Selected option"] },
+        attachmentsByQuestionId: {
+          q: [{ type: "image", id, name: "screen.png", mimeType: "image/png", sizeBytes: 3 }],
+        },
       },
-    }).pipe(Effect.provide(layerFailingDispatch(captured)), Effect.result);
+      TEST_UPLOAD_OWNER,
+    ).pipe(Effect.provide(layerFailingDispatch(captured)), Effect.result);
     expect(captured).toHaveLength(1);
     const command = captured[0]!;
     expect(command.type).toBe("runtime-request.respond");
@@ -144,29 +149,33 @@ it.effect("retains claimed copies when dispatch failure may have been accepted",
   Effect.gen(function* () {
     const config = yield* ServerConfig.ServerConfig;
     const pendingId = ChatAttachmentId.make(createPendingAttachmentId()!);
+    recordTestUploadOwner(config.attachmentsDir, pendingId);
     NodeFS.writeFileSync(
       NodePath.join(config.attachmentsDir, `${pendingId}.png`),
       new Uint8Array([1, 2, 3]),
     );
     const captured: OrchestrationV2ServerCommand[] = [];
-    const result = yield* dispatchCommand({
-      type: "runtime-request.respond",
-      commandId: CommandId.make("answer-ambiguous"),
-      threadId: ThreadId.make("thread-ambiguous"),
-      requestId: RuntimeRequestId.make("request-ambiguous"),
-      answers: { q: ["one"] },
-      attachmentsByQuestionId: {
-        q: [
-          {
-            type: "image",
-            id: pendingId,
-            name: "screen.png",
-            mimeType: "image/png",
-            sizeBytes: 3,
-          },
-        ],
+    const result = yield* dispatchCommand(
+      {
+        type: "runtime-request.respond",
+        commandId: CommandId.make("answer-ambiguous"),
+        threadId: ThreadId.make("thread-ambiguous"),
+        requestId: RuntimeRequestId.make("request-ambiguous"),
+        answers: { q: ["one"] },
+        attachmentsByQuestionId: {
+          q: [
+            {
+              type: "image",
+              id: pendingId,
+              name: "screen.png",
+              mimeType: "image/png",
+              sizeBytes: 3,
+            },
+          ],
+        },
       },
-    }).pipe(Effect.provide(layerFailingDispatch(captured)), Effect.result);
+      TEST_UPLOAD_OWNER,
+    ).pipe(Effect.provide(layerFailingDispatch(captured)), Effect.result);
     expect(result._tag).toBe("Failure");
     expect(captured).toHaveLength(1);
     const threadFiles = NodeFS.readdirSync(config.attachmentsDir).filter((entry) =>
@@ -181,28 +190,32 @@ it.effect("releases claimed copies when the command was already rejected", () =>
   Effect.gen(function* () {
     const config = yield* ServerConfig.ServerConfig;
     const pendingId = ChatAttachmentId.make(createPendingAttachmentId()!);
+    recordTestUploadOwner(config.attachmentsDir, pendingId);
     NodeFS.writeFileSync(
       NodePath.join(config.attachmentsDir, `${pendingId}.png`),
       new Uint8Array([1, 2, 3]),
     );
-    const result = yield* dispatchCommand({
-      type: "runtime-request.respond",
-      commandId: CommandId.make("answer-rejected"),
-      threadId: ThreadId.make("thread-rejected"),
-      requestId: RuntimeRequestId.make("request-rejected"),
-      answers: { q: ["one"] },
-      attachmentsByQuestionId: {
-        q: [
-          {
-            type: "image",
-            id: pendingId,
-            name: "screen.png",
-            mimeType: "image/png",
-            sizeBytes: 3,
-          },
-        ],
+    const result = yield* dispatchCommand(
+      {
+        type: "runtime-request.respond",
+        commandId: CommandId.make("answer-rejected"),
+        threadId: ThreadId.make("thread-rejected"),
+        requestId: RuntimeRequestId.make("request-rejected"),
+        answers: { q: ["one"] },
+        attachmentsByQuestionId: {
+          q: [
+            {
+              type: "image",
+              id: pendingId,
+              name: "screen.png",
+              mimeType: "image/png",
+              sizeBytes: 3,
+            },
+          ],
+        },
       },
-    }).pipe(
+      TEST_UPLOAD_OWNER,
+    ).pipe(
       Effect.provide(
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           dispatch: (command) =>
@@ -232,6 +245,7 @@ it.effect("releases claimed copies when dispatch replays an earlier accepted res
     const config = yield* ServerConfig.ServerConfig;
     const threadId = ThreadId.make("thread-replay");
     const pendingId = ChatAttachmentId.make(createPendingAttachmentId()!);
+    recordTestUploadOwner(config.attachmentsDir, pendingId);
     NodeFS.writeFileSync(
       NodePath.join(config.attachmentsDir, `${pendingId}.png`),
       new Uint8Array([1, 2, 3]),
@@ -252,24 +266,27 @@ it.effect("releases claimed copies when dispatch replays an earlier accepted res
       requestId: "request-replay",
       attachmentsByQuestionId: { q: [earlierAttachment] },
     });
-    const result = yield* dispatchCommand({
-      type: "runtime-request.respond",
-      commandId: CommandId.make("answer-replay"),
-      threadId,
-      requestId: RuntimeRequestId.make("request-replay"),
-      answers: { q: ["one"] },
-      attachmentsByQuestionId: {
-        q: [
-          {
-            type: "image",
-            id: pendingId,
-            name: "screen.png",
-            mimeType: "image/png",
-            sizeBytes: 3,
-          },
-        ],
+    const result = yield* dispatchCommand(
+      {
+        type: "runtime-request.respond",
+        commandId: CommandId.make("answer-replay"),
+        threadId,
+        requestId: RuntimeRequestId.make("request-replay"),
+        answers: { q: ["one"] },
+        attachmentsByQuestionId: {
+          q: [
+            {
+              type: "image",
+              id: pendingId,
+              name: "screen.png",
+              mimeType: "image/png",
+              sizeBytes: 3,
+            },
+          ],
+        },
       },
-    }).pipe(
+      TEST_UPLOAD_OWNER,
+    ).pipe(
       Effect.provide(
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           dispatch: () => Effect.succeed({ sequence: 1, storedEvents }),
@@ -295,7 +312,9 @@ it.effect("a retried response re-claims the preserved pending uploads", () =>
     const config = yield* ServerConfig.ServerConfig;
     const threadId = ThreadId.make("thread-retry");
     const pendingId = ChatAttachmentId.make(createPendingAttachmentId()!);
+    recordTestUploadOwner(config.attachmentsDir, pendingId);
     const lateId = ChatAttachmentId.make(createPendingAttachmentId()!);
+    recordTestUploadOwner(config.attachmentsDir, lateId);
     NodeFS.writeFileSync(
       NodePath.join(config.attachmentsDir, `${pendingId}.png`),
       new Uint8Array([1, 2, 3]),
@@ -328,7 +347,7 @@ it.effect("a retried response re-claims the preserved pending uploads", () =>
       },
     };
     const captured: OrchestrationV2ServerCommand[] = [];
-    const first = yield* dispatchCommand(command).pipe(
+    const first = yield* dispatchCommand(command, TEST_UPLOAD_OWNER).pipe(
       Effect.provide(layerFailingDispatch(captured)),
       Effect.result,
     );
@@ -339,7 +358,7 @@ it.effect("a retried response re-claims the preserved pending uploads", () =>
       NodePath.join(config.attachmentsDir, `${lateId}.png`),
       new Uint8Array([7, 7]),
     );
-    const retry = yield* dispatchCommand(command).pipe(
+    const retry = yield* dispatchCommand(command, TEST_UPLOAD_OWNER).pipe(
       Effect.provide(
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           dispatch: (dispatched) => {
@@ -407,22 +426,73 @@ it.effect("sends a guest message with the guest's files, never ones the client n
           >
         >),
     });
-    yield* dispatchCommand({
-      type: "message.dispatch",
-      commandId: CommandId.make("send-guest-message"),
-      threadId: ThreadId.make("thread-guest"),
-      messageId: MessageId.make("message-guest"),
-      guestMessageId,
-      text: "",
-      attachments: [{ ...guestFile, id: ChatAttachmentId.make("thread-guest-owner-file") }],
-      dispatchMode: { type: "queue_after_active" },
-      createdBy: "user",
-      creationSource: "web",
-    }).pipe(Effect.provide(layerGuestShare), Effect.result);
+    yield* dispatchCommand(
+      {
+        type: "message.dispatch",
+        commandId: CommandId.make("send-guest-message"),
+        threadId: ThreadId.make("thread-guest"),
+        messageId: MessageId.make("message-guest"),
+        guestMessageId,
+        text: "",
+        attachments: [{ ...guestFile, id: ChatAttachmentId.make("thread-guest-owner-file") }],
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "user",
+        creationSource: "web",
+      },
+      TEST_UPLOAD_OWNER,
+    ).pipe(Effect.provide(layerGuestShare), Effect.result);
     const command = captured[0];
     if (command?.type !== "message.dispatch") throw new Error("Expected a message dispatch.");
     expect(command.attachments).toHaveLength(1);
     // The guest's file, which is already the thread's.
     expect(command.attachments).toEqual([guestFile]);
+  }).pipe(Effect.provide(layerIntakeTest)),
+);
+
+it.effect("refuses a Kin chat's file on a client's thread send, by any name", () =>
+  Effect.gen(function* () {
+    const config = yield* ServerConfig.ServerConfig;
+    const kinId = "kin-chat-00000000-0000-4000-8000-0000000000bb";
+    NodeFS.mkdirSync(config.attachmentsDir, { recursive: true });
+    NodeFS.writeFileSync(NodePath.join(config.attachmentsDir, `${kinId}.png`), new Uint8Array([1]));
+    const captured: OrchestrationV2ServerCommand[] = [];
+    for (const name of [kinId, kinId.toUpperCase()]) {
+      const attachment = {
+        type: "image" as const,
+        id: ChatAttachmentId.make(name),
+        name: "whiteboard.png",
+        mimeType: "image/png",
+        sizeBytes: 1,
+      };
+      const commands: ReadonlyArray<OrchestrationV2Command> = [
+        {
+          type: "message.dispatch",
+          commandId: CommandId.make(`send-kin-${name}`),
+          threadId: ThreadId.make("thread-kin"),
+          messageId: MessageId.make(`message-kin-${name}`),
+          text: "Look",
+          attachments: [attachment],
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "user",
+          creationSource: "web",
+        },
+        {
+          type: "runtime-request.respond",
+          commandId: CommandId.make(`answer-kin-${name}`),
+          threadId: ThreadId.make("thread-kin"),
+          requestId: RuntimeRequestId.make("request-kin"),
+          answers: { q: ["Look"] },
+          attachmentsByQuestionId: { q: [attachment] },
+        },
+      ];
+      for (const command of commands) {
+        const result = yield* dispatchCommand(command, TEST_UPLOAD_OWNER).pipe(
+          Effect.provide(layerFailingDispatch(captured)),
+          Effect.flip,
+        );
+        expect(result._tag).toBe("AttachmentClaimError");
+      }
+    }
+    expect(captured).toEqual([]);
   }).pipe(Effect.provide(layerIntakeTest)),
 );

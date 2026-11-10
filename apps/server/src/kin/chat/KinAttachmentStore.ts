@@ -4,21 +4,21 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 
-import { deletePendingAttachment } from "../../assets/AttachmentUpload.ts";
+import { forgetPendingAttachment, type PendingUploadOwner } from "../../assets/AttachmentUpload.ts";
+import { KIN_ATTACHMENT_ID_PREFIX } from "../../attachmentStore.ts";
 import * as ServerConfig from "../../config.ts";
 import * as AttachmentClaims from "../../orchestration-v2/AttachmentClaims.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
 
 // Kin's files sit beside threads' in the attachments directory, under their own id prefix.
-const KIN_ATTACHMENT_OWNER = "kin-chat";
-/** Every file Kin stores has an id that starts with this; no thread's does. */
-export const KIN_ATTACHMENT_ID_PREFIX = `${KIN_ATTACHMENT_OWNER}-`;
+const KIN_ATTACHMENT_OWNER = KIN_ATTACHMENT_ID_PREFIX.slice(0, -1);
+export { KIN_ATTACHMENT_ID_PREFIX };
 
 const refused = (message: string) => new KinChatError({ reason: "invalid_state", message });
 
 export interface ClaimedKinAttachments {
   readonly attachments: ReadonlyArray<KinAttachment>;
-  readonly claimedPaths: ReadonlyArray<string>;
+  readonly claimed: AttachmentClaims.ClaimedAttachments;
 }
 
 /**
@@ -28,11 +28,13 @@ export interface ClaimedKinAttachments {
 export class KinAttachmentStore extends Context.Service<
   KinAttachmentStore,
   {
+    /** Only `owner`'s own uploads, each moved so that one upload lands in one message at most. */
     readonly claim: (
       attachments: ReadonlyArray<KinAttachment>,
+      owner: PendingUploadOwner,
     ) => Effect.Effect<ClaimedKinAttachments, KinChatError>;
-    /** Removes claimed copies whose message was never written. */
-    readonly release: (claimedPaths: ReadonlyArray<string>) => Effect.Effect<void>;
+    /** Puts back the uploads of a message that was never written. */
+    readonly release: (claimed: ClaimedKinAttachments) => Effect.Effect<void>;
     /** Drops the pending uploads a written message no longer needs. */
     readonly discardPending: (attachments: ReadonlyArray<KinAttachment>) => Effect.Effect<void>;
   }
@@ -47,19 +49,21 @@ export const layer = Layer.effect(
       Context.make(DocumentText.DocumentText, yield* DocumentText.DocumentText),
     );
     return KinAttachmentStore.of({
-      claim: Effect.fn("KinAttachmentStore.claim")(function* (attachments) {
+      claim: Effect.fn("KinAttachmentStore.claim")(function* (attachments, owner) {
         // Only this caller's fresh uploads: a stored id from another chat is never re-attached.
         if (!attachments.every(AttachmentClaims.attachmentIsPendingUpload))
           return yield* refused("Attachments must be new uploads.");
         const claimed = yield* AttachmentClaims.claimPendingAttachments({
           threadId: KIN_ATTACHMENT_OWNER,
           attachments,
+          owner,
+          move: true,
         }).pipe(
           Effect.provideContext(context),
           Effect.mapError((error) => refused(error.message)),
         );
         return {
-          claimedPaths: claimed.claimedPaths,
+          claimed,
           // The claim keeps order and kind; it renames the id and normalises name and type.
           attachments: attachments.flatMap((attachment, index) => {
             const stored = claimed.attachments[index];
@@ -69,13 +73,14 @@ export const layer = Layer.effect(
           }),
         };
       }),
-      release: Effect.fn("KinAttachmentStore.release")((claimedPaths) =>
-        AttachmentClaims.releaseClaimedAttachments(claimedPaths).pipe(
+      release: Effect.fn("KinAttachmentStore.release")(({ claimed }) =>
+        AttachmentClaims.releaseClaimedAttachments(claimed.claimedPaths).pipe(
+          Effect.andThen(AttachmentClaims.restoreMovedAttachments(claimed.moved)),
           Effect.provideContext(context),
         ),
       ),
       discardPending: Effect.fn("KinAttachmentStore.discardPending")((attachments) =>
-        Effect.forEach(attachments, (attachment) => deletePendingAttachment(attachment.id), {
+        Effect.forEach(attachments, (attachment) => forgetPendingAttachment(attachment.id), {
           discard: true,
         }).pipe(Effect.provideContext(context)),
       ),

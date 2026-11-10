@@ -1,3 +1,4 @@
+import type { PendingUploadOwner } from "../../assets/AttachmentUpload.ts";
 import * as Floor from "../floor/KinFloor.ts";
 import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
@@ -79,6 +80,8 @@ type ServiceError = Repository.RepositoryError;
 type SendInput = KinMessagesSendInput & {
   readonly intent?: KinAgentIntent;
   readonly floorGrant?: string | undefined;
+  /** The authenticated session sending, set by the transport; only its own uploads are claimed. */
+  readonly uploader?: PendingUploadOwner;
 };
 type WidgetUpsertInput = {
   readonly chatId: KinChatId;
@@ -1216,19 +1219,20 @@ const make = Effect.gen(function* () {
           reason: "unavailable",
           message: "Attachments are unavailable.",
         });
+      if (input.uploader === undefined) return yield* invalidState;
       const store = attachmentStore.value;
-      const claimed = yield* store.claim(requested);
+      const claimed = yield* store.claim(requested, input.uploader);
       return yield* sendClaimed(identity, input, claimed.attachments).pipe(
         Effect.tap((message) =>
           message.attachments?.[0]?.id === claimed.attachments[0]?.id
             ? store.discardPending(requested)
-            : store.release(claimed.claimedPaths),
+            : store.release(claimed),
         ),
         // An interrupted send may still have committed; its files go only if no message has them.
         Effect.onError(() =>
           sent.pipe(
             Effect.flatMap((written) =>
-              Option.isNone(written) ? store.release(claimed.claimedPaths) : Effect.void,
+              Option.isNone(written) ? store.release(claimed) : Effect.void,
             ),
             Effect.ignore,
           ),

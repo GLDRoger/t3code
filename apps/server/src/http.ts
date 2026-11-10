@@ -166,12 +166,14 @@ export const assetFileResponse = Effect.fn("assetFileResponse")(function* (
     readonly mimeType?: string;
     readonly file?: OpenMediaFile;
     readonly renderIntent?: "mcp-app";
+    readonly noStore?: boolean;
   },
   rangeHeader?: string,
   ifRangeHeader?: string,
   method: "GET" | "HEAD" = "GET",
 ) {
   const headers = assetResponseHeaders(asset.path, asset);
+  if (asset.noStore) headers["Cache-Control"] = "private, no-store";
   if (
     asset.renderIntent === "mcp-app" &&
     !asset.download &&

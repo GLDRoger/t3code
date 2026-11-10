@@ -560,7 +560,14 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("SessionStore.lay
 
       yield* sessions.markConnected(client.sessionId);
       const beforeRevoke = yield* sessions.listActive();
+      expect(Option.getOrNull(yield* sessions.getActive(client.sessionId))).toEqual({
+        sessionId: client.sessionId,
+        subject: "one-time-token",
+        method: client.method,
+        scopes: ["orchestration:read"],
+      });
       const revokedCount = yield* sessions.revokeAllExcept(administrative.sessionId);
+      expect(Option.isNone(yield* sessions.getActive(client.sessionId))).toBe(true);
       const afterRevoke = yield* sessions.listActive();
       const revokedClient = yield* Effect.flip(sessions.verify(client.token));
       const revokedClientWebSocket = yield* Effect.flip(

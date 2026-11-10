@@ -2,6 +2,7 @@ import {
   AssetAttachmentNotFoundError,
   AuthKinChatScope,
   type AssetResource,
+  type AuthSessionId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -9,6 +10,7 @@ import * as Option from "effect/Option";
 
 import { normalizeAttachmentRelativePath } from "../../attachmentPaths.ts";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
+import * as SessionStore from "../../auth/SessionStore.ts";
 import { KinServer } from "../KinServer.ts";
 import { KIN_ATTACHMENT_ID_PREFIX } from "./KinAttachmentStore.ts";
 import { KinChatService } from "./KinChatService.ts";
@@ -58,3 +60,30 @@ export const authorizeAttachmentReadOnHost = Effect.fn("Kin.authorizeAttachmentR
     );
   },
 );
+
+/**
+ * Whether a Kin file's URL may still be served: the session it was minted for is still in force
+ * and its person is still an active member of the chat of a message that still holds the file.
+ * Checked on every request, since the URL itself is the only credential image views send.
+ */
+export const authorizeAttachmentServe = Effect.fn("Kin.authorizeAttachmentServe")(function* (
+  reader: AuthSessionId | undefined,
+  attachmentId: string,
+) {
+  if (reader === undefined) return false;
+  const sessions = yield* SessionStore.SessionStore;
+  const session = yield* sessions.getActive(reader).pipe(
+    Effect.tapError((cause) =>
+      Effect.logWarning("Kin could not read the reader's session.", cause),
+    ),
+    Effect.orElseSucceed(() => Option.none()),
+  );
+  if (Option.isNone(session)) return false;
+  return yield* authorizeAttachmentReadOnHost(session.value, {
+    _tag: "attachment",
+    attachmentId,
+  }).pipe(
+    Effect.as(true),
+    Effect.orElseSucceed(() => false),
+  );
+});
