@@ -6,6 +6,10 @@ import {
   KinBudgetSetInput,
   KinLeadCreated,
   KinLeadCreateInput,
+  KinLeadProfile,
+  KinLeadsListInput,
+  KinLeadsListResult,
+  KinLeadUpdateInput,
   KinOrgGetInput,
   KinOrgPauseInput,
   KinOrgResumeInput,
@@ -37,6 +41,7 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthSettingsWriteScope,
+  AuthKinChatScope,
 } from "./auth.ts";
 
 const KinError = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
@@ -56,7 +61,18 @@ const KinOrgRpcs = [
 ] as const;
 // Owner-only: interrupt stops one wake-up, never the org; kin.org.pause is the stop switch.
 // create adds a lead at L0 with its direct chat to its creator, as `kin lead create` does.
+// list shows a person their own live leads; update changes one's name, domain and charter.
 const KinLeadRpcs = [
+  Rpc.make("kin.leads.list", {
+    payload: KinLeadsListInput,
+    success: KinLeadsListResult,
+    error: KinError,
+  }),
+  Rpc.make("kin.lead.update", {
+    payload: KinLeadUpdateInput,
+    success: KinLeadProfile,
+    error: KinError,
+  }),
   Rpc.make("kin.lead.interrupt", {
     payload: KinLeadInterruptInput,
     success: KinLeadInterruptResult,
@@ -140,6 +156,10 @@ export const KIN_RPC_SCOPES = {
   "kin.lead.interrupt": AuthOrchestrationOperateScope,
   // A new lead is an owner setting, like the budget, and spends from the same budget.
   "kin.lead.create": AuthSettingsWriteScope,
+  // Part of the chat list: a person sees their own leads, so a teammate's list is empty.
+  "kin.leads.list": AuthKinChatScope,
+  // What a lead is for is an owner setting, as creating it is.
+  "kin.lead.update": AuthSettingsWriteScope,
   "kin.triggers.getTimeZone": AuthOrchestrationReadScope,
   "kin.triggers.setTimeZone": AuthSettingsWriteScope,
   "kin.webhooks.github.setup": AuthSettingsWriteScope,
@@ -166,6 +186,8 @@ export const KIN_RPC_AGGREGATES = {
   "kin.org.resume": "kin-org",
   "kin.lead.interrupt": "kin-org",
   "kin.lead.create": "kin-chat",
+  "kin.leads.list": "kin-chat",
+  "kin.lead.update": "kin-chat",
   "kin.orgs.list": "kin-chat",
   "kin.chats.subscribe": "kin-chat",
   "kin.chats.createDirect": "kin-chat",

@@ -4,6 +4,7 @@ import {
   AuthSessionId,
   AuthStandardClientScopes,
   KinAgentId,
+  KinOrgId,
   KinPersonId,
   ProjectId,
   ProviderDriverKind,
@@ -19,6 +20,7 @@ import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
+import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinLevels from "./KinLevels.ts";
 import * as Provision from "./KinLeadProvision.ts";
 
@@ -323,5 +325,170 @@ describe("KinLeadProvision", () => {
         const [after] = yield* Provision.list();
         assert.deepStrictEqual(after?.workerProjects, [project]);
       }).pipe(Effect.provide(paired)),
+  );
+  it.effect(
+    "shows a person their own live leads with what each has in hand, and no one else's",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const identity = yield* KinIdentity;
+        const tech = (yield* Provision.create(input(owner, []))).lead;
+        yield* TestClock.adjust("1 minute");
+        const growth = (yield* Provision.create({
+          ...input(owner, []),
+          name: "Growth",
+          domain: "growth",
+          charter: "Grow signups.",
+        })).lead;
+        const person = { ...identity.owner, personId: tech.ownerPersonId };
+        const quiet = {
+          orgId: tech.orgId,
+          agentId: tech.agentId,
+          name: "Ada",
+          domain: "engineering",
+          charter: "",
+          model: "claude-opus-4-6",
+          ownerChatId: tech.ownerChatId,
+          working: false,
+          tracking: [],
+        };
+        assert.deepStrictEqual(yield* Provision.profiles(person), [
+          quiet,
+          {
+            ...quiet,
+            agentId: growth.agentId,
+            name: "Growth",
+            domain: "growth",
+            charter: "Grow signups.",
+            ownerChatId: growth.ownerChatId,
+          },
+        ]);
+
+        // Ada is on a turn, has a worker running, a reminder waiting and a task scheduled. A
+        // reminder already given, a paused task and a finished worker are not in hand.
+        const { orgId } = tech;
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids)
+          VALUES ('wake', ${orgId}, ${tech.agentId}, 'test', 0, 'running', '[]')`;
+        const worker = (id: string, title: string, endedAt: number | null) =>
+          sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id, model_json, provenance_json, status, started_at, ended_at, title, chat_id)
+            VALUES (${id}, ${orgId}, ${tech.agentId}, 'wake', 'build', ${id}, '{}', '{}', 'queued', 5, ${endedAt}, ${title}, ${tech.ownerChatId})`;
+        yield* worker("wk-open", "Add a README section", null);
+        yield* worker("wk-done", "Old task", 9);
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_role, kind, body, mentions_json, status, created_at)
+          VALUES ('card', ${orgId}, ${tech.ownerChatId}, 1, 'system', 'owner', 'system', '', '[]', 'posted', '2026-11-09T00:00:00.000Z')`;
+        const card = (widgetId: string, title: string) =>
+          sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class, type, revision, state_json, awaiting_json, updated_at)
+            VALUES (${widgetId}, ${orgId}, ${tech.ownerChatId}, 'card', 'native', 'card', 1, ${JSON.stringify({ title })}, '[]', '2026-11-09T00:00:00.000Z')`;
+        const deferral = (itemId: string, state: string, onDue: string, dueAt: number) =>
+          sql`INSERT INTO kin_deferral_runs (org_id, item_id, state, due_at, on_due, snapshot_json, updated_at)
+            VALUES (${orgId}, ${itemId}, ${state}, ${dueAt}, ${onDue}, '{}', 0)`.pipe(
+            Effect.andThen(card(`deferral:${orgId}:${itemId}`, `Title of ${itemId}`)),
+          );
+        const due = Date.parse("2026-11-12T09:00:00.000Z");
+        yield* deferral("later", "armed", "start", due + 1000);
+        yield* deferral("soon", "snoozed", "remind", due);
+        yield* deferral("given", "reminded", "remind", due);
+        const scheduled = (itemId: string, paused: number) =>
+          sql`INSERT INTO kin_scheduled_tasks (org_id, item_id, chat_id, state, paused, recorded_at, updated_at)
+            VALUES (${orgId}, ${itemId}, ${tech.ownerChatId}, 'active', ${paused}, '2026-11-09T00:00:00.000Z', 0)`.pipe(
+            Effect.andThen(card(`scheduled:${orgId}:${itemId}`, `Title of ${itemId}`)),
+          );
+        yield* scheduled("daily", 0);
+        yield* scheduled("resting", 1);
+        const chatId = tech.ownerChatId;
+        const [ada, other] = yield* Provision.profiles(person);
+        assert.deepInclude(ada, {
+          working: true,
+          tracking: [
+            { kind: "work", title: "Add a README section", chatId },
+            { kind: "reminder", title: "Title of soon", dueAt: "2026-11-12T09:00:00.000Z", chatId },
+            {
+              kind: "follow_up",
+              title: "Title of later",
+              dueAt: "2026-11-12T09:00:01.000Z",
+              chatId,
+            },
+            { kind: "scheduled", title: "Title of daily", chatId },
+          ],
+        });
+        assert.deepInclude(other, { working: false, tracking: [] });
+
+        // A teammate has no leads; a retired lead leaves the list.
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('teammate', ${orgId}, 'teammate', 'Teammate', '2026-11-09T00:00:00.000Z')`;
+        assert.deepStrictEqual(
+          yield* Provision.profiles({ ...person, personId: KinPersonId.make("teammate") }),
+          [],
+        );
+        yield* Provision.retire(growth.agentId);
+        assert.lengthOf(yield* Provision.profiles(person), 1);
+      }).pipe(Effect.provide(paired)),
+  );
+
+  it.effect("lets only the owner rename a lead of theirs and change what it is for", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const tech = (yield* Provision.create(input(owner, []))).lead;
+      const growth = (yield* Provision.create({
+        ...input(owner, []),
+        name: "Growth",
+        domain: "growth",
+      })).lead;
+      const edit = (
+        fields: Parameters<typeof Provision.update>[0]["fields"],
+        agentId = tech.agentId,
+        editor = owner,
+      ) => Provision.update({ editor, orgId: tech.orgId, agentId, fields });
+      assert.deepInclude(yield* edit({ name: "Tech lead", charter: "Ship the app." }), {
+        agentId: tech.agentId,
+        name: "Tech lead",
+        domain: "engineering",
+        charter: "Ship the app.",
+      });
+      // Chats show the agent's name; the lead keeps its chat, level and projects.
+      assert.deepStrictEqual(
+        yield* sql`SELECT a.display_name AS name, l.name AS lead, l.level, l.owner_chat_id AS chat
+          FROM kin_agents a JOIN kin_leads l ON l.org_id = a.org_id AND l.agent_id = a.agent_id
+          WHERE a.org_id = ${tech.orgId} AND a.agent_id = ${tech.agentId} ORDER BY a.agent_id`,
+        [{ name: "Tech lead", lead: "Tech lead", level: "L0", chat: tech.ownerChatId }],
+      );
+      // An omitted field stays; two live leads can't share a name and domain.
+      assert.deepInclude(yield* edit({ domain: "platform" }), {
+        name: "Tech lead",
+        charter: "Ship the app.",
+      });
+      assert.strictEqual(yield* refusal(edit({ name: "Growth", domain: "growth" })), "conflict");
+
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('teammate', ${tech.orgId}, 'teammate', 'Teammate', '2026-11-09T00:00:00.000Z')`;
+      const teammate = { _tag: "person", personId: KinPersonId.make("teammate") } as const;
+      assert.strictEqual(
+        yield* refusal(edit({ name: "Mine" }, tech.agentId, teammate)),
+        "not_owner",
+      );
+      assert.strictEqual(
+        yield* refusal(
+          edit({ name: "Mine" }, tech.agentId, session(AuthStandardClientScopes.slice(1))),
+        ),
+        "not_owner",
+      );
+      assert.strictEqual(
+        yield* refusal(edit({ name: "X" }, KinAgentId.make("lead-nowhere"))),
+        "not_found",
+      );
+      assert.strictEqual(
+        yield* refusal(
+          Provision.update({
+            editor: owner,
+            orgId: KinOrgId.make("org-b"),
+            agentId: tech.agentId,
+            fields: { name: "X" },
+          }),
+        ),
+        "not_found",
+      );
+      yield* Provision.retire(growth.agentId);
+      assert.strictEqual(yield* refusal(edit({ name: "X" }, growth.agentId)), "retired");
+    }).pipe(Effect.provide(paired)),
   );
 });
