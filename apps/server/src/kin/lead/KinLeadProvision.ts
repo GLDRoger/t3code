@@ -439,26 +439,23 @@ const profileOf = (
     })),
 });
 
-/** The person's own live leads, oldest first. Someone with none, such as a teammate, gets none. */
+/**
+ * The person's own live leads, oldest first. Someone with none, such as a teammate, gets none.
+ * Plain reads, outside a transaction, so a client's list never holds the writer's lock.
+ */
 export const profiles = Effect.fn("KinLeadProvision.profiles")(function* (person: PersonIdentity) {
   const sql = yield* SqlClient.SqlClient;
-  return yield* transaction(
-    sql,
-    "KinLeadProvision.profiles",
-    Effect.gen(function* () {
-      const leads = (yield* leadsIn(person.orgId, { liveOnly: true })).filter(
-        (lead) => lead.ownerPersonId === person.personId,
-      );
-      if (leads.length === 0) return [];
-      const running = yield* sql<{ agentId: string }>`SELECT agent_id AS "agentId" FROM kin_wakeups
-        WHERE org_id = ${person.orgId} AND status = 'running' ORDER BY agent_id`.pipe(
-        Effect.mapError(toPersistenceSqlError("KinLeadProvision.profiles")),
-      );
-      const working = new Set(running.map((row) => row.agentId));
-      const items = yield* tracked(person.orgId);
-      return leads.map((lead) => profileOf(lead, working, items));
-    }),
+  const leads = (yield* leadsIn(person.orgId, { liveOnly: true })).filter(
+    (lead) => lead.ownerPersonId === person.personId,
   );
+  if (leads.length === 0) return [];
+  const running = yield* sql<{ agentId: string }>`SELECT agent_id AS "agentId" FROM kin_wakeups
+    WHERE org_id = ${person.orgId} AND status = 'running' ORDER BY agent_id`.pipe(
+    Effect.mapError(toPersistenceSqlError("KinLeadProvision.profiles")),
+  );
+  const working = new Set(running.map((row) => row.agentId));
+  const items = yield* tracked(person.orgId);
+  return leads.map((lead) => profileOf(lead, working, items));
 });
 
 /**
