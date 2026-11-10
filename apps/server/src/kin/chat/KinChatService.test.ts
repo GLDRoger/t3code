@@ -1261,6 +1261,31 @@ describe("KinChatService", () => {
         assert.deepStrictEqual(yield* repo.listOpenWaiting(other), []);
       }).pipe(Effect.provide(layer)),
   );
+  it.effect(
+    "previews a chat by its latest message the feed still shows, never a dismissed one",
+    () =>
+      Effect.gen(function* () {
+        const { service, person, chat } = yield* seed();
+        const sql = yield* SqlClient.SqlClient;
+        const hello = yield* service.send(person, {
+          chatId: chat.chatId,
+          body: "Hello",
+          clientMessageId: "hello",
+        });
+        const notice = yield* service.notice({
+          orgId: person.orgId,
+          chatId: chat.chatId,
+          messageId: KinMessageId.make("retired-notice"),
+          body: "A retired notice",
+        });
+        yield* sql`UPDATE kin_messages SET status = 'dismissed'
+        WHERE message_id = ${notice.message.messageId}`;
+        const list = Option.getOrThrow(yield* Stream.runHead(service.subscribeChats([person], {})));
+        if (list._tag !== "snapshot") return assert.fail("Expected snapshot");
+        const row = list.chats.find((candidate) => candidate.chatId === chat.chatId);
+        assert.strictEqual(row?.lastMessage?.messageId, hello.messageId);
+      }).pipe(Effect.provide(layer)),
+  );
   it.effect("marks a chat working in the list while its agent's run is live", () =>
     Effect.gen(function* () {
       const { service, person, chat } = yield* seed();

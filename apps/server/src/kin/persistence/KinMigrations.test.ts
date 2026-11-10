@@ -695,6 +695,8 @@ describe("Kin migrations", () => {
         );
         assert.deepStrictEqual(yield* runKinMigrations(), []);
       }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("K035 takes the level cards out of chats and the Waiting list, and nothing else", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

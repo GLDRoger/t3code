@@ -104,7 +104,7 @@ const runOnHost = Effect.fn("kin.lead.runOnHost")(
 const describe = (lead: Provision.LeadSummary) =>
   [
     `${lead.name} (${lead.agentId})`,
-    `  domain ${lead.domain}, org ${lead.orgId}, level ${lead.level}, owner ${lead.ownerPersonId}`,
+    `  domain ${lead.domain}, org ${lead.orgId}, owner ${lead.ownerPersonId}`,
     `  owner chat ${lead.ownerChatId}, created by ${lead.createdByPersonId ?? "unknown"}`,
     `  charter ${lead.charter === "" ? "none" : JSON.stringify(lead.charter)}`,
     `  strong ${lead.models.strong.instanceId}:${lead.models.strong.model}, cheap ${lead.models.cheap.instanceId}:${lead.models.cheap.model}`,
