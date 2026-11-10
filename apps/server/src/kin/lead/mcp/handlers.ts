@@ -9,6 +9,7 @@ import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
 import { KinRepoReads } from "../../github/KinRepoReads.ts";
 import { laneFor } from "../../reply/KinReplyBridge.ts";
+import { KinHandoff } from "../Handoff.ts";
 import { KinLevelGate } from "../LevelGate.ts";
 import { quote } from "../LeadPrompt.ts";
 import { LeadMemory, resolveLead } from "../LeadMemory.ts";
@@ -38,6 +39,16 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
   kin_worker_stop: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.workerStop")(function* (input) {
       return yield* (yield* KinWorkers).stop(yield* McpInvocationContext, input);
+    }),
+  ),
+  kin_leads: McpToolAccess.reads(
+    Effect.fn("KinLeadToolkit.leads")(function* () {
+      return yield* (yield* KinHandoff).leads(yield* McpInvocationContext);
+    }),
+  ),
+  kin_hand_off: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.handOff")(function* (input) {
+      return yield* (yield* KinHandoff).handOff(yield* McpInvocationContext, input);
     }),
   ),
   kin_ask: McpToolAccess.actsAsCaller(

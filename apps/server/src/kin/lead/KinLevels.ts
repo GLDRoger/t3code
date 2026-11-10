@@ -96,7 +96,7 @@ export const effectiveLevel = Effect.fn("KinLevels.effectiveLevel")(function* (i
 
 export const lowest = (a: KinLevel, b: KinLevel) => (atLeast(a, b) ? b : a);
 
-/** The chat a due deferral was asked from, and the lead that was asked there. */
+/** The chat a due deferral or a passed-on request was first asked in, and the lead asked there. */
 export interface KinOrigin {
   readonly agentId: KinAgentId;
   readonly chatId: KinChatId;
@@ -109,8 +109,9 @@ export const originLevel = (orgId: KinOrgId, origin: KinOrigin) =>
   );
 
 /**
- * The lowest level of the chats the wake-up's due deferrals were asked from, or undefined when
- * none was asked from outside its owner chat. Read from the stored events only.
+ * The lowest level of the chats the wake-up's due deferrals and passed-on requests were first
+ * asked in, or undefined when none was asked outside its owner chat. Read from the stored events
+ * only.
  */
 export const originCap = Effect.fn("KinLevels.originCap")(function* (input: {
   readonly orgId: KinOrgId;
@@ -122,7 +123,8 @@ export const originCap = Effect.fn("KinLevels.originCap")(function* (input: {
     SELECT DISTINCT json_extract(json, '$.origin.agentId') AS "agentId",
       json_extract(json, '$.origin.chatId') AS "chatId" FROM kin_events
     WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND wakeup_id = ${input.wakeupId}
-      AND tag = 'deferral.due' AND json_extract(json, '$.origin.chatId') IS NOT NULL
+      AND tag IN ('deferral.due', 'chat.message')
+      AND json_extract(json, '$.origin.chatId') IS NOT NULL
     ORDER BY 1, 2`.pipe(Effect.mapError(toPersistenceSqlError("KinLevels.originCap")));
   let cap: KinLevel | undefined;
   for (const origin of origins) {

@@ -224,8 +224,8 @@ const decodeStoredEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(KinEv
 
 /**
  * The chat a deferral was asked from, read from its server-recorded source event, never tool
- * input: that event's chat, the origin of the due wake-up it was made in, else that lead's owner
- * chat. Without a stored source event, its own chat stands in. Undefined when it is `lead`'s
+ * input: the origin of the due deferral or passed-on request it was made for, else that event's
+ * chat, else that lead's owner chat. Without a stored source event, its own chat stands in. Undefined when it is `lead`'s
  * owner chat, so such a deferral runs as it always has.
  */
 export const deferralOrigin = Effect.fn("Deferrals.origin")(function* (
@@ -250,12 +250,14 @@ export const deferralOrigin = Effect.fn("Deferrals.origin")(function* (
       ? item?.chat === undefined
         ? undefined
         : { agentId: lead.agentId, chatId: item.chat }
-      : event._tag === "chat.message" ||
-          event._tag === "widget.action" ||
-          event._tag === "chat.reaction"
-        ? { agentId: KinAgentId.make(row.agentId), chatId: event.chatId }
-        : event._tag === "deferral.due" && event.origin !== undefined
-          ? event.origin
+      : (event._tag === "deferral.due" || event._tag === "chat.message") &&
+          event.origin !== undefined
+        ? // Made while answering a due deferral or a passed-on request: where that was asked.
+          event.origin
+        : event._tag === "chat.message" ||
+            event._tag === "widget.action" ||
+            event._tag === "chat.reaction"
+          ? { agentId: KinAgentId.make(row.agentId), chatId: event.chatId }
           : { agentId: KinAgentId.make(row.agentId), chatId: KinChatId.make(row.ownerChatId) };
   return origin === undefined ||
     (origin.agentId === lead.agentId && origin.chatId === lead.ownerChatId)

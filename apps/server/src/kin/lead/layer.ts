@@ -48,6 +48,7 @@ import * as KinStop from "./KinStop.ts";
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import * as DreamRunner from "../dreaming/DreamRunner.ts";
 import * as DreamSession from "../dreaming/DreamSession.ts";
+import * as Handoff from "./Handoff.ts";
 import * as Workers from "./Workers.ts";
 import * as KinRepoReads from "../github/KinRepoReads.ts";
 import * as WorkerTracker from "./WorkerTracker.ts";
@@ -354,6 +355,7 @@ const tracker = Layer.effectDiscard(
 const production = withServices(
   Layer.mergeAll(runner, ChatWake.layer, registration, tracker).pipe(
     Layer.provideMerge(workers),
+    Layer.provideMerge(Handoff.layer),
     Layer.provideMerge(toolkit),
     Layer.provide(repoReads),
   ),
