@@ -336,14 +336,22 @@ describe("rows", () => {
       ]),
     ).toMatchObject([{ text: "Tech lead didn't reply.", retry: null }]);
     expect(systemRows([notice(6, "kin-no-reply:w1")])).toMatchObject([{ retry: null }]);
-    // The host's own retry answering ends "trying again"; giving up keeps Retry.
+    // The host's own retry answering ends "trying again".
+    expect(systemRows([asked, notice(6, "kin-retrying:w1"), agentMessage(7)])).toMatchObject([
+      { key: "kin-retrying:w1", retry: null },
+    ]);
+    // Giving up replaces the "trying again" lines before it and is the one that offers Retry.
     expect(
       systemRows([
         asked,
         notice(6, "kin-retrying:w1"),
-        notice(7, "kin-failed:w2"),
-        agentMessage(8),
+        notice(7, "kin-retrying:w2"),
+        notice(8, "kin-failed:w3"),
+        agentMessage(9),
       ]),
+    ).toMatchObject([{ key: "kin-failed:w3", retry: "Is the deploy green?" }]);
+    expect(
+      systemRows([asked, notice(6, "kin-no-reply:w1"), notice(7, "kin-no-reply:w2")]),
     ).toMatchObject([{ retry: null }, { retry: "Is the deploy green?" }]);
   });
 
