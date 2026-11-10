@@ -649,10 +649,18 @@ it.effect.each([
 ])("derives production memory config from the server state directory and env %#", (row) =>
   Effect.gen(function* () {
     const server = yield* ServerConfig.ServerConfig;
+    const warnings: string[] = [];
     const result = yield* Effect.result(
       Layer.build(MemoryConfig.layer([{ orgId: orgA, repoUrl: "unused" }])).pipe(
         Effect.map((context) => Context.get(context, MemoryConfig.MemoryConfig)),
-        Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(row.env))),
+        Effect.provide(
+          Layer.mergeAll(
+            ConfigProvider.layer(ConfigProvider.fromUnknown(row.env)),
+            Logger.layer([Logger.make(({ message }) => warnings.push(String(message)))], {
+              mergeWithExisting: false,
+            }),
+          ),
+        ),
       ),
     );
     if (row.refused !== undefined) {
@@ -664,6 +672,10 @@ it.effect.each([
     }
     assert(result._tag === "Success");
     const config = result.success;
+    expect(
+      warnings.some((message) => message.includes("memory repository has no GitHub slug")),
+    ).toBe(true);
+    expect(warnings.join(" ")).not.toContain("unused");
     expect(config.baseDirectory).toBe(`${server.stateDir}/kin`);
     expect(config.repositories[0]?.path).toBe(orgA);
     expect({

@@ -47,7 +47,7 @@ export const relevant = (
   botLogin: string,
   items: ReadonlyArray<MemoryItemHead>,
   workers: ReadonlyArray<{
-    readonly url: string | null;
+    readonly pullRequestNumber: number | null;
     readonly branch: string;
     readonly repositoryKey: string | null;
   }>,
@@ -61,10 +61,13 @@ export const relevant = (
   ];
   if (
     workers.some((worker) => {
-      const number = worker.url === null ? undefined : linkedNumber(worker.url, event.repo);
+      const sameRepo =
+        worker.repositoryKey?.toLowerCase() === `github.com/${event.repo.toLowerCase()}`;
       return (
-        (number !== undefined && numbers.includes(number)) ||
-        (worker.repositoryKey?.toLowerCase() === `github.com/${event.repo.toLowerCase()}` &&
+        (sameRepo &&
+          worker.pullRequestNumber !== null &&
+          numbers.includes(worker.pullRequestNumber)) ||
+        (sameRepo &&
           fields?.pull_request?.head?.ref === worker.branch &&
           fields.pull_request.head.repo?.full_name.toLowerCase() === event.repo.toLowerCase())
       );
@@ -89,6 +92,10 @@ export const relevant = (
     )
   )
     return true;
+  if (event.action !== "opened" && event.action !== "edited" && event.action !== "created")
+    return false;
+  const slug = botLogin.replace(/\[bot\]$/, "").toLowerCase();
+  if (slug.length === 0) return false;
   const texts = [
     fields?.pull_request?.title,
     fields?.pull_request?.body,
@@ -100,7 +107,7 @@ export const relevant = (
   return texts.some((text) =>
     text
       ?.toLowerCase()
-      .split(`@${botLogin.toLowerCase()}`)
+      .split(`@${slug}`)
       .slice(1)
       .some((tail) => !/^[a-z0-9_-]/i.test(tail)),
   );

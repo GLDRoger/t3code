@@ -28,7 +28,11 @@ import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { publishBranch } from "../lead/workerPublish.ts";
 import { ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
-import { configuredGithubMemoryRepo } from "../memory/MemoryConfig.ts";
+import {
+  configuredRepositories,
+  githubRepoOf,
+  configuredGithubMemoryRepo,
+} from "../memory/MemoryConfig.ts";
 import * as Memory from "../memory/Memory.ts";
 import { relevant } from "./githubInterest.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
@@ -94,12 +98,15 @@ export const repoScopeLayer = Layer.effect(
       });
       return [];
     }
-    return entries;
+    const memoryRepos = (yield* configuredRepositories).map(({ repoUrl }) =>
+      githubRepoOf(repoUrl)?.toLowerCase(),
+    );
+    return entries.filter((repo) => !memoryRepos.includes(repo.toLowerCase()));
   }).pipe(
     Effect.catch((cause) =>
-      Effect.logWarning("KIN_GITHUB_REPOS is unreadable; dropping all GitHub events", cause).pipe(
-        Effect.as([]),
-      ),
+      Effect.logWarning("Kin GitHub repository scope is unreadable; dropping all GitHub events", {
+        errorTag: cause._tag,
+      }).pipe(Effect.as([])),
     ),
     Effect.map((repos) => KinGithubRepoScope.of({ repos })),
   ),
@@ -347,10 +354,10 @@ const make = Effect.gen(function* () {
         const { event } = outcome;
         const workers = yield* sql<{
           workerId: KinWorkerId;
-          url: string | null;
+          pullRequestNumber: number | null;
           repositoryKey: string | null;
         }>`
-          SELECT worker_id AS "workerId", pull_request_url AS url, repository_key AS "repositoryKey" FROM kin_workers
+          SELECT worker_id AS "workerId", pull_request_number AS "pullRequestNumber", repository_key AS "repositoryKey" FROM kin_workers
           WHERE org_id = ${orgId} AND agent_id = ${lead.agentId} ORDER BY worker_id`;
         if (
           !relevant(
@@ -360,6 +367,11 @@ const make = Effect.gen(function* () {
             workers.map((row) => ({ ...row, branch: publishBranch(row.workerId) })),
           )
         ) {
+          yield* Effect.logDebug("Kin GitHub event dropped", {
+            orgId,
+            fireId: fire.fireId,
+            reason: "untracked",
+          });
           yield* inbox.markConsumed(orgId, [fire.fireId]);
           return;
         }
@@ -396,9 +408,9 @@ const make = Effect.gen(function* () {
             }),
           );
         yield* sql`UPDATE kin_events SET not_before = COALESCE((
-          SELECT MIN(not_before) FROM kin_events WHERE org_id = ${orgId} AND agent_id = ${lead.agentId}
+          SELECT MAX(${now}, MIN(not_before)) FROM kin_events WHERE org_id = ${orgId} AND agent_id = ${lead.agentId}
             AND tag = 'github' AND state = 'queued' AND attempts = 0 AND budget_deferred = 0
-            AND not_before > ${now} AND not_before <= ${now + 120_000}
+            AND not_before <= ${now + 120_000}
         ), ${now + 120_000})
           WHERE org_id = ${orgId} AND state = 'queued' AND attempts = 0 AND not_before IS NULL
             AND event_id IN (${eventIdFor("github", orgId, fire.fireId)}, ${eventIdFor("github_condition", orgId, fire.fireId)})`;
@@ -445,23 +457,18 @@ const make = Effect.gen(function* () {
       });
     }
 
-    // Worker links and mentions still qualify if memory is unavailable.
-    const items = reads.some(
+    const memoryRead = reads.some(
       ({ result }) => Result.isSuccess(result) && result.success._tag === "event",
     )
-      ? yield* memory.query(orgId, { status: "open", excludeInvalid: true }, "triggers").pipe(
-          Effect.catch((cause) =>
-            Effect.logWarning("Kin GitHub condition matching skipped: memory unavailable", {
-              orgId,
-              errorTag: cause._tag,
-            }).pipe(Effect.as([])),
-          ),
-        )
-      : [];
+      ? yield* memory
+          .query(orgId, { status: "open", excludeInvalid: true }, "triggers")
+          .pipe(Effect.result)
+      : Result.succeed([]);
 
     for (const { fire, retry, giveUp, result } of reads) {
       yield* Effect.gen(function* () {
         const built = yield* Effect.fromResult(result);
+        const items = built._tag === "event" ? yield* Effect.fromResult(memoryRead) : [];
         const outcome: Outcome =
           built._tag === "event"
             ? {
@@ -478,7 +485,11 @@ const make = Effect.gen(function* () {
         ),
         Effect.catch((cause) =>
           Effect.gen(function* () {
-            const permanent = isPermanent(cause) || isQueueConflict(cause);
+            const memoryUnavailable =
+              Result.isFailure(memoryRead) &&
+              Result.isSuccess(result) &&
+              result.success._tag === "event";
+            const permanent = !memoryUnavailable && (isPermanent(cause) || isQueueConflict(cause));
             const consume = permanent || giveUp;
             const failures = (retry?.failures ?? 0) + 1;
             yield* (consume || failures === 1 ? Effect.logWarning : Effect.logDebug)(
