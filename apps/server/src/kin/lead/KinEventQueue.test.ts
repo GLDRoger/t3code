@@ -839,37 +839,35 @@ describe("KinEventQueue", () => {
       }).pipe(Effect.provide(layer)),
   );
 
-  it.effect(
-    "wakes empty queues on enqueue and releases the organization permit on interruption",
-    () =>
-      Effect.gen(function* () {
-        yield* seed();
-        const queue = yield* KinEventQueue.KinEventQueue;
-        const cancelled = yield* Effect.scoped(queue.claim(input("cancelled"))).pipe(
-          Effect.forkChild,
-        );
-        yield* seed("a", "lead-a2");
-        yield* queue.enqueue(yield* event("other-lead", "github", "a", "lead-a2"));
-        const otherLead = yield* Effect.scoped(
-          queue.claim(input("other-lead", "a", "lead-a2")),
-        ).pipe(Effect.forkChild);
-        yield* TestClock.adjust("20 seconds");
-        assert.isDefined(otherLead.pollUnsafe());
-        assert.deepStrictEqual(
-          (yield* Fiber.join(otherLead)).map((entry) => entry.eventId),
-          ["other-lead"],
-        );
-        yield* finish("other-lead");
-        yield* Fiber.interrupt(cancelled);
-        const waiting = yield* Effect.scoped(queue.claim(input("notified"))).pipe(Effect.forkChild);
-        yield* TestClock.adjust("1 second");
-        yield* queue.enqueue(yield* event("notification"));
-        yield* TestClock.adjust("20 seconds");
-        assert.deepStrictEqual(
-          (yield* Fiber.join(waiting)).map((entry) => entry.eventId),
-          ["notification"],
-        );
-      }).pipe(Effect.provide(layer)),
+  it.effect("wakes empty queues on enqueue and releases the lead permit on interruption", () =>
+    Effect.gen(function* () {
+      yield* seed();
+      const queue = yield* KinEventQueue.KinEventQueue;
+      const cancelled = yield* Effect.scoped(queue.claim(input("cancelled"))).pipe(
+        Effect.forkChild,
+      );
+      yield* seed("a", "lead-a2");
+      yield* queue.enqueue(yield* event("other-lead", "github", "a", "lead-a2"));
+      const otherLead = yield* Effect.scoped(queue.claim(input("other-lead", "a", "lead-a2"))).pipe(
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust("20 seconds");
+      assert.isDefined(otherLead.pollUnsafe());
+      assert.deepStrictEqual(
+        (yield* Fiber.join(otherLead)).map((entry) => entry.eventId),
+        ["other-lead"],
+      );
+      yield* finish("other-lead");
+      yield* Fiber.interrupt(cancelled);
+      const waiting = yield* Effect.scoped(queue.claim(input("notified"))).pipe(Effect.forkChild);
+      yield* TestClock.adjust("1 second");
+      yield* queue.enqueue(yield* event("notification"));
+      yield* TestClock.adjust("20 seconds");
+      assert.deepStrictEqual(
+        (yield* Fiber.join(waiting)).map((entry) => entry.eventId),
+        ["notification"],
+      );
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect(
