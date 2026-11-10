@@ -96,6 +96,7 @@ const workerEnvironment = (configured: boolean) =>
     call: Effect.fn("test.workerEnvironmentCall")(function* () {
       return yield* Effect.die("Deferral tests start no workers.");
     }),
+    kill: Effect.die("Deferral tests start no workers."),
   });
 // Stands in for LEAD-11, the worker environment and #44's GitHub client.
 const openGates =

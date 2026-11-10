@@ -16,7 +16,7 @@ Group=kin-worker
 WorkingDirectory=/home/kin-worker
 Environment=HOME=/home/kin-worker
 Environment=PATH=/home/kin-worker/.local/bin:/home/kin-worker/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
-# The sandbox. Keep in step with `kin-worker run` in kin-worker.sh, which `check` uses.
+# The sandbox. Keep in step with SANDBOX in kin-worker.sh; `check` compares every entry.
 # /home is an empty tmpfs, so kin's home, the owner's home and every other user's are not there;
 # only the worker's own home comes back. Kin's running build comes in read-only.
 ProtectHome=tmpfs
@@ -26,6 +26,15 @@ PrivateTmp=yes
 ProtectProc=invisible
 NoNewPrivileges=yes
 ProtectSystem=full
+# A worker can't take kin-server's port (or any other of Kin's listeners) while it restarts.
+SocketBindDeny=ipv4:tcp:3773
+SocketBindDeny=ipv6:tcp:3773
+# Cloud metadata, link-local, Tailscale and private LAN ranges. Allow one back in a drop-in:
+# `systemctl edit kin-worker-server` with `IPAddressAllow=<address>`; `kin-worker run` copies it.
+IPAddressDeny=169.254.0.0/16 fe80::/10 100.64.0.0/10 fc00::/7 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+# Workers can't starve kin-server of memory or processes.
+MemoryMax=60%
+TasksMax=4096
 ExecStart=/usr/local/sbin/kin-worker node serve --base-dir /home/kin-worker/.t3 --host 127.0.0.1 --port 3874 --no-browser
 Restart=always
 RestartSec=5

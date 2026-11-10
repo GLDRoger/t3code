@@ -47,6 +47,15 @@ if [ -e "$BUILD" ]; then git -C "$REPO" worktree remove --force "$BUILD" 2>/dev/
 git -C "$REPO" worktree prune
 git -C "$REPO" worktree add --detach "$BUILD" "$SHA"
 trap 'echo "update.sh: build of $SHA failed; the server still runs ${PREVIOUS:-nothing}." >&2; git -C "$REPO" worktree remove --force "$BUILD" 2>/dev/null || rm -rf "$BUILD"' ERR
+# Workers' sandbox mounts the build read-only, .env included, so it may hold only the public
+# identifiers .env.example names; a secret there would be readable by every worker.
+allowed="$(sed -n 's/^#\{0,1\} *\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$BUILD/.env.example" | sort -u)"
+extra="$(sed -n 's/^ *\(export \)\{0,1\}\([A-Za-z_][A-Za-z0-9_]*\)=.*/\2/p' "$REPO/.env" | sort -u |
+  comm -23 - <(printf '%s\n' "$allowed") | tr '\n' ' ')"
+if [ -n "$extra" ]; then
+  echo "update.sh: $REPO/.env sets ${extra}which .env.example doesn't name. Workers can read the build's .env, so remove them; server settings go in ~/.t3/service.env." >&2
+  false
+fi
 cp -p "$REPO/.env" "$BUILD/.env"
 
 node_version="$(sed -n '/"engines"/,/}/s/.*"node": *"\([^"]*\)".*/\1/p' "$BUILD/package.json" | head -n1)"
@@ -73,6 +82,14 @@ printf '%s\n' \
   "KIN_NODE_VERSION=$node_version" >"$tmp"
 chmod 600 "$tmp"
 mv -f "$tmp" "$ENV_FILE"
+
+# The worker environment mounts ~/kin-current when it starts, so it moves to a build only on a
+# restart. kin-worker.sh's sudoers entry lets kin run exactly this; no worker unit, no restart.
+restart_workers() {
+  systemctl --system cat kin-worker-server.service >/dev/null 2>&1 || return 0
+  sudo -n /usr/bin/systemctl try-restart kin-worker-server.service ||
+    echo "update.sh: couldn't restart kin-worker-server, so workers still run the build before this one. Run sudo ops/kin/host/kin-worker.sh from a root-owned clone." >&2
+}
 
 for unit in kin-server.service kin-backup.service kin-backup.timer; do
   cmp -s "ops/kin/host/$unit" "$UNIT_DIR/$unit" ||
@@ -108,6 +125,7 @@ if [ "$state" != active ] || [ "$restarts" != 0 ]; then
       echo "update.sh: rollback restart failed; see systemctl --user status kin-server" >&2
       exit 1
     }
+    restart_workers
     echo "update.sh: rolled back to $PREVIOUS. $BUILD is kept for inspection until the next good update." >&2
   else
     # First install: nothing to go back to. Stop the crash loop so a rerun rebuilds.
@@ -118,6 +136,7 @@ if [ "$state" != active ] || [ "$restarts" != 0 ]; then
   exit 1
 fi
 rm -f "$ENV_FILE.prev"
+restart_workers
 echo "update.sh: running $SHA. Previous build: ${PREVIOUS:-none}."
 
 # Keep the newest complete builds, the running one and the previous one. Interrupted

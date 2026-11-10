@@ -445,61 +445,88 @@ export const makeFanOut = Effect.fn("KinStop.makeFanOut")(function* (
   return {
     pause: Effect.fn("KinStop.fanOut.pause")(function* (orgId: KinOrgId, pausedAt: number) {
       const failed = (cause: unknown) => new KinStopFanOutError({ orgId, cause });
-      const rows = yield* sql<{ threadId: string }>`
-        SELECT thread_id AS "threadId" FROM kin_leads WHERE org_id = ${orgId} AND thread_id IS NOT NULL
-        UNION SELECT thread_id FROM kin_dream_runs
-          WHERE org_id = ${orgId} AND status = 'running' AND thread_id IS NOT NULL
-        ORDER BY 1`.pipe(Effect.mapError(failed), Effect.exit);
-      const exits = yield* Effect.forEach(
-        Exit.isSuccess(rows) ? rows.value : [],
-        (row) =>
-          Effect.gen(function* () {
-            const threadId = ThreadId.make(row.threadId);
-            // A thread that doesn't exist yet has nothing to stop; any other failure counts.
-            const projection = yield* threads.getThreadProjection(threadId).pipe(
-              Effect.asSome,
-              Effect.catchIf(isMissingThread, () => Effect.succeedNone),
-            );
-            if (Option.isNone(projection)) return;
-            const run = projection.value.runs.at(-1)?.id ?? "idle";
-            yield* stopThreadTree(threads, {
-              projection: projection.value,
-              prefix: "kin-stop",
-              tag: `${threadId}:${pausedAt}:${run}:${boot}`,
-              reason: STOP_REASON,
-            });
-          }).pipe(Effect.exit),
-        { concurrency: "unbounded" },
-      );
-      // Workers run in the worker environment; each is stopped there, by its own key.
-      const workerRows = yield* sql<{ workerId: string; threadId: string; environmentId: string }>`
-        SELECT worker_id AS "workerId", thread_id AS "threadId", environment_id AS "environmentId"
-        FROM kin_workers WHERE org_id = ${orgId} AND ended_at IS NULL AND environment_id IS NOT NULL
-        ORDER BY worker_id`.pipe(Effect.mapError(failed), Effect.exit);
-      const workerExits = yield* Effect.forEach(
-        Exit.isSuccess(workerRows) ? workerRows.value : [],
-        (row) =>
-          Effect.gen(function* () {
-            if (Option.isNone(workers))
-              return yield* failed("Kin has no worker environment service here.");
-            yield* WorkerEnvironment.stopThere(workers.value, {
+      // Routines, lead runs and workers stop side by side: nothing remote can hold up the rest.
+      const routinesPaused = Option.isSome(routines)
+        ? Effect.exit(routines.value.pauseAll(orgId))
+        : Effect.succeed(Exit.void);
+      const leadsStopped = Effect.gen(function* () {
+        const rows = yield* sql<{ threadId: string }>`
+          SELECT thread_id AS "threadId" FROM kin_leads WHERE org_id = ${orgId} AND thread_id IS NOT NULL
+          UNION SELECT thread_id FROM kin_dream_runs
+            WHERE org_id = ${orgId} AND status = 'running' AND thread_id IS NOT NULL
+          ORDER BY 1`.pipe(Effect.mapError(failed), Effect.exit);
+        if (Exit.isFailure(rows)) return [rows];
+        return yield* Effect.forEach(
+          rows.value,
+          (row) =>
+            Effect.gen(function* () {
+              const threadId = ThreadId.make(row.threadId);
+              // A thread that doesn't exist yet has nothing to stop; any other failure counts.
+              const projection = yield* threads.getThreadProjection(threadId).pipe(
+                Effect.asSome,
+                Effect.catchIf(isMissingThread, () => Effect.succeedNone),
+              );
+              if (Option.isNone(projection)) return;
+              const run = projection.value.runs.at(-1)?.id ?? "idle";
+              yield* stopThreadTree(threads, {
+                projection: projection.value,
+                prefix: "kin-stop",
+                tag: `${threadId}:${pausedAt}:${run}:${boot}`,
+                reason: STOP_REASON,
+              });
+            }).pipe(Effect.exit),
+          { concurrency: "unbounded" },
+        );
+      });
+      const workersStopped = Effect.gen(function* () {
+        // Workers run in the worker environment; each is stopped there, by its own key. A row
+        // whose launch never returned has no thread there to name; recovery finds and stops it.
+        const rows = yield* sql<{ workerId: string; threadId: string; environmentId: string }>`
+          SELECT worker_id AS "workerId", thread_id AS "threadId", environment_id AS "environmentId"
+          FROM kin_workers WHERE org_id = ${orgId} AND ended_at IS NULL
+            AND environment_id IS NOT NULL AND thread_id <> 'kin-worker-' || worker_id
+          ORDER BY worker_id`.pipe(Effect.mapError(failed), Effect.exit);
+        if (Exit.isFailure(rows)) return [rows];
+        if (rows.value.length === 0) return [];
+        if (Option.isNone(workers))
+          return [Exit.fail(failed("Kin has no worker environment service here."))];
+        const env = workers.value;
+        const stops = yield* Effect.forEach(
+          rows.value,
+          (row) =>
+            WorkerEnvironment.stopThere(env, {
               environmentId: EnvironmentId.make(row.environmentId),
               threadId: ThreadId.make(row.threadId),
               key: `kin-stop:${row.workerId}:${pausedAt}:${boot}`,
               reason: STOP_REASON,
-            });
-          }).pipe(Effect.exit),
+            }).pipe(Effect.exit),
+          { concurrency: "unbounded" },
+        );
+        const refused = stops.filter(Exit.isFailure);
+        if (refused.length === 0) return [];
+        // A worker server that refuses, errs or hangs is killed on this host instead. It comes
+        // back under systemd, and its followers stop any run it continues while Kin is paused.
+        const killed = yield* Effect.exit(env.kill);
+        if (Exit.isSuccess(killed)) {
+          yield* Effect.logWarning("Kin killed the worker server after a stop there failed", {
+            orgId,
+            failed: refused.length,
+          });
+          return [];
+        }
+        return [...refused, killed];
+      });
+      const [routineExit, leadExits, workerExits] = yield* Effect.all(
+        [routinesPaused, leadsStopped, workersStopped],
         { concurrency: "unbounded" },
       );
-      const routineExit = Option.isSome(routines)
-        ? yield* Effect.exit(routines.value.pauseAll(orgId))
-        : Exit.void;
       const failures: Array<Cause.Cause<unknown>> = [];
-      if (Exit.isFailure(rows)) failures.push(rows.cause);
-      if (Exit.isFailure(workerRows)) failures.push(workerRows.cause);
+      const exits: ReadonlyArray<Exit.Exit<unknown, unknown>> = [
+        routineExit,
+        ...leadExits,
+        ...workerExits,
+      ];
       for (const exit of exits) if (Exit.isFailure(exit)) failures.push(exit.cause);
-      for (const exit of workerExits) if (Exit.isFailure(exit)) failures.push(exit.cause);
-      if (Exit.isFailure(routineExit)) failures.push(routineExit.cause);
       if (failures.length > 0)
         return yield* failed(failures.reduce((all, cause) => Cause.combine(all, cause)));
     }),

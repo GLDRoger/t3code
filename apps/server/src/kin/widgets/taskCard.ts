@@ -65,9 +65,28 @@ export const taskCardState = (
   updatedAt,
 });
 
+/**
+ * A pull request link from another server, kept only as `https://github.com/<repo>/pull/<n>` for
+ * the worker project's own repository (`repositoryKey`, `github.com/<owner>/<repo>`).
+ */
+const trustedPullRequest = (
+  link: { readonly url: string; readonly number: number },
+  repositoryKey: string | null,
+) => {
+  if (repositoryKey === null || !Number.isSafeInteger(link.number) || link.number <= 0)
+    return undefined;
+  const match =
+    /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/([0-9]+)$/.exec(link.url);
+  if (match === null || Number(match[3]) !== link.number) return undefined;
+  if (`github.com/${match[1]}/${match[2]}`.toLowerCase() !== repositoryKey.toLowerCase())
+    return undefined;
+  return { url: link.url, number: link.number };
+};
+
 /** A card's live fields from a thread in a linked environment, as `t3_thread_read` shows it. */
 export const remoteTaskCardState = (
   thread: OrchestratorMcpThreadDetail,
+  repositoryKey: string | null,
 ): Pick<KinTaskCardState, "status" | "pullRequests" | "lastError"> => {
   const status: KinTaskCardState["status"] = thread.archived
     ? "cancelled"
@@ -89,7 +108,10 @@ export const remoteTaskCardState = (
     links.length > 0 || thread.linkedPullRequest === null ? links : [thread.linkedPullRequest];
   return {
     status,
-    pullRequests: shown.map(({ url, number }) => ({ url, number })),
+    pullRequests: shown.flatMap((link) => {
+      const trusted = trustedPullRequest(link, repositoryKey);
+      return trusted === undefined ? [] : [trusted];
+    }),
     lastError: thread.archived ? "Thread no longer available" : null,
   };
 };

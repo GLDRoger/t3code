@@ -377,6 +377,8 @@ describe("Kin migrations", () => {
       yield* sql`DROP TABLE kin_auth_session_keys`;
       yield* sql`DROP TABLE kin_worker_charges`;
       yield* sql`ALTER TABLE kin_workers DROP COLUMN environment_id`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN remote_project_id`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN repository_key`;
       yield* sql`ALTER TABLE kin_workers DROP COLUMN project_id`;
       yield* sql`ALTER TABLE kin_workers DROP COLUMN title`;
       yield* sql`ALTER TABLE kin_workers DROP COLUMN chat_id`;
@@ -539,6 +541,8 @@ describe("Kin migrations", () => {
       yield* sql`DROP TABLE kin_lead_deliveries`;
       yield* sql`DROP TABLE kin_scheduled_tasks`;
       yield* sql`ALTER TABLE kin_workers DROP COLUMN environment_id`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN remote_project_id`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN repository_key`;
       yield* sql`ALTER TABLE kin_workers DROP COLUMN project_id`;
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 27`;
       for (const [id, subject, method, ip, revoked] of [
@@ -686,6 +690,8 @@ describe("Kin migrations", () => {
           chat_id: "chat",
           environment_id: "worker-env",
           project_id: "project",
+          remote_project_id: "remote-project",
+          repository_key: "github.com/acme/app",
         },
         kin_memory_reads: { org_id: "org", item_id: "fixture-id", last_read_at: 1794009600000 },
         kin_cursor: { org_id: "org", consumer: "worker-tracker", after_sequence: 42 },

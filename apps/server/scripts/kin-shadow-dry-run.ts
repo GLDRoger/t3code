@@ -582,6 +582,7 @@ export const runDryRun = Effect.fn("KinDryRun.run")(
             call: Effect.fn("KinDryRun.workerEnvironmentCall")(function* () {
               return yield* Effect.die("The dry run starts no workers.");
             }),
+            kill: Effect.die("The dry run starts no workers."),
           }),
         ),
         Layer.mock(WorkerTracker.WorkerTracker)({}),

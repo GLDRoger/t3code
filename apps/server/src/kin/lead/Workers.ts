@@ -46,7 +46,7 @@ import { resolveLead } from "./LeadMemory.ts";
 import { quote } from "./LeadPrompt.ts";
 import { buildBrief, Quoted, reportFormat } from "./workerBrief.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
-import { endedStatuses, WorkerTracker } from "./WorkerTracker.ts";
+import { endedStatuses, launchRequestId, unboundThreadId, WorkerTracker } from "./WorkerTracker.ts";
 
 const text = (max: number) => Schema.String.check(Schema.isMaxLength(max));
 
@@ -130,6 +130,10 @@ const decodeSelection = Schema.decodeUnknownEffect(ModelSelection);
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 type Lead = Effect.Success<ReturnType<typeof resolveLead>>;
+const bound = (worker: { readonly workerId: KinWorkerId; readonly threadId: ThreadId }) =>
+  worker.threadId !== unboundThreadId(worker.workerId);
+/** Transport failures and timeouts; a refusal there carries the code it was refused with. */
+const isAmbiguous = (error: OrchestratorMcpFailure) => error.code === "orchestration_error";
 
 export class KinWorkers extends Context.Service<
   KinWorkers,
@@ -187,12 +191,14 @@ const make = Effect.gen(function* () {
     if (row === undefined) return yield* missing();
     return yield* decodeEvent(row.json);
   });
-  const worker = Effect.fn("KinWorkers.worker")(function* (orgId: KinOrgId, workerId: KinWorkerId) {
+  /** The lead's own worker; another lead's, even in the same org, reads as not found. */
+  const worker = Effect.fn("KinWorkers.worker")(function* (ctx: Lead, workerId: KinWorkerId) {
     const [row] = yield* sql`SELECT worker_id AS "workerId", kind, agent_id AS "agentId",
       wakeup_id AS "wakeupId", thread_id AS "threadId", title, chat_id AS "chatId",
       model_json AS model, report_json AS report, environment_id AS "environmentId",
       project_id AS "projectId", started_at AS "startedAt"
-      FROM kin_workers WHERE org_id = ${orgId} AND worker_id = ${workerId} ORDER BY worker_id`;
+      FROM kin_workers WHERE org_id = ${ctx.orgId} AND agent_id = ${ctx.agentId}
+        AND worker_id = ${workerId} ORDER BY worker_id`;
     if (row === undefined) return yield* missing();
     return yield* decodeWorker(row);
   });
@@ -264,13 +270,13 @@ const make = Effect.gen(function* () {
         Effect.tapError((error) =>
           Effect.logWarning("Kin worker environment call failed", { code: error.code }),
         ),
-        Effect.mapError(
-          (error) =>
-            new KinChatError({
-              reason: "unavailable",
-              message: `${fallback} The worker environment said: ${error.message}`.slice(0, 2_000),
-            }),
-        ),
+        Effect.mapError((error) => {
+          const { known, untrusted } = WorkerEnvironment.describeFailure(error);
+          return new KinChatError({
+            reason: "unavailable",
+            message: `${fallback} ${known} Its own words:\n${quote("worker environment error (untrusted)", untrusted, true)}`,
+          });
+        }),
       );
   const pick = Effect.fn("KinWorkers.pick")(function* (
     model: typeof WorkerModel.Type | undefined,
@@ -315,13 +321,17 @@ const make = Effect.gen(function* () {
       );
     const matches: Array<ProjectId> = [];
     let cursor: number | null = 0;
-    while (cursor !== null) {
-      const page: Tool.Success<typeof WorkerEnvironment.tools.projects> = yield* env
+    for (let page = 0; cursor !== null; page++) {
+      if (page === WorkerEnvironment.MAX_PAGES)
+        return yield* denied("The worker environment's project list didn't end. Tell the owner.");
+      const listed: Tool.Success<typeof WorkerEnvironment.tools.projects> = yield* env
         .call(environmentId, WorkerEnvironment.tools.projects, { cursor, limit: 100 })
         .pipe(there("The worker could not start."));
-      for (const project of page.projects)
+      for (const project of listed.projects)
         if (project.repositoryIdentity?.canonicalKey === key) matches.push(project.id);
-      cursor = page.nextCursor;
+      if (listed.nextCursor !== null && listed.nextCursor <= cursor)
+        return yield* denied("The worker environment's project list didn't end. Tell the owner.");
+      cursor = listed.nextCursor;
     }
     if (matches.length !== 1)
       return yield* denied(
@@ -329,7 +339,7 @@ const make = Effect.gen(function* () {
           ? "The worker environment has no project for this repository. Tell the owner."
           : "The worker environment has several projects for this repository. Tell the owner.",
       );
-    return matches[0]!;
+    return { projectId: matches[0]!, repositoryKey: key };
   });
   /** The stop fan-out misses a run that starts during its pass; a pause seen after the launch or send stops it. */
   const stopIfPaused = Effect.fn("KinWorkers.stopIfPaused")(function* (
@@ -401,7 +411,7 @@ const make = Effect.gen(function* () {
         if ((input.kind === "review") !== (input.reviewOf !== undefined))
           return yield* denied("Review workers need reviewOf, and only review workers take it.");
         const author =
-          input.reviewOf === undefined ? undefined : yield* worker(ctx.orgId, input.reviewOf);
+          input.reviewOf === undefined ? undefined : yield* worker(ctx, input.reviewOf);
         const chatId =
           event._tag === "chat.message" ||
           event._tag === "widget.action" ||
@@ -431,7 +441,7 @@ const make = Effect.gen(function* () {
       return yield* shadow(ctx, plan.level, "kin_delegate", input, input.projectId);
     const environmentId = yield* admit(ctx.orgId);
     yield* supported(environmentId, modelSelection);
-    const projectId = yield* projectThere(environmentId, input.projectId);
+    const { projectId, repositoryKey } = yield* projectThere(environmentId, input.projectId);
     const items =
       reviewRefs !== undefined
         ? []
@@ -458,51 +468,61 @@ const make = Effect.gen(function* () {
     yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* lead(scope);
-        if (input.reviewOf !== undefined) yield* worker(ctx.orgId, input.reviewOf);
+        if (input.reviewOf !== undefined) yield* worker(ctx, input.reviewOf);
         const startedAt = yield* Clock.currentTimeMillis;
+        // The environment is written now, so a launch whose reply is lost can be found there.
         const inserted = yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id,
           kind, thread_id, review_of, model_json, provenance_json, status, report_json, started_at,
-          ended_at, title, chat_id, project_id) VALUES (${workerId}, ${ctx.orgId}, ${ctx.agentId},
-          ${ctx.wakeupId}, ${input.kind}, ${`kin-worker-${workerId}`}, ${input.reviewOf ?? null},
+          ended_at, title, chat_id, project_id, environment_id, remote_project_id, repository_key)
+          VALUES (${workerId}, ${ctx.orgId}, ${ctx.agentId}, ${ctx.wakeupId}, ${input.kind},
+          ${unboundThreadId(workerId)}, ${input.reviewOf ?? null},
           ${yield* encodeJson(modelSelection)}, ${yield* encodeJson(plan.event.provenance)}, 'queued',
-          NULL, ${startedAt}, NULL, ${input.title}, ${chatId}, ${input.projectId})
-          ON CONFLICT DO NOTHING RETURNING worker_id`;
+          NULL, ${startedAt}, NULL, ${input.title}, ${chatId}, ${input.projectId}, ${environmentId},
+          ${projectId}, ${repositoryKey})
+          ON CONFLICT (worker_id) DO NOTHING RETURNING worker_id`;
         if (inserted.length === 0) {
-          const stored = yield* worker(ctx.orgId, workerId);
+          const stored = yield* worker(ctx, workerId);
           if (stored.wakeupId !== ctx.wakeupId) return yield* denied();
-          yield* sql`UPDATE kin_workers SET status = 'queued', started_at = ${startedAt}, ended_at = NULL
+          yield* sql`UPDATE kin_workers SET status = 'queued', started_at = ${startedAt}, ended_at = NULL,
+              remote_project_id = ${projectId}, repository_key = ${repositoryKey},
+              environment_id = CASE WHEN thread_id = ${unboundThreadId(workerId)}
+                THEN ${environmentId} ELSE environment_id END
             WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId} AND status = 'failed'`;
         }
       }),
     );
     // The same request id there makes a retry return the thread the first launch started.
-    const launched = yield* env
-      .call(environmentId, WorkerEnvironment.tools.launch, {
-        projectId,
-        title: input.title,
-        modelSelection,
-        runtimeMode: "full-access",
-        interactionMode: "default",
-        workspaceStrategy: {
-          type: "worktree",
-          baseRef: input.baseRef ?? "origin/HEAD",
-          startFromOrigin: true,
-        },
-        message: brief,
-        clientRequestId: `kin-worker:${workerId}`,
-      })
-      .pipe(
-        Effect.tapError(() =>
-          Effect.gen(function* () {
-            const now = yield* Clock.currentTimeMillis;
-            yield* sql`UPDATE kin_workers SET status = 'failed', ended_at = ${now}
-              WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId} AND status = 'queued'`;
-          }).pipe(Effect.ignore),
-        ),
-        there("The worker could not start. Retry the same call or tell the owner."),
-      );
+    const launch = env.call(environmentId, WorkerEnvironment.tools.launch, {
+      projectId,
+      title: input.title,
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      workspaceStrategy: {
+        type: "worktree",
+        baseRef: input.baseRef ?? "origin/HEAD",
+        startFromOrigin: true,
+      },
+      message: brief,
+      clientRequestId: launchRequestId(workerId),
+    });
+    const launched = yield* launch.pipe(
+      // A lost reply or a timeout may follow a launch that happened; asking again finds it.
+      Effect.catchIf(isAmbiguous, () => launch),
+      Effect.tapError((error) =>
+        Effect.gen(function* () {
+          const now = yield* Clock.currentTimeMillis;
+          // A plain refusal started nothing, so recovery has nothing to look for.
+          const lookAgain = isAmbiguous(error) ? projectId : null;
+          yield* sql`UPDATE kin_workers SET status = 'failed', ended_at = ${now},
+              remote_project_id = ${lookAgain}
+            WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId} AND status = 'queued'`;
+        }).pipe(Effect.ignore),
+      ),
+      there("The worker could not start. Retry the same call or tell the owner."),
+    );
     const threadId = launched.threadId;
-    yield* sql`UPDATE kin_workers SET environment_id = ${environmentId}, thread_id = ${threadId}
+    yield* sql`UPDATE kin_workers SET thread_id = ${threadId}
       WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId}`;
     yield* stopIfPaused(ctx.orgId, {
       environmentId,
@@ -533,7 +553,7 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const config = yield* leadConfig(ctx);
         yield* sourceEvent(ctx, input.sourceEventId);
-        const stored = yield* worker(ctx.orgId, input.workerId);
+        const stored = yield* worker(ctx, input.workerId);
         // A reviewer sees only the author's refs; more lead text would end that isolation.
         if (stored.kind === "review")
           return yield* denied(
@@ -548,7 +568,7 @@ const make = Effect.gen(function* () {
     if (plan.worker.projectId === null || !plan.config.projects.includes(plan.worker.projectId))
       return yield* denied("Workers may only run in this lead's worker projects.");
     // A worker runs where it was launched, even after the host names another environment.
-    if (plan.worker.environmentId === null)
+    if (plan.worker.environmentId === null || !bound(plan.worker))
       return yield* denied("That worker never started. Start a new one with kin_delegate.");
     const environmentId = plan.worker.environmentId;
     const key = (yield* hash({ wakeupId: ctx.wakeupId, input })).slice(0, 32);
@@ -597,8 +617,9 @@ const make = Effect.gen(function* () {
     input: typeof StopInput.Type,
   ) {
     const ctx = yield* lead(scope);
-    const record = yield* sql.withTransaction(worker(ctx.orgId, input.workerId));
-    if (record.environmentId === null) return { workerId: input.workerId, stopped: false };
+    const record = yield* sql.withTransaction(worker(ctx, input.workerId));
+    if (record.environmentId === null || !bound(record))
+      return { workerId: input.workerId, stopped: false };
     const environmentId = record.environmentId;
     // A follow-up in the same wake-up starts a new run, which a second stop must still reach.
     const stopped = yield* WorkerEnvironment.stopThere(env, {
