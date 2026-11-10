@@ -71,13 +71,13 @@ export const KIN_DEFERRAL_ACTIONS: Record<KinDeferralActionId, KinDeferralAction
   undo: {
     id: "undo",
     label: "Undo",
-    accessibilityLabel: "Undo this deferral",
+    accessibilityLabel: "Undo this",
     tone: "secondary",
   },
   change: {
     id: "change",
     label: "Change",
-    accessibilityLabel: "Change this deferral with your lead",
+    accessibilityLabel: "Change this with your lead",
     tone: "secondary",
   },
   remind: {
@@ -101,7 +101,7 @@ export const KIN_DEFERRAL_ACTIONS: Record<KinDeferralActionId, KinDeferralAction
   cancel: {
     id: "cancel",
     label: "Cancel",
-    accessibilityLabel: "Cancel this deferral",
+    accessibilityLabel: "Cancel this",
     tone: "secondary",
   },
   done: {
@@ -248,15 +248,16 @@ function cardBody(card: KinDeferralCard, timeZone: string | undefined): CardBody
   const dueMs = Date.parse(card.dueAt);
   // The host writes `text` in the owner's zone; show it only when it adds to the local lines.
   const text = clamp(card.text, 280);
+  // Older hosts wrote "Deferred to …" as the text, which the local line already says.
   const withText = (lines: ReadonlyArray<string>) =>
-    text === "" || lines.includes(text) ? lines : [...lines, text];
+    text === "" || lines.includes(text) || text.startsWith("Deferred to ")
+      ? lines
+      : [...lines, text];
   switch (card.phase) {
     case undefined:
       return {
         phase: "confirmed",
-        lines: withText([
-          `Deferred to ${formatKinDeferralTime(dueMs, timeZone)}. ${then[card.onDue]}`,
-        ]),
+        lines: withText([`Set for ${formatKinDeferralTime(dueMs, timeZone)}. ${then[card.onDue]}`]),
         countdown: { to: dueMs, kind: "due" },
         // The host takes only Undo here until its owner-tap dispatcher lands for Change and Just remind me.
         actions: [KIN_DEFERRAL_ACTIONS.undo],
@@ -302,20 +303,37 @@ export function kinDeferralCardView(
   const decoded = decodeDeferral(widget.state);
   if (Option.isNone(decoded)) return null;
   const card = decoded.value;
-  const title = clamp(card.title, 200) || "This deferral";
+  const title = clamp(card.title, 200) || (card.onDue === "remind" ? "Reminder" : "Scheduled work");
   const body: CardBody =
     widget.closedAt === null
       ? cardBody(card, timeZone)
       : { phase: "closed", lines: ["Closed."], countdown: null, actions: [] };
+  // "Deferral" is Kin's word, not the owner's: they asked for a reminder or for work to wait.
+  const kind = card.onDue === "remind" ? "Reminder" : "Scheduled";
+  const eyebrow = body.phase === "asked" ? "Needs your decision" : kind;
   return {
     widgetId: widget.widgetId,
     revision: widget.revision,
     itemId: card.itemId,
-    eyebrow: body.phase === "asked" ? "Needs your decision" : "Deferral",
+    eyebrow,
     title,
     ...body,
-    accessibilityLabel: kinSentences([`Deferral: ${title}`, ...body.lines]),
+    accessibilityLabel: kinSentences([`${kind}: ${title}`, ...body.lines]),
   };
+}
+
+/**
+ * Kin's own note that it set something for later, as one quiet line: "Reminder set for Fri 13 Nov,
+ * 9:00". Null while the card asks for a decision, which still needs its buttons.
+ */
+export function kinDeferralQuietLine(widget: KinWidget, timeZone?: string): string | null {
+  const decoded = decodeDeferral(widget.state);
+  if (Option.isNone(decoded)) return null;
+  const card = decoded.value;
+  const open = widget.closedAt === null;
+  if (open && (card.phase === "heads_up" || card.phase === "asked")) return null;
+  const when = formatKinDeferralTime(Date.parse(card.dueAt), timeZone);
+  return card.onDue === "remind" ? `Reminder set for ${when}` : `Scheduled for ${when}`;
 }
 
 type KinCardTarget = Pick<KinDeferralCardView, "widgetId" | "revision" | "itemId">;

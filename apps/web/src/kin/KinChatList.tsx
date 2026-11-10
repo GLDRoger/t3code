@@ -1,7 +1,11 @@
+import {
+  kinChatListRowLabel,
+  kinChatListRows,
+  type KinChatListRow,
+} from "@t3tools/client-runtime/kin/kinChatListRows";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
   formatKinTime,
-  kinChatRowLabel,
   kinDirectory,
   kinWaitingBannerView,
   kinWaitingRowView,
@@ -22,7 +26,6 @@ import { Skeleton } from "../components/ui/skeleton";
 import { cn } from "../lib/utils";
 import { KinAvatar } from "./KinAvatar";
 import { ApproveOnPhone } from "./KinCards";
-import { kinChatListRows, type KinChatListRow } from "./kinChatListRows";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinInbox } from "./useKinHost";
 
@@ -156,7 +159,7 @@ function KinChatListItem(props: {
       <Link
         to="/kin/$environmentId/$orgId/$chatId"
         params={{ environmentId: props.environmentId, orgId: chat.orgId, chatId: chat.chatId }}
-        aria-label={kinSentenceLabel(row, time)}
+        aria-label={kinChatListRowLabel(row, time)}
         aria-current={props.active ? "page" : undefined}
         data-active={props.active}
         onClick={props.onOpen}
@@ -207,13 +210,6 @@ function KinChatListItem(props: {
       </Link>
     </li>
   );
-}
-
-function kinSentenceLabel(row: KinChatListRow, time: (date: Date) => string): string {
-  const label = kinChatRowLabel({ ...row.view, author: row.author, preview: row.preview }, time);
-  return [label, row.working ? "Working." : null, row.needsYou ? "Needs you." : null]
-    .filter((part) => part !== null)
-    .join(" ");
 }
 
 /**

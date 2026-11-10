@@ -91,6 +91,50 @@ export const KinLeadCreated = Schema.Struct({
 });
 export type KinLeadCreated = typeof KinLeadCreated.Type;
 
+/** Something a lead has in hand, in the owner's terms. Titles are text to show, never markup. */
+export const KinLeadTracking = Schema.Struct({
+  // work: a coding task running now. reminder: it will remind. follow_up: it will start, ask or
+  // chase when due. scheduled: a recurring task.
+  kind: Schema.Literals(["work", "reminder", "follow_up", "scheduled"]),
+  title: Schema.String.check(Schema.isMaxLength(280)),
+  // When it is due; absent for work under way and for scheduled tasks.
+  dueAt: Schema.optional(Schema.toEncoded(CanonicalUtcTimestamp)),
+  chatId: Schema.NullOr(KinChatId),
+});
+export type KinLeadTracking = typeof KinLeadTracking.Type;
+export const KIN_LEAD_TRACKING_CAP = 20;
+
+/** A lead as its owner sees it: who it is, what it is for and what it has in hand. */
+export const KinLeadProfile = Schema.Struct({
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+  name: TrimmedNonEmptyString,
+  domain: KinLeadDomain,
+  charter: KinLeadCharter,
+  // The model it thinks with, as the provider names it.
+  model: TrimmedNonEmptyString,
+  // The owner's direct chat with it.
+  ownerChatId: KinChatId,
+  // It is on a turn right now.
+  working: Schema.Boolean,
+  // Soonest first after work under way, at most KIN_LEAD_TRACKING_CAP.
+  tracking: Schema.Array(KinLeadTracking),
+});
+export type KinLeadProfile = typeof KinLeadProfile.Type;
+export const KinLeadsListInput = Schema.Struct({ orgId: KinOrgId });
+export type KinLeadsListInput = typeof KinLeadsListInput.Type;
+export const KinLeadsListResult = Schema.Struct({ leads: Schema.Array(KinLeadProfile) });
+export type KinLeadsListResult = typeof KinLeadsListResult.Type;
+/** Omitted fields stay as they are. */
+export const KinLeadUpdateInput = Schema.Struct({
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+  name: Schema.optional(KinLeadCreateInput.fields.name),
+  domain: Schema.optional(KinLeadDomain),
+  charter: Schema.optional(KinLeadCharter),
+});
+export type KinLeadUpdateInput = typeof KinLeadUpdateInput.Type;
+
 export const MemoryItemKind = Schema.Literals([
   "objective",
   "commitment",

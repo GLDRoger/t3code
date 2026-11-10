@@ -7,24 +7,32 @@ import { cn } from "../../../lib/cn";
 /** Online: the chat is live. Working: the lead is on a run. Both static; nothing animates here. */
 export type KinAvatarStatus = "online" | "working";
 
+const FRAME = { small: "size-7", regular: "size-10", large: "size-12" } as const;
+const SQUARE = {
+  small: "rounded-[9px]",
+  regular: "rounded-[12px]",
+  large: "rounded-[14px]",
+} as const;
+const BLOB = { small: 24, regular: 36, large: 44 } as const;
+
 /**
  * The frame says what it is (DESIGN 8.7): an agent is an outlined rounded square, a person a
  * filled circle, a group a filled rounded square. The blobatar inside says which one.
  */
 export function KinAvatar(props: {
   readonly avatar: KinAvatarView;
-  /** `small` sits in the chat's header pill and status row. */
-  readonly size?: "regular" | "small";
+  /** `small` sits in the chat's header pill and status row; `large` leads a chat list row. */
+  readonly size?: "regular" | "small" | "large";
   readonly status?: KinAvatarStatus | null;
 }) {
   const { kind, seed } = props.avatar;
-  const small = props.size === "small";
-  const square = small ? "rounded-[9px]" : "rounded-[12px]";
+  const size = props.size ?? "regular";
+  const square = SQUARE[size];
   return (
     <View
       accessible={false}
       importantForAccessibility="no-hide-descendants"
-      className={small ? "size-7" : "size-10"}
+      className={FRAME[size]}
     >
       <View
         className={cn(
@@ -34,7 +42,7 @@ export function KinAvatar(props: {
           kind === "group" && cn(square, "border border-secondary-border bg-secondary"),
         )}
       >
-        <Blobatar name={seed} size={small ? 24 : 36} />
+        <Blobatar name={seed} size={BLOB[size]} />
       </View>
       {props.status == null ? null : (
         <View

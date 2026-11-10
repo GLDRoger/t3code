@@ -75,35 +75,38 @@ const setup = Effect.gen(function* () {
 });
 
 describe("command permissions", () => {
-  it.effect.each(["kin.budget.set", "kin.triggers.setTimeZone", "kin.lead.create"] as const)(
-    "guards the Kin owner setting %s with the destination settings grant",
-    (method) =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const registry = yield* setup;
-          const permissions = createCommandPermissions(runtime, method);
-          registry.set(sessions(env), AsyncResult.success(grant(true)));
-          expect(registry.get(permissions.permissionAtom(env))).toBe(false);
-          expect((yield* permissions.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
-            "EnvironmentAuthorizationError",
-          );
-          registry.set(
-            sessions(env),
-            AsyncResult.success({
-              ...grant(false),
-              scopes: [AuthSettingsWriteScope],
-              permissions: [AuthSettingsWriteScope],
-            }),
-          );
-          expect(registry.get(permissions.permissionAtom(env))).toBe(true);
-          yield* permissions.authorize(registry, env);
-          registry.set(sessions(other), AsyncResult.success(grant(false)));
-          expect(registry.get(permissions.permissionAtom(other))).toBe(false);
-          expect((yield* permissions.authorize(registry, other).pipe(Effect.flip))._tag).toBe(
-            "EnvironmentAuthorizationError",
-          );
-        }),
-      ),
+  it.effect.each([
+    "kin.budget.set",
+    "kin.triggers.setTimeZone",
+    "kin.lead.create",
+    "kin.lead.update",
+  ] as const)("guards the Kin owner setting %s with the destination settings grant", (method) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        const permissions = createCommandPermissions(runtime, method);
+        registry.set(sessions(env), AsyncResult.success(grant(true)));
+        expect(registry.get(permissions.permissionAtom(env))).toBe(false);
+        expect((yield* permissions.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
+          "EnvironmentAuthorizationError",
+        );
+        registry.set(
+          sessions(env),
+          AsyncResult.success({
+            ...grant(false),
+            scopes: [AuthSettingsWriteScope],
+            permissions: [AuthSettingsWriteScope],
+          }),
+        );
+        expect(registry.get(permissions.permissionAtom(env))).toBe(true);
+        yield* permissions.authorize(registry, env);
+        registry.set(sessions(other), AsyncResult.success(grant(false)));
+        expect(registry.get(permissions.permissionAtom(other))).toBe(false);
+        expect((yield* permissions.authorize(registry, other).pipe(Effect.flip))._tag).toBe(
+          "EnvironmentAuthorizationError",
+        );
+      }),
+    ),
   );
   it.effect.each(Object.values(KIN_PUSH_WS_METHODS))(
     "requires the destination read grant for %s",
@@ -134,6 +137,8 @@ describe("command permissions", () => {
   it.effect.each([
     // Muting quiets only the caller's own pushes, so reading the chat is enough.
     [KIN_CHAT_WS_METHODS.chatsMute, AuthKinChatScope],
+    // A person's own leads are part of their chat list.
+    ["kin.leads.list", AuthKinChatScope],
     [KIN_PEOPLE_WS_METHODS.peopleCreateInvite, AuthAccessWriteScope],
     [KIN_PEOPLE_WS_METHODS.peopleRevokeDevice, AuthAccessWriteScope],
     [KIN_PEOPLE_WS_METHODS.peopleRevokeInvite, AuthAccessWriteScope],

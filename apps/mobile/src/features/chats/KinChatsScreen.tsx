@@ -7,21 +7,14 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
-import {
-  KinAskRow,
-  KinChatRow,
-  KinChatRowSkeletons,
-  KinInboxFoldHeader,
-} from "./components/KinChatRow";
+import { KinChatRow, KinChatRowSkeletons } from "./components/KinChatRow";
 import { KinInboxNotice, KinScreenState } from "./components/KinScreenState";
 import { KinWaitingBanner } from "./components/KinWaitingBanner";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
+import { kinChatListRowLabel, kinChatListRows } from "@t3tools/client-runtime/kin/kinChatListRows";
 import {
   formatKinTime,
-  kinChatRowLabel,
   kinDirectory,
-  kinInboxListRows,
-  kinLeadChatId,
   kinWaitingBannerView,
   type KinChatRowView,
   type KinDirectory,
@@ -68,6 +61,8 @@ export function KinChatsView(props: {
   const { state, onOpenChat } = props;
   const view = state._tag === "ready" ? selectKinInboxView(state.inbox.value) : null;
   const banner = view === null ? null : kinWaitingBannerView(view.waiting);
+  // The stale notice only shows over a cached inbox; an empty header would still pad the list.
+  const notice = state._tag === "ready" && !(state.connected && state.inbox.live);
   if (state._tag !== "ready" || view === null || view.rows.length === 0) {
     return (
       <ScreenScrollView
@@ -81,57 +76,43 @@ export function KinChatsView(props: {
               {banner === null ? null : (
                 <KinWaitingBanner view={banner} onPress={props.onOpenWaiting} />
               )}
-              <EmptyState
-                title="No chats yet"
-                detail="Your lead's chat appears here once Kin is set up."
-              />
+              <EmptyState title="No chats yet" detail="Chats with your leads show up here." />
             </>
           )}
         </KinScreenState>
       </ScreenScrollView>
     );
   }
-  const leadChatId = kinLeadChatId(view.rows);
-  const rows = kinInboxListRows(view, props.directory);
+  const rows = kinChatListRows(view, props.directory);
   return (
     <LegendList
       renderScrollComponent={NativeScrollView}
       className="flex-1"
       contentInsetAdjustmentBehavior="automatic"
-      contentContainerStyle={{ paddingTop: 4, paddingBottom: 16 }}
+      contentContainerStyle={{ paddingTop: 4, paddingBottom: 24 }}
       data={rows}
-      keyExtractor={(row) => row.key}
-      getItemType={(row) => row.type}
-      estimatedItemSize={72}
+      keyExtractor={(row) => row.chat.chatId}
+      estimatedItemSize={76}
       recycleItems
-      renderItem={({ item }) =>
-        item.type === "fold" ? (
-          <KinInboxFoldHeader
-            title={item.title}
-            count={item.count}
-            accessibilityLabel={item.accessibilityLabel}
+      renderItem={({ item, index }) => (
+        <>
+          <KinChatRow
+            row={item}
+            accessibilityLabel={kinChatListRowLabel(item, (date) => formatKinTime(date))}
+            onPress={() => onOpenChat(item.chat.chatId)}
           />
-        ) : (
-          <>
-            <KinChatRow
-              view={item.view}
-              accessibilityLabel={kinChatRowLabel(item.view, (date) => formatKinTime(date))}
-              onPress={() => onOpenChat(item.view.chatId)}
-            />
-            {item.divider ? <View className="ml-[68px] h-px bg-border-subtle" /> : null}
-          </>
-        )
-      }
+          {index < rows.length - 1 ? <View className="ml-[76px] h-px bg-border-subtle" /> : null}
+        </>
+      )}
       ListHeaderComponent={
-        <View className="gap-3 px-4 pb-2 pt-2">
-          <KinInboxNotice state={state} />
-          {banner === null ? null : (
-            <KinWaitingBanner view={banner} onPress={props.onOpenWaiting} />
-          )}
-        </View>
-      }
-      ListFooterComponent={
-        <KinAskRow {...(leadChatId === null ? {} : { onPress: () => onOpenChat(leadChatId) })} />
+        notice || banner !== null ? (
+          <View className="gap-3 px-4 pb-2 pt-2">
+            <KinInboxNotice state={state} />
+            {banner === null ? null : (
+              <KinWaitingBanner view={banner} onPress={props.onOpenWaiting} />
+            )}
+          </View>
+        ) : null
       }
     />
   );

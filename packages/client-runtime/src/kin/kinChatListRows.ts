@@ -1,11 +1,12 @@
-import { kinTapText } from "@t3tools/client-runtime/kin/kinChoicePresentation";
-import type { KinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
+import type { KinChatSummary } from "@t3tools/contracts";
+
+import type { KinInboxView } from "./kinInboxModel.ts";
 import {
+  kinChatRowLabel,
   kinChatRowView,
   type KinChatRowView,
   type KinDirectory,
-} from "@t3tools/client-runtime/kin/kinScreenState";
-import type { KinChatSummary } from "@t3tools/contracts";
+} from "./kinScreenState.ts";
 
 export interface KinChatListRow {
   readonly chat: KinChatSummary;
@@ -32,8 +33,6 @@ function previewOf(chat: KinChatSummary, view: KinChatRowView): string {
   const last = chat.lastMessage;
   if (last === null) return "Say hello to get started";
   if (last.status === "deleted") return view.preview;
-  // A card tap is stored as JSON; its own words stand in, never the JSON.
-  if (last.kind === "widget_action") return kinTapText(last.body) ?? "Answered";
   if (last.body.trim() === "" && last.widgetId !== null) {
     const { widgetId } = last;
     return CARD_PREVIEWS.find(([prefix]) => widgetId.startsWith(prefix))?.[1] ?? "Sent a card";
@@ -63,4 +62,12 @@ export function kinChatListRows(
   });
   const settled = (row: KinChatListRow) => row.fresh && !row.needsYou && !row.working;
   return [...rows.filter((row) => !settled(row)), ...rows.filter(settled)];
+}
+
+/** "Tech lead, agent. Payments test fixed. 9:30. 3 unread. Working." */
+export function kinChatListRowLabel(row: KinChatListRow, time: (date: Date) => string): string {
+  const label = kinChatRowLabel({ ...row.view, author: row.author, preview: row.preview }, time);
+  return [label, row.working ? "Working." : null, row.needsYou ? "Needs you." : null]
+    .filter((part) => part !== null)
+    .join(" ");
 }

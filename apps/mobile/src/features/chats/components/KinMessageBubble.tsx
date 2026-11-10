@@ -30,8 +30,6 @@ import {
 } from "@t3tools/client-runtime/kin/kinChatFeed";
 import type { KinOutboxEntry } from "@t3tools/client-runtime/kin/kinOutbox";
 import {
-  KIN_REACTION_HINT,
-  KIN_REACTION_HINT_LABEL,
   KIN_PICKER_REACTIONS,
   KIN_REACTION_NAMES,
   type KinReactionChip,
@@ -74,8 +72,6 @@ export function KinMessageBubble(props: {
   readonly onOpenActions: (() => void) | null;
   /** A direct chat has one other author, so it shows no author lines. */
   readonly direct: boolean;
-  /** "React 👍/👎 to answer" on the lead's latest message, for its owner. */
-  readonly showReplyHint: boolean;
 }) {
   const { row, onReact, onOpenActions } = props;
   const { message } = row;
@@ -214,15 +210,6 @@ export function KinMessageBubble(props: {
           ))}
         </View>
       ) : null}
-      {props.showReplyHint ? (
-        <Text
-          textRole="caption"
-          className="px-1 text-foreground-muted"
-          accessibilityLabel={KIN_REACTION_HINT_LABEL}
-        >
-          {KIN_REACTION_HINT}
-        </Text>
-      ) : null}
     </View>
   );
 }
@@ -268,6 +255,17 @@ export function KinDraftBubble(props: {
           resolveImageSource={kinImageSource}
         />
       </View>
+    </View>
+  );
+}
+
+/** Kin's own bookkeeping from an older host, kept out of the way: one small centred line. */
+export function KinQuietLine(props: { readonly text: string }) {
+  return (
+    <View className="items-center px-8 py-1.5">
+      <Text textRole="caption" numberOfLines={1} className="text-center text-foreground-muted">
+        {props.text}
+      </Text>
     </View>
   );
 }

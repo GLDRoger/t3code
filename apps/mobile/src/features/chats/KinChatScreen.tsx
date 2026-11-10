@@ -12,8 +12,6 @@ import {
 } from "@react-navigation/native";
 import {
   EnvironmentId,
-  KIN_NO_REACTIONS,
-  KIN_YES_REACTIONS,
   KinChatId,
   type KinChatHistoryInput,
   type KinChatHistoryResult,
@@ -62,7 +60,6 @@ import type { ComposerEditorHandle } from "../../native/T3ComposerEditor.types";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { setComposerDraftText } from "../../state/use-composer-drafts";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { useNowMinuteMs } from "../../lib/clock";
 import { useMarkdownPreviewStyles } from "../files/FileMarkdownPreview";
 import { useResolveClassNames } from "uniwind";
 import type { NativeMarkdownTextStyle } from "../../native/SelectableMarkdownText";
@@ -89,6 +86,7 @@ import {
   KinDraftBubble,
   KinMessageBubble,
   KinPendingBubble,
+  KinQuietLine,
   KinSystemLine,
 } from "./components/KinMessageBubble";
 import {
@@ -111,6 +109,7 @@ import {
   type KinFeedViewer,
   type KinPaging,
 } from "@t3tools/client-runtime/kin/kinChatFeed";
+import { kinQuietCardLine } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { useLocalDayStartMs } from "./state/useLocalDayStartMs";
 import { kinClient, type KinSynced } from "./state/kinClient";
 import { splitKinOutbox, type KinOutboxEntry } from "@t3tools/client-runtime/kin/kinOutbox";
@@ -146,7 +145,6 @@ import { useKinReconnect } from "./state/useKinReconnect";
 import {
   kinReactionChips,
   kinReactionToggle,
-  kinSoftReplyMessageId,
   kinViewerMemberId,
 } from "@t3tools/client-runtime/kin/kinReactions";
 import { KinBadgeSync } from "./notifications/KinBadgeSync";
@@ -320,7 +318,6 @@ function KinLiveChat(props: {
 
 // Mirrors the host's reactable cards; the host still refuses the rest.
 const REACTABLE_WIDGETS = new Set(["choice", "task", "routine"]);
-const YES_NO = new Set<string>([...KIN_YES_REACTIONS, ...KIN_NO_REACTIONS]);
 
 let fixtureMessages: ReadonlyArray<KinMessage> | null = null;
 const readFixtureMessages = (fixtures: KinFixtures) =>
@@ -768,19 +765,11 @@ function KinChatFeed(props: {
   const widgets = new Map(streamed.widgets.map((widget) => [widget.widgetId, widget]));
   const canReactHere = useAtomValue(kinClient.react.permissionAtom(props.environmentId));
   const react = useAtomCommand(kinClient.react, "react");
-  const nowMs = useNowMinuteMs();
   const viewerMemberId = kinViewerMemberId(props.members, props.viewer.personId);
   const canReact =
     canReactHere &&
     viewerMemberId !== null &&
     props.members.some((member) => member.memberId === viewerMemberId && member.role !== "guest");
-  const softReplyId = kinSoftReplyMessageId(
-    streamed.messages,
-    props.members,
-    props.viewer.personId,
-    props.direct,
-    nowMs,
-  );
   const reactorName = (memberId: string) => {
     const member = props.members.find((candidate) => candidate.memberId === memberId);
     if (member === undefined) return null;
@@ -988,6 +977,8 @@ function KinChatFeed(props: {
       case "message": {
         const { message } = item;
         const widget = message.widgetId === null ? undefined : widgets.get(message.widgetId);
+        const quiet = kinQuietCardLine(widget);
+        if (quiet !== null) return <KinQuietLine text={quiet} />;
         const chips = kinReactionChips(
           streamed.reactions,
           message.messageId,
@@ -1024,12 +1015,6 @@ function KinChatFeed(props: {
                       input: kinReactionToggle(chips, message.messageId, emoji),
                     })
                 : null
-            }
-            showReplyHint={
-              canReact &&
-              message.messageId === softReplyId &&
-              message.widgetId === null &&
-              !chips.some((chip) => chip.mine && YES_NO.has(chip.emoji))
             }
           />
         );
@@ -1213,7 +1198,6 @@ function KinChatFeed(props: {
         extraData={[
           streamed.widgets,
           streamed.reactions,
-          softReplyId,
           canReact,
           markdownStyle,
           ownMarkdownStyle,

@@ -20,6 +20,7 @@ import {
   formatKinDeferralTime,
   KIN_DEFERRAL_ACTIONS,
   kinDeferralCardView,
+  kinDeferralQuietLine,
   type KinDeferralCardView,
 } from "./kinDeferralPresentation.ts";
 import {
@@ -159,7 +160,7 @@ const ROUTINE_SECTIONS: Record<KinRoutineSection, string> = {
   ci_red: "CI failing",
   objective_at_risk: "Objective at risk",
   worker: "Workers",
-  past_review: "Past review",
+  past_review: "Overdue for a check",
   done: "Done",
   slipped: "Slipped",
   promised: "Promised",
@@ -187,6 +188,14 @@ function digestView(card: Omit<KinDigestCardView, "accessibilityLabel">): KinDig
   return { ...card, accessibilityLabel: kinSentences(parts) };
 }
 
+// Hosts write some notes with a raw timestamp ("review by 2026-11-09T16:09:12.531Z").
+const ISO_TIME = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})/g;
+const readableTimes = (text: string) =>
+  text.replace(ISO_TIME, (iso) => {
+    const ms = Date.parse(iso);
+    return Number.isNaN(ms) ? iso : formatKinDeferralTime(ms);
+  });
+
 function kinRoutineView(card: KinRoutineCard): KinDigestCardView {
   return digestView({
     eyebrow: card.routine === "morning_brief" ? "Morning brief" : "Evening summary",
@@ -202,7 +211,7 @@ function kinRoutineView(card: KinRoutineCard): KinDigestCardView {
             ? null
             : ROUTINE_SECTIONS[row.section],
         text,
-        note: row.note === undefined ? null : clamp(row.note, 280) || null,
+        note: row.note === undefined ? null : clamp(readableTimes(row.note), 280) || null,
         link:
           url === null
             ? null
@@ -336,6 +345,21 @@ export function kinScheduledTaskCardView(
       : [],
     accessibilityLabel: kinSentences([`Scheduled task: ${title}`, ...lines]),
   };
+}
+
+/**
+ * Kin's bookkeeping from older hosts (a saved note, a reminder it set) as one quiet line instead
+ * of a card. Null for every card the owner acts on or reads.
+ */
+export function kinQuietCardLine(widget: KinWidget | undefined, timeZone?: string): string | null {
+  if (widget === undefined || widget.widgetClass !== "native") return null;
+  if (widget.type === "deferral") return kinDeferralQuietLine(widget, timeZone);
+  if (widget.type !== KIN_MEMORY_CHANGES_CARD) return null;
+  const changes = kinMemoryChangesView(widget);
+  if (changes === null) return null;
+  const rest = changes.items.length - 1;
+  const first = changes.items[0]!.line;
+  return rest === 0 ? first : `${first} and ${rest} more`;
 }
 
 /** What a message's card draws. Anything this build can't read falls back to plain text. */

@@ -15,7 +15,8 @@ import type { AsyncResult } from "effect/reactivity";
 import type { SupervisorConnectionState } from "../connection/model.ts";
 import type { KinSynced } from "./kinStreams.ts";
 import type { KinHost } from "./kinHost.ts";
-import type { KinInboxFold, KinInboxRow, KinInboxState, KinInboxView } from "./kinInboxModel.ts";
+import { kinTapText } from "./kinTap.ts";
+import type { KinInboxRow, KinInboxState, KinInboxView } from "./kinInboxModel.ts";
 
 /** What a Kin screen reading the inbox shows. */
 export type KinInboxScreenState =
@@ -315,6 +316,10 @@ export function kinPreviewText(body: string): string {
 function kinMessagePreview(last: KinChatSummary["lastMessage"]): string {
   if (last === null) return "No messages yet";
   if (last.status === "deleted") return "Message deleted";
+  if (last.kind === "widget_action") return kinTapText(last.body);
+  // Hosts before the quiet-turn change posted their own bookkeeping as system rows.
+  if (last.kind === "system" && last.widgetId?.startsWith("memory-changes:")) return "Saved a note";
+  if (last.kind === "system" && last.widgetId?.startsWith("deferral:")) return "Set a reminder";
   return kinPreviewText(last.body) || "Message";
 }
 
@@ -371,63 +376,6 @@ export function kinChatRowView(
   };
 }
 
-const FOLD_TITLES: Record<KinInboxFold, string> = {
-  needsYou: "Needs you",
-  working: "Working",
-  rest: "Unread and done",
-};
-
-export type KinInboxListRow =
-  | {
-      readonly type: "fold";
-      readonly key: string;
-      readonly title: string;
-      readonly count: number;
-      readonly accessibilityLabel: string;
-    }
-  | {
-      readonly type: "chat";
-      readonly key: string;
-      readonly view: KinChatRowView;
-      /** A divider under it: the next row is another chat, not a fold header or the end. */
-      readonly divider: boolean;
-    };
-
-/**
- * The chat list with a header over each fold that has chats. With nothing waiting or working,
- * the folds would say nothing, so the list stays plain.
- */
-export function kinInboxListRows(
-  view: KinInboxView,
-  directory: KinDirectory,
-): ReadonlyArray<KinInboxListRow> {
-  const headed = view.folds.needsYou + view.folds.working > 0;
-  const rows: Array<KinInboxListRow> = [];
-  let fold: KinInboxFold | null = null;
-  for (const row of view.rows) {
-    if (headed && row.fold !== fold) {
-      fold = row.fold;
-      const count = view.folds[fold];
-      rows.push({
-        type: "fold",
-        key: `fold:${fold}`,
-        title: FOLD_TITLES[fold],
-        count,
-        accessibilityLabel: `${FOLD_TITLES[fold]}, ${count} ${count === 1 ? "chat" : "chats"}`,
-      });
-    }
-    const last = rows[rows.length - 1];
-    if (last?.type === "chat") rows[rows.length - 1] = { ...last, divider: true };
-    rows.push({
-      type: "chat",
-      key: row.chat.chatId,
-      view: kinChatRowView(row, directory),
-      divider: false,
-    });
-  }
-  return rows;
-}
-
 /** "Tech lead, agent. Payments test fixed, PR 212 ready. 9:30. 3 unread." */
 export function kinChatRowLabel(view: KinChatRowView, formatTime: (date: Date) => string): string {
   const preview =
@@ -482,28 +430,6 @@ export function kinWaitingBannerView(
     summary: [...parts, ...(rest > 0 ? [`${rest} more`] : [])].join(" · "),
     accessibilityLabel: `Waiting on you, ${items}: ${parts.join(", ")}${rest > 0 ? `, and ${rest} more` : ""}`,
   };
-}
-
-/**
- * The footer's target: the viewer's direct chat with the lead. `kin.orgs.list` carries no agent
- * role yet, so the lead is the agent that joined a direct chat first: setup creates it before any
- * other. Activity order never decides, so the target stays put as chats update.
- */
-export function kinLeadChatId(rows: ReadonlyArray<KinInboxRow>): KinChatId | null {
-  let best: { readonly chatId: KinChatId; readonly joinedAt: string } | null = null;
-  for (const { chat } of rows) {
-    if (chat.kind !== "direct") continue;
-    const agent = chat.members.find((member) => member.principal._tag === "agent");
-    const joinedAt = agent?.joinedAt ?? chat.createdAt;
-    if (
-      best === null ||
-      joinedAt < best.joinedAt ||
-      (joinedAt === best.joinedAt && chat.chatId < best.chatId)
-    ) {
-      best = { chatId: chat.chatId, joinedAt };
-    }
-  }
-  return best?.chatId ?? null;
 }
 
 /**
