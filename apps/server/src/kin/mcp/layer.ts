@@ -17,6 +17,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatToolkit, handlers } from "./KinChatToolkit.ts";
 import * as KinApprovalsMcp from "../approvals/mcp.ts";
 import * as KinIssuedTokens from "./KinIssuedTokens.ts";
+import * as KinToolGate from "./KinToolGate.ts";
 
 export class KinAgentSessions extends Context.Service<
   KinAgentSessions,
@@ -63,8 +64,9 @@ const auth = HttpRouter.middleware<{ provides: McpInvocationContext | KinServer 
   }),
 ).layer;
 
+// Whatever is registered here, every tool call passes the gate first.
 export const endpoint = <A, E, R>(registrations: Layer.Layer<A, E, R>) =>
-  McpHttpServer.layerMcpTransport(registrations).pipe(
+  McpHttpServer.layerMcpTransport(Layer.merge(registrations, KinToolGate.layer)).pipe(
     Layer.provide(
       Layer.effect(
         McpSessionRegistry.McpSessionRegistry,

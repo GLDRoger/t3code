@@ -16,6 +16,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as TestClock from "effect/testing/TestClock";
 import * as SecureRandom from "effect/crypto/SecureRandom";
+import { recordAudience, turnAudience } from "../lead/Audience.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Effect from "effect/Effect";
@@ -152,5 +153,8 @@ export const startAgentWakeup = Effect.fn("test.startAgentWakeup")(function* (in
   const run = yield* startWakeupRun(input.threadId, wakeupId);
   yield* sql`UPDATE kin_wakeups SET thread_id = ${input.threadId}, run_id = ${run.id}
     WHERE org_id = ${input.orgId} AND wakeup_id = ${wakeupId}`;
+  // What building its prompt records, before any tool runs.
+  const turn = { orgId: input.orgId, agentId: input.agentId, wakeupId };
+  yield* recordAudience(turn, yield* turnAudience(turn));
   return wakeupId;
 }, Effect.provide(KinEventQueue.layer));

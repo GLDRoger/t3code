@@ -18,6 +18,7 @@ import {
 import { McpServer } from "effect/ai";
 import { KinAgentSessions } from "./layer.ts";
 import * as KinIssuedTokens from "./KinIssuedTokens.ts";
+import { SHARED_TOOLS, sharedToolAllowed } from "../lead/SharedTools.ts";
 import { KinChatToolkit, handlers } from "./KinChatToolkit.ts";
 import * as KinApprovalsMcp from "../approvals/mcp.ts";
 import budget from "./agentContextBudget.json" with { type: "json" };
@@ -323,6 +324,17 @@ it.effect.each([true, false])(
         ]);
         for (const name of ["schedule_task", "t3_thread_launch", "create_threads"])
           assert.notInclude(toolNames, name);
+        // Every tool a lead can call says what it may do where others read; a tool added later
+        // without a line is refused there, and the table names no tool that isn't served.
+        assert.sameMembers(toolNames, Object.keys(SHARED_TOOLS));
+        assert.lengthOf(toolNames, 23);
+        assert.isFalse(
+          yield* sharedToolAllowed(
+            { orgId: person.orgId, agentId, wakeupId: "any" },
+            "kin_tool_added_later",
+            {},
+          ).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+        );
         assert.strictEqual(
           (yield* request("/mcp", issued.config.authorizationHeader, "initialize", initialize))
             .status,

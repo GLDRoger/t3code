@@ -8,6 +8,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
@@ -1232,6 +1233,37 @@ export const layerInProcessMcpServer = McpServer.middleware<{
     ),
   { global: true },
 ).pipe(Layer.provideMerge(McpServer.McpServer.layer));
+
+/** A tool call a gate refused before its handler ran; the message is what the caller reads. */
+export class ToolCallRefused extends Schema.Error<ToolCallRefused>("t3/mcp/ToolCallRefused")({
+  ...McpSchema.McpErrorBase.fields,
+  _tag: Schema.tag("ToolCallRefused"),
+  code: Schema.tag(-32003),
+}) {}
+
+/**
+ * Every tool call on the server this joins passes `admit` before its handler, whichever toolkit
+ * registered the tool, including ones added later. `admit` sees the tool name and its raw
+ * arguments; `false` answers with `refusal` and the handler never runs.
+ */
+export const toolCallGate = <R>(
+  admit: (name: string, args: unknown) => Effect.Effect<boolean, never, R>,
+  refusal: string,
+) =>
+  McpServer.middleware()(
+    (effect, { method, target, payload }) =>
+      method !== "tools/call"
+        ? effect
+        : admit(
+            target,
+            Predicate.hasProperty(payload, "arguments") ? payload.arguments : undefined,
+          ).pipe(
+            Effect.flatMap((admitted) =>
+              admitted ? effect : Effect.fail(new ToolCallRefused({ message: refusal })),
+            ),
+          ),
+    { global: true },
+  );
 
 export const layerMcpTransport = <RA, RE, RR>(registrations: Layer.Layer<RA, RE, RR>) =>
   McpServer.layerHttp({

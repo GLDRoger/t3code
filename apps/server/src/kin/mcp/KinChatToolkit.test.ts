@@ -44,7 +44,14 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Kin from "../layer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
-import { AUDIENCE_MOVED, SHARED_OTHER_CHAT } from "../lead/Audience.ts";
+import {
+  AUDIENCE_MOVED,
+  PRIVATE_DESTINATION,
+  SHARED_ELSEWHERE,
+  SHARED_OTHER_CHAT,
+  SHARED_REFUSAL,
+} from "../lead/Audience.ts";
+import * as KinToolGate from "./KinToolGate.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { KinChatToolkit, handlers, agentServices } from "./KinChatToolkit.ts";
 
@@ -118,6 +125,16 @@ const liveThreads = Layer.mock(ThreadManagement.ThreadManagementService)({
     Effect.succeed({ ...liveThreadShell(id), providerInstanceId: thread.providerInstanceId }),
 });
 const layer = Layer.merge(registration, KinMcp.registry(fakeRegistry)).pipe(
+  Layer.provideMerge(runtime({ KIN_ENABLED: true })),
+  Layer.provideMerge(authorityLayer),
+  Layer.provideMerge(liveThreads),
+);
+/** The same toolkit behind the Kin endpoint's gate, which every tool call passes first. */
+const gatedLayer = Layer.mergeAll(
+  registration,
+  KinToolGate.layer.pipe(Layer.provide(McpHttpServer.layerInProcessMcpServer)),
+  KinMcp.registry(fakeRegistry),
+).pipe(
   Layer.provideMerge(runtime({ KIN_ENABLED: true })),
   Layer.provideMerge(authorityLayer),
   Layer.provideMerge(liveThreads),
@@ -311,17 +328,119 @@ it.effect(
         message: SHARED_OTHER_CHAT,
       });
       assert.isFalse((yield* call("kin_chat_read", { chatId: "room" })).isError);
+      // Built for the owner alone, it now says nothing where it was asked, nor anywhere else.
+      for (const [chatId, message] of [
+        ["room", AUDIENCE_MOVED],
+        [direct.chatId, SHARED_ELSEWHERE],
+      ] as const)
+        assert.include(
+          errorOf(
+            yield* call("kin_chat_post", {
+              chatId,
+              body: "Built for the owner alone",
+              intent: "evidence",
+            }),
+          ),
+          { reason: "not_allowed", message },
+        );
+      // Shared once, shared until it ends: the teammate leaving opens nothing back up.
+      yield* sql`UPDATE kin_chat_members SET left_at = ${at} WHERE member_id = 'room-teammate'`;
+      assert.include(errorOf(yield* call("kin_chat_read", { chatId: direct.chatId })), {
+        reason: "not_allowed",
+        message: SHARED_OTHER_CHAT,
+      });
+    }).pipe(Effect.provide(layer)),
+);
+
+// Review of 0a2a431b26: an owner-only routine turn could post a notice into a group a teammate
+// reads, with whatever the owner's context put in it.
+it.effect("an owner-only turn posts nothing where a teammate reads, and the owner hears once", () =>
+  Effect.gen(function* () {
+    const { chat: direct, person, sql } = yield* seed(true);
+    const at = "1970-01-01T00:00:00.000Z";
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES ('teammate', ${person.orgId}, 'teammate', 'Teammate', ${at})`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at)
+      VALUES ('room', ${person.orgId}, 'team_group', 'Launch', 0, ${at})`;
+    for (const [member, kind, principal, role] of [
+      ["room-owner", "person", person.personId, "owner"],
+      ["room-teammate", "person", "teammate", "member"],
+      ["room-lead", "agent", agentId, "member"],
+    ] as const)
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, agent_id, role, joined_at)
+        VALUES (${member}, ${person.orgId}, 'room', ${kind}, ${kind === "person" ? principal : null},
+          ${kind === "agent" ? principal : null}, ${role}, ${at})`;
+    for (const clientMessageId of ["routine-1", "routine-2"])
       assert.include(
         errorOf(
           yield* call("kin_chat_post", {
-            chatId: direct.chatId,
-            body: "Built for the owner alone",
+            chatId: "room",
+            body: "Invented private brief",
             intent: "evidence",
+            clientMessageId,
           }),
         ),
-        { reason: "not_allowed", message: AUDIENCE_MOVED },
+        { reason: "not_allowed", message: PRIVATE_DESTINATION },
       );
-    }).pipe(Effect.provide(layer)),
+    assert.deepStrictEqual(
+      yield* sql`SELECT body FROM kin_messages WHERE chat_id = 'room' ORDER BY seq`,
+      [],
+    );
+    assert.deepStrictEqual(
+      yield* sql`SELECT body FROM kin_messages WHERE chat_id = ${direct.chatId}
+        AND author_kind = 'system' ORDER BY seq`,
+      [{ body: "Lead couldn't post in Launch: other people are in it." }],
+    );
+    // Its own direct chat with the owner still gets the post.
+    assert.isFalse(
+      (yield* call("kin_chat_post", {
+        chatId: direct.chatId,
+        body: "Invented brief",
+        intent: "evidence",
+      })).isError,
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("every tool call passes the gate, which holds a turn a teammate reads to its list", () =>
+  Effect.gen(function* () {
+    const { chat: direct, person, chatService, sql } = yield* seed();
+    const kin = yield* Kin.KinServer;
+    const at = "1970-01-01T00:00:00.000Z";
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES ('teammate', ${person.orgId}, 'teammate', 'Teammate', ${at})`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+      VALUES ('room', ${person.orgId}, 'team_group', 0, ${at})`;
+    for (const [member, kind, principal, role] of [
+      ["room-owner", "person", person.personId, "owner"],
+      ["room-teammate", "person", "teammate", "member"],
+      ["room-lead", "agent", agentId, "member"],
+    ] as const)
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, agent_id, role, joined_at)
+        VALUES (${member}, ${person.orgId}, 'room', ${kind}, ${kind === "person" ? principal : null},
+          ${kind === "agent" ? principal : null}, ${role}, ${at})`;
+    const gated = (name: string, args: Record<string, unknown>) =>
+      call(name, args).pipe(Effect.provideService(Kin.KinServer, kin));
+    // The owner alone reads its direct chat: everything passes.
+    assert.isFalse((yield* gated("kin_chat_read", { chatId: "room" })).isError);
+    const asked = yield* chatService.send(person, {
+      chatId: KinChatId.make("room"),
+      body: "Owner question with a teammate listening",
+      clientMessageId: "room-ask",
+    });
+    yield* startAgentWakeup({ orgId: person.orgId, agentId, threadId, message: asked });
+    assert.isFalse((yield* gated("kin_chat_read", { chatId: "room" })).isError);
+    for (const [name, args] of [
+      ["kin_chat_read", { chatId: direct.chatId }],
+      ["kin_chat_post", { chatId: direct.chatId, body: "Invented", intent: "evidence" }],
+    ] as const)
+      assert.strictEqual((yield* gated(name, args).pipe(Effect.flip)).message, SHARED_REFUSAL);
+    assert.deepStrictEqual(
+      yield* sql`SELECT body FROM kin_messages WHERE chat_id = ${direct.chatId}
+        AND author_kind = 'agent' ORDER BY seq`,
+      [],
+    );
+  }).pipe(Effect.provide(gatedLayer)),
 );
 
 it.effect.each(["ordinary", "subagent", "ended", "retired", "muted"] as const)(

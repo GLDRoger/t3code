@@ -123,8 +123,21 @@ const seedDirectChats = Effect.gen(function* () {
     yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
       VALUES (${chat}, 'org', 'direct', ${`owner:${chat}`}, 0, '2026-11-08T00:00:00.000Z')`;
 });
+/** The owner's stored message behind a lane event, so only the owner reads the turn. */
+const ownerSays = Effect.fn("test.ownerSays")(function* (id: string, chatId = "owner-chat") {
+  const sql = yield* SqlClient.SqlClient;
+  const at = "2026-11-08T00:00:00.000Z";
+  yield* sql`INSERT OR IGNORE INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+    VALUES (${`${chatId}-owner`}, 'org', ${chatId}, 'person', 'owner', 'owner', ${at})`;
+  yield* sql`INSERT OR IGNORE INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+      author_person_id, author_member_id, author_role, kind, body, mentions_json, status, created_at)
+    VALUES (${id}, 'org', ${chatId},
+      (SELECT COALESCE(MAX(seq), 0) + 1 FROM kin_messages WHERE chat_id = ${chatId}), 'human', 'owner',
+      ${`${chatId}-owner`}, 'owner', 'text', 'Invented question', '[]', 'posted', ${at})`;
+  return laneMessage(id, chatId);
+});
 const wake = Effect.fn("test.wake")(function* (id: string, chatId = "direct") {
-  yield* (yield* KinEventQueue.KinEventQueue).enqueue(laneMessage(id, chatId));
+  yield* (yield* KinEventQueue.KinEventQueue).enqueue(yield* ownerSays(id, chatId));
   yield* Fiber.join(yield* run());
 });
 /** Each run's provider conversation, numbered in order of first use. */
@@ -176,7 +189,7 @@ describe("WakeupRunner", () => {
           const queue = yield* KinEventQueue.KinEventQueue;
           const sql = yield* SqlClient.SqlClient;
           const runner = yield* WakeupRunner.WakeupRunner;
-          yield* queue.enqueue(laneMessage("loop-first"));
+          yield* queue.enqueue(yield* ownerSays("loop-first"));
           yield* runner.start;
           yield* TestClock.adjust("20 seconds");
           yield* Deferred.await(commitEntered);
@@ -240,8 +253,15 @@ describe("WakeupRunner", () => {
   );
   it.effect(
     "runs a turn a teammate can read on its own thread without file tools, then the owner's on a fresh one",
-    () =>
-      Effect.gen(function* () {
+    () => {
+      const memory: Array<string> = [];
+      const writer = Layer.mock(Writer.MemoryWriter)({
+        appendJournal: (_org, wakeupId) => Effect.sync(() => memory.push(`journal:${wakeupId}`)),
+        commitWakeup: (_org, wakeupId) =>
+          Effect.sync(() => (memory.push(`commit:${wakeupId}`), { commit: "fixture" })),
+        discard: (_org, wakeupId) => Effect.sync(() => memory.push(`discard:${wakeupId}`)),
+      });
+      return Effect.gen(function* () {
         yield* seed;
         const sql = yield* SqlClient.SqlClient;
         const at = "2026-11-08T00:00:00.000Z";
@@ -260,9 +280,16 @@ describe("WakeupRunner", () => {
           const [lead] = yield* sql<{
             threadId: string;
           }>`SELECT thread_id AS "threadId" FROM kin_leads`;
-          const [wakeup] = yield* sql<{ audience: string }>`SELECT audience FROM kin_wakeups
+          const [wakeup] = yield* sql<{
+            audience: string;
+            wakeupId: string;
+          }>`SELECT audience, wakeup_id AS "wakeupId" FROM kin_wakeups
               WHERE event_ids LIKE ${`%"${id}"%`}`;
-          return { threadId: lead!.threadId, audience: wakeup?.audience };
+          return {
+            threadId: lead!.threadId,
+            audience: wakeup?.audience,
+            wakeupId: wakeup?.wakeupId,
+          };
         });
         const alone = yield* turn("alone");
         assert.deepStrictEqual(alone.audience, "owner_only");
@@ -280,7 +307,20 @@ describe("WakeupRunner", () => {
           yield* sql`SELECT thread_id FROM kin_agent_threads WHERE ended_at IS NULL`,
           [{ thread_id: again.threadId }],
         );
-      }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
+        // The shared turn left no journal entry, not even the line for a turn without kin_end.
+        const kept = (wakeupId: string | undefined) =>
+          memory.filter(
+            (write) => write === `journal:${wakeupId}` || write === `commit:${wakeupId}`,
+          );
+        assert.deepStrictEqual(kept(alone.wakeupId), [
+          `journal:${alone.wakeupId}`,
+          `commit:${alone.wakeupId}`,
+        ]);
+        assert.deepStrictEqual(kept(shared.wakeupId), []);
+        assert.include(memory, `discard:${shared.wakeupId}`);
+        assert.lengthOf(kept(again.wakeupId), 2);
+      }).pipe(Effect.provide(harness({ writer })), provideDeterministicTestRuntime);
+    },
   );
   it.effect("hands the files on the messages it answers to the provider turn", () => {
     const photo = {
