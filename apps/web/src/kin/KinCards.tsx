@@ -55,7 +55,8 @@ import { Button } from "../components/ui/button";
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
 import { kinClient } from "./kinClient";
 
-const CANT_ACT_TEXT = "This browser can't answer Kin cards. Pair it again from the Mac.";
+const CANT_ACT_TEXT =
+  "This browser can't answer here. Pair it again with the server that runs Kin.";
 
 function CardFrame(props: {
   readonly eyebrow?: string;
@@ -161,12 +162,6 @@ function KinTaskCard(props: { readonly task: KinTaskCardView }) {
     <CardFrame eyebrow="Task" label={task.accessibilityLabel}>
       <p className="font-medium text-foreground">{task.title}</p>
       <p className={cn("text-xs font-medium", TONE_CLASSES[task.tone])}>{task.statusLabel}</p>
-      {task.working ? (
-        // Static on purpose: a bar that animates for the whole task would repaint for minutes.
-        <div aria-hidden className="h-1 overflow-hidden rounded-full bg-primary/20">
-          <div className="h-1 w-1/3 rounded-full bg-primary/60" />
-        </div>
-      ) : null}
       {task.detail === null ? null : (
         <p className="line-clamp-4 text-xs text-muted-foreground">{task.detail}</p>
       )}
