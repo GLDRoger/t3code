@@ -216,6 +216,8 @@ const make = Effect.gen(function* () {
           WHERE org_id = ${ctx.orgId} AND agent_id = ${target!.agentId}
             AND dedupe_key = ${dedupeKey} ORDER BY event_id`;
         if (already.length > 0) return { to: target!.name, passed: true as const };
+        // One line, named as the lead's: its words can't pass for the owner's or for Kin's.
+        const note = input.request.replace(/\s+/g, " ");
         const original =
           asked.body.length > ORIGINAL_CAP ? `${asked.body.slice(0, ORIGINAL_CAP)}…` : asked.body;
         const { message } = yield* chat.notice({
@@ -225,7 +227,7 @@ const make = Effect.gen(function* () {
           body: [
             `Passed on by ${self.name}`,
             `"${original}"`,
-            ...(fold(input.request) === fold(asked.body) ? [] : [`Note: ${input.request}`]),
+            ...(fold(note) === fold(asked.body) ? [] : [`${self.name} adds: ${note}`]),
           ].join("\n"),
         });
         yield* queue.enqueue({

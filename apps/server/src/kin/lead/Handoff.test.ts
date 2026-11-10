@@ -185,7 +185,7 @@ it.effect(
         });
         const input = {
           to: "tech lead",
-          request: "CI is red on acme/app; the owner wants to know why.",
+          request: "CI is red on acme/app.\nThe owner wants to know why.",
           sourceEventId: "ask-event",
         };
         assert.deepStrictEqual(yield* handoff.handOff(scopeFor(chief), input), {
@@ -196,7 +196,7 @@ it.effect(
         yield* handoff.handOff(scopeFor(chief), { ...input, to: "engineering", request: "Again" });
         assert.deepStrictEqual(yield* systemRows(sql, orgId, ctx.techChat), [
           {
-            body: 'Passed on by Chief of staff\n"Why is CI red on the app repo?"\nNote: CI is red on acme/app; the owner wants to know why.',
+            body: 'Passed on by Chief of staff\n"Why is CI red on the app repo?"\nChief of staff adds: CI is red on acme/app. The owner wants to know why.',
           },
         ]);
         const [passed, ...more] = yield* passedOn(sql, orgId, tech);
