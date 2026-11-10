@@ -1,8 +1,8 @@
-import type { KinInboxRow, KinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
-import type { KinDirectory } from "@t3tools/client-runtime/kin/kinScreenState";
 import { describe, expect, it } from "vite-plus/test";
 
-import { kinChatListRows } from "./kinChatListRows";
+import { kinChatListRows } from "./kinChatListRows.ts";
+import type { KinInboxRow, KinInboxView } from "./kinInboxModel.ts";
+import type { KinDirectory } from "./kinScreenState.ts";
 
 const directory: KinDirectory = {
   agentNames: new Map([["lead", "Tech lead"]]),
