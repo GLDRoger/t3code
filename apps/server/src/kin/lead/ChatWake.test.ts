@@ -259,6 +259,43 @@ describe("ChatWake", () => {
       }).pipe(Effect.provide(services)),
   );
 
+  it.effect("shows `seen` for a waking reaction and drops it once the reaction is withdrawn", () =>
+    Effect.gen(function* () {
+      yield* seed("a");
+      yield* storeMessage(message("a", "lead-latest", { seq: 1, agent: true }));
+      const { settle } = yield* start();
+      const hub = yield* Hub.KinChatHub;
+      const presence = yield* Presence.KinPresence;
+      const lines = () =>
+        presence
+          .snapshot(KinOrgId.make("a"), KinChatId.make("chat-a"))
+          .presence.map((line) => line.state);
+      const reaction = (removedAt: string | null) =>
+        hub.publish({
+          type: "reaction.updated",
+          orgId: KinOrgId.make("a"),
+          chatId: KinChatId.make("chat-a"),
+          reaction: {
+            orgId: KinOrgId.make("a"),
+            chatId: KinChatId.make("chat-a"),
+            messageId: KinMessageId.make("lead-latest"),
+            memberId: KinMemberId.make("owner-member-a"),
+            emoji: "👎",
+            createdAt,
+            removedAt,
+          },
+          woke: removedAt === null,
+          by: message("a", "m1").author,
+        });
+      yield* reaction(null);
+      yield* settle;
+      assert.deepStrictEqual(lines(), ["seen"]);
+      yield* reaction(createdAt);
+      yield* settle;
+      assert.deepStrictEqual(lines(), []);
+    }).pipe(Effect.provide(services)),
+  );
+
   it.effect("never wakes a lead for its own posts or after retirement, live or on catch-up", () =>
     Effect.gen(function* () {
       yield* seed("a");

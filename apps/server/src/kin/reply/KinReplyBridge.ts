@@ -48,7 +48,7 @@ import {
   toolLabel,
   type SegmentNext,
 } from "./classify.ts";
-import { KinPresence } from "./KinPresence.ts";
+import { KinPresence, syncSeen } from "./KinPresence.ts";
 
 /** One rescue turn asks for the reply the run owed; its text is posted like any other. */
 const RESCUE_PROMPT =
@@ -118,6 +118,10 @@ type Wake = {
   label: string | null;
   since: number;
   stall: Fiber.Fiber<void> | undefined;
+  // What the line's timer counts from: the wake-up's start, then each posted reply.
+  timerFrom: number;
+  // The reply is settled or the wake-up ended: nothing may show a line for it again.
+  done: boolean;
   // Latency stages already stamped on the wake-up row.
   stamped: Set<"first_token_at" | "posted_at">;
 };
@@ -252,6 +256,7 @@ const make = Effect.gen(function* () {
     label: string | null,
     since?: number,
   ) {
+    if (wake.done) return;
     if (wake.state === state && wake.label === label && since === undefined) return;
     wake.state = state;
     wake.label = label;
@@ -261,7 +266,7 @@ const make = Effect.gen(function* () {
       wakeupId: wake.wakeupId,
       state,
       label,
-      startedAt: iso(wake.startedAt),
+      startedAt: iso(wake.timerFrom),
       since: iso(wake.since),
     });
   });
@@ -339,6 +344,8 @@ const make = Effect.gen(function* () {
         wake.posted++;
         wake.chars += text.length;
         wake.answered = true;
+        // Work after a reply is new work: its timer doesn't count against the answered message.
+        wake.timerFrom = yield* Clock.currentTimeMillis;
         yield* stamp(wake, "posted_at");
         return yield* end(result.messageId);
       case "withheld":
@@ -463,6 +470,8 @@ const make = Effect.gen(function* () {
     yield* wake.lock
       .withPermits(1)(
         Effect.gen(function* () {
+          // An event read before the wake-up ended must not bring its line or draft back.
+          if (wake.done) return;
           if (event.type === "turn-item.updated") return yield* onItem(wake, event.payload);
           if (event.type === "provider-turn.updated" || event.type === "run.updated") {
             wake.lastOutputAt = yield* Clock.currentTimeMillis;
@@ -595,6 +604,21 @@ const make = Effect.gen(function* () {
       });
   });
 
+  // Ends the wake-up's line and drafts for good; `seen` lines are the queue's, not the wake-up's.
+  const settleLine = (wake: Wake) =>
+    wake.lock.withPermits(1)(
+      Effect.gen(function* () {
+        wake.done = true;
+        if (wake.stall !== undefined) yield* Fiber.interrupt(wake.stall);
+        for (const segment of wake.segments.values())
+          if (segment.drafting && segment.outcome === null) {
+            segment.outcome = "empty";
+            yield* presence.endDraft(wake.orgId, wake.lane.chatId, segment.id, null);
+          }
+        yield* presence.clear(wake.orgId, wake.lane.chatId, wake.agentId);
+      }),
+    );
+
   const complete = Effect.fn("KinReplyBridge.complete")(
     function* (input: {
       readonly orgId: KinOrgId;
@@ -618,10 +642,13 @@ const make = Effect.gen(function* () {
           return yield* answered(wake);
         }),
       );
+      // What follows, such as the memory commit, isn't work on the owner's message.
+      const settled = settleLine(wake);
       // A failed or stopped run is retried or was the owner's choice; only a finished one is owed.
-      if ((yield* finish) || input.rescueUntil === null) return;
+      if ((yield* finish) || input.rescueUntil === null) return yield* settled;
       yield* rescue(wake, input.projectId, input.rescueUntil);
-      if (yield* finish) return;
+      if (yield* finish) return yield* settled;
+      yield* settled;
       // Honest, never faked: the owner sees that no reply came.
       yield* chat.notice({
         messageId: KinMessageId.make(`kin-no-reply:${wake.wakeupId}`),
@@ -663,24 +690,6 @@ const make = Effect.gen(function* () {
     Effect.catchCause((cause) => Effect.logWarning("Kin failure notice failed", { cause })),
   );
 
-  // Chats where a human message to the agent is queued and ready: they keep showing `seen`.
-  const waiting = Effect.fn("KinReplyBridge.waiting")(
-    function* (orgId: KinOrgId, agentId: KinAgentId) {
-      const now = yield* Clock.currentTimeMillis;
-      const rows = yield* sql<{ chatId: string }>`
-        SELECT DISTINCT json_extract(json, '$.chatId') AS "chatId" FROM kin_events
-        WHERE org_id = ${orgId} AND agent_id = ${agentId} AND state = 'queued'
-          AND tag IN ('chat.message', 'widget.action')
-          AND json_extract(json, '$.provenance._tag') = 'human'
-          AND (not_before IS NULL OR not_before <= ${now})
-        ORDER BY 1`.pipe(Effect.mapError(toPersistenceSqlError("KinReplyBridge.waiting")));
-      return new Set(rows.map((row) => KinChatId.make(row.chatId)));
-    },
-    Effect.catchCause((cause) =>
-      Effect.logWarning("Kin seen lookup failed", { cause }).pipe(Effect.as(new Set<KinChatId>())),
-    ),
-  );
-
   const end = Effect.fn("KinReplyBridge.end")(function* (input: {
     readonly orgId: KinOrgId;
     readonly agentId: KinAgentId;
@@ -691,16 +700,9 @@ const make = Effect.gen(function* () {
     if (wake !== undefined && wake.orgId === orgId) {
       byWakeup.delete(wakeupId);
       if (wakes.get(wake.threadId) === wake) wakes.delete(wake.threadId);
-      if (wake.stall !== undefined) yield* Fiber.interrupt(wake.stall);
-      for (const segment of wake.segments.values())
-        if (segment.drafting && segment.outcome === null)
-          yield* presence.endDraft(orgId, wake.lane.chatId, segment.id, null);
-      yield* presence.clear(orgId, wake.lane.chatId, wake.agentId);
+      yield* settleLine(wake);
     }
-    const queued = yield* waiting(orgId, agentId);
-    yield* presence.clearSeen(orgId, agentId, queued);
-    const now = yield* Clock.currentTimeMillis;
-    for (const chatId of queued) yield* presence.seen(orgId, chatId, agentId, now);
+    yield* syncSeen(presence, orgId, agentId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
   });
 
   const begin = Effect.fn("KinReplyBridge.begin")(
@@ -731,6 +733,8 @@ const make = Effect.gen(function* () {
         label: null,
         since: input.startedAt,
         stall: undefined,
+        timerFrom: input.startedAt,
+        done: false,
         stamped: new Set(),
       };
       const previous = wakes.get(input.threadId);
