@@ -49,6 +49,10 @@ type DraftRow = Extract<KinFeedRow, { readonly type: "draft" }>;
 const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 const formatTime = (iso: string) => timeFormat.format(new Date(iso));
 
+// The thread feed's shapes: its user bubble, and agent text straight on the screen.
+const OWN_BUBBLE_CLASS_NAME = "max-w-[85%] rounded-[20px] bg-user-bubble px-4 py-2.5";
+const OTHER_MESSAGE_CLASS_NAME = "w-full px-1 py-1";
+
 const renderImageAsText: MarkdownImageRenderer = (image) => (
   <Text textRole="body" className="italic text-foreground-muted">
     {kinImageText(image)}
@@ -75,12 +79,12 @@ function KinAttachments(props: {
   );
 }
 
-/** One message. The owner's own sit right in the brand colour; others sit left on grey. */
+/** One message, as in a thread: the viewer's own in the user bubble, everyone else's as plain text. */
 export function KinMessageBubble(props: {
   readonly row: MessageRow;
   /** `useMarkdownPreviewStyles().nativeTextStyle`, read once by the screen. */
   readonly markdownStyle: NativeMarkdownTextStyle;
-  /** The same, recoloured for text on the brand-coloured bubble. */
+  /** The same, recoloured for text on the user bubble. */
   readonly ownMarkdownStyle: NativeMarkdownTextStyle;
   /** Gets any link the author wrote; the screen opens web links only (`kinLinkToOpen`). */
   readonly onLinkPress: (href: string) => void;
@@ -145,13 +149,7 @@ export function KinMessageBubble(props: {
         const link = links[Number(name.slice("link-".length))];
         if (link !== undefined) props.onLinkPress(link.href);
       }}
-      className={cn(
-        "gap-1 rounded-[22px]",
-        row.own
-          ? "max-w-[85%] bg-primary px-4 py-2.5"
-          : "max-w-[92%] bg-composer-surface px-4 py-3",
-        suggested && "border border-dashed border-border",
-      )}
+      className={cn("gap-1", row.own ? OWN_BUBBLE_CLASS_NAME : OTHER_MESSAGE_CLASS_NAME)}
     >
       {hasBody ? (
         <SelectableMarkdownText
@@ -167,7 +165,10 @@ export function KinMessageBubble(props: {
       ) : deleted ? (
         <Text
           textRole="body"
-          className={cn("italic", row.own ? "text-primary-foreground" : "text-foreground-muted")}
+          className={cn(
+            "italic",
+            row.own ? "text-user-bubble-foreground-muted" : "text-foreground-muted",
+          )}
         >
           Message deleted
         </Text>
@@ -175,7 +176,7 @@ export function KinMessageBubble(props: {
       {suggested || message.editedAt !== null ? (
         <Text
           textRole="caption"
-          className={row.own ? "text-primary-foreground opacity-80" : "text-foreground-muted"}
+          className={row.own ? "text-user-bubble-foreground-muted" : "text-foreground-muted"}
         >
           {suggested ? "Suggestion, not sent yet" : "Edited"}
         </Text>
@@ -280,7 +281,7 @@ export function KinDraftBubble(props: {
           kinPlainText(row.draft.text),
           "Still writing",
         ])}
-        className="max-w-[92%] gap-1 rounded-[22px] bg-composer-surface px-4 py-3"
+        className={cn("gap-1", OTHER_MESSAGE_CLASS_NAME)}
       >
         <SelectableMarkdownText
           markdown={kinBodyMarkdown(row.draft.text)}
@@ -376,12 +377,9 @@ export function KinPendingBubble(props: {
           accessibilityRole={failed ? "button" : undefined}
           accessibilityLabel={kinSentences([`You: ${kinPlainText(entry.body)}`, status])}
           accessibilityHint={failed ? "Edit it in the message box." : undefined}
-          className={cn(
-            "max-w-[85%] rounded-[22px] bg-primary px-4 py-2.5",
-            !failed && "opacity-70",
-          )}
+          className={cn(OWN_BUBBLE_CLASS_NAME, !failed && "opacity-70")}
         >
-          <Text textRole="body" className="text-primary-foreground">
+          <Text textRole="body" className="text-user-bubble-foreground">
             {entry.body}
           </Text>
         </Pressable>

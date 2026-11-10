@@ -123,7 +123,9 @@ export function KinChatsView(props: {
           {() => (
             <>
               {banner === null ? null : (
-                <KinWaitingBanner view={banner} onPress={props.onOpenWaiting} />
+                <View className="-mx-4">
+                  <KinWaitingBanner view={banner} onPress={props.onOpenWaiting} />
+                </View>
               )}
               <EmptyState title="No chats yet" detail="Chats with your leads show up here." />
             </>
@@ -141,7 +143,7 @@ export function KinChatsView(props: {
       contentContainerStyle={{ paddingTop: 4, paddingBottom: 24 }}
       data={rows}
       keyExtractor={(row) => row.chat.chatId}
-      estimatedItemSize={76}
+      estimatedItemSize={64}
       recycleItems
       renderItem={({ item, index }) => (
         <>
@@ -150,17 +152,24 @@ export function KinChatsView(props: {
             accessibilityLabel={kinChatListRowLabel(item, (date) => formatKinTime(date))}
             onPress={() => onOpenChat(item.chat.chatId)}
           />
-          {index < rows.length - 1 ? <View className="ml-[76px] h-px bg-border-subtle" /> : null}
+          {index < rows.length - 1 ? <View className="ml-5 h-px bg-border-subtle" /> : null}
         </>
       )}
       ListHeaderComponent={
         notice || banner !== null ? (
-          <View className="gap-3 px-4 pb-2 pt-2">
-            <KinInboxNotice state={state} />
+          <>
+            {notice ? (
+              <View className="px-4 pb-2 pt-2">
+                <KinInboxNotice state={state} />
+              </View>
+            ) : null}
             {banner === null ? null : (
-              <KinWaitingBanner view={banner} onPress={props.onOpenWaiting} />
+              <>
+                <KinWaitingBanner view={banner} onPress={props.onOpenWaiting} />
+                <View className="ml-5 h-px bg-border-subtle" />
+              </>
             )}
-          </View>
+          </>
         ) : null
       }
     />
