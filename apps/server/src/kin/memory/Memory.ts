@@ -158,6 +158,8 @@ export class MemorySyncHooks extends Context.Reference<{
 }) {}
 
 export interface MemoryHistoryRewrite {
+  /** Whether the default branch here holds memory the remote lacks; a reclone would drop it. */
+  readonly unlanded: () => Effect.Effect<boolean, MemoryFailure>;
   /** Writes the durable marker, then deletes the writer and read checkouts that hold the old history. */
   readonly quarantine: (marker: string) => Effect.Effect<void, MemoryFailure>;
   /** Clones fresh, records the remote heads without preserving old anchors, rebuilds, then clears the marker. */
@@ -171,6 +173,36 @@ export class Memory extends Context.Service<
       orgId: KinOrgId,
       effect: Effect.Effect<A, E>,
     ) => Effect.Effect<A, E>;
+    /**
+     * Serializes landing local commits on the remote with history rewrites. Taken before the
+     * writer lock, never inside it; holding it never blocks a lead.
+     */
+    readonly withLandingLock: <A, E>(
+      orgId: KinOrgId,
+      effect: Effect.Effect<A, E>,
+    ) => Effect.Effect<A, E>;
+    /**
+     * Server-only, for the lander: syncs the writer with the remote under the writer lock and
+     * returns both default-branch heads. `undefined` before the first clone or during a purge.
+     */
+    readonly landingState: (orgId: KinOrgId) => Effect.Effect<
+      | {
+          readonly writer: string;
+          readonly local: string;
+          /** Absent when the remote could not be reached. */
+          readonly remote:
+            | {
+                readonly head: string;
+                /** `local` holds memory the remote lacks (INDEX.md aside). */
+                readonly pending: boolean;
+                /** `local` descends from the remote head, so it can land on top of it. */
+                readonly descends: boolean;
+              }
+            | undefined;
+        }
+      | undefined,
+      MemoryFailure
+    >;
     readonly anchor: (
       orgId: KinOrgId,
       branch: string,
@@ -282,17 +314,22 @@ const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const sql = yield* SqlClient.SqlClient;
   const writerLocks = new Map<KinOrgId, Semaphore.Semaphore>();
+  const landingLocks = new Map<KinOrgId, Semaphore.Semaphore>();
   const pinnedHeads = new Map<KinOrgId, string>();
   const skipWarnedHeads = new Map<KinOrgId, string>();
   const hooks = yield* MemorySyncHooks;
-  const withWriterLock = <A, E>(orgId: KinOrgId, effect: Effect.Effect<A, E>) => {
-    let lock = writerLocks.get(orgId);
-    if (!lock) {
-      lock = Semaphore.makeUnsafe(1);
-      writerLocks.set(orgId, lock);
-    }
-    return lock.withPermits(1)(effect);
-  };
+  const lockIn =
+    (locks: Map<KinOrgId, Semaphore.Semaphore>) =>
+    <A, E>(orgId: KinOrgId, effect: Effect.Effect<A, E>) => {
+      let lock = locks.get(orgId);
+      if (!lock) {
+        lock = Semaphore.makeUnsafe(1);
+        locks.set(orgId, lock);
+      }
+      return lock.withPermits(1)(effect);
+    };
+  const withWriterLock = lockIn(writerLocks);
+  const withLandingLock = lockIn(landingLocks);
   const persistence = <A, E>(orgId: KinOrgId, effect: Effect.Effect<A, E>) =>
     effect.pipe(
       Effect.mapError(toPersistenceSqlError("Memory.anchor")),
@@ -1107,6 +1144,8 @@ const make = Effect.gen(function* () {
   });
 
   let conflictSequence = 0;
+  // Local and remote heads whose content conflict the owner already heard about.
+  const conflictNotices = new Set<string>();
   const preserve = Effect.fn("Memory.preserve")(function* (
     orgId: KinOrgId,
     writer: string,
@@ -1212,6 +1251,24 @@ const make = Effect.gen(function* () {
         head: string;
       }>`SELECT branch, head FROM kin_memory_heads WHERE org_id = ${orgId} ORDER BY branch`,
     );
+    // Local commits on the default branch land in the background, so the anchored head can be
+    // ahead of the remote or beside its squash commits. Kept while sync can still merge the two;
+    // unrelated histories fall back to the remote, with the old anchor preserved below.
+    const anchoredMain = rows.find((row) => row.branch === mainBranch)?.head;
+    const keptMain =
+      exists &&
+      anchoredMain !== undefined &&
+      anchoredMain !== main &&
+      (yield* readFiles(orgId, paths.writer, anchoredMain).pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(VcsProcess, vcs),
+        Effect.result,
+      ))._tag === "Success" &&
+      uniqueMergeBase(
+        yield* walkAncestors(orgId, paths.writer, anchoredMain),
+        yield* walkAncestors(orgId, paths.writer, main),
+      ) !== undefined;
+    if (keptMain && anchoredMain !== undefined) targets.set(mainBranch, anchoredMain);
     // An anchored shadow head the remote lacks may be the lead's only copy: keep it and push it.
     const unpushed = new Set<string>();
     for (const row of rows) {
@@ -1298,6 +1355,14 @@ const make = Effect.gen(function* () {
         local._tag === "Success" ? local.success.trim() : "0".repeat(head.length),
       ]);
       if (old !== head) yield* record(orgId, branch, old, head);
+      if (keptMain && branch === mainBranch) {
+        yield* notify({
+          orgId,
+          branch,
+          reason: "Kept this server's memory; Kin lands what GitHub lacks in the background",
+        });
+        continue;
+      }
       if (!unpushed.has(branch)) {
         yield* notify({ orgId, branch, reason: "Recovered from remote head" });
         continue;
@@ -1417,20 +1482,18 @@ const make = Effect.gen(function* () {
                 metadata.get(next)!,
               );
               if (!merged) {
-                const conflictBranch = yield* preserve(
-                  orgId,
-                  paths.writer,
-                  repo.repoUrl,
-                  head,
-                  wakeupId,
-                );
-                next = remote;
-                yield* notify({
-                  orgId,
-                  branch,
-                  reason: "Content conflict preserved",
-                  conflictBranch,
-                });
+                // This server's copy stays as it is: it may hold commits GitHub never got.
+                next = head;
+                const key = `${orgId}\u0000${head}\u0000${remote}`;
+                if (!conflictNotices.has(key)) {
+                  conflictNotices.add(key);
+                  yield* notify({
+                    orgId,
+                    branch,
+                    reason:
+                      "Memory write not merged: memory on GitHub changed in a way Kin could not combine with this server's. Memory is still saved on this server; the GitHub copy stays behind until the two are reconciled",
+                  });
+                }
               } else {
                 const { files: mergedFiles, modes } = merged;
                 const remoteOriginal = new Map(remoteFiles);
@@ -1542,21 +1605,18 @@ const make = Effect.gen(function* () {
                 );
               }
             }
-            if (next !== remote || tree) {
-              if (!tree || !/^[0-9a-f]{40,64}$/.test(tree))
+            if (tree) {
+              if (!/^[0-9a-f]{40,64}$/.test(tree))
                 return yield* new MemorySyncConflict({
                   orgId,
                   operation: "sync",
                   reason: "Invalid merge tree",
                 });
-              const { message } = yield* readCommit(orgId, paths.writer, commit).pipe(
-                Effect.provideService(FileSystem.FileSystem, fs),
-                Effect.provideService(VcsProcess, vcs),
-              );
+              // Its own subject, so a wake-up's commit search never mistakes a merge for it.
               next = (yield* memoryGit(
                 paths.writer,
                 ["commit-tree", tree, "-p", remote, "-p", head],
-                message,
+                `kin: merge GitHub's memory at ${remote}\n`,
                 {
                   GIT_AUTHOR_NAME: config.botName ?? "Kin Memory Bot",
                   GIT_AUTHOR_EMAIL: config.botEmail ?? "kin-memory@localhost",
@@ -1569,28 +1629,66 @@ const make = Effect.gen(function* () {
             }
           }
         }
+        // Never pushed: the lander takes merged and local-only commits to the remote.
         if (next !== head) {
-          if (next !== remote) {
-            yield* refuseDuringPurge(orgId, "merge");
-            yield* git(orgId, paths.writer, [
-              "push",
-              "--",
-              repo.repoUrl,
-              `${next}:refs/heads/${branch}`,
-            ]);
-          }
+          if (next !== remote) yield* refuseDuringPurge(orgId, "merge");
           yield* git(orgId, paths.writer, ["update-ref", `refs/heads/${branch}`, next, head]);
           yield* record(orgId, branch, head, next);
           head = next;
         }
       }
+      return remote;
     }
+    return undefined;
   });
   const checkedSync = (orgId: KinOrgId, wakeupId?: string) =>
     sync(orgId, wakeupId).pipe(
       Effect.tap(() => Effect.sync(() => synced.set(orgId, true))),
       Effect.tapError(() => Effect.sync(() => synced.set(orgId, false))),
     );
+
+  const isAncestor = (orgId: KinOrgId, writer: string, older: string, newer: string) =>
+    git(orgId, writer, ["merge-base", "--is-ancestor", older, newer]).pipe(
+      Effect.as(true),
+      Effect.catchTags({ MemoryError: () => Effect.succeed(false) }),
+    );
+  /** Whether `local` holds memory `remote` lacks. INDEX.md is rebuilt on every commit, so it never counts. */
+  const holdsMore = Effect.fn("Memory.holdsMore")(function* (
+    orgId: KinOrgId,
+    writer: string,
+    local: string,
+    remote: string,
+  ) {
+    if (local === remote || (yield* isAncestor(orgId, writer, local, remote))) return false;
+    const changed = yield* git(orgId, writer, [
+      "diff-tree",
+      "-r",
+      "--no-renames",
+      "--name-only",
+      remote,
+      local,
+    ]);
+    return changed.split("\n").some((path) => path !== "" && path !== "INDEX.md");
+  });
+
+  const landingState = Effect.fn("Memory.landingState")(function* (orgId: KinOrgId) {
+    const { writer } = yield* pathsFor(orgId);
+    if (!(yield* io(orgId, "exists", fs.exists(writer)))) return undefined;
+    if ((yield* purgeInFlight(orgId)) !== undefined) return undefined;
+    yield* ensureCheckouts(orgId);
+    const remote = yield* checkedSync(orgId);
+    const local = yield* anchor(orgId, mainBranch);
+    if (remote === undefined) return { writer, local, remote };
+    return {
+      writer,
+      local,
+      remote: {
+        head: remote,
+        pending: yield* holdsMore(orgId, writer, local, remote),
+        descends: yield* isAncestor(orgId, writer, remote, local),
+      },
+    };
+  });
 
   const prepare = Effect.fn("Memory.prepare")(function* (
     orgId: KinOrgId,
@@ -1739,6 +1837,18 @@ const make = Effect.gen(function* () {
     return paths;
   });
   const historyRewrite = (orgId: KinOrgId): MemoryHistoryRewrite => ({
+    unlanded: Effect.fn("Memory.unlanded")(() =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const paths = yield* pathsFor(orgId);
+          if (!(yield* io(orgId, "exists", fs.exists(paths.writer)))) return false;
+          const local = yield* anchor(orgId, mainBranch);
+          const remote = yield* advertisedHead(orgId, paths.writer, paths.repo.repoUrl, mainBranch);
+          return yield* holdsMore(orgId, paths.writer, local, remote);
+        }),
+      ),
+    ),
     quarantine: Effect.fn("Memory.quarantine")((marker: string) =>
       locked(
         orgId,
@@ -1766,13 +1876,18 @@ const make = Effect.gen(function* () {
     ),
   });
 
+  // The landing lock first, so no batch is mid-landing on the history being rewritten.
   const withHistoryRewrite = <A, E>(
     orgId: KinOrgId,
     body: (rewrite: MemoryHistoryRewrite) => Effect.Effect<A, E>,
-  ) => withWriterLock(orgId, body(historyRewrite(orgId)));
+  ) => withLandingLock(orgId, withWriterLock(orgId, body(historyRewrite(orgId))));
 
   return Memory.of({
     withWriterLock,
+    withLandingLock,
+    landingState: Effect.fn("Memory.landingStateLocked")((orgId) =>
+      withWriterLock(orgId, locked(orgId, landingState(orgId))),
+    ),
     withHistoryRewrite,
     purgeInFlight: Effect.fn("Memory.purgeInFlightLocked")((orgId) =>
       locked(orgId, purgeInFlight(orgId)),

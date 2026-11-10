@@ -29,6 +29,7 @@ import * as Memory from "../memory/Memory.ts";
 import * as MemoryConfig from "../memory/MemoryConfig.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
+import * as MemoryLander from "../memory/MemoryLander.ts";
 import * as MemoryPullRequests from "../memory/MemoryPullRequests.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -97,7 +98,7 @@ const dreamRuntime = DreamRunner.layer.pipe(
 
 // TRIG-15: at startup and every 5 minutes, close memory PRs no write waits on.
 const memoryPullRequestSweep = Effect.fn("KinMemoryPullRequests.sweepDue")(function* (
-  writer: Writer.MemoryWriter["Service"],
+  lander: MemoryLander.MemoryLander["Service"],
 ) {
   const { repositories } = yield* MemoryConfig.MemoryConfig;
   let due = 0;
@@ -108,7 +109,7 @@ const memoryPullRequestSweep = Effect.fn("KinMemoryPullRequests.sweepDue")(funct
     yield* Effect.forEach(
       repositories,
       ({ orgId }) =>
-        writer.sweepPullRequests(orgId).pipe(
+        lander.sweep(orgId).pipe(
           Effect.catchCause((cause) =>
             Effect.logWarning("Kin memory PR sweep failed", {
               orgId,
@@ -154,6 +155,7 @@ const runner = Layer.effectDiscard(
     // The owner's Undo on a memory change card runs on this runtime's writer.
     const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
     const memoryChanges = yield* Effect.serviceOption(KinMemoryChanges);
+    const lander = yield* Effect.serviceOption(MemoryLander.MemoryLander);
     if (Option.isSome(writer) && Option.isSome(memoryChanges))
       yield* memoryChanges.value.attachWriter(writer.value.undoChange);
     yield* Effect.gen(function* () {
@@ -162,10 +164,10 @@ const runner = Layer.effectDiscard(
         "kin-memory-sync",
         yield* memorySync(memory),
       );
-      if (Option.isSome(writer))
+      if (Option.isSome(lander))
         yield* Context.get(context, Scheduler.Scheduler).register(
           "kin-memory-pull-requests",
-          yield* memoryPullRequestSweep(writer.value),
+          yield* memoryPullRequestSweep(lander.value),
         );
       yield* Layer.build(dreamRuntime.pipe(Layer.provide(Layer.succeedContext(context)))).pipe(
         Effect.catchCause((cause) => Effect.logError("Kin dreams unavailable", { cause })),
