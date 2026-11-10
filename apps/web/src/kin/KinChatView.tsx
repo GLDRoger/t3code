@@ -61,6 +61,7 @@ import {
   KIN_YES_REACTIONS,
   KinChatId,
   type EnvironmentId,
+  type KinAttachment,
   type KinChatMember,
   type KinLeadsListResult,
   type KinPresence,
@@ -73,8 +74,18 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { Atom, type AsyncResult } from "effect/reactivity";
 import { ArrowDownIcon, ArrowLeftIcon, BellOffIcon, ChevronUpIcon } from "lucide-react";
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type DragEvent,
+  type KeyboardEvent,
+} from "react";
 
+import { ComposerAttachButton } from "../components/chat/ComposerAttachmentStrip";
+import { shouldHandleComposerAttachmentPaste } from "../components/chat/composerAttachmentFiles";
+import { ExpandedImageDialogHost } from "../components/chat/ExpandedImageDialog";
 import {
   ComposerPrimaryActions,
   StopGenerationButton,
@@ -93,9 +104,15 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/
 import { Spinner } from "../components/ui/spinner";
 import { Textarea } from "../components/ui/textarea";
 import { isElectron } from "../env";
+import { cn } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
+import {
+  KinComposerAttachmentStrip,
+  kinPreviewKey,
+  useKinComposerAttachments,
+} from "./KinComposerAttachments";
 import { kinClient } from "./kinClient";
 import { KinLeadSheet } from "./KinLeadSheet";
 import { deliverKinOutbox, kinOutbox, startKinOutbox } from "./kinOutbox";
@@ -452,6 +469,7 @@ function KinChatFeed(props: {
   const lastRequest = useRef(0);
   const nowMs = useNowMinuteMs();
   const draftKey = kinDraftKey(props.environmentId, props.orgId, props.chatId);
+  const previewKey = kinPreviewKey(draftKey);
   const [heldPaging, setPaging] = useState<KinPaging>(initialKinPaging);
   const [expandedRuns, setExpandedRuns] = useState<ReadonlySet<string>>(new Set());
   const [follow, setFollow] = useState(() =>
@@ -656,11 +674,12 @@ function KinChatFeed(props: {
     });
   };
 
-  const sendText = async (body: string) => {
+  const sendText = async (body: string, attachments: ReadonlyArray<KinAttachment> = []) => {
     const queued = await kinOutbox.enqueue({
       environmentId: props.environmentId,
       chatId: props.chatId,
       body,
+      ...(attachments.length > 0 ? { attachments } : {}),
     });
     if (queued._tag !== "queued") return false;
     jumpToEnd();
@@ -704,6 +723,7 @@ function KinChatFeed(props: {
                     })
                 : null
             }
+            previewKey={previewKey}
             showReplyHint={
               canReact &&
               message.messageId === softReplyId &&
@@ -731,6 +751,8 @@ function KinChatFeed(props: {
           <KinPendingRow
             entry={item.entry}
             connected={props.connected}
+            environmentId={props.environmentId}
+            previewKey={previewKey}
             onEdit={() =>
               void kinOutbox.discard(item.entry.clientMessageId).then((body) => {
                 if (body === null) return;
@@ -888,6 +910,7 @@ function KinChatFeed(props: {
           onSend={sendText}
         />
       </div>
+      <ExpandedImageDialogHost threadKey={previewKey} />
     </div>
   );
 }
@@ -994,27 +1017,61 @@ function KinComposer(props: {
   readonly environmentId: EnvironmentId;
   readonly recipient: string;
   readonly textareaRef: React.RefObject<HTMLTextAreaElement | null>;
-  readonly onSend: (body: string) => Promise<boolean>;
+  readonly onSend: (body: string, attachments: ReadonlyArray<KinAttachment>) => Promise<boolean>;
 }) {
   const { draftKey, environmentId, recipient, textareaRef, onSend } = props;
   const atom = kinDraftAtom(draftKey);
   const text = useAtomValue(atom);
   const full = useAtomValue(kinOutbox.fullAtom(environmentId));
+  const files = useKinComposerAttachments({ environmentId, draftKey });
+  const [sending, setSending] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
   const length = text.trim().length;
   const tooLong = length > KIN_MESSAGE_MAX_LENGTH;
-  const canSend = length > 0 && !tooLong && !full;
+  const hasContent = length > 0 || files.count > 0;
+  const canSend = hasContent && !tooLong && !full && files.blockReason === null && !sending;
   const hint = tooLong
     ? `Too long to send: ${lengthFormat.format(length)} of ${lengthFormat.format(KIN_MESSAGE_MAX_LENGTH)} characters.`
     : full
       ? "Too many unsent messages. Wait for them to go out."
-      : null;
+      : files.blockReason;
+  const notice = hint ?? files.refusal;
 
   const send = async () => {
-    const body = appAtomRegistry.get(atom).trim();
-    if (body.length === 0 || body.length > KIN_MESSAGE_MAX_LENGTH) return;
-    appAtomRegistry.set(atom, "");
-    if (!(await onSend(body))) restoreDraft(draftKey, body);
+    const drafted = appAtomRegistry.get(atom);
+    const body = drafted.trim();
+    if (body.length > KIN_MESSAGE_MAX_LENGTH) return;
+    setSending(true);
+    try {
+      await deliver(drafted, body);
+    } finally {
+      setSending(false);
+    }
   };
+
+  const deliver = async (drafted: string, body: string) => {
+    // The text stays in the box while files upload, so a failed upload loses nothing.
+    const settled = await files.settle();
+    if (settled._tag === "blocked") return;
+    if (body.length === 0 && settled.attachments.length === 0) return;
+    if (!(await onSend(body, settled.attachments))) return;
+    // Keeps anything typed while the files were uploading.
+    const typed = appAtomRegistry.get(atom);
+    appAtomRegistry.set(atom, typed.startsWith(drafted) ? typed.slice(drafted.length) : typed);
+    files.clear();
+  };
+
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const pasted = Array.from(event.clipboardData.files);
+    if (!files.canAttach || pasted.length === 0) return;
+    const plainText = event.clipboardData.getData("text/plain");
+    if (!shouldHandleComposerAttachmentPaste({ files: pasted, plainText })) return;
+    event.preventDefault();
+    void files.add(pasted);
+  };
+
+  const dropsFiles = (event: DragEvent<HTMLFormElement>) =>
+    files.canAttach && event.dataTransfer.types.includes("Files");
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
@@ -1024,20 +1081,44 @@ function KinComposer(props: {
 
   return (
     <div className="flex flex-col gap-1">
-      {hint === null ? null : (
+      {notice === null ? null : (
         <p role="alert" className="px-1 text-xs text-destructive-foreground">
-          {hint}
+          {notice}
         </p>
       )}
       <ComposerSurface.Shell>
         <ComposerSurface.Host>
           <ComposerSurface.Main>
             <form
+              className={cn(
+                dragOver && "rounded-[inherit] bg-accent/45 ring-1 ring-inset ring-primary/70",
+              )}
               onSubmit={(event) => {
                 event.preventDefault();
                 if (canSend) void send();
               }}
+              onDragOver={(event) => {
+                if (!dropsFiles(event)) return;
+                event.preventDefault();
+                setDragOver(true);
+              }}
+              onDragLeave={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+                  setDragOver(false);
+              }}
+              onDrop={(event) => {
+                if (!dropsFiles(event)) return;
+                event.preventDefault();
+                setDragOver(false);
+                void files.add(Array.from(event.dataTransfer.files));
+                textareaRef.current?.focus();
+              }}
             >
+              <KinComposerAttachmentStrip
+                environmentId={environmentId}
+                draftKey={draftKey}
+                state={files}
+              />
               <div className="px-1 pt-2.5 sm:pt-3">
                 <Textarea
                   unstyled
@@ -1048,20 +1129,29 @@ function KinComposer(props: {
                   placeholder={`Message ${recipient}`}
                   onChange={(event) => appAtomRegistry.set(atom, event.target.value)}
                   onKeyDown={onKeyDown}
+                  onPaste={onPaste}
                 />
               </div>
-              <div className="flex items-center justify-end px-2 pb-2">
+              <div className="flex items-center justify-between px-2 pb-2">
+                <div className="flex items-center">
+                  {files.canAttach ? (
+                    <ComposerAttachButton
+                      addComposerAttachments={(picked) => files.add(picked)}
+                      focusComposer={() => textareaRef.current?.focus()}
+                    />
+                  ) : null}
+                </div>
                 <ComposerPrimaryActions
                   compact={false}
                   canOperateThread
                   pendingAction={null}
                   isRunning={false}
                   canInterrupt={false}
-                  isSendBusy={false}
+                  isSendBusy={sending}
                   sendDisabledReason={hint}
                   isEnvironmentUnavailable={false}
                   isPreparingWorktree={false}
-                  hasSendableContent={length > 0}
+                  hasSendableContent={hasContent}
                   onPreviousPendingQuestion={noop}
                   onInterrupt={noop}
                 />
