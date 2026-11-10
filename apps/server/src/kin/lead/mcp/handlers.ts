@@ -94,6 +94,11 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
       return yield* (yield* LeadMemory).schedule(yield* McpInvocationContext, input);
     }),
   ),
+  kin_cancel: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.cancel")(function* (input) {
+      return yield* (yield* LeadMemory).cancel(yield* McpInvocationContext, input);
+    }),
+  ),
   kin_journal: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.journal")(function* (input) {
       return yield* (yield* LeadMemory).journal(yield* McpInvocationContext, input);

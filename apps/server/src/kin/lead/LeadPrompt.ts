@@ -132,7 +132,7 @@ export class KinLeadPrompt extends Context.Service<
             fromOwner = false;
             const item = yield* dueItem(orgId, event.subject.itemId);
             events.push(
-              `${eventQuote}\n\nThis reminder is due now. Recheck the facts, then write it as your reply. Kin attaches the Done, Snooze and Change card to your message.${
+              `${eventQuote}\n\nThis reminder is due now. Write it as your reply, in one message: only what it was for, and anything about that which changed. Kin attaches the Done, Snooze and Change card to your message.${
                 Option.isSome(item)
                   ? `\n\n${quote("memory item (data)", { head: item.value.head, body: item.value.body }, true)}`
                   : ""
