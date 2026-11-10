@@ -16,6 +16,7 @@ import {
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -66,6 +67,15 @@ const isSteerRun = (wakeupId: KinWakeupId, run: { readonly userMessageId: string
   KinIdentity.isAdoptedRunMessage(wakeupId, run.userMessageId) &&
   run.userMessageId !== KinIdentity.rescueMessageId(wakeupId);
 const ownerCheckDispatcherReady = false;
+/** A running lead never shortens the org loop's wait; its finish wakes the loop instead. */
+const orgLoopWaitMs = (
+  ready: ReadonlyArray<{ readonly agentId: KinAgentId; readonly readyAt: number }>,
+  active: ReadonlySet<KinAgentId>,
+  now: number,
+) => {
+  const next = ready.find((candidate) => !active.has(candidate.agentId));
+  return next === undefined ? 60_000 : Math.min(60_000, Math.max(1, next.readyAt - now));
+};
 /** A direct chat keeps its provider session for this long idle, for at most this many wake-ups. */
 const WARM_IDLE_MS = 600_000;
 const WARM_MAX_WAKEUPS = 10;
@@ -474,11 +484,12 @@ const make = Effect.gen(function* () {
             yield* writer.value.appendJournal(row.orgId, row.wakeupId, [
               Writer.LEAD_ENDED_WITHOUT_KIN_END,
             ]);
-          yield* writer.value.commitWakeup(
+          const { commit } = yield* writer.value.commitWakeup(
             row.orgId,
             row.wakeupId,
             status === "completed" ? "completed" : "failed",
           );
+          yield* sql`UPDATE kin_wakeups SET memory_commit = ${commit} WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId}`;
         }
         yield* capture(row);
         if (stopped)
@@ -808,13 +819,26 @@ const make = Effect.gen(function* () {
                 return;
               }
             }
-            const paths = yield* memory.ensureCheckouts(orgId);
+            // A project per lead, since its root is the provider's cwd: the lead's own checkout.
             const { project } = yield* projects.bootstrap({
-              commandId: CommandId.make(`kin-project:${orgId}`),
-              projectId: ProjectId.make(`kin:${orgId}`),
-              workspaceRoot: paths.read,
-              title: `Kin · ${record.orgName}`,
+              commandId: CommandId.make(`kin-project:${orgId}:${agentId}`),
+              projectId: ProjectId.make(`kin:${orgId}:${agentId}`),
+              workspaceRoot: pinned.read,
+              title: `Kin · ${record.orgName} · ${record.name}`,
             });
+            let existingThreadId = current.threadId;
+            if (existingThreadId !== null) {
+              const existing = yield* threads
+                .getThreadProjection(existingThreadId)
+                .pipe(Effect.option);
+              // A thread launched under the old shared-checkout project keeps that cwd; end it
+              // so this wake-up launches one in this lead's own checkout instead.
+              if (Option.isSome(existing) && existing.value.thread.projectId !== project.id) {
+                yield* identity.endAgentThread({ orgId, threadId: existingThreadId });
+                yield* sql`UPDATE kin_leads SET thread_id = NULL WHERE org_id = ${orgId} AND agent_id = ${agentId} AND thread_id = ${existingThreadId}`;
+                existingThreadId = null;
+              }
+            }
             const urgent =
               yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND priority IN ('P0', 'P1') LIMIT 1`;
             const modelSelection =
@@ -833,27 +857,25 @@ const make = Effect.gen(function* () {
               previous !== undefined &&
               seen !== undefined &&
               previous.chatId === direct &&
-              previous.threadId === current.threadId &&
+              previous.threadId === existingThreadId &&
               previous.level === current.level &&
               modelSelectionsEqual(previous.model, modelSelection) &&
               previous.wakeups < WARM_MAX_WAKEUPS &&
               row.startedAt - previous.endedAt < WARM_IDLE_MS &&
               // New standing rules are a new contract, so they get a fresh session.
               previous.rules === seen.rules;
-            // Prepare refills the read checkout in place, so an idle warm process keeps its cwd,
-            // unless the directory itself is new (a first fill, or after a purge).
+            // Prepare swapped in a new read checkout, so a warm session resumes in a new process.
             const resumes =
               resumable &&
-              (pinned.replaced !== true ||
-                (yield* releaseProcess(previous.threadId).pipe(
-                  Effect.catchCause((cause) =>
-                    Effect.logWarning("Kin lead process release failed", {
-                      orgId,
-                      wakeupId,
-                      cause,
-                    }).pipe(Effect.as(false)),
-                  ),
-                )));
+              (yield* releaseProcess(previous.threadId).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("Kin lead process release failed", {
+                    orgId,
+                    wakeupId,
+                    cause,
+                  }).pipe(Effect.as(false)),
+                ),
+              ));
             const text = yield* prompt.build({
               orgId,
               agentId,
@@ -865,7 +887,7 @@ const make = Effect.gen(function* () {
               ...(lane === undefined ? {} : { lane }),
               ...(resumes ? { since: { index: previous.index, chatSeq: previous.chatSeq } } : {}),
             });
-            const threadId = current.threadId ?? ThreadId.make(`kin:${yield* ulid}`);
+            const threadId = existingThreadId ?? ThreadId.make(`kin:${yield* ulid}`);
             row = { ...row, threadId };
             yield* sql.withTransaction(
               Effect.gen(function* () {
@@ -906,7 +928,7 @@ const make = Effect.gen(function* () {
             const commandId = CommandId.make(`kin-wakeup:${wakeupId}`);
             const messageId = MessageId.make(KinIdentity.wakeupMessageId(wakeupId));
             const sent =
-              current.threadId === null
+              existingThreadId === null
                 ? (yield* launch.launch({
                     commandId,
                     threadId,
@@ -997,12 +1019,20 @@ const make = Effect.gen(function* () {
       ),
   );
   const recoverOrg = Effect.fn("WakeupRunner.recoverOrg")(
-    function* (orgId: KinOrgId) {
+    function* (
+      orgId: KinOrgId,
+      active: Set<KinAgentId> = new Set(),
+      wake: Effect.Effect<void> = Effect.void,
+      forkRecoveries = false,
+    ) {
       const rows = yield* sql<{
         wakeupId: string;
+        agentId: string;
       }>`SELECT org_id AS "orgId", agent_id AS "agentId", wakeup_id AS "wakeupId", thread_id AS "threadId", run_id AS "runId", started_at AS "startedAt" FROM kin_wakeups WHERE org_id = ${orgId} AND status = 'running' ORDER BY started_at, wakeup_id`;
-      for (const raw of rows) {
-        yield* Effect.scoped(
+      // Rows of leads this process is already driving are not abandoned; the rest recover together.
+      const pending = rows.filter((row) => !active.has(KinAgentId.make(row.agentId)));
+      const recoverRow = (raw: (typeof pending)[number]) =>
+        Effect.scoped(
           Effect.gen(function* () {
             yield* Effect.acquireRelease(Effect.void, () =>
               queue
@@ -1030,16 +1060,18 @@ const make = Effect.gen(function* () {
               const receipts =
                 yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId} LIMIT 1`;
               if (receipts.length > 0 && Option.isSome(writer)) {
-                yield* writer.value
-                  .commitWakeup(row.orgId, row.wakeupId, "failed")
-                  .pipe(
-                    Effect.catchCause((cause) =>
-                      Effect.logError(
-                        "Kin recovery commit failed; requeueing unfinished wake-up",
-                        cause,
-                      ),
+                yield* writer.value.commitWakeup(row.orgId, row.wakeupId, "failed").pipe(
+                  Effect.tap(
+                    ({ commit }) =>
+                      sql`UPDATE kin_wakeups SET memory_commit = ${commit} WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId}`,
+                  ),
+                  Effect.catchCause((cause) =>
+                    Effect.logError(
+                      "Kin recovery commit failed; requeueing unfinished wake-up",
+                      cause,
                     ),
-                  );
+                  ),
+                );
               }
               if (projection === undefined) yield* clearMissingThread(row);
               yield* queue.requeueUnfinished(row.orgId, row.wakeupId);
@@ -1077,7 +1109,23 @@ const make = Effect.gen(function* () {
             }),
           ),
         );
-      }
+      // In the org loop each recovery runs beside the loop, marked active like a fresh run,
+      // so one slow recovery never stalls the leads behind it.
+      if (forkRecoveries) {
+        for (const raw of pending) {
+          const agentId = KinAgentId.make(raw.agentId);
+          active.add(agentId);
+          yield* recoverRow(raw).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                active.delete(agentId);
+              }).pipe(Effect.andThen(wake)),
+            ),
+            Effect.forkScoped,
+          );
+        }
+      } else
+        yield* Effect.forEach(pending, recoverRow, { concurrency: "unbounded", discard: true });
     },
     Effect.mapError((cause) =>
       isWakeupError(cause)
@@ -1124,36 +1172,62 @@ const make = Effect.gen(function* () {
   );
   const start = Effect.gen(function* () {
     const organizations = new Set<KinOrgId>();
+    // Leads with a wake-up in flight, per organization, so each is driven once.
+    const activeByOrg = new Map<KinOrgId, Set<KinAgentId>>();
+    const activeOf = (orgId: KinOrgId) => {
+      const existing = activeByOrg.get(orgId);
+      if (existing !== undefined) return existing;
+      const created = new Set<KinAgentId>();
+      activeByOrg.set(orgId, created);
+      return created;
+    };
     yield* Effect.gen(function* () {
       for (const orgId of yield* orgIds()) {
         if (organizations.has(orgId)) continue;
         organizations.add(orgId);
+        // A run leaves `active` before it signals, so the lead it frees launches on the next pass.
+        let freed = Deferred.makeUnsafe<void>();
+        const wake = Effect.suspend(() => {
+          const signal = freed;
+          freed = Deferred.makeUnsafe<void>();
+          return Deferred.succeed(signal, undefined);
+        }).pipe(Effect.asVoid);
         yield* Effect.gen(function* () {
           const changed = yield* queue.changes(orgId);
-          yield* recoverOrg(orgId);
-          const unfinished =
-            yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${orgId} AND status = 'running'`;
-          if (unfinished.length > 0) {
-            yield* Effect.raceFirst(changed, threadActivity(orgId)).pipe(
-              Effect.timeoutOrElse({ duration: 60_000, orElse: () => Effect.void }),
-            );
-            return;
-          }
+          // Taken before any read, so a run that finishes mid-pass still ends this pass's wait.
+          const finished = Deferred.await(freed);
+          const active = activeOf(orgId);
+          yield* recoverOrg(orgId, active, wake, true);
           const rows = yield* sql<{
             agentId: string;
           }>`SELECT l.agent_id AS "agentId" FROM kin_leads l
               JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
               WHERE l.org_id = ${orgId} AND a.retired_at IS NOT NULL ORDER BY l.agent_id`;
           for (const row of rows) yield* retire(yield* lead(orgId, KinAgentId.make(row.agentId)));
-          const next = (yield* paused(orgId)) ? undefined : yield* queue.nextReady(orgId);
+          const ready = (yield* paused(orgId)) ? [] : yield* queue.readyLeads(orgId);
           const now = yield* Clock.currentTimeMillis;
-          if (next !== undefined && next.readyAt <= now) {
-            yield* runOnce(orgId, next.agentId);
-            return;
+          for (const candidate of ready) {
+            if (candidate.readyAt > now || active.has(candidate.agentId)) continue;
+            active.add(candidate.agentId);
+            yield* runOnce(orgId, candidate.agentId).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logError("Kin runner iteration failed", {
+                  orgId,
+                  agentId: candidate.agentId,
+                  cause,
+                }).pipe(Effect.andThen(Effect.sleep("1 second"))),
+              ),
+              Effect.ensuring(
+                Effect.sync(() => {
+                  active.delete(candidate.agentId);
+                }).pipe(Effect.andThen(wake)),
+              ),
+              Effect.forkScoped,
+            );
           }
-          yield* Effect.raceFirst(changed, threadActivity(orgId)).pipe(
+          yield* Effect.raceAllFirst([changed, finished, threadActivity(orgId)]).pipe(
             Effect.timeoutOrElse({
-              duration: Math.min(60_000, Math.max(1, (next?.readyAt ?? Infinity) - now)),
+              duration: orgLoopWaitMs(ready, active, now),
               orElse: () => Effect.void,
             }),
           );

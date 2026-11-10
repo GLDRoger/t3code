@@ -35,6 +35,7 @@ import ManyLeads from "./migrations/K030_ManyLeads.ts";
 import LeadDeliveries from "./migrations/K031_LeadDeliveries.ts";
 import WorkerEnvironment from "./migrations/K032_WorkerEnvironment.ts";
 import ApproverKeyConfirmations from "./migrations/K033_ApproverKeyConfirmations.ts";
+import PerLeadWakeups from "./migrations/K034_PerLeadWakeups.ts";
 import RetireLevelCards from "./migrations/K035_RetireLevelCards.ts";
 
 const table = "kin_sql_migrations";
@@ -73,7 +74,7 @@ const loader = Migrator.fromRecord({
   "31_LeadDeliveries": LeadDeliveries,
   "32_WorkerEnvironment": WorkerEnvironment,
   "33_ApproverKeyConfirmations": ApproverKeyConfirmations,
-  // K034 is reserved by an open pull request.
+  "34_PerLeadWakeups": PerLeadWakeups,
   "35_RetireLevelCards": RetireLevelCards,
 });
 
