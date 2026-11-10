@@ -39,16 +39,20 @@ const encoders = new Map(
 
 /** A call there that answers in none of this long fails, so a frozen server can't hold Kin. */
 export const CALL_TIMEOUT = Duration.seconds(30);
-/** The stop switch waits this long for each stop there before it kills the worker server. */
+/** Each advisory stop there gets this long; the pause stops the server's unit regardless. */
 export const STOP_TIMEOUT = Duration.seconds(10);
 /** Bounds on answers Kin pages through, so a hostile server can't keep Kin reading. */
 export const MAX_PAGES = 50;
 const MAX_REPLY_CHARS = 200_000;
+/** An answer is cancelled unread past this many bytes, and refused with any longer array or string. */
+const MAX_ANSWER_BYTES = 8 * 1024 * 1024;
+const MAX_ANSWER_ITEMS = 1_000;
+const MAX_ANSWER_CHARS = 200_000;
 
-/** The worker server could not be killed on this host. */
-export class KinWorkerKillError extends Schema.TaggedError<KinWorkerKillError>()(
-  "KinWorkerKillError",
-  { cause: Schema.Defect() },
+/** systemd couldn't stop or start the worker server's unit on this host. */
+export class KinWorkerServerError extends Schema.TaggedError<KinWorkerServerError>()(
+  "KinWorkerServerError",
+  { action: Schema.Literals(["stop", "start"]), cause: Schema.Defect() },
 ) {}
 
 /**
@@ -70,27 +74,22 @@ export class KinWorkerEnvironment extends Context.Service<
       options?: { readonly timeout?: Duration.Input },
     ) => Effect.Effect<Tool.Success<T>, OrchestratorMcpFailure>;
     /**
-     * SIGKILLs every process of the worker server's unit on this host. The stop switch's last
-     * resort when a stop there fails: it works whatever the server there answers.
+     * `systemctl stop` on the worker server's unit: every process there ends and stays ended,
+     * whatever the server answers. kin-worker.sh's unit also refuses to start while Kin is paused.
      */
-    readonly kill: Effect.Effect<void, KinWorkerKillError>;
+    readonly stopServer: Effect.Effect<void, KinWorkerServerError>;
+    /** `systemctl start` on that unit, after the owner resumes. */
+    readonly startServer: Effect.Effect<void, KinWorkerServerError>;
   }
 >()("t3/kin/lead/workerEnvironment/KinWorkerEnvironment") {}
 
-/** The one command kin-worker.sh's sudoers entry lets `kin` run. */
-const KILL_COMMAND = [
-  "/usr/bin/sudo",
-  "-n",
-  "/usr/bin/systemctl",
-  "kill",
-  "-s",
-  "SIGKILL",
-  "kin-worker-server.service",
-] as const;
+/** The commands kin-worker.sh's sudoers entry lets `kin` run, with no argument of anyone else's. */
+const unitCommand = (action: "stop" | "start") =>
+  ["/usr/bin/sudo", "-n", "/usr/bin/systemctl", action, "kin-worker-server.service"] as const;
 
-const systemctlKill = Effect.gen(function* () {
+const systemctl = Effect.fn("KinWorkerEnvironment.systemctl")(function* (action: "stop" | "start") {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const [command, ...args] = KILL_COMMAND;
+  const [command, ...args] = unitCommand(action);
   const code = yield* spawner
     .exitCode(
       ChildProcess.make(command, args, {
@@ -101,20 +100,37 @@ const systemctlKill = Effect.gen(function* () {
       }),
     )
     .pipe(
-      Effect.timeout("10 seconds"),
-      Effect.mapError((cause) => new KinWorkerKillError({ cause })),
+      // The unit's TimeoutStopSec is 10 seconds, after which systemd SIGKILLs what is left.
+      Effect.timeout("30 seconds"),
+      Effect.mapError((cause) => new KinWorkerServerError({ action, cause })),
     );
-  if (code !== 0) return yield* new KinWorkerKillError({ cause: `exit code ${code}` });
+  if (code !== 0) return yield* new KinWorkerServerError({ action, cause: `exit code ${code}` });
 });
 
 const timedOut = new OrchestratorMcpFailure({
   code: "orchestration_error",
   message: "The worker environment didn't answer in time.",
 });
+const outOfBounds = new OrchestratorMcpFailure({
+  code: "orchestration_error",
+  message: "The worker environment's answer was larger than Kin reads.",
+});
 
-export const make = Effect.fn("KinWorkerEnvironment.make")(function* (
-  kill: Effect.Effect<void, KinWorkerKillError>,
-) {
+/** No array or object wider than MAX_ANSWER_ITEMS and no string longer than MAX_ANSWER_CHARS. */
+const withinBounds = (value: unknown, depth = 0): boolean => {
+  if (typeof value === "string") return value.length <= MAX_ANSWER_CHARS;
+  if (value === null || typeof value !== "object") return true;
+  if (depth > 32) return false;
+  const entries = Array.isArray(value) ? value : Object.values(value);
+  return (
+    entries.length <= MAX_ANSWER_ITEMS && entries.every((entry) => withinBounds(entry, depth + 1))
+  );
+};
+
+export const make = Effect.fn("KinWorkerEnvironment.make")(function* (unit: {
+  readonly stop: Effect.Effect<void, KinWorkerServerError>;
+  readonly start: Effect.Effect<void, KinWorkerServerError>;
+}) {
   const peers = yield* PeerMcpClient.PeerMcpClient;
   const configured = yield* Config.option(Config.String("KIN_WORKER_ENVIRONMENT_ID")).pipe(
     Effect.orElseSucceed(() => Option.none()),
@@ -138,8 +154,11 @@ export const make = Effect.fn("KinWorkerEnvironment.make")(function* (
           arguments: args,
           limits: { runtimeMode: "full-access", interactionMode: "default" },
           success: tool.successSchema as unknown as Schema.Decoder<Tool.Success<typeof tool>>,
+          maxResponseBytes: MAX_ANSWER_BYTES,
         })
         .pipe(
+          Effect.filterOrFail(withinBounds, () => outOfBounds),
+          // Covers the whole call, reading the answer included.
           Effect.timeoutOrElse({
             duration: options?.timeout ?? CALL_TIMEOUT,
             orElse: () => Effect.fail(timedOut),
@@ -147,16 +166,23 @@ export const make = Effect.fn("KinWorkerEnvironment.make")(function* (
         );
     },
   );
-  return KinWorkerEnvironment.of({ environmentId, call, kill });
+  return KinWorkerEnvironment.of({
+    environmentId,
+    call,
+    stopServer: unit.stop,
+    startServer: unit.start,
+  });
 });
 
 export const layer = Layer.effect(
   KinWorkerEnvironment,
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    return yield* make(
-      systemctlKill.pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)),
-    );
+    const run = (action: "stop" | "start") =>
+      systemctl(action).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      );
+    return yield* make({ stop: run("stop"), start: run("start") });
   }),
 );
 
@@ -188,8 +214,9 @@ export const describeFailure = (error: OrchestratorMcpFailure) => {
 };
 
 /**
- * Stops a worker's thread there as its Stop button does: its turn, queued messages and
- * delegated tasks. `key` names the stop, so a resend is recorded there once.
+ * Asks the server there to stop a worker's thread as its Stop button does: its turn, queued
+ * messages and delegated tasks. `key` names the stop, so a resend is recorded there once. The
+ * server may lie, so the pause doesn't rely on it.
  */
 export const stopThere = (
   env: KinWorkerEnvironment["Service"],

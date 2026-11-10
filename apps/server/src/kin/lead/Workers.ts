@@ -341,7 +341,10 @@ const make = Effect.gen(function* () {
       );
     return { projectId: matches[0]!, repositoryKey: key };
   });
-  /** The stop fan-out misses a run that starts during its pass; a pause seen after the launch or send stops it. */
+  /**
+   * The stop fan-out misses a run that starts during its pass; a pause seen after the launch or
+   * send stops it, and stops the worker server again.
+   */
   const stopIfPaused = Effect.fn("KinWorkers.stopIfPaused")(function* (
     orgId: KinOrgId,
     target: {
@@ -353,7 +356,12 @@ const make = Effect.gen(function* () {
     if (!(yield* isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)))) return;
     yield* WorkerEnvironment.stopThere(env, { ...target, reason: STOP_REASON }).pipe(
       Effect.catchCause((cause) =>
-        Effect.logWarning("Kin could not stop a worker started during a pause", { cause }),
+        Effect.logWarning("Kin's stop there went unanswered during a pause", { cause }),
+      ),
+    );
+    yield* env.stopServer.pipe(
+      Effect.catchCause((cause) =>
+        Effect.logError("Kin could not stop the worker server during a pause", { cause }),
       ),
     );
   });
@@ -509,17 +517,37 @@ const make = Effect.gen(function* () {
     const launched = yield* launch.pipe(
       // A lost reply or a timeout may follow a launch that happened; asking again finds it.
       Effect.catchIf(isAmbiguous, () => launch),
-      Effect.tapError((error) =>
+      Effect.catchIf(isAmbiguous, (error) =>
         Effect.gen(function* () {
-          const now = yield* Clock.currentTimeMillis;
-          // A plain refusal started nothing, so recovery has nothing to look for.
-          const lookAgain = isAmbiguous(error) ? projectId : null;
-          yield* sql`UPDATE kin_workers SET status = 'failed', ended_at = ${now},
-              remote_project_id = ${lookAgain}
-            WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId} AND status = 'queued'`;
-        }).pipe(Effect.ignore),
+          // Still open, so pause and the tracker cover it; the follower asks there until it
+          // finds the thread or learns there is none.
+          yield* Effect.logWarning("Kin worker launch unconfirmed", { code: error.code });
+          yield* tracker.track(ctx.orgId, workerId);
+          return yield* new KinChatError({
+            reason: "unavailable",
+            message:
+              "The worker environment didn't confirm the launch. Kin keeps checking and reports what it finds; retrying the same call is safe.",
+          });
+        }),
       ),
-      there("The worker could not start. Retry the same call or tell the owner."),
+      Effect.tapError((error) =>
+        isChatError(error)
+          ? Effect.void
+          : Effect.gen(function* () {
+              const now = yield* Clock.currentTimeMillis;
+              // A plain refusal started nothing, so there is nothing there to look for.
+              yield* sql`UPDATE kin_workers SET status = 'failed', ended_at = ${now},
+                  remote_project_id = NULL
+                WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId} AND status = 'queued'
+                  AND thread_id = ${unboundThreadId(workerId)}`;
+            }).pipe(Effect.ignore),
+      ),
+      Effect.catchTags({
+        OrchestratorMcpFailure: (error) =>
+          Effect.fail(error).pipe(
+            there("The worker could not start. Retry the same call or tell the owner."),
+          ),
+      }),
     );
     const threadId = launched.threadId;
     yield* sql`UPDATE kin_workers SET thread_id = ${threadId}

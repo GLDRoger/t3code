@@ -10,6 +10,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -61,8 +62,8 @@ const lastRunStatus = (threadId: ThreadId) =>
       .pipe(Effect.map((projection) => projection.runs.at(-1)?.status)),
   );
 /** Routines that record each pause and resume; `pauseAll` may be slowed down. */
-/** The worker environment, recording each stop Kin sends there. */
-const recordingWorkers = (stops: Array<Record<string, unknown>>) =>
+/** The worker environment, recording each stop Kin sends there and each unit stop or start. */
+const recordingWorkers = (stops: Array<Record<string, unknown>>, units: Array<string> = []) =>
   WorkerEnvironment.KinWorkerEnvironment.of({
     environmentId: Option.some(EnvironmentId.make("worker-env")),
     call: ((
@@ -74,7 +75,8 @@ const recordingWorkers = (stops: Array<Record<string, unknown>>) =>
         stops.push({ tool: tool.name, ...params });
         return { threadId: params.threadId, runId: null, status: "interrupt_requested" };
       })) as never,
-    kill: Effect.die("A stop there that answers needs no kill."),
+    stopServer: Effect.sync(() => void units.push("stop")),
+    startServer: Effect.sync(() => void units.push("start")),
   });
 
 const recordingRoutines = (
@@ -111,6 +113,7 @@ describe("KinStop", () => {
           const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
           const delegated: Array<ThreadId> = [];
           const stops: Array<Record<string, unknown>> = [];
+          const units: Array<string> = [];
           yield* stop.attach(
             yield* KinStop.makeFanOut(Option.none()).pipe(
               Effect.provideService(ThreadManagement.ThreadManagementService, {
@@ -122,7 +125,7 @@ describe("KinStop", () => {
               }),
               Effect.provideService(
                 WorkerEnvironment.KinWorkerEnvironment,
-                recordingWorkers(stops),
+                recordingWorkers(stops, units),
               ),
             ),
           );
@@ -137,9 +140,11 @@ describe("KinStop", () => {
           }>`SELECT wakeup_id AS "wakeupId", thread_id AS "threadId" FROM kin_wakeups WHERE org_id = ${orgId} ORDER BY wakeup_id`;
           const leadThread = ThreadId.make(running!.threadId);
 
-          // A worker runs in the worker environment, so the stop goes there.
+          // A worker runs in the worker environment, so the stop goes there; another's launch
+          // never answered, so it has no thread to name.
           yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id, model_json, provenance_json, status, started_at, environment_id)
-            VALUES ('worker', ${orgId}, ${agentId}, ${running!.wakeupId}, 'build', 'remote-worker', '{}', '{"_tag":"system"}', 'running', 0, 'worker-env')`;
+            VALUES ('worker', ${orgId}, ${agentId}, ${running!.wakeupId}, 'build', 'remote-worker', '{}', '{"_tag":"system"}', 'running', 0, 'worker-env'),
+              ('lost', ${orgId}, ${agentId}, ${running!.wakeupId}, 'build', 'kin-worker-lost', '{}', '{"_tag":"system"}', 'queued', 0, 'worker-env')`;
           const dreamThread = ThreadId.make("kin-dream:dream-stop-test:extract");
           yield* launchThread(dreamThread);
           yield* sql`INSERT INTO kin_dream_runs (org_id, owner_date, dream_id, full, status, branch, material_from, material_until, started_at, thread_id)
@@ -160,6 +165,8 @@ describe("KinStop", () => {
             stops.map(({ tool, threadId, stop }) => ({ tool, threadId, stop })),
             [{ tool: "t3_thread_interrupt", threadId: "remote-worker", stop: true }],
           );
+          // The server answered that it stopped; the unit stops anyway, and covers the lost launch.
+          assert.deepStrictEqual(units, ["stop"]);
           assert.deepStrictEqual(
             yield* sql`SELECT status FROM kin_wakeups WHERE org_id = ${orgId} ORDER BY wakeup_id`,
             [{ status: "released" }],
@@ -171,6 +178,7 @@ describe("KinStop", () => {
           );
 
           assert.deepStrictEqual(yield* stop.pause(owner, { orgId }), paused);
+          assert.deepStrictEqual(units, ["stop", "stop"]);
           assert.deepStrictEqual(
             yield* sql`SELECT body FROM kin_messages WHERE org_id = ${orgId} ORDER BY seq`,
             [{ body: KinStop.PAUSED_NOTICE }],
@@ -340,7 +348,7 @@ describe("KinStop", () => {
   );
 
   it.effect(
-    "a worker server that never answers is killed after the stop timeout; routines pause without waiting",
+    "a worker server that never answers can't hold the pause; its unit stops, and starts on resume",
     () =>
       Effect.gen(function* () {
         yield* seed;
@@ -348,21 +356,32 @@ describe("KinStop", () => {
         const stop = yield* KinStop.KinStop;
         const asked = yield* Queue.unbounded<string>();
         const routinesPaused = yield* Deferred.make<void>();
-        const kills = { count: 0, refuse: false };
+        const units: Array<string> = [];
+        let refuse = false;
         // The real boundary over a link whose server takes every call and never answers.
-        const frozen = yield* WorkerEnvironment.make(
-          Effect.suspend(() => {
-            kills.count += 1;
-            return kills.refuse
-              ? Effect.fail(new WorkerEnvironment.KinWorkerKillError({ cause: "sudo refused" }))
+        const frozen = yield* WorkerEnvironment.make({
+          stop: Effect.suspend(() => {
+            units.push("stop");
+            return refuse
+              ? Effect.fail(
+                  new WorkerEnvironment.KinWorkerServerError({
+                    action: "stop",
+                    cause: "sudo refused",
+                  }),
+                )
               : Effect.void;
           }),
-        ).pipe(
+          start: Effect.sync(() => void units.push("start")),
+        }).pipe(
           Effect.provideService(
             PeerMcpClient.PeerMcpClient,
             PeerMcpClient.PeerMcpClient.of({
               call: (input) => Queue.offer(asked, input.tool).pipe(Effect.andThen(Effect.never)),
             }),
+          ),
+          Effect.provideService(
+            ConfigProvider.ConfigProvider,
+            ConfigProvider.fromUnknown({ KIN_WORKER_ENVIRONMENT_ID: "worker-env" }),
           ),
         );
         const routines = yield* Effect.asSome(
@@ -388,21 +407,23 @@ describe("KinStop", () => {
         assert.strictEqual(yield* Queue.take(asked), "t3_thread_interrupt");
         // The clock hasn't moved: routines paused while the stop there still hangs.
         yield* Deferred.await(routinesPaused);
-        assert.strictEqual(kills.count, 0);
+        assert.deepStrictEqual(units, []);
         yield* TestClock.adjust(WorkerEnvironment.STOP_TIMEOUT);
         yield* Fiber.join(pausing);
-        assert.strictEqual(kills.count, 1);
+        assert.deepStrictEqual(units, ["stop"]);
         assert.isTrue(yield* stop.isPaused(orgId));
 
-        // When the kill is refused too, the owner hears the stop didn't reach everything.
         yield* stop.resume(owner, { orgId });
-        kills.refuse = true;
+        assert.deepStrictEqual(units, ["stop", "start"]);
+
+        // When systemd refuses the stop, the owner hears the stop didn't reach everything.
+        refuse = true;
         yield* TestClock.adjust("1 second");
         const again = yield* stop.pause(owner, { orgId }).pipe(Effect.flip, Effect.forkChild);
         assert.strictEqual(yield* Queue.take(asked), "t3_thread_interrupt");
         yield* TestClock.adjust(WorkerEnvironment.STOP_TIMEOUT);
         assert.include(yield* Fiber.join(again), { _tag: "KinChatError", reason: "unavailable" });
-        assert.strictEqual(kills.count, 2);
+        assert.deepStrictEqual(units, ["stop", "start", "stop"]);
         assert.isTrue(yield* stop.isPaused(orgId));
       }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
   );

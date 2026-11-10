@@ -89,6 +89,9 @@ const WorkerRow = Schema.Struct({
   status: Schema.String,
   startedAt: Schema.Number,
   repositoryKey: Schema.NullOr(Schema.String),
+  remoteProjectId: Schema.NullOr(ProjectId),
+  title: Schema.NullOr(Schema.String),
+  model: Schema.String,
 });
 type WorkerRow = typeof WorkerRow.Type;
 const decodeWorker = Schema.decodeUnknownEffect(WorkerRow);
@@ -140,7 +143,8 @@ const make = Effect.gen(function* () {
     const [raw] = yield* sql`SELECT org_id AS "orgId", worker_id AS "workerId",
       agent_id AS "agentId", thread_id AS "threadId", chat_id AS "chatId",
       environment_id AS "environmentId", status, started_at AS "startedAt",
-      repository_key AS "repositoryKey"
+      repository_key AS "repositoryKey", remote_project_id AS "remoteProjectId", title,
+      model_json AS model
       FROM kin_workers WHERE org_id = ${orgId} AND worker_id = ${workerId} ORDER BY worker_id`;
     return raw === undefined ? undefined : yield* decodeWorker(raw);
   });
@@ -247,6 +251,48 @@ const make = Effect.gen(function* () {
     return true;
   });
 
+  /**
+   * A launch whose reply never came: asks there again with the same request id and no message,
+   * which returns the thread the launch started, or an idle one when it never arrived. Either
+   * way the row gets a thread to follow, stop and report. False until then.
+   */
+  const reconcile = Effect.fn("WorkerTracker.reconcile")(function* (
+    worker: WorkerRow,
+    environmentId: EnvironmentId,
+  ) {
+    if (worker.status !== "queued" || worker.remoteProjectId === null) return true;
+    // Paused: the worker server is down, and asking would only fail.
+    if (yield* isOrgPaused(worker.orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
+      return false;
+    const found = yield* env
+      .call(environmentId, WorkerEnvironment.tools.launch, {
+        projectId: worker.remoteProjectId,
+        title: worker.title ?? "Worker",
+        modelSelection: yield* decodeSelection(worker.model),
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        clientRequestId: launchRequestId(worker.workerId),
+      })
+      .pipe(
+        Effect.map((launched) => launched.threadId),
+        Effect.catchIf(
+          (error) => error.code === "invalid_request",
+          () => Effect.succeed(undefined),
+        ),
+      );
+    if (found === undefined)
+      return yield* record(worker, {
+        key: `worker-abandoned:${worker.workerId}:${worker.startedAt}`,
+        status: "failed",
+        endedAt: yield* Clock.currentTimeMillis,
+        report: blocked(worker, environmentId, "The worker environment never started this worker."),
+      });
+    yield* sql`UPDATE kin_workers SET thread_id = ${found}
+      WHERE org_id = ${worker.orgId} AND worker_id = ${worker.workerId}
+        AND thread_id = ${unboundThreadId(worker.workerId)}`;
+    return false;
+  });
+
   /** One wait on the worker's thread there; true once its latest run is reported. */
   const followOnce = Effect.fn("WorkerTracker.followOnce")(function* (
     orgId: KinOrgId,
@@ -254,9 +300,10 @@ const make = Effect.gen(function* () {
     shown: { card?: ReturnType<typeof remoteTaskCardState> },
   ) {
     const worker = yield* workerRow(orgId, workerId);
-    if (worker === undefined || worker.environmentId === null || !isBound(worker)) return true;
+    if (worker === undefined || worker.environmentId === null) return true;
     if (endedStatuses.has(worker.status as OrchestrationV2RunStatus)) return true;
     const environmentId = worker.environmentId;
+    if (!isBound(worker)) return yield* reconcile(worker, environmentId);
     // The worker's own tasks there wake it for its answer, which the report waits for.
     const waited = yield* env.call(environmentId, WorkerEnvironment.tools.wait, {
       threadId: worker.threadId,
@@ -268,17 +315,24 @@ const make = Effect.gen(function* () {
       limit: 1,
       runLimit: 5,
     });
-    // A server that restarted while Kin is paused continues cut turns; they stop here too.
+    // The worker server is stopped while Kin is paused; one that still runs a turn is stopped again.
     if (
       read.thread.activeRunId !== null &&
       (yield* isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
-    )
+    ) {
       yield* WorkerEnvironment.stopThere(env, {
         environmentId,
         threadId: worker.threadId,
         key: `kin-stop-follow:${worker.workerId}:${read.thread.activeRunId}`,
         reason: STOP_REASON,
-      });
+      }).pipe(Effect.ignore);
+      yield* env.stopServer.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logError("Kin could not stop the worker server during a pause", { cause }),
+        ),
+      );
+      return false;
+    }
     const state = remoteTaskCardState(read.thread, worker.repositoryKey);
     if (shown.card === undefined || !cardStateEquivalent(shown.card, state))
       yield* card(worker, (chatId) =>
@@ -431,96 +485,15 @@ const make = Effect.gen(function* () {
   const process: WorkerTracker["Service"]["process"] = (stored) =>
     stored.event.type === "subagent.updated" ? strayDelegation(stored.event.payload) : Effect.void;
 
-  // An unanswered launch may still have started a thread there. Older rows ask again with the
-  // same request id and no message, which returns that thread or an idle one, and stop it. Rows
-  // from this process are skipped (still in flight); rows from before K031 name no environment.
-  const recoverUnbound = Effect.fn("WorkerTracker.recoverUnbound")(function* () {
-    const rows = yield* sql<{
-      orgId: string;
-      workerId: string;
-      threadId: string;
-      chatId: string | null;
-      status: string;
-      environmentId: string | null;
-      remoteProjectId: string | null;
-      title: string | null;
-      model: string;
-    }>`SELECT org_id AS "orgId", worker_id AS "workerId", thread_id AS "threadId",
-        chat_id AS "chatId", status, environment_id AS "environmentId",
-        remote_project_id AS "remoteProjectId", title, model_json AS model
-      FROM kin_workers WHERE org_id IN (SELECT org_id FROM kin_leads GROUP BY org_id)
-        AND status IN ('queued', 'failed') AND thread_id = 'kin-worker-' || worker_id
-        AND started_at < ${bootedAt}
-        AND (status = 'queued' OR (environment_id IS NOT NULL AND remote_project_id IS NOT NULL))
-      ORDER BY org_id, worker_id`;
-    yield* Effect.forEach(rows, (row) =>
-      Effect.gen(function* () {
-        const orgId = KinOrgId.make(row.orgId);
-        const workerId = KinWorkerId.make(row.workerId);
-        const now = yield* Clock.currentTimeMillis;
-        if (row.environmentId !== null && row.remoteProjectId !== null) {
-          const environmentId = EnvironmentId.make(row.environmentId);
-          const found = yield* env
-            .call(environmentId, WorkerEnvironment.tools.launch, {
-              projectId: ProjectId.make(row.remoteProjectId),
-              title: row.title ?? "Worker",
-              modelSelection: yield* decodeSelection(row.model),
-              runtimeMode: "full-access",
-              interactionMode: "default",
-              clientRequestId: launchRequestId(workerId),
-            })
-            .pipe(
-              Effect.catchTags({
-                // Refused for good: nothing there to find. Anything else is asked again next start.
-                OrchestratorMcpFailure: (error) =>
-                  WorkerEnvironment.isFinal(error) || error.code === "invalid_request"
-                    ? Effect.undefined
-                    : Effect.fail(error),
-              }),
-            );
-          if (found !== undefined) {
-            yield* WorkerEnvironment.stopThere(env, {
-              environmentId,
-              threadId: found.threadId,
-              key: `kin-recover:${workerId}`,
-              reason: "Kin lost this launch's reply and stopped it.",
-            });
-            yield* sql`UPDATE kin_workers SET thread_id = ${found.threadId}, status = 'failed',
-              ended_at = COALESCE(ended_at, ${now})
-            WHERE org_id = ${orgId} AND worker_id = ${workerId}
-              AND thread_id = ${unboundThreadId(workerId)}`;
-          } else
-            yield* sql`UPDATE kin_workers SET status = 'failed', ended_at = COALESCE(ended_at, ${now}),
-              remote_project_id = NULL
-            WHERE org_id = ${orgId} AND worker_id = ${workerId}`;
-        } else
-          yield* sql`UPDATE kin_workers SET status = 'failed', ended_at = ${now}
-          WHERE org_id = ${orgId} AND worker_id = ${workerId} AND status = 'queued'`;
-        if (row.chatId !== null && row.status === "queued")
-          yield* chat
-            .setTaskCardClosed({
-              orgId,
-              chatId: KinChatId.make(row.chatId),
-              threadId: ThreadId.make(row.threadId),
-              closed: true,
-            })
-            .pipe(Effect.catchTags({ KinChatError: () => Effect.void }));
-      }).pipe(
-        // One row's failure leaves it for the next start; the others still recover.
-        Effect.catchCause((cause) =>
-          Effect.logWarning("Kin could not recover a worker launch", {
-            workerId: row.workerId,
-            cause,
-          }),
-        ),
-      ),
-    );
-  });
+  // Rows from before K031 name no environment, so there is nothing there to look for.
+  const failUnplaced = sql`UPDATE kin_workers SET status = 'failed', ended_at = ${bootedAt}
+    WHERE org_id IN (SELECT org_id FROM kin_leads GROUP BY org_id)
+      AND status = 'queued' AND thread_id = 'kin-worker-' || worker_id AND environment_id IS NULL`;
+  // Unconfirmed launches included: their followers find what the launch started there.
   const openWorkers = sql<{ orgId: string; workerId: string }>`
     SELECT org_id AS "orgId", worker_id AS "workerId" FROM kin_workers
     WHERE org_id IN (SELECT org_id FROM kin_leads GROUP BY org_id)
-      AND environment_id IS NOT NULL AND thread_id <> 'kin-worker-' || worker_id
-      AND status NOT IN ${sql.in([...endedStatuses])}
+      AND environment_id IS NOT NULL AND status NOT IN ${sql.in([...endedStatuses])}
     ORDER BY org_id, worker_id`;
 
   const start = Effect.gen(function* () {
@@ -550,7 +523,7 @@ const make = Effect.gen(function* () {
       Effect.retry(retry),
       Effect.forkScoped,
     );
-    yield* recoverUnbound().pipe(Effect.retry(retry));
+    yield* failUnplaced.pipe(Effect.retry(retry));
     for (const row of yield* openWorkers.pipe(Effect.retry(retry)))
       yield* track(KinOrgId.make(row.orgId), KinWorkerId.make(row.workerId));
   }).pipe(
