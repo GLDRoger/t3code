@@ -509,6 +509,17 @@ function KinChatFeed(props: {
     if (isAtEnd !== follow.atEnd) transition({ type: "end-check", isAtEnd });
     if (isAtEnd) transition({ type: "seen", seq: latestSeq });
   };
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- onScroll can read isAtEnd before the list re-pins, leaving follow off at the end; the list's own signal restores it
+  useEffect(
+    () =>
+      listRef.current?.getState().listen("isAtEnd", (isAtEnd) => {
+        if (!isAtEnd) return;
+        transition({ type: "end-check", isAtEnd });
+        transition({ type: "seen", seq: reading.current.latestSeq });
+      }),
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- transition only calls setFollow, which is stable.
+    [],
+  );
 
   const prefersReducedMotion =
     typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;

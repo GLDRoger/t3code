@@ -804,6 +804,15 @@ function KinChatFeed(props: {
     const isAtEnd = listRef.current?.getState().isAtEnd ?? true;
     if (isAtEnd !== follow.atEnd) transition({ type: "end-check", isAtEnd });
   };
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- onScroll can read isAtEnd before the list re-pins, leaving follow off at the end; the list's own signal restores it
+  useEffect(
+    () =>
+      listRef.current?.getState().listen("isAtEnd", (isAtEnd) => {
+        if (isAtEnd) transition({ type: "end-check", isAtEnd });
+      }),
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- transition only calls setFollow, which is stable.
+    [],
+  );
 
   const markSeen = ({ viewableItems }: OnViewableItemsChangedInfo<KinChatRow>) => {
     const seq = Math.max(
