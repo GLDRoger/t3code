@@ -20,8 +20,10 @@ jobs:
   preview:
     name: EAS Preview
     if: >-
+      !startsWith(github.head_ref, 'kin/worker/') && (
       github.event.pull_request.head.repo.full_name != github.repository &&
       github.event.label.name == '🚀 Mobile Continuous Deployment'
+      )
     runs-on: blacksmith-8vcpu-ubuntu-2404
     concurrency:
       group: mobile-eas-preview-fork-${{ github.event.pull_request.number }}
