@@ -1,4 +1,5 @@
 import { installKinNotifications } from "./notifications/installKinNotifications";
+import { installKinStartList } from "./state/kinLastList";
 import { startKinOutbox } from "./state/kinOutboxDelivery";
 
 /**
@@ -6,7 +7,19 @@ import { startKinOutbox } from "./state/kinOutboxDelivery";
  * notification response before that router consumes it.
  */
 export function installKin(navigate: (href: string) => void): () => void {
-  const disposers = [startKinOutbox(), installKinNotifications(navigate)];
+  // A notification that opened a chat owns the screen; the start list then stays out of the way.
+  let navigated = false;
+  const disposers = [
+    startKinOutbox(),
+    installKinNotifications((href) => {
+      navigated = true;
+      navigate(href);
+    }),
+    installKinStartList(
+      () => navigate("/kin"),
+      () => !navigated,
+    ),
+  ];
   return () => {
     for (const dispose of disposers) dispose();
   };

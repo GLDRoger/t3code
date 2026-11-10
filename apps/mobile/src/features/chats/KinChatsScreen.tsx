@@ -1,5 +1,7 @@
 import { LegendList } from "@legendapp/list/react-native";
+import { useAtomSet } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
+import { useEffect } from "react";
 import { View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
@@ -20,11 +22,19 @@ import {
   type KinDirectory,
   type KinInboxScreenState,
 } from "@t3tools/client-runtime/kin/kinScreenState";
+import { rememberKinListAtom } from "./state/kinLastList";
 import { useKinInbox } from "./state/useKinInbox";
 
 export function KinChatsScreen() {
   const navigation = useNavigation();
   const { host, state, retry } = useKinInbox();
+  const rememberList = useAtomSet(rememberKinListAtom);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- records in device storage which list is open, so the next launch opens to it
+  useEffect(() => {
+    rememberList("kin");
+    // Leaving the list, by Back or the swipe, is the switch back to coding threads.
+    return navigation.addListener("beforeRemove", () => rememberList("threads"));
+  }, [navigation, rememberList]);
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar title="Kin" onBack={() => navigation.goBack()} />

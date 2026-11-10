@@ -20,6 +20,7 @@ import {
   useNativeColumnLayoutMetrics,
   useNativeLayoutMetrics,
 } from "../../../native/native-layout-metrics";
+import { KinListSwitch } from "../../chats/components/KinListSwitch";
 import { HomeRouteScreen } from "../../home/HomeRouteScreen";
 import { WorkspaceConnectionTitle } from "../../home/WorkspaceConnectionTitle";
 import { useAdaptiveWorkspaceLayout } from "../AdaptiveWorkspaceLayout";
@@ -44,6 +45,7 @@ const TAB_TITLES = WORKSPACE_TAB_LABELS;
 function WorkspaceRootTitle(props: {
   readonly columnWidth: number;
   readonly onOpenEnvironments: () => void;
+  readonly onOpenKin: () => void;
 }) {
   const { state, settingsOpen } = useWorkspaceTabs()!;
   const maxWidth = Math.max(0, props.columnWidth - (use(HeaderItemsWidthContext) ?? 160));
@@ -56,7 +58,17 @@ function WorkspaceRootTitle(props: {
   return (
     <View style={{ width: maxWidth, minHeight: 32, justifyContent: "center" }}>
       <WorkspaceConnectionTitle
-        brand={<CompactBrandTitle accessibilityLabel={`T3 Code, ${tabTitle}`} fit />}
+        brand={
+          <KinListSwitch onOpenKin={props.onOpenKin}>
+            {(trailing) => (
+              <CompactBrandTitle
+                accessibilityLabel={`T3 Code, ${tabTitle}`}
+                fit
+                trailing={trailing}
+              />
+            )}
+          </KinListSwitch>
+        }
         maxWidth={maxWidth}
         onPress={props.onOpenEnvironments}
       />
@@ -93,6 +105,7 @@ function WorkspaceRootContent() {
     <WorkspaceRootTitle
       columnWidth={width}
       onOpenEnvironments={() => openSettings(navigation, "SettingsEnvironments")}
+      onOpenKin={() => navigation.navigate("KinChats")}
     />
   );
   const tab = state.tabs[settingsOpen ? "settings" : state.selectedTab];
