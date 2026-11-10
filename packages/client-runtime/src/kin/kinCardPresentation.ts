@@ -159,7 +159,7 @@ const ROUTINE_SECTIONS: Record<KinRoutineSection, string> = {
   review_requested: "Review requested",
   ci_red: "CI failing",
   objective_at_risk: "Objective at risk",
-  worker: "Workers",
+  worker: "In progress",
   past_review: "Overdue for a check",
   done: "Done",
   slipped: "Slipped",

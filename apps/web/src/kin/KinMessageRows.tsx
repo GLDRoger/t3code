@@ -33,15 +33,17 @@ type DraftRow = Extract<KinFeedRow, { readonly type: "draft" }>;
 type FoldRow = Extract<KinFeedRow, { readonly type: "fold" }>;
 
 const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
-const formatTime = (iso: string) => timeFormat.format(new Date(iso));
+export const formatKinMessageTime = (iso: string) => timeFormat.format(new Date(iso));
+const formatTime = formatKinMessageTime;
 
 const ROW = "mx-auto flex w-full max-w-3xl flex-col gap-1 px-4 pb-1.5";
 const BUBBLE = "min-w-0 max-w-[85%] rounded-2xl px-3.5 py-2 text-sm";
 
-function AuthorLine(props: { readonly label: string; readonly at: string }) {
+/** Who and when, over the first bubble of a group. The bubble's own label reads both aloud. */
+function HeadLine(props: { readonly label: string }) {
   return (
-    <p aria-hidden className="px-1 pt-2 text-xs font-medium text-muted-foreground">
-      {props.label} · {formatTime(props.at)}
+    <p aria-hidden className="px-1 pt-2 text-xs text-muted-foreground tabular-nums">
+      {props.label}
     </p>
   );
 }
@@ -57,9 +59,10 @@ function KinBody(props: { readonly markdown: string; readonly environmentId: Env
   );
 }
 
-/** One message: the viewer's own sit right; others sit left under an author line. */
+/** One message: the viewer's own sit right, others left; `head` names who and when over a group. */
 export function KinMessageRow(props: {
   readonly row: MessageRow;
+  readonly head: string | null;
   readonly widget: KinWidget | undefined;
   readonly environmentId: EnvironmentId;
   readonly viewerPersonId: KinPersonId | null;
@@ -80,7 +83,7 @@ export function KinMessageRow(props: {
 
   return (
     <div className={cn(ROW, "group/kin-message", row.own ? "items-end" : "items-start")}>
-      {row.showAuthor ? <AuthorLine label={row.authorLabel} at={message.createdAt} /> : null}
+      {props.head === null ? null : <HeadLine label={props.head} />}
       <div className={cn("flex w-full items-center gap-1", row.own && "flex-row-reverse")}>
         {hasBubble ? (
           <div
@@ -107,12 +110,15 @@ export function KinMessageRow(props: {
         {canReact && hasBubble ? <KinReactMenu mine={mine} onReact={onReact} /> : null}
       </div>
       {hasCard ? (
-        <div className="w-full max-w-[85%]">
-          <KinCard
-            widget={props.widget}
-            environmentId={props.environmentId}
-            viewerPersonId={props.viewerPersonId}
-          />
+        <div className="flex w-full items-start gap-1">
+          <div className="min-w-0 max-w-[85%] flex-1">
+            <KinCard
+              widget={props.widget}
+              environmentId={props.environmentId}
+              viewerPersonId={props.viewerPersonId}
+            />
+          </div>
+          {canReact && !hasBubble ? <KinReactMenu mine={mine} onReact={onReact} /> : null}
         </div>
       ) : null}
       {props.reactions.length > 0 ? (
@@ -134,10 +140,7 @@ export function KinMessageRow(props: {
               {chip.emoji} {chip.count}
             </Button>
           ))}
-          {canReact && !hasBubble ? <KinReactMenu mine={mine} onReact={onReact} /> : null}
         </div>
-      ) : canReact && !hasBubble ? (
-        <KinReactMenu mine={mine} onReact={onReact} />
       ) : null}
       {props.showReplyHint ? (
         <p className="px-1 text-xs text-muted-foreground" aria-label={KIN_REACTION_HINT_LABEL}>
@@ -178,11 +181,13 @@ function KinReactMenu(props: {
 export function KinDraftRow(props: {
   readonly row: DraftRow;
   readonly environmentId: EnvironmentId;
+  /** A direct chat has one lead, so its reply needs no name. */
+  readonly direct: boolean;
 }) {
   const { row } = props;
   return (
     <div className={cn(ROW, "items-start")}>
-      {row.showAuthor ? <AuthorLine label={row.authorLabel} at={row.draft.startedAt} /> : null}
+      {row.showAuthor && !props.direct ? <HeadLine label={row.authorLabel} /> : null}
       <div
         role="article"
         aria-label={kinSentences([
@@ -198,15 +203,24 @@ export function KinDraftRow(props: {
   );
 }
 
-/** A line from Kin itself, such as a member joining. */
+/** A line from Kin itself or a piece of bookkeeping: muted, centred, never a bubble. */
 export function KinSystemRow(props: {
   readonly body: string;
   /** Sends the owner's unanswered message again; null shows the line alone. */
   readonly onRetry: (() => void) | null;
+  /** Old bookkeeping the owner needn't read: fainter, and cut at two lines. */
+  readonly quiet?: boolean;
 }) {
   return (
-    <div className="mx-auto flex max-w-3xl items-center justify-center gap-2 px-8 py-2">
-      <p className="text-center text-xs text-muted-foreground">{props.body}</p>
+    <div className="mx-auto flex max-w-3xl items-center justify-center gap-2 px-8 py-1">
+      <p
+        className={cn(
+          "text-center text-xs",
+          props.quiet === true ? "line-clamp-2 text-muted-foreground/70" : "text-muted-foreground",
+        )}
+      >
+        {props.body}
+      </p>
       {props.onRetry === null ? null : (
         <Button size="xs" variant="outline" onClick={props.onRetry}>
           Retry
