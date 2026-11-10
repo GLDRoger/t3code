@@ -291,19 +291,23 @@ const make = Effect.gen(function* () {
   const writer = yield* Writer.MemoryWriter;
   const writerAuthority = yield* Writer.MemoryWriterAuthority;
   const sql = yield* SqlClient.SqlClient;
-  const locks = new Map<KinOrgId, Semaphore.Semaphore>();
+  // Receipts are keyed per wake-up, so the lock that orders them is too.
+  const locks = new Map<string, Semaphore.Semaphore>();
+  const wakeKey = (orgId: KinOrgId, wakeupId: string) => `${orgId}\u0000${wakeupId}`;
   const locked = Effect.fn("LeadMemory.locked")(function* <A, E, R>(
     orgId: KinOrgId,
+    wakeupId: string,
     operation: Effect.Effect<A, E, R>,
   ) {
-    let lock = locks.get(orgId);
+    const key = wakeKey(orgId, wakeupId);
+    let lock = locks.get(key);
     if (!lock) {
       lock = Semaphore.makeUnsafe(1);
-      locks.set(orgId, lock);
+      locks.set(key, lock);
     }
     return yield* lock.withPermits(1)(operation);
   });
-  const ended = new Map<KinOrgId, string>();
+  const ended = new Set<string>();
   const resolve = (scope: McpInvocationScope, allowEnded = false) =>
     resolveLead(scope, allowEnded).pipe(
       Effect.provideService(KinIdentity, identity),
@@ -447,6 +451,7 @@ const make = Effect.gen(function* () {
       const ctx = yield* resolve(scope);
       return yield* locked(
         ctx.orgId,
+        ctx.wakeupId,
         Effect.gen(function* () {
           return yield* stage(yield* resolve(scope), input);
         }),
@@ -456,6 +461,7 @@ const make = Effect.gen(function* () {
       const ctx = yield* resolve(scope);
       return yield* locked(
         ctx.orgId,
+        ctx.wakeupId,
         Effect.gen(function* () {
           const ctx = yield* resolve(scope);
           yield* checkSource(ctx, input.sourceEventId);
@@ -509,6 +515,7 @@ const make = Effect.gen(function* () {
       const ctx = yield* resolve(scope);
       return yield* locked(
         ctx.orgId,
+        ctx.wakeupId,
         Effect.gen(function* () {
           const ctx = yield* resolve(scope);
           yield* checkSource(ctx, input.sourceEventId);
@@ -584,17 +591,18 @@ const make = Effect.gen(function* () {
       const ctx = yield* resolve(scope, true);
       yield* locked(
         ctx.orgId,
+        ctx.wakeupId,
         Effect.gen(function* () {
           const ctx = yield* resolve(scope, true);
           yield* receipt(
             ctx,
             "end",
             input,
-            ended.get(ctx.orgId) === ctx.wakeupId
+            ended.has(wakeKey(ctx.orgId, ctx.wakeupId))
               ? Effect.void
               : writer.appendJournal(ctx.orgId, ctx.wakeupId, [`Summary: ${input.summary}`]),
           );
-          ended.set(ctx.orgId, ctx.wakeupId);
+          ended.add(wakeKey(ctx.orgId, ctx.wakeupId));
         }),
       );
     }, Effect.mapError(failure)),

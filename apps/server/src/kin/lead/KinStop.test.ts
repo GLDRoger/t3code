@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
+  KinAgentId,
   KinPersonId,
   KinWakeupId,
   MessageId,
@@ -14,6 +15,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as DateTime from "effect/DateTime";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
@@ -163,6 +165,73 @@ describe("KinStop", () => {
           );
         }).pipe(Effect.provide(harness({ entered, untilInterrupted: true })));
       }).pipe(provideDeterministicTestRuntime),
+  );
+
+  it.effect("stops two leads' running wake-ups at once and starts none until resume", () =>
+    Effect.gen(function* () {
+      const enteredThreads = yield* Queue.unbounded<ThreadId>();
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const runner = yield* WakeupRunner.WakeupRunner;
+        const stop = yield* KinStop.KinStop;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        yield* stop.attach(yield* KinStop.makeFanOut(Option.none()));
+        yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+          SELECT 'lead-z', org_id, display_name, role, owner_person_id, created_at FROM kin_agents WHERE agent_id = 'lead'`;
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+          SELECT 'lead-z', org_id, name, level_since, models_json, worker_projects_json, owner_chat_id FROM kin_leads WHERE agent_id = 'lead'`;
+        const otherLead = KinAgentId.make("lead-z");
+        yield* queue.enqueue(event("work"));
+        yield* queue.enqueue({ ...event("other-work"), agentId: otherLead });
+        const first = yield* runner.runOnce(orgId, agentId).pipe(Effect.forkChild);
+        const second = yield* runner.runOnce(orgId, otherLead).pipe(Effect.forkChild);
+        yield* TestClock.adjust("20 seconds");
+        const threads = [yield* Queue.take(enteredThreads), yield* Queue.take(enteredThreads)];
+        assert.deepStrictEqual(
+          yield* sql`SELECT agent_id FROM kin_wakeups WHERE org_id = ${orgId} AND status = 'running' ORDER BY agent_id`,
+          [{ agent_id: "lead" }, { agent_id: "lead-z" }],
+        );
+
+        const paused = yield* stop.pause(owner, { orgId });
+        assert.isTrue(paused.paused);
+        yield* worker.drain();
+        yield* Fiber.join(first);
+        yield* Fiber.join(second);
+        for (const threadId of threads)
+          assert.strictEqual(yield* lastRunStatus(threadId), "interrupted");
+        assert.deepStrictEqual(
+          yield* sql`SELECT status FROM kin_wakeups WHERE org_id = ${orgId} ORDER BY wakeup_id`,
+          [{ status: "released" }, { status: "released" }],
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT state, attempts FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`,
+          [
+            { state: "queued", attempts: 0 },
+            { state: "queued", attempts: 0 },
+          ],
+        );
+
+        yield* queue.enqueue(event("held"));
+        yield* TestClock.adjust("2 minutes");
+        yield* runner.runOnce(orgId, agentId);
+        yield* runner.runOnce(orgId, otherLead);
+        assert.lengthOf(
+          yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${orgId} ORDER BY wakeup_id`,
+          2,
+        );
+        const resumed = yield* stop.resume(owner, { orgId });
+        assert.isFalse(resumed.paused);
+      }).pipe(
+        Effect.provide(
+          harness({
+            untilInterrupted: true,
+            onTurn: ({ threadId }) => Queue.offer(enteredThreads, threadId).pipe(Effect.asVoid),
+          }),
+        ),
+      );
+    }).pipe(provideDeterministicTestRuntime),
   );
 
   it.effect("resumes once with one resume event and expires events queued over a day ago", () =>

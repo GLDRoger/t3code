@@ -33,6 +33,7 @@ it.live.each([
   "undo",
   "recovered-no-end",
   "lost-session-retry",
+  "two-leads",
   "completed",
   "failed",
   "blocked",
@@ -265,8 +266,12 @@ it.live.each([
             : Effect.succeed({
                 orgId,
                 wakeupId,
-                agentId,
+                agentId:
+                  scenario === "two-leads" && wakeupId === "wake2"
+                    ? KinAgentId.make("fixture-lead-2")
+                    : agentId,
                 level:
+                  scenario === "two-leads" ||
                   scenario === "conflict" ||
                   scenario === "B5-journal" ||
                   scenario === "read-during-record" ||
@@ -356,6 +361,44 @@ it.live.each([
       yield* git(paths.writer, ["config", "user.name", "Fixture Bot"]);
       yield* git(paths.writer, ["config", "user.email", "fixture@example.invalid"]);
       const original = yield* git(paths.writer, ["rev-parse", "HEAD"]);
+      if (scenario === "two-leads") {
+        const one = {
+          path: "claims/one.md",
+          sourceEventId: "owner",
+          content: fixtureItem({ id: "one", kind: "claim", title: "First claim", links: [] }),
+        };
+        const two = {
+          path: "claims/two.md",
+          sourceEventId: "owner",
+          content: fixtureItem({ id: "two", kind: "claim", title: "Second claim", links: [] }),
+        };
+        yield* writer.stage(orgId, "wake1", one);
+        // The second lead stages and journals while the first wake-up is still open.
+        yield* writer.stage(orgId, "wake2", two);
+        yield* writer.appendJournal(orgId, "wake1", ["First lead note."]);
+        yield* writer.appendJournal(orgId, "wake2", ["Second lead note."]);
+        // The writer checkout is still validated on the second lead's writes too.
+        yield* fs.rename(`${paths.writer}/.git/refs`, `${paths.writer}/.git/refs-moved`);
+        expect((yield* writer.stage(orgId, "wake2", two).pipe(Effect.result))._tag).toBe("Failure");
+        yield* fs.rename(`${paths.writer}/.git/refs-moved`, `${paths.writer}/.git/refs`);
+        const first = yield* writer.commitWakeup(orgId, "wake1", "completed");
+        const second = yield* writer.commitWakeup(orgId, "wake2", "completed");
+        expect(yield* git(paths.writer, ["rev-parse", `${second.commit}^`])).toBe(first.commit);
+        expect(yield* git(paths.writer, ["show", `${second.commit}:claims/one.md`])).toContain(
+          "First claim",
+        );
+        expect(yield* git(paths.writer, ["show", `${second.commit}:claims/two.md`])).toContain(
+          "Second claim",
+        );
+        const journal = yield* git(paths.writer, [
+          "show",
+          `${second.commit}:journal/2026/11-08.md`,
+        ]);
+        expect(journal).toContain("First lead note.");
+        expect(journal).toContain("Second lead note.");
+        expect(cards.map((card) => card.wakeupId)).toEqual(["wake1", "wake2"]);
+        return;
+      }
       if (scenario === "lost-session-retry") {
         failBranch = true;
         expect((yield* writer.appendJournal(orgId, "wake1", []).pipe(Effect.result))._tag).toBe(

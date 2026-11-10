@@ -292,8 +292,10 @@ const make = Effect.gen(function* () {
       Effect.provideService(VcsProcess, vcs),
     );
   const locked = memory.withWriterLock;
+  // Staged changes are per wake-up, so concurrent leads never share a session; the
+  // git commit and push themselves stay serialized per repository under `locked`.
   const sessions = new Map<
-    KinOrgId,
+    string,
     {
       wakeupId: string;
       generation: number;
@@ -302,6 +304,7 @@ const make = Effect.gen(function* () {
       supersessions: Map<string, string>;
     }
   >();
+  const sessionKey = (orgId: KinOrgId, wakeupId: string) => `${orgId}\u0000${wakeupId}`;
   const io = <A, E, R>(orgId: KinOrgId, effect: Effect.Effect<A, E, R>) =>
     effect.pipe(Effect.mapError((cause) => new MemoryError({ orgId, operation: "writer", cause })));
   const git = Effect.fn("MemoryWriter.git")(function* (
@@ -405,13 +408,12 @@ const make = Effect.gen(function* () {
     )
       return yield* new MemoryWriteRejected({ reason: "Invalid server context" });
     yield* journalEntry(ctx, "completed", []);
-    const previous = sessions.get(orgId);
-    if (previous && previous.wakeupId !== wakeupId)
-      return yield* new MemoryWriteRejected({ reason: "Another wake-up owns the writer" });
+    const key = sessionKey(orgId, wakeupId);
+    const previous = sessions.get(key);
     const generation = yield* memory.historyGeneration(orgId);
     // A purge rewrote history after this wake-up staged; committing it could restore purged content.
     if (previous && previous.generation !== generation) {
-      sessions.delete(orgId);
+      sessions.delete(key);
       return yield* new MemorySyncConflict({
         orgId,
         operation: "push",
@@ -438,7 +440,7 @@ const make = Effect.gen(function* () {
         yield* recovery.notify({ orgId, branch: `wakeup:${wakeupId}`, reason });
       }
     }
-    sessions.set(orgId, state);
+    sessions.set(key, state);
     return { ctx, state };
   });
   const safePath = Effect.fn("MemoryWriter.safePath")(function* (
@@ -1044,11 +1046,8 @@ const make = Effect.gen(function* () {
     discard: Effect.fn("MemoryWriter.discard")((orgId, wakeupId) =>
       locked(
         orgId,
-        Effect.gen(function* () {
-          const state = sessions.get(orgId);
-          if (state && state.wakeupId !== wakeupId)
-            return yield* new MemoryWriteRejected({ reason: "Another wake-up owns the writer" });
-          sessions.delete(orgId);
+        Effect.sync(() => {
+          sessions.delete(sessionKey(orgId, wakeupId));
         }),
       ),
     ),
@@ -1248,7 +1247,9 @@ const make = Effect.gen(function* () {
                 items: yield* itemChanges(orgId, recordedFiles, changes),
               });
               return { commit };
-            }).pipe(Effect.ensuring(Effect.sync(() => sessions.delete(orgId))));
+            }).pipe(
+              Effect.ensuring(Effect.sync(() => sessions.delete(sessionKey(orgId, wakeupId)))),
+            );
           }),
         ),
       ),

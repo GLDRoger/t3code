@@ -973,7 +973,7 @@ describe("WakeupRunner", () => {
       yield* queue.enqueue(event("busy"));
       yield* queue.enqueue({ ...event("other"), agentId: KinAgentId.make("lead-z") });
       yield* TestClock.adjust("20 seconds");
-      const next = yield* queue.nextReady(orgId);
+      const next = (yield* queue.readyLeads(orgId))[0];
       assert.strictEqual(next?.agentId, "lead-z");
       yield* Fiber.join(
         yield* (yield* WakeupRunner.WakeupRunner)
@@ -987,6 +987,52 @@ describe("WakeupRunner", () => {
         { state: "queued" },
       ]);
     }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
+  );
+
+  it.effect("runs two leads' wake-ups at the same time", () =>
+    Effect.gen(function* () {
+      const holdRunning = yield* Deferred.make<void>();
+      const enteredThreads = yield* Queue.unbounded<ThreadId>();
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const runner = yield* WakeupRunner.WakeupRunner;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+          SELECT 'lead-z', org_id, display_name, role, owner_person_id, created_at FROM kin_agents WHERE agent_id = 'lead'`;
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+          SELECT 'lead-z', org_id, name, level_since, models_json, worker_projects_json, owner_chat_id FROM kin_leads WHERE agent_id = 'lead'`;
+        yield* queue.enqueue(event("first"));
+        yield* queue.enqueue({ ...event("other"), agentId: KinAgentId.make("lead-z") });
+        yield* runner.start;
+        yield* TestClock.adjust("20 seconds");
+        const entered = [yield* Queue.take(enteredThreads), yield* Queue.take(enteredThreads)];
+        assert.notStrictEqual(entered[0], entered[1]);
+        assert.deepStrictEqual(
+          yield* sql`SELECT agent_id FROM kin_wakeups WHERE org_id = ${orgId} AND status = 'running' ORDER BY agent_id`,
+          [{ agent_id: "lead" }, { agent_id: "lead-z" }],
+        );
+        yield* Deferred.succeed(holdRunning, undefined);
+        while (true) {
+          const changed = yield* queue.changes(orgId);
+          const running =
+            yield* sql`SELECT wakeup_id FROM kin_wakeups WHERE org_id = ${orgId} AND status = 'running' ORDER BY wakeup_id`;
+          if (running.length === 0) break;
+          yield* changed;
+        }
+        assert.deepStrictEqual(yield* sql`SELECT state FROM kin_events ORDER BY event_id`, [
+          { state: "done" },
+          { state: "done" },
+        ]);
+      }).pipe(
+        Effect.provide(
+          harness({
+            holdRunning,
+            onTurn: ({ threadId }) => Queue.offer(enteredThreads, threadId).pipe(Effect.asVoid),
+          }),
+        ),
+      );
+    }).pipe(provideDeterministicTestRuntime),
   );
 
   it.effect("steers a second message in the lane into the running turn, in the same wake-up", () =>
