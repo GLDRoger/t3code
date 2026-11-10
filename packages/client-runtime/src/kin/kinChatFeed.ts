@@ -237,6 +237,8 @@ const messageRowKey = (message: KinMessage) =>
 
 // A choice tap shows as the owner's words, not its JSON, and never repeats the card it answered.
 const shownMessage = (message: KinMessage): KinMessage => {
+  // A host card's body is its inbox summary; the card says the same, so it isn't repeated.
+  if (isSystem(message)) return message.body === "" ? message : { ...message, body: "" };
   if (message.kind !== "widget_action") return message;
   const text = kinTapText(message.body);
   return text === null ? message : { ...message, body: text, widgetId: null };
@@ -317,7 +319,8 @@ export function buildKinFeedRows(
 
   const pushMessage = (message: KinMessage) => {
     startDay(message);
-    if (isSystem(message)) {
+    // Host cards (memory changes, levels, routines) arrive as system messages carrying a widget.
+    if (isSystem(message) && message.widgetId === null) {
       const notice = retryNotice(message);
       const retry = notice ? lastOwnText : null;
       if (retry !== null) openRetries.push(rows.length);

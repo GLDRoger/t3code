@@ -276,6 +276,11 @@ describe("rows", () => {
         agentMessage(2, { status: "dismissed" }),
         agentMessage(3, { kind: "system", author: { _tag: "system" } }),
         agentMessage(4),
+        agentMessage(5, {
+          kind: "system",
+          author: { _tag: "system" },
+          widgetId: "memory-changes:w1" as KinMessage["widgetId"],
+        }),
       ],
       viewer,
       new Set(),
@@ -284,8 +289,14 @@ describe("rows", () => {
       true,
       false,
       true,
+      true,
     ]);
     expect(rows[1]!.type).toBe("system");
+    // A host card is a system message with a widget; it draws as its card, not a line.
+    expect(rows[3]).toMatchObject({
+      type: "message",
+      message: { widgetId: "memory-changes:w1", body: "" },
+    });
   });
 
   it("offers to resend the owner's last message on a no-reply notice until the owner writes again", () => {
