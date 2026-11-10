@@ -507,10 +507,10 @@ export function kinLeadChatId(rows: ReadonlyArray<KinInboxRow>): KinChatId | nul
 }
 
 /**
- * The lead whose Levels this viewer may open from a chat: the agent of a direct chat the viewer
- * owns. Only a lead's owner reaches its levels; the host checks that again on every call.
+ * The lead this viewer owns in a chat: the agent of a direct chat the viewer owns, for owner-only
+ * controls such as interrupt. The host checks ownership again on every call.
  */
-export function kinLevelsAgentId(
+export function kinOwnedLeadAgentId(
   chat: Pick<KinChatSummary, "kind" | "members">,
   personId: string | null,
 ): KinAgentId | null {

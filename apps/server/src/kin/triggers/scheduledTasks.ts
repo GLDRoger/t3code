@@ -40,7 +40,7 @@ import {
   scheduleOf,
   scheduledTaskTriggerId,
 } from "../widgets/scheduledTaskCard.ts";
-import { hex } from "./deferrals.ts";
+import { deferralOrigin, hex } from "./deferrals.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 
 /** A run more than this late (the host was off) is skipped; the next slot runs as usual. */
@@ -339,6 +339,8 @@ const make = Effect.gen(function* () {
       item === undefined
         ? undefined
         : yield* liveLead(sql, orgId, { chatId: item.chat, prefer: CHIEF_OF_STAFF_DOMAIN });
+    // Run at no more than the chat the owner set it up from.
+    const origin = lead === undefined ? undefined : yield* deferralOrigin(sql, orgId, item, lead);
     const admitted =
       lead === undefined
         ? false
@@ -420,6 +422,7 @@ const make = Effect.gen(function* () {
           dedupeKey,
           subject: { type: "scheduled_task", itemId, runId },
           lateByMs: Math.max(0, now - dueAt),
+          ...(origin === undefined ? {} : { origin }),
         });
         const running = {
           ...base,

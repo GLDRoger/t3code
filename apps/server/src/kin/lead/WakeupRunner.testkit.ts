@@ -166,12 +166,6 @@ export function orchestrationHarness(options: HarnessOptions = {}) {
   return Layer.mergeAll(kin, stack).pipe(Layer.provideMerge(database));
 }
 
-/** The fake-provider orchestration stack alone, for callers that bring Kin's own services. */
-export function orchestrationStack(options: HarnessOptions = {}) {
-  const { stack, database } = parts(options);
-  return stack.pipe(Layer.provideMerge(database));
-}
-
 function parts(options: HarnessOptions) {
   const database: Database = options.database ?? defaultDatabase;
   let nativeOrdinal = 0;

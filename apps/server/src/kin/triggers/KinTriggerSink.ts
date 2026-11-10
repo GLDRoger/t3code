@@ -18,6 +18,7 @@ import { OrchestratorCommandRejectedError } from "../../orchestration-v2/Orchest
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import { PersistenceDecodeError, toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { configuredGithubMemoryRepo } from "../memory/MemoryConfig.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as KinTriggerStore from "./KinTriggerStore.ts";
@@ -43,8 +44,9 @@ export const findLaunchDelivery = (
     readonly projectId: string;
     readonly botLogin: string;
   },
-) => sql<{ readonly receivedAt: unknown; readonly secret: string }>`
-  SELECT d.received_at AS "receivedAt", t.webhook_secret AS secret
+) => sql<{ readonly receivedAt: unknown; readonly secret: string; readonly repo: string | null }>`
+  SELECT d.received_at AS "receivedAt", t.webhook_secret AS secret,
+    CASE WHEN json_valid(d.body) THEN json_extract(d.body, '$.repository.full_name') END AS repo
   FROM scheduled_task_webhook_deliveries d
   JOIN scheduled_tasks t ON t.task_id = d.task_id
   WHERE d.task_id = ${input.taskId} AND d.delivery_id = ${input.deliveryId}
@@ -137,6 +139,13 @@ const make = Effect.gen(function* () {
             orgId: source.orgId,
             reason: "unknown_source",
           });
+        const memoryRepo = yield* configuredGithubMemoryRepo(source.orgId);
+        if (
+          typeof row.repo === "string" &&
+          memoryRepo !== undefined &&
+          row.repo.toLowerCase() === memoryRepo.toLowerCase()
+        )
+          return { threadId: source.inboxThreadId, projection, resumed: false };
         const now = yield* Clock.currentTimeMillis;
         const event = yield* decodeFire({
           fireId: KinTriggerFireId.make(`gh:${source.orgId}:${deliveryId}`),

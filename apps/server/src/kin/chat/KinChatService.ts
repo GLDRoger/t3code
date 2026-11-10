@@ -254,12 +254,13 @@ const isKinChatError = Schema.is(KinChatError);
 // resume's 200-message reset cap.
 const checkpointEvery = 100;
 /** The flood bound on one wake-up's posts in one chat, natural replies and kin_chat_post alike. */
+const PREVIEW_LOOKBACK = 20;
 export const KIN_WAKEUP_MESSAGE_LIMIT = 8;
 export const KIN_WAKEUP_CHAR_LIMIT = 32_000;
 /** A person's mute with no end: it lasts until they unmute. */
 const KIN_MUTED_FOREVER = "9999-12-31T23:59:59.999Z";
 /** Guests never write; a muted agent stays silent until its mute ends. */
-export const mayWrite = (member: KinChatMember, agent: boolean, now: number) =>
+const mayWrite = (member: KinChatMember, agent: boolean, now: number) =>
   member.role !== "guest" &&
   !(agent && member.mutedUntil !== null && Date.parse(member.mutedUntil) > now);
 const notAllowed = new KinChatError({
@@ -661,16 +662,17 @@ const make = Effect.gen(function* () {
   ): Effect.fn.Return<KinChatSummary, ServiceError> {
     const member = yield* memberFor(identity, chatId);
     const chat = yield* requireRecord(repo.getChat({ orgId: identity.orgId, chatId }));
+    // Owners' history keeps dismissed messages, which no feed draws; the preview skips them.
     const history = yield* repo.history({
       ...chat,
       beforeSeq: chat.lastSeq + 1,
-      limit: 1,
+      limit: PREVIEW_LOOKBACK,
       viewerMemberId: member.memberId,
     });
     return {
       ...chat,
       members: yield* repo.listMembers(chat),
-      lastMessage: history.messages[0] ?? null,
+      lastMessage: history.messages.findLast((message) => message.status !== "dismissed") ?? null,
       unread: yield* repo.unreadCount(member),
       working:
         Option.isSome(presence) &&
@@ -1490,8 +1492,6 @@ const make = Effect.gen(function* () {
           reason: "use_approvals",
           message: "Use the signed approvals service.",
         });
-      // Verdicts and raises go to the owner-only kin.levels methods, never the lead's queue.
-      if (widget.type === "shadow_review" || widget.type === "promotion") return yield* notAllowed;
       if (widget.type === "owner_check") {
         if (member.role !== "owner") return yield* notAllowed;
         const card = yield* decodeOwnerCheckCard(widget.state).pipe(

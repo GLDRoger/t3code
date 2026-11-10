@@ -14,7 +14,7 @@ import * as KeySeal from "./approvals/KeySeal.ts";
 import * as ApprovalCards from "./chat/approvalCards.ts";
 import * as ExecutionNotices from "./chat/executionNotices.ts";
 import * as KinPush from "./push/layer.ts";
-import * as Promotion from "./levels/Promotion.ts";
+import * as LevelControl from "./levels/LevelControl.ts";
 import * as MemoryChanges from "./memory/MemoryChanges.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
 
@@ -45,14 +45,14 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
   ).pipe(
     Layer.provide(
       Layer.mergeAll(
-        // On top of Promotion and approvals: the executor takes approvals from their pending
-        // actions instance, and a raise redraws Promotion's card.
+        // On top of level control and approvals: the executor takes approvals from their
+        // pending actions instance.
         KinApprovals.executorLayer.pipe(
           Layer.provide(ExecutionNotices.layer),
           Layer.provideMerge(
             Layer.mergeAll(
               KinPush.layer,
-              Promotion.layer,
+              LevelControl.layer,
               MemoryChanges.layer,
               ApprovalCards.layer,
             ).pipe(Layer.provideMerge(KinApprovals.layer)),

@@ -12,7 +12,7 @@ import * as TriggerInbox from "../triggers/KinTriggerInbox.ts";
 import * as TriggerService from "../triggers/KinTriggerService.ts";
 import * as OwnerTimeZone from "../triggers/ownerTimeZone.ts";
 import { forkParked } from "../../serverActivation.ts";
-import { KinOrgId, KinChatId, KinMessageId } from "@t3tools/contracts";
+import { KinChatId, KinMessageId } from "@t3tools/contracts";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -45,7 +45,6 @@ import * as ReplyBridge from "../reply/KinReplyBridge.ts";
 import * as RoutineContent from "./RoutineContent.ts";
 import * as LeadDelivery from "./LeadDelivery.ts";
 import * as KinStop from "./KinStop.ts";
-import { KinPromotion } from "../levels/Promotion.ts";
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import * as DreamRunner from "../dreaming/DreamRunner.ts";
 import * as DreamSession from "../dreaming/DreamSession.ts";
@@ -152,12 +151,8 @@ const runner = Layer.effectDiscard(
     const memory = yield* Memory.Memory;
     const stop = yield* KinStop.KinStop;
     const ownerTimeZone = yield* Effect.serviceOption(OwnerTimeZone.KinOwnerTimeZone);
-    // The owner's keep-or-discard of shadow memory runs on this runtime's writer.
+    // The owner's Undo on a memory change card runs on this runtime's writer.
     const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
-    const promotion = yield* Effect.serviceOption(KinPromotion);
-    if (Option.isSome(writer) && Option.isSome(promotion))
-      yield* promotion.value.attachShadowMemory(writer.value.settleShadow);
-    // The owner's Undo on a memory change card runs on this runtime's writer too.
     const memoryChanges = yield* Effect.serviceOption(KinMemoryChanges);
     if (Option.isSome(writer) && Option.isSome(memoryChanges))
       yield* memoryChanges.value.attachWriter(writer.value.undoChange);
@@ -342,16 +337,11 @@ const production = withServices(
   ),
 );
 
-const Repositories = Schema.fromJsonString(
-  Schema.Array(Schema.Struct({ orgId: KinOrgId, repoUrl: Schema.String })),
-);
 const configured = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
   containStartup(
     Layer.unwrap(
       Effect.gen(function* () {
-        const repositories = yield* Config.schema(Repositories, "KIN_MEMORY_REPOSITORIES").pipe(
-          Config.withDefault([]),
-        );
+        const repositories = yield* MemoryConfig.configuredRepositories;
         if (repositories.length === 0) return Layer.empty;
         return entry.pipe(Layer.provide(MemoryConfig.layer(repositories)));
       }),

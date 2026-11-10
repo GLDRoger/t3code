@@ -12,10 +12,8 @@ import { KinEventQueue } from "./lead/KinEventQueue.ts";
 import { ApproverKeys } from "./approvals/ApproverKeys.ts";
 import { GrantVerifier } from "./approvals/GrantVerifier.ts";
 import { KinStop } from "./lead/KinStop.ts";
-import type { KinShadowSummary } from "./lead/KinLevels.ts";
 import type { KinLevelGate } from "./lead/LevelGate.ts";
-import type { KinPromotion } from "./levels/Promotion.ts";
-import type { KinPromotionCards } from "./lead/KinLevels.ts";
+import type { KinLevelControl } from "./levels/LevelControl.ts";
 import type { KinMemoryChanges } from "./memory/MemoryChanges.ts";
 import type { MemoryChangeHooks } from "./memory/MemoryWriter.ts";
 import type { KinGithubWebhookLock } from "./triggers/githubWebhooks.ts";
@@ -36,9 +34,7 @@ export type Services =
   | KinStop
   | KinOwnerTimeZone
   | KinLevelGate
-  | KinShadowSummary
-  | KinPromotion
-  | KinPromotionCards
+  | KinLevelControl
   | KinMemoryChanges
   | MemoryChangeHooks
   | KinGithubWebhookLock

@@ -38,7 +38,7 @@ export const KinActionKind = Schema.Literals([
   "merge_pull_request",
   "delete_branch",
   // phase 1, executed by other specs' handlers through the registry (section 6)
-  "set_level", // lead spec: L0–L3 per lead and chat
+  "set_level", // lead spec: what a lead may do, per lead and chat
   "change_rules", // lead spec: rules.md, bound to the new file's hash
   "memory_purge", // triggers spec: history rewrite for one item
   "register_approver_key", // this spec: a second device
@@ -362,7 +362,7 @@ export const KinProvenance = Schema.Struct({
 - The lead spec computes it from the `KinEvent` and passes it down to workers; the ceiling is the lowest role in the chain. Webhook content (PR bodies, comments) counts as `none`.
 - **Work** runs only if the ceiling and the chat's level allow it (`ceilingAllows`).
 - **Privileged** is proposed under any ceiling but runs only with the owner's grant, which is the owner's own authority for that one action. `request_action` stores `ceilingBelowOwner` from the whole batch, not the cited event: the lead can cite the owner's message while a PR comment in the same batch drove the request. When it is set, the card warns above the buttons that the request didn't come from the owner alone. `afterNonOwnerMessage` only supplies the name ("Asked for after Priya's message"); without one the card names the source kind, such as a GitHub event.
-- A lead can never request `set_level`, whoever drove the wake-up: `request_action` refuses it (`unsupported_kind`) before provenance is read. Level raises reach the owner only through `kin.levels.raise` (LEAD-12's promotion card or settings), which creates the action under the reserved requester `kin-promotion`; `KinPendingActions.create` refuses `set_level` from any other requester.
+- A lead can never request `set_level`, whoever drove the wake-up: `request_action` refuses it (`unsupported_kind`) before provenance is read. Raises reach the owner only through the owner-only `kin.levels.raise`, which creates the action under the reserved requester `kin-promotion`; `KinPendingActions.create` refuses `set_level` from any other requester.
 - `change_rules`, `register_approver_key`, and (later) `set_delegation` and `set_next_of_kin` are refused at `request_action` (`not_owner`) unless every event in the wake-up's chain is the owner's, which implies `startedByRole == "owner"`. The lead picks `sourceEventId`, so checking only the cited event would let it cite an owner's message while acting on a member's in the same batch. A member can't even get those cards in front of the owner.
 - Roles come from stored rows, never event text: a chat message's stored `author_role` (human, posted), or for other human events the actor's current chat membership. Only the lead's own owner counts as `owner`; another human holding an owner row counts as `member`. Agent, system, schedule and webhook events count as `none`. `afterNonOwnerMessage` names the first non-owner human message in the batch.
 
@@ -602,7 +602,7 @@ RPCs and scopes: `kin.approvals.list` (stream) and `get` → `orchestration:read
 ## Interfaces to other specs
 
 - **Chat:** `KinOrgId`, `KinPersonId` (human `KinAuthor`), `KinChatMember` roles (owner lookup), `KinWidget` type `approval {actionId}` with the agent-field rejection, posting result messages, **Waiting on you** items. Chat spec owns the Kin migration runner and the Kin RPC/route hooks.
-- **Lead:** registry of lead threads (for `request_action`), `KinEvent.id` (idempotency) and provenance, the stop switch (executor checks it), levels (`ceilingAllows`, and the `set_level` handler behind LEAD-12's promotion card, never a lead's request), `change_rules` handler.
+- **Lead:** registry of lead threads (for `request_action`), `KinEvent.id` (idempotency) and provenance, the stop switch (executor checks it), levels (`ceilingAllows`, and the `set_level` handler behind `kin.levels.raise`, never a lead's request), `change_rules` handler.
 - **Triggers:** `pull_request` synchronize/closed webhooks → `refreshAction(actionId)`; `pull_request_review` → enables a card waiting on a GitHub review; `memory_purge` handler; Kin host setup (bot `gh` login, keychain items, hygiene check passing); upstream contract test for `GitHubRequestPolicy.credential` and `verifyDpopProof`.
 - **Mobile:** renders `ApprovalCard` inside the chat screens; this spec ships the card, the native module and the signing hook.
 - **T3 auth (lane A), open hand-offs:**
@@ -666,7 +666,7 @@ Later, marked by phase:
 
 **APPR-12 (phase 3) Delegations (9.6).** `set_delegation` kind and handler; `KinDelegation {orgId, grantee, kinds, scope: {repo, paths?, labels?}, expiresAt, signedBy}`; a matching delegation lets the grantee's own signed grant meet `requiredApprovers`; list and one-tap revoke. Depends on: APPR-4, APPR-9. Done when: a delegated docs merge by a member succeeds, an out-of-scope one fails `not_owner`, and revoked delegations stop working at once. Owner: backend.
 
-**APPR-13 (phase 3) L3 risk gate (10).** Path and label classifier (`auth`, `security`, migrations, `.github/**` are never low-risk) used by delegations and L3. Depends on: APPR-12, LEAD-8. Done when: a fixture list of PRs classifies as expected. Owner: backend.
+**APPR-13 (phase 3) L3 risk gate (10).** Path and label classifier (`auth`, `security`, migrations, `.github/**` are never low-risk) used by delegations and by any future merge request from a lead. Depends on: APPR-12, LEAD-8. Done when: a fixture list of PRs classifies as expected. Owner: backend.
 
 **APPR-14 (phase 3) Next of kin (9.9).** `set_next_of_kin` (owner-signed, max two, can't name self), escalation timer (2 h default or owner away) with a 30-minute warning, undo-only default scope (revert merge, roll back deploy, pause routines), any owner answer cancels, return summary in the owner's direct chat. Next of kin must also be a GitHub code owner. Depends on: APPR-12, TRIG-3. Done when: a simulated outage hands a revert to the next of kin after the wait, and an owner tap during the wait cancels it. Owner: backend.
 

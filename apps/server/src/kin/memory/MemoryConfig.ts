@@ -1,4 +1,4 @@
-import type { KinOrgId } from "@t3tools/contracts";
+import { KinOrgId } from "@t3tools/contracts";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -45,10 +45,19 @@ export class MemoryCredentialConfigError extends Schema.TaggedError<MemoryCreden
   }
 }
 
-const GITHUB_URL =
-  /^(?:git@github\.com:|(?:https|ssh):\/\/(?:git@)?github\.com\/)([A-Za-z0-9-]+\/[A-Za-z0-9._-]+?)(?:\.git)?\/?$/;
-
-export const githubRepoOf = (repoUrl: string) => GITHUB_URL.exec(repoUrl)?.[1];
+export const githubRepoOf = (repoUrl: string) => {
+  try {
+    const url = new URL(repoUrl.replace(/^git@github\.com:/i, "ssh://git@github.com/"));
+    if (
+      (url.protocol !== "https:" && url.protocol !== "ssh:") ||
+      !["github.com", "www.github.com"].includes(url.hostname.toLowerCase())
+    )
+      return undefined;
+    return /^\/([A-Za-z0-9-]+\/[A-Za-z0-9._-]+?)(?:\.git)?\/?$/.exec(url.pathname)?.[1];
+  } catch {
+    return undefined;
+  }
+};
 
 const credential = Effect.fn("MemoryConfig.credential")(function* (
   variable: MemoryCredentialConfigError["variable"],
@@ -77,19 +86,40 @@ export const layer = (
       const directMainPush = yield* Config.Boolean("KIN_MEMORY_DIRECT_PUSH").pipe(
         Config.withDefault(false),
       );
-      return MemoryConfig.of({
-        baseDirectory: path.join(config.stateDir, "kin"),
-        ...(credentialHelper === undefined ? {} : { credentialHelper }),
-        ...(sshCommand === undefined ? {} : { sshCommand }),
-        directMainPush,
-        repositories: repositories.map((repo) => {
+      const configured = yield* Effect.forEach(repositories, (repo) =>
+        Effect.gen(function* () {
           const githubRepo = githubRepoOf(repo.repoUrl);
+          if (githubRepo === undefined)
+            yield* Effect.logWarning(
+              "Kin memory repository has no GitHub slug; GitHub event exclusion is unavailable",
+              { orgId: repo.orgId },
+            );
           return {
             ...repo,
             path: encodeURIComponent(repo.orgId),
             ...(githubRepo === undefined ? {} : { githubRepo }),
           };
         }),
+      );
+      return MemoryConfig.of({
+        baseDirectory: path.join(config.stateDir, "kin"),
+        ...(credentialHelper === undefined ? {} : { credentialHelper }),
+        ...(sshCommand === undefined ? {} : { sshCommand }),
+        directMainPush,
+        repositories: configured,
       });
     }),
   );
+
+export const configuredRepositories = Config.schema(
+  Schema.fromJsonString(Schema.Array(Schema.Struct({ orgId: KinOrgId, repoUrl: Schema.String }))),
+  "KIN_MEMORY_REPOSITORIES",
+).pipe(Config.withDefault([]));
+
+export const configuredGithubMemoryRepo = Effect.fn("MemoryConfig.configuredGithubMemoryRepo")(
+  function* (orgId: KinOrgId) {
+    const repositories = yield* configuredRepositories;
+    const repo = repositories.find((entry) => entry.orgId === orgId);
+    return repo === undefined ? undefined : githubRepoOf(repo.repoUrl);
+  },
+);

@@ -52,7 +52,7 @@ import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as KinTriggerSink from "./KinTriggerSink.ts";
 import * as KinTriggerStore from "./KinTriggerStore.ts";
 import { makeKinWebhookHandlers } from "./webhookRpcHandlers.ts";
-import { projection, timestamp, waitForDispatch } from "./webhooks.testkit.ts";
+import { projection, signedRequest, timestamp, waitForDispatch } from "./webhooks.testkit.ts";
 
 const orgId = KinOrgId.make("org-a");
 const owner = [{ _tag: "person", orgId, personId: KinPersonId.make("owner") }] as const;
@@ -95,7 +95,13 @@ const database = KinPersistence.layer.pipe(
   Layer.provideMerge(Sqlite.layerMemory),
   Layer.provideMerge(
     ConfigProvider.layer(
-      ConfigProvider.fromUnknown({ KIN_ENABLED: true, KIN_GITHUB_BOT_LOGIN: "kin-app[bot]" }),
+      ConfigProvider.fromUnknown({
+        KIN_ENABLED: true,
+        KIN_GITHUB_BOT_LOGIN: "kin-app[bot]",
+        KIN_MEMORY_REPOSITORIES: JSON.stringify([
+          { orgId, repoUrl: "git@github.com:owner/memory.git" },
+        ]),
+      }),
     ),
   ),
 );
@@ -118,7 +124,11 @@ const signed = (
   task: { readonly id: string; readonly webhook?: { readonly path: string } | undefined },
   input: { readonly delivery: string; readonly secret: string; readonly sender?: string },
 ) => {
-  const bodyText = JSON.stringify({ action: "opened", sender: { login: input.sender ?? "dev" } });
+  const bodyText = JSON.stringify({
+    repository: { full_name: "owner/repo" },
+    action: "opened",
+    sender: { login: input.sender ?? "dev" },
+  });
   return {
     hookId: task.id,
     token: task.webhook?.path.split("/").at(-1) ?? "",
@@ -343,6 +353,7 @@ describe("KinGithubWebhooks", () => {
                     value: KinTriggerStore.GITHUB_EVENTS,
                   },
                   { path: "body.sender.login", op: "notEquals", value: "kin-app[bot]" },
+                  { path: "body.repository.full_name", op: "notEquals", value: "owner/memory" },
                 ],
               });
               assert.isTrue(task.webhook?.hasSecret);
@@ -407,6 +418,27 @@ describe("KinGithubWebhooks", () => {
                 "configured",
               );
               yield* TestClock.adjust("1 second");
+              const filtered = yield* tasks.triggerWebhook(
+                signedRequest(
+                  task,
+                  "memory-push",
+                  {
+                    repository: { full_name: "owner/memory" },
+                    sender: { login: "human" },
+                    after: "abc",
+                  },
+                  "push",
+                  Redacted.value(ownerSecret),
+                ),
+              );
+              assert.strictEqual(filtered._tag, "accepted");
+              if (filtered._tag === "accepted") assert.strictEqual(filtered.outcome, "filtered");
+              assert.lengthOf(yield* inbox.listPending(orgId), 0);
+              assert.lengthOf(
+                yield* sql`SELECT event_id FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`,
+                0,
+              );
+
               const delivery = { delivery: "gh-1", secret: Redacted.value(ownerSecret) };
               const accepted = yield* waitForDispatch(tasks.triggerWebhook(signed(task, delivery)));
               assert.strictEqual(accepted._tag === "accepted" && accepted.outcome, "accepted");

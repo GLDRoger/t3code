@@ -401,7 +401,7 @@ it.effect("asks when the stop switch is on, and production defaults never start"
       "couldn't verify GitHub",
       "the stop switch is on",
       "workers can't launch yet",
-      "Kin is at L0, below L2",
+      "starting work isn't open to me here",
     ])
       assert.include(text, reason);
     assert.lengthOf(yield* starts(), 0);
@@ -412,6 +412,44 @@ it.effect("asks when the stop switch is on, and production defaults never start"
     Effect.provide(layerFor([stopped, linked])),
   );
 });
+
+it.effect(
+  "a deferral asked for in a chat that can't start work asks, and [Start now] refuses",
+  () => {
+    const asked = makeDeferral("def-1", { source_event: KinEventId.make("asked") });
+    return Effect.gen(function* () {
+      yield* setup();
+      const sql = yield* SqlClient.SqlClient;
+      const lead = `lead-${orgId}`;
+      // kin_defer's source event came from a group whose cap is below L2.
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+      VALUES ('team', ${orgId}, 'team_group', 0, '1970-01-01T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_chat_levels (org_id, agent_id, chat_id, level, level_since)
+      VALUES (${orgId}, ${lead}, 'team', 'L1', 0)`;
+      const event = {
+        _tag: "chat.message",
+        orgId,
+        agentId: lead,
+        eventId: "asked",
+        receivedAt: "1970-01-01T00:00:00.000Z",
+        dedupeKey: null,
+        provenance: { _tag: "human", personId: `owner-${orgId}`, memberId: "member" },
+        chatId: "team",
+        messageId: "message",
+      };
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state)
+      VALUES ('asked', ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify(event)}, 0, 0, 'done')`;
+      yield* (yield* TriggerService.KinTriggerService).syncItem(asked);
+      yield* tick(headsUpAt);
+      assert.equal((yield* runOf("def-1"))?.state, "asked");
+      assert.include((yield* cardOf("def-1")).text, "starting work isn't open to me here");
+      const refused = yield* tap("start_now", "owner", []);
+      assert.equal(refused._tag === "Failure" && refused.failure.cause, "below_l2");
+      yield* tick(dueAt);
+      assert.lengthOf(yield* starts(), 0);
+    }).pipe(openGates(new Map()), Effect.provide(layerFor([asked])));
+  },
+);
 
 it.effect(
   "heads-up taps: [Monday] re-arms next Monday 09:00, [Cancel] cancels, [Start now] starts",

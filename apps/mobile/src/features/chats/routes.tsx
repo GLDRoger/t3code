@@ -4,7 +4,6 @@ import { pageRoute } from "../layout/route-options";
 import { KinApprovalsScreen } from "./approvals/KinApprovalsScreen";
 import { KinChatScreen } from "./KinChatScreen";
 import { KinChatsScreen } from "./KinChatsScreen";
-import { KinLevelsScreen } from "./KinLevelsScreen";
 import { KinWaitingScreen } from "./KinWaitingScreen";
 
 /** Kin's root-stack routes, spread into `Stack.tsx`. Kin files must never import `Stack.tsx`. */
@@ -29,10 +28,5 @@ export const KIN_SCREENS = {
     screen: KinApprovalsScreen,
     linking: "kin/:environmentId/:orgId/approvals",
     options: pageRoute({ title: "Approvals" }),
-  }),
-  KinLevels: createNativeStackScreen({
-    screen: KinLevelsScreen,
-    linking: "kin/:environmentId/:orgId/levels/:agentId",
-    options: pageRoute({ title: "Levels" }),
   }),
 };

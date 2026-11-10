@@ -138,7 +138,7 @@ import {
   kinAgentAvatar,
   kinAvatarView,
   type KinAvatarView,
-  kinLevelsAgentId,
+  kinOwnedLeadAgentId,
   kinStaleNotice,
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import { useKinHostAt } from "./state/useKinHost";
@@ -233,10 +233,8 @@ function KinLiveChat(props: {
     inbox?._tag === "Success"
       ? inbox.value.value.chats.find((chat) => chat.chatId === chatId)
       : undefined;
-  const canReadLevels = useAtomValue(kinClient.levelsRead.permissionAtom(props.environmentId));
-  // The owner's own lead in their direct chat: the only one they can see and stop.
-  const ownedAgentId = summary === undefined ? null : kinLevelsAgentId(summary, viewer.personId);
-  const levelsAgentId = canReadLevels ? ownedAgentId : null;
+  // The owner's own lead in their direct chat: the only one they can stop.
+  const ownedAgentId = summary === undefined ? null : kinOwnedLeadAgentId(summary, viewer.personId);
   const canInterrupt = useAtomValue(kinClient.leadInterrupt.permissionAtom(props.environmentId));
   const canMute = useAtomValue(kinClient.mute.permissionAtom(props.environmentId));
   const runMute = useAtomCommand(kinClient.mute, "Muting this chat");
@@ -274,11 +272,6 @@ function KinLiveChat(props: {
               )
         }
         agentName={summary === undefined ? null : kinDirectAgentName(summary, viewer.agentNames)}
-        levels={
-          levelsAgentId === null
-            ? null
-            : { environmentId: props.environmentId, orgId: props.orgId, agentId: levelsAgentId }
-        }
         unread={summary?.unread ?? null}
         mute={
           environmentId === null || chatId === null || summary === undefined || !canMute
@@ -421,7 +414,6 @@ function KinChatAppBar(props: {
   readonly presence: KinPresence | undefined;
   readonly tasks: string | null;
   readonly onBack: () => void;
-  readonly actions: ComponentPropsWithRef<typeof AppBar>["actions"];
   readonly menus: ComponentPropsWithRef<typeof AppBar>["menus"];
 }) {
   const pill = Platform.OS === "ios";
@@ -435,13 +427,7 @@ function KinChatAppBar(props: {
   );
   return (
     <>
-      <AppBar
-        title={title}
-        subtitle={subtitle}
-        onBack={props.onBack}
-        actions={props.actions}
-        menus={props.menus}
-      />
+      <AppBar title={title} subtitle={subtitle} onBack={props.onBack} menus={props.menus} />
       {/* Always set, so going back to the default size resets the bar. */}
       <NativeStackScreenOptions
         optionsVersion={[title, avatar.seed, avatar.kind, status, tasks]}
@@ -484,12 +470,6 @@ function KinChatPage(props: {
   readonly avatar?: KinAvatarView;
   /** The agent a direct chat is with, for the empty chat's copy; null when unknown. */
   readonly agentName: string | null;
-  /** The lead's Levels screen, for its owner in their direct chat; null elsewhere. */
-  readonly levels?: {
-    readonly environmentId: string;
-    readonly orgId: string;
-    readonly agentId: string;
-  } | null;
   /** The inbox's unread count for this chat; null until the inbox loads. */
   readonly unread: number | null;
   /** Null where nothing can be marked, such as the dev fixture. */
@@ -513,7 +493,6 @@ function KinChatPage(props: {
   const topInset = useContentTopInset();
   const { state } = props;
   const tasks = state._tag === "ready" ? kinChatStatusLine(state.chat.value.widgets) : null;
-  const { levels } = props;
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <KinChatAppBar
@@ -544,17 +523,6 @@ function KinChatPage(props: {
                       onPress: props.mute.toggle,
                     },
                   ],
-                },
-              ]
-        }
-        actions={
-          levels == null
-            ? undefined
-            : [
-                {
-                  accessibilityLabel: "Levels",
-                  icon: "slider.horizontal.3",
-                  onPress: () => navigation.navigate("KinLevels", levels),
                 },
               ]
         }
@@ -1026,7 +994,7 @@ function KinChatFeed(props: {
           viewerMemberId,
           reactorName,
         );
-        // The host refuses reactions on approval, level, review and deferral cards.
+        // The host refuses reactions on approval and deferral cards.
         const reactable =
           canReact &&
           message.status === "posted" &&
@@ -1352,7 +1320,7 @@ function KinFeedMessageActions(props: {
     props.viewerMemberId,
     props.reactorName,
   );
-  // The host refuses reactions on approval, level, review and deferral cards.
+  // The host refuses reactions on approval and deferral cards.
   const reactable =
     props.canReact &&
     message.status === "posted" &&

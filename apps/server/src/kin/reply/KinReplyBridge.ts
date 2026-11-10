@@ -111,7 +111,7 @@ type Wake = {
   readonly overflow: Array<string>;
   posted: number;
   chars: number;
-  // A post, shadow entry or withheld segment answered the lane, or nothing could have.
+  // A post or withheld segment answered the lane, or nothing could have.
   answered: boolean;
   lastOutputAt: number;
   state: KinPresenceState;
@@ -308,14 +308,9 @@ const make = Effect.gen(function* () {
         clientMessageId,
         body: capBody(body),
         intent: wake.lane.mode === "reply" ? "answer" : "evidence",
-        tool: "reply",
       })
       .pipe(
-        Effect.map((result) =>
-          "shadowed" in result
-            ? { _tag: "shadowed" as const }
-            : { _tag: "posted" as const, messageId: result.messageId },
-        ),
+        Effect.map((result) => ({ _tag: "posted" as const, messageId: result.messageId })),
         Effect.catch((error) =>
           Effect.succeed({ _tag: "withheld" as const, reason: error.reason }),
         ),
@@ -353,11 +348,6 @@ const make = Effect.gen(function* () {
         wake.timerFrom = yield* Clock.currentTimeMillis;
         yield* stamp(wake, "posted_at");
         return yield* end(result.messageId);
-      case "shadowed":
-        segment.outcome = "posted";
-        wake.answered = true;
-        yield* stamp(wake, "posted_at");
-        return yield* end(null);
       case "withheld":
         segment.outcome = "withheld";
         // Nothing it writes can land, so a rescue would not help either.
@@ -549,8 +539,6 @@ const make = Effect.gen(function* () {
         WHERE org_id = ${wake.orgId} AND chat_id = ${wake.lane.chatId} AND author_kind = 'agent'
           AND author_agent_id = ${wake.agentId} AND author_thread_id = ${wake.threadId}
           AND created_at >= ${iso(wake.startedAt)}
-      UNION ALL SELECT 1 FROM kin_shadow_entries
-        WHERE org_id = ${wake.orgId} AND wakeup_id = ${wake.wakeupId} AND would_target = ${wake.lane.chatId}
       UNION ALL SELECT 1 FROM kin_reactions r
         JOIN kin_chat_members m ON m.org_id = r.org_id AND m.chat_id = r.chat_id
           AND m.member_id = r.member_id AND m.principal_kind = 'agent' AND m.agent_id = ${wake.agentId}

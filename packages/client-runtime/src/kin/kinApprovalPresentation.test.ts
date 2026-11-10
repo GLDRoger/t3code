@@ -183,12 +183,12 @@ describe("kinApprovalCardView", () => {
     });
   });
 
-  it("a level raise names the lead and says the owner asked", () => {
+  it("a raise names the lead and what it may do, never a level, and says the owner asked", () => {
     const raise = merge({
       kind: "set_level",
       target: { _tag: "level", agentId: "lead", level: "L1" },
       resolved: { _tag: "none" },
-      reason: "Raise Tech lead to L1, from the owner's promotion card.",
+      reason: "Let Tech lead post.",
       requestedBy: { agentId: "kin-promotion", threadId: "kin-promotion" },
       provenance: {
         startedBy: { humanId: "kin-default-owner" },
@@ -197,12 +197,14 @@ describe("kinApprovalCardView", () => {
         ceilingBelowOwner: false,
       },
     } as unknown as Partial<KinPendingAction>);
-    expect(kinApprovalCardView(full(raise, { leadName: "Tech lead" }))).toMatchObject({
-      title: "Raise Tech lead to L1",
+    const view = kinApprovalCardView(full(raise, { leadName: "Tech lead" }));
+    expect(view).toMatchObject({
+      title: "Let Tech lead post",
       asked: { text: "You asked for this.", warning: false },
       reason: null,
       decidable: true,
     });
+    expect(view.accessibilityLabel).not.toMatch(/\bL[0-3]\b|level/i);
   });
 
   it("a new phone's card shows its whole key and attested hardware before anyone signs", () => {

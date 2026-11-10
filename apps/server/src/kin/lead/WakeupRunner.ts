@@ -53,7 +53,6 @@ import * as RoutineContent from "./RoutineContent.ts";
 import * as LeadDelivery from "./LeadDelivery.ts";
 import { PAUSE_POLL_INTERVAL_MS } from "./KinStop.ts";
 import { isOrgPaused } from "./orgState.ts";
-import { KinPromotion } from "../levels/Promotion.ts";
 import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
 
 /** How long one wake-up may run before it is interrupted. */
@@ -155,7 +154,6 @@ const ulid = Effect.gen(function* () {
 
 const make = Effect.gen(function* () {
   const ownerCheck = yield* Effect.serviceOption(OwnerCheck.OwnerCheck);
-  const promotion = yield* Effect.serviceOption(KinPromotion);
   const bridge = yield* Effect.serviceOption(KinReplyBridge);
   const endReply = (row: {
     readonly orgId: KinOrgId;
@@ -748,9 +746,6 @@ const make = Effect.gen(function* () {
               ),
             );
             const preparedAt = yield* Clock.currentTimeMillis;
-            const eveningRun = events.some(
-              (event) => event._tag === "routine" && event.routine === "evening_summary",
-            );
             if (Option.isSome(ownerCheck)) {
               for (const event of events) {
                 if (event._tag === "routine" && event.routine === "owner_check")
@@ -814,9 +809,6 @@ const make = Effect.gen(function* () {
                 if (prepared !== null) routineFacts.set(event.eventId, prepared.body);
               }
             }
-            // The review and promotion cards are server-drawn, never the lead's.
-            if (eveningRun && Option.isSome(promotion))
-              yield* promotion.value.evening({ orgId, agentId });
             if (Option.isSome(routineContent)) {
               events = events.filter(
                 (event) =>

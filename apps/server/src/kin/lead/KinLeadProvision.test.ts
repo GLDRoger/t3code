@@ -105,7 +105,7 @@ describe("KinLeadProvision", () => {
       );
 
       assert.strictEqual(lead.createdByPersonId, lead.ownerPersonId);
-      // It works at L2 in that chat from creation; the shadow week is for groups.
+      // It works at L2 in that chat from creation, as in groups its owner owns.
       assert.strictEqual(
         yield* KinLevels.effectiveLevel({ ...lead, chatId: lead.ownerChatId }),
         "L2",

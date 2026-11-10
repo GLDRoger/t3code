@@ -228,7 +228,7 @@ Every screen handles the same seven states. Each state's copy is fixed below.
 
 ### Native cards (`features/chats/widgets/`, new)
 
-`KinWidgetView` switches on `widget.kind`. A kind this build can't draw renders "This card can't be shown here yet." and never falls back to HTML. The server-drawn `shadow_summary` and `routine` cards render as plain text: a title and one line per row, with row links opening only over http(s).
+`KinWidgetView` switches on `widget.kind`. A kind this build can't draw renders "This card can't be shown here yet." and never falls back to HTML. The server-drawn `routine` card renders as plain text: a title and one line per row, with row links opening only over http(s).
 
 **Message bodies are untrusted.** Agents write them, so a bubble never loads or opens an image (image syntax becomes the text "Image: alt" before parsing) and opens only http(s) links. A link's accessibility action names its real host whenever the link text doesn't. Every card uses the `PendingApprovalCard` frame and `Button`s. Button labels are plain words (DESIGN 8.6).
 

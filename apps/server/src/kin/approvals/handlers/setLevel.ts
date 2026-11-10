@@ -9,13 +9,10 @@ const refuse = (message: string) =>
 
 const REFUSALS: Record<KinLevels.KinLevelRefused["reason"], string> = {
   not_a_lead: "The lead is retired or gone.",
-  not_running: "The lead isn't running.",
-  conflict: "The level changed meanwhile.",
-  limit: "The level can't change now.",
+  conflict: "What the lead may do changed meanwhile.",
   not_found: "The lead is no longer in that chat.",
-  invalid_level: "The level no longer matches what was approved.",
-  not_eligible: "The lead is no longer eligible for this level.",
-  not_granted: "No claimed owner grant backs this raise.",
+  invalid_level: "What the lead may do no longer matches what was approved.",
+  not_granted: "No claimed owner grant backs this change.",
 };
 const refusal = (error: KinLevels.KinLevelRefused) => refuse(REFUSALS[error.reason]);
 
@@ -28,7 +25,7 @@ export const makeSetLevelHandler = Effect.gen(function* () {
 
   const reached = Effect.fn("setLevel.reached")(function* (action: KinPendingAction) {
     if (action.kind !== "set_level" || action.target._tag !== "level")
-      return yield* refuse("Not a level change.");
+      return yield* refuse("Not a permission change.");
     const target = action.target;
     const level = yield* KinLevels.effectiveLevel({
       orgId: action.orgId,
@@ -42,15 +39,14 @@ export const makeSetLevelHandler = Effect.gen(function* () {
   });
 
   const precheck = Effect.fn("setLevel.precheck")(function* (action: KinPendingAction) {
-    if (yield* reached(action)) return yield* refuse("The lead is already at this level.");
+    if (yield* reached(action)) return yield* refuse("The lead can already do this.");
   });
 
   const run = Effect.fn("setLevel.run")(function* (action: KinPendingAction, _grant: KinGrant) {
-    const raised = yield* KinLevels.raiseByGrant({ orgId: action.orgId, actionId: action.id }).pipe(
+    yield* KinLevels.raiseByGrant({ orgId: action.orgId, actionId: action.id }).pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
       Effect.catchTags({ KinLevelRefused: refusal }),
     );
-    yield* KinLevels.refreshPromotion({ orgId: action.orgId, agentId: raised.agentId });
     return "succeeded" as const;
   });
 
