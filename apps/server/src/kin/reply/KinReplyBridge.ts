@@ -590,6 +590,13 @@ const make = Effect.gen(function* () {
   // "thanks, that's all" can take a 👍; a question, a card tap or a reaction still needs words.
   const answered = Effect.fn("KinReplyBridge.answered")(function* (wake: Wake) {
     if (wake.answered || wake.lane.mode === "notice") return true;
+    // A turn only reactions started may end on NO_REPLY: a 👍 on a statement needs no answer.
+    if ([...wake.segments.values()].some((segment) => segment.outcome === "silent")) {
+      const spoken = yield* sql`SELECT 1 FROM kin_events
+        WHERE org_id = ${wake.orgId} AND wakeup_id = ${wake.wakeupId}
+          AND tag IN ('chat.message', 'widget.action') LIMIT 1`;
+      if (spoken.length === 0) return true;
+    }
     const owed = sql`SELECT e.event_id, e.tag, e.priority, q.body FROM kin_events e
       LEFT JOIN kin_messages q ON q.org_id = e.org_id
         AND q.message_id = json_extract(e.json, '$.messageId') AND q.chat_id = ${wake.lane.chatId}
