@@ -33,6 +33,7 @@ import {
   WsRpcGroup,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import type * as RpcGroup from "effect/rpc/RpcGroup";
@@ -254,6 +255,7 @@ const requiredScopesForSettingsUpdate = (payload: unknown) => {
 
 const decodeProjectMutation = Schema.decodeUnknownSync(ProjectMutation);
 const decodeAssetCreateUrlInput = Schema.decodeUnknownSync(AssetCreateUrlInput);
+const decodeAssetCreateUrlOption = Schema.decodeUnknownOption(AssetCreateUrlInput);
 
 const requiredScopesForRpcCall = (
   method: string,
@@ -281,6 +283,21 @@ const requiredScopesForRpcCall = (
   return [requiredScopeForRpcMethod(method)];
 };
 
+/**
+ * The thread attachment calls a chat-only session may make, for the files on Kin messages.
+ * Uploads land in the pending pool under an unguessable id and belong to no chat until a send
+ * the chat service authorizes claims them; a read is checked against chat membership by the
+ * handler (`authorizeAttachmentRead`), which gives such a session no file outside its chats.
+ */
+const kinChatMayCall = (method: string, payload: unknown) =>
+  method === WS_METHODS.attachmentsCreateUploadUrl ||
+  method === WS_METHODS.attachmentsDelete ||
+  (method === WS_METHODS.assetsCreateUrl &&
+    Option.exists(
+      decodeAssetCreateUrlOption(payload),
+      ({ resource }) => resource._tag === "attachment",
+    ));
+
 export const authorizeRpc = (
   scopes: ReadonlyArray<AuthEnvironmentScope>,
   method: string,
@@ -288,7 +305,9 @@ export const authorizeRpc = (
 ) => {
   const coarse = requiredScopeForRpcMethod(method);
   if (scopes.every((scope) => scope === AuthKinChatScope) && coarse !== AuthKinChatScope) {
-    return Effect.fail(rpcAuthorizationError(coarse));
+    return scopes.length > 0 && kinChatMayCall(method, payload)
+      ? Effect.void
+      : Effect.fail(rpcAuthorizationError(coarse));
   }
   const missing = requiredScopesForRpcCall(method, payload).find(
     (scope) => !sessionGrantsScope({ authenticated: true, permissions: scopes }, scope),

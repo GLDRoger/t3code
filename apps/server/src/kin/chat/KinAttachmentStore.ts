@@ -11,6 +11,8 @@ import * as DocumentText from "../../provider/DocumentText.ts";
 
 // Kin's files sit beside threads' in the attachments directory, under their own id prefix.
 const KIN_ATTACHMENT_OWNER = "kin-chat";
+/** Every file Kin stores has an id that starts with this; no thread's does. */
+export const KIN_ATTACHMENT_ID_PREFIX = `${KIN_ATTACHMENT_OWNER}-`;
 
 const refused = (message: string) => new KinChatError({ reason: "invalid_state", message });
 

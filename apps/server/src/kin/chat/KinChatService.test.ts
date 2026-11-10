@@ -7,6 +7,7 @@ import { createPendingAttachmentId } from "../../attachmentStore.ts";
 import * as ServerConfig from "../../config.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import * as AttachmentStore from "./KinAttachmentStore.ts";
+import { authorizeAttachmentRead } from "./attachmentAccess.ts";
 import { environment } from "./TaskCard.testkit.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import { CommandId } from "@t3tools/contracts";
@@ -31,6 +32,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -233,6 +235,91 @@ describe("KinChatService", () => {
         yield* storedFiles,
         [`${theirs.id}.png`, `${stored!.id}.png`].toSorted(),
       );
+    }).pipe(Effect.provide(attachmentLayer)),
+  );
+
+  it.effect("hands a stored file only to people in its chat", () =>
+    Effect.gen(function* () {
+      const { repo, service, identity, person, chat } = yield* seed();
+      const sql = yield* SqlClient.SqlClient;
+      const memberId = KinPersonId.make("suraj");
+      const memberSession = {
+        ...session,
+        sessionId: AuthSessionId.make("member-session"),
+        scopes: [AuthKinChatScope],
+      };
+      yield* repo.insertPerson({
+        orgId: person.orgId,
+        personId: memberId,
+        handle: "suraj",
+        displayName: "Suraj",
+        githubLogin: null,
+        createdAt: timestamp,
+      });
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at) VALUES (${memberSession.sessionId}, ${person.orgId}, ${memberId}, 0)`;
+      const members = yield* identity.resolve(memberSession);
+      const ownAgent = KinAgentId.make("suraj-lead");
+      yield* repo.insertAgent({
+        orgId: person.orgId,
+        agentId: ownAgent,
+        ownerPersonId: memberId,
+        displayName: "Suraj lead",
+        role: "lead",
+        createdAt: timestamp,
+      });
+      const own = yield* service.createDirect(members, { orgId: person.orgId, agentId: ownAgent });
+      const send = { body: "", clientMessageId: "photo" };
+      const ownersFile = (yield* service.send(person, {
+        ...send,
+        chatId: chat.chatId,
+        attachments: [yield* uploadPhoto("owner.png")],
+      })).attachments![0]!.id;
+      const membersMessage = yield* service.send(members, {
+        ...send,
+        chatId: own.chatId,
+        attachments: [yield* uploadPhoto("member.png")],
+      });
+      const membersFile = membersMessage.attachments![0]!.id;
+      const pending = (yield* uploadPhoto("pending.png")).id;
+
+      const kin = Option.some(
+        Context.make(Identity.KinIdentity, identity).pipe(
+          Context.add(Service.KinChatService, service),
+        ),
+      );
+      const read = (reader: AuthenticatedSession, attachmentId: string, host = kin) =>
+        authorizeAttachmentRead(reader, { _tag: "attachment", attachmentId }, host).pipe(
+          Effect.as("served"),
+          Effect.catchTags({ AssetAttachmentNotFoundError: () => Effect.succeed("refused") }),
+        );
+      // The same file under the names a path or a case-blind disk would still resolve.
+      const aliases = (id: string) => [
+        id,
+        id.toUpperCase(),
+        `./${id}`,
+        `/${id}`,
+        `x/../${id}`,
+        id.replace("kin", "\u212Ain"),
+      ];
+      const cases = [
+        [session, [ownersFile], "served"],
+        [memberSession, [membersFile], "served"],
+        // The teammate reaches nothing of the owner's chat, by any name for it.
+        [memberSession, aliases(ownersFile), "refused"],
+        // Holding every other scope does not put the owner in the teammate's chat.
+        [session, aliases(membersFile), "refused"],
+        // A Kin id no message holds, and an upload no message has claimed.
+        [session, ["kin-chat-00000000-0000-4000-8000-000000000000"], "refused"],
+        [memberSession, ["kin-chat-00000000-0000-4000-8000-000000000000", pending], "refused"],
+        // Thread attachments stay with sessions that may read threads.
+        [session, [pending], "served"],
+      ] as const;
+      for (const [reader, ids, expected] of cases)
+        for (const id of ids) assert.strictEqual(yield* read(reader, id), expected, id);
+      assert.strictEqual(yield* read(session, ownersFile, Option.none()), "refused");
+
+      yield* sql`UPDATE kin_chat_members SET left_at = ${timestamp} WHERE chat_id = ${own.chatId} AND person_id = ${memberId}`;
+      assert.strictEqual(yield* read(memberSession, membersFile), "refused");
     }).pipe(Effect.provide(attachmentLayer)),
   );
 
