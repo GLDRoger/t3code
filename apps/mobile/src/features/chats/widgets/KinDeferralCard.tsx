@@ -70,17 +70,36 @@ export const KinDeferralCard = memo(function KinDeferralCard(props: {
     setLastStatus(kinCardStatusAfter(outcome, actionId, revision));
   };
 
+  // A settled card has nothing left to press, so it shrinks to what it was and how it ended.
+  if (deferral.phase === "closed") {
+    return (
+      <View
+        accessible
+        accessibilityLabel={deferral.accessibilityLabel}
+        className="gap-0.5 rounded-[16px] border border-border bg-card-alt px-3.5 py-2.5"
+      >
+        <Text textRole="caption" className="font-t3-medium text-foreground-muted">
+          {`${deferral.eyebrow} · ${deferral.lines.join(" ").replace(/\.$/, "")}`}
+        </Text>
+        <Text textRole="footnote" numberOfLines={2} className="text-foreground-muted">
+          {deferral.title}
+        </Text>
+      </View>
+    );
+  }
+
   return (
-    <View className="gap-2.5 rounded-[20px] border border-border bg-card-alt p-4">
+    <View className="gap-2 rounded-[20px] border border-border bg-card-alt p-4">
       <Text
-        className="font-t3-bold text-2xs uppercase tracking-[1.1px] text-foreground-secondary"
+        textRole="caption"
+        className="font-t3-medium text-foreground-muted"
         importantForAccessibility="no"
         accessibilityElementsHidden
       >
         {deferral.eyebrow}
       </Text>
       <View accessible accessibilityLabel={deferral.accessibilityLabel} className="gap-1.5">
-        <Text textRole="headline" className="font-t3-bold text-foreground">
+        <Text textRole="body" numberOfLines={4} className="font-t3-medium text-foreground">
           {deferral.title}
         </Text>
         {deferral.lines.map((line) => (
@@ -114,6 +133,7 @@ export const KinDeferralCard = memo(function KinDeferralCard(props: {
               label={action.label}
               accessibilityLabel={action.accessibilityLabel}
               tone={action.tone}
+              size="compact"
               loading={pending === action.id}
               disabled={status?.holding === true || (pending !== null && pending !== action.id)}
               onPress={() => void press(action.id)}

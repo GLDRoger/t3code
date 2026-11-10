@@ -51,6 +51,7 @@ import { buildCodexAdditionalContext } from "../../apps/server/src/provider/Code
 import { makeSideChatContext } from "../../apps/server/src/orchestration-v2/ContextHandoffService.ts";
 import { withInlineContext } from "../../apps/server/src/orchestration-v2/ContextHandoffDelivery.ts";
 import { instructions as kinLeadInstructions } from "../../apps/server/src/kin/lead/instructions.ts";
+import { leadTools } from "../../apps/server/src/kin/lead/LeadIsolation.ts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
 import { KinChatToolkit } from "../../apps/server/src/kin/mcp/KinChatToolkit.ts";
 import { KinApprovalsToolkit } from "../../apps/server/src/kin/approvals/mcp.ts";
@@ -675,17 +676,31 @@ export const buildBase = (
   const open = { type: "object", additionalProperties: true };
   const nativeSchema = (name: string) =>
     NATIVE_SCHEMAS[name] ?? { description: name, input_schema: open };
+  const environment = {
+    cwd: anonymize(cwd),
+    platform: /Platform: (\w+)/.exec(joined)?.[1] ?? "linux",
+    date: /Today's date is ([\d-]+)/.exec(reminders.join("\n"))?.[1],
+  };
+  // LeadIsolation: a lead's instructions are its whole system prompt, its only native tools are
+  // the read-only ones, and every Kin tool loads upfront.
+  if (options.kinLead === true)
+    return {
+      model,
+      system: [text(kinLeadInstructions)],
+      reminders: [],
+      gitStatusAt: undefined,
+      environment,
+      nativeTools: [...template.tools.filter((tool) => leadTools.includes(tool.name)), ...t3],
+      t3,
+      deferred: [],
+    };
   return {
     model,
     system: system.map(text),
     reminders: reminders.filter((_, i) => i !== gitStatusAt).map((value) => text(anonymize(value))),
     gitStatusAt: gitStatusAt === -1 ? reminders.length : gitStatusAt,
     /** The shell simulator's cwd and OS follow the template's environment section. */
-    environment: {
-      cwd: anonymize(cwd),
-      platform: /Platform: (\w+)/.exec(joined)?.[1] ?? "linux",
-      date: /Today's date is ([\d-]+)/.exec(reminders.join("\n"))?.[1],
-    },
+    environment,
     nativeTools: [
       ...template.tools.filter((tool) => !isT3Name(tool.name)),
       ...t3.filter((tool) => alwaysLoaded.has(tool.name)),
@@ -1004,7 +1019,11 @@ export const buildMessages = (sample: Sample) => {
       : undefined,
     context,
   ];
-  const reminders = base.reminders.toSpliced(base.gitStatusAt, 0, reminder(gitStatus(testCase)));
+  // A lead's cwd is its memory checkout, so its turn carries no git status.
+  const reminders =
+    base.gitStatusAt === undefined
+      ? base.reminders
+      : base.reminders.toSpliced(base.gitStatusAt, 0, reminder(gitStatus(testCase)));
   push("user", ...reminders, ...notes.flatMap((note) => (note ? [reminder(note)] : [])));
   const toolSearch = findTool(base, "ToolSearch")?.name ?? "ToolSearch";
   let nextId = 0;
@@ -1045,9 +1064,11 @@ export const buildMessages = (sample: Sample) => {
       : projectComposerContextForProvider({ text: testCase.prompt, ...testCase.promptContext });
   const inline =
     sideChatContext === undefined ? userText : withInlineContext(sideChatContext, userText);
-  // A Kin lead's wake-up prompt opens with its instructions, as LeadPrompt's does.
+  // Codex has no lead session to carry the instructions, so its prompt opens with them.
   const prompt =
-    testCase.setup.world?.kinLead === true ? `${kinLeadInstructions}\n\n${inline}` : inline;
+    testCase.setup.world?.kinLead === true && base.codex !== undefined
+      ? `${kinLeadInstructions}\n\n${inline}`
+      : inline;
   const childPrompt = () => taskPrompt({ task: prompt, role: delegateRole });
   if (testCase.prompt !== "")
     push("user", text(role === "delegated-child" ? childPrompt() : prompt));

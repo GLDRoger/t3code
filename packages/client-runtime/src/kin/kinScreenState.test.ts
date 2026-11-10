@@ -16,10 +16,8 @@ import {
   kinDirectory,
   kinHomeLabel,
   kinHomeSubtitle,
-  kinInboxListRows,
   kinInboxNotice,
   kinInboxScreenState,
-  kinLeadChatId,
   kinOwnedLeadAgentId,
   kinPreviewText,
   kinReconnectStep,
@@ -232,6 +230,19 @@ describe("kinHomeSubtitle", () => {
     const marked = { ...inbox, chats: [chat("a", "2026-11-01T00:00:00.000Z", "**Fixed** `pay`")] };
     expect(kinHomeSubtitle(readyState(true), selectKinInboxView(marked))).toBe("Fixed pay");
   });
+
+  it.each([
+    [
+      { kind: "widget_action", body: '{"text":"Tapped \\"Done\\" on the reminder \\"Stretch\\""}' },
+      "Done",
+    ],
+    [{ kind: "system", widgetId: "memory-changes:lead:1", body: "Remembered: x" }, "Saved a note"],
+    [{ kind: "system", widgetId: "deferral:org:1", body: "Deferred to Fri" }, "Set a reminder"],
+  ])("never previews a card tap's JSON or Kin's own bookkeeping", (last, preview) => {
+    const held = { ...inbox.chats[0]!, lastMessage: last as never };
+    const view = selectKinInboxView({ ...inbox, chats: [held] });
+    expect(kinHomeSubtitle(readyState(true), view)).toBe(preview);
+  });
 });
 
 describe("kinHomeLabel", () => {
@@ -342,22 +353,6 @@ describe("chat list rows", () => {
       waitingCount,
     }) as never;
 
-  it("heads each fold with its count, and drops headers when nothing waits or works", () => {
-    const folded = (chatId: string, fold: string) => ({ ...(row({ chatId }) as object), fold });
-    const listed = (rows: ReadonlyArray<object>, folds: object) =>
-      kinInboxListRows({ rows, folds } as never, directory).map((item) =>
-        item.type === "fold" ? item.accessibilityLabel : item.key,
-      );
-    expect(
-      listed([folded("a", "needsYou"), folded("b", "rest"), folded("c", "rest")], {
-        needsYou: 1,
-        working: 0,
-        rest: 2,
-      }),
-    ).toEqual(["Needs you, 1 chat", "a", "Unread and done, 2 chats", "b", "c"]);
-    expect(listed([folded("b", "rest")], { needsYou: 0, working: 0, rest: 1 })).toEqual(["b"]);
-  });
-
   it("names a direct chat after its agent and reads as the spec's label", () => {
     const view = kinChatRowView(row({}), directory);
     expect(view).toMatchObject({
@@ -464,30 +459,6 @@ describe("chat list rows", () => {
     ["2 * 3 * 4 in snake_case_name", "2 * 3 * 4 in snake_case_name"],
   ])("flattens %j to one line", (body, preview) => {
     expect(kinPreviewText(body)).toBe(preview);
-  });
-
-  it("opens the lead's direct chat from the footer, not the most active one", () => {
-    const direct = (chatId: string, agentId: string, joinedAt: string, waitingCount = 0) =>
-      row(
-        {
-          chatId,
-          members: [
-            member({ _tag: "person", personId: "owner" }),
-            member({ _tag: "agent", agentId }, null, joinedAt),
-          ],
-        },
-        waitingCount,
-      );
-    expect(
-      kinLeadChatId([
-        // Waiting chats sort first, so the newer QA chat leads the list.
-        direct("qa", "qa", "2026-11-07T00:00:00.000Z", 2),
-        row({ chatId: "g", kind: "team_group" }),
-        direct("lead", "lead", "2026-11-01T00:00:00.000Z"),
-      ]),
-    ).toBe("lead");
-    expect(kinLeadChatId([row({ chatId: "g", kind: "team_group" })])).toBeNull();
-    expect(kinLeadChatId([])).toBeNull();
   });
 });
 

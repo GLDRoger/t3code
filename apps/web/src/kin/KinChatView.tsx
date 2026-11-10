@@ -96,7 +96,9 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
 import { kinClient } from "./kinClient";
 import { deliverKinOutbox, kinOutbox, startKinOutbox } from "./kinOutbox";
+import { kinFeedDisplay, kinIsBookkeeping, kinQuietWording } from "./kinFeedDisplay";
 import {
+  formatKinMessageTime,
   KinDayRow,
   KinDraftRow,
   KinFoldRow,
@@ -277,12 +279,12 @@ const STATE_COPY: Record<
     detail: "Connect to a T3 server that runs Kin.",
   },
   unpaired: {
-    title: "This browser isn't paired with that Mac",
-    detail: "Pair it again to open this chat.",
+    title: "This browser isn't connected to that server",
+    detail: "Pair it with the server that runs Kin to open this chat.",
   },
   unauthorized: {
     title: "This browser can't read Kin chats",
-    detail: "Pair it again from the Mac.",
+    detail: "Pair it again with the server that runs Kin.",
   },
   noIdentity: {
     title: "Kin doesn't know who you are on this server yet",
@@ -425,11 +427,20 @@ function KinChatFeed(props: {
   const dayStart = new Date(nowMs);
   dayStart.setHours(0, 0, 0, 0);
   const feedRows = buildKinFeedRows(messages, props.viewer, expandedRuns, dayStart, live.drafts);
+  const display = kinFeedDisplay({
+    rows: feedRows,
+    widgets,
+    direct: props.direct,
+    formatTime: formatKinMessageTime,
+  });
+  const shownRows = feedRows.some((row) => display.get(row.key)?.hidden === true)
+    ? feedRows.filter((row) => display.get(row.key)?.hidden !== true)
+    : feedRows;
   const rows: ReadonlyArray<KinChatRow> =
     pending.length === 0
-      ? feedRows
+      ? shownRows
       : [
-          ...feedRows,
+          ...shownRows,
           ...pending.map((entry) => ({
             type: "pending" as const,
             key: `pending:${entry.clientMessageId}`,
@@ -588,6 +599,8 @@ function KinChatFeed(props: {
     switch (item.type) {
       case "message": {
         const { message } = item;
+        const shown = display.get(item.key);
+        if (shown?.quiet != null) return <KinSystemRow body={shown.quiet} onRetry={null} quiet />;
         const widget = message.widgetId === null ? undefined : widgets.get(message.widgetId);
         const chips = kinReactionChips(
           streamed.reactions,
@@ -604,6 +617,7 @@ function KinChatFeed(props: {
         return (
           <KinMessageRow
             row={item}
+            head={shown?.head ?? null}
             widget={widget}
             environmentId={props.environmentId}
             viewerPersonId={props.viewer.personId}
@@ -631,7 +645,8 @@ function KinChatFeed(props: {
         // An unsent message is already a retry in flight.
         return (
           <KinSystemRow
-            body={item.text}
+            body={kinQuietWording(item.text)}
+            quiet={kinIsBookkeeping(item.text)}
             onRetry={retry === null || pending.length > 0 ? null : () => void sendText(retry)}
           />
         );
@@ -656,7 +671,7 @@ function KinChatFeed(props: {
       case "day":
         return <KinDayRow label={item.label} />;
       case "draft":
-        return <KinDraftRow row={item} environmentId={props.environmentId} />;
+        return <KinDraftRow row={item} environmentId={props.environmentId} direct={props.direct} />;
     }
   };
 
@@ -722,12 +737,12 @@ function KinChatFeed(props: {
           <Empty size="compact">
             <EmptyHeader>
               <EmptyTitle>
-                {props.agentName === null ? "No messages yet" : `Say hello to ${props.agentName}.`}
+                {props.agentName === null ? "No messages yet" : `Say hello to ${props.agentName}`}
               </EmptyTitle>
               <EmptyDescription>
                 {props.agentName === null
                   ? "Messages in this chat show up here."
-                  : "It reads every message here."}
+                  : "Your first message starts the chat."}
               </EmptyDescription>
             </EmptyHeader>
           </Empty>
@@ -752,7 +767,7 @@ function KinChatFeed(props: {
         }
         renderItem={renderItem}
         // Both reach rows only through renderItem, which the list doesn't watch.
-        extraData={[streamed.widgets, streamed.reactions, softReplyId, canReact]}
+        extraData={[streamed.widgets, streamed.reactions, softReplyId, canReact, display]}
         estimatedItemSize={72}
         recycleItems={false}
         alignItemsAtEnd
@@ -857,10 +872,10 @@ function KinIntro(props: {
   return (
     <Empty size="compact">
       <EmptyHeader>
-        <EmptyTitle>What {props.agentName} does</EmptyTitle>
+        <EmptyTitle>Say hello to {props.agentName}</EmptyTitle>
         <EmptyDescription>
-          Tell it what you need in plain words. It answers, remembers what you ask it to, sets
-          reminders and hands bigger jobs to workers. When it needs a decision, it asks you here.
+          Ask for what you need in plain words. {props.agentName} replies here, and asks you when a
+          decision is yours.
         </EmptyDescription>
       </EmptyHeader>
       <div className="flex flex-wrap justify-center gap-2">

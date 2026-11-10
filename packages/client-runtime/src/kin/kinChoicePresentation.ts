@@ -105,15 +105,3 @@ export function kinChoiceActInput(
     clientActionId,
   };
 }
-
-const decodeTap = Schema.decodeUnknownOption(
-  Schema.fromJsonString(Schema.Struct({ text: Schema.String })),
-);
-
-/** A choice tap's own words (`Chose "Ship it" on "…"`), shown in place of its JSON. */
-export function kinTapText(body: string): string | null {
-  return Option.match(decodeTap(body), {
-    onNone: () => null,
-    onSome: (tap) => (tap.text.trim() === "" ? null : tap.text),
-  });
-}

@@ -575,6 +575,10 @@
       "types": "./src/kin/kinIntro.ts",
       "default": "./src/kin/kinIntro.ts"
     },
+    "./kin/kinChatListRows": {
+      "types": "./src/kin/kinChatListRows.ts",
+      "default": "./src/kin/kinChatListRows.ts"
+    },
     "./kin/kinScreenState": {
       "types": "./src/kin/kinScreenState.ts",
       "default": "./src/kin/kinScreenState.ts"
