@@ -189,3 +189,156 @@ it.effect(
       );
     }).pipe(Effect.provide(layer)),
 );
+
+it.effect.each(["create", "accept"] as const)("rejects owner binding at %s", (stage) =>
+  Effect.gen(function* () {
+    const service = yield* People.KinPeople;
+    const identity = yield* KinIdentity;
+    const sql = yield* SqlClient.SqlClient;
+    yield* pairSession(ownerSession.sessionId);
+    const input = { orgId: identity.owner.orgId, displayName: "Owner device" };
+    if (stage === "create") {
+      assert.propertyVal(
+        yield* service
+          .createInvite(ownerSession, { ...input, personId: identity.owner.personId })
+          .pipe(Effect.flip),
+        "reason",
+        "not_allowed",
+      );
+    } else {
+      const invite = yield* service.createInvite(ownerSession, input);
+      yield* sql`UPDATE kin_people_invites SET person_id = ${identity.owner.personId} WHERE invite_id = ${invite.inviteId}`;
+      assert.propertyVal(
+        yield* service.accept({ secret: invite.secret }).pipe(Effect.flip),
+        "reason",
+        "not_found",
+      );
+      assert.lengthOf(yield* sql`SELECT * FROM kin_session_bindings`, 0);
+    }
+  }).pipe(Effect.provide(layer)),
+);
+it.effect("reserves invite handles and rechecks collisions at acceptance", () =>
+  Effect.gen(function* () {
+    const service = yield* People.KinPeople;
+    const identity = yield* KinIdentity;
+    const sql = yield* SqlClient.SqlClient;
+    yield* pairSession(ownerSession.sessionId);
+    const input = { orgId: identity.owner.orgId, displayName: "Sam" };
+    const first = yield* service.createInvite(ownerSession, input);
+    const second = yield* service.createInvite(ownerSession, input);
+    assert.notEqual(first.handle, second.handle);
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('collision', ${input.orgId}, ${first.handle}, 'Sam', '2026-01-01T00:00:00.000Z')`;
+    const a = yield* service.accept({ secret: first.secret });
+    const b = yield* service.accept({ secret: second.secret });
+    assert.notEqual(a.person.handle, b.person.handle);
+    assert.notEqual(a.person.handle, first.handle);
+    const timestamps = yield* sql<{
+      created_at: string;
+    }>`SELECT created_at FROM kin_people WHERE person_id = ${a.person.personId}`;
+    assert.match(timestamps[0]!.created_at, /^\d{4}-/);
+  }).pipe(Effect.provide(layer)),
+);
+it.effect("GitHub routing logins are unique per org ignoring case", () =>
+  Effect.gen(function* () {
+    const service = yield* People.KinPeople;
+    const identity = yield* KinIdentity;
+    const orgId = identity.owner.orgId;
+    yield* pairSession(ownerSession.sessionId);
+    yield* service.setGithubLogin(ownerSession, {
+      orgId,
+      personId: identity.owner.personId,
+      githubLogin: "OwnerLogin",
+    });
+    const invite = yield* service.createInvite(ownerSession, { orgId, displayName: "Member" });
+    const member = yield* service.accept({ secret: invite.secret });
+    const sessions = yield* SessionStore;
+    const session = yield* sessions.verify(member.accessToken);
+    assert.propertyVal(
+      yield* service
+        .setGithubLogin(session, {
+          orgId,
+          personId: member.person.personId,
+          githubLogin: "ownerlogin",
+        })
+        .pipe(Effect.flip),
+      "reason",
+      "not_allowed",
+    );
+    yield* service.setGithubLogin(session, {
+      orgId,
+      personId: member.person.personId,
+      githubLogin: "member",
+    });
+    yield* service.setGithubLogin(session, {
+      orgId,
+      personId: member.person.personId,
+      githubLogin: "MEMBER",
+    });
+    yield* service.setGithubLogin(session, {
+      orgId,
+      personId: member.person.personId,
+      githubLogin: null,
+    });
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("only the owner can list and revoke pending invites; revoked secrets are unknown", () =>
+  Effect.gen(function* () {
+    const service = yield* People.KinPeople;
+    const identity = yield* KinIdentity;
+    const orgId = identity.owner.orgId;
+    yield* pairSession(ownerSession.sessionId);
+    const invite = yield* service.createInvite(ownerSession, { orgId, displayName: "Pending" });
+    const used = yield* service.createInvite(ownerSession, { orgId, displayName: "Used" });
+    const member = yield* service.accept({ secret: used.secret });
+    const sessions = yield* SessionStore;
+    const session = yield* sessions.verify(member.accessToken);
+    const input = { orgId, inviteId: invite.inviteId };
+    assert.propertyVal(
+      yield* service.listInvites(session, orgId).pipe(Effect.flip),
+      "reason",
+      "not_allowed",
+    );
+    assert.propertyVal(
+      yield* service.revokeInvite(session, input).pipe(Effect.flip),
+      "reason",
+      "not_allowed",
+    );
+    const pending = yield* service.listInvites(ownerSession, orgId);
+    assert.deepEqual(
+      pending.invites.map((row) => row.inviteId),
+      [invite.inviteId],
+    );
+    assert.deepEqual(Object.keys(pending.invites[0]!).sort(), [
+      "createdAt",
+      "displayName",
+      "expiresAt",
+      "handle",
+      "inviteId",
+      "personId",
+    ]);
+    assert.isTrue((yield* service.revokeInvite(ownerSession, input)).revoked);
+    assert.deepEqual((yield* service.listInvites(ownerSession, orgId)).invites, []);
+    const revoked = yield* service.accept({ secret: invite.secret }).pipe(Effect.flip);
+    const unknown = yield* service
+      .accept({ secret: invite.secret.replace(invite.inviteId, "unknown") })
+      .pipe(Effect.flip);
+    assert.propertyVal(revoked, "reason", "not_found");
+    assert.propertyVal(unknown, "reason", "not_found");
+    assert.equal(revoked.message, unknown.message);
+    const expired = yield* service.createInvite(ownerSession, {
+      orgId,
+      displayName: "Expired",
+      ttlHours: 1,
+    });
+    yield* TestClock.adjust("1 hour");
+    assert.deepEqual((yield* service.listInvites(ownerSession, orgId)).invites, []);
+    assert.propertyVal(
+      yield* service
+        .revokeInvite(ownerSession, { orgId, inviteId: expired.inviteId })
+        .pipe(Effect.flip),
+      "reason",
+      "not_found",
+    );
+  }).pipe(Effect.provide(layer)),
+);

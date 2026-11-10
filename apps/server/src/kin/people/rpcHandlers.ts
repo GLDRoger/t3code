@@ -33,6 +33,8 @@ export const makeKinPeopleHandlers = Effect.fn("makeKinPeopleHandlers")(function
       Effect.mapError((e) => (isKinError(e) ? e : unavailable)),
     );
   return group.of({
+    "kin.people.listInvites": (input) => run((p) => p.listInvites(session, input.orgId)),
+    "kin.people.revokeInvite": (input) => run((p) => p.revokeInvite(session, input)),
     "kin.people.list": (input) => run((p) => p.list(session, input.orgId)),
     "kin.people.createInvite": (input) => run((p) => p.createInvite(session, input)),
     "kin.people.listDevices": (input) => run((p) => p.listDevices(session, input)),

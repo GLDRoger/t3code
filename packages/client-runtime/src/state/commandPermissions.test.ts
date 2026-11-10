@@ -136,6 +136,7 @@ describe("command permissions", () => {
     [KIN_CHAT_WS_METHODS.chatsMute, AuthKinChatScope],
     [KIN_PEOPLE_WS_METHODS.peopleCreateInvite, AuthAccessWriteScope],
     [KIN_PEOPLE_WS_METHODS.peopleRevokeDevice, AuthAccessWriteScope],
+    [KIN_PEOPLE_WS_METHODS.peopleRevokeInvite, AuthAccessWriteScope],
     [KIN_PEOPLE_WS_METHODS.peopleSetGithubLogin, AuthKinChatScope],
     [KIN_LEVEL_WS_METHODS.get, AuthOrchestrationReadScope],
     [KIN_LEVEL_WS_METHODS.review, AuthOrchestrationOperateScope],

@@ -22,7 +22,7 @@ export default Effect.gen(function* () {
     secret_hash TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL,
-    consumed_at INTEGER
+    consumed_at INTEGER,
+    revoked_at INTEGER
   )`;
-  yield* sql`CREATE INDEX kin_people_invites_org ON kin_people_invites(org_id, invite_id)`;
 });

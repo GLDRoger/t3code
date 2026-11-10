@@ -472,10 +472,27 @@ it.effect("denies manual cleanup before the handler without settings permission"
 );
 
 it("a chat-only grant cannot satisfy any non-chat method's declared permission", () => {
-  for (const [method, permission] of Object.entries(RPC_REQUIRED_SCOPES)) {
-    if (permission === "kin:chat") expect(method.startsWith("kin.")).toBe(true);
-    if (!method.startsWith("kin.")) expect(permission).not.toBe("kin:chat");
-  }
+  expect(
+    Object.entries(RPC_REQUIRED_SCOPES)
+      .filter(([, permission]) => permission === "kin:chat")
+      .map(([method]) => method)
+      .sort(),
+  ).toEqual([
+    "kin.chat.history",
+    "kin.chat.subscribe",
+    "kin.chats.createDirect",
+    "kin.chats.mute",
+    "kin.chats.subscribe",
+    "kin.messages.markRead",
+    "kin.messages.react",
+    "kin.messages.send",
+    "kin.orgs.list",
+    "kin.people.list",
+    "kin.people.setGithubLogin",
+    "kin.widgets.act",
+  ]);
+  expect(RPC_REQUIRED_SCOPES["kin.people.revokeInvite"]).toBe("access:write");
+  expect(RPC_REQUIRED_SCOPES["kin.people.listInvites"]).toBe("access:read");
 });
 it.effect.each(["chat-only", "legacy-owner"] as const)(
   "%s authorizes Kin chat without widening access",

@@ -731,6 +731,7 @@ describe("Kin migrations", () => {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`DROP INDEX idx_kin_wakeups_running_lead`;
       yield* sql`CREATE UNIQUE INDEX idx_kin_wakeups_running_org ON kin_wakeups(org_id) WHERE status = 'running'`;
+      yield* undoPeopleInvites;
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 34`;
       yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
       yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
@@ -750,7 +751,10 @@ describe("Kin migrations", () => {
       yield* wakeup("done", "lead", "completed");
       yield* wakeup("done-2", "lead-2", "completed");
 
-      assert.deepStrictEqual(yield* runKinMigrations(), [[34, "PerLeadWakeups"]]);
+      assert.deepStrictEqual(yield* runKinMigrations(), [
+        [34, "PerLeadWakeups"],
+        [38, "PeopleInvites"],
+      ]);
       assert.deepStrictEqual(
         yield* sql`SELECT name FROM sqlite_master WHERE type = 'index' AND name GLOB 'idx_kin_wakeups_running*' ORDER BY name`,
         [{ name: "idx_kin_wakeups_running_lead" }],

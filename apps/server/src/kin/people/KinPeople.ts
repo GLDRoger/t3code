@@ -12,6 +12,8 @@ import {
   type KinPeopleCreateInviteResult,
   type KinInviteAcceptRequest,
   type KinInviteAcceptResult,
+  type KinPeopleListInvitesResult,
+  type KinPeopleRevokeInviteInput,
   type KinPeopleListDevicesInput,
   type KinPeopleListDevicesResult,
   type KinPeopleRevokeDeviceInput,
@@ -51,6 +53,14 @@ export class KinPeople extends Context.Service<
       session: AuthenticatedSession,
       input: KinPeopleCreateInviteInput,
     ) => Effect.Effect<KinPeopleCreateInviteResult, Failure>;
+    readonly listInvites: (
+      session: AuthenticatedSession,
+      orgId: KinOrgId,
+    ) => Effect.Effect<KinPeopleListInvitesResult, Failure>;
+    readonly revokeInvite: (
+      session: AuthenticatedSession,
+      input: KinPeopleRevokeInviteInput,
+    ) => Effect.Effect<{ revoked: boolean }, Failure>;
     readonly accept: (
       input: KinInviteAcceptRequest,
     ) => Effect.Effect<KinInviteAcceptResult, Failure>;
@@ -90,11 +100,31 @@ export const make = Effect.gen(function* () {
     const rows =
       yield* sql`SELECT person_id AS "personId", org_id AS "orgId", handle, display_name AS "displayName",
       github_login AS "githubLogin", created_at AS "createdAt" FROM kin_people
-      WHERE org_id = ${orgId} AND person_id = ${personId}`.pipe(
+      WHERE org_id = ${orgId} AND person_id = ${personId} ORDER BY person_id`.pipe(
         Effect.mapError(toPersistenceSqlError("KinPeople.person")),
       );
     if (!rows[0]) return yield* missing;
     return decodePerson(rows[0]);
+  });
+  const uniqueHandle = Effect.fn("KinPeople.uniqueHandle")(function* (
+    orgId: KinOrgId,
+    base: string,
+    now: number,
+  ) {
+    const rows = yield* sql<{
+      handle: string;
+    }>`SELECT handle FROM kin_people WHERE org_id = ${orgId}
+      UNION SELECT handle FROM kin_people_invites WHERE org_id = ${orgId}
+      AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ${now} ORDER BY handle`.pipe(
+      Effect.mapError(toPersistenceSqlError("KinPeople.uniqueHandle")),
+    );
+    const used = new Set(rows.map((row) => row.handle));
+    let handle = base;
+    for (let n = 2; used.has(handle); n++) {
+      const suffix = `-${n}`;
+      handle = `${base.slice(0, 40 - suffix.length)}${suffix}`;
+    }
+    return handle;
   });
   const createInvite = Effect.fn("KinPeople.createInvite")(function* (
     session: AuthenticatedSession,
@@ -104,7 +134,7 @@ export const make = Effect.gen(function* () {
     const now = (yield* DateTime.now).epochMilliseconds;
     const secret = NodeCrypto.randomBytes(32).toString("base64url");
     const inviteId = KinInviteId.make(NodeCrypto.randomUUID());
-    const handle =
+    let handle =
       input.handle ??
       (input.displayName
         .toLowerCase()
@@ -115,7 +145,9 @@ export const make = Effect.gen(function* () {
     yield* sql
       .withTransaction(
         Effect.gen(function* () {
+          if (input.personId === identity.owner.personId) return yield* denied;
           if (input.personId) yield* person(input.orgId, input.personId);
+          else handle = yield* uniqueHandle(input.orgId, handle, now);
           yield* sql`INSERT INTO kin_people_invites (invite_id, org_id, person_id, display_name, handle, secret_hash, created_at, expires_at)
         VALUES (${inviteId}, ${input.orgId}, ${input.personId ?? null}, ${input.displayName}, ${handle},
           ${hash(secret).toString("hex")}, ${now}, ${expiresAt})`.pipe(
@@ -146,25 +178,27 @@ export const make = Effect.gen(function* () {
             handle: string;
             secret_hash: string;
           }>`SELECT person_id, display_name, handle, secret_hash FROM kin_people_invites
-          WHERE org_id = ${orgId} AND invite_id = ${inviteId} AND consumed_at IS NULL AND expires_at > ${now}`.pipe(
+          WHERE org_id = ${orgId} AND invite_id = ${inviteId} AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ${now} ORDER BY invite_id`.pipe(
             Effect.mapError(toPersistenceSqlError("KinPeople.accept")),
           );
           const row = rows[0];
           if (
             !row ||
+            row.person_id === identity.owner.personId ||
             !/^[a-f0-9]{64}$/.test(row.secret_hash) ||
             !NodeCrypto.timingSafeEqual(hash(secret), Buffer.from(row.secret_hash, "hex"))
           )
             return yield* missing;
           const consumed = yield* sql`UPDATE kin_people_invites SET consumed_at = ${now}
-        WHERE org_id = ${orgId} AND invite_id = ${inviteId} AND consumed_at IS NULL AND expires_at > ${now} RETURNING invite_id`.pipe(
+        WHERE org_id = ${orgId} AND invite_id = ${inviteId} AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ${now} RETURNING invite_id`.pipe(
             Effect.mapError(toPersistenceSqlError("KinPeople.consume")),
           );
           if (!consumed.length) return yield* missing;
           const personId = KinPersonId.make(row.person_id ?? NodeCrypto.randomUUID());
           if (!row.person_id) {
+            const handle = yield* uniqueHandle(identity.owner.orgId, row.handle, now);
             yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
-          VALUES (${personId}, ${orgId}, ${row.handle}, ${row.display_name}, ${now})`.pipe(
+          VALUES (${personId}, ${orgId}, ${handle}, ${row.display_name}, ${DateTime.formatIso(DateTime.makeUnsafe(now))})`.pipe(
               Effect.mapError(toPersistenceSqlError("KinPeople.insertPerson")),
             );
           }
@@ -203,6 +237,46 @@ export const make = Effect.gen(function* () {
         Effect.mapError(toPersistenceSqlError("KinPeople.list")),
       );
     return { people: rows.map(decodePerson) };
+  });
+  const listInvites = Effect.fn("KinPeople.listInvites")(function* (
+    session: AuthenticatedSession,
+    orgId: KinOrgId,
+  ) {
+    yield* owner(session, orgId);
+    const now = (yield* DateTime.now).epochMilliseconds;
+    const rows = yield* sql<{
+      inviteId: KinInviteId;
+      personId: KinPersonId | null;
+      displayName: string;
+      handle: string;
+      createdAt: number;
+      expiresAt: number;
+    }>`SELECT invite_id AS "inviteId", person_id AS "personId", display_name AS "displayName", handle,
+      created_at AS "createdAt", expires_at AS "expiresAt" FROM kin_people_invites WHERE org_id = ${orgId}
+      AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ${now} ORDER BY created_at, invite_id`.pipe(
+      Effect.mapError(toPersistenceSqlError("KinPeople.listInvites")),
+    );
+    return {
+      invites: rows.map((row) => ({
+        ...row,
+        createdAt: DateTime.formatIso(DateTime.makeUnsafe(row.createdAt)),
+        expiresAt: DateTime.formatIso(DateTime.makeUnsafe(row.expiresAt)),
+      })),
+    };
+  });
+  const revokeInvite = Effect.fn("KinPeople.revokeInvite")(function* (
+    session: AuthenticatedSession,
+    input: KinPeopleRevokeInviteInput,
+  ) {
+    yield* owner(session, input.orgId);
+    const now = (yield* DateTime.now).epochMilliseconds;
+    const rows = yield* sql`UPDATE kin_people_invites SET revoked_at = ${now}
+      WHERE org_id = ${input.orgId} AND invite_id = ${input.inviteId} AND consumed_at IS NULL
+      AND revoked_at IS NULL AND expires_at > ${now} RETURNING invite_id`.pipe(
+      Effect.mapError(toPersistenceSqlError("KinPeople.revokeInvite")),
+    );
+    if (!rows.length) return yield* missing;
+    return { revoked: true };
   });
   const listDevices = Effect.fn("KinPeople.listDevices")(function* (
     session: AuthenticatedSession,
@@ -277,6 +351,19 @@ export const make = Effect.gen(function* () {
           )
             return yield* denied;
 
+          if (input.githubLogin !== null) {
+            const clashes =
+              yield* sql`SELECT person_id FROM kin_people WHERE org_id = ${input.orgId}
+              AND lower(github_login) = lower(${input.githubLogin}) AND person_id != ${input.personId} ORDER BY person_id`.pipe(
+                Effect.mapError(toPersistenceSqlError("KinPeople.githubLoginClash")),
+              );
+            if (clashes.length)
+              return yield* new KinChatError({
+                reason: "not_allowed",
+                message: "That GitHub login is already linked to someone.",
+              });
+          }
+          // This login routes review reminders; it never grants GitHub authority.
           yield* sql`UPDATE kin_people SET github_login = ${input.githubLogin} WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`.pipe(
             Effect.mapError(toPersistenceSqlError("KinPeople.setGithubLogin")),
           );
@@ -285,6 +372,15 @@ export const make = Effect.gen(function* () {
       )
       .pipe(Effect.mapError(sqlError("KinPeople.setGithubLogin")));
   });
-  return KinPeople.of({ createInvite, accept, list, listDevices, revokeDevice, setGithubLogin });
+  return KinPeople.of({
+    listInvites,
+    revokeInvite,
+    createInvite,
+    accept,
+    list,
+    listDevices,
+    revokeDevice,
+    setGithubLogin,
+  });
 });
 export const layer = Layer.effect(KinPeople, make);

@@ -54,6 +54,22 @@ export const KinPeopleCreateInviteResult = Schema.Struct({
 });
 export type KinPeopleCreateInviteResult = typeof KinPeopleCreateInviteResult.Type;
 
+export const KinPeopleListInvitesResult = Schema.Struct({
+  invites: Schema.Array(
+    Schema.Struct({
+      inviteId: KinInviteId,
+      personId: Schema.NullOr(KinPersonId),
+      displayName: KinTrimmedText,
+      handle: KinTrimmedText,
+      createdAt: IsoDateTime,
+      expiresAt: IsoDateTime,
+    }),
+  ),
+});
+export type KinPeopleListInvitesResult = typeof KinPeopleListInvitesResult.Type;
+export const KinPeopleRevokeInviteInput = Schema.Struct({ orgId: KinOrgId, inviteId: KinInviteId });
+export type KinPeopleRevokeInviteInput = typeof KinPeopleRevokeInviteInput.Type;
+
 /** One of a person's devices: an auth session bound to them in one org. */
 export const KinPersonDevice = Schema.Struct({
   sessionId: AuthSessionId,
@@ -108,6 +124,8 @@ export type KinInviteAcceptResult = typeof KinInviteAcceptResult.Type;
 export const KIN_INVITE_ACCEPT_ROUTE = "/kin/invites/accept";
 
 export const KIN_PEOPLE_WS_METHODS = {
+  peopleListInvites: "kin.people.listInvites",
+  peopleRevokeInvite: "kin.people.revokeInvite",
   peopleList: "kin.people.list",
   peopleCreateInvite: "kin.people.createInvite",
   peopleListDevices: "kin.people.listDevices",
@@ -118,6 +136,16 @@ export const KIN_PEOPLE_WS_METHODS = {
 const KinPeopleError = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
 
 export const KinPeopleRpcs = [
+  Rpc.make(KIN_PEOPLE_WS_METHODS.peopleListInvites, {
+    payload: KinPeopleListInput,
+    success: KinPeopleListInvitesResult,
+    error: KinPeopleError,
+  }),
+  Rpc.make(KIN_PEOPLE_WS_METHODS.peopleRevokeInvite, {
+    payload: KinPeopleRevokeInviteInput,
+    success: KinPeopleRevokeDeviceResult,
+    error: KinPeopleError,
+  }),
   Rpc.make(KIN_PEOPLE_WS_METHODS.peopleList, {
     payload: KinPeopleListInput,
     success: KinPeopleListResult,
@@ -146,6 +174,8 @@ export const KinPeopleRpcs = [
 ] as const;
 
 export const KIN_PEOPLE_RPC_SCOPES = {
+  [KIN_PEOPLE_WS_METHODS.peopleListInvites]: AuthAccessReadScope,
+  [KIN_PEOPLE_WS_METHODS.peopleRevokeInvite]: AuthAccessWriteScope,
   [KIN_PEOPLE_WS_METHODS.peopleList]: AuthKinChatScope,
   // An invite hands access to someone new, like a pairing link.
   [KIN_PEOPLE_WS_METHODS.peopleCreateInvite]: AuthAccessWriteScope,
