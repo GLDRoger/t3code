@@ -465,7 +465,12 @@ const offlineTime = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute
 
 type KinChatRow =
   | KinFeedRow
-  | { readonly type: "pending"; readonly key: string; readonly entry: KinOutboxEntry };
+  | {
+      readonly type: "pending";
+      readonly key: string;
+      readonly entry: KinOutboxEntry;
+      readonly continues: boolean;
+    };
 
 type StopState = "idle" | "stopping" | "failed";
 
@@ -553,15 +558,18 @@ function KinChatFeed(props: {
   const shownRows = feedRows.some((row) => display.get(row.key)?.hidden === true)
     ? feedRows.filter((row) => display.get(row.key)?.hidden !== true)
     : feedRows;
+  const lastShownRow = shownRows.at(-1);
+  const endsOnOwn = lastShownRow?.type === "message" && lastShownRow.own;
   const rows: ReadonlyArray<KinChatRow> =
     pending.length === 0
       ? shownRows
       : [
           ...shownRows,
-          ...pending.map((entry) => ({
+          ...pending.map((entry, index) => ({
             type: "pending" as const,
             key: `pending:${entry.clientMessageId}`,
             entry,
+            continues: index > 0 || endsOnOwn,
           })),
         ];
 
@@ -774,6 +782,7 @@ function KinChatFeed(props: {
             connected={props.connected}
             environmentId={props.environmentId}
             previewKey={previewKey}
+            continues={item.continues}
             onEdit={() =>
               void kinOutbox.discard(item.entry.clientMessageId).then((body) => {
                 if (body === null) return;

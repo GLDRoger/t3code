@@ -174,6 +174,8 @@ export type KinFeedRow =
       readonly authorLabel: string;
       readonly authorKind: "agent" | "person";
       readonly showAuthor: boolean;
+      /** The row above is a bubble by the same author, so this one sits tight under it. */
+      readonly continues: boolean;
     }
   /** A reply still streaming. Its key is its durable message's, so the bubble stays in place. */
   | {
@@ -182,6 +184,7 @@ export type KinFeedRow =
       readonly draft: KinHeldDraft;
       readonly authorLabel: string;
       readonly showAuthor: boolean;
+      readonly continues: boolean;
     }
   | {
       readonly type: "system";
@@ -264,7 +267,8 @@ function messageRow(message: KinMessage, fields: Omit<MessageRow, "type" | "key"
     held.own === fields.own &&
     held.authorLabel === fields.authorLabel &&
     held.authorKind === fields.authorKind &&
-    held.showAuthor === fields.showAuthor
+    held.showAuthor === fields.showAuthor &&
+    held.continues === fields.continues
   ) {
     return held;
   }
@@ -390,6 +394,7 @@ export function buildKinFeedRows(
         authorLabel: kinAuthorLabel(message, viewer),
         authorKind: message.author._tag === "agent" ? "agent" : "person",
         showAuthor: !own && previousAuthor !== author,
+        continues: previousAuthor === author,
       }),
     );
     previousAuthor = author;
@@ -455,6 +460,7 @@ export function buildKinFeedRows(
       draft,
       authorLabel: viewer.agentNames.get(draft.agentId) ?? "Agent",
       showAuthor: previousAuthor !== author,
+      continues: previousAuthor === author,
     });
     previousAuthor = author;
   }
