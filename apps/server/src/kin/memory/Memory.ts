@@ -126,7 +126,7 @@ export const shadowBranch = (agentId: string) => `kin/shadow/${agentId}`;
  */
 export const LANDED_REF = "refs/kin/landed";
 /** How far down GitHub's history a landed squash is looked for, past the owner's own commits. */
-const LANDED_SEARCH_DEPTH = 200;
+export const LANDED_SEARCH_DEPTH = 200;
 
 export interface MemoryQuery {
   readonly kind?: MemoryItemKind;
@@ -1435,7 +1435,8 @@ const make = Effect.gen(function* () {
   /**
    * The local commit whose tree GitHub's newest unmerged squash of this server's memory carries:
    * the merge base, since squashes never link the two in git's ancestry. The owner may have
-   * committed on top, so the squash is sought down GitHub's first parents, newest first.
+   * committed on top, so the squash is sought down GitHub's first parents, newest first;
+   * `exhausted` means the search stopped before it could tell whether one exists.
    */
   const landedBase = Effect.fn("Memory.landedBase")(function* (
     orgId: KinOrgId,
@@ -1461,20 +1462,21 @@ const make = Effect.gen(function* () {
       ),
       Effect.orElseSucceed(() => undefined),
     );
+    const absent = { _tag: "absent" } as const;
     let sha: string | undefined = remoteHead;
     for (let depth = 0; sha !== undefined && depth < LANDED_SEARCH_DEPTH; depth++) {
       // Merged in here already: git's own merge base is at least as new.
-      if (local.has(sha)) return undefined;
-      if (sha === recorded?.theirs) return recorded.ours;
+      if (local.has(sha)) return absent;
+      if (sha === recorded?.theirs) return { _tag: "found", commit: recorded.ours } as const;
       // The record is written after GitHub merges. If the server stopped in between, the squash
       // still names its commit, and an identical tree proves the pair without trusting that line.
       const squash = yield* commitAt(sha);
       const named = /^Kin-Local: ([a-f0-9]{40}(?:[a-f0-9]{24})?)$/m.exec(squash.message)?.[1];
       if (named !== undefined && local.has(named) && (yield* commitAt(named)).tree === squash.tree)
-        return named;
+        return { _tag: "found", commit: named } as const;
       sha = remote.get(sha)?.[0];
     }
-    return undefined;
+    return sha === undefined ? absent : ({ _tag: "exhausted" } as const);
   });
 
   // Callers have run `ensureCheckouts`. A head fetched before the lock was taken is merged as it
@@ -1511,9 +1513,17 @@ const make = Effect.gen(function* () {
           const localAncestors = yield* walkAncestors(orgId, paths.writer, head);
           if (localAncestors.has(remote)) next = head;
           else {
+            const landed = yield* landedBase(
+              orgId,
+              paths.writer,
+              localAncestors,
+              remoteAncestors,
+              remote,
+            );
             const mergeBase =
-              (yield* landedBase(orgId, paths.writer, localAncestors, remoteAncestors, remote)) ??
-              uniqueMergeBase(localAncestors, remoteAncestors);
+              landed._tag === "found"
+                ? landed.commit
+                : uniqueMergeBase(localAncestors, remoteAncestors);
             if (!mergeBase) {
               const conflictBranch = yield* preserve(
                 orgId,
@@ -1554,14 +1564,18 @@ const make = Effect.gen(function* () {
                 );
                 metadata.set(sha, new Map(entries.map((entry) => [entry.relative, entry])));
               }
-              const merged = mergeMemoryFiles(
-                base,
-                local,
-                remoteFiles,
-                metadata.get(parent)!,
-                metadata.get(commit)!,
-                metadata.get(next)!,
-              );
+              // Past the search, an older base would bring back journal entries that already landed.
+              const merged =
+                landed._tag === "exhausted"
+                  ? undefined
+                  : mergeMemoryFiles(
+                      base,
+                      local,
+                      remoteFiles,
+                      metadata.get(parent)!,
+                      metadata.get(commit)!,
+                      metadata.get(next)!,
+                    );
               if (!merged) {
                 // This server's copy stays as it is: it may hold commits GitHub never got.
                 next = head;
