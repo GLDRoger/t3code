@@ -2,6 +2,8 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   KIN_GITHUB_APP_SOURCE,
   KinEvent,
+  KinAgentId,
+  KinWakeupId,
   KinOrgId,
   KinWebhookSource,
   MemoryItemHead,
@@ -83,7 +85,12 @@ const pullRequest = (overrides: { repo?: string; merged?: boolean; padding?: str
   ...(overrides.padding === undefined ? {} : { padding: overrides.padding }),
   action: "closed",
   number: 212,
-  pull_request: { number: 212, merged: overrides.merged ?? true, head: { sha: "abc123" } },
+  pull_request: {
+    title: "@kin[bot]",
+    number: 212,
+    merged: overrides.merged ?? true,
+    head: { sha: "abc123" },
+  },
   repository: { full_name: overrides.repo ?? "owner/repo" },
   sender: { login: "alice" },
 });
@@ -127,7 +134,10 @@ function services(memoryDown: Ref.Ref<boolean>, ticks: Map<string, Effect.Effect
         Effect.gen(function* () {
           if (yield* Ref.get(memoryDown))
             return yield* new Memory.MemoryError({ orgId: org, operation: "query" });
-          return [whenMerged].map((head) => ({ ...head, duplicate: false }));
+          return [
+            whenMerged,
+            item("watch-link", undefined, { links: ["https://github.com/owner/repo/issues/777"] }),
+          ].map((head) => ({ ...head, duplicate: false }));
         }),
     }),
   ).pipe(
@@ -254,6 +264,114 @@ describe("KinGithubEvents", () => {
         yield* drain;
         assert.strictEqual((yield* events).length, 2);
         assert.strictEqual((yield* pending("github")).length, 0);
+      }),
+    ),
+  );
+
+  it.effect("drops untracked traffic, keeps tracked items and mentions, and batches notices", () =>
+    run(({ deliver, drain }) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const untracked = {
+          ...pullRequest(),
+          pull_request: { number: 999, title: "unrelated", head: { sha: "abc" } },
+        };
+        yield* deliver("untracked", untracked);
+        yield* deliver(
+          "push",
+          { repository: { full_name: "owner/repo" }, sender: { login: "human" }, after: "abc" },
+          "push",
+        );
+        yield* drain;
+        assert.lengthOf(yield* events, 0);
+        yield* deliver("tracked", {
+          ...pullRequest(),
+          pull_request: { number: 212, merged: true, head: { sha: "abc" } },
+        });
+        yield* drain;
+        const first = yield* sql<{
+          not_before: number;
+        }>`SELECT not_before FROM kin_events WHERE org_id = ${orgId} AND tag = 'github' ORDER BY event_id`;
+        yield* TestClock.adjust("1 minute");
+        yield* deliver("mention", { ...untracked, comment: { body: "Please check @kin[bot]" } });
+        yield* drain;
+        const deadlines = yield* sql<{
+          not_before: number;
+        }>`SELECT not_before FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`;
+        assert.lengthOf(deadlines, 3);
+        assert.isTrue(deadlines.every((row) => row.not_before === first[0]?.not_before));
+        const queue = yield* KinEventQueue.KinEventQueue;
+        yield* TestClock.adjust("80 seconds");
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const claimed = yield* queue.claim({
+              orgId,
+              agentId: KinAgentId.make("lead"),
+              wakeupId: KinWakeupId.make("batch"),
+              model: "test",
+            });
+            assert.lengthOf(claimed, 3);
+          }),
+        );
+      }),
+    ),
+  );
+
+  it.effect("keeps memory-linked issues and worker PR CI, scoped to the repository", () =>
+    run(({ deliver, drain }) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids)
+        VALUES (${orgId}, 'worker-wake', 'lead', 'test', 0, 'completed', '[]')`;
+        yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id, model_json, provenance_json, status, started_at, pull_request_url)
+        VALUES ('worker', ${orgId}, 'lead', 'worker-wake', 'build', 'worker-thread', '{}', '{}', 'done', 0, 'https://github.com/OWNER/REPO/pull/888')`;
+        yield* sql`INSERT INTO kin_agents VALUES ('other-lead', ${orgId}, 'Other', 'lead', 'owner', ${timestamp}, NULL)`;
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+          VALUES ('other-lead', ${orgId}, 'Other', 0, '{}', '[]', 'chat')`;
+        yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids)
+          VALUES (${orgId}, 'other-wake', 'other-lead', 'test', 0, 'completed', '[]')`;
+        yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id, model_json, provenance_json, status, started_at, pull_request_url)
+          VALUES ('other-worker', ${orgId}, 'other-lead', 'other-wake', 'build', 'other-thread', '{}', '{}', 'done', 0, 'https://github.com/owner/repo/pull/889')`;
+        yield* deliver("other-lead", { ...pullRequest(), pull_request: { number: 889 } });
+        yield* deliver(
+          "linked-issue",
+          {
+            repository: { full_name: "owner/repo" },
+            issue: { number: 777 },
+            sender: { login: "human" },
+          },
+          "issue_comment",
+        );
+        yield* deliver(
+          "worker-ci",
+          {
+            repository: { full_name: "owner/repo" },
+            check_suite: { head_sha: "abc", pull_requests: [{ number: 888 }] },
+            sender: { login: "human" },
+          },
+          "check_suite",
+        );
+        yield* deliver("foreign", {
+          ...pullRequest(),
+          repository: { full_name: "owner/elsewhere" },
+          pull_request: { number: 888 },
+        });
+        yield* drain;
+        assert.deepStrictEqual((yield* events).map((event) => event.dedupeKey).sort(), [
+          "linked-issue",
+          "worker-ci",
+        ]);
+        yield* sql`UPDATE kin_workers SET pull_request_url = NULL, repository_key = 'github.com/owner/repo'
+          WHERE org_id = ${orgId} AND worker_id = 'worker'`;
+        yield* deliver("worker-opened", {
+          ...pullRequest(),
+          pull_request: {
+            number: 890,
+            head: { sha: "abc", ref: "kin/worker/worker", repo: { full_name: "owner/repo" } },
+          },
+        });
+        yield* drain;
+        assert.lengthOf(yield* events, 3);
       }),
     ),
   );
