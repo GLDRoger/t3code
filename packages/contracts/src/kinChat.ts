@@ -243,6 +243,7 @@ export const KinChoiceCardState = Schema.Struct({
 export type KinChoiceCardState = typeof KinChoiceCardState.Type;
 
 export const KinPresenceState = Schema.Literals([
+  // Older servers only; clients show no line for it.
   "seen",
   "starting",
   "thinking",
@@ -262,8 +263,8 @@ export const KinPresence = Schema.Struct({
   agentId: KinAgentId,
   wakeupId: Schema.NullOr(KinWakeupId),
   state: KinPresenceState,
-  // A fixed label ("Checking memory"), a short note from the agent, or a refusal
-  // ("Couldn't post: notice limit"), at most 60 characters.
+  // What the agent is doing, from the server's fixed table ("Reading memory", "Setting a
+  // reminder") or a refusal ("Couldn't post: limit"); never model or user text. At most 60.
   label: Schema.NullOr(KinText.check(Schema.isMaxLength(60))),
   startedAt: IsoDateTime,
   since: IsoDateTime,

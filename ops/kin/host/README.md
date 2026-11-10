@@ -129,7 +129,7 @@ Only attested keys are listed. A simulator, or a phone that couldn't prove its k
 
 ## Reply latency
 
-Each wake-up logs one `Kin wake-up latency` line with every stage's ms since its first message was queued: claimed, memory prepared, provider launched, first token, reply posted, and whether it was warm. For p50 and p90 over the last 20 owner-message wake-ups, read the database without writing to it:
+Each wake-up logs one `Kin wake-up latency` line with every stage's ms since its first message was queued: claimed, memory prepared, provider launched, first token, reply posted. Wake-ups from before warm sessions were removed still group as `warm`. For p50 and p90 over the last 20 owner-message wake-ups, read the database without writing to it:
 
 ```bash
 sqlite3 -readonly ~/.t3/userdata/statev2.sqlite "
@@ -156,7 +156,7 @@ SELECT CASE warm WHEN 1 THEN 'warm' ELSE 'cold' END AS session, stage, c AS wake
 FROM r GROUP BY warm, stage ORDER BY warm, stage;"
 ```
 
-`seen` shows in the chat as soon as the message is queued, before any of these stages.
+The lead's working line shows in the chat as soon as the message is queued, before any of these stages.
 
 ## Workers
 

@@ -97,15 +97,32 @@ const TOOL_TYPES: ReadonlySet<OrchestrationV2TurnItem["type"]> = new Set([
 ]);
 export const isToolItem = (item: OrchestrationV2TurnItem) => TOOL_TYPES.has(item.type);
 
-// Labels come from this table, never from the model's own words about what it is doing.
-const LABELS: ReadonlyArray<readonly [RegExp, string]> = [
+// The presence line's only words. Each is fixed text: never tool arguments or model text.
+export const PHASE_LABELS = {
+  queued: "Queued",
+  preparing: "Reading memory",
+  thinking: "Thinking",
+  writing: "Writing",
+  tool: "Working",
+} as const;
+// Null leaves the line as it was: the call is bookkeeping, not work the owner waits on.
+const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
   [/(?:^|__|\.)(?:memory_search|memory_read|Read|Grep|Glob)$/, "Checking memory"],
+  [/(?:^|__|\.)memory_\w+$/, "Updating memory"],
   [/(?:^|__|\.)kin_defer$/, "Setting a reminder"],
   [/(?:^|__|\.)kin_delegate$/, "Starting a worker"],
+  [/(?:^|__|\.)kin_follow_up$/, "Messaging a worker"],
+  [/(?:^|__|\.)kin_worker_stop$/, "Stopping a worker"],
+  [/(?:^|__|\.)kin_ask$/, "Preparing a question"],
+  [/(?:^|__|\.)kin_schedule$/, "Scheduling"],
+  [/(?:^|__|\.)kin_cancel$/, "Cancelling a reminder"],
+  [/(?:^|__|\.)kin_github_\w+$/, "Checking GitHub"],
   [/(?:^|__|\.)request_action$/, "Preparing a request"],
+  [/(?:^|__|\.)(?:kin_react|kin_journal|kin_end)$/, null],
 ];
-export function toolLabel(item: OrchestrationV2TurnItem): string {
+export function toolLabel(item: OrchestrationV2TurnItem): string | null {
   if (item.type === "file_search") return "Checking memory";
   const name = item.type === "dynamic_tool" ? (item.toolName ?? "") : (item.title ?? "");
-  return LABELS.find(([pattern]) => pattern.test(name))?.[1] ?? "Working";
+  const found = TOOL_LABELS.find(([pattern]) => pattern.test(name));
+  return found === undefined ? PHASE_LABELS.tool : found[1];
 }

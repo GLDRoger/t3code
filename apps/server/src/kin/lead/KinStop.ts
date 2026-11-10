@@ -38,7 +38,7 @@ import { PersistenceSqlError, toPersistenceSqlError } from "../../persistence/Er
 import * as Hub from "../chat/KinChatHub.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
-import { KinPresence, syncSeen } from "../reply/KinPresence.ts";
+import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import type * as Routines from "../triggers/routines.ts";
 import * as Queue from "./KinEventQueue.ts";
 import { isOrgOwner, isOrgPaused, STOP_REASON } from "./orgState.ts";
@@ -334,11 +334,11 @@ const make = Effect.gen(function* () {
     );
     if (resumed !== undefined) {
       yield* publish(input.orgId, resumed);
-      // Messages the pause expired no longer wait, so their `seen` goes too.
+      // Messages the pause expired no longer wait, so their working line goes too.
       if (Option.isSome(presence))
         for (const lead of yield* sql<{ agentId: string }>`SELECT agent_id AS "agentId"
           FROM kin_leads WHERE org_id = ${input.orgId} ORDER BY agent_id`)
-          yield* syncSeen(presence.value, input.orgId, KinAgentId.make(lead.agentId)).pipe(
+          yield* syncQueued(presence.value, input.orgId, KinAgentId.make(lead.agentId)).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
           );
       if (attached !== undefined) yield* attached.resume(input.orgId);

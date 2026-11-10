@@ -219,13 +219,13 @@ describe("ChatWake", () => {
           results.map((result) => result.duplicate),
           [false, true, false, false],
         );
-        // The owner sees `seen` as soon as the message is queued, before any wake-up claims it.
+        // The working line shows as soon as the message is queued, before any wake-up claims it.
         const presence = yield* Presence.KinPresence;
         assert.deepStrictEqual(
           presence
             .snapshot(KinOrgId.make("a"), KinChatId.make("chat-a"))
-            .presence.map((line) => [line.agentId, line.state, line.wakeupId]),
-          [["lead-a", "seen", null]],
+            .presence.map((line) => [line.agentId, line.state, line.label, line.wakeupId]),
+          [["lead-a", "starting", "Reading memory", null]],
         );
         const stored = yield* storedEvents();
         assert.deepStrictEqual(
@@ -259,41 +259,46 @@ describe("ChatWake", () => {
       }).pipe(Effect.provide(services)),
   );
 
-  it.effect("shows `seen` for a waking reaction and drops it once the reaction is withdrawn", () =>
-    Effect.gen(function* () {
-      yield* seed("a");
-      yield* storeMessage(message("a", "lead-latest", { seq: 1, agent: true }));
-      const { settle } = yield* start();
-      const hub = yield* Hub.KinChatHub;
-      const presence = yield* Presence.KinPresence;
-      const lines = () =>
-        presence
-          .snapshot(KinOrgId.make("a"), KinChatId.make("chat-a"))
-          .presence.map((line) => line.state);
-      const reaction = (removedAt: string | null) =>
-        hub.publish({
-          type: "reaction.updated",
-          orgId: KinOrgId.make("a"),
-          chatId: KinChatId.make("chat-a"),
-          reaction: {
+  it.effect(
+    "shows Queued for a waking reaction behind a running wake-up, gone once withdrawn",
+    () =>
+      Effect.gen(function* () {
+        yield* seed("a");
+        yield* storeMessage(message("a", "lead-latest", { seq: 1, agent: true }));
+        const { settle } = yield* start();
+        const hub = yield* Hub.KinChatHub;
+        const presence = yield* Presence.KinPresence;
+        const lines = () =>
+          presence
+            .snapshot(KinOrgId.make("a"), KinChatId.make("chat-a"))
+            .presence.map((line) => [line.state, line.label]);
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids)
+        VALUES ('running', 'a', 'lead-a', 'fixture', 0, 'running', '[]')`;
+        const reaction = (removedAt: string | null) =>
+          hub.publish({
+            type: "reaction.updated",
             orgId: KinOrgId.make("a"),
             chatId: KinChatId.make("chat-a"),
-            messageId: KinMessageId.make("lead-latest"),
-            memberId: KinMemberId.make("owner-member-a"),
-            emoji: "👎",
-            createdAt,
-            removedAt,
-          },
-          woke: removedAt === null,
-          by: message("a", "m1").author,
-        });
-      yield* reaction(null);
-      yield* settle;
-      assert.deepStrictEqual(lines(), ["seen"]);
-      yield* reaction(createdAt);
-      yield* settle;
-      assert.deepStrictEqual(lines(), []);
-    }).pipe(Effect.provide(services)),
+            reaction: {
+              orgId: KinOrgId.make("a"),
+              chatId: KinChatId.make("chat-a"),
+              messageId: KinMessageId.make("lead-latest"),
+              memberId: KinMemberId.make("owner-member-a"),
+              emoji: "👎",
+              createdAt,
+              removedAt,
+            },
+            woke: removedAt === null,
+            by: message("a", "m1").author,
+          });
+        yield* reaction(null);
+        yield* settle;
+        assert.deepStrictEqual(lines(), [["starting", "Queued"]]);
+        yield* reaction(createdAt);
+        yield* settle;
+        assert.deepStrictEqual(lines(), []);
+      }).pipe(Effect.provide(services)),
   );
 
   it.effect("never wakes a lead for its own posts or after retirement, live or on catch-up", () =>

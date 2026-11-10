@@ -10,6 +10,9 @@ import {
   KinMessageId,
   KinWakeupId,
   MessageId,
+  NodeId,
+  ProviderThreadId,
+  ProviderTurnId,
   RunId,
   ThreadId,
   TurnItemId,
@@ -24,7 +27,6 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
-import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -146,6 +148,24 @@ const itemEvent = (item: OrchestrationV2TurnItem): OrchestrationV2DomainEvent =>
   occurredAt: at,
   type: "turn-item.updated",
   payload: item,
+});
+
+const turnEvent = (id: string): OrchestrationV2DomainEvent => ({
+  id: EventId.make(`event:turn:${id}`),
+  threadId,
+  occurredAt: at,
+  type: "provider-turn.updated",
+  payload: {
+    id: ProviderTurnId.make("turn"),
+    providerThreadId: ProviderThreadId.make("provider-thread"),
+    nodeId: NodeId.make("node"),
+    runAttemptId: null,
+    nativeTurnRef: null,
+    ordinal: 1,
+    status: "running",
+    startedAt: at,
+    completedAt: null,
+  },
 });
 
 /** A lead at `level` with its direct chat; `ask` is an owner message that wakes it. */
@@ -275,36 +295,59 @@ it.effect("posts the lead run's plain text to the chat it answers, as one agent 
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect("shows a short note before a tool call only on the presence line", () =>
+it.effect("labels each phase of a wake-up once per change and clears when the reply settles", () =>
   Effect.gen(function* () {
     const { fake, runId, complete, posted, bridge, owner, wakeupId, services, sql, direct } =
       yield* setup({ ask: "Remind me Friday" });
+    const presence = Context.get(services, KinPresence);
+    const shown = () =>
+      presence
+        .snapshot(owner.orgId, direct.chatId)
+        .presence.map((line) => [line.state, line.label, line.wakeupId]);
+    // Begun, before the model starts: never `seen`.
+    assert.deepStrictEqual(shown(), [["starting", "Reading memory", wakeupId]]);
+    const updates = yield* Queue.unbounded<string | null>();
     const all = yield* Context.get(services, KinChatHub).subscribeAll;
+    yield* all.pipe(
+      Stream.runForEach((event) =>
+        event.type === "presence.updated"
+          ? Queue.offer(updates, event.presence?.label ?? null)
+          : Effect.void,
+      ),
+      Effect.forkScoped,
+    );
     const note = text("a", 1, "Checking your reminders", runId);
     const call = tool("b", 2, "mcp__kin__kin_defer", runId);
+    const calling = { ...call, status: "running" } as OrchestrationV2TurnItem;
     const answer = text("c", 3, "Done: I'll remind you Friday at 9:00.", runId);
-    const labels = yield* all.pipe(
-      Stream.filterMap((event) =>
-        event.type === "presence.updated" && event.presence !== null
-          ? Result.succeed(event.presence.label)
-          : Result.failVoid,
-      ),
-      Stream.takeUntil((label) => label === "Checking your reminders"),
-      Stream.runCollect,
-      Effect.forkScoped,
-    );
-    for (const item of [note, call]) yield* Queue.offer(fake.live, itemEvent(item));
-    assert.include(yield* Fiber.join(labels), "Checking your reminders");
+    const streaming = (body: string) =>
+      ({ ...answer, text: body, streaming: true }) as OrchestrationV2TurnItem;
+    // Repeats of a phase (a second turn update, the tool's progress, each text delta) send nothing.
+    for (const event of [
+      turnEvent("1"),
+      turnEvent("2"),
+      itemEvent(note),
+      itemEvent(calling),
+      itemEvent(calling),
+      itemEvent(call),
+      itemEvent(streaming("Done:")),
+      itemEvent(streaming("Done: I'll remind")),
+    ])
+      yield* Queue.offer(fake.live, event);
+    // The model's own note before the call is never the label: the table's words are.
+    assert.deepStrictEqual(yield* Queue.takeN(updates, 4), [
+      "Thinking",
+      "Setting a reminder",
+      "Thinking",
+      "Writing",
+    ]);
     fake.items = [note, call, answer];
-    const cleared = yield* all.pipe(
-      Stream.filter((event) => event.type === "presence.updated" && event.presence === null),
-      Stream.take(1),
-      Stream.runCollect,
-      Effect.forkScoped,
-    );
     yield* complete;
     // The reply is settled: what the wake-up does next isn't work on the owner's message.
-    assert.lengthOf(yield* Fiber.join(cleared), 1);
+    assert.strictEqual(yield* Queue.take(updates), null);
+    // A late event after settle doesn't bring the line back.
+    yield* Queue.offer(fake.live, itemEvent(calling));
+    yield* Queue.offer(fake.live, turnEvent("3"));
     assert.deepStrictEqual(
       (yield* posted).map((row) => row.body),
       ["Done: I'll remind you Friday at 9:00."],
@@ -315,13 +358,35 @@ it.effect("shows a short note before a tool call only on the presence line", () 
       [{ firstToken: 1, posted: 1 }],
     );
     yield* bridge.end({ orgId: owner.orgId, agentId, wakeupId });
-    const presence = Context.get(services, KinPresence);
-    assert.deepStrictEqual(presence.snapshot(owner.orgId, direct.chatId).presence, []);
-    // A wake-up that ends before it begins drops `seen` where no message waits any more.
-    yield* presence.seen(owner.orgId, direct.chatId, agentId, 0);
-    assert.lengthOf(presence.snapshot(owner.orgId, direct.chatId).presence, 1);
+    assert.deepStrictEqual(shown(), []);
+    // A wake-up's line wins over a queue line, and a queue line's relabel keeps its start.
+    yield* presence.queued(owner.orgId, direct.chatId, agentId, "Reading memory", 0);
+    yield* presence.queued(owner.orgId, direct.chatId, agentId, "Queued", 5_000);
+    assert.deepStrictEqual(
+      presence
+        .snapshot(owner.orgId, direct.chatId)
+        .presence.map((line) => [line.label, line.startedAt]),
+      [["Queued", "1970-01-01T00:00:00.000Z"]],
+    );
+    // A wake-up that ends before it begins drops the queue line where no message waits any more.
     yield* bridge.end({ orgId: owner.orgId, agentId, wakeupId: KinWakeupId.make("never-began") });
-    assert.deepStrictEqual(presence.snapshot(owner.orgId, direct.chatId).presence, []);
+    assert.deepStrictEqual(shown(), []);
+    assert.strictEqual(yield* Queue.size(updates), 3);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("holds a claimed wake-up's line from its claim, and drops it if it never begins", () =>
+  Effect.gen(function* () {
+    const { bridge, owner, services, direct } = yield* setup({ ask: "Hi" });
+    const presence = Context.get(services, KinPresence);
+    const shown = () =>
+      presence.snapshot(owner.orgId, direct.chatId).presence.map((line) => line.wakeupId);
+    const next = KinWakeupId.make("next");
+    const lane = { chatId: direct.chatId, mode: "reply", leadName: "Ada" } as const;
+    yield* bridge.preparing({ orgId: owner.orgId, agentId, wakeupId: next, lane, startedAt: 0 });
+    assert.deepStrictEqual(shown(), [next]);
+    yield* bridge.end({ orgId: owner.orgId, agentId, wakeupId: next });
+    assert.deepStrictEqual(shown(), []);
   }).pipe(Effect.provide(layer)),
 );
 
@@ -347,19 +412,20 @@ it.effect(
       assert.lengthOf(yield* posted, 1);
       const [reply] = yield* sql<{ messageId: KinMessageId }>`SELECT message_id AS "messageId"
         FROM kin_messages WHERE chat_id = ${direct.chatId} AND author_kind = 'agent' ORDER BY seq`;
-      const seen = (state: "seen" | null) =>
+      const seen = (label: "Queued" | null) =>
         all.pipe(
           Stream.filter(
             (event) =>
               event.type === "presence.updated" &&
-              (state === null ? event.presence === null : event.presence?.state === state),
+              (label === null ? event.presence === null : event.presence?.label === label),
           ),
           Stream.take(1),
           Stream.runCollect,
           Effect.forkScoped,
         );
       // While the wake-up still runs (its memory commit), the owner 👎s and withdraws it.
-      const shown = yield* seen("seen");
+      // The wake-up still runs, so the reaction waits behind it.
+      const shown = yield* seen("Queued");
       yield* chats.react(owner, { messageId: reply!.messageId, emoji: "👎", on: true });
       assert.lengthOf(yield* Fiber.join(shown), 1);
       const gone = yield* seen(null);
