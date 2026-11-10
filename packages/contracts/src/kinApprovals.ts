@@ -411,8 +411,12 @@ export const KinApprovalView = Schema.Union([
     /** Display names the server looked up: the lead it concerns, and `afterNonOwnerMessage`'s author. */
     leadName: Schema.optional(KinText),
     afterNonOwnerName: Schema.optional(KinText),
-    /** For `register_approver_key`: the new key's device label, from the host's key record. */
+    /**
+     * For `register_approver_key`, present only while the server vouches for the new key's record
+     * (registration's pending seal verifies): its device label and attested hardware.
+     */
     keyDeviceLabel: Schema.optional(KinText),
+    keyHardware: Schema.optional(Schema.Literals(["secure_enclave", "strongbox", "tee"])),
   }),
   Schema.TaggedStruct("redacted", {
     actionId: KinActionId,

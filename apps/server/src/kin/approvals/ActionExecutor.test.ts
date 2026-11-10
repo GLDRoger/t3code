@@ -44,7 +44,12 @@ import * as Audit from "./Audit.ts";
 import * as CredentialHygiene from "./CredentialHygiene.ts";
 import { KinExecutionNotices } from "./ExecutionNotices.ts";
 import { BOOTSTRAP_OWNER, KinOrgRoles } from "./GrantPorts.ts";
-import { insertActiveKey, makeApprovalKey, signCompact } from "./grant.testkit.ts";
+import {
+  insertActiveKey,
+  insertPendingKey,
+  makeApprovalKey,
+  signCompact,
+} from "./grant.testkit.ts";
 import * as KeySeal from "./KeySeal.ts";
 import * as ApprovalsLayer from "./layer.ts";
 import { makeDeleteBranchHandler } from "./handlers/deleteBranch.ts";
@@ -414,7 +419,7 @@ let jtiCounter = 0;
 
 /** Creates an action and approves it through `PendingActions`, as check 10 does. */
 const approved = (input: {
-  readonly kind: "merge_pull_request" | "delete_branch";
+  readonly kind: "merge_pull_request" | "delete_branch" | "register_approver_key";
   readonly target: KinActionTarget;
   readonly resolved: KinResolvedTarget;
   readonly source: string;
@@ -1488,6 +1493,45 @@ describe("KinActionExecutor", () => {
           yield* TestClock.adjust("16 minutes");
           assert.deepInclude(yield* stateOf(ref), { state: "voided", reason: "grant_expired" });
           assert.deepStrictEqual(lapses, ["not_configured"]);
+        }).pipe(Effect.provide(context));
+      }).pipe(Effect.scoped);
+    },
+  );
+
+  it.effect(
+    "a second phone activates once the first signs, with the credential check failing",
+    () => {
+      const lapses: Array<string> = [];
+      return Effect.gen(function* () {
+        yield* TestClock.setTime(NOW);
+        const context = yield* Layer.build(production(ApprovalsLayer.executorLayer, lapses));
+        yield* Effect.gen(function* () {
+          const { sql } = yield* seed;
+          const enrol = (key: ReturnType<typeof makeApprovalKey>, source: string) =>
+            approved({
+              kind: "register_approver_key",
+              target: { _tag: "device_key", thumbprint: key.kid, hardware: "tee", attested: true },
+              resolved: { _tag: "none" },
+              source,
+            });
+          const stateOfKey = (key: ReturnType<typeof makeApprovalKey>) =>
+            sql<{ state: string; sealed: number }>`SELECT state, seal IS NOT NULL AS sealed
+            FROM kin_approver_keys WHERE thumbprint = ${key.kid}`;
+          const phone = makeApprovalKey();
+          yield* insertPendingKey({ key: phone, orgId, humanId: owner });
+          // A row written into SQLite with no pending seal, and a card for it the owner signs.
+          const forged = makeApprovalKey();
+          yield* insertPendingKey({ key: forged, orgId, humanId: owner, sealed: false });
+          const ref = yield* enrol(phone, "second-phone");
+          const forgedRef = yield* enrol(forged, "forged-phone");
+          yield* TestClock.adjust("1 second");
+          assert.deepInclude(yield* stateOf(ref), { state: "succeeded" });
+          assert.deepStrictEqual(yield* stateOfKey(phone), [{ state: "active", sealed: 1 }]);
+          assert.deepInclude(yield* stateOf(forgedRef), { state: "failed" });
+          assert.deepStrictEqual(yield* stateOfKey(forged), [{ state: "pending", sealed: 0 }]);
+          assert.isEmpty(
+            (yield* auditEntries).filter((entry) => entry.event === "credential_check_failed"),
+          );
         }).pipe(Effect.provide(context));
       }).pipe(Effect.scoped);
     },

@@ -38,6 +38,7 @@ import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import {
   internal,
   makeKeyStore,
+  pendingSealFields,
   sealFields,
   type KeyRef,
   type KeyRow,
@@ -221,7 +222,7 @@ const make = Effect.gen(function* () {
           reason: result.reason,
         });
       }
-      const row: KeyRow = {
+      const unsealed: KeyRow = {
         thumbprint,
         org_id: input.orgId,
         public_jwk_json: stableStringify(input.publicJwk),
@@ -238,7 +239,12 @@ const make = Effect.gen(function* () {
         confirmed_at: null,
         revoked_at: null,
         seal: null,
+        pending_seal: null,
       };
+      // Vouches for this verdict and holder, so a row written into SQLite can't pose as attested.
+      const row: KeyRow = result.attested
+        ? { ...unsealed, pending_seal: seal.pendingSeal(pendingSealFields(unsealed)) }
+        : unsealed;
       const key = yield* toKey(row);
       const code = kinKeyConfirmationCode(thumbprint, challenge);
       const target = result.attested
@@ -358,9 +364,14 @@ const make = Effect.gen(function* () {
     function* (ref: KeyRef) {
       yield* reconcileSessions(ref.orgId);
       const now = yield* Clock.currentTimeMillis;
-      const row = yield* select(ref);
-      if (row === undefined || row.state !== "pending" || row.attested !== 1) return false;
-      return (yield* store.activate(row, now, false)) !== undefined;
+      // `activate` checks the pending seal on the row this transaction read, then pins it.
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const row = yield* select(ref);
+          if (row === undefined) return false;
+          return (yield* store.activate(row, now, false)) !== undefined;
+        }),
+      );
     },
     Effect.catch(internal("ApproverKeys.activateByGrant")),
   );

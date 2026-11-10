@@ -465,6 +465,42 @@ describe("GrantVerifier", () => {
     }).pipe(Effect.provide(h.layer));
   });
 
+  it.effect("a new phone's card claims hardware only while its pending seal verifies", () => {
+    const h = harness();
+    return Effect.gen(function* () {
+      const world = yield* seed;
+      const first = yield* register(world.keys, ownerPhone);
+      yield* world.ceremony.confirm({
+        orgId,
+        thumbprint: first.key.thumbprint,
+        sessionId: ownerPhone.session.sessionId,
+        code: first.code,
+        recover: false,
+      });
+      const second = yield* register(world.keys, ownerLaptop);
+      const [enrolment] = (yield* world.keys.listKeys(ownerPhone, { orgId })).enrolments ?? [];
+      const input = { actionId: enrolment!.actionId };
+      assert.deepInclude(yield* world.grants.view(ownerPhone, input), {
+        _tag: "full",
+        keyDeviceLabel: "Pixel 9",
+        keyHardware: "strongbox",
+      });
+      const challenge = yield* world.grants.challenge(ownerPhone, input);
+      assert.deepInclude(challenge.payload.target, { thumbprint: second.key.thumbprint });
+      // The same row with its pending seal gone, as a SQLite write would leave it.
+      yield* world.sql`UPDATE kin_approver_keys SET pending_seal = NULL
+        WHERE thumbprint = ${second.key.thumbprint}`;
+      const view = yield* world.grants.view(ownerPhone, input);
+      assert.strictEqual(view._tag, "full");
+      assert.notProperty(view, "keyHardware");
+      assert.notProperty(view, "keyDeviceLabel");
+      assert.strictEqual(
+        reasonOf(yield* Effect.exit(world.grants.challenge(ownerPhone, input))),
+        "invalid_state",
+      );
+    }).pipe(Effect.provide(h.layer));
+  });
+
   it.effect("a phone with no active approver key gets no challenge and can't approve", () => {
     const h = harness();
     return Effect.gen(function* () {

@@ -3,6 +3,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 // The phone's 6-digit code, kept where the host's `kin approvals confirm-key` CLI can consume it.
 // `verifier` is an HMAC over the row's tuple and the code, so a row written into SQLite can't pass.
+// `pending_seal` is registration's HMAC over a pending key's holder and attestation verdict.
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`
@@ -19,4 +20,5 @@ export default Effect.gen(function* () {
       FOREIGN KEY (org_id, thumbprint) REFERENCES kin_approver_keys(org_id, thumbprint)
     )
   `;
+  yield* sql`ALTER TABLE kin_approver_keys ADD COLUMN pending_seal TEXT`;
 });

@@ -242,11 +242,11 @@ function fullView(
     if (label) fact("phone", "Phone", label);
     // Whole, as the Face ID prompt shows it: the new phone shows the same key on its screen.
     fact("key", "Key", action.target.thumbprint, true);
-    fact(
-      "hardware",
-      "Hardware",
-      `${KEY_HARDWARE[action.target.hardware]}, ${action.target.attested ? "attested" : "not attested"}`,
-    );
+    // Only what the server vouches for; the target alone is just what the database says.
+    if (view.keyHardware === undefined)
+      approveBlocked =
+        "Kin can't vouch for this phone's key. Decline it and set the phone up again.";
+    else fact("hardware", "Hardware", `${KEY_HARDWARE[view.keyHardware]}, attested`);
   } else {
     title = "Approve this request";
   }

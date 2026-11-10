@@ -83,23 +83,18 @@ const make = Effect.gen(function* () {
     function* () {
       yield* store.reconcileSessions(undefined);
       const now = yield* Clock.currentTimeMillis;
-      const rows = yield* sql<{
-        org_id: KinOrgId;
-        thumbprint: KinKeyThumbprint;
-        human_id: string;
-        device_label: string;
-        platform: string;
-        hardware: string;
-        session_id: string;
-        subject: string | null;
-        client: string | null;
-        created_at: number;
-        expires_at: number;
-        attempts: number;
-        has_active: number;
-      }>`SELECT k.org_id, k.thumbprint, k.human_id, k.device_label, k.platform, k.hardware,
-          c.session_id, s.subject, s.client_label AS client, k.created_at, c.expires_at,
-          c.attempts,
+      const rows = yield* sql<
+        KeyRow & {
+          org_id: KinOrgId;
+          thumbprint: KinKeyThumbprint;
+          session_id: string;
+          subject: string | null;
+          client: string | null;
+          expires_at: number;
+          attempts: number;
+          has_active: number;
+        }
+      >`SELECT k.*, s.subject, s.client_label AS client, c.expires_at, c.attempts,
           EXISTS (SELECT 1 FROM kin_approver_keys a
             WHERE a.org_id = k.org_id AND a.state = 'active') AS has_active
         FROM kin_approver_key_confirmations c
@@ -108,7 +103,8 @@ const make = Effect.gen(function* () {
         WHERE k.state = 'pending' AND k.attested = 1 AND k.session_id = c.session_id
           AND c.expires_at > ${now} AND c.attempts < ${MAX_CODE_ATTEMPTS}
         ORDER BY k.org_id, k.created_at, k.thumbprint`;
-      return rows.map((row): KinPendingEnrolment => ({
+      // A row whose pending seal doesn't verify was never vouched for by registration.
+      return rows.filter(store.pendingVouched).map((row): KinPendingEnrolment => ({
         orgId: row.org_id,
         thumbprint: row.thumbprint,
         humanId: row.human_id,
@@ -181,6 +177,15 @@ const make = Effect.gen(function* () {
         if (!matches) {
           if (counted.attempts >= MAX_CODE_ATTEMPTS) yield* store.deleteConfirmation(ref);
           return refused(refuse("bad_code", "That code doesn't match this phone's key."));
+        }
+        if (!store.pendingVouched(row)) {
+          yield* store.deleteConfirmation(ref);
+          return refused(
+            refuse(
+              "unattested",
+              "Kin can't vouch for this key's record. Make a new key on the phone.",
+            ),
+          );
         }
         const others = yield* othersOf(input);
         if (needsRecover(others, input)) return refused(alreadyActive);

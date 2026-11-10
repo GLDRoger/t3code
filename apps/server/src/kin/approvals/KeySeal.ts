@@ -22,6 +22,18 @@ export type KinSealedKeyFields = {
   readonly hardware: string;
 };
 
+/**
+ * What registration vouches for when the attestation verified: the key, who holds it, and the
+ * attestation's verdict. A pending row that doesn't match its pending seal never activates.
+ */
+export type KinPendingKeyFields = KinSealedKeyFields & {
+  readonly deviceLabel: string;
+  readonly platform: string;
+  readonly attested: number;
+  readonly sessionId: string | null;
+  readonly proofKeyThumbprint: string | null;
+};
+
 /** The exact enrolment a phone's code confirms: one key, from one session, for one challenge. */
 export type KinConfirmationFields = KinSealedKeyFields & {
   readonly sessionId: string;
@@ -38,6 +50,9 @@ export class KinKeySeal extends Context.Service<
   {
     readonly seal: (key: KinSealedKeyFields) => string;
     readonly verify: (key: KinSealedKeyFields, seal: string | null) => boolean;
+    /** What `kin_approver_keys.pending_seal` holds, written when the attestation verified. */
+    readonly pendingSeal: (key: KinPendingKeyFields) => string;
+    readonly verifyPending: (key: KinPendingKeyFields, seal: string | null) => boolean;
     /** What `kin_approver_key_confirmations.verifier` holds; checked with `verify`'s compare. */
     readonly confirmation: (fields: KinConfirmationFields) => string;
     readonly verifyConfirmation: (fields: KinConfirmationFields, verifier: string) => boolean;
@@ -50,7 +65,7 @@ const make = (
   secret: Uint8Array,
   marker: { readonly adopted: Effect.Effect<boolean>; readonly markAdopted: Effect.Effect<void> },
 ) => {
-  const mac = (fields: Record<string, string | number>) =>
+  const mac = (fields: Record<string, string | number | null>) =>
     NodeCrypto.createHmac("sha256", secret).update(stableStringify(fields)).digest("base64url");
   const keyFields = (key: KinSealedKeyFields) => ({
     orgId: key.orgId,
@@ -61,6 +76,17 @@ const make = (
   });
   const seal = (key: KinSealedKeyFields) =>
     mac({ v: 1, use: "kin-approver-key", ...keyFields(key) });
+  const pendingSeal = (key: KinPendingKeyFields) =>
+    mac({
+      v: 1,
+      use: "kin-approver-key-pending",
+      ...keyFields(key),
+      deviceLabel: key.deviceLabel,
+      platform: key.platform,
+      attested: key.attested,
+      sessionId: key.sessionId,
+      proofKeyThumbprint: key.proofKeyThumbprint,
+    });
   const confirmation = (fields: KinConfirmationFields) =>
     mac({
       v: 1,
@@ -78,6 +104,8 @@ const make = (
   return KinKeySeal.of({
     seal,
     verify: (key, stored) => stored !== null && same(seal(key), stored),
+    pendingSeal,
+    verifyPending: (key, stored) => stored !== null && same(pendingSeal(key), stored),
     confirmation,
     verifyConfirmation: (fields, verifier) => same(confirmation(fields), verifier),
     adoptOnce: Effect.fn("KinKeySeal.adoptOnce")(function* <E, R>(

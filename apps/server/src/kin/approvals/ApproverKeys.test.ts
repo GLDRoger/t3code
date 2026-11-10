@@ -32,9 +32,11 @@ import { KinHostKeyCeremony, layer as hostCeremonyLayer } from "./HostKeyCeremon
 import * as KeySeal from "./KeySeal.ts";
 import { KinAttestationTrust } from "./attestation/AttestationTrust.ts";
 import { androidChain, makeTrustFixture } from "./attestation/testFixtures.ts";
+import { makeApprovalKey } from "./grant.testkit.ts";
 import { makeRegisterApproverKeyHandler } from "./handlers/registerApproverKey.ts";
 import {
   KinPendingActions,
+  kinTargetDigest,
   layer as pendingActionsLayer,
   type KinPendingActionCreateInput,
 } from "./PendingActions.ts";
@@ -609,6 +611,68 @@ describe("ApproverKeys", () => {
         reasonOf(yield* Effect.exit(keys.listKeys(phone, { orgId }))),
         "unavailable",
       );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a pending key and enrolment forged in SQLite never activate, even once signed", () =>
+    Effect.gen(function* () {
+      const { keys, actions, ceremony, sql } = yield* seed;
+      const first = yield* confirmFirst(keys);
+      const genuine = yield* registerAndroid(keys, caller("sess-phone-2", "phone"));
+      const [real] = yield* sql<{ action_id: string; pending_seal: string }>`
+        SELECT a.action_id, k.pending_seal FROM kin_pending_actions a
+        JOIN kin_approver_keys k ON k.thumbprint = json_extract(a.target_json, '$.thumbprint')
+        WHERE a.kind = 'register_approver_key'`;
+      // A software key posing as attested, carrying a real pending row's seal, and its own action.
+      const forged = makeApprovalKey();
+      yield* sql`INSERT INTO kin_approver_keys (thumbprint, org_id, public_jwk_json, human_id,
+          device_label, platform, hardware, attested, session_id, state, created_at, pending_seal)
+        VALUES (${forged.kid}, ${orgId}, ${forged.publicJwkJson}, ${owner}, 'iPhone', 'ios',
+          'secure_enclave', 1, 'sess-phone', 'pending', ${NOW}, ${real!.pending_seal})`;
+      const target = {
+        _tag: "device_key",
+        thumbprint: forged.kid,
+        hardware: "secure_enclave",
+        attested: true,
+      } as const;
+      yield* sql`INSERT INTO kin_pending_actions (action_id, org_id, idempotency_key, kind,
+          target_json, resolved_json, target_digest, nonce, revision, reason,
+          requested_by_agent_id, requested_by_thread_id, provenance_json, required_approvers_json,
+          state, created_at, updated_at, expires_at)
+        SELECT 'act_forged', org_id, ${"f".repeat(64)}, kind, ${JSON.stringify(target)}, resolved_json,
+          ${kinTargetDigest("register_approver_key", target, { _tag: "none" })}, nonce, revision,
+          reason, requested_by_agent_id, requested_by_thread_id, provenance_json,
+          required_approvers_json, state, created_at, updated_at, expires_at
+        FROM kin_pending_actions WHERE action_id = ${real!.action_id}`;
+      const forgedRef = { orgId, thumbprint: forged.kid };
+      // It reads as unattested, and the host never lists it.
+      assert.isFalse(Option.getOrThrow(yield* keys.get(forgedRef)).attested);
+      assert.isTrue(Option.getOrThrow(yield* keys.get(genuine.key)).attested);
+      assert.deepStrictEqual(
+        (yield* ceremony.listPending()).map((row) => row.thumbprint),
+        [genuine.key.thumbprint],
+      );
+
+      // The owner signs the forged card; the grant binds its thumbprint, but activation refuses.
+      const action = Option.getOrThrow(
+        yield* actions.get({ orgId, actionId: "act_forged" as KinPendingAction["id"] }),
+      );
+      const approved = yield* approveWith(actions, action, first.key.thumbprint, "jti-forged");
+      assert.strictEqual(approved._tag, "approved");
+      if (approved._tag !== "approved") return;
+      const handler = yield* makeRegisterApproverKeyHandler;
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(handler.run(action, approved.grant))));
+      assert.isFalse(yield* keys.activateByGrant(forgedRef));
+      // A missing pending seal is refused the same way.
+      yield* sql`UPDATE kin_approver_keys SET pending_seal = NULL WHERE thumbprint = ${forged.kid}`;
+      assert.isFalse(yield* keys.activateByGrant(forgedRef));
+      const [row] = yield* sql<{ state: string; seal: string | null }>`
+        SELECT state, seal FROM kin_approver_keys WHERE thumbprint = ${forged.kid}`;
+      assert.deepStrictEqual(row, { state: "pending", seal: null });
+      // A genuine row edited after registration loses its seal's backing too.
+      yield* sql`UPDATE kin_approver_keys SET device_label = 'Owner phone'
+        WHERE thumbprint = ${genuine.key.thumbprint}`;
+      assert.isFalse(yield* keys.activateByGrant(genuine.key));
     }).pipe(Effect.provide(layer)),
   );
 });

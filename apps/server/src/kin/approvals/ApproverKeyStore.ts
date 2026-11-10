@@ -39,6 +39,7 @@ export type KeyRow = {
   readonly confirmed_at: number | null;
   readonly revoked_at: number | null;
   readonly seal: string | null;
+  readonly pending_seal: string | null;
 };
 
 export type ConfirmationRow = {
@@ -67,7 +68,16 @@ export const sealFields = (row: KeyRow) => ({
   hardware: row.hardware,
 });
 
-/** `attested` holds for an active key only while the seal written at activation verifies. */
+export const pendingSealFields = (row: KeyRow) => ({
+  ...sealFields(row),
+  deviceLabel: row.device_label,
+  platform: row.platform,
+  attested: row.attested,
+  sessionId: row.session_id,
+  proofKeyThumbprint: row.proof_key_thumbprint,
+});
+
+/** `attested` holds for a pending or active key only while its pending seal or seal verifies. */
 const toKeyWith = (row: KeyRow, sealed: boolean) =>
   decodeKey({
     orgId: row.org_id,
@@ -77,7 +87,7 @@ const toKeyWith = (row: KeyRow, sealed: boolean) =>
     deviceLabel: row.device_label,
     platform: row.platform,
     hardware: row.hardware,
-    attested: row.attested === 1 && (row.state !== "active" || sealed),
+    attested: row.attested === 1 && (row.state === "revoked" || sealed),
     ...(row.session_id === null ? {} : { sessionId: row.session_id }),
     state: row.state,
     createdAt: iso(row.created_at),
@@ -105,15 +115,26 @@ export const makeKeyStore = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const seal = yield* KinKeySeal;
 
+  /** Registration's verdict, intact: a pending attested row whose pending seal verifies. */
+  const pendingVouched = (row: KeyRow) =>
+    row.state === "pending" &&
+    row.attested === 1 &&
+    seal.verifyPending(pendingSealFields(row), row.pending_seal);
+
   const toKey = Effect.fn("ApproverKeyStore.toKey")(function* (row: KeyRow) {
-    if (row.state !== "active" || row.attested !== 1) return yield* toKeyWith(row, false);
-    const sealed = seal.verify(sealFields(row), row.seal);
+    if (row.state === "revoked" || row.attested !== 1) return yield* toKeyWith(row, false);
+    const sealed =
+      row.state === "active" ? seal.verify(sealFields(row), row.seal) : pendingVouched(row);
     // Only a write that skipped the server, such as one straight into SQLite, leaves this.
     if (!sealed)
-      yield* Effect.logWarning("Kin approver key's seal doesn't verify; it can't sign.", {
-        orgId: row.org_id,
-        thumbprint: row.thumbprint,
-      });
+      yield* Effect.logWarning(
+        "Kin approver key's seal doesn't verify; it can't sign or activate.",
+        {
+          orgId: row.org_id,
+          thumbprint: row.thumbprint,
+          state: row.state,
+        },
+      );
     return yield* toKeyWith(row, sealed);
   });
 
@@ -132,18 +153,24 @@ export const makeKeyStore = Effect.gen(function* () {
     sql`DELETE FROM kin_approver_key_confirmations
       WHERE org_id = ${ref.orgId} AND thumbprint = ${ref.thumbprint}`;
 
-  /** The UPDATE that makes a pending attested key active, sealing exactly the row it read. */
+  /**
+   * The UPDATE that makes a pending attested key active, sealing exactly the row it read. It runs
+   * only when that row's pending seal verifies, and pins every field the pending seal covers.
+   */
   const activate = Effect.fn("ApproverKeyStore.activate")(function* (
     row: KeyRow,
     now: number,
     onlyFirst: boolean,
   ) {
+    if (!pendingVouched(row) || row.pending_seal === null) return undefined;
     const [active] = yield* sql<KeyRow>`UPDATE kin_approver_keys
         SET state = 'active', confirmed_at = ${now}, seal = ${seal.seal(sealFields(row))}
         WHERE org_id = ${row.org_id} AND thumbprint = ${row.thumbprint}
-          AND state = 'pending' AND attested = 1
+          AND state = 'pending' AND attested = 1 AND pending_seal = ${row.pending_seal}
           AND public_jwk_json = ${row.public_jwk_json} AND human_id = ${row.human_id}
-          AND hardware = ${row.hardware}
+          AND hardware = ${row.hardware} AND device_label = ${row.device_label}
+          AND platform = ${row.platform} AND session_id IS ${row.session_id}
+          AND proof_key_thumbprint IS ${row.proof_key_thumbprint}
           AND ${
             onlyFirst
               ? sql`NOT EXISTS (SELECT 1 FROM kin_approver_keys
@@ -239,6 +266,7 @@ export const makeKeyStore = Effect.gen(function* () {
     sql,
     seal,
     toKey,
+    pendingVouched,
     select,
     hasActiveKey,
     activate,

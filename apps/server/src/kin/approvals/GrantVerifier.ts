@@ -380,6 +380,20 @@ const make = Effect.gen(function* () {
     return { actionId: action.id, state: "approved" as const };
   });
 
+  /**
+   * The new key a `device_key` card shows, only while the server vouches for it: registration's
+   * pending seal verifies (or, once active, its seal) and its hardware is what the card names.
+   */
+  const newKey = Effect.fn("GrantVerifier.newKey")(function* (action: KinPendingAction) {
+    if (action.target._tag !== "device_key") return undefined;
+    const target = action.target;
+    const key = yield* keys.get({ orgId: action.orgId, thumbprint: target.thumbprint });
+    if (Option.isNone(key)) return undefined;
+    const { state, attested, hardware, deviceLabel } = key.value;
+    if (state === "revoked" || !attested || hardware !== target.hardware) return undefined;
+    return { hardware: target.hardware, label: deviceLabel.trim() || undefined };
+  });
+
   /** The key this person signs with: this session's, else their most recently confirmed one. */
   const signingKey = Effect.fn("GrantVerifier.signingKey")(function* (
     caller: KinKeyCaller,
@@ -406,6 +420,11 @@ const make = Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
       if (found.state !== "awaiting_approval" || DateTime.toEpochMillis(found.expiresAt) <= now)
         return yield* fail("invalid_state", "This action isn't waiting for approval.");
+      if (found.target._tag === "device_key" && (yield* newKey(found)) === undefined)
+        return yield* fail(
+          "invalid_state",
+          "Kin can't vouch for this phone's key. Decline it, then set up the new phone again.",
+        );
       let action = found;
       let resolved = found.resolved;
       if (pinsHead(found.kind)) {
@@ -448,16 +467,6 @@ const make = Effect.gen(function* () {
     return row?.name.trim() || undefined;
   });
 
-  /** What a new phone calls itself, from the host's key record; shown beside its fingerprint. */
-  const newKeyLabel = Effect.fn("GrantVerifier.newKeyLabel")(function* (
-    orgId: KinOrgId,
-    thumbprint: string,
-  ) {
-    const [row] = yield* sql<{ label: string }>`SELECT device_label AS label FROM kin_approver_keys
-      WHERE org_id = ${orgId} AND thumbprint = ${thumbprint} ORDER BY thumbprint LIMIT 1`;
-    return row?.label.trim() || undefined;
-  });
-
   /** The person the card waits on: the owner of the lead it concerns (phase 1's only approver). */
   const ownerName = Effect.fn("GrantVerifier.ownerName")(function* (action: KinPendingAction) {
     const lead = leadOf(action);
@@ -481,17 +490,15 @@ const make = Effect.gen(function* () {
             after === undefined
               ? undefined
               : yield* displayName("kin_people", action.orgId, after.humanId);
-          const keyDeviceLabel =
-            action.target._tag === "device_key"
-              ? yield* newKeyLabel(action.orgId, action.target.thumbprint)
-              : undefined;
+          const vouched = yield* newKey(action);
           return {
             _tag: "full" as const,
             action,
             canApprove: true as const,
             ...(leadName === undefined ? {} : { leadName }),
             ...(afterNonOwnerName === undefined ? {} : { afterNonOwnerName }),
-            ...(keyDeviceLabel === undefined ? {} : { keyDeviceLabel }),
+            ...(vouched === undefined ? {} : { keyHardware: vouched.hardware }),
+            ...(vouched?.label === undefined ? {} : { keyDeviceLabel: vouched.label }),
           };
         }
         // Anyone else sees what waits and on whom, never the facts a challenge would sign.

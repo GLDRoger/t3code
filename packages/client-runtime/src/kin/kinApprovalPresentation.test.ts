@@ -62,7 +62,12 @@ const merge = (overrides: Partial<KinPendingAction> = {}) =>
 
 const full = (
   action: KinPendingAction,
-  names: { leadName?: string; afterNonOwnerName?: string; keyDeviceLabel?: string } = {
+  names: {
+    leadName?: string;
+    afterNonOwnerName?: string;
+    keyDeviceLabel?: string;
+    keyHardware?: "secure_enclave";
+  } = {
     leadName: "Tech lead",
     afterNonOwnerName: "Priya",
   },
@@ -99,7 +104,12 @@ describe("kinApprovalCardView", () => {
   it("names who asked from the provenance the host recorded", () => {
     const asked = (
       provenance: Partial<KinPendingAction["provenance"]>,
-      names: { leadName?: string; afterNonOwnerName?: string; keyDeviceLabel?: string } = {
+      names: {
+        leadName?: string;
+        afterNonOwnerName?: string;
+        keyDeviceLabel?: string;
+        keyHardware?: "secure_enclave";
+      } = {
         leadName: "Tech lead",
       },
     ) =>
@@ -210,18 +220,25 @@ describe("kinApprovalCardView", () => {
         ceilingBelowOwner: false,
       },
     } as unknown as Partial<KinPendingAction>);
-    const card = kinApprovalCardView(full(enrol, { keyDeviceLabel: "Nishchay's iPhone" }));
+    const card = kinApprovalCardView(
+      full(enrol, { keyDeviceLabel: "Nishchay's iPhone", keyHardware: "secure_enclave" }),
+    );
     expect(card).toMatchObject({
       title: "Let a new phone approve",
       asked: { text: "You asked for this.", warning: false },
       reason: null,
       decidable: true,
+      approveBlocked: null,
     });
     expect(card.facts.map((fact) => [fact.label, fact.value])).toEqual([
       ["Phone", "Nishchay's iPhone"],
       ["Key", thumbprint],
       ["Hardware", "Secure Enclave, attested"],
     ]);
+    // A key the server can't vouch for: the target's hardware claim is never shown or signed.
+    const unvouched = kinApprovalCardView(full(enrol, {}));
+    expect(unvouched.facts.map((fact) => [fact.label, fact.value])).toEqual([["Key", thumbprint]]);
+    expect(unvouched.approveBlocked).toMatch(/can't vouch/);
   });
 
   it("anyone else sees who it waits on and never a button", () => {
