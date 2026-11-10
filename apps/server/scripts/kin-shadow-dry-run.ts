@@ -682,7 +682,7 @@ export const runDryRun = Effect.fn("KinDryRun.run")(
         let wakeups = 0;
         const drain = Effect.fn("KinDryRun.drain")(function* (limit: number) {
           while (true) {
-            const next = yield* queue.nextReady(orgId);
+            const next = (yield* queue.readyLeads(orgId))[0];
             if (next === undefined || !Number.isFinite(next.readyAt) || next.readyAt > limit)
               return;
             if (++wakeups > 200)
