@@ -2,6 +2,7 @@ import PeopleInvites from "./migrations/K038_PeopleInvites.ts";
 import LeadHandoffs from "./migrations/K039_LeadHandoffs.ts";
 import MessageAttachments from "./migrations/K040_MessageAttachments.ts";
 import GroupLead from "./migrations/K041_GroupLead.ts";
+import ReactionWakes from "./migrations/K042_ReactionWakes.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -84,6 +85,7 @@ const loader = Migrator.fromRecord({
   "39_LeadHandoffs": LeadHandoffs,
   "40_MessageAttachments": MessageAttachments,
   "41_GroupLead": GroupLead,
+  "42_ReactionWakes": ReactionWakes,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

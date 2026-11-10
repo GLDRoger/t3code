@@ -1741,20 +1741,35 @@ const make = Effect.gen(function* () {
       const withSql = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
         effect.pipe(Effect.provideService(SqlClient.SqlClient, sql));
       // In the owner's direct chat, a yes/no on the lead's latest message and a 👎 anywhere wake
-      // the lead, once per message. Every other reaction is feedback it reads on its next wake-up.
-      const woke =
-        request.on &&
+      // the lead once. A changed answer on the message that last woke it (a yes withdrawn, or yes
+      // to no and back) wakes it again, past the cooldown, a few times at most. Every other
+      // reaction is feedback it reads on its next wake-up.
+      const eligible =
         !answered &&
         identity._tag === "person" &&
         member.role === "owner" &&
         chat.kind === "direct" &&
         message.author._tag === "agent" &&
-        nowMs - Date.parse(message.createdAt) < SOFT_REPLY_WINDOW_MS &&
-        (request.emoji === Reactions.KIN_CLARIFY_REACTION ||
-          (Reactions.reactionAnswer(request.emoji) !== null &&
-            (yield* isLatestLeadMessage(message)))) &&
-        !(yield* withSql(Reactions.wokeOnMessage(message))) &&
-        !(yield* withSql(Reactions.recentlyWoke({ ...key, now: nowMs })));
+        nowMs - Date.parse(message.createdAt) < SOFT_REPLY_WINDOW_MS;
+      const answer = Reactions.reactionAnswer(request.emoji);
+      const past = eligible ? yield* withSql(Reactions.reactionWake(message)) : undefined;
+      const woke =
+        eligible &&
+        (past === undefined
+          ? request.on &&
+            (request.emoji === Reactions.KIN_CLARIFY_REACTION ||
+              (answer !== null && (yield* isLatestLeadMessage(message)))) &&
+            !(yield* withSql(Reactions.recentlyWoke({ ...key, now: nowMs })))
+          : past.latest &&
+            past.wakes < Reactions.KIN_REACTION_WAKES_PER_MESSAGE &&
+            (request.on
+              ? answer !== null && answer !== past.answer
+              : answer === "yes" && past.answer === "yes"));
+      if (woke)
+        yield* withSql(
+          Reactions.recordWake({ ...key, answer: request.on ? answer : null, now: nowMs }),
+        );
+      const changedFrom = woke && past !== undefined && request.on ? past.emoji : undefined;
       if (woke && identity._tag === "person")
         // The lead answers this turn under its own floor run, as it would a message.
         yield* floor.open(
@@ -1788,6 +1803,7 @@ const make = Effect.gen(function* () {
           chatId: message.chatId,
           reaction,
           woke,
+          ...(changedFrom === undefined ? {} : { changedFrom }),
           by,
         });
       return reaction;
