@@ -85,11 +85,10 @@ it.effect.each([
         return;
       }
       const config = yield* ServerConfig.ServerConfig;
-      const preset = lead.systemPrompt;
-      assert(typeof preset === "object" && !Array.isArray(preset) && preset.type === "preset");
       assert.deepStrictEqual(leadOpened, {
         ...lead,
-        systemPrompt: { ...preset, append: `${preset.append}\n\n${instructions}`, snapshot: false },
+        // The instructions alone: no coding-agent preset, no T3 thread guidance.
+        systemPrompt: { type: "custom", prompt: instructions, snapshot: false },
         settingSources: ["user"],
         tools: LeadIsolation.leadTools,
         disallowedTools: [
