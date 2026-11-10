@@ -100,7 +100,6 @@ import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
 import { Spinner } from "../components/ui/spinner";
-import { Textarea } from "../components/ui/textarea";
 import { isElectron } from "../env";
 import { cn } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -239,7 +238,6 @@ export function KinChatView(props: {
       <KinChatHeader
         title={title}
         avatar={avatar}
-        presence={presence}
         tasks={tasks}
         muted={muted}
         onOpenProfile={lead === null ? null : () => setProfileOpen(true)}
@@ -294,18 +292,16 @@ export function KinChatView(props: {
   );
 }
 
-/** Who the chat is with, and what they are doing: presence while a lead works, open tasks otherwise. */
+/** Who the chat is with, and their open tasks. What the lead is doing right now reads under the feed. */
 function KinChatHeader(props: {
   readonly title: string;
   readonly avatar: KinAvatarView | null;
-  readonly presence: KinPresence | undefined;
   readonly tasks: string | null;
   readonly muted: boolean;
   /** Opens the lead's profile; null for a chat that has none to show. */
   readonly onOpenProfile: (() => void) | null;
 }) {
-  const now = useKinPresenceNow(kinPresenceNeedsClock(props.presence));
-  const subtitle = kinPresenceLine(props.presence, now)?.subtitle ?? props.tasks;
+  const subtitle = props.tasks;
   const identity = (
     <>
       {props.avatar === null ? null : <KinAvatar avatar={props.avatar} size="sm" />}
@@ -1102,11 +1098,11 @@ function KinComposer(props: {
                 draftKey={draftKey}
                 state={files}
               />
-              <div className="px-1 pt-2.5 sm:pt-3">
-                <Textarea
-                  unstyled
+              {/* The thread composer's editor box, so both composers are one size. */}
+              <div className="px-4 pt-3.5 pb-2 sm:pt-4">
+                <textarea
+                  className="-m-1 block field-sizing-content max-h-52 min-h-[calc(2lh+--spacing(2))] w-[calc(100%+--spacing(2))] resize-none overflow-y-auto bg-transparent p-1 text-sm leading-relaxed wrap-break-word text-foreground outline-none placeholder:text-placeholder"
                   ref={textareaRef}
-                  rows={2}
                   value={text}
                   aria-label={`Message ${recipient}`}
                   placeholder={`Message ${recipient}`}

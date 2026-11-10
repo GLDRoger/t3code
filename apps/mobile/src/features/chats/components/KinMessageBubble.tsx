@@ -162,6 +162,7 @@ export function KinMessageBubble(props: {
           // A long press opens the sheet, whose Select text offers selection instead.
           selectable={onOpenActions === null}
           preserveSoftBreaks
+          inlineWebLinks
           onLinkPress={props.onLinkPress}
           renderImage={renderImageAsText}
           resolveImageSource={kinImageSource}
