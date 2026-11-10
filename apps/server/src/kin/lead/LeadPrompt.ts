@@ -7,6 +7,7 @@ import {
   type KinChatId,
   type KinEvent,
   type KinMessage,
+  KinMessageId,
   type KinWakeupId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -59,7 +60,8 @@ export class KinLeadPrompt extends Context.Service<
     /**
      * The files on the messages these events carry, to hand the turn as its attachments. Only
      * those: a wake-up starts from a fresh context, and an older message's files are named in
-     * its line of recent chat, not sent again.
+     * its line of recent chat, not sent again. A message sent again after a failed turn carries
+     * no files of its own, so it brings the files of the message it repeats.
      */
     readonly attachments: (
       input: Pick<KinLeadPromptInput, "orgId" | "events">,
@@ -259,6 +261,40 @@ export class KinLeadPrompt extends Context.Service<
         }
         return { events, fromOwner: fromOwner && events.length > 0, replyDue };
       });
+      // Retry resends the text only: a file belongs to one message. The message it repeats is the
+      // same person's last one in that chat, word for word, with nothing but Kin's notices between.
+      const retriedFiles = Effect.fn("KinLeadPrompt.retriedFiles")(function* (retry: KinMessage) {
+        if (retry.author._tag !== "human" || retry.kind !== "text" || retry.body.trim() === "")
+          return [];
+        const [before] = yield* sql<{ messageId: string; personId: string | null; body: string }>`
+          SELECT message_id AS "messageId", author_person_id AS "personId", body
+          FROM kin_messages WHERE org_id = ${retry.orgId} AND chat_id = ${retry.chatId}
+            AND seq < ${retry.seq} AND author_kind <> 'system' AND status = 'posted'
+          ORDER BY seq DESC LIMIT 1`.pipe(
+          Effect.mapError(
+            (cause) =>
+              new KinLeadPromptError({
+                orgId: retry.orgId,
+                reason: "Could not read the message a retry repeats",
+                cause,
+              }),
+          ),
+        );
+        if (before?.personId !== retry.author.personId || before.body !== retry.body) return [];
+        const original = yield* chat
+          .getMessage({ orgId: retry.orgId, messageId: KinMessageId.make(before.messageId) })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new KinLeadPromptError({
+                  orgId: retry.orgId,
+                  reason: "Could not read the message a retry repeats",
+                  cause,
+                }),
+            ),
+          );
+        return Option.isSome(original) ? (original.value.attachments ?? []) : [];
+      });
       const attachments = Effect.fn("KinLeadPrompt.attachments")(function* (
         input: Pick<KinLeadPromptInput, "orgId" | "events">,
       ) {
@@ -284,8 +320,10 @@ export class KinLeadPrompt extends Context.Service<
             Option.isSome(stored) &&
             stored.value.chatId === event.chatId &&
             stored.value.status === "posted"
-          )
-            found.push(...(stored.value.attachments ?? []));
+          ) {
+            const own = stored.value.attachments ?? [];
+            found.push(...(own.length > 0 ? own : yield* retriedFiles(stored.value)));
+          }
         }
         return turnAttachments(found);
       });

@@ -365,7 +365,11 @@ describe("KinLeadProvision", () => {
         ]);
 
         // Ada is on a turn, has a worker running, a reminder waiting and a task scheduled. A
-        // reminder already given, a paused task and a finished worker are not in hand.
+        // reminder already given, a paused task and a finished worker are not in hand; nor is
+        // one whose fire already went out, or a task she cancelled, which stops its trigger at once.
+        const trigger = (triggerId: string, nextRunAt: number | null) =>
+          sql`INSERT INTO kin_triggers (trigger_id, org_id, subject_json, schedule_json, time_zone, enabled, next_run_at, created_at, updated_at)
+            VALUES (${triggerId}, ${orgId}, '{}', '{}', 'UTC', ${nextRunAt === null ? 0 : 1}, ${nextRunAt}, 0, 0)`;
         const { orgId } = tech;
         yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids)
           VALUES ('wake', ${orgId}, ${tech.agentId}, 'test', 0, 'running', '[]')`;
@@ -379,22 +383,33 @@ describe("KinLeadProvision", () => {
         const card = (widgetId: string, title: string) =>
           sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class, type, revision, state_json, awaiting_json, updated_at)
             VALUES (${widgetId}, ${orgId}, ${tech.ownerChatId}, 'card', 'native', 'card', 1, ${JSON.stringify({ title })}, '[]', '2026-11-09T00:00:00.000Z')`;
-        const deferral = (itemId: string, state: string, onDue: string, dueAt: number) =>
+        const deferral = (
+          itemId: string,
+          state: string,
+          onDue: string,
+          dueAt: number,
+          nextRunAt: number | null = dueAt,
+        ) =>
           sql`INSERT INTO kin_deferral_runs (org_id, item_id, state, due_at, on_due, snapshot_json, updated_at)
             VALUES (${orgId}, ${itemId}, ${state}, ${dueAt}, ${onDue}, '{}', 0)`.pipe(
             Effect.andThen(card(`deferral:${orgId}:${itemId}`, `Title of ${itemId}`)),
+            Effect.andThen(trigger(`deferral:${itemId}:due`, nextRunAt)),
           );
         const due = Date.parse("2026-11-12T09:00:00.000Z");
         yield* deferral("later", "armed", "start", due + 1000);
-        yield* deferral("soon", "snoozed", "remind", due);
-        yield* deferral("given", "reminded", "remind", due);
-        const scheduled = (itemId: string, paused: number) =>
+        // Snoozed an hour before it was due: it is tracked at the time it will come back.
+        yield* deferral("soon", "snoozed", "remind", due - 3_600_000, due);
+        yield* deferral("given", "reminded", "remind", due, null);
+        yield* deferral("fired", "armed", "remind", due - 1000, null);
+        const scheduled = (itemId: string, paused: number, nextRunAt: number | null = due) =>
           sql`INSERT INTO kin_scheduled_tasks (org_id, item_id, chat_id, state, paused, recorded_at, updated_at)
             VALUES (${orgId}, ${itemId}, ${tech.ownerChatId}, 'active', ${paused}, '2026-11-09T00:00:00.000Z', 0)`.pipe(
             Effect.andThen(card(`scheduled:${orgId}:${itemId}`, `Title of ${itemId}`)),
+            Effect.andThen(trigger(`schedule:${itemId}`, nextRunAt)),
           );
         yield* scheduled("daily", 0);
-        yield* scheduled("resting", 1);
+        yield* scheduled("resting", 1, null);
+        yield* scheduled("dropped", 0, null);
         const chatId = tech.ownerChatId;
         const [ada, other] = yield* Provision.profiles(person);
         assert.deepInclude(ada, {
