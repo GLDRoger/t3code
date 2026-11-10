@@ -155,7 +155,9 @@ const charterFlag = Flag.String("charter").pipe(
 
 const workerProjectsFlag = Flag.String("worker-project").pipe(
   Flag.withSchema(ProjectId),
-  Flag.withDescription("A project the lead's workers may run in. Repeat for more."),
+  Flag.withDescription(
+    "A project the lead is held to in chats its owner didn't put it in. Repeat for more. The owner's own chats with it reach every repository in the worker environment.",
+  ),
   Flag.atLeast(0),
 );
 
@@ -270,7 +272,7 @@ const projectsCommand = Command.make("projects", {
   json: jsonFlag,
 }).pipe(
   Command.withDescription(
-    "Replace a live lead's worker projects. Pass none to clear them. Applies to its next tool call.",
+    "Replace the projects a live lead is held to in chats its owner didn't put it in. Pass none to clear them. Applies to its next tool call.",
   ),
   Command.withHandler((flags) =>
     runOnHost(flags, (provision) =>

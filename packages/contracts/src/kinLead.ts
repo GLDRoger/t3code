@@ -385,7 +385,14 @@ export const KinRoutineCard = Schema.Struct({
 export type KinRoutineCard = typeof KinRoutineCard.Type;
 
 export const KinEvent = Schema.Union([
-  Schema.TaggedStruct("chat.message", { ...EventBase, chatId: KinChatId, messageId: KinMessageId }),
+  Schema.TaggedStruct("chat.message", {
+    ...EventBase,
+    chatId: KinChatId,
+    messageId: KinMessageId,
+    // Set when another lead passed the request on: the chat it was first asked in and the lead
+    // asked there. The server sets it; the wake-up works at no more than that chat's level.
+    origin: Schema.optional(Schema.Struct({ agentId: KinAgentId, chatId: KinChatId })),
+  }),
   Schema.TaggedStruct("widget.action", {
     ...EventBase,
     chatId: KinChatId,

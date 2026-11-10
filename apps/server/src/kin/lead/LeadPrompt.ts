@@ -700,7 +700,8 @@ function boundedRecent(
   }
   return quoteLines("recent chat", lines.toReversed());
 }
-const messageBodyLimit = 8_000;
+/** The most of a message body a lead is shown; past it the prompt cuts the text. */
+export const messageBodyLimit = 8_000;
 const textFieldLimit = 2_000;
 const eventsLimit = 60_000;
 

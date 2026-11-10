@@ -6,6 +6,7 @@ import {
   KinEvent,
   KinMemoryItemId,
   KinOrgId,
+  KinPersonId,
   KinWorkerId,
   ModelSelection,
   type OrchestratorMcpFailure,
@@ -34,10 +35,12 @@ import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
-import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as Memory from "../memory/Memory.ts";
+import { configuredRepositories } from "../memory/MemoryConfig.ts";
+import { sourceControlDefinitions } from "../../sourceControl/sourceControlDefinitions.ts";
+import { KinGithubRepoScope } from "../triggers/githubEvents.ts";
 import { KinBudget } from "./KinBudget.ts";
 import * as KinLevels from "./KinLevels.ts";
 import { isOrgPaused, STOP_REASON } from "./orgState.ts";
@@ -45,6 +48,13 @@ import { resolveLead } from "./LeadMemory.ts";
 import { quote } from "./LeadPrompt.ts";
 import { buildBrief, publishNote, Quoted, reportFormat } from "./workerBrief.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
+import {
+  labelOf,
+  reachableKeys,
+  resolveProject,
+  type Checkout,
+  type HostProject,
+} from "./workerProjects.ts";
 import { publishBranch } from "./workerPublish.ts";
 import { endedStatuses, launchRequestId, unboundThreadId, WorkerTracker } from "./WorkerTracker.ts";
 
@@ -60,7 +70,10 @@ export const DelegateInput = Schema.Struct({
   goal: TrimmedNonEmptyString.check(Schema.isMaxLength(8_000)),
   brief: text(100_000),
   quoted: Schema.optional(Quoted),
-  projectId: ProjectId,
+  project: TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
+    description:
+      "Where the work happens, in plain words: a project or repository name such as t3code, or owner/name. Never an id you were not given.",
+  }),
   baseRef: Schema.optional(TrimmedNonEmptyString),
   model: Schema.optional(WorkerModel),
   memoryItemIds: Schema.optional(Schema.Array(KinMemoryItemId).check(Schema.isMaxLength(20))),
@@ -77,7 +90,12 @@ export const StopInput = Schema.Struct({
   workerId: KinWorkerId,
   reason: Schema.optional(text(2_000)),
 });
-export const DelegateResult = Schema.Struct({ workerId: KinWorkerId, threadLink: Schema.String });
+export const DelegateResult = Schema.Struct({
+  workerId: KinWorkerId,
+  threadLink: Schema.String,
+  /** The repository or project the name resolved to, as the owner would call it. */
+  project: Schema.optional(Schema.String),
+});
 export const StopResult = Schema.Struct({ workerId: KinWorkerId, stopped: Schema.Boolean });
 
 const supportedDrivers = new Set([
@@ -97,7 +115,15 @@ const NO_ENVIRONMENT = `Coding work can't start yet: this host's worker environm
 const PAUSED = `Kin is paused by the owner, so no new work starts until they resume it. ${STILL}`;
 const OVER_BUDGET = `Today's budget for coding work is used up, so this waits for the daily reset or a higher limit. ${STILL}`;
 const NOT_HERE = `Work can't start in that project from this chat. ${STILL}`;
-const NO_CHECKOUT = `That repository has no checkout in the worker environment yet, so work can't start in it. ${STILL}`;
+const NO_MEMORY_CONFIG = `Coding work can't start right now: Kin couldn't read which repository holds its memory on this host, and no worker may ever work in that one. That is a step on the host, not a fault in you or in this request. ${STILL}`;
+const REVIEW_ELSEWHERE =
+  "A review runs in the same repository as the work it reviews. Nothing started. Call again naming that repository as the project.";
+const noCheckout = (label: string) =>
+  new KinChatError({
+    reason: "unavailable",
+    message: `${label} has no checkout in the worker environment yet, so work can't start in it. That is a step on the host, not a fault in you or in this request. ${STILL}`,
+  });
+const RETRY = "Nothing started. Call again with one of those names, or ask which one is meant.";
 const missing = () => new KinChatError({ reason: "not_found", message: "Kin record not found." });
 const unavailable = () =>
   new KinChatError({ reason: "unavailable", message: "Kin workers are unavailable." });
@@ -122,6 +148,8 @@ const LeadRow = Schema.Struct({
   models: Schema.fromJsonString(Schema.Struct({ strong: ModelSelection, cheap: ModelSelection })),
   projects: Schema.fromJsonString(Schema.Array(ProjectId)),
   ownerChatId: KinChatId,
+  ownerPersonId: KinPersonId,
+  createdBy: Schema.NullOr(KinPersonId),
 });
 const WorkerRow = Schema.Struct({
   workerId: KinWorkerId,
@@ -135,9 +163,16 @@ const WorkerRow = Schema.Struct({
   report: Schema.NullOr(Schema.fromJsonString(WorkerReport)),
   environmentId: Schema.NullOr(EnvironmentId),
   projectId: Schema.NullOr(ProjectId),
+  repositoryKey: Schema.NullOr(Schema.String),
   startedAt: Schema.Number,
 });
+const PasserRow = Schema.Struct({
+  projects: Schema.fromJsonString(Schema.Array(ProjectId)),
+  ownerPersonId: KinPersonId,
+  createdBy: Schema.NullOr(KinPersonId),
+});
 const decodeLead = Schema.decodeUnknownEffect(LeadRow);
+const decodePasser = Schema.decodeUnknownEffect(PasserRow);
 const decodeWorker = Schema.decodeUnknownEffect(WorkerRow);
 const decodeEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(KinEvent));
 /** The chat that asked; other events answer in the owner chat, as the reply bridge does. */
@@ -179,7 +214,26 @@ const make = Effect.gen(function* () {
   const budget = yield* KinBudget;
   const memory = yield* Memory.Memory;
   const projects = yield* ProjectService.ProjectService;
-  const repositories = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
+  const connected = yield* KinGithubRepoScope;
+  // Org memory is never a place for a worker, whoever checked it out there, on any host. Read by
+  // the key the worker environment reports; unreadable, no work starts anywhere.
+  const memoryRepos = yield* configuredRepositories.pipe(
+    Effect.map(
+      (repositories) =>
+        new Set(
+          repositories.map(({ repoUrl }) =>
+            sourceControlDefinitions.repositoryKeyFromRemote(repoUrl).toLowerCase(),
+          ),
+        ),
+    ),
+    Effect.tapError(() =>
+      Effect.logWarning("Kin memory repositories are unreadable; no work starts"),
+    ),
+    Effect.option,
+  );
+  const memoryKeys = Effect.fromOption(memoryRepos).pipe(
+    Effect.mapError(() => new KinChatError({ reason: "unavailable", message: NO_MEMORY_CONFIG })),
+  );
   const env = yield* WorkerEnvironment.KinWorkerEnvironment;
   const tracker = yield* WorkerTracker;
   const environment = yield* ServerEnvironment;
@@ -196,9 +250,11 @@ const make = Effect.gen(function* () {
       Effect.provideService(SqlClient.SqlClient, sql),
     );
   const leadConfig = Effect.fn("KinWorkers.leadConfig")(function* (ctx: Lead) {
-    const [row] = yield* sql`SELECT models_json AS models, worker_projects_json AS projects,
-      owner_chat_id AS "ownerChatId" FROM kin_leads
-      WHERE org_id = ${ctx.orgId} AND agent_id = ${ctx.agentId} ORDER BY agent_id`;
+    const [row] = yield* sql`SELECT l.models_json AS models, l.worker_projects_json AS projects,
+      l.owner_chat_id AS "ownerChatId", a.owner_person_id AS "ownerPersonId",
+      l.created_by_person_id AS "createdBy"
+      FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+      WHERE l.org_id = ${ctx.orgId} AND l.agent_id = ${ctx.agentId} ORDER BY l.agent_id`;
     if (row === undefined) return yield* denied();
     return yield* decodeLead(row);
   });
@@ -214,7 +270,7 @@ const make = Effect.gen(function* () {
     const [row] = yield* sql`SELECT worker_id AS "workerId", kind, agent_id AS "agentId",
       wakeup_id AS "wakeupId", thread_id AS "threadId", title, chat_id AS "chatId",
       model_json AS model, report_json AS report, environment_id AS "environmentId",
-      project_id AS "projectId", started_at AS "startedAt"
+      project_id AS "projectId", repository_key AS "repositoryKey", started_at AS "startedAt"
       FROM kin_workers WHERE org_id = ${ctx.orgId} AND agent_id = ${ctx.agentId}
         AND worker_id = ${workerId} ORDER BY worker_id`;
     if (row === undefined) return yield* missing();
@@ -246,6 +302,47 @@ const make = Effect.gen(function* () {
     }
     return true;
   });
+  /** What another lead brings to a request it passed on: its own reach rules, read the same way. */
+  const passer = Effect.fn("KinWorkers.passer")(function* (orgId: KinOrgId, agentId: KinAgentId) {
+    const [row] = yield* sql`SELECT l.worker_projects_json AS projects,
+        a.owner_person_id AS "ownerPersonId", l.created_by_person_id AS "createdBy"
+      FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+      WHERE l.org_id = ${orgId} AND l.agent_id = ${agentId}
+        AND a.role = 'lead' AND a.retired_at IS NULL ORDER BY l.agent_id`;
+    return row === undefined ? undefined : yield* decodePasser(row);
+  });
+  /**
+   * `all`, the owner's reach, needs this lead and any that passed the request on to be the host
+   * owner's own, placed by the owner in every chat the work touches or it was first asked in.
+   * Else `listed`: the projects on every such lead's list, so no chat or hand-off gains reach.
+   */
+  const reach = Effect.fn("KinWorkers.reach")(
+    function* (ctx: Lead, config: typeof LeadRow.Type, chats: ReadonlyArray<KinChatId | null>) {
+      const { owner } = identity;
+      const origins = yield* KinLevels.origins(ctx);
+      const passers = yield* Effect.forEach(
+        [...new Set(origins.map((origin) => origin.agentId))].filter((id) => id !== ctx.agentId),
+        (agentId) => passer(ctx.orgId, agentId),
+      );
+      const projects = passers.reduce<ReadonlyArray<ProjectId>>(
+        (held, other) =>
+          other === undefined ? [] : held.filter((id) => other.projects.includes(id)),
+        config.projects,
+      );
+      const listed = { _tag: "listed" as const, projects };
+      const ownersOwn = (lead: typeof PasserRow.Type | undefined) =>
+        lead !== undefined &&
+        lead.ownerPersonId === owner.personId &&
+        (lead.createdBy === null || lead.createdBy === owner.personId);
+      if (ctx.orgId !== owner.orgId || ![config, ...passers].every(ownersOwn)) return listed;
+      const asked = [...chats.map((chatId) => ({ agentId: ctx.agentId, chatId })), ...origins];
+      for (const { agentId, chatId } of asked)
+        if (chatId === null || !(yield* KinLevels.ownerPlaced(ctx.orgId, { agentId, chatId })))
+          return listed;
+      return { _tag: "all" as const };
+    },
+    Effect.provideService(SqlClient.SqlClient, sql),
+  );
   /** Where new work may start; workers never run on this server. */
   const admit = Effect.fn("KinWorkers.admit")(function* (orgId: KinOrgId) {
     // Not a permission: nothing the lead or the owner's chat settings can change.
@@ -297,38 +394,110 @@ const make = Effect.gen(function* () {
     if (instance === undefined || !supportedDrivers.has(instance.driverKind))
       return yield* denied("Kin workers run on an enabled Claude Code or Codex provider only.");
   });
-  /** The worker environment's project for the same repository as this host's worker project. */
-  const projectThere = Effect.fn("KinWorkers.projectThere")(function* (
-    environmentId: EnvironmentId,
-    projectId: ProjectId,
-  ) {
-    const here = yield* projects.getById(projectId).pipe(
-      Effect.map(Option.getOrUndefined),
-      Effect.orElseSucceed(() => undefined),
-    );
-    const key =
-      here === undefined
-        ? undefined
-        : (yield* repositories.resolve(here.workspaceRoot))?.canonicalKey;
-    if (key === undefined) return yield* denied(NO_CHECKOUT);
-    const matches: Array<ProjectId> = [];
+  /** The worker environment's projects that have a repository, read a bounded number of pages. */
+  const checkouts = Effect.fn("KinWorkers.checkouts")(function* (environmentId: EnvironmentId) {
+    const memory = yield* memoryKeys;
+    const found: Array<Checkout> = [];
     let cursor: number | null = 0;
     for (let page = 0; cursor !== null; page++) {
       if (page === WorkerEnvironment.MAX_PAGES) return yield* unending();
       const listed: Tool.Success<typeof WorkerEnvironment.tools.projects> = yield* env
         .call(environmentId, WorkerEnvironment.tools.projects, { cursor, limit: 100 })
         .pipe(there("The worker could not start."));
-      for (const project of listed.projects)
-        if (project.repositoryIdentity?.canonicalKey === key) matches.push(project.id);
+      for (const project of listed.projects) {
+        const repository = project.repositoryIdentity;
+        if (
+          repository == null ||
+          [repository.canonicalKey, repository.origin?.canonicalKey].some(
+            (key) => key !== undefined && memory.has(key.toLowerCase()),
+          )
+        )
+          continue;
+        found.push({
+          projectId: project.id,
+          title: project.title,
+          repositoryKey: repository.canonicalKey,
+          slug:
+            repository.owner === undefined || repository.name === undefined
+              ? undefined
+              : `${repository.owner}/${repository.name}`,
+        });
+      }
       if (listed.nextCursor !== null && listed.nextCursor <= cursor) return yield* unending();
       cursor = listed.nextCursor;
     }
-    if (matches.length === 0) return yield* denied(NO_CHECKOUT);
-    if (matches.length > 1)
-      return yield* denied(
-        `The worker environment has several checkouts of that repository, so Kin can't tell which to use. ${STILL}`,
-      );
-    return { projectId: matches[0]!, repositoryKey: key };
+    return found;
+  });
+  /** This host's projects, which a lead may name and a list names. Unreadable reads as none. */
+  const hostProjects = Effect.fn("KinWorkers.hostProjects")(
+    function* () {
+      const found: Array<HostProject> = [];
+      let cursor: number | null = 0;
+      for (let page = 0; cursor !== null && page < WorkerEnvironment.MAX_PAGES; page++) {
+        const listed: Effect.Success<ReturnType<typeof projects.listPage>> =
+          yield* projects.listPage({
+            cursor,
+            limit: 100,
+          });
+        for (const project of listed.projects)
+          found.push({
+            projectId: project.id,
+            title: project.title,
+            repositoryKey: project.repositoryIdentity?.canonicalKey,
+          });
+        cursor =
+          listed.nextCursor !== null && listed.nextCursor > cursor ? listed.nextCursor : null;
+      }
+      return found;
+    },
+    Effect.orElseSucceed((): Array<HostProject> => []),
+  );
+  const reachable = Effect.fn("KinWorkers.reachable")(function* (
+    allowed: ReadonlyArray<ProjectId> | undefined,
+  ) {
+    return reachableKeys({
+      hostProjects: yield* hostProjects(),
+      connectedRepos: connected.repos,
+      allowed,
+    });
+  });
+  /**
+   * The checkout a plainly named project or repository means, among those the request reaches:
+   * the owner's for `allowed` undefined, else the repositories of those host projects.
+   */
+  const locate = Effect.fn("KinWorkers.locate")(function* (
+    environmentId: EnvironmentId,
+    named: string,
+    allowed: ReadonlyArray<ProjectId> | undefined,
+  ) {
+    const found = resolveProject({
+      named,
+      checkouts: yield* checkouts(environmentId),
+      hostProjects: yield* hostProjects(),
+      connectedRepos: connected.repos,
+      allowed,
+    });
+    const said = `"${named.slice(0, 80).replaceAll('"', "'")}"`;
+    switch (found._tag) {
+      case "resolved":
+        return found;
+      case "outside":
+        return yield* denied(NOT_HERE);
+      case "no_checkout":
+        return yield* noCheckout(found.label);
+      case "ambiguous":
+        return yield* new KinChatError({
+          reason: "invalid_state",
+          message: `${said} fits several here: ${found.labels.join(", ")}. ${RETRY}`,
+        });
+      case "unknown":
+        return yield* found.labels.length === 0
+          ? noCheckout("No repository")
+          : new KinChatError({
+              reason: "not_found",
+              message: `No project or repository here is called ${said}. Work can start in: ${found.labels.join(", ")}. ${RETRY}`,
+            });
+    }
   });
   /**
    * The stop fan-out misses a run that starts during its pass; a pause seen after the launch or
@@ -409,7 +578,15 @@ const make = Effect.gen(function* () {
           input.reviewOf === undefined ? undefined : yield* worker(ctx, input.reviewOf);
         const chatId = askingChat(event, config.ownerChatId);
         const chats = author === undefined ? [chatId] : [chatId, author.chatId];
-        return { config, event, author, chatId, open: yield* open(ctx, chats) };
+        return {
+          config,
+          event,
+          author,
+          chatId,
+          chats,
+          open: yield* open(ctx, chats),
+          reach: yield* reach(ctx, config, chats),
+        };
       }),
     );
     const modelSelection = yield* pick(input.model, plan.config.models);
@@ -430,11 +607,20 @@ const make = Effect.gen(function* () {
     }
     if (!plan.open) return yield* denied(NOT_OPEN);
     // The host's state comes first: a lead told "not that project" on a host where nothing can
-    // start asks the owner to fix a list that was never the cause.
+    // start asks the owner to fix something that was never the cause.
     const environmentId = yield* admit(ctx.orgId);
-    if (!plan.config.projects.includes(input.projectId)) return yield* denied(NOT_HERE);
     yield* supported(environmentId, modelSelection);
-    const { projectId, repositoryKey } = yield* projectThere(environmentId, input.projectId);
+    const target = yield* locate(
+      environmentId,
+      input.project,
+      plan.reach._tag === "all" ? undefined : plan.reach.projects,
+    );
+    const { projectId, repositoryKey } = target.checkout;
+    // The author's repository passes the same reach as the request by being the same repository.
+    const sameRepository = (author: typeof WorkerRow.Type) =>
+      author.repositoryKey?.toLowerCase() === repositoryKey.toLowerCase();
+    if (plan.author !== undefined && !sameRepository(plan.author))
+      return yield* denied(REVIEW_ELSEWHERE);
     const items =
       reviewRefs !== undefined
         ? []
@@ -463,7 +649,18 @@ const make = Effect.gen(function* () {
     yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* lead(scope);
-        if (input.reviewOf !== undefined) yield* worker(ctx, input.reviewOf);
+        if (input.reviewOf !== undefined && !sameRepository(yield* worker(ctx, input.reviewOf)))
+          return yield* denied(REVIEW_ELSEWHERE);
+        // What was checked before the calls there still holds as the row is written.
+        const config = yield* leadConfig(ctx);
+        if (!(yield* open(ctx, plan.chats))) return yield* denied(NOT_OPEN);
+        const still = yield* reach(ctx, config, plan.chats);
+        if (
+          still._tag !== plan.reach._tag ||
+          (still._tag === "listed" &&
+            (target.hostProjectId === null || !still.projects.includes(target.hostProjectId)))
+        )
+          return yield* denied(NOT_HERE);
         const startedAt = yield* Clock.currentTimeMillis;
         // The environment is written now, so a launch whose reply is lost can be found there.
         const inserted = yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id,
@@ -472,7 +669,7 @@ const make = Effect.gen(function* () {
           VALUES (${workerId}, ${ctx.orgId}, ${ctx.agentId}, ${ctx.wakeupId}, ${input.kind},
           ${unboundThreadId(workerId)}, ${input.reviewOf ?? null},
           ${yield* encodeJson(modelSelection)}, ${yield* encodeJson(plan.event.provenance)}, 'queued',
-          NULL, ${startedAt}, NULL, ${input.title}, ${chatId}, ${input.projectId}, ${environmentId},
+          NULL, ${startedAt}, NULL, ${input.title}, ${chatId}, ${target.hostProjectId}, ${environmentId},
           ${projectId}, ${repositoryKey})
           ON CONFLICT (worker_id) DO NOTHING RETURNING worker_id`;
         if (inserted.length === 0) {
@@ -557,7 +754,11 @@ const make = Effect.gen(function* () {
       reopen: live,
     });
     yield* tracker.track(ctx.orgId, workerId);
-    return { workerId, threadLink: threadLink(environmentId, threadId) };
+    return {
+      workerId,
+      threadLink: threadLink(environmentId, threadId),
+      project: labelOf(target.checkout),
+    };
   }, guarded("KinWorkers.delegate"));
 
   const followUp = Effect.fn("KinWorkers.followUp")(function* (
@@ -576,18 +777,29 @@ const make = Effect.gen(function* () {
             "Review workers take no follow-ups. Start a new review with kin_delegate.",
           );
         const chats = [askingChat(event, config.ownerChatId), stored.chatId];
-        return { config, worker: stored, open: yield* open(ctx, chats) };
+        return {
+          config,
+          worker: stored,
+          open: yield* open(ctx, chats),
+          reach: yield* reach(ctx, config, chats),
+        };
       }),
     );
     if (!plan.open) return yield* denied(NOT_OPEN);
     yield* admit(ctx.orgId);
-    if (plan.worker.projectId === null || !plan.config.projects.includes(plan.worker.projectId))
+    // The rule a new worker there would pass, applied to the repository it was started in.
+    const key = plan.worker.repositoryKey?.toLowerCase();
+    if (
+      key === undefined ||
+      (yield* memoryKeys).has(key) ||
+      !(yield* reachable(plan.reach._tag === "all" ? undefined : plan.reach.projects)).has(key)
+    )
       return yield* denied(NOT_HERE);
     // A worker runs where it was launched, even after the host names another environment.
     if (plan.worker.environmentId === null || !bound(plan.worker))
       return yield* denied("That worker never started. Start a new one with kin_delegate.");
     const environmentId = plan.worker.environmentId;
-    const key = (yield* hash({ wakeupId: ctx.wakeupId, input })).slice(0, 32);
+    const requestKey = (yield* hash({ wakeupId: ctx.wakeupId, input })).slice(0, 32);
     const sent = yield* env
       .call(environmentId, WorkerEnvironment.tools.send, {
         threadId: plan.worker.threadId,
@@ -599,7 +811,7 @@ const make = Effect.gen(function* () {
           reportFormat,
         ].join("\n\n"),
         mode: "queue",
-        clientRequestId: `kin-follow-up:${key}`,
+        clientRequestId: `kin-follow-up:${requestKey}`,
       })
       .pipe(there("The follow-up could not be sent. Retry the same call or tell the owner."));
     // A new started_at marks newer work, so a follower still reporting the last run can't close it.
