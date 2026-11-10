@@ -130,11 +130,8 @@ describe("command permissions", () => {
   );
   it.effect.each([
     [KIN_LEVEL_WS_METHODS.get, AuthOrchestrationReadScope],
-    [KIN_LEVEL_WS_METHODS.review, AuthOrchestrationOperateScope],
-    [KIN_LEVEL_WS_METHODS.deferPromotion, AuthOrchestrationOperateScope],
     [KIN_LEVEL_WS_METHODS.lower, AuthSettingsWriteScope],
     [KIN_LEVEL_WS_METHODS.raise, AuthSettingsWriteScope],
-    [KIN_LEVEL_WS_METHODS.shadowMemory, AuthSettingsWriteScope],
     // Approving needs operate on the host that holds the action; key setup needs access:write.
     [KIN_APPROVAL_WS_METHODS.get, AuthOrchestrationReadScope],
     [KIN_APPROVAL_WS_METHODS.challenge, AuthOrchestrationOperateScope],

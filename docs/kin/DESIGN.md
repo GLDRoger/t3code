@@ -176,12 +176,12 @@ A click posts a structured message, which the lead acts on under its permissions
 
 ### 9.1 Action classes
 
-| Class      | Examples                                                                                             | Who can trigger it                                  |
-| ---------- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
-| Read       | Answer a question, summarise a PR                                                                    | Any member                                          |
-| Talk       | Comment, ping, post a widget                                                                         | Any member, through the lead                        |
-| Work       | Start a worker, push a branch, open a draft PR                                                       | Members within their chat's level; the owner always |
-| Privileged | Merge, deploy, release, delete a branch, change permissions or `rules.md`, spend money, use a secret | **Owner only, with a signed approval**              |
+| Class      | Examples                                                                                             | Who can trigger it                                    |
+| ---------- | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| Read       | Answer a question, summarise a PR                                                                    | Any member                                            |
+| Talk       | Comment, ping, post a widget                                                                         | Any member, through the lead                          |
+| Work       | Start a worker, push a branch, open a draft PR                                                       | Members within what the chat allows; the owner always |
+| Privileged | Merge, deploy, release, delete a branch, change permissions or `rules.md`, spend money, use a secret | **Owner only, with a signed approval**                |
 
 Privileged actions are **not tools any agent has**. The agent's only tool is `request_action({kind, target})`. It creates a pending action that the **action executor**, a server service, carries out after a valid approval.
 
@@ -265,9 +265,13 @@ Owner-only approval has a gap: when the owner is on a flight and production is d
 - **The owner sees everything** when they're back: one summary in their direct chat listing each action, who approved it, and an undo button where undo is possible.
 - **Kin never acts alone.** If nobody answers, the request waits. A next of kin is a person, never an agent.
 
-## 10. Permission levels
+## 10. Permissions
 
-L0 shadow (talks only in the owner's direct chat; everything else goes to the owner's summary) → L1 comment and ping → L2 start workers and open draft PRs → L3 merge low-risk changes after an owner grant or delegation (docs, dependency bumps; never auth, security or migrations). Set per lead and per chat. Section 9 applies at every level.
+A lead just does its job in the chats its owner puts it in: its DM with the owner, and any group the owner owns. There it posts, pings, starts workers and opens draft PRs. The owner never sees a level, a trial or a promotion (owner decision, 10 Nov 2026; it replaces the earlier "shadow week in groups only").
+
+Privileged actions, such as a merge, deleting a branch or changing what a lead may do, always need the owner's signature on their phone (section 9). Signing replaces any ladder of autonomy.
+
+The server keeps an internal permission gate (`KinLevels`, `LevelGate`) for chats the owner didn't place the lead in. Those are the groups members will create, and there the lead gets nothing by default: it can't post, start work or ask for a merge. It caps what a member can trigger, and the authority of a lead that a member brings (wave 5). Nothing a lead writes changes its own permissions. Only an owner-signed `set_level` approval changes them, and lowering takes effect at once.
 
 ## 10a. Organizations
 
@@ -303,8 +307,8 @@ A partner, such as a consultant, sets up and runs Kin for a client that can't do
 
 ## 11. Phases (each one works on its own)
 
-1. **Direct chat:** chat contracts and service; mobile chat list and direct chat; task, approval and deferral cards; the lead and its memory; morning and evening routines; GitHub webhooks; deferrals on `once`; the action executor, signed grants, the GitHub App, and branch rulesets. The lead starts at L0 on `GLDRoger/t3code`, with memory in `GLDRoger/kin-memory`.
-2. **First group:** lead + QA; roles and provenance ceilings; floor manager; decision cards and polls; generated widgets; notification actions beyond deferrals (phase 1 already has deferral and Review actions). Raise the lead to L1, then L2.
+1. **Direct chat:** chat contracts and service; mobile chat list and direct chat; task, approval and deferral cards; the lead and its memory; morning and evening routines; GitHub webhooks; deferrals on `once`; the action executor, signed grants, the GitHub App, and branch rulesets. The lead works on `GLDRoger/t3code`, with memory in `GLDRoger/kin-memory`.
+2. **First group:** lead + QA; roles and provenance ceilings; floor manager; decision cards and polls; generated widgets; notification actions beyond deferrals (phase 1 already has deferral and Review actions).
 3. **Teams and router:** more teams; the router and its agenda; cross-team requests; live widgets, Live Activities, pinned dashboards; delegations and next of kin (section 9.9).
 4. **Front doors:** an MCP hub so ChatGPT, Grok and Claude.ai reach the same leads and widgets, with the same section 9 rules.
 5. **Organizations:** organization policy, roles and approvers, external members, agents from other owners (section 9.8), partners managing clients (section 10b), the space switcher, and the walls between organizations (`orgId` is already in place from phase 1).
@@ -324,7 +328,7 @@ Fix in code:
 3. **A stop button** (phase 1). One switch, in settings and on the lock screen, that pauses every lead, routine and worker in an organization at once.
 4. **Actions that run twice** (phase 1). Each pending action has an id and the executor refuses to run it twice: a restart in the middle of a merge, a replayed webhook, a deferral that fires twice.
 5. **"Nothing is deleted" vs. secrets and erasure** (phase 1). Scan for secrets before each memory commit, and keep an owner-signed purge that rewrites history for one item and is recorded in the audit log.
-6. **When a lead moves up a level** (phase 1). After the shadow week, the owner reviews what the lead would have said. It moves up when most of it would have gone out unchanged and none of it was harmful.
+6. **What a lead may do on its own** (phase 1). Settled on 10 Nov 2026: no ladder. A lead works fully in chats its owner placed it in, and every privileged action is signed (section 10).
 7. **Upstream API drift** (phase 1). A small contract test for each T3 piece Kin depends on (`delegate_task`, triggers, `McpAppWebView`, managed policy), run after every upstream sync next to the branding drift check.
 8. **How members sign in** (phase 2). Invites, an account per person, their devices, and a link from each person to their GitHub handle, so commitments, provenance and chasing point at the right person.
 9. **What people can see about themselves** (phase 2). Members can read what Kin remembers about them, dispute it ("I never promised that"), and switch off being chased. A disputed item becomes a claim until the owner settles it.

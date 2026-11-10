@@ -35,6 +35,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Result from "effect/Result";
 import * as Schedule from "effect/Schedule";
 import * as TestClock from "effect/testing/TestClock";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
@@ -780,18 +781,19 @@ it.effect(
     ),
 );
 
-it.effect("kin_delegate below L2 records a shadow entry and starts nothing", () =>
+it.effect("kin_delegate below L2 is refused in plain words and starts nothing", () =>
   run(
     ({ ctx, remote, workers }) =>
       Effect.gen(function* () {
         // The owner's DM works at L2 from creation; the owner lowered it to the lead's L1.
         yield* ctx.sql`INSERT INTO kin_chat_levels (org_id, agent_id, chat_id, level, level_since) SELECT org_id, ${leadId}, chat_id, 'L1', 0 FROM kin_chats WHERE org_id = ${ctx.orgId} ORDER BY chat_id`;
-        const result = yield* workers.delegate(scope, delegateInput);
-        assert.ok("shadowed" in result);
-        assert.deepStrictEqual(yield* workers.delegate(scope, delegateInput), result);
-        const rows =
-          yield* ctx.sql`SELECT tool, unlocks_level FROM kin_shadow_entries WHERE org_id = ${ctx.orgId} ORDER BY entry_id`;
-        assert.deepStrictEqual(rows, [{ tool: "kin_delegate", unlocks_level: "L2" }]);
+        const refused = yield* workers.delegate(scope, delegateInput).pipe(Effect.flip);
+        assert.include(refused, { reason: "not_allowed" });
+        assert.notMatch(refused.message, /\bL[0-3]\b|level|shadow|promot/i);
+        assert.deepStrictEqual(
+          yield* ctx.sql`SELECT COUNT(*) AS n FROM kin_shadow_entries ORDER BY n`,
+          [{ n: 0 }],
+        );
         assert.lengthOf(remote.calls, 0);
       }),
     "L1",
@@ -803,10 +805,48 @@ it.effect("a chat's own level caps kin_delegate where its card would go", () =>
     ({ ctx, remote, workers }) =>
       Effect.gen(function* () {
         yield* ctx.sql`INSERT INTO kin_chat_levels (org_id, agent_id, chat_id, level, level_since) SELECT org_id, ${leadId}, chat_id, 'L1', 0 FROM kin_chats WHERE org_id = ${ctx.orgId} ORDER BY chat_id`;
-        assert.ok("shadowed" in (yield* workers.delegate(scope, delegateInput)));
+        assert.include(yield* workers.delegate(scope, delegateInput).pipe(Effect.flip), {
+          reason: "not_allowed",
+        });
         assert.lengthOf(remote.calls, 0);
       }),
     "L2",
+  ),
+);
+
+// The owner's verdict, 10 Nov 2026: a lead just works where the owner put it, from creation.
+it.effect.each([
+  ["a group its owner owns starts the worker", "owner", true],
+  ["a group someone else owns refuses, starting nothing", "teammate", false],
+] as const)("for a new lead, %s", ([, groupOwner, starts]) =>
+  run(
+    ({ ctx, remote, workers }) =>
+      Effect.gen(function* () {
+        const at = "1970-01-01T00:00:00.000Z";
+        const [owner] = yield* ctx.sql<{ personId: string }>`SELECT owner_person_id AS "personId"
+          FROM kin_agents WHERE agent_id = ${leadId}`;
+        yield* ctx.sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('teammate', ${ctx.orgId}, 'teammate', 'Teammate', ${at})`;
+        yield* ctx.sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at)
+          VALUES ('team', ${ctx.orgId}, 'team_group', 'Team', 0, ${at})`;
+        yield* ctx.sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+          VALUES ('team-owner', ${ctx.orgId}, 'team', 'person',
+            ${groupOwner === "owner" ? owner!.personId : "teammate"}, 'owner', ${at})`;
+        yield* ctx.sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+          VALUES ('team-lead', ${ctx.orgId}, 'team', 'agent', ${leadId}, 'member', ${at})`;
+        // The asking message came from the group.
+        yield* ctx.sql`UPDATE kin_events SET json = json_set(json, '$.chatId', 'team')
+          WHERE event_id = 'lead-event'`;
+        const result = yield* workers.delegate(scope, delegateInput).pipe(Effect.result);
+        if (starts) {
+          assert.strictEqual(result._tag, "Success");
+          assert.lengthOf(remote.tools("t3_thread_launch"), 1);
+        } else {
+          assert.include(Result.getOrThrow(Result.flip(result)), { reason: "not_allowed" });
+          assert.lengthOf(remote.calls, 0);
+        }
+      }),
+    "L0",
   ),
 );
 

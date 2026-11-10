@@ -251,7 +251,7 @@ const checkpointEvery = 100;
 export const KIN_WAKEUP_MESSAGE_LIMIT = 8;
 export const KIN_WAKEUP_CHAR_LIMIT = 32_000;
 /** Guests never write; a muted agent stays silent until its mute ends. */
-export const mayWrite = (member: KinChatMember, agent: boolean, now: number) =>
+const mayWrite = (member: KinChatMember, agent: boolean, now: number) =>
   member.role !== "guest" &&
   !(agent && member.mutedUntil !== null && Date.parse(member.mutedUntil) > now);
 const notAllowed = new KinChatError({
@@ -1467,8 +1467,6 @@ const make = Effect.gen(function* () {
           reason: "use_approvals",
           message: "Use the signed approvals service.",
         });
-      // Verdicts and raises go to the owner-only kin.levels methods, never the lead's queue.
-      if (widget.type === "shadow_review" || widget.type === "promotion") return yield* notAllowed;
       if (widget.type === "owner_check") {
         if (member.role !== "owner") return yield* notAllowed;
         const card = yield* decodeOwnerCheckCard(widget.state).pipe(

@@ -10,7 +10,6 @@ import { watchKinChatForPush } from "@t3tools/client-runtime/kin-push";
 import {
   KIN_APPROVAL_WS_METHODS,
   KIN_CHAT_WS_METHODS,
-  KIN_LEVEL_WS_METHODS,
   KIN_PUSH_WS_METHODS,
   KinOrgsListResult,
   type EnvironmentId,
@@ -19,7 +18,6 @@ import {
   type KinChatHistoryInput,
   type KinChatId,
   type KinChatsSubscribeInput,
-  type KinLevelsGetInput,
   type KinOrgsListInput,
   type KinPushWatchInput,
 } from "@t3tools/contracts";
@@ -87,11 +85,6 @@ export const markKinHostKnown = (environmentId: EnvironmentId) => {
   knownKinHosts.add(environmentId);
 };
 const readHistory = guardedRead(historyRead);
-const levelsRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
-  label: "kin:levels:read",
-  tag: KIN_LEVEL_WS_METHODS.get,
-});
-const readLevels = guardedRead(levelsRead);
 const approvalRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "kin:approval:read",
   tag: KIN_APPROVAL_WS_METHODS.get,
@@ -200,16 +193,6 @@ export const kinClient = {
       key: ({ input }) => `${input.messageId}|${input.emoji}`,
     },
   }),
-  /** A lead's levels, trial counts and open raises. Owner only; the host refuses anyone else. */
-  levels: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
-    label: "kin:levels",
-    execute: Effect.fn("KinClient.levels")(function* (input: KinLevelsGetInput) {
-      return yield* readLevels(input);
-    }),
-    staleTimeMs: 30_000,
-  }),
-  /** Gates the Levels entry point the same way the read itself is gated. */
-  levelsRead,
   /** Owner-only Undo of one line on a memory change card. */
   memoryUndo: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:memory:undo",
@@ -218,26 +201,6 @@ export const kinClient = {
       mode: "singleFlight",
       key: ({ input }) => `${input.widgetId}:${input.itemId}`,
     },
-  }),
-  review: createEnvironmentRpcCommand(connectionAtomRuntime, {
-    label: "kin:levels:review",
-    tag: KIN_LEVEL_WS_METHODS.review,
-  }),
-  lower: createEnvironmentRpcCommand(connectionAtomRuntime, {
-    label: "kin:levels:lower",
-    tag: KIN_LEVEL_WS_METHODS.lower,
-  }),
-  raise: createEnvironmentRpcCommand(connectionAtomRuntime, {
-    label: "kin:levels:raise",
-    tag: KIN_LEVEL_WS_METHODS.raise,
-  }),
-  deferPromotion: createEnvironmentRpcCommand(connectionAtomRuntime, {
-    label: "kin:levels:defer",
-    tag: KIN_LEVEL_WS_METHODS.deferPromotion,
-  }),
-  shadowMemory: createEnvironmentRpcCommand(connectionAtomRuntime, {
-    label: "kin:levels:shadow-memory",
-    tag: KIN_LEVEL_WS_METHODS.shadowMemory,
   }),
   /**
    * One pending action as this viewer may see it. `revision` is the card's own, only a cache key:

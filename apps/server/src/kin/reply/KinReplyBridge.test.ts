@@ -321,7 +321,7 @@ it.effect("shows a short note before a tool call only on the presence line", () 
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect("shadows an L0 lead's reply outside its owner's chat", () =>
+it.effect("posts nothing for an L0 lead's reply in a chat its owner didn't place it in", () =>
   Effect.gen(function* () {
     const { fake, runId, complete, posted, sql, owner } = yield* setup({
       level: "L0",
@@ -332,8 +332,8 @@ it.effect("shadows an L0 lead's reply outside its owner's chat", () =>
     yield* complete;
     assert.deepStrictEqual(yield* posted, []);
     assert.deepStrictEqual(
-      yield* sql`SELECT tool, would_target AS target FROM kin_shadow_entries WHERE org_id = ${owner.orgId} ORDER BY created_at`,
-      [{ tool: "reply", target: "group" }],
+      yield* sql`SELECT entry_id FROM kin_shadow_entries WHERE org_id = ${owner.orgId}`,
+      [],
     );
     assert.strictEqual(fake.rescues, 0);
   }).pipe(Effect.provide(layer)),

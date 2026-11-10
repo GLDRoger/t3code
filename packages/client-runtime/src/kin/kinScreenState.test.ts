@@ -20,7 +20,7 @@ import {
   kinInboxNotice,
   kinInboxScreenState,
   kinLeadChatId,
-  kinLevelsAgentId,
+  kinOwnedLeadAgentId,
   kinPreviewText,
   kinReconnectStep,
   kinSnippet,
@@ -509,7 +509,7 @@ const member = (principal: object, leftAt: string | null = null) => ({ principal
 const owner = member({ _tag: "person", personId: "owner" });
 const atlas = member({ _tag: "agent", agentId: "agent-atlas" });
 
-describe("kinLevelsAgentId", () => {
+describe("kinOwnedLeadAgentId", () => {
   const person = (personId: string, role: string, leftAt: string | null = null) => ({
     principal: { _tag: "person", personId },
     role,
@@ -522,17 +522,17 @@ describe("kinLevelsAgentId", () => {
   };
   const chat = (kind: string, members: ReadonlyArray<object>) => ({ kind, members }) as never;
 
-  it("opens Levels only for the owner of a direct chat with an agent", () => {
-    expect(kinLevelsAgentId(chat("direct", [person("me", "owner"), lead]), "me")).toBe(
+  it("names the lead only for the owner of a direct chat with an agent", () => {
+    expect(kinOwnedLeadAgentId(chat("direct", [person("me", "owner"), lead]), "me")).toBe(
       "agent-atlas",
     );
-    expect(kinLevelsAgentId(chat("direct", [person("me", "member"), lead]), "me")).toBeNull();
+    expect(kinOwnedLeadAgentId(chat("direct", [person("me", "member"), lead]), "me")).toBeNull();
     expect(
-      kinLevelsAgentId(chat("direct", [person("me", "owner", "2026-11-01"), lead]), "me"),
+      kinOwnedLeadAgentId(chat("direct", [person("me", "owner", "2026-11-01"), lead]), "me"),
     ).toBeNull();
-    expect(kinLevelsAgentId(chat("team_group", [person("me", "owner"), lead]), "me")).toBeNull();
-    expect(kinLevelsAgentId(chat("direct", [person("me", "owner")]), "me")).toBeNull();
-    expect(kinLevelsAgentId(chat("direct", [person("me", "owner"), lead]), null)).toBeNull();
+    expect(kinOwnedLeadAgentId(chat("team_group", [person("me", "owner"), lead]), "me")).toBeNull();
+    expect(kinOwnedLeadAgentId(chat("direct", [person("me", "owner")]), "me")).toBeNull();
+    expect(kinOwnedLeadAgentId(chat("direct", [person("me", "owner"), lead]), null)).toBeNull();
   });
 });
 

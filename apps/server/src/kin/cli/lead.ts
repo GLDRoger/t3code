@@ -183,7 +183,7 @@ const createCommand = Command.make("create", {
   json: jsonFlag,
 }).pipe(
   Command.withDescription(
-    "Create a lead at L0 with a direct chat to its owner, where it works at L2. An org can have many; a re-run with the same name and domain reports the existing lead.",
+    "Create a lead with a direct chat to its owner, where it posts, starts workers and opens draft PRs; merges still need the owner's signed approval. An org can have many; a re-run with the same name and domain reports the existing lead.",
   ),
   Command.withHandler((flags) =>
     runOnHost(flags, (provision) =>
@@ -211,7 +211,7 @@ const createCommand = Command.make("create", {
         if (flags.json) return yield* Console.log(encodeJson(result));
         yield* Console.log(
           result._tag === "created"
-            ? `Created lead at L0:\n${describe(result.lead)}\nPhones that are already open show its chat after they reconnect.`
+            ? `Created lead:\n${describe(result.lead)}\nPhones that are already open show its chat after they reconnect.`
             : `This lead already exists; nothing changed:\n${describe(result.lead)}`,
         );
       }),

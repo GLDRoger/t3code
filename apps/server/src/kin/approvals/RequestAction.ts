@@ -10,10 +10,8 @@ import {
   KinEventId,
   KinPendingActionState,
   KinResolvedTarget,
-  KinShadowResult,
   ProjectId,
   type Hex64,
-  type KinLevel,
   type KinProvenance,
   type KinProvenanceRole,
 } from "@t3tools/contracts";
@@ -47,7 +45,6 @@ export const RequestActionResult = Schema.Union([
     state: KinPendingActionState,
     waitingOn: Schema.Literal("owner"),
   }),
-  KinShadowResult,
 ]);
 export type RequestActionResult = typeof RequestActionResult.Type;
 
@@ -68,11 +65,6 @@ export class KinPullRequestFacts extends Context.Service<
       { readonly target: PullRequestTarget; readonly resolved: PullRequestFacts },
       KinApprovalError
     >;
-    /** The worker-project mapping alone, with no GitHub read: the target in the project's spelling. */
-    readonly canonical: (input: {
-      readonly target: PullRequestTarget;
-      readonly projectIds: ReadonlyArray<ProjectId>;
-    }) => Effect.Effect<PullRequestTarget, KinApprovalError>;
   }
 >()("t3/kin/approvals/RequestAction/KinPullRequestFacts") {}
 
@@ -117,9 +109,6 @@ export const layerPullRequestFacts = Layer.effect(
       return { projectId: match.projectId, canonical: { ...target, repo: match.repo } };
     });
     return KinPullRequestFacts.of({
-      canonical: Effect.fn("KinPullRequestFacts.canonical")(function* ({ target, projectIds }) {
-        return (yield* project(target, projectIds)).canonical;
-      }),
       read: Effect.fn("KinPullRequestFacts.read")(function* ({ target, projectIds }) {
         const { projectId, canonical } = yield* project(target, projectIds);
         // No host: the read stays on the project's own repository instead of routing elsewhere.
@@ -188,9 +177,11 @@ const OWNER_ONLY_KINDS: ReadonlySet<KinActionKind> = new Set([
 // Kinds whose target the server can resolve and whose handler is specified for phase 1.
 // The executor's handler registry (APPR-9) replaces this list.
 const REQUESTABLE_KINDS: ReadonlySet<KinActionKind> = new Set(["merge_pull_request"]);
-// The lead spec's level table: a privileged request reaches the owner only from L3 (APPR-13 will
-// narrow merges at L3 to low-risk targets). Below it the request becomes a shadow entry.
+// A privileged request reaches the owner only from L3, which no lead holds by default (APPR-13
+// will narrow merges at L3 to low-risk targets). Below it the request is refused.
 const PRIVILEGED_LEVEL = "L3";
+const NOT_OPEN =
+  "Asking for this approval isn't open to you. Tell the owner the pull request is ready and let them merge it.";
 // Bounds how many cards one lead can put in front of the owner at once.
 export const MAX_OPEN_ACTIONS_PER_LEAD = 10;
 
@@ -353,60 +344,15 @@ const make = Effect.gen(function* () {
     return { lead, origin, level };
   });
 
-  /**
-   * Below the kind's level nothing reaches the owner; the would-be request is recorded instead.
-   * A new entry first passes the open-card cap the real request would meet.
-   */
-  const shadow = Effect.fn("KinRequestAction.shadow")(function* (
-    agent: AgentIdentity,
-    input: RequestActionInput,
-    level: KinLevel,
-    provenance: KinProvenance,
-  ) {
-    const target = input.target;
-    const entry = yield* KinLevels.recordShadow(
-      {
-        orgId: agent.orgId,
-        agentId: agent.agentId,
-        threadId: agent.threadId,
-        level,
-        unlocksLevel: PRIVILEGED_LEVEL,
-        tool: "request_action",
-        key: input,
-        // Provenance is the server's, kept so the owner's review shows who drove the request.
-        input: { ...input, provenance },
-        wouldTarget:
-          target._tag === "pull_request"
-            ? `${target.repo}#${target.number}`
-            : target._tag === "branch"
-              ? `${target.repo}:${target.ref}`
-              : input.kind,
-      },
-      admitOpen(agent),
-    ).pipe(
-      Effect.provideService(SqlClient.SqlClient, sql),
-      Effect.catchTags({
-        KinLevelRefused: (error) =>
-          error.reason === "conflict"
-            ? refuse("invalid_state", "This request was already recorded differently.")
-            : error.reason === "limit"
-              ? refuse("invalid_state", KinLevels.SHADOW_LIMIT_MESSAGE)
-              : refuse("not_a_lead", "Only a Kin lead in a running wake-up can request actions."),
-      }),
-    );
-    if (entry.created) yield* KinLevels.refreshSummary(agent);
-    return { shadowed: true as const, entryId: entry.entryId };
-  });
-
   const request = Effect.fn("KinRequestAction.request")(
     function* (agent: AgentIdentity, input: RequestActionInput) {
-      // Levels are raised only from the owner's promotion card (LEAD-12), never by a lead's request.
+      // Only the owner changes what a lead may do, never a lead's own request.
       if (input.kind === "set_level")
         return yield* refuse(
           "unsupported_kind",
-          "Leads can never request a level change; the owner raises a level from the promotion card.",
+          "Leads can never ask to change their own permissions; only the owner changes them.",
         );
-      const { lead, origin, level } = yield* authorize(agent, input);
+      const { lead, level } = yield* authorize(agent, input);
       if (!REQUESTABLE_KINDS.has(input.kind))
         return yield* refuse("unsupported_kind", `${input.kind} can't be requested yet.`);
       // Defensive: decoding here too keeps only declared fields, whoever calls the service.
@@ -414,11 +360,9 @@ const make = Effect.gen(function* () {
       if (named._tag !== "pull_request")
         return yield* refuse("invalid_state", `${input.kind} needs a pull_request target.`);
       const projectIds = yield* decodeProjects(lead.worker_projects_json);
-      // Shadowed before GitHub is read: below the level the request has no side effect at all.
-      if (!KinLevels.atLeast(level, PRIVILEGED_LEVEL)) {
-        const target = yield* facts.canonical({ target: named, projectIds });
-        return yield* shadow(agent, { ...input, target }, level, origin.provenance);
-      }
+      // Refused before GitHub is read: below the level the request has no side effect at all.
+      if (!KinLevels.atLeast(level, PRIVILEGED_LEVEL))
+        return yield* refuse("invalid_state", NOT_OPEN);
       const { target, resolved } = yield* facts.read({ target: named, projectIds });
       const source = input.sourceEventId;
       const idempotencyKey = PendingActions.kinIdempotencyKey({
@@ -438,7 +382,7 @@ const make = Effect.gen(function* () {
               "This lead's worker projects changed while GitHub answered. Try again.",
             );
           if (!KinLevels.atLeast(level, PRIVILEGED_LEVEL))
-            return yield* shadow(agent, { ...input, target }, level, origin.provenance);
+            return yield* refuse("invalid_state", NOT_OPEN);
           const now = yield* Clock.currentTimeMillis;
           const open = yield* sql<{ action_id: KinActionId; idempotency_key: string }>`
             SELECT action_id, idempotency_key FROM kin_pending_actions

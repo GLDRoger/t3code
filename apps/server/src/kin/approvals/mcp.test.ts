@@ -47,7 +47,6 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
-import { KinShadowSummary } from "../lead/KinLevels.ts";
 import { KinChatToolkit, handlers as chatHandlers } from "../mcp/KinChatToolkit.ts";
 import { KinApprovalsToolkit, registrationWith } from "./mcp.ts";
 import {
@@ -185,7 +184,6 @@ const factsDuring = (
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       return KinPullRequestFacts.of({
-        canonical: ({ target }) => Effect.succeed({ ...target, repo: "acme/app" }),
         read: ({ target }) =>
           during(sql).pipe(
             Effect.orDie,
@@ -215,10 +213,7 @@ const asKinCall = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     return yield* Option.match(kin.services, {
       onNone: () => effect,
       onSome: (services) =>
-        effect.pipe(
-          Effect.provideService(KinIdentity, Context.get(services, KinIdentity)),
-          Effect.provideService(KinShadowSummary, Context.get(services, KinShadowSummary)),
-        ),
+        effect.pipe(Effect.provideService(KinIdentity, Context.get(services, KinIdentity))),
     });
   });
 const visible = (caller: McpInvocationScope) =>
@@ -260,7 +255,7 @@ const success = (result: McpSchema.CallToolResult) => {
 type Source = "owner" | "member" | "routine" | "github";
 /**
  * A lead in a real running wake-up whose claimed batch holds one event per source. L3 by default,
- * the level at which a merge request reaches the owner; below it the request is a shadow entry.
+ * the level at which a merge request reaches the owner; below it the request is refused.
  */
 const seed = (sources: ReadonlyArray<Source>, level = "L3") =>
   Effect.gen(function* () {
@@ -407,18 +402,7 @@ const seed = (sources: ReadonlyArray<Source>, level = "L3") =>
       resolved_json: string;
       provenance_json: string;
     }>`SELECT action_id, target_json, resolved_json, provenance_json FROM kin_pending_actions`;
-    const shadows = sql<{
-      tool: string;
-      level: string;
-      unlocks_level: string;
-      would_target: string;
-      input_json: string;
-    }>`SELECT tool, level, unlocks_level, would_target, input_json FROM kin_shadow_entries
-      WHERE org_id = ${orgId} ORDER BY created_at, entry_id`;
-    const summary = sql<{ state_json: string; revision: number }>`SELECT state_json, revision
-      FROM kin_widgets WHERE org_id = ${orgId} AND chat_id = ${chat.chatId} AND type = 'shadow_summary'
-      ORDER BY widget_id`;
-    return { eventIds, sql, rows, shadows, summary, identity, orgId };
+    return { eventIds, sql, rows, identity, orgId };
   });
 
 const merge = (sourceEventId: string, extra: Record<string, unknown> = {}) => ({
@@ -588,7 +572,7 @@ it.effect("a merge the lead pins on the owner is flagged when a webhook shared t
 
 it.effect("a repo outside the lead's worker projects is refused like a missing PR", () =>
   Effect.gen(function* () {
-    const { eventIds, rows, shadows, sql } = yield* seed(["owner"]);
+    const { eventIds, rows } = yield* seed(["owner"]);
     const named = (repo: string, number: number) => {
       const input = merge(eventIds.owner);
       input.target = { ...input.target, repo, number };
@@ -598,15 +582,6 @@ it.effect("a repo outside the lead's worker projects is refused like a missing P
     assert.include(outside, { reason: "not_found" });
     assert.deepStrictEqual(refusal(yield* call(named("acme/app", 404))), outside);
     assert.lengthOf(yield* rows, 0);
-    // Below L3 the same mapping runs locally: no entry for a repo L3 would refuse, and the
-    // project's spelling of the repo, so one PR keys one entry.
-    yield* sql`UPDATE kin_leads SET level = 'L0' WHERE agent_id = ${agentId}`;
-    assert.deepStrictEqual(refusal(yield* call(named("other/secret", 7))), outside);
-    assert.include(success(yield* call(named("ACME/App", 7))), { shadowed: true });
-    assert.deepStrictEqual(
-      (yield* shadows).map((entry) => entry.would_target),
-      ["acme/app#7"],
-    );
   }).pipe(Effect.provide(layer)),
 );
 
@@ -633,7 +608,7 @@ it.effect(
 
 it.effect("one PR gets one waiting card, and one lead a bounded number", () =>
   Effect.gen(function* () {
-    const { eventIds, rows, shadows, sql } = yield* seed(["owner", "github"]);
+    const { eventIds, rows, sql } = yield* seed(["owner", "github"]);
     const first = success(yield* call(merge(eventIds.owner))) as { actionId: string };
     assert.deepStrictEqual(success(yield* call(merge(eventIds.owner))), first);
     // Another method, delete flag or cited event for the same PR is not a second card.
@@ -661,65 +636,47 @@ it.effect("one PR gets one waiting card, and one lead a bounded number", () =>
     const capped = refusal(yield* call(numbered(999))) as { reason: string };
     assert.strictEqual(capped.reason, "invalid_state");
     assert.lengthOf(yield* rows, MAX_OPEN_ACTIONS_PER_LEAD + 1);
-    // A lowered lead meets the same cap: no entry for a request L3 would refuse.
-    yield* sql`UPDATE kin_leads SET level = 'L0' WHERE agent_id = ${agentId}`;
-    assert.deepStrictEqual(refusal(yield* call(numbered(999))), capped);
-    assert.lengthOf(yield* shadows, 0);
     yield* sql`UPDATE kin_pending_actions SET state = 'rejected' WHERE action_id = ${second.actionId}`;
-    assert.include(success(yield* call(numbered(999))), { shadowed: true });
+    assert.include(success(yield* call(numbered(999))), { state: "awaiting_approval" });
   }).pipe(Effect.provide(layerWith(factsDuring(() => Effect.void)))),
 );
 
-// Below L3 GitHub is never read: the request is recorded before anything leaves the server.
-const githubUnread = factsDuring(() => Effect.die("GitHub was read for a shadowed request"));
+// Below L3 GitHub is never read: the request is refused before anything leaves the server.
+const githubUnread = factsDuring(() => Effect.die("GitHub was read for a refused request"));
+const NOT_OPEN = {
+  _tag: "KinApprovalError",
+  reason: "invalid_state",
+  message:
+    "Asking for this approval isn't open to you. Tell the owner the pull request is ready and let them merge it.",
+};
 
-it.effect("at L0 a merge request is a shadow entry: no card, no GitHub read, owner summary", () =>
-  Effect.gen(function* () {
-    const { eventIds, rows, shadows, summary } = yield* seed(["owner", "member"], "L0");
-    const first = success(yield* call(merge(eventIds.owner)));
-    assert.deepStrictEqual(Object.keys(first as object).toSorted(), ["entryId", "shadowed"]);
-    assert.include(first, { shadowed: true });
-    assert.deepStrictEqual(success(yield* call(merge(eventIds.owner))), first);
-    assert.lengthOf(yield* rows, 0);
-    const [entry, ...others] = yield* shadows;
-    assert.lengthOf(others, 0);
-    assert.include(entry, {
-      tool: "request_action",
-      level: "L0",
-      unlocks_level: "L3",
-      would_target: "acme/app#7",
-    });
-    // The server's provenance rides along: a member shared the batch the owner's event sits in.
-    assert.include(JSON.parse(entry!.input_json).provenance, {
-      startedByRole: "owner",
-      ceilingBelowOwner: true,
-    });
-    const [card] = yield* summary;
-    assert.isDefined(card);
-    const state = JSON.parse(card.state_json);
-    assert.strictEqual(state.total, 1);
-    assert.include(state.entries[0], {
-      tool: "request_action",
-      unlocksLevel: "L3",
-      ceilingBelowOwner: true,
-    });
-  }).pipe(Effect.provide(layerWith(githubUnread))),
-);
-
-it.effect("below L3 the owner-only ceiling and the set_level ban still refuse, unrecorded", () =>
+it.effect("below L3 a merge request is refused in plain words: no card, no GitHub read", () =>
   Effect.gen(function* () {
     for (const level of ["L0", "L2"])
       yield* Effect.gen(function* () {
-        const { eventIds, shadows, rows } = yield* seed(["owner", "member"], level);
+        const { eventIds, rows, sql } = yield* seed(["owner", "member"], level);
+        assert.deepStrictEqual(refusal(yield* call(merge(eventIds.owner))), NOT_OPEN);
+        assert.deepStrictEqual(refusal(yield* call(merge(eventIds.owner))), NOT_OPEN);
+        assert.lengthOf(yield* rows, 0);
+        const [shadows] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_shadow_entries`;
+        assert.strictEqual(shadows?.n, 0);
+      }).pipe(Effect.provide(layerWith(githubUnread)));
+  }),
+);
+
+it.effect("below L3 the owner-only ceiling and the set_level ban still refuse", () =>
+  Effect.gen(function* () {
+    for (const level of ["L0", "L2"])
+      yield* Effect.gen(function* () {
+        const { eventIds, rows } = yield* seed(["owner", "member"], level);
         assert.include(refusal(yield* call(changeRules(eventIds.owner))), {
           reason: "not_owner",
         });
-        assert.lengthOf(yield* shadows, 0);
         assert.lengthOf(yield* rows, 0);
       }).pipe(Effect.provide(layerWith(githubUnread)));
     // The ban comes before provenance and kind checks, so it is the answer whoever asked.
     yield* Effect.gen(function* () {
-      const { eventIds, shadows } = yield* seed(["owner", "member"], "L0");
+      const { eventIds, rows } = yield* seed(["owner", "member"], "L0");
       const raise = {
         kind: "set_level",
         target: { _tag: "level", agentId, level: "L3" },
@@ -729,22 +686,18 @@ it.effect("below L3 the owner-only ceiling and the set_level ban still refuse, u
       assert.include(refusal(yield* call(raise)), {
         reason: "unsupported_kind",
         message:
-          "Leads can never request a level change; the owner raises a level from the promotion card.",
+          "Leads can never ask to change their own permissions; only the owner changes them.",
       });
-      assert.lengthOf(yield* shadows, 0);
+      assert.lengthOf(yield* rows, 0);
     }).pipe(Effect.provide(layerWith(githubUnread)));
   }),
 );
 
-it.effect("a level lowered while GitHub answers records the request instead of a card", () =>
+it.effect("a permission lowered while GitHub answers refuses the request instead of a card", () =>
   Effect.gen(function* () {
-    const { eventIds, rows, shadows } = yield* seed(["owner"]);
-    assert.include(success(yield* call(merge(eventIds.owner))), { shadowed: true });
+    const { eventIds, rows } = yield* seed(["owner"]);
+    assert.deepStrictEqual(refusal(yield* call(merge(eventIds.owner))), NOT_OPEN);
     assert.lengthOf(yield* rows, 0);
-    assert.deepStrictEqual(
-      (yield* shadows).map((entry) => [entry.level, entry.unlocks_level]),
-      [["L2", "L3"]],
-    );
   }).pipe(
     Effect.provide(
       layerWith(

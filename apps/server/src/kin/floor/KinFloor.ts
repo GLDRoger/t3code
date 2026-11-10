@@ -56,7 +56,7 @@ const invalidIntent = new KinChatError({
 });
 const isKinChatError = Schema.is(KinChatError);
 const NOTICE_LIMIT = 10;
-export const NOTICE_WINDOW_MS = 3_600_000;
+const NOTICE_WINDOW_MS = 3_600_000;
 const notGranted = new KinChatError({
   reason: "floor_not_granted",
   message: "The floor is not granted.",

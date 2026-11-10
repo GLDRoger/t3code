@@ -6,12 +6,12 @@ The road from today's Kin to [VISION.md](VISION.md), in waves. The task ids (CHA
 
 - At most three workers run at once.
 - Tasks in a wave touch different files unless a note says which one merges first.
-- ★ marks a task that touches authority: approvals, identity, levels or who may speak.
+- ★ marks a task that touches authority: approvals, identity, permissions or who may speak.
 - **Reviews:** W1-1, W1-2 and W5-1 each get one independent high-effort review. UI tasks need captures from a real client. On every other ★ task, the orchestrator reads the authority diff itself.
 
 ## Owner decisions behind this plan (10 Nov 2026)
 
-- The shadow week applies to groups only. In a lead's DM with its owner the lead works at L2 from day one; merges and every other privileged action still need a signed grant.
+- No level ladder, no shadow week and no promotions (this supersedes the earlier "shadow week in groups only"). A lead works at L2 from day one in its DM with its owner and in groups the owner owns; merges and every other privileged action still need a signed grant. The server's permission gate stays internal, for chats members create later.
 - Group floor: the mentioned agent speaks, else the group's lead. No bids and no judge model; the judge code is deleted.
 - The chief of staff is also the router.
 - The first non-engineering leads are growth and marketing, finance and billing, and social media.
@@ -55,7 +55,7 @@ Start W1-2 after W0-3, since both edit `apps/mobile/src/features/chats/**`. W1-1
 | Task                              | Goal                                         | Acceptance                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | --------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | W3-1 ★ Groups of owner and agents | A group exists and its agents answer in turn | Only the owner creates groups and adds or removes agents (test). A group message wakes the mentioned agent, else the group's lead. The server binds the grant to the wake-up and the reply bridge posts under it; no token is ever in a prompt or tool argument. An agent's @mention queues the next agent; six agent turns close the run. The floor's leftover bid parameters are removed. A lead new to a group is at L0 there. Group Undo reaches the lead |
-| W3-2 Kin settings                 | One place to control Kin                     | Pause and resume, budget, time zone, routine times, quiet hours, approval devices, and per lead: name, charter, projects, level, retire. Pause is two taps from any chat                                                                                                                                                                                                                                                                                      |
+| W3-2 Kin settings                 | One place to control Kin                     | Pause and resume, budget, time zone, routine times, quiet hours, approval devices, and per lead: name, charter, projects, retire. Pause is two taps from any chat                                                                                                                                                                                                                                                                                             |
 | W3-3 Push for many chats          | The right person gets the right ping         | Titles name the lead or group. In groups a person is pushed for mentions, cards waiting on them and replies to them. Per-chat mute; badge equals unread plus waiting; quiet hours hold; tapping opens the right chat from a cold start                                                                                                                                                                                                                        |
 
 ## Wave 4: rooms of agents (clients), and the first lead that doesn't code
@@ -100,14 +100,14 @@ Server work in separate folders, so any task can move into an idle server slot f
 
 Run three at a time, in this order.
 
-| Task                                    | Goal                                                        | Acceptance                                                                                                             |
-| --------------------------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| W7-1 ★ Delegations and the L3 risk gate | The owner hands a narrow approval to a person, by signature | A delegated docs merge by a member succeeds with their own signed grant; out of scope fails; revoking stops it at once |
-| W7-2 Guests and group cards             | Suggest-only guests; polls and decisions                    | The chat spec's CHAT-12 and CHAT-13 done-when lines                                                                    |
-| W7-3 What Kin knows about me            | Members can read, dispute and opt out                       | A member sees what Kin remembers about them, disputes an item, and turns off being chased                              |
-| W7-4 ★ First outside action             | One domain's lead can act in the world, by signature        | The chosen action runs only on a signed grant showing the exact content; a changed draft voids it                      |
-| W7-5 ★ Next of kin                      | Someone can undo when the owner can't be reached            | The approvals spec's APPR-14 done-when line                                                                            |
-| W7-6 Cleanup                            | Less to carry                                               | Kin tests green; the docs describe the product that exists                                                             |
+| Task                                           | Goal                                                        | Acceptance                                                                                                             |
+| ---------------------------------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| W7-1 ★ Delegations and the low-risk merge gate | The owner hands a narrow approval to a person, by signature | A delegated docs merge by a member succeeds with their own signed grant; out of scope fails; revoking stops it at once |
+| W7-2 Guests and group cards                    | Suggest-only guests; polls and decisions                    | The chat spec's CHAT-12 and CHAT-13 done-when lines                                                                    |
+| W7-3 What Kin knows about me                   | Members can read, dispute and opt out                       | A member sees what Kin remembers about them, disputes an item, and turns off being chased                              |
+| W7-4 ★ First outside action                    | One domain's lead can act in the world, by signature        | The chosen action runs only on a signed grant showing the exact content; a changed draft voids it                      |
+| W7-5 ★ Next of kin                             | Someone can undo when the owner can't be reached            | The approvals spec's APPR-14 done-when line                                                                            |
+| W7-6 Cleanup                                   | Less to carry                                               | Kin tests green; the docs describe the product that exists                                                             |
 
 ## Wave 8: organizations (last)
 

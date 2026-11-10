@@ -368,7 +368,7 @@ const make = Effect.gen(function* () {
         if (onDue === "start") {
           const lead = yield* deferralLead(sql, orgId, item?.chat);
           if (lead === undefined) reasons.push("there is no active lead");
-          else if (!startsAtLevel(lead.level)) reasons.push(`Kin is at ${lead.level}, below L2`);
+          else if (!startsAtLevel(lead.level)) reasons.push("starting work isn't open to me here");
         }
 
         if (step.kind === "heads_up") {

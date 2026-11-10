@@ -401,7 +401,7 @@ it.effect("asks when the stop switch is on, and production defaults never start"
       "couldn't verify GitHub",
       "the stop switch is on",
       "workers can't launch yet",
-      "Kin is at L0, below L2",
+      "starting work isn't open to me here",
     ])
       assert.include(text, reason);
     assert.lengthOf(yield* starts(), 0);

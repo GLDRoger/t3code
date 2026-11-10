@@ -345,7 +345,7 @@ export function buildKinFeedRows(
 
   const pushMessage = (message: KinMessage) => {
     startDay(message);
-    // Host cards (memory changes, levels, routines) arrive as system messages carrying a widget.
+    // Host cards (memory changes, routines) arrive as system messages carrying a widget.
     if (isSystem(message) && message.widgetId === null) {
       const notice = retryNotice(message);
       const retry = notice ? lastOwnText : null;

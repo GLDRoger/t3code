@@ -15,7 +15,6 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
   WorkerReport,
-  type KinLevel,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
@@ -78,10 +77,7 @@ export const StopInput = Schema.Struct({
   workerId: KinWorkerId,
   reason: Schema.optional(text(2_000)),
 });
-export const DelegateResult = Schema.Union([
-  Schema.Struct({ workerId: KinWorkerId, threadLink: Schema.String }),
-  Schema.Struct({ shadowed: Schema.Literal(true), entryId: TrimmedNonEmptyString }),
-]);
+export const DelegateResult = Schema.Struct({ workerId: KinWorkerId, threadLink: Schema.String });
 export const StopResult = Schema.Struct({ workerId: KinWorkerId, stopped: Schema.Boolean });
 
 const supportedDrivers = new Set([
@@ -90,6 +86,9 @@ const supportedDrivers = new Set([
 ]);
 const denied = (message = "Worker operation is not allowed.") =>
   new KinChatError({ reason: "not_allowed", message });
+// Below L2 in the worker's chat: nothing starts, and the lead hears it in plain words.
+const NOT_OPEN =
+  "Starting work isn't open to you in this chat. Nothing started; tell the owner what you would do.";
 const missing = () => new KinChatError({ reason: "not_found", message: "Kin record not found." });
 const unavailable = () =>
   new KinChatError({ reason: "unavailable", message: "Kin workers are unavailable." });
@@ -166,7 +165,6 @@ const make = Effect.gen(function* () {
   const tracker = yield* WorkerTracker;
   const environment = yield* ServerEnvironment;
   const orchestrator = yield* OrchestratorV2;
-  const summary = yield* KinLevels.KinShadowSummary;
   const digest = yield* Digest.Digest;
   const hash = Effect.fn("KinWorkers.hash")((value: unknown) =>
     digest
@@ -213,40 +211,6 @@ const make = Effect.gen(function* () {
       Effect.provideService(SqlClient.SqlClient, sql),
       Effect.catchTags({ KinLevelRefused: () => Effect.fail(denied()) }),
     );
-  // Below L2 the lead's worker calls become shadow entries for the owner's daily summary.
-  const shadow = Effect.fn("KinWorkers.shadow")(function* (
-    ctx: Lead,
-    level: KinLevel,
-    tool: string,
-    input: unknown,
-    target: string,
-  ) {
-    const entry = yield* KinLevels.recordShadow({
-      orgId: ctx.orgId,
-      agentId: ctx.agentId,
-      threadId: ctx.threadId,
-      level,
-      unlocksLevel: "L2",
-      tool,
-      input,
-      wouldTarget: target,
-    }).pipe(
-      Effect.provideService(SqlClient.SqlClient, sql),
-      Effect.catchTags({
-        KinLevelRefused: (error) =>
-          Effect.fail(
-            error.reason === "limit"
-              ? new KinChatError({
-                  reason: "limit",
-                  message: KinLevels.SHADOW_LIMIT_MESSAGE,
-                })
-              : denied(),
-          ),
-      }),
-    );
-    if (entry.created) yield* summary.refresh({ orgId: ctx.orgId, agentId: ctx.agentId });
-    return { shadowed: true as const, entryId: entry.entryId };
-  });
   /** Where new work may start; workers never run on this server. */
   const admit = Effect.fn("KinWorkers.admit")(function* (orgId: KinOrgId) {
     if (Option.isNone(env.environmentId))
@@ -446,8 +410,7 @@ const make = Effect.gen(function* () {
       if (reviewRefs.length === 0)
         return yield* denied("The author worker has not reported a PR or commit to review yet.");
     }
-    if (!KinLevels.atLeast(plan.level, "L2"))
-      return yield* shadow(ctx, plan.level, "kin_delegate", input, input.projectId);
+    if (!KinLevels.atLeast(plan.level, "L2")) return yield* denied(NOT_OPEN);
     const environmentId = yield* admit(ctx.orgId);
     yield* supported(environmentId, modelSelection);
     const { projectId, repositoryKey } = yield* projectThere(environmentId, input.projectId);
@@ -594,8 +557,7 @@ const make = Effect.gen(function* () {
         return { config, worker: stored, level: yield* levelOf(ctx, stored.chatId) };
       }),
     );
-    if (!KinLevels.atLeast(plan.level, "L2"))
-      return yield* shadow(ctx, plan.level, "kin_follow_up", input, input.workerId);
+    if (!KinLevels.atLeast(plan.level, "L2")) return yield* denied(NOT_OPEN);
     yield* admit(ctx.orgId);
     if (plan.worker.projectId === null || !plan.config.projects.includes(plan.worker.projectId))
       return yield* denied("Workers may only run in this lead's worker projects.");

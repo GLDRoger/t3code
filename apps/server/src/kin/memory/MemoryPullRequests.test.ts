@@ -64,8 +64,6 @@ const scenarios = [
   "hang",
   "stall-body",
   "run-from-fork",
-  "keep",
-  "keep-moved-head",
   "no-app",
 ] as const;
 
@@ -173,7 +171,7 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
             return { status: 200, body: yield* pullBody(number) };
           }
           if (request.method === "GET") {
-            if (scenario === "moved-head" || scenario === "keep-moved-head")
+            if (scenario === "moved-head")
               yield* bare("update-ref", `refs/heads/${state.branch}`, original);
             return { status: 200, body: yield* pullBody(number) };
           }
@@ -355,14 +353,13 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
       baseDirectory: root,
       repositories: [{ orgId, repoUrl: remote, path: "state", githubRepo: repo }],
     });
-    const keeping = scenario === "keep" || scenario === "keep-moved-head";
     const auth = Layer.succeed(Writer.MemoryWriterAuthority, {
       resolve: (_org, wakeupId) =>
         Effect.succeed({
           orgId,
           wakeupId,
           agentId,
-          level: keeping ? "L0" : "L1",
+          level: "L1",
           timeZone: "UTC",
           startedAt: "2026-11-08T00:00:00.000Z",
           eventIds: [],
@@ -408,37 +405,6 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         expect((yield* memory.prepareWakeup(orgId)).head).toBe(original);
       });
       const claim = { path: "claims/new.md", content: fixtureItem({ id: "new", kind: "claim" }) };
-
-      if (keeping) {
-        yield* writer.stage(orgId, "wake1", {
-          path: "deferrals/def-001.md",
-          content: fixtureItem(),
-          sourceEventId: "owner",
-        });
-        const shadowed = yield* writer.commitWakeup(orgId, "wake1", "completed");
-        const { paths: shown } = yield* writer.settleShadow(orgId, agentId, { _tag: "preview" });
-        const keep = writer.settleShadow(orgId, agentId, { _tag: "keep", paths: shown });
-        if (scenario === "keep-moved-head") {
-          yield* refused(keep);
-          yield* unchanged;
-          expect(merges).toEqual([]);
-          expect(yield* branchHead(`kin/shadow/${agentId}`)).toBe(shadowed.commit);
-          expect(pulls.get(1)?.state).toBe("closed");
-          return;
-        }
-        expect(yield* keep).toEqual({ kept: 2, paths: shown });
-        expect(pulls.get(1)?.branch).toMatch(
-          new RegExp(`^kin/write/${agentId}/keep-${shadowed.commit.slice(0, 12)}-[0-9a-f]{12}$`),
-        );
-        const main = yield* bare("rev-parse", "refs/heads/main");
-        expect(merges).toEqual([
-          { number: 1, body: expect.objectContaining({ sha: expect.any(String) }) },
-        ]);
-        expect(yield* localMain()).toBe(main);
-        expect(yield* remoteFiles(main)).toContain("deferrals/def-001.md");
-        expect(yield* branchHead(`kin/shadow/${agentId}`)).toBe(main);
-        return;
-      }
 
       yield* writer.stage(orgId, "wake1", { ...claim, sourceEventId: "owner" });
       const reviewed = scenario === "owner-path" || scenario === "owner-path-close-fails";

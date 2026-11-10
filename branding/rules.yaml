@@ -617,11 +617,9 @@ leaks:
     - reason: >-
         The Kin host runs the server from source with `--base-dir ~/.t3` (ops/kin/host), and the
         worker environment keeps its state in the kin-worker user's ~/.t3 the same way. The host
-        scripts read, pair and link those homes, and the shadow dry run refuses the live state
-        directory; all name the host's real paths.
+        scripts read, pair and link those homes; all name the host's real paths.
       leak: t3-home
       files:
-        - apps/server/scripts/kin-shadow-dry-run.ts
         - ops/kin/host/backup.sh
         - ops/kin/host/kin-server.service
         - ops/kin/host/kin-worker.sh

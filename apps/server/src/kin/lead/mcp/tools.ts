@@ -3,7 +3,6 @@ import {
   KinMessageId,
   KinReaction,
   KinLeadReactionEmoji,
-  KinShadowResult,
   OrchestratorMcpFailure,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -45,14 +44,14 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_delegate", {
     ...workers,
     description:
-      "Start a worker for one build, review or research task in one of this lead's worker projects. Needs L2; below it the call is recorded as shadow work and nothing starts. Brief it with one goal, the facts it needs, and member text in quoted. The server adds the report format and posts the task card. model defaults to strong. For review, set reviewOf to the author workerId and pick a model with a different instance and model; the reviewer gets only your goal and the author's reported PR or commit. Identical retries return the same worker. Returns workerId and threadLink. Do not wait: its report arrives as a worker.report event in a later wake-up. Never use delegate_task.",
+      "Start a worker for one build, review or research task in one of this lead's worker projects. If this chat doesn't allow starting work, it is refused with not_allowed and nothing starts. Brief it with one goal, the facts it needs, and member text in quoted. The server adds the report format and posts the task card. model defaults to strong. For review, set reviewOf to the author workerId and pick a model with a different instance and model; the reviewer gets only your goal and the author's reported PR or commit. Identical retries return the same worker. Returns workerId and threadLink. Do not wait: its report arrives as a worker.report event in a later wake-up. Never use delegate_task.",
     parameters: Workers.DelegateInput,
     success: Workers.DelegateResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_follow_up", {
     ...workers,
     description:
-      "Send more instructions to an existing worker in this organization instead of starting a new one. It keeps its thread and model, and its task card reopens. Needs L2. Review workers refuse follow-ups with not_allowed; start a new review with kin_delegate. Identical retries are not resent. Its next report arrives as a new worker.report event.",
+      "Send more instructions to an existing worker in this organization instead of starting a new one. It keeps its thread and model, and its task card reopens. Refused with not_allowed where starting work isn't allowed. Review workers refuse follow-ups with not_allowed; start a new review with kin_delegate. Identical retries are not resent. Its next report arrives as a new worker.report event.",
     parameters: Workers.FollowUpInput,
     success: Workers.DelegateResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -66,16 +65,16 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_ask", {
     ...chat,
     description:
-      "Ask a question with 2-4 tap-to-answer options, posted as a card in the chat your reply goes to. Use it when the answer is one of a few choices; otherwise ask in plain text. Mark a yes/no pair with kind. The card counts as your reply. The tap arrives later as their reply. A choice is not an approval: privileged actions still need request_action. At L0 outside your owner's direct chat you get shadowed: true; that is expected.",
+      "Ask a question with 2-4 tap-to-answer options, posted as a card in the chat your reply goes to. Use it when the answer is one of a few choices; otherwise ask in plain text. Mark a yes/no pair with kind. The card counts as your reply. The tap arrives later as their reply. A choice is not an approval: privileged actions still need request_action.",
     parameters: ChoiceCard.AskInput,
-    success: Schema.Union([ChoiceCard.AskResult, KinShadowResult]),
+    success: ChoiceCard.AskResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_react", {
     ...chat,
     description:
-      "React to a message in the chat your reply goes to, with one of 👍 ✅ 👎 ❌ ❤️ 👀. A 👍 can end your turn instead of a reply when the owner's message needs no answer, such as \"thanks, that's all\". If they asked something, still reply in text. Never an approval. At L0 outside your owner's direct chat you get shadowed: true.",
+      "React to a message in the chat your reply goes to, with one of 👍 ✅ 👎 ❌ ❤️ 👀. A 👍 can end your turn instead of a reply when the owner's message needs no answer, such as \"thanks, that's all\". If they asked something, still reply in text. Never an approval.",
     parameters: Schema.Struct({ messageId: KinMessageId, emoji: KinLeadReactionEmoji }),
-    success: Schema.Union([KinReaction, KinShadowResult]),
+    success: KinReaction,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("memory_search", {
     ...shared,

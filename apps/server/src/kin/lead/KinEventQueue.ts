@@ -183,7 +183,7 @@ export class KinEventQueue extends Context.Service<
     >;
     /**
      * A failed wake-up's events are retried only when it did nothing anyone could see: no
-     * message, shadow entry, staged memory, worker or action request. `stranded` counts the
+     * message, staged memory, worker or action request. `stranded` counts the
      * events that were not, so the runner owes the chat an honest notice; `retried` counts the
      * events requeued for another try, and `failedEventIds` those that used their last.
      */
@@ -597,7 +597,6 @@ const make = Effect.gen(function* () {
               EXISTS (SELECT 1 FROM kin_messages m WHERE m.org_id = w.org_id AND m.author_kind = 'agent'
                 AND m.author_agent_id = w.agent_id AND m.author_thread_id = w.thread_id
                 AND m.created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', w.started_at / 1000.0, 'unixepoch'))
-              OR EXISTS (SELECT 1 FROM kin_shadow_entries s WHERE s.org_id = w.org_id AND s.wakeup_id = w.wakeup_id)
               OR EXISTS (SELECT 1 FROM kin_lead_tool_calls c WHERE c.org_id = w.org_id
                 AND c.wakeup_id = w.wakeup_id AND c.call_key != 'end')
               OR EXISTS (SELECT 1 FROM kin_workers k WHERE k.org_id = w.org_id AND k.wakeup_id = w.wakeup_id)

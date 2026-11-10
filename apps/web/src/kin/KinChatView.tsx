@@ -50,7 +50,7 @@ import {
 import {
   kinChatTitle,
   kinDirectAgentName,
-  kinLevelsAgentId,
+  kinOwnedLeadAgentId,
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import type { KinSynced } from "@t3tools/client-runtime/kin/kinStreams";
 import {
@@ -157,7 +157,7 @@ export function KinChatView(props: {
     inbox?._tag === "Success"
       ? inbox.value.value.chats.find((chat) => chat.chatId === chatId)
       : undefined;
-  const ownedAgentId = summary === undefined ? null : kinLevelsAgentId(summary, viewer.personId);
+  const ownedAgentId = summary === undefined ? null : kinOwnedLeadAgentId(summary, viewer.personId);
   const title = summary === undefined ? "Chat" : kinChatTitle(summary, viewer.agentNames);
 
   const retry = () => {
@@ -580,7 +580,7 @@ function KinChatFeed(props: {
           viewerMemberId,
           reactorName,
         );
-        // The host refuses reactions on approval, level, review and deferral cards.
+        // The host refuses reactions on approval and deferral cards.
         const reactable =
           canReact &&
           message.status === "posted" &&

@@ -147,6 +147,7 @@ describe("Kin migrations", () => {
           { migration_id: 31, name: "LeadDeliveries" },
           { migration_id: 32, name: "WorkerEnvironment" },
           { migration_id: 33, name: "ApproverKeyConfirmations" },
+          { migration_id: 35, name: "RetireLevelCards" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
@@ -237,6 +238,7 @@ describe("Kin migrations", () => {
           { migration_id: 31, name: "LeadDeliveries" },
           { migration_id: 32, name: "WorkerEnvironment" },
           { migration_id: 33, name: "ApproverKeyConfirmations" },
+          { migration_id: 35, name: "RetireLevelCards" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -350,6 +352,7 @@ describe("Kin migrations", () => {
         [31, "LeadDeliveries"],
         [32, "WorkerEnvironment"],
         [33, "ApproverKeyConfirmations"],
+        [35, "RetireLevelCards"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -471,6 +474,7 @@ describe("Kin migrations", () => {
         [31, "LeadDeliveries"],
         [32, "WorkerEnvironment"],
         [33, "ApproverKeyConfirmations"],
+        [35, "RetireLevelCards"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,
@@ -529,6 +533,7 @@ describe("Kin migrations", () => {
         { migration_id: 31, name: "LeadDeliveries" },
         { migration_id: 32, name: "WorkerEnvironment" },
         { migration_id: 33, name: "ApproverKeyConfirmations" },
+        { migration_id: 35, name: "RetireLevelCards" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);
@@ -587,6 +592,7 @@ describe("Kin migrations", () => {
         [31, "LeadDeliveries"],
         [32, "WorkerEnvironment"],
         [33, "ApproverKeyConfirmations"],
+        [35, "RetireLevelCards"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT session_id, via FROM kin_auth_paired_sessions ORDER BY session_id`,
@@ -622,6 +628,7 @@ describe("Kin migrations", () => {
       assert.deepStrictEqual(yield* runKinMigrations(), [
         [32, "WorkerEnvironment"],
         [33, "ApproverKeyConfirmations"],
+        [35, "RetireLevelCards"],
       ]);
       const columns = yield* sql<{ name: string }>`
         SELECT name FROM pragma_table_info('kin_workers')`;
@@ -659,16 +666,19 @@ describe("Kin migrations", () => {
         };
         yield* sql`INSERT INTO kin_lead_deliveries ${sql.insert(delivery)}`;
         yield* undoApproverKeyConfirmations;
-        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 33`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id IN (33, 35)`;
         assert.deepStrictEqual((yield* kinHistory).slice(-2), [
           { migration_id: 31, name: "LeadDeliveries" },
           { migration_id: 32, name: "WorkerEnvironment" },
         ]);
-        assert.deepStrictEqual(yield* runKinMigrations(), [[33, "ApproverKeyConfirmations"]]);
+        assert.deepStrictEqual(yield* runKinMigrations(), [
+          [33, "ApproverKeyConfirmations"],
+          [35, "RetireLevelCards"],
+        ]);
         assert.deepStrictEqual((yield* kinHistory).slice(-3), [
-          { migration_id: 31, name: "LeadDeliveries" },
           { migration_id: 32, name: "WorkerEnvironment" },
           { migration_id: 33, name: "ApproverKeyConfirmations" },
+          { migration_id: 35, name: "RetireLevelCards" },
         ]);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_lead_deliveries`, [delivery]);
         assert.deepStrictEqual(
@@ -685,6 +695,46 @@ describe("Kin migrations", () => {
         );
         assert.deepStrictEqual(yield* runKinMigrations(), []);
       }).pipe(Effect.provide(layer)),
+  it.effect("K035 takes the level cards out of chats and the Waiting list, and nothing else", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('owner', 'org', 'owner', 'Owner', ${timestamp})`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+        VALUES ('dm', 'org', 'project_group', 4, ${timestamp})`;
+      const cards = [
+        ["promotion:lead:L1", "promotion"],
+        ["shadow-review:lead:2026-11-09", "shadow_review"],
+        ["shadow-summary:lead:2026-11-09", "shadow_summary"],
+        ["routine:morning", "routine"],
+      ] as const;
+      for (const [index, [widgetId, type]] of cards.entries()) {
+        yield* sql`INSERT INTO kin_messages (org_id, chat_id, message_id, seq, author_kind, author_role, kind, body, mentions_json, widget_id, status, created_at)
+          VALUES ('org', 'dm', ${widgetId}, ${index + 1}, 'system', 'member', 'system', ${type}, '[]', ${widgetId}, 'posted', ${timestamp})`;
+        yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class, type, revision, state_json, awaiting_json, updated_at)
+          VALUES (${widgetId}, 'org', 'dm', ${widgetId}, 'native', ${type}, 1, '{}', '[]', ${timestamp})`;
+        yield* sql`INSERT INTO kin_waiting (waiting_id, org_id, person_id, chat_id, message_id, widget_id, reason, created_at)
+          VALUES (${`waiting-${index}`}, 'org', 'owner', 'dm', ${widgetId}, ${widgetId}, 'decision', ${timestamp})`;
+      }
+      yield* sql`INSERT INTO kin_messages (org_id, chat_id, message_id, seq, author_kind, author_role, kind, body, mentions_json, status, created_at)
+        VALUES ('org', 'dm', 'kin-level-lowered:e-1', 5, 'system', 'member', 'system', 'Lead moved down to L0', '[]', 'posted', ${timestamp})`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 35`;
+      assert.deepStrictEqual(yield* runKinMigrations(), [[35, "RetireLevelCards"]]);
+      assert.deepStrictEqual(yield* sql`SELECT message_id, status FROM kin_messages ORDER BY seq`, [
+        { message_id: "promotion:lead:L1", status: "dismissed" },
+        { message_id: "shadow-review:lead:2026-11-09", status: "dismissed" },
+        { message_id: "shadow-summary:lead:2026-11-09", status: "dismissed" },
+        { message_id: "routine:morning", status: "posted" },
+        { message_id: "kin-level-lowered:e-1", status: "dismissed" },
+      ]);
+      assert.deepStrictEqual(yield* sql`SELECT widget_id FROM kin_widgets`, [
+        { widget_id: "routine:morning" },
+      ]);
+      assert.deepStrictEqual(yield* sql`SELECT waiting_id FROM kin_waiting`, [
+        { waiting_id: "waiting-3" },
+      ]);
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect("refuses to start when a registered migration sits below the latest applied one", () =>
@@ -697,7 +747,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 33");
+      assert.include(String(exit), "below the latest applied migration 35");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
