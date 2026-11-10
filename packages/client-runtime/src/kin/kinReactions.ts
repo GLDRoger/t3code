@@ -116,7 +116,10 @@ export function kinReactionChips(
   });
 }
 
-/** What a tap or picker choice sends: toggles the viewer's own reaction with that emoji. */
+/**
+ * What a tap or picker choice sends. The host keeps one reaction per person per message, so a
+ * new emoji replaces the viewer's and their current one again removes it.
+ */
 export const kinReactionToggle = (
   chips: ReadonlyArray<KinReactionChip>,
   messageId: KinMessage["messageId"],
@@ -138,8 +141,8 @@ export const kinViewerMemberId = (
       )?.memberId ?? null);
 
 /**
- * The message whose hint row says a reaction answers it: the lead's latest message, for the
- * owner of a direct chat. Mirrors the host's rule; the host still decides.
+ * The message whose hint row says a reaction answers it: the lead's latest message when it asks
+ * something, for the owner of a direct chat. Mirrors the host's rule; the host still decides.
  */
 export function kinSoftReplyMessageId(
   messages: ReadonlyArray<KinMessage>,
@@ -161,7 +164,8 @@ export function kinSoftReplyMessageId(
     const message = messages[index]!;
     if (message.author._tag !== "agent" || message.status !== "posted") continue;
     // The host stops taking it as a reply after a day.
-    return nowMs - Date.parse(message.createdAt) < KIN_SOFT_REPLY_WINDOW_MS
+    return message.body.includes("?") &&
+      nowMs - Date.parse(message.createdAt) < KIN_SOFT_REPLY_WINDOW_MS
       ? message.messageId
       : null;
   }

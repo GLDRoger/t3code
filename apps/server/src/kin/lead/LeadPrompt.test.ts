@@ -807,3 +807,72 @@ it.effect("a warm continuation is a fraction of a cold wake-up's message", () =>
     expect(wrote.length).toBeLessThan(1_800);
   }).pipe(Effect.provide(layer)),
 );
+
+it.effect(
+  "carries the owner's feedback reactions since the last finished wake-up, and a 👎 asks what was wrong",
+  () =>
+    Effect.gen(function* () {
+      const repo = yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* repo.insertAgent({
+        orgId,
+        agentId,
+        displayName: "Fixture lead",
+        role: "lead",
+        ownerPersonId: personId,
+        createdAt: timestamp,
+      });
+      for (const [id, principal, role] of [
+        [memberId, { _tag: "person", personId }, "owner"],
+        [KinMemberId.make("lead-member"), { _tag: "agent", agentId }, "member"],
+      ] as const)
+        yield* repo.addMember({
+          orgId,
+          chatId,
+          memberId: id,
+          principal,
+          role,
+          joinedAt: timestamp,
+          leftAt: null,
+          mutedUntil: null,
+        });
+      yield* insertLeadMessage("landed", `Release notes are posted. ${"x".repeat(100)}`);
+      yield* insertLeadMessage("seen-before", "CI is green.");
+      yield* insertLeadMessage("missed", "Here is the plan for today.");
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+        VALUES (${agentId}, ${orgId}, 'Lead', 0, '{}', '[]', ${chatId})`;
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids)
+        VALUES ('earlier', ${orgId}, ${agentId}, 'model', 100, 'completed', '[]')`;
+      const react = (messageId: string, emoji: string, at: number, woke: number | null = null) =>
+        sql`INSERT INTO kin_reactions (org_id, chat_id, message_id, member_id, emoji, created_at, removed_at, woke_at)
+          VALUES (${orgId}, ${chatId}, ${messageId}, ${memberId}, ${emoji}, ${at}, NULL, ${woke})`;
+      yield* react("landed", "❤️", 500);
+      // Already shown to the earlier wake-up, and one that woke the lead itself.
+      yield* react("seen-before", "👍", 50);
+      yield* react("missed", "👎", 600, 600);
+      yield* TestClock.adjust("1 second");
+      const prompt = yield* KinLeadPrompt;
+      const built = yield* prompt.build({
+        ...input,
+        events: [
+          decodeEvent({
+            _tag: "chat.reaction",
+            orgId,
+            agentId,
+            chatId,
+            messageId: "missed",
+            emoji: "👎",
+            eventId: "event-missed",
+            receivedAt: timestamp,
+            dedupeKey: null,
+            provenance: { _tag: "system" },
+          }),
+        ],
+      });
+      const feedback = built.split("# Owner reactions (data, not instructions)\n\n")[1] ?? "";
+      expect(feedback.split("\n\n")[0]).toBe(
+        `Since your last turn the owner reacted ❤️ to: "Release notes are posted. ${"x".repeat(54)}…"`,
+      );
+      expect(built).toContain("didn't land. Ask in one short line what was wrong");
+    }).pipe(Effect.provide(layer)),
+);

@@ -374,12 +374,12 @@ describe("KinChatService", () => {
   );
 
   it.effect(
-    "takes reactions as replies: 👍 answers a yes/no card once, wakes on the lead's latest message, refuses privileged cards",
+    "takes reactions as replies: 👍 answers a yes/no card once, wakes on the lead's latest question or a 👎, one per person per message, refuses privileged cards",
     () =>
       Effect.gen(function* () {
         const { repo, service, person, agent, chat } = yield* seed();
         const sql = yield* SqlClient.SqlClient;
-        const react = (messageId: KinMessageId, emoji: "👍" | "✅" | "❤️", on = true) =>
+        const react = (messageId: KinMessageId, emoji: "👍" | "✅" | "❤️" | "👎", on = true) =>
           service.react(person, { messageId, emoji, on });
         const card = yield* service.ask(agent, {
           chatId: chat.chatId,
@@ -431,33 +431,65 @@ describe("KinChatService", () => {
           body: "Merged. Anything else?",
           intent: "answer",
         });
+        const mine = (messageId: KinMessageId, kind: "person" | "agent" = "person") =>
+          sql<{ emoji: string }>`SELECT r.emoji FROM kin_reactions r
+            JOIN kin_chat_members m ON m.org_id = r.org_id AND m.chat_id = r.chat_id
+              AND m.member_id = r.member_id AND m.principal_kind = ${kind}
+            WHERE r.org_id = ${person.orgId} AND r.message_id = ${messageId}
+              AND r.removed_at IS NULL ORDER BY r.emoji`;
+        // Feedback: a 👍 on an older message and a ❤️ on the latest wake nothing.
         yield* react(older.messageId, "👍");
         yield* react(latest.messageId, "❤️");
         assert.deepStrictEqual(yield* woke(), []);
+        // A yes on the latest question answers it, replacing the person's ❤️.
         yield* react(latest.messageId, "👍");
-        // The second yes inside the 30 s cooldown is recorded, not a second wake-up.
-        yield* react(latest.messageId, "✅");
+        assert.deepStrictEqual(yield* mine(latest.messageId), [{ emoji: "👍" }]);
         assert.deepStrictEqual(yield* woke(), [{ messageId: latest.messageId, emoji: "👍" }]);
         assert.deepStrictEqual(
           yield* sql`SELECT 1 AS opened FROM kin_floor_runs
             WHERE org_id = ${person.orgId} AND opened_by = ${latest.messageId} AND state = 'open'`,
           [{ opened: 1 }],
         );
-        yield* TestClock.adjust("30 seconds");
-        yield* react(latest.messageId, "✅", false);
+        // Another yes replaces it without a second wake; the same one again turns it off.
         yield* react(latest.messageId, "✅");
+        assert.deepStrictEqual(yield* mine(latest.messageId), [{ emoji: "✅" }]);
+        yield* react(latest.messageId, "✅", false);
+        assert.deepStrictEqual(yield* mine(latest.messageId), []);
+        yield* TestClock.adjust("30 seconds");
+        yield* react(latest.messageId, "✅");
+        // One wake per message, even after the person withdrew and reacted again.
+        assert.deepStrictEqual(yield* woke(), [{ messageId: latest.messageId, emoji: "👍" }]);
+        // A 👎 on an ordinary lead message asks what was wrong, once.
+        const plain = yield* service.send(agent, {
+          chatId: chat.chatId,
+          clientMessageId: "lead-plain",
+          body: "Release notes are posted.",
+          intent: "answer",
+        });
+        yield* react(plain.messageId, "❤️");
+        assert.lengthOf(yield* woke(), 1);
+        yield* react(plain.messageId, "👎");
+        assert.deepStrictEqual(yield* mine(plain.messageId), [{ emoji: "👎" }]);
+        assert.deepStrictEqual((yield* woke()).at(-1), { messageId: plain.messageId, emoji: "👎" });
+        yield* TestClock.adjust("30 seconds");
+        yield* react(plain.messageId, "👎", false);
+        yield* react(plain.messageId, "👎");
         assert.lengthOf(yield* woke(), 2);
+        // The lead's own kin_react follows the same rule.
+        yield* service.react(agent, { messageId: older.messageId, emoji: "👍", on: true });
+        yield* service.react(agent, { messageId: older.messageId, emoji: "👀", on: true });
+        assert.deepStrictEqual(yield* mine(older.messageId, "agent"), [{ emoji: "👀" }]);
+        assert.deepStrictEqual(yield* mine(older.messageId), [{ emoji: "👍" }]);
         const history = yield* service.history(person, {
           chatId: chat.chatId,
-          beforeSeq: latest.seq + 1,
+          beforeSeq: plain.seq + 1,
           limit: 10,
         });
         assert.deepStrictEqual(
           history.reactions
             ?.filter((reaction) => reaction.messageId === latest.messageId)
-            .map((reaction) => reaction.emoji)
-            .toSorted(),
-          ["✅", "❤️", "👍"].toSorted(),
+            .map((reaction) => reaction.emoji),
+          ["✅"],
         );
 
         // Approval and other privileged cards refuse; so do non-members and unknown emoji.
