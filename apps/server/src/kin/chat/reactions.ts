@@ -48,7 +48,7 @@ type Key = {
   readonly emoji: KinReactionEmoji;
 };
 
-/** 👍 ✅ read as yes, 👎 ❌ as no; ❤️ 👀 are feelings and answer nothing. */
+/** 👍 ✅ read as yes, 👎 ❌ as no; every other reaction is a feeling and answers nothing. */
 export const reactionAnswer = (emoji: KinReactionEmoji): "yes" | "no" | null =>
   (KIN_YES_REACTIONS as ReadonlyArray<string>).includes(emoji)
     ? "yes"
