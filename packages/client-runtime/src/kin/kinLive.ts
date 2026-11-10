@@ -177,6 +177,18 @@ export function kinPresenceLine(
     : line;
 }
 
+/** When the run being shown started, while the agent is busy on it; the line then shows a timer. */
+export function kinPresenceTimerStart(presence: KinPresence | undefined): string | null {
+  switch (presence?.state) {
+    case "thinking":
+    case "working":
+    case "writing":
+      return presence.startedAt;
+    default:
+      return null;
+  }
+}
+
 /** Whether the line reads differently as time passes, so it needs the clock. */
 export function kinPresenceNeedsClock(presence: KinPresence | undefined): boolean {
   return presence?.state === "stalled" || (presence?.state === "starting" && !presence.label);

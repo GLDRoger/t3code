@@ -31,7 +31,11 @@ import {
   type KinInboxState,
 } from "@t3tools/client-runtime/kin/kinInboxModel";
 import { KIN_INTRO_PROMPTS, kinIntroVisible } from "@t3tools/client-runtime/kin/kinIntro";
-import { kinPresenceLine, kinPresenceNeedsClock } from "@t3tools/client-runtime/kin/kinLive";
+import {
+  kinPresenceLine,
+  kinPresenceNeedsClock,
+  kinPresenceTimerStart,
+} from "@t3tools/client-runtime/kin/kinLive";
 import {
   KIN_MESSAGE_MAX_LENGTH,
   splitKinOutbox,
@@ -64,9 +68,21 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { Atom, type AsyncResult } from "effect/reactivity";
-import { ArrowDownIcon, ArrowLeftIcon, ArrowUpIcon, ChevronUpIcon } from "lucide-react";
+import { ArrowDownIcon, ArrowLeftIcon, ChevronUpIcon } from "lucide-react";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 
+import {
+  ComposerPrimaryActions,
+  StopGenerationButton,
+} from "../components/chat/ComposerPrimaryActions";
+import { ComposerSurface } from "../components/chat/ComposerSurface";
+import { WorkingTimer } from "../components/chat/TimelineWorkGroupRows";
+import {
+  WorkspaceBreadcrumb,
+  WorkspaceBreadcrumbItem,
+  WorkspaceBreadcrumbText,
+} from "../components/WorkspaceBreadcrumb";
+import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
@@ -209,7 +225,7 @@ function KinChatHeader(props: {
   const now = useKinPresenceNow(kinPresenceNeedsClock(props.presence));
   const subtitle = kinPresenceLine(props.presence, now)?.subtitle ?? props.tasks;
   return (
-    <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2">
+    <WorkspacePageHeader titlebarInset={false} className="border-b border-border">
       <Button
         size="icon-sm"
         variant="ghost"
@@ -219,13 +235,17 @@ function KinChatHeader(props: {
       >
         <ArrowLeftIcon />
       </Button>
-      <div className="min-w-0 flex-1">
-        <h2 className="truncate text-sm font-medium text-foreground">{props.title}</h2>
-        {subtitle === null ? null : (
-          <p className="truncate text-xs text-muted-foreground">{subtitle}</p>
-        )}
-      </div>
-    </div>
+      <WorkspaceBreadcrumb ariaLabel="Chat" className="shrink">
+        <WorkspaceBreadcrumbItem current>
+          <h2 className="min-w-0">
+            <WorkspaceBreadcrumbText>{props.title}</WorkspaceBreadcrumbText>
+          </h2>
+        </WorkspaceBreadcrumbItem>
+      </WorkspaceBreadcrumb>
+      {subtitle === null ? null : (
+        <p className="min-w-0 flex-1 truncate text-sm text-muted-foreground">{subtitle}</p>
+      )}
+    </WorkspacePageHeader>
   );
 }
 
@@ -779,24 +799,35 @@ function KinPresenceLine(props: {
 }) {
   const now = useKinPresenceNow(kinPresenceNeedsClock(props.presence));
   const line = kinPresenceLine(props.presence, now);
-  const stoppable = line?.stalled === true && props.onStop !== null;
+  const timerStart = kinPresenceTimerStart(props.presence);
+  const { onStop } = props;
+  const stoppable = line?.stalled === true && onStop !== null;
   return (
-    <div className="mx-auto flex h-8 w-full max-w-3xl items-center gap-2 px-5">
-      <p role="status" aria-live="polite" className="truncate text-xs text-muted-foreground">
+    <div className="mx-auto flex h-9 w-full max-w-3xl items-center gap-2 px-5 text-muted-foreground text-xs">
+      <p role="status" aria-live="polite" className="truncate">
         {line === null ? "" : line.text}
       </p>
+      {timerStart === null ? null : (
+        // The timer ticks on its own; screen readers hear the presence text, not every second.
+        <span aria-hidden="true">
+          <WorkingTimer createdAt={timerStart} />
+        </span>
+      )}
       {stoppable ? (
-        props.stop === "stopping" ? (
-          <span className="text-xs text-muted-foreground">Stopping…</span>
-        ) : (
-          <Button
-            size="micro"
-            variant={props.stop === "failed" ? "ghost-destructive" : "ghost"}
-            onClick={props.onStop ?? undefined}
-          >
-            {props.stop === "failed" ? "Couldn't stop · Retry" : "Stop"}
-          </Button>
-        )
+        <>
+          {props.stop === "idle" ? null : (
+            <span role={props.stop === "failed" ? "alert" : undefined}>
+              {props.stop === "failed" ? "Couldn't stop" : "Stopping…"}
+            </span>
+          )}
+          <StopGenerationButton
+            size="compact"
+            label={props.stop === "failed" ? "Try stopping again" : "Stop"}
+            tooltip={props.stop === "failed" ? "Try again" : "Stop"}
+            disabled={props.stop === "stopping"}
+            onClick={onStop}
+          />
+        </>
       ) : null}
     </div>
   );
@@ -847,6 +878,7 @@ function KinIntro(props: {
 }
 
 const lengthFormat = new Intl.NumberFormat();
+const noop = () => {};
 
 /**
  * The chat's text box. A send goes to the outbox, which shows it at once and delivers it when the
@@ -892,20 +924,50 @@ function KinComposer(props: {
           {hint}
         </p>
       )}
-      <div className="flex items-end gap-2">
-        <Textarea
-          ref={textareaRef}
-          rows={1}
-          value={text}
-          aria-label={`Message ${recipient}`}
-          placeholder={`Message ${recipient}`}
-          onChange={(event) => appAtomRegistry.set(atom, event.target.value)}
-          onKeyDown={onKeyDown}
-        />
-        <Button size="icon" aria-label="Send" disabled={!canSend} onClick={() => void send()}>
-          <ArrowUpIcon />
-        </Button>
-      </div>
+      <ComposerSurface.Shell>
+        <ComposerSurface.Host>
+          <ComposerSurface.Main>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (canSend) void send();
+              }}
+            >
+              <div className="px-1 pt-2.5 sm:pt-3">
+                <Textarea
+                  unstyled
+                  ref={textareaRef}
+                  rows={2}
+                  value={text}
+                  aria-label={`Message ${recipient}`}
+                  placeholder={`Message ${recipient}`}
+                  onChange={(event) => appAtomRegistry.set(atom, event.target.value)}
+                  onKeyDown={onKeyDown}
+                />
+              </div>
+              <div className="flex items-center justify-end px-2 pb-2">
+                <ComposerPrimaryActions
+                  compact={false}
+                  canOperateThread
+                  pendingAction={null}
+                  isRunning={false}
+                  canInterrupt={false}
+                  showPlanFollowUpPrompt={false}
+                  promptHasText={length > 0}
+                  isSendBusy={false}
+                  sendDisabledReason={hint}
+                  isEnvironmentUnavailable={false}
+                  isPreparingWorktree={false}
+                  hasSendableContent={length > 0}
+                  onPreviousPendingQuestion={noop}
+                  onInterrupt={noop}
+                  onImplementPlanInNewThread={noop}
+                />
+              </div>
+            </form>
+          </ComposerSurface.Main>
+        </ComposerSurface.Host>
+      </ComposerSurface.Shell>
     </div>
   );
 }

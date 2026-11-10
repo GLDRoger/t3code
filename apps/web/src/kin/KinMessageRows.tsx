@@ -19,9 +19,10 @@ import {
   type KinReactionEmoji,
   type KinWidget,
 } from "@t3tools/contracts";
-import { ChevronDownIcon, ChevronUpIcon, SmilePlusIcon } from "lucide-react";
+import { SmilePlusIcon } from "lucide-react";
 
 import ChatMarkdown from "../components/ChatMarkdown";
+import { WorkGroupHeader } from "../components/chat/TimelineWorkGroupRows";
 import { Button } from "../components/ui/button";
 import { Menu, MenuCheckboxItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { cn } from "../lib/utils";
@@ -239,26 +240,21 @@ const firstLine = (markdown: string) =>
     ?.replace(/[*_`#>]/g, "")
     .trim() ?? "";
 
-/** Folded agent talk: one line naming who talked and what they settled. */
+/** Folded agent talk, as T3's work-group row: who talked, what they settled, how much. */
 export function KinFoldRow(props: { readonly row: FoldRow; readonly onToggle: () => void }) {
   const { row } = props;
   const decision = row.decision === null ? null : firstLine(row.decision);
+  const label = [`${joinNames(row.authors)} talked it over`, decision, `${row.count} messages`]
+    .filter(Boolean)
+    .join(" · ");
   return (
-    <div className="mx-auto flex w-full max-w-3xl px-4 py-1">
-      <Button
-        size="sm-multiline"
-        variant="outline"
-        aria-expanded={row.expanded}
-        className="w-full justify-start"
-        onClick={props.onToggle}
-      >
-        <span className="min-w-0 flex-1 text-start">
-          <span className="text-muted-foreground">{joinNames(row.authors)} talked it over.</span>
-          {decision ? <span className="font-medium"> {decision}</span> : null}
-          <span className="text-muted-foreground"> {row.count} messages</span>
-        </span>
-        {row.expanded ? <ChevronUpIcon /> : <ChevronDownIcon />}
-      </Button>
+    <div className="mx-auto w-full max-w-3xl px-4 py-1">
+      <WorkGroupHeader
+        label={label}
+        iconName="message-circle"
+        expanded={row.expanded}
+        onToggle={props.onToggle}
+      />
     </div>
   );
 }

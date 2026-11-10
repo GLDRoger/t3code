@@ -1,13 +1,17 @@
 import { useEffect, useState } from "react";
-import { AccessibilityInfo, Pressable, View } from "react-native";
+import { AccessibilityInfo, View } from "react-native";
 
+import { ComposerActionButton } from "../../../components/ComposerToolbar";
 import { AppText as Text } from "../../../components/ui/AppText";
+import { formatWorkingDuration } from "../../threads/floating-working-control";
+import { useVisibleSecondClock } from "../../threads/use-visible-second-clock";
 import type { KinPresence } from "@t3tools/contracts";
 
 import {
   KIN_PRESENCE_TICK_MS,
   kinPresenceLine,
   kinPresenceNeedsClock,
+  kinPresenceTimerStart,
 } from "@t3tools/client-runtime/kin/kinLive";
 
 /**
@@ -55,6 +59,7 @@ export function KinPresenceLine(props: {
 
   const { onStop } = props;
   const stoppable = line?.stalled === true && onStop !== null;
+  const timerStart = kinPresenceTimerStart(props.presence);
   return (
     <View className="h-8 flex-row items-center gap-2 px-5">
       {line === null ? null : (
@@ -62,35 +67,47 @@ export function KinPresenceLine(props: {
           {line.text}
         </Text>
       )}
+      {timerStart === null ? null : <KinWorkingTimer startedAt={timerStart} />}
       {stoppable ? (
-        props.stop === "stopping" ? (
-          <Text textRole="caption" className="text-foreground-muted">
-            · Stopping…
-          </Text>
-        ) : (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={props.stop === "failed" ? "Couldn't stop. Try again" : "Stop"}
-            onPress={onStop ?? undefined}
-            hitSlop={12}
-            className="flex-row active:opacity-60"
-          >
-            <Text textRole="caption" className="text-foreground-muted">
-              ·{" "}
-            </Text>
+        <>
+          {props.stop === "idle" ? null : (
             <Text
               textRole="caption"
               className={
-                props.stop === "failed"
-                  ? "font-t3-medium text-danger-foreground"
-                  : "font-t3-medium text-foreground"
+                props.stop === "failed" ? "text-danger-foreground" : "text-foreground-muted"
               }
             >
-              {props.stop === "failed" ? "Couldn't stop · Retry" : "Stop"}
+              {props.stop === "failed" ? "Couldn't stop" : "Stopping…"}
             </Text>
-          </Pressable>
-        )
+          )}
+          {/* The 44 pt target overhangs the 32 pt row, so the row keeps its height. */}
+          <View className="-my-1.5">
+            <ComposerActionButton
+              accessibilityLabel={props.stop === "failed" ? "Try stopping again" : "Stop"}
+              icon="stop.fill"
+              variant="danger"
+              disabled={props.stop === "stopping"}
+              onPress={onStop}
+            />
+          </View>
+        </>
       ) : null}
     </View>
+  );
+}
+
+/** T3's working timer, in the presence line's Dynamic Type role. Ticks once a second, no animation. */
+function KinWorkingTimer(props: { readonly startedAt: string }) {
+  const nowMs = useVisibleSecondClock(true);
+  return (
+    <Text
+      textRole="caption"
+      className="shrink-0 text-foreground-muted"
+      style={{ fontVariant: ["tabular-nums"] }}
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+    >
+      {formatWorkingDuration(props.startedAt, nowMs)}
+    </Text>
   );
 }
