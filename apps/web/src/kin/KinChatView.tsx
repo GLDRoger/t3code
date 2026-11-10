@@ -48,9 +48,11 @@ import {
   kinViewerMemberId,
 } from "@t3tools/client-runtime/kin/kinReactions";
 import {
+  kinAvatarView,
   kinChatTitle,
   kinDirectAgentName,
   kinOwnedLeadAgentId,
+  type KinAvatarView,
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import type { KinSynced } from "@t3tools/client-runtime/kin/kinStreams";
 import {
@@ -88,8 +90,10 @@ import { Button } from "../components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
 import { Spinner } from "../components/ui/spinner";
 import { Textarea } from "../components/ui/textarea";
+import { isElectron } from "../env";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
+import { KinAvatar } from "./KinAvatar";
 import { kinClient } from "./kinClient";
 import { deliverKinOutbox, kinOutbox, startKinOutbox } from "./kinOutbox";
 import {
@@ -159,6 +163,15 @@ export function KinChatView(props: {
       : undefined;
   const ownedAgentId = summary === undefined ? null : kinOwnedLeadAgentId(summary, viewer.personId);
   const title = summary === undefined ? "Chat" : kinChatTitle(summary, viewer.agentNames);
+  const avatar =
+    summary === undefined
+      ? null
+      : kinAvatarView(
+          summary,
+          summary.members.find(
+            (member) => member.leftAt === null && member.principal._tag === "agent",
+          ) ?? null,
+        );
 
   const retry = () => {
     if (environmentId === null) return;
@@ -177,7 +190,7 @@ export function KinChatView(props: {
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <KinChatHeader title={title} presence={presence} tasks={tasks} />
+      <KinChatHeader title={title} avatar={avatar} presence={presence} tasks={tasks} />
       {state._tag === "ready" ? (
         <KinChatFeed
           // Paging, folds and follow belong to one chat.
@@ -216,16 +229,17 @@ export function KinChatView(props: {
   );
 }
 
-/** The chat's title, with presence while the lead works and open tasks otherwise. */
+/** Who the chat is with, and what they are doing: presence while a lead works, open tasks otherwise. */
 function KinChatHeader(props: {
   readonly title: string;
+  readonly avatar: KinAvatarView | null;
   readonly presence: KinPresence | undefined;
   readonly tasks: string | null;
 }) {
   const now = useKinPresenceNow(kinPresenceNeedsClock(props.presence));
   const subtitle = kinPresenceLine(props.presence, now)?.subtitle ?? props.tasks;
   return (
-    <WorkspacePageHeader titlebarInset={false} className="border-b border-border">
+    <WorkspacePageHeader electron={isElectron} className="border-b border-border">
       <Button
         size="icon-sm"
         variant="ghost"
@@ -235,11 +249,12 @@ function KinChatHeader(props: {
       >
         <ArrowLeftIcon />
       </Button>
+      {props.avatar === null ? null : <KinAvatar avatar={props.avatar} size="sm" />}
       <WorkspaceBreadcrumb ariaLabel="Chat" className="shrink">
         <WorkspaceBreadcrumbItem current>
-          <h2 className="min-w-0">
+          <h1 className="min-w-0">
             <WorkspaceBreadcrumbText>{props.title}</WorkspaceBreadcrumbText>
-          </h2>
+          </h1>
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
       {subtitle === null ? null : (
