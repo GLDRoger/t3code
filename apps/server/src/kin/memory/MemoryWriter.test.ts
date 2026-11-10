@@ -34,6 +34,10 @@ it.live.each([
   "recovered-no-end",
   "lost-session-retry",
   "two-leads",
+  "two-leads-same-path",
+  "two-leads-same-id",
+  "recovery-after-other-commit",
+  "prompt-snapshot-stale-head",
   "completed",
   "failed",
   "blocked",
@@ -190,6 +194,7 @@ it.live.each([
         >)
       | undefined;
     let failBranch = false;
+    let restarted = false;
     const memoryRuns: Array<Vcs.VcsProcessInput> = [];
     const interceptedGit = Layer.succeed(
       Vcs.VcsProcess,
@@ -267,11 +272,16 @@ it.live.each([
                 orgId,
                 wakeupId,
                 agentId:
-                  scenario === "two-leads" && wakeupId === "wake2"
+                  wakeupId === "wake2" &&
+                  (scenario.startsWith("two-leads") ||
+                    scenario === "recovery-after-other-commit" ||
+                    scenario === "prompt-snapshot-stale-head")
                     ? KinAgentId.make("fixture-lead-2")
                     : agentId,
                 level:
-                  scenario === "two-leads" ||
+                  scenario.startsWith("two-leads") ||
+                  scenario === "recovery-after-other-commit" ||
+                  scenario === "prompt-snapshot-stale-head" ||
                   scenario === "conflict" ||
                   scenario === "B5-journal" ||
                   scenario === "read-during-record" ||
@@ -282,7 +292,9 @@ it.live.each([
                 startedAt: "2026-11-08T00:00:00.000Z",
                 eventIds: [],
                 stagedReceipts:
-                  scenario === "lost-session-retry" || scenario === "recovered-no-end",
+                  scenario === "lost-session-retry" ||
+                  scenario === "recovered-no-end" ||
+                  (scenario === "recovery-after-other-commit" && restarted),
                 sources: new Map<
                   string,
                   Writer.WakeupContext["sources"] extends ReadonlyMap<string, infer S> ? S : never
@@ -382,6 +394,14 @@ it.live.each([
         expect((yield* writer.stage(orgId, "wake2", two).pipe(Effect.result))._tag).toBe("Failure");
         yield* fs.rename(`${paths.writer}/.git/refs-moved`, `${paths.writer}/.git/refs`);
         const first = yield* writer.commitWakeup(orgId, "wake1", "completed");
+        // The first lead's commit holds none of the second lead's staged work.
+        expect(
+          (yield* git(paths.writer, ["show", `${first.commit}:claims/two.md`]).pipe(Effect.result))
+            ._tag,
+        ).toBe("Failure");
+        expect(
+          yield* git(paths.writer, ["show", `${first.commit}:journal/2026/11-08.md`]),
+        ).not.toContain("Second lead note.");
         const second = yield* writer.commitWakeup(orgId, "wake2", "completed");
         expect(yield* git(paths.writer, ["rev-parse", `${second.commit}^`])).toBe(first.commit);
         expect(yield* git(paths.writer, ["show", `${second.commit}:claims/one.md`])).toContain(
@@ -397,6 +417,71 @@ it.live.each([
         expect(journal).toContain("First lead note.");
         expect(journal).toContain("Second lead note.");
         expect(cards.map((card) => card.wakeupId)).toEqual(["wake1", "wake2"]);
+        return;
+      }
+      if (scenario === "two-leads-same-path" || scenario === "two-leads-same-id") {
+        const first = {
+          path: scenario === "two-leads-same-id" ? "claims/first.md" : "claims/shared.md",
+          sourceEventId: "owner",
+          content: fixtureItem({ id: "shared", kind: "claim", title: "First title", links: [] }),
+        };
+        const second = {
+          path: "claims/shared.md",
+          sourceEventId: "owner",
+          content: fixtureItem({ id: "shared", kind: "claim", title: "Second title", links: [] }),
+        };
+        yield* writer.stage(orgId, "wake1", first);
+        yield* writer.stage(orgId, "wake2", second);
+        const committed = yield* writer.commitWakeup(orgId, "wake2", "completed");
+        // The first lead validated against the old head: at this one its write conflicts, so
+        // its commit refuses rather than erasing the other lead's or duplicating its id.
+        const result = yield* writer.commitWakeup(orgId, "wake1", "completed").pipe(Effect.result);
+        expect(result._tag).toBe("Failure");
+        if (result._tag === "Failure") expect(result.failure._tag).toBe("MemorySyncConflict");
+        expect(yield* git(paths.writer, ["rev-parse", "HEAD"])).toBe(committed.commit);
+        expect(
+          yield* git(paths.writer, ["show", `${committed.commit}:claims/shared.md`]),
+        ).toContain("Second title");
+        return;
+      }
+      if (scenario === "recovery-after-other-commit") {
+        yield* writer.stage(orgId, "wake1", {
+          path: "claims/one.md",
+          sourceEventId: "owner",
+          content: fixtureItem({ id: "one", kind: "claim", title: "First claim", links: [] }),
+        });
+        const first = yield* writer.commitWakeup(orgId, "wake1", "completed");
+        yield* writer.stage(orgId, "wake2", {
+          path: "claims/two.md",
+          sourceEventId: "owner",
+          content: fixtureItem({ id: "two", kind: "claim", title: "Second claim", links: [] }),
+        });
+        const second = yield* writer.commitWakeup(orgId, "wake2", "completed");
+        // A restart now recovers wake1 with only its receipts: its commit is in history,
+        // just no longer at the branch head, so nothing is recommitted or reported lost.
+        restarted = true;
+        yield* writer.appendJournal(orgId, "wake1", ["Lead ended without calling kin_end."]);
+        expect(yield* writer.commitWakeup(orgId, "wake1", "completed")).toEqual(first);
+        expect(yield* git(paths.writer, ["rev-parse", "HEAD"])).toBe(second.commit);
+        const journal = yield* git(paths.writer, [
+          "show",
+          `${second.commit}:journal/2026/11-08.md`,
+        ]);
+        expect(journal).not.toContain("lost on restart");
+        expect(journal).not.toContain("Lead ended without calling kin_end.");
+        return;
+      }
+      if (scenario === "prompt-snapshot-stale-head") {
+        const pinned = yield* memory.prepareWakeup(orgId, "wake1");
+        yield* writer.stage(orgId, "wake2", {
+          path: "claims/two.md",
+          sourceEventId: "owner",
+          content: fixtureItem({ id: "two", kind: "claim", title: "Second claim", links: [] }),
+        });
+        yield* writer.commitWakeup(orgId, "wake2", "completed");
+        // The other lead's commit moved the head; wake1's prompt still reads its own pin.
+        const snapshot = yield* memory.readPromptSnapshot(orgId, pinned.head);
+        expect(snapshot.rules).toBe("Invented rules\n");
         return;
       }
       if (scenario === "lost-session-retry") {

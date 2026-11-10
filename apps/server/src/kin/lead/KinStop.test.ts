@@ -343,7 +343,11 @@ describe("KinStop", () => {
           Deferred.await(ready).pipe(
             Effect.flatMap((stop) => stop.pause(owner, { orgId })),
             Effect.orDie,
-            Effect.as({ head: "abc", indexAsOf: DateTime.makeUnsafe("2026-11-08T00:00:00.000Z") }),
+            Effect.as({
+              head: "abc",
+              indexAsOf: DateTime.makeUnsafe("2026-11-08T00:00:00.000Z"),
+              read: "/private/tmp",
+            }),
           );
         yield* Effect.gen(function* () {
           yield* seed;
