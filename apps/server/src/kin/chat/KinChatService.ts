@@ -20,6 +20,8 @@ import {
   type KinAuthor,
   type KinAgentId,
   type ThreadId,
+  type EnvironmentId,
+  type KinTaskCardState,
   type KinChat,
   type KinChatListEvent,
   type KinChatStreamEvent,
@@ -155,6 +157,11 @@ export class KinChatService extends Context.Service<
       readonly threadId: ThreadId;
       readonly title: string;
       readonly model: string | null;
+      /** A thread in a linked environment: no thread here to read, so the caller says its status. */
+      readonly remote?: {
+        readonly environmentId: EnvironmentId;
+        readonly status: KinTaskCardState["status"];
+      };
     }) => Effect.Effect<KinWidget, ServiceError, OrchestratorV2 | ServerEnvironment>;
     /** Server-only, like createTaskCard: Kin's worker launcher closes and reopens worker cards. */
     readonly setTaskCardClosed: (input: {
@@ -162,6 +169,13 @@ export class KinChatService extends Context.Service<
       readonly chatId: KinChatId;
       readonly threadId: ThreadId;
       readonly closed: boolean;
+    }) => Effect.Effect<KinWidget, ServiceError>;
+    /** Server-only: a remote card's live fields, which no thread here can refresh. */
+    readonly setTaskCardState: (input: {
+      readonly orgId: KinOrgId;
+      readonly chatId: KinChatId;
+      readonly threadId: ThreadId;
+      readonly state: Pick<KinTaskCardState, "status" | "pullRequests" | "lastError">;
     }) => Effect.Effect<KinWidget, ServiceError>;
     readonly act: (
       identity: PersonCaller,
@@ -1166,9 +1180,12 @@ const make = Effect.gen(function* () {
       if (input.orgId !== "kin-default") return yield* notFound;
       const environment = yield* ServerEnvironment;
       const orchestrator = yield* OrchestratorV2;
-      const shell = yield* orchestrator
-        .getThreadShell(input.threadId)
-        .pipe(Effect.orElseSucceed(() => null));
+      const shell =
+        input.remote === undefined
+          ? yield* orchestrator
+              .getThreadShell(input.threadId)
+              .pipe(Effect.orElseSucceed(() => null))
+          : undefined;
       if (shell === null) return yield* notFound;
       const agent = yield* requireRecord(
         repo.getAgent({ orgId: input.orgId, agentId: input.authorAgentId }),
@@ -1209,10 +1226,10 @@ const make = Effect.gen(function* () {
         taskId: input.threadId,
         environmentId: yield* environment.getEnvironmentId,
         threadId: input.threadId,
-        remoteEnvironmentId: null,
+        remoteEnvironmentId: input.remote?.environmentId ?? null,
         title: input.title,
         model: input.model,
-        status: "waiting",
+        status: input.remote?.status ?? "waiting",
         pullRequests: [],
         lastError: null,
         updatedAt,
@@ -1250,7 +1267,7 @@ const make = Effect.gen(function* () {
         widgetClass: "native",
         type: "task",
         revision: 1,
-        state: TaskCard.taskCardState(state, shell, updatedAt),
+        state: shell === undefined ? state : TaskCard.taskCardState(state, shell, updatedAt),
         source: null,
         feed: null,
         awaiting: [],
@@ -1283,6 +1300,28 @@ const make = Effect.gen(function* () {
       if (input.closed)
         for (const item of yield* repo.waitingForWidget(widget)) yield* resolve(item, "closed");
       yield* sql.afterCommit(cards.track(widget));
+      yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
+      return widget;
+    }, transaction),
+    setTaskCardState: Effect.fn("KinChatService.setTaskCardState")(function* (input) {
+      const existing = yield* requireRecord(
+        repo.getWidget({ orgId: input.orgId, widgetId: yield* taskCardWidgetId(input) }),
+      );
+      if (existing.type !== "task" || existing.chatId !== input.chatId) return yield* notFound;
+      const previous = yield* TaskCard.decodeTaskCardEffect(existing.state).pipe(
+        Effect.mapError(() => invalidState),
+      );
+      if (previous.remoteEnvironmentId === null) return yield* invalidState;
+      const next = { ...previous, ...input.state };
+      if (existing.closedAt !== null || TaskCard.taskCardEquivalent(next, previous))
+        return existing;
+      const updatedAt = yield* now;
+      const widget = yield* repo.updateWidget({
+        ...existing,
+        state: { ...next, updatedAt },
+        expectedRevision: existing.revision,
+        updatedAt,
+      });
       yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
       return widget;
     }, transaction),

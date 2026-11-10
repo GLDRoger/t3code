@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
+  EnvironmentId,
   KinAgentId,
   KinChatId,
   KinDeferralCard,
@@ -32,7 +33,7 @@ import * as Budget from "../lead/KinBudget.ts";
 import * as Queue from "../lead/KinEventQueue.ts";
 import * as LeadDelivery from "../lead/LeadDelivery.ts";
 import { leadWakeup } from "../lead/LeadDelivery.testkit.ts";
-import { WorkerLaunchGate } from "../lead/Workers.ts";
+import * as WorkerEnvironment from "../lead/workerEnvironment.ts";
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import { fakeRepository } from "../memory/__fixtures__/repository.ts";
 import * as Memory from "../memory/Memory.ts";
@@ -89,12 +90,21 @@ const fakeGithub = (states: Map<string, Omit<GithubLinkState, "link">>) => ({
       ),
     ),
 });
-// Stands in for LEAD-11, the worker release gate and #44's GitHub client.
+const workerEnvironment = (configured: boolean) =>
+  WorkerEnvironment.KinWorkerEnvironment.of({
+    environmentId: configured ? Option.some(EnvironmentId.make("workers")) : Option.none(),
+    call: Effect.fn("test.workerEnvironmentCall")(function* () {
+      return yield* Effect.die("Deferral tests start no workers.");
+    }),
+    stopServer: Effect.die("Deferral tests start no workers."),
+    startServer: Effect.die("Deferral tests start no workers."),
+  });
+// Stands in for LEAD-11, the worker environment and #44's GitHub client.
 const openGates =
   (states: Map<string, Omit<GithubLinkState, "link">>, stopped = false) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
-      Effect.provideService(WorkerLaunchGate, true),
+      Effect.provideService(WorkerEnvironment.KinWorkerEnvironment, workerEnvironment(true)),
       Effect.provideService(Deferrals.KinDeferralStopSwitch, {
         isStopped: () => Effect.succeed(stopped),
       }),
@@ -435,7 +445,7 @@ it.effect(
           }),
         ),
         yield* tap("start_now", "gated", staged).pipe(
-          Effect.provideService(WorkerLaunchGate, false),
+          Effect.provideService(WorkerEnvironment.KinWorkerEnvironment, workerEnvironment(false)),
         ),
       ];
       yield* sql`UPDATE kin_leads SET level = 'L1' WHERE org_id = ${orgId}`;

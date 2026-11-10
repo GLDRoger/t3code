@@ -1,0 +1,11 @@
+# Weekly: a link lasts 30 days, so a missed week or two still leaves it valid.
+[Unit]
+Description=Renew kin-server's link to Kin's worker environment weekly
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target

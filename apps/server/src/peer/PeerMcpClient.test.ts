@@ -237,3 +237,90 @@ it.effect("renews a missing peer session once and reuses its replacement", () =>
     ]);
   }).pipe(Effect.scoped),
 );
+
+it.effect.each(["initialize", "initialized", "answer"] as const)(
+  "cancels the %s body once it grows past its byte ceiling",
+  (endlessAt) =>
+    Effect.gen(function* () {
+      let calls = 0;
+      let sent = 0;
+      let cancelled = false;
+      const endless = () =>
+        new ReadableStream<Uint8Array>({
+          pull: (controller) => {
+            sent += 64 * 1024;
+            controller.enqueue(new Uint8Array(64 * 1024).fill(0x20));
+          },
+          cancel: () => {
+            cancelled = true;
+          },
+        });
+      const http = HttpClient.make((request) =>
+        Effect.sync(() => {
+          const index = calls++;
+          const endlessHere = ["initialize", "initialized", "answer"].indexOf(endlessAt) === index;
+          const body =
+            index === 2
+              ? JSON.stringify({ result: { content: [{ type: "text", text: '{"modes":"ok"}' }] } })
+              : "";
+          return HttpClientResponse.fromWeb(
+            request,
+            new Response(endlessHere ? endless() : body, {
+              status: index === 1 ? 202 : 200,
+              headers: {
+                "content-type": "application/json",
+                ...(index === 0 ? { "mcp-session-id": "s" } : {}),
+              },
+            }),
+          );
+        }),
+      );
+      const box = descriptorOf("environment-box", "Box");
+      const context = yield* Layer.build(
+        PeerMcpClient.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.succeed(HttpClient.HttpClient, http),
+              Layer.mock(PeerLinks.PeerLinks)({
+                resolve: () =>
+                  Effect.succeed({
+                    link: {
+                      environmentId: box.environmentId,
+                      label: box.label,
+                      urls: ["https://peer.example"],
+                      access: "auto",
+                      linkedAt: DateTime.makeUnsafe(0),
+                      expiresAt: DateTime.makeUnsafe(1),
+                      lastReachedAt: null,
+                      lastError: null,
+                    },
+                    url: "https://peer.example",
+                    token: "fixture",
+                  }),
+                recordOutcome: () => Effect.void,
+              }),
+            ),
+          ),
+        ),
+      );
+      const client = Context.get(context, PeerMcpClient.PeerMcpClient);
+      const answer = yield* client
+        .call({
+          environmentId: box.environmentId,
+          tool: "probe",
+          arguments: {},
+          limits: { runtimeMode: "approval-required", interactionMode: "plan" },
+          success: Result,
+          maxResponseBytes: 1024 * 1024,
+        })
+        .pipe(Effect.result);
+      // A session's opening bodies are read only up to a small cap; the session still opens.
+      if (endlessAt === "answer")
+        expect(answer).toMatchObject({
+          failure: { message: "The linked environment's answer was too large." },
+        });
+      else expect(answer).toMatchObject({ success: { modes: "ok" } });
+      expect(cancelled).toBe(true);
+      expect(sent).toBeLessThanOrEqual(endlessAt === "answer" ? 2 * 1024 * 1024 : 128 * 1024);
+    }).pipe(Effect.scoped),
+);

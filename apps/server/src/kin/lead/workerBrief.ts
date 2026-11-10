@@ -36,8 +36,14 @@ export const reportFormat = [
   "```",
 ].join("\n");
 
+/** What a build worker hears about publishing: it can't push, so Kin does. */
+export const publishNote = (branch: string) =>
+  `Commit your work on the branch \`${branch}\` in this worktree. Don't push or open a pull request: you have no GitHub write access. When your run ends, Kin pushes \`${branch}\` and opens a draft PR. Changes under .github/workflows are never published.`;
+
 export const buildBrief = (input: {
   readonly goal: string;
+  /** A build worker's branch, which Kin publishes. */
+  readonly branch?: string;
   readonly brief?: string;
   readonly quoted?: typeof Quoted.Type;
   readonly memory?: ReadonlyArray<{
@@ -59,6 +65,7 @@ export const buildBrief = (input: {
           "Review the work below independently. You get only its references, not how it was briefed.",
           quote("work to review", input.reviewRefs, true),
         ]),
+    ...(input.branch === undefined ? [] : [publishNote(input.branch)]),
     reportFormat,
   ].join("\n\n");
 

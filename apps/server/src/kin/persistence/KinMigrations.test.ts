@@ -138,6 +138,7 @@ describe("Kin migrations", () => {
           { migration_id: 29, name: "DropJudgeLog" },
           { migration_id: 30, name: "ManyLeads" },
           { migration_id: 31, name: "LeadDeliveries" },
+          { migration_id: 32, name: "WorkerEnvironment" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
@@ -226,6 +227,7 @@ describe("Kin migrations", () => {
           { migration_id: 29, name: "DropJudgeLog" },
           { migration_id: 30, name: "ManyLeads" },
           { migration_id: 31, name: "LeadDeliveries" },
+          { migration_id: 32, name: "WorkerEnvironment" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -337,6 +339,7 @@ describe("Kin migrations", () => {
         [29, "DropJudgeLog"],
         [30, "ManyLeads"],
         [31, "LeadDeliveries"],
+        [32, "WorkerEnvironment"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -373,6 +376,12 @@ describe("Kin migrations", () => {
       yield* sql`DROP TABLE kin_auth_key_repairs`;
       yield* sql`DROP TABLE kin_auth_session_keys`;
       yield* sql`DROP TABLE kin_worker_charges`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN environment_id`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN remote_project_id`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN repository_key`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN pull_request_url`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN pull_request_number`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN project_id`;
       yield* sql`ALTER TABLE kin_workers DROP COLUMN title`;
       yield* sql`ALTER TABLE kin_workers DROP COLUMN chat_id`;
       yield* sql`DROP TABLE kin_floor_notices`;
@@ -449,6 +458,7 @@ describe("Kin migrations", () => {
         [29, "DropJudgeLog"],
         [30, "ManyLeads"],
         [31, "LeadDeliveries"],
+        [32, "WorkerEnvironment"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,
@@ -505,6 +515,7 @@ describe("Kin migrations", () => {
         { migration_id: 29, name: "DropJudgeLog" },
         { migration_id: 30, name: "ManyLeads" },
         { migration_id: 31, name: "LeadDeliveries" },
+        { migration_id: 32, name: "WorkerEnvironment" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);
@@ -531,6 +542,12 @@ describe("Kin migrations", () => {
         yield* sql`ALTER TABLE kin_leads DROP COLUMN ${sql(column)}`;
       yield* sql`DROP TABLE kin_lead_deliveries`;
       yield* sql`DROP TABLE kin_scheduled_tasks`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN environment_id`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN remote_project_id`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN repository_key`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN pull_request_url`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN pull_request_number`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN project_id`;
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 27`;
       for (const [id, subject, method, ip, revoked] of [
         ["phone", "one-time-token", "bearer-access-token", "100.64.0.7", null],
@@ -553,6 +570,7 @@ describe("Kin migrations", () => {
         [29, "DropJudgeLog"],
         [30, "ManyLeads"],
         [31, "LeadDeliveries"],
+        [32, "WorkerEnvironment"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT session_id, via FROM kin_auth_paired_sessions ORDER BY session_id`,
@@ -566,6 +584,36 @@ describe("Kin migrations", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("K032 upgrades a database at K031_LeadDeliveries", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const workerColumns = [
+        "environment_id",
+        "project_id",
+        "remote_project_id",
+        "repository_key",
+        "pull_request_url",
+        "pull_request_number",
+      ];
+      for (const column of workerColumns)
+        yield* sql`ALTER TABLE kin_workers DROP COLUMN ${sql(column)}`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 32`;
+      assert.deepStrictEqual((yield* kinHistory).at(-1), {
+        migration_id: 31,
+        name: "LeadDeliveries",
+      });
+      assert.deepStrictEqual(yield* runKinMigrations(), [[32, "WorkerEnvironment"]]);
+      const columns = yield* sql<{ name: string }>`
+        SELECT name FROM pragma_table_info('kin_workers')`;
+      for (const column of workerColumns)
+        assert.include(
+          columns.map((row) => row.name),
+          column,
+        );
+      assert.deepStrictEqual(yield* runKinMigrations(), []);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("refuses to start when a registered migration sits below the latest applied one", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -576,7 +624,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 31");
+      assert.include(String(exit), "below the latest applied migration 32");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -674,6 +722,12 @@ describe("Kin migrations", () => {
           ended_at: 1794009600000,
           title: "Fix",
           chat_id: "chat",
+          environment_id: "worker-env",
+          project_id: "project",
+          remote_project_id: "remote-project",
+          repository_key: "github.com/acme/app",
+          pull_request_url: null,
+          pull_request_number: null,
         },
         kin_memory_reads: { org_id: "org", item_id: "fixture-id", last_read_at: 1794009600000 },
         kin_cursor: { org_id: "org", consumer: "worker-tracker", after_sequence: 42 },

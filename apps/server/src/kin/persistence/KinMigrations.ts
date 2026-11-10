@@ -33,6 +33,7 @@ import WakeupTimings from "./migrations/K028_WakeupTimings.ts";
 import DropJudgeLog from "./migrations/K029_DropJudgeLog.ts";
 import ManyLeads from "./migrations/K030_ManyLeads.ts";
 import LeadDeliveries from "./migrations/K031_LeadDeliveries.ts";
+import WorkerEnvironment from "./migrations/K032_WorkerEnvironment.ts";
 
 const table = "kin_sql_migrations";
 const run = Migrator.make({});
@@ -68,6 +69,7 @@ const loader = Migrator.fromRecord({
   "29_DropJudgeLog": DropJudgeLog,
   "30_ManyLeads": ManyLeads,
   "31_LeadDeliveries": LeadDeliveries,
+  "32_WorkerEnvironment": WorkerEnvironment,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that
