@@ -15,13 +15,13 @@ export function KinAvatar(props: { readonly avatar: KinAvatarView }) {
       accessible={false}
       importantForAccessibility="no-hide-descendants"
       className={cn(
-        "size-10 items-center justify-center",
+        "size-10 items-center justify-center overflow-hidden",
         kind === "agent" && "rounded-[12px] border-[1.5px] border-primary",
         kind === "person" && "rounded-full border border-secondary-border bg-secondary",
         kind === "group" && "rounded-[12px] border border-secondary-border bg-secondary",
       )}
     >
-      <Blobatar name={seed} size={28} />
+      <Blobatar name={seed} size={36} />
     </View>
   );
 }

@@ -13,13 +13,13 @@ export function KinAvatar(props: { readonly avatar: KinAvatarView }) {
     <span
       aria-hidden
       className={cn(
-        "flex size-9 shrink-0 items-center justify-center",
+        "flex size-9 shrink-0 items-center justify-center overflow-hidden",
         kind === "agent" && "rounded-lg border-2 border-primary",
         kind === "person" && "rounded-full border bg-secondary",
         kind === "group" && "rounded-lg border bg-secondary",
       )}
     >
-      <Blobatar name={seed} size={26} alt="" draggable={false} />
+      <Blobatar name={seed} size={32} alt="" draggable={false} />
     </span>
   );
 }
