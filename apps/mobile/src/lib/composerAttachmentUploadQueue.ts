@@ -4,6 +4,8 @@ import { clampFileAttachmentUploadBytes } from "@t3tools/client-runtime/state/at
 import { parseLegacyNewTaskDraftKey } from "../state/new-task-draft-key";
 import type { DraftComposerAttachment } from "./composerImages";
 
+export const KIN_DRAFT_PREFIX = "kin:";
+
 export interface ComposerAttachmentUploadRequest {
   readonly environmentId: EnvironmentId;
   readonly attachment: DraftComposerAttachment;
@@ -44,10 +46,14 @@ export function composerDraftEnvironmentId(
     const legacy = parseLegacyNewTaskDraftKey(draftKey);
     return legacy === null ? null : EnvironmentId.make(legacy.environmentId);
   }
+  // A Kin chat's draft: `kin:<environment>:<org>:<chat>`.
+  const key = draftKey.startsWith(KIN_DRAFT_PREFIX)
+    ? draftKey.slice(KIN_DRAFT_PREFIX.length)
+    : draftKey;
   let match: EnvironmentId | null = null;
   for (const environmentId of environmentIds) {
     if (
-      draftKey.startsWith(`${environmentId}:`) &&
+      key.startsWith(`${environmentId}:`) &&
       (match === null || environmentId.length > match.length)
     ) {
       match = environmentId;

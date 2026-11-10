@@ -1,5 +1,6 @@
 import type { KinChatSummary } from "@t3tools/contracts";
 
+import { kinAttachmentSummary } from "./kinAttachments.ts";
 import type { KinInboxView } from "./kinInboxModel.ts";
 import {
   kinChatRowLabel,
@@ -37,6 +38,8 @@ function previewOf(chat: KinChatSummary, view: KinChatRowView): string {
     const { widgetId } = last;
     return CARD_PREVIEWS.find(([prefix]) => widgetId.startsWith(prefix))?.[1] ?? "Sent a card";
   }
+  if (last.body.trim() === "" && last.attachments !== undefined)
+    return kinAttachmentSummary(last.attachments);
   return view.preview;
 }
 

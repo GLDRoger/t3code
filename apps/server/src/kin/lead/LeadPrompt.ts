@@ -1,5 +1,7 @@
 import {
+  getProviderAttachmentLimitError,
   KinOrgId,
+  type KinAttachment,
   type KinMemoryItemId,
   type KinAgentId,
   type KinChatId,
@@ -54,6 +56,14 @@ export class KinLeadPrompt extends Context.Service<
     readonly steer: (
       input: Pick<KinLeadPromptInput, "orgId" | "agentId" | "events">,
     ) => Effect.Effect<string, KinLeadPromptError>;
+    /**
+     * The files on the messages these events carry, to hand the turn as its attachments. Only
+     * those: a wake-up starts from a fresh context, and an older message's files are named in
+     * its line of recent chat, not sent again.
+     */
+    readonly attachments: (
+      input: Pick<KinLeadPromptInput, "orgId" | "events">,
+    ) => Effect.Effect<ReadonlyArray<KinAttachment>, KinLeadPromptError>;
   }
   // @effect-diagnostics-next-line deterministicKeys:off -- LEAD-5 consumes this agreed service identity.
 >()("t3/kin/lead/LeadPrompt") {
@@ -243,12 +253,43 @@ export class KinLeadPrompt extends Context.Service<
                           : message.author.agentId,
                     }),
                 body: spoken(message),
+                ...attachedNames(message),
               },
               true,
             ),
           );
         }
         return { events, fromOwner: fromOwner && events.length > 0, replyDue };
+      });
+      const attachments = Effect.fn("KinLeadPrompt.attachments")(function* (
+        input: Pick<KinLeadPromptInput, "orgId" | "events">,
+      ) {
+        const found: Array<KinAttachment> = [];
+        for (const event of input.events.toSorted(
+          (left, right) =>
+            DateTime.toEpochMillis(left.receivedAt) - DateTime.toEpochMillis(right.receivedAt),
+        )) {
+          if (event._tag !== "chat.message") continue;
+          const stored = yield* chat
+            .getMessage({ orgId: input.orgId, messageId: event.messageId })
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new KinLeadPromptError({
+                    orgId: input.orgId,
+                    reason: "Could not read event message",
+                    cause,
+                  }),
+              ),
+            );
+          if (
+            Option.isSome(stored) &&
+            stored.value.chatId === event.chatId &&
+            stored.value.status === "posted"
+          )
+            found.push(...(stored.value.attachments ?? []));
+        }
+        return turnAttachments(found);
       });
       const steer = Effect.fn("KinLeadPrompt.steer")(function* (
         input: Pick<KinLeadPromptInput, "orgId" | "agentId" | "events">,
@@ -324,7 +365,7 @@ export class KinLeadPrompt extends Context.Service<
             (message) =>
               message.status === "posted" &&
               message.author._tag !== "system" &&
-              message.body.trim() !== "" &&
+              (message.body.trim() !== "" || (message.attachments?.length ?? 0) > 0) &&
               !quoted.has(message.messageId),
           );
           // Reactions are context: who reacted what, by role, never as instructions.
@@ -472,7 +513,7 @@ export class KinLeadPrompt extends Context.Service<
           boundedEvents(events),
         ].join("\n\n");
       });
-      return KinLeadPrompt.of({ build, steer });
+      return KinLeadPrompt.of({ build, steer, attachments });
     }),
   ).pipe(Layer.provide(MemoryCache.layer));
 }
@@ -518,6 +559,32 @@ const spoken = (message: KinMessage) =>
         onSome: (tap) => tap.text,
       })
     : message.body;
+
+/** One wake-up may batch several messages; past this many files the oldest are only named. */
+const TURN_ATTACHMENT_LIMIT = 20;
+const ATTACHED_NAME_LIMIT = 80;
+/** The names of a message's files: the model's only trace of one it is not handed. */
+const attachedNames = (message: KinMessage) =>
+  message.attachments === undefined || message.attachments.length === 0
+    ? {}
+    : {
+        attachments: message.attachments.map((attachment) =>
+          attachment.name.length <= ATTACHED_NAME_LIMIT
+            ? attachment.name
+            : `${attachment.name.slice(0, ATTACHED_NAME_LIMIT)}…`,
+        ),
+      };
+/** The newest files that fit what one provider turn takes, in the order they were sent. */
+const turnAttachments = (found: ReadonlyArray<KinAttachment>) => {
+  let kept: ReadonlyArray<KinAttachment> = [];
+  for (const attachment of found.toReversed()) {
+    const next = [attachment, ...kept];
+    if (next.length > TURN_ATTACHMENT_LIMIT || getProviderAttachmentLimitError(next) !== undefined)
+      break;
+    kept = next;
+  }
+  return kept;
+};
 
 /** `2026-11-10T19:36:48+05:30 Tue`: what a `due` needs, to the second, in the owner's zone. */
 const ownerClock = (at: number, timeZone: string | undefined) => {
@@ -621,9 +688,10 @@ function boundedRecent(
       : ownSeen
         ? RECENT_BODY_LIMIT.own
         : RECENT_BODY_LIMIT.ownLatest;
+    const attached = attachedNames(message).attachments;
     const line = `${from} ${chatClock(at, options.now, options.timeZone)}: ${encoded(clip(spoken(message), limit))}${
-      reactions.length === 0 ? "" : ` [${reactions.join(", ")}]`
-    }`;
+      attached === undefined ? "" : ` [attached, not shown: ${encoded(attached.join(", "))}]`
+    }${reactions.length === 0 ? "" : ` [${reactions.join(", ")}]`}`;
     if (lines.length > 0 && chars + line.length > window.chars) break;
     lines.push(line);
     chars += line.length;

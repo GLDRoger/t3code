@@ -49,6 +49,7 @@ import { ControlPill } from "../../components/ui/ControlPill";
 import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ErrorBanner } from "../../components/ui/ErrorBanner";
+import { FilePreviewModal, type FilePreviewSource } from "../../components/ui/FilePreviewModal";
 import { LoadingStrip } from "../../components/ui/LoadingStrip";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { useBarOverlap, useContentTopInset } from "../../components/ui/useBarInset";
@@ -741,6 +742,7 @@ function KinChatFeed(props: {
   const markdownStyle = useMarkdownPreviewStyles().nativeTextStyle;
   const ownMarkdownStyle = useOwnBubbleMarkdownStyle(markdownStyle);
   // Each open gets its own sheet, so a dismissal the list never heard of can't block the next.
+  const [previewFile, setPreviewFile] = useState<FilePreviewSource | null>(null);
   const [actions, setActions] = useState<{ readonly messageId: string; readonly open: number }>({
     messageId: "",
     open: 0,
@@ -1040,6 +1042,7 @@ function KinChatFeed(props: {
             markdownStyle={markdownStyle}
             ownMarkdownStyle={ownMarkdownStyle}
             direct={props.direct}
+            onPressPreview={setPreviewFile}
             onOpenActions={
               message.status !== "deleted" && (reactable || message.body.trim().length > 0)
                 ? () => openActions(message.messageId)
@@ -1078,6 +1081,8 @@ function KinChatFeed(props: {
         return (
           <KinPendingBubble
             entry={item.entry}
+            environmentId={props.environmentId}
+            onPressPreview={setPreviewFile}
             connected={props.connected}
             onEdit={() =>
               void editKinOutboxEntry(
@@ -1108,6 +1113,7 @@ function KinChatFeed(props: {
       chatId={props.chatId}
       environmentId={props.environmentId}
       recipient={props.title}
+      connected={props.connected}
       bottomInset={composerInset}
       onSend={jumpToEnd}
       onFocusChange={onComposerFocus}
@@ -1311,6 +1317,7 @@ function KinChatFeed(props: {
           {composer}
         </View>
       </KeyboardStickyView>
+      <FilePreviewModal source={previewFile} onRequestClose={() => setPreviewFile(null)} />
       {actionsMessage === null ? null : (
         <KinFeedMessageActions
           key={actions.open}

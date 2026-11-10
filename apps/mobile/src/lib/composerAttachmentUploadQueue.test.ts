@@ -274,6 +274,11 @@ describe("draft upload scope and offline submission", () => {
     expect(composerDraftEnvironmentId("new-task:environment-1:project", [], [])).toBe(
       environmentId,
     );
+    // A Kin chat's draft uploads to its host; an unknown host's waits.
+    expect(composerDraftEnvironmentId("kin:environment-1:org:chat", [environmentId], [])).toBe(
+      environmentId,
+    );
+    expect(composerDraftEnvironmentId("kin:elsewhere:org:chat", [environmentId], [])).toBeNull();
     expect(
       composerDraftEnvironmentId(
         "pending-task:message",

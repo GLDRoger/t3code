@@ -498,6 +498,80 @@ it.effect.each([
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect("hands the turn the files on its messages and only names an older message's", () =>
+  Effect.gen(function* () {
+    const repo = yield* seed;
+    yield* repo.addMember({
+      orgId,
+      chatId,
+      memberId,
+      principal: { _tag: "person", personId },
+      role: "owner",
+      joinedAt: timestamp,
+      leftAt: null,
+      mutedUntil: null,
+    });
+    const attachment = (name: string) => ({
+      type: "image" as const,
+      id: `kin-chat-00000000-0000-4000-8000-${name.length.toString().padStart(12, "0")}`,
+      name,
+      mimeType: "image/png",
+      sizeBytes: 68,
+    });
+    const earlier = attachment("yesterday-sketch.png");
+    const current = attachment("whiteboard.png");
+    for (const [id, files] of [
+      ["earlier", [earlier]],
+      ["current", [current]],
+    ] as const)
+      yield* repo.insertMessage({
+        orgId,
+        chatId,
+        messageId: KinMessageId.make(id),
+        author: { _tag: "human", personId, memberId },
+        kind: "text",
+        body: "",
+        attachments: files,
+        intent: null,
+        mentions: [],
+        replyTo: null,
+        widgetId: null,
+        floorRunId: null,
+        status: "posted",
+        sentBy: null,
+        createdAt: timestamp,
+        editedAt: null,
+        clientMessageId: null,
+      });
+    yield* repo.insertAgent({
+      orgId,
+      agentId,
+      displayName: "Fixture lead",
+      role: "lead",
+      ownerPersonId: personId,
+      createdAt: timestamp,
+    });
+    yield* repo.addMember({
+      orgId,
+      chatId,
+      memberId: KinMemberId.make("lead-member"),
+      principal: { _tag: "agent", agentId },
+      role: "member",
+      joinedAt: timestamp,
+      leftAt: null,
+      mutedUntil: null,
+    });
+    const prompt = yield* KinLeadPrompt;
+    const events = [event("current")];
+    expect(yield* prompt.attachments({ orgId, events })).toEqual([current]);
+    const built = yield* prompt.build({ ...input, events, lane: { chatId, mode: "reply" } });
+    expect(built.split("> BEGIN QUOTE: owner message")[1]).toContain('"whiteboard.png"');
+    expect(built.split("# Recent chat")[1]).toContain(
+      '[attached, not shown: "yesterday-sketch.png"]',
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect("quotes a choice tap as the owner's words, not its JSON", () =>
   Effect.gen(function* () {
     const repo = yield* seed;

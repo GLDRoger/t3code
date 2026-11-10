@@ -4,6 +4,7 @@ import {
   kinPlainText,
   type KinFeedRow,
 } from "@t3tools/client-runtime/kin/kinChatFeed";
+import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
 import type { KinOutboxEntry } from "@t3tools/client-runtime/kin/kinOutbox";
 import { KIN_REACTION_NAMES, type KinReactionChip } from "@t3tools/client-runtime/kin/kinReactions";
 import { kinSentences } from "@t3tools/client-runtime/kin/kinScreenState";
@@ -22,6 +23,7 @@ import { Button } from "../components/ui/button";
 import { Menu, MenuCheckboxItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { cn } from "../lib/utils";
 import { KinCard } from "./KinCards";
+import { KinMessageAttachments } from "./KinMessageAttachments";
 
 type MessageRow = Extract<KinFeedRow, { readonly type: "message" }>;
 type DraftRow = Extract<KinFeedRow, { readonly type: "draft" }>;
@@ -67,6 +69,7 @@ export function KinMessageRow(props: {
   readonly reactions: ReadonlyArray<KinReactionChip>;
   /** Toggles the viewer's reaction; null where they can't react, such as a privileged card. */
   readonly onReact: ((emoji: KinReactionEmoji) => void) | null;
+  readonly previewKey: string;
 }) {
   const { row, onReact } = props;
   const { message } = row;
@@ -74,13 +77,31 @@ export function KinMessageRow(props: {
   const suggested = message.status === "suggested";
   const hasBody = !deleted && message.body.trim().length > 0;
   const hasCard = !deleted && message.widgetId !== null;
-  const hasBubble = !hasCard || hasBody || suggested || message.editedAt !== null;
+  const attachments = deleted ? [] : (message.attachments ?? []);
+  // Files alone need no bubble; a deleted or edited message still says so in one.
+  const hasBubble =
+    hasBody ||
+    suggested ||
+    message.editedAt !== null ||
+    (!hasCard && (deleted || attachments.length === 0));
   const mine = new Set(props.reactions.flatMap((chip) => (chip.mine ? [chip.emoji] : [])));
   const canReact = onReact !== null && !deleted;
 
   return (
     <div className={cn(ROW, "group/kin-message", row.own ? "items-end" : "items-start")}>
       {props.head === null ? null : <HeadLine label={props.head} />}
+      {attachments.length === 0 ? null : (
+        <div
+          role={hasBubble ? undefined : "article"}
+          aria-label={hasBubble ? undefined : kinMessageLabel(row, formatTime(message.createdAt))}
+        >
+          <KinMessageAttachments
+            environmentId={props.environmentId}
+            attachments={attachments}
+            previewKey={props.previewKey}
+          />
+        </div>
+      )}
       <div className={cn("flex w-full items-center gap-1", row.own && "flex-row-reverse")}>
         {hasBubble ? (
           <div
@@ -100,7 +121,9 @@ export function KinMessageRow(props: {
             ) : null}
           </div>
         ) : null}
-        {canReact && hasBubble ? <KinReactMenu mine={mine} onReact={onReact} /> : null}
+        {canReact && (hasBubble || !hasCard) ? (
+          <KinReactMenu mine={mine} onReact={onReact} />
+        ) : null}
       </div>
       {hasCard ? (
         <div className="flex w-full items-start gap-1">
@@ -265,6 +288,8 @@ export function KinFoldRow(props: { readonly row: FoldRow; readonly onToggle: ()
 export function KinPendingRow(props: {
   readonly entry: KinOutboxEntry;
   readonly connected: boolean;
+  readonly environmentId: EnvironmentId;
+  readonly previewKey: string;
   /** Puts the body back in the composer and drops the refused send. */
   readonly onEdit: () => void;
   readonly onDiscard: () => void;
@@ -276,15 +301,33 @@ export function KinPendingRow(props: {
     : props.connected || entry.state === "sending"
       ? "Sending…"
       : "Waiting for connection";
+  const attachments = entry.attachments ?? [];
+  const hasBody = entry.body.trim().length > 0;
+  const label = kinSentences([`You: ${kinPlainText(kinMessageSummary(entry))}`, status]);
   return (
     <div className={cn(ROW, "items-end")}>
-      <div
-        role="article"
-        aria-label={kinSentences([`You: ${kinPlainText(entry.body)}`, status])}
-        className={cn(BUBBLE, "whitespace-pre-wrap", !failed && "opacity-70")}
-      >
-        {entry.body}
-      </div>
+      {attachments.length === 0 ? null : (
+        <div
+          role={hasBody ? undefined : "article"}
+          aria-label={hasBody ? undefined : label}
+          className={cn(!failed && "opacity-70")}
+        >
+          <KinMessageAttachments
+            environmentId={props.environmentId}
+            attachments={attachments}
+            previewKey={props.previewKey}
+          />
+        </div>
+      )}
+      {hasBody ? (
+        <div
+          role="article"
+          aria-label={label}
+          className={cn(BUBBLE, "whitespace-pre-wrap", !failed && "opacity-70")}
+        >
+          {entry.body}
+        </div>
+      ) : null}
       <div className="flex items-center gap-1 px-1">
         <span
           role={failed ? "alert" : undefined}
@@ -297,9 +340,11 @@ export function KinPendingRow(props: {
         </span>
         {failed ? (
           <>
-            <Button size="micro" variant="ghost" onClick={props.onEdit}>
-              Edit
-            </Button>
+            {hasBody ? (
+              <Button size="micro" variant="ghost" onClick={props.onEdit}>
+                Edit
+              </Button>
+            ) : null}
             <Button size="micro" variant="ghost-destructive" onClick={props.onDiscard}>
               Delete
             </Button>
