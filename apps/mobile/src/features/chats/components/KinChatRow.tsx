@@ -10,7 +10,8 @@ import { cn } from "../../../lib/cn";
 import type { KinChatListRow } from "@t3tools/client-runtime/kin/kinChatListRows";
 import { KinAvatar } from "./KinAvatar";
 
-const ROW_CLASS_NAME = "min-h-[76px] flex-row items-center gap-3 px-4 py-3";
+// The thread list row's insets (`THREAD_LIST_V2_ROW_CONTENT_CLASS_NAME`).
+const ROW_CLASS_NAME = "min-h-16 flex-row items-center gap-3 px-5 py-2.5";
 
 /**
  * One chat, as in any messenger: who, the last line, when, and on the right what wants a look.
@@ -27,7 +28,7 @@ export function KinChatRow(props: {
   const unread = view.unread > 0;
   const content = (
     <>
-      <KinAvatar avatar={view.avatar} size="large" status={row.working ? "working" : null} />
+      <KinAvatar avatar={view.avatar} />
       <View className="min-w-0 flex-1 gap-0.5">
         <View className="flex-row items-baseline gap-2">
           <Text
@@ -41,10 +42,7 @@ export function KinChatRow(props: {
             {view.title}
           </Text>
           {view.sentAt === null ? null : (
-            <Text
-              textRole="caption"
-              className={unread ? "font-t3-medium text-primary" : "text-foreground-muted"}
-            >
+            <Text textRole="caption" className="text-foreground-muted">
               <RelativeTime timestamp={view.sentAt} />
             </Text>
           )}
@@ -77,11 +75,9 @@ export function KinChatRow(props: {
             />
           ) : null}
           {row.needsYou ? (
-            <View className="rounded-full bg-primary/15 px-2 py-0.5">
-              <Text textRole="caption" className="font-t3-medium text-primary">
-                Needs you
-              </Text>
-            </View>
+            <Text textRole="caption" className="font-t3-bold text-warning-foreground">
+              Needs you
+            </Text>
           ) : null}
           {unread ? (
             <View className="min-w-5 items-center rounded-full bg-primary px-1.5 py-0.5">
@@ -144,12 +140,7 @@ export function KinChatRowSkeletons() {
           importantForAccessibility="no-hide-descendants"
           className={ROW_CLASS_NAME}
         >
-          <View
-            className={cn(
-              "size-12 bg-subtle-strong",
-              index === 0 ? "rounded-[14px]" : "rounded-full",
-            )}
-          />
+          <View className="size-10 rounded-[12px] bg-subtle-strong" />
           <View className="flex-1 gap-2">
             <View
               className="h-3.5 rounded bg-subtle-strong"

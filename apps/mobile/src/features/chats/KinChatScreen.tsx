@@ -46,6 +46,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AppBar } from "../../components/ui/AppBar";
 import { Button } from "../../components/ui/Button";
 import { ControlPill } from "../../components/ui/ControlPill";
+import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ErrorBanner } from "../../components/ui/ErrorBanner";
 import { LoadingStrip } from "../../components/ui/LoadingStrip";
@@ -73,8 +74,7 @@ import {
 } from "./components/KinComposer";
 import { KinFoldLine } from "./components/KinFoldLine";
 import { KinMessageSheet } from "./components/KinMessageSheet";
-import type { KinAvatarStatus } from "./components/KinAvatar";
-import { KinChatTitlePill } from "./components/KinChatTitlePill";
+import { KinChatTitle } from "./components/KinChatTitle";
 import { KinOfflineState, KinStaleNoticeView } from "./components/KinScreenState";
 import { KinIntro } from "./components/KinIntro";
 import {
@@ -427,67 +427,74 @@ const KIN_BAR_SUBTITLE_SIZE = 12;
 const KIN_BAR_MAX_FONT_SCALE = 1.5;
 
 /**
- * The glass bar. On iOS the title is a pill with the lead's avatar and a live dot; presence
- * moves to the status row above the composer, so the bar only names who the chat is with.
+ * The chat's bar, as on a thread: Back and who the chat is with. The avatar and name open the
+ * chat's details; presence sits in the status row above the composer.
  */
 function KinChatAppBar(props: {
   readonly title: string;
   readonly avatar: KinAvatarView;
-  readonly status: KinAvatarStatus | null;
   readonly presence: KinPresence | undefined;
   readonly tasks: string | null;
   readonly onBack: () => void;
-  readonly onOpenLead: (() => void) | null;
-  readonly menus: ComponentPropsWithRef<typeof AppBar>["menus"];
+  readonly details: KinChatDetails | null;
 }) {
-  const pill = Platform.OS === "ios";
-  const now = useKinPresenceNow(!pill && kinPresenceNeedsClock(props.presence));
-  const subtitle = pill ? null : (kinPresenceLine(props.presence, now)?.subtitle ?? props.tasks);
+  const ios = Platform.OS === "ios";
+  const now = useKinPresenceNow(!ios && kinPresenceNeedsClock(props.presence));
+  const subtitle = ios ? null : (kinPresenceLine(props.presence, now)?.subtitle ?? props.tasks);
   // The native bar sets fixed font sizes, so it follows Dynamic Type only through these.
   const scale = useNativeFontScale(KIN_BAR_MAX_FONT_SCALE);
-  const { title, avatar, status, tasks, onOpenLead } = props;
+  const { title, avatar, tasks, details } = props;
   const renderTitle = () => (
-    <KinChatHeaderTitle
-      title={title}
-      avatar={avatar}
-      status={status}
-      detail={tasks}
-      onPress={onOpenLead}
-    />
+    <KinChatHeaderTitle title={title} avatar={avatar} detail={tasks} details={details} />
   );
   return (
     <>
-      <AppBar title={title} subtitle={subtitle} onBack={props.onBack} menus={props.menus} />
+      <AppBar
+        title={title}
+        subtitle={subtitle}
+        onBack={props.onBack}
+        titleContent={
+          <KinChatTitle
+            title={title}
+            avatar={avatar}
+            detail={null}
+            onPress={details?.open}
+            accessibilityHint={details?.hint}
+          />
+        }
+      />
       {/* Always set, so going back to the default size resets the bar. */}
       <NativeStackScreenOptions
-        optionsVersion={[title, avatar.seed, avatar.kind, status, tasks, onOpenLead !== null]}
+        optionsVersion={[title, avatar.seed, avatar.kind, tasks, details?.hint]}
         options={{
           headerTitleStyle: { fontSize: KIN_BAR_TITLE_SIZE * scale, fontWeight: "800" },
           headerSubtitleStyle: { fontSize: KIN_BAR_SUBTITLE_SIZE * scale },
-          headerTitle: pill ? renderTitle : undefined,
+          headerTitle: ios ? renderTitle : undefined,
         }}
       />
     </>
   );
 }
 
+/** What a tap on the chat's avatar or name opens. */
+type KinChatDetails = { readonly open: () => void; readonly hint: string };
+
 function KinChatHeaderTitle(props: {
   readonly title: string;
   readonly avatar: KinAvatarView;
-  readonly status: KinAvatarStatus | null;
   readonly detail: string | null;
-  readonly onPress: (() => void) | null;
+  readonly details: KinChatDetails | null;
 }) {
   const { width } = useWindowDimensions();
   const maxWidth = Math.max(120, width - (use(HeaderItemsWidthContext) ?? 160));
   return (
-    <KinChatTitlePill
+    <KinChatTitle
       title={props.title}
       avatar={props.avatar}
-      status={props.status}
       detail={props.detail}
       maxWidth={maxWidth}
-      onPress={props.onPress ?? undefined}
+      onPress={props.details?.open}
+      accessibilityHint={props.details?.hint}
     />
   );
 }
@@ -525,21 +532,25 @@ function KinChatPage(props: {
 }) {
   const navigation = useNavigation();
   const lead = props.lead ?? null;
-  const menuItems = [
-    ...(lead === null
-      ? []
-      : [{ id: "lead", title: "Lead details", icon: "info.circle", onPress: lead.open }]),
-    ...(props.mute == null
-      ? []
-      : [
-          {
-            id: "mute",
-            title: props.mute.muted ? "Unmute notifications" : "Mute notifications",
-            icon: props.mute.muted ? "bell" : "bell.slash",
-            onPress: props.mute.toggle,
-          },
-        ]),
-  ];
+  const { mute } = props;
+  // A lead's details hold its mute; a chat without them asks about the mute directly.
+  const details: KinChatDetails | null =
+    lead !== null
+      ? { open: lead.open, hint: "Opens this lead's details" }
+      : mute == null
+        ? null
+        : {
+            hint: mute.muted ? "Offers to unmute this chat" : "Offers to mute this chat",
+            open: () =>
+              Dialog.confirm({
+                title: props.title,
+                message: mute.muted
+                  ? "Notifications from this chat are muted."
+                  : "You get a notification for each new message in this chat.",
+                confirmText: mute.muted ? "Unmute notifications" : "Mute notifications",
+                onConfirm: mute.toggle,
+              }),
+          };
   const topInset = useContentTopInset();
   const { state } = props;
   const tasks = state._tag === "ready" ? kinChatStatusLine(state.chat.value.widgets) : null;
@@ -548,22 +559,10 @@ function KinChatPage(props: {
       <KinChatAppBar
         title={props.title}
         avatar={props.avatar ?? { kind: "agent", seed: `chat:${props.chatId}` }}
-        status={
-          livePresence(state) !== undefined
-            ? "working"
-            : state._tag === "ready" && state.connected && state.chat.live
-              ? "online"
-              : null
-        }
         presence={livePresence(state)}
         tasks={tasks}
         onBack={() => navigation.goBack()}
-        onOpenLead={lead?.open ?? null}
-        menus={
-          menuItems.length === 0
-            ? undefined
-            : [{ title: "Chat options", icon: "ellipsis", items: menuItems }]
-        }
+        details={details}
       />
       <ScreenContent surface="screen">
         {state._tag === "ready" ? (
@@ -1304,7 +1303,6 @@ function KinChatFeed(props: {
                 icon="chevron.down"
                 label="New messages"
                 accessibilityLabel={`${unseen} new ${unseen === 1 ? "message" : "messages"}. Scroll to the latest.`}
-                className="border border-border shadow-md shadow-black/10"
                 onPress={jumpToEnd}
               />
             </View>
@@ -1377,25 +1375,12 @@ function KinFeedMessageActions(props: {
   );
 }
 
-/** The feed's markdown colours for text on the brand-coloured bubble. */
+/** The feed's markdown colours for text on T3's user bubble. */
 function useOwnBubbleMarkdownStyle(base: NativeMarkdownTextStyle): NativeMarkdownTextStyle {
   const text = String(
-    StyleSheet.flatten(useResolveClassNames("text-primary-foreground"))?.color ?? base.color,
+    StyleSheet.flatten(useResolveClassNames("text-user-bubble-foreground"))?.color ?? base.color,
   );
-  return {
-    ...base,
-    color: text,
-    strongColor: text,
-    mutedColor: text,
-    linkColor: text,
-    inlineCodeColor: text,
-    codeColor: text,
-    fileTextColor: text,
-    quoteMarkerColor: text,
-    dividerColor: text,
-    codeBackgroundColor: "rgba(255, 255, 255, 0.18)",
-    codeBlockBackgroundColor: "rgba(255, 255, 255, 0.18)",
-  };
+  return { ...base, color: text, strongColor: text };
 }
 
 // Messages fade under the floating bar instead of meeting it at a hard edge.

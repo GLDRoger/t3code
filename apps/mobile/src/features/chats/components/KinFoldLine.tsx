@@ -20,7 +20,7 @@ const firstLine = (markdown: string) =>
     ?.replace(/[*_`#>]/g, "")
     .trim() ?? "";
 
-/** Folded agent talk (DESIGN 8.3): one dashed line naming who talked and what they settled. */
+/** Folded agent talk (DESIGN 8.3): one line naming who talked and what they settled. */
 export function KinFoldLine(props: { readonly row: FoldRow; readonly onToggle: () => void }) {
   const { row } = props;
   const who = `${joinNames(row.authors)} talked it over.`;
@@ -33,19 +33,18 @@ export function KinFoldLine(props: { readonly row: FoldRow; readonly onToggle: (
         accessibilityLabel={[who, decision, count].filter(Boolean).join(" ")}
         accessibilityHint={`Double tap to ${row.expanded ? "hide" : "show"} the messages.`}
         accessibilityState={{ expanded: row.expanded }}
-        className="min-h-11 flex-row items-center gap-2 rounded-[16px] border border-dashed border-border px-3.5 py-2.5"
+        className="min-h-11 flex-row items-center gap-2 px-1 active:opacity-60"
         onPress={() => {
           void Haptics.selectionAsync();
           props.onToggle();
         }}
       >
-        <Text textRole="footnote" className="min-w-0 flex-1 text-foreground-secondary">
+        <Text textRole="footnote" className="min-w-0 shrink text-foreground-muted">
           {who}
-          {decision ? <Text className="font-t3-bold text-foreground"> {decision}</Text> : null}
-          <Text className="text-foreground-muted"> {count}</Text>
+          {decision ? <Text className="text-foreground"> {decision}</Text> : null} {count}
         </Text>
         <SymbolView
-          name={row.expanded ? "chevron.up" : "chevron.down"}
+          name={row.expanded ? "chevron.down" : "chevron.right"}
           size={12}
           tintColorClassName="accent-icon-subtle"
         />
