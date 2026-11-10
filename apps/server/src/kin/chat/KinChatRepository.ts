@@ -123,7 +123,7 @@ const AgentIdentityRow = Schema.Struct({
 });
 const agentColumns = `agent_id AS "agentId", org_id AS "orgId", display_name AS "displayName", role AS "role", owner_person_id AS "ownerPersonId"`;
 const ChatRow = KinChat;
-const chatColumns = `org_id AS "orgId", chat_id AS "chatId", kind AS "kind", title AS "title", team_id AS "teamId", last_seq AS "lastSeq", last_message_at AS "lastMessageAt", created_at AS "createdAt", archived_at AS "archivedAt"`;
+const chatColumns = `org_id AS "orgId", chat_id AS "chatId", kind AS "kind", title AS "title", team_id AS "teamId", last_seq AS "lastSeq", last_message_at AS "lastMessageAt", created_at AS "createdAt", archived_at AS "archivedAt", lead_agent_id AS "leadAgentId"`;
 const MemberRow = Schema.Struct({
   ...KinChatMember.fields,
   principal: Schema.fromJsonString(KinChatMember.fields.principal),
@@ -331,6 +331,14 @@ export class KinChatRepository extends Context.Service<
     readonly createChat: (
       input: Omit<KinChat, "lastSeq"> & {
         readonly directKey: typeof TrimmedNonEmptyString.Type | null;
+      },
+    ) => Effect.Effect<KinChat, RepositoryError>;
+    /** Changes a group's name, lead or archived time; fields left out stay as they are. */
+    readonly updateChat: (
+      input: ChatScope & {
+        readonly title?: KinChat["title"];
+        readonly leadAgentId?: KinAgentId | null;
+        readonly archivedAt?: IsoDateTime;
       },
     ) => Effect.Effect<KinChat, RepositoryError>;
     readonly findClientMessage: (
@@ -1168,8 +1176,8 @@ const make = Effect.gen(function* () {
         return yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* requireRecord(orgOne(input));
-            yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, team_id, direct_key, last_seq, last_message_at, created_at, archived_at)
- VALUES (${input.chatId}, ${input.orgId}, ${input.kind}, ${input.title}, ${input.teamId}, ${input.directKey}, 0, ${input.lastMessageAt}, ${input.createdAt}, ${input.archivedAt})
+            yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, team_id, direct_key, last_seq, last_message_at, created_at, archived_at, lead_agent_id)
+ VALUES (${input.chatId}, ${input.orgId}, ${input.kind}, ${input.title}, ${input.teamId}, ${input.directKey}, 0, ${input.lastMessageAt}, ${input.createdAt}, ${input.archivedAt}, ${input.leadAgentId ?? null})
  ON CONFLICT DO NOTHING`;
             return yield* requireRecord(
               SqlSchema.findOneOption({
@@ -1184,6 +1192,18 @@ const make = Effect.gen(function* () {
         );
       },
       Effect.mapError(toRepositoryError("KinChatRepository.createChat")),
+    ),
+    updateChat: Effect.fn("KinChatRepository.updateChat")(
+      function* (input) {
+        if (input.title !== undefined) yield* decodeChatTitle(input.title);
+        yield* sql`UPDATE kin_chats SET
+            title = ${input.title === undefined ? sql`title` : input.title},
+            lead_agent_id = ${input.leadAgentId === undefined ? sql`lead_agent_id` : input.leadAgentId},
+            archived_at = ${input.archivedAt === undefined ? sql`archived_at` : input.archivedAt}
+          WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
+        return yield* requireRecord(chatOne(input));
+      },
+      Effect.mapError(toRepositoryError("KinChatRepository.updateChat")),
     ),
     findClientMessage: Effect.fn("KinChatRepository.findClientMessage")(
       function (input) {

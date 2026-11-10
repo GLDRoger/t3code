@@ -725,9 +725,13 @@ it.effect(
         assert.strictEqual(failureOf(yield* sendFloor(post))._tag, "PersistenceSqlError");
         yield* sql`UPDATE kin_floor_runs SET mention_queue = ${before!.mention_queue}, last_speaker = NULL WHERE run_id = ${grant.run_id}`;
       }
-      yield* sql`UPDATE kin_floor_runs SET agent_turns = 1, last_speaker = 'other' WHERE run_id = ${grant.run_id}`;
+      // Once another agent has spoken, only an agent the message still owes a turn answers it.
+      const [owed] = yield* sql<{
+        mention_queue: string;
+      }>`SELECT mention_queue FROM kin_floor_runs WHERE run_id = ${grant.run_id}`;
+      yield* sql`UPDATE kin_floor_runs SET agent_turns = 1, last_speaker = 'other', mention_queue = '[]' WHERE run_id = ${grant.run_id}`;
       assert.include(failureOf(yield* sendFloor(post)), { reason: "invalid_state" });
-      yield* sql`UPDATE kin_floor_runs SET agent_turns = 0, last_speaker = NULL WHERE run_id = ${grant.run_id}`;
+      yield* sql`UPDATE kin_floor_runs SET agent_turns = 0, last_speaker = NULL, mention_queue = ${owed!.mention_queue} WHERE run_id = ${grant.run_id}`;
       const first = yield* sendFloor(post);
       assert.isTrue(Result.isSuccess(first));
       assert.deepStrictEqual(yield* sendFloor(post), first);
@@ -948,7 +952,7 @@ it.effect(
 );
 
 it.effect(
-  "requires explicit group grants and keeps the six-turn door closed until a human speaks",
+  "grants each agent a group message names one reply, and keeps the six-turn door closed until a human speaks",
   () =>
     Effect.gen(function* () {
       const { chat, person, chatService, sql } = yield* seed();
@@ -972,7 +976,7 @@ it.effect(
       const [grant] = yield* sql<{
         token: string;
         run_id: string;
-      }>`SELECT token, run_id FROM kin_floor_grants WHERE org_id = ${person.orgId} AND chat_id = ${chat.chatId} ORDER BY token`;
+      }>`SELECT token, run_id FROM kin_floor_grants WHERE org_id = ${person.orgId} AND chat_id = ${chat.chatId} AND agent_id = ${agentId} ORDER BY token`;
       assert.isDefined(grant);
       const post = {
         chatId: chat.chatId,
@@ -980,11 +984,11 @@ it.effect(
         intent: "answer",
         clientMessageId: "group-answer",
       } as const;
-      assert.include(failureOf(yield* sendFloor(post)), { reason: "floor_not_granted" });
-      assert.include(errorOf(yield* call("kin_chat_post", { ...post, floorGrant: grant.token })), {
+      // The grant is the agent's own row: a token that isn't its grant's opens nothing.
+      assert.include(failureOf(yield* sendFloor({ ...post, floorGrant: "forged" })), {
         reason: "floor_not_granted",
       });
-      const first = yield* sendFloor({ ...post, floorGrant: grant.token });
+      const first = yield* sendFloor(post);
       assert.isTrue(Result.isSuccess(first));
       assert.deepStrictEqual(
         yield* sql`SELECT agent_id FROM kin_floor_grants
@@ -1022,7 +1026,7 @@ it.effect(
       });
       const [fresh] = yield* sql<{
         token: string;
-      }>`SELECT token FROM kin_floor_grants WHERE org_id = ${person.orgId} AND run_id != ${grant.run_id} ORDER BY token`;
+      }>`SELECT token FROM kin_floor_grants WHERE org_id = ${person.orgId} AND run_id != ${grant.run_id} AND agent_id = ${agentId} ORDER BY token`;
       assert.isDefined(fresh);
       assert.isFalse(
         (yield* sendFloor({

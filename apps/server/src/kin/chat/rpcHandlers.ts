@@ -13,10 +13,11 @@ import * as LeadProvision from "../lead/KinLeadProvision.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { KinStop } from "../lead/KinStop.ts";
 import { KinOwnerTimeZone } from "../triggers/ownerTimeZone.ts";
-import { KinIdentity } from "./KinIdentity.ts";
+import { KinIdentity, type PersonIdentity } from "./KinIdentity.ts";
 import { KinChatService } from "./KinChatService.ts";
+import { KinGroups } from "./KinGroups.ts";
 
-const group = RpcGroup.make(...KinChatAndBudgetRpcs);
+const rpcs = RpcGroup.make(...KinChatAndBudgetRpcs);
 const unavailable = new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
 const disabled = new KinChatError({
   reason: "disabled",
@@ -57,13 +58,29 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
       stop: Context.get(kin.value.services.value, KinStop),
       timeZone: Context.get(kin.value.services.value, KinOwnerTimeZone),
       chat: Context.get(kin.value.services.value, KinChatService),
+      groups: Context.get(kin.value.services.value, KinGroups),
     };
   });
+  // Every group method: who the session is, then the one service call that decides.
+  const group = <A, E>(
+    run: (
+      groups: KinGroups["Service"],
+      people: ReadonlyArray<PersonIdentity>,
+    ) => Effect.Effect<A, E>,
+  ) =>
+    services.pipe(
+      Effect.flatMap(({ identity, groups }) =>
+        identity.resolve(session).pipe(Effect.flatMap((people) => run(groups, people))),
+      ),
+      Effect.tapError(logInfra),
+      Effect.mapError(mapError),
+      Effect.catchDefect(defect),
+    );
   const viewer = Effect.gen(function* () {
     const { identity, chat } = yield* services;
     return { chat, people: yield* identity.resolve(session) };
   });
-  return group.of({
+  return rpcs.of({
     "kin.budget.get": (input) =>
       services.pipe(
         Effect.flatMap(({ identity, budget }) =>
@@ -176,6 +193,15 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
         Effect.mapError(mapError),
         Effect.catchDefect(defect),
       ),
+    "kin.chat.members": (input) => group((groups, people) => groups.members(people, input)),
+    "kin.groups.create": (input) => group((groups, people) => groups.create(people, input)),
+    "kin.groups.addMember": (input) => group((groups, people) => groups.addMember(people, input)),
+    "kin.groups.removeMember": (input) =>
+      group((groups, people) => groups.removeMember(people, input).pipe(Effect.as({}))),
+    "kin.groups.setLead": (input) => group((groups, people) => groups.setLead(people, input)),
+    "kin.groups.rename": (input) => group((groups, people) => groups.rename(people, input)),
+    "kin.groups.delete": (input) =>
+      group((groups, people) => groups.remove(people, input).pipe(Effect.as({}))),
     "kin.chat.history": (input) =>
       viewer.pipe(
         Effect.flatMap(({ chat, people }) => chat.history(people, input)),

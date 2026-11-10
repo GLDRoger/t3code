@@ -472,6 +472,25 @@ describe("KinPushSender", () => {
       // Cut at a word, under the banner's length, and marked as cut.
       assert.isAtMost(Array.from(first?.body ?? "").length, 160);
       assert.match(first?.body ?? "", /^Payroll for November is ready to review\. .*ledger\.…$/);
+
+      // The lead's answer in the group rings whoever it is answering, named or not.
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json,
+          worker_projects_json, owner_chat_id)
+        VALUES ('lead_fin', 'org_01', 'Finance', 0, '[]', '[]', 'chat_dm')`;
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status,
+          event_ids)
+        VALUES ('wk_answer', 'org_01', 'lead_fin', 'opus', ${NOW}, 'running', '["ev_answer"]')`;
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+          received_at, queued_at, state, wakeup_id)
+        VALUES ('ev_answer', 'org_01', 'lead_fin', 'chat.message', 'P2',
+          ${JSON.stringify({ chatId: "chat_team", messageId: priyaSaid })}, ${NOW}, ${NOW},
+          'claimed', 'wk_answer')`;
+      apns.sent.length = 0;
+      yield* notify({ _tag: "message", orgId, messageId: yield* postMessage(sql, fin, "posted") });
+      assert.deepStrictEqual(
+        apns.sent.map((push) => push.token),
+        [memberPhone],
+      );
     }).pipe(Effect.provide(build(apns)));
   });
 

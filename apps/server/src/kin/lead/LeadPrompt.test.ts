@@ -868,7 +868,14 @@ it.effect(
         events: [event("now")],
         lane: { chatId, mode: "reply" },
       });
-      expect(built).toContain(`Your reply goes to chat "${chatId}", a group.`);
+      // The lead knows the room: which group, who is in it, and that all of them read it.
+      expect(built).toContain(
+        [
+          `Your reply goes to chat "${chatId}", a group.`,
+          'In this group: owner "Fixture", lead "Fixture lead" (you). Everyone in it reads your reply.',
+          "You are this group's lead: you answer a message that names nobody, and one that names you.",
+        ].join("\n"),
+      );
       // Someone is waiting on a reply turn, so staying silent is not offered.
       expect(built).not.toContain("NO_REPLY");
       expect(built).not.toContain("Memory index size");
@@ -899,8 +906,8 @@ it.effect(
       ).toBe(
         [
           "> BEGIN QUOTE: recent chat",
-          '> owner Sun 8 Nov 00:00: "Did the release go out?"',
-          '> owner Sun 8 Nov 00:02: "Also check the docs."',
+          '> owner "Fixture" Sun 8 Nov 00:00: "Did the release go out?"',
+          '> owner "Fixture" Sun 8 Nov 00:02: "Also check the docs."',
           "> END QUOTE",
         ].join("\n"),
       );

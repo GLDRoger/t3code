@@ -707,10 +707,19 @@ const make = Effect.gen(function* () {
       lastMessage = message;
       break;
     }
+    const group = chat.kind !== "direct";
+    const author =
+      group &&
+      lastMessage?.author._tag === "human" &&
+      lastMessage.author.memberId !== member.memberId
+        ? yield* repo.getPerson({ orgId: chat.orgId, personId: lastMessage.author.personId })
+        : Option.none();
     return {
       ...chat,
-      members: yield* repo.listMembers(chat),
+      // A list row never carries a group's member list; `kin.chat.members` does.
+      members: group ? [member] : yield* repo.listMembers(chat),
       lastMessage,
+      ...(Option.isSome(author) ? { lastAuthorName: author.value.displayName } : {}),
       unread: yield* repo.unreadCount(member),
       working:
         Option.isSome(presence) &&
@@ -1077,7 +1086,13 @@ const make = Effect.gen(function* () {
                   : Effect.succeed([event]),
               ),
               Stream.flattenIterable,
-              Stream.takeUntil((event) => event._tag === "member" && event.member.leftAt !== null),
+              // Only the viewer's own leaving ends their stream; the others stay in the chat.
+              Stream.takeUntil(
+                (event) =>
+                  event._tag === "member" &&
+                  event.member.leftAt !== null &&
+                  event.member.memberId === member.memberId,
+              ),
             ),
           );
         }),
@@ -1114,6 +1129,14 @@ const make = Effect.gen(function* () {
                   return yield* requireRecord(repo.getWaiting(event.item)).pipe(
                     Effect.map((item) => ({ _tag: "waiting" as const, item })),
                   );
+                // The viewer was taken out, or the group ended: the row leaves their list.
+                if (event.type === "member.removed") {
+                  const chat = yield* requireRecord(repo.getChat(event.member));
+                  return {
+                    _tag: "chat" as const,
+                    chat: { ...chat, members: [event.member], lastMessage: null, unread: 0 },
+                  };
+                }
                 const chatId =
                   event.type === "chat.created"
                     ? event.chat.chatId
@@ -1121,9 +1144,7 @@ const make = Effect.gen(function* () {
                       ? event.message.chatId
                       : event.type === "widget.updated"
                         ? event.widget.chatId
-                        : event.type === "member.removed"
-                          ? event.member.chatId
-                          : event.chatId;
+                        : event.chatId;
                 return yield* summary(viewer, chatId).pipe(
                   Effect.map((chat) => ({ _tag: "chat" as const, chat })),
                 );

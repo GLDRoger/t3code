@@ -80,6 +80,7 @@ const LANE_OF = `CASE WHEN e.tag IN ('chat.message', 'widget.action', 'chat.reac
   THEN json_extract(e.json, '$.chatId')
   WHEN e.tag = 'deferral.due' AND json_extract(e.json, '$.origin.chatId') IS NOT NULL
   THEN 'origin:' || json_extract(e.json, '$.origin.agentId') || ':' || json_extract(e.json, '$.origin.chatId')
+    || ':' || COALESCE(json_extract(e.json, '$.origin.personId'), '')
   ELSE l.owner_chat_id END`;
 
 /** An owner message waits only for the rest of its burst, and never longer than the cap. */

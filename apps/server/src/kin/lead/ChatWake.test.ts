@@ -66,6 +66,7 @@ const message = (
     readonly agent?: boolean;
     readonly tap?: string;
     readonly chat?: string;
+    readonly mentions?: ReadonlyArray<string>;
   } = {},
 ) =>
   decodeMessage({
@@ -90,7 +91,7 @@ const message = (
         ? "Can you check the release?"
         : JSON.stringify({ widgetId: "widget", revision: 1, actionId: options.tap }),
     intent: options.agent === true ? "answer" : null,
-    mentions: [],
+    mentions: options.mentions ?? [],
     replyTo: null,
     widgetId: null,
     floorRunId: null,
@@ -110,7 +111,8 @@ const storeMessage = Effect.fn("test.storeMessage")(function* (row: KinMessage) 
     VALUES (${row.messageId}, ${row.orgId}, ${row.chatId}, ${row.seq}, ${row.author._tag},
       ${human?.personId ?? null}, ${agent?.agentId ?? null}, ${agent?.ownerPersonId ?? null},
       ${agent?.threadId ?? null}, ${agent?.memberId ?? human?.memberId ?? null}, ${row.authorRole},
-      ${row.kind}, ${row.body}, ${row.intent}, '[]', ${row.status}, ${row.createdAt})`;
+      ${row.kind}, ${row.body}, ${row.intent}, ${JSON.stringify(row.mentions)}, ${row.status},
+      ${row.createdAt})`;
 });
 
 // Records every enqueue attempt and result. `settle` publishes a post the bridge ignores and waits
@@ -321,17 +323,48 @@ describe("ChatWake", () => {
     }).pipe(Effect.provide(services)),
   );
 
-  it.effect("never wakes a lead for group posts, live or on catch-up, until CHAT-11", () =>
-    Effect.gen(function* () {
-      yield* seed("a");
-      yield* seed("g", "team_group");
-      yield* storeMessage(message("g", "missed-group"));
-      const { attempts, settle } = yield* start();
-      yield* post("g", "group", { seq: 2 });
-      yield* settle;
-      assert.deepStrictEqual(attempts, []);
-      assert.deepStrictEqual(yield* storedEvents(), []);
-    }).pipe(Effect.provide(services)),
+  it.effect(
+    "in a group, wakes the leads a message names, else the group's lead, live and on catch-up",
+    () =>
+      Effect.gen(function* () {
+        yield* seed("a");
+        yield* seed("g", "team_group");
+        const sql = yield* SqlClient.SqlClient;
+        // A second lead in the group, and one who left it.
+        for (const [id, leftAt] of [
+          ["growth", null],
+          ["gone", createdAt],
+        ] as const) {
+          yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+            VALUES (${id}, 'g', ${id}, 'lead', 'owner-g', ${createdAt})`;
+          yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at, left_at)
+            VALUES (${`${id}-member`}, 'g', 'chat-g', 'agent', ${id}, 'member', ${createdAt}, ${leftAt})`;
+          yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+            VALUES (${id}, 'g', ${id}, 0, '{}', '[]', 'chat-g')`;
+        }
+        yield* storeMessage(message("g", "missed", { mentions: ["growth-member"] }));
+        const { attempts, settle } = yield* start();
+        yield* post("g", "unnamed", { seq: 2 });
+        yield* post("g", "named", { seq: 3, mentions: ["growth-member"] });
+        yield* post("g", "both", { seq: 4, mentions: ["lead-member-g", "growth-member"] });
+        // A lead's own post names another lead and wakes nobody; nor does naming one who left.
+        yield* post("g", "from-lead", { seq: 5, agent: true, mentions: ["growth-member"] });
+        yield* post("g", "left", { seq: 6, mentions: ["gone-member"] });
+        yield* settle;
+        yield* sql`UPDATE kin_chats SET lead_agent_id = 'growth' WHERE chat_id = 'chat-g'`;
+        yield* post("g", "new-lead", { seq: 7 });
+        yield* settle;
+        assert.deepStrictEqual(keys(attempts), [
+          "chat-message:missed:growth",
+          "chat-message:unnamed:lead-g",
+          "chat-message:named:growth",
+          "chat-message:both:lead-g",
+          "chat-message:both:growth",
+          // Nobody it names is here, so the group's lead takes it.
+          "chat-message:left:lead-g",
+          "chat-message:new-lead:growth",
+        ]);
+      }).pipe(Effect.provide(services)),
   );
 
   it.effect("catches up on owner messages the lead has not answered since its last post", () =>
@@ -377,11 +410,16 @@ describe("ChatWake", () => {
     Effect.gen(function* () {
       yield* seed("a");
       const sql = yield* SqlClient.SqlClient;
-      // A group the lead is in, and a retired lead's direct chat, each busier than the limit.
+      // A group where every post names another lead, and a retired lead's direct chat, each
+      // busier than the limit.
       yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
         VALUES ('group-a', 'a', 'team_group', 0, ${createdAt})`;
       yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
         VALUES ('lead-group-member', 'a', 'group-a', 'agent', 'lead-a', 'member', ${createdAt})`;
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+        VALUES ('other-a', 'a', 'Other', 'lead', 'owner-a', ${createdAt})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+        VALUES ('other-group-member', 'a', 'group-a', 'agent', 'other-a', 'member', ${createdAt})`;
       yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at, retired_at)
         VALUES ('old-a', 'a', 'Old', 'lead', 'owner-a', ${createdAt}, ${createdAt})`;
       yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
@@ -393,7 +431,9 @@ describe("ChatWake", () => {
       // Their ids sort above the direct post, so either one counted would push it out.
       for (let seq = 1; seq <= 200; seq++) {
         const n = String(seq).padStart(3, "0");
-        yield* storeMessage(message("a", `z-group-${n}`, { seq, chat: "group-a" }));
+        yield* storeMessage(
+          message("a", `z-group-${n}`, { seq, chat: "group-a", mentions: ["other-group-member"] }),
+        );
         yield* storeMessage(message("a", `y-retired-${n}`, { seq, chat: "old-chat" }));
       }
       yield* storeMessage(message("a", "a-direct"));

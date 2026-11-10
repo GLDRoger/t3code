@@ -79,6 +79,8 @@ export const KinChat = Schema.Struct({
   lastMessageAt: Schema.NullOr(IsoDateTime),
   createdAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime),
+  // A group's lead, who answers a message that names nobody. Absent from servers without groups.
+  leadAgentId: Schema.optional(Schema.NullOr(KinAgentId)),
 });
 export type KinChat = typeof KinChat.Type;
 
@@ -361,8 +363,12 @@ export const KinWaitingItem = Schema.Struct({
 export type KinWaitingItem = typeof KinWaitingItem.Type;
 export const KinChatSummary = Schema.Struct({
   ...KinChat.fields,
+  // A direct chat's two members. A group's row carries only the viewer's own, with `leftAt` set
+  // once they are no longer in it; `kin.chat.members` lists the rest.
   members: Schema.Array(KinChatMember),
   lastMessage: Schema.NullOr(KinMessage),
+  // In a group, the person who wrote `lastMessage`, when it wasn't the viewer.
+  lastAuthorName: Schema.optional(KinTrimmedText),
   unread: NonNegativeInt,
   /** An agent in the chat is on a live wake-up. Absent from servers without it. */
   working: Schema.optional(Schema.Boolean),
@@ -437,6 +443,39 @@ export const KinChatsSubscribeInput = Schema.Struct({ orgId: Schema.optional(Kin
 export type KinChatsSubscribeInput = typeof KinChatsSubscribeInput.Type;
 export const KinChatsCreateDirectInput = Schema.Struct({ orgId: KinOrgId, agentId: KinAgentId });
 export type KinChatsCreateDirectInput = typeof KinChatsCreateDirectInput.Type;
+export const KIN_GROUP_TITLE_MAX_LENGTH = 60;
+export const KIN_GROUP_MAX_MEMBERS = 50;
+export const KinGroupTitle = KinTrimmedText.check(Schema.isMaxLength(KIN_GROUP_TITLE_MAX_LENGTH));
+/** A new group: its name and who is in it besides the owner. The first lead listed leads it. */
+export const KinChatsCreateGroupInput = Schema.Struct({
+  orgId: KinOrgId,
+  title: KinGroupTitle,
+  agentIds: Schema.Array(KinAgentId).check(Schema.isMaxLength(KIN_GROUP_MAX_MEMBERS)),
+  personIds: Schema.Array(KinPersonId).check(Schema.isMaxLength(KIN_GROUP_MAX_MEMBERS)),
+});
+export type KinChatsCreateGroupInput = typeof KinChatsCreateGroupInput.Type;
+export const KinChatMembersInput = Schema.Struct({ chatId: KinChatId });
+export type KinChatMembersInput = typeof KinChatMembersInput.Type;
+/** Who is in a chat, by name: what a group draws its authors, mentions and details from. */
+export const KinChatMembersResult = Schema.Struct({
+  chat: KinChat,
+  members: Schema.Array(Schema.Struct({ ...KinChatMember.fields, displayName: KinTrimmedText })),
+});
+export type KinChatMembersResult = typeof KinChatMembersResult.Type;
+export const KinGroupAddMemberInput = Schema.Struct({ chatId: KinChatId, principal: KinPrincipal });
+export type KinGroupAddMemberInput = typeof KinGroupAddMemberInput.Type;
+export const KinGroupRemoveMemberInput = Schema.Struct({
+  chatId: KinChatId,
+  memberId: KinMemberId,
+});
+export type KinGroupRemoveMemberInput = typeof KinGroupRemoveMemberInput.Type;
+export const KinGroupSetLeadInput = Schema.Struct({ chatId: KinChatId, agentId: KinAgentId });
+export type KinGroupSetLeadInput = typeof KinGroupSetLeadInput.Type;
+export const KinGroupRenameInput = Schema.Struct({ chatId: KinChatId, title: KinGroupTitle });
+export type KinGroupRenameInput = typeof KinGroupRenameInput.Type;
+export const KinGroupDeleteInput = Schema.Struct({ chatId: KinChatId });
+export type KinGroupDeleteInput = typeof KinGroupDeleteInput.Type;
+export const KinGroupDone = Schema.Struct({});
 export const KinChatSubscribeInput = Schema.Struct({
   chatId: KinChatId,
   afterSeq: Schema.optional(NonNegativeInt),
@@ -537,6 +576,7 @@ export const KIN_CHAT_WS_METHODS = {
   chatsSubscribe: "kin.chats.subscribe",
   chatsCreateDirect: "kin.chats.createDirect",
   chatsMute: "kin.chats.mute",
+  chatMembers: "kin.chat.members",
   chatSubscribe: "kin.chat.subscribe",
   chatHistory: "kin.chat.history",
   messagesSend: "kin.messages.send",
@@ -565,6 +605,11 @@ export const KinChatRpcs = [
   Rpc.make(KIN_CHAT_WS_METHODS.chatsMute, {
     payload: KinChatsMuteInput,
     success: KinChatMember,
+    error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(KIN_CHAT_WS_METHODS.chatMembers, {
+    payload: KinChatMembersInput,
+    success: KinChatMembersResult,
     error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
   }),
   Rpc.make(KIN_CHAT_WS_METHODS.chatSubscribe, {
@@ -607,6 +652,8 @@ export const KIN_CHAT_RPC_SCOPES = {
   [KIN_CHAT_WS_METHODS.chatsCreateDirect]: AuthKinChatScope,
   // Only quiets the caller's own pushes, like marking a chat read.
   [KIN_CHAT_WS_METHODS.chatsMute]: AuthKinChatScope,
+  // Names of the people and leads in a chat the caller is in.
+  [KIN_CHAT_WS_METHODS.chatMembers]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.chatSubscribe]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.chatHistory]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.messagesSend]: AuthKinChatScope,
@@ -617,6 +664,41 @@ export const KIN_CHAT_RPC_SCOPES = {
   (typeof KIN_CHAT_WS_METHODS)[keyof typeof KIN_CHAT_WS_METHODS],
   AuthEnvironmentScope
 >;
+
+const KinGroupError = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
+/** Owner only: making a group and changing who is in it, who leads it and what it is called. */
+export const KinGroupRpcs = [
+  Rpc.make("kin.groups.create", {
+    payload: KinChatsCreateGroupInput,
+    success: KinChat,
+    error: KinGroupError,
+  }),
+  Rpc.make("kin.groups.addMember", {
+    payload: KinGroupAddMemberInput,
+    success: KinChatMember,
+    error: KinGroupError,
+  }),
+  Rpc.make("kin.groups.removeMember", {
+    payload: KinGroupRemoveMemberInput,
+    success: KinGroupDone,
+    error: KinGroupError,
+  }),
+  Rpc.make("kin.groups.setLead", {
+    payload: KinGroupSetLeadInput,
+    success: KinChat,
+    error: KinGroupError,
+  }),
+  Rpc.make("kin.groups.rename", {
+    payload: KinGroupRenameInput,
+    success: KinChat,
+    error: KinGroupError,
+  }),
+  Rpc.make("kin.groups.delete", {
+    payload: KinGroupDeleteInput,
+    success: KinGroupDone,
+    error: KinGroupError,
+  }),
+] as const;
 
 export const kinMessageLink = ({
   orgId,

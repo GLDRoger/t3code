@@ -21,8 +21,6 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { toPersistenceSqlError, type PersistenceSqlError } from "../../persistence/Errors.ts";
 import type { AgentIdentity } from "../chat/KinIdentity.ts";
 import {
-  decideFloor,
-  type FloorDecision,
   FLOOR_GRANT_TTL_MS,
   FLOOR_MAX_AGENT_TURNS,
   noticeIntentAllowed,
@@ -62,17 +60,30 @@ const notGranted = new KinChatError({
   message: "The floor is not granted.",
 });
 type Scope = { readonly orgId: KinOrgId; readonly chatId: KinChatId };
+
+/**
+ * Who answers first in a chat: the lead the owner chose for it, else the lead who joined first.
+ * For a query that names the chat `c`, its member row `m` and the agent `a`.
+ */
+export const speakerOrder = (sql: SqlClient.SqlClient) =>
+  sql`CASE WHEN a.agent_id = c.lead_agent_id THEN 0 ELSE 1 END,
+    CASE a.role WHEN 'lead' THEN 0 ELSE 1 END, m.joined_at, m.rowid`;
 type Authorization = { readonly runId: string | null };
 export class KinFloor extends Context.Service<
   KinFloor,
   {
+    /**
+     * A person's message opens the chat's floor and grants one reply to each agent that answers
+     * it: the leads it mentions, else the chat's lead, plus any agent the message before still
+     * owed a reply. Returns those agents.
+     */
     readonly open: (
       message: KinMessage,
       chat: KinChat,
-    ) => Effect.Effect<FloorDecision | null, PersistenceSqlError>;
+    ) => Effect.Effect<ReadonlyArray<KinAgentId>, PersistenceSqlError>;
     /**
-     * Re-arms the agent's unused direct-chat grant on each open run one of `messageIds` opened,
-     * so a wake-up that starts after the TTL can still reply once. It never issues a grant.
+     * Re-arms the agent's unused grant on the open run of each chat `messageIds` are in, so a
+     * wake-up that starts after the TTL can still reply once. It never issues a grant.
      * `until` (the wake-up's own deadline) replaces the default TTL from now.
      */
     readonly renew: (input: {
@@ -121,6 +132,8 @@ const make = Effect.gen(function* () {
       JOIN kin_agents a ON a.org_id = m.org_id AND a.agent_id = m.agent_id
       WHERE r.org_id = ${scope.orgId} AND r.chat_id = ${scope.chatId} AND r.run_id = ${scope.runId}
         AND r.state = 'open' AND a.agent_id = ${scope.agentId} AND a.retired_at IS NULL AND m.left_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM kin_floor_grants g WHERE g.org_id = r.org_id
+          AND g.run_id = r.run_id AND g.agent_id = a.agent_id)
       ORDER BY m.member_id LIMIT 1
       ON CONFLICT DO NOTHING RETURNING token`;
   });
@@ -131,50 +144,46 @@ const make = Effect.gen(function* () {
   });
   const open = Effect.fn("KinFloor.open")(
     function* (message: KinMessage, chat: KinChat) {
-      if (message.author._tag !== "human" || message.status !== "posted") return null;
+      if (message.author._tag !== "human" || message.status !== "posted") return [];
       const now = yield* Clock.currentTimeMillis;
+      // Read before the run closes: a lead asked a moment ago still answers once.
+      const owed = yield* sql<{ agentId: string }>`
+        SELECT DISTINCT g.agent_id AS "agentId" FROM kin_floor_grants g
+        JOIN kin_floor_runs r ON r.org_id = g.org_id AND r.run_id = g.run_id
+        WHERE g.org_id = ${message.orgId} AND g.chat_id = ${message.chatId}
+          AND r.state = 'open' AND g.consumed_at IS NULL ORDER BY g.agent_id`;
       yield* close(message);
       const agents = yield* sql`
       SELECT a.agent_id, m.member_id, a.role FROM kin_chat_members m
       JOIN kin_agents a ON a.org_id = m.org_id AND a.agent_id = m.agent_id
+      JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
       WHERE m.org_id = ${message.orgId} AND m.chat_id = ${message.chatId}
         AND m.left_at IS NULL AND a.retired_at IS NULL
-      ORDER BY CASE a.role WHEN 'lead' THEN 0 ELSE 1 END, m.joined_at, a.agent_id`.pipe(
-        Effect.flatMap(decodeMembers),
-      );
+      ORDER BY ${speakerOrder(sql)}`.pipe(Effect.flatMap(decodeMembers));
       const lead = agents[0];
       const mentions = message.mentions.flatMap((id) =>
         agents.filter((agent) => agent.member_id === id).map((agent) => agent.agent_id),
       );
-      const mentionQueue =
-        chat.kind === "direct" && lead !== undefined ? [lead.agent_id] : mentions;
+      const asked =
+        lead === undefined
+          ? []
+          : chat.kind === "direct" || mentions.length === 0
+            ? [lead.agent_id]
+            : mentions;
+      const speakers = [
+        ...new Set([
+          ...asked,
+          ...agents
+            .map((agent) => agent.agent_id)
+            .filter((agentId) => owed.some((row) => row.agentId === agentId)),
+        ]),
+      ];
       const runId = SecureRandom.uuidV4Unsafe();
       yield* sql`INSERT INTO kin_floor_runs (org_id, run_id, chat_id, opened_by, mention_queue, state, opened_at)
-      VALUES (${message.orgId}, ${runId}, ${message.chatId}, ${message.messageId}, ${yield* encodeAgents(mentionQueue)}, 'open', ${now})
+      VALUES (${message.orgId}, ${runId}, ${message.chatId}, ${message.messageId}, ${yield* encodeAgents(speakers)}, 'open', ${now})
       ON CONFLICT DO NOTHING RETURNING run_id`;
-      if (lead === undefined) return null;
-      const decision = decideFloor({
-        run: {
-          runId,
-          chatId: chat.chatId,
-          openedBy: message.messageId,
-          mentionQueue,
-          agentTurns: 0,
-          lastSpeaker: null,
-          spoken: [],
-          grant: null,
-          state: "open",
-        },
-        bids: [],
-        text: message.body,
-        leadAgentId: lead.agent_id,
-        bidWindowOpenedAt: now,
-        now,
-      });
-      // Group tokens remain internal until phase-2 wake-up delivery.
-      if (decision._tag !== "grant") return decision;
-      yield* issue({ ...message, runId, agentId: decision.agentId }, now);
-      return decision;
+      for (const agentId of speakers) yield* issue({ ...message, runId, agentId }, now);
+      return speakers;
     },
     Effect.mapError(toPersistenceSqlError("KinFloor.open")),
   );
@@ -188,13 +197,13 @@ const make = Effect.gen(function* () {
     }) {
       if (input.messageIds.length === 0) return;
       const expiresAt = input.until ?? (yield* Clock.currentTimeMillis) + FLOOR_GRANT_TTL_MS;
-      // A new human message closes the run, and a reply consumes the grant, so neither re-arms.
+      // A reply consumes the grant, so it never re-arms; a run a newer message closed is not open.
       yield* sql`UPDATE kin_floor_grants SET expires_at = MAX(expires_at, ${expiresAt})
       WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND consumed_at IS NULL
         AND run_id IN (SELECT r.run_id FROM kin_floor_runs r
-          JOIN kin_chats c ON c.org_id = r.org_id AND c.chat_id = r.chat_id AND c.kind = 'direct'
           WHERE r.org_id = ${input.orgId} AND r.state = 'open'
-            AND r.opened_by IN ${sql.in(input.messageIds)})`;
+            AND r.chat_id IN (SELECT m.chat_id FROM kin_messages m
+              WHERE m.org_id = ${input.orgId} AND m.message_id IN ${sql.in(input.messageIds)}))`;
     },
     Effect.mapError(toPersistenceSqlError("KinFloor.renew")),
   );
@@ -292,9 +301,13 @@ const make = Effect.gen(function* () {
           ORDER BY token LIMIT 1`;
         if (held.length > 0) return { runId: run.run_id };
       }
-      if (!replyIntentAllowed(run.agent_turns, intent)) return yield* invalidIntent;
+      // Each agent the message asked answers it, whoever of them speaks first.
+      if (
+        !replyIntentAllowed(run.agent_turns, intent) &&
+        !run.mention_queue.includes(identity.agentId)
+      )
+        return yield* invalidIntent;
       if (run.last_speaker === identity.agentId) return yield* notGranted;
-      if (chat.kind !== "direct" && token === undefined) return yield* notGranted;
       const grants = yield* sql<{ token: string }>`SELECT token FROM kin_floor_grants
       WHERE org_id = ${identity.orgId} AND chat_id = ${chat.chatId} AND agent_id = ${identity.agentId}
         AND run_id = ${run.run_id} AND consumed_at IS NULL AND expires_at > ${now}
@@ -313,32 +326,6 @@ const make = Effect.gen(function* () {
       mention_queue = (SELECT COALESCE(json_group_array(value), '[]') FROM json_each(mention_queue) WHERE value != ${identity.agentId} ORDER BY key),
       state = CASE WHEN agent_turns + 1 >= ${FLOOR_MAX_AGENT_TURNS} THEN 'closed' ELSE 'open' END
       WHERE org_id = ${identity.orgId} AND run_id = ${run.run_id}`;
-      const remaining = run.mention_queue.filter((agent) => agent !== identity.agentId);
-      // With no bids, only the remaining mentions can win; leadAgentId is unused.
-      const next = decideFloor({
-        run: {
-          runId: run.run_id,
-          chatId: chat.chatId,
-          openedBy: run.opened_by,
-          mentionQueue: remaining,
-          agentTurns: run.agent_turns + 1,
-          lastSpeaker: identity.agentId,
-          spoken: [...run.spoken, identity.agentId],
-          grant: null,
-          state: run.agent_turns + 1 >= FLOOR_MAX_AGENT_TURNS ? "closed" : "open",
-        },
-        bids: [],
-        text: "",
-        leadAgentId: identity.agentId,
-        bidWindowOpenedAt: now,
-        now,
-      });
-      if (next._tag === "grant") {
-        yield* issue(
-          { orgId: identity.orgId, chatId: chat.chatId, runId: run.run_id, agentId: next.agentId },
-          now,
-        );
-      }
       return { runId: run.run_id };
     },
     Effect.mapError((error) =>

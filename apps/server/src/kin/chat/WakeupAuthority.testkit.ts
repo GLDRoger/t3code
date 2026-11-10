@@ -133,7 +133,8 @@ export const startAgentWakeup = Effect.fn("test.startAgentWakeup")(function* (in
           messageId: input.message.messageId,
         };
   yield* queue.enqueue(event);
-  yield* TestClock.adjust(input.message === undefined ? 20_000 : 2_000);
+  // The owner's message is claimed after its short burst window; anyone else's waits the full one.
+  yield* TestClock.adjust(input.message?.authorRole === "owner" ? 2_000 : 20_000);
   yield* Effect.scoped(
     queue.claim({ orgId: input.orgId, agentId: input.agentId, wakeupId, model: "test" }),
   );

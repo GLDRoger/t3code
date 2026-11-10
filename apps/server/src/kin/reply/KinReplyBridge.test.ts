@@ -196,7 +196,10 @@ const setup = Effect.fn("test.setup")(function* (input: {
   if (input.lane === "group") {
     chatId = KinChatId.make("group");
     yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at) VALUES ('group', ${owner.orgId}, 'team_group', 0, '1970-01-01T00:00:00.000Z')`;
-    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at) VALUES ('group-owner', ${owner.orgId}, 'group', 'person', ${owner.personId}, 'owner', '1970-01-01T00:00:00.000Z')`;
+    // Someone else's group: the lead's owner is only a member, so the owner did not place it.
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('other', ${owner.orgId}, 'other', 'Other', '1970-01-01T00:00:00.000Z')`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at) VALUES ('group-other', ${owner.orgId}, 'group', 'person', 'other', 'owner', '1970-01-01T00:00:00.000Z')`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at) VALUES ('group-owner', ${owner.orgId}, 'group', 'person', ${owner.personId}, 'member', '1970-01-01T00:00:00.000Z')`;
     yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at) VALUES ('group-lead', ${owner.orgId}, 'group', 'agent', ${agentId}, 'member', '1970-01-01T00:00:00.000Z')`;
   }
   const message =

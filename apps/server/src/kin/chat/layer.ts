@@ -10,6 +10,7 @@ import * as Repository from "./KinChatRepository.ts";
 import * as Hub from "./KinChatHub.ts";
 import * as Presence from "../reply/KinPresence.ts";
 import * as Service from "./KinChatService.ts";
+import * as Groups from "./KinGroups.ts";
 import { KinIdentity, KinIdentityConfig } from "./KinIdentity.ts";
 
 export const layer = Layer.mergeAll(
@@ -19,7 +20,10 @@ export const layer = Layer.mergeAll(
     Stop.layer.pipe(Layer.provide(Presence.layer)),
     OwnerTimeZone.layer,
   ).pipe(Layer.provideMerge(Queue.layer)),
-  KinIdentity.layer.pipe(Layer.provide(KinIdentityConfig.layer)),
+  Groups.layer.pipe(
+    Layer.provide(Presence.layer),
+    Layer.provideMerge(KinIdentity.layer.pipe(Layer.provide(KinIdentityConfig.layer))),
+  ),
 ).pipe(
   Layer.provideMerge(Hub.layer),
   Layer.provideMerge(Repository.layer),
