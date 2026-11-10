@@ -86,7 +86,8 @@ text:
     to: "--scheme kin"
 
   # Mobile: links the app opens and builds, and the names it shows.
-  - files: [apps/mobile/src/widgets/AgentActivity.tsx]
+  - files:
+      [apps/mobile/src/widgets/AgentActivity.tsx, apps/mobile/src/widgets/AgentActivityWidget.tsx]
     from: "t3code://"
     to: "kin://"
   - files: [apps/mobile/src/App.tsx]
@@ -615,12 +616,16 @@ leaks:
       files: [apps/server/src/project/AgentSessionScanner.ts]
     - reason: >-
         The Kin host runs the server from source with `--base-dir ~/.t3` (ops/kin/host), and the
-        shadow dry run refuses that live state directory; both name the host's real path.
+        worker environment keeps its state in the kin-worker user's ~/.t3 the same way. The host
+        scripts read, pair and link those homes, and the shadow dry run refuses the live state
+        directory; all name the host's real paths.
       leak: t3-home
       files:
         - apps/server/scripts/kin-shadow-dry-run.ts
         - ops/kin/host/backup.sh
         - ops/kin/host/kin-server.service
+        - ops/kin/host/kin-worker.sh
+        - ops/kin/host/update.sh
     - reason: Message attribution enum on the wire; peers and stored threads use this value.
       leak: scheme-name
       text: "^t3code$"
@@ -684,6 +689,13 @@ leaks:
       text: "play\\.google\\.com/store/apps/details\\?id=com\\.t3tools\\.t3code$"
       files: [apps/web/src/components/settings/MobileAppSettingsRow.tsx]
     - reason: >-
+        The store redirect for T3 Code's mobile app, read only by the Welcome page's Phone
+        section, which a guard makes render nothing (scripts/lib/kinBrandGuards.ts). Kin's builds
+        go to TestFlight (see the eas.json rule) and have no public listing to link instead.
+      leak: t3-domain
+      text: "^https://t3\\.codes/mobile$"
+      files: [apps/web/src/branding.ts]
+    - reason: >-
         Kin has no hosted web app, so links that need one (copied thread links, hosted pairing,
         prompt links, MCP thread links) use upstream's app.t3.codes. An empty default would break
         them: prompt links build `new URL("/new", origin)`, which throws on "". These links work
@@ -694,6 +706,14 @@ leaks:
       leak: t3-domain
       text: "^https://app\\.t3\\.codes$"
       files: [packages/shared/src/connectAuth.ts]
+    - reason: >-
+        Nightly builds' default for approving agent sign-ins on the T3 Connect address. Kin has
+        no hosted web app (see the connectAuth.ts entry), so approval uses upstream's nightly
+        hosted app the way stable uses app.t3.codes; T3CODE_HOSTED_APP_URL points it at Kin's own
+        once it has one.
+      leak: t3-domain
+      text: "^https://nightly\\.app\\.t3\\.codes$"
+      files: [apps/server/src/cloud/publicConfig.ts]
     - reason: >-
         Text that names the hosted app those links use: a log line, a policy label, triage's
         surface label and a comment in the example env file.
@@ -846,5 +866,18 @@ leaks:
         and the copy's `t3 service install` refuses to install one (kinBrandGuards.ts).
       leak: t3-domain
       files: [apps/server/src/cloud/servicePreflight.ts]
+    - reason: >-
+        T3's installers, named as the fix when `t3 install` runs outside a standalone runtime.
+        Kin publishes no standalone runtime, and the copy's `t3 install` refuses before reaching
+        this text (kinBrandGuards.ts).
+      leak: t3-domain
+      text: "^(irm https://t3\\.codes/install\\.ps1 \\| iex|curl -fsSL https://t3\\.codes/install\\.sh \\| sh)$"
+      files: [apps/server/src/cli/install.ts]
+    - reason: >-
+        T3's installers in setup steps shown only by the hosted app's empty state (hosted-static
+        mode, on a hosted app deployment). Kin deploys no hosted app, so no Kin client shows them.
+      leak: t3-domain
+      text: "^(irm https://t3\\.codes/install\\.ps1 \\| iex|curl -fsSL https://t3\\.codes/install\\.sh \\| sh)$"
+      files: [apps/web/src/components/InstallT3Commands.tsx]
     - reason: The dev-only mock ACP agent's fixture URLs; no build ships it.
       files: [apps/server/scripts/acp-mock-agent.ts]
