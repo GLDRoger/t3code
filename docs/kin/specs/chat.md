@@ -205,6 +205,7 @@ export const KinWidget = Schema.Struct({
 - **State schemas** are registered per type in `apps/server/src/kin/widgets/registry.ts` (**new**). Owners: `task` (this spec, registered in CHAT-5; updater in CHAT-8), `approval` (approvals spec, drawn from `KinPendingAction`), `deferral` (lead spec), `decision`, `poll`, `checklist`, `form`, `date` (this spec, phase 2, CHAT-13). An unknown type, or state that fails its schema, is refused at upsert. CHAT-5 registers only `task`; other owners add their schemas with their features.
 - **Acting:** `kin.widgets.act({ widgetId, revision, actionId, value?, clientActionId })` posts a `widget_action` message authored by the session's person, with `{ widgetId, revision, actionId, value }` as its structured body. A widget action is a human turn: it opens a new floor run and revokes the lead's unused grant from the previous run. The lead acts on it under its own permissions. A stale `revision` fails with `widget_changed`.
 - **Approval cards never go through `act`.** `act` refuses `type: "approval"` with `use_approvals`. Approving is the approvals spec's signed-grant RPC (section 9.2). Approval widgets are created only by the approvals spec's server code; the MCP upsert tool refuses that type too, so an agent can't draw one.
+- **Reminder and scheduled task cards** (`reminder`, `scheduled_task`, triggers spec) are server-written and not in the registry, so no agent can draw one. `act` takes their taps only from the chat's owner and applies them in the tap's transaction. A tap the server finishes alone (Snooze, Run now, Pause, Resume) carries `handled: true` in its `widget_action` body and doesn't wake the lead; Done, Change, Edit and Delete wake it so it can update memory.
 - **Generated widgets** carry `source`, the lead thread's turn item that produced the MCP App resource. The client renders it with the existing `ThreadMcpApp`, which already calls `mcpApps.*` RPCs scoped to `{ threadId, itemId }`. This works for the owner only, since those RPCs need `orchestration:*` scopes. Members seeing generated widgets is an open question.
 - **Live widgets** (phase 3) carry `feed`; a server feeder updates `state` in place.
 
@@ -446,7 +447,7 @@ New (all Kin-owned):
 - `packages/contracts/src/kinChat.ts`: ids, schemas, `KIN_CHAT_WS_METHODS`, `KinChatRpcs` (array of `Rpc.make`), `KIN_CHAT_RPC_SCOPES`, `KinChatError`, `kinMessageLink`, plus `KinWaitingId` for waiting rows. Test: `kinChat.test.ts`.
 - `apps/server/src/kin/persistence/KinMigrations.ts`, `migrations/K001_ChatCore.ts`, `migrations/KNNN_Floor.ts` (next free number), `KinPersistence.ts`.
 - `apps/server/src/kin/chat/KinChatRepository.ts`, `KinIdentity.ts`, `KinChatService.ts`, `KinChatHub.ts`, `TaskCardUpdater.ts`, `rpcHandlers.ts` (`makeKinChatHandlers(session)`), `layer.ts` (`KinChat.layer`).
-- `apps/server/src/kin/widgets/registry.ts`, `taskCard.ts`.
+- `apps/server/src/kin/widgets/registry.ts`, `taskCard.ts`, `reminderCard.ts`, `scheduledTaskCard.ts`.
 - `apps/server/src/kin/mcp/KinChatToolkit.ts` (`makeKinChatToolkitLayer(register)`), `handlers.ts`.
 - `apps/server/src/kin/floor/FloorManager.ts`, `KinFloor.ts`.
 - Tests next to each file (`*.test.ts`).

@@ -10,6 +10,7 @@ import {
   ProviderInstanceId,
   KinWakeupId,
   ThreadId,
+  MemoryItemHead,
   type KinAuthor,
   type KinRole,
 } from "@t3tools/contracts";
@@ -26,6 +27,7 @@ import { instructions } from "./instructions.ts";
 import { KinLeadPrompt, type KinLeadPromptInput } from "./LeadPrompt.ts";
 
 const decodeEvent = Schema.decodeSync(KinEvent);
+const decodeHead = Schema.decodeUnknownSync(MemoryItemHead);
 const decodeEventEffect = Schema.decodeEffect(KinEvent);
 const decodeBody = Schema.decodeEffect(
   Schema.fromJsonString(Schema.Struct({ body: Schema.String })),
@@ -77,6 +79,33 @@ const insertLeadMessage = Effect.fn("test.insertLeadMessage")(function* (id: str
       'lead-member', 'member', 'text', ${body}, '[]', 'posted', ${timestamp}
     FROM kin_chats WHERE org_id = ${orgId} AND chat_id = ${chatId}`;
 });
+const task = (id: string, trust: "owner" | "member") => ({
+  head: decodeHead({
+    orgId,
+    id,
+    path: `deferrals/${id}.md`,
+    kind: "deferral",
+    title: "Open PRs digest",
+    status: "open",
+    due: null,
+    every: { at: "08:00", days: [1, 2, 3, 4, 5] },
+    what: "List the open PRs and who blocks each one.",
+    recorded_at: timestamp,
+    valid_from: timestamp,
+    invalid_at: null,
+    superseded_by: null,
+    review_by: null,
+    source: "owner-chat",
+    said_by: trust === "owner" ? "owner" : "fixture-member",
+    trust,
+    links: [],
+  }),
+  body: "Every weekday at 8, tell me which PRs are stuck.\n",
+});
+const dueItems = new Map([
+  ["sch-owner", task("sch-owner", "owner")],
+  ["sch-member", task("sch-member", "member")],
+]);
 const database = authorityLayer;
 const repository = Chat.layer.pipe(Layer.provide(database));
 const memory = Layer.succeed(
@@ -101,7 +130,12 @@ const memory = Layer.succeed(
     readRules: () => Effect.die("Unused"),
     query: () => Effect.die("Unused"),
     readItem: () => Effect.die("Unused"),
-    readItemQuietly: () => Effect.die("Unused"),
+    readItemQuietly: (org, id) => {
+      const found = org === orgId ? dueItems.get(id) : undefined;
+      return found === undefined
+        ? Effect.fail(new Memory.MemoryNotFound({ orgId: org, id }))
+        : Effect.succeed(found);
+    },
     rebuildIndex: () => Effect.die("Unused"),
     rebuildCache: () => Effect.die("Unused"),
     syncCheckout: () => Effect.die("Unused"),
@@ -506,6 +540,33 @@ it.effect("quotes a choice tap as the owner's words, not its JSON", () =>
     const quoted = built.split("> BEGIN QUOTE: owner message")[1] ?? "";
     expect(quoted).toContain('Chose \\"Ship it\\" on \\"Release today?\\"');
     expect(quoted).not.toContain("option-1");
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a scheduled run quotes the owner's instruction, and refuses a task without it", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const prompt = yield* KinLeadPrompt;
+    const run = (itemId: string) =>
+      decodeEvent({
+        _tag: "deferral.due",
+        orgId,
+        agentId,
+        eventId: `run-${itemId}`,
+        receivedAt: timestamp,
+        provenance: { _tag: "system" },
+        dedupeKey: null,
+        subject: { type: "scheduled_task", itemId, runId: `run-${itemId}` },
+        lateByMs: 0,
+      });
+    const owned = yield* prompt.build({ ...input, events: [run("sch-owner")] });
+    const quoted = owned.split("> BEGIN QUOTE: owner request (scheduled task)")[1] ?? "";
+    expect(owned).toContain("Do the work now with your normal tools");
+    expect(quoted).toContain("List the open PRs and who blocks each one.");
+    expect(quoted).toContain("Every weekday at 8, tell me which PRs are stuck.");
+    const forged = yield* prompt.build({ ...input, events: [run("sch-member")] });
+    expect(forged).not.toContain("Do the work now");
+    expect(forged).toContain("> BEGIN QUOTE: scheduled task (untrusted)");
   }).pipe(Effect.provide(layer)),
 );
 

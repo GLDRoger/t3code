@@ -44,7 +44,9 @@ type FireKind = typeof FireKind.Type;
 const PendingRequest = Schema.Struct({
   orgId: KinOrgId,
   limit: Schema.Int.check(Schema.isGreaterThan(0)),
-  routines: Schema.optional(Schema.Union([Schema.Array(KinRoutine), Schema.Literal("deferral")])),
+  routines: Schema.optional(
+    Schema.Union([Schema.Array(KinRoutine), Schema.Literals(["deferral", "scheduled_task"])]),
+  ),
   kinds: Schema.optional(Schema.Array(FireKind)),
 });
 
@@ -61,11 +63,11 @@ export class KinTriggerInbox extends Context.Service<
       event: KinTriggerFired,
       receivedAt: number,
     ) => Effect.Effect<boolean, InboxError>;
-    /** `subjects` narrows to those routines, or to deferral fires. */
+    /** `subjects` narrows to those routines, or to deferral or scheduled task fires. */
     readonly listPending: (
       orgId: KinOrgId,
       limit?: number,
-      subjects?: ReadonlyArray<KinRoutine> | "deferral",
+      subjects?: ReadonlyArray<KinRoutine> | "deferral" | "scheduled_task",
       kinds?: ReadonlyArray<FireKind>,
     ) => Effect.Effect<ReadonlyArray<KinTriggerFired>, InboxError>;
     readonly markConsumed: (
@@ -96,8 +98,8 @@ const make = Effect.gen(function* () {
         ${
           routines === undefined
             ? sql``
-            : routines === "deferral"
-              ? sql`AND json_extract(payload_json, '$.payload.subject.type') = 'deferral'`
+            : routines === "deferral" || routines === "scheduled_task"
+              ? sql`AND json_extract(payload_json, '$.payload.subject.type') = ${routines}`
               : sql`AND json_extract(payload_json, '$.payload.subject.routine') IN (${sql.join(",", false)(routines.map((routine) => sql`${routine}`))})`
         }
         ${

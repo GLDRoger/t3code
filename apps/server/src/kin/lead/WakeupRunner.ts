@@ -49,6 +49,7 @@ import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import { nonClaudeLeadModel } from "./leadModels.ts";
 import * as RoutineContent from "./RoutineContent.ts";
+import * as LeadDelivery from "./LeadDelivery.ts";
 import { PAUSE_POLL_INTERVAL_MS } from "./KinStop.ts";
 import { isOrgPaused } from "./orgState.ts";
 import { KinPromotion } from "../levels/Promotion.ts";
@@ -667,6 +668,32 @@ const make = Effect.gen(function* () {
                 const deferred = new Set(
                   events.filter((item) => item.priority === priority).map((item) => item.eventId),
                 );
+                // A brief can't wait for tomorrow's budget: Kin sends its own line, saying so.
+                if (Option.isSome(routineContent))
+                  for (const event of events) {
+                    if (!deferred.has(event.eventId) || !RoutineContent.isRoutineContent(event))
+                      continue;
+                    const sent = yield* routineContent.value
+                      .post(
+                        agentId,
+                        event,
+                        `(Today's budget is used up, so Kin sent this instead of ${current.name}.)`,
+                      )
+                      .pipe(
+                        Effect.as(true),
+                        Effect.catch((error) =>
+                          Effect.logWarning("Kin routine fallback failed", {
+                            orgId,
+                            eventId: event.eventId,
+                            cause: error.cause,
+                          }).pipe(Effect.as(false)),
+                        ),
+                      );
+                    if (sent) {
+                      deferred.delete(event.eventId);
+                      events = events.filter((item) => item.eventId !== event.eventId);
+                    }
+                  }
                 yield* queue.release({
                   orgId,
                   wakeupId,
@@ -728,35 +755,62 @@ const make = Effect.gen(function* () {
                 return;
               }
             }
+            // The lead writes briefs and summaries from the server's facts; the server attaches
+            // their card to its message, or posts its own line when the lead can't.
+            const routineFacts = new Map<string, string>();
             if (Option.isSome(routineContent)) {
-              // Briefs and summaries are written by the server, so they never wake the lead.
-              for (const event of events)
-                if (RoutineContent.isRoutineContent(event))
-                  yield* routineContent.value.post(agentId, event).pipe(
-                    // A failed brief retries on its own; the rest of the batch still runs.
-                    Effect.catch((error) =>
-                      Effect.logWarning("Kin routine content failed", {
-                        orgId,
-                        eventId: event.eventId,
-                        cause: error.cause,
-                      }).pipe(
-                        Effect.andThen(
-                          queue.release({
-                            orgId,
-                            wakeupId,
-                            eventIds: [event.eventId],
-                            countAttempt: true,
-                          }),
-                        ),
+              const deliveries = yield* Effect.serviceOption(LeadDelivery.KinLeadDelivery);
+              for (const event of events) {
+                if (!RoutineContent.isRoutineContent(event)) continue;
+                const content = routineContent.value;
+                const prepared = yield* Effect.gen(function* () {
+                  const ready = yield* content.prepare(agentId, event);
+                  if (ready === null || Option.isNone(deliveries)) {
+                    yield* content.post(agentId, event);
+                    return null;
+                  }
+                  yield* deliveries.value.track({
+                    orgId,
+                    eventId: event.eventId,
+                    kind: "routine",
+                    agentId,
+                    chatId: ready.chatId,
+                    widget: { widgetId: ready.widgetId, type: "routine", state: ready.state },
+                    fallbackBody: `${ready.body}\n\n(${current.name} couldn't write this one, so Kin sent it.)`,
+                    deadlineAt: row.startedAt + LeadDelivery.DELIVERY_DEADLINE_MS.routine,
+                  });
+                  return ready;
+                }).pipe(
+                  // A failed brief retries on its own; the rest of the batch still runs.
+                  Effect.catch((error) =>
+                    Effect.logWarning("Kin routine content failed", {
+                      orgId,
+                      eventId: event.eventId,
+                      cause: error.cause,
+                    }).pipe(
+                      Effect.andThen(
+                        queue.release({
+                          orgId,
+                          wakeupId,
+                          eventIds: [event.eventId],
+                          countAttempt: true,
+                        }),
                       ),
+                      Effect.as(null),
                     ),
-                  );
+                  ),
+                );
+                if (prepared !== null) routineFacts.set(event.eventId, prepared.body);
+              }
             }
-            // The review and promotion cards are server-drawn after the summary, never the lead's.
+            // The review and promotion cards are server-drawn, never the lead's.
             if (eveningRun && Option.isSome(promotion))
               yield* promotion.value.evening({ orgId, agentId });
             if (Option.isSome(routineContent)) {
-              events = events.filter((event) => !RoutineContent.isRoutineContent(event));
+              events = events.filter(
+                (event) =>
+                  !RoutineContent.isRoutineContent(event) || routineFacts.has(event.eventId),
+              );
               if (events.length === 0) {
                 yield* queue.finish({ orgId, wakeupId, status: "completed" });
                 return;
@@ -815,6 +869,7 @@ const make = Effect.gen(function* () {
               events,
               memoryHead: pinned.head,
               budgetContext,
+              routineFacts,
               ...(lane === undefined ? {} : { lane }),
               ...(resumes ? { since: { index: previous.index, chatSeq: previous.chatSeq } } : {}),
             });
