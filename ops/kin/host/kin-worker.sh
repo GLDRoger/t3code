@@ -491,9 +491,12 @@ cmd_link() {
   wait_for_worker_server
   local code linked id
   # The pairing code stays in this shell: it is never printed or logged.
-  code="$(cmd_run t3 pair --base-dir "$WORKER_HOME/.t3" --label kin-server </dev/null | sed -n 's/^Token: //p' | tail -n1)"
+  code="$(cmd_run t3 pair --base-dir "$WORKER_HOME/.t3" --label kin-server </dev/null | sed -n 's/^Token: //p' | tail -n1)" ||
+    die "the worker environment couldn't make a pairing code. Try: sudo kin-worker run t3 pair --base-dir $WORKER_HOME/.t3 --label kin-server"
   [ -n "$code" ] || die "the worker environment gave no pairing code."
-  linked="$(kin_cli environment link "$WORKER_URL" --pairing-code "$code" --access full-access --base-dir "$KIN_HOME/.t3")"
+  # The CLI prints its errors on stdout, so a failure is shown here: its first lines, never the code.
+  linked="$(kin_cli environment link "$WORKER_URL" --pairing-code "$code" --access full-access --base-dir "$KIN_HOME/.t3" 2>&1)" ||
+    die "kin-server couldn't link to the worker environment: $(printf '%s\n' "${linked//"$code"/(code)}" | head -n 4)"
   id="$(printf '%s\n' "$linked" | sed -n 's/^Linked .* (\([^)]*\)) with .*/\1/p' | head -n1)"
   # The id lands in kin's service.env, which systemd reads: nothing but an id may go there.
   [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || die "linking printed no usable environment id: $linked"
