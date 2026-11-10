@@ -114,7 +114,8 @@ Defaults: brief 08:30 daily, summary 18:30 Mon–Fri, dream 03:00 daily, full re
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | Deferral `heads_up` | If `due` has also passed, skip the heads-up and handle `due` as late.                                                               |
 | Deferral `due`      | Within the 30-minute grace, run the due flow with "This was due at 9:00"; the grace starts from now. Older fires ask, never start.  |
-| Reminder, follow-up | Deliver with "This was due at …". Pings respect quiet hours.                                                                        |
+| Reminder, follow-up | Deliver with "This was due at …". Pings respect quiet hours; a reminder comes at the time the owner chose.                          |
+| Scheduled task      | Run if at most 2 hours late; otherwise skip with a note on its card and a line in the chat. The next slot runs as usual.            |
 | Morning brief       | Post if before the evening summary time; otherwise fold into the evening summary.                                                   |
 | Evening summary     | Post if before the next dream; otherwise fold into the next morning brief.                                                          |
 | Dream, full rebuild | Run if before 08:00 owner time; otherwise skip, because the next dream reads everything since the last good dream. Nothing is lost. |
@@ -229,7 +230,7 @@ Arming comes from memory. When the front-matter cache (LEAD) sees a `deferrals/*
 | `on_due` | Triggers armed (owner time from `due`)   | At due                         |
 | -------- | ---------------------------------------- | ------------------------------ |
 | `start`  | `heads_up` at due − 30 min, `due` at due | recheck, then start work       |
-| `remind` | `due` only                               | post reminder                  |
+| `remind` | `due` only                               | the lead writes the reminder   |
 | `ask`    | `due` only                               | post a decision card           |
 | `chase`  | `due` only                               | ping the promiser (ping rules) |
 
@@ -274,6 +275,20 @@ armed ──heads_up fire──▶ recheck ──changed──▶ asked   (decis
 - **States.** `armed`, `heads_up`, `grace`, `asked`, `started` (`start`); `reminded`, `asked`, `chased` (`remind`, `ask`, `chase`); `undone` (owner Undo); `disarmed`. A re-arm from memory returns the run to `armed`.
 - **Bring it up early.** When a message touches the topic before the due time, the lead mentions it (LEAD, using the cache). The Monday morning brief lists deferrals due this week.
 
+### Reminders the lead writes
+
+A due `remind` run enqueues `deferral.due` with subject `reminder` (P1) for the chief of staff, or the item's chat's lead, in that lead's owner chat. The lead wakes, rechecks the item, and writes the reminder as its own reply. When the wake-up ends, [`LeadDelivery.ts`](../../../apps/server/src/kin/lead/LeadDelivery.ts) attaches a `reminder` card (widget id `reminder:<org>:<item>:<dueAtMs>`) to the lead's last plain message in that chat during the wake-up. Kin posts its own line with the card instead, ending "(… couldn't write this one, so Kin sent it.)" and with `fallback: true`, when there is no live lead, the org is paused, the budget refuses P1, the wake-up fails, the lead posts nothing, or the event is still queued 10 minutes later. Every hand-off is a `kin_lead_deliveries` row, so a restart still settles it.
+
+The card's taps are owner-only and checked by the chat service. Snooze (10 min, 1 h, tomorrow 9:00 owner time) re-arms the `due` trigger in the tap's transaction (run state `snoozed`, `snoozedUntil` in the snapshot), and the snooze's fire is due again. Done ends the run. Neither needs the lead, so Snooze never wakes it; Done and Change do, so the lead can close or edit the memory item.
+
+### Scheduled tasks
+
+A scheduled task is a `deferrals/*.md` item with `every: {at, days}` (owner-local time; 0 is Sunday) and `due: null`. It is never an ordinary deferral. Only the owner sets one up: `kin_schedule` takes the owner's chat message as its source event, refuses any other source, and stores that message verbatim as the item body with its provenance. Git stays the record; `kin_scheduled_tasks` and the `schedule:<item>` `fixed_time` trigger are rebuilt from it by `KinTriggerService.syncOrg`.
+
+At each slot [`scheduledTasks.ts`](../../../apps/server/src/kin/triggers/scheduledTasks.ts) enqueues `deferral.due` with subject `scheduled_task` (P2). The lead wakes with the owner's words quoted as an owner request (an item without `trust: owner` is quoted as untrusted, and the lead must not act on it). It works at its own level with its normal tools, and its reply is the result. A run counts against the budget, stops when Kin is paused, and holds no extra authority: approving, merging or changing permissions still goes through `request_action` and a signed grant. A paused org, no lead, a refused budget or a late slot skips the run with a note.
+
+The standing `scheduled_task` card (widget id `scheduled:<org>:<item>`) shows the schedule, next run and last run: the start of the lead's result and its message id, or why the run failed or was skipped. Run now and Pause/Resume are server state and don't wake the lead; Run now still runs while paused. Delete disarms at once and wakes the lead to cancel the item; until it does, the delete holds. Edit hands the task to the lead. Pause lives only in SQLite, so a host rebuilt from git resumes paused tasks.
+
 **Follow-ups (deferred to TRIG-8/10; not implemented by TRIG-11).** A ping with no answer creates a follow-up trigger (`followup`, `once`, next working morning at the owner's brief time). That is the "follow-up = a deferral created by a ping" row of section 6.
 
 ### Pings
@@ -296,7 +311,7 @@ The dream consumer suppresses a `dream` fire whose `dueAt`, in owner time, falls
 | `dream_full`      | The same pipeline over all items, not just new material.                                                                                                                                                                                                                                                                              |
 | `owner_check`     | Code picks 5 items: past `review_by`, flagged misleading, low-trust claims older than 30 days, and evidence-free status claims, in that order. It posts a native card with Keep (push `review_by` out one period), Update (opens the direct chat on the item) and Drop (set `invalid_at` now). Taps are owner-authored memory writes. |
 
-Routine delivery is a lead-queue request, not a second posting path: TRIG-9 enqueues `routine`; LEAD-13 owns the brief/summary message and prepared-brief content. Late boundaries are measured from the scheduled owner's calendar date (a summary expires at the first dream after its due time). Folds retain the original routine and due instant, survive restart, and move with an expired summary into the next brief. Same-tick fires are handled by due time, not inbox receipt order. Disabling a routine expires its queued requests; enabling it schedules the next slot without backfill. Pause/resume preserves individual opt-outs.
+Routine delivery is a lead-queue request, not a second posting path: TRIG-9 enqueues `routine`; LEAD-13 owns the brief/summary message and prepared-brief content. The server gathers the facts and the lead (the chief of staff when there is one) writes the brief from them; its message gets the `routine` card. Kin posts the server-written text and card instead, saying so, when the budget refuses or the lead doesn't post within 20 minutes. Late boundaries are measured from the scheduled owner's calendar date (a summary expires at the first dream after its due time). Folds retain the original routine and due instant, survive restart, and move with an expired summary into the next brief. Same-tick fires are handled by due time, not inbox receipt order. Disabling a routine expires its queued requests; enabling it schedules the next slot without backfill. Pause/resume preserves individual opt-outs.
 
 Routine processing consumes schema/decode failures immediately. Other failures (including SQLite contention, enqueue failure and unavailable memory checkouts) stay pending for the next tick; a failing fire more than 24 hours past its due instant is consumed to bound poison retries. Successful late fires still follow the normal fold/post policy. Owner-check selection runs before the enqueue transaction, which rechecks consumption and event identity.
 
@@ -529,7 +544,7 @@ Kin runs on one always-on machine, the **Kin host**. The laptop and phone are cl
 
 - `packages/contracts/src/kinTriggers.ts`
 - `apps/server/src/kin/triggers/KinTriggerStore.ts`, `KinTriggerScheduler.ts`, `KinTriggerService.ts`, `KinTriggerSink.ts`, `KinTriggerInbox.ts`
-- `apps/server/src/kin/triggers/githubWebhooks.ts`, `githubEvents.ts`, `deferrals.ts`, `deferralFlow.ts`, `deferralGithub.ts`, `routines.ts`, `watchdogs.ts`, `pings.ts`, `ownerCheck.ts`
+- `apps/server/src/kin/triggers/githubWebhooks.ts`, `githubEvents.ts`, `deferrals.ts`, `deferralFlow.ts`, `deferralGithub.ts`, `scheduledTasks.ts`, `routines.ts`, `watchdogs.ts`, `pings.ts`, `ownerCheck.ts`
 - `apps/server/src/kin/memory/freshness.ts`, `buildIndex.ts`, `secretScan.ts`, `purge.ts`
 - `apps/server/src/kin/dreaming/DreamRunner.ts`, `DreamSession.ts`, `material.ts`, `checkDream.ts`, `classifyDream.ts`
 - `apps/server/src/kin/contract/*.kin-contract.test.ts`, `apps/mobile/src/features/chats/contract/mcpAppWebView.kin-contract.test.ts`
