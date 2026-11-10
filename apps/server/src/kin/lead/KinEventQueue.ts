@@ -291,7 +291,10 @@ const make = Effect.gen(function* () {
             case "chat.message":
             case "widget.action":
             case "chat.reaction":
-              if (event.provenance._tag === "human") {
+              // The owner's request, passed on by another lead: it waits its turn as a due
+              // reminder does, and never jumps the budget as the owner's own message would.
+              if (event._tag === "chat.message" && event.origin !== undefined) priority = "P1";
+              else if (event.provenance._tag === "human") {
                 const owners = yield* sql`
             SELECT 1 FROM kin_chat_members
             WHERE org_id = ${event.orgId} AND chat_id = ${event.chatId}

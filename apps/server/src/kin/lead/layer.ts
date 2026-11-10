@@ -49,6 +49,7 @@ import * as KinStop from "./KinStop.ts";
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import * as DreamRunner from "../dreaming/DreamRunner.ts";
 import * as DreamSession from "../dreaming/DreamSession.ts";
+import * as Handoff from "./Handoff.ts";
 import * as Workers from "./Workers.ts";
 import * as KinRepoReads from "../github/KinRepoReads.ts";
 import * as WorkerTracker from "./WorkerTracker.ts";
@@ -346,6 +347,8 @@ const repoReads = Layer.unwrap(
 const workers = Workers.layer.pipe(
   Layer.provideMerge(WorkerTracker.layer.pipe(Layer.provide(workerPublish))),
   Layer.provideMerge(WorkerEnvironment.layer),
+  // The repositories the owner connected are part of where the owner's own work may start.
+  Layer.provide(GithubEvents.repoScopeLayer),
 );
 const tracker = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -356,6 +359,7 @@ const tracker = Layer.effectDiscard(
 const production = withServices(
   Layer.mergeAll(runner, ChatWake.layer, registration, tracker).pipe(
     Layer.provideMerge(workers),
+    Layer.provideMerge(Handoff.layer),
     Layer.provideMerge(toolkit),
     Layer.provide(repoReads),
   ),

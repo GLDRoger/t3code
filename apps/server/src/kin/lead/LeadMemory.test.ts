@@ -44,6 +44,7 @@ import * as Writer from "../memory/MemoryWriter.ts";
 import * as Scan from "../memory/secretScan.ts";
 import * as TriggerService from "../triggers/KinTriggerService.ts";
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
+import { KinHandoff } from "./Handoff.ts";
 import * as Lead from "./LeadMemory.ts";
 import { KinWorkers } from "./Workers.ts";
 import * as KinRepoReads from "../github/KinRepoReads.ts";
@@ -77,6 +78,7 @@ const client = McpSchema.McpServerClient.of({
 const registration = McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers).pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
   Layer.provide(Layer.mock(KinWorkers)({})),
+  Layer.provide(Layer.mock(KinHandoff)({})),
   Layer.provide(KinRepoReads.notConnectedLayer),
   Layer.provide(
     Layer.mock(Threads.ThreadManagementService)({
@@ -297,6 +299,8 @@ it.live(
           "kin_delegate",
           "kin_follow_up",
           "kin_worker_stop",
+          "kin_leads",
+          "kin_hand_off",
           "kin_ask",
           "kin_react",
           "memory_search",
