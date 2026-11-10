@@ -692,6 +692,17 @@ const make = Effect.gen(function* () {
       input.commit();
       return yield* fail(orgId, "clone", "The purge marker changed while waiting for the lock");
     }
+    // The rewrite starts from GitHub and ends in a reclone, which would drop unlanded memory.
+    if (
+      yield* history
+        .unlanded()
+        .pipe(failed(orgId, "clone", "Could not compare this server's memory with GitHub's"))
+    )
+      return yield* fail(
+        orgId,
+        "clone",
+        "Memory on this server hasn't reached GitHub yet; purge again once Kin has landed it",
+      );
     const { work, before, head: oldHead } = yield* mirror(orgId, repo);
 
     // A re-run after a push that landed: nothing to rewrite, but the checkouts still need a reclone.

@@ -132,7 +132,7 @@ export class MemoryPullRequests extends Context.Service<
     /**
      * Closes every open `kin/write/*` PR that no write is waiting on: review PRs whose head is not
      * the commit Kin recorded, and all others. Returns only the recorded review PRs it closed or
-     * failed to close. Run it under the writer lock, so no `land` is open.
+     * failed to close. Run it under the landing lock, so no `land` is open.
      */
     readonly sweep: (input: {
       readonly orgId: KinOrgId;
@@ -206,7 +206,7 @@ const memoryCheckVerdict = (
 
 const PAGE = 100;
 const MAX_RUNS = 10;
-// Every call runs under the writer lock; GitHub's own edge gives up after about 10 seconds.
+// Every call runs under the landing lock; GitHub's own edge gives up after about 10 seconds.
 const CALL_TIMEOUT: Duration.Input = "30 seconds";
 /** `memory-check.yml`'s job timeout: past it the check can't pass. */
 const CHECK_DEADLINE: Duration.Input = "15 minutes";
@@ -424,7 +424,7 @@ export const make = Effect.fn("MemoryPullRequests.make")(function* (options: {
       }
       return verdict;
     });
-    // The writer lock is held while this waits, so the deadline bounds slow calls too.
+    // The landing lock is held while this waits, so the deadline bounds slow calls too.
     const verdict = Option.getOrElse(
       yield* awaitCheck.pipe(Effect.timeoutOption(CHECK_DEADLINE)),
       (): Verdict => ({ _tag: "pending" }),

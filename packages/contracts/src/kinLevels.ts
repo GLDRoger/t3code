@@ -10,10 +10,6 @@ import { KinActionId } from "./kinApprovals.ts";
 import { KinAgentId, KinChatError, KinChatId, KinOrgId } from "./kinChat.ts";
 import { CanonicalUtcTimestamp, KinLevel } from "./kinLead.ts";
 
-// guestShare.ts NAME_BREAKING_CHARACTER, widened to every format character (zero-width, BOM).
-/** What the server spells out as `[U+XXXX]` in lead-written previews; newlines and tabs stay. */
-export const KIN_HIDDEN_CHARACTER = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
-
 export const KinLevelsView = Schema.Struct({
   orgId: KinOrgId,
   agentId: KinAgentId,
