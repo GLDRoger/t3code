@@ -9,6 +9,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinApprovalPresentation";
 import type {
   EnvironmentId,
+  KinApprovalsListKeysResult,
   KinApproverKey,
   KinOrgId,
   KinPendingAction,
@@ -40,13 +41,21 @@ export type KinApproverKeyStatus =
   | {
       readonly _tag: "pending";
       readonly code: string | null;
-      /** The org's first key: only the desktop app on the Kin host can confirm it. */
+      readonly thumbprint: string;
+      /** The org's first key: confirmed only on the Kin host, with `t3 kin approvals confirm-key`. */
       readonly first: boolean;
     }
   /** No App Attest (a simulator, an old phone): the host never activates this key. */
   | { readonly _tag: "unattested" }
   | { readonly _tag: "revoked" }
-  | { readonly _tag: "active"; readonly key: KinApproverKey };
+  | {
+      readonly _tag: "active";
+      readonly key: KinApproverKey;
+      /** New phones waiting for this one to approve them. */
+      readonly enrolments: ReadonlyArray<KinApprovalEnrolment>;
+    };
+
+export type KinApprovalEnrolment = NonNullable<KinApprovalsListKeysResult["enrolments"]>[number];
 
 export function useKinApproverKey(environmentId: EnvironmentId, orgId: KinOrgId) {
   const record = useAtomValue(kinApproverKeyRecordAtom);
@@ -61,7 +70,7 @@ export function useKinApproverKey(environmentId: EnvironmentId, orgId: KinOrgId)
 
 function approverKeyStatus(
   record: AsyncResult.AsyncResult<KinApproverKeyRecord | null, unknown>,
-  keys: AsyncResult.AsyncResult<{ readonly keys: ReadonlyArray<KinApproverKey> }, unknown>,
+  keys: AsyncResult.AsyncResult<KinApprovalsListKeysResult, unknown>,
   environmentId: EnvironmentId,
   orgId: KinOrgId,
   retry: () => void,
@@ -76,11 +85,17 @@ function approverKeyStatus(
   if (here === null || key === undefined) return { _tag: "none", staleKey: saved !== null };
   if (key.state === "revoked") return { _tag: "revoked" };
   if (!key.attested) return { _tag: "unattested" };
-  if (key.state === "active") return { _tag: "active", key };
+  if (key.state === "active")
+    return {
+      _tag: "active",
+      key,
+      enrolments: (keys.value.enrolments ?? []).filter((e) => e.thumbprint !== key.thumbprint),
+    };
   const live = here.code !== null && (here.codeExpiresAt ?? 0) > Date.now();
   return {
     _tag: "pending",
     code: live ? here.code : null,
+    thumbprint: key.thumbprint,
     first: !keys.value.keys.some((k) => k.state === "active"),
   };
 }

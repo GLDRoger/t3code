@@ -99,6 +99,12 @@ const CHECK_LABEL: Record<KinCheckRun["status"], string> = {
   skipped: "Skipped",
 };
 
+const KEY_HARDWARE: Record<"secure_enclave" | "strongbox" | "tee", string> = {
+  secure_enclave: "Secure Enclave",
+  strongbox: "StrongBox",
+  tee: "Secure hardware",
+};
+
 const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 function checksSummary(checks: ReadonlyArray<KinCheckRun>): string {
@@ -230,6 +236,17 @@ function fullView(
     fact("lead", "Lead", name);
     fact("level", "New level", action.target.level);
     fact("where", "Applies to", action.target.chatId === undefined ? "All chats" : "One chat");
+  } else if (action.target._tag === "device_key") {
+    const label = view.keyDeviceLabel === undefined ? "" : clamp(view.keyDeviceLabel, 80);
+    title = "Let a new phone approve";
+    if (label) fact("phone", "Phone", label);
+    // Whole, as the Face ID prompt shows it: the new phone shows the same key on its screen.
+    fact("key", "Key", action.target.thumbprint, true);
+    fact(
+      "hardware",
+      "Hardware",
+      `${KEY_HARDWARE[action.target.hardware]}, ${action.target.attested ? "attested" : "not attested"}`,
+    );
   } else {
     title = "Approve this request";
   }
@@ -280,7 +297,9 @@ function redactedView(view: Extract<KinApprovalView, { _tag: "redacted" }>): Kin
       ? `Merge #${view.number}${view.repo === null ? "" : ` in ${view.repo}`}`
       : view.kind === "set_level"
         ? "Change a lead's level"
-        : "A request for the owner";
+        : view.kind === "register_approver_key"
+          ? "Let a new phone approve"
+          : "A request for the owner";
   const subtitle = view.title === null ? null : clamp(view.title, 200) || null;
   const eyebrow = settled ? "Approval" : `Waiting on ${waitingOn}`;
   const status = settled ? KIN_APPROVAL_STATE_TEXT[view.state] : null;

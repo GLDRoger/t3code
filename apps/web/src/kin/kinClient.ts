@@ -13,10 +13,8 @@ import {
   environmentSessionGenerationAtom,
 } from "@t3tools/client-runtime/state/runtime";
 import {
-  KIN_APPROVAL_WS_METHODS,
   KIN_CHAT_WS_METHODS,
   type EnvironmentId,
-  type KinApprovalsOrgInput,
   type KinChatHistoryInput,
   type KinOrgsListInput,
 } from "@t3tools/contracts";
@@ -62,11 +60,6 @@ function guardedRead<Input, A, E>(command: {
 
 const readOrgs = guardedRead(orgsRead);
 const readHistory = guardedRead(historyRead);
-const approverKeysRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
-  label: "kin:approver-keys:read",
-  tag: KIN_APPROVAL_WS_METHODS.listKeys,
-});
-const readApproverKeys = guardedRead(approverKeysRead);
 
 // Hosts that answered `kin.orgs.list` this run: their `unavailable` is an outage to wait out.
 const knownKinHosts = new Set<EnvironmentId>();
@@ -136,18 +129,6 @@ export const kinClient = {
       mode: "singleFlight",
       key: ({ input }) => `${input.messageId}|${input.emoji}`,
     },
-  }),
-  /** The org's approver keys, so the desktop can confirm the first phone's. */
-  approverKeys: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
-    label: "kin:approver-keys",
-    execute: Effect.fn("KinWebClient.approverKeys")(function* (input: KinApprovalsOrgInput) {
-      return yield* readApproverKeys(input);
-    }),
-    staleTimeMs: 10_000,
-  }),
-  confirmKey: createEnvironmentRpcCommand(connectionAtomRuntime, {
-    label: "kin:approver-key:confirm",
-    tag: KIN_APPROVAL_WS_METHODS.confirmKey,
   }),
   memoryUndo: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:memory:undo",

@@ -33,6 +33,7 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import { layerKinAuthTest } from "../auth/ProofKeySessions.testkit.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { ApproverKeys, layer as approverKeysLayer, type KinKeyCaller } from "./ApproverKeys.ts";
+import { KinHostKeyCeremony, layer as hostCeremonyLayer } from "./HostKeyCeremony.ts";
 import { KinAudit, make as makeAudit, type KinAuditAppendInput } from "./Audit.ts";
 import { KinAttestationTrust } from "./attestation/AttestationTrust.ts";
 import { androidChain, makeTrustFixture, newKey } from "./attestation/testFixtures.ts";
@@ -69,14 +70,9 @@ const decodePersonId = Schema.decodeSync(KinPersonId);
 const callerFor = (id: string, personId: KinPersonId, subject = "phone"): KinKeyCaller => ({
   session: { sessionId: sessionId(id), subject, method: "bearer-access-token", scopes: [] },
   people: [{ _tag: "person", orgId, personId }],
-  connection: Option.some({
-    remoteAddress: subject === "desktop-bootstrap" ? "127.0.0.1" : "192.168.1.20",
-    headers: {},
-  }),
 });
 const ownerPhone = callerFor("sess-phone", owner);
 const ownerLaptop = callerFor("sess-laptop", owner);
-const desktop = callerFor("sess-desktop", owner, "desktop-bootstrap");
 const memberPhone = callerFor("sess-member", member);
 const nobody: KinKeyCaller = { ...callerFor("sess-nobody", owner), people: [] };
 
@@ -148,7 +144,7 @@ function harness() {
   const trust = Layer.succeed(KinAttestationTrust, { load: () => Effect.succeed(fixture.trust) });
   const on = <A, E, R>(database: Layer.Layer<A, E, R>) =>
     grantVerifierLayer.pipe(
-      Layer.provideMerge(approverKeysLayer),
+      Layer.provideMerge(Layer.merge(approverKeysLayer, hostCeremonyLayer)),
       Layer.provideMerge(Layer.merge(pendingActionsLayer, ledgerLayer)),
       Layer.provide(Layer.mergeAll(trust, roles, live, grantAuditLayer, KeySeal.layerTest())),
       Layer.provideMerge(recordingAudit),
@@ -169,7 +165,6 @@ const seed = Effect.gen(function* () {
     ["sess-phone", "phone", "192.168.1.20"],
     ["sess-laptop", "phone", "192.168.1.21"],
     ["sess-member", "phone", "192.168.1.30"],
-    ["sess-desktop", "desktop-bootstrap", "127.0.0.1"],
   ] as const) {
     yield* sql`INSERT INTO auth_sessions (session_id, subject, scopes, method, client_ip_address,
         issued_at, expires_at)
@@ -179,6 +174,7 @@ const seed = Effect.gen(function* () {
   return {
     sql,
     keys: yield* ApproverKeys,
+    ceremony: yield* KinHostKeyCeremony,
     actions: { ...(yield* KinPendingActions), ...(yield* KinExecutionLedger) },
     grants: yield* GrantVerifier,
   };
@@ -202,14 +198,16 @@ const register = (keys: ApproverKeys["Service"], from: KinKeyCaller) =>
     return { ...registered, privateKey: chain.approvalKey.privateKey };
   });
 
-/** The owner's first key, confirmed on the desktop; the member's activated as a later key. */
+/** The owner's first key, confirmed on the host; the member's activated as a later key. */
 const enrol = Effect.gen(function* () {
   const world = yield* seed;
   const ownerKey = yield* register(world.keys, ownerPhone);
-  yield* world.keys.confirmKey(desktop, {
+  yield* world.ceremony.confirm({
     orgId,
     thumbprint: ownerKey.key.thumbprint,
+    sessionId: ownerPhone.session.sessionId,
     code: ownerKey.code,
+    recover: false,
   });
   const memberKey = yield* register(world.keys, memberPhone);
   assert.isTrue(yield* world.keys.activateByGrant(memberKey.key));

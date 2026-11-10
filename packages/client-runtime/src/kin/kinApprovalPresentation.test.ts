@@ -62,7 +62,7 @@ const merge = (overrides: Partial<KinPendingAction> = {}) =>
 
 const full = (
   action: KinPendingAction,
-  names: { leadName?: string; afterNonOwnerName?: string } = {
+  names: { leadName?: string; afterNonOwnerName?: string; keyDeviceLabel?: string } = {
     leadName: "Tech lead",
     afterNonOwnerName: "Priya",
   },
@@ -99,7 +99,9 @@ describe("kinApprovalCardView", () => {
   it("names who asked from the provenance the host recorded", () => {
     const asked = (
       provenance: Partial<KinPendingAction["provenance"]>,
-      names: { leadName?: string; afterNonOwnerName?: string } = { leadName: "Tech lead" },
+      names: { leadName?: string; afterNonOwnerName?: string; keyDeviceLabel?: string } = {
+        leadName: "Tech lead",
+      },
     ) =>
       kinApprovalCardView(
         full(
@@ -191,6 +193,35 @@ describe("kinApprovalCardView", () => {
       reason: null,
       decidable: true,
     });
+  });
+
+  it("a new phone's card shows its whole key and attested hardware before anyone signs", () => {
+    const thumbprint = "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs";
+    const enrol = merge({
+      kind: "register_approver_key",
+      target: { _tag: "device_key", thumbprint, hardware: "secure_enclave", attested: true },
+      resolved: { _tag: "none" },
+      reason: 'Add approver key for "iPhone".',
+      requestedBy: { agentId: "kin-approver-keys", threadId: "kin-approver-keys" },
+      provenance: {
+        startedBy: { humanId: "kin-default-owner" },
+        startedByRole: "owner",
+        chain: [],
+        ceilingBelowOwner: false,
+      },
+    } as unknown as Partial<KinPendingAction>);
+    const card = kinApprovalCardView(full(enrol, { keyDeviceLabel: "Nishchay's iPhone" }));
+    expect(card).toMatchObject({
+      title: "Let a new phone approve",
+      asked: { text: "You asked for this.", warning: false },
+      reason: null,
+      decidable: true,
+    });
+    expect(card.facts.map((fact) => [fact.label, fact.value])).toEqual([
+      ["Phone", "Nishchay's iPhone"],
+      ["Key", thumbprint],
+      ["Hardware", "Secure Enclave, attested"],
+    ]);
   });
 
   it("anyone else sees who it waits on and never a button", () => {

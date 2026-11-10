@@ -442,10 +442,20 @@ const make = Effect.gen(function* () {
     const [row] =
       table === "kin_people"
         ? yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
-            WHERE org_id = ${orgId} AND person_id = ${id}`
+            WHERE org_id = ${orgId} AND person_id = ${id} ORDER BY person_id LIMIT 1`
         : yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_agents
-            WHERE org_id = ${orgId} AND agent_id = ${id}`;
+            WHERE org_id = ${orgId} AND agent_id = ${id} ORDER BY agent_id LIMIT 1`;
     return row?.name.trim() || undefined;
+  });
+
+  /** What a new phone calls itself, from the host's key record; shown beside its fingerprint. */
+  const newKeyLabel = Effect.fn("GrantVerifier.newKeyLabel")(function* (
+    orgId: KinOrgId,
+    thumbprint: string,
+  ) {
+    const [row] = yield* sql<{ label: string }>`SELECT device_label AS label FROM kin_approver_keys
+      WHERE org_id = ${orgId} AND thumbprint = ${thumbprint} ORDER BY thumbprint LIMIT 1`;
+    return row?.label.trim() || undefined;
   });
 
   /** The person the card waits on: the owner of the lead it concerns (phase 1's only approver). */
@@ -453,7 +463,8 @@ const make = Effect.gen(function* () {
     const lead = leadOf(action);
     const [row] = yield* sql<{ name: string }>`SELECT p.display_name AS name FROM kin_agents a
       JOIN kin_people p ON p.org_id = a.org_id AND p.person_id = a.owner_person_id
-      WHERE a.org_id = ${action.orgId} AND a.agent_id = ${lead}`;
+      WHERE a.org_id = ${action.orgId} AND a.agent_id = ${lead}
+      ORDER BY a.agent_id, p.person_id LIMIT 1`;
     return row?.name.trim() || undefined;
   });
 
@@ -470,12 +481,17 @@ const make = Effect.gen(function* () {
             after === undefined
               ? undefined
               : yield* displayName("kin_people", action.orgId, after.humanId);
+          const keyDeviceLabel =
+            action.target._tag === "device_key"
+              ? yield* newKeyLabel(action.orgId, action.target.thumbprint)
+              : undefined;
           return {
             _tag: "full" as const,
             action,
             canApprove: true as const,
             ...(leadName === undefined ? {} : { leadName }),
             ...(afterNonOwnerName === undefined ? {} : { afterNonOwnerName }),
+            ...(keyDeviceLabel === undefined ? {} : { keyDeviceLabel }),
           };
         }
         // Anyone else sees what waits and on whom, never the facts a challenge would sign.

@@ -17,6 +17,7 @@ import {
   AuthSourceControlWriteScope,
   ThreadId,
   EnvironmentId,
+  KIN_APPROVAL_WS_METHODS,
   KIN_LEVEL_WS_METHODS,
   KIN_PUSH_WS_METHODS,
   ORCHESTRATION_V2_WS_METHODS,
@@ -133,6 +134,15 @@ describe("command permissions", () => {
     [KIN_LEVEL_WS_METHODS.lower, AuthSettingsWriteScope],
     [KIN_LEVEL_WS_METHODS.raise, AuthSettingsWriteScope],
     [KIN_LEVEL_WS_METHODS.shadowMemory, AuthSettingsWriteScope],
+    // Approving needs operate on the host that holds the action; key setup needs access:write.
+    [KIN_APPROVAL_WS_METHODS.get, AuthOrchestrationReadScope],
+    [KIN_APPROVAL_WS_METHODS.challenge, AuthOrchestrationOperateScope],
+    [KIN_APPROVAL_WS_METHODS.submitGrant, AuthOrchestrationOperateScope],
+    [KIN_APPROVAL_WS_METHODS.reject, AuthOrchestrationOperateScope],
+    [KIN_APPROVAL_WS_METHODS.keyChallenge, AuthAccessWriteScope],
+    [KIN_APPROVAL_WS_METHODS.registerKey, AuthAccessWriteScope],
+    [KIN_APPROVAL_WS_METHODS.listKeys, AuthAccessWriteScope],
+    [KIN_APPROVAL_WS_METHODS.revokeKey, AuthAccessWriteScope],
   ] as const)("guards %s with the destination %s grant", ([method, scope]) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -142,23 +152,33 @@ describe("command permissions", () => {
           tag: method,
           execute: () => Effect.die("unused"),
         });
+        const permissions = createCommandPermissions(runtime, method);
         const others = [
           AuthOrchestrationReadScope,
           AuthOrchestrationOperateScope,
           AuthSettingsWriteScope,
+          AuthAccessWriteScope,
         ].filter((other) => other !== scope);
         registry.set(
           sessions(env),
           AsyncResult.success({ ...grant(false), scopes: others, permissions: others }),
         );
         expect(registry.get(command.permissionAtom(env))).toBe(false);
+        expect((yield* permissions.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
+          "EnvironmentAuthorizationError",
+        );
         registry.set(
           sessions(env),
           AsyncResult.success({ ...grant(false), scopes: [scope], permissions: [scope] }),
         );
         expect(registry.get(command.permissionAtom(env))).toBe(true);
+        yield* permissions.authorize(registry, env);
+        // The grant belongs to the destination: another environment's session doesn't carry it.
         registry.set(sessions(other), AsyncResult.success(grant(false)));
         expect(registry.get(command.permissionAtom(other))).toBe(false);
+        expect((yield* permissions.authorize(registry, other).pipe(Effect.flip))._tag).toBe(
+          "EnvironmentAuthorizationError",
+        );
       }),
     ),
   );

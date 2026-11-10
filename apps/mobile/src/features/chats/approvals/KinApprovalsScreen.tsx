@@ -16,6 +16,7 @@ import { ErrorBanner } from "../../../components/ui/ErrorBanner";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
 import { kinClient } from "../state/kinClient";
+import { KinApprovalCard } from "../widgets/KinApprovalCard";
 import { useEnrolApproverKey, useKinApproverKey } from "./useKinApproverKey";
 
 type KinApprovalsParams = { readonly environmentId: string; readonly orgId: string };
@@ -63,7 +64,9 @@ function ApprovalsBody(props: { readonly environmentId: EnvironmentId; readonly 
   const { environmentId, orgId } = props;
   const { status, refresh } = useKinApproverKey(environmentId, orgId);
   const enrol = useEnrolApproverKey();
-  const canEnrol = useAtomValue(kinClient.registerKey.permissionAtom(environmentId));
+  const canChallenge = useAtomValue(kinClient.keyChallenge.permissionAtom(environmentId));
+  const canRegister = useAtomValue(kinClient.registerKey.permissionAtom(environmentId));
+  const canEnrol = canChallenge && canRegister;
   const [working, setWorking] = useState(false);
   const [problem, setProblem] = useState<{
     readonly text: string;
@@ -71,7 +74,7 @@ function ApprovalsBody(props: { readonly environmentId: EnvironmentId; readonly 
   } | null>(null);
 
   const start = async (replace: boolean) => {
-    if (working) return;
+    if (working || !canEnrol) return;
     setWorking(true);
     setProblem(null);
     const result = await enrol({ environmentId, orgId, replace });
@@ -126,8 +129,35 @@ function ApprovalsBody(props: { readonly environmentId: EnvironmentId; readonly 
   const actions = (primary: ReactNode) => (
     <View className="flex-row flex-wrap gap-2 pt-1">{primary}</View>
   );
+  const cantEnrolLine = canEnrol ? null : (
+    <Text textRole="footnote" className="text-foreground-muted">
+      This device can't set up approvals. Pair it again from the Kin host.
+    </Text>
+  );
   const remake = (label: string) =>
-    actions(<Button label={label} tone="primary" loading={working} onPress={confirmReplace} />);
+    actions(
+      <Button
+        label={label}
+        tone="primary"
+        loading={working}
+        disabled={!canEnrol}
+        onPress={confirmReplace}
+      />,
+    );
+  const keyLine = (thumbprint: string) => (
+    <Text selectable textRole="caption" className="font-mono text-foreground-muted">
+      {`Key ${thumbprint}`}
+    </Text>
+  );
+  const codeLine = (code: string) => (
+    <Text
+      selectable
+      accessibilityLabel={`Code ${code.split("").join(" ")}`}
+      className="py-2 font-mono text-[34px] tracking-[6px] text-foreground"
+    >
+      {`${code.slice(0, 3)} ${code.slice(3)}`}
+    </Text>
+  );
 
   switch (status._tag) {
     case "none":
@@ -144,11 +174,7 @@ function ApprovalsBody(props: { readonly environmentId: EnvironmentId; readonly 
         ],
         <>
           {problemLine}
-          {canEnrol ? null : (
-            <Text textRole="footnote" className="text-foreground-muted">
-              This device can't set up approvals. Pair it again from the Mac.
-            </Text>
-          )}
+          {cantEnrolLine}
           {actions(
             problem?.keyExists === true || status.staleKey ? (
               <Button
@@ -171,38 +197,36 @@ function ApprovalsBody(props: { readonly environmentId: EnvironmentId; readonly 
         </>,
       );
     case "pending":
-      if (!status.first)
-        return section("Another phone already approves", [
-          "Kin has an approval key on another phone. Adding a second phone isn't supported yet, so approve from that one.",
-        ]);
       return section(
-        "Confirm this phone on your Mac",
+        status.first
+          ? "Confirm this phone on the Kin host"
+          : "Approve this phone from your other one",
         status.code === null
           ? ["The code expired. Make a new key to get another."]
-          : [
-              "Open the Kin desktop app on the Mac that runs Kin, and enter this code under Approvals. It works for 10 minutes.",
-            ],
+          : status.first
+            ? [
+                "In a shell on the Kin host, run t3 kin approvals confirm-key, pick this key, and type this code. It works for 10 minutes.",
+              ]
+            : [
+                "On the phone that already approves, open Approvals and approve this key with Face ID.",
+                "Lost that phone? Run t3 kin approvals confirm-key --recover on the Kin host and type this code instead.",
+              ],
         <>
-          {status.code === null ? null : (
-            <Text
-              selectable
-              accessibilityLabel={`Code ${status.code.split("").join(" ")}`}
-              className="py-2 font-mono text-[34px] tracking-[6px] text-foreground"
-            >
-              {`${status.code.slice(0, 3)} ${status.code.slice(3)}`}
-            </Text>
-          )}
+          {status.code === null ? null : codeLine(status.code)}
+          {keyLine(status.thumbprint)}
           {problemLine}
+          {cantEnrolLine}
           {actions(
             status.code === null ? (
               <Button
                 label="Make a new key"
                 tone="primary"
                 loading={working}
+                disabled={!canEnrol}
                 onPress={confirmReplace}
               />
             ) : (
-              <Button label="I've entered it" tone="primary" onPress={refresh} />
+              <Button label="Check again" tone="primary" onPress={refresh} />
             ),
           )}
         </>,
@@ -215,6 +239,7 @@ function ApprovalsBody(props: { readonly environmentId: EnvironmentId; readonly 
         ],
         <>
           {problemLine}
+          {cantEnrolLine}
           {remake("Make a new key")}
         </>,
       );
@@ -224,12 +249,25 @@ function ApprovalsBody(props: { readonly environmentId: EnvironmentId; readonly 
         ["Kin no longer accepts approvals from it. Make a new key to approve from this phone."],
         <>
           {problemLine}
+          {cantEnrolLine}
           {remake("Make a new key")}
         </>,
       );
     case "active":
-      return section("This phone approves for Kin", [
-        `Its key is in ${HARDWARE[status.key.hardware] ?? "secure hardware"}. Every approval asks for Face ID.`,
-      ]);
+      return (
+        <>
+          {section("This phone approves for Kin", [
+            `Its key is in ${HARDWARE[status.key.hardware] ?? "secure hardware"}. Every approval asks for Face ID.`,
+          ])}
+          {status.enrolments.map((enrolment) => (
+            <KinApprovalCard
+              key={enrolment.actionId}
+              environmentId={environmentId}
+              actionId={enrolment.actionId}
+              revision={0}
+            />
+          ))}
+        </>
+      );
   }
 }

@@ -89,7 +89,12 @@ function OwnerCard(props: {
   const navigation = useNavigation();
   const { status: key } = useKinApproverKey(environmentId, action.orgId);
   const { approve, reject } = useDecidePendingAction();
-  const canDecide = useAtomValue(kinClient.submitGrant.permissionAtom(environmentId));
+  // Approving takes the challenge and the submit; declining only the reject. Each is its own grant.
+  const canChallenge = useAtomValue(kinClient.approvalChallenge.permissionAtom(environmentId));
+  const canSubmit = useAtomValue(kinClient.submitGrant.permissionAtom(environmentId));
+  const canApprove = canChallenge && canSubmit;
+  const canDecline = useAtomValue(kinClient.declineAction.permissionAtom(environmentId));
+  const canDecide = canApprove || canDecline;
   const [busy, setBusy] = useState<KinApprovalBusy | null>(null);
   // The answer belongs to the revision it was given on; a redraw at a new revision replaces it.
   const [decided, setDecided] = useState<{
@@ -107,6 +112,7 @@ function OwnerCard(props: {
 
   const decide = async (which: KinApprovalBusy) => {
     if (busy !== null || !card.decidable) return;
+    if (which === "approving" ? !canApprove : !canDecline) return;
     setBusy(which);
     setFailure(null);
     const outcome =
@@ -140,12 +146,14 @@ function OwnerCard(props: {
           {failure.text}
         </Text>
       )}
-      {card.decidable && !canDecide ? (
+      {card.decidable && !canApprove ? (
         <Text textRole="footnote" className="text-foreground-muted">
-          This device can't approve. Pair it again from the Mac.
+          {canDecline
+            ? "This device can decline but not approve. Pair it again from the Kin host to approve."
+            : "This device can't approve or decline. Pair it again from the Kin host."}
         </Text>
       ) : null}
-      {showButtons && !approveReady && key._tag !== "loading" ? (
+      {showButtons && canApprove && !approveReady && key._tag !== "loading" ? (
         <Text textRole="footnote" className="text-foreground-muted">
           {key._tag === "pending"
             ? "Finish setting up approvals on this phone to approve."
@@ -161,7 +169,7 @@ function OwnerCard(props: {
       ) : null}
       {showButtons || busy !== null ? (
         <View className="flex-row flex-wrap gap-2 pt-1">
-          {approveReady || key._tag === "loading" ? (
+          {!canApprove ? null : approveReady || key._tag === "loading" ? (
             <Button
               label="Approve"
               tone="primary"
@@ -179,13 +187,15 @@ function OwnerCard(props: {
               onPress={openSetup}
             />
           ) : null}
-          <Button
-            label="Decline"
-            tone="secondary"
-            loading={busy === "declining"}
-            disabled={busy !== null || !card.decidable}
-            onPress={() => void decide("declining")}
-          />
+          {canDecline ? (
+            <Button
+              label="Decline"
+              tone="secondary"
+              loading={busy === "declining"}
+              disabled={busy !== null || !card.decidable}
+              onPress={() => void decide("declining")}
+            />
+          ) : null}
         </View>
       ) : null}
       {failure?.reenrol === true ? (

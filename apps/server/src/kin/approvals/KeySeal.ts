@@ -22,6 +22,13 @@ export type KinSealedKeyFields = {
   readonly hardware: string;
 };
 
+/** The exact enrolment a phone's code confirms: one key, from one session, for one challenge. */
+export type KinConfirmationFields = KinSealedKeyFields & {
+  readonly sessionId: string;
+  readonly challengeSha256: string;
+  readonly code: string;
+};
+
 /**
  * An HMAC the server writes when it activates an attested approver key. The key is a server
  * secret, so a row inserted or edited in SQLite never carries a valid seal.
@@ -31,6 +38,9 @@ export class KinKeySeal extends Context.Service<
   {
     readonly seal: (key: KinSealedKeyFields) => string;
     readonly verify: (key: KinSealedKeyFields, seal: string | null) => boolean;
+    /** What `kin_approver_key_confirmations.verifier` holds; checked with `verify`'s compare. */
+    readonly confirmation: (fields: KinConfirmationFields) => string;
+    readonly verifyConfirmation: (fields: KinConfirmationFields, verifier: string) => boolean;
     /** Runs `adopt` on the first start after the seal shipped, and never again once it succeeds. */
     readonly adoptOnce: <E, R>(adopt: Effect.Effect<number, E, R>) => Effect.Effect<void, E, R>;
   }
@@ -40,28 +50,36 @@ const make = (
   secret: Uint8Array,
   marker: { readonly adopted: Effect.Effect<boolean>; readonly markAdopted: Effect.Effect<void> },
 ) => {
+  const mac = (fields: Record<string, string | number>) =>
+    NodeCrypto.createHmac("sha256", secret).update(stableStringify(fields)).digest("base64url");
+  const keyFields = (key: KinSealedKeyFields) => ({
+    orgId: key.orgId,
+    thumbprint: key.thumbprint,
+    publicJwkJson: key.publicJwkJson,
+    humanId: key.humanId,
+    hardware: key.hardware,
+  });
   const seal = (key: KinSealedKeyFields) =>
-    NodeCrypto.createHmac("sha256", secret)
-      .update(
-        stableStringify({
-          v: 1,
-          use: "kin-approver-key",
-          orgId: key.orgId,
-          thumbprint: key.thumbprint,
-          publicJwkJson: key.publicJwkJson,
-          humanId: key.humanId,
-          hardware: key.hardware,
-        }),
-      )
-      .digest("base64url");
+    mac({ v: 1, use: "kin-approver-key", ...keyFields(key) });
+  const confirmation = (fields: KinConfirmationFields) =>
+    mac({
+      v: 1,
+      use: "kin-approver-key-confirmation",
+      ...keyFields(fields),
+      sessionId: fields.sessionId,
+      challengeSha256: fields.challengeSha256,
+      code: fields.code,
+    });
+  const same = (expected: string, stored: string) => {
+    const left = Buffer.from(expected);
+    const right = Buffer.from(stored);
+    return left.length === right.length && NodeCrypto.timingSafeEqual(left, right);
+  };
   return KinKeySeal.of({
     seal,
-    verify: (key, stored) => {
-      if (stored === null) return false;
-      const expected = Buffer.from(seal(key));
-      const actual = Buffer.from(stored);
-      return expected.length === actual.length && NodeCrypto.timingSafeEqual(expected, actual);
-    },
+    verify: (key, stored) => stored !== null && same(seal(key), stored),
+    confirmation,
+    verifyConfirmation: (fields, verifier) => same(confirmation(fields), verifier),
     adoptOnce: Effect.fn("KinKeySeal.adoptOnce")(function* <E, R>(
       adopt: Effect.Effect<number, E, R>,
     ) {

@@ -411,6 +411,8 @@ export const KinApprovalView = Schema.Union([
     /** Display names the server looked up: the lead it concerns, and `afterNonOwnerMessage`'s author. */
     leadName: Schema.optional(KinText),
     afterNonOwnerName: Schema.optional(KinText),
+    /** For `register_approver_key`: the new key's device label, from the host's key record. */
+    keyDeviceLabel: Schema.optional(KinText),
   }),
   Schema.TaggedStruct("redacted", {
     actionId: KinActionId,
@@ -512,14 +514,15 @@ export const KinApprovalsKeyInput = Schema.Struct({
   thumbprint: KinKeyThumbprint,
 });
 export type KinApprovalsKeyInput = typeof KinApprovalsKeyInput.Type;
-export const KinApprovalsConfirmKeyInput = Schema.Struct({
-  ...KinApprovalsKeyInput.fields,
-  code: pattern(/^\d{6}$/, "a 6-digit code"),
-});
-export type KinApprovalsConfirmKeyInput = typeof KinApprovalsConfirmKeyInput.Type;
 export const KinApprovalsOrgInput = Schema.Struct({ orgId: KinOrgId });
 export type KinApprovalsOrgInput = typeof KinApprovalsOrgInput.Type;
-export const KinApprovalsListKeysResult = Schema.Struct({ keys: Schema.Array(KinApproverKey) });
+export const KinApprovalsListKeysResult = Schema.Struct({
+  keys: Schema.Array(KinApproverKey),
+  /** Pending `register_approver_key` actions: a new phone an active one has to approve. */
+  enrolments: Schema.optional(
+    Schema.Array(Schema.Struct({ thumbprint: KinKeyThumbprint, actionId: KinActionId })),
+  ),
+});
 export type KinApprovalsListKeysResult = typeof KinApprovalsListKeysResult.Type;
 
 export const KinAuditListInput = Schema.Struct({
@@ -558,7 +561,6 @@ export class KinApprovalError extends Schema.TaggedError<KinApprovalError>()("Ki
       "not_a_lead",
       "bad_challenge",
       "bad_code",
-      "not_local",
       "unattested",
     ]),
   ]),
@@ -573,7 +575,6 @@ export const KIN_APPROVAL_WS_METHODS = {
   reject: "kin.approvals.reject",
   keyChallenge: "kin.approvals.keyChallenge",
   registerKey: "kin.approvals.registerKey",
-  confirmKey: "kin.approvals.confirmKey",
   listKeys: "kin.approvals.listKeys",
   revokeKey: "kin.approvals.revokeKey",
   auditList: "kin.audit.list",
@@ -619,11 +620,6 @@ export const KinApprovalRpcs = [
     success: KinApprovalsRegisterKeyResult,
     error,
   }),
-  Rpc.make(KIN_APPROVAL_WS_METHODS.confirmKey, {
-    payload: KinApprovalsConfirmKeyInput,
-    success: KinApproverKey,
-    error,
-  }),
   Rpc.make(KIN_APPROVAL_WS_METHODS.listKeys, {
     payload: KinApprovalsOrgInput,
     success: KinApprovalsListKeysResult,
@@ -655,7 +651,6 @@ export const KIN_APPROVAL_RPC_SCOPES = {
   [KIN_APPROVAL_WS_METHODS.reject]: AuthOrchestrationOperateScope,
   [KIN_APPROVAL_WS_METHODS.keyChallenge]: AuthAccessWriteScope,
   [KIN_APPROVAL_WS_METHODS.registerKey]: AuthAccessWriteScope,
-  [KIN_APPROVAL_WS_METHODS.confirmKey]: AuthAccessWriteScope,
   [KIN_APPROVAL_WS_METHODS.listKeys]: AuthAccessWriteScope,
   [KIN_APPROVAL_WS_METHODS.revokeKey]: AuthAccessWriteScope,
   [KIN_APPROVAL_WS_METHODS.auditList]: AuthAccessWriteScope,
