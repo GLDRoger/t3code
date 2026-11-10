@@ -135,6 +135,8 @@ export const withScheduledTasks = Effect.fn("KinContract.withScheduledTasks")(fu
       }),
     }),
     Layer.mock(ThreadManagement.ThreadManagementService)({
+      // A live destination, so binding passes the archived-thread check.
+      getThreadShell: () => Effect.succeed({ ...projection().thread, archivedAt: null }),
       // Only the input boundary is under contract; no orchestrator runs in this fixture.
       sendToThread: (input) =>
         Queue.offer(sends, input).pipe(Effect.andThen(Effect.die("send boundary reached"))),

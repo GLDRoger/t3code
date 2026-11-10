@@ -137,6 +137,8 @@ export const withScheduledTasks = <A, E, R>(
     const sends: ThreadManagementService.ThreadManagementSendInput[] = [];
     const boundThreads = Layer.mock(ThreadManagementService.ThreadManagementService)({
       getThreadProjection: (id) => Effect.succeed(projection(orgOf(id))),
+      // A live destination, so binding reaches Kin's sink rather than the archived-thread check.
+      getThreadShell: (id) => Effect.succeed(projection(orgOf(id), null).thread),
       sendToThread: (input) =>
         Effect.gen(function* () {
           sends.push(input);
