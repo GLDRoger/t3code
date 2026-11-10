@@ -22,6 +22,7 @@ import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
+import type { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
@@ -116,7 +117,7 @@ const run = <A, E>(
   test: (input: {
     readonly ctx: Effect.Success<typeof setup>;
     readonly handoff: Handoff.KinHandoff["Service"];
-  }) => Effect.Effect<A, E, SqlClient.SqlClient>,
+  }) => Effect.Effect<A, E, SqlClient.SqlClient | OrchestratorV2>,
 ) =>
   Effect.gen(function* () {
     const ctx = yield* setup;
@@ -194,6 +195,14 @@ it.effect(
         });
         // By domain, in other words, from a retry: the same message reaches that lead once.
         yield* handoff.handOff(scopeFor(chief), { ...input, to: "engineering", request: "Again" });
+        // One owner message goes to one lead: after Tech lead, not also to another.
+        yield* ctx.addLead(KinAgentId.make("ops"), "Ops", "operations", "1970-01-01T00:00:02.000Z");
+        const second = yield* Effect.flip(
+          handoff.handOff(scopeFor(chief), { ...input, to: "Ops" }),
+        );
+        assert.strictEqual(second.reason, "not_allowed");
+        assert.include(second.message, "already passed on to Tech lead");
+        assert.lengthOf(yield* passedOn(sql, orgId, KinAgentId.make("ops")), 0);
         assert.deepStrictEqual(yield* systemRows(sql, orgId, ctx.techChat), [
           {
             body: 'Passed on by Chief of staff\n"Why is CI red on the app repo?"\nChief of staff adds: CI is red on acme/app. The owner wants to know why.',
@@ -309,6 +318,11 @@ it.effect(
         assert.strictEqual((yield* pass("tech-event")).reason, "not_found");
         assert.strictEqual((yield* pass("nowhere")).reason, "not_found");
 
+        // A group's message woke the lead too, so what it adds could carry someone else's words.
+        assert.include((yield* pass("ask-event")).message, "outside your own chat with the owner");
+        yield* sql`UPDATE kin_events SET state = 'done', wakeup_id = NULL
+          WHERE org_id = ${orgId} AND event_id = 'group-event'`;
+
         // Someone else's lead, itself, and a name nobody has all name who can be reached.
         for (const to of ["Finance", "finance", "Chief of staff", "Nobody"]) {
           const refused = yield* pass("ask-event", to);
@@ -324,4 +338,75 @@ it.effect(
         assert.lengthOf(yield* systemRows(sql, orgId, ctx.techChat), 0);
       }),
     ),
+);
+
+it.effect(
+  "the owner's message goes whole, or not at all when the other lead couldn't see it whole",
+  () =>
+    run(({ ctx, handoff }) =>
+      Effect.gen(function* () {
+        const { sql, orgId, owner } = ctx;
+        const ask = Effect.fn("HandoffTest.ask")(function* (eventId: string, body: string) {
+          const sent = yield* ctx.chats.send(owner, {
+            chatId: ctx.chiefChat,
+            body,
+            clientMessageId: eventId,
+          });
+          yield* ctx.claim(eventId, chief, { messageId: sent.messageId });
+        });
+        const pass = (sourceEventId: string, request = "Please look.") =>
+          handoff.handOff(scopeFor(chief), { to: "Tech lead", request, sourceEventId });
+        // Past the 1,500 characters the reviewed version cut it at.
+        const long = `${"The deploy log says ".repeat(150)}end.`;
+        yield* ask("long-event", long);
+        yield* pass("long-event");
+        const [row] = yield* systemRows(sql, orgId, ctx.techChat);
+        assert.include(row!.body, `"${long}"`);
+        // More than a lead is shown of one message: refused rather than cut.
+        yield* ask("huge-event", "x".repeat(8_100));
+        const huge = yield* Effect.flip(pass("huge-event"));
+        assert.strictEqual(huge.reason, "not_allowed");
+        assert.include(huge.message, "too long for another lead to be shown whole");
+        assert.include(huge.message, "Nothing was passed on.");
+        // Whole on its own, but not with the lead's words added.
+        yield* ask("close-event", "y".repeat(7_000));
+        const close = yield* Effect.flip(pass("close-event", "z ".repeat(999)));
+        assert.include(close.message, "Add less and call again");
+        assert.lengthOf(yield* systemRows(sql, orgId, ctx.techChat), 1);
+      }),
+    ),
+);
+
+it.effect("kin_leads tells charters only to a wake-up the owner alone set off", () =>
+  run(({ ctx, handoff }) =>
+    Effect.gen(function* () {
+      const { sql, orgId, owner } = ctx;
+      yield* ctx.addLead(KinAgentId.make("ops"), "Ops", "operations", "1970-01-01T00:00:02.000Z");
+      assert.lengthOf((yield* handoff.leads(scopeFor(chief))).leads, 3);
+      // A group with a teammate, the Chief of staff and the Tech lead in it; Ops isn't there.
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('teammate', ${orgId}, 'teammate', 'Teammate', ${at})`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at)
+        VALUES ('team', ${orgId}, 'team_group', 'Team', 0, ${at})`;
+      for (const [id, kind, who, role] of [
+        ["team-owner", "person", owner.personId, "owner"],
+        ["team-mate", "person", "teammate", "member"],
+        ["team-chief", "agent", chief, "member"],
+        ["team-tech", "agent", tech, "member"],
+      ] as const)
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, agent_id, role, joined_at)
+          VALUES (${id}, ${orgId}, 'team', ${kind}, ${kind === "person" ? who : null},
+            ${kind === "agent" ? who : null}, ${role}, ${at})`;
+      yield* ctx.claim("team-event", chief, {
+        chatId: "team",
+        provenance: { _tag: "human", personId: "teammate", memberId: "team-mate" },
+      });
+      assert.deepStrictEqual(yield* handoff.leads(scopeFor(chief)), {
+        leads: [
+          { name: "Chief of staff", you: true },
+          { name: "Tech lead", you: false },
+        ],
+      });
+    }),
+  ),
 );

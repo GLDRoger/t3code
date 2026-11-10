@@ -11,6 +11,7 @@ import {
 } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -25,14 +26,16 @@ import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import { resolveLead } from "./LeadMemory.ts";
+import { messageBodyLimit } from "./LeadPrompt.ts";
 
 export const LeadsResult = Schema.Struct({
   leads: Schema.Array(
     Schema.Struct({
       name: Schema.String,
-      domain: Schema.String,
+      // Both only when the owner alone set off this wake-up; anywhere else, names only.
+      domain: Schema.optional(Schema.String),
       // What the owner said it is for.
-      charter: Schema.String,
+      charter: Schema.optional(Schema.String),
       you: Schema.Boolean,
     }),
   ),
@@ -55,7 +58,6 @@ export const HandOffResult = Schema.Struct({
   passed: Schema.Literal(true),
 });
 
-const ORIGINAL_CAP = 1_500;
 const NOTHING = "Nothing was passed on.";
 const refuse = (message: string) =>
   new KinChatError({ reason: "not_allowed", message: `${message} ${NOTHING}` });
@@ -89,6 +91,31 @@ const Colleague = Schema.Struct({
 type Colleague = typeof Colleague.Type;
 const decodeColleagues = Schema.decodeUnknownEffect(Schema.Array(Colleague));
 const decodeEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(KinEvent));
+const decodeEvents = Schema.decodeUnknownEffect(Schema.Array(Schema.fromJsonString(KinEvent)));
+/**
+ * Whether only the owner could have put this in front of the lead: their own words in its own
+ * chat with them, a routine, or a reminder they asked for there. Anything a teammate, another
+ * lead, GitHub or a worker could have shaped is not.
+ */
+const fromOwnerAlone = (event: KinEvent, self: Colleague) => {
+  switch (event._tag) {
+    case "chat.message":
+    case "widget.action":
+    case "chat.reaction":
+      return (
+        event.chatId === self.ownerChatId &&
+        (event._tag !== "chat.message" || event.origin === undefined) &&
+        event.provenance._tag === "human" &&
+        event.provenance.personId === self.ownerPersonId
+      );
+    case "routine":
+      return true;
+    case "deferral.due":
+      return event.origin === undefined;
+    default:
+      return false;
+  }
+};
 const fold = (value: string) => value.trim().toLowerCase();
 const describe = (leads: ReadonlyArray<Colleague>) =>
   leads.map((lead) => `${lead.name} (${lead.domain})`).join(", ");
@@ -149,15 +176,53 @@ const make = Effect.gen(function* () {
     return yield* decodeColleagues(rows);
   });
 
+  /** The events that woke this lead now, as stored. */
+  const wakeEvents = Effect.fn("KinHandoff.wakeEvents")(function* (ctx: Lead) {
+    const rows = yield* sql<{ json: string }>`SELECT json FROM kin_events
+      WHERE org_id = ${ctx.orgId} AND agent_id = ${ctx.agentId} AND wakeup_id = ${ctx.wakeupId}
+      ORDER BY event_id`;
+    return yield* decodeEvents(rows.map((row) => row.json));
+  });
+
   const leads = Effect.fn("KinHandoff.leads")(function* (scope: McpInvocationScope) {
     const ctx = yield* lead(scope);
+    const all = yield* colleagues(ctx);
+    const self = all.find((entry) => entry.agentId === ctx.agentId);
+    if (self === undefined) return yield* missing();
+    const events = yield* wakeEvents(ctx);
+    if (events.every((event) => fromOwnerAlone(event, self)))
+      return {
+        leads: all.map(({ agentId, name, domain, charter }) => ({
+          name,
+          domain,
+          charter,
+          you: agentId === ctx.agentId,
+        })),
+      };
+    // Someone else may be reading the answer: only the leads already in the chats asked from.
+    const chats = [
+      ...new Set(
+        events.flatMap((event) =>
+          event._tag === "chat.message" ||
+          event._tag === "widget.action" ||
+          event._tag === "chat.reaction"
+            ? [event.chatId]
+            : [],
+        ),
+      ),
+    ];
+    const present =
+      chats.length === 0
+        ? []
+        : yield* sql<{ agentId: string }>`SELECT DISTINCT agent_id AS "agentId"
+            FROM kin_chat_members WHERE org_id = ${ctx.orgId} AND chat_id IN ${sql.in(chats)}
+              AND principal_kind = 'agent' AND left_at IS NULL
+            ORDER BY agent_id`;
+    const seen = new Set(present.map((row) => row.agentId));
     return {
-      leads: (yield* colleagues(ctx)).map(({ agentId, name, domain, charter }) => ({
-        name,
-        domain,
-        charter,
-        you: agentId === ctx.agentId,
-      })),
+      leads: all
+        .filter((entry) => entry.agentId === ctx.agentId || seen.has(entry.agentId))
+        .map(({ agentId, name }) => ({ name, you: agentId === ctx.agentId })),
     };
   }, guarded("KinHandoff.leads"));
 
@@ -192,9 +257,15 @@ const make = Effect.gen(function* () {
                   AND m.author_kind = 'human' AND m.author_person_id = ${self.ownerPersonId}
                   AND m.kind = 'text' AND m.status = 'posted'
                 ORDER BY m.message_id`;
-        if (asked === undefined)
+        if (asked === undefined || event._tag !== "chat.message")
           return yield* refuse(
             "A request can be passed on only when the owner wrote it to you in your own chat with them. Say in one line which lead owns it instead.",
+          );
+        // What the lead adds was written with all of this wake-up in view, so it carries only
+        // when the owner alone set it off.
+        if (!(yield* wakeEvents(ctx)).every((entry) => fromOwnerAlone(entry, self)))
+          return yield* refuse(
+            "Something from outside your own chat with the owner came in with this, so it can't be passed on now. Say in one line which lead owns it instead.",
           );
         const others = all.filter((entry) => entry.agentId !== ctx.agentId);
         if (others.length === 0)
@@ -209,26 +280,50 @@ const make = Effect.gen(function* () {
             message: `${matches.length === 0 ? "No lead here answers to that name or domain" : "Several leads answer to that"}. The leads are: ${describe(others)}. ${NOTHING} Call again with one of those names.`,
           });
         const [target] = matches;
-        // One per asked message and lead, whatever words or wake-up a retry comes with.
-        const dedupeKey = `handoff:${event.eventId}:${target!.agentId}`;
+        /** Where this owner message already went: there again is the same hand-off, else refused. */
+        const already = Effect.fnUntraced(function* () {
+          const [record] = yield* sql<{ toAgentId: KinAgentId }>`SELECT to_agent_id AS "toAgentId"
+            FROM kin_handoffs WHERE org_id = ${ctx.orgId} AND message_id = ${event.messageId}
+            ORDER BY message_id`;
+          if (record === undefined) return undefined;
+          if (record.toAgentId === target!.agentId)
+            return { to: target!.name, passed: true as const };
+          const went = all.find((entry) => entry.agentId === record.toAgentId)?.name;
+          return yield* refuse(
+            `This was already passed on${went === undefined ? "" : ` to ${went}`}, and a request goes to one lead only. Tell the owner where it went instead.`,
+          );
+        });
+        const before = yield* already();
+        if (before !== undefined) return before;
+        const dedupeKey = `handoff:${event.messageId}`;
         const id = NodeCrypto.createHash("sha256").update(dedupeKey).digest("hex").slice(0, 32);
-        const already = yield* sql`SELECT 1 FROM kin_events
-          WHERE org_id = ${ctx.orgId} AND agent_id = ${target!.agentId}
-            AND dedupe_key = ${dedupeKey} ORDER BY event_id`;
-        if (already.length > 0) return { to: target!.name, passed: true as const };
-        // One line, named as the lead's: its words can't pass for the owner's or for Kin's.
+        // The owner's words whole, then one line named as the lead's, so neither passes for the
+        // other or for Kin's.
         const note = input.request.replace(/\s+/g, " ");
-        const original =
-          asked.body.length > ORIGINAL_CAP ? `${asked.body.slice(0, ORIGINAL_CAP)}…` : asked.body;
+        const head = `Passed on by ${self.name}`;
+        const quoted = `"${asked.body}"`;
+        const adds = fold(note) === fold(asked.body) ? [] : [`${self.name} adds: ${note}`];
+        const body = [head, quoted, ...adds].join("\n");
+        // The other lead is shown no more than this of a message; Kin won't pass on part of one.
+        if (body.length > messageBodyLimit)
+          return yield* refuse(
+            [head, quoted].join("\n").length > messageBodyLimit
+              ? "The owner's message is too long for another lead to be shown whole, and Kin won't pass on part of it. Say in one line which lead owns it, so the owner can send it there."
+              : "With what you add, this is too long for another lead to be shown whole. Add less and call again.",
+          );
+        // One hand-off per owner message, whatever words, lead name or wake-up a retry uses. The
+        // row is claimed before anything is posted, so a second destination never gets it.
+        const claimed = yield* sql<{ toAgentId: KinAgentId }>`INSERT INTO kin_handoffs
+            (org_id, message_id, from_agent_id, to_agent_id, event_id, created_at)
+          VALUES (${ctx.orgId}, ${event.messageId}, ${ctx.agentId}, ${target!.agentId},
+            ${`handoff-${id}`}, ${yield* Clock.currentTimeMillis})
+          ON CONFLICT (org_id, message_id) DO NOTHING RETURNING to_agent_id AS "toAgentId"`;
+        if (claimed.length === 0) return (yield* already()) ?? (yield* unavailable());
         const { message } = yield* chat.notice({
           orgId: ctx.orgId,
           chatId: target!.ownerChatId,
           messageId: KinMessageId.make(`kin-handoff:${id}`),
-          body: [
-            `Passed on by ${self.name}`,
-            `"${original}"`,
-            ...(fold(note) === fold(asked.body) ? [] : [`${self.name} adds: ${note}`]),
-          ].join("\n"),
+          body,
         });
         yield* queue.enqueue({
           _tag: "chat.message",

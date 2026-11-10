@@ -1652,6 +1652,47 @@ it.effect.each([
   ),
 );
 
+// A request another lead passed on carries that lead's reach, so the hand-off widens nothing:
+// the owner's own reach stays the owner's, and a passer held to a list holds this lead to it too.
+it.effect.each([
+  ["by a lead the owner made, reaches what the owner's own request does", null, [], 2],
+  ["by a lead a teammate made, is held to both leads' lists", "teammate", [], 0],
+  ["by a lead a teammate made with app on its list, reaches only app", "teammate", [project], 1],
+] as const)("an owner's request passed on %s", ([, createdBy, passerProjects, starts]) =>
+  run(({ ctx, remote, workers }) =>
+    Effect.gen(function* () {
+      const at = "1970-01-01T00:00:00.000Z";
+      const [lead] = yield* ctx.sql<{ personId: string }>`SELECT owner_person_id AS "personId"
+        FROM kin_agents WHERE agent_id = ${leadId}`;
+      yield* ctx.sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('teammate', ${ctx.orgId}, 'teammate', 'Teammate', ${at})`;
+      yield* ctx.sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+        VALUES ('front', ${ctx.orgId}, 'Front', 'lead', ${lead!.personId}, ${at})`;
+      yield* ctx.sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+        VALUES ('front-chat', ${ctx.orgId}, 'direct', ${`${lead!.personId}:front`}, 0, ${at})`;
+      yield* ctx.sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, models_json, worker_projects_json, owner_chat_id, created_by_person_id)
+        VALUES ('front', ${ctx.orgId}, 'Front', 'L2', 0, '{}', ${JSON.stringify(passerProjects)}, 'front-chat', ${createdBy})`;
+      // As the hand-off stores it: in this lead's own chat, first asked in the passer's.
+      yield* ctx.sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
+        SELECT 'handed-event', org_id, agent_id, tag, 'P1',
+          json_set(json, '$.eventId', 'handed-event',
+            '$.origin', json_object('agentId', 'front', 'chatId', 'front-chat')),
+          received_at, queued_at, state, wakeup_id
+        FROM kin_events WHERE event_id = 'lead-event'`;
+      let started = 0;
+      for (const named of ["GLDRoger/t3code", "acme/app"]) {
+        const result = yield* workers
+          .delegate(scope, { ...delegateInput, project: named, sourceEventId: "handed-event" })
+          .pipe(Effect.result);
+        if (result._tag === "Success") started++;
+        else assert.include(Result.getOrThrow(Result.flip(result)), { reason: "not_allowed" });
+      }
+      assert.strictEqual(started, starts);
+      assert.lengthOf(remote.tools("t3_thread_launch"), starts);
+    }),
+  ),
+);
+
 it.effect("stopping a worker closes its card and a follow-up reopens the same card", () =>
   run(({ ctx, remote, workers }) =>
     Effect.gen(function* () {

@@ -166,7 +166,13 @@ const WorkerRow = Schema.Struct({
   repositoryKey: Schema.NullOr(Schema.String),
   startedAt: Schema.Number,
 });
+const PasserRow = Schema.Struct({
+  projects: Schema.fromJsonString(Schema.Array(ProjectId)),
+  ownerPersonId: KinPersonId,
+  createdBy: Schema.NullOr(KinPersonId),
+});
 const decodeLead = Schema.decodeUnknownEffect(LeadRow);
+const decodePasser = Schema.decodeUnknownEffect(PasserRow);
 const decodeWorker = Schema.decodeUnknownEffect(WorkerRow);
 const decodeEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(KinEvent));
 /** The chat that asked; other events answer in the owner chat, as the reply bridge does. */
@@ -296,29 +302,44 @@ const make = Effect.gen(function* () {
     }
     return true;
   });
+  /** What another lead brings to a request it passed on: its own reach rules, read the same way. */
+  const passer = Effect.fn("KinWorkers.passer")(function* (orgId: KinOrgId, agentId: KinAgentId) {
+    const [row] = yield* sql`SELECT l.worker_projects_json AS projects,
+        a.owner_person_id AS "ownerPersonId", l.created_by_person_id AS "createdBy"
+      FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+      WHERE l.org_id = ${orgId} AND l.agent_id = ${agentId}
+        AND a.role = 'lead' AND a.retired_at IS NULL ORDER BY l.agent_id`;
+    return row === undefined ? undefined : yield* decodePasser(row);
+  });
   /**
-   * How far the request reaches. `all`, every checkout in the worker environment, is its owner's
-   * reach: only for a lead the host's owner created for themselves, and only when the owner placed
-   * it in every chat the work touches and every chat a due deferral was asked from. Anything else
-   * is `listed`, held to the lead's own projects, so someone else's chat never gains that reach.
+   * `all`, the owner's reach, needs this lead and any that passed the request on to be the host
+   * owner's own, placed by the owner in every chat the work touches or it was first asked in.
+   * Else `listed`: the projects on every such lead's list, so no chat or hand-off gains reach.
    */
   const reach = Effect.fn("KinWorkers.reach")(
     function* (ctx: Lead, config: typeof LeadRow.Type, chats: ReadonlyArray<KinChatId | null>) {
       const { owner } = identity;
-      if (
-        ctx.orgId !== owner.orgId ||
-        config.ownerPersonId !== owner.personId ||
-        (config.createdBy !== null && config.createdBy !== owner.personId)
-      )
-        return "listed" as const;
-      const asked = [
-        ...chats.map((chatId) => ({ agentId: ctx.agentId, chatId })),
-        ...(yield* KinLevels.origins(ctx)),
-      ];
+      const origins = yield* KinLevels.origins(ctx);
+      const passers = yield* Effect.forEach(
+        [...new Set(origins.map((origin) => origin.agentId))].filter((id) => id !== ctx.agentId),
+        (agentId) => passer(ctx.orgId, agentId),
+      );
+      const projects = passers.reduce<ReadonlyArray<ProjectId>>(
+        (held, other) =>
+          other === undefined ? [] : held.filter((id) => other.projects.includes(id)),
+        config.projects,
+      );
+      const listed = { _tag: "listed" as const, projects };
+      const ownersOwn = (lead: typeof PasserRow.Type | undefined) =>
+        lead !== undefined &&
+        lead.ownerPersonId === owner.personId &&
+        (lead.createdBy === null || lead.createdBy === owner.personId);
+      if (ctx.orgId !== owner.orgId || ![config, ...passers].every(ownersOwn)) return listed;
+      const asked = [...chats.map((chatId) => ({ agentId: ctx.agentId, chatId })), ...origins];
       for (const { agentId, chatId } of asked)
         if (chatId === null || !(yield* KinLevels.ownerPlaced(ctx.orgId, { agentId, chatId })))
-          return "listed" as const;
-      return "all" as const;
+          return listed;
+      return { _tag: "all" as const };
     },
     Effect.provideService(SqlClient.SqlClient, sql),
   );
@@ -592,7 +613,7 @@ const make = Effect.gen(function* () {
     const target = yield* locate(
       environmentId,
       input.project,
-      plan.reach === "all" ? undefined : plan.config.projects,
+      plan.reach._tag === "all" ? undefined : plan.reach.projects,
     );
     const { projectId, repositoryKey } = target.checkout;
     // The author's repository passes the same reach as the request by being the same repository.
@@ -633,10 +654,11 @@ const make = Effect.gen(function* () {
         // What was checked before the calls there still holds as the row is written.
         const config = yield* leadConfig(ctx);
         if (!(yield* open(ctx, plan.chats))) return yield* denied(NOT_OPEN);
+        const still = yield* reach(ctx, config, plan.chats);
         if (
-          (yield* reach(ctx, config, plan.chats)) !== plan.reach ||
-          (plan.reach === "listed" &&
-            (target.hostProjectId === null || !config.projects.includes(target.hostProjectId)))
+          still._tag !== plan.reach._tag ||
+          (still._tag === "listed" &&
+            (target.hostProjectId === null || !still.projects.includes(target.hostProjectId)))
         )
           return yield* denied(NOT_HERE);
         const startedAt = yield* Clock.currentTimeMillis;
@@ -770,7 +792,7 @@ const make = Effect.gen(function* () {
     if (
       key === undefined ||
       (yield* memoryKeys).has(key) ||
-      !(yield* reachable(plan.reach === "all" ? undefined : plan.config.projects)).has(key)
+      !(yield* reachable(plan.reach._tag === "all" ? undefined : plan.reach.projects)).has(key)
     )
       return yield* denied(NOT_HERE);
     // A worker runs where it was launched, even after the host names another environment.

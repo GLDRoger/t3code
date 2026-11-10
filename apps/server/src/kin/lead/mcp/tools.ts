@@ -75,13 +75,13 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_leads", {
     ...handoff,
     description:
-      "List the owner's leads, you included: each one's name, domain and what the owner said it is for. Use it to see whose domain a request falls in before you answer or pass it on. Read-only.",
+      "List the owner's leads, you included: each one's name, domain and what the owner said it is for. Use it to see whose domain a request falls in before you answer or pass it on. When anyone but the owner had a hand in waking you, it lists only the names of the leads in the chat you were asked from. Read-only.",
     success: Handoff.LeadsResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_hand_off", {
     ...handoff,
     description:
-      "Pass a request the owner made in your chat to the lead whose domain owns it, instead of telling the owner to ask them. Kin posts it in that lead's chat with the owner, saying you passed it on and quoting the owner's message, and that lead answers there. Then tell the owner in one line, such as \"I've passed this to Tech lead.\" Only for the owner's own message in your direct chat; a request passed on to you can't be passed on again. Passing the same message to the same lead twice does nothing. Never an approval, and it gives the other lead no more than this chat allows.",
+      "Pass a request the owner made in your chat to the lead whose domain owns it, instead of telling the owner to ask them. Kin posts it in that lead's chat with the owner, saying you passed it on and quoting the owner's message, and that lead answers there. Then tell the owner in one line, such as \"I've passed this to Tech lead.\" Only for the owner's own message in your direct chat; a request passed on to you can't be passed on again. Passing the same message to the same lead twice does nothing, and it can't go to a second lead. Never an approval, and it gives the other lead no more than this chat allows.",
     parameters: Handoff.HandOffInput,
     success: Handoff.HandOffResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
