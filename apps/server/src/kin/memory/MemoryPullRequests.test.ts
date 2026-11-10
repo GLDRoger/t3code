@@ -81,6 +81,7 @@ const scenarios = [
   "review-retry",
   "sync-fetch",
   "crash-owner-correction",
+  "crash-beyond-search",
 ] as const;
 
 // `it.effect`: real git, but GitHub's silences only end when the test clock moves.
@@ -149,7 +150,8 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
     const attemptReleased = yield* Deferred.make<void>();
     let failLanding = scenario === "land-fails";
     // The server stops after GitHub squash-merges, before it records what landed.
-    let crashBeforeRecord = scenario === "crash-owner-correction";
+    const crashes = scenario === "crash-owner-correction" || scenario === "crash-beyond-search";
+    let crashBeforeRecord = crashes;
     const crashed = yield* Deferred.make<void>();
     const gatedGit = Layer.succeed(
       Vcs.VcsProcess,
@@ -574,15 +576,25 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         expect((yield* memory.readItem(orgId, KinMemoryItemId.make("new"))).head.id).toBe("new");
       });
 
-      if (scenario === "crash-owner-correction") {
+      if (crashes) {
         yield* Deferred.await(crashed);
         const landed = yield* bare("show", `main:${journalPath}`);
         expect(landed).toContain("wake-up wake1");
         // The owner corrects the landed entry on GitHub while this server is down.
         yield* ownerCommits({
           [journalPath]: (current) =>
-            current.replace("Outcome: completed", "Outcome: corrected by the owner"),
+            scenario === "crash-beyond-search"
+              ? current
+                  .replace("Outcome: completed", "Outcome: corrected by the owner")
+                  .replace("wake-up wake1", "wake-up wake1, checked")
+              : current.replace("Outcome: completed", "Outcome: corrected by the owner"),
         });
+        // Then commits enough on top that the squash is past where Kin looks for it.
+        if (scenario === "crash-beyond-search") {
+          for (let commit = 0; commit < Memory.LANDED_SEARCH_DEPTH; commit++)
+            yield* git(source, [...identity, "commit", "--allow-empty", "-m", `owner ${commit}`]);
+          yield* git(source, ["push", "--", remote, "HEAD:main"]);
+        }
         return;
       }
 
@@ -1131,6 +1143,24 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         expect(after.startsWith(corrected)).toBe(true);
         expect(after.match(/wake-up wake1/g)).toHaveLength(1);
         expect(after).toContain("wake-up wake2");
+      }).pipe(Effect.provide(writerLayer));
+    }
+
+    if (scenario === "crash-beyond-search") {
+      // Kin can't tell what landed, so it merges nothing and says so; the correction stays alone.
+      yield* Effect.gen(function* () {
+        const memory = yield* Memory.Memory;
+        const corrected = yield* bare("show", `main:${journalPath}`);
+        yield* memory.syncCheckout(orgId);
+        expect(yield* bare("show", `main:${journalPath}`)).toBe(corrected);
+        expect(corrected).not.toContain("Outcome: completed");
+        expect(
+          notices.filter((notice) => notice.reason.startsWith("Memory write not merged")),
+        ).toHaveLength(1);
+        const head = yield* memory.anchor(orgId, "main");
+        expect(yield* git(`${root}/state/memory`, ["show", `${head}:${journalPath}`])).toContain(
+          "Outcome: completed",
+        );
       }).pipe(Effect.provide(writerLayer));
     }
 
