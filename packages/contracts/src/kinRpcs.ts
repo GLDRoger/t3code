@@ -151,6 +151,12 @@ export const KIN_RPC_SCOPES = {
 } as const;
 
 export const KIN_RPC_AGGREGATES = {
+  "kin.people.list": "kin-people",
+  "kin.people.createInvite": "kin-people",
+  "kin.people.listDevices": "kin-people",
+  "kin.people.revokeDevice": "kin-people",
+  "kin.people.setGithubLogin": "kin-people",
+
   "kin.budget.get": "kin-budget",
   "kin.budget.set": "kin-budget",
   "kin.org.get": "kin-org",

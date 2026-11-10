@@ -1,5 +1,6 @@
 import {
   AuthStandardClientScopes,
+  AuthKinChatScope,
   type AuthSessionId,
   KinChatError,
   TrimmedNonEmptyString,
@@ -145,6 +146,21 @@ export class KinIdentity extends Context.Service<
       return KinIdentity.of({
         owner: { _tag: "person", orgId: owner.orgId, personId: owner.personId },
         resolve: Effect.fn("KinIdentity.resolve")(function* (session) {
+          if (session.scopes.includes(AuthKinChatScope)) {
+            const bindings = yield* sql<{
+              person_id: string;
+            }>`SELECT b.person_id FROM kin_session_bindings b
+              JOIN kin_people p ON p.org_id = b.org_id AND p.person_id = b.person_id
+              WHERE b.org_id = ${owner.orgId} AND b.session_id = ${session.sessionId}
+              AND b.revoked_at IS NULL ORDER BY b.person_id`.pipe(Effect.orElseSucceed(() => []));
+            if (bindings.length > 0)
+              return bindings.map((b) => ({
+                _tag: "person" as const,
+                orgId: owner.orgId,
+                personId: KinPersonId.make(b.person_id),
+              }));
+            return [];
+          }
           if (!AuthStandardClientScopes.every((scope) => session.scopes.includes(scope))) return [];
           if (!(yield* isPaired(session.sessionId))) return [];
           return [{ _tag: "person", orgId: owner.orgId, personId: owner.personId }];

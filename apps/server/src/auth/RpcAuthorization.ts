@@ -1,5 +1,7 @@
 import {
   CLIENT_GUARDED_RPC_SCOPES,
+  AuthKinChatScope,
+  sessionGrantsScope,
   type DeviceListInput,
   clientRpcRequiredScopes,
   authScopeRequiredResponse,
@@ -279,6 +281,21 @@ const requiredScopesForRpcCall = (
   return [requiredScopeForRpcMethod(method)];
 };
 
+export const authorizeRpc = (
+  scopes: ReadonlyArray<AuthEnvironmentScope>,
+  method: string,
+  payload: unknown,
+) => {
+  const coarse = requiredScopeForRpcMethod(method);
+  if (scopes.every((scope) => scope === AuthKinChatScope) && coarse !== AuthKinChatScope) {
+    return Effect.fail(rpcAuthorizationError(coarse));
+  }
+  const missing = requiredScopesForRpcCall(method, payload).find(
+    (scope) => !sessionGrantsScope({ authenticated: true, permissions: scopes }, scope),
+  );
+  return missing === undefined ? Effect.void : Effect.fail(rpcAuthorizationError(missing));
+};
+
 /**
  * `onAuthorized` runs once after an authorized request succeeds; for a stream
  * RPC, that is when the stream completes. Every RPC passes through here, so it
@@ -289,12 +306,13 @@ export const layer = (
   onAuthorized?: (method: string, payload: unknown) => Effect.Effect<void>,
 ) =>
   Layer.succeed(RpcScopeAuthorization)((effect, { rpc, payload }) => {
-    const requiredScopes = requiredScopesForRpcCall(rpc._tag, payload);
-    const requiredScope = requiredScopes.find((scope) => !scopes.includes(scope));
-    if (requiredScope !== undefined) return Effect.fail(rpcAuthorizationError(requiredScope));
-    return onAuthorized === undefined
-      ? effect
-      : Effect.tap(effect, () => onAuthorized(rpc._tag, payload));
+    return authorizeRpc(scopes, rpc._tag, payload).pipe(
+      Effect.andThen(
+        onAuthorized === undefined
+          ? effect
+          : Effect.tap(effect, () => onAuthorized(rpc._tag, payload)),
+      ),
+    );
   });
 
 /** Retrying can install or restart tools even though ordinary listing is readable. */

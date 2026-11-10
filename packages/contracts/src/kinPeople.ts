@@ -16,7 +16,7 @@ export type KinInviteId = typeof KinInviteId.Type;
 
 /** Default invite lifetime; the owner can ask for between an hour and thirty days. */
 export const KIN_INVITE_DEFAULT_TTL_HOURS = 24 * 7;
-export const KIN_INVITE_MAX_TTL_HOURS = 24 * 30;
+const KIN_INVITE_MAX_TTL_HOURS = 24 * 30;
 
 /** GitHub usernames: alphanumeric or single hyphens, at most 39 characters. */
 export const KinGithubLogin = KinTrimmedText.check(
@@ -39,7 +39,9 @@ export const KinPeopleCreateInviteInput = Schema.Struct({
   handle: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(40))),
   // Re-inviting someone who is already a person binds a new device to that person.
   personId: Schema.optional(KinPersonId),
-  ttlHours: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(KIN_INVITE_MAX_TTL_HOURS))),
+  ttlHours: Schema.optional(
+    PositiveInt.check(Schema.isLessThanOrEqualTo(KIN_INVITE_MAX_TTL_HOURS)),
+  ),
 });
 export type KinPeopleCreateInviteInput = typeof KinPeopleCreateInviteInput.Type;
 export const KinPeopleCreateInviteResult = Schema.Struct({
@@ -91,7 +93,7 @@ export type KinPeopleSetGithubLoginInput = typeof KinPeopleSetGithubLoginInput.T
 
 /** POSTed to `/kin/invites/accept` by a device with no session yet. The secret is never logged. */
 export const KinInviteAcceptRequest = Schema.Struct({
-  secret: TrimmedNonEmptyString,
+  secret: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
   label: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(80))),
 });
 export type KinInviteAcceptRequest = typeof KinInviteAcceptRequest.Type;

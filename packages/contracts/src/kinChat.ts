@@ -562,7 +562,7 @@ export const KinChatRpcs = [
 
 // Chat is what a member's `kin:chat`-only session may use; membership is checked per chat.
 export const KIN_CHAT_RPC_SCOPES = {
-[KIN_CHAT_WS_METHODS.orgsList]: AuthKinChatScope,
+  [KIN_CHAT_WS_METHODS.orgsList]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.chatsSubscribe]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.chatsCreateDirect]: AuthKinChatScope,
   // Only quiets the caller's own pushes, like marking a chat read.

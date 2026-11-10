@@ -6,6 +6,7 @@ import { startWakeupRun, authorityLayer, startAgentWakeup } from "./WakeupAuthor
 import { assert, describe, it } from "@effect/vitest";
 import {
   AuthSessionId,
+  AuthKinChatScope,
   AuthStandardClientScopes,
   EnvironmentId,
   KinAgentId,
@@ -135,6 +136,74 @@ const seed = Effect.fn("test.seed")(function* (notice = false) {
 });
 
 describe("KinChatService", () => {
+  it.effect("bound chat-only members can use their own chats but not the owner's chat", () =>
+    Effect.gen(function* () {
+      const { repo, service, identity, person, chat } = yield* seed();
+      const memberId = KinPersonId.make("suraj");
+      const memberSession = {
+        ...session,
+        sessionId: AuthSessionId.make("member-session"),
+        scopes: [AuthKinChatScope],
+      };
+      yield* repo.insertPerson({
+        orgId: person.orgId,
+        personId: memberId,
+        handle: "suraj",
+        displayName: "Suraj",
+        githubLogin: null,
+        createdAt: timestamp,
+      });
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at) VALUES (${memberSession.sessionId}, ${person.orgId}, ${memberId}, 0)`;
+      const members = yield* identity.resolve(memberSession);
+      const me = members[0]!;
+      const ownAgent = KinAgentId.make("suraj-lead");
+      yield* repo.insertAgent({
+        orgId: person.orgId,
+        agentId: ownAgent,
+        ownerPersonId: memberId,
+        displayName: "Suraj lead",
+        role: "lead",
+        createdAt: timestamp,
+      });
+      const own = yield* service.createDirect(members, { orgId: person.orgId, agentId: ownAgent });
+      const sent = yield* service.send(members, {
+        chatId: own.chatId,
+        body: "Hello",
+        clientMessageId: "member-send",
+      });
+      assert.equal(sent.author._tag, "human");
+      yield* service.history(members, { chatId: own.chatId, beforeSeq: 100, limit: 50 });
+      yield* service.markRead(members, { chatId: own.chatId, seq: sent.seq });
+      yield* service.mute(members, { chatId: own.chatId, muted: true });
+      yield* service
+        .subscribe(members, { chatId: own.chatId })
+        .pipe(Stream.take(1), Stream.runDrain);
+      yield* service.subscribeChats(members, {}).pipe(Stream.take(1), Stream.runDrain);
+      assert.equal((yield* service.orgs(members)).me[0]!.personId, me.personId);
+      assert.include(
+        yield* service
+          .history(members, { chatId: chat.chatId, beforeSeq: 100, limit: 50 })
+          .pipe(Effect.flip),
+        {
+          reason: "not_found",
+        },
+      );
+      assert.include(
+        yield* service
+          .send(members, { chatId: chat.chatId, body: "Hostile", clientMessageId: "hostile" })
+          .pipe(Effect.flip),
+        { reason: "not_found" },
+      );
+      assert.include(
+        yield* service
+          .subscribe(members, { chatId: chat.chatId })
+          .pipe(Stream.runDrain, Effect.flip),
+        { reason: "not_found" },
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect(
     "creates exactly two members, derives authors from identity, and deduplicates sends",
     () =>

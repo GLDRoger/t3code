@@ -1,3 +1,4 @@
+import { peopleCommand } from "./people.ts";
 import {
   AuthSessionId,
   KinAgentId,
@@ -326,5 +327,6 @@ export const kinCommand = Command.make("kin").pipe(
     ),
     approvalsCommand,
     githubCommand,
+    peopleCommand,
   ]),
 );
