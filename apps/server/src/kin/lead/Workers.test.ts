@@ -1256,7 +1256,7 @@ it.effect("stopping a worker closes its card and a follow-up reopens the same ca
 );
 
 it.effect(
-  "tracker start fails a launch from before K031, follows lost launches and open workers, and fails one whose thread is gone",
+  "tracker start fails a launch from before K032, follows lost launches and open workers, and fails one whose thread is gone",
   () =>
     run(({ ctx, remote, tracker }) =>
       Effect.gen(function* () {

@@ -584,6 +584,36 @@ describe("Kin migrations", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("K032 upgrades a database at K031_LeadDeliveries", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const workerColumns = [
+        "environment_id",
+        "project_id",
+        "remote_project_id",
+        "repository_key",
+        "pull_request_url",
+        "pull_request_number",
+      ];
+      for (const column of workerColumns)
+        yield* sql`ALTER TABLE kin_workers DROP COLUMN ${sql(column)}`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 32`;
+      assert.deepStrictEqual((yield* kinHistory).at(-1), {
+        migration_id: 31,
+        name: "LeadDeliveries",
+      });
+      assert.deepStrictEqual(yield* runKinMigrations(), [[32, "WorkerEnvironment"]]);
+      const columns = yield* sql<{ name: string }>`
+        SELECT name FROM pragma_table_info('kin_workers')`;
+      for (const column of workerColumns)
+        assert.include(
+          columns.map((row) => row.name),
+          column,
+        );
+      assert.deepStrictEqual(yield* runKinMigrations(), []);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("refuses to start when a registered migration sits below the latest applied one", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -594,7 +624,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 31");
+      assert.include(String(exit), "below the latest applied migration 32");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

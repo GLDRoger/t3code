@@ -576,7 +576,7 @@ const make = Effect.gen(function* () {
   const process: WorkerTracker["Service"]["process"] = (stored) =>
     stored.event.type === "subagent.updated" ? strayDelegation(stored.event.payload) : Effect.void;
 
-  // Rows from before K031 name no environment, so there is nothing there to look for.
+  // Rows from before K032 name no environment, so there is nothing there to look for.
   const failUnplaced = sql`UPDATE kin_workers SET status = 'failed', ended_at = ${bootedAt}
     WHERE org_id IN (SELECT org_id FROM kin_leads GROUP BY org_id)
       AND status = 'queued' AND thread_id = 'kin-worker-' || worker_id AND environment_id IS NULL`;
