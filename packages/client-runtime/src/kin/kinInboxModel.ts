@@ -53,6 +53,9 @@ export function applyKinInboxEvent(state: KinInboxState, event: KinInboxEvent): 
         waiting: event.waiting.filter((item) => item.resolvedAt === null),
       };
     case "chat": {
+      // The host's last word on a chat the viewer was taken out of, or one that ended.
+      if (kinChatGone(event.chat))
+        return applyKinInboxEvent(state, { _tag: "left", chatId: event.chat.chatId });
       const index = state.chats.findIndex((chat) => chat.chatId === event.chat.chatId);
       if (index === -1) return { ...state, chats: [...state.chats, event.chat] };
       // An upsert read before a newer one can arrive after it; never move a chat backwards.
@@ -75,6 +78,11 @@ export function applyKinInboxEvent(state: KinInboxState, event: KinInboxEvent): 
       };
   }
 }
+
+/** The viewer is no longer in this chat: every member the row carries has left, or it ended. */
+const kinChatGone = (chat: KinChatSummary) =>
+  chat.archivedAt !== null ||
+  (chat.members.length > 0 && chat.members.every((member) => member.leftAt !== null));
 
 /** Where a chat sits in the list: something waits on the viewer, an agent is on it, or neither. */
 export type KinInboxFold = "needsYou" | "working" | "rest";
@@ -176,6 +184,8 @@ export const KinChatState = Schema.Struct({
   presence: Schema.Array(KinPresence).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
   /** Live reactions on held messages; a backlog that carries them replaces the set. */
   reactions: Schema.Array(KinReaction).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
+  /** Counts changes to who is in the chat, its name or its lead, so its details reread them. */
+  memberChanges: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
 });
 export type KinChatState = typeof KinChatState.Type;
 
@@ -191,6 +201,7 @@ export const emptyKinChat: KinChatState = {
   drafts: [],
   presence: [],
   reactions: [],
+  memberChanges: 0,
 };
 
 /** Every Kin refusal but `unavailable`, which the stream retries. */
@@ -313,7 +324,10 @@ export function applyKinChatEvent(
       return widgets === state.widgets ? state : { ...state, widgets };
     }
     case "member":
-      return event.member.leftAt === null ? state : { ...state, left: true };
+      // The host sends a departure only to the one who left; anything else is a change to reread.
+      return event.member.leftAt === null
+        ? { ...state, memberChanges: state.memberChanges + 1 }
+        : { ...state, left: true };
     case "read": {
       const held = state.reads[event.memberId] ?? 0;
       if (event.seq <= held) return state;
@@ -373,5 +387,6 @@ export function trimKinChatForCache(state: KinChatState): KinChatState {
     closed: null,
     drafts: [],
     presence: [],
+    memberChanges: 0,
   };
 }

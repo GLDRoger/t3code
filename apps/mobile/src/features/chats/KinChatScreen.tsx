@@ -16,6 +16,7 @@ import {
   type KinChatHistoryInput,
   type KinChatHistoryResult,
   type KinChatMember,
+  type KinChatMembersResult,
   type KinChatSummary,
   type KinLeadsListResult,
   type KinMessage,
@@ -144,6 +145,12 @@ import {
 import { useKinHostAt } from "./state/useKinHost";
 import { useKinReconnect } from "./state/useKinReconnect";
 import {
+  kinMemberNames,
+  kinMentionCandidates,
+  kinMentionsIn,
+  type KinMentionCandidate,
+} from "@t3tools/client-runtime/kin/kinGroups";
+import {
   kinReactionChips,
   kinReactionToggle,
   kinViewerMemberId,
@@ -200,6 +207,8 @@ const noChatAtom: Atom.Atom<ChatResult> = Atom.make<ChatResult>(null);
 const noInboxAtom: Atom.Atom<InboxResult> = Atom.make<InboxResult>(null);
 type LeadsResult = AsyncResult.AsyncResult<KinLeadsListResult, unknown> | null;
 const noLeadsAtom: Atom.Atom<LeadsResult> = Atom.make<LeadsResult>(null);
+type MembersResult = AsyncResult.AsyncResult<KinChatMembersResult, unknown> | null;
+const noMembersAtom: Atom.Atom<MembersResult> = Atom.make<MembersResult>(null);
 
 const decodeChatId = Schema.decodeUnknownOption(KinChatId);
 /** Read at render: a mute only ends when its time passes, and a re-render reads it again. */
@@ -241,6 +250,17 @@ function KinLiveChat(props: {
       ? noLeadsAtom
       : kinClient.leads({ environmentId, input: { orgId: summary.orgId } }),
   );
+  // A group's row carries only the viewer's own member; who else is in it is read by name.
+  const group = summary !== undefined && summary.kind !== "direct";
+  const groupResult = useAtomValue(
+    environmentId === null || chatId === null || !group
+      ? noMembersAtom
+      : kinClient.chatMembers({ environmentId, input: { chatId } }),
+  );
+  const groupMembers =
+    groupResult === null
+      ? null
+      : (Option.getOrNull(AsyncResult.value(groupResult))?.members ?? null);
   const charter =
     leads !== null && AsyncResult.isSuccess(leads)
       ? (leads.value.leads.find((lead) => lead.agentId === ownedAgentId)?.charter ?? null)
@@ -314,8 +334,19 @@ function KinLiveChat(props: {
                   .then((result) => result._tag === "Success")
         }
         state={state}
-        viewer={viewer}
-        members={summary?.members ?? []}
+        viewer={group ? { ...viewer, memberNames: kinMemberNames(groupMembers) } : viewer}
+        members={groupMembers ?? summary?.members ?? []}
+        mentionable={group ? kinMentionCandidates(groupMembers) : undefined}
+        group={
+          environmentId === null || summary === undefined || !group
+            ? null
+            : () =>
+                navigation.navigate("KinGroup", {
+                  environmentId,
+                  orgId: summary.orgId,
+                  chatId: summary.chatId,
+                })
+        }
         direct={summary?.kind === "direct"}
         ownsLead={ownedAgentId !== null}
         lead={
@@ -529,6 +560,10 @@ function KinChatPage(props: {
   readonly ownsLead?: boolean;
   /** The viewer's own lead in this chat, for its details and the intro; null otherwise. */
   readonly lead?: { readonly charter: string | null; readonly open: () => void } | null;
+  /** Opens a group's details; null for any other chat. */
+  readonly group?: (() => void) | null;
+  /** A group's leads, which the composer offers on `@`. */
+  readonly mentionable?: ReadonlyArray<KinMentionCandidate>;
 }) {
   const navigation = useNavigation();
   const lead = props.lead ?? null;
@@ -537,20 +572,22 @@ function KinChatPage(props: {
   const details: KinChatDetails | null =
     lead !== null
       ? { open: lead.open, hint: "Opens this lead's details" }
-      : mute == null
-        ? null
-        : {
-            hint: mute.muted ? "Offers to unmute this chat" : "Offers to mute this chat",
-            open: () =>
-              Dialog.confirm({
-                title: props.title,
-                message: mute.muted
-                  ? "Notifications from this chat are muted."
-                  : "You get a notification for each new message in this chat.",
-                confirmText: mute.muted ? "Unmute notifications" : "Mute notifications",
-                onConfirm: mute.toggle,
-              }),
-          };
+      : props.group != null
+        ? { open: props.group, hint: "Opens this group's details" }
+        : mute == null
+          ? null
+          : {
+              hint: mute.muted ? "Offers to unmute this chat" : "Offers to mute this chat",
+              open: () =>
+                Dialog.confirm({
+                  title: props.title,
+                  message: mute.muted
+                    ? "Notifications from this chat are muted."
+                    : "You get a notification for each new message in this chat.",
+                  confirmText: mute.muted ? "Unmute notifications" : "Mute notifications",
+                  onConfirm: mute.toggle,
+                }),
+            };
   const topInset = useContentTopInset();
   const { state } = props;
   const tasks = state._tag === "ready" ? kinChatStatusLine(state.chat.value.widgets) : null;
@@ -588,6 +625,7 @@ function KinChatPage(props: {
             members={props.members ?? []}
             direct={props.direct ?? false}
             ownsLead={props.ownsLead ?? false}
+            mentionable={props.mentionable}
           />
         ) : (
           <KinChatStateView
@@ -727,6 +765,7 @@ function KinChatFeed(props: {
   readonly members: ReadonlyArray<KinChatMember>;
   readonly direct: boolean;
   readonly ownsLead: boolean;
+  readonly mentionable?: ReadonlyArray<KinMentionCandidate>;
 }) {
   const listRef = useRef<LegendListRef>(null);
   const editorRef = useRef<ComposerEditorHandle>(null);
@@ -819,9 +858,7 @@ function KinChatFeed(props: {
     if (member === undefined) return null;
     return member.principal._tag === "agent"
       ? (props.viewer.agentNames.get(member.principal.agentId) ?? "Lead")
-      : member.role === "owner"
-        ? "Owner"
-        : "Member";
+      : (props.viewer.memberNames?.get(memberId) ?? (member.role === "owner" ? "Owner" : "Member"));
   };
   const feedRows = buildKinFeedRows(
     kinFeedMessages(messages, widgets),
@@ -1006,7 +1043,13 @@ function KinChatFeed(props: {
     if (sendingSample.current) return;
     sendingSample.current = true;
     void kinOutbox
-      .enqueue({ environmentId: props.environmentId, chatId: props.chatId, body })
+      .enqueue({
+        environmentId: props.environmentId,
+        chatId: props.chatId,
+        body,
+        // A resent message asks the same lead it named the first time.
+        mentions: kinMentionsIn(body, props.mentionable ?? []),
+      })
       .then((queued) => {
         if (queued._tag !== "queued") return;
         jumpToEnd();
@@ -1115,6 +1158,7 @@ function KinChatFeed(props: {
       onSend={jumpToEnd}
       onFocusChange={onComposerFocus}
       editorRef={editorRef}
+      mentionable={props.mentionable}
     />
   );
 

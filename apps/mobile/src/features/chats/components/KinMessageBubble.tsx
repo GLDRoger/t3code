@@ -36,11 +36,17 @@ import {
   KIN_REACTION_NAMES,
   type KinReactionChip,
 } from "@t3tools/client-runtime/kin/kinReactions";
-import { kinSentences } from "@t3tools/client-runtime/kin/kinScreenState";
+import {
+  kinAgentAvatar,
+  kinSentences,
+  type KinAvatarView,
+} from "@t3tools/client-runtime/kin/kinScreenState";
+import { kinAuthorAvatar } from "@t3tools/client-runtime/kin/kinGroups";
 import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
 import { kinCardDraws } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { MessageAttachmentList } from "../../threads/ThreadFeed";
 import { KinWidgetView } from "../widgets/KinWidgetView";
+import { KinAvatar } from "./KinAvatar";
 
 type MessageRow = Extract<KinFeedRow, { readonly type: "message" }>;
 type SystemRow = Extract<KinFeedRow, { readonly type: "system" }>;
@@ -76,6 +82,22 @@ function KinAttachments(props: {
         onPressPreview={props.onPressPreview}
         onPlaybackStart={NO_PLAYBACK}
       />
+    </View>
+  );
+}
+
+/** Who wrote the messages under it, in a chat with more than one other author. */
+function KinAuthorLine(props: { readonly label: string; readonly avatar: KinAvatarView }) {
+  return (
+    <View
+      className="flex-row items-center gap-1.5 px-1 pt-2"
+      importantForAccessibility="no-hide-descendants"
+      accessibilityElementsHidden
+    >
+      <KinAvatar avatar={props.avatar} size="mini" />
+      <Text textRole="caption" className="font-t3-medium text-foreground-muted">
+        {props.label}
+      </Text>
     </View>
   );
 }
@@ -191,15 +213,8 @@ export function KinMessageBubble(props: {
 
   return (
     <View className={cn("gap-1 px-4 pb-2", row.own ? "items-end" : "items-start")}>
-      {row.showAuthor && !props.direct ? (
-        <Text
-          textRole="caption"
-          className="px-1 pt-2 font-t3-medium text-foreground-muted"
-          importantForAccessibility="no"
-          accessibilityElementsHidden
-        >
-          {row.authorLabel}
-        </Text>
+      {row.showAuthor && !props.direct && message.author._tag !== "system" ? (
+        <KinAuthorLine label={row.authorLabel} avatar={kinAuthorAvatar(message.author)} />
       ) : null}
       {attachments.length > 0 ? (
         <KinAttachments
@@ -270,14 +285,7 @@ export function KinDraftBubble(props: {
   return (
     <View className="items-start gap-1 px-4 pb-2">
       {row.showAuthor && !props.direct ? (
-        <Text
-          textRole="caption"
-          className="px-1 pt-2 font-t3-medium text-foreground-muted"
-          importantForAccessibility="no"
-          accessibilityElementsHidden
-        >
-          {row.authorLabel}
-        </Text>
+        <KinAuthorLine label={row.authorLabel} avatar={kinAgentAvatar(row.draft.agentId)} />
       ) : null}
       <View
         accessible

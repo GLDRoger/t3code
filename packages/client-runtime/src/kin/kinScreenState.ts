@@ -284,9 +284,11 @@ export function kinChatRowView(
       ? null
       : last.author._tag === "agent"
         ? (directory.agentNames.get(last.author.agentId) ?? null)
-        : last.author._tag === "human" && directory.me.has(last.author.personId)
-          ? "You"
-          : null;
+        : last.author._tag !== "human"
+          ? null
+          : directory.me.has(last.author.personId)
+            ? "You"
+            : (chat.lastAuthorName ?? null);
   const preview = kinMessagePreview(last);
   return {
     chatId: chat.chatId,

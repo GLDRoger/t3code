@@ -291,6 +291,16 @@ describe("chat list rows", () => {
       null,
       "Hi",
     ],
+    [
+      "a teammate the host names in a group",
+      {
+        kind: "team_group",
+        lastAuthorName: "Ravi",
+        lastMessage: { author: { _tag: "human", personId: "ravi" }, status: "posted", body: "Hi" },
+      },
+      "Ravi",
+      "Hi",
+    ],
   ])("previews %s", (_name, chat, author, preview) => {
     expect(kinChatRowView(row(chat), directory)).toMatchObject({ author, preview });
   });

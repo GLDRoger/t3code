@@ -160,6 +160,8 @@ export function mergeKinFeed(live: KinChatState, earlier: KinChatState): KinChat
 export interface KinFeedViewer {
   readonly personId: KinPersonId | null;
   readonly agentNames: ReadonlyMap<string, string>;
+  /** People by member id, in a group whose members are loaded; a role stands in without it. */
+  readonly memberNames?: ReadonlyMap<string, string>;
 }
 
 export type KinFeedRow =
@@ -213,7 +215,8 @@ const ROLE_LABELS = { owner: "Owner", member: "Member", guest: "Guest" } as cons
 function kinAuthorLabel(message: KinMessage, viewer: KinFeedViewer): string {
   const { author } = message;
   if (author._tag === "agent") return viewer.agentNames.get(author.agentId) ?? "Agent";
-  if (author._tag === "human") return ROLE_LABELS[message.authorRole];
+  if (author._tag === "human")
+    return viewer.memberNames?.get(author.memberId) ?? ROLE_LABELS[message.authorRole];
   return "Kin";
 }
 

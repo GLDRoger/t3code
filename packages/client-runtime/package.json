@@ -559,6 +559,10 @@
       "types": "./src/kin/kinAttachments.ts",
       "default": "./src/kin/kinAttachments.ts"
     },
+    "./kin/kinGroups": {
+      "types": "./src/kin/kinGroups.ts",
+      "default": "./src/kin/kinGroups.ts"
+    },
     "./kin/kinListSwitch": {
       "types": "./src/kin/kinListSwitch.ts",
       "default": "./src/kin/kinListSwitch.ts"

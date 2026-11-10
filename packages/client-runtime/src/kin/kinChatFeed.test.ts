@@ -247,6 +247,20 @@ describe("rows", () => {
       [true, false],
       [false, true],
     ]);
+    // In a group a teammate's line carries their name once the members are known.
+    const teammate = {
+      ...ownMessage(1),
+      author: { ...ownMessage(1).author, personId: "ravi", memberId: "m-ravi" },
+      authorRole: "member",
+    } as KinMessage;
+    const label = (names?: ReadonlyMap<string, string>) =>
+      messageRows(
+        [teammate],
+        names === undefined ? viewer : { ...viewer, memberNames: names },
+        new Set(),
+      ).map((row) => row.type === "message" && row.authorLabel);
+    expect(label()).toEqual(["Member"]);
+    expect(label(new Map([["m-ravi", "Ravi"]]))).toEqual(["Ravi"]);
   });
 
   it("shows a card tap as the button's label, never its JSON or card", () => {

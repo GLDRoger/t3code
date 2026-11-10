@@ -43,6 +43,7 @@ export const kinOutbox = createKinOutbox({
         clientMessageId: record.clientMessageId,
         body: record.body,
         ...(record.attachments === undefined ? {} : { attachments: record.attachments }),
+        ...(record.mentions === undefined ? {} : { mentions: record.mentions }),
       },
     });
     return result._tag === "Success"

@@ -5,7 +5,9 @@ import {
   kinInboxStream,
   makeKinChatStream,
   retryKinProbe,
+  type KinSynced,
 } from "@t3tools/client-runtime/kin/kinStreams";
+import type { KinChatState } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
   createEnvironmentQueryAtomFamily,
   createEnvironmentRpcCommand,
@@ -14,13 +16,18 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import {
   KIN_CHAT_WS_METHODS,
+  KIN_PEOPLE_WS_METHODS,
   type EnvironmentId,
   type KinChatHistoryInput,
+  type KinChatId,
+  type KinChatMembersInput,
+  type KinPeopleListInput,
   type KinLeadsListInput,
   type KinOrgsListInput,
 } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Stream from "effect/Stream";
 import { AtomRegistry, type AsyncResult } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../connection/runtime";
@@ -64,6 +71,17 @@ const leadsRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   tag: "kin.leads.list",
 });
 
+const membersRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:chat-members:read",
+  tag: KIN_CHAT_WS_METHODS.chatMembers,
+});
+const readMembers = guardedRead(membersRead);
+const peopleRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:people:read",
+  tag: KIN_PEOPLE_WS_METHODS.peopleList,
+});
+const readPeople = guardedRead(peopleRead);
+
 const readOrgs = guardedRead(orgsRead);
 const readLeads = guardedRead(leadsRead);
 const readHistory = guardedRead(historyRead);
@@ -73,6 +91,37 @@ const knownKinHosts = new Set<EnvironmentId>();
 
 /** A dropped connection can leave a read pending; "Load earlier" fails after this and offers Retry. */
 const KIN_HISTORY_PAGE_TIMEOUT = Duration.seconds(20);
+
+/** Who is in a chat, by name: a group's authors, mentions and details. */
+const chatMembers = createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  label: "kin:chat-members",
+  execute: Effect.fn("KinWebClient.chatMembers")(function* (input: KinChatMembersInput) {
+    return yield* readMembers(input);
+  }),
+  staleTimeMs: 30_000,
+  refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
+    environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+});
+
+/** Reads a chat's members again whenever its stream says who is in it, its name or lead changed. */
+const rereadMembersOnChange =
+  (chatId: KinChatId) =>
+  <E, R>(stream: Stream.Stream<KinSynced<KinChatState>, E, R>) =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        const environmentId = yield* currentEnvironmentId;
+        let seen = 0;
+        return stream.pipe(
+          Stream.tap((view) =>
+            Effect.sync(() => {
+              if (view.value.memberChanges === seen) return;
+              seen = view.value.memberChanges;
+              appAtomRegistry.refresh(chatMembers({ environmentId, input: { chatId } }));
+            }),
+          ),
+        );
+      }),
+    );
 
 const chatStream = makeKinChatStream((input) =>
   readHistory(input).pipe(Effect.provideService(AtomRegistry.AtomRegistry, appAtomRegistry)),
@@ -112,6 +161,46 @@ export const kinClient = {
     tag: "kin.lead.update",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.agentId },
   }),
+  chatMembers,
+  /** The people of the org, for choosing who joins a group. */
+  people: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:people",
+    execute: Effect.fn("KinWebClient.people")(function* (input: KinPeopleListInput) {
+      return yield* readPeople(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
+      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  }),
+  groupCreate: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:group:create",
+    tag: "kin.groups.create",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.title}` },
+  }),
+  groupAddMember: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:group:add-member",
+    tag: "kin.groups.addMember",
+  }),
+  groupRemoveMember: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:group:remove-member",
+    tag: "kin.groups.removeMember",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.memberId },
+  }),
+  groupSetLead: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:group:set-lead",
+    tag: "kin.groups.setLead",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.chatId },
+  }),
+  groupRename: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:group:rename",
+    tag: "kin.groups.rename",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.chatId },
+  }),
+  groupDelete: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:group:delete",
+    tag: "kin.groups.delete",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.chatId },
+  }),
   mute: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:mute",
     tag: KIN_CHAT_WS_METHODS.chatsMute,
@@ -123,7 +212,8 @@ export const kinClient = {
   }),
   chat: createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {
     label: KIN_CHAT_LABEL,
-    subscribe: chatStream,
+    subscribe: (input: { readonly chatId: KinChatId }) =>
+      chatStream(input).pipe(rereadMembersOnChange(input.chatId)),
   }),
   /** One "Load earlier" page, read fresh every time so a retry after a failure refetches. */
   readHistoryPage: (environmentId: EnvironmentId, input: KinChatHistoryInput) =>
