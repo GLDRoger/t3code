@@ -1,4 +1,3 @@
-import * as JudgeShadow from "../floor/JudgeShadow.ts";
 import { assert, describe, it } from "@effect/vitest";
 import {
   KinChatId,
@@ -73,7 +72,6 @@ function layer(
   hubLayer = Hub.layer,
 ) {
   const dependencies = Chat.layer.pipe(
-    Layer.provide(JudgeShadow.layerOff),
     Layer.provideMerge(hubLayer),
     Layer.provideMerge(Repo.layer),
     Layer.provideMerge(Cache.layer),

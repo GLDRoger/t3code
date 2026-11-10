@@ -1,125 +1,136 @@
-# Kin: phase 1 plan
+# Kin: roadmap
 
-Phase 1 delivers a direct chat on the phone with one lead, on `GLDRoger/t3code`, with memory in `GLDRoger/kin-memory`, running on the Kin host at L0. What phase 1 includes is in [DESIGN.md section 11](DESIGN.md#11-phases-each-one-works-on-its-own). Each task is described in full in its spec:
+The road from today's Kin to [VISION.md](VISION.md), in waves. The task ids (CHAT-n, LEAD-n, APPR-n, TRIG-n, MOB-n) in the [specs](specs/) record how phase 1 was built. New work is tracked by the wave ids below.
 
-| Spec                            | Covers                                                                                                  | Tasks             |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------- | ----------------- |
-| [chat](specs/chat.md)           | Organizations, people, chats, messages, widgets, chat RPC and streams, `/kin/mcp`, floor manager, judge | CHAT-1 to CHAT-13 |
-| [lead](specs/lead.md)           | Event queue, wake-ups, lead tools, memory reads and writes, workers, budget, stop switch, levels        | LEAD-1 to LEAD-14 |
-| [approvals](specs/approvals.md) | `request_action`, pending actions, signed grants, executor, GitHub App, rulesets, audit                 | APPR-1 to APPR-15 |
-| [triggers](specs/triggers.md)   | Webhooks, deferrals, routines, watchdogs, dreaming, secret scan, purge, contract tests, Kin host        | TRIG-1 to TRIG-20 |
-| [mobile](specs/mobile.md)       | Chat list, direct chat, cards, Waiting on you, notifications                                            | MOB-1 to MOB-12   |
+**How to read it.**
 
-Tasks marked phase 2, 3 or 5 in a spec wait: CHAT-11 to CHAT-13, APPR-12 to APPR-15.
+- At most three workers run at once.
+- Tasks in a wave touch different files unless a note says which one merges first.
+- ★ marks a task that touches authority: approvals, identity, levels or who may speak.
+- **Reviews:** W1-1, W1-2 and W5-1 each get one independent high-effort review. UI tasks need captures from a real client. On every other ★ task, the orchestrator reads the authority diff itself.
 
-## Who does what
+## Owner decisions behind this plan (10 Nov 2026)
 
-Two lanes, split by area so each lane owns whole folders and rarely waits on the other.
+- The shadow week applies to groups only. In a lead's DM with its owner the lead works at L2 from day one; merges and every other privileged action still need a signed grant.
+- Group floor: the mentioned agent speaks, else the group's lead. No bids and no judge model; the judge code is deleted.
+- The chief of staff is also the router.
+- The first non-engineering leads are growth and marketing, finance and billing, and social media.
+- Members can create their own leads through a form (name, domain, charter, model). These leads run on the main host, with authority taken from the member who made them and capped at that member's. Self-hosted and outside agents are deferred.
+- DMs between two people are private from agents.
+- Who pays for a teammate's requests, and for member-created leads, is decided before W5-5.
+- The first teammate uses iOS. Android comes last.
 
-| Lane                         | Who                                                      | Owns                                                                                                                           | Tasks                                                                                                                       |
-| ---------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| **A: the lead**              | Nishchay, with agents (GPT-6.1 Sol builds, Opus reviews) | Chat server, the lead, triggers and dreaming                                                                                   | CHAT-1 to CHAT-10, LEAD-1 to LEAD-14, TRIG-1 to TRIG-14, TRIG-16 to TRIG-18                                                 |
-| **B: approvals and the app** | The teammate, with Claude Opus 5.5                       | Approvals end to end (server and phone, since the signer and the verifier must match), the mobile app, notifications, branding | APPR-1 to APPR-11, MOB-1 to MOB-12, BRAND-1, TRIG-19                                                                        |
-| **Ops**                      | Nishchay only                                            | Things that need his accounts or hardware                                                                                      | TRIG-20 Kin host, running the APPR-8 and APPR-11 scripts that lane B writes, TRIG-15 on `kin-memory`, the APNs and FCM keys |
+## Wave 0: make what exists work
 
-Lane A has more tasks, but it runs several agents at once. Lane B holds the most security-sensitive code, so it gets one careful owner.
+| Task              | Goal                                                   | Acceptance                                                                                                                                 |
+| ----------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| W0-1 Push live    | Lock-screen pushes for replies, reminders and cards    | With the app closed, a lead reply reaches a locked iPhone within 5 s and opens the right chat; a reminder does the same; no APNs refusals  |
+| W0-2 Latency      | Something visible in under 1 s, first words in seconds | Stage times recorded per wake-up; p50 first visible state < 1 s, first token < 8 s cold and < 4 s warm on the host. **Merged** (#133)      |
+| W0-3 Live checks  | Know what's broken on each surface and fix it          | Checklist run on iOS, web and desktop against a seeded dev server; every failure fixed or listed. **Merged** (#134)                        |
+| W0-4 Reply polish | Replies feel live and failures are visible             | Claude drafts stream; a failed wake-up shows a notice and a retry at once; refusals name their reason; the warm provider process is reused |
 
-**Reviews cross lanes,** so a reviewer is never the author's model:
+## Wave 1: close the loop
 
-- Lane A's code (written by Sol) is reviewed by lane B's Opus.
-- Lane B's server code is reviewed by Sol in lane A. Lane B's UI is reviewed by a fresh Opus session in lane A that didn't write it.
-- Security-sensitive tasks (listed in [KT.md](KT.md#shipping-a-task)) get a high-effort review, and Nishchay approves them.
+Start W1-2 after W0-3, since both edit `apps/mobile/src/features/chats/**`. W1-1 and W1-3 both edit `docs/kin/specs/lead.md`, and W1-3 lands second.
 
-**Where the lanes meet.** These are the only places one lane waits on the other. Ship them early and tell the other lane when they merge:
+| Task                              | Goal                                                                          | Acceptance                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| --------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| W1-1 ★ Worker isolation           | A worker can't read Kin's state, the memory key or the executor's credentials | The GitHub App key and the owner's merge credential are unreadable from a worker's shell (transcript); holds for workers of several leads at once; the `workerLaunchReady` seam is deleted                                                                                                                                                                                                                                                                          |
+| W1-2 ★ Phone approvals            | Enrol a key, see an approval card, sign with Face ID                          | Works for `merge_pull_request`, `set_level` and key enrolment. The card names who asked when the request came from below the owner                                                                                                                                                                                                                                                                                                                                  |
+| W1-3 ★ Many leads                 | A lead per domain                                                             | A second and third lead can be created from the CLI and from an owner-only RPC through one service method that takes the creating person and their ceiling; a non-owner session is refused. Each lead has a domain and a charter only the owner can change. A lead works at L2 in its owner's DM. Group rules load only for group wake-ups. Routines, budget notices and dreams name the right lead; budget stays one daily figure per org, with use shown per lead |
+| W1-4 Delegation end to end (gate) | The whole loop works on the host and the phone                                | From the iPhone: ask Tech lead for a small change; a worker starts; the task card updates in place; the report wakes the lead; a draft PR exists; the approval card arrives; Face ID; merged at the pinned SHA; audit row present. A push after approval voids it                                                                                                                                                                                                   |
 
-| Lane B waits for                        | Lane A waits for                      |
-| --------------------------------------- | ------------------------------------- |
-| CHAT-1 contracts (day 1): APPR-1, MOB-1 | APPR-3 `request_action`: LEAD-8       |
-| CHAT-2 migration track: APPR-2          | APPR-4 grant checks: LEAD-12, TRIG-14 |
-| LEAD-1 and LEAD-5: APPR-3               | APPR-9 executor: TRIG-5, TRIG-17      |
-| LEAD-11 stop switch: APPR-9             | APPR-10 audit: TRIG-17                |
-| CHAT-6 RPCs: MOB-5, MOB-10              | APPR-11 rulesets: TRIG-15             |
-| CHAT-8 task cards: MOB-6                |                                       |
-| TRIG-7 deferrals: MOB-7                 |                                       |
+## Wave 2: a company of leads, one list, one switcher
 
-APPR-9 → TRIG-5 is on the critical path. If it holds lane A up, settle the triggers spec's open question in favour of the GitHub App's own webhook. That needs no repo hooks, so TRIG-5 stops depending on the executor.
+| Task                                       | Goal                                                | Acceptance                                                                                                                                                                                                                                    |
+| ------------------------------------------ | --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| W2-1 One wake-up per lead                  | One lead's reply never waits on another's           | Two leads answer two messages at once (real-orchestrator test). Two memory writes in the same second both land in order, each validated. Pause still stops everything. W0-2's latency holds with three leads active                           |
+| W2-2 Kin list, switcher, new lead (mobile) | Kin is a list of chats, one tap from coding threads | The brand mark switches between coding threads and Kin; the app reopens to the list last used. Every lead and chat is listed, with **Waiting on you** first. A "New lead" sheet creates one through W1-3's RPC. With Kin off, nothing changes |
+| W2-3 Kin list and switcher (web, desktop)  | The same on the laptop                              | The sidebar mark switches lists; a setting picks the first list; command palette entry and keybinding; unread count outside Kin; desktop notification for a reply, also against a remote host                                                 |
 
-**Day 1:**
+**Checkpoint A:** the owner alone, daily. Several leads, each delegating and remembering, approvals from the phone, push on the lock screen, one list.
 
-1. Lane A ships CHAT-1 (contracts) first, within a day, and lane B reviews it straight away. Every other spec builds on its names.
-2. Meanwhile lane B starts the tasks that depend on nothing: APPR-6 (native key module), BRAND-1 and TRIG-19.
-3. Nishchay starts TRIG-20 (the Kin host) and creates the APNs and FCM keys.
-4. Then lane A starts CHAT-2, CHAT-3 and LEAD-1, and lane B starts APPR-1 and MOB-1.
+## Wave 3: rooms of agents (server), controls, push
 
-## Working in parallel without conflicts
+| Task                              | Goal                                         | Acceptance                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| --------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| W3-1 ★ Groups of owner and agents | A group exists and its agents answer in turn | Only the owner creates groups and adds or removes agents (test). A group message wakes the mentioned agent, else the group's lead. The server binds the grant to the wake-up and the reply bridge posts under it; no token is ever in a prompt or tool argument. An agent's @mention queues the next agent; six agent turns close the run. The floor's leftover bid parameters are removed. A lead new to a group is at L0 there. Group Undo reaches the lead |
+| W3-2 Kin settings                 | One place to control Kin                     | Pause and resume, budget, time zone, routine times, quiet hours, approval devices, and per lead: name, charter, projects, level, retire. Pause is two taps from any chat                                                                                                                                                                                                                                                                                      |
+| W3-3 Push for many chats          | The right person gets the right ping         | Titles name the lead or group. In groups a person is pushed for mentions, cards waiting on them and replies to them. Per-chat mute; badge equals unread plus waiting; quiet hours hold; tapping opens the right chat from a cold start                                                                                                                                                                                                                        |
 
-- **One branch per task:** `kin-<id>-<slug>` (for example `kin-chat-3-repository`; a branch can't be named `kin/...` while `kin` exists), branched from `kin`, with a PR back into `kin`. Rebase on `kin` before asking for review.
-- **Upstream hooks are created once.** CHAT-6 adds a single Kin entry to `packages/contracts/src/rpc.ts`, `RpcAuthorization.ts` and `ws.ts`, and CHAT-7 creates `/kin/mcp`. After that, every lane adds its RPCs, scopes and tools to Kin's own files, never to the upstream files. Until those merge, lane B keeps its RPC definitions in its own contract file and wires them in afterwards.
-- **Migration numbers are taken when a PR merges.** Kin's track runs in order and skips any number lower than the highest already applied, so two PRs can't both be K003. Name yours with the next free number. If someone merges first, rebase and renumber before merging (dev databases are disposable).
-- **Contracts change by PR to the owning spec's file.** If lane B needs a field in `kinChat.ts`, it asks in a small PR to that file, not inside a feature PR.
-- **Folders by lane.** Lane A: `apps/server/src/kin/` `chat`, `floor`, `widgets`, `mcp`, `lead`, `memory`, `triggers`, `dreaming`, `github`. Lane B: `apps/server/src/kin/approvals` and `push`, `apps/mobile/src/features/chats`, `apps/mobile/modules/kin-approval-key`, `branding/` and the `scripts/kin-*` files. Shared: `apps/server/src/kin/persistence/` (each migration is its own file) and `packages/contracts/src/kin*.ts` (each file has one owning spec).
-- **No real memory in tests.** Use a fixture memory repo in the test folder. Only the Kin host sees `GLDRoger/kin-memory`.
+## Wave 4: rooms of agents (clients), and the first lead that doesn't code
 
-## Starting the teammate's Claude Code
+| Task                           | Goal                                            | Acceptance                                                                                                                                                                                              |
+| ------------------------------ | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| W4-1 Group chat (mobile)       | A group reads like a group                      | New group, member list, add and remove agents, an @ picker, author name and avatar on every bubble. An agent run folds into one line. An approval the viewer can't sign reads "Waiting on Nishchay"     |
+| W4-2 Group chat (web, desktop) | The same on the laptop                          | Same checks; folds and mentions follow W4-1's shared files                                                                                                                                              |
+| W4-3 Workspace projects        | A growth or marketing lead produces real output | A non-engineering lead has a private documents repo. Asked for a launch plan, it starts a worker that writes files as a PR; the task card links the document; approving the PR approves the deliverable |
 
-Lane B runs from one orchestrator session that hands each task to its own subagent. The setup steps and the startup prompt are in [prompts/lane-b-orchestrator.md](prompts/lane-b-orchestrator.md).
+## Wave 5: the first teammate
 
-## How to take a task
+W5-1 lands a contract-only PR first. Then W5-1, W5-2 and W5-3 run together, then W5-4 and W5-6, then W5-5.
 
-1. Pick a task whose dependencies have merged. The waves below show what's ready.
-2. Claim it: on a branch named `kin-<id>-<slug>`, open a draft PR against `kin` titled `<ID>: <title>` (for example `CHAT-3: Repository`) before writing much code. An open draft PR with that id means the task is taken.
-3. Build exactly what the task's "What" and "Files" say. Its "Done when" is the acceptance test. Put the command you ran and its result in the PR.
-4. If the spec is wrong, fix the spec in the same PR and say so in the description.
+| Task                                        | Goal                                                     | Acceptance                                                                                                                                                                                                                                                             |
+| ------------------------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| W5-1 ★ People, invites, devices, `kin:chat` | A teammate has an account that can chat and nothing else | A single-use, expiring invite creates a person and a session holding only `kin:chat`. That session uses `kin.*` chat methods for its own chats and is refused on T3 streams, terminals, files and projects (test and transcript). The owner revokes a member's devices |
+| W5-2 Chat-only clients                      | A member's app works with a chat-only session            | A device paired by invite shows only the Kin list and never subscribes to T3 streams. Invite to first message in under two minutes, over the tailnet and the tunnel                                                                                                    |
+| W5-3 ★ People in chats, provenance ceilings | A member can talk and ask for work, within their role    | The owner adds people to groups. A DM between two people wakes nothing, and no agent, dream or memory reads it. Work a member starts runs under the member's ceiling. A member's approval is refused. Member Undo can't cancel an owner-trust item                     |
+| W5-4 People in the app                      | People are first-class in the list                       | Invite sheet with a share link; people DMs and mixed groups in the list; the owner sees and removes members and their devices                                                                                                                                          |
+| W5-6 ★ Member-created leads                 | A member creates their own lead                          | A member creates a lead through the form (name, domain, charter, model) on the main host. Its authority is capped at the creating member's, never the group's (test)                                                                                                   |
+| W5-5 First teammate, live (gate)            | Two real people, two phones, one week                    | The teammate joins by invite, shares a group with the owner and two leads, and asks a lead for a change the owner approves. The hostile-member checklist passes from the teammate's device                                                                             |
 
-## Waves
+**Before W5-5:** decide who pays for a teammate's requests and for member-created leads, and confirm the separate executor user from W1-1.
 
-A task can start once everything it depends on has merged. These waves come from each task's "Depends on" line; tasks in the same wave can run in parallel and touch different files. Many tasks can start before their whole wave above has finished, so check the task's own dependencies, not only the wave.
+### ▶ Milestone: usable daily by the owner and the first teammate
 
-| Wave  | Backend                                                                                        | UI                                | Ops                                                                                    |
-| ----- | ---------------------------------------------------------------------------------------------- | --------------------------------- | -------------------------------------------------------------------------------------- |
-| 0     | CHAT-1 contracts, CHAT-2 Kin migration track                                                   | APPR-6 native approval key module | TRIG-20 Kin host setup, BRAND-1 branding script, TRIG-19 `McpAppWebView` contract test |
-| 1     | CHAT-3, LEAD-1, APPR-1, TRIG-1                                                                 | MOB-1                             |                                                                                        |
-| 2     | CHAT-4, LEAD-2, LEAD-4, APPR-2, TRIG-2                                                         | MOB-2                             | APPR-8 GitHub App (needs Nishchay's GitHub sign-in)                                    |
-| 3     | CHAT-5, LEAD-3 (with a TRIG-16 stub), LEAD-5, LEAD-6, APPR-5, APPR-10, TRIG-3, TRIG-4, TRIG-12 | MOB-3, MOB-4                      | APPR-11 rulesets and CODEOWNERS                                                        |
-| 4     | CHAT-6, CHAT-7, LEAD-10, APPR-3, APPR-4, TRIG-9, TRIG-16, TRIG-18                              |                                   | TRIG-15 memory repo guard rails                                                        |
-| 5     | CHAT-8, CHAT-9, LEAD-7, MOB-10, TRIG-11, TRIG-13                                               | MOB-5, APPR-7 phone signing flow  |                                                                                        |
-| 6     | CHAT-10, LEAD-8, LEAD-9, TRIG-7, TRIG-14                                                       | MOB-6, MOB-11                     |                                                                                        |
-| 7     | LEAD-11, LEAD-12, LEAD-13                                                                      | MOB-7, MOB-8                      |                                                                                        |
-| 8     | APPR-9 executor, LEAD-14 dry run, TRIG-8                                                       | MOB-9                             |                                                                                        |
-| 9     | TRIG-5 GitHub webhooks, TRIG-17 purge                                                          | MOB-12                            |                                                                                        |
-| 10–11 | TRIG-6 GitHub events, TRIG-10 watchdogs                                                        |                                   | Shadow week on the Kin host                                                            |
+Measured over one week at the end of wave 5: both people use Kin every working day; at least three leads are live, one not engineering; at least one mixed group is active; every merge went through a phone approval; no reminder was missed; nothing on the hostile-member checklist succeeded.
 
-**Critical path:** CHAT-1 → CHAT-3 → CHAT-4 → CHAT-5 → CHAT-7 → LEAD-7 → LEAD-9 → LEAD-11 → APPR-9 → TRIG-5 → TRIG-6 → TRIG-10. Review those PRs first. GitHub webhooks come late only because TRIG-5 creates repo hooks through the executor. If that becomes the bottleneck, TRIG-5 can create the hook directly with the bot's token and move to wave 5.
+## Wave 6: proactive
 
-**BRAND-1. Branding script.** `scripts/kin-brand.ts`, `branding/rules.yaml`, `branding/assets/`, as described in [KIN.md](../../KIN.md#branding-at-build-time). Done when: running it on a clean checkout produces a copy that typechecks, shows "Kin" in the mobile, desktop and web app names, installs alongside T3 Code (different bundle ids and scheme), turns over-the-air updates on only when both a Kin EAS project and an update code-signing certificate are configured, and its drift check fails when a rule matches nothing. Owner: backend.
+Server work in separate folders, so any task can move into an idle server slot from wave 3 on.
 
-## Shared decisions the specs settled
+| Task                                  | Goal                                                 | Acceptance                                                                                                                                                          |
+| ------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| W6-1 GitHub awareness                 | PR and CI events reach the right chat, without noise | An event goes to the lead whose projects include the repo; a failed CI run on a watched PR is one useful message; routine pushes are silent; under 10 notices a day |
+| W6-2 Dreams and briefs for many leads | A week of dreams and briefs worth reading            | Seven nightly dreams in a row complete on the host. Each lead with something to say sends one morning message; the chief of staff sends one digest across leads     |
+| W6-3 Chief of staff as router         | "Tell whoever handles this" works                    | The chief of staff hands a message to the right lead word for word, keeping author and provenance. One agenda across leads flags two leads planning the same thing  |
+| W6-4 Voice and images                 | Talk to Kin; send a screenshot                       | Works in DMs and groups                                                                                                                                             |
 
-Where specs overlapped, this is who owns what:
+## Wave 7: team depth
 
-- **One Kin migration track.** CHAT-2 creates it (`kin_sql_migrations`, separate from upstream's numbered list). Every other spec adds its tables there.
-- **One Kin MCP endpoint, `/kin/mcp`.** CHAT-7 creates it. The chat tools (`kin_chat_post`, `kin_chat_read`, `kin_widget_upsert`, `kin_floor_bid`), the lead tools (LEAD-7, LEAD-8, including `kin_defer`) and `request_action` (APPR-3) all live there, and only registered lead/agent threads are given it; ordinary threads and subagents retain `/mcp`. CHAT-7 wraps transport construction and credential issuance with two one-line `server.ts` hooks, sharing CHAT-6's `KinIdentity`. The Kin transport also carries the existing T3 tools in an isolated registry. Nothing Kin adds goes into upstream's `layerTools`. `kin_floor_bid` and `floorGrant` remain phase 2.
-- **Workers start with `ThreadLaunchService.launch`, not `delegate_task`,** so a worker finishing doesn't wake the lead outside the queue (lead spec, correction 1).
-- **Scheduled triggers don't start agent threads.** They write to `kin_trigger_inbox`, and the lead's queue reads it (TRIG-4).
-- **The approval card is split.** MOB-8 draws the card. APPR-7 owns `approvePendingAction`: the challenge, the biometric signature and the submit.
-- **Dream auto-merge waits for delegations** (APPR-12, phase 3). Until then the owner approves both dream PRs.
+Run three at a time, in this order.
 
-## Design corrections found by the specs
+| Task                                    | Goal                                                        | Acceptance                                                                                                             |
+| --------------------------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| W7-1 ★ Delegations and the L3 risk gate | The owner hands a narrow approval to a person, by signature | A delegated docs merge by a member succeeds with their own signed grant; out of scope fails; revoking stops it at once |
+| W7-2 Guests and group cards             | Suggest-only guests; polls and decisions                    | The chat spec's CHAT-12 and CHAT-13 done-when lines                                                                    |
+| W7-3 What Kin knows about me            | Members can read, dispute and opt out                       | A member sees what Kin remembers about them, disputes an item, and turns off being chased                              |
+| W7-4 ★ First outside action             | One domain's lead can act in the world, by signature        | The chosen action runs only on a signed grant showing the exact content; a changed draft voids it                      |
+| W7-5 ★ Next of kin                      | Someone can undo when the owner can't be reached            | The approvals spec's APPR-14 done-when line                                                                            |
+| W7-6 Cleanup                            | Less to carry                                               | Kin tests green; the docs describe the product that exists                                                             |
 
-The specs checked the design against the code and found these. Until DESIGN.md is updated, the spec wins.
+## Wave 8: organizations (last)
 
-- T3 has no notion of a person. A paired device gets environment-wide scopes, including terminal access. Members need Kin's own people records and a narrow `kin:chat` scope before anyone else pairs a phone (chat spec).
-- T3's mobile device key is a software key used only for the relay. Kin needs its own approval key in the Secure Enclave or Keystore behind Face ID (approvals spec).
-- Agent CLIs inherit the server's `gh` login. Kin on the Kin host must run as a dedicated `kin` user whose GitHub identity is the bot, and leads stay at L0 until it does (lead and approvals specs).
-- T3's merge doesn't pin the head SHA, so the executor calls GitHub's merge API with the SHA itself. The GitHub review comes from the phone, never from the server (approvals spec).
-- `fixed_time` triggers use the machine's timezone and skip runs more than 10 minutes late, so Kin runs its own time triggers on T3's scheduler (triggers spec).
-- Kin needs its own push sender and an APNs key, because T3's relay pushes have no action buttons (mobile spec).
-- The lock screen shows **Review** for approvals, never Approve, because approving needs Face ID inside the app (mobile spec).
-- There's no general way to read plan headroom, so the budget counts tokens per turn (lead spec).
+| Task                                       | Goal                                        | Acceptance                                                                                                      |
+| ------------------------------------------ | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| W8-1 ★ A second organization and its walls | Two companies on one host, nothing crossing | A second org with its own memory repo, leads, budget and keys; a test per store proves no read or write crosses |
+| W8-2 Organization switcher                 | One app, several companies                  | A switcher on the Kin list; **Waiting on you** gathers every org, each item labelled                            |
+| W8-3 ★ Organization policy and roles       | Approvers by role, locked settings          | "Merges in this repo need a tech admin" holds; a locked setting can't be changed by a member or an agent        |
+| W8-4 ★ External members and partners       | The consultant case                         | A partner manages setup without reading content. Outside agents stay deferred (owner decision)                  |
 
-## Waiting on Nishchay
+## Done
 
-- **An APNs key** (and an FCM key for Android) for Kin's push sender. Blocks MOB-10.
-- **The GitHub App:** creating it and installing it on `GLDRoger/t3code` and `GLDRoger/kin-memory` needs your GitHub sign-in. Blocks APPR-8.
-- **The Kin host:** setting up `nishchay-linux` with a dedicated `kin` user and the systemd unit (triggers spec, "Running on the Kin host"). Blocks TRIG-20.
-- **Jev from TypeSafe:** pricing and API access. Until then the judge is the no-op stub (CHAT-10).
+Kin is done when all of these hold for four straight weeks:
+
+- The owner and at least two teammates use it every working day, from phones, with desktop as a second screen.
+- At least four leads are live in at least three domains, each producing output the owner used that month. At least one acts in the outside world by signed approval.
+- The list holds all four kinds of chat, and at least one group mixes people and several agents on different models, with agent talk folded.
+- Every privileged action in the audit log has an owner-signed grant, `kin.audit.verify` is clean, and the hostile-member checklist passes on the current build.
+- No reminder was missed. With three leads active, W0-2's latency targets still hold.
+- A second organization runs on the same app and the walls suite is green.
+
+## Waiting on the owner
+
+- **The GitHub App:** creating and installing it needs the owner's GitHub sign-in. Blocks the merge in W1-4 and all of W6-1.
+- **One paid eval run,** now with group cases.
+- **Teammate cost:** decided before W5-5.

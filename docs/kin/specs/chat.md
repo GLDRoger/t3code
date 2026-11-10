@@ -294,7 +294,7 @@ K001 (phase 1, includes everything phase 2 needs for existing rows):
 
 K001 uses `TEXT` for ids, ISO timestamps and JSON, and `INTEGER` for sequences and revisions. Optional or nullable schema fields are nullable; system-author identity fields and `client_message_id` for non-client posts are nullable. `author_owner_person_id` snapshots the agent author's required `ownerPersonId`. Waiting `message_id` and `widget_id` are nullable references; `resolution` is nullable free text because resolution values are not a closed set. Message `widget_id` has no foreign key to avoid a message/widget insert cycle. Org foreign keys and other Kin-only references are enforced; org-consistent relationships and chat ownership cardinality are checked by the service.
 
-K008 stores floor runs, grants and notice accounting. Phase 2 adds `kin_floor_bids` and `kin_judge_log` at the next free migration numbers. New tables only.
+K008 stores floor runs, grants and notice accounting. K009 created `kin_judge_log` for a judge that was later removed; K029 drops it. There is no bids table.
 
 **Seq allocation:** in one `sql.withTransaction`: `UPDATE kin_chats SET last_seq = last_seq + 1, last_message_at = ? WHERE chat_id = ? AND org_id = ? RETURNING last_seq`, then insert the message with that seq. Look up an existing `(chat_id, author_member_id, client_message_id)` inside the transaction before allocating a seq. Store sends as `send:<clientMessageId>` and widget actions as `act:<clientActionId>` so the namespaces cannot collide. History returns the newest page before `beforeSeq` in ascending seq order, with `hasMore` from one extra row. Message and widget ids are server-generated; widget revisions start at 1 and are server-owned. Publish to the in-process hub only after commit.
 
@@ -380,7 +380,6 @@ export const KinChatStreamEvent = Schema.Union([
 - `kin_chat_post({ chatId, body, intent, mentions?, replyTo?, clientMessageId? })`
 - `kin_chat_read({ chatId, afterSeq?, limit? })`: messages as data. Text from anyone but the owner is wrapped in quoted blocks labelled with the author's role (section 9.4) by the lead spec's brief builder, not here; this tool returns `authorRole` so it can.
 - `kin_widget_upsert({ chatId, widgetId, revision, type, state, awaiting?, closed? })`: updates an existing task card anchored by the agent's own member. Server-owned state is preserved. Agents never create task cards; creation returns `not_allowed`. Refuses `approval`.
-- `kin_floor_bid({ chatId, runId, reason, intent })` (phase 2).
 
 Kin serves these tools at **`/kin/mcp`**, alongside the existing T3 tools, never in upstream `layerTools`. Two one-line hooks in `server.ts` wrap transport construction and credential issuance; the registry wrapper is the sole Kin construction root for both WS and MCP. The credential wrapper uses the environment's shared `KinIdentity` instance to give only registered agent threads this endpoint; ordinary threads and subagents retain `/mcp`. The Kin transport is mounted only when Kin is enabled and has an isolated MCP registry, authenticates only server-issued provider credentials, and calls `resolveAgent` on every HTTP request. It does not accept OAuth client identities. Credentials become unresolvable when registration changes their required endpoint, and only a new provider session reissues them: an attached live session keeps its dead token and loses every tool. So LEAD-5 registers a lead thread before its first provider session opens and ends it only after its session stops.
 
@@ -388,11 +387,13 @@ Kin serves these tools at **`/kin/mcp`**, alongside the existing T3 tools, never
 
 `kin_chat_post` accepts an optional `clientMessageId` retry key. Reusing it with identical content returns the stored row; changed content fails `not_allowed`. Omission creates a fresh post on each call. Bodies are nonblank, at most 16,000 characters, and contain no NUL; mentions are capped at 100. Reads are per-call, ascending after a non-negative safe-integer `afterSeq`, with a default limit of 50 and a maximum of 100, and preserve the viewer's suggestion visibility. No agent stream is exposed.
 
-Task-card creation is server-only and unavailable through this toolkit. Updates require `widgetId` plus the expected `revision`; missing revision is refused and stale revision fails `widget_changed`. The anchor is immutable, and an agent can update only cards anchored by its own member. Neither trusted waiting APIs nor hub subscriptions are exposed. `approval` is refused by the service. `kin_floor_bid` is phase 2 and absent from the phase-1 toolkit. CHAT-9 keeps group grant tokens internal; direct-chat grants are implicit. CHAT-11 and the phase-2 floor-bid work must deliver group grants through the agent wake-up before exposing `floorGrant` in `kin_chat_post`. Until then, a mentioned agent in a group cannot reply. Grants expire after five minutes. The first post consumes the grant and records its wake-up; that wake-up's later posts in the same floor run reuse it while no other agent has spoken, share its `floorRunId`, and count as one agent turn. One wake-up posts at most 8 messages and 32,000 characters per chat, reply-bridge text and `kin_chat_post` together. When a wake-up carrying the message that opened a direct-chat run starts, the runner extends the lead's unused grant on that run to the wake-up's deadline (lead spec, `KinFloor.renew`); it never issues one. Trusted server notices (`KinChatService.notice`) bypass the floor and agent-notice quota; agent notices are classified from the running wake-up's stored events, never from a model-provided flag. Notice classification applies to the entire wake-up across all of the agent's chats, not only the destination chat. A batch containing chat events is treated as replies.
+Task-card creation is server-only and unavailable through this toolkit. Updates require `widgetId` plus the expected `revision`; missing revision is refused and stale revision fails `widget_changed`. The anchor is immutable, and an agent can update only cards anchored by its own member. Neither trusted waiting APIs nor hub subscriptions are exposed. `approval` is refused by the service. There is no bid tool. CHAT-9 keeps group grant tokens internal; direct-chat grants are implicit. W3-1 in [PLAN.md](../PLAN.md) binds group grants to the wake-up on the server, so no token ever reaches a prompt or a tool argument. Until then, a mentioned agent in a group cannot reply. Grants expire after five minutes. The first post consumes the grant and records its wake-up; that wake-up's later posts in the same floor run reuse it while no other agent has spoken, share its `floorRunId`, and count as one agent turn. One wake-up posts at most 8 messages and 32,000 characters per chat, reply-bridge text and `kin_chat_post` together. When a wake-up carrying the message that opened a direct-chat run starts, the runner extends the lead's unused grant on that run to the wake-up's deadline (lead spec, `KinFloor.renew`); it never issues one. Trusted server notices (`KinChatService.notice`) bypass the floor and agent-notice quota; agent notices are classified from the running wake-up's stored events, never from a model-provided flag. Notice classification applies to the entire wake-up across all of the agent's chats, not only the destination chat. A batch containing chat events is treated as replies.
 
 ### Floor manager (plain code)
 
-`apps/server/src/kin/floor/FloorManager.ts` (**new**) is a pure module: state in, decision out, no Effect services. `KinChatService` stores state in `kin_floor_runs` and calls it.
+`apps/server/src/kin/floor/FloorManager.ts` is a pure module: state in, decision out, no Effect services. `KinFloor` stores state in `kin_floor_runs` and `kin_floor_grants` and calls it; `KinChatService` calls `KinFloor.open` on every human message.
+
+Who speaks is decided by code alone. There is no judge model and there are no bids (owner decision, 10 Nov 2026). If a month of real groups shows the code picking the wrong speaker, that is the case for reopening it.
 
 ```ts
 interface FloorRun {
@@ -406,73 +407,26 @@ interface FloorRun {
   grant: { agentId: KinAgentId; token: string; expiresAt: number } | null;
   state: "open" | "closed";
 }
-interface FloorBid {
-  agentId: KinAgentId;
-  role: KinAgentRole;
-  reason: string;
-  intent: KinAgentIntent;
-  at: number;
-}
 type FloorDecision =
   | { _tag: "grant"; agentId: KinAgentId }
-  | { _tag: "wait" } // bid window still open
+  | { _tag: "wait" }
   | { _tag: "close"; reason: "turn_budget" | "no_bids" | "nothing_to_add" };
 
 export const FLOOR_MAX_AGENT_TURNS = 6; // rule 4
-export const FLOOR_BID_WINDOW_MS = 2_000;
 ```
 
-- **Rule 1:** a human message opens a new run and closes the old one. Its @mentioned agents fill `mentionQueue`. The first queued agent that may speak (rule 3) gets the grant without bidding.
-- **Rule 2:** otherwise bids collected in the window compete. Role fit is a static table in code: the chat's lead wins ties for a plain question; `qa` for test or bug words; `release` for deploy or release words. While the judge is in shadow mode its `role` answer is logged, not used. Ties go to the earliest bid.
-- **Rule 3:** a bid or mention from `lastSpeaker` is skipped. Only a human message clears `lastSpeaker`.
+- **Rule 1:** a human message opens a new run and closes the old one. Its @mentioned agents fill `mentionQueue`, and the first that may speak (rule 3) gets the grant.
+- **Rule 2:** with no mention, the group's lead speaks. An agent brings another in by @mentioning it, inside the six-turn budget.
+- **Rule 3:** a mention of `lastSpeaker` is skipped. Only a human message clears `lastSpeaker`.
 - **Rule 4:** at `agentTurns === 6` the run closes with `turn_budget`. Later agent posts get `floor_closed` until a human speaks.
 - **Rule 5:** the first agent turn after a human may be `answer` or `question`. Later turns must be `evidence`, `objection` or `decision`; others are refused.
-- **Enforcement (phase 2):** `kin_chat_post` in a group needs `floorGrant`, the grant token. A post without a valid token fails with `floor_not_granted`. A wake-up run uses the grant: its first post adds one to `agentTurns` and sets `lastSpeaker`, and all its posts share one `floorRunId`. Intent order is guidance only for natural text, which declares no intent.
+- **Where the code is today:** rules 1, 3, 4 and 5 are enforced. Rule 2 and agent-to-agent mentions land in W3-1. Until then `decideFloor` still carries the old bid parameters (a bid list and a 2 s window); `KinFloor` always passes no bids, so a group message without a mention gets no grant.
+- **Enforcement:** an agent post in a group needs a live grant for the current run, or it fails with `floor_not_granted`. A wake-up's first post consumes the grant, adds one to `agentTurns` and sets `lastSpeaker`; its later posts in the run share one `floorRunId`. Intent order is guidance only for natural text, which declares no intent.
 - **Replies vs notices:** posts woken by a `KinEvent` that is not a chat message (routine, webhook, deferral, worker report) are notices. They need no grant, don't open or count in a run, and must use `evidence`, `decision` or `question` (interface rule 2). They are limited to 10 per agent per chat per hour; status belongs in widget updates.
-- **Direct chats** (phase 1): one agent, so rules 1 and 2 always pick it and no bids are needed. Rules 3, 4 and 5 still apply to replies: the server opens a run on each owner message and grants the lead implicitly.
-- **Who bids:** waking an agent costs a lead session (lead spec, budget). The floor manager names who to wake: mentioned agents, else the chat's lead. Other agents in the chat get a `floor.offer` KinEvent only when the lead spec's budget allows; they may bid with `kin_floor_bid` or ignore it.
+- **Direct chats:** one agent, so rule 1 always picks it. Rules 3, 4 and 5 still apply to replies: the server opens a run on each owner message and grants the lead implicitly.
+- **Who is woken:** waking an agent costs a lead session (lead spec, budget), so only the agent the floor picked is woken.
 - **Folding (interface rule 3):** clients fold two or more consecutive agent messages with one `floorRunId` into one line showing the last `decision` message. When a run closes with an `objection` and no later `decision`, the server posts a `decision` card (CHAT-13) awaiting the owner.
-
-### Judge (interface only, shadow mode)
-
-`apps/server/src/kin/floor/Judge.ts` (**new**):
-
-```ts
-export interface JudgeInput {
-  orgId: KinOrgId;
-  chatId: KinChatId;
-  messageId: KinMessageId;
-  text: string;
-  authorRole: KinRole;
-  recent: ReadonlyArray<{ authorKind: "human" | "agent"; role: string; text: string }>; // last 10
-  agentRoles: ReadonlyArray<KinAgentRole>;
-}
-export interface Scored<A> {
-  value: A;
-  confidence: number;
-} // 0..1
-export interface JudgeVerdict {
-  needsResponse: Scored<boolean>;
-  role: Scored<KinAgentRole | null>;
-  urgency: Scored<"low" | "normal" | "high">;
-  needsHumanDecision: Scored<boolean>;
-  commitment: Scored<{ kind: "none" | "defer" | "promise"; text: string | null }>;
-}
-export class Judge extends Context.Service<
-  Judge,
-  {
-    readonly name: string;
-    readonly judge: (input: JudgeInput) => Effect.Effect<JudgeVerdict, JudgeError>;
-  }
->()("kin/Judge") {}
-export const JUDGE_MODE: "off" | "shadow" | "live" = "shadow";
-export const JUDGE_THRESHOLDS = { act: 0.8, ask: 0.5 } as const; // below ask: ask an LLM or the user
-```
-
-- **Shadow runner:** after the floor manager decides, `JudgeShadow` calls the judge in a forked fiber with one 3 s deadline covering context reads, the model call and the log write, and writes `kin_judge_log (org_id, id, chat_id, message_id, judge, verdict_json, floor_decision_json, latency_ms, error, created_at)`. It never changes the decision. Errors and timeouts are logged and dropped; a timeout does not attempt a second log-table write. Before storage, an explicit allowlist rejects unknown verdict fields, out-of-range confidence, invalid verdict values, commitment text over 1,000 characters, judge names outside 1–100 characters, message ids outside the same org/chat, and grant agent ids outside its active membership. Rejected records are logged without payloads and never stored. `JudgeShadow` is a required chat dependency supplied by the Kin layer; `off` mode supplies a no-op.
-- **Implementations:** `NoopJudge` (always low confidence) ships first. Jev and the cheap-LLM fallback are later tasks outside this spec.
-- **It never authorises an action.** `JudgeVerdict` has no field any approvals code reads. A test asserts that nothing under `apps/server/src/kin/approvals/` imports `kin/floor/Judge.ts`.
-- The lead spec may read `commitment` from the log to propose deferrals, as a suggestion only.
+- **Authority:** the floor decides who may talk, never what may be done. No floor state is read by approvals code.
 
 ### Failure cases
 
@@ -493,7 +447,7 @@ New (all Kin-owned):
 - `apps/server/src/kin/chat/KinChatRepository.ts`, `KinIdentity.ts`, `KinChatService.ts`, `KinChatHub.ts`, `TaskCardUpdater.ts`, `rpcHandlers.ts` (`makeKinChatHandlers(session)`), `layer.ts` (`KinChat.layer`).
 - `apps/server/src/kin/widgets/registry.ts`, `taskCard.ts`.
 - `apps/server/src/kin/mcp/KinChatToolkit.ts` (`makeKinChatToolkitLayer(register)`), `handlers.ts`.
-- `apps/server/src/kin/floor/FloorManager.ts`, `Judge.ts`, `JudgeShadow.ts`, `NoopJudge.ts`.
+- `apps/server/src/kin/floor/FloorManager.ts`, `KinFloor.ts`.
 - Tests next to each file (`*.test.ts`).
 
 Upstream files touched, hooks only:
@@ -539,7 +493,6 @@ Run with `cd apps/server && vp test run src/kin` and `cd packages/contracts && v
 - Read state: `markRead` never moves back; unread counts exclude the reader's own messages.
 - Waiting: an agent question in a direct chat adds a row; the owner's reply resolves it; the list stream shows both changes.
 - Floor manager: table tests for rules 1 to 5, including a mention of the last speaker, the 6-turn cap, `answer` refused on a second turn, and notices outside runs.
-- Judge: shadow mode never changes a decision (property test with a judge that returns random verdicts); timeouts are logged; the import-boundary test passes.
 - Budget: `AgentContextBudget.test.ts` passes unchanged.
 
 ## Tasks
@@ -562,7 +515,7 @@ Run with `cd apps/server && vp test run src/kin` and `cd packages/contracts && v
 
 **CHAT-9. Floor manager.** What: pure `FloorManager.ts` (rules 1 to 5, replies vs notices), floor tables at K008, internal group grant tokens pending phase-2 wake-up delivery, implicit grants in direct chats, notice rate limit. Files: `apps/server/src/kin/floor/FloorManager.ts`, `migrations/KNNN_Floor.ts` (next free number), tests. Depends on: CHAT-7. Done when: floor table tests pass and a direct-chat test shows a second unprompted reply refused with `floor_not_granted` while a notice passes. Owner: backend.
 
-**CHAT-10. Judge in shadow.** What: `Judge` service, `NoopJudge`, `JudgeShadow`, `kin_judge_log`, thresholds, import-boundary test. Files: `apps/server/src/kin/floor/Judge.ts`, `JudgeShadow.ts`, `NoopJudge.ts`, tests. Depends on: CHAT-9. Done when: the judge tests pass and `kin_judge_log` gets one row per human message in a group test. Owner: backend.
+**CHAT-10. Judge in shadow.** Removed. It shipped as a no-op and was deleted on 10 Nov 2026 by owner decision; K029 drops its table.
 
 **CHAT-11. Groups, members and the `kin:chat` scope** (phase 2). What: `createGroup`, members add, remove, setRole, mute; session bindings; `kin:chat` scope hook in `auth.ts`; move `KIN_CHAT_RPC_SCOPES` to it; owner-only role checks; deliver group floor grants through agent wake-ups. Files: `KinChatService.ts`, `KinIdentity.ts`, `kinChat.ts`, `auth.ts` hook. Depends on: CHAT-6, and the member sign-in work for DESIGN gap 8 (unowned; see Open questions). Done when: a session holding only `kin:chat` can use every `kin.*` method for its chats and gets `EnvironmentAuthorizationError` on `orchestration.subscribeShell` and `terminal.open`. Owner: backend.
 
@@ -578,9 +531,9 @@ Run with `cd apps/server && vp test run src/kin` and `cd packages/contracts && v
 4. **Guest sharing can't be reused as chat guests.** It is one browser guest per thread over T3 Connect, for 24 hours, behind the `guestSharingEnabled` beta flag. Kin reuses its suggest-only model, its limits and `PayloadSigner`. `NAME_BREAKING_CHARACTER` isn't exported, so Kin copies it.
 5. **Kin imports `toolkitRegistration` without an upstream cycle.** `McpHttpServer.ts` does not import Kin; `server.ts` wraps the existing transport and credential layer. The Kin transport isolates its MCP registry with `Layer.fresh` so Kin registrations cannot leak into the ordinary endpoint.
 6. **`ws.ts` is near a TypeScript limit.** Its comment says that near 200 methods the handler layer's requirements degrade to `any`, which is why it splits into two groups. Kin's phase-1 methods land in `OtherWsRpcGroup`. If typecheck shows the degradation, Kin needs a third group: three more lines in `ws.ts`.
-7. **"Each agent may ask to speak" has a cost** the design doesn't mention. Agents only act inside a woken lead session, so every bid is a session. The floor manager decides who is woken; others are offered the floor only within budget.
+7. **"Each agent may ask to speak" has a cost** the design didn't mention. Agents only act inside a woken lead session, so every bid would be a session. Resolved: there are no bids; the mentioned agent speaks, else the group's lead.
 8. **Rules 3 and 4 would block scheduled posts** in a direct chat (a morning brief after an unanswered deferral notice). The spec splits agent posts into replies, which the rules govern, and notices, which are rate-limited instead.
-9. **"Jev from TypeSafe"** could not be checked from this repo. The spec stubs the `Judge` interface only.
+9. **The judge** was removed (owner decision, 10 Nov 2026). The floor uses code rules only.
 
 ## Open questions
 

@@ -1,4 +1,3 @@
-import { JudgeShadow } from "../floor/JudgeShadow.ts";
 import * as Floor from "../floor/KinFloor.ts";
 import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
@@ -267,7 +266,6 @@ const WORKING_PRESENCE: ReadonlySet<KinPresenceState> = new Set([
 
 const make = Effect.gen(function* () {
   const floor = yield* Floor.KinFloor;
-  const shadow = yield* JudgeShadow;
   const cards = yield* TaskCard.TaskCardIndex;
   const repo = yield* Repository.KinChatRepository;
   const hub = yield* Hub.KinChatHub;
@@ -439,8 +437,7 @@ const make = Effect.gen(function* () {
     });
     if (message.messageId !== messageId) return message;
     if (message.author._tag === "human") {
-      const decision = yield* floor.open(message, yield* requireRecord(repo.getChat(member)));
-      yield* shadow.observe(message, decision);
+      yield* floor.open(message, yield* requireRecord(repo.getChat(member)));
     }
     if (input.publish === false) return message;
     yield* hub.publish({ type: "message.posted", orgId: identity.orgId, message });
