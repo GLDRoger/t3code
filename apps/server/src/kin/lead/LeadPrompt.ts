@@ -5,6 +5,7 @@ import {
   type KinMemoryItemId,
   type KinAgentId,
   type KinChatId,
+  type KinChatMember,
   type KinEvent,
   type KinMessage,
   type KinWakeupId,
@@ -81,6 +82,8 @@ export class KinLeadPrompt extends Context.Service<
       const quoteEvents = Effect.fnUntraced(function* (
         input: Pick<KinLeadPromptInput, "orgId" | "agentId" | "events" | "routineFacts"> & {
           readonly laneChatId?: KinChatId | undefined;
+          /** In a group, who each member is, so a quoted message says who wrote it. */
+          readonly names?: ReadonlyMap<string, string> | undefined;
         },
       ) {
         const { orgId, agentId } = input;
@@ -251,6 +254,9 @@ export class KinLeadPrompt extends Context.Service<
                         message.author._tag === "human"
                           ? message.author.personId
                           : message.author.agentId,
+                      ...(input.names?.get(message.author.memberId) === undefined
+                        ? {}
+                        : { name: input.names.get(message.author.memberId) }),
                     }),
                 body: spoken(message),
                 ...attachedNames(message),
@@ -394,9 +400,54 @@ export class KinLeadPrompt extends Context.Service<
             reactions: reactions.get(message.messageId)?.toSorted() ?? [],
           }));
         });
+        const laneChat =
+          input.lane === undefined
+            ? undefined
+            : yield* chat.getChat({ orgId, chatId: input.lane.chatId }).pipe(
+                Effect.map(Option.getOrUndefined),
+                Effect.catch((cause) =>
+                  Effect.logWarning("Kin reply chat unavailable", cause).pipe(Effect.as(undefined)),
+                ),
+              );
+        // Who is in the group, from stored rows: the lead knows the room it is speaking in.
+        const room =
+          laneChat === undefined || laneChat.kind === "direct"
+            ? undefined
+            : yield* Effect.gen(function* () {
+                const people = new Map(
+                  (yield* chat.listPeople({ orgId })).map((row) => [
+                    row.personId as string,
+                    row.displayName,
+                  ]),
+                );
+                const agents = new Map(
+                  (yield* chat.listAgents({ orgId })).map((row) => [
+                    row.agentId as string,
+                    row.displayName,
+                  ]),
+                );
+                return (yield* chat.listMembers(laneChat)).flatMap((member) => {
+                  const name =
+                    member.principal._tag === "person"
+                      ? people.get(member.principal.personId)
+                      : agents.get(member.principal.agentId);
+                  return name === undefined
+                    ? []
+                    : [{ member, name: Array.from(name).slice(0, 80).join("") }];
+                });
+              }).pipe(
+                Effect.catch((cause) =>
+                  Effect.logWarning("Kin group members unavailable", cause).pipe(Effect.as([])),
+                ),
+              );
+        const names =
+          room === undefined
+            ? undefined
+            : new Map(room.map(({ member, name }) => [member.memberId as string, name]));
         const { events, replyDue } = yield* quoteEvents({
           ...input,
           laneChatId: input.lane?.chatId,
+          names,
         });
         const feedback = yield* reactionFeedback(input).pipe(
           Effect.catch((cause) =>
@@ -428,15 +479,6 @@ export class KinLeadPrompt extends Context.Service<
             Effect.logWarning("Kin lead charter unavailable", cause).pipe(Effect.as([])),
           ),
         );
-        const laneChat =
-          input.lane === undefined
-            ? undefined
-            : yield* chat.getChat({ orgId, chatId: input.lane.chatId }).pipe(
-                Effect.map(Option.getOrUndefined),
-                Effect.catch((cause) =>
-                  Effect.logWarning("Kin reply chat unavailable", cause).pipe(Effect.as(undefined)),
-                ),
-              );
         const recent =
           input.lane === undefined
             ? []
@@ -479,8 +521,13 @@ export class KinLeadPrompt extends Context.Service<
                       ? ""
                       : laneChat.kind === "direct"
                         ? ", your direct chat with the owner"
-                        : ", a group"
+                        : laneChat.title === null
+                          ? ", a group"
+                          : `, the group ${encoded(laneChat.title)}`
                   }.`,
+                  ...(room === undefined || laneChat === undefined
+                    ? []
+                    : [groupLine(room, agentId, laneChat.leadAgentId ?? null)]),
                   ...(input.lane.mode === "reply" || replyDue
                     ? []
                     : [
@@ -504,6 +551,7 @@ export class KinLeadPrompt extends Context.Service<
                   now,
                   timeZone,
                   notice: input.lane?.mode !== "reply",
+                  names,
                 }),
               ]),
           ...(feedback.length === 0
@@ -664,6 +712,8 @@ function boundedRecent(
     readonly now: number;
     readonly timeZone: string | undefined;
     readonly notice: boolean;
+    /** In a group, each member's name; a direct chat needs none. */
+    readonly names?: ReadonlyMap<string, string> | undefined;
   },
 ): string {
   const window = options.notice ? RECENT_WINDOW.notice : RECENT_WINDOW.reply;
@@ -676,13 +726,16 @@ function boundedRecent(
     if (lines.length >= window.messages) break;
     if (newer !== undefined && lines.length >= 2 && newer - at > RECENT_GAP_MS) break;
     const own = message.author._tag === "agent" && message.author.agentId === self;
+    const name =
+      message.author._tag === "system" ? undefined : options.names?.get(message.author.memberId);
+    const who = name === undefined ? "" : ` ${encoded(name)}`;
     const from = own
       ? "you"
       : message.author._tag === "agent"
-        ? "agent (untrusted)"
+        ? `agent${who} (untrusted)`
         : message.authorRole === "owner"
-          ? "owner"
-          : `${message.authorRole} (untrusted)`;
+          ? `owner${who}`
+          : `${message.authorRole}${who} (untrusted)`;
     const limit = !own
       ? RECENT_BODY_LIMIT.other
       : ownSeen
@@ -699,6 +752,35 @@ function boundedRecent(
     ownSeen ||= own;
   }
   return quoteLines("recent chat", lines.toReversed());
+}
+/** Past this many, a group's line names the first and counts the rest. */
+const GROUP_NAMES_SHOWN = 20;
+/**
+ * Who is in the group and that all of them read the reply. Names are stored display names,
+ * encoded as data; who owns the group and which lead answers by default come from stored rows.
+ */
+function groupLine(
+  room: ReadonlyArray<{ readonly member: KinChatMember; readonly name: string }>,
+  self: KinAgentId,
+  leadAgentId: KinAgentId | null,
+): string {
+  const here = room.filter(({ member }) => member.leftAt === null);
+  // A group made before leads were chosen follows the lead who joined first.
+  const first = here.find(({ member }) => member.principal._tag === "agent")?.member.principal;
+  const lead = leadAgentId ?? (first?._tag === "agent" ? first.agentId : null);
+  const named = here.slice(0, GROUP_NAMES_SHOWN).map(({ member, name }) => {
+    const principal = member.principal;
+    if (principal._tag === "person")
+      return `${member.role === "owner" ? "owner" : "person"} ${encoded(name)}`;
+    return `lead ${encoded(name)}${principal.agentId === self ? " (you)" : ""}`;
+  });
+  const more = here.length - named.length;
+  return [
+    `In this group: ${named.join(", ")}${more > 0 ? `, and ${more} more` : ""}. Everyone in it reads your reply.`,
+    lead === self
+      ? "You are this group's lead: you answer a message that names nobody, and one that names you."
+      : "You answer here only when a message names you.",
+  ].join("\n");
 }
 /** The most of a message body a lead is shown; past it the prompt cuts the text. */
 export const messageBodyLimit = 8_000;

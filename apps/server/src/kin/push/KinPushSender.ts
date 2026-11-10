@@ -100,7 +100,8 @@ const decodeQuietHours = Schema.decodeUnknownOption(
 
 /**
  * Whether a message concerns someone enough to ring their phone. A direct chat is theirs; in a
- * group only a mention of them or a reply to their message does (cards push on their own).
+ * group only a mention of them, a reply to their message, or a lead's answer to what they asked
+ * does (cards push on their own).
  */
 const kinPushConcerns = (input: {
   readonly direct: boolean;
@@ -264,6 +265,7 @@ const make = Effect.gen(function* () {
       body: string;
       mentions_json: string;
       reply_author: KinPersonId | null;
+      asked_json: string;
       awaits_card: number;
       owner_timed: number;
     }>`
@@ -277,6 +279,14 @@ const make = Effect.gen(function* () {
         ) AS author_name,
         (SELECT r.author_person_id FROM kin_messages r
           WHERE r.org_id = m.org_id AND r.message_id = m.reply_to) AS reply_author,
+        -- Whose messages in this chat the lead's running wake-up answers.
+        (SELECT COALESCE(json_group_array(DISTINCT q.author_person_id), '[]') FROM kin_wakeups k
+          JOIN kin_events e ON e.org_id = k.org_id AND e.wakeup_id = k.wakeup_id
+            AND e.tag IN ('chat.message', 'widget.action')
+          JOIN kin_messages q ON q.org_id = e.org_id AND q.chat_id = m.chat_id
+            AND q.message_id = json_extract(e.json, '$.messageId') AND q.author_kind = 'human'
+          WHERE k.org_id = m.org_id AND k.agent_id = m.author_agent_id
+            AND k.status = 'running') AS asked_json,
         EXISTS (SELECT 1 FROM kin_widgets w WHERE w.org_id = m.org_id
           AND w.message_id = m.message_id AND w.closed_at IS NULL
           AND w.awaiting_json != '[]') AS awaits_card,
@@ -295,6 +305,7 @@ const make = Effect.gen(function* () {
     if (row === undefined || row.awaits_card === 1) return undefined;
     const chat = yield* chatName(orgId, row.chat_id);
     const mentions = new Set<string>(yield* decodeIds(row.mentions_json));
+    const asked = new Set<string>(yield* decodeIds(row.asked_json));
     // Reminders and scheduled runs come at the time the owner chose, so quiet hours let them ring.
     const quiet = row.owner_timed === 1 ? false : yield* quietNow(orgId);
     const people = yield* chatPeople(orgId, row.chat_id);
@@ -323,7 +334,7 @@ const make = Effect.gen(function* () {
             kinPushConcerns({
               direct: chat.direct,
               mentioned: mentions.has(person.memberId),
-              repliesToThem: row.reply_author === person.personId,
+              repliesToThem: row.reply_author === person.personId || asked.has(person.personId),
             }),
         )
         .map((person) => ({ personId: person.personId, silent: person.muted || quiet })),

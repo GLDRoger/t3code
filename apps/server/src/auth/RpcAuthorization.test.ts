@@ -480,6 +480,7 @@ it("a chat-only grant cannot satisfy any non-chat method's declared permission",
       .sort(),
   ).toEqual([
     "kin.chat.history",
+    "kin.chat.members",
     "kin.chat.subscribe",
     "kin.chats.createDirect",
     "kin.chats.mute",
@@ -576,6 +577,29 @@ it.effect("a chat-only session may upload, and ask only for stored attachments",
     expect(yield* allowed([AuthKinChatScope], "assets.persistChatAttachments", undefined)).toBe(
       false,
     );
+  }),
+);
+
+it.effect.each(
+  Object.keys(RPC_REQUIRED_SCOPES).filter((method) => method.startsWith("kin.groups.")),
+)("a teammate's chat-only session can't make or change a group: %s", (method) =>
+  Effect.gen(function* () {
+    expect(
+      Object.keys(RPC_REQUIRED_SCOPES).filter((name) => name.startsWith("kin.groups.")),
+    ).toEqual([
+      "kin.groups.create",
+      "kin.groups.addMember",
+      "kin.groups.removeMember",
+      "kin.groups.setLead",
+      "kin.groups.rename",
+      "kin.groups.delete",
+    ]);
+    expect(
+      yield* RpcAuthorization.authorizeRpc([AuthKinChatScope], method, undefined).pipe(Effect.flip),
+    ).toMatchObject({ _tag: "EnvironmentAuthorizationError" });
+    // The owner's paired client holds the scope; reading who is in a chat stays chat access.
+    yield* RpcAuthorization.authorizeRpc(AuthStandardClientScopes, method, undefined);
+    yield* RpcAuthorization.authorizeRpc([AuthKinChatScope], "kin.chat.members", undefined);
   }),
 );
 

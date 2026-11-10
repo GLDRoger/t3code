@@ -272,6 +272,27 @@ const samples = {
   ],
   KinChatsSubscribeInput: [{}, { orgId: "org-1" }],
   KinChatsCreateDirectInput: [{ orgId: "org-1", agentId: "agent-1" }],
+  KinGroupTitle: ["Launch"],
+  KinChatsCreateGroupInput: [
+    { orgId: "org-1", title: "Launch", agentIds: ["agent-1"], personIds: ["person-2"] },
+    { orgId: "org-1", title: "Leads", agentIds: ["agent-1", "agent-2"], personIds: [] },
+  ],
+  KinChatMembersInput: [{ chatId: "chat-1" }],
+  KinChatMembersResult: [
+    {
+      chat: { ...chat, kind: "team_group", title: "Launch", leadAgentId: "agent-1" },
+      members: [{ ...member, displayName: "Priya" }],
+    },
+  ],
+  KinGroupAddMemberInput: [
+    { chatId: "chat-1", principal: { _tag: "agent", agentId: "agent-2" } },
+    { chatId: "chat-1", principal: { _tag: "person", personId: "person-2" } },
+  ],
+  KinGroupRemoveMemberInput: [{ chatId: "chat-1", memberId: "member-2" }],
+  KinGroupSetLeadInput: [{ chatId: "chat-1", agentId: "agent-2" }],
+  KinGroupRenameInput: [{ chatId: "chat-1", title: "Launch week" }],
+  KinGroupDeleteInput: [{ chatId: "chat-1" }],
+  KinGroupDone: [{}],
   KinChatSubscribeInput: [
     { chatId: "chat-1" },
     { chatId: "chat-1", afterSeq: 0 },

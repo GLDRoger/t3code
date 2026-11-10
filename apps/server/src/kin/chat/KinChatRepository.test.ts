@@ -64,6 +64,7 @@ const chat: KinChat = {
   lastMessageAt: null,
   createdAt: timestamp,
   archivedAt: null,
+  leadAgentId: null,
 };
 const owner: KinChatMember = {
   orgId,

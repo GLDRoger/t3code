@@ -96,17 +96,66 @@ export const effectiveLevel = Effect.fn("KinLevels.effectiveLevel")(function* (i
 
 export const lowest = (a: KinLevel, b: KinLevel) => (atLeast(a, b) ? b : a);
 
-/** The chat a due deferral or a passed-on request was first asked in, and the lead asked there. */
+/**
+ * What a lead does for someone who isn't its owner: it talks. Starting work, opening pull
+ * requests and asking for a privileged action stay the owner's to ask for.
+ */
+const TEAMMATE_LEVEL: KinLevel = "L1";
+
+/**
+ * The chat a due deferral or a passed-on request was first asked in, and the lead asked there.
+ * `personId` is someone other than that lead's owner who was part of the asking.
+ */
 export interface KinOrigin {
   readonly agentId: KinAgentId;
   readonly chatId: KinChatId;
+  readonly personId?: KinPersonId | undefined;
 }
 
-/** `origin`'s level for the lead asked there; a lead retired since reads as L0. */
-export const originLevel = (orgId: KinOrgId, origin: KinOrigin) =>
-  effectiveLevel({ orgId, agentId: origin.agentId, chatId: origin.chatId }).pipe(
-    Effect.catchTags({ KinLevelRefused: () => Effect.succeed<KinLevel>("L0") }),
-  );
+/**
+ * `origin`'s level for the lead asked there, and no more than a teammate's when one asked; a
+ * lead retired since reads as L0.
+ */
+export const originLevel = Effect.fn("KinLevels.originLevel")(function* (
+  orgId: KinOrgId,
+  origin: KinOrigin,
+) {
+  const level = yield* effectiveLevel({
+    orgId,
+    agentId: origin.agentId,
+    chatId: origin.chatId,
+  }).pipe(Effect.catchTags({ KinLevelRefused: () => Effect.succeed<KinLevel>("L0") }));
+  return origin.personId === undefined ? level : lowest(level, TEAMMATE_LEVEL);
+});
+
+/**
+ * The people, other than the lead's owner, whose messages, card taps or reactions the wake-up
+ * answers. A message's author is read from its stored row and a reaction's from the event the
+ * server wrote, never from tool input or model text.
+ */
+export const askers = Effect.fn("KinLevels.askers")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+  readonly wakeupId: string;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ personId: KinPersonId }>`
+    SELECT DISTINCT COALESCE(m.author_person_id,
+      CASE WHEN e.tag = 'chat.reaction' THEN json_extract(e.json, '$.provenance.personId') END)
+      AS "personId"
+    FROM kin_events e
+    JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
+    LEFT JOIN kin_messages m ON m.org_id = e.org_id AND e.tag IN ('chat.message', 'widget.action')
+      AND m.message_id = json_extract(e.json, '$.messageId') AND m.author_kind = 'human'
+    WHERE e.org_id = ${input.orgId} AND e.agent_id = ${input.agentId}
+      AND e.wakeup_id = ${input.wakeupId}
+      AND e.tag IN ('chat.message', 'widget.action', 'chat.reaction')
+      AND COALESCE(m.author_person_id,
+        CASE WHEN e.tag = 'chat.reaction' THEN json_extract(e.json, '$.provenance.personId') END)
+        <> a.owner_person_id
+    ORDER BY 1`.pipe(Effect.mapError(toPersistenceSqlError("KinLevels.askers")));
+  return rows.map((row) => row.personId);
+});
 
 /**
  * Whether the lead's owner placed it in `chatId` (`ownerPlacedSql`). False for a retired lead or a
@@ -136,18 +185,41 @@ export const origins = Effect.fn("KinLevels.origins")(function* (input: {
   readonly wakeupId: string;
 }) {
   const sql = yield* SqlClient.SqlClient;
-  return yield* sql<KinOrigin>`
+  const rows = yield* sql<{
+    agentId: KinAgentId;
+    chatId: KinChatId;
+    personId: KinPersonId | null;
+  }>`
     SELECT DISTINCT json_extract(json, '$.origin.agentId') AS "agentId",
-      json_extract(json, '$.origin.chatId') AS "chatId" FROM kin_events
+      json_extract(json, '$.origin.chatId') AS "chatId",
+      json_extract(json, '$.origin.personId') AS "personId" FROM kin_events
     WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND wakeup_id = ${input.wakeupId}
       AND tag IN ('deferral.due', 'chat.message')
       AND json_extract(json, '$.origin.chatId') IS NOT NULL
-    ORDER BY 1, 2`.pipe(Effect.mapError(toPersistenceSqlError("KinLevels.origins")));
+    ORDER BY 1, 2, 3`.pipe(Effect.mapError(toPersistenceSqlError("KinLevels.origins")));
+  return rows.map(({ personId, ...origin }): KinOrigin =>
+    personId === null ? origin : { ...origin, personId },
+  );
+});
+
+/**
+ * Whether only the lead's owner asked for what the wake-up does: no teammate's message woke it,
+ * and none stands behind a due deferral or passed-on request in it.
+ */
+export const ownerAlone = Effect.fn("KinLevels.ownerAlone")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+  readonly wakeupId: string;
+}) {
+  if ((yield* askers(input)).length > 0) return false;
+  return (yield* origins(input)).every((origin) => origin.personId === undefined);
 });
 
 /**
  * The lowest level of the chats the wake-up's due deferrals and passed-on requests were first
- * asked in, or undefined when none was asked outside its owner chat.
+ * asked in, and a teammate's when one of them asked for any of it: a wake-up that batches the
+ * owner's message with a teammate's works as the teammate's. Undefined when the owner alone
+ * asked, in the lead's own chats.
  */
 export const originCap = Effect.fn("KinLevels.originCap")(function* (input: {
   readonly orgId: KinOrgId;
@@ -159,6 +231,8 @@ export const originCap = Effect.fn("KinLevels.originCap")(function* (input: {
     const level = yield* originLevel(input.orgId, origin);
     cap = cap === undefined ? level : lowest(cap, level);
   }
+  if ((yield* askers(input)).length > 0)
+    cap = cap === undefined ? TEAMMATE_LEVEL : lowest(cap, TEAMMATE_LEVEL);
   return cap;
 });
 

@@ -335,6 +335,8 @@ const make = Effect.gen(function* () {
         lead.ownerPersonId === owner.personId &&
         (lead.createdBy === null || lead.createdBy === owner.personId);
       if (ctx.orgId !== owner.orgId || ![config, ...passers].every(ownersOwn)) return listed;
+      // The owner's reach is for what the owner asked; a teammate's message never borrows it.
+      if (!(yield* KinLevels.ownerAlone(ctx))) return listed;
       const asked = [...chats.map((chatId) => ({ agentId: ctx.agentId, chatId })), ...origins];
       for (const { agentId, chatId } of asked)
         if (chatId === null || !(yield* KinLevels.ownerPlaced(ctx.orgId, { agentId, chatId })))

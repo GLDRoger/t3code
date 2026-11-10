@@ -384,6 +384,16 @@ export const KinRoutineCard = Schema.Struct({
 });
 export type KinRoutineCard = typeof KinRoutineCard.Type;
 
+/**
+ * Where a due deferral or passed-on request was first asked: the chat and the lead asked there.
+ * `personId` names someone other than that lead's owner whose message was part of the asking, so
+ * the work that follows is done for them and never with the owner's authority.
+ */
+export const KinEventOrigin = Schema.Struct({
+  agentId: KinAgentId,
+  chatId: KinChatId,
+  personId: Schema.optional(KinPersonId),
+});
 export const KinEvent = Schema.Union([
   Schema.TaggedStruct("chat.message", {
     ...EventBase,
@@ -391,7 +401,7 @@ export const KinEvent = Schema.Union([
     messageId: KinMessageId,
     // Set when another lead passed the request on: the chat it was first asked in and the lead
     // asked there. The server sets it; the wake-up works at no more than that chat's level.
-    origin: Schema.optional(Schema.Struct({ agentId: KinAgentId, chatId: KinChatId })),
+    origin: Schema.optional(KinEventOrigin),
   }),
   Schema.TaggedStruct("widget.action", {
     ...EventBase,
@@ -439,7 +449,7 @@ export const KinEvent = Schema.Union([
     lateByMs: NonNegativeInt,
     // The chat the deferral was asked from, when it isn't the running lead's owner chat. The
     // server derives it from the item's source event; the wake-up works at no more than its level.
-    origin: Schema.optional(Schema.Struct({ agentId: KinAgentId, chatId: KinChatId })),
+    origin: Schema.optional(KinEventOrigin),
   }),
   Schema.TaggedStruct("routine", {
     ...EventBase,

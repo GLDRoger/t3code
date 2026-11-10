@@ -21,6 +21,7 @@ import { KinMemoryRpcs, KIN_MEMORY_RPC_SCOPES } from "./kinMemory.ts";
 import {
   KinChatError,
   KinChatRpcs,
+  KinGroupRpcs,
   KinLeadInterruptInput,
   KinLeadInterruptResult,
   KIN_CHAT_RPC_SCOPES,
@@ -126,6 +127,7 @@ const KinTimeZoneRpcs = [
 ] as const;
 export const KinChatAndBudgetRpcs = [
   ...KinChatRpcs,
+  ...KinGroupRpcs,
   ...KinBudgetRpcs,
   ...KinOrgRpcs,
   ...KinLeadRpcs,
@@ -160,6 +162,13 @@ export const KIN_RPC_SCOPES = {
   "kin.leads.list": AuthKinChatScope,
   // What a lead is for is an owner setting, as creating it is.
   "kin.lead.update": AuthSettingsWriteScope,
+  // Who is in a group decides who its leads listen to: an owner setting, never a teammate's.
+  "kin.groups.create": AuthSettingsWriteScope,
+  "kin.groups.addMember": AuthSettingsWriteScope,
+  "kin.groups.removeMember": AuthSettingsWriteScope,
+  "kin.groups.setLead": AuthSettingsWriteScope,
+  "kin.groups.rename": AuthSettingsWriteScope,
+  "kin.groups.delete": AuthSettingsWriteScope,
   "kin.triggers.getTimeZone": AuthOrchestrationReadScope,
   "kin.triggers.setTimeZone": AuthSettingsWriteScope,
   "kin.webhooks.github.setup": AuthSettingsWriteScope,
@@ -192,6 +201,13 @@ export const KIN_RPC_AGGREGATES = {
   "kin.chats.subscribe": "kin-chat",
   "kin.chats.createDirect": "kin-chat",
   "kin.chats.mute": "kin-chat",
+  "kin.chat.members": "kin-chat",
+  "kin.groups.create": "kin-chat",
+  "kin.groups.addMember": "kin-chat",
+  "kin.groups.removeMember": "kin-chat",
+  "kin.groups.setLead": "kin-chat",
+  "kin.groups.rename": "kin-chat",
+  "kin.groups.delete": "kin-chat",
   "kin.chat.subscribe": "kin-chat",
   "kin.chat.history": "kin-chat",
   "kin.messages.send": "kin-chat",

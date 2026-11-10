@@ -24,6 +24,7 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { forkParked } from "../../serverActivation.ts";
 import { KinChatHub, type KinChatHubEvent } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
+import { speakerOrder } from "../floor/KinFloor.ts";
 import { KinPresence, queueLabel, syncQueued } from "../reply/KinPresence.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 
@@ -38,8 +39,9 @@ const CATCH_UP_LIMIT_PER_ORG = 200;
 
 /**
  * Turns committed human chat posts and widget taps into `chat.message` and `widget.action`
- * events for the lead the floor manager would wake: mentioned leads, else the chat's lead.
- * Direct chats only: a lead cannot reply in a group until CHAT-11 delivers group grants.
+ * events for the leads the floor grants a reply: the leads a message mentions, else the chat's
+ * lead. Only a person's message wakes anyone, so two leads never set each other off, and each
+ * message wakes a lead at most once (its event id is the message and the lead).
  */
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -66,11 +68,12 @@ const make = Effect.gen(function* () {
       const leads = yield* sql<{ agentId: string; memberId: string }>`
         SELECT l.agent_id AS "agentId", m.member_id AS "memberId" FROM kin_leads l
         JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id AND a.retired_at IS NULL
-        JOIN kin_chats c ON c.org_id = l.org_id AND c.chat_id = ${message.chatId} AND c.kind = 'direct'
+        JOIN kin_chats c ON c.org_id = l.org_id AND c.chat_id = ${message.chatId}
+          AND c.archived_at IS NULL
         JOIN kin_chat_members m ON m.org_id = l.org_id AND m.chat_id = c.chat_id
           AND m.principal_kind = 'agent' AND m.agent_id = l.agent_id AND m.left_at IS NULL
         WHERE l.org_id = ${message.orgId}
-        ORDER BY CASE a.role WHEN 'lead' THEN 0 ELSE 1 END, m.joined_at, l.agent_id`.pipe(
+        ORDER BY ${speakerOrder(sql)}`.pipe(
         Effect.mapError(toPersistenceSqlError("KinChatWake.leads")),
       );
       const mentioned = leads.filter((lead) =>
@@ -195,10 +198,18 @@ const make = Effect.gen(function* () {
       JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id AND a.retired_at IS NULL
       JOIN kin_chat_members am ON am.org_id = l.org_id AND am.principal_kind = 'agent'
         AND am.agent_id = l.agent_id AND am.left_at IS NULL
-      JOIN kin_chats c ON c.org_id = am.org_id AND c.chat_id = am.chat_id AND c.kind = 'direct'
+      JOIN kin_chats c ON c.org_id = am.org_id AND c.chat_id = am.chat_id
+        AND c.archived_at IS NULL
       JOIN kin_messages m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
       WHERE l.org_id = ${orgId}
         AND m.author_kind = 'human' AND m.status = 'posted' AND m.kind IN ('text', 'widget_action')
+        -- In a group, only what this lead would answer: it is named, or nobody is and it leads.
+        AND (c.kind = 'direct'
+          OR EXISTS (SELECT 1 FROM json_each(m.mentions_json) j WHERE j.value = am.member_id)
+          OR (COALESCE(c.lead_agent_id, l.agent_id) = l.agent_id AND NOT EXISTS (
+            SELECT 1 FROM json_each(m.mentions_json) j
+            JOIN kin_chat_members x ON x.org_id = m.org_id AND x.chat_id = m.chat_id
+              AND x.member_id = j.value AND x.principal_kind = 'agent' AND x.left_at IS NULL)))
         AND m.created_at > ${since}
         AND m.seq > COALESCE((SELECT MAX(x.seq) FROM kin_messages x
           WHERE x.org_id = m.org_id AND x.chat_id = m.chat_id AND x.author_kind = 'agent'
