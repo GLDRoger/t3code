@@ -13,10 +13,6 @@ import { uuidv4 } from "../../../lib/uuid";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
 import {
-  KIN_REACTION_HINT,
-  KIN_REACTION_HINT_LABEL,
-} from "@t3tools/client-runtime/kin/kinReactions";
-import {
   KIN_CHOICE_EXPIRED_TEXT,
   kinChoiceAccessibilityLabel,
   kinChoiceActInput,
@@ -153,15 +149,6 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
               />
             ))}
           </View>
-          {choice.takesReaction ? (
-            <Text
-              textRole="caption"
-              className="text-foreground-muted"
-              accessibilityLabel={KIN_REACTION_HINT_LABEL}
-            >
-              {KIN_REACTION_HINT}
-            </Text>
-          ) : null}
         </>
       )}
     </View>

@@ -36,10 +36,6 @@ import {
   type KinMemoryChangeItemView,
   type KinMemoryChangesCardView,
 } from "@t3tools/client-runtime/kin/kinMemoryChangesPresentation";
-import {
-  KIN_REACTION_HINT,
-  KIN_REACTION_HINT_LABEL,
-} from "@t3tools/client-runtime/kin/kinReactions";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, KinPersonId, KinWidget } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
@@ -321,11 +317,6 @@ function KinChoiceCard(props: {
               </Button>
             ))}
           </div>
-          {choice.takesReaction ? (
-            <p className="text-xs text-muted-foreground" aria-label={KIN_REACTION_HINT_LABEL}>
-              {KIN_REACTION_HINT}
-            </p>
-          ) : null}
         </>
       )}
     </CardFrame>

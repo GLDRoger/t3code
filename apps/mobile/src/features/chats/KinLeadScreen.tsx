@@ -1,11 +1,17 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { EnvironmentId, KinOrgId, type KinLeadProfile } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  KinOrgId,
+  type KinChatSummary,
+  type KinLeadProfile,
+} from "@t3tools/contracts";
 import {
   kinDomainLabel,
   kinLeadTrackingDetail,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
-import { kinAgentAvatar } from "@t3tools/client-runtime/kin/kinScreenState";
+import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
+import { kinAgentAvatar, kinChatMuted } from "@t3tools/client-runtime/kin/kinScreenState";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
@@ -18,11 +24,14 @@ import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
+import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { appAtomRegistry } from "../../state/atom-registry";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { KinAvatar } from "./components/KinAvatar";
 import { kinClient } from "./state/kinClient";
+import { useKinHostAt } from "./state/useKinHost";
 
 export type KinLeadParams = {
   readonly environmentId: string;
@@ -96,7 +105,10 @@ function KinLeadBody(props: {
           contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
         >
           {lead !== null ? (
-            <KinLeadProfileView lead={lead} />
+            <>
+              <KinLeadProfileView lead={lead} />
+              <KinLeadNotifications environmentId={environmentId} lead={lead} />
+            </>
           ) : AsyncResult.isInitial(result) ? (
             <View
               className="items-center py-12"
@@ -132,6 +144,43 @@ function KinLeadBody(props: {
   );
 }
 
+/** Read at render: a mute only ends when its time passes, and a re-render reads it again. */
+const mutedNow = (chat: KinChatSummary, personId: string) =>
+  kinChatMuted(chat, new Set([personId]), Date.now());
+
+/** The viewer's mute for their chat with this lead; nothing until the chat and viewer are known. */
+function KinLeadNotifications(props: {
+  readonly environmentId: EnvironmentId;
+  readonly lead: KinLeadProfile;
+}) {
+  const { environmentId, lead } = props;
+  const host = useKinHostAt(environmentId);
+  const inbox = useAtomValue(kinClient.inbox({ environmentId, input: {} }));
+  const canMute = useAtomValue(kinClient.mute.permissionAtom(environmentId));
+  const runMute = useAtomCommand(kinClient.mute, "Muting this chat");
+  const { personId } = kinFeedViewer(
+    host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs : null,
+    lead.orgId,
+  );
+  const chat =
+    inbox._tag === "Success"
+      ? inbox.value.value.chats.find((held) => held.chatId === lead.ownerChatId)
+      : undefined;
+  if (!canMute || chat === undefined || personId === null) return null;
+  const muted = mutedNow(chat, personId);
+  return (
+    <ListSection title="Notifications">
+      <ListToggleRow
+        label="Mute notifications"
+        value={muted}
+        onValueChange={(next) =>
+          void runMute({ environmentId, input: { chatId: chat.chatId, muted: next } })
+        }
+      />
+    </ListSection>
+  );
+}
+
 /** Also drawn from fixtures in the component catalog. */
 export function KinLeadProfileView({ lead }: { readonly lead: KinLeadProfile }) {
   const charter = lead.charter.trim();
@@ -144,11 +193,7 @@ export function KinLeadProfileView({ lead }: { readonly lead: KinLeadProfile }) 
   return (
     <>
       <View className="items-center gap-3 pt-2">
-        <KinAvatar
-          avatar={kinAgentAvatar(lead.agentId)}
-          size="large"
-          status={lead.working ? "working" : null}
-        />
+        <KinAvatar avatar={kinAgentAvatar(lead.agentId)} size="large" />
         <View className="items-center gap-1">
           <Text textRole="title" className="text-center font-t3-bold text-foreground">
             {lead.name}
