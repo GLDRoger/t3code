@@ -30,6 +30,7 @@ export type DeliveryKind = "reminder" | "routine" | "scheduled_task";
 /**
  * What the server does once the lead's wake-up for `eventId` ends. `reminder` and `routine`
  * attach a new card to the lead's message; `scheduled_task` records the run on its standing card.
+ * A routine or scheduled run whose finished wake-up wrote nothing had nothing to report: no message.
  */
 export interface Delivery {
   readonly orgId: KinOrgId;
@@ -80,6 +81,7 @@ export const DELIVERY_DEADLINE_MS: Record<DeliveryKind, number> = {
   scheduled_task: 30 * 60_000,
 };
 const EXCERPT_MAX = 200;
+const NOTHING_TO_REPORT = "nothing to report.";
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
@@ -369,7 +371,20 @@ const make = Effect.gen(function* () {
             AND author_agent_id = ${row.agentId} AND status = 'posted' AND kind = 'text'
             AND widget_id IS NULL AND created_at >= ${from} AND created_at <= ${until}
           ORDER BY seq DESC LIMIT 1`;
-        if (message === undefined) return yield* fallback;
+        if (message === undefined) {
+          // A reminder is owed; a routine or scheduled run that found nothing to say posts nothing.
+          if (row.kind === "reminder") return yield* fallback;
+          if (row.kind === "scheduled_task") {
+            const state = yield* decodeScheduledCard(delivery.widget.state);
+            yield* settleRun(
+              orgId,
+              delivery.widget.widgetId,
+              { at: state.lastRun?.at ?? iso(now), status: "skipped", note: NOTHING_TO_REPORT },
+              now,
+            );
+          }
+          return yield* finish("delivered", null);
+        }
         const messageId = KinMessageId.make(message.messageId);
         if (row.kind === "scheduled_task") {
           const state = yield* decodeScheduledCard(delivery.widget.state);

@@ -107,6 +107,25 @@ it.effect("a scheduled task wakes the lead at its time and its card records the 
       messageId: KinMessageId.make(messageId!),
     });
     assert.equal(after.nextRunAt, "2026-11-11T02:30:00.000Z");
+
+    // The next run finds nothing worth telling: the lead ends its turn without a message.
+    yield* tick(wednesday);
+    const [, quiet] = yield* runs();
+    yield* leadWakeup({ orgId, eventId: quiet!.eventId, chatId: "chat-a" });
+    yield* (yield* LeadDelivery.KinLeadDelivery).settle(orgId);
+    assert.deepEqual((yield* card()).state.lastRun, {
+      at: "2026-11-11T02:30:00.000Z",
+      status: "skipped",
+      note: "nothing to report.",
+    });
+    const sql = yield* SqlClient.SqlClient;
+    const said = yield* sql<{ body: string }>`SELECT body FROM kin_messages
+      WHERE org_id = ${orgId} AND chat_id = 'chat-a' AND created_at > ${after.lastRun!.at}
+      ORDER BY seq`;
+    assert.deepStrictEqual(
+      said.map((row) => row.body),
+      ["Three PRs are open on acme/api. #41 waits on Bob's review."],
+    );
   }).pipe(Effect.provide(layer)),
 );
 
