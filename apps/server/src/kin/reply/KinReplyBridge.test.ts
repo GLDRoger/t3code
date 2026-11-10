@@ -390,6 +390,106 @@ it.effect("holds a claimed wake-up's line from its claim, and drops it if it nev
   }).pipe(Effect.provide(layer)),
 );
 
+const thought = (id: string, ordinal: number, runId: RunId): OrchestrationV2TurnItem => ({
+  ...base(id, ordinal, runId),
+  type: "reasoning",
+  text: "Thinking",
+  streaming: false,
+});
+const githubAnswer =
+  "GitHub access works now: GLDRoger/t3code has one open PR (#87, the live status change), its checks are green and it waits on one review. The last Actions run on kin passed. I cancelled the old reminder to retry GitHub, since you no longer need it. Tell me if you want me to watch #87.";
+const secondAnswer = `GitHub works now. I can read GLDRoger/t3code myself: ${"one open PR, green checks, ".repeat(20)}`;
+
+it.effect.each([
+  {
+    name: "the reply, kin_end, then the same answer again",
+    items: (runId: RunId) => [
+      tool("t1", 1, "mcp__kin__kin_github_repos", runId),
+      thought("r1", 2, runId),
+      tool("t2", 3, "mcp__kin__kin_github_prs", runId),
+      thought("r2", 4, runId),
+      tool("t3", 5, "mcp__kin__kin_cancel", runId),
+      tool("t4", 6, "mcp__kin__kin_github_runs", runId),
+      thought("r3", 7, runId),
+      tool("t5", 8, "mcp__kin__kin_journal", runId),
+      text("a", 9, githubAnswer, runId),
+      tool("end", 10, "mcp__kin__kin_end", runId),
+      text("b", 11, secondAnswer, runId),
+    ],
+    expected: [githubAnswer],
+  },
+  {
+    name: "a short reply right before kin_end is the reply, not a status note",
+    items: (runId: RunId) => [
+      text("a", 1, "Done: deferred to Fri 9:00.", runId),
+      tool("end", 2, "mcp__kin__kin_end", runId),
+      text("b", 3, secondAnswer, runId),
+    ],
+    expected: ["Done: deferred to Fri 9:00."],
+  },
+  {
+    name: "kin_end with nothing posted, then the reply",
+    items: (runId: RunId) => [
+      tool("t1", 1, "mcp__kin__kin_journal", runId),
+      tool("end", 2, "mcp__kin__kin_end", runId),
+      text("a", 3, "CI is green on main.", runId),
+    ],
+    expected: ["CI is green on main."],
+  },
+])("a lead replies once: nothing posts after a reply and kin_end ($name)", ({ items, expected }) =>
+  Effect.gen(function* () {
+    const { fake, runId, complete, posted } = yield* setup({ ask: "Try now" });
+    fake.items = items(runId);
+    yield* complete;
+    assert.deepStrictEqual(
+      (yield* posted).map((row) => row.body),
+      expected,
+    );
+    assert.strictEqual(fake.rescues, 0);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("never streams a message the lead starts after its reply and kin_end", () =>
+  Effect.gen(function* () {
+    const { fake, runId, complete, posted, services, owner, chatId } = yield* setup({
+      ask: "Try now",
+    });
+    const all = yield* Context.get(services, KinChatHub).subscribeAll;
+    const answer = text("a", 1, githubAnswer, runId);
+    const end = tool("end", 2, "mcp__kin__kin_end", runId);
+    const again = text("b", 3, secondAnswer, runId);
+    const seen = yield* all.pipe(
+      Stream.filter((event) => event.type === "presence.updated" && event.presence !== null),
+      Stream.takeUntil(
+        (event) =>
+          event.type === "presence.updated" && event.presence?.label === "Setting a reminder",
+      ),
+      Stream.runCollect,
+      Effect.forkScoped,
+    );
+    // The running call after it is the sync point: by then the streamed text was handled.
+    const call = { ...tool("t", 4, "mcp__kin__kin_defer", runId), status: "running" as const };
+    for (const item of [answer, end, { ...again, streaming: true }, call])
+      yield* Queue.offer(fake.live, itemEvent(item));
+    const events = yield* Fiber.join(seen);
+    assert.deepStrictEqual(
+      Context.get(services, KinPresence).snapshot(owner.orgId, chatId).drafts,
+      [],
+    );
+    assert.isFalse(
+      events.some(
+        (event) => event.type === "presence.updated" && event.presence?.state === "writing",
+      ),
+    );
+    fake.items = [answer, end, again];
+    yield* complete;
+    assert.deepStrictEqual(
+      (yield* posted).map((row) => row.body),
+      [githubAnswer],
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect(
   "leaves no presence after an owner's reaction is queued during the wake-up and withdrawn",
   () =>
