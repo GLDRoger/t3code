@@ -12,6 +12,7 @@ Set by the owner on 10 Nov 2026. Read this before planning, appraising, or cutti
   - groups of the owner and several agents;
   - groups of the owner, other people, and several agents.
 - **Teams of people and agents.** Team members join the same group chats. Several agents on different models work in the open without drowning out the people. The groups, levels, floor, and organizations in [DESIGN.md](DESIGN.md) all serve this goal. Don't cut them as "not needed for one user".
+- **Members bring their own leads.** "Teammate" and "lead" mean the same thing. Any member can create and customise a lead through a creation form: its name, domain, charter and model. It runs on the main host. Its authority comes from the member who made it, never from the group, and never more than that member has. Self-hosted agents, running on a member's own machine, are deferred.
 - **Work goes to T3 threads.** Coding work runs in Claude Code and Codex threads. The lead decides, remembers, and follows up, and the workers do the work.
 - **Authority never passes through a model.** Only the owner approves privileged actions, by signing on a device. Nothing a group member or an agent writes becomes an approval.
 
