@@ -615,6 +615,10 @@
       "types": "./src/kin/kinMemoryChangesPresentation.ts",
       "default": "./src/kin/kinMemoryChangesPresentation.ts"
     },
+    "./kin/kinApprovalPresentation": {
+      "types": "./src/kin/kinApprovalPresentation.ts",
+      "default": "./src/kin/kinApprovalPresentation.ts"
+    },
     "./kin/kinLevelsPresentation": {
       "types": "./src/kin/kinLevelsPresentation.ts",
       "default": "./src/kin/kinLevelsPresentation.ts"

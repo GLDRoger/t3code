@@ -10,6 +10,7 @@ import {
   KIN_UNKNOWN_CARD_TEXT,
   kinCardView,
 } from "@t3tools/client-runtime/kin/kinCardPresentation";
+import { KinApprovalCard } from "./KinApprovalCard";
 import { KinChoiceCard } from "./KinChoiceCard";
 import { KinDeferralCard } from "./KinDeferralCard";
 import { KinDigestCard } from "./KinDigestCard";
@@ -54,6 +55,14 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
       return <KinPromotionCard promotion={view.promotion} environmentId={props.environmentId} />;
     case "memory_changes":
       return <KinMemoryChangesCard changes={view.changes} environmentId={props.environmentId} />;
+    case "approval":
+      return (
+        <KinApprovalCard
+          environmentId={props.environmentId}
+          actionId={view.approval.actionId}
+          revision={view.approval.revision}
+        />
+      );
     case "missing":
     case "unknown":
       return (

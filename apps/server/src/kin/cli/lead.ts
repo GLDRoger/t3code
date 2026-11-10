@@ -26,6 +26,7 @@ import * as ServerConfig from "../../config.ts";
 import * as EnvironmentAuth from "../auth/EnvironmentAuthRuntime.ts";
 import * as KinEnabled from "../KinEnabled.ts";
 import type * as Provision from "../lead/KinLeadProvision.ts";
+import { approvalsCommand } from "./approvals.ts";
 
 export class KinLeadCliError extends Schema.TaggedError<KinLeadCliError>()("KinLeadCliError", {
   message: Schema.String,
@@ -322,5 +323,6 @@ export const kinCommand = Command.make("kin").pipe(
         charterCommand,
       ]),
     ),
+    approvalsCommand,
   ]),
 );

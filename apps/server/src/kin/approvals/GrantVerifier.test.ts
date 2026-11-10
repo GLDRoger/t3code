@@ -33,6 +33,7 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import { layerKinAuthTest } from "../auth/ProofKeySessions.testkit.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { ApproverKeys, layer as approverKeysLayer, type KinKeyCaller } from "./ApproverKeys.ts";
+import { KinHostKeyCeremony, layer as hostCeremonyLayer } from "./HostKeyCeremony.ts";
 import { KinAudit, make as makeAudit, type KinAuditAppendInput } from "./Audit.ts";
 import { KinAttestationTrust } from "./attestation/AttestationTrust.ts";
 import { androidChain, makeTrustFixture, newKey } from "./attestation/testFixtures.ts";
@@ -69,14 +70,9 @@ const decodePersonId = Schema.decodeSync(KinPersonId);
 const callerFor = (id: string, personId: KinPersonId, subject = "phone"): KinKeyCaller => ({
   session: { sessionId: sessionId(id), subject, method: "bearer-access-token", scopes: [] },
   people: [{ _tag: "person", orgId, personId }],
-  connection: Option.some({
-    remoteAddress: subject === "desktop-bootstrap" ? "127.0.0.1" : "192.168.1.20",
-    headers: {},
-  }),
 });
 const ownerPhone = callerFor("sess-phone", owner);
 const ownerLaptop = callerFor("sess-laptop", owner);
-const desktop = callerFor("sess-desktop", owner, "desktop-bootstrap");
 const memberPhone = callerFor("sess-member", member);
 const nobody: KinKeyCaller = { ...callerFor("sess-nobody", owner), people: [] };
 
@@ -148,7 +144,7 @@ function harness() {
   const trust = Layer.succeed(KinAttestationTrust, { load: () => Effect.succeed(fixture.trust) });
   const on = <A, E, R>(database: Layer.Layer<A, E, R>) =>
     grantVerifierLayer.pipe(
-      Layer.provideMerge(approverKeysLayer),
+      Layer.provideMerge(Layer.merge(approverKeysLayer, hostCeremonyLayer)),
       Layer.provideMerge(Layer.merge(pendingActionsLayer, ledgerLayer)),
       Layer.provide(Layer.mergeAll(trust, roles, live, grantAuditLayer, KeySeal.layerTest())),
       Layer.provideMerge(recordingAudit),
@@ -169,7 +165,6 @@ const seed = Effect.gen(function* () {
     ["sess-phone", "phone", "192.168.1.20"],
     ["sess-laptop", "phone", "192.168.1.21"],
     ["sess-member", "phone", "192.168.1.30"],
-    ["sess-desktop", "desktop-bootstrap", "127.0.0.1"],
   ] as const) {
     yield* sql`INSERT INTO auth_sessions (session_id, subject, scopes, method, client_ip_address,
         issued_at, expires_at)
@@ -179,6 +174,7 @@ const seed = Effect.gen(function* () {
   return {
     sql,
     keys: yield* ApproverKeys,
+    ceremony: yield* KinHostKeyCeremony,
     actions: { ...(yield* KinPendingActions), ...(yield* KinExecutionLedger) },
     grants: yield* GrantVerifier,
   };
@@ -202,14 +198,16 @@ const register = (keys: ApproverKeys["Service"], from: KinKeyCaller) =>
     return { ...registered, privateKey: chain.approvalKey.privateKey };
   });
 
-/** The owner's first key, confirmed on the desktop; the member's activated as a later key. */
+/** The owner's first key, confirmed on the host; the member's activated as a later key. */
 const enrol = Effect.gen(function* () {
   const world = yield* seed;
   const ownerKey = yield* register(world.keys, ownerPhone);
-  yield* world.keys.confirmKey(desktop, {
+  yield* world.ceremony.confirm({
     orgId,
     thumbprint: ownerKey.key.thumbprint,
+    sessionId: ownerPhone.session.sessionId,
     code: ownerKey.code,
+    recover: false,
   });
   const memberKey = yield* register(world.keys, memberPhone);
   assert.isTrue(yield* world.keys.activateByGrant(memberKey.key));
@@ -221,6 +219,7 @@ const requestMerge = (
   actions: KinPendingActions["Service"],
   number: number,
   github: Map<number, KinResolvedTarget | "down">,
+  afterNonOwnerMessage?: { readonly humanId: string; readonly messageId: string },
 ) =>
   Effect.gen(function* () {
     const target = pr(number);
@@ -239,6 +238,7 @@ const requestMerge = (
         startedByRole: "none",
         chain: [],
         ceilingBelowOwner: true,
+        ...(afterNonOwnerMessage === undefined ? {} : { afterNonOwnerMessage }),
       },
       source: decodeEventId(`evt-${number}`),
     } as unknown as KinPendingActionCreateInput;
@@ -413,6 +413,142 @@ describe("GrantVerifier", () => {
         privateKey: stranger.privateKey,
         kid,
       });
+      assert.strictEqual(
+        reasonOf(yield* Effect.exit(grants.submitGrant(ownerPhone, { compact }))),
+        "unknown_key",
+      );
+      assert.strictEqual((yield* stateOf(actions, action)).state, "awaiting_approval");
+    }).pipe(Effect.provide(h.layer));
+  });
+
+  it.effect("non-owners get the redacted card and no challenge", () => {
+    const h = harness();
+    return Effect.gen(function* () {
+      const { grants, actions, sql } = yield* enrol;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES (${owner}, 'org_01', 'nishchay', 'Nishchay', '2026-11-07T00:00:00.000Z'),
+          (${member}, 'org_01', 'priya', 'Priya', '2026-11-07T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id,
+          created_at)
+        VALUES ('lead', 'org_01', 'Tech lead', 'lead', ${owner}, '2026-11-07T00:00:00.000Z')`;
+      const action = yield* requestMerge(actions, 212, h.github, {
+        humanId: member,
+        messageId: "msg-priya",
+      });
+      assert.deepStrictEqual(yield* grants.view(ownerPhone, { actionId: action.id }), {
+        _tag: "full",
+        action,
+        canApprove: true,
+        leadName: "Tech lead",
+        afterNonOwnerName: "Priya",
+      });
+      assert.deepStrictEqual(yield* grants.view(memberPhone, { actionId: action.id }), {
+        _tag: "redacted",
+        actionId: action.id,
+        orgId,
+        kind: "merge_pull_request",
+        repo: "GLDRoger/t3code",
+        number: 212,
+        title: "Fix",
+        state: "awaiting_approval",
+        waitingOn: "Nishchay",
+        canApprove: false,
+      });
+      assert.strictEqual(
+        reasonOf(yield* Effect.exit(grants.challenge(memberPhone, { actionId: action.id }))),
+        "not_owner",
+      );
+      assert.strictEqual(
+        reasonOf(yield* Effect.exit(grants.view(nobody, { actionId: action.id }))),
+        "not_found",
+      );
+    }).pipe(Effect.provide(h.layer));
+  });
+
+  it.effect("a new phone's card claims hardware only while its pending seal verifies", () => {
+    const h = harness();
+    return Effect.gen(function* () {
+      const world = yield* seed;
+      const first = yield* register(world.keys, ownerPhone);
+      yield* world.ceremony.confirm({
+        orgId,
+        thumbprint: first.key.thumbprint,
+        sessionId: ownerPhone.session.sessionId,
+        code: first.code,
+        recover: false,
+      });
+      const second = yield* register(world.keys, ownerLaptop);
+      const [enrolment] = (yield* world.keys.listKeys(ownerPhone, { orgId })).enrolments ?? [];
+      const input = { actionId: enrolment!.actionId };
+      assert.deepInclude(yield* world.grants.view(ownerPhone, input), {
+        _tag: "full",
+        keyDeviceLabel: "Pixel 9",
+        keyHardware: "strongbox",
+      });
+      const challenge = yield* world.grants.challenge(ownerPhone, input);
+      assert.deepInclude(challenge.payload.target, { thumbprint: second.key.thumbprint });
+      // The same row with its pending seal gone, as a SQLite write would leave it.
+      yield* world.sql`UPDATE kin_approver_keys SET pending_seal = NULL
+        WHERE thumbprint = ${second.key.thumbprint}`;
+      const view = yield* world.grants.view(ownerPhone, input);
+      assert.strictEqual(view._tag, "full");
+      assert.notProperty(view, "keyHardware");
+      assert.notProperty(view, "keyDeviceLabel");
+      assert.strictEqual(
+        reasonOf(yield* Effect.exit(world.grants.challenge(ownerPhone, input))),
+        "invalid_state",
+      );
+    }).pipe(Effect.provide(h.layer));
+  });
+
+  it.effect("a phone with no active approver key gets no challenge and can't approve", () => {
+    const h = harness();
+    return Effect.gen(function* () {
+      const { keys, actions, grants } = yield* seed;
+      const action = yield* requestMerge(actions, 212, h.github);
+      assert.strictEqual(
+        reasonOf(yield* Effect.exit(grants.challenge(ownerPhone, { actionId: action.id }))),
+        "unknown_key",
+      );
+      // An iPhone simulator has no App Attest: its key registers unattested and stays pending.
+      const simulator = newKey();
+      const jwk = simulator.publicKey.export({ format: "jwk" });
+      const publicJwk = { kty: "EC" as const, crv: "P-256" as const, x: jwk.x!, y: jwk.y! };
+      const { challenge } = yield* keys.keyChallenge(ownerPhone);
+      const { key } = yield* keys.registerKey(ownerPhone, {
+        orgId,
+        publicJwk,
+        platform: "ios",
+        challenge,
+        deviceLabel: "iPhone simulator",
+      });
+      assert.deepInclude(key, { state: "pending", attested: false, hardware: "software" });
+      assert.strictEqual(
+        reasonOf(yield* Effect.exit(grants.challenge(ownerPhone, { actionId: action.id }))),
+        "unknown_key",
+      );
+      const compact = signGrant(
+        simulator.privateKey,
+        { typ: "kin-grant+jws", alg: "ES256", kid: key.thumbprint },
+        {
+          v: 1,
+          orgId,
+          actionId: action.id,
+          revision: action.revision,
+          nonce: action.nonce,
+          kind: action.kind,
+          targetDigest: action.targetDigest,
+          target: action.target,
+          headSha: sha("a"),
+          base: "main",
+          mergeMethod: "squash",
+          approver: { humanId: owner, kid: key.thumbprint },
+          decision: "approve",
+          jti: freshJti(),
+          iat: NOW_S,
+          exp: NOW_S + 600,
+        },
+      );
       assert.strictEqual(
         reasonOf(yield* Effect.exit(grants.submitGrant(ownerPhone, { compact }))),
         "unknown_key",
@@ -1132,7 +1268,8 @@ describe("GrantVerifier", () => {
         public_jwk_json: string;
         human_id: string;
         hardware: string;
-      }>`SELECT public_jwk_json, human_id, hardware
+        created_at: number;
+      }>`SELECT public_jwk_json, human_id, hardware, created_at
         FROM kin_approver_keys WHERE org_id = ${orgId} AND thumbprint = ${ownerKey.key.thumbprint}`;
       const seal = (yield* KeySeal.KinKeySeal.pipe(Effect.provide(KeySeal.layerTest()))).seal({
         orgId: "org_02",
@@ -1140,6 +1277,7 @@ describe("GrantVerifier", () => {
         publicJwkJson: copied!.public_jwk_json,
         humanId: copied!.human_id,
         hardware: copied!.hardware,
+        createdAt: copied!.created_at,
       });
       yield* sql`INSERT INTO kin_approver_keys (thumbprint, org_id, public_jwk_json, human_id,
           device_label, platform, hardware, attested, state, created_at, confirmed_at, seal)

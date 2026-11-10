@@ -120,8 +120,9 @@ export const make = Effect.gen(function* () {
         public_jwk_json: string;
         human_id: string;
         hardware: string;
+        created_at: number;
         seal: string | null;
-      }>`SELECT public_jwk_json, human_id, hardware, seal FROM kin_approver_keys
+      }>`SELECT public_jwk_json, human_id, hardware, created_at, seal FROM kin_approver_keys
         WHERE org_id = ${action.orgId} AND thumbprint = ${grant.keyThumbprint}
         ORDER BY thumbprint LIMIT 1`;
       if (key === undefined || key.human_id !== grant.approverHumanId) return false;
@@ -132,6 +133,7 @@ export const make = Effect.gen(function* () {
           publicJwkJson: key.public_jwk_json,
           humanId: key.human_id,
           hardware: key.hardware,
+          createdAt: key.created_at,
         },
         key.seal,
       );

@@ -28,7 +28,8 @@ export const makeRegisterApproverKeyHandler = Effect.gen(function* () {
   const precheck = Effect.fn("registerApproverKey.precheck")(function* (action: KinPendingAction) {
     const { target, key } = yield* pendingKey(action);
     if (key.state !== "pending") return yield* refuse("The key isn't waiting to be added.");
-    // The card showed the target; the stored key must still be what it described.
+    // The card showed the target; the stored key must still be what it described, and `attested`
+    // holds only while registration's pending seal verifies (spec section 4).
     if (!key.attested || key.hardware !== target.hardware)
       return yield* refuse("The key doesn't match what was approved.");
   });
@@ -55,10 +56,10 @@ export const makeRegisterApproverKeyHandler = Effect.gen(function* () {
     return key.state === "active" ? ("done" as const) : ("not_done" as const);
   });
 
-  // Gated like the GitHub kinds (spec section 12).
+  // No GitHub write, like set_level: the hygiene check guards GitHub credentials, not keys.
   return {
     kind: "register_approver_key" as const,
-    credentialCheck: true,
+    credentialCheck: false,
     precheck,
     run,
     reconcile,
