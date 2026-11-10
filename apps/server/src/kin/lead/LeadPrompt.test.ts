@@ -979,6 +979,29 @@ it.effect(
       expect(feedback.split("\n\n")[0]).toBe(
         `Since your last turn the owner reacted ❤️ to: "Release notes are posted. ${"x".repeat(54)}…"`,
       );
-      expect(built).toContain("didn't land. Ask in one short line what was wrong");
+      expect(built).toContain(
+        `Owner reacted 👎 to your message "Here is the plan for today." (a reaction, not text). On a yes/no question or offer it means no. Otherwise your message didn't land`,
+      );
+      const thumbsUp = yield* prompt.build({
+        ...input,
+        events: [
+          decodeEvent({
+            _tag: "chat.reaction",
+            orgId,
+            agentId,
+            chatId,
+            messageId: "seen-before",
+            emoji: "👍",
+            eventId: "event-seen-before",
+            receivedAt: timestamp,
+            dedupeKey: null,
+            provenance: { _tag: "system" },
+          }),
+        ],
+      });
+      expect(thumbsUp).toContain(
+        `Owner reacted 👍 to your message "CI is green." (a reaction, not text). On an offer or proposal it means go ahead`,
+      );
+      expect(thumbsUp).toContain("write exactly NO_REPLY");
     }).pipe(Effect.provide(layer)),
 );

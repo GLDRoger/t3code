@@ -173,6 +173,7 @@ const setup = Effect.fn("test.setup")(function* (input: {
   readonly level?: "L0" | "L1";
   readonly ask?: string;
   readonly lane?: "direct" | "group";
+  readonly reaction?: "👍";
 }) {
   const kin = yield* Kin.KinServer;
   const services = Option.getOrThrow(kin.services);
@@ -212,6 +213,7 @@ const setup = Effect.fn("test.setup")(function* (input: {
       agentId,
       threadId,
       ...(message === undefined ? {} : { message }),
+      ...(input.reaction === undefined ? {} : { reaction: input.reaction }),
     }),
   );
   const [row] = yield* sql<{ runId: string; startedAt: number }>`
@@ -594,24 +596,32 @@ it.effect("bounds one wake-up to eight messages in a chat, kin_chat_post include
 );
 
 it.effect.each([
-  { rescue: [], expected: ["system:Ada didn't reply."] },
+  { rescue: [], rescues: 1, expected: ["system:Ada didn't reply."] },
   {
     rescue: ["Sorry, here it is: the deploy is done."],
+    rescues: 1,
     expected: ["agent:Sorry, here it is: the deploy is done."],
   },
-])("rescues a run that owed a reply once, then says so (%#)", ({ rescue, expected }) =>
-  Effect.gen(function* () {
-    const { fake, runId, complete, posted } = yield* setup({ ask: "Did the deploy finish?" });
-    // NO_REPLY can't answer an owner's message.
-    fake.items = [text("a", 1, "NO_REPLY", runId)];
-    fake.rescueItems = rescue.map((body, n) => text(`r${n}`, 10 + n, body, rescueRunId));
-    yield* complete;
-    assert.strictEqual(fake.rescues, 1);
-    assert.deepStrictEqual(
-      (yield* posted).map((row) => `${row.authorKind}:${row.body}`),
-      expected,
-    );
-  }).pipe(Effect.provide(layer)),
+  // A 👍 that only acknowledged a statement may end its turn silently.
+  { reaction: "👍" as const, rescue: [], rescues: 0, expected: [] },
+])(
+  "rescues a run that owed a reply once, then says so (%#)",
+  ({ reaction, rescue, rescues, expected }) =>
+    Effect.gen(function* () {
+      const { fake, runId, complete, posted } = yield* setup({
+        ask: "Did the deploy finish?",
+        ...(reaction === undefined ? {} : { reaction }),
+      });
+      // NO_REPLY can't answer an owner's message.
+      fake.items = [text("a", 1, "NO_REPLY", runId)];
+      fake.rescueItems = rescue.map((body, n) => text(`r${n}`, 10 + n, body, rescueRunId));
+      yield* complete;
+      assert.strictEqual(fake.rescues, rescues);
+      assert.deepStrictEqual(
+        (yield* posted).map((row) => `${row.authorKind}:${row.body}`),
+        expected,
+      );
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect.each([

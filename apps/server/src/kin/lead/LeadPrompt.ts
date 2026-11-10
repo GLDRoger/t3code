@@ -23,7 +23,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
-import { asksQuestion, liveReactions, reactionAnswer } from "../chat/reactions.ts";
+import { liveReactions, reactionAnswer } from "../chat/reactions.ts";
 
 import { SILENT_REPLY } from "../reply/classify.ts";
 import { groupRules } from "./instructions.ts";
@@ -124,12 +124,8 @@ export class KinLeadPrompt extends Context.Service<
                 reason: "Event message is missing or belongs to another chat",
               });
             const body = spoken(stored.value);
-            // The chat service raises this event only for the owner's reaction, by the same rule:
-            // a yes/no on a question answers it, a 👎 on anything else asks what was wrong.
-            const meaning =
-              reactionAnswer(event.emoji) !== null && asksQuestion(body)
-                ? REACTION_MEANING
-                : REACTION_CLARIFY;
+            // Raised only for the owner's yes/no on the lead's latest message or a 👎 on any.
+            const meaning = reactionAnswer(event.emoji) === "yes" ? REACTION_YES : REACTION_CLARIFY;
             events.push(
               `${eventQuote}\n\nOwner reacted ${event.emoji} to your message ${encoded(body.length <= REACTED_EXCERPT ? body : `${body.slice(0, REACTED_EXCERPT)}…`)} (a reaction, not text). ${meaning}`,
             );
@@ -619,13 +615,12 @@ const LATE_MINUTES = 5;
 const BUDGET_LOW_PERCENT = 20;
 const REACTED_EXCERPT = 280;
 const REACTION_CLARIFY =
-  "Your message didn't land. Ask in one short line what was wrong, or correct it in one short line.";
+  "On a yes/no question or offer it means no. Otherwise your message didn't land: ask in one short line what was wrong, or correct it in one short line.";
 const FEEDBACK_EXCERPT = 80;
 const FEEDBACK_LIMIT = 10;
 /** A lead with no finished wake-up yet reads the last day's reactions. */
 const FEEDBACK_FIRST_WINDOW_MS = 24 * 60 * 60 * 1000;
-const REACTION_MEANING =
-  "👍 or ✅ means yes or agreement and 👎 or ❌ means no, for a single yes/no question or proposal only. If your message asked more than that, ask in text.";
+const REACTION_YES = `On an offer or proposal it means go ahead: do it and say so in one line. On a plain statement it only acknowledges it: write exactly ${SILENT_REPLY} and nothing else. It never approves a privileged action; that still needs the signed card.`;
 const INDEX_MAX_LINES = 200;
 const INDEX_NEARLY_FULL = 160;
 
