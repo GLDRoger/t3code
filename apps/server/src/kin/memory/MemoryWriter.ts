@@ -10,6 +10,7 @@ import * as MemoryCache from "./MemoryCache.ts";
 import {
   KIN_HIDDEN_CHARACTER,
   KIN_MEMORY_CHANGE_TITLE_MAX,
+  MemoryItemFrontMatter,
   RepoSlug,
   type KinAgentId,
   type KinMemoryChangeKind,
@@ -39,7 +40,7 @@ import {
   MemoryDuplicateId,
   shadowBranch,
 } from "./Memory.ts";
-import { parseFrontMatter, MemoryItemError } from "./frontMatter.ts";
+import { parseFrontMatter, MemoryItemError, schemaKeyFailure } from "./frontMatter.ts";
 import { journalEntry, MemoryJournalError, type JournalContext } from "./journal.ts";
 import { mergeMemoryFiles } from "./merge.ts";
 import { isOwnerReviewedPath, kinShapeFailure } from "./lint.ts";
@@ -496,6 +497,14 @@ const make = Effect.gen(function* () {
         reason: "A memory purge is in flight; old history must not be pushed",
       });
   });
+  // The cause is dropped, so the reason keeps the key it names; only known keys, never values.
+  const namedReason = (error: MemoryItemError) => {
+    const failure = schemaKeyFailure(error);
+    return failure !== undefined &&
+      Object.hasOwn(MemoryItemFrontMatter.fields, failure.key.split(".")[0] ?? "")
+      ? failure.reason
+      : error.reason;
+  };
   const report = <A>(orgId: KinOrgId, wakeupId: string, effect: Effect.Effect<A, Failure>) =>
     effect.pipe(
       Effect.catchTags({
@@ -506,7 +515,7 @@ const make = Effect.gen(function* () {
                 new MemoryItemError({
                   orgId: error.orgId,
                   path: findings.length ? "[redacted]" : error.path,
-                  reason: error.reason,
+                  reason: namedReason(error),
                 }),
               ),
             ),

@@ -419,8 +419,8 @@ it.live(
           item: { ...input.item, chat: "other-chat", source_event: "forged-event" },
         });
         assert.strictEqual(
-          (yield* service.write(scope, forged).pipe(Effect.flip)).reason,
-          "not_allowed",
+          (yield* service.write(scope, forged).pipe(Effect.flip)).message,
+          "Only deferrals carry `chat`. Leave it out.",
         );
         assert.notProperty(forged.item, "source_event");
         assert.strictEqual(
@@ -441,8 +441,8 @@ it.live(
         assert.strictEqual(
           (yield* service
             .write(scope, { ...input, item: { ...input.item, body: "Different" } })
-            .pipe(Effect.flip)).reason,
-          "not_allowed",
+            .pipe(Effect.flip)).message,
+          "Memory item new-claim was already written differently in this wake-up. Repeat the same call, or use a new id.",
         );
         assert.strictEqual(
           (yield* service
@@ -527,9 +527,10 @@ it.live(
           (yield* service.end(scope, { summary: "Changed" }).pipe(Effect.flip)).reason,
           "not_allowed",
         );
+        // After kin_end the refusal is about authority, so it stays unexplained.
         assert.strictEqual(
-          (yield* service.write(scope, input).pipe(Effect.flip)).reason,
-          "not_allowed",
+          (yield* service.write(scope, input).pipe(Effect.flip)).message,
+          "Lead operation is not allowed.",
         );
         const committed = yield* (yield* Writer.MemoryWriter).commitWakeup(
           orgId,
