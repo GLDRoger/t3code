@@ -123,7 +123,7 @@ export const KinDeferralCard = memo(function KinDeferralCard(props: {
       )}
       {deferral.actions.length === 0 ? null : !canAct ? (
         <Text textRole="footnote" className="text-foreground-muted">
-          This device can't answer Kin cards. Pair it again from the Mac.
+          This phone can't answer here. Pair it again with the computer that runs T3 Code.
         </Text>
       ) : (
         <View className="flex-row flex-wrap gap-2 pt-1">

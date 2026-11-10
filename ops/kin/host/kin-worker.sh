@@ -3,6 +3,9 @@
 # Workers' shells run there, in a sandbox that has no kin home, no owner home and no /tmp of
 # kin's, so they can't read Kin's database, secrets, memory key or service.env, or run Kin's CLI.
 #
+#   sudo <root-owned clone>/ops/kin/host/kin-worker.sh setup [owner/repo ...]   everything, in
+#                                            one go: asks for the worker's two credentials on
+#                                            the terminal, and ends with `check`
 #   sudo <root-owned clone>/ops/kin/host/kin-worker.sh [install] [--dry-run]   set up or repair
 #   sudo kin-worker link                     (re)link kin-server; the timer runs it weekly
 #   sudo kin-worker check                    the isolation checks, as a transcript
@@ -13,7 +16,7 @@
 #   kin-worker upload-pack <path>            the worker's repository, read-only, for Kin to publish
 #   kin-worker may-start                     the unit's ExecCondition: no org of Kin's is paused
 #
-# `install` copies this script to /usr/local/sbin/kin-worker and never restarts kin-server.
+# `install` copies this script to /usr/local/sbin/kin-worker. Nothing here restarts kin-server.
 # Root never writes, chowns or chmods through a path under the worker's home: that work runs as
 # kin-worker (`worker_do`), so a symlink there reaches only what kin-worker could already change.
 set -euo pipefail
@@ -115,11 +118,13 @@ cmd_run() {
   local io=--pipe allow=()
   if [ -t 0 ] && [ -t 1 ]; then io=--pty; fi
   mapfile -t allow < <(allowed_networks)
+  # systemd-run looks a bare name up on root's PATH. Root's /usr/bin/env looks it up instead,
+  # inside the sandbox as kin-worker on WORKER_PATH, so the worker's own mise or claude is found.
   systemd-run --quiet --wait --collect "$io" \
     --uid="$WORKER_USER" --gid="$WORKER_USER" \
     --working-directory="$WORKER_HOME" \
     --setenv=HOME="$WORKER_HOME" --setenv=PATH="$WORKER_PATH" \
-    "${SANDBOX[@]}" "${allow[@]}" -- "$@"
+    "${SANDBOX[@]}" "${allow[@]}" -- /usr/bin/env -- "$@"
 }
 
 refuse_unsafe_users() {
@@ -174,11 +179,16 @@ print(json.load(open(sys.argv[1])).get("env", {}).get("ANTHROPIC_BASE_URL", ""))
 }
 
 # Writes stdin to a new file of the worker's, mode 600, as kin-worker; an existing one stays.
-# Exits 3 when the file is already there.
+# Exits 3 when the file is already there. The file appears whole or not at all: an interrupted
+# write leaves no partial file behind.
 worker_write_new() {
   worker_do /bin/sh -c 'umask 077
 if [ -e "$1" ] || [ -L "$1" ]; then exit 3; fi
-/usr/bin/install -d -m 0700 "$(dirname "$1")" && cat >"$1"' sh "$1"
+/usr/bin/install -d -m 0700 "$(dirname "$1")" || exit 1
+scratch="$1.new.$$"
+trap "/bin/rm -f \"\$scratch\"" EXIT
+trap "exit 1" INT TERM HUP
+cat >"$scratch" && /bin/mv -f "$scratch" "$1"' sh "$1"
 }
 
 write_claude_settings() {
@@ -261,10 +271,27 @@ cmd_upload_pack() {
     -- /usr/bin/git upload-pack --timeout=60 "$path" | head -c "$UPLOAD_PACK_MAX_BYTES"
 }
 
-cmd_install() {
-  if [ "${1:-}" = --dry-run ]; then DRY_RUN=1; fi
+# What this script itself stands on, checked before it changes anything: Bash 4.4 (mapfile,
+# empty arrays under `set -u`), GNU stat and sed, and systemd 249 (SocketBindDeny=).
+MIN_SYSTEMD=249
+preflight() {
+  [ "$(uname -s)" = Linux ] || die "needs Linux with systemd."
+  [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 4 ]; } ||
+    die "needs Bash 4.4 or later; this is Bash $BASH_VERSION."
+  stat --version 2>/dev/null | grep -q GNU || die "needs GNU stat (coreutils)."
+  sed --version 2>/dev/null | grep -q 'GNU sed' || die "needs GNU sed."
+  local version
+  version="$(systemctl --version 2>/dev/null | sed -n '1s/^systemd \([0-9]*\).*/\1/p')"
+  [ -n "$version" ] && [ "$version" -ge "$MIN_SYSTEMD" ] ||
+    die "needs systemd $MIN_SYSTEMD or later (SocketBindDeny=); this host has ${version:-no systemctl}."
+}
+
+# Tools a worker server starts with: mise, which brings the build's Node.
+worker_tools_ready() { in_sandbox mise --version >/dev/null 2>&1; }
+
+install_steps() {
   if [ "$DRY_RUN" -eq 0 ]; then
-    [ "$(uname -s)" = Linux ] || die "needs Linux with systemd."
+    preflight
     need_root install
     refuse_unsafe_source
   fi
@@ -324,14 +351,32 @@ cmd_install() {
   # 4. Claude's gateway settings, the worker's own.
   if [ "$DRY_RUN" -eq 0 ]; then write_claude_settings; fi
 
-  # 5. Start what can start.
+  # 5. Start what can start. The server waits for its tools: started without mise it would
+  # restart until systemd's start limit, and refuse to start after that.
   run_cmd systemctl enable kin-worker-server.service kin-worker-link.timer
   run_cmd systemctl start kin-worker-link.timer
-  if [ -f "$KIN_HOME/kin-current/apps/server/dist/bin.mjs" ]; then
-    run_cmd systemctl start kin-worker-server.service
-  else
+  if [ ! -f "$KIN_HOME/kin-current/apps/server/dist/bin.mjs" ]; then
     say "No Kin build at $KIN_HOME/kin-current yet: run update.sh as $KIN_USER, then this again."
+  elif [ "$DRY_RUN" -eq 1 ]; then
+    say "+ systemctl start kin-worker-server.service, once $WORKER_USER's tools are installed"
+  elif worker_tools_ready; then
+    start_worker_server
+  else
+    say "No tools for $WORKER_USER yet, so the worker server isn't started: run setup."
   fi
+}
+
+# Starts the worker server, clearing a start limit an earlier failed start left behind.
+start_worker_server() {
+  if systemctl is-active --quiet kin-worker-server.service; then return 0; fi
+  systemctl reset-failed kin-worker-server.service >/dev/null 2>&1 || true
+  run_cmd systemctl start kin-worker-server.service ||
+    die "couldn't start kin-worker-server. See: journalctl -u kin-worker-server -n 50"
+}
+
+cmd_install() {
+  if [ "${1:-}" = --dry-run ]; then DRY_RUN=1; fi
+  install_steps
   if [ "$DRY_RUN" -eq 1 ]; then
     say ""
     say "Dry run: nothing was changed."
@@ -357,8 +402,10 @@ trusted_bins() {
       [ $((8#$(stat -L -c %a "$bin") & 8#022)) -eq 0 ] || return 1
   done
 }
+# kin-server reads service.env if it is there (`EnvironmentFile=-`), so a missing one holds nothing.
 service_env_value() {
-  sed -n "s/^$1=//p" "$KIN_HOME/.t3/service.env" 2>/dev/null | tail -n1
+  [ -f "$KIN_HOME/.t3/service.env" ] || return 0
+  sed -n "s/^$1=//p" "$KIN_HOME/.t3/service.env" | tail -n1
 }
 
 FAILED=0
@@ -395,9 +442,52 @@ checklist() {
   cmd_check
 }
 
+# Waits up to a minute for the worker server to answer HTTP, and stops early if it has stopped.
+wait_for_worker_server() {
+  local _ state
+  for _ in {1..60}; do
+    if [ "$(/usr/bin/curl -s -m 2 -o /dev/null -w '%{http_code}' "$WORKER_URL/" 2>/dev/null)" != 000 ]; then
+      return 0
+    fi
+    state="$(systemctl is-active kin-worker-server.service 2>/dev/null || true)"
+    case "$state" in inactive | failed) break ;; esac
+    sleep 1
+  done
+  die "kin-worker-server isn't answering on $WORKER_URL (${state:-unknown}). Kin paused, or a start that failed? See: journalctl -u kin-worker-server -n 50"
+}
+
+# Sets KIN_WORKER_ENVIRONMENT_ID in kin's service.env, as kin: every other line stays, and the
+# file is replaced whole (a scratch file beside it, then a rename), mode 600.
+set_kin_worker_environment_id() {
+  as_user "$KIN_USER" /usr/bin/python3 -I -c 'import os, sys, tempfile
+path = os.path.realpath(sys.argv[1])
+try:
+    with open(path) as handle:
+        lines = handle.read().splitlines()
+except FileNotFoundError:
+    lines = []
+lines = [line for line in lines if not line.startswith("KIN_WORKER_ENVIRONMENT_ID=")]
+lines.append("KIN_WORKER_ENVIRONMENT_ID=" + sys.argv[2])
+directory = os.path.dirname(path)
+os.makedirs(directory, mode=0o700, exist_ok=True)
+descriptor, scratch = tempfile.mkstemp(prefix=".service.env.", dir=directory)
+try:
+    with os.fdopen(descriptor, "w") as handle:
+        handle.write("\n".join(lines) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(scratch, 0o600)
+    os.replace(scratch, path)
+except BaseException:
+    os.unlink(scratch)
+    raise' "$KIN_HOME/.t3/service.env" "$1"
+}
+
 cmd_link() {
   need_root link
-  systemctl is-active --quiet kin-worker-server.service || die "kin-worker-server is not running."
+  systemctl is-active --quiet kin-worker-server.service ||
+    die "kin-worker-server is not running. Kin paused, or a start that failed? See: systemctl status kin-worker-server"
+  wait_for_worker_server
   local code linked id
   # The pairing code stays in this shell: it is never printed or logged.
   code="$(cmd_run t3 pair --base-dir "$WORKER_HOME/.t3" --label kin-server </dev/null | sed -n 's/^Token: //p' | tail -n1)"
@@ -412,14 +502,293 @@ cmd_link() {
     say "$env_file already names $id."
     return 0
   fi
-  if [ -f "$env_file" ]; then
-    sed -i '/^KIN_WORKER_ENVIRONMENT_ID=/d' "$env_file"
-  else
-    install -m 0600 -o "$KIN_USER" -g "$KIN_USER" /dev/null "$env_file"
-  fi
-  printf 'KIN_WORKER_ENVIRONMENT_ID=%s\n' "$id" >>"$env_file"
+  set_kin_worker_environment_id "$id" || die "couldn't set KIN_WORKER_ENVIRONMENT_ID in $env_file as $KIN_USER."
   say "Set KIN_WORKER_ENVIRONMENT_ID=$id in $env_file. Apply it at a quiet moment:"
   say "  sudo -u $KIN_USER XDG_RUNTIME_DIR=/run/user/$(id -u "$KIN_USER") systemctl --user restart kin-server"
+}
+
+# --- setup -----------------------------------------------------------------------------------
+
+# setup asks on the terminal, so it refuses to start, before it changes anything, without one.
+require_terminal() {
+  [ -t 0 ] && (exec 3<>/dev/tty) 2>/dev/null ||
+    die "setup asks for credentials on the terminal: run it from an interactive shell (ssh -t), with nothing piped in. Nothing was changed."
+}
+
+# One secret from the terminal into SECRET, line ends dropped. Echo goes off before the prompt
+# shows, so a paste that lands early isn't shown either. It stays in this shell: never printed,
+# logged or put on a command line. Ctrl-C turns echo back on and exits before anything is written.
+SECRET=""
+TTY_SAVED=""
+restore_tty() {
+  if [ -n "$TTY_SAVED" ]; then stty "$TTY_SAVED" </dev/tty 2>/dev/null || true; fi
+  TTY_SAVED=""
+}
+ask_secret() {
+  SECRET=""
+  TTY_SAVED="$(stty -g </dev/tty)" || die "can't read the terminal's settings; nothing was asked."
+  trap restore_tty EXIT
+  trap 'restore_tty; SECRET=""; printf "\n" >/dev/tty 2>/dev/null; exit 130' INT TERM HUP
+  stty -echo </dev/tty
+  printf '%s' "$1" >/dev/tty
+  IFS= read -r SECRET </dev/tty || true
+  restore_tty
+  trap - EXIT INT TERM HUP
+  printf '\n' >/dev/tty
+  SECRET="${SECRET//[$'\r\n']/}"
+}
+
+# mise, the build's Node, Claude Code and Codex in kin-worker's own home, installed by kin-worker
+# inside the sandbox, so nothing of root's, kin's or the owner's is within the installers' reach.
+# Each install has a time limit.
+setup_tools() {
+  local version tool
+  version="$(node_version_of "$KIN_HOME/kin-current")"
+  [ -n "$version" ] || die "no engines.node in $KIN_HOME/kin-current/package.json."
+  if ! worker_tools_ready; then
+    say "Installing mise for $WORKER_USER."
+    # Downloaded whole to the sandbox's own /tmp first: a cut-off download never runs.
+    in_sandbox /usr/bin/timeout 600 /bin/sh -c 'set -e
+installer="$(/usr/bin/mktemp)"
+trap "/bin/rm -f \"\$installer\"" EXIT
+/usr/bin/curl -fsSL --max-time 120 -o "$installer" https://mise.run
+[ -s "$installer" ]
+/bin/sh "$installer"' >/dev/null ||
+      die "couldn't install mise as $WORKER_USER. Is https://mise.run reachable from the sandbox?"
+  fi
+  in_sandbox /usr/bin/timeout 900 mise use --global "node@$version" >/dev/null ||
+    die "couldn't install Node $version as $WORKER_USER."
+  for tool in claude:@anthropic-ai/claude-code codex:@openai/codex; do
+    if in_sandbox "${tool%%:*}" --version >/dev/null 2>&1; then continue; fi
+    say "Installing ${tool#*:} for $WORKER_USER."
+    in_sandbox /usr/bin/timeout 900 mise exec "node@$version" -- npm install --global --silent "${tool#*:}" ||
+      die "couldn't install ${tool#*:} as $WORKER_USER."
+  done
+  in_sandbox mise reshim || die "couldn't refresh mise's shims as $WORKER_USER."
+  say "Tools are in $WORKER_HOME: mise, Node $version, Claude Code, Codex."
+}
+
+# The first credential: kin-worker's own Claude gateway key, written by kin-worker to a file only
+# it can read. A key already there stays. The key typed in is compared with kin's before any of it
+# reaches kin-worker's file, since a running worker could copy it from there at once; the check
+# after writing is a second wall.
+setup_gateway_key() {
+  local wrote=0 theirs
+  theirs="$(kin_key_hash)" ||
+    die "couldn't read kin's own gateway key to compare with ($KIN_HOME/.claude/settings.json, its apiKeyHelper run as $KIN_USER), so nothing was asked for or written. Fix that, then setup again."
+  if worker_do /usr/bin/test -s "$GATEWAY_KEY"; then
+    say "$WORKER_USER already has a gateway key; keeping it. To replace it: sudo kin-worker run -- rm $GATEWAY_KEY, then setup again."
+  else
+    ask_secret "Claude gateway key for $WORKER_USER alone, never kin's or yours (Enter to skip): "
+    if [ -z "$SECRET" ]; then
+      say "No gateway key yet: workers can't use Claude until setup is run again with one."
+      return 0
+    fi
+    if ! [[ "$SECRET" =~ ^[[:graph:]]+$ ]]; then
+      SECRET=""
+      die "that key has spaces or unprintable characters; nothing was written."
+    fi
+    if printf '%s' "$SECRET" | is_kin_key "$theirs"; then
+      SECRET=""
+      die "that is kin's own gateway key, which a worker must never hold; nothing was written. Create one for $WORKER_USER alone, then setup again."
+    fi
+    # An empty file from an attempt that failed would block the new one.
+    worker_do /bin/rm -f "$GATEWAY_KEY"
+    printf '%s\n' "$SECRET" | worker_write_new "$GATEWAY_KEY" || {
+      SECRET=""
+      die "couldn't write the key as $WORKER_USER."
+    }
+    SECRET=""
+    wrote=1
+  fi
+  if ! own_gateway_key; then
+    if [ "$wrote" -eq 1 ]; then worker_do /bin/rm -f "$GATEWAY_KEY"; fi
+    die "$WORKER_USER's gateway key is kin's own, or couldn't be compared with kin's; a worker must never hold kin's. Create one for $WORKER_USER alone (and remove an old one: sudo kin-worker run -- rm $GATEWAY_KEY), then setup again."
+  fi
+  if [ "$wrote" -eq 1 ]; then say "Wrote the key to $GATEWAY_KEY (mode 600, $WORKER_USER's)."; fi
+  if in_sandbox /usr/bin/timeout 90 claude -p ok >/dev/null 2>&1; then
+    say "Claude answers as $WORKER_USER."
+  else
+    say "Claude didn't answer as $WORKER_USER yet. Try: sudo kin-worker run -- claude -p ok"
+  fi
+}
+
+# The second credential, optional: Codex, on an account that is not the owner's.
+setup_codex() {
+  if in_sandbox codex login status >/dev/null 2>&1; then
+    say "Codex is signed in for $WORKER_USER."
+    return 0
+  fi
+  ask_secret "Codex API key for a separate account with a spending cap, never the owner's (Enter to skip Codex): "
+  if [ -z "$SECRET" ]; then
+    say "Codex skipped: workers use Claude only. To sign in later: sudo kin-worker run -- codex login"
+    return 0
+  fi
+  if printf '%s\n' "$SECRET" | /usr/local/sbin/kin-worker run -- codex login --with-api-key >/dev/null 2>&1; then
+    say "Codex is signed in for $WORKER_USER."
+  else
+    say "Codex didn't accept that key. To try again: sudo kin-worker run -- codex login --with-api-key < <key file>"
+  fi
+  SECRET=""
+}
+
+# Linked environments on kin-server, which watches its settings file: kin sets the one key in
+# its own file and every other setting stays as it was. A file it can't parse is left alone.
+enable_kin_links() {
+  as_user "$KIN_USER" /usr/bin/python3 -I -c 'import json, os, sys
+path = os.path.realpath(sys.argv[1])
+try:
+    with open(path) as handle:
+        data = json.load(handle)
+except FileNotFoundError:
+    data = {}
+if not isinstance(data, dict):
+    sys.exit(1)
+if data.get("linkedEnvironmentsEnabled") is True:
+    sys.exit(0)
+data["linkedEnvironmentsEnabled"] = True
+os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+scratch = path + ".kin-worker-setup"
+with os.fdopen(os.open(scratch, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as handle:
+    json.dump(data, handle, indent=2)
+    handle.write("\n")
+os.replace(scratch, path)' "$KIN_HOME/.t3/userdata/settings.json"
+}
+
+# Kin's memory repositories, as owner/repo. Workers get no checkout of those.
+memory_repos() {
+  cat "$KIN_HOME/.t3/service.env" "$KIN_HOME/.config/kin/kin-server.env" 2>/dev/null |
+    sed -n 's/^KIN_MEMORY_REPOSITORIES=//p' |
+    grep -oE 'github\.com[:/][A-Za-z0-9-]+/[A-Za-z0-9._-]+' |
+    sed -e 's#^github\.com[:/]##' -e 's/\.git$//' | sort -u
+}
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+checkout_origin() {
+  in_sandbox /usr/bin/git -C "$1" remote get-url origin 2>/dev/null |
+    sed -n 's#^.*github\.com[:/]\([^/]*/[^/]*\)$#\1#p' | sed 's/\.git$//'
+}
+# How `t3 project add` went, from its exit status and output: added, registered (it already was)
+# or failed. Only a failed run that says the project already exists counts as registered.
+registration_result() {
+  if [ "$1" -eq 0 ]; then
+    echo added
+    return
+  fi
+  case "$2" in
+    *"Active project "*" already exists for '"*) echo registered ;;
+    *) echo failed ;;
+  esac
+}
+# One repository: a checkout of kin-worker's, cloned by kin-worker in the sandbox with whatever
+# read access it has, and registered in the worker environment. Run again, it changes nothing.
+setup_project() {
+  local slug="$1" dir="$WORKER_HOME/projects/${1#*/}" origin added status=0
+  origin="$(checkout_origin "$dir" || true)"
+  if [ -n "$origin" ] && [ "$(lower "$origin")" != "$(lower "$slug")" ]; then
+    # Another owner's repository of the same name already has that directory.
+    dir="$WORKER_HOME/projects/${slug%%/*}-${slug#*/}"
+    origin="$(checkout_origin "$dir" || true)"
+  fi
+  if [ -z "$origin" ]; then
+    if in_sandbox /usr/bin/test -e "$dir"; then
+      say "  ✗ $slug: $dir is there and isn't a checkout of it."
+      return 1
+    fi
+    if ! in_sandbox /usr/bin/env GIT_TERMINAL_PROMPT=0 /usr/bin/git clone --quiet "https://github.com/$slug" "$dir"; then
+      say "  ✗ $slug: couldn't clone it. A private repository needs kin-worker's read-only token first (README, \"Set up workers\")."
+      return 1
+    fi
+  elif [ "$(lower "$origin")" != "$(lower "$slug")" ]; then
+    say "  ✗ $slug: $dir is a checkout of $origin."
+    return 1
+  fi
+  added="$(in_sandbox t3 project add "$dir" --base-dir "$WORKER_HOME/.t3" 2>&1)" || status=$?
+  case "$(registration_result "$status" "$added")" in
+    added) say "  ✓ $slug at $dir" ;;
+    registered) say "  ✓ $slug at $dir, already registered" ;;
+    *)
+      say "  ✗ $slug: it is at $dir, but registering it failed: $(printf '%s\n' "$added" | tail -n1)"
+      return 1
+      ;;
+  esac
+}
+# Every repository Kin publishes to (KIN_GITHUB_REPOS and Kin's own), plus any named on the
+# command line: the ones a lead's work can end in a pull request on. Fails when any is missing.
+setup_projects() {
+  local slug skip repos missing=0
+  skip="$(memory_repos || true)"
+  repos="$({
+    kin_repos || true
+    printf '%s\n' "$@"
+  } | sed 's/[[:space:]]//g' | grep -E '^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$' | sort -u || true)"
+  if [ -z "$repos" ]; then
+    say "No repositories to clone: KIN_GITHUB_REPOS is empty. Name them: setup <owner>/<repo> ..."
+    return 0
+  fi
+  say "Projects in the worker environment:"
+  for slug in $repos; do
+    if grep -qixF "$slug" <<<"$skip"; then continue; fi
+    setup_project "$slug" || missing=1
+  done
+  if [ "$missing" -eq 1 ]; then say "Leads can't start work in the ✗ ones until they are fixed; run setup again then."; fi
+  return "$missing"
+}
+
+# `setup [owner/repo ...]`: every step from a fresh host to a passing `check` that needs no
+# credential, and a prompt for the two that do. Safe to run again: each step keeps what is there.
+# Exits non-zero when a check fails or a repository couldn't be set up; the transcript still runs.
+cmd_setup() {
+  local repos=() arg before missing=0
+  for arg in "$@"; do
+    case "$arg" in
+      --dry-run) DRY_RUN=1 ;;
+      -*) die "setup takes repositories as owner/repo, and --dry-run." ;;
+      *) repos+=("$arg") ;;
+    esac
+  done
+  if [ "$DRY_RUN" -eq 1 ]; then
+    install_steps
+    say "+ as $WORKER_USER, in the sandbox: install mise, the build's Node, Claude Code and Codex"
+    say "+ start kin-worker-server"
+    say "+ ask for $WORKER_USER's Claude gateway key, and optionally a Codex API key"
+    say "+ turn on Linked environments in kin's settings"
+    say "+ clone and register every repository in KIN_GITHUB_REPOS and Kin's own ${repos[*]:-}"
+    say "+ kin-worker link, then kin-worker check"
+    say ""
+    say "Dry run: nothing was changed."
+    return 0
+  fi
+  # Everything setup stands on, checked before it changes anything.
+  preflight
+  need_root setup
+  require_terminal
+  id -u "$KIN_USER" >/dev/null 2>&1 || die "no $KIN_USER user yet: run /root/kin-ops/ops/kin/host/setup.sh first."
+  [ -f "$KIN_HOME/kin-current/apps/server/dist/bin.mjs" ] ||
+    die "no Kin build at $KIN_HOME/kin-current yet: run update.sh as $KIN_USER first (README, \"Install\")."
+  if [ ! -f "$KIN_HOME/.t3/service.env" ]; then
+    say "No $KIN_HOME/.t3/service.env yet, so KIN_GITHUB_REPOS and KIN_GITHUB_APP_ID are unset. The link creates it with the worker environment's id."
+  fi
+  install_steps
+  setup_tools
+  start_worker_server
+  setup_gateway_key
+  setup_codex
+  if enable_kin_links; then say "Linked environments are on for kin-server."; else
+    say "Couldn't turn on Linked environments in kin's settings. From any client: Settings → Labs → Linked environments."
+  fi
+  setup_projects ${repos[@]+"${repos[@]}"} || missing=1
+  if [ "$(stat -c %d "$WORKER_HOME")" = "$(stat -c %d "$KIN_HOME")" ]; then
+    say "Note: $WORKER_HOME shares a filesystem with $KIN_HOME. Give $WORKER_USER a disk quota or its own filesystem, so a worker can't fill Kin's disk."
+  fi
+  before="$(service_env_value KIN_WORKER_ENVIRONMENT_ID)"
+  cmd_link
+  if [ "$(service_env_value KIN_WORKER_ENVIRONMENT_ID)" != "$before" ]; then
+    say "Leads can start workers once kin-server restarts with that id. Nothing here restarts it."
+  fi
+  checklist
+  if [ "$missing" -eq 1 ]; then
+    die "the isolation checks pass, but a repository marked ✗ above isn't in the worker environment. Fix it, then setup again."
+  fi
 }
 
 # --- check -----------------------------------------------------------------------------------
@@ -453,7 +822,7 @@ sandbox_matches() {
   systemctl stop "$probe.service" >/dev/null 2>&1 || true
   systemctl reset-failed "$probe.service" >/dev/null 2>&1 || true
   if ! systemd-run --quiet --collect --unit="$probe" --uid="$WORKER_USER" --gid="$WORKER_USER" \
-    "${SANDBOX[@]}" "${allow[@]}" -- sleep 120 >/dev/null 2>&1; then
+    "${SANDBOX[@]}" "${allow[@]}" -- /usr/bin/sleep 120 >/dev/null 2>&1; then
     printf '  ✗ the sandbox probe unit could not start\n'
     FAILED=1
     return
@@ -517,24 +886,39 @@ home_closed() { [ "$(stat -c %a "$1")" = 700 ] && no_acl "$1"; }
 # The worker's Claude settings as text, read by kin-worker, never by root through its path.
 worker_settings() { worker_do /bin/cat "$WORKER_HOME/.claude/settings.json"; }
 sha() { /usr/bin/sha256sum | cut -d' ' -f1; }
-# kin's gateway key: its apiKeyHelper's output, else an inline key.
+# A gateway key on stdin, as compared: line ends are dropped, so kin's key with a newline after
+# it is still kin's key.
+key_hash() { tr -d '\r\n' | sha; }
+# Whether the key on stdin is the one whose key_hash is $1. No hash, no kin key: never a match.
+is_kin_key() {
+  local mine
+  mine="$(key_hash)"
+  [ -n "$1" ] && [ "$mine" = "$1" ]
+}
+# key_hash of kin's gateway key: its apiKeyHelper's output, else an inline key. Prints nothing
+# when kin's Claude settings name no key, and fails when they name one that can't be read.
 kin_key_hash() {
   local settings="$KIN_HOME/.claude/settings.json" helper key
-  [ -f "$settings" ] || return 0
+  [ -e "$settings" ] || return 0
   helper="$(/usr/bin/python3 -I -c 'import json, sys
-print(json.load(open(sys.argv[1])).get("apiKeyHelper", ""))' "$settings" 2>/dev/null || true)"
-  if [ -n "$helper" ]; then key="$(as_kin sh -c "$helper" 2>/dev/null || true)"; else
+print(json.load(open(sys.argv[1])).get("apiKeyHelper") or "")' "$settings" 2>/dev/null)" || return 1
+  if [ -n "$helper" ]; then
+    key="$(as_kin /usr/bin/timeout 30 /bin/sh -c "$helper" </dev/null 2>/dev/null)" || return 1
+    [ -n "$key" ] || return 1
+  else
     key="$(/usr/bin/python3 -I -c 'import json, sys
-env = json.load(open(sys.argv[1])).get("env", {})
-print(env.get("ANTHROPIC_API_KEY") or env.get("ANTHROPIC_AUTH_TOKEN") or "")' "$settings" 2>/dev/null || true)"
+env = json.load(open(sys.argv[1])).get("env") or {}
+print(env.get("ANTHROPIC_API_KEY") or env.get("ANTHROPIC_AUTH_TOKEN") or "")' "$settings" 2>/dev/null)" || return 1
+    [ -n "$key" ] || return 0
   fi
-  if [ -n "$key" ]; then printf '%s' "$key" | sha; fi
+  printf '%s' "$key" | key_hash
 }
 # The worker's key is the file its settings' helper reads (settings_hold_no_token checks that).
+# Fails when kin's key can't be read to compare with.
 own_gateway_key() {
   local mine theirs
-  mine="$(worker_do /bin/cat "$GATEWAY_KEY" 2>/dev/null | sha)"
-  theirs="$(kin_key_hash)"
+  theirs="$(kin_key_hash)" || return 1
+  mine="$(worker_do /bin/cat "$GATEWAY_KEY" 2>/dev/null | key_hash)" || return 1
   [ "$mine" != "$(printf '' | sha)" ] && [ "$mine" != "$theirs" ]
 }
 # The worker's settings carry no token inline, name nothing of kin's, and read the key file.
@@ -736,15 +1120,21 @@ cmd_check() {
   fi
 }
 
-case "${1:-install}" in
-  install) shift || true; cmd_install "$@" ;;
-  --dry-run) cmd_install --dry-run ;;
-  link) cmd_link ;;
-  check) cmd_check ;;
-  run) shift; cmd_run "$@" ;;
-  node) shift; cmd_node "$@" ;;
-  upload-pack) shift; cmd_upload_pack "$@" ;;
-  may-start) cmd_may_start ;;
-  -h | --help) sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
-  *) die "unknown command: $1 (install, link, check, run)" ;;
-esac
+main() {
+  case "${1:-install}" in
+    install) shift || true; cmd_install "$@" ;;
+    setup) shift; cmd_setup "$@" ;;
+    --dry-run) cmd_install --dry-run ;;
+    link) cmd_link ;;
+    check) cmd_check ;;
+    run) shift; cmd_run "$@" ;;
+    node) shift; cmd_node "$@" ;;
+    upload-pack) shift; cmd_upload_pack "$@" ;;
+    may-start) cmd_may_start ;;
+    -h | --help) sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+    *) die "unknown command: $1 (setup, install, link, check, run)" ;;
+  esac
+}
+
+# Sourced (by scripts/kin-worker.test.ts), it defines the functions and runs nothing.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi

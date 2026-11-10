@@ -10,6 +10,7 @@ import {
   ThreadId,
   type KinChatMember,
   type KinChatSummary,
+  type KinLeadProfile,
   type KinWaitingItem,
   type KinWaitingReason,
 } from "@t3tools/contracts";
@@ -19,6 +20,7 @@ import { View } from "react-native";
 import { AppText } from "../../components/ui/AppText";
 import { Chip } from "../../components/ui/Chip";
 import { KinChatsView } from "./KinChatsScreen";
+import { KinLeadProfileView } from "./KinLeadScreen";
 import type { KinInboxState } from "@t3tools/client-runtime/kin/kinInboxModel";
 import type { KinDirectory, KinInboxScreenState } from "@t3tools/client-runtime/kin/kinScreenState";
 
@@ -216,6 +218,34 @@ const FIXTURES: ReadonlyArray<{ readonly label: string; readonly state: KinInbox
   { label: "No identity", state: { _tag: "noIdentity" } },
 ];
 
+const LEAD_FIXTURE: KinLeadProfile = {
+  orgId,
+  agentId: lead,
+  name: "Tech lead",
+  domain: "engineering",
+  charter:
+    "Runs engineering. Turns requests into well-scoped tasks, follows them to a reviewed PR and says plainly what is done, blocked or needs a decision.",
+  model: "claude-opus-5-5",
+  ownerChatId: KinChatId.make("chat-lead"),
+  working: true,
+  tracking: [
+    { kind: "work", title: "Fix the flaky checkout test", chatId: null },
+    {
+      kind: "reminder",
+      title: "Renew the Apple developer account",
+      dueAt: "2026-11-13T09:00:00.000Z",
+      chatId: null,
+    },
+    {
+      kind: "follow_up",
+      title: "Check whether the billing migration PR was reviewed, and chase it if not",
+      dueAt: "2026-11-11T14:30:00.000Z",
+      chatId: null,
+    },
+    { kind: "scheduled", title: "Morning brief", chatId: null },
+  ],
+};
+
 /** Dev fixtures for every chat list state, shown in the component catalog. */
 export function KinChatsCatalog() {
   const [selected, setSelected] = useState(0);
@@ -252,6 +282,10 @@ export function KinChatsCatalog() {
           onOpenWaiting={() => setNote("Opens Waiting on you")}
           onOpenChat={(chatId) => setNote(`Opens chat ${chatId}`)}
         />
+      </View>
+      <AppText className="text-lg font-t3-semibold">Kin lead details</AppText>
+      <View className="gap-5 rounded-[24px] border border-border bg-screen p-4">
+        <KinLeadProfileView lead={LEAD_FIXTURE} />
       </View>
     </View>
   );

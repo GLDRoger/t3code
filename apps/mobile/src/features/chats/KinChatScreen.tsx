@@ -17,6 +17,7 @@ import {
   type KinChatHistoryResult,
   type KinChatMember,
   type KinChatSummary,
+  type KinLeadsListResult,
   type KinMessage,
   type KinReaction,
   type KinReactionEmoji,
@@ -27,7 +28,7 @@ import {
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { Atom, type AsyncResult } from "effect/reactivity";
+import { Atom, AsyncResult } from "effect/reactivity";
 import { KeyboardAwareLegendList } from "@legendapp/list/keyboard";
 import { use, useEffect, useRef, useState, type ComponentPropsWithRef } from "react";
 import {
@@ -45,6 +46,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AppBar } from "../../components/ui/AppBar";
 import { Button } from "../../components/ui/Button";
 import { ControlPill } from "../../components/ui/ControlPill";
+import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ErrorBanner } from "../../components/ui/ErrorBanner";
 import { LoadingStrip } from "../../components/ui/LoadingStrip";
@@ -72,8 +74,7 @@ import {
 } from "./components/KinComposer";
 import { KinFoldLine } from "./components/KinFoldLine";
 import { KinMessageSheet } from "./components/KinMessageSheet";
-import type { KinAvatarStatus } from "./components/KinAvatar";
-import { KinChatTitlePill } from "./components/KinChatTitlePill";
+import { KinChatTitle } from "./components/KinChatTitle";
 import { KinOfflineState, KinStaleNoticeView } from "./components/KinScreenState";
 import { KinIntro } from "./components/KinIntro";
 import {
@@ -197,6 +198,8 @@ type ChatResult = AsyncResult.AsyncResult<KinSynced<KinChatState>, unknown> | nu
 type InboxResult = AsyncResult.AsyncResult<KinSynced<KinInboxState>, unknown> | null;
 const noChatAtom: Atom.Atom<ChatResult> = Atom.make<ChatResult>(null);
 const noInboxAtom: Atom.Atom<InboxResult> = Atom.make<InboxResult>(null);
+type LeadsResult = AsyncResult.AsyncResult<KinLeadsListResult, unknown> | null;
+const noLeadsAtom: Atom.Atom<LeadsResult> = Atom.make<LeadsResult>(null);
 
 const decodeChatId = Schema.decodeUnknownOption(KinChatId);
 /** Read at render: a mute only ends when its time passes, and a re-render reads it again. */
@@ -233,6 +236,16 @@ function KinLiveChat(props: {
       : undefined;
   // The owner's own lead in their direct chat: the only one they can stop.
   const ownedAgentId = summary === undefined ? null : kinOwnedLeadAgentId(summary, viewer.personId);
+  const leads = useAtomValue(
+    environmentId === null || summary === undefined || ownedAgentId === null
+      ? noLeadsAtom
+      : kinClient.leads({ environmentId, input: { orgId: summary.orgId } }),
+  );
+  const charter =
+    leads !== null && AsyncResult.isSuccess(leads)
+      ? (leads.value.leads.find((lead) => lead.agentId === ownedAgentId)?.charter ?? null)
+      : null;
+  const navigation = useNavigation();
   const canInterrupt = useAtomValue(kinClient.leadInterrupt.permissionAtom(props.environmentId));
   const canMute = useAtomValue(kinClient.mute.permissionAtom(props.environmentId));
   const runMute = useAtomCommand(kinClient.mute, "Muting this chat");
@@ -305,6 +318,19 @@ function KinLiveChat(props: {
         members={summary?.members ?? []}
         direct={summary?.kind === "direct"}
         ownsLead={ownedAgentId !== null}
+        lead={
+          environmentId === null || summary === undefined || ownedAgentId === null
+            ? null
+            : {
+                charter,
+                open: () =>
+                  navigation.navigate("KinLead", {
+                    environmentId,
+                    orgId: summary.orgId,
+                    agentId: ownedAgentId,
+                  }),
+              }
+        }
         onRetry={retry}
         readHistory={
           state._tag === "ready" && state.connected
@@ -401,58 +427,74 @@ const KIN_BAR_SUBTITLE_SIZE = 12;
 const KIN_BAR_MAX_FONT_SCALE = 1.5;
 
 /**
- * The glass bar. On iOS the title is a pill with the lead's avatar and a live dot; presence
- * moves to the status row above the composer, so the bar only names who the chat is with.
+ * The chat's bar, as on a thread: Back and who the chat is with. The avatar and name open the
+ * chat's details; presence sits in the status row above the composer.
  */
 function KinChatAppBar(props: {
   readonly title: string;
   readonly avatar: KinAvatarView;
-  readonly status: KinAvatarStatus | null;
   readonly presence: KinPresence | undefined;
   readonly tasks: string | null;
   readonly onBack: () => void;
-  readonly menus: ComponentPropsWithRef<typeof AppBar>["menus"];
+  readonly details: KinChatDetails | null;
 }) {
-  const pill = Platform.OS === "ios";
-  const now = useKinPresenceNow(!pill && kinPresenceNeedsClock(props.presence));
-  const subtitle = pill ? null : (kinPresenceLine(props.presence, now)?.subtitle ?? props.tasks);
+  const ios = Platform.OS === "ios";
+  const now = useKinPresenceNow(!ios && kinPresenceNeedsClock(props.presence));
+  const subtitle = ios ? null : (kinPresenceLine(props.presence, now)?.subtitle ?? props.tasks);
   // The native bar sets fixed font sizes, so it follows Dynamic Type only through these.
   const scale = useNativeFontScale(KIN_BAR_MAX_FONT_SCALE);
-  const { title, avatar, status, tasks } = props;
+  const { title, avatar, tasks, details } = props;
   const renderTitle = () => (
-    <KinChatHeaderTitle title={title} avatar={avatar} status={status} detail={tasks} />
+    <KinChatHeaderTitle title={title} avatar={avatar} detail={tasks} details={details} />
   );
   return (
     <>
-      <AppBar title={title} subtitle={subtitle} onBack={props.onBack} menus={props.menus} />
+      <AppBar
+        title={title}
+        subtitle={subtitle}
+        onBack={props.onBack}
+        titleContent={
+          <KinChatTitle
+            title={title}
+            avatar={avatar}
+            detail={null}
+            onPress={details?.open}
+            accessibilityHint={details?.hint}
+          />
+        }
+      />
       {/* Always set, so going back to the default size resets the bar. */}
       <NativeStackScreenOptions
-        optionsVersion={[title, avatar.seed, avatar.kind, status, tasks]}
+        optionsVersion={[title, avatar.seed, avatar.kind, tasks, details?.hint]}
         options={{
           headerTitleStyle: { fontSize: KIN_BAR_TITLE_SIZE * scale, fontWeight: "800" },
           headerSubtitleStyle: { fontSize: KIN_BAR_SUBTITLE_SIZE * scale },
-          headerTitle: pill ? renderTitle : undefined,
+          headerTitle: ios ? renderTitle : undefined,
         }}
       />
     </>
   );
 }
 
+/** What a tap on the chat's avatar or name opens. */
+type KinChatDetails = { readonly open: () => void; readonly hint: string };
+
 function KinChatHeaderTitle(props: {
   readonly title: string;
   readonly avatar: KinAvatarView;
-  readonly status: KinAvatarStatus | null;
   readonly detail: string | null;
+  readonly details: KinChatDetails | null;
 }) {
   const { width } = useWindowDimensions();
   const maxWidth = Math.max(120, width - (use(HeaderItemsWidthContext) ?? 160));
   return (
-    <KinChatTitlePill
+    <KinChatTitle
       title={props.title}
       avatar={props.avatar}
-      status={props.status}
       detail={props.detail}
       maxWidth={maxWidth}
+      onPress={props.details?.open}
+      accessibilityHint={props.details?.hint}
     />
   );
 }
@@ -485,8 +527,30 @@ function KinChatPage(props: {
   readonly direct?: boolean;
   /** The viewer owns this direct chat's lead, so a first run shows the intro. */
   readonly ownsLead?: boolean;
+  /** The viewer's own lead in this chat, for its details and the intro; null otherwise. */
+  readonly lead?: { readonly charter: string | null; readonly open: () => void } | null;
 }) {
   const navigation = useNavigation();
+  const lead = props.lead ?? null;
+  const { mute } = props;
+  // A lead's details hold its mute; a chat without them asks about the mute directly.
+  const details: KinChatDetails | null =
+    lead !== null
+      ? { open: lead.open, hint: "Opens this lead's details" }
+      : mute == null
+        ? null
+        : {
+            hint: mute.muted ? "Offers to unmute this chat" : "Offers to mute this chat",
+            open: () =>
+              Dialog.confirm({
+                title: props.title,
+                message: mute.muted
+                  ? "Notifications from this chat are muted."
+                  : "You get a notification for each new message in this chat.",
+                confirmText: mute.muted ? "Unmute notifications" : "Mute notifications",
+                onConfirm: mute.toggle,
+              }),
+          };
   const topInset = useContentTopInset();
   const { state } = props;
   const tasks = state._tag === "ready" ? kinChatStatusLine(state.chat.value.widgets) : null;
@@ -495,34 +559,10 @@ function KinChatPage(props: {
       <KinChatAppBar
         title={props.title}
         avatar={props.avatar ?? { kind: "agent", seed: `chat:${props.chatId}` }}
-        status={
-          livePresence(state) !== undefined
-            ? "working"
-            : state._tag === "ready" && state.connected && state.chat.live
-              ? "online"
-              : null
-        }
         presence={livePresence(state)}
         tasks={tasks}
         onBack={() => navigation.goBack()}
-        menus={
-          props.mute == null
-            ? undefined
-            : [
-                {
-                  title: "Chat options",
-                  icon: "ellipsis",
-                  items: [
-                    {
-                      id: "mute",
-                      title: props.mute.muted ? "Unmute notifications" : "Mute notifications",
-                      icon: props.mute.muted ? "bell" : "bell.slash",
-                      onPress: props.mute.toggle,
-                    },
-                  ],
-                },
-              ]
-        }
+        details={details}
       />
       <ScreenContent surface="screen">
         {state._tag === "ready" ? (
@@ -534,6 +574,7 @@ function KinChatPage(props: {
             environmentId={state.environmentId}
             chatId={props.chatId}
             agentName={props.agentName}
+            charter={lead?.charter ?? null}
             chat={state.chat}
             connected={state.connected}
             error={state.error}
@@ -582,8 +623,8 @@ function KinChatStateView(props: {
         return (
           <EmptyState
             variant="plain"
-            title="Kin isn't set up on this environment"
-            detail="Connect this phone to a T3 server that runs Kin."
+            title="No server with Kin yet"
+            detail="Connect this phone to a T3 Code server that has Kin turned on."
             actionLabel="Open environments"
             onAction={() => navigation.navigate("SettingsEnvironments")}
           />
@@ -592,7 +633,7 @@ function KinChatStateView(props: {
         return (
           <EmptyState
             variant="plain"
-            title="This Mac isn't paired with this phone"
+            title="This phone isn't paired with the server anymore"
             detail="Pair it again to open this chat."
             actionLabel="Open environments"
             onAction={() => navigation.navigate("SettingsEnvironments")}
@@ -602,16 +643,16 @@ function KinChatStateView(props: {
         return (
           <EmptyState
             variant="plain"
-            title="This device can't read Kin chats"
-            detail="Pair it again from the Mac."
+            title="This phone can't read Kin chats"
+            detail="Pair it again with the computer that runs T3 Code."
           />
         );
       case "noIdentity":
         return (
           <EmptyState
             variant="plain"
-            title="Kin doesn't know who you are on this server yet"
-            detail="Ask whoever runs Kin here to add you, then come back."
+            title="You're not in Kin on this server yet"
+            detail="Ask whoever runs it to add you, then come back."
           />
         );
       case "gone":
@@ -670,6 +711,8 @@ function KinChatFeed(props: {
   readonly environmentId: EnvironmentId;
   readonly chatId: KinChatId;
   readonly agentName: string | null;
+  /** What the viewer made their lead for, shown on the first-run intro. */
+  readonly charter: string | null;
   readonly chat: KinSynced<KinChatState>;
   readonly connected: boolean;
   /** The stream failed after the feed loaded. */
@@ -1078,7 +1121,12 @@ function KinChatFeed(props: {
   };
   const intro =
     showIntro && props.agentName !== null ? (
-      <KinIntro agentName={props.agentName} onSend={sendSample} onStart={startSample} />
+      <KinIntro
+        agentName={props.agentName}
+        charter={props.charter}
+        onSend={sendSample}
+        onStart={startSample}
+      />
     ) : null;
 
   const header = (
@@ -1255,7 +1303,6 @@ function KinChatFeed(props: {
                 icon="chevron.down"
                 label="New messages"
                 accessibilityLabel={`${unseen} new ${unseen === 1 ? "message" : "messages"}. Scroll to the latest.`}
-                className="border border-border shadow-md shadow-black/10"
                 onPress={jumpToEnd}
               />
             </View>
@@ -1328,25 +1375,12 @@ function KinFeedMessageActions(props: {
   );
 }
 
-/** The feed's markdown colours for text on the brand-coloured bubble. */
+/** The feed's markdown colours for text on T3's user bubble. */
 function useOwnBubbleMarkdownStyle(base: NativeMarkdownTextStyle): NativeMarkdownTextStyle {
   const text = String(
-    StyleSheet.flatten(useResolveClassNames("text-primary-foreground"))?.color ?? base.color,
+    StyleSheet.flatten(useResolveClassNames("text-user-bubble-foreground"))?.color ?? base.color,
   );
-  return {
-    ...base,
-    color: text,
-    strongColor: text,
-    mutedColor: text,
-    linkColor: text,
-    inlineCodeColor: text,
-    codeColor: text,
-    fileTextColor: text,
-    quoteMarkerColor: text,
-    dividerColor: text,
-    codeBackgroundColor: "rgba(255, 255, 255, 0.18)",
-    codeBlockBackgroundColor: "rgba(255, 255, 255, 0.18)",
-  };
+  return { ...base, color: text, strongColor: text };
 }
 
 // Messages fade under the floating bar instead of meeting it at a hard edge.

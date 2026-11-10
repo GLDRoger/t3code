@@ -44,7 +44,6 @@ import {
 import {
   kinReactionChips,
   kinReactionToggle,
-  kinSoftReplyMessageId,
   kinViewerMemberId,
 } from "@t3tools/client-runtime/kin/kinReactions";
 import {
@@ -57,8 +56,6 @@ import {
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import type { KinSynced } from "@t3tools/client-runtime/kin/kinStreams";
 import {
-  KIN_NO_REACTIONS,
-  KIN_YES_REACTIONS,
   KinChatId,
   type EnvironmentId,
   type KinChatMember,
@@ -72,7 +69,7 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { Atom, type AsyncResult } from "effect/reactivity";
-import { ArrowDownIcon, ArrowLeftIcon, BellOffIcon, ChevronUpIcon } from "lucide-react";
+import { ArrowDownIcon, ArrowLeftIcon, ChevronUpIcon } from "lucide-react";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 
 import {
@@ -122,7 +119,6 @@ const decodeChatId = Schema.decodeUnknownOption(KinChatId);
 
 // Mirrors the host's reactable cards; the host still refuses the rest.
 const REACTABLE_WIDGETS = new Set(["choice", "task", "routine"]);
-const YES_NO = new Set<string>([...KIN_YES_REACTIONS, ...KIN_NO_REACTIONS]);
 
 /** Every Kin host uses the same org id, so the environment keeps two hosts' drafts apart. */
 const kinDraftAtom = Atom.family((_key: string) =>
@@ -305,7 +301,7 @@ function KinChatHeader(props: {
     </>
   );
   return (
-    <WorkspacePageHeader electron={isElectron} className="border-b border-border">
+    <WorkspacePageHeader electron={isElectron}>
       <Button
         size="icon-sm"
         variant="ghost"
@@ -327,9 +323,7 @@ function KinChatHeader(props: {
           {identity}
         </button>
       )}
-      {props.muted ? (
-        <BellOffIcon aria-label="Muted" className="size-3.5 shrink-0 text-muted-foreground" />
-      ) : null}
+      {props.muted ? <span className="sr-only">Muted</span> : null}
       {subtitle === null ? null : (
         <p className="min-w-0 flex-1 truncate text-sm text-muted-foreground">{subtitle}</p>
       )}
@@ -481,13 +475,6 @@ function KinChatFeed(props: {
     canReactHere &&
     viewerMemberId !== null &&
     props.members.some((member) => member.memberId === viewerMemberId && member.role !== "guest");
-  const softReplyId = kinSoftReplyMessageId(
-    streamed.messages,
-    props.members,
-    props.viewer.personId,
-    props.direct,
-    nowMs,
-  );
   const reactorName = (memberId: string) => {
     const member = props.members.find((candidate) => candidate.memberId === memberId);
     if (member === undefined) return null;
@@ -704,12 +691,6 @@ function KinChatFeed(props: {
                     })
                 : null
             }
-            showReplyHint={
-              canReact &&
-              message.messageId === softReplyId &&
-              message.widgetId === null &&
-              !chips.some((chip) => chip.mine && YES_NO.has(chip.emoji))
-            }
           />
         );
       }
@@ -841,7 +822,7 @@ function KinChatFeed(props: {
         }
         renderItem={renderItem}
         // Both reach rows only through renderItem, which the list doesn't watch.
-        extraData={[streamed.widgets, streamed.reactions, softReplyId, canReact, display]}
+        extraData={[streamed.widgets, streamed.reactions, canReact, display]}
         estimatedItemSize={72}
         recycleItems={false}
         alignItemsAtEnd
