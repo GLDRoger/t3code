@@ -30,6 +30,26 @@ const journalDate = (path: string) => {
   return match ? `${match[1]}-${match[2]}-${match[3]}` : undefined;
 };
 
+// `## HH:MM · wake-up <id> · <agentId> · <level>`, as memory/journal.ts writes each entry.
+const ENTRY_HEADING = /^## \d{2}:\d{2} · wake-up (.+) · (.+) · L[0-3]$/;
+
+/** A journal file's entries, each with the wake-up and lead its heading names. */
+const journalEntries = (text: string) => {
+  const entries: Array<{
+    wakeupId?: string | undefined;
+    agentId?: string | undefined;
+    text: string;
+  }> = [];
+  for (const line of text.split("\n")) {
+    const heading = ENTRY_HEADING.exec(line);
+    if (heading !== null) entries.push({ wakeupId: heading[1], agentId: heading[2], text: "" });
+    else if (entries.length === 0) entries.push({ text: "" });
+    const entry = entries[entries.length - 1]!;
+    entry.text += `${line}\n`;
+  }
+  return entries.filter((entry) => entry.text.trim() !== "");
+};
+
 /**
  * Originals in `(from, until]`: journal files, chat messages, worker reports and GitHub events.
  * Briefs, summaries and earlier dream output are never material. `full` adds every item.
@@ -46,24 +66,29 @@ export const collectMaterial = Effect.fn("DreamMaterial.collect")(
     const sql = yield* SqlClient.SqlClient;
     const { orgId, from, until } = input;
     const entries: Array<MaterialEntry> = [];
-    const [lead] = yield* sql<{
-      agentId: string;
-    }>`SELECT l.agent_id AS "agentId" FROM kin_leads l
-      JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
-      WHERE l.org_id = ${orgId} AND a.retired_at IS NULL ORDER BY l.agent_id LIMIT 1`;
+    // A dream may edit journal files, so a heading names a lead only if it is one of this org's.
+    const leads = new Set(
+      (yield* sql<{ agentId: string }>`SELECT agent_id AS "agentId" FROM kin_leads
+        WHERE org_id = ${orgId} ORDER BY agent_id`).map((row) => row.agentId),
+    );
     const firstDay = from === 0 ? "" : ownerDate(from, input.timeZone);
     const lastDay = ownerDate(until, input.timeZone);
     for (const [path, text] of [...input.files].toSorted(([a], [b]) => (a < b ? -1 : 1))) {
       const day = journalDate(path);
       if (day === undefined || day < firstDay || day > lastDay) continue;
-      entries.push({
-        ref: `memory:${path}`,
-        kind: "journal",
-        saidBy: lead?.agentId ?? "kin",
-        trust: "agent",
-        at: `${day}T00:00:00.000Z`,
-        text,
-      });
+      const parts = journalEntries(text);
+      for (const [index, part] of parts.entries())
+        entries.push({
+          ref:
+            parts.length === 1
+              ? `memory:${path}`
+              : `memory:${path}#${part.wakeupId ?? `part-${index + 1}`}`,
+          kind: "journal",
+          saidBy: part.agentId !== undefined && leads.has(part.agentId) ? part.agentId : "kin",
+          trust: "agent",
+          at: `${day}T00:00:00.000Z`,
+          text: parts.length === 1 ? text : part.text,
+        });
     }
     const messages = yield* sql<{
       chatId: string;

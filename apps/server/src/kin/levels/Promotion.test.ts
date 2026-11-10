@@ -502,7 +502,7 @@ it.effect("every trial day with unreviewed entries gets a card, late entries inc
 
 it.effect("only the lead's owner reads, reviews, lowers or raises; others are refused", () =>
   Effect.gen(function* () {
-    const { lead, client, member, readOnly, entries, sql, level } = yield* seed;
+    const { lead, client, member, readOnly, entries, sql, level, direct } = yield* seed;
     yield* entries(["e-0"]);
     yield* sql`UPDATE kin_leads SET level = 'L2' WHERE org_id = ${lead.orgId}`;
     const lowerGroup = { ...lead, chatId: group, level: "L0" as const };
@@ -555,6 +555,14 @@ it.effect("only the lead's owner reads, reviews, lowers or raises; others are re
     );
     view = yield* client["kin.levels.lower"]({ ...lead, level: "L1" });
     assert.strictEqual(view.level, "L1");
+    // The owner's DM stays at L2 without a row of its own, and shows it.
+    assert.deepStrictEqual(
+      view.chats.map(({ chatId, level }) => ({ chatId, level })),
+      [
+        { chatId: group, level: "L0" },
+        { chatId: direct.chatId, level: "L2" },
+      ],
+    );
     assert.include(yield* client["kin.levels.lower"]({ ...lead, level: "L1" }).pipe(Effect.flip), {
       reason: "invalid_state",
     });

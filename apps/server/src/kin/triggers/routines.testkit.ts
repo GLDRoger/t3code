@@ -126,3 +126,19 @@ export const seed = Effect.fn("test.routinesSeed")(function* () {
     yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id) VALUES (${agent}, ${org}, 'Lead', 0, '{}', '[]', ${`chat-${org}`})`;
   }
 });
+
+/** Another live lead in `org`, with its own direct chat to the org's owner. */
+export const addLead = Effect.fn("test.routinesAddLead")(function* (
+  org: string,
+  agent: string,
+  domain: string,
+  createdAt: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const chat = `chat-${agent}`;
+  yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at) VALUES (${agent}, ${org}, ${agent}, 'lead', ${`owner-${org}`}, ${createdAt})`;
+  yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at) VALUES (${chat}, ${org}, 'direct', ${`owner-${org}:${agent}`}, 0, ${createdAt})`;
+  yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at) VALUES (${`owner-${chat}`}, ${org}, ${chat}, 'person', ${`owner-${org}`}, 'owner', ${createdAt})`;
+  yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at) VALUES (${`agent-${chat}`}, ${org}, ${chat}, 'agent', ${agent}, 'member', ${createdAt})`;
+  yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id, domain) VALUES (${agent}, ${org}, ${agent}, 0, '{}', '[]', ${chat}, ${domain})`;
+});

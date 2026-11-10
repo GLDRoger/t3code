@@ -134,6 +134,7 @@ describe("Kin migrations", () => {
           { migration_id: 27, name: "AuthorityBinding" },
           { migration_id: 28, name: "WakeupTimings" },
           { migration_id: 29, name: "DropJudgeLog" },
+          { migration_id: 30, name: "ManyLeads" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
@@ -220,6 +221,7 @@ describe("Kin migrations", () => {
           { migration_id: 27, name: "AuthorityBinding" },
           { migration_id: 28, name: "WakeupTimings" },
           { migration_id: 29, name: "DropJudgeLog" },
+          { migration_id: 30, name: "ManyLeads" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -250,6 +252,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_floor_latest" },
           { name: "idx_kin_floor_notices_rate" },
           { name: "idx_kin_floor_open" },
+          { name: "idx_kin_leads_org_domain" },
           { name: "idx_kin_messages_changes" },
           { name: "idx_kin_pending_actions_approved" },
           { name: "idx_kin_pending_actions_expiry" },
@@ -327,6 +330,7 @@ describe("Kin migrations", () => {
         [27, "AuthorityBinding"],
         [28, "WakeupTimings"],
         [29, "DropJudgeLog"],
+        [30, "ManyLeads"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -389,6 +393,9 @@ describe("Kin migrations", () => {
         "resumed",
       ])
         yield* sql`ALTER TABLE kin_wakeups DROP COLUMN ${sql(column)}`;
+      yield* sql`DROP INDEX idx_kin_leads_org_domain`;
+      for (const column of ["domain", "charter", "created_by_person_id"])
+        yield* sql`ALTER TABLE kin_leads DROP COLUMN ${sql(column)}`;
       for (const table of [
         "kin_reactions",
         "kin_memory_review_pulls",
@@ -432,6 +439,7 @@ describe("Kin migrations", () => {
         [27, "AuthorityBinding"],
         [28, "WakeupTimings"],
         [29, "DropJudgeLog"],
+        [30, "ManyLeads"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,
@@ -486,6 +494,7 @@ describe("Kin migrations", () => {
         { migration_id: 27, name: "AuthorityBinding" },
         { migration_id: 28, name: "WakeupTimings" },
         { migration_id: 29, name: "DropJudgeLog" },
+        { migration_id: 30, name: "ManyLeads" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);
@@ -507,6 +516,9 @@ describe("Kin migrations", () => {
         "resumed",
       ])
         yield* sql`ALTER TABLE kin_wakeups DROP COLUMN ${sql(column)}`;
+      yield* sql`DROP INDEX idx_kin_leads_org_domain`;
+      for (const column of ["domain", "charter", "created_by_person_id"])
+        yield* sql`ALTER TABLE kin_leads DROP COLUMN ${sql(column)}`;
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 27`;
       for (const [id, subject, method, ip, revoked] of [
         ["phone", "one-time-token", "bearer-access-token", "100.64.0.7", null],
@@ -527,6 +539,7 @@ describe("Kin migrations", () => {
         [27, "AuthorityBinding"],
         [28, "WakeupTimings"],
         [29, "DropJudgeLog"],
+        [30, "ManyLeads"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT session_id, via FROM kin_auth_paired_sessions ORDER BY session_id`,
@@ -550,7 +563,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 29");
+      assert.include(String(exit), "below the latest applied migration 30");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -591,6 +604,9 @@ describe("Kin migrations", () => {
             '{"strong":{"instanceId":"codex","model":"strong"},"cheap":{"instanceId":"codex","model":"cheap"}}',
           worker_projects_json: '["upstream-project"]',
           owner_chat_id: "direct",
+          domain: "engineering",
+          charter: "",
+          created_by_person_id: null,
         },
         kin_wakeups: {
           org_id: "org",

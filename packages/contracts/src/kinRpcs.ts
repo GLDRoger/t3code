@@ -4,6 +4,8 @@ import {
   KinBudget,
   KinBudgetGetInput,
   KinBudgetSetInput,
+  KinLeadCreated,
+  KinLeadCreateInput,
   KinOrgGetInput,
   KinOrgPauseInput,
   KinOrgResumeInput,
@@ -50,11 +52,17 @@ const KinOrgRpcs = [
     error: KinError,
   }),
 ] as const;
-// Owner-only: stops one wake-up, never the org; kin.org.pause is the stop switch.
+// Owner-only: interrupt stops one wake-up, never the org; kin.org.pause is the stop switch.
+// create adds a lead at L0 with its direct chat to its creator, as `kin lead create` does.
 const KinLeadRpcs = [
   Rpc.make("kin.lead.interrupt", {
     payload: KinLeadInterruptInput,
     success: KinLeadInterruptResult,
+    error: KinError,
+  }),
+  Rpc.make("kin.lead.create", {
+    payload: KinLeadCreateInput,
+    success: KinLeadCreated,
     error: KinError,
   }),
 ] as const;
@@ -121,6 +129,8 @@ export const KIN_RPC_SCOPES = {
   "kin.org.pause": AuthOrchestrationOperateScope,
   "kin.org.resume": AuthOrchestrationOperateScope,
   "kin.lead.interrupt": AuthOrchestrationOperateScope,
+  // A new lead is an owner setting, like the budget, and spends from the same budget.
+  "kin.lead.create": AuthSettingsWriteScope,
   "kin.triggers.getTimeZone": AuthOrchestrationReadScope,
   "kin.triggers.setTimeZone": AuthSettingsWriteScope,
   "kin.webhooks.github.setup": AuthSettingsWriteScope,
@@ -136,6 +146,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.org.pause": "kin-org",
   "kin.org.resume": "kin-org",
   "kin.lead.interrupt": "kin-org",
+  "kin.lead.create": "kin-chat",
   "kin.orgs.list": "kin-chat",
   "kin.chats.subscribe": "kin-chat",
   "kin.chats.createDirect": "kin-chat",

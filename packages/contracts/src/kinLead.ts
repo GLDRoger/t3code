@@ -61,6 +61,36 @@ export const KinLead = Schema.Struct({
 });
 export type KinLead = typeof KinLead.Type;
 
+/** A lead's domain as a short slug, such as `engineering`, `growth` or `chief-of-staff`. */
+export const KinLeadDomain = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9-]{0,39}$/));
+export type KinLeadDomain = typeof KinLeadDomain.Type;
+/** What the lead is for, in the owner's words; it is added to every wake-up's prompt. */
+export const KinLeadCharter = Schema.String.check(Schema.isMaxLength(1_000));
+export type KinLeadCharter = typeof KinLeadCharter.Type;
+
+export const KinLeadCreateInput = Schema.Struct({
+  orgId: KinOrgId,
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
+  domain: KinLeadDomain,
+  charter: KinLeadCharter,
+  // Omitted: the models of the org's first live lead.
+  models: Schema.optional(Schema.Struct({ strong: ModelSelection, cheap: ModelSelection })),
+  workerProjects: Schema.optional(Schema.Array(ProjectId)),
+});
+export type KinLeadCreateInput = typeof KinLeadCreateInput.Type;
+export const KinLeadCreated = Schema.Struct({
+  // `existing`: the creator already has a live lead with this name and domain; nothing changed.
+  outcome: Schema.Literals(["created", "existing"]),
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+  name: TrimmedNonEmptyString,
+  domain: KinLeadDomain,
+  level: KinLevel,
+  ownerChatId: KinChatId,
+  createdByPersonId: KinPersonId,
+});
+export type KinLeadCreated = typeof KinLeadCreated.Type;
+
 export const MemoryItemKind = Schema.Literals([
   "objective",
   "commitment",
@@ -393,6 +423,16 @@ export const KinBudget = Schema.Struct({
   leadUnits: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
   workerUnits: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
   limits: KinBudgetLimits,
+  // Today's lead units by lead, largest first; the limit stays one figure for the org.
+  leads: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        agentId: KinAgentId,
+        name: Schema.String,
+        leadUnits: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+      }),
+    ),
+  ),
 });
 export type KinBudget = typeof KinBudget.Type;
 export const KinBudgetGetInput = Schema.Struct({ orgId: KinOrgId });

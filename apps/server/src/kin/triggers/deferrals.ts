@@ -1,5 +1,4 @@
 import {
-  KinAgentId,
   type KinAuthor,
   KinChatId,
   KinDeferralCard,
@@ -26,6 +25,8 @@ import { stringify } from "yaml";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import * as KinLevels from "../lead/KinLevels.ts";
+import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { WorkerLaunchGate } from "../lead/Workers.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
@@ -210,6 +211,28 @@ export const KinDeferralStopSwitch = Context.Reference<{
 /** The lead level work may start at; an owner tap is not a level grant. */
 export const startsAtLevel = (level: string) => level === "L2" || level === "L3";
 
+/**
+ * The lead a deferral's due work goes to: its chat's lead, else the chief of staff, else the first
+ * lead. Its level is the one in its owner's direct chat, where a `deferral.due` wake-up runs.
+ */
+export const deferralLead = Effect.fn("Deferrals.lead")(function* (
+  sql: SqlClient.SqlClient,
+  orgId: KinOrgId,
+  chatId: string | null | undefined,
+) {
+  const lead = yield* liveLead(sql, orgId, { chatId, prefer: CHIEF_OF_STAFF_DOMAIN });
+  if (lead === undefined) return undefined;
+  const level = yield* KinLevels.effectiveLevel({
+    orgId,
+    agentId: lead.agentId,
+    chatId: lead.ownerChatId,
+  }).pipe(
+    Effect.provideService(SqlClient.SqlClient, sql),
+    Effect.catchTags({ KinLevelRefused: () => Effect.undefined }),
+  );
+  return level === undefined ? undefined : { ...lead, level };
+});
+
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
 
@@ -312,11 +335,14 @@ export const makeDeferralStarter = Effect.gen(function* () {
     readonly now: number;
     /** The run state the caller read in this transaction. */
     readonly from: string;
+    /** The item's chat, whose lead gets the work. */
+    readonly chatId: string | null | undefined;
   }) {
     const { orgId, itemId, dueAt, at, now } = input;
-    const [lead] = yield* sql<{ agentId: string }>`SELECT l.agent_id AS "agentId" FROM kin_leads l
-      JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
-      WHERE l.org_id = ${orgId} AND a.retired_at IS NULL ORDER BY l.agent_id LIMIT 1`;
+    const lead = yield* liveLead(sql, orgId, {
+      chatId: input.chatId,
+      prefer: CHIEF_OF_STAFF_DOMAIN,
+    });
     if (lead === undefined) return false;
     const moved = yield* sql`UPDATE kin_deferral_runs SET state = 'started', updated_at = ${now}
       WHERE org_id = ${orgId} AND item_id = ${itemId} AND due_at = ${dueAt}
@@ -329,7 +355,7 @@ export const makeDeferralStarter = Effect.gen(function* () {
           _tag: "deferral.due",
           eventId: KinEventId.make(`deferral_${hex(`${orgId.length}:${orgId}${dedupeKey}`)}`),
           orgId,
-          agentId: KinAgentId.make(lead.agentId),
+          agentId: lead.agentId,
           receivedAt: iso(at),
           provenance: input.provenance,
           dedupeKey,
@@ -467,9 +493,7 @@ const make = Effect.gen(function* () {
             if (yield* (yield* KinDeferralStopSwitch).isStopped(orgId))
               return yield* Effect.fail("stopped" as const);
             if (!(yield* WorkerLaunchGate)) return yield* Effect.fail("workers_blocked" as const);
-            const [lead] = yield* sql<{ level: string }>`SELECT l.level FROM kin_leads l
-              JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
-              WHERE l.org_id = ${orgId} AND a.retired_at IS NULL ORDER BY l.agent_id LIMIT 1`;
+            const lead = yield* deferralLead(sql, orgId, item.head.chat);
             if (lead === undefined || !startsAtLevel(lead.level))
               return yield* Effect.fail("below_l2" as const);
             const now = yield* Clock.currentTimeMillis;
@@ -489,6 +513,7 @@ const make = Effect.gen(function* () {
                   at: now,
                   now,
                   from: run.state,
+                  chatId: item.head.chat,
                 });
               }),
             );

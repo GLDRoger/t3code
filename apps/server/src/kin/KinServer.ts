@@ -6,6 +6,8 @@ import { KinIdentity } from "./chat/KinIdentity.ts";
 import { KinChatService } from "./chat/KinChatService.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
 import { KinBudget } from "./lead/KinBudget.ts";
+import type { KinChatRepository } from "./chat/KinChatRepository.ts";
+import type * as SqlClient from "effect/sql/SqlClient";
 import { KinEventQueue } from "./lead/KinEventQueue.ts";
 import { ApproverKeys } from "./approvals/ApproverKeys.ts";
 import { GrantVerifier } from "./approvals/GrantVerifier.ts";
@@ -27,6 +29,8 @@ export type Services =
   | KinIdentity
   | KinChatService
   | KinBudget
+  | KinChatRepository
+  | SqlClient.SqlClient
   | KinEventQueue
   | KinChatHub
   | KinStop

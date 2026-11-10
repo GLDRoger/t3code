@@ -5,7 +5,6 @@ import {
   KinMessageId,
   KinOrgId,
   KinWidgetId,
-  KinPersonId,
   type MemoryItemHead,
   WorkerReport,
   type KinWidget,
@@ -29,6 +28,7 @@ import { memoryDateMillis } from "../memory/frontMatter.ts";
 import * as Chat from "../chat/KinChatService.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as Hub from "../chat/KinChatHub.ts";
+import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 
 const day = 86_400_000;
 const reasons = ["past_review", "misleading", "old_low_trust", "no_evidence"] as const;
@@ -246,12 +246,10 @@ const make = Effect.gen(function* () {
                     ({ itemId, reason }) => ({ itemId, reason }),
                   );
                 if (selections.length === 0) return selections;
-                const [lead] = yield* sql<{
-                  owner_chat_id: string;
-                  owner_person_id: string;
-                }>`SELECT l.owner_chat_id, a.owner_person_id FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id WHERE l.org_id = ${orgId} AND a.retired_at IS NULL ORDER BY l.agent_id LIMIT 1`;
+                // The lead the owner_check routine goes to (triggers/routines.ts).
+                const lead = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
                 if (lead === undefined) return yield* Effect.fail("missing_lead");
-                const chatId = KinChatId.make(lead.owner_chat_id);
+                const chatId = lead.ownerChatId;
                 const { message } = yield* chat.notice({
                   orgId,
                   chatId,
@@ -277,7 +275,7 @@ const make = Effect.gen(function* () {
                   state,
                   source: null,
                   feed: null,
-                  awaiting: [KinPersonId.make(lead.owner_person_id)],
+                  awaiting: [lead.ownerPersonId],
                   pinnedAt: null,
                   closedAt: null,
                   updatedAt: now,

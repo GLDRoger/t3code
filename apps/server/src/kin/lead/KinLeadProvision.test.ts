@@ -35,7 +35,7 @@ const layer = Provision.layer.pipe(
 );
 // The owner's phone, paired; `session(...)` stands for it.
 const paired = Layer.effectDiscard(pairSession("phone")).pipe(Layer.provideMerge(layer));
-const session = (scopes: AuthenticatedSession["scopes"]): Provision.LeadOwner => ({
+const session = (scopes: AuthenticatedSession["scopes"]): Provision.LeadCreator => ({
   _tag: "session",
   session: {
     sessionId: AuthSessionId.make("phone"),
@@ -46,9 +46,11 @@ const session = (scopes: AuthenticatedSession["scopes"]): Provision.LeadOwner =>
 });
 const owner = session(AuthStandardClientScopes);
 const project = ProjectId.make("project-a");
-const input = (who: Provision.LeadOwner = owner, workerProjects = [project]) => ({
-  owner: who,
+const input = (who: Provision.LeadCreator = owner, workerProjects = [project]) => ({
+  creator: who,
   name: "Ada",
+  domain: "engineering",
+  charter: "",
   models: {
     // The default Claude instance, and a custom one that settings name as Claude.
     strong: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "claude-opus-4-6" },
@@ -102,11 +104,17 @@ describe("KinLeadProvision", () => {
         ],
       );
 
+      assert.strictEqual(lead.createdByPersonId, lead.ownerPersonId);
+      // It works at L2 in that chat from creation; the shadow week is for groups.
+      assert.strictEqual(
+        yield* KinLevels.effectiveLevel({ ...lead, chatId: lead.ownerChatId }),
+        "L2",
+      );
+
       const before = yield* counts;
-      const again = yield* Provision.create({
-        ...input({ _tag: "person", personId: lead.ownerPersonId }),
-        name: "Someone else",
-      });
+      const again = yield* Provision.create(
+        input({ _tag: "person", personId: lead.ownerPersonId }),
+      );
       assert.deepStrictEqual(again, { _tag: "existing", lead });
       assert.deepStrictEqual(yield* counts, before);
     }).pipe(Effect.provide(paired)),
@@ -149,37 +157,100 @@ describe("KinLeadProvision", () => {
       }).pipe(Effect.provide(paired)),
   );
 
-  it.effect("refuses a second live lead in the org", () =>
+  it.effect("creates a second and third lead per domain, each with its own chat, owner-only", () =>
     Effect.gen(function* () {
       const repo = yield* Repository.KinChatRepository;
       const sql = yield* SqlClient.SqlClient;
-      const [org] = yield* repo.listAllOrgs();
-      const orgId = org!.orgId;
-      const at = "2026-11-09T00:00:00.000Z";
+      const tech = (yield* Provision.create(input(owner, []))).lead;
+      yield* TestClock.adjust("1 minute");
+      const growth = yield* Provision.create({
+        ...input({ _tag: "person", personId: tech.ownerPersonId }, []),
+        name: "Growth",
+        domain: "growth",
+        charter: "Grow signups. Own launch posts and the waitlist.",
+      });
+      assert.strictEqual(growth._tag, "created");
+      // No models named: the org's first lead's.
+      const { models: _models, ...noModels } = input(owner, []);
+      yield* TestClock.adjust("1 minute");
+      const finance = yield* Provision.create({
+        ...noModels,
+        name: "Finance",
+        domain: "finance",
+        charter: "Invoices and chasing what's overdue.",
+      });
+      assert.deepStrictEqual(finance.lead.models, tech.models);
+      assert.deepStrictEqual(
+        (yield* Provision.list()).map(({ name, domain, charter, level }) => ({
+          name,
+          domain,
+          charter,
+          level,
+        })),
+        [
+          { name: "Ada", domain: "engineering", charter: "", level: "L0" },
+          {
+            name: "Growth",
+            domain: "growth",
+            charter: "Grow signups. Own launch posts and the waitlist.",
+            level: "L0",
+          },
+          {
+            name: "Finance",
+            domain: "finance",
+            charter: "Invoices and chasing what's overdue.",
+            level: "L0",
+          },
+        ],
+      );
+      const chats = new Set([tech, growth.lead, finance.lead].map((lead) => lead.ownerChatId));
+      assert.strictEqual(chats.size, 3);
+      for (const lead of [growth.lead, finance.lead]) {
+        const members = yield* repo.listMembers({ orgId: lead.orgId, chatId: lead.ownerChatId });
+        assert.sameDeepMembers(
+          members.map(({ principal }) => principal),
+          [
+            { _tag: "agent", agentId: lead.agentId },
+            { _tag: "person", personId: tech.ownerPersonId },
+          ],
+        );
+      }
+
+      // Only the owner changes a charter, from the host; it reads per wake-up.
+      const changed = yield* Provision.setCharter(growth.lead.agentId, {
+        charter: "Grow revenue.",
+      });
+      assert.deepStrictEqual(changed.lead, { ...growth.lead, charter: "Grow revenue." });
+      assert.strictEqual(
+        yield* refusal(Provision.setCharter(KinAgentId.make("missing"), { charter: "" })),
+        "not_found",
+      );
+
+      // A member of the org can't create one yet, though members will.
       const teammate = KinPersonId.make("teammate");
       yield* repo.insertPerson({
-        orgId,
+        orgId: tech.orgId,
         personId: teammate,
         handle: "teammate",
         displayName: "Teammate",
         githubLogin: null,
-        createdAt: at,
+        createdAt: "2026-11-09T00:00:00.000Z",
       });
-      yield* repo.insertAgent({
-        orgId,
-        agentId: KinAgentId.make("their-lead"),
-        displayName: "Theirs",
-        role: "lead",
-        ownerPersonId: teammate,
-        createdAt: at,
-      });
-      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at) VALUES ('their-chat', ${orgId}, 'team_group', 0, ${at})`;
-      const models = JSON.stringify(input().models);
-      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
-        VALUES ('their-lead', ${orgId}, 'Theirs', 0, ${models}, '[]', 'their-chat')`;
       const before = yield* counts;
-      assert.strictEqual(yield* refusal(Provision.create(input(owner, []))), "lead_exists");
+      assert.strictEqual(
+        yield* refusal(
+          Provision.create({
+            ...input({ _tag: "person", personId: teammate }, []),
+            domain: "social",
+          }),
+        ),
+        "not_owner",
+      );
       assert.deepStrictEqual(yield* counts, before);
+      assert.deepStrictEqual(
+        yield* sql`SELECT COUNT(*) AS n FROM kin_leads WHERE created_by_person_id = ${teammate} ORDER BY n`,
+        [{ n: 0 }],
+      );
     }).pipe(Effect.provide(paired)),
   );
 

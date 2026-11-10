@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import { KinOrgId, KinPersonId, KinWakeupId } from "@t3tools/contracts";
+import { KinAgentId, KinOrgId, KinPersonId, KinWakeupId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -155,6 +155,42 @@ describe("KinBudget", () => {
           { reason: "not_found" },
         );
       }).pipe(Effect.provide(layer)),
+  );
+  it.effect("keeps one daily figure per org and shows each lead's use, in the notice too", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const budget = yield* Budget.KinBudget;
+      const wakeupId = KinWakeupId.make("wakeup");
+      yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids) VALUES (${orgId}, ${wakeupId}, ${agentId}, 'cheap', 0, 'running', '[]')`;
+      yield* budget.charge({ orgId, wakeupId, usage });
+      // One daily figure for the org, with each lead's share; the notice names them.
+      const at = "1970-01-01T00:00:00.000Z";
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+        VALUES ('growth', ${orgId}, 'Growth', 'lead', 'owner', ${at})`;
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id, domain)
+        SELECT 'growth', org_id, 'Growth', level_since, models_json, worker_projects_json, owner_chat_id, 'growth'
+        FROM kin_leads WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+      const growthWakeup = KinWakeupId.make("growth-wakeup");
+      yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids) VALUES (${orgId}, ${growthWakeup}, 'growth', 'cheap', 0, 'completed', '[]')`;
+      yield* budget.charge({
+        orgId,
+        wakeupId: growthWakeup,
+        usage: [...usage, { ...usage[0]!, providerTurnId: "turn-2" }],
+      });
+      const shared = yield* budget.get(orgId);
+      assert.strictEqual(shared.leadUnits, 166.5);
+      assert.deepStrictEqual(shared.leads, [
+        { agentId: KinAgentId.make("growth"), name: "Growth", leadUnits: 111 },
+        { agentId, name: "Lead", leadUnits: 55.5 },
+      ]);
+      yield* budget.set(owner, { orgId, limits: { leadUnits: 100, workerUnits: 10 } });
+      yield* budget.admit(orgId, "P3");
+      const [notice] = yield* sql<{
+        body: string;
+      }>`SELECT body FROM kin_messages WHERE org_id = ${orgId} ORDER BY message_id`;
+      assert.include(notice?.body, "Used today: Growth 67%, Lead 33%.");
+    }).pipe(Effect.provide(layer)),
   );
   it.effect(
     "charges partial retries only by their positive delta and tolerates unusable usage",

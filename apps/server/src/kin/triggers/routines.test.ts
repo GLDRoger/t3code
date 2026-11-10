@@ -20,7 +20,7 @@ import * as OwnerTimeZone from "./ownerTimeZone.ts";
 import * as Routines from "./routines.ts";
 import * as TriggerScheduler from "./KinTriggerScheduler.ts";
 import * as TriggerStore from "./KinTriggerStore.ts";
-import { fixture, seed, orgId as orgA, otherOrg } from "./routines.testkit.ts";
+import { addLead, fixture, seed, orgId as orgA, otherOrg } from "./routines.testkit.ts";
 import { routineDisposition } from "./routines.ts";
 
 const decodeEventJson = Schema.decodeSync(Schema.fromJsonString(KinEvent));
@@ -53,6 +53,9 @@ it.effect(
   () =>
     Effect.gen(function* () {
       yield* seed();
+      // With many leads, org routines go to the chief of staff, whatever the ids sort as.
+      yield* addLead(orgA, "aaa-growth", "growth", "2026-11-08T00:00:00.000Z");
+      yield* addLead(orgA, "zzz-chief", "chief-of-staff", "2026-11-08T00:00:00.000Z");
       const routines = yield* Routines.KinRoutines;
       const scheduler = yield* TriggerScheduler.KinTriggerScheduler;
       const sql = yield* SqlClient.SqlClient;
@@ -74,6 +77,10 @@ it.effect(
       assert.lengthOf(rows, 2);
       assert.equal(new Set(rows.map((row) => row.dedupe_key)).size, 2);
       assert.equal(decodeEventJson(rows[0]!.json)._tag, "routine");
+      assert.deepStrictEqual(
+        rows.map((row) => decodeEventJson(row.json).agentId),
+        ["zzz-chief", `lead-${otherOrg}`],
+      );
       yield* TestClock.setTime(Date.parse("2026-11-09T13:00:00.000Z"));
       yield* scheduler.runDue();
       yield* routines.drain(orgA);

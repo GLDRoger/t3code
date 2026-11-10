@@ -641,6 +641,8 @@ it.effect("kin_delegate below L2 records a shadow entry and starts nothing", () 
   run(
     ({ ctx, fakes, workers }) =>
       Effect.gen(function* () {
+        // The owner's DM works at L2 from creation; the owner lowered it to the lead's L1.
+        yield* ctx.sql`INSERT INTO kin_chat_levels (org_id, agent_id, chat_id, level, level_since) SELECT org_id, ${leadId}, chat_id, 'L1', 0 FROM kin_chats WHERE org_id = ${ctx.orgId} ORDER BY chat_id`;
         const result = yield* workers.delegate(scope, delegateInput);
         assert.ok("shadowed" in result);
         assert.deepStrictEqual(yield* workers.delegate(scope, delegateInput), result);

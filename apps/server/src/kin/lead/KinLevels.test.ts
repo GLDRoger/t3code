@@ -86,6 +86,71 @@ it.effect("effectiveLevel is min(lead, chat) and reads only the stored level row
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect("a lead works at L2 in its own DM with its owner from creation, and nowhere else", () =>
+  Effect.gen(function* () {
+    const sql = yield* seed;
+    // The lead's owner chat is its direct chat with its owner; a teammate has a DM with it too.
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES ('teammate', ${orgId}, 'teammate', 'Teammate', ${at})`;
+    for (const [chat, person] of [
+      ["dm-owner", "owner-org"],
+      ["dm-teammate", "teammate"],
+    ] as const) {
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+        VALUES (${chat}, ${orgId}, 'direct', ${`${person}:${lead.agentId}`}, 0, ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+        VALUES (${`${chat}-lead`}, ${orgId}, ${chat}, 'agent', ${lead.agentId}, 'member', ${at})`;
+    }
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+      VALUES ('group-lead', ${orgId}, ${group}, 'agent', ${lead.agentId}, 'member', ${at})`;
+    yield* sql`UPDATE kin_leads SET owner_chat_id = 'dm-owner' WHERE agent_id = ${lead.agentId}`;
+    const dm = KinChatId.make("dm-owner");
+    const level = (chatId?: KinChatId) => KinLevels.effectiveLevel({ ...lead, chatId });
+    assert.strictEqual(yield* level(), "L0");
+    assert.strictEqual(yield* level(dm), "L2");
+    assert.strictEqual(yield* level(group), "L0");
+    assert.strictEqual(yield* level(KinChatId.make("dm-teammate")), "L0");
+    // Another org's lead can't borrow this DM.
+    assert.strictEqual(
+      yield* KinLevels.effectiveLevel({
+        orgId: KinOrgId.make("other"),
+        agentId: KinAgentId.make("lead-other"),
+        chatId: dm,
+      }),
+      "L0",
+    );
+
+    // A wake-up's level is its lane's: the group for a group message, else the owner's DM.
+    yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at, status, event_ids)
+      VALUES ('wakeup', ${orgId}, ${lead.agentId}, ${threadId}, 'test', 0, 'running', '[]')`;
+    const wakeup = { ...lead, wakeupId: "wakeup" };
+    assert.strictEqual(yield* KinLevels.wakeupLevel(wakeup), "L2");
+    yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
+      VALUES ('event', ${orgId}, ${lead.agentId}, 'chat.message', 'P0', ${JSON.stringify({ chatId: group })}, 0, 0, 'claimed', 'wakeup')`;
+    assert.strictEqual(yield* KinLevels.wakeupLevel(wakeup), "L0");
+
+    // The owner can still lower the DM, and raise it back up to L2 but no further.
+    assert.deepStrictEqual(yield* KinLevels.lower({ ...lead, chatId: dm, level: "L1" }), {
+      from: "L2",
+      to: "L1",
+    });
+    assert.strictEqual(yield* level(dm), "L1");
+    assert.include(yield* KinLevels.checkRaise({ ...lead, chatId: dm, level: "L2" }), {
+      from: "L1",
+    });
+    assert.include(
+      yield* KinLevels.checkRaise({ ...lead, chatId: dm, level: "L3" }).pipe(Effect.flip),
+      { reason: "invalid_level" },
+    );
+    // Past L2, the DM follows the lead's own level, under its cap.
+    yield* sql`UPDATE kin_leads SET level = 'L3' WHERE agent_id = ${lead.agentId}`;
+    assert.strictEqual(yield* level(dm), "L1");
+    yield* sql`DELETE FROM kin_chat_levels WHERE agent_id = ${lead.agentId}`;
+    assert.strictEqual(yield* level(dm), "L3");
+    assert.strictEqual(yield* level(group), "L3");
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect("a shadow entry needs the caller's running wake-up and is idempotent by key", () =>
   Effect.gen(function* () {
     const sql = yield* seed;
