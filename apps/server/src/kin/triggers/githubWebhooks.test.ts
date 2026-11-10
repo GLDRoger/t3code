@@ -308,6 +308,11 @@ describe("KinGithubWebhooks", () => {
               assert.include(unbotted, { reason: "invalid_state" });
               assert.include(unbotted.message, "[bot]");
               assert.deepStrictEqual((yield* tasks.list()).tasks, []);
+              assert.deepStrictEqual(yield* webhooks.status(owner, { orgId }), { status: "off" });
+              assert.strictEqual(
+                (yield* Effect.flip(webhooks.status(member, { orgId }))).reason,
+                "not_allowed",
+              );
               const setup = yield* webhooks.setup(owner, { orgId, projectId: project.id });
               assert.strictEqual(setup.status, "needs_secret");
               const [task] = (yield* tasks.list()).tasks;
@@ -357,6 +362,16 @@ describe("KinGithubWebhooks", () => {
                 botLogin: "kin-app[bot]",
               });
               assert.lengthOf(hookConfigs, 0);
+              // Setup bound the secret it generated, so status reports it set before GitHub has it.
+              assert.deepStrictEqual(yield* webhooks.status(owner, { orgId }), {
+                status: "on",
+                sourceId: setup.sourceId,
+                projectId: project.id,
+                url: setup.url,
+                enabled: true,
+                secretBound: true,
+                lastDelivery: null,
+              });
               assert.strictEqual(
                 (yield* GithubWebhooks.configureAppHook({
                   kind: "github.app_hook.configure",
@@ -479,6 +494,12 @@ describe("KinGithubWebhooks", () => {
                 signed(task, { delivery: "gh-owner", secret: Redacted.value(rekey) }),
               );
               assert.strictEqual(owners._tag, "rejected_signature");
+              const swapped = yield* webhooks.status(owner, { orgId });
+              assert.include(swapped, { status: "on", secretBound: false });
+              assert.deepInclude(swapped.status === "on" ? swapped.lastDelivery : null, {
+                outcome: "rejected_signature",
+                signatureVerified: false,
+              });
               assert.lengthOf(yield* inbox.listPending(orgId), 4);
               assert.strictEqual(
                 (yield* Effect.flip(
@@ -770,6 +791,7 @@ describe("KinGithubWebhooks", () => {
           rpc["kin.webhooks.github.setSecret"]({ orgId, secret: ownerSecret }),
         (rpc: typeof readOnly) => rpc["kin.webhooks.github.rotate"]({ orgId }),
         (rpc: typeof readOnly) => rpc["kin.webhooks.github.remove"]({ orgId }),
+        (rpc: typeof readOnly) => rpc["kin.webhooks.github.status"]({ orgId }),
       ];
       for (const call of calls) {
         assert.strictEqual(

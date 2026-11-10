@@ -36,6 +36,7 @@ import {
   type KinChatsCreateDirectInput,
   type KinMessage,
   type KinMessagesMarkReadInput,
+  type KinChatsMuteInput,
   type KinPersonId,
   type KinOrgId,
   type KinReaction,
@@ -121,6 +122,10 @@ export class KinChatService extends Context.Service<
       identities: ReadonlyArray<PersonIdentity>,
       input: KinChatsSubscribeInput,
     ) => Stream.Stream<KinChatListEvent, ServiceError>;
+    readonly mute: (
+      identity: PersonCaller,
+      input: KinChatsMuteInput,
+    ) => Effect.Effect<KinChatMember, ServiceError>;
     readonly leaveChat: (
       identity: PersonIdentity,
       input: { readonly chatId: KinChatId; readonly memberId: KinMemberId },
@@ -251,6 +256,8 @@ const checkpointEvery = 100;
 const PREVIEW_LOOKBACK = 20;
 export const KIN_WAKEUP_MESSAGE_LIMIT = 8;
 export const KIN_WAKEUP_CHAR_LIMIT = 32_000;
+/** A person's mute with no end: it lasts until they unmute. */
+const KIN_MUTED_FOREVER = "9999-12-31T23:59:59.999Z";
 /** Guests never write; a muted agent stays silent until its mute ends. */
 const mayWrite = (member: KinChatMember, agent: boolean, now: number) =>
   member.role !== "guest" &&
@@ -799,6 +806,20 @@ const make = Effect.gen(function* () {
       );
       return { orgs, me: identities.map(({ orgId, personId }) => ({ orgId, personId })) };
     }),
+    mute: Effect.fn("KinChatService.mute")(function* (caller, input) {
+      const identity = yield* personFor(caller, input);
+      const member = yield* memberFor(identity, input.chatId);
+      const mutedUntil = input.muted ? KIN_MUTED_FOREVER : null;
+      if (member.mutedUntil === mutedUntil) return member;
+      const updated = yield* requireRecord(repo.setMute({ ...member, mutedUntil }));
+      yield* hub.publish({
+        type: "member.updated",
+        orgId: identity.orgId,
+        chatId: input.chatId,
+        member: updated,
+      });
+      return updated;
+    }, transaction),
     leaveChat: Effect.fn("KinChatService.leaveChat")(function* (identity, input) {
       const caller = yield* memberFor(identity, input.chatId);
       if (caller.role !== "owner") return yield* notAllowed;
@@ -898,6 +919,7 @@ const make = Effect.gen(function* () {
                     });
                   }
                   case "member.removed":
+                  case "member.updated":
                     return event.member.chatId === input.chatId
                       ? Option.some<KinChatStreamEvent>({ _tag: "member", member: event.member })
                       : Option.none();

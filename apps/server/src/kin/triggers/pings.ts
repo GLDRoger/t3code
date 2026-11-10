@@ -23,6 +23,7 @@ import { PersistenceSqlError, toPersistenceSqlError } from "../../persistence/Er
 import * as Chat from "../chat/KinChatService.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as Cache from "../memory/MemoryCache.ts";
+import { isQuiet, KIN_DEFAULT_QUIET_HOURS } from "./quietHours.ts";
 
 const text = Schema.String.check(
   Schema.isTrimmed(),
@@ -94,13 +95,6 @@ function validZone(zone: string | undefined, fallback: string) {
   } catch {
     return fallback;
   }
-}
-function isQuiet(now: number, zone: string, hours: { readonly from: string; readonly to: string }) {
-  const p = localParts(now, zone);
-  const time = `${String(p.hour).padStart(2, "0")}:${String(p.minute).padStart(2, "0")}`;
-  return hours.from < hours.to
-    ? time >= hours.from && time < hours.to
-    : hours.from > hours.to && (time >= hours.from || time < hours.to);
 }
 
 export function quoted(value: string) {
@@ -217,8 +211,7 @@ const make = Effect.gen(function* () {
           quiet_hours_json: string;
         }>`SELECT quiet_hours_json FROM kin_trigger_settings WHERE org_id = ${orgId} ORDER BY org_id`;
         const defaultHours = decodeJsonQuiet(settings[0]?.quiet_hours_json);
-        const hours =
-          defaultHours._tag === "Some" ? defaultHours.value : { from: "21:00", to: "08:00" };
+        const hours = defaultHours._tag === "Some" ? defaultHours.value : KIN_DEFAULT_QUIET_HOURS;
         const people = yield* memory.query(orgId, { kind: "person", excludeInvalid: true });
         const candidates: Array<{
           row: Row;

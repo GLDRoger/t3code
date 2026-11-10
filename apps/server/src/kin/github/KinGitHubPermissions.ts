@@ -43,6 +43,15 @@ export const KIN_GITHUB_APP_EVENTS = [
   "push",
 ] as const;
 
+/** The App's subscribed events against Kin's, for `--check` and `kin github webhook status`. */
+export const diffAppEvents = (events: ReadonlyArray<string>) => {
+  const expected: ReadonlyArray<string> = KIN_GITHUB_APP_EVENTS;
+  return {
+    missing: expected.filter((event) => !events.includes(event)),
+    extra: events.filter((event) => !expected.includes(event)),
+  };
+};
+
 const rank = (access: string | undefined): number =>
   access === "read" ? 1 : access === "write" ? 2 : access === undefined ? 0 : 3;
 

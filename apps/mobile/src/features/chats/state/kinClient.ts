@@ -175,6 +175,12 @@ export const kinClient = {
     tag: "kin.lead.interrupt",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.wakeupId },
   }),
+  /** Mutes or unmutes this chat's pushes for the viewer; one in flight per chat. */
+  mute: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:mute",
+    tag: KIN_CHAT_WS_METHODS.chatsMute,
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.chatId },
+  }),
   markRead: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:mark-read",
     tag: KIN_CHAT_WS_METHODS.messagesMarkRead,

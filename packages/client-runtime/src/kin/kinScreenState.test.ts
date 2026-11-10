@@ -370,6 +370,27 @@ describe("chat list rows", () => {
     );
   });
 
+  it.each([
+    ["the viewer's open mute", "owner", "9999-12-31T23:59:59.999Z", true],
+    ["a mute that ended", "owner", "2026-11-08T09:00:00.000Z", false],
+    ["someone else's mute", "lead", "9999-12-31T23:59:59.999Z", false],
+  ] as const)("marks a chat muted for %s", (_name, mutedBy, mutedUntil, muted) => {
+    const members = [
+      { principal: { _tag: "person", personId: "owner" }, leftAt: null, mutedUntil: null },
+      { principal: { _tag: "agent", agentId: "lead" }, leftAt: null, mutedUntil: null },
+    ].map((member) =>
+      ("personId" in member.principal ? member.principal.personId : member.principal.agentId) ===
+      mutedBy
+        ? { ...member, mutedUntil }
+        : member,
+    );
+    const view = kinChatRowView(row({ members }), directory, Date.parse("2026-11-08T10:00:00Z"));
+    expect(view.muted).toBe(muted);
+    expect(kinChatRowLabel(view, () => "9:30")).toBe(
+      `Tech lead, agent. Payments test fixed, PR 212 ready. 9:30.${muted ? " Muted." : ""} 3 unread.`,
+    );
+  });
+
   it("prefixes the viewer's own message and drops a missing time and zero unread", () => {
     const view = kinChatRowView(
       row({

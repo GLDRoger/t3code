@@ -18,6 +18,7 @@ import {
   type KinChatHistoryInput,
   type KinChatHistoryResult,
   type KinChatMember,
+  type KinChatSummary,
   type KinMessage,
   type KinReaction,
   type KinReactionEmoji,
@@ -131,6 +132,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinInboxModel";
 import { kinPresenceLine, kinPresenceNeedsClock } from "@t3tools/client-runtime/kin/kinLive";
 import {
+  kinChatMuted,
   kinChatTitle,
   kinDirectAgentName,
   kinAgentAvatar,
@@ -147,6 +149,7 @@ import {
   kinSoftReplyMessageId,
   kinViewerMemberId,
 } from "@t3tools/client-runtime/kin/kinReactions";
+import { KinBadgeSync } from "./notifications/KinBadgeSync";
 import { KinChatPushWatch } from "./notifications/KinChatPushWatch";
 
 type KinChatParams = {
@@ -198,6 +201,9 @@ const noChatAtom: Atom.Atom<ChatResult> = Atom.make<ChatResult>(null);
 const noInboxAtom: Atom.Atom<InboxResult> = Atom.make<InboxResult>(null);
 
 const decodeChatId = Schema.decodeUnknownOption(KinChatId);
+/** Read at render: a mute only ends when its time passes, and a re-render reads it again. */
+const mutedNow = (chat: KinChatSummary, personId: string | null) =>
+  personId !== null && kinChatMuted(chat, new Set([personId]), Date.now());
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 
 function KinLiveChat(props: {
@@ -230,6 +236,9 @@ function KinLiveChat(props: {
   // The owner's own lead in their direct chat: the only one they can stop.
   const ownedAgentId = summary === undefined ? null : kinOwnedLeadAgentId(summary, viewer.personId);
   const canInterrupt = useAtomValue(kinClient.leadInterrupt.permissionAtom(props.environmentId));
+  const canMute = useAtomValue(kinClient.mute.permissionAtom(props.environmentId));
+  const runMute = useAtomCommand(kinClient.mute, "Muting this chat");
+  const muted = summary === undefined ? false : mutedNow(summary, viewer.personId);
 
   const retry = () => {
     if (environmentId === null) return;
@@ -243,6 +252,10 @@ function KinLiveChat(props: {
   return (
     <>
       <KinChatPushWatch environmentId={props.environmentId} chatId={props.chatId} />
+      {/* Only a live inbox: a saved one would put an old count back on the icon. */}
+      <KinBadgeSync
+        inbox={inbox?._tag === "Success" && inbox.value.live ? inbox.value.value : null}
+      />
       <KinChatPage
         environmentId={props.environmentId}
         orgId={props.orgId}
@@ -260,6 +273,16 @@ function KinLiveChat(props: {
         }
         agentName={summary === undefined ? null : kinDirectAgentName(summary, viewer.agentNames)}
         unread={summary?.unread ?? null}
+        mute={
+          environmentId === null || chatId === null || summary === undefined || !canMute
+            ? null
+            : {
+                muted,
+                toggle: () => {
+                  void runMute({ environmentId, input: { chatId, muted: !muted } });
+                },
+              }
+        }
         stopLead={
           environmentId === null || summary === undefined || ownedAgentId === null || !canInterrupt
             ? null
@@ -391,6 +414,7 @@ function KinChatAppBar(props: {
   readonly presence: KinPresence | undefined;
   readonly tasks: string | null;
   readonly onBack: () => void;
+  readonly menus: ComponentPropsWithRef<typeof AppBar>["menus"];
 }) {
   const pill = Platform.OS === "ios";
   const now = useKinPresenceNow(!pill && kinPresenceNeedsClock(props.presence));
@@ -403,7 +427,7 @@ function KinChatAppBar(props: {
   );
   return (
     <>
-      <AppBar title={title} subtitle={subtitle} onBack={props.onBack} />
+      <AppBar title={title} subtitle={subtitle} onBack={props.onBack} menus={props.menus} />
       {/* Always set, so going back to the default size resets the bar. */}
       <NativeStackScreenOptions
         optionsVersion={[title, avatar.seed, avatar.kind, status, tasks]}
@@ -452,6 +476,8 @@ function KinChatPage(props: {
   readonly markRead: MarkRead | null;
   /** Interrupts the lead's current wake-up; null unless the viewer owns it and may stop it. */
   readonly stopLead?: StopLead | null;
+  /** The viewer's mute for this chat's notifications; null until it can be set. */
+  readonly mute?: { readonly muted: boolean; readonly toggle: () => void } | null;
   readonly state: KinChatScreenState;
   readonly viewer: KinFeedViewer;
   readonly onRetry: () => void;
@@ -482,6 +508,24 @@ function KinChatPage(props: {
         presence={livePresence(state)}
         tasks={tasks}
         onBack={() => navigation.goBack()}
+        menus={
+          props.mute == null
+            ? undefined
+            : [
+                {
+                  title: "Chat options",
+                  icon: "ellipsis",
+                  items: [
+                    {
+                      id: "mute",
+                      title: props.mute.muted ? "Unmute notifications" : "Mute notifications",
+                      icon: props.mute.muted ? "bell" : "bell.slash",
+                      onPress: props.mute.toggle,
+                    },
+                  ],
+                },
+              ]
+        }
       />
       <ScreenContent surface="screen">
         {state._tag === "ready" ? (
