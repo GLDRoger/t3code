@@ -14,7 +14,29 @@ export const KIN_REACTION_NAMES: Readonly<Record<KinReactionEmoji, string>> = {
   "❌": "cross mark",
   "❤️": "heart",
   "👀": "eyes",
+  "😂": "laughing",
+  "🎉": "party",
+  "😮": "surprised",
+  "🔥": "fire",
+  "🙏": "thank you",
+  "😢": "sad",
+  "💯": "hundred",
 };
+
+/** The long-press sheet's reactions, in its two rows; ✅ and ❌ stay reachable as chips. */
+export const KIN_PICKER_REACTIONS = [
+  "👍",
+  "👎",
+  "❤️",
+  "😂",
+  "🎉",
+  "😮",
+  "🔥",
+  "👀",
+  "🙏",
+  "😢",
+  "💯",
+] as const satisfies ReadonlyArray<KinReactionEmoji>;
 
 export const KIN_REACTION_HINT = "React 👍/👎 to answer";
 export const KIN_REACTION_HINT_LABEL = "React thumbs up or thumbs down to answer";

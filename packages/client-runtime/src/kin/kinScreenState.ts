@@ -276,7 +276,14 @@ export interface KinAvatarView {
   readonly seed: string;
 }
 
-function kinAvatarView(
+/** An agent's avatar, the same wherever it shows: a chat row, the chat's title, its status line. */
+export const kinAgentAvatar = (agentId: string): KinAvatarView => ({
+  kind: "agent",
+  seed: `agent:${agentId}`,
+});
+
+/** A chat's avatar: its group, or the other side of a direct chat. */
+export function kinAvatarView(
   chat: KinChatSummary,
   counterpart: KinChatSummary["members"][number] | null,
 ): KinAvatarView {
@@ -285,7 +292,7 @@ function kinAvatarView(
   }
   const principal = counterpart?.principal;
   if (principal?._tag === "person") return { kind: "person", seed: `person:${principal.personId}` };
-  if (principal?._tag === "agent") return { kind: "agent", seed: `agent:${principal.agentId}` };
+  if (principal?._tag === "agent") return kinAgentAvatar(principal.agentId);
   return { kind: "agent", seed: `chat:${chat.chatId}` };
 }
 
