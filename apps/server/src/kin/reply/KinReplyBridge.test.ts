@@ -504,7 +504,6 @@ it.effect(
       const { fake, runId, complete, owner, services, chats, direct, posted, sql } = yield* setup({
         ask: "What can you do?",
       });
-      yield* Layer.build(ChatWake.layer.pipe(Layer.provide(Layer.succeedContext(services))));
       const all = yield* Context.get(services, KinChatHub).subscribeAll;
       const presence = Context.get(services, KinPresence);
       const lines = () => presence.snapshot(owner.orgId, direct.chatId).presence;
@@ -515,6 +514,9 @@ it.effect(
         tool("t2", 3, "Write", runId),
       ];
       yield* complete;
+      // Started once the ask is answered: the fixture's wake-up event lacks the dedupe key a real
+      // one has, so an earlier catch-up would queue the ask a second time.
+      yield* Layer.build(ChatWake.layer.pipe(Layer.provide(Layer.succeedContext(services))));
       assert.deepStrictEqual(lines(), []);
       assert.lengthOf(yield* posted, 1);
       const [reply] = yield* sql<{ messageId: KinMessageId }>`SELECT message_id AS "messageId"
