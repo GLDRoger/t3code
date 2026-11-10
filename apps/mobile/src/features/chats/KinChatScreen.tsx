@@ -17,6 +17,7 @@ import {
   type KinChatHistoryResult,
   type KinChatMember,
   type KinChatSummary,
+  type KinLeadsListResult,
   type KinMessage,
   type KinReaction,
   type KinReactionEmoji,
@@ -27,7 +28,7 @@ import {
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { Atom, type AsyncResult } from "effect/reactivity";
+import { Atom, AsyncResult } from "effect/reactivity";
 import { KeyboardAwareLegendList } from "@legendapp/list/keyboard";
 import { use, useEffect, useRef, useState, type ComponentPropsWithRef } from "react";
 import {
@@ -197,6 +198,8 @@ type ChatResult = AsyncResult.AsyncResult<KinSynced<KinChatState>, unknown> | nu
 type InboxResult = AsyncResult.AsyncResult<KinSynced<KinInboxState>, unknown> | null;
 const noChatAtom: Atom.Atom<ChatResult> = Atom.make<ChatResult>(null);
 const noInboxAtom: Atom.Atom<InboxResult> = Atom.make<InboxResult>(null);
+type LeadsResult = AsyncResult.AsyncResult<KinLeadsListResult, unknown> | null;
+const noLeadsAtom: Atom.Atom<LeadsResult> = Atom.make<LeadsResult>(null);
 
 const decodeChatId = Schema.decodeUnknownOption(KinChatId);
 /** Read at render: a mute only ends when its time passes, and a re-render reads it again. */
@@ -233,6 +236,16 @@ function KinLiveChat(props: {
       : undefined;
   // The owner's own lead in their direct chat: the only one they can stop.
   const ownedAgentId = summary === undefined ? null : kinOwnedLeadAgentId(summary, viewer.personId);
+  const leads = useAtomValue(
+    environmentId === null || summary === undefined || ownedAgentId === null
+      ? noLeadsAtom
+      : kinClient.leads({ environmentId, input: { orgId: summary.orgId } }),
+  );
+  const charter =
+    leads !== null && AsyncResult.isSuccess(leads)
+      ? (leads.value.leads.find((lead) => lead.agentId === ownedAgentId)?.charter ?? null)
+      : null;
+  const navigation = useNavigation();
   const canInterrupt = useAtomValue(kinClient.leadInterrupt.permissionAtom(props.environmentId));
   const canMute = useAtomValue(kinClient.mute.permissionAtom(props.environmentId));
   const runMute = useAtomCommand(kinClient.mute, "Muting this chat");
@@ -305,6 +318,19 @@ function KinLiveChat(props: {
         members={summary?.members ?? []}
         direct={summary?.kind === "direct"}
         ownsLead={ownedAgentId !== null}
+        lead={
+          environmentId === null || summary === undefined || ownedAgentId === null
+            ? null
+            : {
+                charter,
+                open: () =>
+                  navigation.navigate("KinLead", {
+                    environmentId,
+                    orgId: summary.orgId,
+                    agentId: ownedAgentId,
+                  }),
+              }
+        }
         onRetry={retry}
         readHistory={
           state._tag === "ready" && state.connected
@@ -411,6 +437,7 @@ function KinChatAppBar(props: {
   readonly presence: KinPresence | undefined;
   readonly tasks: string | null;
   readonly onBack: () => void;
+  readonly onOpenLead: (() => void) | null;
   readonly menus: ComponentPropsWithRef<typeof AppBar>["menus"];
 }) {
   const pill = Platform.OS === "ios";
@@ -418,16 +445,22 @@ function KinChatAppBar(props: {
   const subtitle = pill ? null : (kinPresenceLine(props.presence, now)?.subtitle ?? props.tasks);
   // The native bar sets fixed font sizes, so it follows Dynamic Type only through these.
   const scale = useNativeFontScale(KIN_BAR_MAX_FONT_SCALE);
-  const { title, avatar, status, tasks } = props;
+  const { title, avatar, status, tasks, onOpenLead } = props;
   const renderTitle = () => (
-    <KinChatHeaderTitle title={title} avatar={avatar} status={status} detail={tasks} />
+    <KinChatHeaderTitle
+      title={title}
+      avatar={avatar}
+      status={status}
+      detail={tasks}
+      onPress={onOpenLead}
+    />
   );
   return (
     <>
       <AppBar title={title} subtitle={subtitle} onBack={props.onBack} menus={props.menus} />
       {/* Always set, so going back to the default size resets the bar. */}
       <NativeStackScreenOptions
-        optionsVersion={[title, avatar.seed, avatar.kind, status, tasks]}
+        optionsVersion={[title, avatar.seed, avatar.kind, status, tasks, onOpenLead !== null]}
         options={{
           headerTitleStyle: { fontSize: KIN_BAR_TITLE_SIZE * scale, fontWeight: "800" },
           headerSubtitleStyle: { fontSize: KIN_BAR_SUBTITLE_SIZE * scale },
@@ -443,6 +476,7 @@ function KinChatHeaderTitle(props: {
   readonly avatar: KinAvatarView;
   readonly status: KinAvatarStatus | null;
   readonly detail: string | null;
+  readonly onPress: (() => void) | null;
 }) {
   const { width } = useWindowDimensions();
   const maxWidth = Math.max(120, width - (use(HeaderItemsWidthContext) ?? 160));
@@ -453,6 +487,7 @@ function KinChatHeaderTitle(props: {
       status={props.status}
       detail={props.detail}
       maxWidth={maxWidth}
+      onPress={props.onPress ?? undefined}
     />
   );
 }
@@ -485,8 +520,26 @@ function KinChatPage(props: {
   readonly direct?: boolean;
   /** The viewer owns this direct chat's lead, so a first run shows the intro. */
   readonly ownsLead?: boolean;
+  /** The viewer's own lead in this chat, for its details and the intro; null otherwise. */
+  readonly lead?: { readonly charter: string | null; readonly open: () => void } | null;
 }) {
   const navigation = useNavigation();
+  const lead = props.lead ?? null;
+  const menuItems = [
+    ...(lead === null
+      ? []
+      : [{ id: "lead", title: "Lead details", icon: "info.circle", onPress: lead.open }]),
+    ...(props.mute == null
+      ? []
+      : [
+          {
+            id: "mute",
+            title: props.mute.muted ? "Unmute notifications" : "Mute notifications",
+            icon: props.mute.muted ? "bell" : "bell.slash",
+            onPress: props.mute.toggle,
+          },
+        ]),
+  ];
   const topInset = useContentTopInset();
   const { state } = props;
   const tasks = state._tag === "ready" ? kinChatStatusLine(state.chat.value.widgets) : null;
@@ -505,23 +558,11 @@ function KinChatPage(props: {
         presence={livePresence(state)}
         tasks={tasks}
         onBack={() => navigation.goBack()}
+        onOpenLead={lead?.open ?? null}
         menus={
-          props.mute == null
+          menuItems.length === 0
             ? undefined
-            : [
-                {
-                  title: "Chat options",
-                  icon: "ellipsis",
-                  items: [
-                    {
-                      id: "mute",
-                      title: props.mute.muted ? "Unmute notifications" : "Mute notifications",
-                      icon: props.mute.muted ? "bell" : "bell.slash",
-                      onPress: props.mute.toggle,
-                    },
-                  ],
-                },
-              ]
+            : [{ title: "Chat options", icon: "ellipsis", items: menuItems }]
         }
       />
       <ScreenContent surface="screen">
@@ -534,6 +575,7 @@ function KinChatPage(props: {
             environmentId={state.environmentId}
             chatId={props.chatId}
             agentName={props.agentName}
+            charter={lead?.charter ?? null}
             chat={state.chat}
             connected={state.connected}
             error={state.error}
@@ -670,6 +712,8 @@ function KinChatFeed(props: {
   readonly environmentId: EnvironmentId;
   readonly chatId: KinChatId;
   readonly agentName: string | null;
+  /** What the viewer made their lead for, shown on the first-run intro. */
+  readonly charter: string | null;
   readonly chat: KinSynced<KinChatState>;
   readonly connected: boolean;
   /** The stream failed after the feed loaded. */
@@ -1078,7 +1122,12 @@ function KinChatFeed(props: {
   };
   const intro =
     showIntro && props.agentName !== null ? (
-      <KinIntro agentName={props.agentName} onSend={sendSample} onStart={startSample} />
+      <KinIntro
+        agentName={props.agentName}
+        charter={props.charter}
+        onSend={sendSample}
+        onStart={startSample}
+      />
     ) : null;
 
   const header = (

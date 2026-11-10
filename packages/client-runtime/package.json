@@ -575,6 +575,10 @@
       "types": "./src/kin/kinIntro.ts",
       "default": "./src/kin/kinIntro.ts"
     },
+    "./kin/kinLeadPresentation": {
+      "types": "./src/kin/kinLeadPresentation.ts",
+      "default": "./src/kin/kinLeadPresentation.ts"
+    },
     "./kin/kinChatListRows": {
       "types": "./src/kin/kinChatListRows.ts",
       "default": "./src/kin/kinChatListRows.ts"
