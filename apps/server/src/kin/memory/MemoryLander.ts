@@ -11,6 +11,7 @@ import * as Schema from "effect/Schema";
 import { VcsProcess } from "../../vcs/VcsProcess.ts";
 import { memoryGit } from "./git.ts";
 import {
+  LANDED_REF,
   Memory,
   type MemoryConfigError,
   MemoryError,
@@ -36,6 +37,18 @@ export type LandingOutcome =
   | { readonly _tag: "stuck"; readonly reason: string }
   /** Still stuck on the same local head, so nothing was tried. */
   | { readonly _tag: "waiting" };
+
+/** What went wrong, from the error's own tag and reason: a cause can quote git output and URLs. */
+const unexpected = (cause: Cause.Cause<unknown>) => {
+  const error: unknown = Cause.squash(cause);
+  const field = (name: string) => {
+    const value =
+      typeof error === "object" && error !== null ? Reflect.get(error, name) : undefined;
+    return typeof value === "string" ? value : undefined;
+  };
+  const detail = [field("_tag"), field("reason") ?? field("operation")].filter(Boolean).join(": ");
+  return `Kin hit an error while landing memory${detail ? ` (${detail})` : ""}`;
+};
 
 /** Told after every landing run, for tests and logs; never on the wake-up path. */
 export class MemoryLanderHooks extends Context.Reference<{
@@ -79,10 +92,17 @@ const make = Effect.gen(function* () {
     GIT_COMMITTER_NAME: config.botName ?? "Kin Memory Bot",
     GIT_COMMITTER_EMAIL: config.botEmail ?? "kin-memory@localhost",
   };
-  // The local head each org's landing stopped on; a new head, or a restart, tries again.
-  const stuck = new Map<KinOrgId, { readonly local: string; readonly reason: string }>();
+  // The local head each org's landing stopped on; a new head, or a restart, tries again. With no
+  // head, the failure came before one was read, and every signal tries again.
+  const stuck = new Map<
+    KinOrgId,
+    { readonly local: string | undefined; readonly reason: string }
+  >();
+  // Review commits whose PR could not be opened, by ref, with the reason the owner last heard.
+  const unpublished = new Map<string, string>();
   // Review PRs GitHub keeps refusing to close are reported once per process, not every sweep.
   const reportedOpen = new Set<string>();
+  // One server owns a state directory (`serverOwnership.ts`), so no second process lands this repo.
   const signals = new Map<KinOrgId, Queue.Queue<void>>();
 
   const provide = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | VcsProcess>) =>
@@ -112,7 +132,7 @@ const make = Effect.gen(function* () {
 
   const refuse = Effect.fn("MemoryLander.refuse")(function* (
     orgId: KinOrgId,
-    local: string,
+    local: string | undefined,
     reason: string,
     options: { readonly url?: string; readonly told?: boolean } = {},
   ) {
@@ -222,28 +242,41 @@ const make = Effect.gen(function* () {
         });
         return { url: landed.url, commit };
       }).pipe(Effect.result);
+      if (opened._tag === "Failure") {
+        // The commit stays under its ref for the next landing run; the owner hears once per reason.
+        const reason =
+          "reason" in opened.failure && typeof opened.failure.reason === "string"
+            ? opened.failure.reason
+            : opened.failure._tag;
+        if (unpublished.get(ref) !== reason)
+          yield* recovery.notify({
+            orgId,
+            branch,
+            reason: `Memory changes on paths you review were not opened as a PR: ${reason}. Kin keeps them on this server and tries again with the next memory change or restart`,
+          });
+        unpublished.set(ref, reason);
+        continue;
+      }
+      unpublished.delete(ref);
       yield* recovery.notify({
         orgId,
         branch,
-        reason:
-          opened._tag === "Success"
-            ? `Memory changes on paths you review wait in ${opened.success.url}. Kin pushed \`${opened.success.commit}\`; if the PR's head differs, close it`
-            : `Memory changes on paths you review were not opened as a PR: ${"reason" in opened.failure && typeof opened.failure.reason === "string" ? opened.failure.reason : opened.failure._tag}`,
+        reason: `Memory changes on paths you review wait in ${opened.success.url}. Kin pushed \`${opened.success.commit}\`; if the PR's head differs, close it`,
       });
       yield* git(orgId, writer, ["update-ref", "-d", ref, sha]);
     }
   });
 
-  const landOnce = Effect.fn("MemoryLander.landOnce")(function* (orgId: KinOrgId) {
-    const target = githubRepo(orgId);
-    if (Option.isNone(pullRequests) || target === undefined) return { _tag: "idle" } as const;
-    // Under the writer lock: sync merges what GitHub merged, so `local` descends from it.
-    const state = yield* memory.landingState(orgId);
-    if (state === undefined) return { _tag: "idle" } as const;
+  const landOnce = Effect.fn("MemoryLander.landOnce")(function* (
+    orgId: KinOrgId,
+    target: NonNullable<ReturnType<typeof githubRepo>>,
+    state: NonNullable<Effect.Success<ReturnType<typeof memory.landingState>>>,
+  ) {
+    if (Option.isNone(pullRequests)) return { _tag: "idle" } as const;
     const { writer, local, remote } = state;
     if (remote !== undefined && !remote.pending) {
-      stuck.delete(orgId);
       yield* openReviews(orgId, writer, remote.head, target);
+      stuck.delete(orgId);
       return { _tag: "idle" } as const;
     }
     if (stuck.get(orgId)?.local === local) return { _tag: "waiting" } as const;
@@ -294,11 +327,6 @@ const make = Effect.gen(function* () {
     if (landed.success._tag !== "merged")
       return yield* refuse(orgId, local, "GitHub opened the memory PR for review");
     const { url, commit } = landed.success;
-    yield* git(orgId, writer, ["push", "--", target.repoUrl, `:refs/heads/${branch}`]).pipe(
-      Effect.catch(() =>
-        Effect.logWarning("Could not delete a merged memory PR branch", { orgId }),
-      ),
-    );
     // With GitHub's head unmoved, the squash must hold exactly the tree Kin pushed.
     yield* git(orgId, writer, ["fetch", "--", target.repoUrl, commit]);
     const [parent, merged] = [
@@ -307,26 +335,66 @@ const make = Effect.gen(function* () {
     ];
     if (parent === remote.head && merged !== tree)
       return yield* refuse(orgId, local, "GitHub merged a different tree than Kin pushed", { url });
+    // One ref to one commit, so both halves move together: GitHub's squash, then the local
+    // commit whose tree it carries. The next sync merges the squash in from that tree.
+    const landedAs = yield* git(
+      orgId,
+      writer,
+      ["commit-tree", tree, "-p", commit, "-p", local],
+      identity,
+      `kin: landed ${local} as ${commit}\n`,
+    );
+    const before = yield* git(orgId, writer, ["rev-parse", "--verify", "--quiet", LANDED_REF]).pipe(
+      Effect.option,
+    );
+    yield* git(orgId, writer, ["update-ref", LANDED_REF, landedAs]);
     stuck.delete(orgId);
+    yield* git(orgId, writer, ["push", "--", target.repoUrl, `:refs/heads/${branch}`]).pipe(
+      Effect.catch(() =>
+        Effect.logWarning("Could not delete a merged memory PR branch", { orgId }),
+      ),
+    );
+    // Local commits since the batch before; with no record yet, every one GitHub has only squashed.
+    const commits = yield* git(orgId, writer, [
+      "rev-list",
+      "--count",
+      "--no-merges",
+      local,
+      `^${remote.head}`,
+      ...(Option.isSome(before) ? [`^${before.value}^2`] : []),
+    ]).pipe(Effect.orElseSucceed(() => "unknown"));
+    yield* Effect.logInfo("Kin memory batch landed", {
+      orgId,
+      commits,
+      pullRequest: url.slice(url.lastIndexOf("/") + 1),
+    });
     return { _tag: "merged", url, commit } as const;
   });
 
-  const land = Effect.fn("MemoryLander.land")(function* (orgId: KinOrgId) {
+  const land = Effect.fn("MemoryLander.land")(function* (orgId: KinOrgId, atStart = false) {
     for (let batch = 0; batch < MAX_BATCHES_PER_RUN; batch++) {
-      const outcome = yield* landOnce(orgId).pipe(
-        Effect.catchCause((cause) =>
-          Effect.gen(function* () {
-            yield* Effect.logWarning("Kin memory landing failed", {
+      // The head this attempt read: a failure is held against it, never against a later commit.
+      let attempted: string | undefined;
+      const outcome = yield* Effect.gen(function* () {
+        const target = githubRepo(orgId);
+        if (target === undefined) return { _tag: "idle" } as const;
+        // Under the writer lock: sync merges what GitHub merged, so `local` descends from it.
+        const state = yield* memory.landingState(orgId);
+        if (state === undefined) return { _tag: "idle" } as const;
+        attempted = state.local;
+        return yield* landOnce(orgId, target, state);
+      }).pipe(
+        Effect.catchCauseIf(
+          (cause) => !Cause.hasInterruptsOnly(cause),
+          (cause) =>
+            Effect.logWarning("Kin memory landing failed", {
               orgId,
               cause: Cause.pretty(cause),
-            });
-            const head = yield* memory.anchor(orgId, main).pipe(Effect.option);
-            if (Option.isSome(head))
-              stuck.set(orgId, { local: head.value, reason: "landing failed" });
-            return { _tag: "stuck", reason: "landing failed" } as const;
-          }),
+            }).pipe(Effect.andThen(refuse(orgId, attempted, unexpected(cause)))),
         ),
       );
+      if (atStart && batch === 0 && outcome._tag === "idle")
+        yield* Effect.logInfo("Kin memory lander started with nothing to land", { orgId });
       yield* hooks.settled(orgId, outcome);
       if (outcome._tag !== "merged") return;
     }
@@ -370,19 +438,24 @@ const make = Effect.gen(function* () {
             cause: Cause.pretty(cause),
           }),
         ),
-        Effect.andThen(land(orgId)),
+        Effect.andThen(land(orgId, true)),
       );
-      yield* memory
-        .withLandingLock(orgId, resume)
-        .pipe(
-          Effect.andThen(
-            Queue.take(queue).pipe(
-              Effect.andThen(memory.withLandingLock(orgId, land(orgId))),
-              Effect.forever,
-            ),
+      // A defect in one run must not end the loop: later signals would land nothing.
+      const run = (atStart: boolean) =>
+        memory.withLandingLock(orgId, atStart ? resume : land(orgId)).pipe(
+          Effect.catchCauseIf(
+            (cause) => !Cause.hasInterruptsOnly(cause),
+            (cause) =>
+              Effect.logError("Kin memory lander run ended abnormally", {
+                orgId,
+                cause: Cause.pretty(cause),
+              }),
           ),
-          Effect.forkScoped,
         );
+      yield* run(true).pipe(
+        Effect.andThen(Queue.take(queue).pipe(Effect.andThen(run(false)), Effect.forever)),
+        Effect.forkScoped,
+      );
     }
 
   return MemoryLander.of({

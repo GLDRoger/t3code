@@ -59,6 +59,15 @@ it.each([
     "original\nlanded\nowner\n",
     "original\nlanded\nowner\n",
   ],
+  // The landed entry is in both copies, and each side then added one of its own.
+  [
+    "both grew since",
+    "journal/day.md",
+    "original\n\n## 10:00 landed\n\n## 10:05 later\n",
+    "original\n\n## 10:00 landed\n\n## 10:07 owner\n",
+    "original\n\n## 10:00 landed\n\n## 10:07 owner\n\n## 10:05 later\n",
+  ],
+  ["same journal rewrite", "journal/day.md", "rewritten\n", "rewritten\n", "rewritten\n"],
 ])("merges back a landed batch: %s", (_name, path, ours, theirs, expected) => {
   const base = new Map([
     [path, Buffer.from(path.startsWith("journal/") ? "original\n" : "before\n")],

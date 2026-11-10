@@ -120,6 +120,11 @@ export interface MemoryPaths {
 export type LeadView = { readonly lead: KinAgentId };
 export type MemoryView = LeadView | "triggers";
 export const shadowBranch = (agentId: string) => `kin/shadow/${agentId}`;
+/**
+ * The lander's record of its last merged batch: a commit whose parents are GitHub's squash and the
+ * local commit whose tree that squash carries. It lives in the writer and goes when a purge reclones.
+ */
+export const LANDED_REF = "refs/kin/landed";
 
 export interface MemoryQuery {
   readonly kind?: MemoryItemKind;
@@ -239,8 +244,9 @@ export class Memory extends Context.Service<
     ) => Effect.Effect<{ head: string; indexAsOf: DateTime.Utc; read: string }, MemoryFailure>;
     /**
      * The writer's integrity check (`git fsck`) and default-branch sync with the remote, off the
-     * reply path. Skips an organization with no clone yet, or whose last sync failed: its next
-     * wake-up re-runs the sync and refuses to start until it passes.
+     * reply path; it reads the remote before taking the writer lock. Skips an organization with no
+     * clone yet, or whose last sync failed: its next wake-up re-runs the sync and refuses to start
+     * until it passes.
      */
     readonly syncCheckout: (orgId: KinOrgId) => Effect.Effect<void, MemoryFailure>;
     readonly readPromptSnapshot: (
@@ -1408,17 +1414,74 @@ const make = Effect.gen(function* () {
   /** The remote's default-branch head, fetched with no lock held: fetching only adds objects. */
   const fetchRemote = (orgId: KinOrgId, writer: string, url: string): Effect.Effect<Fetched> =>
     advertisedHead(orgId, writer, url, mainBranch).pipe(Effect.result);
+  /** `fetchRemote` for a caller about to take the writer lock; nothing before the first clone. */
+  const prefetch = Effect.fn("Memory.prefetch")(function* (orgId: KinOrgId) {
+    const { writer, repo } = yield* pathsFor(orgId);
+    if (!(yield* io(orgId, "exists", fs.exists(writer)))) return undefined;
+    const generation = historyGenerations.get(orgId) ?? 0;
+    return { generation, fetched: yield* fetchRemote(orgId, writer, repo.repoUrl) };
+  });
+  // A purge that ran since the fetch dropped the checkout its objects went to.
+  const stillFetched = (
+    orgId: KinOrgId,
+    prefetched: Effect.Success<ReturnType<typeof prefetch>>,
+  ) =>
+    prefetched?.generation === (historyGenerations.get(orgId) ?? 0)
+      ? prefetched.fetched
+      : undefined;
 
-  // Callers have run `ensureCheckouts`. The lander passes a head it fetched before taking the
-  // lock and skips `fsck`, which the periodic sync still runs.
+  /**
+   * The local commit whose tree GitHub's newest squash of this server's memory carries, while
+   * that squash is not merged in here. GitHub squash-merges, so git's ancestry never links the
+   * two: this commit's tree is the merge base, and local commits after it are changes on top.
+   */
+  const landedBase = Effect.fn("Memory.landedBase")(function* (
+    orgId: KinOrgId,
+    writer: string,
+    local: ReadonlyMap<string, ReadonlyArray<string>>,
+    remote: ReadonlyMap<string, ReadonlyArray<string>>,
+    remoteHead: string,
+  ) {
+    const commitAt = (sha: string) =>
+      readCommit(orgId, writer, sha).pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(VcsProcess, vcs),
+      );
+    const recorded = yield* git(orgId, writer, [
+      "rev-parse",
+      "--verify",
+      "--quiet",
+      LANDED_REF,
+    ]).pipe(
+      Effect.flatMap((sha) => commitAt(sha.trim())),
+      Effect.result,
+    );
+    if (recorded._tag === "Success") {
+      const [theirs, ours] = recorded.success.parents;
+      // Once the squash is merged in, git's own merge base is at least as new as this record.
+      if (theirs && ours && remote.has(theirs) && local.has(ours) && !local.has(theirs))
+        return ours;
+    }
+    // The record is written after GitHub merges. If the server stopped in between, the squash
+    // still names its commit, and an identical tree proves the pair without trusting that line.
+    const squash = yield* commitAt(remoteHead);
+    const named = /^Kin-Local: ([a-f0-9]{40}(?:[a-f0-9]{24})?)$/m.exec(squash.message)?.[1];
+    if (named !== undefined && local.has(named) && (yield* commitAt(named)).tree === squash.tree)
+      return named;
+    return undefined;
+  });
+
+  // Callers have run `ensureCheckouts`. A head fetched before the lock was taken is merged as it
+  // is; the lander skips `fsck`, which the periodic sync and a wake-up's own sync still run.
   const sync = Effect.fn("Memory.sync")(function* (
     orgId: KinOrgId,
-    wakeupId?: string,
-    prefetched?: Fetched,
+    prefetched: Fetched | undefined,
+    options: { readonly wakeupId?: string; readonly fsck: boolean },
   ) {
+    const { wakeupId } = options;
     const paths = yield* pathsFor(orgId);
     yield* validateWriter(orgId, paths);
-    if (prefetched === undefined)
+    if (options.fsck)
       yield* git(orgId, paths.writer, [
         "fsck",
         "--full",
@@ -1442,7 +1505,9 @@ const make = Effect.gen(function* () {
           const localAncestors = yield* walkAncestors(orgId, paths.writer, head);
           if (localAncestors.has(remote)) next = head;
           else {
-            const mergeBase = uniqueMergeBase(localAncestors, remoteAncestors);
+            const mergeBase =
+              (yield* landedBase(orgId, paths.writer, localAncestors, remoteAncestors, remote)) ??
+              uniqueMergeBase(localAncestors, remoteAncestors);
             if (!mergeBase) {
               const conflictBranch = yield* preserve(
                 orgId,
@@ -1651,10 +1716,10 @@ const make = Effect.gen(function* () {
     }
     return undefined;
   });
-  const checkedSync = (orgId: KinOrgId, wakeupId?: string, prefetched?: Fetched) =>
-    sync(orgId, wakeupId, prefetched).pipe(
-      Effect.tap(() => Effect.sync(() => synced.set(orgId, true))),
-      Effect.tapError(() => Effect.sync(() => synced.set(orgId, false))),
+  const checkedSync = (...args: Parameters<typeof sync>) =>
+    sync(...args).pipe(
+      Effect.tap(() => Effect.sync(() => synced.set(args[0], true))),
+      Effect.tapError(() => Effect.sync(() => synced.set(args[0], false))),
     );
 
   const isAncestor = (orgId: KinOrgId, writer: string, older: string, newer: string) =>
@@ -1687,7 +1752,7 @@ const make = Effect.gen(function* () {
   ) {
     yield* ensureCheckouts(orgId);
     const { writer } = yield* pathsFor(orgId);
-    const remote = yield* checkedSync(orgId, undefined, fetched);
+    const remote = yield* checkedSync(orgId, fetched, { fsck: false });
     const local = yield* anchor(orgId, mainBranch);
     if (remote === undefined) return { writer, local, remote };
     return {
@@ -1705,12 +1770,17 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     wakeupId?: string,
     view?: LeadView,
+    prefetched?: Fetched,
   ) {
     const paths = yield* ensureCheckouts(orgId);
     if (synced.get(orgId) === true) {
       yield* validateWriter(orgId, yield* pathsFor(orgId));
       yield* refuseUnfinishedOperation(orgId, paths.writer);
-    } else yield* checkedSync(orgId, wakeupId);
+    } else
+      yield* checkedSync(orgId, prefetched, {
+        fsck: true,
+        ...(wakeupId === undefined ? {} : { wakeupId }),
+      });
     const branch = config.defaultBranch ?? "main";
     const head = yield* anchor(orgId, branch);
     // The read checkout holds the waking lead's view: its shadow branch at L0.
@@ -1919,11 +1989,23 @@ const make = Effect.gen(function* () {
     ensureCheckouts: Effect.fn("Memory.ensureCheckoutsLocked")((orgId) =>
       locked(orgId, ensureCheckouts(orgId, true)),
     ),
-    prepareWakeup: Effect.fn("Memory.prepareWakeup")((orgId, wakeupId, view) =>
-      withWriterLock(orgId, locked(orgId, prepare(orgId, wakeupId, view))),
-    ),
-    syncCheckout: Effect.fn("Memory.syncCheckout")((orgId) =>
-      withWriterLock(
+    prepareWakeup: Effect.fn("Memory.prepareWakeup")(function* (orgId, wakeupId, view) {
+      // A wake-up that has to sync reads GitHub before it takes the writer lock, like the lander.
+      const prefetched = synced.get(orgId) === true ? undefined : yield* prefetch(orgId);
+      return yield* withWriterLock(
+        orgId,
+        locked(
+          orgId,
+          Effect.suspend(() => prepare(orgId, wakeupId, view, stillFetched(orgId, prefetched))),
+        ),
+      );
+    }),
+    syncCheckout: Effect.fn("Memory.syncCheckout")(function* (orgId) {
+      if (synced.get(orgId) === false) return;
+      // The network part, outside the writer lock, so a slow GitHub never holds up a lead.
+      const prefetched = yield* prefetch(orgId);
+      if (prefetched === undefined) return;
+      yield* withWriterLock(
         orgId,
         locked(
           orgId,
@@ -1932,11 +2014,11 @@ const make = Effect.gen(function* () {
             const { writer } = yield* pathsFor(orgId);
             if (!(yield* io(orgId, "exists", fs.exists(writer)))) return;
             yield* ensureCheckouts(orgId);
-            yield* checkedSync(orgId);
+            yield* checkedSync(orgId, stillFetched(orgId, prefetched), { fsck: true });
           }),
         ),
-      ),
-    ),
+      );
+    }),
     readPromptSnapshot: Effect.fn("Memory.readPromptSnapshot")((orgId, expectedHead, view) =>
       locked(
         orgId,
