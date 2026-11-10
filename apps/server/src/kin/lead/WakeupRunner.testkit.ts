@@ -1,5 +1,5 @@
 import * as ProviderSessionManager from "../../orchestration-v2/ProviderSessionManager.ts";
-import type { ThreadId } from "@t3tools/contracts";
+import type { ChatAttachment, KinAttachment, ThreadId } from "@t3tools/contracts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -128,6 +128,9 @@ type HarnessOptions = {
   /** Each turn opens a command approval and ends only once it is answered. */
   readonly approval?: Deferred.Deferred<ProviderApprovalDecision | undefined>;
   readonly runtimeModes?: Array<RuntimeMode>;
+  /** What the prompt names as this turn's files, and what each provider turn was handed. */
+  readonly attachments?: ReadonlyArray<KinAttachment>;
+  readonly turnAttachments?: Array<ReadonlyArray<ChatAttachment>>;
   /** `false` registers the fake provider as the default Codex instance instead of Claude. */
   readonly claude?: boolean;
   readonly settings?: Parameters<typeof ServerSettings.layerTest>[0];
@@ -221,6 +224,7 @@ function parts(options: HarnessOptions) {
           resumeThread: ({ providerThread }) => Effect.succeed(providerThread),
           startTurn: Effect.fn("test.startTurn")(function* (input) {
             options.runtimeModes?.push(input.runtimePolicy.runtimeMode);
+            options.turnAttachments?.push(input.message?.attachments ?? []);
             if (options.entered !== undefined) yield* Deferred.succeed(options.entered, undefined);
             if (options.hold !== undefined) yield* Deferred.await(options.hold);
             if (options.onTurn !== undefined) yield* options.onTurn({ threadId: input.threadId });
@@ -501,6 +505,7 @@ function parts(options: HarnessOptions) {
         options.steering === undefined
           ? Effect.succeed("Steered")
           : Deferred.succeed(options.steering, undefined).pipe(Effect.as("Steered")),
+      attachments: () => Effect.succeed(options.attachments ?? []),
     }),
     Layer.mock(Memory.Memory)({
       prepareWakeup:

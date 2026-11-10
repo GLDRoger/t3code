@@ -23,6 +23,7 @@ import {
   ProviderTurnId,
   ProjectId,
   ProviderInstanceId,
+  type ChatAttachment,
 } from "@t3tools/contracts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as ChatService from "../chat/KinChatService.ts";
@@ -236,6 +237,26 @@ describe("WakeupRunner", () => {
       }).pipe(Effect.provide(harness({ projectId: () => projectId })));
     }).pipe(provideDeterministicTestRuntime),
   );
+  it.effect("hands the files on the messages it answers to the provider turn", () => {
+    const photo = {
+      type: "image" as const,
+      id: "kin-chat-0f0e0d0c-0b0a-4908-8706-050403020100",
+      name: "whiteboard.png",
+      mimeType: "image/png",
+      sizeBytes: 68,
+    };
+    const turnAttachments: Array<ReadonlyArray<ChatAttachment>> = [];
+    return Effect.gen(function* () {
+      yield* seed;
+      yield* seedDirectChats;
+      yield* wake("with-photo");
+      assert.deepStrictEqual(turnAttachments, [[photo]]);
+    }).pipe(
+      Effect.provide(harness({ attachments: [photo], turnAttachments })),
+      provideDeterministicTestRuntime,
+    );
+  });
+
   it.effect("handles the owner check in code without starting a provider turn", () =>
     Effect.gen(function* () {
       yield* seed;

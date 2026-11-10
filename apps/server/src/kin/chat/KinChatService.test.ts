@@ -1,4 +1,12 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
+import { createPendingAttachmentId } from "../../attachmentStore.ts";
+import * as ServerConfig from "../../config.ts";
+import * as DocumentText from "../../provider/DocumentText.ts";
+import * as AttachmentStore from "./KinAttachmentStore.ts";
 import { environment } from "./TaskCard.testkit.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import { CommandId } from "@t3tools/contracts";
@@ -51,6 +59,35 @@ const database = authorityLayer;
 const repositories = Layer.provideMerge(Repository.layer, database);
 const dependencies = Layer.provideMerge(Hub.layer, repositories);
 const layer = Layer.provideMerge(Service.layer, dependencies).pipe(Layer.provideMerge(environment));
+const attachmentLayer = Layer.provideMerge(
+  Service.layer,
+  Layer.provideMerge(
+    AttachmentStore.layer.pipe(
+      Layer.provideMerge(DocumentText.layer),
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-kin-attachments-" })),
+      Layer.provideMerge(NodeServices.layer),
+    ),
+    dependencies,
+  ),
+).pipe(Layer.provideMerge(environment));
+// A one-pixel PNG is not needed: the store checks size and name, never pixels.
+const PHOTO_BYTES = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+const uploadPhoto = Effect.fn("test.uploadPhoto")(function* (name: string) {
+  const config = yield* ServerConfig.ServerConfig;
+  const id = createPendingAttachmentId();
+  NodeFS.writeFileSync(NodePath.join(config.attachmentsDir, `${id}.png`), PHOTO_BYTES);
+  return {
+    type: "image" as const,
+    id,
+    name,
+    mimeType: "image/png",
+    sizeBytes: PHOTO_BYTES.byteLength,
+  };
+});
+const storedFiles = Effect.gen(function* () {
+  const config = yield* ServerConfig.ServerConfig;
+  return NodeFS.readdirSync(config.attachmentsDir).toSorted();
+});
 const presenceLayer = Layer.provideMerge(
   Service.layer,
   Layer.provideMerge(Presence.layer, dependencies),
@@ -136,6 +173,69 @@ const seed = Effect.fn("test.seed")(function* (notice = false) {
 });
 
 describe("KinChatService", () => {
+  it.effect("keeps a person's uploads with the message and takes them from nobody else", () =>
+    Effect.gen(function* () {
+      const { repo, service, person, agent, chat } = yield* seed();
+      const sql = yield* SqlClient.SqlClient;
+      const photo = yield* uploadPhoto("whiteboard.png");
+      const send = {
+        chatId: chat.chatId,
+        body: "",
+        clientMessageId: "photo",
+        attachments: [photo],
+      };
+      const message = yield* service.send(person, send);
+      const [stored] = message.attachments ?? [];
+      assert.deepStrictEqual(message.attachments, [{ ...photo, id: stored!.id }]);
+      assert.match(stored!.id, /^kin-chat-/);
+      assert.deepStrictEqual(yield* storedFiles, [`${stored!.id}.png`]);
+      assert.deepStrictEqual(
+        yield* sql`SELECT chat_id, message_id FROM kin_message_attachments WHERE attachment_id = ${stored!.id}`,
+        [{ chat_id: chat.chatId, message_id: message.messageId }],
+      );
+      // A resend after a lost reply finds the message; the upload it named is already gone.
+      assert.deepStrictEqual(yield* service.send(person, send), message);
+      assert.deepStrictEqual(
+        (yield* service.history(person, {
+          chatId: chat.chatId,
+          beforeSeq: message.seq + 1,
+          limit: 1,
+        })).messages[0]?.attachments,
+        message.attachments,
+      );
+
+      const refusals = [
+        // A file some message already holds is never attached again, here or in another chat.
+        [person, { ...send, clientMessageId: "again", attachments: [stored!] }, "invalid_state"],
+        [agent, { ...send, clientMessageId: "agent", intent: "answer" as const }, "invalid_state"],
+        [person, { ...send, clientMessageId: "empty", attachments: [] }, "invalid_state"],
+      ] as const;
+      for (const [sender, input, reason] of refusals)
+        assert.include(yield* service.send(sender, input).pipe(Effect.flip), { reason });
+
+      const outsider = { ...person, personId: decodeKinPersonId("outsider") };
+      yield* repo.insertPerson({
+        ...outsider,
+        handle: "outsider",
+        displayName: "Outsider",
+        githubLogin: null,
+        createdAt: timestamp,
+      });
+      const theirs = yield* uploadPhoto("theirs.png");
+      assert.include(
+        yield* service
+          .send(outsider, { ...send, clientMessageId: "outsider", attachments: [theirs] })
+          .pipe(Effect.flip),
+        { reason: "not_found" },
+      );
+      // Nothing of the outsider's was copied into the chat's keeping.
+      assert.deepStrictEqual(
+        yield* storedFiles,
+        [`${theirs.id}.png`, `${stored!.id}.png`].toSorted(),
+      );
+    }).pipe(Effect.provide(attachmentLayer)),
+  );
+
   it.effect("bound chat-only members can use their own chats but not the owner's chat", () =>
     Effect.gen(function* () {
       const { repo, service, identity, person, chat } = yield* seed();

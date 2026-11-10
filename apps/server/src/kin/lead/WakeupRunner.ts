@@ -286,6 +286,7 @@ const make = Effect.gen(function* () {
         const messageId = MessageId.make(KinIdentity.steerMessageId(wakeupId, n));
         const deliver = Effect.gen(function* () {
           const text = yield* prompt.steer({ orgId, agentId, events });
+          const attachments = yield* prompt.attachments({ orgId, events });
           const claimed = yield* sql<{ messageId: string }>`
             SELECT json_extract(json, '$.messageId') AS "messageId" FROM kin_events
             WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND state = 'claimed'
@@ -304,7 +305,7 @@ const make = Effect.gen(function* () {
               threadId,
               messageId,
               text,
-              attachments: [],
+              attachments,
               mode,
               createdBy: "system",
               creationSource: "server",
@@ -806,6 +807,8 @@ const make = Effect.gen(function* () {
               routineFacts,
               ...(lane === undefined ? {} : { lane }),
             });
+            // What the people in the chat attached to the messages this turn answers.
+            const attachments = yield* prompt.attachments({ orgId, events });
             const threadId = existingThreadId ?? ThreadId.make(`kin:${yield* ulid}`);
             row = { ...row, threadId };
             yield* sql.withTransaction(
@@ -857,7 +860,7 @@ const make = Effect.gen(function* () {
                     runtimeMode: "full-access",
                     interactionMode: "default",
                     workspaceStrategy: { type: "root" },
-                    initialMessage: { messageId, text, attachments: [] },
+                    initialMessage: { messageId, text, attachments },
                     createdBy: "system",
                     creationSource: "server",
                   })).projection
@@ -867,7 +870,7 @@ const make = Effect.gen(function* () {
                     threadId,
                     messageId,
                     text,
-                    attachments: [],
+                    attachments,
                     mode: "queue",
                     freshContext: true,
                     modelSelection,

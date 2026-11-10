@@ -16,6 +16,11 @@ import {
   NodeId,
   TurnItemId,
 } from "./baseSchemas.ts";
+import {
+  ChatFileAttachment,
+  ChatImageAttachment,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+} from "./chatAttachment.ts";
 
 export const KinOrgId = TrimmedNonEmptyString.pipe(Schema.brand("KinOrgId"));
 export type KinOrgId = typeof KinOrgId.Type;
@@ -36,8 +41,9 @@ export type KinWaitingId = typeof KinWaitingId.Type;
 export const KinWakeupId = TrimmedNonEmptyString.pipe(Schema.brand("KinWakeupId"));
 export type KinWakeupId = typeof KinWakeupId.Type;
 
-// Markdown keeps its whitespace, so this checks non-blank without trimming.
-const isNonBlankBody = Schema.makeFilter((value: string) => value.trim().length > 0, {
+// Markdown keeps its whitespace, so this checks blank without trimming.
+const isBlankBody = (value: string) => value.trim().length === 0;
+const isNonBlankBody = Schema.makeFilter((value: string) => !isBlankBody(value), {
   expected: "a non-blank message body",
 });
 
@@ -129,6 +135,18 @@ export const KinAuthor = Schema.Union([
 ]);
 export type KinAuthor = typeof KinAuthor.Type;
 
+const { source: _imageSource, ...kinImageAttachmentFields } = ChatImageAttachment.fields;
+const { source: _fileSource, ...kinFileAttachmentFields } = ChatFileAttachment.fields;
+/**
+ * A file stored by the thread composer's upload path. A message carries the reference and size,
+ * never the bytes; clients read it the way a thread reads its own attachments.
+ */
+export const KinAttachment = Schema.Union([
+  Schema.Struct(kinImageAttachmentFields),
+  Schema.Struct(kinFileAttachmentFields),
+]);
+export type KinAttachment = typeof KinAttachment.Type;
+
 export const KinAgentIntent = Schema.Literals([
   "answer",
   "evidence",
@@ -153,6 +171,8 @@ export const KinMessage = Schema.Struct({
   authorRole: KinRole,
   kind: KinMessageKind,
   body: KinText,
+  // Absent on a message without files, so those stay the size they were.
+  attachments: Schema.optional(Schema.Array(KinAttachment)),
   intent: Schema.NullOr(KinAgentIntent),
   mentions: Schema.Array(KinMemberId),
   replyTo: Schema.NullOr(KinMessageId),
@@ -437,13 +457,32 @@ export const KinChatHistoryResult = Schema.Struct({
 });
 export type KinChatHistoryResult = typeof KinChatHistoryResult.Type;
 export const KIN_MESSAGE_BODY_MAX_LENGTH = 16_000;
+/** What an agent may post: text, always. Only a person's message can be files alone. */
+export const KinAgentMessageBody = KinText.check(
+  isNonBlankBody,
+  Schema.isMaxLength(KIN_MESSAGE_BODY_MAX_LENGTH),
+);
 export const KinMessagesSendInput = Schema.Struct({
   chatId: KinChatId,
   clientMessageId: TrimmedNonEmptyString,
-  body: KinText.check(isNonBlankBody, Schema.isMaxLength(KIN_MESSAGE_BODY_MAX_LENGTH)),
+  body: KinText.check(Schema.isMaxLength(KIN_MESSAGE_BODY_MAX_LENGTH)),
+  // Uploads still pending from `attachments.createUploadUrl`; the host claims them for the chat.
+  attachments: Schema.optional(
+    Schema.Array(KinAttachment).check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_ATTACHMENTS)),
+  ),
   mentions: Schema.optional(Schema.Array(KinMemberId)),
   replyTo: Schema.optional(KinMessageId),
-});
+}).check(
+  Schema.makeFilter(
+    (input: {
+      readonly body: string;
+      readonly attachments?: ReadonlyArray<unknown> | undefined;
+    }) =>
+      isBlankBody(input.body) && (input.attachments?.length ?? 0) === 0
+        ? "a message needs text or an attachment"
+        : undefined,
+  ),
+);
 export type KinMessagesSendInput = typeof KinMessagesSendInput.Type;
 export const KinMessagesMarkReadInput = Schema.Struct({ chatId: KinChatId, seq: NonNegativeInt });
 export type KinMessagesMarkReadInput = typeof KinMessagesMarkReadInput.Type;

@@ -9,6 +9,7 @@ import * as Layer from "effect/Layer";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as Option from "effect/Option";
 import * as KinChat from "./chat/layer.ts";
+import * as KinAttachmentStore from "./chat/KinAttachmentStore.ts";
 import * as KinApprovals from "./approvals/layer.ts";
 import * as KeySeal from "./approvals/KeySeal.ts";
 import * as ApprovalCards from "./chat/approvalCards.ts";
@@ -141,5 +142,7 @@ export const mcpRegistryLayer = <E, R>(
 ) =>
   KinMcp.registry(base).pipe(
     Layer.provideMerge(layer),
+    // The chat service takes this optionally, so the running server names it here.
+    Layer.provide(KinAttachmentStore.layer),
     Layer.provide(SqlitePersistence.layerConfig),
   );

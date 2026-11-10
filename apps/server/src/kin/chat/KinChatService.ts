@@ -34,6 +34,7 @@ import {
   type KinChatHistoryResult,
   type KinChatMember,
   type KinChatsCreateDirectInput,
+  type KinAttachment,
   type KinMessage,
   type KinMessagesMarkReadInput,
   type KinChatsMuteInput,
@@ -66,6 +67,7 @@ import * as ReminderCard from "../widgets/reminderCard.ts";
 import * as Hub from "./KinChatHub.ts";
 import { KinPresence } from "../reply/KinPresence.ts";
 import * as Repository from "./KinChatRepository.ts";
+import { KinAttachmentStore } from "./KinAttachmentStore.ts";
 import type { AgentIdentity, PersonIdentity } from "./KinIdentity.ts";
 import * as Reactions from "./reactions.ts";
 
@@ -303,6 +305,8 @@ const make = Effect.gen(function* () {
   const repo = yield* Repository.KinChatRepository;
   const hub = yield* Hub.KinChatHub;
   const presence = yield* Effect.serviceOption(KinPresence);
+  // Absent where no attachments directory exists; a send with files is then refused.
+  const attachmentStore = yield* Effect.serviceOption(KinAttachmentStore);
   const sql = yield* SqlClient.SqlClient;
   const transaction = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     sql
@@ -437,6 +441,7 @@ const make = Effect.gen(function* () {
     input: {
       readonly chatId: KinChatId;
       readonly body: string;
+      readonly attachments?: ReadonlyArray<KinAttachment> | undefined;
       readonly intent: KinAgentIntent | null;
       readonly mentions: ReadonlyArray<KinMemberId>;
       readonly replyTo: KinMessageId | null;
@@ -457,6 +462,9 @@ const make = Effect.gen(function* () {
       author: authorFor(identity, member),
       kind: input.kind,
       body: input.body,
+      ...(input.attachments === undefined || input.attachments.length === 0
+        ? {}
+        : { attachments: input.attachments }),
       intent: input.intent,
       mentions: input.mentions,
       replyTo: input.replyTo,
@@ -699,6 +707,72 @@ const make = Effect.gen(function* () {
     },
     (effect) => transaction(effect).pipe(NodeSqliteClient.readOnly),
   );
+  // The message itself, once any files are claimed: one transaction, no file work inside it.
+  const sendClaimed = Effect.fn("KinChatService.sendClaimed")(function* (
+    caller: Caller,
+    input: SendInput,
+    attachments: ReadonlyArray<KinAttachment>,
+  ) {
+    const identity = yield* identityFor(caller, input);
+    const request = yield* decodeSend(input).pipe(Effect.mapError(() => invalidState));
+    const member = yield* memberFor(identity, request.chatId);
+    yield* canWrite(identity, member);
+    // A lead posts text; only a person's message can be files alone.
+    if (identity._tag === "agent" && request.body.trim().length === 0) return yield* invalidState;
+    if (request.mentions !== undefined && request.mentions.length > 100) return yield* invalidState;
+    if (
+      (identity._tag === "agent" && input.intent === undefined) ||
+      (identity._tag === "person" && input.intent !== undefined)
+    )
+      return yield* invalidState;
+    const intent =
+      input.intent === undefined
+        ? null
+        : yield* decodeIntent(input.intent).pipe(Effect.mapError(() => invalidState));
+    const existing = yield* repo.findClientMessage({
+      orgId: identity.orgId,
+      chatId: request.chatId,
+      memberId: member.memberId,
+      kind: "send",
+      clientId: request.clientMessageId,
+    });
+    const chat = yield* requireRecord(repo.getChat(member));
+    if (identity._tag === "agent" && Option.isNone(existing)) {
+      const used = yield* repo.wakeupPosts({
+        orgId: identity.orgId,
+        chatId: request.chatId,
+        agentId: identity.agentId,
+        threadId: identity.threadId,
+      });
+      if (
+        used.messages >= KIN_WAKEUP_MESSAGE_LIMIT ||
+        used.chars + request.body.length > KIN_WAKEUP_CHAR_LIMIT
+      )
+        return yield* new KinChatError({
+          reason: "limit",
+          message: "This wake-up has posted all it may in this chat.",
+        });
+    }
+    const authorization =
+      identity._tag === "agent" && Option.isNone(existing)
+        ? yield* floor.authorize(identity, chat, intent ?? "answer", input.floorGrant)
+        : { runId: null };
+    const message = yield* post(identity, member, {
+      ...request,
+      // Never the request's own: those name uploads, these the files kept for the chat.
+      attachments,
+      kind: "text",
+      intent,
+      floorRunId: authorization.runId,
+      mentions: request.mentions ?? [],
+      replyTo: request.replyTo ?? null,
+      widgetId: null,
+      clientId: { kind: "send", id: request.clientMessageId },
+    });
+    if (Option.isNone(existing) && identity._tag === "agent" && authorization.runId === null)
+      yield* floor.recordNotice(identity, message);
+    return message;
+  }, transaction);
   return KinChatService.of({
     // Trusted server callers only; deliberately absent from RPC and MCP.
     notice: Effect.fn("KinChatService.notice")(function* (input) {
@@ -1097,64 +1171,49 @@ const make = Effect.gen(function* () {
       yield* hub.publish({ type: "chat.created", orgId: identity.orgId, chat });
       return chat;
     }, transaction),
-    send: Effect.fn("KinChatService.send")(function* (identity, input) {
-      identity = yield* identityFor(identity, input);
-      const request = yield* decodeSend(input).pipe(Effect.mapError(() => invalidState));
-      const member = yield* memberFor(identity, request.chatId);
+    send: Effect.fn("KinChatService.send")(function* (caller, input) {
+      const requested = input.attachments ?? [];
+      if (requested.length === 0) return yield* sendClaimed(caller, input, []);
+      // Files are copied before the message's transaction, never inside it.
+      const identity = yield* identityFor(caller, input);
+      if (identity._tag !== "person") return yield* invalidState;
+      const member = yield* memberFor(identity, input.chatId);
       yield* canWrite(identity, member);
-      if (request.mentions !== undefined && request.mentions.length > 100)
-        return yield* invalidState;
-      if (
-        (identity._tag === "agent" && input.intent === undefined) ||
-        (identity._tag === "person" && input.intent !== undefined)
-      )
-        return yield* invalidState;
-      const intent =
-        input.intent === undefined
-          ? null
-          : yield* decodeIntent(input.intent).pipe(Effect.mapError(() => invalidState));
-      const existing = yield* repo.findClientMessage({
+      const sent = repo.findClientMessage({
         orgId: identity.orgId,
-        chatId: request.chatId,
+        chatId: input.chatId,
         memberId: member.memberId,
         kind: "send",
-        clientId: request.clientMessageId,
+        clientId: input.clientMessageId,
       });
-      const chat = yield* requireRecord(repo.getChat(member));
-      if (identity._tag === "agent" && Option.isNone(existing)) {
-        const used = yield* repo.wakeupPosts({
-          orgId: identity.orgId,
-          chatId: request.chatId,
-          agentId: identity.agentId,
-          threadId: identity.threadId,
+      const existing = yield* sent;
+      // A resend finds its message and its files already kept.
+      if (Option.isSome(existing))
+        return yield* sendClaimed(identity, input, existing.value.attachments ?? []);
+      if (Option.isNone(attachmentStore))
+        return yield* new KinChatError({
+          reason: "unavailable",
+          message: "Attachments are unavailable.",
         });
-        if (
-          used.messages >= KIN_WAKEUP_MESSAGE_LIMIT ||
-          used.chars + request.body.length > KIN_WAKEUP_CHAR_LIMIT
-        )
-          return yield* new KinChatError({
-            reason: "limit",
-            message: "This wake-up has posted all it may in this chat.",
-          });
-      }
-      const authorization =
-        identity._tag === "agent" && Option.isNone(existing)
-          ? yield* floor.authorize(identity, chat, intent ?? "answer", input.floorGrant)
-          : { runId: null };
-      const message = yield* post(identity, member, {
-        ...request,
-        kind: "text",
-        intent,
-        floorRunId: authorization.runId,
-        mentions: request.mentions ?? [],
-        replyTo: request.replyTo ?? null,
-        widgetId: null,
-        clientId: { kind: "send", id: request.clientMessageId },
-      });
-      if (Option.isNone(existing) && identity._tag === "agent" && authorization.runId === null)
-        yield* floor.recordNotice(identity, message);
-      return message;
-    }, transaction),
+      const store = attachmentStore.value;
+      const claimed = yield* store.claim(requested);
+      return yield* sendClaimed(identity, input, claimed.attachments).pipe(
+        Effect.tap((message) =>
+          message.attachments?.[0]?.id === claimed.attachments[0]?.id
+            ? store.discardPending(requested)
+            : store.release(claimed.claimedPaths),
+        ),
+        // An interrupted send may still have committed; its files go only if no message has them.
+        Effect.onError(() =>
+          sent.pipe(
+            Effect.flatMap((written) =>
+              Option.isNone(written) ? store.release(claimed.claimedPaths) : Effect.void,
+            ),
+            Effect.ignore,
+          ),
+        ),
+      );
+    }),
     read: Effect.fn("KinChatService.read")(function* (identity, input) {
       const request = yield* decodeRead(input).pipe(Effect.mapError(() => invalidState));
       const member = yield* memberFor(identity, request.chatId);

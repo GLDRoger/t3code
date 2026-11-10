@@ -6,6 +6,7 @@ import {
   KinPerson,
   KinPersonId,
   KinAgent,
+  KinAttachment,
   KinAgentId,
   KinChat,
   KinChatId,
@@ -127,30 +128,36 @@ const MemberRow = Schema.Struct({
 });
 const memberColumns = `org_id AS "orgId", chat_id AS "chatId", member_id AS "memberId", role AS "role", joined_at AS "joinedAt", left_at AS "leftAt", muted_until AS "mutedUntil", CASE principal_kind WHEN 'person' THEN json_object('_tag', 'person', 'personId', person_id)
  ELSE json_object('_tag', principal_kind, 'agentId', agent_id) END AS principal`;
+const StoredAttachments = Schema.Array(KinAttachment);
+const encodeAttachments = Schema.encodeEffect(Schema.fromJsonString(StoredAttachments));
+const { attachments: _attachments, ...messageRowFields } = KinMessage.fields;
 const MessageRow = Schema.Struct({
-  ...KinMessage.fields,
+  ...messageRowFields,
   storedClientMessageId: Schema.NullOr(Schema.String),
+  storedAttachments: Schema.NullOr(Schema.fromJsonString(StoredAttachments)),
   author: Schema.fromJsonString(KinMessage.fields.author),
   mentions: Schema.fromJsonString(KinMessage.fields.mentions),
 }).pipe(
   Schema.decodeTo(
     Schema.toType(KinMessage),
     SchemaTransformation.transform({
-      decode: ({ storedClientMessageId, ...message }) => ({
+      decode: ({ storedClientMessageId, storedAttachments, ...message }): KinMessage => ({
         ...message,
+        ...(storedAttachments === null ? {} : { attachments: storedAttachments }),
         ...(storedClientMessageId?.startsWith("send:")
           ? { clientMessageId: storedClientMessageId.slice(5) }
           : {}),
       }),
-      encode: (message) => ({
+      encode: ({ attachments, ...message }) => ({
         ...message,
+        storedAttachments: attachments ?? null,
         storedClientMessageId:
           message.clientMessageId === undefined ? null : `send:${message.clientMessageId}`,
       }),
     }),
   ),
 );
-const messageColumns = `org_id AS "orgId", chat_id AS "chatId", message_id AS "messageId", seq AS "seq", change_seq AS "changeSeq", client_message_id AS "storedClientMessageId", author_role AS "authorRole", kind AS "kind", body AS "body", intent AS "intent", mentions_json AS "mentions", reply_to AS "replyTo", widget_id AS "widgetId", floor_run_id AS "floorRunId", status AS "status", sent_by AS "sentBy", created_at AS "createdAt", edited_at AS "editedAt", CASE author_kind WHEN 'human' THEN json_object('_tag', 'human', 'personId', author_person_id, 'memberId', author_member_id)
+const messageColumns = `org_id AS "orgId", chat_id AS "chatId", message_id AS "messageId", seq AS "seq", change_seq AS "changeSeq", client_message_id AS "storedClientMessageId", author_role AS "authorRole", kind AS "kind", body AS "body", attachments_json AS "storedAttachments", intent AS "intent", mentions_json AS "mentions", reply_to AS "replyTo", widget_id AS "widgetId", floor_run_id AS "floorRunId", status AS "status", sent_by AS "sentBy", created_at AS "createdAt", edited_at AS "editedAt", CASE author_kind WHEN 'human' THEN json_object('_tag', 'human', 'personId', author_person_id, 'memberId', author_member_id)
  WHEN 'agent' THEN json_object('_tag', 'agent', 'agentId', author_agent_id, 'memberId', author_member_id,
  'ownerPersonId', author_owner_person_id, 'threadId', author_thread_id)
  ELSE json_object('_tag', author_kind) END AS author`;
@@ -1176,6 +1183,7 @@ const make = Effect.gen(function* () {
         return yield* sql.withTransaction(
           Effect.gen(function* () {
             const author = input.author;
+            const attachments = input.attachments ?? [];
             const memberId = author._tag === "system" ? null : author.memberId;
             const clientId =
               input.clientMessageId === null
@@ -1227,6 +1235,11 @@ const make = Effect.gen(function* () {
                   existing.value.replyTo !== input.replyTo ||
                   existing.value.widgetId !== input.widgetId ||
                   existing.value.kind !== input.kind ||
+                  (existing.value.attachments?.length ?? 0) !== attachments.length ||
+                  !attachments.every(
+                    (attachment, index) =>
+                      attachment.id === existing.value.attachments?.[index]?.id,
+                  ) ||
                   existing.value.mentions.length !== input.mentions.length ||
                   !existing.value.mentions.every((id, index) => id === input.mentions[index])
                 )
@@ -1326,6 +1339,8 @@ const make = Effect.gen(function* () {
                 });
             }
             const mentions = yield* encodeMentions(input.mentions);
+            const attachmentsJson =
+              attachments.length === 0 ? null : yield* encodeAttachments(attachments);
             const allocated = yield* SqlSchema.findOneOption({
               Request: Schema.Unknown,
               Result: Schema.Struct({ last_seq: NonNegativeInt }),
@@ -1336,12 +1351,12 @@ const make = Effect.gen(function* () {
             const seq = (yield* requireRecord(Effect.succeed(allocated))).last_seq;
             const inserted =
               yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id, author_agent_id,
- author_owner_person_id, author_thread_id, author_member_id, author_role, kind, body, intent, mentions_json, reply_to,
+ author_owner_person_id, author_thread_id, author_member_id, author_role, kind, body, attachments_json, intent, mentions_json, reply_to,
  widget_id, floor_run_id, status, sent_by, client_message_id, created_at, edited_at)
  VALUES (${input.messageId}, ${input.orgId}, ${input.chatId}, ${seq}, ${author._tag},
  ${member?.principal._tag === "person" ? member.principal.personId : null}, ${member?.principal._tag === "agent" ? member.principal.agentId : null},
  ${agent?.ownerPersonId ?? null}, ${author._tag === "agent" ? author.threadId : null},
- ${memberId}, ${member?.role ?? "member"}, ${input.kind}, ${input.body}, ${input.intent}, ${mentions}, ${input.replyTo},
+ ${memberId}, ${member?.role ?? "member"}, ${input.kind}, ${input.body}, ${attachmentsJson}, ${input.intent}, ${mentions}, ${input.replyTo},
  ${input.widgetId}, ${input.floorRunId}, ${input.status}, ${input.sentBy}, ${clientId}, ${input.createdAt}, ${input.editedAt})
  ON CONFLICT DO NOTHING RETURNING message_id`;
             if (inserted.length === 0)
@@ -1349,6 +1364,10 @@ const make = Effect.gen(function* () {
                 reason: "not_found",
                 message: "Kin record not found.",
               });
+            // Which chat owns each file: what reading one by id is checked against.
+            for (const attachment of attachments)
+              yield* sql`INSERT INTO kin_message_attachments (attachment_id, org_id, chat_id, message_id)
+ VALUES (${attachment.id}, ${input.orgId}, ${input.chatId}, ${input.messageId})`;
             return yield* requireRecord(messageOne(input));
           }),
         );
