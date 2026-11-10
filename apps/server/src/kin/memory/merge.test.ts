@@ -68,6 +68,21 @@ it.each([
     "original\n\n## 10:00 landed\n\n## 10:07 owner\n\n## 10:05 later\n",
   ],
   ["same journal rewrite", "journal/day.md", "rewritten\n", "rewritten\n", "rewritten\n"],
+  // The owner corrected a landed entry on GitHub: its old text must not come back under it.
+  [
+    "owner corrected a landed entry",
+    "journal/day.md",
+    "original\n\n## 10:00 landed\n\n- old\n",
+    "original\n\n## 10:00 landed\n\n- OWNER CORRECTION\n",
+    undefined,
+  ],
+  [
+    "owner rewrote a landed entry under its heading",
+    "journal/day.md",
+    "original\n\n## 10:00 landed\n\n- old\n",
+    "original\n\n## 10:00 landed\n\nRewritten\n",
+    undefined,
+  ],
 ])("merges back a landed batch: %s", (_name, path, ours, theirs, expected) => {
   const base = new Map([
     [path, Buffer.from(path.startsWith("journal/") ? "original\n" : "before\n")],

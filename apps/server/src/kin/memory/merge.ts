@@ -19,6 +19,12 @@ const unlandedFrom = (journal: Buffer, differs: number, floor: number) => {
     : start;
 };
 
+const headings = (text: Buffer) =>
+  text
+    .toString("utf8")
+    .split("\n")
+    .filter((line) => line.startsWith("## "));
+
 export const mergeMemoryFiles = (
   base: ReadonlyMap<string, Buffer>,
   local: ReadonlyMap<string, Buffer>,
@@ -64,11 +70,17 @@ export const mergeMemoryFiles = (
       let shared = original.length;
       while (shared < ours.length && ours[shared] === theirs[shared]) shared++;
       if (shared === theirs.length) files.set(file, ours);
-      else if (shared < ours.length)
-        files.set(
-          file,
-          Buffer.concat([theirs, ours.subarray(unlandedFrom(ours, shared, original.length))]),
-        );
+      else if (shared < ours.length) {
+        const from = unlandedFrom(ours, shared, original.length);
+        // Text both sides hold that differs inside an entry, or an entry under one heading on
+        // both sides, was edited rather than added: refuse instead of keeping both versions.
+        const atEntry =
+          from === original.length || ours.subarray(from, from + 4).toString("latin1") === "\n## ";
+        const unlanded = new Set(headings(ours.subarray(from)));
+        if (!atEntry || headings(theirs.subarray(from)).some((heading) => unlanded.has(heading)))
+          return undefined;
+        files.set(file, Buffer.concat([theirs, ours.subarray(from)]));
+      }
     } else return undefined;
   }
   return { files, modes };

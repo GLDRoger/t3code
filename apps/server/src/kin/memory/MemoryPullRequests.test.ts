@@ -80,6 +80,7 @@ const scenarios = [
   "land-fails",
   "review-retry",
   "sync-fetch",
+  "crash-owner-correction",
 ] as const;
 
 // `it.effect`: real git, but GitHub's silences only end when the test clock moves.
@@ -147,6 +148,9 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
     const attempting = yield* Deferred.make<void>();
     const attemptReleased = yield* Deferred.make<void>();
     let failLanding = scenario === "land-fails";
+    // The server stops after GitHub squash-merges, before it records what landed.
+    let crashBeforeRecord = scenario === "crash-owner-correction";
+    const crashed = yield* Deferred.make<void>();
     const gatedGit = Layer.succeed(
       Vcs.VcsProcess,
       Vcs.VcsProcess.of({
@@ -154,6 +158,15 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
           if (holdFetch && input.args.includes("ls-remote")) {
             yield* Deferred.succeed(fetching, undefined);
             yield* Deferred.await(fetchReleased);
+          }
+          if (
+            crashBeforeRecord &&
+            input.args.includes("update-ref") &&
+            input.args.includes(Memory.LANDED_REF)
+          ) {
+            crashBeforeRecord = false;
+            yield* Deferred.succeed(crashed, undefined);
+            return yield* Effect.never;
           }
           if (failLanding && input.stdin?.startsWith("kin: memory from this server")) {
             yield* Deferred.succeed(attempting, undefined);
@@ -560,6 +573,18 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         expect((yield* memory.prepareWakeup(orgId)).head).toBe(committed.commit);
         expect((yield* memory.readItem(orgId, KinMemoryItemId.make("new"))).head.id).toBe("new");
       });
+
+      if (scenario === "crash-owner-correction") {
+        yield* Deferred.await(crashed);
+        const landed = yield* bare("show", `main:${journalPath}`);
+        expect(landed).toContain("wake-up wake1");
+        // The owner corrects the landed entry on GitHub while this server is down.
+        yield* ownerCommits({
+          [journalPath]: (current) =>
+            current.replace("Outcome: completed", "Outcome: corrected by the owner"),
+        });
+        return;
+      }
 
       if (scenario === "restart") {
         const outcome = yield* landing;
@@ -1078,6 +1103,34 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         expect(landed).toContain("claims/new.md");
         expect(landed).toContain("claims/later.md");
         expect(yield* bare("show", "main:INDEX.md")).not.toContain("stale");
+      }).pipe(Effect.provide(writerLayer));
+    }
+
+    if (scenario === "crash-owner-correction") {
+      // The restart finds the squash under the owner's commit and merges from what landed, so
+      // the entry's old text never comes back under the correction.
+      yield* Effect.gen(function* () {
+        const memory = yield* Memory.Memory;
+        yield* settled;
+        const corrected = yield* bare("show", `main:${journalPath}`);
+        expect(corrected).toContain("Outcome: corrected by the owner");
+        expect(corrected).not.toContain("Outcome: completed");
+        expect(corrected.match(/wake-up wake1/g)).toHaveLength(1);
+        const head = yield* memory.anchor(orgId, "main");
+        expect(yield* git(`${root}/state/memory`, ["show", `${head}:${journalPath}`])).toBe(
+          corrected,
+        );
+        expect(notices).toEqual([]);
+        // A later wake-up lands on top of the correction.
+        const writer = yield* Writer.MemoryWriter;
+        yield* memory.prepareWakeup(orgId);
+        yield* writer.stage(orgId, "wake2", claim("later"));
+        yield* writer.commitWakeup(orgId, "wake2", "completed");
+        expect(yield* landing).toMatchObject({ _tag: "merged" });
+        const after = yield* bare("show", `main:${journalPath}`);
+        expect(after.startsWith(corrected)).toBe(true);
+        expect(after.match(/wake-up wake1/g)).toHaveLength(1);
+        expect(after).toContain("wake-up wake2");
       }).pipe(Effect.provide(writerLayer));
     }
 
