@@ -1,3 +1,4 @@
+import * as KinPeopleHttp from "./kin/people/http.ts";
 import * as ProofKeySessions from "./kin/auth/ProofKeySessions.ts";
 import * as Kin from "./kin/layer.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
@@ -799,6 +800,7 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerHttp.layerAssetRoute,
     ServerHttp.layerAttachmentUploadRoute,
     GuestHttp.layer,
+    KinPeopleHttp.layer,
     DeviceHubProxy.layer,
     ServerBrowserStream.routeLayer,
     ServerHttp.layerStaticAndDevRoute,

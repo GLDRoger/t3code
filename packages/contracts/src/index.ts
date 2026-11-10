@@ -82,3 +82,5 @@ export * from "./kinMemory.ts";
 export * from "./kinPush.ts";
 
 export * from "./kinRpcs.ts";
+
+export * from "./kinPeople.ts";

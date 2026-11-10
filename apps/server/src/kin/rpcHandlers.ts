@@ -1,3 +1,4 @@
+import { makeKinPeopleHandlers } from "./people/rpcHandlers.ts";
 import { KinRpcs } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -18,6 +19,7 @@ export const makeKinHandlers = Effect.fn("makeKinHandlers")(function* (
 ) {
   const kin = yield* Effect.serviceOption(KinServer);
   return group.of({
+    ...(yield* makeKinPeopleHandlers(session)),
     ...(yield* makeKinChatHandlers(session)),
     ...(yield* makeKinApprovalHandlers(
       session,

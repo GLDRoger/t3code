@@ -1,3 +1,4 @@
+import PeopleInvites from "./migrations/K038_PeopleInvites.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -76,6 +77,7 @@ const loader = Migrator.fromRecord({
   "33_ApproverKeyConfirmations": ApproverKeyConfirmations,
   "34_PerLeadWakeups": PerLeadWakeups,
   "35_RetireLevelCards": RetireLevelCards,
+  "38_PeopleInvites": PeopleInvites,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

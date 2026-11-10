@@ -8,6 +8,8 @@ import { describe, expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import {
   AuthAccessReadScope,
+  AuthKinChatScope,
+  KIN_PEOPLE_WS_METHODS,
   AuthAccessWriteScope,
   AuthEnvironmentMaintainScope,
   AuthOrchestrationOperateScope,
@@ -131,7 +133,11 @@ describe("command permissions", () => {
   );
   it.effect.each([
     // Muting quiets only the caller's own pushes, so reading the chat is enough.
-    [KIN_CHAT_WS_METHODS.chatsMute, AuthOrchestrationReadScope],
+    [KIN_CHAT_WS_METHODS.chatsMute, AuthKinChatScope],
+    [KIN_PEOPLE_WS_METHODS.peopleCreateInvite, AuthAccessWriteScope],
+    [KIN_PEOPLE_WS_METHODS.peopleRevokeDevice, AuthAccessWriteScope],
+    [KIN_PEOPLE_WS_METHODS.peopleRevokeInvite, AuthAccessWriteScope],
+    [KIN_PEOPLE_WS_METHODS.peopleSetGithubLogin, AuthKinChatScope],
     [KIN_LEVEL_WS_METHODS.get, AuthOrchestrationReadScope],
     [KIN_LEVEL_WS_METHODS.lower, AuthSettingsWriteScope],
     [KIN_LEVEL_WS_METHODS.raise, AuthSettingsWriteScope],

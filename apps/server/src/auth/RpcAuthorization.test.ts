@@ -1,5 +1,7 @@
 import {
   AuthEnvironmentMaintainScope,
+  AuthKinChatScope,
+  AuthStandardClientScopes,
   AuthDiagnosticsReadScope,
   AuthFilesystemReadScope,
   AuthProvidersManageScope,
@@ -467,4 +469,86 @@ it.effect("denies manual cleanup before the handler without settings permission"
     });
     expect(handled).toBe(false);
   }).pipe(Effect.scoped),
+);
+
+it("a chat-only grant cannot satisfy any non-chat method's declared permission", () => {
+  expect(
+    Object.entries(RPC_REQUIRED_SCOPES)
+      .filter(([, permission]) => permission === "kin:chat")
+      .map(([method]) => method)
+      .sort(),
+  ).toEqual([
+    "kin.chat.history",
+    "kin.chat.subscribe",
+    "kin.chats.createDirect",
+    "kin.chats.mute",
+    "kin.chats.subscribe",
+    "kin.messages.markRead",
+    "kin.messages.react",
+    "kin.messages.send",
+    "kin.orgs.list",
+    "kin.people.list",
+    "kin.people.setGithubLogin",
+    "kin.widgets.act",
+  ]);
+  expect(RPC_REQUIRED_SCOPES["kin.people.revokeInvite"]).toBe("access:write");
+  expect(RPC_REQUIRED_SCOPES["kin.people.listInvites"]).toBe("access:read");
+});
+it.effect.each(["chat-only", "legacy-owner"] as const)(
+  "%s authorizes Kin chat without widening access",
+  (kind) =>
+    Effect.gen(function* () {
+      const tested = [
+        "kin.orgs.list",
+        "orchestration.subscribeShell",
+        "terminal.open",
+        "projects.readFile",
+      ] as const;
+      const group = WsRpcGroup.omit(
+        ...[...WsRpcGroup.requests.keys()].filter(
+          (tag): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, (typeof tested)[number]> =>
+            !(tested as ReadonlyArray<string>).includes(tag),
+        ),
+      );
+      const handlers = group.toLayer({
+        "kin.orgs.list": () => Effect.succeed({ orgs: [], me: [] }),
+        "orchestration.subscribeShell": () => Stream.empty,
+        "terminal.open": () => Effect.never,
+        "projects.readFile": () => Effect.never,
+      });
+      const scopes = kind === "legacy-owner" ? AuthStandardClientScopes : [AuthKinChatScope];
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(Layer.merge(handlers, RpcAuthorization.layer(scopes))),
+      );
+      expect(yield* client["kin.orgs.list"]({})).toEqual({ orgs: [], me: [] });
+      if (kind === "chat-only") {
+        expect(
+          yield* client["terminal.open"]({
+            threadId: ThreadId.make("private"),
+            terminalId: "private",
+            cwd: "/tmp",
+          }).pipe(Effect.flip),
+        ).toMatchObject({ _tag: "EnvironmentAuthorizationError" });
+        expect(
+          yield* client["projects.readFile"]({ cwd: "/tmp", relativePath: "secret" }).pipe(
+            Effect.flip,
+          ),
+        ).toMatchObject({ _tag: "EnvironmentAuthorizationError" });
+        expect(
+          yield* client["orchestration.subscribeShell"]({}).pipe(Stream.runDrain, Effect.flip),
+        ).toMatchObject({ _tag: "EnvironmentAuthorizationError" });
+      }
+    }).pipe(Effect.scoped),
+);
+
+it.effect.each(Object.keys(RPC_REQUIRED_SCOPES).filter((method) => !method.startsWith("kin.")))(
+  "chat-only sessions are refused before dispatch or stream subscription: %s",
+  (method) =>
+    Effect.gen(function* () {
+      expect(
+        yield* RpcAuthorization.authorizeRpc([AuthKinChatScope], method, undefined).pipe(
+          Effect.flip,
+        ),
+      ).toMatchObject({ _tag: "EnvironmentAuthorizationError" });
+    }),
 );

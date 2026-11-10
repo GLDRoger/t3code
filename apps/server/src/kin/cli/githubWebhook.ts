@@ -1,15 +1,9 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
-  AuthAccessTokenType,
-  AuthEnvironmentBootstrapTokenType,
-  AuthTokenExchangeGrantType,
   KinChatError,
   KinGithubWebhookRpcs,
   KinGithubWebhookSecretInput,
   KinOrgId,
-  ORCHESTRATION_PROTOCOL_HEADER,
-  ORCHESTRATION_PROTOCOL_QUERY_PARAM,
-  ORCHESTRATION_PROTOCOL_VERSION_TEXT,
   ProjectId,
   type KinGithubWebhookOrgInput,
   type KinGithubWebhookSetup,
@@ -28,9 +22,9 @@ import * as Schema from "effect/Schema";
 import * as Stdio from "effect/Stdio";
 import * as Stream from "effect/Stream";
 import { Command, Flag, GlobalFlag, Prompt } from "effect/cli";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
-import { RpcClient, RpcGroup, RpcSerialization } from "effect/rpc";
-import { Socket } from "effect/socket";
+import { FetchHttpClient } from "effect/http";
+import { RpcGroup } from "effect/rpc";
+import { openRemote as openRemoteClient } from "./openRemote.ts";
 
 import {
   authLocationFlags,
@@ -297,8 +291,6 @@ const appEventsOnHost = Effect.fn("kin.github.webhook.appEvents")(
 );
 
 const group = RpcGroup.make(...KinGithubWebhookRpcs);
-const AccessToken = Schema.Struct({ access_token: Schema.String });
-const Ticket = Schema.Struct({ ticket: Schema.String });
 const CALL_TIMEOUT = "90 seconds";
 
 /** Pairs a short-lived owner session with the running server; the scope revokes it. */
@@ -307,64 +299,7 @@ const openRemote = Effect.fn("kin.github.webhook.openRemote")(function* (origin:
   const unreachable = new KinGithubWebhookCliError({
     message: `Could not reach Kin's server at ${origin}. Check that it's running.`,
   });
-  const auth = yield* EnvironmentAuth.EnvironmentAuth;
-  const tag = Buffer.from(yield* (yield* SecureRandom.SecureRandom).randomBytes(4)).toString("hex");
-  const label = `Kin GitHub webhook CLI ${tag}`;
-  const pairing = yield* auth.issuePairingCredential({ label });
-  yield* Effect.addFinalizer(() =>
-    Effect.andThen(
-      Effect.ignore(auth.revokePairingLink(pairing.id)),
-      auth.listSessions().pipe(
-        Effect.flatMap((sessions) =>
-          Effect.forEach(
-            sessions.filter((session) => session.client.label === label),
-            (session) => auth.revokeSession(session.sessionId),
-            { discard: true },
-          ),
-        ),
-        Effect.ignore,
-      ),
-    ),
-  );
-  const http = HttpClient.filterStatusOk(yield* HttpClient.HttpClient);
-  const post = <A>(request: HttpClientRequest.HttpClientRequest, schema: Schema.Decoder<A>) =>
-    http.execute(request).pipe(
-      Effect.flatMap((response) => response.json),
-      Effect.flatMap(Schema.decodeUnknownEffect(schema)),
-      Effect.mapError(() => unreachable),
-    );
-  const { access_token } = yield* post(
-    HttpClientRequest.post(new URL("/oauth/token", origin)).pipe(
-      HttpClientRequest.bodyUrlParams({
-        grant_type: AuthTokenExchangeGrantType,
-        subject_token: pairing.credential,
-        subject_token_type: AuthEnvironmentBootstrapTokenType,
-        requested_token_type: AuthAccessTokenType,
-      }),
-    ),
-    AccessToken,
-  );
-  const { ticket } = yield* post(
-    HttpClientRequest.post(new URL("/api/auth/websocket-ticket/rpc", origin)).pipe(
-      HttpClientRequest.setHeaders({
-        authorization: `Bearer ${access_token}`,
-        [ORCHESTRATION_PROTOCOL_HEADER]: ORCHESTRATION_PROTOCOL_VERSION_TEXT,
-      }),
-    ),
-    Ticket,
-  );
-  const wsUrl = new URL("/ws", origin);
-  wsUrl.protocol = wsUrl.protocol === "https:" ? "wss:" : "ws:";
-  wsUrl.searchParams.set(ORCHESTRATION_PROTOCOL_QUERY_PARAM, ORCHESTRATION_PROTOCOL_VERSION_TEXT);
-  wsUrl.searchParams.set("wsTicket", ticket);
-  const protocol = yield* Layer.build(
-    RpcClient.layerProtocolSocket().pipe(
-      Layer.provide(Socket.layerWebSocket(wsUrl.href)),
-      Layer.provide(Socket.layerWebSocketConstructorGlobal),
-      Layer.provide(RpcSerialization.layerJson),
-    ),
-  );
-  const client = yield* RpcClient.make(group).pipe(Effect.provideContext(protocol));
+  const client = yield* openRemoteClient(origin, group, "Kin GitHub webhook CLI", unreachable);
   const call = <A, E>(effect: Effect.Effect<A, E>): CliEffect<A> =>
     effect.pipe(
       Effect.timeoutOrElse({ duration: CALL_TIMEOUT, orElse: () => Effect.fail(unreachable) }),

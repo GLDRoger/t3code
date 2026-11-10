@@ -22,6 +22,7 @@ import {
   KIN_CHAT_RPC_SCOPES,
 } from "./kinChat.ts";
 import { KinPushRpcs, KIN_PUSH_RPC_SCOPES } from "./kinPush.ts";
+import { KinPeopleRpcs, KIN_PEOPLE_RPC_SCOPES } from "./kinPeople.ts";
 import {
   KinGithubWebhookOrgInput,
   KinGithubWebhookSecretInput,
@@ -121,6 +122,7 @@ export const KinRpcs = [
   ...KinMemoryRpcs,
   ...KinGithubWebhookRpcs,
   ...KinPushRpcs,
+  ...KinPeopleRpcs,
 ] as const;
 export const KIN_RPC_SCOPES = {
   ...KIN_CHAT_RPC_SCOPES,
@@ -128,6 +130,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_LEVEL_RPC_SCOPES,
   ...KIN_MEMORY_RPC_SCOPES,
   ...KIN_PUSH_RPC_SCOPES,
+  ...KIN_PEOPLE_RPC_SCOPES,
   "kin.budget.get": AuthOrchestrationReadScope,
   "kin.budget.set": AuthSettingsWriteScope,
   "kin.org.get": AuthOrchestrationReadScope,
@@ -148,6 +151,14 @@ export const KIN_RPC_SCOPES = {
 } as const;
 
 export const KIN_RPC_AGGREGATES = {
+  "kin.people.listInvites": "kin-people",
+  "kin.people.revokeInvite": "kin-people",
+  "kin.people.list": "kin-people",
+  "kin.people.createInvite": "kin-people",
+  "kin.people.listDevices": "kin-people",
+  "kin.people.revokeDevice": "kin-people",
+  "kin.people.setGithubLogin": "kin-people",
+
   "kin.budget.get": "kin-budget",
   "kin.budget.set": "kin-budget",
   "kin.org.get": "kin-org",

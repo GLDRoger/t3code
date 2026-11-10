@@ -46,6 +46,8 @@ export const AuthAccessReadScope = "access:read" as const;
 export const AuthAccessWriteScope = "access:write" as const;
 export const AuthRelayReadScope = "relay:read" as const;
 export const AuthRelayWriteScope = "relay:write" as const;
+/** Kin chat only: a member's session can use Kin chat methods and nothing else. */
+export const AuthKinChatScope = "kin:chat" as const;
 export const AuthEnvironmentScope = Schema.Literals([
   AuthOrchestrationReadScope,
   AuthOrchestrationOperateScope,
@@ -64,6 +66,7 @@ export const AuthEnvironmentScope = Schema.Literals([
   AuthAccessWriteScope,
   AuthRelayReadScope,
   AuthRelayWriteScope,
+  AuthKinChatScope,
 ]);
 export type AuthEnvironmentScope = typeof AuthEnvironmentScope.Type;
 export const AuthEnvironmentScopes = Schema.Array(AuthEnvironmentScope);
@@ -112,7 +115,10 @@ const legacyParents: Partial<Record<AuthEnvironmentScope, AuthEnvironmentScope>>
 /** Keep permission denials decodable by clients with the original scope enum. */
 export function authScopeRequiredResponse(requiredPermission: AuthEnvironmentScope) {
   return {
-    requiredScope: legacyParents[requiredPermission] ?? requiredPermission,
+    requiredScope:
+      requiredPermission === AuthKinChatScope
+        ? AuthOrchestrationReadScope
+        : (legacyParents[requiredPermission] ?? requiredPermission),
     requiredPermission,
   };
 }
@@ -129,6 +135,9 @@ export function sessionGrantsScope(
   scope: AuthEnvironmentScope,
 ): boolean {
   if (!session.authenticated) return false;
+  const granted = session.permissions ?? session.scopes ?? [];
+  if (scope === AuthKinChatScope && AuthStandardClientScopes.every((s) => granted.includes(s)))
+    return true;
   if (session.permissions !== undefined) return session.permissions.includes(scope);
   if (session.scopes?.includes(scope)) return true;
   if (session.auth?.serverUpdateScope !== undefined) return false;
