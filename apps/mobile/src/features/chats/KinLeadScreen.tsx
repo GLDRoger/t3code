@@ -8,6 +8,7 @@ import {
 } from "@t3tools/contracts";
 import {
   kinDomainLabel,
+  kinLeadModelName,
   kinLeadTrackingDetail,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
@@ -28,6 +29,7 @@ import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { appAtomRegistry } from "../../state/atom-registry";
+import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { KinAvatar } from "./components/KinAvatar";
 import { kinClient } from "./state/kinClient";
@@ -77,6 +79,7 @@ function KinLeadBody(props: {
   const atom = kinClient.leads({ environmentId, input: { orgId } });
   const result = useAtomValue(atom);
   const canEdit = useAtomValue(kinClient.leadUpdate.permissionAtom(environmentId));
+  const providers = useAtomValue(serverEnvironment.providersValueAtom(environmentId));
   const lead = AsyncResult.isSuccess(result)
     ? (result.value.leads.find((held) => held.agentId === agentId) ?? null)
     : null;
@@ -106,7 +109,7 @@ function KinLeadBody(props: {
         >
           {lead !== null ? (
             <>
-              <KinLeadProfileView lead={lead} />
+              <KinLeadProfileView lead={lead} modelName={kinLeadModelName(lead.model, providers)} />
               <KinLeadNotifications environmentId={environmentId} lead={lead} />
             </>
           ) : AsyncResult.isInitial(result) ? (
@@ -182,7 +185,14 @@ function KinLeadNotifications(props: {
 }
 
 /** Also drawn from fixtures in the component catalog. */
-export function KinLeadProfileView({ lead }: { readonly lead: KinLeadProfile }) {
+export function KinLeadProfileView({
+  lead,
+  modelName,
+}: {
+  readonly lead: KinLeadProfile;
+  /** The model as the model picker names it. */
+  readonly modelName: string;
+}) {
   const charter = lead.charter.trim();
   const area = kinDomainLabel(lead.domain);
   // A lead named after its area would say the same word twice.
@@ -218,7 +228,7 @@ export function KinLeadProfileView({ lead }: { readonly lead: KinLeadProfile }) 
           </Text>
         </View>
       </ListSection>
-      <ListSection title="In hand" footer={`Thinks with ${lead.model}.`}>
+      <ListSection title="In hand" footer={`Thinks with ${modelName}.`}>
         {lead.tracking.length === 0 ? (
           <View className="px-4 py-3">
             <Text textRole="body" className="text-foreground-muted">

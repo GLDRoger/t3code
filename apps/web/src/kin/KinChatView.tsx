@@ -18,6 +18,7 @@ import {
   type KinFeedViewer,
   type KinPaging,
 } from "@t3tools/client-runtime/kin/kinChatFeed";
+import { kinFeedMessages } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import {
   initialKinFeedFollow,
   kinFollowsEnd,
@@ -113,7 +114,7 @@ import {
 import { kinClient } from "./kinClient";
 import { KinLeadSheet } from "./KinLeadSheet";
 import { deliverKinOutbox, kinOutbox, startKinOutbox } from "./kinOutbox";
-import { kinFeedDisplay, kinIsBookkeeping, kinQuietWording } from "./kinFeedDisplay";
+import { kinFeedDisplay } from "./kinFeedDisplay";
 import {
   formatKinMessageTime,
   KinDayRow,
@@ -504,10 +505,15 @@ function KinChatFeed(props: {
   };
   const dayStart = new Date(nowMs);
   dayStart.setHours(0, 0, 0, 0);
-  const feedRows = buildKinFeedRows(messages, props.viewer, expandedRuns, dayStart, live.drafts);
+  const feedRows = buildKinFeedRows(
+    kinFeedMessages(messages, widgets),
+    props.viewer,
+    expandedRuns,
+    dayStart,
+    live.drafts,
+  );
   const display = kinFeedDisplay({
     rows: feedRows,
-    widgets,
     direct: props.direct,
     formatTime: formatKinMessageTime,
   });
@@ -679,7 +685,6 @@ function KinChatFeed(props: {
       case "message": {
         const { message } = item;
         const shown = display.get(item.key);
-        if (shown?.quiet != null) return <KinSystemRow body={shown.quiet} onRetry={null} quiet />;
         const widget = message.widgetId === null ? undefined : widgets.get(message.widgetId);
         const chips = kinReactionChips(
           streamed.reactions,
@@ -719,8 +724,7 @@ function KinChatFeed(props: {
         // An unsent message is already a retry in flight.
         return (
           <KinSystemRow
-            body={kinQuietWording(item.text)}
-            quiet={kinIsBookkeeping(item.text)}
+            body={item.text}
             onRetry={retry === null || pending.length > 0 ? null : () => void sendText(retry)}
           />
         );

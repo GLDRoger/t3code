@@ -1,4 +1,13 @@
 import { useAtomValue } from "@effect/atom-react";
+import {
+  KIN_LEAD_CHARTER_MAX,
+  KIN_LEAD_NAME_MAX,
+  kinDomainSlug,
+  kinLeadChanges,
+  kinLeadDraftCheck,
+  kinLeadDraftOf,
+  kinLeadSaveProblem,
+} from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { useNavigate } from "@tanstack/react-router";
 import { useId, useState } from "react";
@@ -20,15 +29,7 @@ import { Textarea } from "../components/ui/textarea";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient } from "./kinClient";
-import {
-  KIN_LEAD_CHARTER_MAX,
-  KIN_LEAD_NAME_MAX,
-  kinLeadDomainLabel,
-  kinLeadDomainSlug,
-  kinLeadFormAtom,
-  kinLeadSaveFailureText,
-  type KinLeadFormTarget,
-} from "./kinLeadForm";
+import { kinLeadFormAtom, type KinLeadFormTarget } from "./kinLeadForm";
 
 const closeLeadForm = () => appAtomRegistry.set(kinLeadFormAtom, null);
 
@@ -44,43 +45,51 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
   const navigate = useNavigate();
   const create = useAtomCommand(kinClient.leadCreate, { reportFailure: false });
   const update = useAtomCommand(kinClient.leadUpdate, { reportFailure: false });
-  const [name, setName] = useState(lead?.name ?? "");
-  const [area, setArea] = useState(lead === null ? "" : kinLeadDomainLabel(lead.domain));
-  const [charter, setCharter] = useState(lead?.charter ?? "");
+  const [initial] = useState(() =>
+    lead === null ? { name: "", area: "", charter: "" } : kinLeadDraftOf(lead),
+  );
+  const [name, setName] = useState(initial.name);
+  const [area, setArea] = useState(initial.area);
+  const [charter, setCharter] = useState(initial.charter);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const nameId = useId();
   const areaId = useId();
   const charterId = useId();
 
-  const trimmedName = name.trim();
-  const domain = kinLeadDomainSlug(area);
-  const areaInvalid = area.trim() !== "" && domain === null;
-  const canSave =
-    trimmedName !== "" && domain !== null && charter.length <= KIN_LEAD_CHARTER_MAX && !busy;
+  const checked = kinLeadDraftCheck({ name, area, charter });
+  const areaInvalid = area.trim() !== "" && kinDomainSlug(area) === null;
+  const canSave = checked.ok && !busy;
 
   const save = async () => {
-    if (!canSave || domain === null) return;
+    if (!checked.ok || busy) return;
+    const changes = lead === null ? null : kinLeadChanges(lead, checked);
+    if (lead !== null && changes === null) return closeLeadForm();
     setBusy(true);
     setError(null);
-    const fields = { orgId, name: trimmedName, domain, charter: charter.trim() };
+    const { name: leadName, domain, charter: leadCharter } = checked;
     // Each command settles into its own result type, so both reduce to the chat to open.
     const saved =
       lead === null
-        ? await create({ environmentId, input: fields }).then((result) =>
+        ? await create({
+            environmentId,
+            input: { orgId, name: leadName, domain, charter: leadCharter },
+          }).then((result) =>
             result._tag === "Success"
               ? { chatId: result.value.ownerChatId }
               : { cause: squashAtomCommandFailure(result) },
           )
-        : await update({ environmentId, input: { ...fields, agentId: lead.agentId } }).then(
-            (result) =>
-              result._tag === "Success"
-                ? { chatId: result.value.ownerChatId }
-                : { cause: squashAtomCommandFailure(result) },
+        : await update({
+            environmentId,
+            input: { orgId, agentId: lead.agentId, ...changes },
+          }).then((result) =>
+            result._tag === "Success"
+              ? { chatId: result.value.ownerChatId }
+              : { cause: squashAtomCommandFailure(result) },
           );
     setBusy(false);
     if ("cause" in saved) {
-      setError(kinLeadSaveFailureText(saved.cause));
+      setError(kinLeadSaveProblem(saved.cause, lead === null));
       return;
     }
     // The list names chats from the directory and the profile reads the lead list.

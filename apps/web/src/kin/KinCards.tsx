@@ -1,7 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_MISSING_CARD_TEXT,
-  KIN_UNKNOWN_CARD_TEXT,
   kinCardView,
   type KinDigestCardView,
   type KinTaskCardView,
@@ -134,12 +133,15 @@ export const KinCard = memo(function KinCard(props: {
     case "approval":
       return <KinApprovalCard approval={view.approval} />;
     case "missing":
-    case "unknown":
       return (
         <CardFrame>
-          <p className="text-muted-foreground">
-            {view.kind === "missing" ? KIN_MISSING_CARD_TEXT : KIN_UNKNOWN_CARD_TEXT}
-          </p>
+          <p className="text-muted-foreground">{KIN_MISSING_CARD_TEXT}</p>
+        </CardFrame>
+      );
+    case "unknown":
+      return view.text === null ? null : (
+        <CardFrame>
+          <p>{view.text}</p>
         </CardFrame>
       );
   }

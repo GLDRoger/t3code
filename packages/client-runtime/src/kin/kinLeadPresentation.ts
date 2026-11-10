@@ -1,4 +1,5 @@
-import type { KinLeadProfile, KinLeadTracking } from "@t3tools/contracts";
+import type { KinLeadProfile, KinLeadTracking, ServerProviderModel } from "@t3tools/contracts";
+import { formatModelSlugName } from "@t3tools/shared/model";
 
 import { formatKinDeferralTime } from "./kinDeferralPresentation.ts";
 
@@ -15,6 +16,7 @@ export function kinDomainLabel(domain: string): string {
 /** What the owner typed as the host's slug; null when nothing in it can start one. */
 export function kinDomainSlug(text: string): string | null {
   const slug = text
+    .normalize("NFKD")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^[^a-z]+/, "")
@@ -104,6 +106,28 @@ export function kinLeadTrackingDetail(
   return Number.isNaN(due) ? kind : `${kind}, ${formatKinDeferralTime(due, timeZone)}`;
 }
 
+/**
+ * The lead's model as T3's model picker names it: the name its provider lists, else the id
+ * read the way the picker reads one it has no name for.
+ */
+export function kinLeadModelName(
+  model: string,
+  providers:
+    | ReadonlyArray<{
+        readonly models: ReadonlyArray<Pick<ServerProviderModel, "slug" | "name" | "aliases">>;
+      }>
+    | null
+    | undefined,
+): string {
+  for (const provider of providers ?? []) {
+    const listed = provider.models.find(
+      (candidate) => candidate.slug === model || candidate.aliases?.includes(model) === true,
+    );
+    if (listed !== undefined) return listed.name;
+  }
+  return formatModelSlugName(model);
+}
+
 const INTRO_MAX = 320;
 
 /** The empty chat's text: what the owner made this lead for, else what any lead does. */
@@ -124,7 +148,7 @@ export function kinLeadSaveProblem(error: unknown, creating: boolean): string {
   switch (reason) {
     case "not_allowed":
       return creating
-        ? "This phone isn't allowed to add leads on this server."
+        ? "This device isn't allowed to add leads on this server."
         : "Only the person who set up this lead can change it.";
     case "conflict":
       return "You already have a lead with this name and area.";

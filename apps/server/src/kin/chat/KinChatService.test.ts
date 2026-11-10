@@ -1569,6 +1569,35 @@ describe("KinChatService", () => {
         });
         yield* sql`UPDATE kin_messages SET status = 'dismissed'
         WHERE message_id = ${notice.message.messageId}`;
+        // Kin's own notes from earlier versions: a plain row, and a card about a memory change.
+        yield* service.notice({
+          orgId: person.orgId,
+          chatId: chat.chatId,
+          messageId: KinMessageId.make("old-note"),
+          body: "Forgot: the old office address",
+        });
+        const saved = yield* service.notice({
+          orgId: person.orgId,
+          chatId: chat.chatId,
+          messageId: KinMessageId.make("old-card"),
+          body: "Memory: 1 change",
+        });
+        const repo = yield* Repository.KinChatRepository;
+        yield* repo.insertWidget({
+          orgId: person.orgId,
+          chatId: chat.chatId,
+          widgetId: KinWidgetId.make("memory-changes:lead:1"),
+          messageId: saved.message.messageId,
+          widgetClass: "native",
+          type: "memory_changes",
+          state: { items: [], more: 0 },
+          source: null,
+          feed: null,
+          awaiting: [],
+          pinnedAt: null,
+          closedAt: null,
+          updatedAt: saved.message.createdAt,
+        });
         const list = Option.getOrThrow(yield* Stream.runHead(service.subscribeChats([person], {})));
         if (list._tag !== "snapshot") return assert.fail("Expected snapshot");
         const row = list.chats.find((candidate) => candidate.chatId === chat.chatId);
