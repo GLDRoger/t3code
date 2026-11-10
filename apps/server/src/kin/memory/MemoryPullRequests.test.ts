@@ -34,6 +34,9 @@ it.each([
   ["git@gitlab.com:GLDRoger/kin-memory.git", undefined],
   ["https://github.com/GLDRoger/kin-memory/extra", undefined],
   ["/srv/memory.git", undefined],
+  ["https://user:token@github.com/GLDRoger/kin-memory.git", "GLDRoger/kin-memory"],
+  ["https://www.github.com/GLDRoger/kin-memory/", "GLDRoger/kin-memory"],
+  ["https://github.com.evil.test/GLDRoger/kin-memory", undefined],
 ])("finds the GitHub repo of %s", (url, slug) => {
   expect(githubRepoOf(url)).toBe(slug);
 });
