@@ -219,6 +219,19 @@ index 285136b..d36eac4 100644
 +        liveActivity.dismissEnded()
 +      }
      }
+diff --git a/scripts/build-layout-registry.mjs b/scripts/build-layout-registry.mjs
+--- a/scripts/build-layout-registry.mjs
++++ b/scripts/build-layout-registry.mjs
+@@ -19,7 +19,8 @@ const registryEntryPath = path.join(__dirname, '../bundle/layout-registry-entry.
+ const registryMetroConfigPath = path.join(__dirname, '../layout-registry.metro.config.js');
+ 
+ async function main() {
+-  const projectRoot = path.resolve(possibleProjectRoot);
++  // Metro indexes real paths, so a symlinked root (macOS /var, EAS local builds) breaks the imports.
++  const projectRoot = fs.realpathSync(path.resolve(possibleProjectRoot));
+   const outputPath = path.resolve(projectRoot, registryOutput ?? defaultOutputPath);
+   const defaultConfigPath =
+     platform === 'android'
 diff --git a/src/ExpoWidgets.ts b/src/ExpoWidgets.ts
 index db15000..6863dc9 100644
 --- a/src/ExpoWidgets.ts
