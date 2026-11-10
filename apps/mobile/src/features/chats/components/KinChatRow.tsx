@@ -36,6 +36,14 @@ export function KinChatRow(props: {
           >
             {view.title}
           </Text>
+          {view.muted ? (
+            <SymbolView
+              name="bell.slash"
+              size={13}
+              tintColorClassName="accent-icon-muted"
+              type="monochrome"
+            />
+          ) : null}
           {view.sentAt === null ? null : (
             <Text textRole="caption" className="text-foreground-muted">
               <RelativeTime timestamp={view.sentAt} />

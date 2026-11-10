@@ -21,6 +21,7 @@ import {
   emptyKinChat,
   emptyKinInbox,
   KIN_CACHED_MESSAGE_LIMIT,
+  kinBadgeCount,
   selectKinInboxView,
   trimKinChatForCache,
   type KinChatState,
@@ -168,15 +169,18 @@ describe("kin inbox", () => {
     expect(state.chats[0]!.unread).toBe(1);
     state = applyKinInboxEvent(state, { _tag: "chat", chat: chat("a", { lastSeq: 5, unread: 0 }) });
     expect(state.chats[0]!.unread).toBe(0);
-    state = applyKinInboxEvent(state, { _tag: "chat", chat: chat("b") });
+    state = applyKinInboxEvent(state, { _tag: "chat", chat: chat("b", { unread: 2 }) });
     expect(state.chats.map((c) => c.chatId)).toEqual(["a", "b"]);
 
     state = applyKinInboxEvent(state, { _tag: "waiting", item: waiting("w2", "b") });
+    // The badge: unread across chats plus what waits on the viewer.
+    expect(kinBadgeCount(state)).toBe(4);
     state = applyKinInboxEvent(state, {
       _tag: "waiting",
       item: waiting("w1", "a", { resolvedAt: at(3), resolution: "answered" }),
     });
     expect(state.waiting.map((w) => w.waitingId)).toEqual(["w2"]);
+    expect(kinBadgeCount(state)).toBe(3);
   });
 
   it("drops a chat the viewer left, with its waiting rows", () => {

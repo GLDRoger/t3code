@@ -36,6 +36,14 @@ export const GUARDS: ReadonlyArray<Guard> = [
     error: `new CliUpdateError({ reason: ${JSON.stringify(NO_RELEASES)} })`,
   },
   {
+    file: "apps/server/src/cli/install.ts",
+    reason:
+      "`t3 install` links a standalone runtime from T3 Code's installers or npm launcher, and " +
+      "without one it points at T3's install scripts.",
+    span: "cli.install.install",
+    error: `new CliInstallError({ reason: ${JSON.stringify(NO_RELEASES)} })`,
+  },
+  {
     file: "apps/server/src/cloud/pinnedRuntime.ts",
     reason:
       "Every published runtime install goes through here: `t3 service install` and `t3 up` " +
@@ -129,6 +137,13 @@ export const GUARDS: ReadonlyArray<Guard> = [
     reason:
       "Its store links install T3 Code's mobile app, which can't open Kin's kin:// pairing links.",
     function: "MobileAppSettingsRow",
+  },
+  {
+    file: "apps/web/src/components/onboarding/WelcomePage.tsx",
+    reason:
+      "The Welcome page's Phone section shows a QR code for T3 Code's mobile app, which can't " +
+      "open Kin's kin:// pairing links.",
+    function: "PhoneSection",
   },
 ];
 

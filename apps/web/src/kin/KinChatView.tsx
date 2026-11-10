@@ -952,8 +952,6 @@ function KinComposer(props: {
                   pendingAction={null}
                   isRunning={false}
                   canInterrupt={false}
-                  showPlanFollowUpPrompt={false}
-                  promptHasText={length > 0}
                   isSendBusy={false}
                   sendDisabledReason={hint}
                   isEnvironmentUnavailable={false}
@@ -961,7 +959,6 @@ function KinComposer(props: {
                   hasSendableContent={length > 0}
                   onPreviousPendingQuestion={noop}
                   onInterrupt={noop}
-                  onImplementPlanInNewThread={noop}
                 />
               </div>
             </form>

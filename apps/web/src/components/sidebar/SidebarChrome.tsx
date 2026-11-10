@@ -238,7 +238,7 @@ function SidebarBrandMark({
   product = "Code",
 }: {
   onBackdrop: boolean;
-  product?: "Code" | "Kin";
+  product?: string;
 }) {
   return (
     <span className="inline-flex min-w-0 items-baseline gap-1 text-sm font-medium tracking-tight">
