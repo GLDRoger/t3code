@@ -857,7 +857,12 @@ function KinChatFeed(props: {
 
   const jumpToEnd = () => {
     transition({ type: "jump-to-end" });
-    void listRef.current?.scrollToEnd({ animated: !reduceMotion });
+    // The list's own end, as maintainScrollAtEnd pins it: scrollToEnd counts the presence footer
+    // twice and overshoots by its height.
+    const list = listRef.current;
+    if (list === null) return;
+    const { contentLength, scrollLength } = list.getState();
+    void list.scrollToOffset({ offset: contentLength - scrollLength, animated: !reduceMotion });
   };
 
   const toggleRun = (runId: string) => {
@@ -1099,6 +1104,9 @@ function KinChatFeed(props: {
         {...(initialContentInset ? { contentInset: initialContentInset } : {})}
         keyboardOffset={keyboardOffset}
         keyboardLiftBehavior="whenAtEnd"
+        // As in the thread feed: RN clamps scrollTo to the raw inset, so end pins stop short of
+        // the safe area UIKit adds and the last row sits under the composer.
+        scrollToOverflowEnabled
         alignItemsAtEnd
         initialScrollAtEnd
         maintainScrollAtEnd={
