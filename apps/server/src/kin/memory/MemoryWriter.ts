@@ -294,8 +294,8 @@ const make = Effect.gen(function* () {
   const locked = memory.withWriterLock;
   // Staged changes are per wake-up, so concurrent leads never share a session; the
   // git commit and push themselves stay serialized per repository under `locked`.
-  // `bases`/`heads` record what each staged path was validated against, so a commit that
-  // lands after another lead's can re-validate instead of overwriting it whole.
+  // `changes` and `heads` keep each staged change and the branch head it was validated at,
+  // so a commit after another lead's re-validates them instead of laying stale files over it.
   type SessionState = {
     wakeupId: string;
     generation: number;
@@ -303,7 +303,6 @@ const make = Effect.gen(function* () {
     lines: string[];
     supersessions: Map<string, string>;
     changes: Map<string, MemoryChange>;
-    bases: Map<string, string | undefined>;
     heads: Map<string, string>;
   };
   const sessions = new Map<string, SessionState>();
@@ -400,18 +399,28 @@ const make = Effect.gen(function* () {
     ]);
     return recorded;
   });
-  // A wake-up's own commit, by its subject in recent history: after another lead commits on
-  // the same branch, the branch head is no longer this wake-up's commit, so head equality
-  // would mistake a committed wake-up for a lost one.
+  const wakeupSubject = (ctx: WakeupContext) => `kin(${ctx.agentId}): wake-up ${ctx.wakeupId}`;
+  // The wake-up's commit, by the subject that names it: once another lead commits on the same
+  // branch, the head is no longer this wake-up's commit even though it committed.
   const ownCommit = Effect.fn("MemoryWriter.ownCommit")(function* (
     orgId: KinOrgId,
     writer: string,
     head: string,
-    subject: string,
+    ctx: WakeupContext,
   ) {
-    const log = yield* git(orgId, writer, ["log", "--format=%H%x09%s", "-n", "200", head]).pipe(
-      Effect.orElseSucceed(() => ""),
-    );
+    const subject = wakeupSubject(ctx);
+    // A day of slack for clock changes; the walk stops at older commits, so it stays short.
+    const since = Date.parse(ctx.startedAt) - 86_400_000;
+    const bound = since > 0 ? [`--since=${DateTime.formatIso(DateTime.makeUnsafe(since))}`] : [];
+    const log = yield* git(orgId, writer, [
+      "log",
+      ...bound,
+      "--fixed-strings",
+      `--grep=${subject}`,
+      "--format=%H%x09%s",
+      head,
+      "--",
+    ]);
     for (const line of log.split("\n")) {
       const [sha, text] = line.split("\t");
       if (sha && text === subject) return sha;
@@ -448,7 +457,6 @@ const make = Effect.gen(function* () {
       lines: [],
       supersessions: new Map<string, string>(),
       changes: new Map<string, MemoryChange>(),
-      bases: new Map<string, string | undefined>(),
       heads: new Map<string, string>(),
     };
     if (!previous && ctx.stagedReceipts) {
@@ -456,10 +464,7 @@ const make = Effect.gen(function* () {
       const branch =
         ctx.level === "L0" ? shadowBranch(ctx.agentId) : (config.defaultBranch ?? "main");
       const head = yield* branchHead(orgId, writer, branch);
-      if (
-        (yield* ownCommit(orgId, writer, head, `kin(${ctx.agentId}): wake-up ${wakeupId}`)) ===
-        undefined
-      ) {
+      if ((yield* ownCommit(orgId, writer, head, ctx)) === undefined) {
         const reason =
           "Staged changes and kin_end summary were lost on restart; tool receipts do not prove those changes were committed.";
         state.lines.push(reason);
@@ -859,13 +864,11 @@ const make = Effect.gen(function* () {
     const recordedFiles = yield* filesAt(orgId, writer, recorded);
     const items = [];
     const bodies = new Map<string, string>();
-    const treeEntries = yield* readTree(orgId, writer, recorded).pipe(
-      Effect.provideService(FileSystem.FileSystem, fs),
-      Effect.provideService(VcsProcess, vcs),
-    );
-    const recordedShas = new Map(treeEntries.map((entry) => [entry.relative, entry.sha]));
     const regular = new Set(
-      treeEntries
+      (yield* readTree(orgId, writer, recorded).pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(VcsProcess, vcs),
+      ))
         .filter((entry) => ["100644", "100755"].includes(entry.mode))
         .map((entry) => entry.relative),
     );
@@ -1037,9 +1040,6 @@ const make = Effect.gen(function* () {
     state.files.set(change.path, text);
     if (supersessionHash !== undefined) state.supersessions.set(change.path, supersessionHash);
     state.changes.set(change.path, change);
-    if (!state.bases.has(change.path)) state.bases.set(change.path, recordedShas.get(change.path));
-    if (superseded && !state.bases.has(superseded.path))
-      state.bases.set(superseded.path, recordedShas.get(superseded.path));
     state.heads.set(change.path, recorded);
   });
   return MemoryWriter.of({
@@ -1066,15 +1066,7 @@ const make = Effect.gen(function* () {
             const branch =
               ctx.level === "L0" ? shadowBranch(ctx.agentId) : (config.defaultBranch ?? "main");
             const head = yield* branchHead(orgId, writer, branch);
-            if (
-              (yield* ownCommit(
-                orgId,
-                writer,
-                head,
-                `kin(${ctx.agentId}): wake-up ${wakeupId}`,
-              )) !== undefined
-            )
-              return;
+            if ((yield* ownCommit(orgId, writer, head, ctx)) !== undefined) return;
           }
           state.lines.push(...lines);
         }),
@@ -1140,7 +1132,7 @@ const make = Effect.gen(function* () {
                 ),
               );
             return yield* Effect.gen(function* () {
-              const subject = `kin(${ctx.agentId}): wake-up ${wakeupId}`;
+              const subject = wakeupSubject(ctx);
               const fingerprintOf = () =>
                 git(
                   orgId,
@@ -1154,7 +1146,7 @@ const make = Effect.gen(function* () {
                   }),
                 );
               let fingerprint = yield* fingerprintOf();
-              const own = yield* ownCommit(orgId, writer, recorded, subject);
+              const own = yield* ownCommit(orgId, writer, recorded, ctx);
               if (own !== undefined) {
                 const { message: body } = yield* commitAt(orgId, writer, own);
                 if (
@@ -1168,44 +1160,33 @@ const make = Effect.gen(function* () {
                 return { commit: own };
               }
               if (outcome === "failed") state.files.clear();
-              // Another lead may have committed since these changes were staged: re-validate
-              // them against the commit-time head instead of laying whole files over it.
-              if (outcome !== "failed" && state.changes.size > 0) {
-                const currentShas = new Map(
-                  (yield* readTree(orgId, writer, recorded).pipe(
-                    Effect.provideService(FileSystem.FileSystem, fs),
-                    Effect.provideService(VcsProcess, vcs),
-                  )).map((entry) => [entry.relative, entry.sha]),
-                );
-                const stale = [...state.changes.keys()].some(
-                  (path) =>
-                    state.heads.get(path) !== recorded ||
-                    state.bases.get(path) !== currentShas.get(path),
-                );
-                if (stale) {
-                  const original = [...state.changes.values()];
-                  state.files.clear();
-                  state.supersessions.clear();
-                  state.changes.clear();
-                  state.bases.clear();
-                  state.heads.clear();
-                  for (const change of original)
-                    yield* stageChange(orgId, wakeupId, ctx, state, change).pipe(
-                      Effect.mapError((error) =>
-                        error._tag === "MemoryConflict" ||
-                        error._tag === "MemoryWriteRejected" ||
-                        error._tag === "MemoryDuplicateId"
-                          ? new MemorySyncConflict({
-                              orgId,
-                              operation: "push",
-                              reason: `Memory changed since this wake-up staged ${change.path}; its change no longer applies cleanly and was not committed`,
-                              cause: error,
-                            })
-                          : error,
-                      ),
-                    );
-                  fingerprint = yield* fingerprintOf();
-                }
+              // Staged files are whole files: after another lead's commit, every change is
+              // validated again at this head, supersession and duplicate ids included.
+              if (
+                outcome !== "failed" &&
+                [...state.heads.values()].some((head) => head !== recorded)
+              ) {
+                const original = [...state.changes.values()];
+                state.files.clear();
+                state.supersessions.clear();
+                state.changes.clear();
+                state.heads.clear();
+                for (const change of original)
+                  yield* stageChange(orgId, wakeupId, ctx, state, change).pipe(
+                    Effect.mapError((error) =>
+                      error._tag === "MemoryConflict" ||
+                      error._tag === "MemoryWriteRejected" ||
+                      error._tag === "MemoryDuplicateId"
+                        ? new MemorySyncConflict({
+                            orgId,
+                            operation: "push",
+                            reason: `Memory changed since this wake-up staged ${change.path}; its change no longer applies cleanly and was not committed`,
+                            cause: error,
+                          })
+                        : error,
+                    ),
+                  );
+                fingerprint = yield* fingerprintOf();
               }
               const entry = yield* journalEntry(ctx, outcome, state.lines);
               yield* safePath(orgId, writer, entry.path);

@@ -24,6 +24,7 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
@@ -151,6 +152,8 @@ type HarnessOptions = {
   readonly opened?: Array<string>;
   /** Called on every `readyLeads` pass the runner makes. */
   readonly onReadyLeads?: () => void;
+  /** The project id bootstrap returns, read on each call. */
+  readonly projectId?: () => ProjectId;
 };
 
 export function harness(options: HarnessOptions = {}) {
@@ -427,10 +430,12 @@ function parts(options: HarnessOptions) {
     })),
     Layer.provide(Layer.mergeAll(orchestration, settings, receipts)),
   );
+  const current = () =>
+    options.projectId === undefined ? project : { ...project, id: options.projectId() };
   const projectLayer = Layer.mock(ProjectService.ProjectService)({
-    bootstrap: () => Effect.succeed({ project, created: true }),
-    getById: () => Effect.succeedSome(project),
-    getByWorkspaceRoot: () => Effect.succeedSome(project),
+    bootstrap: () => Effect.sync(() => ({ project: current(), created: true })),
+    getById: () => Effect.sync(() => Option.some(current())),
+    getByWorkspaceRoot: () => Effect.sync(() => Option.some(current())),
   });
   const external = Layer.mergeAll(
     projectLayer,
@@ -510,7 +515,12 @@ function parts(options: HarnessOptions) {
     Layer.mock(Memory.Memory)({
       prepareWakeup:
         options.prepare ??
-        (() => Effect.succeed({ head: "abc", indexAsOf: DateTime.makeUnsafe(timestamp) })),
+        (() =>
+          Effect.succeed({
+            head: "abc",
+            indexAsOf: DateTime.makeUnsafe(timestamp),
+            read: "/private/tmp",
+          })),
       ensureCheckouts: () => Effect.succeed({ writer: "/private/tmp", read: "/private/tmp" }),
       readPromptSnapshot:
         options.snapshot ?? (() => Effect.succeed({ rules: "rules", index: "index" })),

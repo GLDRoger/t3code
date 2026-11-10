@@ -1,3 +1,5 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- a synchronous SHA-256 names an unusual lead's read checkout.
+import * as NodeCrypto from "node:crypto";
 import * as SecretScan from "./secretScan.ts";
 import {
   readTree,
@@ -193,19 +195,15 @@ export class Memory extends Context.Service<
     readonly historyGeneration: (orgId: KinOrgId) => Effect.Effect<number>;
     readonly ensureCheckouts: (orgId: KinOrgId) => Effect.Effect<MemoryPaths, MemoryFailure>;
     /**
-     * Validates the writer and fills the waking lead's own read checkout (`memory-read-<lead>`)
-     * with its view, swapped in whole so no other lead ever sees it half-filled; `read` is that
-     * directory and `replaced` says it is a new one. The first wake-up after a start, and every
-     * one after a failed `syncCheckout`, syncs inline first.
+     * Validates the writer and swaps in a fresh read checkout, `read`: the waking lead's own
+     * (`memory-read-<lead>`) with its view. No other lead's prepare touches it. The first wake-up
+     * after a start, and every one after a failed `syncCheckout`, syncs inline first.
      */
     readonly prepareWakeup: (
       orgId: KinOrgId,
       wakeupId?: string,
       view?: LeadView,
-    ) => Effect.Effect<
-      { head: string; indexAsOf: DateTime.Utc; replaced?: true; read?: string },
-      MemoryFailure
-    >;
+    ) => Effect.Effect<{ head: string; indexAsOf: DateTime.Utc; read: string }, MemoryFailure>;
     /**
      * The writer's integrity check (`git fsck`) and default-branch sync with the remote, off the
      * reply path. Skips an organization with no clone yet, or whose last sync failed: its next
@@ -510,20 +508,13 @@ const make = Effect.gen(function* () {
   });
 
   /** Each lead reads from its own checkout, a sibling of the shared one no-view prepare fills. */
-  const readDirFor = Effect.fn("Memory.readDirFor")(function* (
-    orgId: KinOrgId,
-    paths: { read: string },
-    view?: LeadView,
-  ) {
+  const readDirFor = (paths: { read: string }, view?: LeadView) => {
     if (view === undefined) return paths.read;
-    if (!/^[A-Za-z0-9_-]+$/.test(view.lead))
-      return yield* new MemoryError({
-        orgId,
-        operation: "readCheckout",
-        reason: "Invalid lead id for a read checkout",
-      });
-    return path.join(path.dirname(paths.read), `memory-read-${view.lead}`);
-  });
+    const name = /^[A-Za-z0-9_-]{1,80}$/.test(view.lead)
+      ? view.lead
+      : NodeCrypto.createHash("sha256").update(view.lead).digest("hex").slice(0, 32);
+    return path.join(path.dirname(paths.read), `memory-read-${name}`);
+  };
 
   const markerPath = (root: string) => path.join(root, "purge-in-flight");
   /** Half-finished clones from a crash; after a purge they can hold the old history. */
@@ -970,6 +961,27 @@ const make = Effect.gen(function* () {
     return branch === mainBranch ? main : yield* loadSnapshot(orgId, false, branch);
   });
 
+  /** The branch as a wake-up pinned it, after another lead's commit moved the branch on. */
+  const pinnedSnapshot = Effect.fn("Memory.pinnedSnapshot")(function* (
+    orgId: KinOrgId,
+    branch: string,
+    head: string,
+  ) {
+    const mismatch = new MemoryError({
+      orgId,
+      operation: "promptSnapshot",
+      reason: "Memory head does not match wake-up",
+    });
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(head)) return yield* mismatch;
+    const { writer } = yield* pathsFor(orgId);
+    const known = yield* git(orgId, writer, ["cat-file", "-e", `${head}^{commit}`]).pipe(
+      Effect.as(true),
+      Effect.orElseSucceed(() => false),
+    );
+    if (!known) return yield* mismatch;
+    return yield* loadSnapshot(orgId, false, branch, head);
+  });
+
   const query = Effect.fn("Memory.query")(function* (
     orgId: KinOrgId,
     q: MemoryQuery,
@@ -1051,9 +1063,9 @@ const make = Effect.gen(function* () {
       now,
       ownerTimeZone,
     );
-    if ((checkoutBranches.get(checkoutKey(orgId, view)) ?? mainBranch) !== snapshot.branch) return;
-    const paths = yield* pathsFor(orgId);
-    const read = yield* readDirFor(orgId, paths, view);
+    // Only a checkout this process filled; a lead's next prepare refills its own anyway.
+    if (checkoutBranches.get(checkoutKey(orgId, view)) !== snapshot.branch) return;
+    const read = readDirFor(yield* pathsFor(orgId), view);
     yield* io(
       orgId,
       "writeIndex",
@@ -1647,8 +1659,8 @@ const make = Effect.gen(function* () {
           Effect.provideService(VcsProcess, vcs),
         )),
       );
-    const readTarget = yield* readDirFor(orgId, paths, view);
-    const replaced = yield* io(
+    const readTarget = readDirFor(paths, view);
+    yield* io(
       orgId,
       "readSnapshot",
       Effect.scoped(
@@ -1673,16 +1685,14 @@ const make = Effect.gen(function* () {
             args: ["init", "--quiet", "--", read],
             env: { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TEMPLATE_DIR: "" },
           });
-          // Swapped whole: the old checkout moves aside before the new one lands, so a reader
-          // never sees a half-filled directory. A warm process in the old one is released by
-          // the runner, which `replaced` already tells it to do.
+          // Two renames, so a reader sees the old checkout, the new one or none, never a mix.
+          // The old one leaves with the staging directory; a process still in it must restart.
           const existing = yield* fs.lstat(readTarget).pipe(
             Effect.as(true),
             Effect.orElseSucceed(() => false),
           );
           if (existing) yield* fs.rename(readTarget, path.join(staging, "old"));
           yield* fs.rename(read, readTarget);
-          return true;
         }),
       ),
     );
@@ -1699,7 +1709,6 @@ const make = Effect.gen(function* () {
     return {
       head: checkoutHead,
       indexAsOf: DateTime.toUtc(indexAsOf),
-      ...(replaced ? { replaced: true as const } : {}),
       read: readTarget,
     };
   });
@@ -1801,28 +1810,11 @@ const make = Effect.gen(function* () {
       locked(
         orgId,
         Effect.gen(function* () {
-          const branch = view === undefined ? mainBranch : yield* leadBranch(orgId, view.lead);
-          // A head that is not a commit here is a stale pin, not a broken checkout.
-          const { writer } = yield* pathsFor(orgId);
-          const known =
-            /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(expectedHead) &&
-            (yield* git(orgId, writer, ["cat-file", "-e", `${expectedHead}^{commit}`]).pipe(
-              Effect.as(true),
-              Effect.orElseSucceed(() => false),
-            ));
-          if (!known)
-            return yield* new MemoryError({
-              orgId,
-              operation: "promptSnapshot",
-              reason: "Memory head does not match wake-up",
-            });
-          const snapshot = yield* loadSnapshot(orgId, false, branch, expectedHead);
-          if (snapshot.head !== expectedHead)
-            return yield* new MemoryError({
-              orgId,
-              operation: "promptSnapshot",
-              reason: "Memory head does not match wake-up",
-            });
+          const current = yield* load(orgId, false, view);
+          const snapshot =
+            current.head === expectedHead
+              ? current
+              : yield* pinnedSnapshot(orgId, current.branch, expectedHead);
           const rules = snapshot.files.get("rules.md");
           const index = snapshot.index ?? snapshot.files.get("INDEX.md") ?? "";
           if (rules === undefined)

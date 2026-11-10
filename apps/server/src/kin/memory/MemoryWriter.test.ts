@@ -35,6 +35,7 @@ it.live.each([
   "lost-session-retry",
   "two-leads",
   "two-leads-same-path",
+  "two-leads-same-id",
   "recovery-after-other-commit",
   "prompt-snapshot-stale-head",
   "completed",
@@ -418,9 +419,9 @@ it.live.each([
         expect(cards.map((card) => card.wakeupId)).toEqual(["wake1", "wake2"]);
         return;
       }
-      if (scenario === "two-leads-same-path") {
+      if (scenario === "two-leads-same-path" || scenario === "two-leads-same-id") {
         const first = {
-          path: "claims/shared.md",
+          path: scenario === "two-leads-same-id" ? "claims/first.md" : "claims/shared.md",
           sourceEventId: "owner",
           content: fixtureItem({ id: "shared", kind: "claim", title: "First title", links: [] }),
         };
@@ -432,7 +433,8 @@ it.live.each([
         yield* writer.stage(orgId, "wake1", first);
         yield* writer.stage(orgId, "wake2", second);
         const committed = yield* writer.commitWakeup(orgId, "wake2", "completed");
-        // The first lead staged against the old head: its commit must refuse, not erase.
+        // The first lead validated against the old head: at this one its write conflicts, so
+        // its commit refuses rather than erasing the other lead's or duplicating its id.
         const result = yield* writer.commitWakeup(orgId, "wake1", "completed").pipe(Effect.result);
         expect(result._tag).toBe("Failure");
         if (result._tag === "Failure") expect(result.failure._tag).toBe("MemorySyncConflict");

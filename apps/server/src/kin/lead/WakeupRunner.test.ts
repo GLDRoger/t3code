@@ -141,30 +141,6 @@ const sessions = Effect.fn("test.sessions")(function* () {
 });
 
 describe("WakeupRunner", () => {
-  it("org loop waits on the first launchable lead, never on a running one", () => {
-    const a = KinAgentId.make("a");
-    const b = KinAgentId.make("b");
-    assert.strictEqual(
-      WakeupRunner.orgLoopWaitMs([{ agentId: a, readyAt: 0 }], new Set([a]), 1000),
-      60_000,
-    );
-    assert.strictEqual(
-      WakeupRunner.orgLoopWaitMs(
-        [
-          { agentId: a, readyAt: 0 },
-          { agentId: b, readyAt: 5000 },
-        ],
-        new Set([a]),
-        1000,
-      ),
-      4000,
-    );
-    assert.strictEqual(WakeupRunner.orgLoopWaitMs([], new Set(), 1000), 60_000);
-    assert.strictEqual(
-      WakeupRunner.orgLoopWaitMs([{ agentId: b, readyAt: 500 }], new Set(), 1000),
-      0,
-    );
-  });
   it.effect("does not spin the org loop while a lead with queued events is still finishing", () =>
     Effect.gen(function* () {
       const commitEntered = Deferred.makeUnsafe<void>();
@@ -235,6 +211,31 @@ describe("WakeupRunner", () => {
           }),
         ),
       );
+    }).pipe(provideDeterministicTestRuntime),
+  );
+  it.effect("moves a lead's thread off the shared project into its own checkout's", () =>
+    Effect.gen(function* () {
+      let projectId = ProjectId.make("kin:org");
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const leadThread = Effect.map(
+          sql<{ threadId: string }>`SELECT thread_id AS "threadId" FROM kin_leads`,
+          ([row]) => ThreadId.make(row!.threadId),
+        );
+        yield* wake("on-shared", "owner-chat");
+        const shared = yield* leadThread;
+        projectId = ProjectId.make("kin:org:lead");
+        yield* wake("on-own", "owner-chat");
+        const own = yield* leadThread;
+        assert.notStrictEqual(own, shared);
+        assert.strictEqual((yield* threads.getThreadProjection(own)).thread.projectId, projectId);
+        assert.deepStrictEqual(
+          yield* sql`SELECT thread_id FROM kin_agent_threads WHERE ended_at IS NULL`,
+          [{ thread_id: own }],
+        );
+      }).pipe(Effect.provide(harness({ projectId: () => projectId })));
     }).pipe(provideDeterministicTestRuntime),
   );
   it.effect("handles the owner check in code without starting a provider turn", () =>
@@ -679,14 +680,12 @@ describe("WakeupRunner", () => {
         let journals = 0;
         const prompts: Array<KinLeadPromptInput> = [];
         const opened: Array<string> = [];
-        let prepares = 0;
-        // The 5th prepare finds a new checkout directory, as after a purge.
         const prepare = () =>
-          Effect.sync(() => ({
+          Effect.succeed({
             head: "abc",
             indexAsOf: DateTime.makeUnsafe("2026-11-08T00:00:00.000Z"),
-            ...(++prepares === 5 ? { replaced: true as const } : {}),
-          }));
+            read: "/private/tmp",
+          });
         const writer = Layer.mock(Writer.MemoryWriter)({
           appendJournal: () => Effect.sync(() => void journals++),
           commitWakeup: () => Effect.sync(() => (commits++, { commit: "fixture" })),
@@ -703,9 +702,9 @@ describe("WakeupRunner", () => {
           yield* wake("late");
           // The 11th starts fresh at the turn cap, and the 12th after 10 idle minutes.
           assert.deepStrictEqual(yield* sessions(), [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 3]);
-          // Warm wake-ups keep the idle process, since the read checkout is refilled in place;
-          // a new directory resumes in a new one. (The fake also keeps it across fresh contexts.)
-          assert.lengthOf(opened, 2);
+          // Each warm wake-up resumes in a new process, since prepare swapped its cwd for a new
+          // checkout. (The fake keeps the last one across the two fresh contexts.)
+          assert.lengthOf(opened, 10);
           assert.deepStrictEqual(
             prompts.map((prompt) => prompt.since !== undefined),
             [false, ...Array.from({ length: 9 }, () => true), false, false],
@@ -1529,6 +1528,64 @@ describe("WakeupRunner", () => {
           assert.deepStrictEqual(yield* sql`SELECT state FROM kin_events`, [{ state: "done" }]);
         }).pipe(Effect.provide(harness({ entered, hold })));
       }).pipe(provideDeterministicTestRuntime),
+  );
+
+  it.effect("launches other leads while the org loop still waits on a recovered run", () =>
+    Effect.gen(function* () {
+      const holdRunning = yield* Deferred.make<void>();
+      const enteredThreads = yield* Queue.unbounded<ThreadId>();
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const sql = yield* SqlClient.SqlClient;
+        const wakeupId = KinWakeupId.make("left-running");
+        yield* queue.enqueue(event("recovered"));
+        yield* TestClock.adjust("20 seconds");
+        // A wake-up a previous process left running, its provider run still going.
+        yield* Effect.scoped(queue.claim({ orgId, agentId, wakeupId, model: "test" }));
+        const sent = yield* (yield* ThreadLaunch.ThreadLaunchService).launch({
+          commandId: CommandId.make(`kin-wakeup:${wakeupId}`),
+          projectId: ProjectId.make("kin:org"),
+          title: "Lead",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("claudeAgent"),
+            model: "claude-opus-4-6",
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          workspaceStrategy: { type: "root" },
+          initialMessage: {
+            messageId: MessageId.make(`kin-wakeup-msg:${wakeupId}`),
+            text: "Wake up",
+            attachments: [],
+          },
+          createdBy: "system",
+          creationSource: "server",
+        });
+        yield* sql`UPDATE kin_leads SET thread_id = ${sent.threadId} WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+        yield* sql`UPDATE kin_wakeups SET thread_id = ${sent.threadId} WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId}`;
+        assert.strictEqual(yield* Queue.take(enteredThreads), sent.threadId);
+        yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+          SELECT 'lead-z', org_id, display_name, role, owner_person_id, created_at FROM kin_agents WHERE agent_id = 'lead'`;
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+          SELECT 'lead-z', org_id, name, level_since, models_json, worker_projects_json, owner_chat_id FROM kin_leads WHERE agent_id = 'lead'`;
+        yield* queue.enqueue({ ...event("other"), agentId: KinAgentId.make("lead-z") });
+        yield* (yield* WakeupRunner.WakeupRunner).start;
+        yield* TestClock.adjust("20 seconds");
+        assert.notStrictEqual(yield* Queue.take(enteredThreads), sent.threadId);
+        assert.deepStrictEqual(
+          yield* sql`SELECT agent_id FROM kin_wakeups WHERE org_id = ${orgId} AND status = 'running' ORDER BY agent_id`,
+          [{ agent_id: "lead" }, { agent_id: "lead-z" }],
+        );
+      }).pipe(
+        Effect.provide(
+          harness({
+            holdRunning,
+            onTurn: ({ threadId }) => Queue.offer(enteredThreads, threadId).pipe(Effect.asVoid),
+          }),
+        ),
+      );
+    }).pipe(provideDeterministicTestRuntime),
   );
 
   it.effect(

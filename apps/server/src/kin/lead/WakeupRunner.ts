@@ -68,17 +68,14 @@ const isSteerRun = (wakeupId: KinWakeupId, run: { readonly userMessageId: string
   KinIdentity.isAdoptedRunMessage(wakeupId, run.userMessageId) &&
   run.userMessageId !== KinIdentity.rescueMessageId(wakeupId);
 const ownerCheckDispatcherReady = false;
-/**
- * How long an org loop may sleep: until the first lead it could actually launch is ready.
- * A lead already running never shortens the wait; its finish wakes the loop instead.
- */
-export const orgLoopWaitMs = (
+/** A running lead never shortens the org loop's wait; its finish wakes the loop instead. */
+const orgLoopWaitMs = (
   ready: ReadonlyArray<{ readonly agentId: KinAgentId; readonly readyAt: number }>,
   active: ReadonlySet<KinAgentId>,
   now: number,
 ) => {
   const next = ready.find((candidate) => !active.has(candidate.agentId));
-  return next === undefined ? 60_000 : Math.min(60_000, Math.max(0, next.readyAt - now));
+  return next === undefined ? 60_000 : Math.min(60_000, Math.max(1, next.readyAt - now));
 };
 /** A direct chat keeps its provider session for this long idle, for at most this many wake-ups. */
 const WARM_IDLE_MS = 600_000;
@@ -830,13 +827,12 @@ const make = Effect.gen(function* () {
                 return;
               }
             }
-            const paths = yield* memory.ensureCheckouts(orgId);
-            // Each lead's provider runs in its own read checkout, so its project is per lead too.
+            // A project per lead, since its root is the provider's cwd: the lead's own checkout.
             const { project } = yield* projects.bootstrap({
               commandId: CommandId.make(`kin-project:${orgId}:${agentId}`),
               projectId: ProjectId.make(`kin:${orgId}:${agentId}`),
-              workspaceRoot: pinned.read ?? paths.read,
-              title: `Kin · ${record.orgName}`,
+              workspaceRoot: pinned.read,
+              title: `Kin · ${record.orgName} · ${record.name}`,
             });
             let existingThreadId = current.threadId;
             if (existingThreadId !== null) {
@@ -876,20 +872,18 @@ const make = Effect.gen(function* () {
               row.startedAt - previous.endedAt < WARM_IDLE_MS &&
               // New standing rules are a new contract, so they get a fresh session.
               previous.rules === seen.rules;
-            // Prepare swaps in a whole new read checkout, so an idle warm process resumes only
-            // once it has released the old directory as its cwd.
+            // Prepare swapped in a new read checkout, so a warm session resumes in a new process.
             const resumes =
               resumable &&
-              (pinned.replaced !== true ||
-                (yield* releaseProcess(previous.threadId).pipe(
-                  Effect.catchCause((cause) =>
-                    Effect.logWarning("Kin lead process release failed", {
-                      orgId,
-                      wakeupId,
-                      cause,
-                    }).pipe(Effect.as(false)),
-                  ),
-                )));
+              (yield* releaseProcess(previous.threadId).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("Kin lead process release failed", {
+                    orgId,
+                    wakeupId,
+                    cause,
+                  }).pipe(Effect.as(false)),
+                ),
+              ));
             const text = yield* prompt.build({
               orgId,
               agentId,
@@ -1199,16 +1193,17 @@ const make = Effect.gen(function* () {
       for (const orgId of yield* orgIds()) {
         if (organizations.has(orgId)) continue;
         organizations.add(orgId);
-        // Finished runs wake the loop through this, after leaving `active`, so the lead they
-        // freed is launchable on the very next pass instead of at the 60-second cap.
-        const finished = { current: Deferred.makeUnsafe<void>() };
-        const wake: Effect.Effect<void> = Effect.suspend(() => {
-          const current = finished.current;
-          finished.current = Deferred.makeUnsafe<void>();
-          return Deferred.succeed(current, undefined).pipe(Effect.asVoid);
-        });
+        // A run leaves `active` before it signals, so the lead it frees launches on the next pass.
+        let freed = Deferred.makeUnsafe<void>();
+        const wake = Effect.suspend(() => {
+          const signal = freed;
+          freed = Deferred.makeUnsafe<void>();
+          return Deferred.succeed(signal, undefined);
+        }).pipe(Effect.asVoid);
         yield* Effect.gen(function* () {
           const changed = yield* queue.changes(orgId);
+          // Taken before any read, so a run that finishes mid-pass still ends this pass's wait.
+          const finished = Deferred.await(freed);
           const active = activeOf(orgId);
           yield* recoverOrg(orgId, active, wake, true);
           const rows = yield* sql<{
@@ -1238,10 +1233,7 @@ const make = Effect.gen(function* () {
               Effect.forkScoped,
             );
           }
-          yield* Effect.raceFirst(
-            changed,
-            Effect.raceFirst(Deferred.await(finished.current), threadActivity(orgId)),
-          ).pipe(
+          yield* Effect.raceAllFirst([changed, finished, threadActivity(orgId)]).pipe(
             Effect.timeoutOrElse({
               duration: orgLoopWaitMs(ready, active, now),
               orElse: () => Effect.void,
