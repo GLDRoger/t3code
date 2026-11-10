@@ -35,6 +35,7 @@ import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
+import { configuredGithubMemoryRepo } from "../memory/MemoryConfig.ts";
 import * as KinTriggerStore from "./KinTriggerStore.ts";
 
 export const KIN_SINK_PROMPT =
@@ -213,7 +214,7 @@ export const make = Effect.gen(function* () {
   const findTask = (id: ScheduledTaskId) =>
     tasks.list().pipe(Effect.map(({ tasks }) => tasks.find((task) => task.id === id)));
 
-  const upsert = (input: {
+  const upsert = Effect.fn("KinGithubWebhooks.upsert")(function* (input: {
     readonly orgId: KinOrgId;
     readonly target: { readonly id: ScheduledTaskId } | { readonly commandId: CommandId };
     readonly projectId: ProjectId;
@@ -222,8 +223,9 @@ export const make = Effect.gen(function* () {
     /** Undefined keeps the stored secret, so the bound hash stays valid. */
     readonly secret: Redacted.Redacted<string> | undefined;
     readonly enabled: boolean;
-  }) =>
-    decodeUpsert({
+  }) {
+    const memoryRepo = yield* configuredGithubMemoryRepo(input.orgId);
+    return yield* decodeUpsert({
       ...("id" in input.target
         ? { id: input.target.id, requireExisting: true }
         : { commandId: input.target.commandId }),
@@ -252,6 +254,9 @@ export const make = Effect.gen(function* () {
         filters: [
           { path: "headers.x-github-event", op: "in", value: KinTriggerStore.GITHUB_EVENTS },
           { path: "body.sender.login", op: "notEquals", value: input.botLogin },
+          ...(memoryRepo === undefined
+            ? []
+            : [{ path: "body.repository.full_name", op: "notEquals" as const, value: memoryRepo }]),
         ],
       },
     }).pipe(
@@ -259,6 +264,7 @@ export const make = Effect.gen(function* () {
       Effect.mapError(() => invalid("The GitHub source could not be saved.")),
       Effect.flatMap(tasks.upsert),
     );
+  });
 
   const needsConnect = Effect.fn("KinGithubWebhooks.needsConnect")(function* (orgId: KinOrgId) {
     const lead = yield* liveLead(sql, orgId, { prefer: ENGINEERING_DOMAIN }).pipe(

@@ -2,6 +2,7 @@ import {
   GithubRepoSlug,
   KinEvent,
   KinEventId,
+  type KinWorkerId,
   KinOrgId,
   type KinGithubEvent,
   type KinTriggerFired,
@@ -25,8 +26,11 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { publishBranch } from "../lead/workerPublish.ts";
 import { ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
+import { configuredGithubMemoryRepo } from "../memory/MemoryConfig.ts";
 import * as Memory from "../memory/Memory.ts";
+import { relevant } from "./githubInterest.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import { isPermanent } from "./routines.ts";
 
@@ -253,6 +257,7 @@ type Outcome =
   | Exclude<GithubDeliveryResult, { readonly _tag: "event" }>
   | (Extract<GithubDeliveryResult, { readonly _tag: "event" }> & {
       readonly matches: ReadonlyArray<MemoryItemHead>;
+      readonly items: ReadonlyArray<MemoryItemHead>;
     });
 
 const make = Effect.gen(function* () {
@@ -288,6 +293,9 @@ const make = Effect.gen(function* () {
       acceptAnyOutcome: true,
     });
     const built = githubEventFromDelivery(orgId, delivery);
+    const memoryRepo = yield* configuredGithubMemoryRepo(orgId);
+    if (built._tag === "event" && memoryRepo?.toLowerCase() === built.event.repo.toLowerCase())
+      return { _tag: "drop", reason: "memory repo" } satisfies GithubDeliveryResult;
     if (built._tag === "event" && !inRepoScope(scope.repos, built.event.repo))
       return { _tag: "drop", reason: "repo out of scope" } satisfies GithubDeliveryResult;
     return built;
@@ -318,7 +326,10 @@ const make = Effect.gen(function* () {
       WHERE org_id = ${orgId} AND fire_id = ${fire.fireId} AND consumed_at IS NULL ORDER BY fire_id`;
     if (unconsumed.length === 0) return;
     const { sourceId, scheduledTaskId } = fire.payload;
-    const [source] = yield* sql`SELECT source_id FROM kin_webhook_sources
+    const [source] = yield* sql<{
+      source_id: string;
+      bot_login: string;
+    }>`SELECT source_id, bot_login FROM kin_webhook_sources
       WHERE org_id = ${orgId} AND source_id = ${sourceId} AND scheduled_task_id = ${scheduledTaskId}
       ORDER BY source_id`;
     const outcome: Outcome =
@@ -334,6 +345,24 @@ const make = Effect.gen(function* () {
         });
       } else {
         const { event } = outcome;
+        const workers = yield* sql<{
+          workerId: KinWorkerId;
+          url: string | null;
+          repositoryKey: string | null;
+        }>`
+          SELECT worker_id AS "workerId", pull_request_url AS url, repository_key AS "repositoryKey" FROM kin_workers
+          WHERE org_id = ${orgId} AND agent_id = ${lead.agentId} ORDER BY worker_id`;
+        if (
+          !relevant(
+            event,
+            source?.bot_login ?? "",
+            outcome.items,
+            workers.map((row) => ({ ...row, branch: publishBranch(row.workerId) })),
+          )
+        ) {
+          yield* inbox.markConsumed(orgId, [fire.fireId]);
+          return;
+        }
         const base = {
           orgId,
           agentId: lead.agentId,
@@ -366,6 +395,13 @@ const make = Effect.gen(function* () {
               itemIds: outcome.matches.map((item) => item.id),
             }),
           );
+        yield* sql`UPDATE kin_events SET not_before = COALESCE((
+          SELECT MIN(not_before) FROM kin_events WHERE org_id = ${orgId} AND agent_id = ${lead.agentId}
+            AND tag = 'github' AND state = 'queued' AND attempts = 0 AND budget_deferred = 0
+            AND not_before > ${now} AND not_before <= ${now + 120_000}
+        ), ${now + 120_000})
+          WHERE org_id = ${orgId} AND state = 'queued' AND attempts = 0 AND not_before IS NULL
+            AND event_id IN (${eventIdFor("github", orgId, fire.fireId)}, ${eventIdFor("github_condition", orgId, fire.fireId)})`;
       }
     } else {
       yield* Effect.logDebug("Kin GitHub event dropped", {
@@ -409,7 +445,7 @@ const make = Effect.gen(function* () {
       });
     }
 
-    // One memory read per drain; without it events still go through and TRIG-10's recheck matches later.
+    // Worker links and mentions still qualify if memory is unavailable.
     const items = reads.some(
       ({ result }) => Result.isSuccess(result) && result.success._tag === "event",
     )
@@ -431,6 +467,7 @@ const make = Effect.gen(function* () {
             ? {
                 ...built,
                 matches: matchConditions({ ...built.event, merged: built.merged }, items),
+                items,
               }
             : built;
         yield* sql.withTransaction(write(orgId, fire, outcome, now));
