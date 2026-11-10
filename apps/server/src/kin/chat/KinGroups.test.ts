@@ -431,7 +431,14 @@ it.effect(
         capacity: "unbounded",
       });
       assert.strictEqual((yield* Queue.take(list))._tag, "snapshot");
+      const open = yield* Stream.toQueue(chats.subscribe([owner], { chatId }), {
+        capacity: "unbounded",
+      });
+      assert.strictEqual((yield* Queue.take(open))._tag, "backlog");
       yield* groups.removeMember([owner], { chatId, memberId: member("Priya") });
+      // The owner's open chat hears of a change, never of a departure it could take for its own.
+      const change = yield* Queue.take(open);
+      assert.isTrue(change._tag === "member" && change.member.leftAt === null);
       const gone = yield* Queue.take(list);
       assert.isTrue(gone._tag === "chat" && gone.chat.members[0]?.leftAt !== null);
       assert.isFalse(yield* chats.attachmentReadable([priya], "kin-chat-plan"));

@@ -312,7 +312,7 @@ const make = Effect.gen(function* () {
     }, transaction),
 
     removeMember: Effect.fn("KinGroups.removeMember")(function* (caller, input) {
-      const { chat } = yield* ownedGroup(caller, input.chatId);
+      const { chat, member: ownerMember } = yield* ownedGroup(caller, input.chatId);
       const member = yield* repo.getMember({ orgId: chat.orgId, memberId: input.memberId });
       if (Option.isNone(member) || member.value.chatId !== chat.chatId) return yield* notFound;
       if (member.value.role === "owner")
@@ -345,7 +345,8 @@ const make = Effect.gen(function* () {
       const removed = yield* repo.getMember(member.value);
       if (Option.isNone(removed)) return yield* notFound;
       yield* hub.publish({ type: "member.removed", orgId: chat.orgId, member: removed.value });
-      yield* changed(removed.value);
+      // Those who stay hear it as a change by an active member: a departed one reads as their own exit.
+      yield* changed(ownerMember);
     }, transaction),
 
     setLead: Effect.fn("KinGroups.setLead")(function* (caller, input) {
