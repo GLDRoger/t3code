@@ -20,6 +20,8 @@ export type KinSealedKeyFields = {
   readonly publicJwkJson: string;
   readonly humanId: string;
   readonly hardware: string;
+  /** The `since` bound for session revocations, so moving it can't hide a repaired revoke. */
+  readonly createdAt: number;
 };
 
 /**
@@ -73,6 +75,7 @@ const make = (
     publicJwkJson: key.publicJwkJson,
     humanId: key.humanId,
     hardware: key.hardware,
+    createdAt: key.createdAt,
   });
   const seal = (key: KinSealedKeyFields) =>
     mac({ v: 1, use: "kin-approver-key", ...keyFields(key) });

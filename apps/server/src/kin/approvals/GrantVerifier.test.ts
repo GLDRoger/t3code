@@ -1268,7 +1268,8 @@ describe("GrantVerifier", () => {
         public_jwk_json: string;
         human_id: string;
         hardware: string;
-      }>`SELECT public_jwk_json, human_id, hardware
+        created_at: number;
+      }>`SELECT public_jwk_json, human_id, hardware, created_at
         FROM kin_approver_keys WHERE org_id = ${orgId} AND thumbprint = ${ownerKey.key.thumbprint}`;
       const seal = (yield* KeySeal.KinKeySeal.pipe(Effect.provide(KeySeal.layerTest()))).seal({
         orgId: "org_02",
@@ -1276,6 +1277,7 @@ describe("GrantVerifier", () => {
         publicJwkJson: copied!.public_jwk_json,
         humanId: copied!.human_id,
         hardware: copied!.hardware,
+        createdAt: copied!.created_at,
       });
       yield* sql`INSERT INTO kin_approver_keys (thumbprint, org_id, public_jwk_json, human_id,
           device_label, platform, hardware, attested, state, created_at, confirmed_at, seal)

@@ -66,6 +66,7 @@ export const sealFields = (row: KeyRow) => ({
   publicJwkJson: row.public_jwk_json,
   humanId: row.human_id,
   hardware: row.hardware,
+  createdAt: row.created_at,
 });
 
 export const pendingSealFields = (row: KeyRow) => ({
@@ -171,6 +172,7 @@ export const makeKeyStore = Effect.gen(function* () {
           AND hardware = ${row.hardware} AND device_label = ${row.device_label}
           AND platform = ${row.platform} AND session_id IS ${row.session_id}
           AND proof_key_thumbprint IS ${row.proof_key_thumbprint}
+          AND created_at = ${row.created_at}
           AND ${
             onlyFirst
               ? sql`NOT EXISTS (SELECT 1 FROM kin_approver_keys

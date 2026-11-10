@@ -780,6 +780,9 @@ describe("KinActionExecutor", () => {
         yield* refuse("unbound-head", { payload: (payload) => ({ ...payload, headSha: MOVED }) });
         yield* refuse("forged-signature", { forged: true });
         const sql = yield* SqlClient.SqlClient;
+        // `created_at` bounds the session-revocation check, so the seal covers it.
+        yield* sql`UPDATE kin_approver_keys SET created_at = created_at + 1 WHERE org_id = ${orgId}`;
+        yield* refuse("moved-created-at");
         yield* sql`DELETE FROM kin_approver_keys WHERE org_id = ${orgId}`;
         yield* insertKey(orgId, { sealed: false });
         yield* refuse("unsealed-key");

@@ -673,6 +673,17 @@ describe("ApproverKeys", () => {
       yield* sql`UPDATE kin_approver_keys SET device_label = 'Owner phone'
         WHERE thumbprint = ${genuine.key.thumbprint}`;
       assert.isFalse(yield* keys.activateByGrant(genuine.key));
+      // `created_at` bounds the session-revocation check, so moving it voids both seals.
+      const moved = yield* registerAndroid(keys, caller("sess-phone-3", "phone"));
+      yield* sql`UPDATE kin_approver_keys SET created_at = created_at + 1
+        WHERE thumbprint = ${moved.key.thumbprint}`;
+      assert.isFalse(Option.getOrThrow(yield* keys.get(moved.key)).attested);
+      assert.isFalse(yield* keys.activateByGrant(moved.key));
+      assert.strictEqual(Option.getOrThrow(yield* keys.get(moved.key)).state, "pending");
+      assert.isTrue((yield* keys.requireActive(first.key)).attested);
+      yield* sql`UPDATE kin_approver_keys SET created_at = created_at + 1
+        WHERE thumbprint = ${first.key.thumbprint}`;
+      assert.isFalse((yield* keys.requireActive(first.key)).attested);
     }).pipe(Effect.provide(layer)),
   );
 });

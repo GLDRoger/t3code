@@ -55,6 +55,7 @@ export const insertActiveKey = Effect.fn("grant.testkit.insertActiveKey")(functi
     publicJwkJson: input.key.publicJwkJson,
     humanId: input.humanId,
     hardware: "tee",
+    createdAt: 0,
   };
   const seal = input.sealed === false ? null : (yield* KinKeySeal).seal(fields);
   yield* sql`INSERT INTO kin_approver_keys (thumbprint, org_id, public_jwk_json, human_id,
@@ -77,6 +78,7 @@ export const insertPendingKey = Effect.fn("grant.testkit.insertPendingKey")(func
     publicJwkJson: input.key.publicJwkJson,
     humanId: input.humanId,
     hardware: "tee",
+    createdAt: 0,
     deviceLabel: "Pixel 9",
     platform: "android",
     attested: 1,
