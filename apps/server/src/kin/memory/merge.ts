@@ -10,6 +10,15 @@ export const uniqueMergeBase = (
   return candidates.size === 1 ? [...candidates][0] : undefined;
 };
 
+/** Where the first line that differs starts, with the blank line that opens its journal entry. */
+const unlandedFrom = (journal: Buffer, differs: number, floor: number) => {
+  let start = differs;
+  while (start > floor && journal[start - 1] !== 10) start--;
+  return start > floor && journal.subarray(start - 1, start + 3).toString("latin1") === "\n## "
+    ? start - 1
+    : start;
+};
+
 export const mergeMemoryFiles = (
   base: ReadonlyMap<string, Buffer>,
   local: ReadonlyMap<string, Buffer>,
@@ -30,10 +39,10 @@ export const mergeMemoryFiles = (
     const original = base.get(file) ?? Buffer.alloc(0);
     const bytes = local.get(file);
     const journal = file.startsWith("journal/");
-    if (journal && (!bytes || !bytes.subarray(0, original.length).equals(original)))
-      return undefined;
     // Both sides made this change, as when the remote squash-merged a batch of local commits.
     if (same(remote.get(file), bytes) && after?.mode === modes.get(file)) continue;
+    if (journal && (!bytes || !bytes.subarray(0, original.length).equals(original)))
+      return undefined;
     if (same(remote.get(file), base.get(file)) && before?.mode === modes.get(file)) {
       if (bytes) {
         files.set(file, bytes);
@@ -50,10 +59,16 @@ export const mergeMemoryFiles = (
     ) {
       const theirs = remote.get(file)!;
       const ours = bytes!;
-      // One side already holds the other's entries when a landed batch is merged back.
-      if (ours.subarray(0, theirs.length).equals(theirs)) files.set(file, ours);
-      else if (!theirs.subarray(0, ours.length).equals(ours))
-        files.set(file, Buffer.concat([theirs, ours.subarray(original.length)]));
+      // Entries both sides hold are kept once, even when the base predates them: a landed batch
+      // comes back in GitHub's copy, and only what follows it here is still unlanded.
+      let shared = original.length;
+      while (shared < ours.length && ours[shared] === theirs[shared]) shared++;
+      if (shared === theirs.length) files.set(file, ours);
+      else if (shared < ours.length)
+        files.set(
+          file,
+          Buffer.concat([theirs, ours.subarray(unlandedFrom(ours, shared, original.length))]),
+        );
     } else return undefined;
   }
   return { files, modes };

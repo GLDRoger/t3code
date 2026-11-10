@@ -3,6 +3,7 @@ import { expect, it } from "@effect/vitest";
 import { KinAgentId, KinMemoryItemId, KinOrgId } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -72,6 +73,13 @@ const scenarios = [
   "no-app",
   "batched",
   "restart",
+  "repeat-edit",
+  "owner-edit",
+  "owner-conflict",
+  "first-run",
+  "land-fails",
+  "review-retry",
+  "sync-fetch",
 ] as const;
 
 // `it.effect`: real git, but GitHub's silences only end when the test clock moves.
@@ -107,11 +115,55 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
     let stalls = 0;
     let jobsListed = false;
     let unclosable: number | undefined;
-    // `batched`: memory-check stays pending on the first PR until the test releases it.
+    // memory-check stays pending on the first PR until the test releases it.
+    const heldInCi = ["batched", "repeat-edit", "owner-edit", "owner-conflict"].includes(scenario);
     const firstPoll = yield* Deferred.make<void>();
     let ciDone = false;
-    // `restart`: GitHub refuses new PRs until the server restarts.
-    let createFails = scenario === "restart";
+    // GitHub refuses new PRs until the server restarts.
+    let createFails = scenario === "restart" || scenario === "first-run";
+    let reviewFails = scenario === "review-retry";
+    const journalPath = "journal/2026/11-08.md";
+    // The owner changes memory on GitHub itself, as a PR of their own would once merged.
+    let ownerHead: string | undefined;
+    const ownerCommits = (files: Record<string, (current: string) => string>) =>
+      Effect.gen(function* () {
+        yield* git(source, ["fetch", "--", remote, "main"]);
+        yield* git(source, ["reset", "--hard", "FETCH_HEAD"]);
+        for (const [path, edit] of Object.entries(files)) {
+          const file = `${source}/${path}`;
+          yield* fs.makeDirectory(file.slice(0, file.lastIndexOf("/")), { recursive: true });
+          const current = yield* fs.readFileString(file).pipe(Effect.orElseSucceed(() => ""));
+          yield* fs.writeFileString(file, edit(current));
+        }
+        yield* git(source, ["add", "--", "."]);
+        yield* git(source, [...identity, "commit", "-m", "owner edit"]);
+        yield* git(source, ["push", "--", remote, "HEAD:main"]);
+        ownerHead = yield* git(source, ["rev-parse", "HEAD"]);
+      });
+    // `sync-fetch` holds every read of GitHub's head; `land-fails` breaks the batch commit.
+    const fetching = yield* Deferred.make<void>();
+    const fetchReleased = yield* Deferred.make<void>();
+    let holdFetch = false;
+    const attempting = yield* Deferred.make<void>();
+    const attemptReleased = yield* Deferred.make<void>();
+    let failLanding = scenario === "land-fails";
+    const gatedGit = Layer.succeed(
+      Vcs.VcsProcess,
+      Vcs.VcsProcess.of({
+        run: Effect.fn("test.memoryPullRequests.gatedGit")(function* (input) {
+          if (holdFetch && input.args.includes("ls-remote")) {
+            yield* Deferred.succeed(fetching, undefined);
+            yield* Deferred.await(fetchReleased);
+          }
+          if (failLanding && input.stdin?.startsWith("kin: memory from this server")) {
+            yield* Deferred.succeed(attempting, undefined);
+            yield* Deferred.await(attemptReleased);
+            return yield* Effect.die("fixture: the disk is full");
+          }
+          return yield* vcs.run(input);
+        }),
+      }),
+    );
     const branchHead = (branch: string) => bare("rev-parse", `refs/heads/${branch}`);
     const pullBody = (number: number) =>
       Effect.gen(function* () {
@@ -134,7 +186,8 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         const query = new URL(path, "https://github.invalid").searchParams;
         const body = request.body as Record<string, string> | undefined;
         if (request.method === "POST" && path === "/pulls") {
-          if (createFails) return { status: 500, body: { message: "Server Error" } };
+          if (createFails || (reviewFails && body!.head!.endsWith("-review")))
+            return { status: 500, body: { message: "Server Error" } };
           if (scenario === "hang") {
             yield* Deferred.succeed(silenced, undefined);
             return { status: 0, hang: true as const };
@@ -208,6 +261,18 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
           );
           yield* bare("update-ref", "refs/heads/main", squash, parent);
           state.state = "closed";
+          // Right after the first batch merges, before Kin reads GitHub again.
+          if (merges.length === 1 && scenario === "owner-edit")
+            yield* ownerCommits({
+              "claims/owner.md": () =>
+                fixtureItem({ id: "owner", kind: "claim", title: "Claim owner", links: [] }),
+              [journalPath]: (current) => `${current}\n## Owner note\n`,
+            });
+          if (merges.length === 1 && scenario === "owner-conflict")
+            yield* ownerCommits({
+              "claims/new.md": (current) =>
+                current.replace("Claim new", "Claim the owner reworded"),
+            });
           return { status: 200, body: { merged: true, sha: squash } };
         }
         if (request.method === "GET" && /^\/pulls\?state=open&per_page=/.test(path)) {
@@ -272,7 +337,7 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         const jobs = /^\/actions\/runs\/(\d+)\/jobs\?/.exec(path);
         if (jobs) {
           jobsListed = true;
-          const pending = scenario === "check-pending" || (scenario === "batched" && !ciDone);
+          const pending = scenario === "check-pending" || (heldInCi && !ciDone);
           // `check-failed` fails only the first PR, so a later commit's attempt can land.
           const failed =
             (scenario === "check-failed" && pulls.size === 1) || scenario === "owner-path-refused";
@@ -294,7 +359,7 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
           const answered = yield* Effect.forEach(listed, job);
           // The poll's git reads are done, so moving the test clock times out no subprocess.
           if (pending) yield* Deferred.succeed(silenced, undefined);
-          if (pending && scenario === "batched") yield* Deferred.succeed(firstPoll, undefined);
+          if (pending && heldInCi) yield* Deferred.succeed(firstPoll, undefined);
           return { status: 200, body: { total_count: listed.length, jobs: answered } };
         }
         const checks = /^\/commits\/([a-f0-9]+)\/check-runs\?(.*)$/.exec(path);
@@ -361,8 +426,7 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
     const pullRequests = Layer.effect(
       PullRequests.MemoryPullRequests,
       PullRequests.make({
-        pollInterval:
-          scenario === "check-pending" ? "20 minutes" : scenario === "batched" ? "1 minute" : 0,
+        pollInterval: scenario === "check-pending" ? "20 minutes" : heldInCi ? "1 minute" : 0,
       }),
     ).pipe(Layer.provide(Layer.mergeAll(app, github.layer)));
 
@@ -407,6 +471,7 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
       Layer.provide(auth),
       Layer.provide(Scan.layer),
       Layer.provide(landerHooks),
+      Layer.provide(gatedGit),
     );
     // The first landing run that did something; runs with nothing to land are skipped.
     const landing = Effect.gen(function* () {
@@ -438,10 +503,21 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
       const notMerged = () =>
         notices.filter((notice) => notice.reason.startsWith("Memory write not merged"));
 
+      // The periodic sync is still waiting on GitHub when the lead stages and commits.
+      holdFetch = scenario === "sync-fetch";
+      const sync =
+        scenario === "sync-fetch"
+          ? yield* memory.syncCheckout(orgId).pipe(Effect.forkChild)
+          : undefined;
+      if (sync !== undefined) yield* Deferred.await(fetching);
+
       yield* writer.stage(orgId, "wake1", claim("new"));
       const reviewed = scenario === "owner-path" || scenario === "owner-path-close-fails";
       const ownerPath =
-        reviewed || scenario === "owner-path-refused" || scenario === "records-broken";
+        reviewed ||
+        scenario === "owner-path-refused" ||
+        scenario === "records-broken" ||
+        scenario === "review-retry";
       const sql = yield* SqlClient.SqlClient;
       const records = sql`SELECT branch, head FROM kin_memory_review_pulls ORDER BY branch`;
       if (scenario === "records-broken")
@@ -471,6 +547,11 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
       expect(yield* localMain()).toBe(committed.commit);
       expect(yield* memory.anchor(orgId, "main")).toBe(committed.commit);
       expect(yield* git(paths.writer, ["rev-parse", `${committed.commit}^`])).toBe(original);
+      if (sync !== undefined) {
+        holdFetch = false;
+        yield* Deferred.succeed(fetchReleased, undefined);
+        yield* Fiber.join(sync);
+      }
 
       // A refused landing undoes nothing: this server keeps the commit and leads read it.
       const kept = Effect.gen(function* () {
@@ -520,6 +601,146 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         return;
       }
 
+      if (scenario === "first-run") {
+        expect(yield* landing).toMatchObject({ _tag: "stuck" });
+        // As on a server from before the landed record: GitHub holds a squash of this server's
+        // commits, with the same tree, and nothing here says so.
+        const pushed = yield* bare(
+          "for-each-ref",
+          "--format=%(objectname)",
+          "refs/heads/kin/write/land/",
+        );
+        const squash = yield* bare(
+          ...identity,
+          "commit-tree",
+          `${pushed}^{tree}`,
+          "-p",
+          original,
+          "-m",
+          "squash",
+        );
+        yield* bare("update-ref", "refs/heads/main", squash, original);
+        // And as there, the writer's own index is stale, so git reports staged changes in it.
+        yield* fs.writeFileString(`${paths.writer}/INDEX.md`, "stale\n");
+        yield* git(paths.writer, ["add", "--", "INDEX.md"]);
+        expect(yield* git(paths.writer, ["status", "--porcelain"])).toContain("D  claims/new.md");
+        createFails = false;
+        return;
+      }
+
+      if (scenario === "land-fails") {
+        // The first attempt is under way on wake1's commit when wake2 commits.
+        yield* Deferred.await(attempting);
+        yield* writer.stage(orgId, "wake2", claim("two"));
+        yield* writer.commitWakeup(orgId, "wake2", "completed");
+        yield* Deferred.succeed(attemptReleased, undefined);
+        expect(yield* landing).toMatchObject({ _tag: "stuck" });
+        // wake2's commit was never tried, so its signal tries it instead of waiting on wake1's.
+        expect(yield* landing).toMatchObject({ _tag: "stuck" });
+        expect(yield* bare("rev-parse", "refs/heads/main")).toBe(original);
+        // The owner hears once: memory is only on this server, and the same failure stays quiet.
+        expect(notMerged()).toEqual([
+          expect.objectContaining({
+            reason: expect.stringContaining("Memory is still saved on this server"),
+          }),
+        ]);
+        yield* lander.signal(orgId);
+        expect(yield* landing).toEqual({ _tag: "waiting" });
+        failLanding = false;
+        yield* writer.stage(orgId, "wake3", claim("three"));
+        yield* writer.commitWakeup(orgId, "wake3", "completed");
+        expect(yield* landing).toMatchObject({ _tag: "merged" });
+        yield* settled;
+        for (const id of ["new", "two", "three"])
+          expect(yield* remoteFiles("main")).toContain(`claims/${id}.md`);
+        expect(notMerged()).toHaveLength(1);
+        return;
+      }
+
+      if (
+        scenario === "repeat-edit" ||
+        scenario === "owner-edit" ||
+        scenario === "owner-conflict"
+      ) {
+        yield* Deferred.await(firstPoll);
+        // memory-check is still running on wake1's batch when wake2 commits.
+        yield* writer.stage(
+          orgId,
+          "wake2",
+          scenario === "owner-edit"
+            ? claim("two")
+            : {
+                ...claim("new"),
+                content: fixtureItem({
+                  id: "new",
+                  kind: "claim",
+                  title: "Claim new",
+                  links: [],
+                  status: "done",
+                }),
+              },
+        );
+        const second = yield* writer.commitWakeup(orgId, "wake2", "completed");
+        ciDone = true;
+        yield* TestClock.adjust("1 minute");
+        expect(yield* landing).toMatchObject({ _tag: "merged" });
+        const firstBatch = (merges[0]!.body as { sha: string }).sha;
+        expect(yield* bare("show", `${firstBatch}:claims/new.md`)).toContain("status: open");
+
+        if (scenario === "owner-conflict") {
+          // The owner reworded the item on GitHub that wake2 closed here: a real conflict.
+          expect(yield* landing).toMatchObject({
+            _tag: "stuck",
+            reason: expect.stringContaining("could not combine"),
+          });
+          expect(yield* localMain()).toBe(second.commit);
+          expect(yield* bare("rev-parse", "refs/heads/main")).toBe(ownerHead);
+          expect(pulls.size).toBe(1);
+          const told = () =>
+            notices.filter((notice) => notice.reason.includes("could not combine"));
+          expect(told()).toHaveLength(1);
+          yield* lander.signal(orgId);
+          expect(yield* landing).toEqual({ _tag: "waiting" });
+          expect(told()).toHaveLength(1);
+          expect(notices).toHaveLength(1);
+          return;
+        }
+
+        // wake2's commit is a later local change on top of what landed, not a second writer.
+        expect(yield* landing).toMatchObject({ _tag: "merged" });
+        yield* settled;
+        expect(merges.map((merge) => merge.number)).toEqual([1, 2]);
+        expect(notices).toEqual([]);
+        const head = yield* localMain();
+        expect(yield* memory.anchor(orgId, "main")).toBe(head);
+        // Both wake-ups' own commits are still in local history.
+        expect(yield* writer.commitWakeup(orgId, "wake1", "completed")).toEqual(committed);
+        expect(yield* writer.commitWakeup(orgId, "wake2", "completed")).toEqual(second);
+        const remoteJournal = yield* bare("show", `main:${journalPath}`);
+        expect(yield* git(paths.writer, ["show", `${head}:${journalPath}`])).toBe(remoteJournal);
+        if (scenario === "repeat-edit") {
+          expect(yield* bare("show", "main:claims/new.md")).toContain("status: done");
+          expect(remoteJournal.match(/wake-up wake\d/g)).toEqual([
+            "wake-up wake1",
+            "wake-up wake2",
+          ]);
+          return;
+        }
+        // The owner's item and journal note are on both sides, and wake2's entry follows them once.
+        expect(yield* remoteFiles("main")).toContain("claims/owner.md");
+        expect(yield* remoteFiles("main")).toContain("claims/two.md");
+        expect((yield* memory.prepareWakeup(orgId)).head).toBe(head);
+        expect((yield* memory.readItem(orgId, KinMemoryItemId.make("owner"))).head.id).toBe(
+          "owner",
+        );
+        expect(remoteJournal.match(/wake-up wake\d|Owner note/g)).toEqual([
+          "wake-up wake1",
+          "Owner note",
+          "wake-up wake2",
+        ]);
+        return;
+      }
+
       if (scenario === "batched") {
         yield* Deferred.await(firstPoll);
         // memory-check is still running on wake1's batch: another lead prepares and commits,
@@ -559,7 +780,9 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         !reviewed &&
         scenario !== "merged" &&
         scenario !== "rerun" &&
-        scenario !== "records-broken"
+        scenario !== "records-broken" &&
+        scenario !== "review-retry" &&
+        scenario !== "sync-fetch"
       ) {
         const foreign = "did not come from .github/workflows/memory-check.yml";
         if (scenario === "check-pending") {
@@ -685,11 +908,36 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         return;
       }
 
+      if (scenario === "review-retry") {
+        const failed = () =>
+          notices.filter((notice) => notice.reason.includes("were not opened as a PR"));
+        const waiting = () =>
+          git(paths.writer, ["for-each-ref", "--format=%(refname)", "refs/kin/review/"]);
+        // GitHub refused the review PR: the owner hears once and the commit waits for a retry.
+        expect(failed()).toHaveLength(1);
+        expect(yield* waiting()).toMatch(new RegExp(`^refs/kin/review/${agentId}/wake1-`));
+        yield* lander.signal(orgId);
+        yield* settled;
+        expect(failed()).toHaveLength(1);
+        expect(yield* waiting()).not.toBe("");
+        reviewFails = false;
+        yield* lander.signal(orgId);
+        yield* settled;
+        const review = [...pulls].find(([, pull]) => reviewBranch.test(pull.branch))!;
+        expect(review[1].state).toBe("open");
+        expect(notices.map((notice) => notice.reason)).toContainEqual(
+          expect.stringContaining(`wait in https://github.com/${repo}/pull/${review[0]}`),
+        );
+        expect(yield* waiting()).toBe("");
+        expect(yield* records).toHaveLength(1);
+        return;
+      }
+
       if (scenario === "records-broken") {
         const reviewNumber = [...pulls].find(([, pull]) => pull.branch.endsWith("-review"))![0];
         expect(pulls.get(reviewNumber)?.state).toBe("closed");
         expect(notices.map((notice) => notice.reason)).toContainEqual(
-          "Memory changes on paths you review were not opened as a PR: Kin could not record the commit it pushed (MemoryPullRequests.recordReview)",
+          "Memory changes on paths you review were not opened as a PR: Kin could not record the commit it pushed (MemoryPullRequests.recordReview). Kin keeps them on this server and tries again with the next memory change or restart",
         );
         const sweepRefusal = lander.sweep(orgId).pipe(Effect.flip);
         yield* sql`DROP TRIGGER no_insert`;
@@ -803,6 +1051,35 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
       ]);
       expect(yield* records).toEqual([]);
     }).pipe(Effect.provide(writerLayer));
+
+    if (scenario === "first-run") {
+      // With matching trees there is nothing to land: the squash is merged in and no PR opens.
+      yield* Effect.gen(function* () {
+        const memory = yield* Memory.Memory;
+        yield* settled;
+        expect(github.requests.filter((request) => request.path.endsWith("/pulls"))).toHaveLength(
+          1,
+        );
+        expect(merges).toEqual([]);
+        const squash = yield* bare("rev-parse", "refs/heads/main");
+        const head = yield* memory.anchor(orgId, "main");
+        expect(
+          (yield* git(`${root}/state/memory`, ["show", "-s", "--format=%P", head])).split(" ")[0],
+        ).toBe(squash);
+        expect(yield* bare("ls-tree", "-r", "--name-only", "main")).toContain("claims/new.md");
+        // The next wake-up lands on top, and nothing staged in the writer's index goes with it.
+        const writer = yield* Writer.MemoryWriter;
+        yield* memory.prepareWakeup(orgId);
+        yield* writer.stage(orgId, "wake2", claim("later"));
+        yield* writer.commitWakeup(orgId, "wake2", "completed");
+        expect(yield* landing).toMatchObject({ _tag: "merged" });
+        yield* settled;
+        const landed = yield* bare("ls-tree", "-r", "--name-only", "main");
+        expect(landed).toContain("claims/new.md");
+        expect(landed).toContain("claims/later.md");
+        expect(yield* bare("show", "main:INDEX.md")).not.toContain("stale");
+      }).pipe(Effect.provide(writerLayer));
+    }
 
     if (scenario === "restart") {
       // The restart closes the PR the crash left open before it lands anything, then lands the
