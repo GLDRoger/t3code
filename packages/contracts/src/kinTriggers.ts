@@ -62,6 +62,7 @@ export const KinTriggerSubject = Schema.Union([
   }),
   Schema.Struct({ type: Schema.Literal("routine"), routine: KinRoutine }),
   Schema.Struct({ type: Schema.Literal("watchdog"), watchdog: KinWatchdog }),
+  Schema.Struct({ type: Schema.Literal("scheduled_task"), itemId: KinMemoryItemId }),
 ]);
 export type KinTriggerSubject = typeof KinTriggerSubject.Type;
 

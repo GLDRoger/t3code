@@ -1,6 +1,7 @@
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as Routines from "../triggers/routines.ts";
 import * as DeferralFlow from "../triggers/deferralFlow.ts";
+import * as ScheduledTasks from "../triggers/scheduledTasks.ts";
 import * as GithubEvents from "../triggers/githubEvents.ts";
 import * as Watchdogs from "../triggers/watchdogs.ts";
 import * as GithubReaders from "../triggers/githubReaders.ts";
@@ -42,6 +43,7 @@ import { KinLeadPrompt } from "./LeadPrompt.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
 import * as ReplyBridge from "../reply/KinReplyBridge.ts";
 import * as RoutineContent from "./RoutineContent.ts";
+import * as LeadDelivery from "./LeadDelivery.ts";
 import * as KinStop from "./KinStop.ts";
 import { KinPromotion } from "../levels/Promotion.ts";
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
@@ -76,9 +78,11 @@ export function containStartup<A, E, R>(layer: Layer.Layer<A, E, R>) {
 const routineRuntime = Layer.mergeAll(
   Routines.layer,
   DeferralFlow.layer,
+  ScheduledTasks.layer,
   GithubEvents.consumerLayer,
   Watchdogs.runtimeLayer,
 ).pipe(
+  Layer.provideMerge(LeadDelivery.layer),
   Layer.provideMerge(TriggerScheduler.layer),
   Layer.provideMerge(Layer.mergeAll(TriggerStore.layer, TriggerInbox.layer)),
   // Kin builds in its contained startup scope; orchestration runtime does not expose its scheduler.

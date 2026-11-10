@@ -27,7 +27,9 @@ import { KinPresence } from "../reply/KinPresence.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 
 const decodeTap = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(Schema.Struct({ actionId: TrimmedNonEmptyString })),
+  Schema.fromJsonString(
+    Schema.Struct({ actionId: TrimmedNonEmptyString, handled: Schema.optional(Schema.Boolean) }),
+  ),
 );
 // Matches the resume expiry: older unanswered messages are not worth a wake-up after downtime.
 const CATCH_UP_WINDOW = { hours: 24 } as const;
@@ -64,12 +66,13 @@ const make = Effect.gen(function* () {
       );
       const targets = mentioned.length > 0 ? mentioned : leads.slice(0, 1);
       if (targets.length === 0) return;
-      const actionId =
+      const tap =
         message.kind === "widget_action"
-          ? (yield* decodeTap(message.body).pipe(Effect.option)).pipe(
-              Option.map((tap) => tap.actionId),
-            )
+          ? yield* decodeTap(message.body).pipe(Effect.option)
           : Option.none();
+      // A tap the server finished alone, such as Snooze or Pause, is not the lead's to answer.
+      if (Option.isSome(tap) && tap.value.handled === true) return;
+      const actionId = tap.pipe(Option.map((value) => value.actionId));
       if (message.kind === "widget_action" && Option.isNone(actionId))
         return yield* Effect.logWarning("Kin widget action has no readable action id", {
           orgId: message.orgId,

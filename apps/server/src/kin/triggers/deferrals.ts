@@ -66,6 +66,7 @@ export function planDeferral(
   const dueAt = Number.isFinite(due) ? due : null;
   const armed =
     item.kind === "deferral" &&
+    item.every === undefined &&
     item.status === "open" &&
     item.invalid_at === null &&
     item.superseded_by === null &&
@@ -87,6 +88,8 @@ export const DeferralSnapshot = Schema.Struct({
   github: Schema.optional(Schema.NullOr(Schema.Array(GithubLinkState))),
   /** The re-armed due fire's instant while the run is in `grace`. */
   graceEndsAt: Schema.optional(Schema.Number),
+  /** The re-armed due fire's instant while a reminder is `snoozed`. */
+  snoozedUntil: Schema.optional(Schema.Number),
 });
 export type DeferralSnapshot = typeof DeferralSnapshot.Type;
 export const deferralSnapshot = (
@@ -310,7 +313,7 @@ export const makeDeferralCards = Effect.gen(function* () {
   return { write, publish };
 });
 
-const hex = (value: string) =>
+export const hex = (value: string) =>
   Array.from(new TextEncoder().encode(value), (byte) => byte.toString(16).padStart(2, "0")).join(
     "",
   );

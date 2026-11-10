@@ -11,6 +11,7 @@ import {
   KinPersonId,
   KinWakeupId,
   KinWidgetId,
+  kinReminderWidgetId,
   type MemoryItemHead,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -27,11 +28,15 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as Chat from "../chat/KinChatService.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
+import * as Budget from "../lead/KinBudget.ts";
 import * as Queue from "../lead/KinEventQueue.ts";
+import * as LeadDelivery from "../lead/LeadDelivery.ts";
+import { leadWakeup } from "../lead/LeadDelivery.testkit.ts";
 import { WorkerLaunchGate } from "../lead/Workers.ts";
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import { fakeRepository } from "../memory/__fixtures__/repository.ts";
 import * as Memory from "../memory/Memory.ts";
+import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as MemoryConfig from "../memory/MemoryConfig.ts";
 import * as MemoryWriter from "../memory/MemoryWriter.ts";
 import * as DeferralFlow from "./deferralFlow.ts";
@@ -68,6 +73,8 @@ const layerFor = <E = never>(
   DeferralFlow.layer.pipe(
     Layer.provideMerge(Deferrals.layer),
     Layer.provideMerge(TriggerService.layer),
+    Layer.provideMerge(LeadDelivery.layer),
+    Layer.provideMerge(Budget.layer.pipe(Layer.provide(MemoryCache.layer))),
     Layer.provideMerge(fixture(items, options)),
   );
 
@@ -124,7 +131,17 @@ const cardOf = Effect.fn("test.deferralCard")(function* (itemId: string) {
 const starts = Effect.fn("test.deferralStarts")(function* () {
   const sql = yield* SqlClient.SqlClient;
   return yield* sql<{ dedupeKey: string; json: string }>`SELECT dedupe_key AS "dedupeKey", json
-    FROM kin_events WHERE org_id = ${orgId} AND tag = 'deferral.due' ORDER BY event_id`;
+    FROM kin_events WHERE org_id = ${orgId} AND tag = 'deferral.due'
+      AND json_extract(json, '$.subject.type') = 'deferral' ORDER BY event_id`;
+});
+
+/** Reminders handed to the lead to write, by item. */
+const handedReminders = Effect.fn("test.deferralReminders")(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql<{ itemId: string; lateByMs: number }>`SELECT
+      json_extract(json, '$.subject.itemId') AS "itemId", json_extract(json, '$.lateByMs') AS "lateByMs"
+    FROM kin_events WHERE org_id = ${orgId} AND tag = 'deferral.due'
+      AND json_extract(json, '$.subject.type') = 'reminder' ORDER BY received_at, event_id`;
 });
 
 const pendingFires = Effect.fn("test.deferralPending")(function* () {
@@ -504,7 +521,6 @@ it.effect("drops queued fires for disarmed or moved deferrals", () => {
   ];
   return Effect.gen(function* () {
     yield* setup();
-    const sql = yield* SqlClient.SqlClient;
     const service = yield* TriggerService.KinTriggerService;
     const scheduler = yield* TriggerScheduler.KinTriggerScheduler;
     for (const entry of items) yield* service.syncItem(entry);
@@ -534,13 +550,13 @@ it.effect("drops queued fires for disarmed or moved deferrals", () => {
     yield* tick(dueAt + 30 * 60_000);
     assert.equal((yield* runOf("def-3"))?.state, "started");
     assert.lengthOf(yield* starts(), 1);
-    const reminders = () =>
-      sql<{ body: string }>`SELECT body FROM kin_messages WHERE org_id = ${orgId}
-        AND body LIKE 'Reminder:%' ORDER BY seq`;
-    assert.lengthOf(yield* reminders(), 0);
+    assert.lengthOf(yield* handedReminders(), 0);
 
     yield* tick(Date.parse("2026-11-14T03:30:00.000Z"));
-    assert.deepStrictEqual(yield* reminders(), [{ body: "Reminder: def-2." }]);
+    assert.deepStrictEqual(
+      (yield* handedReminders()).map((row) => row.itemId),
+      ["def-2"],
+    );
   }).pipe(openGates(new Map()), Effect.provide(layerFor(items)));
 });
 
@@ -591,9 +607,10 @@ it.effect("an Undo disarms the reminder; a late or outsider Undo is refused", ()
     assert.equal(yield* service.syncItem(undone), "unchanged");
 
     yield* tick(dueAt);
-    const reminders = yield* sql<{ body: string }>`SELECT body FROM kin_messages
-      WHERE org_id = ${orgId} AND body LIKE 'Reminder:%' ORDER BY seq`;
-    assert.deepStrictEqual(reminders, [{ body: "Reminder: def-l." }]);
+    assert.deepStrictEqual(
+      (yield* handedReminders()).map((row) => row.itemId),
+      ["def-l"],
+    );
     assert.lengthOf(yield* pendingFires(), 0);
 
     assert.equal(reason(yield* undo("owner-a", "def-l")), "invalid_state");
@@ -636,7 +653,9 @@ it.effect("remind, ask and chase act at due, noting lateness", () => {
 
     const messages = yield* sql<{ body: string }>`SELECT body FROM kin_messages
       WHERE org_id = ${orgId} AND kind = 'system' ORDER BY seq`;
-    assert.isTrue(messages.some(({ body }) => body === "Reminder: def-r. This was due at 9:00."));
+    const [reminder] = yield* handedReminders();
+    assert.equal(reminder?.itemId, "def-r");
+    assert.isAbove(reminder?.lateByMs ?? 0, 10 * 60_000);
     assert.isTrue(
       messages.some(({ body }) =>
         body.includes("def-c was due Fri 13 Nov, 9:00. What's the status?"),
@@ -662,6 +681,86 @@ it.effect("remind, ask and chase act at due, noting lateness", () => {
     assert.equal((yield* runOf("def-x"))?.state, "armed");
     assert.lengthOf(yield* pendingFires(), 0);
   }).pipe(Effect.provide(layerFor(items)));
+});
+
+const reminderEvent = Effect.fn("test.reminderEvent")(function* (index = 0) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
+    WHERE org_id = ${orgId} AND json_extract(json, '$.subject.type') = 'reminder'
+    ORDER BY received_at, event_id`;
+  return rows[index]!.eventId;
+});
+const reminderCard = Effect.fn("test.reminderCard")(function* (itemId: string, at: number) {
+  const repo = yield* Repository.KinChatRepository;
+  const widgetId = KinWidgetId.make(kinReminderWidgetId(orgId, itemId, at));
+  return Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId }));
+});
+const owner = { _tag: "person", orgId, personId: KinPersonId.make("owner-a") } as const;
+
+it.effect("a due reminder wakes the lead, its message gets the card, and Snooze re-arms it", () => {
+  const remind = makeDeferral("def-r", { on_due: "remind" });
+  return Effect.gen(function* () {
+    yield* setup();
+    const sql = yield* SqlClient.SqlClient;
+    const deliveries = yield* LeadDelivery.KinLeadDelivery;
+    yield* (yield* TriggerService.KinTriggerService).syncItem(remind);
+    yield* tick(dueAt);
+
+    const messageId = yield* leadWakeup({
+      orgId,
+      eventId: yield* reminderEvent(),
+      chatId: "chat-a",
+      body: "Still on for def-r: the invoice went out yesterday, so this is the follow-up.",
+    });
+    yield* deliveries.settle(orgId);
+    const card = yield* reminderCard("def-r", dueAt);
+    assert.equal(card.messageId, messageId);
+    assert.deepInclude(card.state, { status: "due", itemId: "def-r" });
+    const serverLines = yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${orgId}
+      AND kind = 'system' AND body LIKE 'Reminder:%' ORDER BY seq`;
+    assert.lengthOf(serverLines, 0);
+
+    const tappedAt = yield* Clock.currentTimeMillis;
+    yield* (yield* Chat.KinChatService).act(owner, {
+      widgetId: card.widgetId,
+      revision: card.revision,
+      actionId: "snooze_10m",
+      value: "def-r",
+      clientActionId: "snooze-def-r",
+    });
+    assert.equal((yield* runOf("def-r"))?.state, "snoozed");
+    assert.deepInclude((yield* reminderCard("def-r", dueAt)).state, { status: "snoozed" });
+    yield* tick(tappedAt + 5 * 60_000);
+    assert.lengthOf(yield* handedReminders(), 1);
+    yield* tick(tappedAt + 10 * 60_000);
+    assert.lengthOf(yield* handedReminders(), 2);
+    assert.equal((yield* runOf("def-r"))?.state, "reminded");
+  }).pipe(Effect.provide(layerFor([remind])));
+});
+
+it.effect("a reminder whose wake-up fails falls back to Kin's line, marked as a fallback", () => {
+  const remind = makeDeferral("def-r", { on_due: "remind" });
+  return Effect.gen(function* () {
+    yield* setup();
+    const sql = yield* SqlClient.SqlClient;
+    yield* (yield* TriggerService.KinTriggerService).syncItem(remind);
+    yield* tick(dueAt);
+    yield* leadWakeup({
+      orgId,
+      eventId: yield* reminderEvent(),
+      chatId: "chat-a",
+      status: "failed",
+    });
+    yield* (yield* LeadDelivery.KinLeadDelivery).settle(orgId);
+
+    const card = yield* reminderCard("def-r", dueAt);
+    assert.deepInclude(card.state, { status: "due", fallback: true });
+    const [line] = yield* sql<{ body: string; kind: string }>`SELECT body, kind FROM kin_messages
+      WHERE org_id = ${orgId} AND message_id = ${card.messageId} ORDER BY seq`;
+    assert.equal(line?.kind, "system");
+    assert.include(line?.body ?? "", "Reminder: def-r.");
+    assert.include(line?.body ?? "", "couldn't write this one, so Kin sent it.");
+  }).pipe(Effect.provide(layerFor([remind])));
 });
 
 it.effect("chases through the real memory lock without reading memory inside the write", () =>
@@ -764,11 +863,10 @@ it.effect("chases through the real memory lock without reading memory inside the
       assert.equal(due?.nextRunAt, remindAt);
       yield* tick(remindAt);
       assert.equal((yield* runOf("def-s"))?.state, "reminded");
-      const reminders = yield* sql<{ chatId: string; body: string }>`SELECT chat_id AS "chatId",
-        body FROM kin_messages WHERE org_id = ${orgId} AND body LIKE '%stretch%' ORDER BY seq`;
-      assert.deepStrictEqual(reminders, [
-        { chatId: "chat-a", body: "Reminder: Invented stretch." },
-      ]);
+      assert.deepStrictEqual(
+        (yield* handedReminders()).map((row) => row.itemId),
+        ["def-s"],
+      );
       assert.deepStrictEqual(writing, []);
     }).pipe(Effect.provide(layerFor([], { memory: spied })));
   }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
@@ -790,7 +888,7 @@ it.effect("backs off a failing fire and warns once", () => {
     yield* setup();
     const sql = yield* SqlClient.SqlClient;
     yield* (yield* TriggerService.KinTriggerService).syncItem(remind);
-    yield* sql`CREATE TEMP TRIGGER fail_remind BEFORE INSERT ON kin_messages
+    yield* sql`CREATE TEMP TRIGGER fail_remind BEFORE INSERT ON kin_lead_deliveries
       BEGIN SELECT RAISE(ABORT, 'fixture failure'); END`;
     for (const seconds of [0, 5, 60, 90, 180]) yield* tick(dueAt + seconds * 1000);
     // Retries at +1 and +3 minutes, each after a longer wait.

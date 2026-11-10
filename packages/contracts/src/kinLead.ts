@@ -114,6 +114,15 @@ export const MemoryItemCondition = Schema.Struct({
   repo: Schema.optional(GithubRepoSlug),
 });
 export type MemoryItemCondition = typeof MemoryItemCondition.Type;
+/** A scheduled task's repeat: an owner-local time on the listed weekdays (0 is Sunday). */
+export const MemoryItemEvery = Schema.Struct({
+  at: TimeOfDay,
+  days: Schema.Array(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 6 }))).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(7),
+  ),
+});
+export type MemoryItemEvery = typeof MemoryItemEvery.Type;
 export const MemoryItemFrontMatter = Schema.Struct({
   id: KinMemoryItemId,
   kind: MemoryItemKind,
@@ -125,6 +134,8 @@ export const MemoryItemFrontMatter = Schema.Struct({
   source_event: Schema.optional(KinEventId),
   on_due: Schema.optional(Schema.Literals(["remind", "start", "ask", "chase"])),
   on: Schema.optional(MemoryItemCondition),
+  // Set on a deferral that repeats: a scheduled task, written only by kin_schedule.
+  every: Schema.optional(MemoryItemEvery),
   owner: Schema.optional(TrimmedNonEmptyString),
   tz: Schema.optional(
     Schema.UndefinedOr(TimeZone).pipe(Schema.catchDecoding(() => Effect.succeedSome(undefined))),
@@ -218,6 +229,59 @@ export function kinDeferralItemIdFromWidgetId(orgId: string, widgetId: string): 
     ? widgetId.slice(prefix.length)
     : null;
 }
+
+/** The card on a reminder: the lead's message carries it, or Kin's own line when it couldn't. */
+export const KinReminderCard = Schema.Struct({
+  itemId: KinMemoryItemId,
+  title: Schema.String,
+  // The instant this reminder came due: the deferral's due time, or the end of a snooze.
+  dueAt: Schema.toEncoded(CanonicalUtcTimestamp),
+  status: Schema.Literals(["due", "snoozed", "done"]),
+  snoozedUntil: Schema.optional(Schema.toEncoded(CanonicalUtcTimestamp)),
+  // Kin posted the reminder itself because the lead couldn't write it.
+  fallback: Schema.optional(Schema.Boolean),
+});
+export type KinReminderCard = typeof KinReminderCard.Type;
+export const KIN_REMINDER_CARD_ACTIONS = [
+  "done",
+  "snooze_10m",
+  "snooze_1h",
+  "snooze_tomorrow",
+  "change",
+] as const;
+export type KinReminderCardAction = (typeof KIN_REMINDER_CARD_ACTIONS)[number];
+export const kinReminderWidgetId = (orgId: string, itemId: string, dueAtMs: number) =>
+  `reminder:${orgId}:${itemId}:${dueAtMs}`;
+
+/** A scheduled task's standing card: what runs when, and how its last run went. */
+export const KinScheduledTaskCard = Schema.Struct({
+  itemId: KinMemoryItemId,
+  title: Schema.String,
+  every: MemoryItemEvery,
+  timeZone: TimeZone,
+  status: Schema.Literals(["active", "paused", "deleted"]),
+  nextRunAt: Schema.NullOr(Schema.toEncoded(CanonicalUtcTimestamp)),
+  lastRun: Schema.NullOr(
+    Schema.Struct({
+      at: Schema.toEncoded(CanonicalUtcTimestamp),
+      status: Schema.Literals(["running", "posted", "failed", "skipped"]),
+      // The start of the lead's result, or why the run was skipped. Plain text.
+      note: Schema.optional(Schema.String.check(Schema.isMaxLength(280))),
+      messageId: Schema.optional(KinMessageId),
+    }),
+  ),
+});
+export type KinScheduledTaskCard = typeof KinScheduledTaskCard.Type;
+export const KIN_SCHEDULED_TASK_CARD_ACTIONS = [
+  "run_now",
+  "pause",
+  "resume",
+  "edit",
+  "delete",
+] as const;
+export type KinScheduledTaskCardAction = (typeof KIN_SCHEDULED_TASK_CARD_ACTIONS)[number];
+export const kinScheduledTaskWidgetId = (orgId: string, itemId: string) =>
+  `scheduled:${orgId}:${itemId}`;
 
 const EventBase = {
   orgId: KinOrgId,
@@ -343,6 +407,12 @@ export const KinEvent = Schema.Union([
         type: Schema.Literal("followup"),
         itemId: KinMemoryItemId,
         person: KinPersonId,
+      }),
+      // One run of a scheduled task; `runId` names the fire or Run now tap that started it.
+      Schema.Struct({
+        type: Schema.Literal("scheduled_task"),
+        itemId: KinMemoryItemId,
+        runId: TrimmedNonEmptyString,
       }),
     ]),
     lateByMs: NonNegativeInt,

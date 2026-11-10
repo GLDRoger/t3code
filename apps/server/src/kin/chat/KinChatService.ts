@@ -58,6 +58,8 @@ import { validateState } from "../widgets/registry.ts";
 import { deferralCardActions, deferralCardActionsReady } from "../widgets/deferralCard.ts";
 import * as ChoiceCard from "../widgets/choiceCard.ts";
 import { undoDeferral } from "../triggers/KinTriggerService.ts";
+import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
+import * as ReminderCard from "../widgets/reminderCard.ts";
 import * as Hub from "./KinChatHub.ts";
 import { KinPresence } from "../reply/KinPresence.ts";
 import * as Repository from "./KinChatRepository.ts";
@@ -248,6 +250,14 @@ const requireRecord = Effect.fn("KinChatService.requireRecord")(function* <A, E,
   const value = yield* effect;
   return Option.isSome(value) ? value.value : yield* notFound;
 });
+
+/** A card tap's failure as the client sees it: the refusal, a storage error, or a stale card. */
+const cardTapError = (cause: KinChatError | SqlError.SqlError | Schema.SchemaError) =>
+  isKinChatError(cause)
+    ? cause
+    : SqlError.isSqlError(cause)
+      ? toPersistenceSqlError("KinChatService.cardTap")(cause)
+      : new KinChatError({ reason: "invalid_state", message: "Invalid widget state." });
 
 const taskCardWidgetId = (input: { readonly chatId: KinChatId; readonly threadId: ThreadId }) =>
   encodeAction([input.chatId, input.threadId]).pipe(
@@ -477,12 +487,23 @@ const make = Effect.gen(function* () {
     reaction: { readonly emoji: KinReactionEmoji } | null,
   ) {
     const choice = widget.type === "choice" ? yield* ChoiceCard.readChoice(widget, request) : null;
+    const reminder =
+      widget.type === "reminder"
+        ? yield* ReminderCard.describeReminderTap(widget, request.actionId, request.value)
+        : null;
+    const scheduled =
+      widget.type === "scheduled_task"
+        ? yield* ScheduledTasks.describeScheduledTaskTap(widget, request.actionId, request.value)
+        : null;
+    const tap = choice ?? reminder ?? scheduled;
     const body = yield* encodeAction({
       widgetId: request.widgetId,
       revision: request.revision,
       actionId: request.actionId,
       ...(request.value === undefined ? {} : { value: request.value }),
-      ...(choice === null ? {} : { text: choice.text }),
+      ...(tap === null ? {} : { text: tap.text }),
+      // The server finished this tap itself, so it doesn't wake the lead.
+      ...((reminder ?? scheduled)?.wake === false ? { handled: true } : {}),
     }).pipe(Effect.mapError(() => invalidState));
     const previous = yield* repo.findClientMessage({
       ...member,
@@ -534,6 +555,34 @@ const make = Effect.gen(function* () {
       yield* sql.afterCommit(
         hub.publish({ type: "widget.updated", orgId: identity.orgId, widget: closed }),
       );
+    }
+    if (reminder !== null || scheduled !== null) {
+      const nowMs = yield* Clock.currentTimeMillis;
+      let applied: { readonly state: unknown; readonly closed: boolean } | null = null;
+      if (reminder !== null) {
+        const state = yield* ReminderCard.applyReminderTap(widget, reminder, nowMs).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.mapError(cardTapError),
+        );
+        applied = state === null ? null : { state, closed: false };
+      } else if (scheduled !== null)
+        applied = yield* ScheduledTasks.applyScheduledTaskTap(widget, scheduled, nowMs).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.mapError(cardTapError),
+        );
+      if (applied !== null) {
+        const at = yield* now;
+        const updated = yield* repo.updateWidget({
+          ...widget,
+          state: applied.state,
+          expectedRevision: widget.revision,
+          closedAt: applied.closed ? at : widget.closedAt,
+          updatedAt: at,
+        });
+        yield* sql.afterCommit(
+          hub.publish({ type: "widget.updated", orgId: identity.orgId, widget: updated }),
+        );
+      }
     }
     const answer =
       choice === null
@@ -1392,6 +1441,12 @@ const make = Effect.gen(function* () {
         )
           return yield* invalidState;
       }
+      // Reminders and scheduled tasks act for the owner, so only the owner taps them.
+      if (
+        (widget.type === "reminder" || widget.type === "scheduled_task") &&
+        member.role !== "owner"
+      )
+        return yield* notAllowed;
       // Any writing member of the card's chat may undo; the other taps wait on the dispatcher.
       if (
         widget.type === "deferral" &&

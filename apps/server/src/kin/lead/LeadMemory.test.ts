@@ -301,6 +301,7 @@ it.live(
           "memory_read",
           "memory_write",
           "kin_defer",
+          "kin_schedule",
           "kin_journal",
           "kin_end",
         ]);
@@ -515,6 +516,21 @@ it.live(
             (yield* decodeDefer({ ...deferred, due }).pipe(Effect.result))._tag,
             "Failure",
           );
+        const scheduleInput = {
+          what: "Summarise the open PRs",
+          at: "08:00",
+          days: [5, 1, 1],
+          chatId: chat.chatId,
+          sourceEventId: "fixture-event",
+        } as const;
+        // Only the owner's own message sets up a scheduled task, never a member's.
+        assert.strictEqual(
+          (yield* service
+            .schedule(scope, { ...scheduleInput, sourceEventId: "member-event" })
+            .pipe(Effect.flip)).reason,
+          "not_allowed",
+        );
+        const scheduled = yield* service.schedule(scope, scheduleInput);
         yield* service.journal(scope, {
           saw: ["Invented request"],
           did: ["Wrote memory"],
@@ -564,6 +580,15 @@ it.live(
         assert.include(content, "trust: owner");
         assert.include(content, `chat: ${chat.chatId}`);
         assert.include(content, "source_event: fixture-event");
+        const task = yield* git(remote, [
+          "show",
+          `${committed.commit}:deferrals/${scheduled.itemId}.md`,
+        ]);
+        assert.include(task, "what: Summarise the open PRs");
+        assert.match(task, /every:\n\s+at: "?08:00"?\n\s+days:\n\s+- 1\n\s+- 5\n/);
+        assert.include(task, "trust: owner");
+        assert.include(task, "source_event: fixture-event");
+        assert.isTrue(task.trimEnd().endsWith("Invented request"));
         const memberClaim = yield* git(remote, [
           "show",
           `${committed.commit}:claims/member-claim.md`,

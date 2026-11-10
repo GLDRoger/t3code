@@ -558,6 +558,13 @@ it.effect("a failed brief retries on its own with a counted attempt", () =>
         WakeupRunner.layer.pipe(
           Layer.provide(
             Layer.succeed(RoutineContent.KinRoutineContent, {
+              prepare: (_agentId, event) =>
+                Effect.fail(
+                  new RoutineContent.KinRoutineContentError({
+                    orgId: event.orgId,
+                    cause: "fixture",
+                  }),
+                ),
               post: (_agentId, event) =>
                 Effect.fail(
                   new RoutineContent.KinRoutineContentError({

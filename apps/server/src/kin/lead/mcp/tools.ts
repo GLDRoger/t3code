@@ -105,6 +105,13 @@ export const KinLeadToolkit = Toolkit.make(
     parameters: Lead.DeferInput,
     success: Lead.ItemResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("kin_schedule", {
+    ...shared,
+    description:
+      "Set up a scheduled task: at each run you wake with its instruction, do the work with your normal tools and post the results. Only when the owner's own message in this batch asked for it; anything else is refused. Supply what (the instruction, in the owner's terms), at (HH:MM owner time), days (0 Sunday to 6 Saturday), chatId and that message's sourceEventId. The server keeps the owner's words with it and posts the task's card. Identical retries return the same item. For a single time, use kin_defer. Never use schedule_task.",
+    parameters: Lead.ScheduleInput,
+    success: Lead.ItemResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_journal", {
     ...shared,
     description:

@@ -35,6 +35,7 @@ import {
   type DeferralPlan,
 } from "./deferrals.ts";
 import { type GithubLinkState, readGithubLinks, readGithubLinkSets } from "./deferralGithub.ts";
+import { isScheduledTask, syncScheduledTasks } from "./scheduledTasks.ts";
 
 export class KinTriggerSyncError extends Schema.TaggedError<KinTriggerSyncError>()(
   "KinTriggerSyncError",
@@ -108,6 +109,21 @@ const make = Effect.gen(function* () {
   const publish = (event: Parameters<KinChatHub["Service"]["publish"]>[0]) =>
     Option.isSome(hub) ? sql.afterCommit(hub.value.publish(event)) : Effect.void;
   const cards = yield* makeDeferralCards;
+  const scheduled = Effect.fn("KinTriggerService.syncScheduled")(
+    function* (orgId: KinOrgId, items: ReadonlyArray<SyncItem>, complete: boolean) {
+      yield* syncScheduledTasks({
+        orgId,
+        items,
+        complete,
+        timeZone: yield* cache.ownerTimeZone(orgId),
+        now: yield* Clock.currentTimeMillis,
+      });
+    },
+    (effect) =>
+      Option.isSome(hub) ? Effect.provideService(effect, KinChatHub, hub.value) : effect,
+    Effect.provideService(SqlClient.SqlClient, sql),
+    Effect.provideService(Repository.KinChatRepository, repo),
+  );
 
   // Trigger rows are only written in the same transaction as their run row.
   const readStored = Effect.fn("KinTriggerService.readStored")(function* (
@@ -277,6 +293,10 @@ const make = Effect.gen(function* () {
 
   return KinTriggerService.of({
     syncItem: Effect.fn("KinTriggerService.syncItem")(function* (item) {
+      if (isScheduledTask(item)) {
+        yield* scheduled(item.orgId, [item], false).pipe(wrap(item.orgId));
+        return "unchanged" as const;
+      }
       if (item.kind !== "deferral") return "unchanged" as const;
       const timeZone = yield* cache.ownerTimeZone(item.orgId);
       const now = yield* Clock.currentTimeMillis;
@@ -293,8 +313,14 @@ const make = Effect.gen(function* () {
       const stored = yield* readStored(orgId).pipe(wrap(orgId));
       const present = new Set<string>();
       const pending: Array<readonly [KinMemoryItemId, SyncItem | undefined, DeferralPlan]> = [];
+      yield* scheduled(orgId, items, true).pipe(
+        wrap(orgId),
+        Effect.catch((error) =>
+          Effect.logWarning("Could not sync scheduled tasks", { orgId, cause: error }),
+        ),
+      );
       for (const item of items) {
-        if (item.orgId !== orgId || item.kind !== "deferral") continue;
+        if (item.orgId !== orgId || item.kind !== "deferral" || isScheduledTask(item)) continue;
         present.add(item.id);
         const plan = planDeferral(item);
         if (!isCurrent(plan, stored.get(item.id))) pending.push([item.id, item, plan]);
