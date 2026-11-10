@@ -13,6 +13,7 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { kinApprovalWidgetView, type KinApprovalWidgetView } from "./kinApprovalPresentation.ts";
 import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks.ts";
 import { kinSentences } from "./kinScreenState.ts";
 import { kinChoiceCardView, type KinChoiceCardView } from "./kinChoicePresentation.ts";
@@ -58,6 +59,7 @@ export type KinCardView =
   | { readonly kind: "digest"; readonly digest: KinDigestCardView }
   | KinLevelsCardView
   | { readonly kind: "memory_changes"; readonly changes: KinMemoryChangesCardView }
+  | { readonly kind: "approval"; readonly approval: KinApprovalWidgetView }
   | { readonly kind: "missing" }
   | { readonly kind: "unknown" };
 
@@ -405,6 +407,10 @@ export function kinCardView(
     case "shadow_review":
     case "promotion":
       return kinLevelsCardView(widget) ?? { kind: "unknown" };
+    case "approval": {
+      const approval = kinApprovalWidgetView(widget);
+      return approval === null ? { kind: "unknown" } : { kind: "approval", approval };
+    }
     case KIN_MEMORY_CHANGES_CARD: {
       const changes = kinMemoryChangesView(widget);
       return changes === null ? { kind: "unknown" } : { kind: "memory_changes", changes };
