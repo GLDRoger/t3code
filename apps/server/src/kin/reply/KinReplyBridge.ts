@@ -44,11 +44,12 @@ import {
   draftReplyText,
   isToolItem,
   NOTE_MAX_CHARS,
+  PHASE_LABELS,
   stripTrailingSilenceMarker,
   toolLabel,
   type SegmentNext,
 } from "./classify.ts";
-import { KinPresence, syncSeen } from "./KinPresence.ts";
+import { KinPresence, syncQueued } from "./KinPresence.ts";
 
 /** One rescue turn asks for the reply the run owed; its text is posted like any other. */
 const RESCUE_PROMPT =
@@ -116,6 +117,10 @@ type Wake = {
   lastOutputAt: number;
   state: KinPresenceState;
   label: string | null;
+  // What a stall interrupted, so the line returns to it when output resumes.
+  live: { readonly state: KinPresenceState; readonly label: string | null };
+  // The highest item ordinal seen live: only the latest tool's end turns the line to Thinking.
+  latest: number;
   since: number;
   stall: Fiber.Fiber<void> | undefined;
   // What the line's timer counts from: the wake-up's start, then each posted reply.
@@ -135,6 +140,14 @@ export class KinReplyBridge extends Context.Service<
       readonly agentId: KinAgentId;
       readonly wakeupId: KinWakeupId;
     }) => Effect.Effect<Option.Option<Lane>>;
+    /** A wake-up claimed its events and is preparing: its lane reads "Reading memory". */
+    readonly preparing: (input: {
+      readonly orgId: KinOrgId;
+      readonly agentId: KinAgentId;
+      readonly wakeupId: KinWakeupId;
+      readonly lane: Lane;
+      readonly startedAt: number;
+    }) => Effect.Effect<void>;
     /** Starts mirroring the wake-up's thread into its lane. Call before its run starts. */
     readonly begin: (input: {
       readonly orgId: KinOrgId;
@@ -167,7 +180,7 @@ export class KinReplyBridge extends Context.Service<
       readonly lane: Lane;
       readonly outcome: FailedOutcome;
     }) => Effect.Effect<void>;
-    /** Clears the wake-up's line; `seen` stays, or comes back, where a message still waits. */
+    /** Clears the wake-up's line; a queue line stays, or comes back, where a message still waits. */
     readonly end: (input: {
       readonly orgId: KinOrgId;
       readonly agentId: KinAgentId;
@@ -229,6 +242,11 @@ const make = Effect.gen(function* () {
   const scope = yield* Effect.scope;
   const wakes = new Map<ThreadId, Wake>();
   const byWakeup = new Map<KinWakeupId, Wake>();
+  // Wake-ups between their claim and `begin`, and the chat whose line they hold.
+  const prepared = new Map<
+    KinWakeupId,
+    { readonly orgId: KinOrgId; readonly agentId: KinAgentId; readonly chatId: KinChatId }
+  >();
 
   const iso = (millis: number) => DateTime.formatIso(DateTime.makeUnsafe(millis));
   const stamp = Effect.fn("KinReplyBridge.stamp")(
@@ -260,6 +278,7 @@ const make = Effect.gen(function* () {
     if (wake.state === state && wake.label === label && since === undefined) return;
     wake.state = state;
     wake.label = label;
+    if (state !== "stalled") wake.live = { state, label };
     wake.since = since ?? (yield* Clock.currentTimeMillis);
     yield* presence.set(wake.orgId, wake.lane.chatId, {
       agentId: wake.agentId,
@@ -418,6 +437,7 @@ const make = Effect.gen(function* () {
   const onItem = Effect.fnUntraced(function* (wake: Wake, item: OrchestrationV2TurnItem) {
     const now = yield* Clock.currentTimeMillis;
     wake.lastOutputAt = now;
+    wake.latest = Math.max(wake.latest, item.ordinal);
     if (item.type === "assistant_message") {
       const segment = segmentFor(wake, item.id, item.ordinal, now);
       for (const earlier of pendingBefore(wake, item.ordinal)) yield* decide(wake, earlier, "text");
@@ -426,7 +446,7 @@ const make = Effect.gen(function* () {
       segment.ordinal = item.ordinal;
       if (segment.text.trim() !== "") yield* stamp(wake, "first_token_at");
       if (item.streaming) {
-        yield* show(wake, "writing", null);
+        yield* show(wake, "writing", PHASE_LABELS.writing);
         // Drafts are append-only, so a marker shown here could not be taken back at the end.
         const draft = draftReplyText(segment.text);
         if (
@@ -448,20 +468,18 @@ const make = Effect.gen(function* () {
       const later = wake.tools.some((ordinal) => ordinal > segment.ordinal) ? "tool" : null;
       return yield* decide(wake, segment, later);
     }
-    if (item.type === "reasoning") return yield* show(wake, "thinking", null);
+    if (item.type === "reasoning") return yield* show(wake, "thinking", PHASE_LABELS.thinking);
     if (!isToolItem(item)) return;
-    const previousTool = Math.max(-1, ...wake.tools.filter((ordinal) => ordinal < item.ordinal));
     if (!wake.tools.includes(item.ordinal)) wake.tools.push(item.ordinal);
     for (const earlier of pendingBefore(wake, item.ordinal)) yield* decide(wake, earlier, "tool");
-    // A note written right before this call is its label; otherwise the fixed table's.
-    const note = wake.notes.at(-1);
-    yield* show(
-      wake,
-      "working",
-      note !== undefined && note.ordinal > previousTool && note.ordinal < item.ordinal
-        ? cutLabel(note.text)
-        : toolLabel(item),
-    );
+    if (item.ordinal < wake.latest) return;
+    if (item.status === "pending" || item.status === "running" || item.status === "waiting") {
+      const label = toolLabel(item);
+      if (label !== null) yield* show(wake, "working", label);
+      return;
+    }
+    // The latest call ended: the model is deciding what comes next.
+    yield* show(wake, "thinking", PHASE_LABELS.thinking);
   });
 
   const onEvent = Effect.fnUntraced(function* (event: OrchestrationV2DomainEvent) {
@@ -475,8 +493,15 @@ const make = Effect.gen(function* () {
           if (event.type === "turn-item.updated") return yield* onItem(wake, event.payload);
           if (event.type === "provider-turn.updated" || event.type === "run.updated") {
             wake.lastOutputAt = yield* Clock.currentTimeMillis;
-            if (wake.state === "stalled") yield* show(wake, "working", null);
+            if (wake.state === "stalled") yield* show(wake, wake.live.state, wake.live.label);
           }
+          // The provider has the turn: the model is running.
+          if (
+            event.type === "provider-turn.updated" &&
+            event.payload.status === "running" &&
+            wake.live.state === "starting"
+          )
+            yield* show(wake, "thinking", PHASE_LABELS.thinking);
         }),
       )
       .pipe(
@@ -584,7 +609,7 @@ const make = Effect.gen(function* () {
       creationSource: "server",
     });
     const run = sent.run;
-    yield* wake.lock.withPermits(1)(show(wake, "thinking", null));
+    yield* wake.lock.withPermits(1)(show(wake, "thinking", PHASE_LABELS.thinking));
     const timeoutMs = Math.max(
       0,
       Math.min(RESCUE_TIMEOUT_MS, until - (yield* Clock.currentTimeMillis)),
@@ -604,7 +629,7 @@ const make = Effect.gen(function* () {
       });
   });
 
-  // Ends the wake-up's line and drafts for good; `seen` lines are the queue's, not the wake-up's.
+  // Ends the wake-up's line and drafts for good; queue lines are the queue's, not the wake-up's.
   const settleLine = (wake: Wake) =>
     wake.lock.withPermits(1)(
       Effect.gen(function* () {
@@ -696,14 +721,49 @@ const make = Effect.gen(function* () {
     readonly wakeupId: KinWakeupId;
   }) {
     const { orgId, agentId, wakeupId } = input;
+    const held = prepared.get(wakeupId);
+    if (held !== undefined && held.orgId === orgId) {
+      prepared.delete(wakeupId);
+      if (byWakeup.get(wakeupId) === undefined)
+        yield* presence.clear(orgId, held.chatId, held.agentId);
+    }
     const wake = byWakeup.get(wakeupId);
     if (wake !== undefined && wake.orgId === orgId) {
       byWakeup.delete(wakeupId);
       if (wakes.get(wake.threadId) === wake) wakes.delete(wake.threadId);
       yield* settleLine(wake);
     }
-    yield* syncSeen(presence, orgId, agentId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    yield* syncQueued(presence, orgId, agentId).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
   });
+
+  const preparing = Effect.fn("KinReplyBridge.preparing")(
+    function* (input: {
+      readonly orgId: KinOrgId;
+      readonly agentId: KinAgentId;
+      readonly wakeupId: KinWakeupId;
+      readonly lane: Lane;
+      readonly startedAt: number;
+    }) {
+      if (byWakeup.has(input.wakeupId) || prepared.has(input.wakeupId)) return;
+      const { orgId, agentId, wakeupId, lane, startedAt } = input;
+      prepared.set(wakeupId, { orgId, agentId, chatId: lane.chatId });
+      yield* presence.set(orgId, lane.chatId, {
+        agentId,
+        wakeupId,
+        state: "starting",
+        label: PHASE_LABELS.preparing,
+        startedAt: iso(startedAt),
+        since: iso(startedAt),
+      });
+      // Messages in other chats now wait behind this wake-up.
+      yield* syncQueued(presence, orgId, agentId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+    },
+    Effect.catchCause((cause) => Effect.logWarning("Kin preparing line failed", { cause })),
+  );
 
   const begin = Effect.fn("KinReplyBridge.begin")(
     function* (input: {
@@ -730,7 +790,9 @@ const make = Effect.gen(function* () {
         answered: false,
         lastOutputAt: now,
         state: "starting",
-        label: null,
+        label: PHASE_LABELS.preparing,
+        live: { state: "starting", label: PHASE_LABELS.preparing },
+        latest: -1,
         since: input.startedAt,
         stall: undefined,
         timerFrom: input.startedAt,
@@ -741,7 +803,8 @@ const make = Effect.gen(function* () {
       if (previous !== undefined) yield* end(previous);
       wakes.set(input.threadId, wake);
       byWakeup.set(input.wakeupId, wake);
-      yield* show(wake, "starting", null, input.startedAt);
+      prepared.delete(input.wakeupId);
+      yield* show(wake, "starting", PHASE_LABELS.preparing, input.startedAt);
       wake.stall = yield* watchStall(wake).pipe(Effect.forkIn(scope));
     },
     Effect.catchCause((cause) => Effect.logWarning("Kin reply bridge could not start", { cause })),
@@ -756,6 +819,7 @@ const make = Effect.gen(function* () {
 
   return KinReplyBridge.of({
     lane,
+    preparing,
     begin,
     complete,
     steered,

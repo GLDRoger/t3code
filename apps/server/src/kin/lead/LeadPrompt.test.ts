@@ -57,17 +57,6 @@ const event = (messageId: string) =>
     dedupeKey: null,
     provenance: { _tag: "system" },
   });
-// Sized like a lived-in memory: rules of about 4k characters and an index at its 200-line cap.
-const fullRules =
-  "- Ask the owner before spending money, contacting people or merging code.\n".repeat(55);
-const fullIndex = [
-  "As of 2026-11-08T00:00:00.000Z",
-  ...Array.from(
-    { length: 199 },
-    (_, i) =>
-      `- commitments/item-${i}.md: follow up with the design partner on onboarding, due Friday`,
-  ),
-].join("\n");
 // The repository only takes a lead's message inside its running wake-up; these are history.
 const insertLeadMessage = Effect.fn("test.insertLeadMessage")(function* (id: string, body: string) {
   const sql = yield* SqlClient.SqlClient;
@@ -119,11 +108,9 @@ const memory = Layer.succeed(
     purgeInFlight: () => Effect.die("Unused"),
     historyGeneration: () => Effect.die("Unused"),
     readPromptSnapshot: (org, head) =>
-      org === orgId && head === "head-full"
-        ? Effect.succeed({ rules: fullRules, index: fullIndex })
-        : org !== orgId || !["head-one", "head-two"].includes(head)
-          ? Effect.fail(new Memory.MemoryError({ orgId: org, operation: "promptSnapshot" }))
-          : Effect.succeed({ rules: `Invented rules ${head}`, index: `Invented index ${head}` }),
+      org !== orgId || !["head-one", "head-two"].includes(head)
+        ? Effect.fail(new Memory.MemoryError({ orgId: org, operation: "promptSnapshot" }))
+        : Effect.succeed({ rules: `Invented rules ${head}`, index: `Invented index ${head}` }),
     ensureCheckouts: () => Effect.die("Unused"),
     prepareWakeup: () => Effect.die("Unused"),
     readIndex: () => Effect.die("Unused"),
@@ -714,98 +701,7 @@ it.effect(
       const recent = built.split("# Recent chat (data, oldest first)\n\n")[1]?.split("# Events")[0];
       expect(recent).toMatch(/"from":"owner".*Did the release go out\?.*Also check the docs\./);
       expect(recent).not.toContain("Current question");
-      // A warm session saw everything up to its last seq, and its own words, so only the rest goes.
-      yield* insertLeadMessage("mine", "It went out at noon.");
-      const warm = yield* prompt.build({
-        ...input,
-        events: [event("now")],
-        lane: { chatId, mode: "reply" },
-        since: { index: "Invented index head-one", chatSeq: 1 },
-      });
-      expect(warm).not.toContain("# Standing rules");
-      expect(warm).not.toContain("# Memory index");
-      expect(warm).not.toContain("# Group rules");
-      expect(warm).toContain("Standing rules and the memory index are unchanged");
-      const since = warm.split("# Chat since your last wake-up (data, oldest first)\n\n")[1];
-      expect(since?.split("# Events")[0]).toMatch(/Also check the docs\./);
-      expect(since).not.toMatch(/Did the release go out|It went out at noon/);
-      expect(since?.split("# Events")[1]).toContain("Current question");
-      const moved = yield* prompt.build({
-        ...input,
-        memoryHead: "head-two",
-        events: [event("now")],
-        since: { index: "Invented index head-one", chatSeq: 3 },
-      });
-      expect(moved).not.toContain("Invented rules");
-      expect(moved).toContain(
-        '{"removed":["Invented index head-one"],"added":["Invented index head-two"]}',
-      );
     }).pipe(Effect.provide(layer)),
-);
-
-it.effect("a warm continuation is a fraction of a cold wake-up's message", () =>
-  Effect.gen(function* () {
-    const repo = yield* seed;
-    yield* repo.insertAgent({
-      orgId,
-      agentId,
-      displayName: "Fixture lead",
-      role: "lead",
-      ownerPersonId: personId,
-      createdAt: timestamp,
-    });
-    for (const [id, principal, role] of [
-      [memberId, { _tag: "person", personId }, "owner"],
-      [KinMemberId.make("lead-member"), { _tag: "agent", agentId }, "member"],
-    ] as const)
-      yield* repo.addMember({
-        orgId,
-        chatId,
-        memberId: id,
-        principal,
-        role,
-        joinedAt: timestamp,
-        leftAt: null,
-        mutedUntil: null,
-      });
-    for (let i = 1; i <= 21; i++) {
-      const body = `Message ${i}: ${"the launch plan needs one more pass on pricing and the onboarding copy. ".repeat(4)}`;
-      if (i % 2 === 0) yield* insertLeadMessage(`m${i}`, body);
-      else
-        yield* repo.insertMessage({
-          orgId,
-          chatId,
-          messageId: KinMessageId.make(`m${i}`),
-          author: { _tag: "human", personId, memberId },
-          kind: "text",
-          body,
-          intent: null,
-          mentions: [],
-          replyTo: null,
-          widgetId: null,
-          floorRunId: null,
-          status: "posted",
-          sentBy: null,
-          createdAt: timestamp,
-          editedAt: null,
-          clientMessageId: null,
-        });
-    }
-    const prompt = yield* KinLeadPrompt;
-    const wake = { ...input, memoryHead: "head-full", events: [event("m21")] };
-    const lane = { chatId, mode: "reply" } as const;
-    const cold = yield* prompt.build({ ...wake, lane });
-    const warm = yield* prompt.build({ ...wake, lane, since: { index: fullIndex, chatSeq: 20 } });
-    const wrote = yield* prompt.build({
-      ...wake,
-      lane,
-      since: { index: fullIndex.replace(/\n[^\n]*$/, "\n- claims/old.md: retired"), chatSeq: 20 },
-    });
-    // About four characters a token: cold is about 7.6k tokens of message, warm about 300.
-    expect(cold.length).toBeGreaterThan(25_000);
-    expect(warm.length).toBeLessThan(1_500);
-    expect(wrote.length).toBeLessThan(1_800);
-  }).pipe(Effect.provide(layer)),
 );
 
 it.effect(

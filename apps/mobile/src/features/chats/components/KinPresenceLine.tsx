@@ -53,8 +53,8 @@ export function useKinPresenceNow(active: boolean): number {
 export type KinStopState = "idle" | "stopping" | "failed";
 
 /**
- * What the lead is doing, in one line above the composer: pulsing dots while it has only seen
- * or is starting, else its avatar and a gently breathing line while it works. The row keeps its
+ * What the lead is doing, in one line above the composer: pulsing dots while it is queued or
+ * starting, else its avatar and a gently breathing line while it works. The row keeps its
  * height when empty, so a reply landing never shifts the feed.
  */
 export function KinPresenceLine(props: {
@@ -75,7 +75,7 @@ export function KinPresenceLine(props: {
     if (announcement !== null) AccessibilityInfo.announceForAccessibility(announcement);
   }, [announcement]);
   const reduceMotion = useReduceMotionEnabled();
-  // Motion only while a run is live and seen; Reduce Motion leaves the row still.
+  // Motion only while a run is live and on screen; Reduce Motion leaves the row still.
   const animate = line !== null && props.visible && !reduceMotion;
 
   const { onStop } = props;
