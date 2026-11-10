@@ -287,6 +287,8 @@ const make = Effect.gen(function* () {
       );
     if (worker.repositoryKey === null || worktreePath === null)
       return refused("the worker has no repository or worktree to publish from");
+    if (yield* isOrgPaused(worker.orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
+      return refused("Kin is paused; ask the worker for a follow-up after the owner resumes");
     const pull = yield* publisher.value
       .publish({
         workerId: worker.workerId,
