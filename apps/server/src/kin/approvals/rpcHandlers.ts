@@ -13,7 +13,7 @@ import * as Audit from "./Audit.ts";
 import { GrantVerifier } from "./GrantVerifier.ts";
 
 const group = RpcGroup.make(...KinApprovalRpcs);
-// Methods refuse until their task lands (APPR-3). Approving only goes through GrantVerifier.
+// `list` refuses until its task lands. Approving only goes through GrantVerifier.
 const unavailable = Effect.fail(
   new KinApprovalError({ reason: "unavailable", message: "Kin approvals are unavailable." }),
 );
@@ -69,7 +69,8 @@ export const makeKinApprovalHandlers = Effect.fn("makeKinApprovalHandlers")(func
   });
   return group.of({
     "kin.approvals.list": () => Stream.fromEffect(unavailable),
-    "kin.approvals.get": () => unavailable,
+    "kin.approvals.get": (input) =>
+      keys.pipe(Effect.flatMap(({ grants, caller }) => grants.view(caller, input))),
     "kin.approvals.challenge": (input) =>
       keys.pipe(Effect.flatMap(({ grants, caller }) => grants.challenge(caller, input))),
     "kin.approvals.submitGrant": (input) =>

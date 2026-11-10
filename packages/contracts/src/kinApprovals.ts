@@ -408,6 +408,9 @@ export const KinApprovalView = Schema.Union([
   Schema.TaggedStruct("full", {
     action: KinPendingAction,
     canApprove: Schema.Literal(true),
+    /** Display names the server looked up: the lead it concerns, and `afterNonOwnerMessage`'s author. */
+    leadName: Schema.optional(KinText),
+    afterNonOwnerName: Schema.optional(KinText),
   }),
   Schema.TaggedStruct("redacted", {
     actionId: KinActionId,
@@ -422,6 +425,17 @@ export const KinApprovalView = Schema.Union([
   }),
 ]);
 export type KinApprovalView = typeof KinApprovalView.Type;
+
+// One approval card per action, so a client reads the action from a waiting item's widget id.
+const KIN_APPROVAL_WIDGET_PREFIX = "kin-approval:";
+export const kinApprovalWidgetId = (actionId: KinActionId): string =>
+  `${KIN_APPROVAL_WIDGET_PREFIX}${actionId}`;
+const isKinActionId = Schema.is(KinActionId);
+export const kinApprovalActionIdOf = (widgetId: string): KinActionId | null => {
+  if (!widgetId.startsWith(KIN_APPROVAL_WIDGET_PREFIX)) return null;
+  const actionId = widgetId.slice(KIN_APPROVAL_WIDGET_PREFIX.length);
+  return isKinActionId(actionId) ? actionId : null;
+};
 
 export const KinApprovalListEvent = Schema.Union([
   Schema.TaggedStruct("snapshot", { actions: Schema.Array(KinApprovalView) }),

@@ -7,6 +7,7 @@ import {
   type KinApprovalsDecisionResult,
   type KinApprovalsRejectInput,
   type KinApprovalsSubmitGrantInput,
+  type KinApprovalView,
   type KinGrantRejectionReason,
   type KinOrgId,
   type KinPendingAction,
@@ -22,6 +23,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { ApproverKeys, type KinKeyCaller } from "./ApproverKeys.ts";
@@ -68,6 +70,10 @@ const REJECTION_MESSAGES = {
 
 const reject = (reason: KinGrantRejectionReason) => fail(reason, REJECTION_MESSAGES[reason]);
 
+/** The lead an action concerns: a raise names its lead, anything else its requester. */
+const leadOf = (action: KinPendingAction) =>
+  action.target._tag === "level" ? action.target.agentId : action.requestedBy.agentId;
+
 const headOf = (action: KinPendingAction) => {
   const resolved = action.resolved;
   return stableStringify({
@@ -89,6 +95,11 @@ type Seen = {
 export class GrantVerifier extends Context.Service<
   GrantVerifier,
   {
+    /** `get`: the full card for an approver, the redacted one for anyone else in the action's org. */
+    readonly view: (
+      caller: KinKeyCaller,
+      input: KinApprovalsActionInput,
+    ) => Effect.Effect<KinApprovalView, KinApprovalError>;
     /** The unsigned payload the phone renders and signs; re-reads GitHub and rotates if it moved. */
     readonly challenge: (
       caller: KinKeyCaller,
@@ -113,6 +124,7 @@ const make = Effect.gen(function* () {
   const roles = yield* KinOrgRoles;
   const live = yield* KinLiveTargets;
   const audit = yield* KinGrantAudit;
+  const sql = yield* SqlClient.SqlClient;
   const scope = yield* Effect.scope;
   const junkWindows = new Map<string, { used: number; skipped: number }>();
 
@@ -422,6 +434,73 @@ const make = Effect.gen(function* () {
     Effect.catch(internal("GrantVerifier.challenge")),
   );
 
+  const displayName = Effect.fn("GrantVerifier.displayName")(function* (
+    table: "kin_people" | "kin_agents",
+    orgId: KinOrgId,
+    id: string,
+  ) {
+    const [row] =
+      table === "kin_people"
+        ? yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+            WHERE org_id = ${orgId} AND person_id = ${id}`
+        : yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_agents
+            WHERE org_id = ${orgId} AND agent_id = ${id}`;
+    return row?.name.trim() || undefined;
+  });
+
+  /** The person the card waits on: the owner of the lead it concerns (phase 1's only approver). */
+  const ownerName = Effect.fn("GrantVerifier.ownerName")(function* (action: KinPendingAction) {
+    const lead = leadOf(action);
+    const [row] = yield* sql<{ name: string }>`SELECT p.display_name AS name FROM kin_agents a
+      JOIN kin_people p ON p.org_id = a.org_id AND p.person_id = a.owner_person_id
+      WHERE a.org_id = ${action.orgId} AND a.agent_id = ${lead}`;
+    return row?.name.trim() || undefined;
+  });
+
+  const view = Effect.fn("GrantVerifier.view")(
+    function* (caller: KinKeyCaller, input: KinApprovalsActionInput) {
+      for (const person of caller.people) {
+        const found = yield* actions.get({ orgId: person.orgId, actionId: input.actionId });
+        if (Option.isNone(found)) continue;
+        const action = found.value;
+        if (yield* roles.isOwner(person)) {
+          const leadName = yield* displayName("kin_agents", action.orgId, leadOf(action));
+          const after = action.provenance.afterNonOwnerMessage;
+          const afterNonOwnerName =
+            after === undefined
+              ? undefined
+              : yield* displayName("kin_people", action.orgId, after.humanId);
+          return {
+            _tag: "full" as const,
+            action,
+            canApprove: true as const,
+            ...(leadName === undefined ? {} : { leadName }),
+            ...(afterNonOwnerName === undefined ? {} : { afterNonOwnerName }),
+          };
+        }
+        // Anyone else sees what waits and on whom, never the facts a challenge would sign.
+        const pr = action.target._tag === "pull_request" ? action.target : undefined;
+        return {
+          _tag: "redacted" as const,
+          actionId: action.id,
+          orgId: action.orgId,
+          kind: action.kind,
+          repo:
+            action.target._tag === "pull_request" || action.target._tag === "branch"
+              ? action.target.repo
+              : null,
+          number: pr?.number ?? null,
+          title: action.resolved._tag === "pull_request" ? action.resolved.title : null,
+          state: action.state,
+          waitingOn: (yield* ownerName(action)) ?? "the owner",
+          canApprove: false as const,
+        };
+      }
+      return yield* fail("not_found", "No such action.");
+    },
+    Effect.catch(internal("GrantVerifier.view")),
+  );
+
   const rejectAction = Effect.fn("GrantVerifier.reject")(
     function* (caller: KinKeyCaller, input: KinApprovalsRejectInput) {
       const { action } = yield* actionFor(caller, input.actionId);
@@ -456,7 +535,7 @@ const make = Effect.gen(function* () {
     Effect.catch(internal("GrantVerifier.reject")),
   );
 
-  return GrantVerifier.of({ challenge, submitGrant, reject: rejectAction });
+  return GrantVerifier.of({ view, challenge, submitGrant, reject: rejectAction });
 });
 
 export const layer = Layer.effect(GrantVerifier, make);

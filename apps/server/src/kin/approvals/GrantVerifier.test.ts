@@ -221,6 +221,7 @@ const requestMerge = (
   actions: KinPendingActions["Service"],
   number: number,
   github: Map<number, KinResolvedTarget | "down">,
+  afterNonOwnerMessage?: { readonly humanId: string; readonly messageId: string },
 ) =>
   Effect.gen(function* () {
     const target = pr(number);
@@ -239,6 +240,7 @@ const requestMerge = (
         startedByRole: "none",
         chain: [],
         ceilingBelowOwner: true,
+        ...(afterNonOwnerMessage === undefined ? {} : { afterNonOwnerMessage }),
       },
       source: decodeEventId(`evt-${number}`),
     } as unknown as KinPendingActionCreateInput;
@@ -413,6 +415,106 @@ describe("GrantVerifier", () => {
         privateKey: stranger.privateKey,
         kid,
       });
+      assert.strictEqual(
+        reasonOf(yield* Effect.exit(grants.submitGrant(ownerPhone, { compact }))),
+        "unknown_key",
+      );
+      assert.strictEqual((yield* stateOf(actions, action)).state, "awaiting_approval");
+    }).pipe(Effect.provide(h.layer));
+  });
+
+  it.effect("non-owners get the redacted card and no challenge", () => {
+    const h = harness();
+    return Effect.gen(function* () {
+      const { grants, actions, sql } = yield* enrol;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES (${owner}, 'org_01', 'nishchay', 'Nishchay', '2026-11-07T00:00:00.000Z'),
+          (${member}, 'org_01', 'priya', 'Priya', '2026-11-07T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id,
+          created_at)
+        VALUES ('lead', 'org_01', 'Tech lead', 'lead', ${owner}, '2026-11-07T00:00:00.000Z')`;
+      const action = yield* requestMerge(actions, 212, h.github, {
+        humanId: member,
+        messageId: "msg-priya",
+      });
+      assert.deepStrictEqual(yield* grants.view(ownerPhone, { actionId: action.id }), {
+        _tag: "full",
+        action,
+        canApprove: true,
+        leadName: "Tech lead",
+        afterNonOwnerName: "Priya",
+      });
+      assert.deepStrictEqual(yield* grants.view(memberPhone, { actionId: action.id }), {
+        _tag: "redacted",
+        actionId: action.id,
+        orgId,
+        kind: "merge_pull_request",
+        repo: "GLDRoger/t3code",
+        number: 212,
+        title: "Fix",
+        state: "awaiting_approval",
+        waitingOn: "Nishchay",
+        canApprove: false,
+      });
+      assert.strictEqual(
+        reasonOf(yield* Effect.exit(grants.challenge(memberPhone, { actionId: action.id }))),
+        "not_owner",
+      );
+      assert.strictEqual(
+        reasonOf(yield* Effect.exit(grants.view(nobody, { actionId: action.id }))),
+        "not_found",
+      );
+    }).pipe(Effect.provide(h.layer));
+  });
+
+  it.effect("a phone with no active approver key gets no challenge and can't approve", () => {
+    const h = harness();
+    return Effect.gen(function* () {
+      const { keys, actions, grants } = yield* seed;
+      const action = yield* requestMerge(actions, 212, h.github);
+      assert.strictEqual(
+        reasonOf(yield* Effect.exit(grants.challenge(ownerPhone, { actionId: action.id }))),
+        "unknown_key",
+      );
+      // An iPhone simulator has no App Attest: its key registers unattested and stays pending.
+      const simulator = newKey();
+      const jwk = simulator.publicKey.export({ format: "jwk" });
+      const publicJwk = { kty: "EC" as const, crv: "P-256" as const, x: jwk.x!, y: jwk.y! };
+      const { challenge } = yield* keys.keyChallenge(ownerPhone);
+      const { key } = yield* keys.registerKey(ownerPhone, {
+        orgId,
+        publicJwk,
+        platform: "ios",
+        challenge,
+        deviceLabel: "iPhone simulator",
+      });
+      assert.deepInclude(key, { state: "pending", attested: false, hardware: "software" });
+      assert.strictEqual(
+        reasonOf(yield* Effect.exit(grants.challenge(ownerPhone, { actionId: action.id }))),
+        "unknown_key",
+      );
+      const compact = signGrant(
+        simulator.privateKey,
+        { typ: "kin-grant+jws", alg: "ES256", kid: key.thumbprint },
+        {
+          v: 1,
+          orgId,
+          actionId: action.id,
+          revision: action.revision,
+          nonce: action.nonce,
+          kind: action.kind,
+          targetDigest: action.targetDigest,
+          target: action.target,
+          headSha: sha("a"),
+          base: "main",
+          mergeMethod: "squash",
+          approver: { humanId: owner, kid: key.thumbprint },
+          decision: "approve",
+          jti: freshJti(),
+          iat: NOW_S,
+          exp: NOW_S + 600,
+        },
+      );
       assert.strictEqual(
         reasonOf(yield* Effect.exit(grants.submitGrant(ownerPhone, { compact }))),
         "unknown_key",
