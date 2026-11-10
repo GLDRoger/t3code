@@ -267,7 +267,7 @@ Each wake-up's message, most stable first:
 4. Recent chat is only the conversation the turn is in: at most 8 messages on a reply turn and 4 on a notice, cut at a six-hour gap, one quoted line each (`owner 19:31: "…"`) in the owner's time zone. System rows and empty messages are left out, and the lead's own older messages are clipped to their opening and end, so it does not re-read and repeat its earlier status.
 5. Each event is one labelled quote of compact JSON holding what a tool call or the reply needs: the event id, the message or item id, and the text. Routing fields the server already acted on (organization, lead, dedupe key, provenance, delivery ids) are left out. Message bodies are loaded by organization and message id from the chat repository. Owner labels require both stored `author._tag: human` and `authorRole: owner`, never event provenance or body text. Only posted messages reach the prompt; suggested guest messages remain hidden until the owner sends them. Human non-owner text uses role-labelled quotes; agent and system labels never start with a role word ("agent message (untrusted)" and "system message"). GitHub summaries and other event data are quoted. JSON encoding escapes angle brackets, ampersands and every Unicode Cc, Cf, Zl and Zp character as `\uXXXX` (surrogate pairs where needed), so source text cannot close a block or forge a label. Each quoted event/message text field is capped at 2,000 UTF-16 characters, except message bodies at 8,000; a visible `…[truncated N chars]` marker inside the JSON string reports removed characters. The complete encoded events section is capped at 60,000 characters, including framing and an `N earlier events omitted` line; drop oldest events first. Raw webhook bodies remain references for tool reads.
 
-No wake-up timestamps or ids go above the divider (dates and item ids already in memory remain there). A test asserts that two prompts built for the same organization and memory commit share everything above it while the snapshot index is unchanged. Cache hits are measured with `cachedInputTokens` on the turn's `tokenUsage` and shown in the evening summary.
+No wake-up timestamps or ids go above the divider (dates and item ids already in memory remain there). A test asserts that two prompts built for the same organization and memory commit share everything above it while the snapshot index is unchanged. Cache hits are measured with `cachedInputTokens` on the turn's `tokenUsage`.
 
 ### The lead instructions file
 
@@ -561,8 +561,8 @@ Morning brief, gathered live (TRIG-13 has no prepared brief yet):
 - PRs waiting on the owner's review, and CI red on the default branch.
 - Objectives at risk, one line each with the reason.
 - Workers running or blocked.
-- Postponed for budget, and yesterday's units used.
-- Up to 3 items past `review_by` (their Keep, Update and Drop are on the owner-check card).
+- How many events were held over to stay within the day's budget, only when some were. Spend itself is not the owner's morning reading.
+- Items past `review_by` are rows on the card only (their Keep, Update and Drop are on the owner-check card). Memory upkeep stays out of the message: the owner's first brief listed two reminders that had already fired as "past review date".
 
 Evening summary:
 
@@ -571,7 +571,7 @@ Evening summary:
 - Promises made today, by whom.
 - Open questions: the owner's unresolved waiting items, count and oldest.
 - Due tomorrow.
-- Units used and cache hit rate (cached over input tokens on today's lead charges); failed or timed-out wake-ups and failed dreams. Refused commits are only logged today, so the summary cannot count them yet.
+- Replies that failed today, only when some did, because a failed turn may have cost the owner an answer. Units, the cache hit rate and failed dreams are gathered for the facts but not written into the message: they are Kin's telemetry, and the owner's first summaries were nothing else.
 
 ### Failure cases
 
