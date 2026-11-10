@@ -89,9 +89,23 @@ const denied = (message = "Worker operation is not allowed.") =>
 // Below L2 in a chat the work touches: nothing starts, and the lead hears it in plain words.
 const NOT_OPEN =
   "Starting work isn't open to you in this chat. Nothing started; tell the owner what you would do.";
+// What a lead hears when work can't start: what is true, that nothing started, and what it can
+// still do. None of it blames the lead's own setup or sends the owner to reconfigure it.
+const STILL =
+  "Nothing started. Say so once, in one line, and don't ask the owner to change your setup. You can still read repos, pull requests and CI yourself, or answer from memory.";
+const NO_ENVIRONMENT = `Coding work can't start yet: this host's worker environment isn't set up. That is a one-time step on the host, not a fault in you or in this request. ${STILL}`;
+const PAUSED = `Kin is paused by the owner, so no new work starts until they resume it. ${STILL}`;
+const OVER_BUDGET = `Today's budget for coding work is used up, so this waits for the daily reset or a higher limit. ${STILL}`;
+const NOT_HERE = `Work can't start in that project from this chat. ${STILL}`;
+const NO_CHECKOUT = `That repository has no checkout in the worker environment yet, so work can't start in it. ${STILL}`;
 const missing = () => new KinChatError({ reason: "not_found", message: "Kin record not found." });
 const unavailable = () =>
   new KinChatError({ reason: "unavailable", message: "Kin workers are unavailable." });
+const unending = () =>
+  new KinChatError({
+    reason: "unavailable",
+    message: `The worker environment's project list didn't end, so Kin couldn't find the project. ${STILL}`,
+  });
 const isChatError = Schema.is(KinChatError);
 const toolFailure = (label: string) => (error: unknown) =>
   isChatError(error)
@@ -234,18 +248,13 @@ const make = Effect.gen(function* () {
   });
   /** Where new work may start; workers never run on this server. */
   const admit = Effect.fn("KinWorkers.admit")(function* (orgId: KinOrgId) {
+    // Not a permission: nothing the lead or the owner's chat settings can change.
     if (Option.isNone(env.environmentId))
-      return yield* denied(
-        "This Kin host has no worker environment, so workers can't start. Tell the owner.",
-      );
+      return yield* new KinChatError({ reason: "unavailable", message: NO_ENVIRONMENT });
     if (yield* isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
-      return yield* denied("Kin is paused by the owner. Nothing new starts until they resume.");
+      return yield* denied(PAUSED);
     if (!(yield* budget.admitWorker(orgId)))
-      return yield* new KinChatError({
-        reason: "limit",
-        message:
-          "Today's worker budget is used up. Tell the owner; workers can start again after the daily reset or a higher limit.",
-      });
+      return yield* new KinChatError({ reason: "limit", message: OVER_BUDGET });
     return env.environmentId.value;
   });
   /** The worker environment refused or could not be reached; its message says which. */
@@ -301,29 +310,23 @@ const make = Effect.gen(function* () {
       here === undefined
         ? undefined
         : (yield* repositories.resolve(here.workspaceRoot))?.canonicalKey;
-    if (key === undefined)
-      return yield* denied(
-        "That worker project has no repository Kin can match in the worker environment.",
-      );
+    if (key === undefined) return yield* denied(NO_CHECKOUT);
     const matches: Array<ProjectId> = [];
     let cursor: number | null = 0;
     for (let page = 0; cursor !== null; page++) {
-      if (page === WorkerEnvironment.MAX_PAGES)
-        return yield* denied("The worker environment's project list didn't end. Tell the owner.");
+      if (page === WorkerEnvironment.MAX_PAGES) return yield* unending();
       const listed: Tool.Success<typeof WorkerEnvironment.tools.projects> = yield* env
         .call(environmentId, WorkerEnvironment.tools.projects, { cursor, limit: 100 })
         .pipe(there("The worker could not start."));
       for (const project of listed.projects)
         if (project.repositoryIdentity?.canonicalKey === key) matches.push(project.id);
-      if (listed.nextCursor !== null && listed.nextCursor <= cursor)
-        return yield* denied("The worker environment's project list didn't end. Tell the owner.");
+      if (listed.nextCursor !== null && listed.nextCursor <= cursor) return yield* unending();
       cursor = listed.nextCursor;
     }
-    if (matches.length !== 1)
+    if (matches.length === 0) return yield* denied(NO_CHECKOUT);
+    if (matches.length > 1)
       return yield* denied(
-        matches.length === 0
-          ? "The worker environment has no project for this repository. Tell the owner."
-          : "The worker environment has several projects for this repository. Tell the owner.",
+        `The worker environment has several checkouts of that repository, so Kin can't tell which to use. ${STILL}`,
       );
     return { projectId: matches[0]!, repositoryKey: key };
   });
@@ -400,8 +403,6 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const config = yield* leadConfig(ctx);
         const event = yield* sourceEvent(ctx, input.sourceEventId);
-        if (!config.projects.includes(input.projectId))
-          return yield* denied("Workers may only run in this lead's worker projects.");
         if ((input.kind === "review") !== (input.reviewOf !== undefined))
           return yield* denied("Review workers need reviewOf, and only review workers take it.");
         const author =
@@ -428,7 +429,10 @@ const make = Effect.gen(function* () {
         return yield* denied("The author worker has not reported a PR or commit to review yet.");
     }
     if (!plan.open) return yield* denied(NOT_OPEN);
+    // The host's state comes first: a lead told "not that project" on a host where nothing can
+    // start asks the owner to fix a list that was never the cause.
     const environmentId = yield* admit(ctx.orgId);
+    if (!plan.config.projects.includes(input.projectId)) return yield* denied(NOT_HERE);
     yield* supported(environmentId, modelSelection);
     const { projectId, repositoryKey } = yield* projectThere(environmentId, input.projectId);
     const items =
@@ -578,7 +582,7 @@ const make = Effect.gen(function* () {
     if (!plan.open) return yield* denied(NOT_OPEN);
     yield* admit(ctx.orgId);
     if (plan.worker.projectId === null || !plan.config.projects.includes(plan.worker.projectId))
-      return yield* denied("Workers may only run in this lead's worker projects.");
+      return yield* denied(NOT_HERE);
     // A worker runs where it was launched, even after the host names another environment.
     if (plan.worker.environmentId === null || !bound(plan.worker))
       return yield* denied("That worker never started. Start a new one with kin_delegate.");
