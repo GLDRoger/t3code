@@ -1666,6 +1666,10 @@ describe("KinActionExecutor", () => {
         ["const requireForFfi = NodeModule.createRequire(import.meta.url);"],
       ],
       [
+        "vcs/CheckoutCloner.ts",
+        ["const requireForFfi = NodeModule.createRequire(import.meta.url);"],
+      ],
+      [
         "preview/ServerBrowserContexts.ts",
         [
           "// Playwright needs its files on disk. createRequire also resolves it from a Node SEA executable.",
