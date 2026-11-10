@@ -84,11 +84,12 @@ chmod 600 "$tmp"
 mv -f "$tmp" "$ENV_FILE"
 
 # The worker environment mounts ~/kin-current when it starts, so it moves to a build only on a
-# restart. kin-worker.sh's sudoers entry lets kin run exactly this; no worker unit, no restart.
+# restart. kin-worker.sh's sudoers entry lets kin run this; try-restart leaves a server Kin's
+# pause stopped as it is. No worker unit, no restart.
 restart_workers() {
   systemctl --system cat kin-worker-server.service >/dev/null 2>&1 || return 0
   sudo -n /usr/bin/systemctl try-restart kin-worker-server.service ||
-    echo "update.sh: couldn't restart kin-worker-server, so workers still run the build before this one. Run sudo ops/kin/host/kin-worker.sh from a root-owned clone." >&2
+    echo "update.sh: couldn't restart kin-worker-server, so workers still run the build before this one. Run sudo /root/kin-ops/ops/kin/host/kin-worker.sh." >&2
 }
 
 for unit in kin-server.service kin-backup.service kin-backup.timer; do

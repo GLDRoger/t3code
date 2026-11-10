@@ -9,7 +9,13 @@
 #   sudo kin-worker run [--] <command...>    a command as kin-worker, in the sandbox
 #                                            (`t3 ...` runs Kin's build's CLI)
 #
+# kin-server reaches two more through its sudoers entry, and the worker unit a third:
+#   kin-worker upload-pack <path>            the worker's repository, read-only, for Kin to publish
+#   kin-worker may-start                     the unit's ExecCondition: no org of Kin's is paused
+#
 # `install` copies this script to /usr/local/sbin/kin-worker and never restarts kin-server.
+# Root never writes, chowns or chmods through a path under the worker's home: that work runs as
+# kin-worker (`worker_do`), so a symlink there reaches only what kin-worker could already change.
 set -euo pipefail
 
 KIN_USER=kin
@@ -26,6 +32,15 @@ UNITS=(kin-worker-server.service kin-worker-link.service kin-worker-link.timer)
 OLD_UNITS=(kin-worker-reload.path kin-worker-reload.service)
 SUDOERS=/etc/sudoers.d/kin-worker
 GATEWAY_KEY=$WORKER_HOME/.config/kin-worker/gateway-key
+KIN_DB=$KIN_HOME/.t3/userdata/statev2.sqlite
+WORKER_DB=$WORKER_HOME/.t3/userdata/statev2.sqlite
+# The most of a worker's repository Kin's server reads in one publish.
+UPLOAD_PACK_MAX_BYTES=$((512 * 1024 * 1024))
+# The probes and helpers run these, never anything on the worker's PATH; `check` verifies each
+# is root-owned and writable by no one else.
+TRUSTED_BINS=(/usr/bin/python3 /usr/bin/sqlite3 /usr/bin/curl /usr/bin/git /usr/bin/setpriv
+  /usr/bin/nsenter /usr/bin/getent /usr/bin/ss /usr/bin/env /bin/sh /bin/cat)
+SYSTEM_PATH=/usr/bin:/bin
 WORKER_PATH="$WORKER_HOME/.local/bin:$WORKER_HOME/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin"
 # Cloud metadata, link-local, Tailscale (CGNAT and ULA) and private LAN ranges. A worker needs
 # none of them; allow one back with `IPAddressAllow=` in a drop-in (README, "Workers").
@@ -57,6 +72,16 @@ need_root() { [ "$(id -u)" -eq 0 ] || die "run this as root: sudo $0 $*"; }
 node_version_of() {
   sed -n '/"engines"/,/}/s/.*"node": *"\([^"]*\)".*/\1/p' "$1/package.json" | head -n1
 }
+
+# Runs a root-owned binary (absolute path) as `user`, with no groups, no new privileges and the
+# system PATH: it opens only what that user can, so root never follows a path the user controls.
+as_user() {
+  local user="$1"
+  shift
+  /usr/bin/setpriv --reuid="$(id -u "$user")" --regid="$(id -g "$user")" --clear-groups \
+    --no-new-privs -- /usr/bin/env -i HOME="/home/$user" PATH="$SYSTEM_PATH" "$@"
+}
+worker_do() { as_user "$WORKER_USER" "$@"; }
 
 # `node <args>`: Kin's build's server CLI. Runs as kin-worker inside the sandbox, where the build
 # is at $BUILD; the worker unit starts the server with it.
@@ -143,38 +168,47 @@ gateway_url() {
     return
   fi
   [ -f "$KIN_HOME/.claude/settings.json" ] || return 0
-  python3 -I -c 'import json, sys
+  /usr/bin/python3 -I -c 'import json, sys
 print(json.load(open(sys.argv[1])).get("env", {}).get("ANTHROPIC_BASE_URL", ""))' \
     "$KIN_HOME/.claude/settings.json" 2>/dev/null || true
 }
 
+# Writes stdin to a new file of the worker's, mode 600, as kin-worker; an existing one stays.
+# Exits 3 when the file is already there.
+worker_write_new() {
+  worker_do /bin/sh -c 'umask 077
+if [ -e "$1" ] || [ -L "$1" ]; then exit 3; fi
+/usr/bin/install -d -m 0700 "$(dirname "$1")" && cat >"$1"' sh "$1"
+}
+
 write_claude_settings() {
-  local settings="$WORKER_HOME/.claude/settings.json" url
-  if [ -f "$settings" ]; then
-    say "$settings exists; check verifies it holds no token and names nothing of kin's."
-    return 0
-  fi
+  local settings="$WORKER_HOME/.claude/settings.json" url code=0
   url="$(gateway_url)"
   if ! [[ "$url" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?$ ]]; then
     say "No gateway URL for the worker's Claude settings: set KIN_WORKER_GATEWAY_URL=https://... and run this again."
     return 0
   fi
-  install -d -m 0700 -o "$WORKER_USER" -g "$WORKER_USER" "$WORKER_HOME/.claude" "$(dirname "$GATEWAY_KEY")"
   # Only the gateway and a helper that reads the worker's own key; never kin's file or key.
-  printf '{\n  "env": { "ANTHROPIC_BASE_URL": "%s" },\n  "apiKeyHelper": "cat %s"\n}\n' "$url" "$GATEWAY_KEY" >"$settings"
-  chown "$WORKER_USER:$WORKER_USER" "$settings"
-  chmod 0600 "$settings"
-  say "Wrote $settings with gateway $url. Put kin-worker's own gateway key in $GATEWAY_KEY (mode 600)."
+  printf '{\n  "env": { "ANTHROPIC_BASE_URL": "%s" },\n  "apiKeyHelper": "cat %s"\n}\n' "$url" "$GATEWAY_KEY" |
+    worker_write_new "$settings" || code=$?
+  case "$code" in
+    0) say "Wrote $settings with gateway $url. Put kin-worker's own gateway key in $GATEWAY_KEY (README, \"Workers\")." ;;
+    3) say "$settings exists; check verifies it holds no token and names nothing of kin's." ;;
+    *) die "couldn't write $settings as $WORKER_USER." ;;
+  esac
+  worker_do /usr/bin/install -d -m 0700 "$(dirname "$GATEWAY_KEY")"
 }
 
-# kin may SIGKILL or restart the worker server, nothing else: the stop switch's last resort and
-# update.sh's restart onto the new build. The kill command matches workerEnvironment.ts.
+# kin may stop, start or restart the worker server, with no argument of anyone else's: the
+# stop switch and its resume (workerEnvironment.ts), and update.sh's move to a new build. And it
+# may fetch a worker's repository through `upload-pack`, which checks its one path itself.
+SUDOERS_LINE="$KIN_USER ALL=(root) NOPASSWD: /usr/bin/systemctl stop kin-worker-server.service, /usr/bin/systemctl start kin-worker-server.service, /usr/bin/systemctl try-restart kin-worker-server.service, /usr/local/sbin/kin-worker upload-pack *"
 install_sudoers() {
   local tmp
   tmp="$(mktemp)"
   printf '%s\n' \
-    "# Installed by ops/kin/host/kin-worker.sh. kin may kill or restart the worker environment, nothing else." \
-    "$KIN_USER ALL=(root) NOPASSWD: /usr/bin/systemctl kill -s SIGKILL kin-worker-server.service, /usr/bin/systemctl try-restart kin-worker-server.service" \
+    "# Installed by ops/kin/host/kin-worker.sh. kin may stop, start or restart the worker environment and read workers' repositories, nothing else." \
+    "$SUDOERS_LINE" \
     >"$tmp"
   if cmp -s "$tmp" "$SUDOERS"; then
     rm -f "$tmp"
@@ -185,6 +219,48 @@ install_sudoers() {
   rm -f "$tmp"
 }
 
+# How many of Kin's orgs are paused, read by kin with the system sqlite3, read-only.
+kin_paused_orgs() {
+  as_user "$KIN_USER" /usr/bin/sqlite3 -readonly -batch -noheader -cmd ".timeout 2000" "$KIN_DB" \
+    "SELECT count(*) FROM kin_org_state WHERE paused = 1;"
+}
+
+# `may-start`: the worker unit's ExecCondition. Exit 0 only when Kin's database shows no paused
+# org; any error keeps the worker server stopped. Kin's pause stops the unit, and this keeps it
+# stopped until the owner resumes, whoever starts it.
+cmd_may_start() {
+  need_root may-start
+  local paused
+  paused="$(kin_paused_orgs 2>/dev/null)" || {
+    echo "kin-worker: can't read Kin's pause state from $KIN_DB, so the worker server stays stopped." >&2
+    exit 1
+  }
+  [ "$paused" = 0 ] || {
+    echo "kin-worker: Kin is paused, so the worker server stays stopped until the owner resumes." >&2
+    exit 1
+  }
+}
+
+# `upload-pack <path>`: Kin's server fetches a worker's branch through this (an `ext::` remote in
+# workerPublish.ts) and pushes it itself, so workers need no GitHub write credential. git runs as
+# kin-worker in the sandbox without the worker's global config, its output capped. Never while
+# Kin is paused.
+cmd_upload_pack() {
+  need_root upload-pack
+  [ $# -eq 1 ] || die "upload-pack takes one path"
+  local path="$1" allow=()
+  [[ "$path" =~ ^$WORKER_HOME/[A-Za-z0-9._/-]+$ ]] || die "upload-pack serves only a path under $WORKER_HOME"
+  case "$path/" in */../* | */./*) die "upload-pack refuses a path with . or .. in it" ;; esac
+  cmd_may_start
+  mapfile -t allow < <(allowed_networks)
+  systemd-run --quiet --wait --collect --pipe \
+    --uid="$WORKER_USER" --gid="$WORKER_USER" --working-directory="$WORKER_HOME" \
+    --setenv=HOME="$WORKER_HOME" --setenv=PATH="$SYSTEM_PATH" \
+    --setenv=GIT_CONFIG_GLOBAL=/dev/null --setenv=GIT_CONFIG_NOSYSTEM=1 \
+    "${SANDBOX[@]}" "${allow[@]}" -p RuntimeMaxSec=300 \
+    -- /usr/bin/git upload-pack --timeout=60 "$path" | head -c "$UPLOAD_PACK_MAX_BYTES"
+}
+
 cmd_install() {
   if [ "${1:-}" = --dry-run ]; then DRY_RUN=1; fi
   if [ "$DRY_RUN" -eq 0 ]; then
@@ -192,7 +268,7 @@ cmd_install() {
     need_root install
     refuse_unsafe_source
   fi
-  id -u "$KIN_USER" >/dev/null 2>&1 || die "no $KIN_USER user yet: run ops/kin/host/setup.sh first."
+  id -u "$KIN_USER" >/dev/null 2>&1 || die "no $KIN_USER user yet: run /root/kin-ops/ops/kin/host/setup.sh first."
   refuse_unsafe_users
 
   # 1. The worker user, with a home only it can read. Kin's home gets the same.
@@ -203,7 +279,8 @@ cmd_install() {
   fi
   if [ "$DRY_RUN" -eq 0 ]; then
     ensure_mode_700 "$KIN_HOME"
-    ensure_mode_700 "$WORKER_HOME"
+    # The worker owns its home: kin-worker sets the mode, so root changes nothing it controls.
+    if [ "$(stat -c %a "$WORKER_HOME")" != 700 ]; then worker_do /bin/chmod 0700 "$WORKER_HOME"; fi
   fi
 
   # 2. This script, the units, the sudoers entry and the build's mount point.
@@ -233,13 +310,15 @@ cmd_install() {
   fi
 
   # 3. Linked environments on in the worker environment, so kin-server's link is accepted.
-  local settings="$WORKER_HOME/.t3/userdata/settings.json"
-  if [ "$DRY_RUN" -eq 0 ] && [ ! -f "$settings" ]; then
-    install -d -m 0700 -o "$WORKER_USER" -g "$WORKER_USER" "$WORKER_HOME/.t3" "$WORKER_HOME/.t3/userdata"
-    printf '{\n  "linkedEnvironmentsEnabled": true\n}\n' >"$settings"
-    chown "$WORKER_USER:$WORKER_USER" "$settings"
-    chmod 0600 "$settings"
-    say "Wrote $settings."
+  if [ "$DRY_RUN" -eq 0 ]; then
+    local code=0
+    printf '{\n  "linkedEnvironmentsEnabled": true\n}\n' |
+      worker_write_new "$WORKER_HOME/.t3/userdata/settings.json" || code=$?
+    case "$code" in
+      0) say "Wrote $WORKER_HOME/.t3/userdata/settings.json." ;;
+      3) ;;
+      *) die "couldn't write the worker environment's settings as $WORKER_USER." ;;
+    esac
   fi
 
   # 4. Claude's gateway settings, the worker's own.
@@ -271,6 +350,13 @@ kin_cli() {
   as_kin mise exec "node@$version" -- node "$KIN_HOME/kin-current/apps/server/dist/bin.mjs" "$@"
 }
 in_sandbox() { /usr/local/sbin/kin-worker run -- "$@" </dev/null; }
+trusted_bins() {
+  local bin
+  for bin in "${TRUSTED_BINS[@]}" /usr/bin/systemd-run /usr/bin/sudo; do
+    [ -x "$bin" ] && [ "$(stat -L -c %u "$bin")" = 0 ] &&
+      [ $((8#$(stat -L -c %a "$bin") & 8#022)) -eq 0 ] || return 1
+  done
+}
 service_env_value() {
   sed -n "s/^$1=//p" "$KIN_HOME/.t3/service.env" 2>/dev/null | tail -n1
 }
@@ -289,15 +375,15 @@ checklist() {
   say "Kin worker environment checklist ($WORKER_USER, $WORKER_HOME)"
   FAILED=0
   check "git" in_sandbox git --version
-  check "gh" in_sandbox gh --version
   check "mise" in_sandbox mise --version
-  check "python3 (check's probes use it)" in_sandbox python3 --version
   check "Claude Code CLI" in_sandbox claude --version
   check "Codex CLI" in_sandbox codex --version
-  check "gh signed in (the workers' own GitHub token)" in_sandbox gh auth status
-  check "kin-worker's own gateway key at $GATEWAY_KEY" test -s "$GATEWAY_KEY"
+  check "the system binaries check runs are root-owned" trusted_bins
+  check "kin-worker's own gateway key at $GATEWAY_KEY" worker_do /usr/bin/test -s "$GATEWAY_KEY"
   check "kin-worker-server running" systemctl is-active kin-worker-server.service
   check "weekly relink timer" systemctl is-active kin-worker-link.timer
+  check "Kin's GitHub App configured, so Kin can publish workers' branches (KIN_GITHUB_APP_ID)" \
+    test -n "$(service_env_value KIN_GITHUB_APP_ID)$(sed -n 's/^KIN_GITHUB_APP_ID=//p' "$KIN_HOME/.config/kin/kin-server.env" 2>/dev/null)"
   check "Linked environments on in kin's settings (Settings → Labs)" \
     sh -c "grep -q '\"linkedEnvironmentsEnabled\": *true' '$KIN_HOME/.t3/userdata/settings.json'"
   check "KIN_WORKER_ENVIRONMENT_ID in $KIN_HOME/.t3/service.env" test -n "$(service_env_value KIN_WORKER_ENVIRONMENT_ID)"
@@ -344,11 +430,20 @@ live_pid() { [ -n "$1" ] && [ "$1" != 0 ] && kill -0 "$1"; }
 # workers' shells run. cgroup rules (SocketBindDeny, IPAddressDeny, limits) don't follow nsenter;
 # those are probed in a fresh `run` sandbox, which `sandbox_matches` shows is the same.
 in_service() {
-  nsenter --target "$SERVICE_PID" --mount -- \
-    setpriv --reuid="$(id -u "$WORKER_USER")" --regid="$(id -g "$WORKER_USER")" --clear-groups --no-new-privs -- \
-    env -i HOME="$WORKER_HOME" PATH="$WORKER_PATH" sh -c "cd / && $1" </dev/null
+  /usr/bin/nsenter --target "$SERVICE_PID" --mount -- \
+    /usr/bin/setpriv --reuid="$(id -u "$WORKER_USER")" --regid="$(id -g "$WORKER_USER")" --clear-groups --no-new-privs -- \
+    /usr/bin/env -i HOME="$WORKER_HOME" PATH="$SYSTEM_PATH" /bin/sh -c "cd / && $1" </dev/null
 }
-as_login() { sudo -u "$WORKER_USER" -H sh -c "$1" </dev/null; }
+as_login() { sudo -u "$WORKER_USER" -H /usr/bin/env PATH="$SYSTEM_PATH" /bin/sh -c "$1" </dev/null; }
+# A probe as kin-worker in a fresh sandbox like the server's, with only the system's binaries.
+in_probe_sandbox() {
+  local allow=()
+  mapfile -t allow < <(allowed_networks)
+  systemd-run --quiet --wait --collect --pipe \
+    --uid="$WORKER_USER" --gid="$WORKER_USER" --working-directory="$WORKER_HOME" \
+    --setenv=HOME="$WORKER_HOME" --setenv=PATH="$SYSTEM_PATH" \
+    "${SANDBOX[@]}" "${allow[@]}" -- "$@" </dev/null
+}
 
 # Starts a throwaway unit with SANDBOX and compares each of its properties with the server's,
 # in systemd's own normalized form.
@@ -419,47 +514,41 @@ no_kin_world_readable() { [ -z "$(kin_world_readable)" ]; }
 no_acl() { [ "$(ls -ld "$1" | cut -c11)" != + ]; }
 home_closed() { [ "$(stat -c %a "$1")" = 700 ] && no_acl "$1"; }
 
-# A gateway key from a user's Claude settings: its apiKeyHelper's output, else an inline key.
-key_hash() {
-  local user="$1" settings="$2" helper key
+# The worker's Claude settings as text, read by kin-worker, never by root through its path.
+worker_settings() { worker_do /bin/cat "$WORKER_HOME/.claude/settings.json"; }
+sha() { /usr/bin/sha256sum | cut -d' ' -f1; }
+# kin's gateway key: its apiKeyHelper's output, else an inline key.
+kin_key_hash() {
+  local settings="$KIN_HOME/.claude/settings.json" helper key
   [ -f "$settings" ] || return 0
-  helper="$(python3 -I -c 'import json, sys
+  helper="$(/usr/bin/python3 -I -c 'import json, sys
 print(json.load(open(sys.argv[1])).get("apiKeyHelper", ""))' "$settings" 2>/dev/null || true)"
-  if [ -n "$helper" ]; then
-    if [ "$user" = "$WORKER_USER" ]; then key="$(in_sandbox sh -c "$helper" 2>/dev/null || true)"; else
-      key="$(as_kin sh -c "$helper" 2>/dev/null || true)"
-    fi
-  else
-    key="$(python3 -I -c 'import json, sys
+  if [ -n "$helper" ]; then key="$(as_kin sh -c "$helper" 2>/dev/null || true)"; else
+    key="$(/usr/bin/python3 -I -c 'import json, sys
 env = json.load(open(sys.argv[1])).get("env", {})
 print(env.get("ANTHROPIC_API_KEY") or env.get("ANTHROPIC_AUTH_TOKEN") or "")' "$settings" 2>/dev/null || true)"
   fi
-  if [ -n "$key" ]; then printf '%s' "$key" | sha256sum | cut -d' ' -f1; fi
+  if [ -n "$key" ]; then printf '%s' "$key" | sha; fi
 }
+# The worker's key is the file its settings' helper reads (settings_hold_no_token checks that).
 own_gateway_key() {
   local mine theirs
-  mine="$(key_hash "$WORKER_USER" "$WORKER_HOME/.claude/settings.json")"
-  theirs="$(key_hash "$KIN_USER" "$KIN_HOME/.claude/settings.json")"
-  [ -n "$mine" ] && [ "$mine" != "$theirs" ]
+  mine="$(worker_do /bin/cat "$GATEWAY_KEY" 2>/dev/null | sha)"
+  theirs="$(kin_key_hash)"
+  [ "$mine" != "$(printf '' | sha)" ] && [ "$mine" != "$theirs" ]
 }
-# The worker's settings carry no token inline and name nothing of kin's.
+# The worker's settings carry no token inline, name nothing of kin's, and read the key file.
 settings_hold_no_token() {
-  local settings="$WORKER_HOME/.claude/settings.json"
-  [ -f "$settings" ] || return 1
-  ! grep -q "$KIN_HOME" "$settings" || return 1
-  ! grep -Eq 'sk-ant|gh[opsu]_[A-Za-z0-9]' "$settings" || return 1
-  python3 -I -c 'import json, re, sys
-data = json.load(open(sys.argv[1]))
+  local text
+  text="$(worker_settings)" || return 1
+  ! grep -q "$KIN_HOME" <<<"$text" || return 1
+  ! grep -Eq 'sk-ant|gh[opsu]_[A-Za-z0-9]|github_pat_' <<<"$text" || return 1
+  /usr/bin/python3 -I -c 'import json, re, sys
+data = json.loads(sys.stdin.read())
 env = data.get("env", {})
-sys.exit(1 if not data.get("apiKeyHelper") or any(re.search("KEY|TOKEN|SECRET|PASSWORD", k, re.I) for k in env) else 0)' "$settings"
-}
-own_github_login() {
-  local mine theirs mine_token theirs_token
-  mine="$(in_sandbox gh api user --jq .login 2>/dev/null || true)"
-  theirs="$(as_kin gh api user --jq .login 2>/dev/null || true)"
-  mine_token="$(in_sandbox gh auth token 2>/dev/null | sha256sum | cut -d' ' -f1)"
-  theirs_token="$(as_kin gh auth token 2>/dev/null | sha256sum | cut -d' ' -f1)"
-  [ -n "$mine" ] && [ "$mine" != "$theirs" ] && [ "$mine_token" != "$theirs_token" ]
+ok = data.get("apiKeyHelper") == "cat " + sys.argv[1] and not any(
+    re.search("KEY|TOKEN|SECRET|PASSWORD", k, re.I) for k in env)
+sys.exit(0 if ok else 1)' "$GATEWAY_KEY" <<<"$text"
 }
 # Kin's repository as owner/repo, from kin's clone that update.sh builds.
 kin_repo_slug() {
@@ -468,51 +557,87 @@ kin_repo_slug() {
   url="$(as_kin git -C "${repo:-$KIN_HOME/t3code}" remote get-url origin 2>/dev/null || true)"
   printf '%s\n' "$url" | sed -n 's#^.*github\.com[:/]\([^/]*/[^/]*\)$#\1#p' | sed 's/\.git$//'
 }
-# The worker's token can't push to Kin's `kin` or `main`: no push access at all, or each branch
-# under a ruleset rule that blocks direct pushes, which the bot can never bypass.
-cant_push_kin() {
-  local slug branch ids id blocked
-  slug="$(kin_repo_slug)"
-  [ -n "$slug" ] || return 1
-  [ "$(in_sandbox gh api "repos/$slug" --jq .permissions.push 2>/dev/null || true)" = true ] || return 0
-  for branch in kin main; do
-    ids="$(in_sandbox gh api "repos/$slug/rules/branches/$branch" \
-      --jq '.[] | select(.type == "update" or .type == "pull_request") | .ruleset_id' 2>/dev/null || true)"
-    blocked=0
-    for id in $(printf '%s\n' "$ids" | sort -u); do
-      if [ "$(in_sandbox gh api "repos/$slug/rulesets/$id?includes_parents=true" --jq .current_user_can_bypass 2>/dev/null)" = never ]; then
-        blocked=1
-      fi
+# Every GitHub token kin-worker keeps where gh and git look (gh's hosts.yml, git's credential
+# store), read by kin-worker. A token elsewhere goes unseen: this checks setup, not a hostile worker.
+worker_github_tokens() {
+  {
+    worker_do /bin/cat "$WORKER_HOME/.config/gh/hosts.yml" 2>/dev/null |
+      sed -n 's/^[[:space:]]*oauth_token:[[:space:]]*\([^[:space:]]*\).*/\1/p'
+    worker_do /bin/cat "$WORKER_HOME/.git-credentials" 2>/dev/null |
+      sed -n 's#^https://[^:@/]*:\([^@]*\)@github\.com.*#\1#p'
+  } | sort -u
+}
+# The repositories Kin publishes to: KIN_GITHUB_REPOS and Kin's own.
+kin_repos() {
+  {
+    service_env_value KIN_GITHUB_REPOS | tr ',' '\n'
+    kin_repo_slug
+  } | sed 's/[[:space:]]//g' | grep -E '^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$' | sort -u
+}
+# GitHub's answer for a token on one repository, from the system curl; the token goes on stdin,
+# never on a command line. Prints the body, then the HTTP status on its own line.
+github_repo_as() {
+  printf 'header = "Authorization: Bearer %s"\n' "$1" |
+    /usr/bin/curl -sS -m 15 --config - -H 'Accept: application/vnd.github+json' \
+      -w '\n%{http_code}' "https://api.github.com/repos/$2"
+}
+# No token of the worker's is kin's, and none can push to a repository Kin publishes to. A 401
+# (bad token) or 404 (can't see it) can't push; any other answer, rate limits included, fails.
+worker_tokens_read_only() {
+  local token repo answer status theirs repos
+  theirs="$(as_kin gh auth token 2>/dev/null | sha)"
+  repos="$(kin_repos)"
+  [ -n "$repos" ] || return 1
+  while IFS= read -r token; do
+    [ -n "$token" ] || continue
+    [ "$(printf '%s\n' "$token" | sha)" != "$theirs" ] || return 1
+    for repo in $repos; do
+      answer="$(github_repo_as "$token" "$repo")" || return 1
+      status="${answer##*$'\n'}"
+      case "$status" in
+        401 | 404) ;;
+        200)
+          /usr/bin/python3 -I -c 'import json, sys
+sys.exit(0 if json.loads(sys.stdin.read()).get("permissions", {}).get("push") is False else 1)' \
+            <<<"${answer%$'\n'*}" || return 1
+          ;;
+        *) return 1 ;;
+      esac
     done
-    [ "$blocked" -eq 1 ] || return 1
-  done
+  done < <(worker_github_tokens)
 }
 links_json() {
-  python3 -I -c 'import json, sys
+  /usr/bin/python3 -I -c 'import json, sys
 links = json.load(sys.stdin)
-mode = sys.argv[1]
-if mode == "none":
-    sys.exit(0 if links == [] else 1)
-match = [l for l in links if l.get("environmentId") == sys.argv[2]]
-sys.exit(0 if len(match) == 1 and sys.argv[3] in match[0].get("urls", []) else 1)' "$@"
+match = [l for l in links if l.get("environmentId") == sys.argv[1]]
+sys.exit(0 if len(match) == 1 and sys.argv[2] in match[0].get("urls", []) else 1)' "$@"
 }
+# The worker's own database, read by kin-worker with the system sqlite3, read-only. Any error fails.
 worker_has_no_links() {
-  in_sandbox /usr/local/sbin/kin-worker node environment list --base-dir "$WORKER_HOME/.t3" --json |
-    links_json none
+  [ "$(worker_do /usr/bin/sqlite3 -readonly -batch -noheader -cmd ".timeout 2000" "$WORKER_DB" \
+    "SELECT count(*) FROM peer_environment_links;")" = 0 ]
+}
+# From root, not from the server: the worker server's own process listens on its port only.
+worker_server_listens_on_loopback_only() {
+  local lines
+  lines="$(/usr/bin/ss -H -ltnp 2>/dev/null | grep -F "pid=$SERVICE_PID," || true)"
+  [ -n "$lines" ] && ! awk -v want="127.0.0.1:$WORKER_PORT" '$4 != want { bad = 1 } END { exit !bad }' <<<"$lines"
 }
 kin_link_is_loopback() {
   local id
   id="$(service_env_value KIN_WORKER_ENVIRONMENT_ID)"
   [ -n "$id" ] || return 1
-  kin_cli environment list --base-dir "$KIN_HOME/.t3" --json | links_json one "$id" "$WORKER_URL"
+  kin_cli environment list --base-dir "$KIN_HOME/.t3" --json | links_json "$id" "$WORKER_URL"
 }
 refuses() {
-  in_sandbox curl -s -m 10 -o /dev/null -w '%{http_code}' -X "$1" "${@:3}" "$2" | grep -Eqx '401|403'
+  in_probe_sandbox /usr/bin/curl -s -m 10 -o /dev/null -w '%{http_code}' -X "$1" "${@:3}" "$2" |
+    grep -Eqx '401|403'
 }
 
 # Each probe must fail. They run as kin-worker three ways: inside the running server's mount
 # namespace, in a fresh sandbox like the server's, and as a plain login, where kin's mode-700
-# home is the second wall.
+# home is the second wall. Probes run only root-owned system binaries. This verifies the
+# sandbox's configuration; a hostile worker controls its own server, so it is not attestation.
 cmd_check() {
   need_root check
   local owner="${SUDO_USER:-}" probes kin_pid kin_url kin_uid unit
@@ -559,22 +684,21 @@ cmd_check() {
       printf '  ✗ service: can %s\n' "$label"
       FAILED=1
     else printf '  ✓ service: can'\''t %s\n' "$label"; fi
-    check "sandbox: can't $label" sh -c "! /usr/local/sbin/kin-worker run -- sh -c '$command' </dev/null"
+    if in_probe_sandbox /bin/sh -c "$command" >/dev/null 2>&1; then
+      printf '  ✗ sandbox: can %s\n' "$label"
+      FAILED=1
+    else printf '  ✓ sandbox: can'\''t %s\n' "$label"; fi
     if as_login "$command" >/dev/null 2>&1; then
       printf '  ✗ login:   can %s\n' "$label"
       FAILED=1
     else printf '  ✓ login:   can'\''t %s\n' "$label"; fi
   done
-  check "sandbox: can't list Kin's sessions with the auth CLI" \
-    sh -c "! /usr/local/sbin/kin-worker run t3 auth session list --base-dir $KIN_HOME/.t3 </dev/null"
-  check "sandbox: can't change a lead's worker projects (kin lead projects, H3)" \
-    sh -c "! /usr/local/sbin/kin-worker run -- env KIN_ENABLED=true /usr/local/sbin/kin-worker node kin lead list --base-dir $KIN_HOME/.t3 </dev/null"
-  check "sandbox: can't sudo" sh -c "! /usr/local/sbin/kin-worker run -- sudo -n true </dev/null"
-  check "sandbox: binding 127.0.0.1:$KIN_PORT is refused" in_sandbox python3 -I -c "$BIND_PROBE" 127.0.0.1 "$KIN_PORT"
-  check "sandbox: binding [::1]:$KIN_PORT is refused" in_sandbox python3 -I -c "$BIND_PROBE" ::1 "$KIN_PORT"
+  check "sandbox: can't sudo" in_probe_sandbox /bin/sh -c "! /usr/bin/sudo -n true"
+  check "sandbox: binding 127.0.0.1:$KIN_PORT is refused" in_probe_sandbox /usr/bin/python3 -I -c "$BIND_PROBE" 127.0.0.1 "$KIN_PORT"
+  check "sandbox: binding [::1]:$KIN_PORT is refused" in_probe_sandbox /usr/bin/python3 -I -c "$BIND_PROBE" ::1 "$KIN_PORT"
   check "sandbox: can't reach cloud metadata (169.254.169.254)" \
-    sh -c "! /usr/local/sbin/kin-worker run -- curl -s -m 5 -o /dev/null http://169.254.169.254/ </dev/null"
-  check "sandbox: DNS still resolves (github.com)" in_sandbox getent hosts github.com
+    in_probe_sandbox /bin/sh -c "! /usr/bin/curl -s -m 5 -o /dev/null http://169.254.169.254/"
+  check "sandbox: DNS still resolves (github.com)" in_probe_sandbox /usr/bin/getent hosts github.com
   check "Kin's /mcp refuses a call with no credential ($kin_url)" refuses POST "$kin_url/mcp"
   check "Kin's /kin/mcp refuses a call with no credential" refuses POST "$kin_url/kin/mcp"
   check "Kin's /ws refuses an upgrade with no credential" refuses GET "$kin_url/ws?orchestrationProtocol=2" \
@@ -588,13 +712,17 @@ cmd_check() {
   check "$WORKER_HOME is mode 700 with no ACL" home_closed "$WORKER_HOME"
   check "the worker's gateway key is its own, not kin's" own_gateway_key
   check "the worker's Claude settings hold no token and name nothing of kin's" settings_hold_no_token
-  check "the worker's GitHub login and token are its own, not kin's" own_github_login
-  check "the worker's GitHub token can't push to Kin's kin or main ($(kin_repo_slug))" cant_push_kin
-  check "the worker environment has no links of its own" worker_has_no_links
+  check "no GitHub token of the worker's is kin's or can push to $(kin_repos | paste -sd, -)" worker_tokens_read_only
+  check "the worker environment's database has no links of its own (sqlite3, read-only)" worker_has_no_links
+  check "kin-worker-server listens only on 127.0.0.1:$WORKER_PORT (ss, from root)" worker_server_listens_on_loopback_only
+  check "kin-worker-server won't start while Kin is paused (ExecCondition)" \
+    sh -c "systemctl show -P ExecCondition kin-worker-server.service | grep -q 'kin-worker may-start'"
+  check "kin may only stop, start or restart the worker server and read workers' repositories" \
+    grep -qxF "$SUDOERS_LINE" "$SUDOERS"
   check "KIN_WORKER_ENVIRONMENT_ID is kin-server's link to $WORKER_URL" kin_link_is_loopback
   # The probes above must fail for the right reason, not because the sandbox is broken.
   check "sandbox: can read its own home and Kin's build" \
-    /usr/local/sbin/kin-worker run -- sh -c "test -w $WORKER_HOME && test -r $BUILD/apps/server/dist/bin.mjs"
+    in_probe_sandbox /bin/sh -c "test -w $WORKER_HOME && test -r $BUILD/apps/server/dist/bin.mjs"
   if in_service "test -w $WORKER_HOME && test -r $BUILD/apps/server/dist/bin.mjs" >/dev/null 2>&1; then
     printf '  ✓ service: can read its own home and Kin'\''s build\n'
   else
@@ -615,6 +743,8 @@ case "${1:-install}" in
   check) cmd_check ;;
   run) shift; cmd_run "$@" ;;
   node) shift; cmd_node "$@" ;;
-  -h | --help) sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+  upload-pack) shift; cmd_upload_pack "$@" ;;
+  may-start) cmd_may_start ;;
+  -h | --help) sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: $1 (install, link, check, run)" ;;
 esac
