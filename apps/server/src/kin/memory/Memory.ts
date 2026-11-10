@@ -25,6 +25,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import type * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
@@ -1403,24 +1404,33 @@ const make = Effect.gen(function* () {
     }
   });
 
-  // Callers have run `ensureCheckouts`.
-  const sync = Effect.fn("Memory.sync")(function* (orgId: KinOrgId, wakeupId?: string) {
+  type Fetched = Result.Result<string, MemoryFailure>;
+  /** The remote's default-branch head, fetched with no lock held: fetching only adds objects. */
+  const fetchRemote = (orgId: KinOrgId, writer: string, url: string): Effect.Effect<Fetched> =>
+    advertisedHead(orgId, writer, url, mainBranch).pipe(Effect.result);
+
+  // Callers have run `ensureCheckouts`. The lander passes a head it fetched before taking the
+  // lock and skips `fsck`, which the periodic sync still runs.
+  const sync = Effect.fn("Memory.sync")(function* (
+    orgId: KinOrgId,
+    wakeupId?: string,
+    prefetched?: Fetched,
+  ) {
     const paths = yield* pathsFor(orgId);
     yield* validateWriter(orgId, paths);
-    yield* git(orgId, paths.writer, [
-      "fsck",
-      "--full",
-      "--strict",
-      "--no-reflogs",
-      yield* anchor(orgId, config.defaultBranch ?? "main"),
-    ]);
+    if (prefetched === undefined)
+      yield* git(orgId, paths.writer, [
+        "fsck",
+        "--full",
+        "--strict",
+        "--no-reflogs",
+        yield* anchor(orgId, config.defaultBranch ?? "main"),
+      ]);
     yield* refuseUnfinishedOperation(orgId, paths.writer);
     const { repo } = yield* pathsFor(orgId);
     const branch = config.defaultBranch ?? "main";
     let head = yield* anchor(orgId, branch);
-    const fetched = yield* advertisedHead(orgId, paths.writer, repo.repoUrl, branch).pipe(
-      Effect.result,
-    );
+    const fetched = prefetched ?? (yield* fetchRemote(orgId, paths.writer, repo.repoUrl));
     if (fetched._tag === "Failure" && fetched.failure._tag === "MemoryCheckoutInvalid")
       return yield* fetched.failure;
     if (fetched._tag === "Success") {
@@ -1641,8 +1651,8 @@ const make = Effect.gen(function* () {
     }
     return undefined;
   });
-  const checkedSync = (orgId: KinOrgId, wakeupId?: string) =>
-    sync(orgId, wakeupId).pipe(
+  const checkedSync = (orgId: KinOrgId, wakeupId?: string, prefetched?: Fetched) =>
+    sync(orgId, wakeupId, prefetched).pipe(
       Effect.tap(() => Effect.sync(() => synced.set(orgId, true))),
       Effect.tapError(() => Effect.sync(() => synced.set(orgId, false))),
     );
@@ -1671,12 +1681,13 @@ const make = Effect.gen(function* () {
     return changed.split("\n").some((path) => path !== "" && path !== "INDEX.md");
   });
 
-  const landingState = Effect.fn("Memory.landingState")(function* (orgId: KinOrgId) {
-    const { writer } = yield* pathsFor(orgId);
-    if (!(yield* io(orgId, "exists", fs.exists(writer)))) return undefined;
-    if ((yield* purgeInFlight(orgId)) !== undefined) return undefined;
+  const landingState = Effect.fn("Memory.landingState")(function* (
+    orgId: KinOrgId,
+    fetched: Fetched,
+  ) {
     yield* ensureCheckouts(orgId);
-    const remote = yield* checkedSync(orgId);
+    const { writer } = yield* pathsFor(orgId);
+    const remote = yield* checkedSync(orgId, undefined, fetched);
     const local = yield* anchor(orgId, mainBranch);
     if (remote === undefined) return { writer, local, remote };
     return {
@@ -1885,9 +1896,14 @@ const make = Effect.gen(function* () {
   return Memory.of({
     withWriterLock,
     withLandingLock,
-    landingState: Effect.fn("Memory.landingStateLocked")((orgId) =>
-      withWriterLock(orgId, locked(orgId, landingState(orgId))),
-    ),
+    landingState: Effect.fn("Memory.landingStateLocked")(function* (orgId) {
+      const { writer, repo } = yield* pathsFor(orgId);
+      if (!(yield* io(orgId, "exists", fs.exists(writer)))) return undefined;
+      if ((yield* purgeInFlight(orgId)) !== undefined) return undefined;
+      // The network part, outside the writer lock; the lock covers only the local merge.
+      const fetched = yield* fetchRemote(orgId, writer, repo.repoUrl);
+      return yield* withWriterLock(orgId, locked(orgId, landingState(orgId, fetched)));
+    }),
     withHistoryRewrite,
     purgeInFlight: Effect.fn("Memory.purgeInFlightLocked")((orgId) =>
       locked(orgId, purgeInFlight(orgId)),

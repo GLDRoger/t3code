@@ -1076,65 +1076,73 @@ const make = Effect.gen(function* () {
         }),
       ),
     ),
+    // The push runs outside the writer lock, under the landing lock so no purge starts meanwhile.
     commitDream: Effect.fn("MemoryWriter.commitDream")((orgId, input) =>
       report(
         orgId,
         input.branch,
-        locked(
+        memory.withLandingLock(
           orgId,
           Effect.gen(function* () {
-            if (!dreamBranch.test(input.branch))
-              return yield* new MemoryWriteRejected({ reason: "Invalid dream branch" });
-            const { writer } = yield* validate(orgId);
-            yield* refuseDuringPurge(orgId);
-            const repo = yield* repoFor(orgId);
-            // A purge's reclone drops the old history, so a dream started before it has no base here.
-            if (
-              !/^[a-f0-9]{40}([a-f0-9]{24})?$/.test(input.base) ||
-              (yield* git(orgId, writer, ["cat-file", "-e", `${input.base}^{commit}`]).pipe(
-                Effect.result,
-              ))._tag === "Failure"
-            )
-              return yield* new MemorySyncConflict({
-                orgId,
-                operation: "push",
-                reason: "The dream's base is no longer in memory history",
-              });
-            const baseFiles = yield* filesAt(orgId, writer, input.base);
-            const regular = yield* regularPaths(orgId, writer, input.base);
-            const combined = new Map(
-              [...baseFiles]
-                .filter(([path]) => regular.has(path))
-                .map(([path, bytes]) => [path, bytes.toString("utf8")]),
-            );
-            for (const [path, text] of input.files) {
-              if (path === "INDEX.md")
-                return yield* new MemoryWriteRejected({ reason: "INDEX.md is built by code" });
-              yield* safePath(orgId, writer, path);
-              if (!path.startsWith("journal/")) {
-                const { frontMatter } = yield* parseFrontMatter(orgId, path, text);
-                const folder = frontMatter.kind === "person" ? "people" : `${frontMatter.kind}s`;
-                if (!path.startsWith(`${folder}/`))
-                  return yield* new MemoryWriteRejected({ reason: "Kind does not match path" });
-              }
-              combined.set(path, text);
-            }
-            const changes = new Map(
-              [...input.files].map(([path, text]) => [path, Buffer.from(text)]),
-            );
-            changes.set("INDEX.md", Buffer.from(yield* indexFor(orgId, combined)));
-            const findings = yield* scanner.scan({
+            const { writer, repo, commit } = yield* locked(
               orgId,
-              files: [...changes].map(([path, content]) => ({ path, content })),
-            });
-            if (findings.length) return yield* new MemorySecretBlocked({ orgId, findings });
-            const commit = yield* writeCommit(
-              orgId,
-              writer,
-              input.base,
-              baseFiles,
-              changes,
-              input.message,
+              Effect.gen(function* () {
+                if (!dreamBranch.test(input.branch))
+                  return yield* new MemoryWriteRejected({ reason: "Invalid dream branch" });
+                const { writer } = yield* validate(orgId);
+                yield* refuseDuringPurge(orgId);
+                const repo = yield* repoFor(orgId);
+                // A purge's reclone drops the old history, so a dream started before it has no base here.
+                if (
+                  !/^[a-f0-9]{40}([a-f0-9]{24})?$/.test(input.base) ||
+                  (yield* git(orgId, writer, ["cat-file", "-e", `${input.base}^{commit}`]).pipe(
+                    Effect.result,
+                  ))._tag === "Failure"
+                )
+                  return yield* new MemorySyncConflict({
+                    orgId,
+                    operation: "push",
+                    reason: "The dream's base is no longer in memory history",
+                  });
+                const baseFiles = yield* filesAt(orgId, writer, input.base);
+                const regular = yield* regularPaths(orgId, writer, input.base);
+                const combined = new Map(
+                  [...baseFiles]
+                    .filter(([path]) => regular.has(path))
+                    .map(([path, bytes]) => [path, bytes.toString("utf8")]),
+                );
+                for (const [path, text] of input.files) {
+                  if (path === "INDEX.md")
+                    return yield* new MemoryWriteRejected({ reason: "INDEX.md is built by code" });
+                  yield* safePath(orgId, writer, path);
+                  if (!path.startsWith("journal/")) {
+                    const { frontMatter } = yield* parseFrontMatter(orgId, path, text);
+                    const folder =
+                      frontMatter.kind === "person" ? "people" : `${frontMatter.kind}s`;
+                    if (!path.startsWith(`${folder}/`))
+                      return yield* new MemoryWriteRejected({ reason: "Kind does not match path" });
+                  }
+                  combined.set(path, text);
+                }
+                const changes = new Map(
+                  [...input.files].map(([path, text]) => [path, Buffer.from(text)]),
+                );
+                changes.set("INDEX.md", Buffer.from(yield* indexFor(orgId, combined)));
+                const findings = yield* scanner.scan({
+                  orgId,
+                  files: [...changes].map(([path, content]) => ({ path, content })),
+                });
+                if (findings.length) return yield* new MemorySecretBlocked({ orgId, findings });
+                const commit = yield* writeCommit(
+                  orgId,
+                  writer,
+                  input.base,
+                  baseFiles,
+                  changes,
+                  input.message,
+                );
+                return { writer, repo, commit };
+              }),
             );
             yield* git(orgId, writer, [
               "push",
@@ -1158,14 +1166,19 @@ const make = Effect.gen(function* () {
       ),
     ),
     deleteDreamBranch: Effect.fn("MemoryWriter.deleteDreamBranch")((orgId, branch) =>
-      locked(
+      memory.withLandingLock(
         orgId,
         Effect.gen(function* () {
           if (!dreamBranch.test(branch))
             return yield* new MemoryWriteRejected({ reason: "Invalid dream branch" });
-          const { writer } = yield* validate(orgId);
-          yield* refuseDuringPurge(orgId);
-          const repo = yield* repoFor(orgId);
+          const { writer, repo } = yield* locked(
+            orgId,
+            Effect.gen(function* () {
+              const { writer } = yield* validate(orgId);
+              yield* refuseDuringPurge(orgId);
+              return { writer, repo: yield* repoFor(orgId) };
+            }),
+          );
           const advertised = yield* git(orgId, writer, [
             "ls-remote",
             "--",
