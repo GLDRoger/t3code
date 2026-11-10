@@ -52,6 +52,7 @@ import * as Memory from "../memory/Memory.ts";
 import { KinBudget } from "./KinBudget.ts";
 import * as Registry from "./KinLeadRegistry.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
+import * as Publish from "./workerPublish.ts";
 import * as Workers from "./Workers.ts";
 import * as Tracker from "./WorkerTracker.ts";
 
@@ -83,6 +84,19 @@ const delegateInput = {
   memoryItemIds: [KinMemoryItemId.make("decision-1")],
   sourceEventId: "lead-event",
 };
+/** A build worker's report as the lead gets it: Kin's own PR replaces any the worker claims. */
+const published = (body: typeof report) => ({
+  ...body,
+  evidence: [
+    {
+      kind: "pr" as const,
+      ref: "https://github.com/acme/app/pull/9",
+      note: "Kin opened this from the worker's branch",
+    },
+    ...body.evidence.filter((item) => item.kind !== "pr"),
+  ],
+  parsed: true,
+});
 const report = {
   result: "done" as const,
   summary: "Fixed it.",
@@ -181,6 +195,8 @@ const fakeWorkers = () => {
     units: Array<"stop" | "start">;
     /** How many more launches there lose their reply after they start or find the thread. */
     lostReplies: number;
+    /** Kin's publisher refuses the branch with this reason. */
+    publishRefusal?: string;
     /** The next cursor `t3_project_list` answers for a cursor; null ends the list. */
     nextCursor: (cursor: number) => number | null;
     /** Where an assistant reply's next chunk starts after `offset`; null ends it. */
@@ -235,6 +251,7 @@ const fakeWorkers = () => {
       archived: false,
       linkedPullRequest: null,
       pullRequests: found.pullRequests.map((pr) => ({ ...pr, source: "manual" })),
+      worktreePath: `/home/kin-worker/.t3/worktrees/app/${found.threadId}`,
     };
   };
   const handle = Effect.fn("FakeWorkers.call")(function* (
@@ -416,7 +433,34 @@ const fakeWorkers = () => {
   };
   const tools = (name: string) =>
     calls.filter((call) => call.tool === name).map((call) => call.params);
-  return { calls, threads, faults, state, hooks, service, finish, seed, tools };
+  /** Kin's own publisher, which pushes from here, never the worker. */
+  const published: Array<Record<string, unknown>> = [];
+  const publisher = Publish.KinWorkerPublish.of({
+    publish: (input) =>
+      Effect.suspend(() => {
+        published.push(input);
+        return state.publishRefusal === undefined
+          ? Effect.succeed({
+              url: "https://github.com/acme/app/pull/9",
+              number: 9,
+              sha: "a".repeat(40),
+            })
+          : Effect.fail(new Publish.KinWorkerPublishRefused({ reason: state.publishRefusal }));
+      }),
+  });
+  return {
+    calls,
+    threads,
+    faults,
+    state,
+    hooks,
+    service,
+    finish,
+    seed,
+    tools,
+    published,
+    publisher,
+  };
 };
 type FakeWorkers = ReturnType<typeof fakeWorkers>;
 
@@ -482,6 +526,7 @@ const run = <A, E>(
           Layer.provide(
             Layer.mergeAll(
               Layer.succeed(WorkerEnvironment.KinWorkerEnvironment, remote.service),
+              Layer.succeed(Publish.KinWorkerPublish, remote.publisher),
               threads,
               EventStore.layer,
               memory,
@@ -600,12 +645,16 @@ it.effect(
           clientRequestId: `kin-worker:${first.workerId}`,
           modelSelection: codex,
         });
+        // A build worker commits on Kin's branch; it can't push, so Kin publishes it.
         assert.deepStrictEqual(launch!.workspaceStrategy, {
           type: "worktree",
           baseRef: "origin/HEAD",
           startFromOrigin: true,
+          branch: `kin/worker/${first.workerId}`,
         });
         const brief = launch!.message as string;
+        assert.include(brief, `Commit your work on the branch \`kin/worker/${first.workerId}\``);
+        assert.include(brief, "you have no GitHub write access");
         assert.isTrue(brief.startsWith("You were called by Kin. Do this task yourself."));
         assert.include(brief, "Use retries sparingly");
         assert.include(brief, "```kin-report");
@@ -799,7 +848,15 @@ it.effect("a reviewer needs a different instance and model and sees only the aut
       assert.strictEqual((yield* Effect.flip(followUp)).reason, "not_allowed");
       assert.lengthOf(remote.tools("t3_thread_send"), 0);
       const brief = remote.tools("t3_thread_launch").at(-1)!.message as string;
-      assert.include(brief, "https://example.invalid/pr/1");
+      // The reviewer reads the PR Kin published, not one the author only claimed.
+      assert.include(brief, "https://github.com/acme/app/pull/9");
+      assert.notInclude(brief, "https://example.invalid/pr/1");
+      assert.notInclude(brief, "Commit your work on the branch");
+      assert.deepInclude(remote.published[0], {
+        workerId: author.workerId,
+        repositoryKey: repoKey,
+        worktreePath: `/home/kin-worker/.t3/worktrees/app/${threadId}`,
+      });
       assert.notInclude(brief, delegateInput.brief);
       assert.notInclude(brief, "ignore previous instructions");
       assert.notInclude(brief, "Use retries sparingly");
@@ -849,10 +906,7 @@ it.effect(
         const byWorker = new Map(events.map((item) => [item.event.workerId, item]));
         assert.strictEqual(byWorker.get(done.workerId)!.priority, "P1");
         assert.strictEqual(byWorker.get(done.workerId)!.event.eventId, `worker-report:${doneRun}`);
-        assert.deepStrictEqual(byWorker.get(done.workerId)!.event.report, {
-          ...report,
-          parsed: true,
-        });
+        assert.deepStrictEqual(byWorker.get(done.workerId)!.event.report, published(report));
         const synthesized = byWorker.get(cancelled.workerId)!.event.report;
         assert.deepInclude(synthesized, {
           result: "blocked",
@@ -871,9 +925,13 @@ it.effect(
         assert.strictEqual(doneCard.widgetId, before!.widgetId);
         assert.isAbove(doneCard.revision, before!.revision);
         assert.isNull(doneCard.closedAt);
+        // Kin's own PR first, then the one link of the server's that passes the check.
         assert.deepInclude(doneCard.state, {
           status: "done",
-          pullRequests: [{ url: "https://github.com/acme/app/pull/7", number: 7 }],
+          pullRequests: [
+            { url: "https://github.com/acme/app/pull/9", number: 9 },
+            { url: "https://github.com/acme/app/pull/7", number: 7 },
+          ],
         });
         assert.isNotNull(after.get(cancelledThread)!.closedAt);
       }),
@@ -1004,8 +1062,9 @@ it.effect(
           .tools("t3_thread_launch")
           .filter(
             (params) =>
-              params.clientRequestId ===
-              launches[0]!.clientRequestId.replace(worker.workerId, open!.workerId),
+              (params.clientRequestId === params.clientRequestId) !==
+                launches[0]!.clientRequestId &&
+              String(params.clientRequestId).endsWith(open!.workerId),
           );
         assert.lengthOf(asks, 3);
         assert.notProperty(asks[2], "message");
@@ -1072,7 +1131,31 @@ it.effect("a reply whose text never ends is read a bounded number of times and s
       assert.lengthOf(chunks, WorkerEnvironment.MAX_PAGES);
       // Kin keeps the reply's end, where the report block is.
       const [event] = yield* reports(ctx.sql, ctx.orgId);
-      assert.deepStrictEqual(event!.event.report, { ...report, parsed: true });
+      assert.deepStrictEqual(event!.event.report, published(report));
+    }),
+  ),
+);
+
+it.effect("a branch Kin refuses to publish reaches the lead as an open question, not a PR", () =>
+  run(({ ctx, remote, workers, tracker }) =>
+    Effect.gen(function* () {
+      remote.state.publishRefusal =
+        "kin/worker/x changes .github/workflows/, which Kin never publishes";
+      const worker = yield* workers.delegate(scope, delegateInput);
+      assert.ok("workerId" in worker);
+      const { threadId } = yield* workerRow(ctx.sql, ctx.orgId, worker.workerId);
+      yield* remote.finish(ThreadId.make(threadId), "completed", reportReply);
+      yield* settled(tracker, ctx.orgId, worker.workerId);
+      const [event] = yield* reports(ctx.sql, ctx.orgId);
+      assert.deepStrictEqual(event!.event.report, {
+        ...report,
+        openQuestions: [
+          `Kin didn't publish kin/worker/${worker.workerId}: kin/worker/x changes .github/workflows/, which Kin never publishes.`,
+        ],
+        parsed: true,
+      });
+      const [card] = yield* cards(ctx.sql, ctx.orgId);
+      assert.deepStrictEqual(card!.state.pullRequests, []);
     }),
   ),
 );

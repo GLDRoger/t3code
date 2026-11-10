@@ -45,6 +45,7 @@ import { KinLeadRegistry } from "./KinLeadRegistry.ts";
 import { isOrgPaused, STOP_REASON } from "./orgState.ts";
 import { parseReport } from "./workerBrief.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
+import * as Publish from "./workerPublish.ts";
 
 export const endedStatuses = new Set<OrchestrationV2RunStatus>([
   "completed",
@@ -79,6 +80,20 @@ const cardStateEquivalent = Schema.toEquivalence(
     lastError: fields.lastError,
   })),
 );
+/** The PR Kin opened comes first; the server there may list others, which taskCard.ts filters. */
+const withPublished = (
+  state: ReturnType<typeof remoteTaskCardState>,
+  worker: { readonly pullRequestUrl: string | null; readonly pullRequestNumber: number | null },
+) =>
+  worker.pullRequestUrl === null || worker.pullRequestNumber === null
+    ? state
+    : {
+        ...state,
+        pullRequests: [
+          { url: worker.pullRequestUrl, number: worker.pullRequestNumber },
+          ...state.pullRequests.filter((pull) => pull.url !== worker.pullRequestUrl),
+        ],
+      };
 const WorkerRow = Schema.Struct({
   orgId: KinOrgId,
   workerId: KinWorkerId,
@@ -92,6 +107,9 @@ const WorkerRow = Schema.Struct({
   remoteProjectId: Schema.NullOr(ProjectId),
   title: Schema.NullOr(Schema.String),
   model: Schema.String,
+  kind: Schema.String,
+  pullRequestUrl: Schema.NullOr(Schema.String),
+  pullRequestNumber: Schema.NullOr(Schema.Number),
 });
 type WorkerRow = typeof WorkerRow.Type;
 const decodeWorker = Schema.decodeUnknownEffect(WorkerRow);
@@ -132,6 +150,7 @@ const make = Effect.gen(function* () {
   const registry = yield* KinLeadRegistry;
   const env = yield* WorkerEnvironment.KinWorkerEnvironment;
   const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
+  const publisher = yield* Effect.serviceOption(Publish.KinWorkerPublish);
   // Followers live as long as this service, so shutting down stops them.
   const followers = yield* Scope.Scope;
   const bootedAt = yield* Clock.currentTimeMillis;
@@ -144,7 +163,8 @@ const make = Effect.gen(function* () {
       agent_id AS "agentId", thread_id AS "threadId", chat_id AS "chatId",
       environment_id AS "environmentId", status, started_at AS "startedAt",
       repository_key AS "repositoryKey", remote_project_id AS "remoteProjectId", title,
-      model_json AS model
+      model_json AS model, kind, pull_request_url AS "pullRequestUrl",
+      pull_request_number AS "pullRequestNumber"
       FROM kin_workers WHERE org_id = ${orgId} AND worker_id = ${workerId} ORDER BY worker_id`;
     return raw === undefined ? undefined : yield* decodeWorker(raw);
   });
@@ -252,6 +272,43 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * Kin pushes a finished build worker's branch and opens its draft PR, then remembers the PR
+   * for the card. A refusal is a sentence for the lead, never words from the worker there.
+   */
+  const publish = Effect.fn("WorkerTracker.publish")(function* (
+    worker: WorkerRow,
+    worktreePath: string | null,
+  ) {
+    const branch = Publish.publishBranch(worker.workerId);
+    const refused = (reason: string) => ({ refused: `Kin didn't publish ${branch}: ${reason}.` });
+    if (Option.isNone(publisher))
+      return refused(
+        "this host has no Kin GitHub App, so the commits stay in the worker environment",
+      );
+    if (worker.repositoryKey === null || worktreePath === null)
+      return refused("the worker has no repository or worktree to publish from");
+    const pull = yield* publisher.value
+      .publish({
+        workerId: worker.workerId,
+        repositoryKey: worker.repositoryKey,
+        worktreePath,
+        title: worker.title ?? "Kin worker",
+      })
+      .pipe(Effect.result);
+    if (pull._tag === "Failure") {
+      yield* Effect.logWarning("Kin didn't publish a worker's branch", {
+        workerId: worker.workerId,
+        reason: pull.failure.reason,
+      });
+      return refused(pull.failure.reason);
+    }
+    yield* sql`UPDATE kin_workers SET pull_request_url = ${pull.success.url},
+        pull_request_number = ${pull.success.number}
+      WHERE org_id = ${worker.orgId} AND worker_id = ${worker.workerId}`;
+    return { url: pull.success.url, number: pull.success.number };
+  });
+
+  /**
    * A launch whose reply never came: asks there again with the same request id and no message,
    * which returns the thread the launch started, or an idle one when it never arrived. Either
    * way the row gets a thread to follow, stop and report. False until then.
@@ -277,7 +334,7 @@ const make = Effect.gen(function* () {
         Effect.map((launched) => launched.threadId),
         Effect.catchIf(
           (error) => error.code === "invalid_request",
-          () => Effect.succeed(undefined),
+          () => Effect.undefined,
         ),
       );
     if (found === undefined)
@@ -333,7 +390,7 @@ const make = Effect.gen(function* () {
       );
       return false;
     }
-    const state = remoteTaskCardState(read.thread, worker.repositoryKey);
+    const state = withPublished(remoteTaskCardState(read.thread, worker.repositoryKey), worker);
     if (shown.card === undefined || !cardStateEquivalent(shown.card, state))
       yield* card(worker, (chatId) =>
         chat
@@ -360,6 +417,25 @@ const make = Effect.gen(function* () {
         ? yield* WorkerEnvironment.lastReply(env, environmentId, worker.threadId, answer.runId)
         : undefined;
     const completedAt = read.recentRuns.find((run) => run.runId === answer.runId)?.completedAt;
+    const report =
+      (reply === undefined ? undefined : parseReport(reply)) ??
+      blocked(worker, environmentId, `Worker ended ${status} without a report.`);
+    const published =
+      status === "completed" && worker.kind === "build"
+        ? yield* publish(worker, read.thread.worktreePath)
+        : undefined;
+    if (published !== undefined && "url" in published)
+      yield* card(worker, (chatId) =>
+        chat.setTaskCardState({
+          orgId,
+          chatId,
+          threadId: worker.threadId,
+          state: withPublished(state, {
+            pullRequestUrl: published.url,
+            pullRequestNumber: published.number,
+          }),
+        }),
+      );
     return yield* record(worker, {
       key: `worker-report:${answer.runId}`,
       status,
@@ -368,8 +444,21 @@ const make = Effect.gen(function* () {
           ? yield* Clock.currentTimeMillis
           : DateTime.toEpochMillis(DateTime.makeUnsafe(completedAt)),
       report:
-        (reply === undefined ? undefined : parseReport(reply)) ??
-        blocked(worker, environmentId, `Worker ended ${status} without a report.`),
+        published === undefined
+          ? report
+          : "url" in published
+            ? {
+                ...report,
+                evidence: [
+                  {
+                    kind: "pr",
+                    ref: published.url,
+                    note: "Kin opened this from the worker's branch",
+                  },
+                  ...report.evidence.filter((item) => item.kind !== "pr"),
+                ],
+              }
+            : { ...report, openQuestions: [...report.openQuestions, published.refused] },
     });
   });
 

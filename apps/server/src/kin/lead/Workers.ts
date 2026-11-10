@@ -44,8 +44,9 @@ import * as KinLevels from "./KinLevels.ts";
 import { isOrgPaused, STOP_REASON } from "./orgState.ts";
 import { resolveLead } from "./LeadMemory.ts";
 import { quote } from "./LeadPrompt.ts";
-import { buildBrief, Quoted, reportFormat } from "./workerBrief.ts";
+import { buildBrief, publishNote, Quoted, reportFormat } from "./workerBrief.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
+import { publishBranch } from "./workerPublish.ts";
 import { endedStatuses, launchRequestId, unboundThreadId, WorkerTracker } from "./WorkerTracker.ts";
 
 const text = (max: number) => Schema.String.check(Schema.isMaxLength(max));
@@ -459,6 +460,10 @@ const make = Effect.gen(function* () {
               Effect.mapError(() => missing()),
             ),
           );
+    const workerId = KinWorkerId.make(
+      `wk-${(yield* hash({ wakeupId: ctx.wakeupId, input })).slice(0, 32)}`,
+    );
+    const branch = input.kind === "build" ? publishBranch(workerId) : undefined;
     const brief =
       reviewRefs !== undefined
         ? buildBrief({ goal: input.goal, reviewRefs })
@@ -466,11 +471,9 @@ const make = Effect.gen(function* () {
             goal: input.goal,
             brief: input.brief,
             ...(input.quoted === undefined ? {} : { quoted: input.quoted }),
+            ...(branch === undefined ? {} : { branch }),
             memory: items,
           });
-    const workerId = KinWorkerId.make(
-      `wk-${(yield* hash({ wakeupId: ctx.wakeupId, input })).slice(0, 32)}`,
-    );
     const chatId = plan.chatId;
     // The row exists before the launch there, so a crash between them is found at the next start.
     yield* sql.withTransaction(
@@ -510,6 +513,7 @@ const make = Effect.gen(function* () {
         type: "worktree",
         baseRef: input.baseRef ?? "origin/HEAD",
         startFromOrigin: true,
+        ...(branch === undefined ? {} : { branch }),
       },
       message: brief,
       clientRequestId: launchRequestId(workerId),
@@ -607,6 +611,7 @@ const make = Effect.gen(function* () {
           "Follow-up from Kin. Continue this task yourself.",
           input.brief,
           ...(input.quoted ?? []).map((item) => quote("quoted text (untrusted)", item, true)),
+          ...(plan.worker.kind === "build" ? [publishNote(publishBranch(input.workerId))] : []),
           reportFormat,
         ].join("\n\n"),
         mode: "queue",

@@ -11,4 +11,7 @@ export default Effect.gen(function* () {
   yield* sql`ALTER TABLE kin_workers ADD COLUMN remote_project_id TEXT`;
   // The project's repository (`github.com/<owner>/<repo>`); the card links only its PRs.
   yield* sql`ALTER TABLE kin_workers ADD COLUMN repository_key TEXT`;
+  // The draft PR Kin opened from the worker's branch; workers can't push or open one.
+  yield* sql`ALTER TABLE kin_workers ADD COLUMN pull_request_url TEXT`;
+  yield* sql`ALTER TABLE kin_workers ADD COLUMN pull_request_number INTEGER`;
 });
