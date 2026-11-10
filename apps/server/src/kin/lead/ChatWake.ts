@@ -23,7 +23,7 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { forkParked } from "../../serverActivation.ts";
 import { KinChatHub, type KinChatHubEvent } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
-import { KinPresence } from "../reply/KinPresence.ts";
+import { KinPresence, syncSeen } from "../reply/KinPresence.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 
 const decodeTap = Schema.decodeUnknownEffect(
@@ -124,18 +124,23 @@ const make = Effect.gen(function* () {
     Effect.catchCause((cause) => Effect.logError("Kin chat wake-up failed", { cause })),
   );
 
-  // A soft-reply reaction (the chat service decides) becomes `chat.reaction`; withdrawing it
-  // before a wake-up claims it cancels the event.
+  // A waking reaction (the chat service decides) becomes `chat.reaction`; withdrawing it before
+  // a wake-up claims it cancels the event and its `seen`. Other reactions are feedback only.
   const react = Effect.fn("KinChatWake.react")(
     function* (event: Extract<KinChatHubEvent, { type: "reaction.updated" }>) {
       const { reaction } = event;
       const dedupeKey = `chat-reaction:${reaction.messageId}:${reaction.memberId}:${reaction.emoji}:${reaction.createdAt}`;
       if (reaction.removedAt !== null) {
-        yield* sql`UPDATE kin_events SET state = 'expired'
+        const expired = yield* sql<{ agentId: string }>`UPDATE kin_events SET state = 'expired'
           WHERE org_id = ${reaction.orgId} AND tag = 'chat.reaction' AND dedupe_key = ${dedupeKey}
-            AND state = 'queued'`.pipe(
+            AND state = 'queued' RETURNING agent_id AS "agentId"`.pipe(
           Effect.mapError(toPersistenceSqlError("KinChatWake.unreact")),
         );
+        if (Option.isSome(presence))
+          for (const row of expired)
+            yield* syncSeen(presence.value, reaction.orgId, KinAgentId.make(row.agentId)).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            );
         return;
       }
       if (!event.woke) return;
@@ -144,14 +149,15 @@ const make = Effect.gen(function* () {
         messageId: reaction.messageId,
       });
       if (Option.isNone(message) || message.value.author._tag !== "agent") return;
-      yield* queue
+      const agentId = message.value.author.agentId;
+      const queued = yield* queue
         .enqueue({
           _tag: "chat.reaction",
           orgId: reaction.orgId,
           eventId: KinEventId.make(
             `chat-reaction-${NodeCrypto.createHash("sha256").update(dedupeKey).digest("hex").slice(0, 32)}`,
           ),
-          agentId: message.value.author.agentId,
+          agentId,
           receivedAt: DateTime.makeUnsafe(reaction.createdAt),
           dedupeKey,
           provenance: event.by,
@@ -160,12 +166,22 @@ const make = Effect.gen(function* () {
           emoji: reaction.emoji,
         })
         .pipe(
+          Effect.map((result) => !result.duplicate),
           Effect.catchTags({
-            KinEventQueueRetiredAgent: () => Effect.void,
-            KinEventQueueUnknownAgent: () => Effect.void,
+            KinEventQueueRetiredAgent: () => Effect.succeed(false),
+            KinEventQueueUnknownAgent: () => Effect.succeed(false),
             KinEventQueueConflict: (error) =>
-              Effect.logWarning("Kin reaction wake-up conflicts with a stored event", error),
+              Effect.logWarning("Kin reaction wake-up conflicts with a stored event", error).pipe(
+                Effect.as(false),
+              ),
           }),
+        );
+      if (queued && Option.isSome(presence))
+        yield* presence.value.seen(
+          reaction.orgId,
+          reaction.chatId,
+          agentId,
+          yield* Clock.currentTimeMillis,
         );
     },
     Effect.catchCause((cause) => Effect.logError("Kin reaction wake-up failed", { cause })),
