@@ -13,6 +13,8 @@ export class MemoryGitMissingRepository extends Schema.TaggedError<MemoryGitMiss
 ) {}
 
 const repositoryFree = new Set(["clone", "ls-remote"]);
+// These run under the writer lock, so a hung remote must not hold up a reply for long.
+const network = new Set(["ls-remote", "fetch", "push"]);
 
 const formats = new Map<string, "sha1" | "sha256">();
 
@@ -104,7 +106,7 @@ export const memoryGit = Effect.fn("Memory.gitHardened")(function* (
         ...(stdin === undefined ? {} : { stdin }),
         ...(onStdoutChunk === undefined ? {} : { onStdoutChunk }),
         maxOutputBytes: 64 * 1024 * 1024,
-        timeoutMs: 120_000,
+        timeoutMs: network.has(args[0] ?? "") ? 30_000 : 120_000,
       });
       if (packedBefore !== undefined) {
         const packedAfter = yield* fs

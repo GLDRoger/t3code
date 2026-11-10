@@ -104,6 +104,7 @@ const memory = Layer.succeed(
     readItemQuietly: () => Effect.die("Unused"),
     rebuildIndex: () => Effect.die("Unused"),
     rebuildCache: () => Effect.die("Unused"),
+    syncCheckout: () => Effect.die("Unused"),
   }),
 );
 const layer = KinLeadPrompt.layer.pipe(

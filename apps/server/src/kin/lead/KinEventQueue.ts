@@ -77,6 +77,10 @@ const SteerInput = Schema.Struct({
 const LANE_OF = `CASE WHEN e.tag IN ('chat.message', 'widget.action', 'chat.reaction')
   THEN json_extract(e.json, '$.chatId') ELSE l.owner_chat_id END`;
 
+/** An owner message waits only for the rest of its burst, and never longer than the cap. */
+const OWNER_BURST_MS = 300;
+const OWNER_WINDOW_MS = 2_000;
+
 const decodeClaimInput = Schema.decodeEffect(ClaimInput);
 const decodeSteerInput = Schema.decodeEffect(SteerInput);
 const decodeReleaseInput = Schema.decodeEffect(ReleaseInput);
@@ -358,7 +362,9 @@ const make = Effect.gen(function* () {
         ? Math.min(
             window.last_at + 20_000,
             window.first_at + 120_000,
-            window.urgent_at === null ? Infinity : window.urgent_at + 2_000,
+            window.urgent_at === null
+              ? Infinity
+              : Math.min(window.urgent_at + OWNER_WINDOW_MS, window.last_at + OWNER_BURST_MS),
           )
         : Infinity;
     return { readyAt, next: Math.min(readyAt, window?.deferred_at ?? Infinity) };
@@ -411,6 +417,7 @@ const make = Effect.gen(function* () {
                         json: string;
                         priority: "P0" | "P1" | "P2" | "P3";
                         received_at: number;
+                        queued_at: number;
                         event_id: string;
                       }>`
                 WITH eligible AS (
@@ -424,7 +431,7 @@ const make = Effect.gen(function* () {
                   SELECT event_id FROM eligible
                   WHERE lane = (SELECT lane FROM eligible ORDER BY priority, received_at, event_id LIMIT 1)
                   ORDER BY priority, received_at, event_id LIMIT 50
-                ) RETURNING json, priority, received_at, event_id`;
+                ) RETURNING json, priority, received_at, queued_at, event_id`;
                       if (rows.length === 0) return yield* new NoClaimableEvents({});
                       const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
                       const ordered = rows.toSorted(
@@ -439,7 +446,8 @@ const make = Effect.gen(function* () {
                         ),
                       );
                       const eventIds = yield* encodeEventIds(events.map((event) => event.eventId));
-                      yield* sql`UPDATE kin_wakeups SET event_ids = ${eventIds}
+                      const enqueuedAt = Math.min(...rows.map((row) => row.queued_at));
+                      yield* sql`UPDATE kin_wakeups SET event_ids = ${eventIds}, enqueued_at = ${enqueuedAt}
                 WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId}`;
                       return events;
                     }),

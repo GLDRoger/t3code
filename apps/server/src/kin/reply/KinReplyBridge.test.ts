@@ -35,6 +35,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startAgentWakeup } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
+import { KinPresence } from "./KinPresence.ts";
 import * as ReplyBridge from "./KinReplyBridge.ts";
 
 const threadId = ThreadId.make("lead-thread");
@@ -273,9 +274,8 @@ it.effect("posts the lead run's plain text to the chat it answers, as one agent 
 
 it.effect("shows a short note before a tool call only on the presence line", () =>
   Effect.gen(function* () {
-    const { fake, runId, complete, posted, bridge, owner, wakeupId, services } = yield* setup({
-      ask: "Remind me Friday",
-    });
+    const { fake, runId, complete, posted, bridge, owner, wakeupId, services, sql, direct } =
+      yield* setup({ ask: "Remind me Friday" });
     const all = yield* Context.get(services, KinChatHub).subscribeAll;
     const note = text("a", 1, "Checking your reminders", runId);
     const call = tool("b", 2, "mcp__kin__kin_defer", runId);
@@ -298,14 +298,25 @@ it.effect("shows a short note before a tool call only on the presence line", () 
       (yield* posted).map((row) => row.body),
       ["Done: I'll remind you Friday at 9:00."],
     );
+    assert.deepStrictEqual(
+      yield* sql`SELECT first_token_at IS NOT NULL AS "firstToken", posted_at IS NOT NULL AS posted
+        FROM kin_wakeups WHERE org_id = ${owner.orgId} AND wakeup_id = ${wakeupId} ORDER BY wakeup_id`,
+      [{ firstToken: 1, posted: 1 }],
+    );
     const cleared = yield* all.pipe(
       Stream.filter((event) => event.type === "presence.updated" && event.presence === null),
       Stream.take(1),
       Stream.runCollect,
       Effect.forkScoped,
     );
-    yield* bridge.end(owner.orgId, wakeupId);
+    yield* bridge.end({ orgId: owner.orgId, agentId, wakeupId });
     assert.lengthOf(yield* Fiber.join(cleared), 1);
+    // A wake-up that ends before it begins drops `seen` where no message waits any more.
+    const presence = Context.get(services, KinPresence);
+    yield* presence.seen(owner.orgId, direct.chatId, agentId, 0);
+    assert.lengthOf(presence.snapshot(owner.orgId, direct.chatId).presence, 1);
+    yield* bridge.end({ orgId: owner.orgId, agentId, wakeupId: KinWakeupId.make("never-began") });
+    assert.deepStrictEqual(presence.snapshot(owner.orgId, direct.chatId).presence, []);
   }).pipe(Effect.provide(layer)),
 );
 

@@ -29,6 +29,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
+import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import {
   KinChatService,
   KIN_WAKEUP_CHAR_LIMIT,
@@ -101,6 +102,8 @@ type Wake = {
   label: string | null;
   since: number;
   stall: Fiber.Fiber<void> | undefined;
+  // Latency stages already stamped on the wake-up row.
+  stamped: Set<"first_token_at" | "posted_at">;
 };
 
 export class KinReplyBridge extends Context.Service<
@@ -139,7 +142,12 @@ export class KinReplyBridge extends Context.Service<
       readonly agentId: KinAgentId;
       readonly wakeupId: KinWakeupId;
     }) => Effect.Effect<void>;
-    readonly end: (orgId: KinOrgId, wakeupId: KinWakeupId) => Effect.Effect<void>;
+    /** Clears the wake-up's line; `seen` stays, or comes back, where a message still waits. */
+    readonly end: (input: {
+      readonly orgId: KinOrgId;
+      readonly agentId: KinAgentId;
+      readonly wakeupId: KinWakeupId;
+    }) => Effect.Effect<void>;
   }
 >()("t3/kin/reply/KinReplyBridge") {}
 
@@ -198,6 +206,18 @@ const make = Effect.gen(function* () {
   const byWakeup = new Map<KinWakeupId, Wake>();
 
   const iso = (millis: number) => DateTime.formatIso(DateTime.makeUnsafe(millis));
+  const stamp = Effect.fn("KinReplyBridge.stamp")(
+    function* (wake: Wake, column: "first_token_at" | "posted_at") {
+      if (wake.stamped.has(column)) return;
+      wake.stamped.add(column);
+      const now = yield* Clock.currentTimeMillis;
+      yield* sql`UPDATE kin_wakeups SET ${sql(column)} = COALESCE(${sql(column)}, ${now})
+        WHERE org_id = ${wake.orgId} AND wakeup_id = ${wake.wakeupId}`.pipe(
+        Effect.mapError(toPersistenceSqlError("KinReplyBridge.stamp")),
+      );
+    },
+    Effect.catchCause((cause) => Effect.logWarning("Kin wake-up timing failed", { cause })),
+  );
   const journal = (wake: Wake, lines: ReadonlyArray<string>) =>
     Option.isSome(writer)
       ? writer.value
@@ -303,10 +323,12 @@ const make = Effect.gen(function* () {
         wake.posted++;
         wake.chars += text.length;
         wake.answered = true;
+        yield* stamp(wake, "posted_at");
         return yield* end(result.messageId);
       case "shadowed":
         segment.outcome = "posted";
         wake.answered = true;
+        yield* stamp(wake, "posted_at");
         return yield* end(null);
       case "withheld":
         segment.outcome = "withheld";
@@ -382,6 +404,7 @@ const make = Effect.gen(function* () {
       if (segment.outcome !== null) return;
       segment.text = textOf(item);
       segment.ordinal = item.ordinal;
+      if (segment.text.trim() !== "") yield* stamp(wake, "first_token_at");
       if (item.streaming) {
         yield* show(wake, "writing", null);
         if (
@@ -626,16 +649,44 @@ const make = Effect.gen(function* () {
     Effect.catchCause((cause) => Effect.logWarning("Kin partway notice failed", { cause })),
   );
 
-  const end = Effect.fn("KinReplyBridge.end")(function* (orgId: KinOrgId, wakeupId: KinWakeupId) {
+  // Chats where a human message to the agent is queued and ready: they keep showing `seen`.
+  const waiting = Effect.fn("KinReplyBridge.waiting")(
+    function* (orgId: KinOrgId, agentId: KinAgentId) {
+      const now = yield* Clock.currentTimeMillis;
+      const rows = yield* sql<{ chatId: string }>`
+        SELECT DISTINCT json_extract(json, '$.chatId') AS "chatId" FROM kin_events
+        WHERE org_id = ${orgId} AND agent_id = ${agentId} AND state = 'queued'
+          AND tag IN ('chat.message', 'widget.action')
+          AND json_extract(json, '$.provenance._tag') = 'human'
+          AND (not_before IS NULL OR not_before <= ${now})
+        ORDER BY 1`.pipe(Effect.mapError(toPersistenceSqlError("KinReplyBridge.waiting")));
+      return new Set(rows.map((row) => KinChatId.make(row.chatId)));
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin seen lookup failed", { cause }).pipe(Effect.as(new Set<KinChatId>())),
+    ),
+  );
+
+  const end = Effect.fn("KinReplyBridge.end")(function* (input: {
+    readonly orgId: KinOrgId;
+    readonly agentId: KinAgentId;
+    readonly wakeupId: KinWakeupId;
+  }) {
+    const { orgId, agentId, wakeupId } = input;
     const wake = byWakeup.get(wakeupId);
-    if (wake === undefined || wake.orgId !== orgId) return;
-    byWakeup.delete(wakeupId);
-    if (wakes.get(wake.threadId) === wake) wakes.delete(wake.threadId);
-    if (wake.stall !== undefined) yield* Fiber.interrupt(wake.stall);
-    for (const segment of wake.segments.values())
-      if (segment.drafting && segment.outcome === null)
-        yield* presence.endDraft(orgId, wake.lane.chatId, segment.id, null);
-    yield* presence.clear(orgId, wake.lane.chatId, wake.agentId);
+    if (wake !== undefined && wake.orgId === orgId) {
+      byWakeup.delete(wakeupId);
+      if (wakes.get(wake.threadId) === wake) wakes.delete(wake.threadId);
+      if (wake.stall !== undefined) yield* Fiber.interrupt(wake.stall);
+      for (const segment of wake.segments.values())
+        if (segment.drafting && segment.outcome === null)
+          yield* presence.endDraft(orgId, wake.lane.chatId, segment.id, null);
+      yield* presence.clear(orgId, wake.lane.chatId, wake.agentId);
+    }
+    const queued = yield* waiting(orgId, agentId);
+    yield* presence.clearSeen(orgId, agentId, queued);
+    const now = yield* Clock.currentTimeMillis;
+    for (const chatId of queued) yield* presence.seen(orgId, chatId, agentId, now);
   });
 
   const begin = Effect.fn("KinReplyBridge.begin")(
@@ -666,9 +717,10 @@ const make = Effect.gen(function* () {
         label: null,
         since: input.startedAt,
         stall: undefined,
+        stamped: new Set(),
       };
       const previous = wakes.get(input.threadId);
-      if (previous !== undefined) yield* end(previous.orgId, previous.wakeupId);
+      if (previous !== undefined) yield* end(previous);
       wakes.set(input.threadId, wake);
       byWakeup.set(input.wakeupId, wake);
       yield* show(wake, "starting", null, input.startedAt);

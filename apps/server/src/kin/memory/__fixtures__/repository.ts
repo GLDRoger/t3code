@@ -1,5 +1,6 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Git object identity uses the native byte-oriented hash API.
 import * as NodeCrypto from "node:crypto";
+import { VcsProcessExitError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -49,6 +50,9 @@ export const fakeRepository = (fs: FileSystem.FileSystem) => {
   let blobReads = 0;
   let revision = 0;
   let corruptNextBatch = false;
+  let fsck = 0;
+  let remote = 0;
+  let fsckFails = false;
   const layer = Layer.succeed(
     VcsProcess.VcsProcess,
     VcsProcess.VcsProcess.of({
@@ -80,7 +84,11 @@ export const fakeRepository = (fs: FileSystem.FileSystem) => {
                 : head();
             break;
           case "ls-remote":
+            remote++;
             stdout = `${head()}\trefs/heads/main\n`;
+            break;
+          case "fsck":
+            fsck++;
             break;
           case "cat-file": {
             const chunks = (stdin?.trim().split("\n") ?? []).map((sha) => {
@@ -107,6 +115,14 @@ export const fakeRepository = (fs: FileSystem.FileSystem) => {
         }
         onStdoutChunk?.(Buffer.from(stdout));
         return Effect.gen(function* () {
+          if (args[0] === "fsck" && fsckFails)
+            return yield* new VcsProcessExitError({
+              operation: "Test.git",
+              command: "git fsck",
+              cwd,
+              exitCode: 1,
+              detail: "error: invented corrupt object",
+            });
           if (args[0] === "clone") {
             yield* fs
               .makeDirectory(`${args.at(-1)}/.git/objects`, { recursive: true })
@@ -131,7 +147,10 @@ export const fakeRepository = (fs: FileSystem.FileSystem) => {
       revision++;
       return head();
     },
-    counts: () => ({ treeReads, blobReads, validations }),
+    counts: () => ({ treeReads, blobReads, validations, fsck, remote }),
+    failFsck: (fails: boolean) => {
+      fsckFails = fails;
+    },
     corruptBatch: () => {
       corruptNextBatch = true;
     },

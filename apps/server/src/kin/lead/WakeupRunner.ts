@@ -146,8 +146,11 @@ const make = Effect.gen(function* () {
   const ownerCheck = yield* Effect.serviceOption(OwnerCheck.OwnerCheck);
   const promotion = yield* Effect.serviceOption(KinPromotion);
   const bridge = yield* Effect.serviceOption(KinReplyBridge);
-  const endReply = (row: { readonly orgId: KinOrgId; readonly wakeupId: KinWakeupId }) =>
-    Option.isSome(bridge) ? bridge.value.end(row.orgId, row.wakeupId) : Effect.void;
+  const endReply = (row: {
+    readonly orgId: KinOrgId;
+    readonly agentId: KinAgentId;
+    readonly wakeupId: KinWakeupId;
+  }) => (Option.isSome(bridge) ? bridge.value.end(row) : Effect.void);
   const finishWakeup = Effect.fn("WakeupRunner.finishWakeup")(function* (
     row: typeof RunningRow.Type,
     status: "completed" | "failed" | "timed_out",
@@ -535,6 +538,41 @@ const make = Effect.gen(function* () {
     else yield* finishWakeup(row, "failed");
   });
 
+  /** One line per wake-up: each stage's ms since the first claimed event was queued. */
+  const logLatency = Effect.fn("WakeupRunner.logLatency")(
+    function* (orgId: KinOrgId, wakeupId: KinWakeupId) {
+      const [row] = yield* sql<{
+        status: string;
+        enqueuedAt: number | null;
+        claimedAt: number;
+        preparedAt: number | null;
+        launchedAt: number | null;
+        firstTokenAt: number | null;
+        postedAt: number | null;
+        resumed: number | null;
+      }>`SELECT status, enqueued_at AS "enqueuedAt", started_at AS "claimedAt",
+          prepared_at AS "preparedAt", launched_at AS "launchedAt",
+          first_token_at AS "firstTokenAt", posted_at AS "postedAt", resumed
+        FROM kin_wakeups WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId}
+        ORDER BY wakeup_id`.pipe(Effect.mapError(toPersistenceSqlError("WakeupRunner.logLatency")));
+      const enqueuedAt = row?.enqueuedAt;
+      if (row === undefined || enqueuedAt == null) return;
+      const since = (at: number | null) => (at === null ? null : at - enqueuedAt);
+      yield* Effect.logInfo("Kin wake-up latency", {
+        orgId,
+        wakeupId,
+        status: row.status,
+        warm: row.resumed === 1,
+        claimedMs: since(row.claimedAt),
+        preparedMs: since(row.preparedAt),
+        launchedMs: since(row.launchedAt),
+        firstTokenMs: since(row.firstTokenAt),
+        postedMs: since(row.postedAt),
+      });
+    },
+    Effect.catchCause((cause) => Effect.logWarning("Kin wake-up latency log failed", { cause })),
+  );
+
   const runOnce = Effect.fn("WakeupRunner.runOnce")(
     function* (orgId: KinOrgId, agentId: KinAgentId) {
       const record = yield* lead(orgId, agentId);
@@ -648,6 +686,7 @@ const make = Effect.gen(function* () {
                   : Effect.void,
               ),
             );
+            const preparedAt = yield* Clock.currentTimeMillis;
             const eveningRun = events.some(
               (event) => event._tag === "routine" && event.routine === "evening_summary",
             );
@@ -766,7 +805,8 @@ const make = Effect.gen(function* () {
                 });
                 yield* identity.registerAgentThread({ orgId, agentId, threadId });
                 yield* sql`UPDATE kin_leads SET thread_id = ${threadId} WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
-                yield* sql`UPDATE kin_wakeups SET thread_id = ${threadId}, model = ${modelSelection.model}
+                yield* sql`UPDATE kin_wakeups SET thread_id = ${threadId}, model = ${modelSelection.model},
+                prepared_at = ${preparedAt}
               WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND agent_id = ${agentId} AND status = 'running'`;
               }),
             );
@@ -814,7 +854,9 @@ const make = Effect.gen(function* () {
             if (run === undefined)
               return yield* new KinWakeupError({ orgId, agentId, cause: "missing_run" });
             row = { ...row, runId: run.id };
-            yield* sql`UPDATE kin_wakeups SET run_id = ${run.id} WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND agent_id = ${agentId} AND status = 'running'`;
+            yield* sql`UPDATE kin_wakeups SET run_id = ${run.id}, launched_at = ${yield* Clock.currentTimeMillis},
+              resumed = ${resumes ? 1 : 0}
+              WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND agent_id = ${agentId} AND status = 'running'`;
             // A pause that landed during launch found no run to stop; stop it here instead.
             if (yield* paused(orgId))
               yield* threads.interruptThread({
@@ -870,6 +912,7 @@ const make = Effect.gen(function* () {
           while: (error) => error._tag === "KinEventQueueBusy",
           schedule: Schedule.spaced("5 seconds"),
         }),
+        Effect.ensuring(logLatency(orgId, wakeupId)),
       );
     },
     (effect, orgId, agentId) =>

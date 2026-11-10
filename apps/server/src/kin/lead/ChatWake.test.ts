@@ -22,6 +22,7 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import * as Presence from "../reply/KinPresence.ts";
 import * as ChatWake from "./ChatWake.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 
@@ -30,7 +31,8 @@ const decodeEventJson = Schema.decodeEffect(Schema.fromJsonString(KinEvent));
 const createdAt = "1970-01-01T00:00:00.000Z";
 
 const database = Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory);
-const services = Layer.mergeAll(KinEventQueue.layer, Hub.layer).pipe(
+const services = Layer.mergeAll(KinEventQueue.layer, Presence.layer).pipe(
+  Layer.provideMerge(Hub.layer),
   Layer.provideMerge(Repository.layer),
   Layer.provideMerge(database),
 );
@@ -216,6 +218,14 @@ describe("ChatWake", () => {
         assert.deepStrictEqual(
           results.map((result) => result.duplicate),
           [false, true, false, false],
+        );
+        // The owner sees `seen` as soon as the message is queued, before any wake-up claims it.
+        const presence = yield* Presence.KinPresence;
+        assert.deepStrictEqual(
+          presence
+            .snapshot(KinOrgId.make("a"), KinChatId.make("chat-a"))
+            .presence.map((line) => [line.agentId, line.state, line.wakeupId]),
+          [["lead-a", "seen", null]],
         );
         const stored = yield* storedEvents();
         assert.deepStrictEqual(

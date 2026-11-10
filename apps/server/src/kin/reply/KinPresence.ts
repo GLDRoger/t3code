@@ -1,11 +1,12 @@
-import type {
-  KinAgentId,
+import {
   KinChatId,
-  KinDraft,
-  KinMessageId,
-  KinOrgId,
-  KinPresence as Presence,
+  type KinAgentId,
+  type KinDraft,
+  type KinMessageId,
+  type KinOrgId,
+  type KinPresence as Presence,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -39,6 +40,19 @@ export class KinPresence extends Context.Service<
       orgId: KinOrgId,
       chatId: KinChatId,
       agentId: KinAgentId,
+    ) => Effect.Effect<void>;
+    /** `seen` for a queued message, unless the agent already shows something in that chat. */
+    readonly seen: (
+      orgId: KinOrgId,
+      chatId: KinChatId,
+      agentId: KinAgentId,
+      at: number,
+    ) => Effect.Effect<void>;
+    /** Drops the agent's `seen` lines in every chat of the organization except `keep`. */
+    readonly clearSeen: (
+      orgId: KinOrgId,
+      agentId: KinAgentId,
+      keep: ReadonlySet<KinChatId>,
     ) => Effect.Effect<void>;
     /** `text` is the whole draft so far; only its new tail is sent. */
     readonly draft: (orgId: KinOrgId, chatId: KinChatId, draft: KinDraft) => Effect.Effect<void>;
@@ -111,18 +125,47 @@ const make = Effect.gen(function* () {
       },
     });
   });
+  const set = Effect.fn("KinPresence.set")(function* (
+    orgId: KinOrgId,
+    chatId: KinChatId,
+    presence: Presence,
+  ) {
+    const current = line(orgId, chatId);
+    if (same(current.presence.get(presence.agentId), presence)) return;
+    current.presence.set(presence.agentId, presence);
+    yield* hub.publish({
+      type: "presence.updated",
+      orgId,
+      chatId,
+      agentId: presence.agentId,
+      presence,
+    });
+  });
   return KinPresence.of({
-    set: Effect.fn("KinPresence.set")(function* (orgId, chatId, presence) {
-      const current = line(orgId, chatId);
-      if (same(current.presence.get(presence.agentId), presence)) return;
-      current.presence.set(presence.agentId, presence);
-      yield* hub.publish({
-        type: "presence.updated",
-        orgId,
-        chatId,
-        agentId: presence.agentId,
-        presence,
+    set,
+    seen: Effect.fn("KinPresence.seen")(function* (orgId, chatId, agentId, at) {
+      if (lines.get(keyOf(orgId, chatId))?.presence.has(agentId)) return;
+      const iso = DateTime.formatIso(DateTime.makeUnsafe(at));
+      yield* set(orgId, chatId, {
+        agentId,
+        wakeupId: null,
+        state: "seen",
+        label: null,
+        startedAt: iso,
+        since: iso,
       });
+    }),
+    clearSeen: Effect.fn("KinPresence.clearSeen")(function* (orgId, agentId, keep) {
+      const prefix = `${orgId}\u0000`;
+      for (const [key, found] of lines) {
+        if (!key.startsWith(prefix)) continue;
+        const chatId = KinChatId.make(key.slice(prefix.length));
+        if (keep.has(chatId)) continue;
+        if (found.presence.get(agentId)?.state !== "seen") continue;
+        found.presence.delete(agentId);
+        prune(orgId, chatId);
+        yield* hub.publish({ type: "presence.updated", orgId, chatId, agentId, presence: null });
+      }
     }),
     clear: Effect.fn("KinPresence.clear")(function* (orgId, chatId, agentId) {
       const current = line(orgId, chatId);
