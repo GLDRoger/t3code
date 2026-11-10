@@ -520,6 +520,7 @@ describe("WakeupRunner", () => {
             mode: "reply" as const,
             leadName: "Lead",
           }),
+        preparing: () => Effect.void,
         begin: () => Effect.void,
         complete: () => Effect.void,
         end: () => Effect.void,
@@ -669,66 +670,28 @@ describe("WakeupRunner", () => {
       }).pipe(provideDeterministicTestRuntime),
   );
 
-  it.effect(
-    "keeps a direct chat's session for 10 wake-ups under 10 idle minutes apart, committing each",
-    () =>
-      Effect.gen(function* () {
-        let commits = 0;
-        let journals = 0;
-        const prompts: Array<KinLeadPromptInput> = [];
-        const opened: Array<string> = [];
-        const prepare = () =>
-          Effect.succeed({
-            head: "abc",
-            indexAsOf: DateTime.makeUnsafe("2026-11-08T00:00:00.000Z"),
-            read: "/private/tmp",
-          });
-        const writer = Layer.mock(Writer.MemoryWriter)({
-          appendJournal: () => Effect.sync(() => void journals++),
-          commitWakeup: () => Effect.sync(() => (commits++, { commit: "fixture" })),
-          discard: () => Effect.void,
-        });
-        yield* Effect.gen(function* () {
-          yield* seed;
-          yield* seedDirectChats;
-          for (let i = 1; i <= 11; i++) {
-            yield* wake(`m${i}`);
-            yield* TestClock.adjust("9 minutes");
-          }
+  it.effect("starts every wake-up in a fresh session with the full prompt, committing each", () =>
+    Effect.gen(function* () {
+      let commits = 0;
+      const prompts: Array<KinLeadPromptInput> = [];
+      const writer = Layer.mock(Writer.MemoryWriter)({
+        appendJournal: () => Effect.void,
+        commitWakeup: () => Effect.sync(() => (commits++, { commit: "fixture" })),
+        discard: () => Effect.void,
+      });
+      yield* Effect.gen(function* () {
+        yield* seed;
+        yield* seedDirectChats;
+        // Back to back in one direct chat, at one level and model: still no session carries over.
+        for (const id of ["m1", "m2", "m3"]) {
+          yield* wake(id);
           yield* TestClock.adjust("1 minute");
-          yield* wake("late");
-          // The 11th starts fresh at the turn cap, and the 12th after 10 idle minutes.
-          assert.deepStrictEqual(yield* sessions(), [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 3]);
-          // Each warm wake-up resumes in a new process, since prepare swapped its cwd for a new
-          // checkout. (The fake keeps the last one across the two fresh contexts.)
-          assert.lengthOf(opened, 10);
-          assert.deepStrictEqual(
-            prompts.map((prompt) => prompt.since !== undefined),
-            [false, ...Array.from({ length: 9 }, () => true), false, false],
-          );
-          assert.strictEqual(commits, 12);
-          assert.strictEqual(journals, 12);
-        }).pipe(Effect.provide(harness({ writer, prompts, opened, prepare })));
-      }).pipe(provideDeterministicTestRuntime),
-  );
-  it.effect.each(["another direct chat", "a level change", "new standing rules"] as const)(
-    "starts a fresh session for %s",
-    (change) =>
-      Effect.gen(function* () {
-        let rules = "rules";
-        const snapshot = () => Effect.sync(() => ({ rules, index: "index" }));
-        yield* Effect.gen(function* () {
-          yield* seed;
-          yield* seedDirectChats;
-          const sql = yield* SqlClient.SqlClient;
-          yield* wake("first");
-          yield* TestClock.adjust("1 minute");
-          if (change === "a level change") yield* sql`UPDATE kin_leads SET level = 'L1'`;
-          if (change === "new standing rules") rules = "new rules";
-          yield* wake("second", change === "another direct chat" ? "other-direct" : "direct");
-          assert.deepStrictEqual(yield* sessions(), [1, 2]);
-        }).pipe(Effect.provide(harness({ snapshot })));
-      }).pipe(provideDeterministicTestRuntime),
+        }
+        assert.deepStrictEqual(yield* sessions(), [1, 2, 3]);
+        assert.lengthOf(prompts, 3);
+        assert.strictEqual(commits, 3);
+      }).pipe(Effect.provide(harness({ writer, prompts })));
+    }).pipe(provideDeterministicTestRuntime),
   );
 
   it.effect("interrupts mid-wake-up without counting an attempt and admits the next claim", () =>

@@ -471,6 +471,8 @@ describe("kinPresenceLine", () => {
     );
     expect(text(presence({ state: "working", label: "x".repeat(80) }), 0)).toHaveLength(60);
     expect(kinPresenceNeedsClock(presence({ state: "working" }))).toBe(false);
+    // Older servers' `seen` shows nothing: the line starts with the wake-up's own state.
+    expect(kinPresenceLine(presence({ state: "seen", wakeupId: null }), start)).toBeNull();
   });
 
   it("shows a slow start's wait after 20 s, announcing it once", () => {
@@ -482,6 +484,11 @@ describe("kinPresenceLine", () => {
       kinPresenceLine(starting, start + 35_000)?.announcement,
     );
     expect(kinPresenceNeedsClock(starting)).toBe(true);
+    const queued = presence({ state: "starting", label: "Queued", wakeupId: null });
+    expect(text(queued, KIN_SLOW_START_AFTER_MS - 1)).toBe("Queued");
+    expect(text(queued, 65_000)).toBe("Queued · 1:05");
+    expect(kinPresenceLine(queued, start + 65_000)?.announcement).toBe("Queued");
+    expect(kinPresenceNeedsClock(queued)).toBe(true);
   });
 
   it("counts a stall's minutes from the last output, never under 2", () => {

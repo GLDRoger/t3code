@@ -1429,8 +1429,8 @@ describe("KinChatService", () => {
       const working = Effect.map(Queue.take(updates), (event) =>
         event._tag === "chat" ? event.chat.working : event._tag,
       );
-      // "seen" leaves the row as it was, so the list sends nothing for it.
-      yield* presence.set(person.orgId, chat.chatId, { ...line, state: "seen" });
+      // "paused" leaves the row as it was, so the list sends nothing for it.
+      yield* presence.set(person.orgId, chat.chatId, { ...line, state: "paused" });
       yield* presence.set(person.orgId, chat.chatId, { ...line, state: "thinking" });
       assert.strictEqual(yield* working, true);
       yield* presence.clear(person.orgId, chat.chatId, agentId);

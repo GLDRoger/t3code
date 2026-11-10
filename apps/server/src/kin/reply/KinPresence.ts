@@ -15,6 +15,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Hub from "../chat/KinChatHub.ts";
+import { PHASE_LABELS } from "./classify.ts";
 
 /** Draft deltas go out at most this often per chat. */
 const DRAFT_THROTTLE_MS = 250;
@@ -44,15 +45,19 @@ export class KinPresence extends Context.Service<
       chatId: KinChatId,
       agentId: KinAgentId,
     ) => Effect.Effect<void>;
-    /** `seen` for a queued message, unless the agent already shows something in that chat. */
-    readonly seen: (
+    /**
+     * The line for a message still in the queue, unless a wake-up already shows one in that
+     * chat.
+     */
+    readonly queued: (
       orgId: KinOrgId,
       chatId: KinChatId,
       agentId: KinAgentId,
+      label: QueueLabel,
       at: number,
     ) => Effect.Effect<void>;
-    /** Drops the agent's `seen` lines in every chat of the organization except `keep`. */
-    readonly clearSeen: (
+    /** Drops the agent's queue lines in every chat of the organization except `keep`. */
+    readonly clearQueued: (
       orgId: KinOrgId,
       agentId: KinAgentId,
       keep: ReadonlySet<KinChatId>,
@@ -74,6 +79,8 @@ export class KinPresence extends Context.Service<
     };
   }
 >()("t3/kin/reply/KinPresence") {}
+
+type QueueLabel = (typeof PHASE_LABELS)["queued" | "preparing"];
 
 const same = (a: Presence | undefined, b: Presence) =>
   a !== undefined &&
@@ -146,25 +153,28 @@ const make = Effect.gen(function* () {
   });
   return KinPresence.of({
     set,
-    seen: Effect.fn("KinPresence.seen")(function* (orgId, chatId, agentId, at) {
-      if (lines.get(keyOf(orgId, chatId))?.presence.has(agentId)) return;
-      const iso = DateTime.formatIso(DateTime.makeUnsafe(at));
+    queued: Effect.fn("KinPresence.queued")(function* (orgId, chatId, agentId, label, at) {
+      const current = lines.get(keyOf(orgId, chatId))?.presence.get(agentId);
+      if (current !== undefined && current.wakeupId !== null) return;
+      // A label change keeps the line's start, so its timer doesn't restart.
+      const iso = current?.startedAt ?? DateTime.formatIso(DateTime.makeUnsafe(at));
       yield* set(orgId, chatId, {
         agentId,
         wakeupId: null,
-        state: "seen",
-        label: null,
+        state: "starting",
+        label,
         startedAt: iso,
         since: iso,
       });
     }),
-    clearSeen: Effect.fn("KinPresence.clearSeen")(function* (orgId, agentId, keep) {
+    clearQueued: Effect.fn("KinPresence.clearQueued")(function* (orgId, agentId, keep) {
       const prefix = `${orgId}\u0000`;
       for (const [key, found] of lines) {
         if (!key.startsWith(prefix)) continue;
         const chatId = KinChatId.make(key.slice(prefix.length));
         if (keep.has(chatId)) continue;
-        if (found.presence.get(agentId)?.state !== "seen") continue;
+        const current = found.presence.get(agentId);
+        if (current === undefined || current.wakeupId !== null) continue;
         found.presence.delete(agentId);
         prune(orgId, chatId);
         yield* hub.publish({ type: "presence.updated", orgId, chatId, agentId, presence: null });
@@ -250,16 +260,29 @@ const waitingChats = Effect.fn("KinPresence.waitingChats")(
   Effect.mapError(toPersistenceSqlError("KinPresence.waitingChats")),
 );
 
+/** Which queue label a waiting message gets: "Queued" while the lead runs a wake-up. */
+export const queueLabel = Effect.fn("KinPresence.queueLabel")(
+  function* (orgId: KinOrgId, agentId: KinAgentId) {
+    const sql = yield* SqlClient.SqlClient;
+    const running = yield* sql`SELECT 1 FROM kin_wakeups
+      WHERE org_id = ${orgId} AND agent_id = ${agentId} AND status = 'running' LIMIT 1`;
+    return running.length > 0 ? PHASE_LABELS.queued : PHASE_LABELS.preparing;
+  },
+  Effect.mapError(toPersistenceSqlError("KinPresence.queueLabel")),
+);
+
 /**
- * After queued events left the queue without a wake-up taking their chat (expired, withdrawn,
- * or a wake-up ended): `seen` stays only where something still waits, and returns there.
+ * After queued events left the queue or a wake-up claimed or ended: a queue line stays only
+ * where something still waits, and shows there with the current label.
  */
-export const syncSeen = Effect.fn("KinPresence.syncSeen")(
+export const syncQueued = Effect.fn("KinPresence.syncQueued")(
   function* (presence: KinPresence["Service"], orgId: KinOrgId, agentId: KinAgentId) {
     const waiting = yield* waitingChats(orgId, agentId);
-    yield* presence.clearSeen(orgId, agentId, waiting);
+    yield* presence.clearQueued(orgId, agentId, waiting);
+    if (waiting.size === 0) return;
+    const label = yield* queueLabel(orgId, agentId);
     const now = yield* Clock.currentTimeMillis;
-    for (const chatId of waiting) yield* presence.seen(orgId, chatId, agentId, now);
+    for (const chatId of waiting) yield* presence.queued(orgId, chatId, agentId, label, now);
   },
-  Effect.catchCause((cause) => Effect.logWarning("Kin seen sync failed", { cause })),
+  Effect.catchCause((cause) => Effect.logWarning("Kin queue line sync failed", { cause })),
 );
