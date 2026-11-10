@@ -174,7 +174,7 @@ const createCommand = Command.make("create", {
     Flag.withSchema(TrimmedNonEmptyString),
     Flag.withDescription("The lead's display name."),
   ),
-  domain: domainFlag,
+  domain: domainFlag.pipe(Flag.withDefault("engineering")),
   charter: charterFlag.pipe(Flag.withDefault("")),
   strong: modelFlag("strong"),
   cheap: modelFlag("cheap"),
