@@ -308,8 +308,8 @@ it.live.each([
         const readDirectory = (yield* fs.stat(a.read)).ino;
         yield* fs.writeFileString(`${a.read}/stray.md`, "Planted by hand");
         expect((yield* memory.prepareWakeup(orgA)).head).toBe(prepared.head);
-        // Rebuilt from scratch inside the same directory, so a warm lead's cwd survives.
-        expect((yield* fs.stat(a.read)).ino).toEqual(readDirectory);
+        // Swapped in whole: a fresh directory replaces the old one, never a half-filled mix.
+        expect((yield* fs.stat(a.read)).ino).not.toEqual(readDirectory);
         expect(yield* fs.exists(`${a.read}/stray.md`)).toBe(false);
         expect(
           (yield* vcs.run({
@@ -768,6 +768,47 @@ it.live(
       Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer, databaseLayer)),
       Effect.scoped,
     ),
+);
+
+it.live("gives each lead its own read checkout, swapped in whole on prepare", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const { root, source } = yield* fixtureRepository();
+    yield* Effect.gen(function* () {
+      const memory = yield* Memory.Memory;
+      const leadA = KinAgentId.make("lead-a");
+      const leadB = KinAgentId.make("lead-b");
+      const a = yield* memory.prepareWakeup(orgA, "wake-a", { lead: leadA });
+      const b = yield* memory.prepareWakeup(orgA, "wake-b", { lead: leadB });
+      expect(a.read).toContain("memory-read-lead-a");
+      expect(b.read).toContain("memory-read-lead-b");
+      expect(a.read).not.toBe(b.read);
+      for (const read of [a.read!, b.read!]) {
+        expect(yield* fs.exists(`${read}/rules.md`)).toBe(true);
+        expect(yield* fs.exists(`${read}/.git`)).toBe(true);
+      }
+      // One lead's refill never touches the other's checkout, stray files and all.
+      yield* fs.writeFileString(`${a.read}/stray.md`, "A was here");
+      const bAgain = yield* memory.prepareWakeup(orgA, "wake-b2", { lead: leadB });
+      expect(bAgain.read).toBe(b.read);
+      expect(yield* fs.readFileString(`${a.read}/stray.md`)).toBe("A was here");
+      // Its own refill swaps the whole directory: the stray is gone, every file is present.
+      const before = (yield* fs.stat(a.read!)).ino;
+      yield* memory.prepareWakeup(orgA, "wake-a2", { lead: leadA });
+      expect((yield* fs.stat(a.read!)).ino).not.toEqual(before);
+      expect(yield* fs.exists(`${a.read}/stray.md`)).toBe(false);
+      expect(yield* fs.exists(`${a.read}/rules.md`)).toBe(true);
+      expect(yield* fs.exists(`${a.read}/.git`)).toBe(true);
+      expect(
+        (yield* fs.readDirectory(`${root}/state/a`)).filter((entry) =>
+          entry.startsWith("memory-read.next-"),
+        ),
+      ).toEqual([]);
+    }).pipe(Effect.provide(memoryLayer(`${root}/state`, source)));
+  }).pipe(
+    Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer, databaseLayer)),
+    Effect.scoped,
+  ),
 );
 
 it.live.each([

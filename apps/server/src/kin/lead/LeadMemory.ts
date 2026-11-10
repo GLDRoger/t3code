@@ -291,15 +291,16 @@ const make = Effect.gen(function* () {
   const writer = yield* Writer.MemoryWriter;
   const writerAuthority = yield* Writer.MemoryWriterAuthority;
   const sql = yield* SqlClient.SqlClient;
-  // Receipts are keyed per wake-up, so the lock that orders them is too.
+  // A lead runs one wake-up at a time, so the lock that orders its receipts is per lead:
+  // keyed per wake-up, these maps would grow with every wake-up ever run.
   const locks = new Map<string, Semaphore.Semaphore>();
-  const wakeKey = (orgId: KinOrgId, wakeupId: string) => `${orgId}\u0000${wakeupId}`;
+  const agentKey = (orgId: KinOrgId, agentId: KinAgentId) => `${orgId}\u0000${agentId}`;
   const locked = Effect.fn("LeadMemory.locked")(function* <A, E, R>(
     orgId: KinOrgId,
-    wakeupId: string,
+    agentId: KinAgentId,
     operation: Effect.Effect<A, E, R>,
   ) {
-    const key = wakeKey(orgId, wakeupId);
+    const key = agentKey(orgId, agentId);
     let lock = locks.get(key);
     if (!lock) {
       lock = Semaphore.makeUnsafe(1);
@@ -307,7 +308,8 @@ const make = Effect.gen(function* () {
     }
     return yield* lock.withPermits(1)(operation);
   });
-  const ended = new Set<string>();
+  // The last wake-up each lead ended, so an identical kin_end retry appends no second summary.
+  const ended = new Map<string, string>();
   const resolve = (scope: McpInvocationScope, allowEnded = false) =>
     resolveLead(scope, allowEnded).pipe(
       Effect.provideService(KinIdentity, identity),
@@ -451,7 +453,7 @@ const make = Effect.gen(function* () {
       const ctx = yield* resolve(scope);
       return yield* locked(
         ctx.orgId,
-        ctx.wakeupId,
+        ctx.agentId,
         Effect.gen(function* () {
           return yield* stage(yield* resolve(scope), input);
         }),
@@ -461,7 +463,7 @@ const make = Effect.gen(function* () {
       const ctx = yield* resolve(scope);
       return yield* locked(
         ctx.orgId,
-        ctx.wakeupId,
+        ctx.agentId,
         Effect.gen(function* () {
           const ctx = yield* resolve(scope);
           yield* checkSource(ctx, input.sourceEventId);
@@ -515,7 +517,7 @@ const make = Effect.gen(function* () {
       const ctx = yield* resolve(scope);
       return yield* locked(
         ctx.orgId,
-        ctx.wakeupId,
+        ctx.agentId,
         Effect.gen(function* () {
           const ctx = yield* resolve(scope);
           yield* checkSource(ctx, input.sourceEventId);
@@ -591,18 +593,18 @@ const make = Effect.gen(function* () {
       const ctx = yield* resolve(scope, true);
       yield* locked(
         ctx.orgId,
-        ctx.wakeupId,
+        ctx.agentId,
         Effect.gen(function* () {
           const ctx = yield* resolve(scope, true);
           yield* receipt(
             ctx,
             "end",
             input,
-            ended.has(wakeKey(ctx.orgId, ctx.wakeupId))
+            ended.get(agentKey(ctx.orgId, ctx.agentId)) === ctx.wakeupId
               ? Effect.void
               : writer.appendJournal(ctx.orgId, ctx.wakeupId, [`Summary: ${input.summary}`]),
           );
-          ended.add(wakeKey(ctx.orgId, ctx.wakeupId));
+          ended.set(agentKey(ctx.orgId, ctx.agentId), ctx.wakeupId);
         }),
       );
     }, Effect.mapError(failure)),

@@ -193,15 +193,19 @@ export class Memory extends Context.Service<
     readonly historyGeneration: (orgId: KinOrgId) => Effect.Effect<number>;
     readonly ensureCheckouts: (orgId: KinOrgId) => Effect.Effect<MemoryPaths, MemoryFailure>;
     /**
-     * Validates the writer and fills the read checkout with the waking lead's view. The first
-     * wake-up after a start, and every one after a failed `syncCheckout`, syncs inline first.
-     * The checkout is refilled inside the same directory; `replaced` says it is a new one.
+     * Validates the writer and fills the waking lead's own read checkout (`memory-read-<lead>`)
+     * with its view, swapped in whole so no other lead ever sees it half-filled; `read` is that
+     * directory and `replaced` says it is a new one. The first wake-up after a start, and every
+     * one after a failed `syncCheckout`, syncs inline first.
      */
     readonly prepareWakeup: (
       orgId: KinOrgId,
       wakeupId?: string,
       view?: LeadView,
-    ) => Effect.Effect<{ head: string; indexAsOf: DateTime.Utc; replaced?: true }, MemoryFailure>;
+    ) => Effect.Effect<
+      { head: string; indexAsOf: DateTime.Utc; replaced?: true; read?: string },
+      MemoryFailure
+    >;
     /**
      * The writer's integrity check (`git fsck`) and default-branch sync with the remote, off the
      * reply path. Skips an organization with no clone yet, or whose last sync failed: its next
@@ -376,8 +380,9 @@ const make = Effect.gen(function* () {
   const blobCaches = new Map<string, BlobCache>();
   const snapshotKey = (orgId: KinOrgId, branch: string) => `${orgId}\u0000${branch}`;
   const triggerViews = new Map<KinOrgId, { readonly key: string; readonly snapshot: Snapshot }>();
-  // The branch the read checkout holds; its INDEX.md is only ever that branch's index.
-  const checkoutBranches = new Map<KinOrgId, string>();
+  // The branch each read checkout holds, keyed by org and lead; its INDEX.md is only that branch's.
+  const checkoutBranches = new Map<string, string>();
+  const checkoutKey = (orgId: KinOrgId, view?: LeadView) => `${orgId}\u0000${view?.lead ?? ""}`;
   const forgetSnapshots = (orgId: KinOrgId) => {
     for (const cache of [snapshots, blobCaches, duplicateWarnings])
       for (const key of cache.keys()) if (key.startsWith(`${orgId}\u0000`)) cache.delete(key);
@@ -502,6 +507,22 @@ const make = Effect.gen(function* () {
       }
     }
     return { repo, root, writer, read };
+  });
+
+  /** Each lead reads from its own checkout, a sibling of the shared one no-view prepare fills. */
+  const readDirFor = Effect.fn("Memory.readDirFor")(function* (
+    orgId: KinOrgId,
+    paths: { read: string },
+    view?: LeadView,
+  ) {
+    if (view === undefined) return paths.read;
+    if (!/^[A-Za-z0-9_-]+$/.test(view.lead))
+      return yield* new MemoryError({
+        orgId,
+        operation: "readCheckout",
+        reason: "Invalid lead id for a read checkout",
+      });
+    return path.join(path.dirname(paths.read), `memory-read-${view.lead}`);
   });
 
   const markerPath = (root: string) => path.join(root, "purge-in-flight");
@@ -641,11 +662,22 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     force: boolean,
     branch: string = mainBranch,
+    explicitHead?: string,
   ) {
     const paths = yield* pathsFor(orgId);
-    const key = snapshotKey(orgId, branch);
+    // An explicit head reads that commit as pinned at prepare time, even after another lead's
+    // commit moved the shared pin; it is returned uncached so branch snapshots stay current.
+    const key =
+      explicitHead === undefined
+        ? snapshotKey(orgId, branch)
+        : snapshotKey(orgId, `${branch}@${explicitHead}`);
     let head: string;
-    if (branch === mainBranch) {
+    if (explicitHead !== undefined) {
+      const cached = snapshots.get(snapshotKey(orgId, branch));
+      if (!force && cached?.head === explicitHead) return cached;
+      if (!initializedCheckouts.has(orgId)) yield* ensureCheckouts(orgId);
+      head = explicitHead;
+    } else if (branch === mainBranch) {
       const pinned = pinnedHeads.get(orgId);
       // Bootstraps a missing writer, so reads before the first wake-up don't fail validation.
       if (pinned === undefined) yield* ensureCheckouts(orgId);
@@ -804,7 +836,7 @@ const make = Effect.gen(function* () {
       if (!duplicateWarnings.get(key)?.has(id))
         yield* Effect.logWarning("Duplicate memory id", { orgId, branch, id });
     }
-    duplicateWarnings.set(key, duplicateIds);
+    if (explicitHead === undefined) duplicateWarnings.set(key, duplicateIds);
     const snapshot: Snapshot = {
       head,
       branch,
@@ -814,7 +846,8 @@ const make = Effect.gen(function* () {
       duplicateIds,
       ...(previous?.head === head && previous.index !== undefined ? { index: previous.index } : {}),
     };
-    snapshots.set(key, snapshot);
+    if (explicitHead === undefined) snapshots.set(key, snapshot);
+    else blobCaches.delete(key);
     const reachable = new Set(entries.map((entry) => entry.sha));
     for (const cache of [blobs, parsedBlobs, mismatchWarnings]) {
       for (const sha of cache.keys()) if (!reachable.has(sha)) cache.delete(sha);
@@ -1018,18 +1051,19 @@ const make = Effect.gen(function* () {
       now,
       ownerTimeZone,
     );
-    if ((checkoutBranches.get(orgId) ?? mainBranch) !== snapshot.branch) return;
+    if ((checkoutBranches.get(checkoutKey(orgId, view)) ?? mainBranch) !== snapshot.branch) return;
     const paths = yield* pathsFor(orgId);
+    const read = yield* readDirFor(orgId, paths, view);
     yield* io(
       orgId,
       "writeIndex",
       Effect.gen(function* () {
         const temporary = yield* fs.makeTempFileScoped({
-          directory: paths.read,
+          directory: read,
           prefix: ".kin-index-",
         });
         yield* fs.writeFileString(temporary, snapshot.index ?? "");
-        yield* fs.rename(temporary, path.join(paths.read, "INDEX.md"));
+        yield* fs.rename(temporary, path.join(read, "INDEX.md"));
       }).pipe(Effect.scoped),
     ).pipe(
       Effect.catchTags({
@@ -1613,19 +1647,18 @@ const make = Effect.gen(function* () {
           Effect.provideService(VcsProcess, vcs),
         )),
       );
+    const readTarget = yield* readDirFor(orgId, paths, view);
     const replaced = yield* io(
       orgId,
       "readSnapshot",
       Effect.scoped(
         Effect.gen(function* () {
           // Staged beside the target: the system temp dir can be another filesystem (EXDEV).
-          const read = path.join(
-            yield* fs.makeTempDirectoryScoped({
-              directory: path.dirname(paths.read),
-              prefix: "memory-read.next-",
-            }),
-            "read",
-          );
+          const staging = yield* fs.makeTempDirectoryScoped({
+            directory: path.dirname(readTarget),
+            prefix: "memory-read.next-",
+          });
+          const read = path.join(staging, "read");
           yield* fs.makeDirectory(read);
           for (const [index, { relative }] of kept.entries()) {
             const target = path.join(read, relative);
@@ -1640,26 +1673,21 @@ const make = Effect.gen(function* () {
             args: ["init", "--quiet", "--", read],
             env: { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TEMPLATE_DIR: "" },
           });
-          // Swapped in place: an idle warm lead process keeps this directory as its cwd.
-          const inPlace = yield* fs.lstat(paths.read).pipe(
-            Effect.map((info) => info.type === "Directory"),
+          // Swapped whole: the old checkout moves aside before the new one lands, so a reader
+          // never sees a half-filled directory. A warm process in the old one is released by
+          // the runner, which `replaced` already tells it to do.
+          const existing = yield* fs.lstat(readTarget).pipe(
+            Effect.as(true),
             Effect.orElseSucceed(() => false),
           );
-          if (!inPlace) {
-            yield* fs.remove(paths.read, { recursive: true, force: true });
-            yield* fs.rename(read, paths.read);
-            return true;
-          }
-          for (const entry of yield* fs.readDirectory(paths.read))
-            yield* fs.remove(path.join(paths.read, entry), { recursive: true, force: true });
-          for (const entry of yield* fs.readDirectory(read))
-            yield* fs.rename(path.join(read, entry), path.join(paths.read, entry));
-          return false;
+          if (existing) yield* fs.rename(readTarget, path.join(staging, "old"));
+          yield* fs.rename(read, readTarget);
+          return true;
         }),
       ),
     );
     pinnedHeads.set(orgId, head);
-    checkoutBranches.set(orgId, checkoutBranch);
+    checkoutBranches.set(checkoutKey(orgId, view), checkoutBranch);
     const index = yield* readFile(orgId, "INDEX.md", view).pipe(
       Effect.catchTags({ MemoryError: () => Effect.succeed("") }),
     );
@@ -1672,6 +1700,7 @@ const make = Effect.gen(function* () {
       head: checkoutHead,
       indexAsOf: DateTime.toUtc(indexAsOf),
       ...(replaced ? { replaced: true as const } : {}),
+      read: readTarget,
     };
   });
 
@@ -1681,13 +1710,22 @@ const make = Effect.gen(function* () {
     // `dreams/` holds plain copies of memory files for a running dream.
     for (const directory of [paths.writer, paths.read, path.join(paths.root, "dreams")])
       yield* io(orgId, "quarantine", fs.remove(directory, { recursive: true, force: true }));
-    if (yield* io(orgId, "exists", fs.exists(paths.root)))
+    if (yield* io(orgId, "exists", fs.exists(paths.root))) {
+      for (const entry of yield* io(orgId, "quarantine", fs.readDirectory(paths.root)))
+        if (/^memory-read-[A-Za-z0-9_-]+$/.test(entry))
+          yield* io(
+            orgId,
+            "quarantine",
+            fs.remove(path.join(paths.root, entry), { recursive: true, force: true }),
+          );
       yield* removeStaleClones(orgId, paths.root);
+    }
     initializedCheckouts.delete(orgId);
     pinnedHeads.delete(orgId);
     synced.delete(orgId);
     skipWarnedHeads.delete(orgId);
-    checkoutBranches.delete(orgId);
+    for (const key of checkoutBranches.keys())
+      if (key.startsWith(`${orgId}\u0000`)) checkoutBranches.delete(key);
     forgetSnapshots(orgId);
     return paths;
   });
@@ -1763,7 +1801,22 @@ const make = Effect.gen(function* () {
       locked(
         orgId,
         Effect.gen(function* () {
-          const snapshot = yield* load(orgId, false, view);
+          const branch = view === undefined ? mainBranch : yield* leadBranch(orgId, view.lead);
+          // A head that is not a commit here is a stale pin, not a broken checkout.
+          const { writer } = yield* pathsFor(orgId);
+          const known =
+            /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(expectedHead) &&
+            (yield* git(orgId, writer, ["cat-file", "-e", `${expectedHead}^{commit}`]).pipe(
+              Effect.as(true),
+              Effect.orElseSucceed(() => false),
+            ));
+          if (!known)
+            return yield* new MemoryError({
+              orgId,
+              operation: "promptSnapshot",
+              reason: "Memory head does not match wake-up",
+            });
+          const snapshot = yield* loadSnapshot(orgId, false, branch, expectedHead);
           if (snapshot.head !== expectedHead)
             return yield* new MemoryError({
               orgId,

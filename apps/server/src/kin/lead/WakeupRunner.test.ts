@@ -141,6 +141,102 @@ const sessions = Effect.fn("test.sessions")(function* () {
 });
 
 describe("WakeupRunner", () => {
+  it("org loop waits on the first launchable lead, never on a running one", () => {
+    const a = KinAgentId.make("a");
+    const b = KinAgentId.make("b");
+    assert.strictEqual(
+      WakeupRunner.orgLoopWaitMs([{ agentId: a, readyAt: 0 }], new Set([a]), 1000),
+      60_000,
+    );
+    assert.strictEqual(
+      WakeupRunner.orgLoopWaitMs(
+        [
+          { agentId: a, readyAt: 0 },
+          { agentId: b, readyAt: 5000 },
+        ],
+        new Set([a]),
+        1000,
+      ),
+      4000,
+    );
+    assert.strictEqual(WakeupRunner.orgLoopWaitMs([], new Set(), 1000), 60_000);
+    assert.strictEqual(
+      WakeupRunner.orgLoopWaitMs([{ agentId: b, readyAt: 500 }], new Set(), 1000),
+      0,
+    );
+  });
+  it.effect("does not spin the org loop while a lead with queued events is still finishing", () =>
+    Effect.gen(function* () {
+      const commitEntered = Deferred.makeUnsafe<void>();
+      const commitRelease = Deferred.makeUnsafe<void>();
+      let commits = 0;
+      let readyCalls = 0;
+      const writer = Layer.succeed(
+        Writer.MemoryWriter,
+        Writer.MemoryWriter.of({
+          dreamBase: () => Effect.die("unused"),
+          commitDream: () => Effect.die("unused"),
+          deleteDreamBranch: () => Effect.die("unused"),
+          settleShadow: () => Effect.die("unused"),
+          undoChange: () => Effect.die("unused"),
+          sweepPullRequests: () => Effect.die("unused"),
+          stage: () => Effect.die("unused"),
+          appendJournal: () => Effect.void,
+          discard: () => Effect.void,
+          commitWakeup: () =>
+            Effect.gen(function* () {
+              commits++;
+              if (commits === 1) {
+                yield* Deferred.succeed(commitEntered, undefined);
+                yield* Deferred.await(commitRelease);
+              }
+              return { commit: `fixture-${commits}` };
+            }),
+        }),
+      );
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* seed;
+          const queue = yield* KinEventQueue.KinEventQueue;
+          const sql = yield* SqlClient.SqlClient;
+          const runner = yield* WakeupRunner.WakeupRunner;
+          yield* queue.enqueue(laneMessage("loop-first"));
+          yield* runner.start;
+          yield* TestClock.adjust("20 seconds");
+          yield* Deferred.await(commitEntered);
+          // The lead is still finishing its first wake-up, with more work queued.
+          yield* queue.enqueue(event("loop-second"));
+          yield* TestClock.adjust("5 seconds");
+          const settled = readyCalls;
+          yield* TestClock.adjust("30 seconds");
+          assert.strictEqual(readyCalls, settled);
+          yield* Deferred.succeed(commitRelease, undefined);
+          yield* TestClock.adjust("20 seconds");
+          // The finish wakes the loop at once: the queued event is claimed long before
+          // the 60-second cap a missed wake would wait for.
+          const states = yield* sql<{
+            event_id: string;
+            state: string;
+          }>`SELECT event_id, state FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`;
+          assert.strictEqual(states[0]?.state, "done");
+          assert.notStrictEqual(states[1]?.state, "queued");
+          assert.deepStrictEqual(
+            yield* sql`SELECT memory_commit FROM kin_wakeups WHERE org_id = ${orgId} AND status = 'completed' ORDER BY started_at`,
+            [{ memory_commit: "fixture-1" }],
+          );
+        }),
+      ).pipe(
+        Effect.provide(
+          harness({
+            writer,
+            onReadyLeads: () => {
+              readyCalls++;
+            },
+          }),
+        ),
+      );
+    }).pipe(provideDeterministicTestRuntime),
+  );
   it.effect("handles the owner check in code without starting a provider turn", () =>
     Effect.gen(function* () {
       yield* seed;

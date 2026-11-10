@@ -149,6 +149,8 @@ type HarnessOptions = {
   readonly snapshot?: Memory.Memory["Service"]["readPromptSnapshot"];
   /** Every provider process the fake adapter opens. */
   readonly opened?: Array<string>;
+  /** Called on every `readyLeads` pass the runner makes. */
+  readonly onReadyLeads?: () => void;
 };
 
 export function harness(options: HarnessOptions = {}) {
@@ -451,8 +453,21 @@ function parts(options: HarnessOptions) {
   const launch = ThreadLaunch.layer.pipe(
     Layer.provide(Layer.mergeAll(external, management, receipts, IdAllocator.layer)),
   );
+  const queueLayer =
+    options.onReadyLeads === undefined
+      ? KinEventQueue.layer
+      : Layer.effect(
+          KinEventQueue.KinEventQueue,
+          Effect.map(KinEventQueue.KinEventQueue, (queue) => ({
+            ...queue,
+            readyLeads: (orgId: Parameters<typeof queue.readyLeads>[0]) =>
+              Effect.sync(() => options.onReadyLeads!()).pipe(
+                Effect.andThen(queue.readyLeads(orgId)),
+              ),
+          })),
+        ).pipe(Layer.provide(KinEventQueue.layer));
   const kin = Layer.mergeAll(
-    KinEventQueue.layer,
+    queueLayer,
     KinStop.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
