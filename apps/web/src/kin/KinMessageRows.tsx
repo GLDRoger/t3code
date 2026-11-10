@@ -198,11 +198,20 @@ export function KinDraftRow(props: {
 }
 
 /** A line from Kin itself, such as a member joining. */
-export function KinSystemRow(props: { readonly body: string }) {
+export function KinSystemRow(props: {
+  readonly body: string;
+  /** Sends the owner's unanswered message again; null shows the line alone. */
+  readonly onRetry: (() => void) | null;
+}) {
   return (
-    <p className="mx-auto max-w-3xl px-8 py-2 text-center text-xs text-muted-foreground">
-      {props.body}
-    </p>
+    <div className="mx-auto flex max-w-3xl items-center justify-center gap-2 px-8 py-2">
+      <p className="text-center text-xs text-muted-foreground">{props.body}</p>
+      {props.onRetry === null ? null : (
+        <Button size="xs" variant="outline" onClick={props.onRetry}>
+          Retry
+        </Button>
+      )}
+    </div>
   );
 }
 

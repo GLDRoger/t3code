@@ -804,6 +804,15 @@ function KinChatFeed(props: {
     const isAtEnd = listRef.current?.getState().isAtEnd ?? true;
     if (isAtEnd !== follow.atEnd) transition({ type: "end-check", isAtEnd });
   };
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- onScroll can read isAtEnd before the list re-pins, leaving follow off at the end; the list's own signal restores it
+  useEffect(
+    () =>
+      listRef.current?.getState().listen("isAtEnd", (isAtEnd) => {
+        if (isAtEnd) transition({ type: "end-check", isAtEnd });
+      }),
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- transition only calls setFollow, which is stable.
+    [],
+  );
 
   const markSeen = ({ viewableItems }: OnViewableItemsChangedInfo<KinChatRow>) => {
     const seq = Math.max(
@@ -834,6 +843,21 @@ function KinChatFeed(props: {
     if (url !== null) void openLink(url);
   };
 
+  const sendingSample = useRef(false);
+  const sendSample = (body: string) => {
+    if (sendingSample.current) return;
+    sendingSample.current = true;
+    void kinOutbox
+      .enqueue({ environmentId: props.environmentId, chatId: props.chatId, body })
+      .then((queued) => {
+        if (queued._tag !== "queued") return;
+        jumpToEnd();
+        void deliverKinOutbox();
+      })
+      .finally(() => {
+        sendingSample.current = false;
+      });
+  };
   const renderItem = ({ item }: { readonly item: KinChatRow }) => {
     switch (item.type) {
       case "message": {
@@ -878,8 +902,16 @@ function KinChatFeed(props: {
           />
         );
       }
-      case "system":
-        return <KinSystemLine row={item} />;
+      case "system": {
+        const { retry } = item;
+        // An unsent message is already a retry in flight.
+        return (
+          <KinSystemLine
+            row={item}
+            onRetry={retry === null || pending.length > 0 ? null : () => sendSample(retry)}
+          />
+        );
+      }
       case "fold":
         return <KinFoldLine row={item} onToggle={() => toggleRun(item.runId)} />;
       case "pending":
@@ -918,21 +950,6 @@ function KinChatFeed(props: {
     />
   );
 
-  const sendingSample = useRef(false);
-  const sendSample = (body: string) => {
-    if (sendingSample.current) return;
-    sendingSample.current = true;
-    void kinOutbox
-      .enqueue({ environmentId: props.environmentId, chatId: props.chatId, body })
-      .then((queued) => {
-        if (queued._tag !== "queued") return;
-        jumpToEnd();
-        void deliverKinOutbox();
-      })
-      .finally(() => {
-        sendingSample.current = false;
-      });
-  };
   const startSample = (body: string) => {
     setComposerDraftText(kinDraftKey(props.environmentId, props.orgId, props.chatId), body);
     editorRef.current?.focus();

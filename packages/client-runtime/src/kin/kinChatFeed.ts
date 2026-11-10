@@ -180,7 +180,15 @@ export type KinFeedRow =
       readonly authorLabel: string;
       readonly showAuthor: boolean;
     }
-  | { readonly type: "system"; readonly key: string; readonly message: KinMessage }
+  | {
+      readonly type: "system";
+      readonly key: string;
+      readonly message: KinMessage;
+      /** What the line reads; a no-reply notice drops its "send it again" ask. */
+      readonly text: string;
+      /** The viewer's message to send again when the lead didn't answer it; null offers nothing. */
+      readonly retry: string | null;
+    }
   /** Starts each local day; `label` is relative to the day the rows were built on. */
   | { readonly type: "day"; readonly key: string; readonly label: string }
   | {
@@ -208,6 +216,13 @@ function kinAuthorLabel(message: KinMessage, viewer: KinFeedViewer): string {
 const isSystem = (message: KinMessage) =>
   message.kind === "system" || message.author._tag === "system";
 
+type SystemRow = Extract<KinFeedRow, { readonly type: "system" }>;
+
+// The host's notices for a reply that never came (KinReplyBridge); their ids carry the wake-up.
+const retryNotice = (message: KinMessage) =>
+  message.messageId.startsWith("kin-no-reply:") || message.messageId.startsWith("kin-partway:");
+const RETRY_HINT = /\s*Send your message again[^.]*\.\s*$/;
+
 // A deleted message stays in its run, so deleting one doesn't split the fold in two.
 const foldRunId = (message: KinMessage) =>
   message.author._tag === "agent" ? message.floorRunId : null;
@@ -222,6 +237,8 @@ const messageRowKey = (message: KinMessage) =>
 
 // A choice tap shows as the owner's words, not its JSON, and never repeats the card it answered.
 const shownMessage = (message: KinMessage): KinMessage => {
+  // A host card's body is its inbox summary; the card says the same, so it isn't repeated.
+  if (isSystem(message)) return message.body === "" ? message : { ...message, body: "" };
   if (message.kind !== "widget_action") return message;
   const text = kinTapText(message.body);
   return text === null ? message : { ...message, body: text, widgetId: null };
@@ -297,14 +314,35 @@ export function buildKinFeedRows(
     rows.push(dayRow(message, day, now));
   };
 
+  let lastOwnText: string | null = null;
+  const openRetries: number[] = [];
+
   const pushMessage = (message: KinMessage) => {
     startDay(message);
-    if (isSystem(message)) {
-      rows.push({ type: "system", key: message.messageId, message });
+    // Host cards (memory changes, levels, routines) arrive as system messages carrying a widget.
+    if (isSystem(message) && message.widgetId === null) {
+      const notice = retryNotice(message);
+      const retry = notice ? lastOwnText : null;
+      if (retry !== null) openRetries.push(rows.length);
+      rows.push({
+        type: "system",
+        key: message.messageId,
+        message,
+        // The client offers Retry, so the host's "send it again" ask is dropped.
+        text: notice ? message.body.replace(RETRY_HINT, "") : message.body,
+        retry,
+      });
       previousAuthor = null;
       return;
     }
     const own = message.author._tag === "human" && message.author.personId === viewer.personId;
+    if (own && message.kind === "text" && message.status === "posted") {
+      lastOwnText = message.body;
+      // Writing again answers the notice, so it stops offering to resend.
+      for (const index of openRetries.splice(0)) {
+        rows[index] = { ...(rows[index] as SystemRow), retry: null };
+      }
+    }
     const author = authorKey(message);
     rows.push(
       messageRow(message, {

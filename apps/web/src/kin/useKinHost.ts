@@ -14,7 +14,7 @@ import {
   type KinInboxScreenState,
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import type { KinSynced } from "@t3tools/client-runtime/kin/kinStreams";
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, type KinOrgsListResult } from "@t3tools/contracts";
 import { Atom, type AsyncResult } from "effect/reactivity";
 
 import { environmentCatalog } from "../connection/catalog";
@@ -41,8 +41,15 @@ const kinHostCandidates = (get: Atom.AtomContext): ReadonlyArray<KinHostCandidat
     connected: presentation.connection.phase === "connected",
   }));
 
-const kinProbe = (get: Atom.AtomContext) => (environmentId: EnvironmentId) =>
-  classifyKinProbe(get(kinClient.orgs({ environmentId, input: {} })));
+// Each host's last directory, so an offline chat still names its lead and knows the viewer.
+const lastOrgs = new Map<EnvironmentId, KinOrgsListResult>();
+
+const kinProbe = (get: Atom.AtomContext) => (environmentId: EnvironmentId) => {
+  const result = get(kinClient.orgs({ environmentId, input: {} }));
+  if (result._tag === "Success") lastOrgs.set(environmentId, result.value);
+  return classifyKinProbe(result);
+};
+const cachedOrgs = (environmentId: EnvironmentId) => lastOrgs.get(environmentId) ?? null;
 
 const kinHostAtom: Atom.Atom<KinHost> = Atom.make((get): KinHost => {
   if (!get(environmentCatalog.catalogValueAtom).isReady) return { _tag: "searching" };
@@ -50,6 +57,7 @@ const kinHostAtom: Atom.Atom<KinHost> = Atom.make((get): KinHost => {
     candidates: kinHostCandidates(get),
     savedHostId: savedHost.id,
     probe: kinProbe(get),
+    cachedOrgs,
   });
   const toSave = kinHostIdToSave(host);
   if (toSave !== null && toSave !== savedHost.id) {
@@ -70,6 +78,7 @@ const kinHostAtAtom = Atom.family((environmentId: EnvironmentId) =>
       candidates: kinHostCandidates(get),
       environmentId,
       probe: kinProbe(get),
+      cachedOrgs,
     });
   }).pipe(Atom.withLabel(`kin:host:${environmentId}`)),
 );
