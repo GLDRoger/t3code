@@ -41,8 +41,10 @@ import * as Writer from "../memory/MemoryWriter.ts";
 import {
   classifySegment,
   cutLabel,
+  draftReplyText,
   isToolItem,
   NOTE_MAX_CHARS,
+  stripTrailingSilenceMarker,
   toolLabel,
   type SegmentNext,
 } from "./classify.ts";
@@ -320,7 +322,7 @@ const make = Effect.gen(function* () {
       segment.drafting
         ? presence.endDraft(wake.orgId, wake.lane.chatId, segment.id, messageId)
         : Effect.void;
-    const text = segment.text.trim();
+    const text = stripTrailingSilenceMarker(segment.text.trim());
     if (yield* alreadySaid(wake, text).pipe(Effect.orElseSucceed(() => false))) {
       segment.outcome = "posted";
       wake.answered = true;
@@ -372,6 +374,8 @@ const make = Effect.gen(function* () {
     if (segment.outcome !== null || !segment.complete) return;
     const decision = classifySegment(segment.text, next);
     if (decision === null) return;
+    if (decision === "post" || decision === "note")
+      segment.text = stripTrailingSilenceMarker(segment.text);
     switch (decision) {
       case "post":
         return yield* post(wake, segment);
@@ -426,16 +430,19 @@ const make = Effect.gen(function* () {
       if (segment.text.trim() !== "") yield* stamp(wake, "first_token_at");
       if (item.streaming) {
         yield* show(wake, "writing", null);
+        // Drafts are append-only, so a marker shown here could not be taken back at the end.
+        const draft = draftReplyText(segment.text);
         if (
-          segment.drafting ||
-          segment.text.trim().length > NOTE_MAX_CHARS ||
-          now - segment.firstSeenAt >= DRAFT_AFTER_MS
+          draft.trim() !== "" &&
+          (segment.drafting ||
+            draft.trim().length > NOTE_MAX_CHARS ||
+            now - segment.firstSeenAt >= DRAFT_AFTER_MS)
         ) {
           segment.drafting = true;
           yield* presence.draft(wake.orgId, wake.lane.chatId, {
             draftId: segment.id,
             agentId: wake.agentId,
-            text: segment.text,
+            text: draft,
           });
         }
         return;
