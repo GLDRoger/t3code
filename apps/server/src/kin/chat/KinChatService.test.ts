@@ -495,7 +495,7 @@ describe("KinChatService", () => {
           yield* service
             .react(person, {
               messageId: latest.messageId,
-              emoji: "🔥" as "👍",
+              emoji: "🦄" as "👍",
               on: true,
             })
             .pipe(Effect.flip),

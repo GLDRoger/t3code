@@ -64,6 +64,7 @@ const isolateClaudeDream = (
     executable: _executable,
     spawnClaudeCodeProcess: _spawn,
     forkSession: _forkSession,
+    promptSuggestions: _promptSuggestions,
     settings,
     extraArgs,
     permissionMode,

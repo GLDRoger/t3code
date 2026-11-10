@@ -23,6 +23,7 @@ import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as SecretRequests from "../../secrets/SecretRequests.ts";
 import * as KinTriggerSink from "./KinTriggerSink.ts";
 import * as KinTriggerStore from "./KinTriggerStore.ts";
+import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 
 export const timestamp = "2026-11-07T00:00:00.000Z";
 const decodeProjection = Schema.decodeSync(OrchestrationV2ThreadProjectionJson);
@@ -137,6 +138,12 @@ export const withScheduledTasks = <A, E, R>(
     const sends: ThreadManagementService.ThreadManagementSendInput[] = [];
     const boundThreads = Layer.mock(ThreadManagementService.ThreadManagementService)({
       getThreadProjection: (id) => Effect.succeed(projection(orgOf(id))),
+      // A live destination, so binding reaches Kin's sink rather than the archived-thread check.
+      getThreadShell: (id) =>
+        Effect.succeed({
+          ...liveThreadShell(id),
+          projectId: projection(orgOf(id)).thread.projectId,
+        }),
       sendToThread: (input) =>
         Effect.gen(function* () {
           sends.push(input);
