@@ -45,7 +45,6 @@ import * as ReplyBridge from "../reply/KinReplyBridge.ts";
 import * as RoutineContent from "./RoutineContent.ts";
 import * as LeadDelivery from "./LeadDelivery.ts";
 import * as KinStop from "./KinStop.ts";
-import { KinPromotion } from "../levels/Promotion.ts";
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import * as DreamRunner from "../dreaming/DreamRunner.ts";
 import * as DreamSession from "../dreaming/DreamSession.ts";
@@ -152,12 +151,8 @@ const runner = Layer.effectDiscard(
     const memory = yield* Memory.Memory;
     const stop = yield* KinStop.KinStop;
     const ownerTimeZone = yield* Effect.serviceOption(OwnerTimeZone.KinOwnerTimeZone);
-    // The owner's keep-or-discard of shadow memory runs on this runtime's writer.
+    // The owner's Undo on a memory change card runs on this runtime's writer.
     const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
-    const promotion = yield* Effect.serviceOption(KinPromotion);
-    if (Option.isSome(writer) && Option.isSome(promotion))
-      yield* promotion.value.attachShadowMemory(writer.value.settleShadow);
-    // The owner's Undo on a memory change card runs on this runtime's writer too.
     const memoryChanges = yield* Effect.serviceOption(KinMemoryChanges);
     if (Option.isSome(writer) && Option.isSome(memoryChanges))
       yield* memoryChanges.value.attachWriter(writer.value.undoChange);

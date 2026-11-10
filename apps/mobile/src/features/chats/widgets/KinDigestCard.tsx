@@ -8,7 +8,7 @@ import type {
   KinDigestRow,
 } from "@t3tools/client-runtime/kin/kinCardPresentation";
 
-/** A server-drawn list: the shadow summary or a routine. Plain text only; links open on a tap. */
+/** A server-drawn list: a routine. Plain text only; links open on a tap. */
 export const KinDigestCard = memo(function KinDigestCard(props: {
   readonly digest: KinDigestCardView;
   /** The screen's safe link handler. */

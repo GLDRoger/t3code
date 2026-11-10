@@ -367,7 +367,7 @@ export function kinActionFailureNotice(
 export const KIN_START_NOW_REFUSALS = {
   stopped: "Starts are paused for now. Ask your lead in the chat.",
   workers_blocked: "Kin can't start new work right now. Try again soon.",
-  below_l2: "Your lead can't start work on its own yet. Ask it in the chat.",
+  below_l2: "Your lead can't start work from here. Ask it in the chat.",
 } as const satisfies Record<string, string>;
 
 export function kinStartNowRefusalNotice(

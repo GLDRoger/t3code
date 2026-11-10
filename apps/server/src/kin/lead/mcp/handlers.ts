@@ -53,9 +53,7 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
           clientMessageId: `kin-ask:${wakeupId}:${key.slice(0, 32)}`,
         },
       );
-      return "shadowed" in result
-        ? result
-        : { widgetId: result.widgetId, messageId: result.messageId };
+      return { widgetId: result.widgetId, messageId: result.messageId };
     }, Effect.mapError(failure)),
   ),
   kin_react: McpToolAccess.actsAsCaller(

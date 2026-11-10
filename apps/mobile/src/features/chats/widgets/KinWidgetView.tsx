@@ -15,8 +15,6 @@ import { KinChoiceCard } from "./KinChoiceCard";
 import { KinDeferralCard } from "./KinDeferralCard";
 import { KinDigestCard } from "./KinDigestCard";
 import { KinMemoryChangesCard } from "./KinMemoryChangesCard";
-import { KinPromotionCard } from "./KinPromotionCard";
-import { KinShadowReviewCard } from "./KinShadowReviewCard";
 import { KinTaskCard } from "./KinTaskCard";
 
 /** The native card for a message's widget. Never falls back to HTML. */
@@ -49,10 +47,6 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
       );
     case "digest":
       return <KinDigestCard digest={view.digest} onOpenLink={props.onOpenLink} />;
-    case "shadow_review":
-      return <KinShadowReviewCard review={view.review} environmentId={props.environmentId} />;
-    case "promotion":
-      return <KinPromotionCard promotion={view.promotion} environmentId={props.environmentId} />;
     case "memory_changes":
       return <KinMemoryChangesCard changes={view.changes} environmentId={props.environmentId} />;
     case "approval":

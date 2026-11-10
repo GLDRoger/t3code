@@ -158,7 +158,7 @@ export const makeExecutorLayer = <E, R>(platform: Layer.Layer<GitHubPlatform, E,
 
 export const executorLayer = makeExecutorLayer(githubPlatform);
 
-/** Push routing and Promotion read pending actions, so they stay in the output. */
+/** Push routing and level control read pending actions, so they stay in the output. */
 export const layer = GrantVerifier.layer.pipe(
   Layer.provideMerge(ApproverKeys.layer),
   Layer.provideMerge(PendingActions.layer),

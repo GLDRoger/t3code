@@ -18,7 +18,7 @@ All Kin work is on branch `kin` of `GLDRoger/t3code`, a public fork. `main` mirr
 | ---------------------------------- | ---------------------------------------------------------------------------------------- |
 | `apps/server/src/kin/chat/`        | Chats, messages, members, identity, the live hub, task cards, chat RPCs                  |
 | `apps/server/src/kin/floor/`       | Who may speak: `FloorManager` (pure rules) and `KinFloor` (runs and grants in SQLite)    |
-| `apps/server/src/kin/lead/`        | The event queue, wake-up runner, prompt, levels, budget, stop switch, workers, lead CLI  |
+| `apps/server/src/kin/lead/`        | The event queue, wake-up runner, prompt, permissions, budget, stop switch, workers, CLI  |
 | `apps/server/src/kin/reply/`       | The reply bridge (lead text → chat messages) and presence ("thinking", "working")        |
 | `apps/server/src/kin/memory/`      | Memory reads, the git writer, change cards and memory PRs                                |
 | `apps/server/src/kin/dreaming/`    | The nightly dream                                                                        |
@@ -42,7 +42,7 @@ Kin code lives in its own files. Upstream files get a hook of a line or two at m
 2. **Queue.** `ChatWake` turns the message into a `chat.message` event in `KinEventQueue` (`kin_events`) and shows "seen" at once. Triggers, worker reports and approval results become events the same way. Code sets each event's priority; an owner message is P0.
 3. **Wake-up.** `WakeupRunner` waits briefly for a burst to finish, then claims a batch of events for one lead and one chat. It checks the stop switch and budget, prepares a read-only memory checkout, builds the prompt (`LeadPrompt`) and runs the lead as a T3 thread. A message that arrives during a wake-up is steered into it.
 4. **Lead.** The lead runs on Claude with no shell. It acts only through Kin's MCP tools: memory, deferrals, workers, cards, `request_action`. Its plain text is its reply.
-5. **Reply bridge.** `KinReplyBridge` reads the lead's text as it streams and posts it through `LevelGate`, so membership, the floor and levels apply. At L0 a post becomes a shadow entry for the owner to review instead.
+5. **Reply bridge.** `KinReplyBridge` reads the lead's text as it streams and posts it through `LevelGate`, so membership, the floor and permissions apply.
 6. **Clients.** Members' streams deliver the reply, and `KinPushSender` pushes it to phones that aren't showing the chat.
 
 The [lead spec](specs/lead.md) covers queue, wake-up and replies in full. The [chat spec](specs/chat.md) covers chats, streams and the floor.
@@ -61,9 +61,9 @@ Everything that wakes a lead without a chat message goes through one inbox (`kin
 
 ## Approvals
 
-Authority never passes through a model. A lead can only propose a privileged action (merge, set a level, enrol a key) with `request_action`, which stores a pending action bound to an exact target, such as a PR at a pinned head SHA. The owner's phone shows an approval card and signs a single-use grant with a hardware key behind Face ID. `ActionExecutor` checks the grant and runs the action with an executor-held credential, then writes a hash-chained audit row. Chat text, including "approved", never counts. See the [approvals spec](specs/approvals.md).
+Authority never passes through a model. A lead can only propose a privileged action (merge, enrol a key) with `request_action`, which stores a pending action bound to an exact target, such as a PR at a pinned head SHA. The owner's phone shows an approval card and signs a single-use grant with a hardware key behind Face ID. `ActionExecutor` checks the grant and runs the action with an executor-held credential, then writes a hash-chained audit row. Chat text, including "approved", never counts. See the [approvals spec](specs/approvals.md).
 
-Levels (L0–L3) set what a lead may do unasked, per chat. At L0 its posts and actions are shadowed: recorded for the owner to review instead of happening. A promotion needs reviewed entries and the owner's signed `set_level`. Today a new lead starts at L0 everywhere; W1-3 moves it to L2 in its owner's DM, leaving L0 for groups. See the [lead spec, "Levels"](specs/lead.md#levels-l0l3-design-10).
+A lead just works in chats its owner placed it in (its DM, the owner's groups): posts, workers, draft PRs. There is no ladder and the owner never sees a level. An internal gate (`KinLevels`) refuses the lead in any other chat, so members can't widen what it does; only an owner-signed `set_level` changes it. See [DESIGN.md section 10](DESIGN.md#10-permissions) and the [lead spec, "Permissions"](specs/lead.md#permissions-design-10).
 
 ## Running Kin locally
 
@@ -114,17 +114,17 @@ Kin runs from a source build on an always-on Linux machine, as a dedicated `kin`
 
 ## Words we use
 
-| Word          | Meaning                                                                                    |
-| ------------- | ------------------------------------------------------------------------------------------ |
-| Lead          | An agent that talks in chats, decides and keeps memory. One per domain.                    |
-| Worker        | A T3 thread a lead starts for one piece of work, in its own worktree.                      |
-| Wake-up       | One run of a lead over a batch of events for one chat.                                     |
-| Owner         | The person whose machine, subscriptions and repos Kin uses. Only the owner approves.       |
-| Grant         | The owner's signed, single-use approval of one pending action.                             |
-| Floor manager | Plain code that decides which agent may speak in a chat. There is no judge model.          |
-| Deferral      | "Let's do this Friday": a memory item with a due time and what to do then.                 |
-| Dream         | The nightly job that tidies memory into a PR and prepares the morning brief.               |
-| L0–L3         | How much a lead may do on its own in a chat, from shadow (drafts only) to low-risk merges. |
+| Word          | Meaning                                                                              |
+| ------------- | ------------------------------------------------------------------------------------ |
+| Lead          | An agent that talks in chats, decides and keeps memory. One per domain.              |
+| Worker        | A T3 thread a lead starts for one piece of work, in its own worktree.                |
+| Wake-up       | One run of a lead over a batch of events for one chat.                               |
+| Owner         | The person whose machine, subscriptions and repos Kin uses. Only the owner approves. |
+| Grant         | The owner's signed, single-use approval of one pending action.                       |
+| Floor manager | Plain code that decides which agent may speak in a chat. There is no judge model.    |
+| Deferral      | "Let's do this Friday": a memory item with a due time and what to do then.           |
+| Dream         | The nightly job that tidies memory into a PR and prepares the morning brief.         |
+| L0–L3         | The server's internal permission gate per lead and chat. Never shown to the owner.   |
 
 ## Who to ask
 

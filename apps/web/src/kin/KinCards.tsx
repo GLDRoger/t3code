@@ -31,7 +31,6 @@ import {
   KIN_APPROVAL_STATE_TEXT,
   type KinApprovalWidgetView,
 } from "@t3tools/client-runtime/kin/kinApprovalPresentation";
-import type { KinLevelsCardView } from "@t3tools/client-runtime/kin/kinLevelsPresentation";
 import {
   kinMemoryUndoFailureText,
   type KinMemoryChangeItemView,
@@ -135,9 +134,6 @@ export const KinCard = memo(function KinCard(props: {
       return <KinDigestCard digest={view.digest} />;
     case "memory_changes":
       return <KinMemoryChangesCard changes={view.changes} environmentId={props.environmentId} />;
-    case "shadow_review":
-    case "promotion":
-      return <KinLevelsCard view={view} />;
     case "approval":
       return <KinApprovalCard approval={view.approval} />;
     case "missing":
@@ -495,30 +491,6 @@ function KinMemoryChangesCard(props: {
       {changes.more === null ? null : (
         <p className="text-xs text-muted-foreground">{changes.more}</p>
       )}
-    </CardFrame>
-  );
-}
-
-/**
- * Levels reviews and raises are answered on the phone: raising a level is signed with its device
- * key, so this browser only shows what the card asks.
- */
-function KinLevelsCard(props: { readonly view: KinLevelsCardView }) {
-  const { view } = props;
-  const title = view.kind === "promotion" ? view.promotion.title : view.review.title;
-  const eyebrow = view.kind === "promotion" ? view.promotion.eyebrow : "Shadow review";
-  const lines = view.kind === "promotion" ? view.promotion.lines : [view.review.summary];
-  const closed =
-    view.kind === "promotion" ? view.promotion.status === "closed" : view.review.closed;
-  return (
-    <CardFrame eyebrow={eyebrow} label={`${eyebrow}. ${title}`}>
-      <p className="font-medium text-foreground">{title}</p>
-      {lines.map((line) => (
-        <p key={line} className="text-xs text-muted-foreground">
-          {line}
-        </p>
-      ))}
-      {closed ? null : <ApproveOnPhone />}
     </CardFrame>
   );
 }

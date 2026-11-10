@@ -72,10 +72,15 @@ const SteerInput = Schema.Struct({
 
 /**
  * An event's lane, the chat a wake-up answers: a human message's or card tap's own chat, else
- * the lead's direct chat with its owner. Derived from stored rows only, never model text.
+ * the lead's direct chat with its owner. A due deferral asked from another chat gets a lane of
+ * its own, so that chat's level never mixes with owner-chat events in one wake-up. Derived from
+ * stored rows only, never model text.
  */
 const LANE_OF = `CASE WHEN e.tag IN ('chat.message', 'widget.action', 'chat.reaction')
-  THEN json_extract(e.json, '$.chatId') ELSE l.owner_chat_id END`;
+  THEN json_extract(e.json, '$.chatId')
+  WHEN e.tag = 'deferral.due' AND json_extract(e.json, '$.origin.chatId') IS NOT NULL
+  THEN 'origin:' || json_extract(e.json, '$.origin.agentId') || ':' || json_extract(e.json, '$.origin.chatId')
+  ELSE l.owner_chat_id END`;
 
 /** An owner message waits only for the rest of its burst, and never longer than the cap. */
 const OWNER_BURST_MS = 300;
@@ -184,7 +189,7 @@ export class KinEventQueue extends Context.Service<
     >;
     /**
      * A failed wake-up's events are retried only when it did nothing anyone could see: no
-     * message, shadow entry, staged memory, worker or action request. `stranded` counts the
+     * message, staged memory, worker or action request. `stranded` counts the
      * events that were not, so the runner owes the chat an honest notice; `retried` counts the
      * events requeued for another try, and `failedEventIds` those that used their last.
      */
@@ -609,7 +614,6 @@ const make = Effect.gen(function* () {
               EXISTS (SELECT 1 FROM kin_messages m WHERE m.org_id = w.org_id AND m.author_kind = 'agent'
                 AND m.author_agent_id = w.agent_id AND m.author_thread_id = w.thread_id
                 AND m.created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', w.started_at / 1000.0, 'unixepoch'))
-              OR EXISTS (SELECT 1 FROM kin_shadow_entries s WHERE s.org_id = w.org_id AND s.wakeup_id = w.wakeup_id)
               OR EXISTS (SELECT 1 FROM kin_lead_tool_calls c WHERE c.org_id = w.org_id
                 AND c.wakeup_id = w.wakeup_id AND c.call_key != 'end')
               OR EXISTS (SELECT 1 FROM kin_workers k WHERE k.org_id = w.org_id AND k.wakeup_id = w.wakeup_id)

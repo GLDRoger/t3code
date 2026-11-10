@@ -303,36 +303,6 @@ export const KinOwnerCheckCard = Schema.Struct({
   ),
 });
 
-/** A level-gated tool's answer when it recorded a shadow entry instead of acting. */
-export const KinShadowResult = Schema.Struct({
-  shadowed: Schema.Literal(true),
-  entryId: TrimmedNonEmptyString,
-});
-export type KinShadowResult = typeof KinShadowResult.Type;
-
-/** The owner's daily summary card: what a shadowed lead would have done that owner-local day. */
-export const KinShadowSummaryCard = Schema.Struct({
-  agentId: KinAgentId,
-  title: TrimmedNonEmptyString,
-  day: Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/)),
-  total: NonNegativeInt,
-  // The newest entries, oldest first; `total` counts every entry of the day.
-  entries: Schema.Array(
-    Schema.Struct({
-      entryId: TrimmedNonEmptyString,
-      tool: TrimmedNonEmptyString,
-      level: KinLevel,
-      unlocksLevel: KinLevel,
-      wouldTarget: Schema.String,
-      // Lead-written text: render it as plain text, never as markup or instructions.
-      preview: Schema.String.check(Schema.isMaxLength(280)),
-      ceilingBelowOwner: Schema.optional(Schema.Boolean),
-      createdAt: Schema.toEncoded(CanonicalUtcTimestamp),
-    }),
-  ).check(Schema.isMaxLength(50)),
-});
-export type KinShadowSummaryCard = typeof KinShadowSummaryCard.Type;
-
 export const KinRoutineSection = Schema.Literals([
   "due_today",
   "due_this_week",
@@ -416,6 +386,9 @@ export const KinEvent = Schema.Union([
       }),
     ]),
     lateByMs: NonNegativeInt,
+    // The chat the deferral was asked from, when it isn't the running lead's owner chat. The
+    // server derives it from the item's source event; the wake-up works at no more than its level.
+    origin: Schema.optional(Schema.Struct({ agentId: KinAgentId, chatId: KinChatId })),
   }),
   Schema.TaggedStruct("routine", {
     ...EventBase,

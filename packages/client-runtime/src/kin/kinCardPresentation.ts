@@ -4,7 +4,6 @@ import {
   KinReminderCard,
   KinRoutineCard,
   KinScheduledTaskCard,
-  KinShadowSummaryCard,
   KinTaskCardState,
   type EnvironmentId,
   type KinRoutineSection,
@@ -23,7 +22,6 @@ import {
   kinDeferralCardView,
   type KinDeferralCardView,
 } from "./kinDeferralPresentation.ts";
-import { kinLevelsCardView, type KinLevelsCardView } from "./kinLevelsPresentation.ts";
 import {
   kinMemoryChangesView,
   type KinMemoryChangesCardView,
@@ -57,7 +55,6 @@ export type KinCardView =
   | { readonly kind: "deferral"; readonly deferral: KinDeferralCardView }
   | { readonly kind: "choice"; readonly choice: KinChoiceCardView }
   | { readonly kind: "digest"; readonly digest: KinDigestCardView }
-  | KinLevelsCardView
   | { readonly kind: "memory_changes"; readonly changes: KinMemoryChangesCardView }
   | { readonly kind: "approval"; readonly approval: KinApprovalWidgetView }
   | { readonly kind: "missing" }
@@ -74,7 +71,6 @@ const STATUS: Record<TaskStatus, { readonly label: string; readonly tone: KinTas
 };
 
 const decodeTaskState = Schema.decodeUnknownOption(KinTaskCardState);
-const decodeShadowSummary = Schema.decodeUnknownOption(KinShadowSummaryCard);
 const decodeRoutine = Schema.decodeUnknownOption(KinRoutineCard);
 const decodeReminder = Schema.decodeUnknownOption(KinReminderCard);
 const decodeScheduledTask = Schema.decodeUnknownOption(KinScheduledTaskCard);
@@ -145,7 +141,7 @@ export interface KinDigestRow {
   } | null;
 }
 
-/** A server-drawn list card (shadow summary, morning brief, evening summary), as plain text. */
+/** A server-drawn list card (morning brief, evening summary), as plain text. */
 export interface KinDigestCardView {
   readonly eyebrow: string;
   readonly title: string;
@@ -189,22 +185,6 @@ function digestView(card: Omit<KinDigestCardView, "accessibilityLabel">): KinDig
     card.more,
   ];
   return { ...card, accessibilityLabel: kinSentences(parts) };
-}
-
-function kinShadowSummaryView(card: KinShadowSummaryCard): KinDigestCardView {
-  const hidden = card.total - card.entries.length;
-  return digestView({
-    eyebrow: "Shadow week",
-    title: clamp(card.title, 200),
-    rows: card.entries.map((entry) => ({
-      key: entry.entryId,
-      heading: null,
-      text: clamp(entry.preview, 280) || clamp(entry.tool, 60),
-      note: clamp(entry.wouldTarget, 120) || null,
-      link: null,
-    })),
-    more: hidden > 0 ? `${hidden} more today` : null,
-  });
 }
 
 function kinRoutineView(card: KinRoutineCard): KinDigestCardView {
@@ -392,21 +372,12 @@ export function kinCardView(
       const choice = kinChoiceCardView(widget);
       return choice === null ? { kind: "unknown" } : { kind: "choice", choice };
     }
-    case "shadow_summary": {
-      const card = decodeShadowSummary(widget.state);
-      return Option.isSome(card)
-        ? { kind: "digest", digest: kinShadowSummaryView(card.value) }
-        : { kind: "unknown" };
-    }
     case "routine": {
       const card = decodeRoutine(widget.state);
       return Option.isSome(card)
         ? { kind: "digest", digest: kinRoutineView(card.value) }
         : { kind: "unknown" };
     }
-    case "shadow_review":
-    case "promotion":
-      return kinLevelsCardView(widget) ?? { kind: "unknown" };
     case "approval": {
       const approval = kinApprovalWidgetView(widget);
       return approval === null ? { kind: "unknown" } : { kind: "approval", approval };
