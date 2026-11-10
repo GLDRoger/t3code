@@ -430,7 +430,6 @@ function KinChatFeed(props: {
   const display = kinFeedDisplay({
     rows: feedRows,
     widgets,
-    environmentId: props.environmentId,
     direct: props.direct,
     formatTime: formatKinMessageTime,
   });

@@ -4,6 +4,9 @@ import {
   KinLead,
   KinLeadCharter,
   KinLeadDomain,
+  type KinLeadProfile,
+  KIN_LEAD_TRACKING_CAP,
+  KinLeadTracking,
   KinOrgId,
   KinPersonId,
   type ModelSelection,
@@ -30,8 +33,9 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinLevels from "./KinLevels.ts";
 import { nonClaudeLeadModel } from "./leadModels.ts";
 
-// `create` has two callers: the host's `kin lead` CLI and the owner's `kin.lead.create` RPC. The
-// rest is CLI only. No MCP tool or agent reaches any of it.
+// `create` has two callers: the host's `kin lead` CLI and the owner's `kin.lead.create` RPC.
+// `profiles` and `update` back `kin.leads.list` and `kin.lead.update`. The rest is CLI only. No
+// MCP tool or agent reaches any of it.
 
 export class KinLeadProvisionError extends Schema.TaggedError<KinLeadProvisionError>()(
   "KinLeadProvisionError",
@@ -292,32 +296,197 @@ export const setWorkerProjects = Effect.fn("KinLeadProvision.setWorkerProjects")
   );
 });
 
-/** Replaces a live lead's domain or charter. The prompt reads both per wake-up. */
+interface LeadChange {
+  readonly name?: typeof TrimmedNonEmptyString.Type | undefined;
+  readonly domain?: KinLeadDomain | undefined;
+  readonly charter?: KinLeadCharter | undefined;
+}
+
+/**
+ * Changes a live lead's name, domain or charter inside the caller's transaction. With `ownedBy`,
+ * a lead that person doesn't own reads as not found. The prompt reads all three per wake-up.
+ */
+const change = Effect.fn("KinLeadProvision.change")(function* (
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+  fields: LeadChange,
+  ownedBy?: KinPersonId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const live = yield* leadsIn(orgId, { liveOnly: false });
+  const lead = live.find((entry) => entry.agentId === agentId);
+  if (lead === undefined || (ownedBy !== undefined && lead.ownerPersonId !== ownedBy))
+    return yield* refuse("not_found", `Org ${orgId} has no lead ${agentId}.`);
+  if (lead.retiredAt !== null)
+    return yield* refuse("retired", `Lead ${agentId} was retired at ${lead.retiredAt}.`);
+  const next = {
+    name: fields.name ?? lead.name,
+    domain: fields.domain ?? lead.domain,
+    charter: fields.charter ?? lead.charter,
+  };
+  // `create` treats a live lead with the same owner, name and domain as the same lead.
+  const twin = live.find(
+    (entry) =>
+      entry.agentId !== agentId &&
+      entry.retiredAt === null &&
+      entry.ownerPersonId === lead.ownerPersonId &&
+      entry.name === next.name &&
+      entry.domain === next.domain,
+  );
+  if (twin !== undefined)
+    return yield* refuse(
+      "conflict",
+      `Another lead is already called ${next.name} in ${next.domain}.`,
+    );
+  const changed = yield* sql`UPDATE kin_leads SET name = ${next.name}, domain = ${next.domain},
+      charter = ${next.charter}
+    WHERE org_id = ${orgId} AND agent_id = ${agentId} RETURNING agent_id`;
+  if (changed.length === 0)
+    return yield* refuse("conflict", `Lead ${agentId} changed while updating.`);
+  // Chats show the agent's name, so both rows carry it.
+  yield* sql`UPDATE kin_agents SET display_name = ${next.name}
+    WHERE org_id = ${orgId} AND agent_id = ${agentId} AND role = 'lead' RETURNING agent_id`;
+  return { ...lead, ...next };
+});
+
+/** Replaces a live lead's domain or charter, from the host's CLI. */
 export const setCharter = Effect.fn("KinLeadProvision.setCharter")(function* (
   agentId: KinAgentId,
-  change: {
-    readonly domain?: KinLeadDomain | undefined;
-    readonly charter?: KinLeadCharter | undefined;
-  },
+  fields: Pick<LeadChange, "domain" | "charter">,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId } = (yield* KinIdentity).owner;
-  return yield* transaction(
+  const lead = yield* transaction(
     sql,
     "KinLeadProvision.setCharter",
+    change(orgId, agentId, fields),
+  );
+  return { _tag: "updated" as const, lead };
+});
+
+const TrackedRow = Schema.Struct({
+  kind: KinLeadTracking.fields.kind,
+  title: Schema.String,
+  dueAt: Schema.NullOr(Schema.Number),
+  chatId: Schema.NullOr(KinChatId),
+  agentId: Schema.NullOr(KinAgentId),
+});
+const decodeTracked = Schema.decodeUnknownEffect(Schema.Array(TrackedRow));
+
+/**
+ * What each lead has in hand, from stored rows: its running workers, the deferrals still waiting
+ * to come due and the scheduled tasks still on. A deferral belongs to its chat's first-joined
+ * lead, the one the trigger wakes for it (`orgLeads.liveLead`).
+ */
+const tracked = Effect.fn("KinLeadProvision.tracked")(function* (orgId: KinOrgId) {
+  const sql = yield* SqlClient.SqlClient;
+  const firstLead = sql`(SELECT m.agent_id FROM kin_chat_members m
+      JOIN kin_agents a ON a.org_id = m.org_id AND a.agent_id = m.agent_id
+        AND a.role = 'lead' AND a.retired_at IS NULL
+      WHERE m.org_id = w.org_id AND m.chat_id = w.chat_id AND m.principal_kind = 'agent'
+        AND m.left_at IS NULL
+      ORDER BY m.joined_at, m.agent_id LIMIT 1)`;
+  const rows = yield* sql`
+    SELECT 'work' AS kind, COALESCE(k.title, 'Coding task') AS title, NULL AS "dueAt",
+      k.chat_id AS "chatId", k.agent_id AS "agentId", 0 AS rank, k.started_at AS at
+    FROM kin_workers k WHERE k.org_id = ${orgId} AND k.ended_at IS NULL
+    UNION ALL
+    SELECT CASE r.on_due WHEN 'remind' THEN 'reminder' ELSE 'follow_up' END,
+      COALESCE(json_extract(w.state_json, '$.title'), ''), r.due_at, w.chat_id, ${firstLead},
+      1, COALESCE(r.due_at, r.updated_at)
+    FROM kin_deferral_runs r
+    JOIN kin_widgets w ON w.org_id = r.org_id
+      AND w.widget_id = 'deferral:' || r.org_id || ':' || r.item_id
+    WHERE r.org_id = ${orgId} AND r.state IN ('armed', 'heads_up', 'asked', 'grace', 'snoozed')
+    UNION ALL
+    SELECT 'scheduled', COALESCE(json_extract(w.state_json, '$.title'), ''), NULL, w.chat_id,
+      ${firstLead}, 2, t.updated_at
+    FROM kin_scheduled_tasks t
+    JOIN kin_widgets w ON w.org_id = t.org_id
+      AND w.widget_id = 'scheduled:' || t.org_id || ':' || t.item_id
+    WHERE t.org_id = ${orgId} AND t.state = 'active' AND t.paused = 0
+    ORDER BY rank, at, title`.pipe(
+    Effect.mapError(toPersistenceSqlError("KinLeadProvision.tracked")),
+  );
+  return yield* decodeTracked(rows).pipe(
+    Effect.mapError(toPersistenceDecodeError("KinLeadProvision.tracked")),
+  );
+});
+
+const profileOf = (
+  lead: LeadSummary,
+  working: ReadonlySet<string>,
+  items: Effect.Success<ReturnType<typeof tracked>>,
+): KinLeadProfile => ({
+  orgId: lead.orgId,
+  agentId: lead.agentId,
+  name: lead.name as KinLeadProfile["name"],
+  domain: lead.domain,
+  charter: lead.charter,
+  model: lead.models.strong.model,
+  ownerChatId: lead.ownerChatId,
+  working: working.has(lead.agentId),
+  tracking: items
+    .filter((item) => item.agentId === lead.agentId && item.title.trim() !== "")
+    .slice(0, KIN_LEAD_TRACKING_CAP)
+    .map((item): KinLeadTracking => ({
+      kind: item.kind,
+      title: item.title.slice(0, 280),
+      ...(item.dueAt === null
+        ? {}
+        : { dueAt: DateTime.formatIso(DateTime.makeUnsafe(item.dueAt)) }),
+      chatId: item.chatId,
+    })),
+});
+
+/**
+ * The person's own live leads, oldest first. Someone with none, such as a teammate, gets none.
+ * Plain reads, outside a transaction, so a client's list never holds the writer's lock.
+ */
+export const profiles = Effect.fn("KinLeadProvision.profiles")(function* (person: PersonIdentity) {
+  const sql = yield* SqlClient.SqlClient;
+  const leads = (yield* leadsIn(person.orgId, { liveOnly: true })).filter(
+    (lead) => lead.ownerPersonId === person.personId,
+  );
+  if (leads.length === 0) return [];
+  const running = yield* sql<{ agentId: string }>`SELECT agent_id AS "agentId" FROM kin_wakeups
+    WHERE org_id = ${person.orgId} AND status = 'running' ORDER BY agent_id`.pipe(
+    Effect.mapError(toPersistenceSqlError("KinLeadProvision.profiles")),
+  );
+  const working = new Set(running.map((row) => row.agentId));
+  const items = yield* tracked(person.orgId);
+  return leads.map((lead) => profileOf(lead, working, items));
+});
+
+/**
+ * The owner changes what one of their leads is called and what it is for. Owner only, like
+ * `create`; another person's lead, or another org's, reads as not found.
+ */
+export const update = Effect.fn("KinLeadProvision.update")(function* (input: {
+  readonly editor: LeadCreator;
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+  readonly fields: LeadChange;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const person: PersonIdentity = yield* creatorFor(input.editor);
+  yield* mayCreate(person);
+  if (person.orgId !== input.orgId)
+    return yield* refuse("not_found", `Org ${input.orgId} has no lead ${input.agentId}.`);
+  return yield* transaction(
+    sql,
+    "KinLeadProvision.update",
     Effect.gen(function* () {
-      const [lead] = yield* leadsIn(orgId, { liveOnly: false, agentId });
-      if (lead === undefined)
-        return yield* refuse("not_found", `Org ${orgId} has no lead ${agentId}.`);
-      if (lead.retiredAt !== null)
-        return yield* refuse("retired", `Lead ${agentId} was retired at ${lead.retiredAt}.`);
-      const domain = change.domain ?? lead.domain;
-      const charter = change.charter ?? lead.charter;
-      const changed = yield* sql`UPDATE kin_leads SET domain = ${domain}, charter = ${charter}
-          WHERE org_id = ${orgId} AND agent_id = ${agentId} RETURNING agent_id`;
-      if (changed.length === 0)
-        return yield* refuse("conflict", `Lead ${agentId} changed while updating.`);
-      return { _tag: "updated" as const, lead: { ...lead, domain, charter } };
+      const lead = yield* change(person.orgId, input.agentId, input.fields, person.personId);
+      const running = yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${lead.orgId}
+        AND agent_id = ${lead.agentId} AND status = 'running' ORDER BY wakeup_id`.pipe(
+        Effect.mapError(toPersistenceSqlError("KinLeadProvision.update")),
+      );
+      return profileOf(
+        lead,
+        new Set(running.length > 0 ? [lead.agentId] : []),
+        yield* tracked(lead.orgId),
+      );
     }),
   );
 });

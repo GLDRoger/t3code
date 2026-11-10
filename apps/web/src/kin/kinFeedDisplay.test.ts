@@ -1,10 +1,8 @@
 import type { KinFeedRow } from "@t3tools/client-runtime/kin/kinChatFeed";
-import type { EnvironmentId, KinWidget } from "@t3tools/contracts";
+import type { KinWidget } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { kinFeedDisplay, kinIsBookkeeping, kinQuietWording } from "./kinFeedDisplay";
-
-const environmentId = "env" as EnvironmentId;
 
 function message(
   key: string,
@@ -48,7 +46,6 @@ const display = (
   const shown = kinFeedDisplay({
     rows,
     widgets: new Map((options.widgets ?? []).map((held) => [held.widgetId, held])),
-    environmentId,
     direct: options.direct ?? true,
     formatTime: (iso) => iso.slice(11, 16),
   });
@@ -56,22 +53,6 @@ const display = (
 };
 
 describe("kinFeedDisplay", () => {
-  it("never draws a card tap, whether or not the feed could read its words", () => {
-    const shown = display([
-      message("read", 1, { own: true, kind: "widget_action", body: 'Chose "Yes"' }),
-      message("unread", 2, {
-        own: true,
-        kind: "widget_action",
-        widgetId: "choice:1",
-        body: '{"widgetId":"choice:1","actionId":"choose"}',
-      }),
-    ]);
-    expect(shown).toEqual([
-      { hidden: true, quiet: null, head: null },
-      { hidden: true, quiet: null, head: null },
-    ]);
-  });
-
   it("draws the host's old reminder and memory notes as one quiet line each", () => {
     const shown = display(
       [
@@ -111,8 +92,8 @@ describe("kinFeedDisplay", () => {
         ],
       },
     );
-    expect(shown[0]?.quiet).toMatch(/^Scheduled for .*\. I'll remind you then\.$/);
-    expect(shown[1]?.quiet).toBe("Remembered: Repo, and 1 more");
+    expect(shown[0]?.quiet).toMatch(/^Reminder set for /);
+    expect(shown[1]?.quiet).toBe("Remembered: Repo and 1 more");
     // A card that still asks for a decision stays a card.
     expect(shown[2]).toMatchObject({ hidden: false, quiet: null });
   });

@@ -252,6 +252,46 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
         Effect.mapError(mapError),
         Effect.catchDefect(defect),
       ),
+    "kin.leads.list": (input) =>
+      services.pipe(
+        Effect.flatMap(({ identity }) =>
+          Effect.gen(function* () {
+            if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
+            const person = (yield* identity.resolve(session)).find(
+              (entry) => entry.orgId === input.orgId,
+            );
+            // An org the session's person isn't in has no leads to show them.
+            if (person === undefined) return { leads: [] };
+            return {
+              leads: yield* LeadProvision.profiles(person).pipe(
+                Effect.provideContext(kin.value.services.value),
+              ),
+            };
+          }),
+        ),
+        Effect.mapError(toLeadError),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.lead.update": ({ orgId, agentId, ...fields }) =>
+      services.pipe(
+        Effect.flatMap(() =>
+          Effect.gen(function* () {
+            if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
+            return yield* LeadProvision.update({
+              editor: { _tag: "session", session },
+              orgId,
+              agentId,
+              fields,
+            }).pipe(Effect.provideContext(kin.value.services.value));
+          }),
+        ),
+        Effect.mapError(toLeadError),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
     "kin.lead.interrupt": (input) =>
       services.pipe(
         Effect.flatMap(({ identity, stop }) =>

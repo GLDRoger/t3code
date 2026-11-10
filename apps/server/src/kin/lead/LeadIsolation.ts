@@ -51,34 +51,11 @@ const leadSecretReadRules = (config: {
 ];
 
 /**
- * The lead instructions are the stable head of every wake-up, so they sit in the system prompt
- * where the prompt cache reuses them. Leads reuse one session across wake-ups, and a recorded
- * (`snapshot`) prompt would keep an old instructions version until compaction, so it renders fresh.
+ * A lead is a colleague in a chat, not a coding agent: the Claude Code preset and T3's thread
+ * guidance describe tools it doesn't have and cost about 9k tokens a turn, so its instructions are
+ * the whole system prompt. A recorded (`snapshot`) prompt would outlive an instructions change.
  */
-const leadSystemPrompt = (
-  systemPrompt: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions["systemPrompt"],
-): NonNullable<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions["systemPrompt"]> => {
-  if (systemPrompt === undefined || typeof systemPrompt === "string" || Array.isArray(systemPrompt))
-    return {
-      type: "custom",
-      prompt: [...(systemPrompt === undefined ? [] : [systemPrompt].flat()), instructions],
-      snapshot: false,
-    };
-  if (systemPrompt.type === "custom")
-    return {
-      ...systemPrompt,
-      prompt: [...[systemPrompt.prompt].flat(), instructions],
-      snapshot: false,
-    };
-  return {
-    ...systemPrompt,
-    append:
-      systemPrompt.append === undefined
-        ? instructions
-        : `${systemPrompt.append}\n\n${instructions}`,
-    snapshot: false,
-  };
-};
+const leadSystemPrompt = { type: "custom" as const, prompt: instructions, snapshot: false };
 
 const leadOptions = (
   options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions,
@@ -86,7 +63,7 @@ const leadOptions = (
 ) => {
   const { tools, settings, env } = options;
   return {
-    systemPrompt: leadSystemPrompt(options.systemPrompt),
+    systemPrompt: leadSystemPrompt,
     tools: Array.isArray(tools) ? tools.filter((tool) => leadTools.includes(tool)) : leadTools,
     disallowedTools: [...new Set([...(options.disallowedTools ?? []), ...denied])],
     // The user's own MCP servers and plugins could hand a lead a shell again.

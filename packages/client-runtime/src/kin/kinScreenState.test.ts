@@ -232,6 +232,19 @@ describe("kinHomeSubtitle", () => {
     const marked = { ...inbox, chats: [chat("a", "2026-11-01T00:00:00.000Z", "**Fixed** `pay`")] };
     expect(kinHomeSubtitle(readyState(true), selectKinInboxView(marked))).toBe("Fixed pay");
   });
+
+  it.each([
+    [
+      { kind: "widget_action", body: '{"text":"Tapped \\"Done\\" on the reminder \\"Stretch\\""}' },
+      "Done",
+    ],
+    [{ kind: "system", widgetId: "memory-changes:lead:1", body: "Remembered: x" }, "Saved a note"],
+    [{ kind: "system", widgetId: "deferral:org:1", body: "Deferred to Fri" }, "Set a reminder"],
+  ])("never previews a card tap's JSON or Kin's own bookkeeping", (last, preview) => {
+    const held = { ...inbox.chats[0]!, lastMessage: last as never };
+    const view = selectKinInboxView({ ...inbox, chats: [held] });
+    expect(kinHomeSubtitle(readyState(true), view)).toBe(preview);
+  });
 });
 
 describe("kinHomeLabel", () => {

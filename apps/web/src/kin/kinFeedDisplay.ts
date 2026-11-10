@@ -1,11 +1,9 @@
-import { kinCardView } from "@t3tools/client-runtime/kin/kinCardPresentation";
+import { kinQuietCardLine } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import type { KinFeedRow } from "@t3tools/client-runtime/kin/kinChatFeed";
-import type { EnvironmentId, KinWidget } from "@t3tools/contracts";
-
-type MessageRow = Extract<KinFeedRow, { readonly type: "message" }>;
+import type { KinWidget } from "@t3tools/contracts";
 
 export interface KinRowDisplay {
-  /** A card tap: the card it answered already shows the answer, so the tap isn't drawn. */
+  /** An earlier copy of a notice the host repeated; only the last one is drawn. */
   readonly hidden: boolean;
   /** Bookkeeping drawn as one muted line instead of a bubble or card; null draws the row as is. */
   readonly quiet: string | null;
@@ -23,32 +21,6 @@ export const kinQuietWording = (text: string) => text.replace(/^Deferred to /, "
 export const kinIsBookkeeping = (text: string) =>
   /^(Remembered|Forgot|Updated|Replaced|Memory): /.test(text) || text.startsWith("Deferred to ");
 
-const allKnown = () => true;
-
-/**
- * What a row says when it is the host's old bookkeeping rather than conversation: a note about a
- * reminder it set or memory it changed. Newer hosts no longer post these.
- */
-function kinQuietText(
-  row: MessageRow,
-  widget: KinWidget | undefined,
-  environmentId: EnvironmentId,
-): string | null {
-  const { message } = row;
-  if (message.status === "deleted") return null;
-  if (message.author._tag !== "system" || widget === undefined) return null;
-  const view = kinCardView(widget, environmentId, allKnown);
-  if (view.kind === "memory_changes") {
-    const [first, ...rest] = view.changes.items;
-    if (first === undefined) return null;
-    return rest.length === 0 ? first.line : `${first.line}, and ${rest.length} more`;
-  }
-  if (view.kind === "deferral" && view.deferral.phase === "confirmed") {
-    return kinQuietWording(view.deferral.lines[0] ?? view.deferral.title);
-  }
-  return null;
-}
-
 /**
  * How each feed row is drawn, by row key. A direct chat names nobody over a bubble, since both
  * sides are known; a time shows once per minute, and not again right under a time divider.
@@ -56,7 +28,6 @@ function kinQuietText(
 export function kinFeedDisplay(input: {
   readonly rows: ReadonlyArray<KinFeedRow>;
   readonly widgets: ReadonlyMap<string, KinWidget>;
-  readonly environmentId: EnvironmentId;
   readonly direct: boolean;
   readonly formatTime: (iso: string) => string;
 }): ReadonlyMap<string, KinRowDisplay> {
@@ -89,12 +60,11 @@ export function kinFeedDisplay(input: {
     }
     const widget =
       row.message.widgetId === null ? undefined : input.widgets.get(row.message.widgetId);
-    // A tap is stored as JSON, which must never be drawn; its card carries the answer.
-    if (row.message.kind === "widget_action" && row.message.status !== "deleted") {
-      display.set(row.key, HIDDEN);
-      continue;
-    }
-    const quiet = kinQuietText(row, widget, input.environmentId);
+    // The host's old notes about a reminder it set or memory it changed; newer hosts post none.
+    const quiet =
+      row.message.author._tag === "system" && row.message.status !== "deleted"
+        ? kinQuietCardLine(widget)
+        : null;
     if (quiet !== null) {
       display.set(row.key, { hidden: false, quiet, head: null });
       previousBubble = false;
