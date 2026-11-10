@@ -61,7 +61,7 @@ describe("kinDeferralCardView", () => {
     expect(confirmed.phase).toBe("confirmed");
     expect(confirmed.title).toBe("Rate limiting");
     expect(confirmed.lines).toEqual(["Deferred to Fri 13 Nov, 9:00. I'll start then."]);
-    expect(confirmed.eyebrow).toBe("Deferral");
+    expect(confirmed.eyebrow).toBe("Scheduled");
     expect(confirmed.countdown).toEqual({ to: Date.parse(DUE), kind: "due" });
     expect(view(deferral({ onDue: "remind", text: "" })).lines).toEqual([
       "Deferred to Fri 13 Nov, 9:00. I'll remind you then.",
@@ -134,9 +134,9 @@ describe("kinDeferralCardView", () => {
   it("titles a decision card, and reads each line once", () => {
     const asked = view(deferral({ phase: "asked", text: "Due at 9:00. Start it?" }));
     expect(asked.eyebrow).toBe("Needs your decision");
-    expect(asked.accessibilityLabel).toBe("Deferral: Rate limiting. Due at 9:00. Start it?");
+    expect(asked.accessibilityLabel).toBe("Scheduled: Rate limiting. Due at 9:00. Start it?");
     expect(view(deferral({ text: "Waiting on lane A…" })).accessibilityLabel).toBe(
-      "Deferral: Rate limiting. Deferred to Fri 13 Nov, 9:00. I'll start then. Waiting on lane A…",
+      "Scheduled: Rate limiting. Deferred to Fri 13 Nov, 9:00. I'll start then. Waiting on lane A…",
     );
   });
 

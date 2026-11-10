@@ -302,7 +302,7 @@ export function kinDeferralCardView(
   const decoded = decodeDeferral(widget.state);
   if (Option.isNone(decoded)) return null;
   const card = decoded.value;
-  const title = clamp(card.title, 200) || "This deferral";
+  const title = clamp(card.title, 200) || "This item";
   const body: CardBody =
     widget.closedAt === null
       ? cardBody(card, timeZone)
@@ -311,10 +311,10 @@ export function kinDeferralCardView(
     widgetId: widget.widgetId,
     revision: widget.revision,
     itemId: card.itemId,
-    eyebrow: body.phase === "asked" ? "Needs your decision" : "Deferral",
+    eyebrow: body.phase === "asked" ? "Needs your decision" : "Scheduled",
     title,
     ...body,
-    accessibilityLabel: kinSentences([`Deferral: ${title}`, ...body.lines]),
+    accessibilityLabel: kinSentences([`Scheduled: ${title}`, ...body.lines]),
   };
 }
 
