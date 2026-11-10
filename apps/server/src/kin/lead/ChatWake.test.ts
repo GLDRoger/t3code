@@ -389,6 +389,10 @@ describe("ChatWake", () => {
         /\bsubscribeAll\b/.test(NodeFS.readFileSync(NodePath.join(root, file), "utf8")),
       )
       .toSorted();
-    assert.deepStrictEqual(readers, ["kin/chat/KinChatHub.ts", "kin/lead/ChatWake.ts"]);
+    assert.deepStrictEqual(readers, [
+      "kin/chat/KinChatHub.ts",
+      "kin/lead/ChatWake.ts",
+      "kin/push/KinPushDispatch.ts",
+    ]);
   });
 });

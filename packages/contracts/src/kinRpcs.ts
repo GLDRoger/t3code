@@ -150,6 +150,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.orgs.list": "kin-chat",
   "kin.chats.subscribe": "kin-chat",
   "kin.chats.createDirect": "kin-chat",
+  "kin.chats.mute": "kin-chat",
   "kin.chat.subscribe": "kin-chat",
   "kin.chat.history": "kin-chat",
   "kin.messages.send": "kin-chat",

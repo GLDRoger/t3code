@@ -301,6 +301,10 @@ export class KinChatRepository extends Context.Service<
       input: KinAgent & { readonly createdAt: IsoDateTime },
     ) => Effect.Effect<void, RepositoryError>;
     readonly addMember: (input: KinChatMember) => Effect.Effect<KinChatMember, RepositoryError>;
+    /** Sets an active member's mute; `null` unmutes. None when the member isn't active. */
+    readonly setMute: (
+      input: MemberScope & { readonly mutedUntil: IsoDateTime | null },
+    ) => Effect.Effect<Option.Option<KinChatMember>, RepositoryError>;
     readonly leaveChat: (
       input: MemberScope & { readonly leftAt: IsoDateTime },
     ) => Effect.Effect<ReadonlyArray<KinWaitingItem>, RepositoryError>;
@@ -1034,6 +1038,14 @@ const make = Effect.gen(function* () {
         );
       },
       Effect.mapError(toRepositoryError("KinChatRepository.addMember")),
+    ),
+    setMute: Effect.fn("KinChatRepository.setMute")(
+      function* (input) {
+        const changed = yield* sql`UPDATE kin_chat_members SET muted_until = ${input.mutedUntil}
+ WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND member_id = ${input.memberId} AND left_at IS NULL RETURNING member_id`;
+        return changed.length === 0 ? Option.none() : yield* memberOne(input);
+      },
+      Effect.mapError(toRepositoryError("KinChatRepository.setMute")),
     ),
     leaveChat: Effect.fn("KinChatRepository.leaveChat")(
       function* (input) {
