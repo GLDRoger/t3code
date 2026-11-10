@@ -325,6 +325,15 @@ describe("rows", () => {
       ]),
     ).toMatchObject([{ text: "Tech lead didn't reply.", retry: null }]);
     expect(systemRows([notice(6, "kin-no-reply:w1")])).toMatchObject([{ retry: null }]);
+    // The host's own retry answering ends "trying again"; giving up keeps Retry.
+    expect(
+      systemRows([
+        asked,
+        notice(6, "kin-retrying:w1"),
+        notice(7, "kin-failed:w2"),
+        agentMessage(8),
+      ]),
+    ).toMatchObject([{ retry: null }, { retry: "Is the deploy green?" }]);
   });
 
   it("starts each local day with a separator and restarts author lines after it", () => {

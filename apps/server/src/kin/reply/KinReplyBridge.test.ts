@@ -373,7 +373,7 @@ it.effect("bounds one wake-up to eight messages in a chat, kin_chat_post include
 );
 
 it.effect.each([
-  { rescue: [], expected: ["system:Ada didn't reply. Send your message again to ask again."] },
+  { rescue: [], expected: ["system:Ada didn't reply."] },
   {
     rescue: ["Sorry, here it is: the deploy is done."],
     expected: ["agent:Sorry, here it is: the deploy is done."],
@@ -398,7 +398,7 @@ it.effect.each([
   {
     ask: "Did the deploy finish?",
     rescues: 1,
-    expected: ["system:Ada didn't reply. Send your message again to ask again."],
+    expected: ["system:Ada didn't reply."],
   },
 ])(
   "a lead's 👍 is its reply only when the owner asked nothing (%#)",

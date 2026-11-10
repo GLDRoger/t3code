@@ -89,23 +89,52 @@ export const ReadResult = Schema.Struct({
 export const SearchResult = Schema.Array(
   Schema.Struct({ ...MemoryItemHead.fields, duplicate: Schema.Boolean }),
 );
+/** An authority refusal: who is calling, or when. Its reason is never spelled out. */
 const denied = () =>
   new KinChatError({ reason: "not_allowed", message: "Lead operation is not allowed." });
+/** A request the lead can fix: the message says what to change. */
+const invalid = (message: string) => new KinChatError({ reason: "not_allowed", message });
 const missing = () => new KinChatError({ reason: "not_found", message: "Kin record not found." });
+const busy = () =>
+  new KinChatError({
+    reason: "unavailable",
+    message: "Memory is busy finishing another wake-up. Try the same call again in a moment.",
+  });
+// Writer rejections about the caller rather than the request.
+const authorityRejections = new Set([
+  "Wake-up is not running",
+  "Unknown source person",
+  "Invalid writer authority",
+  "Invalid server context",
+  "Different wake-up retry",
+  "Invalid agent id",
+  "Invalid dream branch",
+  "Invalid undo target",
+]);
 const isChatError = Schema.is(KinChatError);
 const isNotFound = Schema.is(Memory.MemoryNotFound);
 const isConflict = Schema.is(Writer.MemoryConflict);
 const isRejected = Schema.is(Writer.MemoryWriteRejected);
 const isItemError = Schema.is(MemoryItemError);
 const isQueryError = Schema.is(Memory.MemoryQueryDecodeError);
-const failure = (error: unknown) =>
-  isChatError(error)
-    ? error
-    : isNotFound(error)
-      ? missing()
-      : isConflict(error) || isRejected(error) || isItemError(error) || isQueryError(error)
-        ? denied()
-        : new KinChatError({ reason: "unavailable", message: "Kin memory is unavailable." });
+const failure = (error: unknown) => {
+  if (isChatError(error)) return error;
+  if (isNotFound(error)) return missing();
+  if (isConflict(error))
+    return new KinChatError({
+      reason: "conflict",
+      message: `Memory item ${error.existingId} already exists. Update or supersede it instead of creating it again.`,
+    });
+  if (isRejected(error)) {
+    if (error.reason === "Another wake-up owns the writer") return busy();
+    return authorityRejections.has(error.reason)
+      ? denied()
+      : invalid(`Memory write refused: ${error.reason}.`);
+  }
+  if (isItemError(error)) return invalid(`Memory item is malformed: ${error.reason}.`);
+  if (isQueryError(error)) return invalid("Memory search filters are invalid.");
+  return new KinChatError({ reason: "unavailable", message: "Kin memory is unavailable." });
+};
 const decodeEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(KinEvent));
 
 export class LeadMemory extends Context.Service<
@@ -273,6 +302,12 @@ const make = Effect.gen(function* () {
       yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${ctx.orgId} AND agent_id = ${ctx.agentId} AND wakeup_id = ${ctx.wakeupId} AND event_id = ${eventId}`;
     if (!row) return yield* missing();
   });
+  const reused = (key: string) =>
+    invalid(
+      key === "end"
+        ? "kin_end was already called with a different summary in this wake-up."
+        : `Memory item ${key.slice("item:".length)} was already written differently in this wake-up. Repeat the same call, or use a new id.`,
+    );
   const receipt = Effect.fn("LeadMemory.receipt")(function* (
     ctx: Effect.Success<ReturnType<typeof resolve>>,
     key: string,
@@ -286,7 +321,7 @@ const make = Effect.gen(function* () {
     const [prior] = yield* sql<{
       request_hash: string;
     }>`SELECT request_hash FROM kin_lead_tool_calls WHERE org_id = ${ctx.orgId} AND wakeup_id = ${ctx.wakeupId} AND call_key = ${key}`;
-    if (prior && prior.request_hash !== digest) return yield* denied();
+    if (prior && prior.request_hash !== digest) return yield* reused(key);
     // Identical retries may re-stage; the writer reports lost sessions after restart.
     yield* operation;
     const inserted =
@@ -295,7 +330,7 @@ const make = Effect.gen(function* () {
       const [stored] = yield* sql<{
         request_hash: string;
       }>`SELECT request_hash FROM kin_lead_tool_calls WHERE org_id = ${ctx.orgId} AND wakeup_id = ${ctx.wakeupId} AND call_key = ${key}`;
-      if (stored?.request_hash !== digest) return yield* denied();
+      if (stored?.request_hash !== digest) return yield* reused(key);
     }
   });
   const stage = Effect.fn("LeadMemory.stage")(function* (
@@ -310,8 +345,9 @@ const make = Effect.gen(function* () {
     yield* checkSource(ctx, input.sourceEventId);
     const { body, ...fields } = input.item;
     if (input.op === "supersede" && (!input.supersedes || input.supersedes === fields.id))
-      return yield* denied();
-    if (input.op !== "supersede" && input.supersedes !== undefined) return yield* denied();
+      return yield* invalid("supersede needs `supersedes` naming another item's id.");
+    if (input.op !== "supersede" && input.supersedes !== undefined)
+      return yield* invalid("Only the supersede op takes `supersedes`.");
     const current = yield* memory
       .readItemQuietly(ctx.orgId, fields.id, { lead: ctx.agentId })
       .pipe(Effect.asSome, Effect.catchTags({ MemoryNotFound: () => Effect.succeedNone }));
@@ -319,7 +355,8 @@ const make = Effect.gen(function* () {
       if (current._tag === "None") return yield* missing();
     }
     if (fields.kind === "deferral") {
-      if (current._tag === "None" || current.value.head.kind !== "deferral") return yield* denied();
+      if (current._tag === "None" || current.value.head.kind !== "deferral")
+        return yield* invalid(`${fields.id} is not a deferral. Use kin_defer to make one.`);
       const { orgId: _org, path: _path, ...stored } = current.value.head;
       if (
         (fields.status !== current.value.head.status &&
@@ -332,9 +369,13 @@ const make = Effect.gen(function* () {
             JSON.stringify(value) !== JSON.stringify(stored[key as keyof typeof stored]),
         )
       )
-        return yield* denied();
-    } else if (fields.chat !== undefined) return yield* denied();
-    if (input.op === "invalidate" && fields.invalid_at === null) return yield* denied();
+        return yield* invalid(
+          "A deferral can only be marked done or cancelled, or invalidated; send its other fields unchanged.",
+        );
+    } else if (fields.chat !== undefined)
+      return yield* invalid("Only deferrals carry `chat`. Leave it out.");
+    if (input.op === "invalidate" && fields.invalid_at === null)
+      return yield* invalid("invalidate needs `invalid_at`.");
     const folder = fields.kind === "person" ? "people" : `${fields.kind}s`;
     yield* receipt(
       ctx,

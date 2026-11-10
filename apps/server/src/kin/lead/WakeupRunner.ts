@@ -155,9 +155,32 @@ const make = Effect.gen(function* () {
     row: typeof RunningRow.Type,
     status: "completed" | "failed" | "timed_out",
   ) {
+    // Read first: finishing returns retried events to the queue, which drops their lane.
+    const lane =
+      status === "completed" || Option.isNone(bridge)
+        ? Option.none()
+        : yield* bridge.value.lane(row);
     const finished = yield* queue.finish({ orgId: row.orgId, wakeupId: row.wakeupId, status });
+    if (Option.isNone(bridge) || Option.isNone(lane)) return;
     // Something visible already happened, so a silent retry could repeat it; say so instead.
-    if (finished.stranded > 0 && Option.isSome(bridge)) yield* bridge.value.partway(row);
+    // Otherwise the person waiting hears at once that it is retrying, or has stopped.
+    const outcome =
+      finished.stranded > 0
+        ? "partway"
+        : lane.value.mode !== "reply"
+          ? undefined
+          : finished.failedEventIds.length > 0
+            ? "gave_up"
+            : finished.retried > 0
+              ? "retrying"
+              : undefined;
+    if (outcome !== undefined)
+      yield* bridge.value.failed({
+        orgId: row.orgId,
+        wakeupId: row.wakeupId,
+        lane: lane.value,
+        outcome,
+      });
   });
   const routineContent = yield* Effect.serviceOption(RoutineContent.KinRoutineContent);
   const sql = yield* SqlClient.SqlClient;
@@ -204,7 +227,7 @@ const make = Effect.gen(function* () {
   // In memory on purpose: after a restart the first wake-up is fresh, which is always safe.
   const warm = new Map<string, WarmSession>();
   const warmKey = (orgId: KinOrgId, agentId: KinAgentId) => `${orgId}\u0000${agentId}`;
-  // Prepare replaces the read clone, so a warm wake-up resumes the conversation in a new process.
+  // A process whose cwd was removed can't run; the next run resumes the conversation in a new one.
   const releaseProcess = Effect.fn("WakeupRunner.releaseProcess")(function* (threadId: ThreadId) {
     const own = (yield* threads.getThreadProjection(threadId)).providerThreads.filter(
       (providerThread) => providerThread.appThreadId === threadId,
@@ -760,7 +783,7 @@ const make = Effect.gen(function* () {
               direct === undefined
                 ? undefined
                 : yield* memory.readPromptSnapshot(orgId, pinned.head, { lead: agentId });
-            const resumes =
+            const resumable =
               previous !== undefined &&
               seen !== undefined &&
               previous.chatId === direct &&
@@ -771,6 +794,20 @@ const make = Effect.gen(function* () {
               row.startedAt - previous.endedAt < WARM_IDLE_MS &&
               // New standing rules are a new contract, so they get a fresh session.
               previous.rules === seen.rules;
+            // Prepare refills the read checkout in place, so an idle warm process keeps its cwd,
+            // unless the directory itself is new (a first fill, or after a purge).
+            const resumes =
+              resumable &&
+              (pinned.replaced !== true ||
+                (yield* releaseProcess(previous.threadId).pipe(
+                  Effect.catchCause((cause) =>
+                    Effect.logWarning("Kin lead process release failed", {
+                      orgId,
+                      wakeupId,
+                      cause,
+                    }).pipe(Effect.as(false)),
+                  ),
+                )));
             const text = yield* prompt.build({
               orgId,
               agentId,
@@ -867,16 +904,6 @@ const make = Effect.gen(function* () {
               });
             const status = yield* wait(row, project.id);
             if (status !== "completed" || direct === undefined || seen === undefined) return;
-            const released = yield* releaseProcess(threadId).pipe(
-              Effect.catchCause((cause) =>
-                Effect.logWarning("Kin lead process release failed", {
-                  orgId,
-                  wakeupId,
-                  cause,
-                }).pipe(Effect.as(false)),
-              ),
-            );
-            if (!released) return;
             const [chat] = yield* sql<{
               lastSeq: number;
             }>`SELECT last_seq AS "lastSeq" FROM kin_chats WHERE org_id = ${orgId} AND chat_id = ${direct}`;

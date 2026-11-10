@@ -2,6 +2,7 @@ import { MemoryItemCondition, MemoryItemFrontMatter, type KinOrgId } from "@t3to
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import * as SchemaIssue from "effect/SchemaIssue";
 import { defaultReviewBy } from "./freshness.ts";
 import { isSeq, parseDocument } from "yaml";
 
@@ -41,6 +42,22 @@ const decodeStaged = Schema.decodeUnknownEffect(
     review_by: Schema.optional(MemoryItemFrontMatter.fields.review_by),
   }),
 );
+
+const formatIssue = SchemaIssue.makeFormatterStandardSchemaV1();
+/** The key a schema failure names. Never its value: schema messages embed the offending source. */
+export const schemaKeyFailure = (error: MemoryItemError) => {
+  if (error.reason !== "Invalid front matter schema" || !Schema.isSchemaError(error.cause))
+    return undefined;
+  const issue = formatIssue(error.cause.issue).issues[0];
+  const key = issue?.path?.map(String).join(".") ?? "";
+  if (!key) return undefined;
+  const missing = issue?.message === "Missing key";
+  return {
+    key,
+    missing,
+    reason: missing ? `Missing required key ${key}` : `Invalid value for key ${key}`,
+  };
+};
 
 // Parsing runs per blob under Memory.load; avoid creating a span for every item.
 export const parseFrontMatter = Effect.fnUntraced(function* (

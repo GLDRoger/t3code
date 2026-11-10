@@ -1,10 +1,8 @@
 import { KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
-import * as SchemaIssue from "effect/SchemaIssue";
 import { YAMLError } from "yaml";
 
-import { parseFrontMatter, type MemoryItemError } from "./frontMatter.ts";
+import { parseFrontMatter, schemaKeyFailure, type MemoryItemError } from "./frontMatter.ts";
 import { folders, maxBlobBytes } from "./Memory.ts";
 
 export interface LintFailure {
@@ -14,7 +12,6 @@ export interface LintFailure {
 }
 
 const orgId = KinOrgId.make("memory-lint");
-const formatIssue = SchemaIssue.makeFormatterStandardSchemaV1();
 
 export interface MemoryTreeEntry {
   readonly path: string;
@@ -104,14 +101,13 @@ const describe = (error: MemoryItemError, text: string): { line: number; reason:
   if (field) return { line: keyLine(text, field), reason: error.reason };
   if (error.reason === "Unknown field in on condition")
     return { line: keyLine(text, "on"), reason: error.reason };
-  if (error.reason === "Invalid front matter schema" && Schema.isSchemaError(error.cause)) {
-    const issue = formatIssue(error.cause.issue).issues[0];
-    const key = issue?.path?.map(String).join(".") ?? "";
-    const top = key.split(".")[0] ?? "";
-    if (!top) return { line: 1, reason: error.reason };
-    return issue?.message === "Missing key"
-      ? { line: 1, reason: `Missing required key ${key}` }
-      : { line: keyLine(text, top), reason: `Invalid value for key ${key}` };
+  if (error.reason === "Invalid front matter schema") {
+    const failure = schemaKeyFailure(error);
+    if (failure === undefined) return { line: 1, reason: error.reason };
+    return {
+      line: failure.missing ? 1 : keyLine(text, failure.key.split(".")[0] ?? ""),
+      reason: failure.reason,
+    };
   }
   if (error.reason.startsWith("Malformed YAML")) {
     const problem = error.cause instanceof Error ? error.cause.cause : undefined;

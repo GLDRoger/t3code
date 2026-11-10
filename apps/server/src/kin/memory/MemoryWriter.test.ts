@@ -801,6 +801,18 @@ it.live.each([
             reason: expect.stringContaining("Disallowed memory path"),
           },
         });
+      // The decode cause is dropped before the lead sees the error, so the reason names the key.
+      expect(
+        yield* writer
+          .stage(orgId, "wake1", {
+            path: "deferrals/bad-status.md",
+            content: fixtureItem({ id: "bad-status", status: "maybe" }),
+          })
+          .pipe(Effect.result),
+      ).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "MemoryItemError", reason: "Invalid value for key status" },
+      });
       yield* fs.symlink(source, `${paths.writer}/people`);
       expect(
         (yield* writer

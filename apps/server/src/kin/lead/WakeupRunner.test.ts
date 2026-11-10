@@ -28,6 +28,7 @@ import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as ChatService from "../chat/KinChatService.ts";
 import * as ChatHub from "../chat/KinChatHub.ts";
 import * as Presence from "../reply/KinPresence.ts";
+import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
 import * as LevelGate from "./LevelGate.ts";
 import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import * as Floor from "../floor/KinFloor.ts";
@@ -415,6 +416,36 @@ describe("WakeupRunner", () => {
         assert.strictEqual((yield* (yield* Budget.KinBudget).get(orgId)).leadUnits, 55.5);
       }).pipe(Effect.provide(harness({ failed: true })), provideDeterministicTestRuntime),
   );
+  it.effect("tells the owner at once that a failed start retries soon, then that it stopped", () =>
+    Effect.gen(function* () {
+      const outcomes: Array<string> = [];
+      const bridge = Layer.mock(KinReplyBridge)({
+        lane: () =>
+          Effect.succeedSome({
+            chatId: KinChatId.make("owner-chat"),
+            mode: "reply" as const,
+            leadName: "Lead",
+          }),
+        begin: () => Effect.void,
+        complete: () => Effect.void,
+        end: () => Effect.void,
+        failed: (input) => Effect.sync(() => void outcomes.push(input.outcome)),
+      });
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* (yield* KinEventQueue.KinEventQueue).enqueue(laneMessage("asked"));
+        for (const wait of ["15 seconds", "60 seconds", undefined] as const) {
+          yield* Fiber.join(yield* run());
+          if (wait !== undefined) yield* TestClock.adjust(wait);
+        }
+        assert.deepStrictEqual(outcomes, ["retrying", "retrying", "gave_up"]);
+        assert.deepStrictEqual(yield* sql`SELECT state, attempts FROM kin_events`, [
+          { state: "failed", attempts: 3 },
+        ]);
+      }).pipe(Effect.provide(harness({ failed: true }).pipe(Layer.provide(bridge))));
+    }).pipe(provideDeterministicTestRuntime),
+  );
   it.effect(
     "runs two wake-ups on one T3 thread with distinct provider threads and captures only each run's usage",
     () =>
@@ -552,6 +583,14 @@ describe("WakeupRunner", () => {
         let journals = 0;
         const prompts: Array<KinLeadPromptInput> = [];
         const opened: Array<string> = [];
+        let prepares = 0;
+        // The 5th prepare finds a new checkout directory, as after a purge.
+        const prepare = () =>
+          Effect.sync(() => ({
+            head: "abc",
+            indexAsOf: DateTime.makeUnsafe("2026-11-08T00:00:00.000Z"),
+            ...(++prepares === 5 ? { replaced: true as const } : {}),
+          }));
         const writer = Layer.mock(Writer.MemoryWriter)({
           appendJournal: () => Effect.sync(() => void journals++),
           commitWakeup: () => Effect.sync(() => (commits++, { commit: "fixture" })),
@@ -568,15 +607,16 @@ describe("WakeupRunner", () => {
           yield* wake("late");
           // The 11th starts fresh at the turn cap, and the 12th after 10 idle minutes.
           assert.deepStrictEqual(yield* sessions(), [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 3]);
-          // Each wake-up still gets its own process, so its cwd is the newly replaced read clone.
-          assert.lengthOf(opened, 12);
+          // Warm wake-ups keep the idle process, since the read checkout is refilled in place;
+          // a new directory resumes in a new one. (The fake also keeps it across fresh contexts.)
+          assert.lengthOf(opened, 2);
           assert.deepStrictEqual(
             prompts.map((prompt) => prompt.since !== undefined),
             [false, ...Array.from({ length: 9 }, () => true), false, false],
           );
           assert.strictEqual(commits, 12);
           assert.strictEqual(journals, 12);
-        }).pipe(Effect.provide(harness({ writer, prompts, opened })));
+        }).pipe(Effect.provide(harness({ writer, prompts, opened, prepare })));
       }).pipe(provideDeterministicTestRuntime),
   );
   it.effect.each(["another direct chat", "a level change", "new standing rules"] as const)(

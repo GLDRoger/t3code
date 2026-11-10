@@ -609,7 +609,7 @@ describe("KinEventQueue", () => {
       }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("retries failed provider runs after five minutes and fails the third attempt", () =>
+  it.effect("retries failed provider runs soon and fails the third attempt", () =>
     Effect.gen(function* () {
       yield* seed();
       const queue = yield* KinEventQueue.KinEventQueue;
@@ -631,15 +631,18 @@ describe("KinEventQueue", () => {
             terminal.failedEventIds,
             attempt === 3 ? [KinEventId.make(id)] : [],
           );
+          if ("retried" in terminal) assert.strictEqual(terminal.retried, attempt === 3 ? 0 : 1);
           assert.deepStrictEqual((yield* failed).failedEventIds, []);
           const now = yield* Clock.currentTimeMillis;
+          // A run that showed nothing retries soon; a counted release keeps its five minutes.
+          const delay = mode === "release" ? 300_000 : attempt === 1 ? 15_000 : 60_000;
           assert.deepStrictEqual(
             yield* sql`SELECT state, attempts, not_before FROM kin_events WHERE event_id = ${id}`,
             [
               {
                 state: attempt === 3 ? "failed" : "queued",
                 attempts: attempt,
-                not_before: now + 300_000,
+                not_before: now + delay,
               },
             ],
           );
@@ -647,13 +650,27 @@ describe("KinEventQueue", () => {
             const retry = yield* Effect.scoped(queue.claim(input(`${id}-early-${attempt}`))).pipe(
               Effect.forkChild,
             );
-            yield* TestClock.adjust("299 seconds");
+            yield* TestClock.adjust(delay - 1_000);
             assert.isUndefined(retry.pollUnsafe());
             yield* Fiber.interrupt(retry);
             yield* TestClock.adjust("1 second");
           }
         }
       }
+      // A new message from the person waiting brings their failed start forward to join it.
+      yield* queue.enqueue(yield* event("asked", "chat.message"));
+      yield* TestClock.adjust("20 seconds");
+      yield* Effect.scoped(queue.claim(input("asked-1")));
+      yield* queue.finish({ ...input("asked-1"), status: "failed" });
+      yield* queue.enqueue(yield* event("asked-again", "chat.message"));
+      assert.deepStrictEqual(
+        yield* sql`SELECT event_id, not_before FROM kin_events
+          WHERE event_id IN ('asked', 'asked-again') ORDER BY event_id`,
+        [
+          { event_id: "asked", not_before: null },
+          { event_id: "asked-again", not_before: null },
+        ],
+      );
       const invalidFinish = yield* queue
         .finish({
           ...input("invalid"),
