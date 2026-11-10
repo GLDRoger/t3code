@@ -25,4 +25,5 @@ Set by the owner on 10 Nov 2026. Read this before planning, appraising, or cutti
 ## Standing choices
 
 - The leads run on Opus, for every reply. Don't switch conversation to a cheaper model to save money or latency without asking the owner.
+- Kin reuses T3 Code's own client components wherever they fit: the composer and chat input, message rendering, working and thinking indicators, lists, and settings. On web, desktop, and mobile alike, Kin should feel like the regular T3 experience. Build a Kin-specific component only for something T3 has no equivalent for, such as approval or memory cards, and extend a shared component with a variant rather than forking it.
 - Speed matters, but not at the cost of slop.
