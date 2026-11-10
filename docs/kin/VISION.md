@@ -1,9 +1,10 @@
 # Kin: the end goal
 
-Set by the owner on 10 Nov 2026. Read this before planning, appraising, or cutting scope. It overrides any summary, plan, or review that reads Kin as a single-owner assistant. Any change to it needs the owner's sign-off.
+Set by the owner on 10 Nov 2026. Read this before planning, appraising, or cutting scope. It overrides any summary, plan, or review that reads Kin as only a single-owner assistant. Any change to it needs the owner's sign-off.
 
 **Run an entire company from the phone.** Kin is a messaging app, like WhatsApp, where the people and AI agents of a company work together. Think Grok bot plus T3 Code, but for every function of the company, not just coding.
 
+- **A chief of staff for the owner.** A personal lead the owner talks to one-on-one belongs in the app: it remembers, sets reminders, and follows up. It is one part of Kin, not the whole of it.
 - **Many leads, in many domains.** Engineering is the first, with Tech lead. Growth strategy, marketing, social media, billing, finance, and any other domain the owner creates each get their own lead.
 - **Every kind of chat in one list:**
   - DMs with a lead;
