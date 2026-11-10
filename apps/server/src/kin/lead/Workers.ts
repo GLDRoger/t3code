@@ -1,5 +1,5 @@
 import {
-  CommandId,
+  EnvironmentId,
   KinAgentId,
   KinChatError,
   KinChatId,
@@ -7,8 +7,8 @@ import {
   KinMemoryItemId,
   KinOrgId,
   KinWorkerId,
-  MessageId,
   ModelSelection,
+  type OrchestratorMcpFailure,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -16,28 +16,26 @@ import {
   TrimmedNonEmptyString,
   WorkerReport,
   type KinLevel,
-  type OrchestrationV2Run,
-  type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Digest from "effect/crypto/Digest";
-import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import type * as Tool from "effect/ai/Tool";
 import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
 import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
-import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
-import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
-import { ProviderInstanceRegistry } from "../../provider/ProviderInstanceRegistry.ts";
+import * as ProjectService from "../../project/ProjectService.ts";
+import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as Memory from "../memory/Memory.ts";
@@ -47,6 +45,8 @@ import { isOrgPaused, STOP_REASON } from "./orgState.ts";
 import { resolveLead } from "./LeadMemory.ts";
 import { quote } from "./LeadPrompt.ts";
 import { buildBrief, Quoted, reportFormat } from "./workerBrief.ts";
+import * as WorkerEnvironment from "./workerEnvironment.ts";
+import { endedStatuses, WorkerTracker } from "./WorkerTracker.ts";
 
 const text = (max: number) => Schema.String.check(Schema.isMaxLength(max));
 
@@ -82,45 +82,6 @@ export const DelegateResult = Schema.Union([
   Schema.Struct({ shadowed: Schema.Literal(true), entryId: TrimmedNonEmptyString }),
 ]);
 export const StopResult = Schema.Struct({ workerId: KinWorkerId, stopped: Schema.Boolean });
-
-// lead.md release gate: workers hold a full /mcp credential until T3 scopes tools per capability.
-const workerLaunchReady = false;
-/** Test seam for the release gate; production always reads `workerLaunchReady`. */
-export const WorkerLaunchGate = Context.Reference<boolean>("t3/kin/lead/Workers/WorkerLaunchGate", {
-  defaultValue: () => workerLaunchReady,
-});
-
-const isLive = (run: OrchestrationV2Run) =>
-  run.status === "queued" || ThreadManagement.isActiveRun(run);
-type ThreadRuns = Pick<OrchestrationV2ThreadProjection, "thread" | "runs">;
-const liveRun = (projection: ThreadRuns) => projection.runs.findLast(isLive);
-/** Interrupts the thread's live run and stops its delegated tasks; true when a run was live. */
-export const stopThreadTree = Effect.fn("KinWorkers.stopThreadTree")(function* (
-  threads: ThreadManagement.ThreadManagementService["Service"],
-  input: {
-    readonly projection: ThreadRuns;
-    readonly prefix: string;
-    readonly tag: string;
-    readonly reason: string;
-  },
-) {
-  const { projection, prefix, tag, reason } = input;
-  const active = liveRun(projection);
-  if (active !== undefined)
-    yield* threads.interruptThread({
-      projectId: projection.thread.projectId,
-      threadId: projection.thread.id,
-      runId: active.id,
-      commandId: CommandId.make(`${prefix}:${tag}`),
-      reason,
-    });
-  yield* threads.stopDelegatedTasks({
-    threadId: projection.thread.id,
-    commandId: CommandId.make(`${prefix}-tasks:${tag}`),
-    reason,
-  });
-  return active !== undefined;
-});
 
 const supportedDrivers = new Set([
   ProviderDriverKind.make("claudeAgent"),
@@ -158,6 +119,9 @@ const WorkerRow = Schema.Struct({
   chatId: Schema.NullOr(KinChatId),
   model: Schema.fromJsonString(ModelSelection),
   report: Schema.NullOr(Schema.fromJsonString(WorkerReport)),
+  environmentId: Schema.NullOr(EnvironmentId),
+  projectId: Schema.NullOr(ProjectId),
+  startedAt: Schema.Number,
 });
 const decodeLead = Schema.decodeUnknownEffect(LeadRow);
 const decodeWorker = Schema.decodeUnknownEffect(WorkerRow);
@@ -191,9 +155,10 @@ const make = Effect.gen(function* () {
   const chat = yield* KinChatService;
   const budget = yield* KinBudget;
   const memory = yield* Memory.Memory;
-  const launch = yield* ThreadLaunch.ThreadLaunchService;
-  const threads = yield* ThreadManagement.ThreadManagementService;
-  const providers = yield* ProviderInstanceRegistry;
+  const projects = yield* ProjectService.ProjectService;
+  const repositories = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
+  const env = yield* WorkerEnvironment.KinWorkerEnvironment;
+  const tracker = yield* WorkerTracker;
   const environment = yield* ServerEnvironment;
   const orchestrator = yield* OrchestratorV2;
   const summary = yield* KinLevels.KinShadowSummary;
@@ -225,7 +190,8 @@ const make = Effect.gen(function* () {
   const worker = Effect.fn("KinWorkers.worker")(function* (orgId: KinOrgId, workerId: KinWorkerId) {
     const [row] = yield* sql`SELECT worker_id AS "workerId", kind, agent_id AS "agentId",
       wakeup_id AS "wakeupId", thread_id AS "threadId", title, chat_id AS "chatId",
-      model_json AS model, report_json AS report
+      model_json AS model, report_json AS report, environment_id AS "environmentId",
+      project_id AS "projectId", started_at AS "startedAt"
       FROM kin_workers WHERE org_id = ${orgId} AND worker_id = ${workerId} ORDER BY worker_id`;
     if (row === undefined) return yield* missing();
     return yield* decodeWorker(row);
@@ -274,9 +240,12 @@ const make = Effect.gen(function* () {
     if (entry.created) yield* summary.refresh({ orgId: ctx.orgId, agentId: ctx.agentId });
     return { shadowed: true as const, entryId: entry.entryId };
   });
+  /** Where new work may start; workers never run on this server. */
   const admit = Effect.fn("KinWorkers.admit")(function* (orgId: KinOrgId) {
-    if (!(yield* WorkerLaunchGate))
-      return yield* denied("Worker launches are disabled until T3 tool scoping lands.");
+    if (Option.isNone(env.environmentId))
+      return yield* denied(
+        "This Kin host has no worker environment, so workers can't start. Tell the owner.",
+      );
     if (yield* isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
       return yield* denied("Kin is paused by the owner. Nothing new starts until they resume.");
     if (!(yield* budget.admitWorker(orgId)))
@@ -285,38 +254,101 @@ const make = Effect.gen(function* () {
         message:
           "Today's worker budget is used up. Tell the owner; workers can start again after the daily reset or a higher limit.",
       });
+    return env.environmentId.value;
   });
-  const selection = Effect.fn("KinWorkers.selection")(function* (
+  /** The worker environment refused or could not be reached; its message says which. */
+  const there =
+    (fallback: string) =>
+    <A, R>(effect: Effect.Effect<A, OrchestratorMcpFailure, R>) =>
+      effect.pipe(
+        Effect.tapError((error) =>
+          Effect.logWarning("Kin worker environment call failed", { code: error.code }),
+        ),
+        Effect.mapError(
+          (error) =>
+            new KinChatError({
+              reason: "unavailable",
+              message: `${fallback} The worker environment said: ${error.message}`.slice(0, 2_000),
+            }),
+        ),
+      );
+  const pick = Effect.fn("KinWorkers.pick")(function* (
     model: typeof WorkerModel.Type | undefined,
     configured: typeof LeadRow.Type.models,
   ) {
-    const chosen =
-      model === undefined || model === "strong"
-        ? configured.strong
-        : model === "cheap"
-          ? configured.cheap
-          : yield* decodeSelection(model).pipe(Effect.mapError(() => denied()));
-    const instance = yield* providers.getInstance(chosen.instanceId);
-    if (instance === undefined || !instance.enabled || !supportedDrivers.has(instance.driverKind))
+    return model === undefined || model === "strong"
+      ? configured.strong
+      : model === "cheap"
+        ? configured.cheap
+        : yield* decodeSelection(model).pipe(Effect.mapError(() => denied()));
+  });
+  /** The instance there must be Claude Code or Codex, whatever it is called there. */
+  const supported = Effect.fn("KinWorkers.supported")(function* (
+    environmentId: EnvironmentId,
+    chosen: ModelSelection,
+  ) {
+    const capabilities = yield* env
+      .call(environmentId, WorkerEnvironment.tools.capabilities, {})
+      .pipe(there("The worker could not start."));
+    const instance = capabilities.providers.find(
+      (provider) => provider.providerInstanceId === chosen.instanceId,
+    );
+    if (instance === undefined || !supportedDrivers.has(instance.driverKind))
       return yield* denied("Kin workers run on an enabled Claude Code or Codex provider only.");
-    return chosen;
+  });
+  /** The worker environment's project for the same repository as this host's worker project. */
+  const projectThere = Effect.fn("KinWorkers.projectThere")(function* (
+    environmentId: EnvironmentId,
+    projectId: ProjectId,
+  ) {
+    const here = yield* projects.getById(projectId).pipe(
+      Effect.map(Option.getOrUndefined),
+      Effect.orElseSucceed(() => undefined),
+    );
+    const key =
+      here === undefined
+        ? undefined
+        : (yield* repositories.resolve(here.workspaceRoot))?.canonicalKey;
+    if (key === undefined)
+      return yield* denied(
+        "That worker project has no repository Kin can match in the worker environment.",
+      );
+    const matches: Array<ProjectId> = [];
+    let cursor: number | null = 0;
+    while (cursor !== null) {
+      const page: Tool.Success<typeof WorkerEnvironment.tools.projects> = yield* env
+        .call(environmentId, WorkerEnvironment.tools.projects, { cursor, limit: 100 })
+        .pipe(there("The worker could not start."));
+      for (const project of page.projects)
+        if (project.repositoryIdentity?.canonicalKey === key) matches.push(project.id);
+      cursor = page.nextCursor;
+    }
+    if (matches.length !== 1)
+      return yield* denied(
+        matches.length === 0
+          ? "The worker environment has no project for this repository. Tell the owner."
+          : "The worker environment has several projects for this repository. Tell the owner.",
+      );
+    return matches[0]!;
   });
   /** The stop fan-out misses a run that starts during its pass; a pause seen after the launch or send stops it. */
   const stopIfPaused = Effect.fn("KinWorkers.stopIfPaused")(function* (
     orgId: KinOrgId,
-    projection: ThreadRuns,
+    target: {
+      readonly environmentId: EnvironmentId;
+      readonly threadId: ThreadId;
+      readonly key: string;
+    },
   ) {
     if (!(yield* isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)))) return;
-    yield* stopThreadTree(threads, {
-      projection,
-      prefix: "kin-stop-launch",
-      tag: `${projection.thread.id}:${liveRun(projection)?.id ?? "idle"}`,
-      reason: STOP_REASON,
-    });
+    yield* WorkerEnvironment.stopThere(env, { ...target, reason: STOP_REASON }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Kin could not stop a worker started during a pause", { cause }),
+      ),
+    );
   });
-  const threadLink = Effect.fn("KinWorkers.threadLink")(function* (threadId: ThreadId) {
-    return formatThreadLink({ environmentId: yield* environment.getEnvironmentId, threadId });
-  });
+  const threadLink = (environmentId: EnvironmentId, threadId: ThreadId) =>
+    formatThreadLink({ environmentId, threadId });
   // Cards are best effort: a launched worker must not fail because its card could not be shown.
   const showCard = Effect.fn("KinWorkers.showCard")(
     function* (input: {
@@ -324,6 +356,7 @@ const make = Effect.gen(function* () {
       readonly chatId: KinChatId;
       readonly agentId: KinAgentId;
       readonly threadId: ThreadId;
+      readonly environmentId: EnvironmentId;
       readonly title: string;
       readonly model: string;
       /** A closed card reopens only for a worker that is running again. */
@@ -337,6 +370,7 @@ const make = Effect.gen(function* () {
           threadId: input.threadId,
           title: input.title,
           model: input.model,
+          remote: { environmentId: input.environmentId, status: "working" },
         })
         .pipe(
           Effect.provideService(OrchestratorV2, orchestrator),
@@ -377,7 +411,7 @@ const make = Effect.gen(function* () {
         return { config, event, author, chatId, level: yield* levelOf(ctx, chatId) };
       }),
     );
-    const modelSelection = yield* selection(input.model, plan.config.models);
+    const modelSelection = yield* pick(input.model, plan.config.models);
     let reviewRefs: ReadonlyArray<{ kind: string; ref: string }> | undefined;
     if (plan.author !== undefined) {
       if (
@@ -395,7 +429,9 @@ const make = Effect.gen(function* () {
     }
     if (!KinLevels.atLeast(plan.level, "L2"))
       return yield* shadow(ctx, plan.level, "kin_delegate", input, input.projectId);
-    yield* admit(ctx.orgId);
+    const environmentId = yield* admit(ctx.orgId);
+    yield* supported(environmentId, modelSelection);
+    const projectId = yield* projectThere(environmentId, input.projectId);
     const items =
       reviewRefs !== undefined
         ? []
@@ -417,37 +453,32 @@ const make = Effect.gen(function* () {
     const workerId = KinWorkerId.make(
       `wk-${(yield* hash({ wakeupId: ctx.wakeupId, input })).slice(0, 32)}`,
     );
-    const threadId = ThreadId.make(`kin-worker-${workerId}`);
     const chatId = plan.chatId;
-    const ordinal = yield* sql.withTransaction(
+    // The row exists before the launch there, so a crash between them is found at the next start.
+    yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* lead(scope);
         if (input.reviewOf !== undefined) yield* worker(ctx.orgId, input.reviewOf);
         const startedAt = yield* Clock.currentTimeMillis;
         const inserted = yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id,
           kind, thread_id, review_of, model_json, provenance_json, status, report_json, started_at,
-          ended_at, title, chat_id) VALUES (${workerId}, ${ctx.orgId}, ${ctx.agentId}, ${ctx.wakeupId},
-          ${input.kind}, ${threadId}, ${input.reviewOf ?? null}, ${yield* encodeJson(modelSelection)},
-          ${yield* encodeJson(plan.event.provenance)}, 'queued', NULL, ${startedAt}, NULL,
-          ${input.title}, ${chatId}) ON CONFLICT DO NOTHING RETURNING worker_id`;
+          ended_at, title, chat_id, project_id) VALUES (${workerId}, ${ctx.orgId}, ${ctx.agentId},
+          ${ctx.wakeupId}, ${input.kind}, ${`kin-worker-${workerId}`}, ${input.reviewOf ?? null},
+          ${yield* encodeJson(modelSelection)}, ${yield* encodeJson(plan.event.provenance)}, 'queued',
+          NULL, ${startedAt}, NULL, ${input.title}, ${chatId}, ${input.projectId})
+          ON CONFLICT DO NOTHING RETURNING worker_id`;
         if (inserted.length === 0) {
           const stored = yield* worker(ctx.orgId, workerId);
-          if (stored.wakeupId !== ctx.wakeupId || stored.threadId !== threadId)
-            return yield* denied();
+          if (stored.wakeupId !== ctx.wakeupId) return yield* denied();
           yield* sql`UPDATE kin_workers SET status = 'queued', started_at = ${startedAt}, ended_at = NULL
             WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId} AND status = 'failed'`;
         }
-        const [row] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_workers
-          WHERE org_id = ${ctx.orgId} AND wakeup_id = ${ctx.wakeupId} AND rowid <= (
-            SELECT rowid FROM kin_workers WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId})`;
-        return row?.n ?? 1;
       }),
     );
-    const launched = yield* launch
-      .launch({
-        commandId: CommandId.make(`kin-worker:${ctx.wakeupId}:${ordinal}`),
-        threadId,
-        projectId: input.projectId,
+    // The same request id there makes a retry return the thread the first launch started.
+    const launched = yield* env
+      .call(environmentId, WorkerEnvironment.tools.launch, {
+        projectId,
         title: input.title,
         modelSelection,
         runtimeMode: "full-access",
@@ -457,13 +488,8 @@ const make = Effect.gen(function* () {
           baseRef: input.baseRef ?? "origin/HEAD",
           startFromOrigin: true,
         },
-        initialMessage: {
-          messageId: MessageId.make(`kin-worker-msg:${workerId}`),
-          text: brief,
-          attachments: [],
-        },
-        createdBy: "agent",
-        creationSource: "server",
+        message: brief,
+        clientRequestId: `kin-worker:${workerId}`,
       })
       .pipe(
         Effect.tapError(() =>
@@ -473,36 +499,29 @@ const make = Effect.gen(function* () {
               WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId} AND status = 'queued'`;
           }).pipe(Effect.ignore),
         ),
-        Effect.mapError(
-          () =>
-            new KinChatError({
-              reason: "unavailable",
-              message: "The worker could not start. Retry the same call or tell the owner.",
-            }),
-        ),
+        there("The worker could not start. Retry the same call or tell the owner."),
       );
-    yield* stopIfPaused(ctx.orgId, launched.projection);
-    const live = launched.projection.runs.some(isLive);
-    // A resumed launch can start nothing; the row then takes the thread's real outcome.
-    if (!live) {
-      const last = launched.projection.runs.at(-1);
-      const endedAt =
-        last?.completedAt == null
-          ? yield* Clock.currentTimeMillis
-          : DateTime.toEpochMillis(last.completedAt);
-      yield* sql`UPDATE kin_workers SET status = ${last?.status ?? "failed"}, ended_at = ${endedAt}
-        WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId} AND status = 'queued'`;
-    }
+    const threadId = launched.threadId;
+    yield* sql`UPDATE kin_workers SET environment_id = ${environmentId}, thread_id = ${threadId}
+      WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId}`;
+    yield* stopIfPaused(ctx.orgId, {
+      environmentId,
+      threadId,
+      key: `kin-stop-launch:${workerId}:${launched.runId ?? "idle"}`,
+    });
+    const live = launched.status === null || !endedStatuses.has(launched.status);
     yield* showCard({
       orgId: ctx.orgId,
       chatId,
       agentId: ctx.agentId,
       threadId,
+      environmentId,
       title: input.title,
       model: modelSelection.model,
       reopen: live,
     });
-    return { workerId, threadLink: yield* threadLink(threadId) };
+    yield* tracker.track(ctx.orgId, workerId);
+    return { workerId, threadLink: threadLink(environmentId, threadId) };
   }, guarded("KinWorkers.delegate"));
 
   const followUp = Effect.fn("KinWorkers.followUp")(function* (
@@ -526,52 +545,51 @@ const make = Effect.gen(function* () {
     if (!KinLevels.atLeast(plan.level, "L2"))
       return yield* shadow(ctx, plan.level, "kin_follow_up", input, input.workerId);
     yield* admit(ctx.orgId);
-    const key = (yield* hash({ wakeupId: ctx.wakeupId, input })).slice(0, 32);
-    const projection = yield* threads
-      .getThreadProjection(plan.worker.threadId)
-      .pipe(Effect.mapError(() => missing()));
-    if (!plan.config.projects.includes(projection.thread.projectId))
+    if (plan.worker.projectId === null || !plan.config.projects.includes(plan.worker.projectId))
       return yield* denied("Workers may only run in this lead's worker projects.");
-    const sent = yield* threads
-      .sendToThread({
-        projectId: projection.thread.projectId,
-        commandId: CommandId.make(`kin-follow-up:${ctx.wakeupId}:${key}`),
+    // A worker runs where it was launched, even after the host names another environment.
+    if (plan.worker.environmentId === null)
+      return yield* denied("That worker never started. Start a new one with kin_delegate.");
+    const environmentId = plan.worker.environmentId;
+    const key = (yield* hash({ wakeupId: ctx.wakeupId, input })).slice(0, 32);
+    const sent = yield* env
+      .call(environmentId, WorkerEnvironment.tools.send, {
         threadId: plan.worker.threadId,
-        messageId: MessageId.make(`kin-follow-up-msg:${key}`),
-        text: [
+        message: [
           "Follow-up from Kin. Continue this task yourself.",
           input.brief,
           ...(input.quoted ?? []).map((item) => quote("quoted text (untrusted)", item, true)),
           reportFormat,
         ].join("\n\n"),
-        attachments: [],
         mode: "queue",
-        createdBy: "agent",
-        creationSource: "server",
+        clientRequestId: `kin-follow-up:${key}`,
       })
-      .pipe(
-        Effect.mapError(
-          () =>
-            new KinChatError({
-              reason: "unavailable",
-              message: "The follow-up could not be sent. Retry the same call or tell the owner.",
-            }),
-        ),
-      );
-    yield* sql`UPDATE kin_workers SET status = 'queued', ended_at = NULL
+      .pipe(there("The follow-up could not be sent. Retry the same call or tell the owner."));
+    // A new started_at marks newer work, so a follower still reporting the last run can't close it.
+    yield* sql`UPDATE kin_workers SET status = 'queued', ended_at = NULL,
+      started_at = ${yield* Clock.currentTimeMillis}
       WHERE org_id = ${ctx.orgId} AND worker_id = ${input.workerId}`;
-    yield* stopIfPaused(ctx.orgId, sent.projection);
+    yield* stopIfPaused(ctx.orgId, {
+      environmentId,
+      threadId: plan.worker.threadId,
+      key: `kin-stop-launch:${input.workerId}:${sent.runId}`,
+    });
     if (plan.worker.chatId !== null)
       yield* showCard({
         orgId: ctx.orgId,
         chatId: plan.worker.chatId,
         agentId: plan.worker.agentId,
         threadId: plan.worker.threadId,
-        title: plan.worker.title ?? projection.thread.title,
+        environmentId,
+        title: plan.worker.title ?? "Worker",
         model: plan.worker.model.model,
         reopen: true,
       });
-    return { workerId: input.workerId, threadLink: yield* threadLink(plan.worker.threadId) };
+    yield* tracker.track(ctx.orgId, input.workerId);
+    return {
+      workerId: input.workerId,
+      threadLink: threadLink(environmentId, plan.worker.threadId),
+    };
   }, guarded("KinWorkers.followUp"));
 
   const stop = Effect.fn("KinWorkers.stop")(function* (
@@ -580,17 +598,15 @@ const make = Effect.gen(function* () {
   ) {
     const ctx = yield* lead(scope);
     const record = yield* sql.withTransaction(worker(ctx.orgId, input.workerId));
-    const projection = yield* threads
-      .getThreadProjection(record.threadId)
-      .pipe(Effect.mapError(() => missing()));
+    if (record.environmentId === null) return { workerId: input.workerId, stopped: false };
+    const environmentId = record.environmentId;
     // A follow-up in the same wake-up starts a new run, which a second stop must still reach.
-    const tag = `${input.workerId}:${ctx.wakeupId}:${(liveRun(projection) ?? projection.runs.at(-1))?.id ?? "idle"}`;
-    const stopped = yield* stopThreadTree(threads, {
-      projection,
-      prefix: "kin-worker-stop",
-      tag,
+    const stopped = yield* WorkerEnvironment.stopThere(env, {
+      environmentId,
+      threadId: record.threadId,
+      key: `kin-worker-stop:${input.workerId}:${ctx.wakeupId}:${record.startedAt}`,
       reason: input.reason ?? "Stopped by the Kin lead.",
-    });
+    }).pipe(there("The worker could not be stopped. Retry or tell the owner."));
     if (record.chatId !== null)
       yield* chat
         .setTaskCardClosed({
@@ -604,7 +620,7 @@ const make = Effect.gen(function* () {
             Effect.logWarning("Kin worker task card could not close", { cause }),
           ),
         );
-    return { workerId: input.workerId, stopped };
+    return { workerId: input.workerId, stopped: stopped.status === "interrupt_requested" };
   }, guarded("KinWorkers.stop"));
 
   return KinWorkers.of({ delegate, followUp, stop });

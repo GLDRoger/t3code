@@ -1,0 +1,38 @@
+# Kin's worker environment: a plain T3 server (Kin off) as the `kin-worker` user, linked from
+# kin-server. Workers' shells run here and can't see Kin's state. Installed by kin-worker.sh into
+# /etc/systemd/system/. See ops/kin/host/README.md, "Workers".
+[Unit]
+Description=Kin worker environment (plain T3 server for Kin's workers)
+Documentation=https://github.com/GLDRoger/t3code/tree/kin/ops/kin/host
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=kin-worker
+Group=kin-worker
+WorkingDirectory=/home/kin-worker
+Environment=HOME=/home/kin-worker
+Environment=PATH=/home/kin-worker/.local/bin:/home/kin-worker/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
+# The sandbox. Keep in step with `kin-worker run` in kin-worker.sh, which `check` uses.
+# /home is an empty tmpfs, so kin's home, the owner's home and every other user's are not there;
+# only the worker's own home comes back. Kin's running build comes in read-only.
+ProtectHome=tmpfs
+BindPaths=/home/kin-worker
+BindReadOnlyPaths=/home/kin/kin-current:/opt/kin-current
+PrivateTmp=yes
+ProtectProc=invisible
+NoNewPrivileges=yes
+ProtectSystem=full
+ExecStart=/usr/local/sbin/kin-worker node serve --base-dir /home/kin-worker/.t3 --host 127.0.0.1 --port 3874 --no-browser
+Restart=always
+RestartSec=5
+KillMode=mixed
+# Provider CLIs share this cgroup; an OOM-killed one must not stop the server.
+OOMPolicy=continue
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

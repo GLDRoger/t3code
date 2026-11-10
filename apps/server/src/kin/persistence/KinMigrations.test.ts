@@ -138,6 +138,7 @@ describe("Kin migrations", () => {
           { migration_id: 29, name: "DropJudgeLog" },
           { migration_id: 30, name: "ManyLeads" },
           { migration_id: 31, name: "LeadDeliveries" },
+          { migration_id: 32, name: "WorkerEnvironment" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
@@ -226,6 +227,7 @@ describe("Kin migrations", () => {
           { migration_id: 29, name: "DropJudgeLog" },
           { migration_id: 30, name: "ManyLeads" },
           { migration_id: 31, name: "LeadDeliveries" },
+          { migration_id: 32, name: "WorkerEnvironment" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -337,6 +339,7 @@ describe("Kin migrations", () => {
         [29, "DropJudgeLog"],
         [30, "ManyLeads"],
         [31, "LeadDeliveries"],
+        [32, "WorkerEnvironment"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -373,6 +376,8 @@ describe("Kin migrations", () => {
       yield* sql`DROP TABLE kin_auth_key_repairs`;
       yield* sql`DROP TABLE kin_auth_session_keys`;
       yield* sql`DROP TABLE kin_worker_charges`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN environment_id`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN project_id`;
       yield* sql`ALTER TABLE kin_workers DROP COLUMN title`;
       yield* sql`ALTER TABLE kin_workers DROP COLUMN chat_id`;
       yield* sql`DROP TABLE kin_floor_notices`;
@@ -449,6 +454,7 @@ describe("Kin migrations", () => {
         [29, "DropJudgeLog"],
         [30, "ManyLeads"],
         [31, "LeadDeliveries"],
+        [32, "WorkerEnvironment"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,
@@ -505,6 +511,7 @@ describe("Kin migrations", () => {
         { migration_id: 29, name: "DropJudgeLog" },
         { migration_id: 30, name: "ManyLeads" },
         { migration_id: 31, name: "LeadDeliveries" },
+        { migration_id: 32, name: "WorkerEnvironment" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);
@@ -531,6 +538,8 @@ describe("Kin migrations", () => {
         yield* sql`ALTER TABLE kin_leads DROP COLUMN ${sql(column)}`;
       yield* sql`DROP TABLE kin_lead_deliveries`;
       yield* sql`DROP TABLE kin_scheduled_tasks`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN environment_id`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN project_id`;
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 27`;
       for (const [id, subject, method, ip, revoked] of [
         ["phone", "one-time-token", "bearer-access-token", "100.64.0.7", null],
@@ -553,6 +562,7 @@ describe("Kin migrations", () => {
         [29, "DropJudgeLog"],
         [30, "ManyLeads"],
         [31, "LeadDeliveries"],
+        [32, "WorkerEnvironment"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT session_id, via FROM kin_auth_paired_sessions ORDER BY session_id`,
@@ -674,6 +684,8 @@ describe("Kin migrations", () => {
           ended_at: 1794009600000,
           title: "Fix",
           chat_id: "chat",
+          environment_id: "worker-env",
+          project_id: "project",
         },
         kin_memory_reads: { org_id: "org", item_id: "fixture-id", last_read_at: 1794009600000 },
         kin_cursor: { org_id: "org", consumer: "worker-tracker", after_sequence: 42 },

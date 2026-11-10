@@ -1,62 +1,56 @@
 import {
   CommandId,
+  EnvironmentId,
   KinAgentId,
   KinAuthor,
   KinChatId,
   KinEventId,
   KinOrgId,
   KinWorkerId,
-  ThreadId,
-  isProviderNativeSubagentThread,
-  type OrchestrationV2ProviderTurn,
-  type OrchestrationV2Run,
+  type OrchestratorMcpFailure,
+  type OrchestrationV2RunStatus,
   type OrchestrationV2StoredEvent,
   type OrchestrationV2Subagent,
-  type OrchestrationV2ThreadProjection,
-  type OrchestrationV2ThreadShell,
+  ThreadId,
   type WorkerReport,
 } from "@t3tools/contracts";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
-import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
-import type * as Scope from "effect/Scope";
+import * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
 import * as Stream from "effect/Stream";
-import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
+import { FORWARDED_WAIT_CHUNK_MS } from "../../peer/PeerForwarding.ts";
 import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { OrchestrationEventStore } from "../../persistence/OrchestrationEventStore.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
-import { KinBudget } from "./KinBudget.ts";
+import { remoteTaskCardState } from "../widgets/taskCard.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import { KinLeadRegistry } from "./KinLeadRegistry.ts";
 import { parseReport } from "./workerBrief.ts";
+import * as WorkerEnvironment from "./workerEnvironment.ts";
 
-const consumer = "worker-tracker";
-const ended = new Set<OrchestrationV2Run["status"]>([
+export const endedStatuses = new Set<OrchestrationV2RunStatus>([
   "completed",
   "interrupted",
   "failed",
   "cancelled",
   "rolled_back",
 ]);
-const stoppedStatuses = new Set<OrchestrationV2Run["status"]>(["interrupted", "cancelled"]);
-// Claude folds native subagent usage into the parent turn's otherUsage; Codex bills each native thread.
-const separatelyBilledNativeDrivers = new Set<string>(["codex"]);
-const maxEventAttempts = 8;
-const maxLineageDepth = 32;
+const stoppedStatuses = new Set<OrchestrationV2RunStatus>(["interrupted", "cancelled"]);
 
-/** Retry policy for the tracker's start and each event; tests swap in a zero-delay schedule. */
+/** Retry policy for the tracker's start and a follower that lost its link; tests swap it. */
 export const WorkerTrackerRetry = Context.Reference<Schedule.Schedule<unknown, unknown>>(
   "t3/kin/lead/WorkerTracker/WorkerTrackerRetry",
   {
@@ -64,33 +58,38 @@ export const WorkerTrackerRetry = Context.Reference<Schedule.Schedule<unknown, u
       Schedule.min([Schedule.exponential("1 second"), Schedule.spaced("30 seconds")]),
   },
 );
-const toMillis = (value: DateTime.Utc | null) =>
-  value === null ? undefined : DateTime.toEpochMillis(value);
-const endedAtMillis = (run: OrchestrationV2Run) =>
-  toMillis(run.completedAt) ?? toMillis(run.startedAt) ?? DateTime.toEpochMillis(run.requestedAt);
 const WorkerRow = Schema.Struct({
   orgId: KinOrgId,
   workerId: KinWorkerId,
   agentId: KinAgentId,
   threadId: ThreadId,
   chatId: Schema.NullOr(KinChatId),
+  environmentId: Schema.NullOr(EnvironmentId),
+  status: Schema.String,
+  startedAt: Schema.Number,
 });
+type WorkerRow = typeof WorkerRow.Type;
 const decodeWorker = Schema.decodeUnknownEffect(WorkerRow);
 const decodeAuthor = Schema.decodeUnknownEffect(KinAuthor);
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
-export class WorkerTrackerEventError extends Schema.TaggedError<WorkerTrackerEventError>()(
-  "WorkerTrackerEventError",
-  { sequence: Schema.Number, cause: Schema.Defect() },
-) {}
+type StrayError =
+  | Effect.Error<
+      ReturnType<ThreadManagement.ThreadManagementService["Service"]["stopDelegatedTasks"]>
+    >
+  | Effect.Error<ReturnType<Writer.MemoryWriter["Service"]["appendJournal"]>>;
 
 export class WorkerTracker extends Context.Service<
   WorkerTracker,
   {
-    /** Handles one stored event; replays are idempotent (charges and reports key on the run). */
-    readonly process: (
-      stored: OrchestrationV2StoredEvent,
-    ) => Effect.Effect<boolean, WorkerTrackerEventError>;
+    /** The stray-delegation guard for one stored `subagent.updated` event. */
+    readonly process: (stored: OrchestrationV2StoredEvent) => Effect.Effect<void, StrayError>;
+    /**
+     * Follows a worker's thread in its environment until the latest run there settles, then
+     * reports it. One follower per worker: asked again while it runs, it looks once more before
+     * it ends. Returns that follower.
+     */
+    readonly track: (orgId: KinOrgId, workerId: KinWorkerId) => Effect.Effect<Fiber.Fiber<void>>;
     readonly start: Effect.Effect<void, never, Scope.Scope>;
   }
 >()("t3/kin/lead/WorkerTracker") {}
@@ -100,29 +99,27 @@ const make = Effect.gen(function* () {
   const orchestrator = yield* OrchestratorV2;
   const events = yield* OrchestrationEventStore;
   const threads = yield* ThreadManagement.ThreadManagementService;
-  const budget = yield* KinBudget;
   const queue = yield* KinEventQueue;
   const chat = yield* KinChatService;
   const registry = yield* KinLeadRegistry;
-  const environment = yield* ServerEnvironment;
+  const env = yield* WorkerEnvironment.KinWorkerEnvironment;
   const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
-
+  // Followers live as long as this service, so shutting down stops them.
+  const followers = yield* Scope.Scope;
   const bootedAt = yield* Clock.currentTimeMillis;
 
-  const orgIds = Effect.fn("WorkerTracker.orgIds")(function* () {
-    const rows = yield* sql<{
-      orgId: string;
-    }>`SELECT org_id AS "orgId" FROM kin_leads GROUP BY org_id ORDER BY org_id`;
-    return rows.map((row) => KinOrgId.make(row.orgId));
-  });
-  const advance = Effect.fn("WorkerTracker.advance")(function* (sequence: number) {
-    const orgs = yield* orgIds();
-    if (orgs.length === 0) return;
-    yield* sql`UPDATE kin_cursor SET after_sequence = ${sequence}
-      WHERE consumer = ${consumer} AND org_id IN ${sql.in(orgs)} AND after_sequence < ${sequence}`;
+  const workerRow = Effect.fn("WorkerTracker.workerRow")(function* (
+    orgId: KinOrgId,
+    workerId: KinWorkerId,
+  ) {
+    const [raw] = yield* sql`SELECT org_id AS "orgId", worker_id AS "workerId",
+      agent_id AS "agentId", thread_id AS "threadId", chat_id AS "chatId",
+      environment_id AS "environmentId", status, started_at AS "startedAt"
+      FROM kin_workers WHERE org_id = ${orgId} AND worker_id = ${workerId} ORDER BY worker_id`;
+    return raw === undefined ? undefined : yield* decodeWorker(raw);
   });
 
-  const author = Effect.fn("WorkerTracker.author")(function* (worker: typeof WorkerRow.Type) {
+  const author = Effect.fn("WorkerTracker.author")(function* (worker: WorkerRow) {
     const [row] = yield* sql<{ memberId: string; ownerPersonId: string }>`
       SELECT m.member_id AS "memberId", a.owner_person_id AS "ownerPersonId"
       FROM kin_agents a JOIN kin_chat_members m ON m.org_id = a.org_id AND m.agent_id = a.agent_id
@@ -138,93 +135,21 @@ const make = Effect.gen(function* () {
           threadId: worker.threadId,
         });
   });
-
-  const workerFor = Effect.fn("WorkerTracker.workerFor")(function* (threadId: ThreadId) {
-    const [raw] = yield* sql`SELECT w.org_id AS "orgId", w.worker_id AS "workerId",
-      w.agent_id AS "agentId", w.thread_id AS "threadId", w.chat_id AS "chatId"
-      FROM kin_workers w JOIN kin_leads l ON l.org_id = w.org_id AND l.agent_id = w.agent_id
-      WHERE w.thread_id = ${threadId} ORDER BY w.worker_id`;
-    return raw === undefined ? undefined : yield* decodeWorker(raw);
-  });
-  // Separately billed native children run their turns on their own thread with no run attempt; the
-  // run's time window picks them out, and run windows on one thread never overlap.
-  const nativeChildTurns = Effect.fn("WorkerTracker.nativeChildTurns")(function* (
-    projection: OrchestrationV2ThreadProjection,
-    run: OrchestrationV2Run,
-  ) {
-    const from = toMillis(run.startedAt) ?? DateTime.toEpochMillis(run.requestedAt);
-    const until = toMillis(run.completedAt) ?? Number.POSITIVE_INFINITY;
-    const turns: Array<OrchestrationV2ProviderTurn> = [];
-    const seen = new Set<ThreadId>();
-    const pending = [projection];
-    for (let parent = pending.pop(); parent !== undefined; parent = pending.pop()) {
-      for (const subagent of parent.subagents) {
-        const childId = subagent.childThreadId;
-        if (
-          subagent.origin !== "provider_native" ||
-          !separatelyBilledNativeDrivers.has(subagent.driver) ||
-          childId === null ||
-          seen.has(childId)
-        )
-          continue;
-        seen.add(childId);
-        // A child that cannot load must not cost the worker its report; charges only grow later.
-        const child = yield* threads.getThreadProjection(childId).pipe(
-          Effect.tapError((cause) =>
-            Effect.logWarning("Kin worker native child usage unavailable", { childId, cause }),
-          ),
-          Effect.orElseSucceed(() => undefined),
-        );
-        if (child === undefined) continue;
-        for (const turn of child.providerTurns) {
-          const at = toMillis(turn.startedAt) ?? toMillis(turn.completedAt);
-          if (turn.runAttemptId === null && at !== undefined && at >= from && at < until)
-            turns.push(turn);
-        }
-        pending.push(child);
-      }
-    }
-    return turns;
-  });
-  /** Charges are keyed on the run and only grow, so a replay never bills twice. */
-  const charge = Effect.fn("WorkerTracker.charge")(function* (
-    worker: typeof WorkerRow.Type,
-    projection: OrchestrationV2ThreadProjection,
-    run: OrchestrationV2Run,
-  ) {
-    const attempts = new Set(
-      projection.attempts.filter((item) => item.runId === run.id).map((item) => item.id),
-    );
-    const own = projection.providerTurns.filter(
-      (turn) => turn.runAttemptId !== null && attempts.has(turn.runAttemptId),
-    );
-    yield* budget.chargeWorker({
-      orgId: worker.orgId,
-      workerId: worker.workerId,
-      runId: run.id,
-      usage: [...own, ...(yield* nativeChildTurns(projection, run))].map((turn) => ({
-        providerTurnId: turn.id,
-        ...(turn.turnTokenUsage === undefined ? {} : { turnTokenUsage: turn.turnTokenUsage }),
-        ...(turn.tokenUsage === undefined ? {} : { tokenUsage: turn.tokenUsage }),
-        usedTokens: turn.tokenUsage?.usedTokens,
-      })),
-    });
-  });
-  // Every field comes from stored state, so a replay enqueues byte-identical JSON.
+  /** Keyed on the answer run, so a replay enqueues the same event; `key` names it. */
   const enqueueReport = Effect.fn("WorkerTracker.enqueueReport")(function* (
-    worker: typeof WorkerRow.Type,
-    run: OrchestrationV2Run,
+    worker: WorkerRow,
+    key: string,
+    endedAt: number,
     report: WorkerReport,
-    kind: "worker-report" | "worker-abandoned" = "worker-report",
   ) {
-    const eventId = KinEventId.make(`${kind}:${run.id}`);
+    const eventId = KinEventId.make(key);
     yield* queue
       .enqueue({
         _tag: "worker.report",
         orgId: worker.orgId,
         eventId,
         agentId: worker.agentId,
-        receivedAt: DateTime.makeUnsafe(endedAtMillis(run)),
+        receivedAt: DateTime.makeUnsafe(endedAt),
         dedupeKey: eventId,
         provenance: yield* author(worker),
         workerId: worker.workerId,
@@ -232,8 +157,6 @@ const make = Effect.gen(function* () {
       })
       .pipe(
         Effect.catchTags({
-          // The id is keyed on the answer run, so a conflict is this run's own report replayed with
-          // drifted provenance; the abandon report uses its own id and never collides with it.
           KinEventQueueConflict: (error) =>
             error.eventId === eventId ? Effect.void : Effect.fail(error),
           KinEventQueueRetiredAgent: () => Effect.void,
@@ -241,142 +164,203 @@ const make = Effect.gen(function* () {
         }),
       );
   });
-  const blocked = Effect.fn("WorkerTracker.blocked")(function* (
-    worker: typeof WorkerRow.Type,
-    summary: string,
-  ) {
-    const link = formatThreadLink({
-      environmentId: yield* environment.getEnvironmentId,
-      threadId: worker.threadId,
-    });
-    return {
+  const blocked = (worker: WorkerRow, environmentId: EnvironmentId, summary: string) =>
+    ({
       result: "blocked",
       summary,
-      evidence: [{ kind: "link", ref: link }],
+      evidence: [
+        { kind: "link", ref: formatThreadLink({ environmentId, threadId: worker.threadId }) },
+      ],
       openQuestions: [],
       memorySuggestions: [],
       misleadingMemory: [],
       parsed: false,
-    } satisfies WorkerReport;
-  });
-  // Cards are best effort, so a worker without one has nothing to close.
-  const closeCard = (input: {
-    readonly orgId: KinOrgId;
-    readonly chatId: KinChatId;
-    readonly threadId: ThreadId;
-  }) =>
-    chat.setTaskCardClosed({ ...input, closed: true }).pipe(
-      Effect.catchTags({
-        KinChatError: (error) => (error.reason === "not_found" ? Effect.void : Effect.fail(error)),
-      }),
-    );
-  // A worker's delegate_task descendants bill to it; provider-native children bill with their parent
-  // run. Only subagent links count: a fork is someone else's work, even though it keeps rootThreadId.
-  const childRunEnded = Effect.fn("WorkerTracker.childRunEnded")(function* (
-    run: OrchestrationV2Run,
+    }) satisfies WorkerReport;
+  // Cards are best effort: a worker's outcome never waits on its card.
+  const card = <A, E>(worker: WorkerRow, effect: (chatId: KinChatId) => Effect.Effect<A, E>) =>
+    worker.chatId === null
+      ? Effect.void
+      : effect(worker.chatId).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin worker task card unavailable", { cause }),
+          ),
+        );
+  /** Records the outcome unless a follow-up started newer work meanwhile; false when it did. */
+  const record = Effect.fn("WorkerTracker.record")(function* (
+    worker: WorkerRow,
+    input: {
+      readonly key: string;
+      readonly status: OrchestrationV2RunStatus;
+      readonly endedAt: number;
+      readonly report: WorkerReport;
+    },
   ) {
-    let shell: OrchestrationV2ThreadShell | null = yield* threads.getThreadShell(run.threadId);
-    if (shell === null || isProviderNativeSubagentThread(shell)) return undefined;
-    for (let depth = 0; depth < maxLineageDepth; depth += 1) {
-      const parentId: ThreadId | null = shell.lineage.parentThreadId;
-      if (shell.lineage.relationshipToParent !== "subagent" || parentId === null) return undefined;
-      const owner = yield* workerFor(parentId);
-      if (owner !== undefined) {
-        yield* charge(owner, yield* threads.getThreadProjection(run.threadId), run);
-        return owner.orgId;
-      }
-      shell = yield* threads.getThreadShell(parentId);
-      if (shell === null) return undefined;
-    }
-    yield* Effect.logWarning("Kin worker lineage deeper than the cap; run not charged", {
-      runId: run.id,
-    });
-    return undefined;
+    const updated = yield* sql`UPDATE kin_workers SET status = ${input.status},
+      report_json = ${yield* encodeJson(input.report)}, ended_at = ${input.endedAt}
+      WHERE org_id = ${worker.orgId} AND worker_id = ${worker.workerId}
+        AND started_at = ${worker.startedAt} RETURNING worker_id`;
+    if (updated.length === 0) return false;
+    yield* enqueueReport(worker, input.key, input.endedAt, input.report);
+    if (stoppedStatuses.has(input.status))
+      yield* card(worker, (chatId) =>
+        chat.setTaskCardClosed({
+          orgId: worker.orgId,
+          chatId,
+          threadId: worker.threadId,
+          closed: true,
+        }),
+      );
+    return true;
   });
 
-  /** Returns the organization whose worker the run belonged to, if any. */
-  const runEnded = Effect.fn("WorkerTracker.runEnded")(function* (run: OrchestrationV2Run) {
-    if (!ended.has(run.status)) return undefined;
-    const worker = yield* workerFor(run.threadId);
-    if (worker === undefined) return yield* childRunEnded(run);
-    const projection = yield* threads.getThreadProjection(worker.threadId);
-    yield* charge(worker, projection, run);
-    // A restart or usage-limit continuation carries the work on; its own end reports.
-    if (
-      projection.runs.some(
-        (item) =>
-          item.restartContinuationOfRunId === run.id ||
-          item.usageLimitContinuationOfRunId === run.id,
-      )
-    )
-      return worker.orgId;
-    const settled = yield* threads.waitForThread({
-      projectId: projection.thread.projectId,
+  /** One wait on the worker's thread there; true once its latest run is reported. */
+  const followOnce = Effect.fn("WorkerTracker.followOnce")(function* (
+    orgId: KinOrgId,
+    workerId: KinWorkerId,
+  ) {
+    const worker = yield* workerRow(orgId, workerId);
+    if (worker === undefined || worker.environmentId === null) return true;
+    if (endedStatuses.has(worker.status as OrchestrationV2RunStatus)) return true;
+    const environmentId = worker.environmentId;
+    // The worker's own tasks there wake it for its answer, which the report waits for.
+    const waited = yield* env.call(environmentId, WorkerEnvironment.tools.wait, {
       threadId: worker.threadId,
-      runId: run.id,
-      timeoutMs: 0,
+      timeoutMs: FORWARDED_WAIT_CHUNK_MS,
       untilDelegatedWorkSettled: true,
     });
-    // The worker's own children will wake it again; that later run reports.
-    if (settled.timedOut) return worker.orgId;
-    // The report keys on the answer run: a re-emitted parent run settles to the same answer.
-    const answer = settled.resultRun ?? run;
-    const reply = projection.messages.findLast(
-      (message) =>
-        message.role === "assistant" && message.runId === answer.id && !message.streaming,
+    const read = yield* env.call(environmentId, WorkerEnvironment.tools.read, {
+      threadId: worker.threadId,
+      limit: 1,
+      runLimit: 5,
+    });
+    yield* card(worker, (chatId) =>
+      chat.setTaskCardState({
+        orgId,
+        chatId,
+        threadId: worker.threadId,
+        state: remoteTaskCardState(read.thread),
+      }),
     );
-    const report =
-      (answer.status === "completed" && reply !== undefined
-        ? parseReport(reply.text)
-        : undefined) ?? (yield* blocked(worker, `Worker ended ${answer.status} without a report.`));
-    yield* sql`UPDATE kin_workers SET status = ${answer.status}, report_json = ${yield* encodeJson(report)},
-      ended_at = ${endedAtMillis(answer)} WHERE org_id = ${worker.orgId} AND worker_id = ${worker.workerId}`;
-    yield* enqueueReport(worker, answer, report);
-    if (stoppedStatuses.has(answer.status) && worker.chatId !== null)
-      yield* closeCard({ orgId: worker.orgId, chatId: worker.chatId, threadId: worker.threadId });
-    return worker.orgId;
+    if (waited.timedOut) return false;
+    if (waited.runId === null) {
+      const now = yield* Clock.currentTimeMillis;
+      return yield* record(worker, {
+        key: `worker-abandoned:${worker.workerId}:${worker.startedAt}`,
+        status: "failed",
+        endedAt: now,
+        report: blocked(worker, environmentId, "The worker's thread never started a run."),
+      });
+    }
+    // A follow-up, restart or usage-limit continuation carries the work on; its end reports.
+    if (waited.status === "idle" || !endedStatuses.has(waited.status)) return false;
+    if (read.thread.activeRunId !== null || read.thread.latestRunId !== waited.runId) return false;
+    const answer = waited.resultRun ?? { runId: waited.runId, status: waited.status };
+    const status = endedStatuses.has(answer.status) ? answer.status : "failed";
+    const reply =
+      status === "completed"
+        ? yield* WorkerEnvironment.lastReply(env, environmentId, worker.threadId, answer.runId)
+        : undefined;
+    const completedAt = read.recentRuns.find((run) => run.runId === answer.runId)?.completedAt;
+    return yield* record(worker, {
+      key: `worker-report:${answer.runId}`,
+      status,
+      endedAt:
+        completedAt == null
+          ? yield* Clock.currentTimeMillis
+          : DateTime.toEpochMillis(DateTime.makeUnsafe(completedAt)),
+      report:
+        (reply === undefined ? undefined : parseReport(reply)) ??
+        blocked(worker, environmentId, `Worker ended ${status} without a report.`),
+    });
   });
 
-  // After the last attempt the worker must not stay open with no report and a live card.
-  const abandon = Effect.fn("WorkerTracker.abandon")(
-    function* (stored: OrchestrationV2StoredEvent, cause: Cause.Cause<unknown>) {
-      yield* Effect.logError("Kin worker tracker gave up on an event", {
-        sequence: stored.sequence,
-        attempts: maxEventAttempts,
-        cause,
-      });
-      const { event } = stored;
-      if (event.type !== "run.updated" || !ended.has(event.payload.status)) return false;
-      const run = event.payload;
-      const worker = yield* workerFor(run.threadId).pipe(Effect.orElseSucceed(() => undefined));
-      if (worker === undefined) return false;
-      // A later or still-running run owns the worker's outcome; don't fail it over an old event.
-      const runs = yield* threads.getThreadProjection(worker.threadId).pipe(
-        Effect.map((projection) => projection.runs),
-        Effect.orElseSucceed(() => undefined),
-      );
-      if (
-        runs !== undefined &&
-        (runs.at(-1)?.id !== run.id || runs.some((item) => !ended.has(item.status)))
-      )
-        return true;
-      const report = yield* blocked(worker, "Kin's tracker could not process the run.");
-      const closed = yield* sql`UPDATE kin_workers SET status = 'failed',
-      report_json = ${yield* encodeJson(report)}, ended_at = ${endedAtMillis(run)}
-      WHERE org_id = ${worker.orgId} AND worker_id = ${worker.workerId}
-        AND status NOT IN ${sql.in([...ended])} RETURNING worker_id`;
-      if (closed.length === 0) return true;
-      yield* enqueueReport(worker, run, report, "worker-abandoned").pipe(Effect.ignore);
-      if (worker.chatId !== null)
-        yield* closeCard({
-          orgId: worker.orgId,
-          chatId: worker.chatId,
-          threadId: worker.threadId,
-        }).pipe(Effect.ignore);
-      return true;
-    },
-    Effect.orElseSucceed(() => true),
-  );
+  /** A revoked or expired link, or a thread gone there: the worker can't report, so it fails. */
+  const abandon = Effect.fn("WorkerTracker.abandon")(function* (
+    orgId: KinOrgId,
+    workerId: KinWorkerId,
+    error: OrchestratorMcpFailure,
+  ) {
+    yield* Effect.logWarning("Kin worker unreachable in its environment", {
+      workerId,
+      code: error.code,
+    });
+    const worker = yield* workerRow(orgId, workerId);
+    if (worker === undefined || worker.environmentId === null) return;
+    yield* record(worker, {
+      key: `worker-abandoned:${worker.workerId}:${worker.startedAt}`,
+      status: "failed",
+      endedAt: yield* Clock.currentTimeMillis,
+      report: blocked(
+        worker,
+        worker.environmentId,
+        `Kin can no longer reach this worker: ${error.message}`.slice(0, 800),
+      ),
+    });
+    yield* card(worker, (chatId) =>
+      chat.setTaskCardClosed({ orgId, chatId, threadId: worker.threadId, closed: true }),
+    );
+  });
+
+  const giveUpIfFinal = Effect.fn("WorkerTracker.giveUpIfFinal")(function* (
+    orgId: KinOrgId,
+    workerId: KinWorkerId,
+    error: OrchestratorMcpFailure,
+  ) {
+    if (!WorkerEnvironment.isFinal(error)) return yield* error;
+    yield* abandon(orgId, workerId, error);
+  });
+
+  const follow = Effect.fn("WorkerTracker.follow")(function* (
+    orgId: KinOrgId,
+    workerId: KinWorkerId,
+  ) {
+    const retry = yield* WorkerTrackerRetry;
+    yield* followOnce(orgId, workerId).pipe(
+      Effect.repeat({ while: (done) => !done }),
+      Effect.catchTags({
+        OrchestratorMcpFailure: (error) => giveUpIfFinal(orgId, workerId, error),
+      }),
+      Effect.mapError((error) =>
+        isSqlError(error) ? toPersistenceSqlError("WorkerTracker.follow")(error) : error,
+      ),
+      Effect.tapError((cause) => Effect.logWarning("Kin worker follower retrying", { cause })),
+      Effect.retry(retry),
+      Effect.ignoreCause({ log: true }),
+    );
+  });
+
+  const following = new Map<KinWorkerId, { again: boolean; fiber?: Fiber.Fiber<void> }>();
+  const track: WorkerTracker["Service"]["track"] = Effect.fnUntraced(function* (orgId, workerId) {
+    const running = following.get(workerId);
+    if (running?.fiber !== undefined) {
+      running.again = true;
+      return running.fiber;
+    }
+    const state: { again: boolean; fiber?: Fiber.Fiber<void> } = { again: false };
+    following.set(workerId, state);
+    const fiber = yield* follow(orgId, workerId).pipe(
+      // Checked and released in one step, so a request between them is never lost.
+      Effect.repeat({
+        while: () => {
+          if (state.again) {
+            state.again = false;
+            return true;
+          }
+          following.delete(workerId);
+          return false;
+        },
+      }),
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (following.get(workerId) === state) following.delete(workerId);
+        }),
+      ),
+      Effect.asVoid,
+      Effect.forkIn(followers),
+    );
+    state.fiber = fiber;
+    return fiber;
+  });
 
   const strays = new Set<string>();
   const strayDelegation = Effect.fn("WorkerTracker.strayDelegation")(function* (
@@ -396,121 +380,77 @@ const make = Effect.gen(function* () {
         "Did: Kin stopped a delegate_task the lead started; workers start only through kin_delegate.",
       ]);
   });
+  const process: WorkerTracker["Service"]["process"] = (stored) =>
+    stored.event.type === "subagent.updated" ? strayDelegation(stored.event.payload) : Effect.void;
 
-  /** True when the event touched a worker, so the follower should persist its position. */
-  const process = Effect.fn("WorkerTracker.process")(
-    function* (stored: OrchestrationV2StoredEvent) {
-      const { event } = stored;
-      if (event.type === "run.updated") return (yield* runEnded(event.payload)) !== undefined;
-      if (event.type === "subagent.updated") yield* strayDelegation(event.payload);
-      return false;
-    },
-    (effect, stored) =>
-      effect.pipe(
-        Effect.mapError(
-          (error) =>
-            new WorkerTrackerEventError({
-              sequence: stored.sequence,
-              cause: isSqlError(error)
-                ? toPersistenceSqlError("WorkerTracker.process")(error)
-                : error,
-            }),
-        ),
-      ),
-  );
+  // A crash between the insert and the launch there leaves a queued row bound to nothing. Rows
+  // from this process are skipped: their launch may still be in flight.
+  const recoverUnbound = Effect.fn("WorkerTracker.recoverUnbound")(function* () {
+    const rows = yield* sql<{
+      orgId: string;
+      workerId: string;
+      threadId: string;
+      chatId: string | null;
+    }>`SELECT org_id AS "orgId", worker_id AS "workerId", thread_id AS "threadId", chat_id AS "chatId"
+      FROM kin_workers WHERE org_id IN (SELECT org_id FROM kin_leads GROUP BY org_id)
+        AND status = 'queued' AND environment_id IS NULL AND started_at < ${bootedAt}
+      ORDER BY org_id, worker_id`;
+    for (const row of rows) {
+      const orgId = KinOrgId.make(row.orgId);
+      yield* sql`UPDATE kin_workers SET status = 'failed', ended_at = ${yield* Clock.currentTimeMillis}
+        WHERE org_id = ${orgId} AND worker_id = ${row.workerId} AND status = 'queued'`;
+      if (row.chatId !== null)
+        yield* chat
+          .setTaskCardClosed({
+            orgId,
+            chatId: KinChatId.make(row.chatId),
+            threadId: ThreadId.make(row.threadId),
+            closed: true,
+          })
+          .pipe(Effect.catchTags({ KinChatError: () => Effect.void }));
+    }
+  });
+  const openWorkers = sql<{ orgId: string; workerId: string }>`
+    SELECT org_id AS "orgId", worker_id AS "workerId" FROM kin_workers
+    WHERE org_id IN (SELECT org_id FROM kin_leads GROUP BY org_id)
+      AND environment_id IS NOT NULL AND status NOT IN ${sql.in([...endedStatuses])}
+    ORDER BY org_id, worker_id`;
 
-  // Every step is idempotent, so each event retries on a fresh schedule and a stream failure
-  // resubscribes after the last handled event. An event that keeps failing is abandoned.
-  const follow = Effect.fnUntraced(function* (
-    eventType: "run.updated" | "subagent.updated",
-    from: number,
-  ) {
+  const start = Effect.gen(function* () {
     const retry = yield* WorkerTrackerRetry;
-    let after = from;
-    const step = (stored: OrchestrationV2StoredEvent) =>
-      process(stored).pipe(
-        Effect.retry({ schedule: retry, times: maxEventAttempts - 1 }),
-        Effect.catchCauseIf(
-          (cause) => !Cause.hasInterruptsOnly(cause),
-          (cause) => abandon(stored, cause),
-        ),
-        Effect.flatMap((touched) => (touched ? advance(stored.sequence) : Effect.void)),
-        Effect.tap(() =>
-          Effect.sync(() => {
-            after = Math.max(after, stored.sequence);
-          }),
-        ),
-      );
-    return yield* Effect.suspend(() =>
+    const latest = yield* events.latestAgentSequence().pipe(Effect.retry(retry));
+    let after = latest;
+    yield* Effect.suspend(() =>
       orchestrator
-        .streamStoredEventsFrom({ eventType, afterSequence: after })
-        .pipe(Stream.runForEach(step)),
+        .streamStoredEventsFrom({ eventType: "subagent.updated", afterSequence: after })
+        .pipe(
+          Stream.runForEach((stored) =>
+            process(stored).pipe(
+              Effect.retry({ schedule: retry, times: 7 }),
+              Effect.ignoreCause({ log: true }),
+              Effect.andThen(
+                Effect.sync(() => {
+                  after = Math.max(after, stored.sequence);
+                }),
+              ),
+            ),
+          ),
+        ),
     ).pipe(
       Effect.tapCause((cause) =>
-        Effect.logWarning("Kin worker tracker stream failed; resuming", {
-          eventType,
-          after,
-          cause,
-        }),
+        Effect.logWarning("Kin stray-delegation guard stream failed; resuming", { cause }),
       ),
       Effect.retry(retry),
       Effect.forkScoped,
     );
-  });
-
-  // A crash between the insert and the launch leaves a queued row with no thread. Rows from this
-  // process are skipped: their launch may still be in flight.
-  const recoverQueued = Effect.fn("WorkerTracker.recoverQueued")(function* (orgId: KinOrgId) {
-    const rows = yield* sql<{
-      workerId: string;
-      threadId: string;
-      chatId: string | null;
-    }>`SELECT worker_id AS "workerId", thread_id AS "threadId", chat_id AS "chatId" FROM kin_workers
-      WHERE org_id = ${orgId} AND status = 'queued' AND started_at < ${bootedAt} ORDER BY worker_id`;
-    for (const row of rows) {
-      const threadId = ThreadId.make(row.threadId);
-      if ((yield* threads.getThreadShell(threadId)) !== null) continue;
-      yield* sql`UPDATE kin_workers SET status = 'failed', ended_at = ${yield* Clock.currentTimeMillis}
-        WHERE org_id = ${orgId} AND worker_id = ${row.workerId} AND status = 'queued'`;
-      if (row.chatId !== null)
-        yield* closeCard({ orgId, chatId: KinChatId.make(row.chatId), threadId });
-    }
-  });
-
-  const begin = Effect.gen(function* () {
-    const latest = yield* events.latestAgentSequence();
-    const orgs = yield* orgIds();
-    for (const orgId of orgs) {
-      yield* sql`INSERT INTO kin_cursor (org_id, consumer, after_sequence)
-        VALUES (${orgId}, ${consumer}, ${latest}) ON CONFLICT DO NOTHING RETURNING org_id`;
-      yield* recoverQueued(orgId);
-      // With no unreported worker there is nothing to replay for this organization.
-      const open = yield* sql`SELECT 1 FROM kin_workers WHERE org_id = ${orgId}
-        AND status NOT IN ${sql.in([...ended])} ORDER BY worker_id LIMIT 1`;
-      if (open.length === 0)
-        yield* sql`UPDATE kin_cursor SET after_sequence = ${latest}
-          WHERE org_id = ${orgId} AND consumer = ${consumer} AND after_sequence < ${latest}`;
-    }
-    const [row] =
-      orgs.length === 0
-        ? []
-        : yield* sql<{ after: number | null }>`SELECT MIN(after_sequence) AS after FROM kin_cursor
-            WHERE consumer = ${consumer} AND org_id IN ${sql.in(orgs)} ORDER BY 1`;
-    return { runs: row?.after ?? latest, latest };
-  }).pipe(
-    Effect.tapCause((cause) =>
-      Effect.logWarning("Kin worker tracker could not start; retrying", { cause }),
-    ),
-  );
-  const start = Effect.gen(function* () {
-    const { runs, latest } = yield* begin.pipe(Effect.retry(yield* WorkerTrackerRetry));
-    yield* follow("run.updated", runs);
-    yield* follow("subagent.updated", latest);
+    yield* recoverUnbound().pipe(Effect.retry(retry));
+    for (const row of yield* openWorkers.pipe(Effect.retry(retry)))
+      yield* track(KinOrgId.make(row.orgId), KinWorkerId.make(row.workerId));
   }).pipe(
     Effect.catchCause((cause) => Effect.logError("Kin worker tracker unavailable", { cause })),
   );
 
-  return WorkerTracker.of({ process, start });
+  return WorkerTracker.of({ process, track, start });
 });
 
 export const layer = Layer.effect(WorkerTracker, make);

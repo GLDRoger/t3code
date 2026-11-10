@@ -2,6 +2,7 @@ import {
   KinOrgId,
   KinTaskCardState,
   type KinWidget,
+  type OrchestratorMcpThreadDetail,
   type OrchestrationV2ThreadShell,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -63,6 +64,35 @@ export const taskCardState = (
       : (shell.lastError ?? null),
   updatedAt,
 });
+
+/** A card's live fields from a thread in a linked environment, as `t3_thread_read` shows it. */
+export const remoteTaskCardState = (
+  thread: OrchestratorMcpThreadDetail,
+): Pick<KinTaskCardState, "status" | "pullRequests" | "lastError"> => {
+  const status: KinTaskCardState["status"] = thread.archived
+    ? "cancelled"
+    : thread.pendingRequestCount > 0
+      ? "needs_decision"
+      : thread.status === "completed"
+        ? "done"
+        : thread.status === "failed"
+          ? "failed"
+          : thread.status === "cancelled" ||
+              thread.status === "interrupted" ||
+              thread.status === "rolled_back"
+            ? "cancelled"
+            : thread.status === "idle" || thread.status === "waiting"
+              ? "waiting"
+              : "working";
+  const links = (thread.pullRequests ?? []).filter((link) => link.source !== "stack-dismissed");
+  const shown =
+    links.length > 0 || thread.linkedPullRequest === null ? links : [thread.linkedPullRequest];
+  return {
+    status,
+    pullRequests: shown.map(({ url, number }) => ({ url, number })),
+    lastError: thread.archived ? "Thread no longer available" : null,
+  };
+};
 
 export class TaskCardIndex extends Context.Service<
   TaskCardIndex,

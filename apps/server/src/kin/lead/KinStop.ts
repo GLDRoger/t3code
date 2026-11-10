@@ -12,7 +12,10 @@ import {
   type KinLeadInterruptInput,
   type KinLeadInterruptResult,
   type KinWakeupId,
+  type OrchestrationV2Run,
+  type OrchestrationV2ThreadProjection,
   CommandId,
+  EnvironmentId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -37,7 +40,7 @@ import * as Chat from "../chat/KinChatRepository.ts";
 import type * as Routines from "../triggers/routines.ts";
 import * as Queue from "./KinEventQueue.ts";
 import { isOrgOwner, isOrgPaused, STOP_REASON } from "./orgState.ts";
-import { stopThreadTree } from "./Workers.ts";
+import * as WorkerEnvironment from "./workerEnvironment.ts";
 
 /** A claim that races a pause returns its events for this long, so a paused org does not spin. */
 export const PAUSE_POLL_INTERVAL_MS = 5_000;
@@ -392,7 +395,39 @@ const make = Effect.gen(function* () {
 
 export const layer = Layer.effect(KinStop, make);
 
-/** The lead runtime's fan-out: lead, worker and dream runs and their delegated tasks, then routines. */
+const isLive = (run: OrchestrationV2Run) =>
+  run.status === "queued" || ThreadManagement.isActiveRun(run);
+type ThreadRuns = Pick<OrchestrationV2ThreadProjection, "thread" | "runs">;
+const liveRun = (projection: ThreadRuns) => projection.runs.findLast(isLive);
+/** Interrupts the thread's live run and stops its delegated tasks; true when a run was live. */
+const stopThreadTree = Effect.fn("KinWorkers.stopThreadTree")(function* (
+  threads: ThreadManagement.ThreadManagementService["Service"],
+  input: {
+    readonly projection: ThreadRuns;
+    readonly prefix: string;
+    readonly tag: string;
+    readonly reason: string;
+  },
+) {
+  const { projection, prefix, tag, reason } = input;
+  const active = liveRun(projection);
+  if (active !== undefined)
+    yield* threads.interruptThread({
+      projectId: projection.thread.projectId,
+      threadId: projection.thread.id,
+      runId: active.id,
+      commandId: CommandId.make(`${prefix}:${tag}`),
+      reason,
+    });
+  yield* threads.stopDelegatedTasks({
+    threadId: projection.thread.id,
+    commandId: CommandId.make(`${prefix}-tasks:${tag}`),
+    reason,
+  });
+  return active !== undefined;
+});
+
+/** The lead runtime's fan-out: lead and dream runs and their delegated tasks, workers there, then routines. */
 const isMissingThread = (error: { readonly _tag: string; readonly cause?: unknown }) =>
   error._tag === "OrchestratorProjectionError" &&
   typeof error.cause === "object" &&
@@ -404,6 +439,7 @@ export const makeFanOut = Effect.fn("KinStop.makeFanOut")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const threads = yield* ThreadManagement.ThreadManagementService;
+  const workers = yield* Effect.serviceOption(WorkerEnvironment.KinWorkerEnvironment);
   // Recovery keeps run ids across a restart, so a replay must not dedupe on a pre-crash receipt.
   const boot = (yield* Random.nextInt).toString(36);
   return {
@@ -411,7 +447,6 @@ export const makeFanOut = Effect.fn("KinStop.makeFanOut")(function* (
       const failed = (cause: unknown) => new KinStopFanOutError({ orgId, cause });
       const rows = yield* sql<{ threadId: string }>`
         SELECT thread_id AS "threadId" FROM kin_leads WHERE org_id = ${orgId} AND thread_id IS NOT NULL
-        UNION SELECT thread_id FROM kin_workers WHERE org_id = ${orgId} AND ended_at IS NULL
         UNION SELECT thread_id FROM kin_dream_runs
           WHERE org_id = ${orgId} AND status = 'running' AND thread_id IS NOT NULL
         ORDER BY 1`.pipe(Effect.mapError(failed), Effect.exit);
@@ -436,12 +471,34 @@ export const makeFanOut = Effect.fn("KinStop.makeFanOut")(function* (
           }).pipe(Effect.exit),
         { concurrency: "unbounded" },
       );
+      // Workers run in the worker environment; each is stopped there, by its own key.
+      const workerRows = yield* sql<{ workerId: string; threadId: string; environmentId: string }>`
+        SELECT worker_id AS "workerId", thread_id AS "threadId", environment_id AS "environmentId"
+        FROM kin_workers WHERE org_id = ${orgId} AND ended_at IS NULL AND environment_id IS NOT NULL
+        ORDER BY worker_id`.pipe(Effect.mapError(failed), Effect.exit);
+      const workerExits = yield* Effect.forEach(
+        Exit.isSuccess(workerRows) ? workerRows.value : [],
+        (row) =>
+          Effect.gen(function* () {
+            if (Option.isNone(workers))
+              return yield* failed("Kin has no worker environment service here.");
+            yield* WorkerEnvironment.stopThere(workers.value, {
+              environmentId: EnvironmentId.make(row.environmentId),
+              threadId: ThreadId.make(row.threadId),
+              key: `kin-stop:${row.workerId}:${pausedAt}:${boot}`,
+              reason: STOP_REASON,
+            });
+          }).pipe(Effect.exit),
+        { concurrency: "unbounded" },
+      );
       const routineExit = Option.isSome(routines)
         ? yield* Effect.exit(routines.value.pauseAll(orgId))
         : Exit.void;
       const failures: Array<Cause.Cause<unknown>> = [];
       if (Exit.isFailure(rows)) failures.push(rows.cause);
+      if (Exit.isFailure(workerRows)) failures.push(workerRows.cause);
       for (const exit of exits) if (Exit.isFailure(exit)) failures.push(exit.cause);
+      for (const exit of workerExits) if (Exit.isFailure(exit)) failures.push(exit.cause);
       if (Exit.isFailure(routineExit)) failures.push(routineExit.cause);
       if (failures.length > 0)
         return yield* failed(failures.reduce((all, cause) => Cause.combine(all, cause)));

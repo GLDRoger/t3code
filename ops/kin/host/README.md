@@ -9,6 +9,7 @@ Runs the Kin server from a source build on the always-on Linux machine, as the d
 | `backup.sh`, `kin-backup.{service,timer}` | Nightly backup of `~/.t3/userdata` and `service.env` to an encrypted volume, keeping 14 days.                                                     |
 | `update.sh`                               | As `kin`: builds `kin` in its own worktree, runs the contract tests, then switches `~/kin-current` to it and restarts. Also does the first build. |
 | `restore.md`                              | The restore drill.                                                                                                                                |
+| `kin-worker.sh`, `kin-worker-*`           | As root: the worker environment, where Kin's workers run as `kin-worker` in a sandbox with no view of Kin's state. See [Workers](#workers).       |
 
 ## A kin shell
 
@@ -57,10 +58,10 @@ Then in `~/.t3/service.env`:
 KIN_MEMORY_SSH_COMMAND="ssh -i /home/kin/.config/kin/kin-memory-deploy-key -o IdentitiesOnly=yes"
 ```
 
-Point `KIN_MEMORY_REPOSITORIES` at the SSH URL (`git@github.com:<owner>/<memory repo>.git`), make sure `~/.ssh/known_hosts` holds GitHub's host key, and restart `kin-server`. The key stays out of `~/.ssh` because the approvals credential check tries every key there against GitHub, and a deploy key's greeting names a repo instead of the bot, so the check fails with `non_bot_identity` and privileged actions stop. **The key is not contained.** Agents run as `kin` and can read the file, so a prompt-injected lead or worker can push to the memory repo directly, around Kin's memory writer and its rules (owner-only `rules.md`, server-set trust, secret scanning, L0 writes only on `kin/shadow/*`). Until Kin runs memory git as a separate OS user, contain it on GitHub:
+Point `KIN_MEMORY_REPOSITORIES` at the SSH URL (`git@github.com:<owner>/<memory repo>.git`), make sure `~/.ssh/known_hosts` holds GitHub's host key, and restart `kin-server`. The key stays out of `~/.ssh` because the approvals credential check tries every key there against GitHub, and a deploy key's greeting names a repo instead of the bot, so the check fails with `non_bot_identity` and privileged actions stop. **Who can read the key.** Leads have no shell, and workers run as `kin-worker` in a sandbox that has no `/home/kin` (see [Workers](#workers)), so no agent can read it. Kin's server process can, and so can anything else that runs as `kin`. Keep GitHub's own containment as a second wall:
 
 - While every lead is at L0, protect `main` in the memory repo with a ruleset that requires a pull request and the `memory-check` workflow, with no bypass for this deploy key. The key can then update every ref except `main`, so a branch it pushes is never trusted on its own (see `ops/kin/memory-repo/README.md`, Workflow permissions).
-- Don't raise any lead to L1 (whose memory writes Kin merges into `main`) until memory git runs as a separate OS user whose key agents can't read. This is the same gap as the approval key (approvals spec, section 12) and has the same fix.
+- Raising a lead to L1 (whose memory writes Kin merges into `main`) needed a key no agent can read. With workers isolated and `sudo kin-worker check` all ✓, that holds; the server itself still holds the key, as it holds the approval key (approvals spec, section 12). L1 stays the owner's call.
 
 **HTTPS.** Set `KIN_MEMORY_CREDENTIAL_HELPER` to a git credential helper's name or absolute path, with an `https://` repo URL. There is no GitHub App installation-token helper yet, so this route has nothing to point at until one is written.
 
@@ -132,6 +133,36 @@ FROM r GROUP BY warm, stage ORDER BY warm, stage;"
 ```
 
 `seen` shows in the chat as soon as the message is queued, before any of these stages.
+
+## Workers
+
+Kin's lead hands coding work to worker threads. They have a full shell, so they never run on kin-server: they run in the **worker environment**, a plain T3 server with Kin off, as the `kin-worker` user, linked from kin-server. kin-server launches, follows and stops them over that link. A worker's shell runs in a systemd sandbox where `/home` is empty apart from `/home/kin-worker`, `/tmp` is its own, other users' processes are hidden and `sudo` can't raise privileges. Kin's build is mounted in read-only. So a worker can't read Kin's database, `~/.t3/userdata/secrets`, `~/.config/kin/*` (memory deploy key, APNs key, GitHub App key), `service.env`, kin's or the owner's logins, and can't run Kin's CLI against Kin's state (`auth session`, `kin lead projects`, direct SQL). It holds no credential for kin-server. `kin_delegate` refuses until a worker environment is configured.
+
+What a worker does get: its own checkouts and worktrees in `/home/kin-worker`, its own Claude and Codex logins, and a GitHub token that can push branches and open pull requests but not merge.
+
+### Set up workers
+
+Steps marked **root** need sudo. Run them from any clone of this repo, or use the installed `/usr/local/sbin/kin-worker` after the first one.
+
+1. **root:** `sudo ops/kin/host/kin-worker.sh`. Creates `kin-worker` (home mode 700, not in group `kin`), sets `/home/kin` to mode 700, installs `/usr/local/sbin/kin-worker` and the units `kin-worker-server.service`, `kin-worker-reload.{path,service}` and `kin-worker-link.{service,timer}`, turns on Linked environments in the worker environment's settings, copies kin's `~/.claude/settings.json` once, and starts the worker server on `127.0.0.1:3874` if Kin has a build. It prints a checklist; the first run fails it until the steps below are done. `--dry-run` changes nothing.
+2. **root:** tools in kin-worker's own home, like kin's (step 2 of [Install](#install)): `sudo -iu kin-worker`, then `curl https://mise.run | sh`, `mise use -g node@<engines.node>`, `npm i -g @anthropic-ai/claude-code @openai/codex`. `git`, `gh` and `curl` are already system-wide.
+3. **Claude.** The copied `~kin-worker/.claude/settings.json` keeps kin's gateway (`ANTHROPIC_BASE_URL`, `apiKeyHelper`). If `apiKeyHelper` reads anything under `/home/kin`, workers can't reach it: give kin-worker its own gateway key in its home (`install -m 600` as kin-worker) and point `apiKeyHelper` there. The checklist fails while the settings name `/home/kin`. Then **root:** `sudo kin-worker run -- claude -p ok` should answer.
+4. **Codex. root:** `sudo kin-worker run -- codex login` and follow its device sign-in to the owner's plan.
+5. **GitHub.** Workers push with a token of their own, never the owner's or the GitHub App's. Use a separate bot account with Write on the worker repos, and a fine-grained token limited to those repos with Contents and Pull requests read and write. On each repo, protect the default branch with a ruleset that requires a pull request and an approving review, with no bypass for the bot, so a worker can open PRs but never merge or push to `main`. Then **root:** `sudo kin-worker run -- gh auth login --with-token < token-file` (shred the file after) and `sudo kin-worker run -- gh auth setup-git`.
+6. **Projects. root:** for each of the lead's worker projects, clone the same repository into the worker environment and register it there: `sudo kin-worker run -- git clone https://github.com/<owner>/<repo> /home/kin-worker/projects/<repo>`, then `sudo kin-worker run t3 project add /home/kin-worker/projects/<repo> --base-dir /home/kin-worker/.t3`. Kin matches a lead's worker project to the worker environment's project with the same repository, so `kin lead create --worker-project` keeps naming this host's project.
+7. **Linked environments on kin-server:** Settings → Labs → Linked environments, from any client.
+8. **root:** `sudo kin-worker link`. Links kin-server to `http://127.0.0.1:3874` with full access and writes `KIN_WORKER_ENVIRONMENT_ID` into `~kin/.t3/service.env`. Restart kin-server at a quiet moment, as it says. A link lasts 30 days; `kin-worker-link.timer` renews it weekly.
+9. **root:** `sudo ops/kin/host/kin-worker.sh` again, then `sudo kin-worker check`. Every line must be ✓ before a lead goes to L2.
+
+`check` is the isolation transcript. As kin-worker, both in the sandbox and as a plain login, it tries to read Kin's database, list `secrets` and `~/.config/kin`, read `service.env`, kin's Claude and Codex logins, kin-server's process environment and the owner's home, and in the sandbox to run `t3 auth session list` and `kin lead list` against `/home/kin/.t3`, `sudo`, and call kin-server's `/mcp` with no credential. Each must fail; it also checks the sandbox can read its own home and Kin's build, and that the running unit has the same sandbox settings. `KIN_URL=http://127.0.0.1:<port>` points it at kin-server when that isn't on 3773.
+
+### Running workers
+
+- `systemctl status kin-worker-server` and `journalctl -u kin-worker-server -f` (system units, as root).
+- `update.sh` switching `~kin/kin-current` restarts the worker server through `kin-worker-reload.path`, so workers always run kin-server's build. Running worker turns stop and continue as after any restart.
+- Pausing Kin stops every worker kin-server tracks, in the worker environment. A thread or scheduled task a worker starts there on its own isn't tracked, so the pause doesn't reach it; stop it in that environment, and don't give the worker environment's own sessions to anyone else.
+- To watch a worker's thread, pair a client with the worker environment too: `sudo kin-worker run t3 pair --base-dir /home/kin-worker/.t3`. The port is loopback only, so reach it over SSH or Tailscale. Task cards update without it.
+- The worker environment has no Kin budget of its own: worker token use isn't visible to kin-server over the link yet, so worker units don't grow. Each worker still needs budget left to start.
 
 ## Update
 

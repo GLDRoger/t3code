@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
+  EnvironmentId,
   KinPersonId,
   KinWakeupId,
   MessageId,
@@ -25,6 +26,7 @@ import { provideDeterministicTestRuntime } from "../../orchestration-v2/testkit/
 import * as Routines from "../triggers/routines.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinStop from "./KinStop.ts";
+import * as WorkerEnvironment from "./workerEnvironment.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
 import { agentId, event, harness, orgId, seed } from "./WakeupRunner.testkit.ts";
 
@@ -57,6 +59,21 @@ const lastRunStatus = (threadId: ThreadId) =>
       .pipe(Effect.map((projection) => projection.runs.at(-1)?.status)),
   );
 /** Routines that record each pause and resume; `pauseAll` may be slowed down. */
+/** The worker environment, recording each stop Kin sends there. */
+const recordingWorkers = (stops: Array<Record<string, unknown>>) =>
+  WorkerEnvironment.KinWorkerEnvironment.of({
+    environmentId: Option.some(EnvironmentId.make("worker-env")),
+    call: ((
+      _environmentId: EnvironmentId,
+      tool: { readonly name: string },
+      params: Record<string, unknown>,
+    ) =>
+      Effect.sync(() => {
+        stops.push({ tool: tool.name, ...params });
+        return { threadId: params.threadId, runId: null, status: "interrupt_requested" };
+      })) as never,
+  });
+
 const recordingRoutines = (
   log: Array<string>,
   beforePause: Effect.Effect<void> = Effect.void,
@@ -90,6 +107,7 @@ describe("KinStop", () => {
           const threads = yield* ThreadManagement.ThreadManagementService;
           const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
           const delegated: Array<ThreadId> = [];
+          const stops: Array<Record<string, unknown>> = [];
           yield* stop.attach(
             yield* KinStop.makeFanOut(Option.none()).pipe(
               Effect.provideService(ThreadManagement.ThreadManagementService, {
@@ -99,6 +117,10 @@ describe("KinStop", () => {
                     Effect.andThen(threads.stopDelegatedTasks(input)),
                   ),
               }),
+              Effect.provideService(
+                WorkerEnvironment.KinWorkerEnvironment,
+                recordingWorkers(stops),
+              ),
             ),
           );
 
@@ -112,17 +134,15 @@ describe("KinStop", () => {
           }>`SELECT wakeup_id AS "wakeupId", thread_id AS "threadId" FROM kin_wakeups WHERE org_id = ${orgId} ORDER BY wakeup_id`;
           const leadThread = ThreadId.make(running!.threadId);
 
-          const workerThread = ThreadId.make("kin-worker-stop-test");
-          yield* launchThread(workerThread);
-          yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id, model_json, provenance_json, status, started_at)
-            VALUES ('worker', ${orgId}, ${agentId}, ${running!.wakeupId}, 'build', ${workerThread}, '{}', '{"_tag":"system"}', 'running', 0)`;
+          // A worker runs in the worker environment, so the stop goes there.
+          yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id, model_json, provenance_json, status, started_at, environment_id)
+            VALUES ('worker', ${orgId}, ${agentId}, ${running!.wakeupId}, 'build', 'remote-worker', '{}', '{"_tag":"system"}', 'running', 0, 'worker-env')`;
           const dreamThread = ThreadId.make("kin-dream:dream-stop-test:extract");
           yield* launchThread(dreamThread);
           yield* sql`INSERT INTO kin_dream_runs (org_id, owner_date, dream_id, full, status, branch, material_from, material_until, started_at, thread_id)
             VALUES (${orgId}, '2026-11-08', 'dream-stop-test', 0, 'running', 'dream/2026-11-08', 0, 0, 0, ${dreamThread})`;
           yield* worker.drain();
           const live = lastRunStatus;
-          assert.include(ThreadManagement.ACTIVE_RUN_STATUSES, yield* live(workerThread));
           assert.include(ThreadManagement.ACTIVE_RUN_STATUSES, yield* live(dreamThread));
 
           const paused = yield* stop.pause(owner, { orgId, reason: "Testing" });
@@ -131,9 +151,12 @@ describe("KinStop", () => {
           yield* Fiber.join(wakeup);
 
           assert.strictEqual(yield* live(leadThread), "interrupted");
-          assert.strictEqual(yield* live(workerThread), "interrupted");
           assert.strictEqual(yield* live(dreamThread), "interrupted");
-          assert.sameMembers(delegated, [leadThread, workerThread, dreamThread]);
+          assert.sameMembers(delegated, [leadThread, dreamThread]);
+          assert.deepStrictEqual(
+            stops.map(({ tool, threadId, stop }) => ({ tool, threadId, stop })),
+            [{ tool: "t3_thread_interrupt", threadId: "remote-worker", stop: true }],
+          );
           assert.deepStrictEqual(
             yield* sql`SELECT status FROM kin_wakeups WHERE org_id = ${orgId} ORDER BY wakeup_id`,
             [{ status: "released" }],
@@ -282,9 +305,9 @@ describe("KinStop", () => {
       const sql = yield* SqlClient.SqlClient;
       const stop = yield* KinStop.KinStop;
       const threads = yield* ThreadManagement.ThreadManagementService;
-      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
       const log: Array<string> = [];
       const broken = ThreadId.make("broken-lead-thread");
+      const stops: Array<Record<string, unknown>> = [];
       yield* stop.attach(
         yield* KinStop.makeFanOut(yield* recordingRoutines(log)).pipe(
           Effect.provideService(ThreadManagement.ThreadManagementService, {
@@ -294,20 +317,20 @@ describe("KinStop", () => {
                 ? Effect.die("unreadable projection")
                 : threads.getThreadProjection(threadId),
           }),
+          Effect.provideService(WorkerEnvironment.KinWorkerEnvironment, recordingWorkers(stops)),
         ),
       );
       yield* sql`UPDATE kin_leads SET thread_id = ${broken} WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
-      const workerThread = ThreadId.make("kin-worker-stop-test");
-      yield* launchThread(workerThread);
       yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids) VALUES ('wake', ${orgId}, ${agentId}, 'test', 0, 'completed', '[]')`;
-      yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id, model_json, provenance_json, status, started_at)
-        VALUES ('worker', ${orgId}, ${agentId}, 'wake', 'build', ${workerThread}, '{}', '{"_tag":"system"}', 'running', 0)`;
-      yield* worker.drain();
+      yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id, model_json, provenance_json, status, started_at, environment_id)
+        VALUES ('worker', ${orgId}, ${agentId}, 'wake', 'build', 'remote-worker', '{}', '{"_tag":"system"}', 'running', 0, 'worker-env')`;
 
       const failure = yield* Effect.flip(stop.pause(owner, { orgId }));
       assert.include(failure, { _tag: "KinChatError", reason: "unavailable" });
-      yield* worker.drain();
-      assert.strictEqual(yield* lastRunStatus(workerThread), "interrupted");
+      assert.deepStrictEqual(
+        stops.map(({ threadId }) => threadId),
+        ["remote-worker"],
+      );
       assert.deepStrictEqual(log, ["pause"]);
       assert.isTrue(yield* stop.isPaused(orgId));
     }).pipe(Effect.provide(harness({ untilInterrupted: true })), provideDeterministicTestRuntime),

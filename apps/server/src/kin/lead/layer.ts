@@ -51,6 +51,7 @@ import * as DreamRunner from "../dreaming/DreamRunner.ts";
 import * as DreamSession from "../dreaming/DreamSession.ts";
 import * as Workers from "./Workers.ts";
 import * as WorkerTracker from "./WorkerTracker.ts";
+import * as WorkerEnvironment from "./workerEnvironment.ts";
 import * as ChatWake from "./ChatWake.ts";
 
 export class KinLeadStartupError extends Schema.TaggedError<KinLeadStartupError>()(
@@ -299,15 +300,20 @@ const toolkit = LeadMemory.layer.pipe(
 );
 
 export const layer = withServices(Layer.merge(runner, ChatWake.layer));
+// Workers run only in the linked worker environment; see workerEnvironment.ts.
+const workers = Workers.layer.pipe(
+  Layer.provideMerge(WorkerTracker.layer),
+  Layer.provideMerge(WorkerEnvironment.layer),
+);
 const tracker = Layer.effectDiscard(
   Effect.gen(function* () {
     const tracker = yield* WorkerTracker.WorkerTracker;
     yield* tracker.start.pipe(forkParked);
   }),
-).pipe(Layer.provide(WorkerTracker.layer));
+);
 const production = withServices(
   Layer.mergeAll(runner, ChatWake.layer, registration, tracker).pipe(
-    Layer.provideMerge(Workers.layer),
+    Layer.provideMerge(workers),
     Layer.provideMerge(toolkit),
   ),
 );

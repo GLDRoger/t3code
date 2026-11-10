@@ -1,0 +1,7 @@
+# Started by kin-worker-reload.path. Installed by kin-worker.sh.
+[Unit]
+Description=Restart Kin's worker environment on Kin's new build
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl try-restart kin-worker-server.service

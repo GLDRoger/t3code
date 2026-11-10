@@ -1,0 +1,9 @@
+# Links kin-server to the worker environment again before the 30-day link expires. Started by
+# kin-worker-link.timer. Installed by kin-worker.sh.
+[Unit]
+Description=Renew kin-server's link to Kin's worker environment
+After=kin-worker-server.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/kin-worker link

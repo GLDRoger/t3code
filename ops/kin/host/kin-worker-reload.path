@@ -1,0 +1,11 @@
+# Restarts the worker environment when update.sh switches ~kin/kin-current to a new build, so
+# workers always run the build kin-server runs. Installed by kin-worker.sh.
+[Unit]
+Description=Restart Kin's worker environment when Kin's build changes
+
+[Path]
+PathChanged=/home/kin/kin-current
+Unit=kin-worker-reload.service
+
+[Install]
+WantedBy=multi-user.target
