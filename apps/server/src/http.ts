@@ -173,7 +173,11 @@ export const assetFileResponse = Effect.fn("assetFileResponse")(function* (
   method: "GET" | "HEAD" = "GET",
 ) {
   const headers = assetResponseHeaders(asset.path, asset);
-  if (asset.noStore) headers["Cache-Control"] = "private, no-store";
+  // Kin chat files: the URL is the credential, so it is neither cached nor sent on as a referrer.
+  if (asset.noStore) {
+    headers["Cache-Control"] = "private, no-store";
+    headers["Referrer-Policy"] = "no-referrer";
+  }
   if (
     asset.renderIntent === "mcp-app" &&
     !asset.download &&
@@ -461,7 +465,8 @@ export const layerAssetRoute = HttpRouter.add(
       Effect.orElseSucceed(() => HttpServerResponse.text("Internal Server Error", { status: 500 })),
     );
   }),
-);
+  // Its path is a signed capability, so the request log never records it.
+).pipe(Layer.provide(HttpRouter.disableLogger));
 
 export const layerAttachmentUploadRoute = HttpRouter.add(
   "POST",

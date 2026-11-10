@@ -44,6 +44,7 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Kin from "../layer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
+import { AUDIENCE_MOVED, SHARED_OTHER_CHAT } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { KinChatToolkit, handlers, agentServices } from "./KinChatToolkit.ts";
 
@@ -278,6 +279,48 @@ it.effect(
         const result = yield* call("kin_chat_post", { ...input, ...changed }).pipe(Effect.result);
         assert.isTrue(result._tag === "Failure" || result.success.isError);
       }
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a teammate joining mid-turn withholds the owner-only reply, and a shared turn reads only its own chat",
+  () =>
+    Effect.gen(function* () {
+      const { chat: direct, person, chatService, sql } = yield* seed();
+      const at = "1970-01-01T00:00:00.000Z";
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+        VALUES ('room', ${person.orgId}, 'team_group', 0, ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('room-owner', ${person.orgId}, 'room', 'person', ${person.personId}, 'owner', ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+        VALUES ('room-lead', ${person.orgId}, 'room', 'agent', ${agentId}, 'member', ${at})`;
+      const asked = yield* chatService.send(person, {
+        chatId: KinChatId.make("room"),
+        body: "Owner question in the group",
+        clientMessageId: "room-question",
+      });
+      yield* startAgentWakeup({ orgId: person.orgId, agentId, threadId, message: asked });
+      // The owner alone reads the group: the lead reads its other chats too.
+      assert.isFalse((yield* call("kin_chat_read", { chatId: direct.chatId })).isError);
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('teammate', ${person.orgId}, 'teammate', 'Teammate', ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('room-teammate', ${person.orgId}, 'room', 'person', 'teammate', 'member', ${at})`;
+      assert.include(errorOf(yield* call("kin_chat_read", { chatId: direct.chatId })), {
+        reason: "not_allowed",
+        message: SHARED_OTHER_CHAT,
+      });
+      assert.isFalse((yield* call("kin_chat_read", { chatId: "room" })).isError);
+      assert.include(
+        errorOf(
+          yield* call("kin_chat_post", {
+            chatId: direct.chatId,
+            body: "Built for the owner alone",
+            intent: "evidence",
+          }),
+        ),
+        { reason: "not_allowed", message: AUDIENCE_MOVED },
+      );
     }).pipe(Effect.provide(layer)),
 );
 

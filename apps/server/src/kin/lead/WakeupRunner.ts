@@ -42,6 +42,7 @@ import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinBudget from "./KinBudget.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
+import { SHARED_THREAD_PREFIX, audienceChanged, recordedAudience } from "./Audience.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import { nonClaudeLeadModel } from "./leadModels.ts";
 import * as RoutineContent from "./RoutineContent.ts";
@@ -185,6 +186,7 @@ const make = Effect.gen(function* () {
   const settings = yield* ServerSettingsService;
   const paused = (orgId: KinOrgId) =>
     isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+  const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
   const threadActivity = Effect.fn("WakeupRunner.threadActivity")(function* (orgId: KinOrgId) {
     const rows = yield* sql<{
       threadId: string;
@@ -281,6 +283,19 @@ const make = Effect.gen(function* () {
           events = events.filter((event) => event.priority !== priority);
         }
         if (events.length === 0) return;
+        // An owner-only turn takes no message that would let someone else read its reply: those
+        // wait for the next wake-up, and this one stops taking more.
+        if (yield* audienceChanged({ orgId, agentId, wakeupId }).pipe(provideSql)) {
+          steering.open = false;
+          yield* queue.release({
+            orgId,
+            wakeupId,
+            eventIds: events.map((event) => event.eventId),
+            notBefore: yield* Clock.currentTimeMillis,
+            countAttempt: false,
+          });
+          return;
+        }
         steering.steers++;
         const n = steering.steers;
         const messageId = MessageId.make(KinIdentity.steerMessageId(wakeupId, n));
@@ -771,32 +786,6 @@ const make = Effect.gen(function* () {
                 return;
               }
             }
-            // A project per lead, since its root is the provider's cwd: the lead's own checkout.
-            const { project } = yield* projects.bootstrap({
-              commandId: CommandId.make(`kin-project:${orgId}:${agentId}`),
-              projectId: ProjectId.make(`kin:${orgId}:${agentId}`),
-              workspaceRoot: pinned.read,
-              title: `Kin · ${record.orgName} · ${record.name}`,
-            });
-            let existingThreadId = current.threadId;
-            if (existingThreadId !== null) {
-              const existing = yield* threads
-                .getThreadProjection(existingThreadId)
-                .pipe(Effect.option);
-              // A thread launched under the old shared-checkout project keeps that cwd; end it
-              // so this wake-up launches one in this lead's own checkout instead.
-              if (Option.isSome(existing) && existing.value.thread.projectId !== project.id) {
-                yield* identity.endAgentThread({ orgId, threadId: existingThreadId });
-                yield* sql`UPDATE kin_leads SET thread_id = NULL WHERE org_id = ${orgId} AND agent_id = ${agentId} AND thread_id = ${existingThreadId}`;
-                existingThreadId = null;
-              }
-            }
-            const urgent =
-              yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND priority IN ('P0', 'P1') LIMIT 1`;
-            const modelSelection =
-              !cheapOnly && (urgent.length > 0 || events.some((event) => event._tag === "routine"))
-                ? current.models.strong
-                : current.models.cheap;
             const text = yield* prompt.build({
               orgId,
               agentId,
@@ -809,7 +798,42 @@ const make = Effect.gen(function* () {
             });
             // What the people in the chat attached to the messages this turn answers.
             const attachments = yield* prompt.attachments({ orgId, events });
-            const threadId = existingThreadId ?? ThreadId.make(`kin:${yield* ulid}`);
+            // The prompt recorded who reads this turn; a shared one runs without file tools.
+            const shared =
+              (yield* recordedAudience({ orgId, wakeupId }).pipe(provideSql)) === "shared";
+            // A project per lead, since its root is the provider's cwd: the lead's own checkout.
+            const { project } = yield* projects.bootstrap({
+              commandId: CommandId.make(`kin-project:${orgId}:${agentId}`),
+              projectId: ProjectId.make(`kin:${orgId}:${agentId}`),
+              workspaceRoot: pinned.read,
+              title: `Kin · ${record.orgName} · ${record.name}`,
+            });
+            let existingThreadId = current.threadId;
+            if (existingThreadId !== null) {
+              const existing = yield* threads
+                .getThreadProjection(existingThreadId)
+                .pipe(Effect.option);
+              // A thread keeps its cwd and its tools: one from another project, or made for the
+              // other audience, ends so this wake-up launches its own.
+              if (
+                Option.isSome(existing) &&
+                (existing.value.thread.projectId !== project.id ||
+                  existingThreadId.startsWith(SHARED_THREAD_PREFIX) !== shared)
+              ) {
+                yield* identity.endAgentThread({ orgId, threadId: existingThreadId });
+                yield* sql`UPDATE kin_leads SET thread_id = NULL WHERE org_id = ${orgId} AND agent_id = ${agentId} AND thread_id = ${existingThreadId}`;
+                existingThreadId = null;
+              }
+            }
+            const urgent =
+              yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND priority IN ('P0', 'P1') LIMIT 1`;
+            const modelSelection =
+              !cheapOnly && (urgent.length > 0 || events.some((event) => event._tag === "routine"))
+                ? current.models.strong
+                : current.models.cheap;
+            const threadId =
+              existingThreadId ??
+              ThreadId.make(`${shared ? SHARED_THREAD_PREFIX : "kin:"}${yield* ulid}`);
             row = { ...row, threadId };
             yield* sql.withTransaction(
               Effect.gen(function* () {

@@ -58,6 +58,7 @@ import { KinGithubRepoScope } from "../triggers/githubEvents.ts";
 import { KinBudget } from "./KinBudget.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import * as Registry from "./KinLeadRegistry.ts";
+import { recordAudience, turnAudience } from "./Audience.ts";
 import { KinLevelGate } from "./LevelGate.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
 import * as Publish from "./workerPublish.ts";
@@ -1037,6 +1038,11 @@ it.effect.each([
           RETURNING event_id AS "eventId"`;
         yield* ctx.sql`UPDATE kin_wakeups SET event_ids = json_array(${due!.eventId})
           WHERE wakeup_id = 'wake'`;
+        // What the prompt builder records before the lead speaks.
+        const turn = { orgId: ctx.orgId, agentId: leadId, wakeupId: "wake" };
+        yield* recordAudience(turn, yield* turnAudience(turn)).pipe(
+          Effect.provideService(SqlClient.SqlClient, ctx.sql),
+        );
         const started = yield* workers
           .delegate(scope, { ...delegateInput, sourceEventId: due!.eventId })
           .pipe(Effect.result);

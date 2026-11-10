@@ -986,6 +986,7 @@ describe("Kin chat file URLs", () => {
           body: yield* response.text,
           cacheControl: response.headers["cache-control"],
           contentType: response.headers["content-type"],
+          referrerPolicy: response.headers["referrer-policy"],
         };
       });
       const missing = yield* fetch(
@@ -1000,6 +1001,7 @@ describe("Kin chat file URLs", () => {
         body: "pixels",
         cacheControl: "private, no-store",
         contentType: "image/png",
+        referrerPolicy: "no-referrer",
       });
       expect(yield* fetch("HEAD", memberUrl)).toMatchObject({
         status: 200,

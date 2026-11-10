@@ -415,7 +415,7 @@ export class SessionStore extends Context.Service<
       ReadonlyArray<AuthClientSession>,
       SessionCredentialInternalError
     >;
-    /** The session by id while it is neither revoked nor expired, as a live socket keeps it. */
+    /** The session by id while it is neither revoked nor past its deadline, connected or not. */
     readonly getActive: (
       sessionId: AuthSessionId,
     ) => Effect.Effect<Option.Option<ActiveSession>, SessionCredentialVerificationError>;
@@ -601,15 +601,19 @@ const make = Effect.gen(function* () {
     );
   });
 
+  // Strict: a connected socket outlives its deadline only until it renews, and a URL is not one.
   const getActive: SessionStore["Service"]["getActive"] = (sessionId) =>
-    loadActiveSession(sessionId).pipe(
-      Effect.map(
-        Option.map((active): ActiveSession => ({
-          sessionId: active.sessionId,
-          subject: active.subject,
-          method: active.method,
-          scopes: active.scopes,
-        })),
+    Effect.all([loadActiveSession(sessionId), DateTime.now]).pipe(
+      Effect.map(([found, now]) =>
+        found.pipe(
+          Option.filter((active) => active.expiresAt.epochMilliseconds > now.epochMilliseconds),
+          Option.map((active): ActiveSession => ({
+            sessionId: active.sessionId,
+            subject: active.subject,
+            method: active.method,
+            scopes: active.scopes,
+          })),
+        ),
       ),
       Effect.mapError((cause) => new SessionCredentialVerificationError({ sessionId, cause })),
     );

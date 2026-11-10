@@ -1,12 +1,16 @@
 import { assert, describe, it } from "@effect/vitest";
-import type { KinChatError } from "@t3tools/contracts";
+import { KinAgentId, KinOrgId, type KinChatError } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as Sqlite from "../../persistence/Sqlite.ts";
+import { SHARED_GITHUB } from "../lead/Audience.ts";
+import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { repoScopeLayer } from "../triggers/githubEvents.ts";
 import * as KinGitHubApp from "./KinGitHubApp.ts";
 import type { KinGitHubPermissionSet } from "./KinGitHubPermissions.ts";
@@ -92,6 +96,80 @@ const defaultRoute = (request: RecordedRequest): FakeAnswer | undefined => {
   return undefined;
 };
 
+const orgId = KinOrgId.make("org-1");
+const agentId = KinAgentId.make("lead-1");
+const turn = (wakeupId: string) => ({ orgId, agentId, wakeupId });
+const at = "2026-11-10T09:00:00.000Z";
+/**
+ * wake-1 and wake-2 answer the owner in their direct chat with the lead; wake-shared answers a
+ * teammate in a group; the reminders were set up in that group, by the teammate or the owner.
+ */
+const wakeups = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES (${orgId}, 'Org', ${at})`;
+    for (const person of ["owner", "teammate"])
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES (${person}, ${orgId}, ${person}, ${person}, ${at})`;
+    yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+      VALUES (${agentId}, ${orgId}, 'Lead', 'lead', 'owner', ${at})`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at, direct_key)
+      VALUES ('dm', ${orgId}, 'direct', 1, ${at}, ${`owner:${agentId}`})`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+      VALUES ('room', ${orgId}, 'team_group', 1, ${at})`;
+    yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+      VALUES (${agentId}, ${orgId}, 'Lead', 0, '{}', '[]', 'dm')`;
+    for (const [member, chat, person, role] of [
+      ["dm-owner", "dm", "owner", "owner"],
+      ["room-owner", "room", "owner", "owner"],
+      ["room-teammate", "room", "teammate", "member"],
+    ] as const)
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES (${member}, ${orgId}, ${chat}, 'person', ${person}, ${role}, ${at})`;
+    for (const [message, chat, person, member, role] of [
+      ["asked-dm", "dm", "owner", "dm-owner", "owner"],
+      ["asked-room", "room", "teammate", "room-teammate", "member"],
+    ] as const)
+      yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+          author_member_id, author_role, kind, body, mentions_json, status, created_at)
+        VALUES (${message}, ${orgId}, ${chat}, 1, 'human', ${person}, ${member}, ${role}, 'text',
+          'Invented question', '[]', 'posted', ${at})`;
+    const asked = (chatId: string, messageId: string, personId: string, memberId: string) => ({
+      _tag: "chat.message",
+      chatId,
+      messageId,
+      provenance: { _tag: "human", personId, memberId },
+    });
+    for (const [wakeupId, event] of [
+      ["wake-1", asked("dm", "asked-dm", "owner", "dm-owner")],
+      ["wake-2", asked("dm", "asked-dm", "owner", "dm-owner")],
+      ["wake-shared", asked("room", "asked-room", "teammate", "room-teammate")],
+      [
+        "wake-reminder",
+        {
+          _tag: "deferral.due",
+          provenance: { _tag: "system" },
+          origin: { agentId, chatId: "room", personId: "teammate" },
+        },
+      ],
+      // The owner asked for it, but in the group the teammate reads.
+      [
+        "wake-room-reminder",
+        {
+          _tag: "deferral.due",
+          provenance: { _tag: "system" },
+          origin: { agentId, chatId: "room" },
+        },
+      ],
+    ] as const) {
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids)
+        VALUES (${wakeupId}, ${orgId}, ${agentId}, 'model', 0, 'completed', '[]')`;
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
+        VALUES (${`event-${wakeupId}`}, ${orgId}, ${agentId}, ${event._tag}, 'P0', ${JSON.stringify(event)}, 0, 0, 'done', ${wakeupId})`;
+    }
+  }),
+).pipe(Layer.provideMerge(KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory))));
+
 const setup = (route: (request: RecordedRequest) => FakeAnswer | undefined = defaultRoute) => {
   const mints: Array<{ repo: string; permissions: KinGitHubPermissionSet; holder: string }> = [];
   const github = fakeGitHub(
@@ -116,7 +194,7 @@ const setup = (route: (request: RecordedRequest) => FakeAnswer | undefined = def
     }),
   );
   const layer = KinRepoReads.layer.pipe(
-    Layer.provide(Layer.mergeAll(app, github.layer, repoScopeLayer)),
+    Layer.provide(Layer.mergeAll(app, github.layer, repoScopeLayer, wakeups)),
     Layer.provide(
       ConfigProvider.layer(
         ConfigProvider.fromUnknown({
@@ -145,7 +223,7 @@ describe("KinRepoReads", () => {
       const { requests, mints, layer } = setup();
       return Effect.gen(function* () {
         yield* TestClock.setTime(Date.UTC(2026, 10, 10, 12));
-        const result = yield* (yield* reads).pulls("wake-1", { repo: "gldroger/T3CODE" });
+        const result = yield* (yield* reads).pulls(turn("wake-1"), { repo: "gldroger/T3CODE" });
         assert.strictEqual(result.repo, REPO);
         assert.deepStrictEqual(
           result.pulls.map((pull) => [pull.number, pull.draft, pull.reviewDecision, pull.checks]),
@@ -191,7 +269,7 @@ describe("KinRepoReads", () => {
   it.effect("reads one PR with a capped body, reviews, failing checks and mergeable state", () => {
     const { requests, layer } = setup();
     return Effect.gen(function* () {
-      const { pull } = yield* (yield* reads).pull("wake-1", { repo: REPO, number: 1 });
+      const { pull } = yield* (yield* reads).pull(turn("wake-1"), { repo: REPO, number: 1 });
       assert.strictEqual(pull.body.length, 2_000 + "…[truncated]".length);
       assert.deepStrictEqual(
         {
@@ -222,7 +300,10 @@ describe("KinRepoReads", () => {
   it.effect("lists recent runs for a branch, capped", () => {
     const { requests, layer } = setup();
     return Effect.gen(function* () {
-      const { runs } = yield* (yield* reads).runs("wake-1", { repo: REPO, branch: "kin/a b" });
+      const { runs } = yield* (yield* reads).runs(turn("wake-1"), {
+        repo: REPO,
+        branch: "kin/a b",
+      });
       assert.strictEqual(runs.length, KinRepoReads.RUNS_CAP);
       assert.deepStrictEqual(runs[0], {
         name: "CI",
@@ -246,7 +327,7 @@ describe("KinRepoReads", () => {
         : defaultRoute(request),
     );
     return Effect.gen(function* () {
-      const { pulls } = yield* (yield* reads).pulls("wake-1", { repo: REPO, state: "all" });
+      const { pulls } = yield* (yield* reads).pulls(turn("wake-1"), { repo: REPO, state: "all" });
       assert.strictEqual(pulls.length, KinRepoReads.PULLS_CAP);
     }).pipe(Effect.provide(layer));
   });
@@ -254,7 +335,7 @@ describe("KinRepoReads", () => {
   it.effect("lists the org's repos without the memory repo", () => {
     const { requests, layer } = setup();
     return Effect.gen(function* () {
-      assert.deepStrictEqual(yield* (yield* reads).repos("wake-1"), { repos: [REPO] });
+      assert.deepStrictEqual(yield* (yield* reads).repos(turn("wake-1")), { repos: [REPO] });
       assert.strictEqual(requests.length, 0);
     }).pipe(Effect.provide(layer));
   });
@@ -274,11 +355,11 @@ describe("KinRepoReads", () => {
         "",
       ];
       const missing = yield* failureOf(
-        service.pull("wake-1", { repo: "GLDRoger/nope", number: 1 }),
+        service.pull(turn("wake-1"), { repo: "GLDRoger/nope", number: 1 }),
       );
       for (const repo of outside) {
-        assert.deepStrictEqual(yield* failureOf(service.pulls("wake-1", { repo })), missing);
-        assert.deepStrictEqual(yield* failureOf(service.runs("wake-1", { repo })), missing);
+        assert.deepStrictEqual(yield* failureOf(service.pulls(turn("wake-1"), { repo })), missing);
+        assert.deepStrictEqual(yield* failureOf(service.runs(turn("wake-1"), { repo })), missing);
       }
       assert.strictEqual(missing.reason, "not_found");
       assert.strictEqual(requests.length, 0);
@@ -289,7 +370,9 @@ describe("KinRepoReads", () => {
   it.effect("a listed repo GitHub can't find gets the same not found", () => {
     const { layer } = setup(() => ({ status: 404, body: { message: "Not Found" } }));
     return Effect.gen(function* () {
-      const failure = yield* failureOf((yield* reads).pull("wake-1", { repo: REPO, number: 9 }));
+      const failure = yield* failureOf(
+        (yield* reads).pull(turn("wake-1"), { repo: REPO, number: 9 }),
+      );
       assert.strictEqual(failure.reason, "not_found");
       assert.notInclude(failure.message, TOKEN);
       assert.notInclude(failure.message, REPO);
@@ -301,20 +384,47 @@ describe("KinRepoReads", () => {
     return Effect.gen(function* () {
       const service = yield* reads;
       for (let call = 0; call < KinRepoReads.CALLS_PER_WAKEUP; call++)
-        yield* service.repos("wake-1");
-      assert.strictEqual((yield* failureOf(service.repos("wake-1"))).reason, "limit");
+        yield* service.repos(turn("wake-1"));
+      assert.strictEqual((yield* failureOf(service.repos(turn("wake-1")))).reason, "limit");
       assert.strictEqual(
-        (yield* failureOf(service.runs("wake-1", { repo: REPO }))).reason,
+        (yield* failureOf(service.runs(turn("wake-1"), { repo: REPO }))).reason,
         "limit",
       );
-      yield* service.repos("wake-2");
+      yield* service.repos(turn("wake-2"));
     }).pipe(Effect.provide(layer));
   });
+
+  it.effect(
+    "refuses a turn someone besides the owner reads, and a reminder such a turn set up, before asking GitHub",
+    () => {
+      const { requests, mints, layer } = setup();
+      return Effect.gen(function* () {
+        const service = yield* reads;
+        for (const wakeupId of [
+          "wake-shared",
+          "wake-reminder",
+          "wake-room-reminder",
+          "wake-unknown",
+        ])
+          for (const failure of [
+            yield* failureOf(service.repos(turn(wakeupId))),
+            yield* failureOf(service.pulls(turn(wakeupId), { repo: REPO })),
+            yield* failureOf(service.pull(turn(wakeupId), { repo: REPO, number: 1 })),
+            yield* failureOf(service.runs(turn(wakeupId), { repo: REPO })),
+          ])
+            assert.deepStrictEqual(failure, { reason: "not_allowed", message: SHARED_GITHUB });
+        assert.lengthOf(requests, 0);
+        assert.lengthOf(mints, 0);
+        // The same lead answering its owner alone still reads.
+        assert.deepStrictEqual(yield* service.repos(turn("wake-1")), { repos: [REPO] });
+      }).pipe(Effect.provide(layer));
+    },
+  );
 
   it.effect("gives up on a GitHub that doesn't answer", () => {
     const { layer } = setup(() => ({ status: 200, hang: true }));
     return Effect.gen(function* () {
-      const fiber = yield* failureOf((yield* reads).runs("wake-1", { repo: REPO })).pipe(
+      const fiber = yield* failureOf((yield* reads).runs(turn("wake-1"), { repo: REPO })).pipe(
         Effect.forkChild,
       );
       yield* TestClock.adjust("30 seconds");
@@ -328,10 +438,10 @@ describe("KinRepoReads", () => {
     Effect.gen(function* () {
       const service = yield* reads;
       for (const failure of [
-        yield* failureOf(service.repos("wake-1")),
-        yield* failureOf(service.pulls("wake-1", { repo: REPO })),
-        yield* failureOf(service.pull("wake-1", { repo: REPO, number: 1 })),
-        yield* failureOf(service.runs("wake-1", { repo: REPO })),
+        yield* failureOf(service.repos(turn("wake-1"))),
+        yield* failureOf(service.pulls(turn("wake-1"), { repo: REPO })),
+        yield* failureOf(service.pull(turn("wake-1"), { repo: REPO, number: 1 })),
+        yield* failureOf(service.runs(turn("wake-1"), { repo: REPO })),
       ])
         assert.deepStrictEqual(failure, {
           reason: "unavailable",
