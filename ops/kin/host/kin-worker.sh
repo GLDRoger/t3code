@@ -272,13 +272,14 @@ cmd_upload_pack() {
 }
 
 # What this script itself stands on, checked before it changes anything: Bash 4.4 (mapfile,
-# empty arrays under `set -u`), GNU stat and sed, and systemd 249 (SocketBindDeny=).
+# empty arrays under `set -u`), a coreutils stat, GNU sed, and systemd 249 (SocketBindDeny=).
 MIN_SYSTEMD=249
 preflight() {
   [ "$(uname -s)" = Linux ] || die "needs Linux with systemd."
   [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 4 ]; } ||
     die "needs Bash 4.4 or later; this is Bash $BASH_VERSION."
-  stat --version 2>/dev/null | grep -q GNU || die "needs GNU stat (coreutils)."
+  # Asked by behaviour, not name: Ubuntu 25.10 ships uutils coreutils, whose stat takes the same -c.
+  [[ "$(stat -c '%u %a' / 2>/dev/null)" =~ ^0\ [0-7]+$ ]] || die "needs a stat that takes -c '%u %a' (GNU or uutils coreutils)."
   sed --version 2>/dev/null | grep -q 'GNU sed' || die "needs GNU sed."
   local version
   version="$(systemctl --version 2>/dev/null | sed -n '1s/^systemd \([0-9]*\).*/\1/p')"
