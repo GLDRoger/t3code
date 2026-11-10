@@ -27,7 +27,7 @@ const hostProjects: ReadonlyArray<HostProject> = [
     repositoryKey: "github.com/acme/site",
   },
 ];
-const connectedRepos = ["GLDRoger/t3code", "acme/docs"];
+const connectedRepos = ["GLDRoger/t3code", "acme/docs", "acme/app", "fork/app"];
 const resolve = (named: string, allowed?: ReadonlyArray<ProjectId>) =>
   resolveProject({ named, checkouts, hostProjects, connectedRepos, allowed });
 
@@ -69,6 +69,57 @@ describe("resolveProject", () => {
       _tag: "unknown",
       labels: ["GLDRoger/t3code", "acme/app", "fork/app"],
     });
+  });
+
+  it("with no list, only this host's projects and connected repositories are reachable", () => {
+    // Executed against the reviewed head: a checkout nobody connected resolved.
+    const stray: Checkout = {
+      projectId: ProjectId.make("there-private"),
+      title: "private",
+      repositoryKey: "github.com/other/private",
+      slug: "other/private",
+    };
+    for (const named of ["other/private", "private", "there-private"])
+      assert.deepStrictEqual(
+        resolveProject({
+          named,
+          checkouts: [stray],
+          hostProjects: [],
+          connectedRepos: [],
+          allowed: undefined,
+        }),
+        { _tag: "unknown", labels: [] },
+      );
+  });
+
+  it.each([
+    ["https://github.com/acme/missing", "github.com/acme/elsewhere"],
+    ["git@github.com:acme/missing.git", "github.com/acme/elsewhere"],
+    ["github.com/acme/missing", "github.com/acme/elsewhere"],
+    ["../../elsewhere", "github.com/acme/elsewhere"],
+    ["/srv/elsewhere", "github.com/acme/elsewhere"],
+  ])("%s names a repository, never a checkout or project titled that", (named, key) => {
+    const titled: Checkout = {
+      projectId: ProjectId.make("there-titled"),
+      title: named,
+      repositoryKey: key,
+      slug: "acme/elsewhere",
+    };
+    const host: HostProject = {
+      projectId: ProjectId.make("titled"),
+      title: named,
+      repositoryKey: key,
+    };
+    assert.deepStrictEqual(
+      resolveProject({
+        named,
+        checkouts: [titled],
+        hostProjects: [host],
+        connectedRepos: [],
+        allowed: undefined,
+      }),
+      { _tag: "unknown", labels: ["acme/elsewhere"] },
+    );
   });
 
   it("a request held to a list reaches only its projects and learns nothing of the rest", () => {

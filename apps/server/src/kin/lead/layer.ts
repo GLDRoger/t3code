@@ -346,6 +346,8 @@ const repoReads = Layer.unwrap(
 const workers = Workers.layer.pipe(
   Layer.provideMerge(WorkerTracker.layer.pipe(Layer.provide(workerPublish))),
   Layer.provideMerge(WorkerEnvironment.layer),
+  // The repositories the owner connected are part of where the owner's own work may start.
+  Layer.provide(GithubEvents.repoScopeLayer),
 );
 const tracker = Layer.effectDiscard(
   Effect.gen(function* () {
