@@ -410,11 +410,14 @@ export const KinEvent = Schema.Union([
     actionId: TrimmedNonEmptyString,
   }),
   // The owner's 👍/👎-style reaction on the lead's latest message: a soft reply, never authority.
+  // `changedFrom` marks a changed answer; `withdrawn` a yes taken back, `emoji` being that yes.
   Schema.TaggedStruct("chat.reaction", {
     ...EventBase,
     chatId: KinChatId,
     messageId: KinMessageId,
     emoji: KinReactionEmoji,
+    changedFrom: Schema.optional(KinReactionEmoji),
+    withdrawn: Schema.optional(Schema.Boolean),
   }),
   Schema.TaggedStruct("github", {
     ...EventBase,

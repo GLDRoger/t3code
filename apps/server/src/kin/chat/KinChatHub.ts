@@ -2,6 +2,7 @@ import type {
   KinAgentId,
   KinAuthor,
   KinReaction,
+  KinReactionEmoji,
   KinChat,
   KinChatId,
   KinChatStreamEvent,
@@ -43,8 +44,10 @@ type ChatEvent =
       readonly type: "reaction.updated";
       readonly chatId: KinChatId;
       readonly reaction: KinReaction;
-      // An owner's soft reply that should wake the lead; `by` is the reacting member.
+      // An owner's soft reply that should wake the lead; `by` is the reacting member. On a removed
+      // reaction, `woke` withdraws a go-ahead; `changedFrom` is the emoji of the wake it reverses.
       readonly woke: boolean;
+      readonly changedFrom?: KinReactionEmoji;
       readonly by: KinAuthor;
     }
   // Live only: never persisted, never in a checkpoint.

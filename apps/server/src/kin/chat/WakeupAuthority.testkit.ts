@@ -92,6 +92,8 @@ export const startAgentWakeup = Effect.fn("test.startAgentWakeup")(function* (in
   readonly message?: KinMessage;
   /** Wakes on this reaction to `message` instead of the message itself. */
   readonly reaction?: KinReactionEmoji;
+  /** Marks the reaction as a changed answer, from this emoji. */
+  readonly changedFrom?: KinReactionEmoji;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
@@ -132,7 +134,11 @@ export const startAgentWakeup = Effect.fn("test.startAgentWakeup")(function* (in
           ...base,
           ...(input.reaction === undefined
             ? { _tag: "chat.message" }
-            : { _tag: "chat.reaction", emoji: input.reaction }),
+            : {
+                _tag: "chat.reaction",
+                emoji: input.reaction,
+                ...(input.changedFrom === undefined ? {} : { changedFrom: input.changedFrom }),
+              }),
           provenance: input.message.author,
           chatId: input.message.chatId,
           messageId: input.message.messageId,

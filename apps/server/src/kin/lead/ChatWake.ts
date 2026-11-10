@@ -133,7 +133,8 @@ const make = Effect.gen(function* () {
   );
 
   // A waking reaction (the chat service decides) becomes `chat.reaction`; withdrawing it before
-  // a wake-up claims it cancels the event and its working line. Other reactions are feedback only.
+  // a wake-up claims it cancels the event and its working line. Withdrawing a yes the lead already
+  // took up wakes it with `withdrawn`. Other reactions are feedback only.
   const react = Effect.fn("KinChatWake.react")(
     function* (event: Extract<KinChatHubEvent, { type: "reaction.updated" }>) {
       const { reaction } = event;
@@ -149,9 +150,13 @@ const make = Effect.gen(function* () {
             yield* syncQueued(presence.value, reaction.orgId, KinAgentId.make(row.agentId)).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
             );
-        return;
+        if (expired.length > 0) return;
       }
       if (!event.woke) return;
+      const withdrawn = reaction.removedAt !== null;
+      const key = withdrawn
+        ? `chat-reaction-withdrawn:${reaction.messageId}:${reaction.memberId}:${reaction.emoji}:${reaction.removedAt}`
+        : dedupeKey;
       const message = yield* repo.getMessage({
         orgId: reaction.orgId,
         messageId: reaction.messageId,
@@ -163,15 +168,17 @@ const make = Effect.gen(function* () {
           _tag: "chat.reaction",
           orgId: reaction.orgId,
           eventId: KinEventId.make(
-            `chat-reaction-${NodeCrypto.createHash("sha256").update(dedupeKey).digest("hex").slice(0, 32)}`,
+            `chat-reaction-${NodeCrypto.createHash("sha256").update(key).digest("hex").slice(0, 32)}`,
           ),
           agentId,
-          receivedAt: DateTime.makeUnsafe(reaction.createdAt),
-          dedupeKey,
+          receivedAt: DateTime.makeUnsafe(reaction.removedAt ?? reaction.createdAt),
+          dedupeKey: key,
           provenance: event.by,
           chatId: reaction.chatId,
           messageId: reaction.messageId,
           emoji: reaction.emoji,
+          ...(event.changedFrom === undefined ? {} : { changedFrom: event.changedFrom }),
+          ...(withdrawn ? { withdrawn: true } : {}),
         })
         .pipe(
           Effect.map((result) => !result.duplicate),
