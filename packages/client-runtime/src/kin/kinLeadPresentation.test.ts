@@ -6,6 +6,7 @@ import {
   kinLeadChanges,
   kinLeadDraftCheck,
   kinLeadDraftOf,
+  kinLeadModelName,
   kinLeadTrackingDetail,
 } from "./kinLeadPresentation.ts";
 
@@ -15,6 +16,8 @@ describe("lead domains", () => {
     ["  Growth & marketing ", "growth-marketing"],
     ["2026 hiring", "hiring"],
     ["Ops!", "ops"],
+    ["R&D / Labs", "r-d-labs"],
+    ["Café ops", "cafe-ops"],
     ["x".repeat(60), "x".repeat(40)],
     [`${"a".repeat(39)} b`, "a".repeat(39)],
   ])("turns %j into the slug %j", (typed, slug) => {
@@ -85,5 +88,20 @@ describe("what a lead has in hand", () => {
     expect(
       kinLeadTrackingDetail({ kind: "reminder", dueAt: "2026-11-13T09:00:00.000Z" }, "UTC"),
     ).toBe("Reminder, Fri 13 Nov, 9:00");
+  });
+});
+
+describe("lead model", () => {
+  const providers = [
+    { models: [{ slug: "gpt-5.1-codex", name: "GPT-5.1 Codex" }] },
+    { models: [{ slug: "claude-opus-4-6", name: "Claude Opus 4.6", aliases: ["opus"] }] },
+  ];
+
+  it("names a lead's model the way the model picker does, never by its raw id", () => {
+    expect(kinLeadModelName("claude-opus-4-6", providers)).toBe("Claude Opus 4.6");
+    expect(kinLeadModelName("opus", providers)).toBe("Claude Opus 4.6");
+    // A model no provider lists yet, or providers that haven't loaded.
+    expect(kinLeadModelName("claude-sonnet-4-5", providers)).toBe("Claude Sonnet 4.5");
+    expect(kinLeadModelName("claude-opus-4-6", undefined)).toBe("Claude Opus 4.6");
   });
 });

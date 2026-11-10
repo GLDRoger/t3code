@@ -36,6 +36,15 @@ function readLastList(): KinList | null {
 
 let lastUsed: KinList | null = typeof window === "undefined" ? null : readLastList();
 let lastKinHref: string | null = null;
+let listBehindModal: KinList = "threads";
+
+/**
+ * The list on screen at `pathname`. Settings and Usage open over the page they came from, so
+ * they keep that page's list instead of swapping the thread list in behind them.
+ */
+export function kinListShownAt(pathname: string): KinList {
+  return isAppModalPage(pathname) ? listBehindModal : kinListAt(pathname);
+}
 
 function recordList(list: KinList) {
   if (list === lastUsed) return;
@@ -76,8 +85,10 @@ export function startKinListTracking(
 ): () => void {
   const record = () => {
     const { pathname, href } = router.state.location;
-    if (pathname === "/" || isAppModalPage(pathname)) return;
+    if (isAppModalPage(pathname)) return;
     const list = kinListAt(pathname);
+    listBehindModal = list;
+    if (pathname === "/") return;
     if (list === "kin") lastKinHref = href;
     recordList(list);
   };
@@ -135,7 +146,7 @@ export function registerKinListCommands(
       event.stopPropagation();
       if (event.repeat) return;
       void router.navigate({
-        href: kinListSwitchHref(kinListAt(router.state.location.pathname)),
+        href: kinListSwitchHref(kinListShownAt(router.state.location.pathname)),
       });
     },
   });

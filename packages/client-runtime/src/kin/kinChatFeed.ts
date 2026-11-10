@@ -374,7 +374,8 @@ export function buildKinFeedRows(
     retryingRows = [];
     const own = message.author._tag === "human" && message.author.personId === viewer.personId;
     if (own && message.kind === "text" && message.status === "posted") {
-      lastOwnText = message.body;
+      // Retry resends words, and the host brings back their files; a picture alone has none.
+      lastOwnText = message.body.trim() === "" ? null : message.body;
       // Writing again answers the notice, so it stops offering to resend.
       closeRetries(() => true);
     }

@@ -1,5 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
-import { formatKinTime, type KinAvatarView } from "@t3tools/client-runtime/kin/kinScreenState";
+import {
+  kinDomainLabel,
+  kinLeadModelName,
+  kinLeadTrackingDetail,
+} from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import type { KinAvatarView } from "@t3tools/client-runtime/kin/kinScreenState";
 import type { EnvironmentId, KinChatId, KinLeadProfile } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { useId, useState } from "react";
@@ -18,7 +23,8 @@ import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
 import { kinClient } from "./kinClient";
-import { kinLeadDomainLabel, kinLeadFormAtom, kinLeadTrackingRow } from "./kinLeadForm";
+import { serverEnvironment } from "../state/server";
+import { kinLeadFormAtom } from "./kinLeadForm";
 
 function Section(props: { readonly title: string; readonly children: React.ReactNode }) {
   return (
@@ -45,6 +51,7 @@ export function KinLeadSheet(props: {
   const mute = useAtomCommand(kinClient.mute, { reportFailure: false });
   const [muteState, setMuteState] = useState<"idle" | "saving" | "failed">("idle");
   const muteId = useId();
+  const providers = useAtomValue(serverEnvironment.providersValueAtom(environmentId));
 
   const setMuted = async (muted: boolean) => {
     setMuteState("saving");
@@ -61,7 +68,7 @@ export function KinLeadSheet(props: {
             <div className="flex min-w-0 flex-col">
               <SheetTitle>{lead.name}</SheetTitle>
               <SheetDescription>
-                {kinLeadDomainLabel(lead.domain)}
+                {kinDomainLabel(lead.domain)}
                 {lead.working ? " · Working now" : ""}
               </SheetDescription>
             </div>
@@ -95,25 +102,21 @@ export function KinLeadSheet(props: {
               <p className="text-sm text-muted-foreground">Nothing in hand right now.</p>
             ) : (
               <ul className="flex flex-col gap-2">
-                {lead.tracking.map((item, index) => {
-                  const row = kinLeadTrackingRow(item, (date) => formatKinTime(date));
-                  return (
-                    // Titles can repeat and items carry no id; the host's order is stable.
-                    // oxlint-disable-next-line react/no-array-index-key
-                    <li key={index} className="flex flex-col gap-0.5">
-                      <span className="text-xs text-muted-foreground">
-                        {row.label}
-                        {row.due === null ? "" : ` · ${row.due}`}
-                      </span>
-                      <span className="text-sm text-foreground">{row.title}</span>
-                    </li>
-                  );
-                })}
+                {lead.tracking.map((item, index) => (
+                  // Titles can repeat and items carry no id; the host's order is stable.
+                  // oxlint-disable-next-line react/no-array-index-key
+                  <li key={index} className="flex flex-col gap-0.5">
+                    <span className="text-xs text-muted-foreground">
+                      {kinLeadTrackingDetail(item)}
+                    </span>
+                    <span className="text-sm text-foreground">{item.title}</span>
+                  </li>
+                ))}
               </ul>
             )}
           </Section>
           <Section title="Model">
-            <p className="text-sm text-foreground">{lead.model}</p>
+            <p className="text-sm text-foreground">{kinLeadModelName(lead.model, providers)}</p>
           </Section>
           {canMute ? (
             <Section title="Notifications">

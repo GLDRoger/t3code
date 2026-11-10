@@ -5,6 +5,7 @@ import {
   type KinFeedRow,
 } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
+import { kinCardDraws } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import type { KinOutboxEntry } from "@t3tools/client-runtime/kin/kinOutbox";
 import { KIN_REACTION_NAMES, type KinReactionChip } from "@t3tools/client-runtime/kin/kinReactions";
 import { kinSentences } from "@t3tools/client-runtime/kin/kinScreenState";
@@ -76,7 +77,10 @@ export function KinMessageRow(props: {
   const deleted = message.status === "deleted";
   const suggested = message.status === "suggested";
   const hasBody = !deleted && message.body.trim().length > 0;
-  const hasCard = !deleted && message.widgetId !== null;
+  const hasCard =
+    !deleted &&
+    message.widgetId !== null &&
+    kinCardDraws(props.widget, props.environmentId, hasBody);
   const attachments = deleted ? [] : (message.attachments ?? []);
   // Files alone need no bubble; a deleted or edited message still says so in one.
   const hasBubble =
@@ -214,24 +218,15 @@ export function KinDraftRow(props: {
   );
 }
 
-/** A line from Kin itself or a piece of bookkeeping: muted, centred, never a bubble. */
+/** A line from Kin itself, such as a reply that failed: muted, centred, never a bubble. */
 export function KinSystemRow(props: {
   readonly body: string;
   /** Sends the owner's unanswered message again; null shows the line alone. */
   readonly onRetry: (() => void) | null;
-  /** Old bookkeeping the owner needn't read: fainter, and cut at two lines. */
-  readonly quiet?: boolean;
 }) {
   return (
     <div className="mx-auto flex max-w-3xl items-center justify-center gap-2 px-8 py-1">
-      <p
-        className={cn(
-          "text-center text-xs",
-          props.quiet === true ? "line-clamp-2 text-muted-foreground/70" : "text-muted-foreground",
-        )}
-      >
-        {props.body}
-      </p>
+      <p className="text-center text-xs text-muted-foreground">{props.body}</p>
       {props.onRetry === null ? null : (
         <Button size="xs" variant="outline" onClick={props.onRetry}>
           Retry

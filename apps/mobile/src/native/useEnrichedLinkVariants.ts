@@ -61,7 +61,10 @@ export function withChipIcon(
 
 function presentation(
   url: string,
-  props: Pick<SelectableMarkdownTextProps, "linkCustomization" | "skills" | "models" | "textStyle">,
+  props: Pick<
+    SelectableMarkdownTextProps,
+    "linkCustomization" | "skills" | "models" | "textStyle" | "inlineWebLinks"
+  >,
 ): MarkdownLinkCustomization | undefined {
   const custom = props.linkCustomization?.(url);
   if (custom) return custom;
@@ -93,6 +96,7 @@ function presentation(
       icon: markdownFileIconSource(link.icon),
       chip: { accent: contextChipPresentation("mention").accent, tintsIcon: false },
     };
+  if (props.inlineWebLinks === true && link.kind === "external") return undefined;
   const icon = link.kind === "external" ? markdownLinkIcon(link.host) : null;
   return icon
     ? {
@@ -108,7 +112,7 @@ export function useEnrichedLinkVariants(
   props: SelectableMarkdownTextProps,
   fileHrefs: ReadonlySet<string>,
 ) {
-  const { linkCustomization, skills, models, textStyle, fileEmbedLabel } = props;
+  const { linkCustomization, skills, models, textStyle, fileEmbedLabel, inlineWebLinks } = props;
   const theme = useUniwindTheme();
   const links = useMemo(() => {
     const byUrl = new Map<string, MarkdownLinkCustomization>();
@@ -121,11 +125,20 @@ export function useEnrichedLinkVariants(
             color: textStyle.fileTextColor,
             icon: markdownFileIconSource(resolveMarkdownFileIcon(label)),
           }
-        : presentation(url, { linkCustomization, skills, models, textStyle });
+        : presentation(url, { linkCustomization, skills, models, textStyle, inlineWebLinks });
       if (value) byUrl.set(url, value);
     }
     return byUrl;
-  }, [urls, linkCustomization, skills, models, textStyle, fileHrefs, fileEmbedLabel]);
+  }, [
+    urls,
+    linkCustomization,
+    skills,
+    models,
+    textStyle,
+    fileHrefs,
+    fileEmbedLabel,
+    inlineWebLinks,
+  ]);
   const chipForegrounds = useMemo(
     () =>
       new Map(

@@ -336,6 +336,10 @@ describe("rows", () => {
       ]),
     ).toMatchObject([{ text: "Tech lead didn't reply.", retry: null }]);
     expect(systemRows([notice(6, "kin-no-reply:w1")])).toMatchObject([{ retry: null }]);
+    // A picture with no words can't be resent by its words.
+    expect(systemRows([{ ...asked, body: "" }, notice(6, "kin-failed:w1")])).toMatchObject([
+      { retry: null },
+    ]);
     // The host's own retry answering ends "trying again".
     expect(systemRows([asked, notice(6, "kin-retrying:w1"), agentMessage(7)])).toMatchObject([
       { key: "kin-retrying:w1", retry: null },

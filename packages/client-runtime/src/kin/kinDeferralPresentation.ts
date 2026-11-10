@@ -323,17 +323,14 @@ export function kinDeferralCardView(
 }
 
 /**
- * Kin's own note that it set something for later, as one quiet line: "Reminder set for Fri 13 Nov,
- * 9:00". Null while the card asks for a decision, which still needs its buttons.
+ * Kin's own note that it set something for later. False while the card asks for a decision,
+ * which still needs its buttons.
  */
-export function kinDeferralQuietLine(widget: KinWidget, timeZone?: string): string | null {
+export function kinDeferralIsBookkeeping(widget: KinWidget): boolean {
   const decoded = decodeDeferral(widget.state);
-  if (Option.isNone(decoded)) return null;
-  const card = decoded.value;
-  const open = widget.closedAt === null;
-  if (open && (card.phase === "heads_up" || card.phase === "asked")) return null;
-  const when = formatKinDeferralTime(Date.parse(card.dueAt), timeZone);
-  return card.onDue === "remind" ? `Reminder set for ${when}` : `Scheduled for ${when}`;
+  if (Option.isNone(decoded)) return false;
+  const { phase } = decoded.value;
+  return !(widget.closedAt === null && (phase === "heads_up" || phase === "asked"));
 }
 
 type KinCardTarget = Pick<KinDeferralCardView, "widgetId" | "revision" | "itemId">;
