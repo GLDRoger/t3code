@@ -26,6 +26,7 @@ const orgId = KinOrgId.make("org-catalog");
 const owner = KinPersonId.make("person-owner");
 const lead = KinAgentId.make("agent-lead");
 const qa = KinAgentId.make("agent-qa");
+const ravi = KinPersonId.make("person-ravi");
 const environmentId = EnvironmentId.make("env-catalog");
 
 const directory: KinDirectory = {
@@ -45,7 +46,7 @@ function member(chatId: KinChatId, principal: KinChatMember["principal"]): KinCh
     chatId,
     memberId: KinMemberId.make(`${chatId}:${id}`),
     principal,
-    role: principal._tag === "person" ? "owner" : "member",
+    role: principal._tag === "person" && principal.personId === owner ? "owner" : "member",
     joinedAt: minutesAgo(10_000),
     leftAt: null,
     mutedUntil: null,
@@ -55,6 +56,8 @@ function member(chatId: KinChatId, principal: KinChatMember["principal"]): KinCh
 function chat(input: {
   readonly id: string;
   readonly agent?: KinAgentId;
+  /** A direct chat with another person instead of an agent. */
+  readonly person?: KinPersonId;
   readonly title?: string;
   readonly body: string | null;
   readonly fromMe?: boolean;
@@ -68,7 +71,7 @@ function chat(input: {
   return {
     orgId,
     chatId,
-    kind: input.title === undefined ? "direct" : "team_group",
+    kind: input.title === undefined || input.person !== undefined ? "direct" : "team_group",
     title: input.title ?? null,
     teamId: null,
     lastSeq: input.body === null ? 0 : 1,
@@ -77,7 +80,12 @@ function chat(input: {
     archivedAt: null,
     members: [
       member(chatId, { _tag: "person", personId: owner }),
-      member(chatId, { _tag: "agent", agentId: agent }),
+      member(
+        chatId,
+        input.person === undefined
+          ? { _tag: "agent", agentId: agent }
+          : { _tag: "person", personId: input.person },
+      ),
     ],
     lastMessage:
       input.body === null
@@ -146,6 +154,14 @@ const typicalInbox: KinInboxState = {
       body: "Trying the cache on the staging index now.",
       minutes: 4,
       working: true,
+    }),
+    chat({
+      id: "ravi",
+      person: ravi,
+      title: "Ravi Patel",
+      body: "Ok, I'll look after lunch.",
+      fromMe: true,
+      minutes: 180,
     }),
   ],
   waiting: [waiting("w1", "lead", "approval"), waiting("w2", "lead", "decision")],
