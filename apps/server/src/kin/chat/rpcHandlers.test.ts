@@ -929,6 +929,42 @@ it.effect("creates many leads over RPC for the owner only, through the CLI's cre
       (yield* operator["kin.lead.create"]({ ...input, domain: "finance" }).pipe(Effect.flip))._tag,
       "EnvironmentAuthorizationError",
     );
+
+    // The owner lists their leads and edits one; a member sees none and edits none.
+    const org = { orgId: person.orgId };
+    const listed = (yield* client["kin.leads.list"](org)).leads;
+    // Both were created in the same instant, so their order is the ids'.
+    assert.sameDeepMembers(
+      listed.map(({ agentId, name, ownerChatId }) => ({ agentId, name, ownerChatId })),
+      [growth, social].map(({ agentId, name, ownerChatId }) => ({ agentId, name, ownerChatId })),
+    );
+    // Leads are part of the chat list, so a session that can't chat can't list them.
+    assert.strictEqual(
+      (yield* operator["kin.leads.list"](org).pipe(Effect.flip))._tag,
+      "EnvironmentAuthorizationError",
+    );
+    assert.deepStrictEqual(yield* member["kin.leads.list"](org), { leads: [] });
+    assert.deepStrictEqual(yield* client["kin.leads.list"]({ orgId: KinOrgId.make("foreign") }), {
+      leads: [],
+    });
+    const edit = { ...org, agentId: growth.agentId, charter: "Grow paid signups." };
+    assert.deepStrictEqual(yield* client["kin.lead.update"](edit), {
+      ...listed.find((lead) => lead.agentId === growth.agentId)!,
+      charter: "Grow paid signups.",
+    });
+    assert.include(yield* member["kin.lead.update"](edit).pipe(Effect.flip), {
+      reason: "not_allowed",
+    });
+    assert.strictEqual(
+      (yield* operator["kin.lead.update"](edit).pipe(Effect.flip))._tag,
+      "EnvironmentAuthorizationError",
+    );
+    assert.include(
+      yield* client["kin.lead.update"]({ ...edit, orgId: KinOrgId.make("foreign") }).pipe(
+        Effect.flip,
+      ),
+      { reason: "not_found" },
+    );
     const sql = yield* SqlClient.SqlClient;
     assert.deepStrictEqual(
       yield* sql`SELECT domain FROM kin_leads WHERE org_id = ${person.orgId} ORDER BY domain`,
