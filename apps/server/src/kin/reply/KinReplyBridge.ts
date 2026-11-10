@@ -36,6 +36,7 @@ import {
   KIN_WAKEUP_MESSAGE_LIMIT,
 } from "../chat/KinChatService.ts";
 import { KinIdentity, rescueMessageId, type AgentIdentity } from "../chat/KinIdentity.ts";
+import { AUDIENCE_MOVED } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import {
@@ -119,6 +120,7 @@ type Wake = {
   endedAt: number | null;
   // A post or withheld segment answered the lane, or nothing could have.
   answered: boolean;
+  movedNoticed: boolean;
   lastOutputAt: number;
   state: KinPresenceState;
   label: string | null;
@@ -329,7 +331,8 @@ const make = Effect.gen(function* () {
     body: string,
   ) {
     const lead = yield* agent(wake);
-    if (lead === undefined) return { _tag: "withheld" as const, reason: "wake-up ended" };
+    if (lead === undefined)
+      return { _tag: "withheld" as const, reason: "wake-up ended", moved: false };
     return yield* gate
       .post(lead, {
         chatId: wake.lane.chatId,
@@ -340,7 +343,11 @@ const make = Effect.gen(function* () {
       .pipe(
         Effect.map((result) => ({ _tag: "posted" as const, messageId: result.messageId })),
         Effect.catch((error) =>
-          Effect.succeed({ _tag: "withheld" as const, reason: error.reason }),
+          Effect.succeed({
+            _tag: "withheld" as const,
+            reason: error.reason,
+            moved: error.message === AUDIENCE_MOVED,
+          }),
         ),
       );
   });
@@ -385,6 +392,16 @@ const make = Effect.gen(function* () {
         wake.answered = true;
         yield* end(null);
         yield* journal(wake, [`Withheld (${result.reason}): ${cutLabel(text)}`]);
+        // Lost, not refused: the owner hears it once and can ask again, now as a shared chat.
+        if (result.moved && !wake.movedNoticed) {
+          wake.movedNoticed = true;
+          yield* chat.notice({
+            messageId: KinMessageId.make(`kin-audience-moved:${wake.wakeupId}`),
+            orgId: wake.orgId,
+            chatId: wake.lane.chatId,
+            body: `${wake.lane.leadName} didn't reply: someone joined while it was working. Send it again.`,
+          });
+        }
         if (result.reason === "limit")
           yield* show(
             wake,
@@ -833,6 +850,7 @@ const make = Effect.gen(function* () {
         replied: false,
         endedAt: null,
         answered: false,
+        movedNoticed: false,
         lastOutputAt: now,
         state: "starting",
         label: PHASE_LABELS.preparing,

@@ -47,6 +47,7 @@ import * as KinStop from "./KinStop.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinIssuedTokens from "../mcp/KinIssuedTokens.ts";
+import { recordAudience, turnAudience } from "./Audience.ts";
 import { KinLeadPrompt, type KinLeadPromptInput } from "./LeadPrompt.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
@@ -495,18 +496,26 @@ function parts(options: HarnessOptions) {
         }),
       ),
     ),
-    Layer.succeed(KinLeadPrompt, {
-      build: (input) =>
-        Effect.sync(() => {
-          options.prompts?.push(input);
-          return "Wake up";
-        }),
-      steer: () =>
-        options.steering === undefined
-          ? Effect.succeed("Steered")
-          : Deferred.succeed(options.steering, undefined).pipe(Effect.as("Steered")),
-      attachments: () => Effect.succeed(options.attachments ?? []),
-    }),
+    Layer.effect(
+      KinLeadPrompt,
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        return KinLeadPrompt.of({
+          // Records who reads the turn as the real builder does; the runner chooses its thread by it.
+          build: (input) =>
+            Effect.gen(function* () {
+              yield* recordAudience(input, yield* turnAudience(input));
+              options.prompts?.push(input);
+              return "Wake up";
+            }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie),
+          steer: () =>
+            options.steering === undefined
+              ? Effect.succeed("Steered")
+              : Deferred.succeed(options.steering, undefined).pipe(Effect.as("Steered")),
+          attachments: () => Effect.succeed(options.attachments ?? []),
+        });
+      }),
+    ),
     Layer.mock(Memory.Memory)({
       prepareWakeup:
         options.prepare ??

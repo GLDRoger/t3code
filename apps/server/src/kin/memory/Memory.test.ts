@@ -15,6 +15,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
+import { ownerOnlyWakeup } from "../lead/Audience.testkit.ts";
 import * as Memory from "./Memory.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
 import { KinLeadPrompt } from "../lead/LeadPrompt.ts";
@@ -166,6 +167,7 @@ it.live.each([
               memoryHead: head,
               events: [],
             };
+            yield* ownerOnlyWakeup(input);
             const first = yield* prompt.build(input);
             const second = yield* prompt.build(input);
             expect(first.split("--- THIS TURN ---")[0]).toBe(second.split("--- THIS TURN ---")[0]);

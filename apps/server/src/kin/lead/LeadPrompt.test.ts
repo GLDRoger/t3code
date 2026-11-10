@@ -171,23 +171,72 @@ const seed = Effect.gen(function* () {
   return repo;
 });
 
+const teammateId = KinPersonId.make("fixture-teammate");
+const teammateMember = KinMemberId.make("fixture-teammate-member");
+const routineEvent = decodeEvent({
+  _tag: "routine",
+  orgId,
+  agentId,
+  eventId: "routine",
+  receivedAt: timestamp,
+  provenance: { _tag: "system" },
+  dedupeKey: null,
+  routine: "morning_brief",
+});
+/** The lead and its owner in `chatId`, the lead's owner chat; nobody else unless a test adds them. */
+const leadWithOwner = Effect.gen(function* () {
+  const repo = yield* seed;
+  const sql = yield* SqlClient.SqlClient;
+  yield* repo.insertAgent({
+    orgId,
+    agentId,
+    displayName: "Fixture lead",
+    role: "lead",
+    ownerPersonId: personId,
+    createdAt: timestamp,
+  });
+  for (const [id, principal, role] of [
+    [memberId, { _tag: "person", personId }, "owner"],
+    [KinMemberId.make("lead-member"), { _tag: "agent", agentId }, "member"],
+  ] as const)
+    yield* repo.addMember({
+      orgId,
+      chatId,
+      memberId: id,
+      principal,
+      role,
+      joinedAt: timestamp,
+      leftAt: null,
+      mutedUntil: null,
+    });
+  yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+    VALUES (${agentId}, ${orgId}, 'Lead', 0, '{}', '[]', ${chatId})`;
+  return repo;
+});
+/** A finished wake-up whose stored events are `events`, which is all the audience reads. */
+const stored = Effect.fn("test.stored")(function* (
+  wakeupId: string,
+  events: ReadonlyArray<KinEvent>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids)
+    VALUES (${wakeupId}, ${orgId}, ${agentId}, 'model', 0, 'completed', '[]')`;
+  for (const item of events)
+    yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
+      VALUES (${`${wakeupId}:${item.eventId}`}, ${orgId}, ${agentId}, ${item._tag}, 'P0', ${JSON.stringify(item)}, 0, 0, 'done', ${wakeupId})`;
+});
+
 it.effect(
   "keeps the cache prefix stable across events and clocks; only memory changes with its head",
   () =>
     Effect.gen(function* () {
+      yield* leadWithOwner;
+      yield* stored(input.wakeupId, [routineEvent]);
+      yield* stored("next", [routineEvent]);
       const prompt = yield* KinLeadPrompt;
       const first = yield* prompt.build(input);
       yield* TestClock.adjust("1 hour");
-      const routine = yield* decodeEventEffect({
-        _tag: "routine",
-        orgId,
-        agentId,
-        eventId: "routine",
-        receivedAt: timestamp,
-        provenance: { _tag: "system" },
-        dedupeKey: null,
-        routine: "morning_brief",
-      });
+      const routine = routineEvent;
       const second = yield* prompt.build({
         ...input,
         wakeupId: KinWakeupId.make("next"),
@@ -215,6 +264,113 @@ it.effect(
       expect(changed.split("# Standing rules")[0]).toBe(first.split("# Standing rules")[0]);
       expect(changed.split(TURN_DIVIDER)[1]).toBe(current.split(TURN_DIVIDER)[1]);
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  { case: "a group whose only human is the owner", audience: "owner_only" },
+  { case: "a group a teammate is in", audience: "shared", teammateStays: true },
+  { case: "a batch with the owner's and a teammate's messages", audience: "shared", batch: true },
+  { case: "a reminder a teammate's turn set up", audience: "shared", reminder: true },
+] as const)("a turn in $case is $audience: memory only when the owner alone reads it", (row) =>
+  Effect.gen(function* () {
+    const repo = yield* leadWithOwner;
+    const sql = yield* SqlClient.SqlClient;
+    yield* repo.insertPerson({
+      orgId,
+      personId: teammateId,
+      displayName: "Teammate",
+      handle: "teammate",
+      githubLogin: null,
+      createdAt: timestamp,
+    });
+    yield* repo.addMember({
+      orgId,
+      chatId,
+      memberId: teammateMember,
+      principal: { _tag: "person", personId: teammateId },
+      role: "member",
+      joinedAt: timestamp,
+      leftAt: null,
+      mutedUntil: null,
+    });
+    const send = (id: string, author: KinAuthor) =>
+      repo.insertMessage({
+        orgId,
+        chatId,
+        messageId: KinMessageId.make(id),
+        author,
+        kind: "text",
+        body: `Invented ${id}`,
+        intent: null,
+        mentions: [],
+        replyTo: null,
+        widgetId: null,
+        floorRunId: null,
+        status: "posted",
+        sentBy: null,
+        createdAt: timestamp,
+        editedAt: null,
+        clientMessageId: null,
+      });
+    yield* send("from-owner", { _tag: "human", personId, memberId });
+    const asked = (messageId: string, provenance: KinAuthor) =>
+      decodeEvent({
+        _tag: "chat.message",
+        orgId,
+        agentId,
+        chatId,
+        messageId,
+        eventId: `event-${messageId}`,
+        receivedAt: timestamp,
+        dedupeKey: null,
+        provenance,
+      });
+    const events: Array<KinEvent> = [asked("from-owner", { _tag: "human", personId, memberId })];
+    if ("batch" in row) {
+      const author = { _tag: "human", personId: teammateId, memberId: teammateMember } as const;
+      yield* send("from-teammate", author);
+      events.push(asked("from-teammate", author));
+    }
+    if ("reminder" in row)
+      events.splice(
+        0,
+        1,
+        decodeEvent({
+          _tag: "deferral.due",
+          orgId,
+          agentId,
+          eventId: "due",
+          receivedAt: timestamp,
+          dedupeKey: null,
+          provenance: { _tag: "system" },
+          subject: { type: "reminder", itemId: "rem" },
+          lateByMs: 0,
+          origin: { agentId, chatId, personId: teammateId },
+        }),
+      );
+    // Only a member who stays makes the group shared; one who has left reads nothing new.
+    if (!("teammateStays" in row))
+      yield* sql`UPDATE kin_chat_members SET left_at = ${timestamp} WHERE member_id = ${teammateMember}`;
+    yield* stored(input.wakeupId, events);
+    yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids)
+      VALUES ('building', ${orgId}, ${agentId}, 'model', 0, 'running', '[]')`;
+    yield* sql`UPDATE kin_events SET wakeup_id = 'building' WHERE wakeup_id = ${input.wakeupId}`;
+    const built = yield* (yield* KinLeadPrompt).build({
+      ...input,
+      wakeupId: KinWakeupId.make("building"),
+      events,
+      lane: { chatId, mode: "reply" },
+    });
+    const ownerOnly = row.audience === "owner_only";
+    expect(built.includes("Invented index head-one")).toBe(ownerOnly);
+    expect(built.includes("Invented rules head-one")).toBe(ownerOnly);
+    expect(built.includes("your notes and GitHub are off here")).toBe(!ownerOnly);
+    // Asked from elsewhere, a shared turn doesn't read the chat it answers in.
+    expect(built.includes("Invented from-owner")).toBe(!("reminder" in row));
+    expect(yield* sql`SELECT audience FROM kin_wakeups WHERE wakeup_id = 'building'`).toEqual([
+      { audience: row.audience },
+    ]);
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect.each([
@@ -402,6 +558,8 @@ it.effect(
   "quotes GitHub payloads and rejects wrong-scope and missing messages and stale memory",
   () =>
     Effect.gen(function* () {
+      yield* leadWithOwner;
+      yield* stored(input.wakeupId, [routineEvent]);
       const prompt = yield* KinLeadPrompt;
       const github = yield* decodeEventEffect({
         _tag: "github",
@@ -915,7 +1073,7 @@ it.effect(
 );
 
 it.effect(
-  "carries the owner's feedback reactions since the last finished wake-up, and a 👎 asks what was wrong",
+  "carries the owner's feedback reactions in the chat being answered since the last finished wake-up, and a 👎 asks what was wrong",
   () =>
     Effect.gen(function* () {
       const repo = yield* seed;
@@ -956,10 +1114,24 @@ it.effect(
       // Already shown to the earlier wake-up, and one that woke the lead itself.
       yield* react("seen-before", "👍", 50);
       yield* react("missed", "👎", 600, 600);
+      // The owner's reaction in their direct chat with the lead belongs to that chat alone.
+      const direct = KinChatId.make("fixture-direct");
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at, direct_key)
+        VALUES (${direct}, ${orgId}, 'direct', 1, ${timestamp}, ${`${personId}:${agentId}`})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('direct-owner', ${orgId}, ${direct}, 'person', ${personId}, 'owner', ${timestamp})`;
+      yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_agent_id,
+          author_owner_person_id, author_thread_id, author_member_id, author_role, kind, body, mentions_json,
+          status, created_at)
+        VALUES ('private', ${orgId}, ${direct}, 1, 'agent', ${agentId}, ${personId}, 'fixture-thread',
+          'lead-member', 'member', 'text', 'Invented private plan.', '[]', 'posted', ${timestamp})`;
+      yield* sql`INSERT INTO kin_reactions (org_id, chat_id, message_id, member_id, emoji, created_at, removed_at, woke_at)
+        VALUES (${orgId}, ${direct}, 'private', 'direct-owner', '❤️', 550, NULL, NULL)`;
       yield* TestClock.adjust("1 second");
       const prompt = yield* KinLeadPrompt;
       const built = yield* prompt.build({
         ...input,
+        lane: { chatId, mode: "reply" },
         events: [
           decodeEvent({
             _tag: "chat.reaction",
@@ -984,6 +1156,7 @@ it.effect(
       );
       const thumbsUp = yield* prompt.build({
         ...input,
+        lane: { chatId, mode: "reply" },
         events: [
           decodeEvent({
             _tag: "chat.reaction",
@@ -1003,5 +1176,10 @@ it.effect(
         `Owner reacted 👍 to your message "CI is green." (a reaction, not text). On an offer or proposal it means go ahead`,
       );
       expect(thumbsUp).toContain("write exactly NO_REPLY");
+      expect(built).not.toContain("Invented private plan");
+      // Without a chat being answered there is nothing to read reactions in.
+      expect(
+        yield* prompt.build({ ...input, wakeupId: KinWakeupId.make("laneless"), events: [] }),
+      ).not.toContain("# Owner reactions");
     }).pipe(Effect.provide(layer)),
 );

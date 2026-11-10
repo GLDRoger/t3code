@@ -1,4 +1,4 @@
-import { KinChatError, RepoSlug } from "@t3tools/contracts";
+import { KinChatError, RepoSlug, type KinAgentId, type KinOrgId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -6,7 +6,10 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import type * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 import { HttpClient } from "effect/http";
+
+import { SHARED_GITHUB, turnAudience } from "../lead/Audience.ts";
 
 import { KinGithubRepoScope } from "../triggers/githubEvents.ts";
 import { gitHubAnswer, isGitHubRateLimit, repoPath } from "./githubRest.ts";
@@ -149,6 +152,13 @@ export interface KinWorkflowRun {
   readonly updatedAt: string;
 }
 
+/** The running wake-up a read is for, from its stored rows: never the model's words. */
+export interface KinReadTurn {
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+  readonly wakeupId: string;
+}
+
 /**
  * A lead's read-only view of the org's repos (`KIN_GITHUB_REPOS` minus memory repos), with the
  * Kin App's read token. Every failure is a short `KinChatError` that never carries a credential.
@@ -156,20 +166,20 @@ export interface KinWorkflowRun {
 export class KinRepoReads extends Context.Service<
   KinRepoReads,
   {
-    readonly repos: (wakeupId: string) => Effect.Effect<typeof ReposResult.Type, KinChatError>;
+    readonly repos: (turn: KinReadTurn) => Effect.Effect<typeof ReposResult.Type, KinChatError>;
     readonly pulls: (
-      wakeupId: string,
+      turn: KinReadTurn,
       input: typeof PullsInput.Type,
     ) => Effect.Effect<
       { readonly repo: string; readonly pulls: ReadonlyArray<KinPullSummary> },
       KinChatError
     >;
     readonly pull: (
-      wakeupId: string,
+      turn: KinReadTurn,
       input: typeof PullInput.Type,
     ) => Effect.Effect<{ readonly repo: string; readonly pull: KinPullDetail }, KinChatError>;
     readonly runs: (
-      wakeupId: string,
+      turn: KinReadTurn,
       input: typeof RunsInput.Type,
     ) => Effect.Effect<
       { readonly repo: string; readonly runs: ReadonlyArray<KinWorkflowRun> },
@@ -226,13 +236,22 @@ const make = Effect.gen(function* () {
   const app = yield* KinGitHubApp.KinGitHubApp;
   const client = yield* HttpClient.HttpClient;
   const scope = yield* KinGithubRepoScope;
+  const sql = yield* SqlClient.SqlClient;
   const tokens = new Map<
     string,
     { readonly token: Redacted.Redacted<string>; readonly expiresAt: number }
   >();
   const calls = new Map<string, number>();
 
-  const spend = Effect.fnUntraced(function* (wakeupId: string) {
+  // The owner's repos are the owner's context; a turn someone else reads gets none of it,
+  // including a reminder such a turn set up, whose stored origin keeps it shared.
+  const spend = Effect.fnUntraced(function* (turn: KinReadTurn) {
+    const audience = yield* turnAudience(turn).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+    const { wakeupId } = turn;
+    if (audience !== "owner_only")
+      return yield* new KinChatError({ reason: "not_allowed", message: SHARED_GITHUB });
     const used = (calls.get(wakeupId) ?? 0) + 1;
     if (used > CALLS_PER_WAKEUP)
       return yield* new KinChatError({
@@ -346,11 +365,11 @@ const make = Effect.gen(function* () {
 
   /** One tool call: counted, scoped and time-boxed. */
   const call = <A>(
-    wakeupId: string,
+    turn: KinReadTurn,
     repo: string,
     read: (repo: RepoSlug) => Effect.Effect<A, KinChatError>,
   ) =>
-    spend(wakeupId).pipe(
+    spend(turn).pipe(
       Effect.andThen(scoped(repo)),
       Effect.flatMap(read),
       Effect.timeoutOrElse({
@@ -360,12 +379,12 @@ const make = Effect.gen(function* () {
     );
 
   return KinRepoReads.of({
-    repos: Effect.fn("KinRepoReads.repos")(function* (wakeupId) {
-      yield* spend(wakeupId);
+    repos: Effect.fn("KinRepoReads.repos")(function* (turn) {
+      yield* spend(turn);
       return { repos: [...scope.repos] };
     }),
-    pulls: Effect.fn("KinRepoReads.pulls")(function* (wakeupId, input) {
-      return yield* call(wakeupId, input.repo, (repo) =>
+    pulls: Effect.fn("KinRepoReads.pulls")(function* (turn, input) {
+      return yield* call(turn, input.repo, (repo) =>
         Effect.gen(function* () {
           const pulls = yield* get(
             repo,
@@ -385,8 +404,8 @@ const make = Effect.gen(function* () {
         }),
       );
     }),
-    pull: Effect.fn("KinRepoReads.pull")(function* (wakeupId, input) {
-      return yield* call(wakeupId, input.repo, (repo) =>
+    pull: Effect.fn("KinRepoReads.pull")(function* (turn, input) {
+      return yield* call(turn, input.repo, (repo) =>
         Effect.gen(function* () {
           const pull = yield* get(repo, "pulls.get", `/pulls/${input.number}`, decodePull);
           const [reviews, checks] = yield* Effect.all(
@@ -415,8 +434,8 @@ const make = Effect.gen(function* () {
         }),
       );
     }),
-    runs: Effect.fn("KinRepoReads.runs")(function* (wakeupId, input) {
-      return yield* call(wakeupId, input.repo, (repo) =>
+    runs: Effect.fn("KinRepoReads.runs")(function* (turn, input) {
+      return yield* call(turn, input.repo, (repo) =>
         Effect.gen(function* () {
           const branch =
             input.branch === undefined ? "" : `&branch=${encodeURIComponent(input.branch)}`;
@@ -443,7 +462,7 @@ const make = Effect.gen(function* () {
   });
 });
 
-/** Needs the Kin App, an HTTP client and the org's repo scope. */
+/** Needs the Kin App, an HTTP client, the org's repo scope and Kin's database. */
 export const layer = Layer.effect(KinRepoReads, make);
 
 const notConnected = () => Effect.fail(unavailable(NOT_CONNECTED));

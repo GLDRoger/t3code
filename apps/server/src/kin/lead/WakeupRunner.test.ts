@@ -58,6 +58,7 @@ import * as KinIssuedTokens from "../mcp/KinIssuedTokens.ts";
 import * as KinLead from "./layer.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinStop from "./KinStop.ts";
+import { SHARED_THREAD_PREFIX } from "./Audience.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
 import { KinLeadPrompt, type KinLeadPromptInput } from "./LeadPrompt.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
@@ -236,6 +237,50 @@ describe("WakeupRunner", () => {
         );
       }).pipe(Effect.provide(harness({ projectId: () => projectId })));
     }).pipe(provideDeterministicTestRuntime),
+  );
+  it.effect(
+    "runs a turn a teammate can read on its own thread without file tools, then the owner's on a fresh one",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const at = "2026-11-08T00:00:00.000Z";
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+            VALUES ('teammate', 'org', 'teammate', 'Teammate', ${at})`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+            VALUES ('owner-member', 'org', 'owner-chat', 'person', 'owner', 'owner', ${at})`;
+        let seq = 0;
+        const turn = Effect.fn("test.turn")(function* (id: string) {
+          seq++;
+          yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+                author_member_id, author_role, kind, body, mentions_json, status, created_at)
+              VALUES (${id}, 'org', 'owner-chat', ${seq}, 'human', 'owner', 'owner-member', 'owner', 'text',
+                'Invented question', '[]', 'posted', ${at})`;
+          yield* wake(id, "owner-chat");
+          const [lead] = yield* sql<{
+            threadId: string;
+          }>`SELECT thread_id AS "threadId" FROM kin_leads`;
+          const [wakeup] = yield* sql<{ audience: string }>`SELECT audience FROM kin_wakeups
+              WHERE event_ids LIKE ${`%"${id}"%`}`;
+          return { threadId: lead!.threadId, audience: wakeup?.audience };
+        });
+        const alone = yield* turn("alone");
+        assert.deepStrictEqual(alone.audience, "owner_only");
+        assert.isTrue(alone.threadId.startsWith("kin:"));
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+            VALUES ('teammate-member', 'org', 'owner-chat', 'person', 'teammate', 'member', ${at})`;
+        const shared = yield* turn("shared");
+        assert.deepStrictEqual(shared.audience, "shared");
+        assert.isTrue(shared.threadId.startsWith(SHARED_THREAD_PREFIX));
+        yield* sql`UPDATE kin_chat_members SET left_at = ${at} WHERE member_id = 'teammate-member'`;
+        const again = yield* turn("again");
+        assert.isTrue(again.threadId.startsWith("kin:"));
+        assert.notStrictEqual(again.threadId, alone.threadId);
+        assert.deepStrictEqual(
+          yield* sql`SELECT thread_id FROM kin_agent_threads WHERE ended_at IS NULL`,
+          [{ thread_id: again.threadId }],
+        );
+      }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
   );
   it.effect("hands the files on the messages it answers to the provider turn", () => {
     const photo = {
