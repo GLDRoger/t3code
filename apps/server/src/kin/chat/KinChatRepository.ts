@@ -61,6 +61,8 @@ const KinReadState = Schema.Struct({
 type KinReadState = typeof KinReadState.Type;
 export type RepositoryError = PersistenceSqlError | PersistenceDecodeError | KinChatError;
 type Scope = { readonly orgId: KinOrgId };
+const AttachmentChat = Schema.Struct({ orgId: KinOrgId, chatId: KinChatId });
+type AttachmentChat = typeof AttachmentChat.Type;
 type ChatScope = Scope & { readonly chatId: KinChatId };
 type MemberScope = ChatScope & { readonly memberId: KinMemberId };
 type InsertMessage = Omit<KinMessage, "seq" | "authorRole" | "clientMessageId"> & {
@@ -210,6 +212,10 @@ export class KinChatRepository extends Context.Service<
     readonly getMessage: (
       input: Scope & { readonly messageId: KinMessageId },
     ) => Effect.Effect<Option.Option<KinMessage>, RepositoryError>;
+    /** The chat whose message carries a stored file, unless that message was deleted. */
+    readonly attachmentChat: (
+      attachmentId: string,
+    ) => Effect.Effect<Option.Option<AttachmentChat>, RepositoryError>;
     readonly openTaskCards: (
       input: Scope,
     ) => Effect.Effect<ReadonlyArray<KinWidget>, RepositoryError>;
@@ -452,6 +458,19 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(toRepositoryError("KinChatRepository.getMessage")),
   );
+  const attachmentChat = Effect.fn("KinChatRepository.attachmentChat")(
+    function (attachmentId: string) {
+      return SqlSchema.findOneOption({
+        Request: Schema.String,
+        Result: AttachmentChat,
+        execute: (id) =>
+          sql`SELECT a.org_id AS "orgId", a.chat_id AS "chatId" FROM kin_message_attachments a
+ JOIN kin_messages m ON m.org_id = a.org_id AND m.message_id = a.message_id
+ WHERE a.attachment_id = ${id} AND m.status <> 'deleted'`,
+      })(attachmentId).pipe(NodeSqliteClient.readOnly);
+    },
+    Effect.mapError(toRepositoryError("KinChatRepository.attachmentChat")),
+  );
   const widgetOne = Effect.fn("KinChatRepository.getWidget")(
     function (input: Scope & { readonly widgetId: KinWidgetId }) {
       return SqlSchema.findOneOption({
@@ -693,6 +712,7 @@ const make = Effect.gen(function* () {
     getChat: chatOne,
     getMember: memberOne,
     getMessage: messageOne,
+    attachmentChat,
     openTaskCards: Effect.fn("KinChatRepository.openTaskCards")(
       (input) =>
         SqlSchema.findAll({

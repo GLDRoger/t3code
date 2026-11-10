@@ -1,6 +1,7 @@
 import {
   AuthEnvironmentMaintainScope,
   AuthKinChatScope,
+  type AuthEnvironmentScope,
   AuthStandardClientScopes,
   AuthDiagnosticsReadScope,
   AuthFilesystemReadScope,
@@ -483,6 +484,7 @@ it("a chat-only grant cannot satisfy any non-chat method's declared permission",
     "kin.chats.createDirect",
     "kin.chats.mute",
     "kin.chats.subscribe",
+    "kin.leads.list",
     "kin.messages.markRead",
     "kin.messages.react",
     "kin.messages.send",
@@ -541,14 +543,50 @@ it.effect.each(["chat-only", "legacy-owner"] as const)(
     }).pipe(Effect.scoped),
 );
 
-it.effect.each(Object.keys(RPC_REQUIRED_SCOPES).filter((method) => !method.startsWith("kin.")))(
-  "chat-only sessions are refused before dispatch or stream subscription: %s",
-  (method) =>
-    Effect.gen(function* () {
-      expect(
-        yield* RpcAuthorization.authorizeRpc([AuthKinChatScope], method, undefined).pipe(
-          Effect.flip,
-        ),
-      ).toMatchObject({ _tag: "EnvironmentAuthorizationError" });
-    }),
+const CHAT_ATTACHMENT_METHODS = ["attachments.createUploadUrl", "attachments.delete"];
+
+it.effect("a chat-only session may upload, and ask only for stored attachments", () =>
+  Effect.gen(function* () {
+    const allowed = (
+      scopes: ReadonlyArray<AuthEnvironmentScope>,
+      method: string,
+      payload: unknown,
+    ) =>
+      RpcAuthorization.authorizeRpc(scopes, method, payload).pipe(
+        Effect.as(true),
+        Effect.orElseSucceed(() => false),
+      );
+    const asset = (resource: unknown) => ({ resource });
+    const stored = asset({ _tag: "attachment", attachmentId: "kin-chat-1" });
+    for (const method of CHAT_ATTACHMENT_METHODS) {
+      expect(yield* allowed([AuthKinChatScope], method, undefined)).toBe(true);
+      // No scope at all is not chat access.
+      expect(yield* allowed([], method, undefined)).toBe(false);
+    }
+    expect(yield* allowed([AuthKinChatScope], "assets.createUrl", stored)).toBe(true);
+    expect(yield* allowed([], "assets.createUrl", stored)).toBe(false);
+    for (const resource of [
+      { _tag: "workspace-file", threadId: "thread", path: "secret.txt" },
+      { _tag: "media-file", threadId: "thread", path: "/tmp/secret.png" },
+      { _tag: "draft-workspace-file", cwd: "/tmp", path: "secret.txt" },
+      { _tag: "tool-output-image", threadId: "thread", itemId: "item", index: 0 },
+      { _tag: "project-favicon", cwd: "/tmp" },
+    ])
+      expect(yield* allowed([AuthKinChatScope], "assets.createUrl", asset(resource))).toBe(false);
+    expect(yield* allowed([AuthKinChatScope], "assets.persistChatAttachments", undefined)).toBe(
+      false,
+    );
+  }),
+);
+
+it.effect.each(
+  Object.keys(RPC_REQUIRED_SCOPES).filter(
+    (method) => !method.startsWith("kin.") && !CHAT_ATTACHMENT_METHODS.includes(method),
+  ),
+)("chat-only sessions are refused before dispatch or stream subscription: %s", (method) =>
+  Effect.gen(function* () {
+    expect(
+      yield* RpcAuthorization.authorizeRpc([AuthKinChatScope], method, undefined).pipe(Effect.flip),
+    ).toMatchObject({ _tag: "EnvironmentAuthorizationError" });
+  }),
 );

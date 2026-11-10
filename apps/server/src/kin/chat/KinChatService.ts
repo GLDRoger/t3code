@@ -137,6 +137,11 @@ export class KinChatService extends Context.Service<
       input: KinChatsCreateDirectInput,
     ) => Effect.Effect<KinChat, ServiceError>;
     readonly send: (identity: Caller, input: SendInput) => Effect.Effect<KinMessage, ServiceError>;
+    /** Whether this person is in the chat whose message carries the stored file. */
+    readonly attachmentReadable: (
+      caller: PersonCaller,
+      attachmentId: string,
+    ) => Effect.Effect<boolean, ServiceError>;
     readonly read: (
       identity: AgentIdentity,
       input: {
@@ -1171,6 +1176,22 @@ const make = Effect.gen(function* () {
       yield* hub.publish({ type: "chat.created", orgId: identity.orgId, chat });
       return chat;
     }, transaction),
+    attachmentReadable: Effect.fn("KinChatService.attachmentReadable")(
+      function* (caller, attachmentId) {
+        const owner = yield* repo.attachmentChat(attachmentId);
+        if (Option.isNone(owner)) return false;
+        const identity =
+          "_tag" in caller ? caller : caller.find((viewer) => viewer.orgId === owner.value.orgId);
+        if (identity === undefined || identity.orgId !== owner.value.orgId) return false;
+        const members = yield* repo.listMembers(owner.value);
+        return members.some(
+          (member) =>
+            member.leftAt === null &&
+            member.principal._tag === "person" &&
+            member.principal.personId === identity.personId,
+        );
+      },
+    ),
     send: Effect.fn("KinChatService.send")(function* (caller, input) {
       const requested = input.attachments ?? [];
       if (requested.length === 0) return yield* sendClaimed(caller, input, []);

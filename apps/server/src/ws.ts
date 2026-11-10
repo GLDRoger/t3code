@@ -1,4 +1,5 @@
 import { makeKinHandlers } from "./kin/rpcHandlers.ts";
+import { authorizeAttachmentReadOnHost } from "./kin/chat/attachmentAccess.ts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -3064,6 +3065,8 @@ export const layerWsRpc = (
           /* Request instrumentation already owns the span; keep this helper in that context. */
           Effect.fnUntraced(function* (input) {
             const path = yield* Path.Path;
+            if (input.resource._tag === "attachment")
+              yield* authorizeAttachmentReadOnHost(currentSession, input.resource);
             if (
               input.resource._tag === "attachment" ||
               input.resource._tag === "native-app-icon" ||
