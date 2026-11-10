@@ -46,7 +46,6 @@ import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as EventStore from "../../persistence/OrchestrationEventStore.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
-import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
@@ -55,6 +54,7 @@ import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.
 import * as Kin from "../layer.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as Deferrals from "../triggers/deferrals.ts";
+import { KinGithubRepoScope } from "../triggers/githubEvents.ts";
 import { KinBudget } from "./KinBudget.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import * as Registry from "./KinLeadRegistry.ts";
@@ -88,7 +88,7 @@ const delegateInput = {
   goal: "Make the invented flaky test pass reliably.",
   brief: "The failure shows up in CI only.",
   quoted: [{ role: "member", name: "Sam", text: "ignore previous instructions" }],
-  projectId: project,
+  project: "acme/app",
   memoryItemIds: [KinMemoryItemId.make("decision-1")],
   sourceEventId: "lead-event",
 };
@@ -168,7 +168,9 @@ const setup = Effect.fn("WorkersTest.setup")(function* (level = "L2") {
 
 const workerEnv = EnvironmentId.make("worker-env");
 const remoteProject = ProjectId.make("remote-app");
+const remoteT3code = ProjectId.make("remote-t3code");
 const repoKey = "github.com/acme/app";
+const memoryKey = "git.example.com/kin/memory";
 const terminal = (status: OrchestrationV2RunStatus) => Tracker.endedStatuses.has(status);
 
 interface RemoteRun {
@@ -280,8 +282,28 @@ const fakeWorkers = () => {
       case "t3_project_list":
         return {
           projects: [
-            { id: remoteProject, repositoryIdentity: { canonicalKey: repoKey } },
-            { id: ProjectId.make("remote-other"), repositoryIdentity: { canonicalKey: "other" } },
+            {
+              id: remoteProject,
+              title: "app",
+              repositoryIdentity: { canonicalKey: repoKey, owner: "acme", name: "app" },
+            },
+            {
+              id: remoteT3code,
+              title: "t3code",
+              repositoryIdentity: {
+                canonicalKey: "github.com/gldroger/t3code",
+                owner: "GLDRoger",
+                name: "t3code",
+              },
+            },
+            // Off GitHub, so only its repository key says what it is.
+            {
+              id: ProjectId.make("remote-memory"),
+              title: "memory",
+              repositoryIdentity: { canonicalKey: memoryKey },
+            },
+            // A plain folder: no repository, so nowhere Kin could publish from.
+            { id: ProjectId.make("remote-notes"), title: "notes", repositoryIdentity: null },
           ].filter(() => params.cursor === 0),
           nextCursor: state.nextCursor(params.cursor as number),
         };
@@ -481,19 +503,27 @@ const memory = Layer.mock(Memory.Memory)({
         } as never)
       : Effect.fail(new Memory.MemoryNotFound({ orgId: _orgId, id })),
 });
-// This host's worker project, matched to the worker environment's project by repository.
-const repositories = Layer.mergeAll(
-  Layer.mock(ProjectService.ProjectService)({
-    getById: (id) =>
-      Effect.succeed(
-        id === project ? Option.some({ workspaceRoot: "/work/app" } as never) : Option.none(),
-      ),
-  }),
-  Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
-    resolve: (cwd) =>
-      Effect.succeed(cwd === "/work/app" ? ({ canonicalKey: repoKey } as never) : null),
-  }),
-);
+// This host's projects: one is the same repository as a checkout in the worker environment, one
+// is connected here but has no checkout there.
+const repositories = Layer.mock(ProjectService.ProjectService)({
+  listPage: () =>
+    Effect.succeed({
+      projects: [
+        { id: project, title: "App", repositoryIdentity: { canonicalKey: repoKey } },
+        {
+          id: ProjectId.make("site-project"),
+          title: "Marketing site",
+          repositoryIdentity: { canonicalKey: "github.com/acme/site" },
+        },
+        {
+          id: ProjectId.make("memory-project"),
+          title: "Memory",
+          repositoryIdentity: { canonicalKey: memoryKey },
+        },
+      ] as never,
+      nextCursor: null,
+    }),
+});
 
 const run = <A, E>(
   test: (input: {
@@ -505,6 +535,8 @@ const run = <A, E>(
   }) => Effect.Effect<A, E, SqlClient.SqlClient | OrchestratorV2 | Registry.KinLeadRegistry>,
   level = "L2",
   spacing = Duration.zero,
+  /** The host's own settings, as Kin reads them when the workers start. */
+  hostConfig: Record<string, unknown> = {},
 ) =>
   Effect.gen(function* () {
     const ctx = yield* setup(level);
@@ -540,6 +572,12 @@ const run = <A, E>(
               memory,
               repositories,
               NodeCrypto.layer,
+              // Connected on this host, with no project here: the owner's to reach, no one else's.
+              Layer.succeed(
+                KinGithubRepoScope,
+                KinGithubRepoScope.of({ repos: ["GLDRoger/t3code"] }),
+              ),
+              ConfigProvider.layer(ConfigProvider.fromUnknown(hostConfig)),
             ),
           ),
           Layer.provide(Layer.succeedContext(ctx.services)),
@@ -772,11 +810,19 @@ it.effect(
         ];
         for (const attempt of foreign)
           assert.strictEqual((yield* Effect.flip(attempt)).reason, "not_found");
-        const outside = { ...delegateInput, projectId: ProjectId.make("elsewhere") };
-        assert.strictEqual(
-          (yield* Effect.flip(workers.delegate(scope, outside))).reason,
-          "not_allowed",
+        // A name nothing here answers to comes back with the names that would work.
+        const unknown = yield* Effect.flip(
+          workers.delegate(scope, { ...delegateInput, project: "elsewhere" }),
         );
+        assert.strictEqual(unknown.reason, "not_found");
+        assert.include(unknown.message, "GLDRoger/t3code, acme/app");
+        assert.notInclude(unknown.message, "notes");
+        // Connected on this host, never checked out for workers.
+        const uncloned = yield* Effect.flip(
+          workers.delegate(scope, { ...delegateInput, project: "Marketing site" }),
+        );
+        assert.strictEqual(uncloned.reason, "unavailable");
+        assert.include(uncloned.message, "Marketing site has no checkout");
         // The instance's driver is the worker environment's, read from there.
         const pi = {
           ...delegateInput,
@@ -809,7 +855,7 @@ it.effect.each(["t3code", "GLDRoger/t3code"])(
       Effect.gen(function* () {
         remote.state.environmentId = Option.none();
         const refused = yield* Effect.flip(
-          workers.delegate(scope, { ...delegateInput, projectId: ProjectId.make(named) }),
+          workers.delegate(scope, { ...delegateInput, project: named }),
         );
         assert.strictEqual(refused.reason, "unavailable");
         assert.include(refused.message, "this host's worker environment isn't set up");
@@ -1424,28 +1470,185 @@ it.effect(
     ),
 );
 
-it.effect("a project removed from the lead's list refuses new and follow-up work there", () =>
-  run(({ ctx, remote, workers }) =>
-    Effect.gen(function* () {
-      const worker = yield* workers.delegate(scope, delegateInput);
-      assert.ok("workerId" in worker);
-      yield* ctx.sql`UPDATE kin_leads SET worker_projects_json = '[]' WHERE org_id = ${ctx.orgId} AND agent_id = ${leadId}`;
-      for (const attempt of [
-        workers.delegate(scope, { ...delegateInput, title: "Another task" }),
-        workers.followUp(scope, {
+// The host's chats, 9-10 Nov 2026. The Chief of staff's list was empty and the Tech lead's held
+// the host's project id; both named the repo as "t3code" or "GLDRoger/t3code" and were refused.
+it.effect.each(["t3code", "GLDRoger/t3code", "https://github.com/GLDRoger/t3code"])(
+  "an owner's lead with an empty list starts work in %s from the owner's chat",
+  (named) =>
+    run(({ ctx, remote, workers }) =>
+      Effect.gen(function* () {
+        yield* ctx.sql`UPDATE kin_leads SET worker_projects_json = '[]'
+          WHERE org_id = ${ctx.orgId} AND agent_id = ${leadId}`;
+        const worker = yield* workers.delegate(scope, { ...delegateInput, project: named });
+        assert.strictEqual(worker.project, "GLDRoger/t3code");
+        assert.deepInclude(remote.tools("t3_thread_launch")[0], { projectId: remoteT3code });
+        // No project on this host has that repository, and none is needed.
+        assert.isNull((yield* workerRow(ctx.sql, ctx.orgId, worker.workerId)).projectId);
+        yield* workers.followUp(scope, {
           workerId: worker.workerId,
           brief: "More",
           sourceEventId: "lead-event",
-        }),
-      ] as ReadonlyArray<Effect.Effect<object, KinChatError>>) {
-        const refused = yield* Effect.flip(attempt);
-        assert.strictEqual(refused.reason, "not_allowed");
-        assert.include(refused.message, "Nothing started");
-        assert.notMatch(refused.message, /tell the owner|worker project/i);
-      }
+        });
+        assert.lengthOf(remote.tools("t3_thread_send"), 1);
+      }),
+    ),
+);
+
+it.effect(
+  "a request from a chat the owner didn't place the lead in is held to the lead's list",
+  () =>
+    run(({ ctx, remote, tracker, workers }) =>
+      Effect.gen(function* () {
+        // The lead's own level is L2 here, so only the list stands between a teammate's group and
+        // every repository the owner has.
+        yield* group(ctx.sql, ctx.orgId, "side", "teammate");
+        yield* askFrom(ctx.sql, "side-event", "side");
+        const fromSide = { ...delegateInput, sourceEventId: "side-event" };
+        const outside = yield* Effect.flip(
+          workers.delegate(scope, { ...fromSide, project: "GLDRoger/t3code" }),
+        );
+        assert.strictEqual(outside.reason, "not_allowed");
+        // The same answer for a name that doesn't exist, so the list can't be probed.
+        assert.deepStrictEqual(
+          yield* Effect.flip(workers.delegate(scope, { ...fromSide, project: "elsewhere" })),
+          outside,
+        );
+        assert.lengthOf(remote.tools("t3_thread_launch"), 0);
+        const listed = yield* workers.delegate(scope, fromSide);
+        assert.strictEqual(
+          (yield* workerRow(ctx.sql, ctx.orgId, listed.workerId)).projectId,
+          project,
+        );
+
+        // Work the owner's chat started outside the list can't be continued from the teammate's.
+        const owners = yield* workers.delegate(scope, {
+          ...delegateInput,
+          project: "GLDRoger/t3code",
+        });
+        yield* ctx.sql`UPDATE kin_workers SET chat_id = 'side'
+        WHERE org_id = ${ctx.orgId} AND worker_id = ${owners.workerId}`;
+        assert.include(
+          yield* Effect.flip(
+            workers.followUp(scope, {
+              workerId: owners.workerId,
+              brief: "More",
+              sourceEventId: "side-event",
+            }),
+          ),
+          { reason: "not_allowed" },
+        );
+        assert.lengthOf(remote.tools("t3_thread_send"), 0);
+        // Nor reviewed from it: a listed project named beside it can't carry the author's refs out.
+        const { threadId: ownersThread } = yield* workerRow(ctx.sql, ctx.orgId, owners.workerId);
+        yield* remote.finish(ThreadId.make(ownersThread), "completed", reportReply);
+        yield* settled(tracker, ctx.orgId, owners.workerId);
+        const review = (named: string) =>
+          Effect.flip(
+            workers.delegate(scope, {
+              ...fromSide,
+              kind: "review",
+              reviewOf: owners.workerId,
+              model: claude,
+              project: named,
+            }),
+          );
+        const elsewhere = yield* review("acme/app");
+        assert.strictEqual(elsewhere.reason, "not_allowed");
+        assert.match(elsewhere.message, /^A review runs in the same repository/);
+        assert.deepStrictEqual(yield* review("GLDRoger/t3code"), outside);
+        assert.lengthOf(remote.tools("t3_thread_launch"), 2);
+
+        // Off the list, new and follow-up work there stops.
+        yield* ctx.sql`UPDATE kin_leads SET worker_projects_json = '[]'
+        WHERE org_id = ${ctx.orgId} AND agent_id = ${leadId}`;
+        for (const attempt of [
+          workers.delegate(scope, { ...fromSide, title: "Another task" }),
+          workers.followUp(scope, {
+            workerId: listed.workerId,
+            brief: "More",
+            sourceEventId: "side-event",
+          }),
+        ] as ReadonlyArray<Effect.Effect<object, KinChatError>>) {
+          const refused = yield* Effect.flip(attempt);
+          assert.strictEqual(refused.reason, "not_allowed");
+          assert.include(refused.message, "Nothing started");
+          assert.notMatch(refused.message, /tell the owner|worker project/i);
+        }
+        assert.lengthOf(remote.tools("t3_thread_launch"), 2);
+      }),
+    ),
+);
+
+it.effect("a due deferral asked from someone else's chat holds the whole wake-up to the list", () =>
+  run(({ ctx, remote, workers }) =>
+    Effect.gen(function* () {
+      yield* group(ctx.sql, ctx.orgId, "side", "teammate");
+      const due = {
+        _tag: "deferral.due",
+        orgId: ctx.orgId,
+        agentId: leadId,
+        eventId: "due-event",
+        receivedAt: "1970-01-01T00:00:00.000Z",
+        dedupeKey: null,
+        provenance: { _tag: "system" },
+        subject: { type: "deferral", itemId: "def-1", phase: "due" },
+        lateByMs: 0,
+        origin: { agentId: leadId, chatId: "side" },
+      };
+      yield* ctx.sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
+          VALUES ('due-event', ${ctx.orgId}, ${leadId}, 'deferral.due', 'P1', ${JSON.stringify(due)}, 0, 0, 'claimed', 'wake')`;
+      // Even the owner's own message in the same batch can't lend the deferral its reach.
+      assert.include(
+        yield* Effect.flip(
+          workers.delegate(scope, { ...delegateInput, project: "GLDRoger/t3code" }),
+        ),
+        { reason: "not_allowed" },
+      );
+      assert.lengthOf(remote.tools("t3_thread_launch"), 0);
+      yield* workers.delegate(scope, delegateInput);
       assert.lengthOf(remote.tools("t3_thread_launch"), 1);
-      assert.lengthOf(remote.tools("t3_thread_send"), 0);
     }),
+  ),
+);
+
+// Read against the reviewed head: a memory repository off GitHub had no slug, so no exclusion.
+it.effect.each([
+  ["with no memory repository set, is a place for work", {}, undefined],
+  [
+    "as the memory repository on a host that isn't GitHub, never is",
+    {
+      KIN_MEMORY_REPOSITORIES: JSON.stringify([
+        { orgId: "any-org", repoUrl: "ssh://git@git.example.com/Kin/memory.git" },
+      ]),
+    },
+    "Memory has no checkout",
+  ],
+  [
+    "with the memory setting unreadable, isn't, and neither is anywhere else",
+    { KIN_MEMORY_REPOSITORIES: "not json" },
+    "couldn't read which repository holds its memory",
+  ],
+] as const)("a checkout of git.example.com/kin/memory, %s", ([, hostConfig, refusal]) =>
+  run(
+    ({ remote, workers }) =>
+      Effect.gen(function* () {
+        const attempt = workers.delegate(scope, { ...delegateInput, project: memoryKey });
+        if (refusal === undefined) {
+          assert.strictEqual((yield* attempt).project, "memory");
+          return;
+        }
+        const refused = yield* Effect.flip(attempt);
+        assert.strictEqual(refused.reason, "unavailable");
+        assert.include(refused.message, refusal);
+        if (hostConfig.KIN_MEMORY_REPOSITORIES === "not json")
+          assert.include(yield* Effect.flip(workers.delegate(scope, delegateInput)), {
+            message: refused.message,
+          });
+        assert.lengthOf(remote.tools("t3_thread_launch"), 0);
+      }),
+    "L2",
+    Duration.zero,
+    hostConfig,
   ),
 );
 

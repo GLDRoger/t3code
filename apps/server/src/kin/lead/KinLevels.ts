@@ -109,25 +109,53 @@ export const originLevel = (orgId: KinOrgId, origin: KinOrigin) =>
   );
 
 /**
+ * Whether the lead's owner placed it in `chatId` (`ownerPlacedSql`). False for a retired lead or a
+ * chat in another org.
+ */
+export const ownerPlaced = Effect.fn("KinLevels.ownerPlaced")(function* (
+  orgId: KinOrgId,
+  origin: KinOrigin,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ ownerPlaced: number }>`
+    SELECT ${ownerPlacedSql(sql, origin.chatId)} AS "ownerPlaced" FROM kin_leads l
+    JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+    WHERE l.org_id = ${orgId} AND l.agent_id = ${origin.agentId}
+      AND a.role = 'lead' AND a.retired_at IS NULL
+    ORDER BY l.agent_id`.pipe(Effect.mapError(toPersistenceSqlError("KinLevels.ownerPlaced")));
+  return row?.ownerPlaced === 1;
+});
+
+/**
+ * The chats the wake-up's due deferrals and passed-on requests were first asked in, read from the
+ * stored events only. Both the level cap and worker reach read this, so neither can drop one.
+ */
+export const origins = Effect.fn("KinLevels.origins")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+  readonly wakeupId: string;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql<KinOrigin>`
+    SELECT DISTINCT json_extract(json, '$.origin.agentId') AS "agentId",
+      json_extract(json, '$.origin.chatId') AS "chatId" FROM kin_events
+    WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND wakeup_id = ${input.wakeupId}
+      AND tag IN ('deferral.due', 'chat.message')
+      AND json_extract(json, '$.origin.chatId') IS NOT NULL
+    ORDER BY 1, 2`.pipe(Effect.mapError(toPersistenceSqlError("KinLevels.origins")));
+});
+
+/**
  * The lowest level of the chats the wake-up's due deferrals and passed-on requests were first
- * asked in, or undefined when none was asked outside its owner chat. Read from the stored events
- * only.
+ * asked in, or undefined when none was asked outside its owner chat.
  */
 export const originCap = Effect.fn("KinLevels.originCap")(function* (input: {
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;
   readonly wakeupId: string;
 }) {
-  const sql = yield* SqlClient.SqlClient;
-  const origins = yield* sql<{ agentId: KinAgentId; chatId: KinChatId }>`
-    SELECT DISTINCT json_extract(json, '$.origin.agentId') AS "agentId",
-      json_extract(json, '$.origin.chatId') AS "chatId" FROM kin_events
-    WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND wakeup_id = ${input.wakeupId}
-      AND tag IN ('deferral.due', 'chat.message')
-      AND json_extract(json, '$.origin.chatId') IS NOT NULL
-    ORDER BY 1, 2`.pipe(Effect.mapError(toPersistenceSqlError("KinLevels.originCap")));
   let cap: KinLevel | undefined;
-  for (const origin of origins) {
+  for (const origin of yield* origins(input)) {
     const level = yield* originLevel(input.orgId, origin);
     cap = cap === undefined ? level : lowest(cap, level);
   }
