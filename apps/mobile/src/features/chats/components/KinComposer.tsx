@@ -3,7 +3,7 @@ import type { EnvironmentId, KinChatId } from "@t3tools/contracts";
 import { useState, type RefObject } from "react";
 import { Platform, View } from "react-native";
 
-import { ComposerEditor } from "../../../components/ComposerEditor";
+import { ComposerEditor, type ComposerEditorSelection } from "../../../components/ComposerEditor";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { useDeviceType } from "../../../native/native-layout-metrics";
 import { useSidebarWorkspaceTabs } from "../../layout/workspace/useSystemWorkspaceTabBar";
@@ -11,8 +11,20 @@ import { useComposerTextRole } from "../../settings/appearance/useScaledTextRole
 import type { ComposerSendPresentation } from "../../threads/composerSendPresentation";
 import { ComposerSurface, SendActionButton } from "../../threads/ThreadComposer";
 import type { ComposerEditorHandle } from "../../../native/T3ComposerEditor.types";
+import { appAtomRegistry } from "../../../state/atom-registry";
+import {
+  ComposerDictationCancelAction,
+  ComposerDictationError,
+  ComposerDictationPrimaryAction,
+  ComposerDictationStartAction,
+  ComposerDictationStatus,
+  ComposerDictationToolbar,
+} from "../../voice-input/ComposerDictationControl";
+import { useVoiceInputController } from "../../voice-input/useVoiceInputController";
+import { resolveVoiceComposerPresentation } from "../../voice-input/voiceInputPresentation";
 import {
   clearComposerDraftContent,
+  composerDraftsAtom,
   getComposerDraftSnapshot,
   setComposerDraftText,
   useComposerDraft,
@@ -60,7 +72,7 @@ export async function editKinOutboxEntry(draftKey: string, clientMessageId: stri
 /**
  * The chat's text box. The draft lives in the shared composer drafts, so it survives a restart;
  * a send goes to the outbox, which shows it at once and delivers it when the host is reachable.
- * Kin sends text only, so it takes no attachments or pasted context.
+ * Kin sends text only, so it takes no attachments or pasted context; dictation types into it.
  */
 export function KinComposer(props: {
   readonly orgId: string;
@@ -89,9 +101,23 @@ export function KinComposer(props: {
     EDITOR_MIN_HEIGHT,
     Math.ceil(Math.min(maxContentHeight, contentHeight)) + 2 * EDITOR_INSET,
   );
+  const [selection, setSelection] = useState<ComposerEditorSelection>({ start: 0, end: 0 });
+  // T3's dictation: it writes into this chat's draft at the cursor, as in the thread composer.
+  const voice = useVoiceInputController({
+    ownerKey: draftKey,
+    label: props.recipient,
+    readDraftMessage: () => getComposerDraftSnapshot(draftKey).text,
+    subscribeToDraftChanges: (onChange) => appAtomRegistry.subscribe(composerDraftsAtom, onChange),
+    selection,
+    onChangeDraftMessage: (text) => setComposerDraftText(draftKey, text),
+    onChangeSelection: setSelection,
+  });
+  const voicePresentation = resolveVoiceComposerPresentation(voice.state, voice.elapsedSeconds);
+  const showsDictation = voicePresentation.statusKind === "active";
+  const controlSize = largeControls ? "large" : "regular";
   const length = draft.text.trim().length;
   const tooLong = length > KIN_MESSAGE_MAX_LENGTH;
-  const canSend = length > 0 && !tooLong && !full;
+  const canSend = length > 0 && !tooLong && !full && !voice.blocksSubmission;
   const hint = tooLong
     ? `Too long to send: ${lengthFormat.format(length)} of ${lengthFormat.format(KIN_MESSAGE_MAX_LENGTH)} characters.`
     : full
@@ -145,36 +171,77 @@ export function KinComposer(props: {
           paddingVertical: largeControls ? 9 : 2,
         }}
       >
-        <View className="flex-row items-end">
-          <View className="min-h-11 flex-1 justify-center py-1 pl-4">
-            <ComposerEditor
-              ref={editorRef}
-              draftKey={draftKey}
-              pasteContext={false}
-              multiline
-              value={draft.text}
-              placeholder={`Message ${props.recipient}`}
-              onSubmit={() => void send()}
-              onChangeText={(text) => setComposerDraftText(draftKey, text)}
-              onFocus={() => props.onFocusChange?.(true)}
-              onBlur={() => props.onFocusChange?.(false)}
-              contentInsetVertical={EDITOR_INSET}
-              singleLineCentered={
-                contentHeight <= Math.max(EDITOR_MIN_HEIGHT - 2 * EDITOR_INSET, lineHeight)
-              }
-              scrollEnabled={Platform.OS === "android" || contentHeight >= maxContentHeight}
-              onContentSizeChange={(size) => setContentHeight(size.height)}
-              style={{ height: editorHeight }}
+        <ComposerDictationError
+          error={voice.state.phase === "error" ? voice.state.error : null}
+          onDismiss={voice.cancel}
+        />
+        {showsDictation ? (
+          <ComposerDictationToolbar showsDictation>
+            <View className="min-h-11 flex-row items-center">
+              <ComposerDictationCancelAction
+                size={controlSize}
+                presentation={voicePresentation}
+                onCancel={voice.cancel}
+              />
+              <ComposerDictationStatus
+                audioLevels={voice.audioLevels}
+                elapsedSeconds={voice.elapsedSeconds}
+                phase={voice.state.phase}
+                presentation={voicePresentation}
+              />
+              <ComposerDictationPrimaryAction
+                size={controlSize}
+                state={voice.state}
+                presentation={voicePresentation}
+                isAvailable={voice.isAvailable}
+                onStart={voice.start}
+                onConfirm={voice.stop}
+                onCancel={voice.cancel}
+              />
+            </View>
+          </ComposerDictationToolbar>
+        ) : (
+          <View className="flex-row items-end">
+            <View className="min-h-11 flex-1 justify-center py-1 pl-4">
+              <ComposerEditor
+                ref={editorRef}
+                draftKey={draftKey}
+                pasteContext={false}
+                multiline
+                value={draft.text}
+                placeholder={`Message ${props.recipient}`}
+                readOnly={voice.freezesEditor}
+                selection={selection}
+                onSelectionChange={setSelection}
+                onSubmit={() => void send()}
+                onChangeText={(text) => setComposerDraftText(draftKey, text)}
+                onFocus={() => props.onFocusChange?.(true)}
+                onBlur={() => props.onFocusChange?.(false)}
+                contentInsetVertical={EDITOR_INSET}
+                singleLineCentered={
+                  contentHeight <= Math.max(EDITOR_MIN_HEIGHT - 2 * EDITOR_INSET, lineHeight)
+                }
+                scrollEnabled={Platform.OS === "android" || contentHeight >= maxContentHeight}
+                onContentSizeChange={(size) => setContentHeight(size.height)}
+                style={{ height: editorHeight }}
+              />
+            </View>
+            <ComposerDictationStartAction
+              size={controlSize}
+              state={voice.state}
+              isAvailable={voice.isAvailable}
+              onStart={voice.start}
+              onCancel={voice.cancel}
+            />
+            <SendActionButton
+              size={controlSize}
+              accessibilityLabel={hint ?? "Send"}
+              presentation={KIN_SEND}
+              disabled={!canSend}
+              onSend={() => void send()}
             />
           </View>
-          <SendActionButton
-            size={largeControls ? "large" : "regular"}
-            accessibilityLabel={hint ?? "Send"}
-            presentation={KIN_SEND}
-            disabled={!canSend}
-            onSend={() => void send()}
-          />
-        </View>
+        )}
       </ComposerSurface>
     </View>
   );

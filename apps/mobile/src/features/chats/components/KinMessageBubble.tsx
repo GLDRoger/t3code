@@ -10,8 +10,10 @@ import { Pressable, View } from "react-native";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { Chip } from "../../../components/ui/Chip";
 import * as Dialog from "../../../components/ui/Dialog";
-import { Menu } from "../../../components/ui/Menu";
+import * as Haptics from "expo-haptics";
+
 import { cn } from "../../../lib/cn";
+import { copyTextWithHaptic } from "../../../lib/copyTextWithHaptic";
 import {
   SelectableMarkdownText,
   type MarkdownImageRenderer,
@@ -30,6 +32,7 @@ import type { KinOutboxEntry } from "@t3tools/client-runtime/kin/kinOutbox";
 import {
   KIN_REACTION_HINT,
   KIN_REACTION_HINT_LABEL,
+  KIN_PICKER_REACTIONS,
   KIN_REACTION_NAMES,
   type KinReactionChip,
 } from "@t3tools/client-runtime/kin/kinReactions";
@@ -50,11 +53,13 @@ const renderImageAsText: MarkdownImageRenderer = (image) => (
   </Text>
 );
 
-/** One message. The owner's own sit right on the user bubble; others sit left under an author line. */
+/** One message. The owner's own sit right in the brand colour; others sit left on grey. */
 export function KinMessageBubble(props: {
   readonly row: MessageRow;
   /** `useMarkdownPreviewStyles().nativeTextStyle`, read once by the screen. */
   readonly markdownStyle: NativeMarkdownTextStyle;
+  /** The same, recoloured for text on the brand-coloured bubble. */
+  readonly ownMarkdownStyle: NativeMarkdownTextStyle;
   /** Gets any link the author wrote; the screen opens web links only (`kinLinkToOpen`). */
   readonly onLinkPress: (href: string) => void;
   /** The widget `row.message.widgetId` points at, if the feed holds it. */
@@ -65,10 +70,14 @@ export function KinMessageBubble(props: {
   readonly reactions: ReadonlyArray<KinReactionChip>;
   /** Toggles the viewer's reaction; null where they can't react, such as a privileged card. */
   readonly onReact: ((emoji: KinReactionEmoji) => void) | null;
+  /** Opens the long-press sheet; null where it would offer nothing. */
+  readonly onOpenActions: (() => void) | null;
+  /** A direct chat has one other author, so it shows no author lines. */
+  readonly direct: boolean;
   /** "React 👍/👎 to answer" on the lead's latest message, for its owner. */
   readonly showReplyHint: boolean;
 }) {
-  const { row, onReact } = props;
+  const { row, onReact, onOpenActions } = props;
   const { message } = row;
   const deleted = message.status === "deleted";
   const suggested = message.status === "suggested";
@@ -78,78 +87,104 @@ export function KinMessageBubble(props: {
   const hasCard = !deleted && message.widgetId !== null;
   const hasBubble = !hasCard || hasBody || suggested || message.editedAt !== null;
   const mine = new Set(props.reactions.flatMap((chip) => (chip.mine ? [chip.emoji] : [])));
-  const reactActions =
-    onReact === null || deleted
+  // The sheet's actions, reachable without the long press.
+  const sheetActions = [
+    ...(onReact === null || deleted
       ? []
-      : KIN_REACTION_EMOJI.map((emoji) => ({
+      : KIN_PICKER_REACTIONS.map((emoji) => ({
           name: `react-${emoji}`,
           label: `${mine.has(emoji) ? "Remove" : "React"} ${KIN_REACTION_NAMES[emoji]}`,
-        }));
+        }))),
+    ...(hasBody ? [{ name: "copy", label: "Copy" }] : []),
+  ];
 
-  const content = (
-    <View className={cn("gap-1 px-4 pb-1.5", row.own ? "items-end" : "items-start")}>
-      {row.showAuthor ? (
+  const bubble = hasBubble ? (
+    <View
+      accessible
+      accessibilityLabel={kinMessageLabel(row, formatTime(message.createdAt))}
+      accessibilityActions={[
+        ...links.map((link, index) => ({ name: `link-${index}`, label: `Open ${link.label}` })),
+        ...sheetActions,
+      ]}
+      onAccessibilityAction={(event) => {
+        const name = event.nativeEvent.actionName;
+        if (name === "copy") {
+          copyTextWithHaptic(message.body, { target: "kin-message" });
+          return;
+        }
+        if (name.startsWith("react-")) {
+          const emoji = KIN_REACTION_EMOJI.find((candidate) => name === `react-${candidate}`);
+          if (emoji !== undefined) onReact?.(emoji);
+          return;
+        }
+        const link = links[Number(name.slice("link-".length))];
+        if (link !== undefined) props.onLinkPress(link.href);
+      }}
+      className={cn(
+        "gap-1 rounded-[22px]",
+        row.own
+          ? "max-w-[85%] bg-primary px-4 py-2.5"
+          : "max-w-[92%] bg-composer-surface px-4 py-3",
+        suggested && "border border-dashed border-border",
+      )}
+    >
+      {hasBody ? (
+        <SelectableMarkdownText
+          markdown={kinBodyMarkdown(message.body)}
+          textStyle={row.own ? props.ownMarkdownStyle : props.markdownStyle}
+          // A long press opens the sheet, whose Select text offers selection instead.
+          selectable={onOpenActions === null}
+          preserveSoftBreaks
+          onLinkPress={props.onLinkPress}
+          renderImage={renderImageAsText}
+          resolveImageSource={kinImageSource}
+        />
+      ) : deleted ? (
+        <Text
+          textRole="body"
+          className={cn("italic", row.own ? "text-primary-foreground" : "text-foreground-muted")}
+        >
+          Message deleted
+        </Text>
+      ) : null}
+      {suggested || message.editedAt !== null ? (
+        <Text
+          textRole="caption"
+          className={row.own ? "text-primary-foreground opacity-80" : "text-foreground-muted"}
+        >
+          {suggested ? "Suggestion, not sent yet" : "Edited"}
+        </Text>
+      ) : null}
+    </View>
+  ) : null;
+
+  return (
+    <View className={cn("gap-1 px-4 pb-2", row.own ? "items-end" : "items-start")}>
+      {row.showAuthor && !props.direct ? (
         <Text
           textRole="caption"
           className="px-1 pt-2 font-t3-medium text-foreground-muted"
           importantForAccessibility="no"
           accessibilityElementsHidden
         >
-          {row.authorLabel} · {formatTime(message.createdAt)}
+          {row.authorLabel}
         </Text>
       ) : null}
-      {hasBubble ? (
-        <View
-          accessible
-          accessibilityLabel={kinMessageLabel(row, formatTime(message.createdAt))}
-          accessibilityActions={[
-            ...links.map((link, index) => ({
-              name: `link-${index}`,
-              label: `Open ${link.label}`,
-            })),
-            ...reactActions,
-          ]}
-          onAccessibilityAction={(event) => {
-            const name = event.nativeEvent.actionName;
-            if (name.startsWith("react-")) {
-              const emoji = KIN_REACTION_EMOJI.find((candidate) => name === `react-${candidate}`);
-              if (emoji !== undefined) onReact?.(emoji);
-              return;
-            }
-            const link = links[Number(name.slice("link-".length))];
-            if (link !== undefined) props.onLinkPress(link.href);
+      {bubble === null ? null : onOpenActions === null ? (
+        bubble
+      ) : (
+        // The bubble inside stays the VoiceOver element; this only takes the long press.
+        <Pressable
+          accessible={false}
+          onLongPress={() => {
+            void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+            onOpenActions();
           }}
-          className={cn(
-            "max-w-[85%] gap-1 rounded-[20px] px-3.5 py-2.5",
-            // The thread composer's surface: `card-alt` vanishes into the light screen.
-            row.own ? "bg-user-bubble" : "bg-composer-surface",
-            suggested && "border border-dashed border-border",
-          )}
+          className={cn("w-full", row.own ? "items-end" : "items-start")}
         >
-          {hasBody ? (
-            <SelectableMarkdownText
-              markdown={kinBodyMarkdown(message.body)}
-              textStyle={props.markdownStyle}
-              preserveSoftBreaks
-              onLinkPress={props.onLinkPress}
-              renderImage={renderImageAsText}
-              resolveImageSource={kinImageSource}
-            />
-          ) : deleted ? (
-            <Text textRole="body" className="italic text-foreground-muted">
-              Message deleted
-            </Text>
-          ) : null}
-          {suggested || message.editedAt !== null ? (
-            <Text
-              textRole="caption"
-              className={row.own ? "text-user-bubble-foreground-muted" : "text-foreground-muted"}
-            >
-              {suggested ? "Suggestion, not sent yet" : "Edited"}
-            </Text>
-          ) : null}
-        </View>
-      ) : null}
+          {bubble}
+        </Pressable>
+      )}
       {hasCard ? (
         <View className="w-[85%]">
           <KinWidgetView
@@ -190,25 +225,6 @@ export function KinMessageBubble(props: {
       ) : null}
     </View>
   );
-  if (onReact === null || deleted) return content;
-  return (
-    <Menu
-      title="React"
-      shouldOpenOnLongPress
-      actions={KIN_REACTION_EMOJI.map((emoji) => ({
-        id: emoji,
-        title: `${emoji}  ${KIN_REACTION_NAMES[emoji]}`,
-        state: mine.has(emoji) ? ("on" as const) : ("off" as const),
-      }))}
-      onPressAction={({ nativeEvent }) => {
-        const emoji = KIN_REACTION_EMOJI.find((candidate) => candidate === nativeEvent.event);
-        if (emoji !== undefined) onReact(emoji);
-      }}
-    >
-      {/* The bubble inside stays the VoiceOver element; this only takes the long press. */}
-      <Pressable accessible={false}>{content}</Pressable>
-    </Menu>
-  );
 }
 
 /**
@@ -219,18 +235,19 @@ export function KinDraftBubble(props: {
   readonly row: DraftRow;
   readonly markdownStyle: NativeMarkdownTextStyle;
   readonly onLinkPress: (href: string) => void;
+  readonly direct: boolean;
 }) {
   const { row } = props;
   return (
-    <View className="items-start gap-1 px-4 pb-1.5">
-      {row.showAuthor ? (
+    <View className="items-start gap-1 px-4 pb-2">
+      {row.showAuthor && !props.direct ? (
         <Text
           textRole="caption"
           className="px-1 pt-2 font-t3-medium text-foreground-muted"
           importantForAccessibility="no"
           accessibilityElementsHidden
         >
-          {row.authorLabel} · {formatTime(row.draft.startedAt)}
+          {row.authorLabel}
         </Text>
       ) : null}
       <View
@@ -240,7 +257,7 @@ export function KinDraftBubble(props: {
           kinPlainText(row.draft.text),
           "Still writing",
         ])}
-        className="max-w-[85%] gap-1 rounded-[20px] bg-composer-surface px-3.5 py-2.5"
+        className="max-w-[92%] gap-1 rounded-[22px] bg-composer-surface px-4 py-3"
       >
         <SelectableMarkdownText
           markdown={kinBodyMarkdown(row.draft.text)}
@@ -295,7 +312,7 @@ export function KinPendingBubble(props: {
       ? "Sending…"
       : "Waiting for connection";
   return (
-    <View className="items-end gap-1 px-4 pb-1.5">
+    <View className="items-end gap-1 px-4 pb-2">
       <Pressable
         disabled={!failed}
         onPress={props.onEdit}
@@ -314,12 +331,9 @@ export function KinPendingBubble(props: {
         accessibilityRole={failed ? "button" : undefined}
         accessibilityLabel={kinSentences([`You: ${kinPlainText(entry.body)}`, status])}
         accessibilityHint={failed ? "Edit it in the message box." : undefined}
-        className={cn(
-          "max-w-[85%] rounded-[20px] bg-user-bubble px-3.5 py-2.5",
-          !failed && "opacity-70",
-        )}
+        className={cn("max-w-[85%] rounded-[22px] bg-primary px-4 py-2.5", !failed && "opacity-70")}
       >
-        <Text textRole="body" className="text-user-bubble-foreground">
+        <Text textRole="body" className="text-primary-foreground">
           {entry.body}
         </Text>
       </Pressable>
@@ -346,16 +360,16 @@ export function KinPendingBubble(props: {
   );
 }
 
-/** Starts a day in the feed: "Today", "Yesterday", or its date. */
+/** A centred time divider: "Today 12:55 PM". */
 export function KinDayLine(props: { readonly row: DayRow }) {
   return (
     <View
       accessible
       accessibilityRole="header"
       accessibilityLabel={props.row.label}
-      className="items-center px-8 pb-1 pt-4"
+      className="items-center px-8 pb-2 pt-5"
     >
-      <Text textRole="caption" className="font-t3-medium text-foreground-muted">
+      <Text textRole="caption" className="text-foreground-muted">
         {props.row.label}
       </Text>
     </View>

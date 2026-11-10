@@ -2,7 +2,7 @@ import {
   KinChatError,
   KinMessageId,
   KinReaction,
-  KinReactionEmoji,
+  KinLeadReactionEmoji,
   KinShadowResult,
   OrchestratorMcpFailure,
 } from "@t3tools/contracts";
@@ -74,7 +74,7 @@ export const KinLeadToolkit = Toolkit.make(
     ...chat,
     description:
       "React to a message in the chat your reply goes to, with one of 👍 ✅ 👎 ❌ ❤️ 👀. A 👍 can end your turn instead of a reply when the owner's message needs no answer, such as \"thanks, that's all\". If they asked something, still reply in text. Never an approval. At L0 outside your owner's direct chat you get shadowed: true.",
-    parameters: Schema.Struct({ messageId: KinMessageId, emoji: KinReactionEmoji }),
+    parameters: Schema.Struct({ messageId: KinMessageId, emoji: KinLeadReactionEmoji }),
     success: Schema.Union([KinReaction, KinShadowResult]),
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("memory_search", {

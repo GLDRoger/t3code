@@ -1,5 +1,5 @@
 import { useId, useState } from "react";
-import { Platform, View } from "react-native";
+import { Platform, useWindowDimensions, View } from "react-native";
 import { FormSheet, ScreenStack } from "react-native-screens";
 import { useResolveClassNames } from "uniwind";
 
@@ -17,10 +17,36 @@ export function Sheet(props: SheetProps) {
   const containerStyle = useResolveClassNames("bg-sheet");
   const screenId = useId();
   const [isOpen, setIsOpen] = useState(true);
+  const [contentHeight, setContentHeight] = useState(0);
+  const windowHeight = useWindowDimensions().height;
   const close = () => {
     if (!props.dismissDisabled) setIsOpen(false);
   };
 
+  if (props.variant === "plain") {
+    // iOS sizes a plain sheet from its measured content; fitToContents isn't wired up on iOS.
+    const fit = contentHeight === 0 ? 0.5 : Math.min(1, contentHeight / windowHeight);
+    return (
+      <FormSheet
+        isOpen={isOpen}
+        detents={[fit]}
+        prefersGrabberVisible
+        preventNativeDismiss={props.dismissDisabled}
+        nativeContainerStyle={containerStyle}
+        onDismiss={props.onClose}
+        onNativeDismiss={props.onClose}
+      >
+        <View
+          collapsable={false}
+          accessibilityLabel={props.title}
+          className="bg-sheet"
+          onLayout={(event) => setContentHeight(Math.ceil(event.nativeEvent.layout.height))}
+        >
+          {props.children}
+        </View>
+      </FormSheet>
+    );
+  }
   return (
     <FormSheet
       isOpen={isOpen}

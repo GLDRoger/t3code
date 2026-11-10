@@ -327,7 +327,7 @@ export function MobileEnrichedMarkdownText(props: SelectableMarkdownTextProps) {
           linkRecognition={linkRecognition}
           containerStyle={{ flexShrink: 1, minWidth: 0 }}
           flavor="github"
-          selectable
+          selectable={props.selectable ?? true}
           selectionClipboard={selectionClipboard}
           selectionColor={props.textStyle.selectionColor}
           selectionHandleColor={props.textStyle.selectionHandleColor}
