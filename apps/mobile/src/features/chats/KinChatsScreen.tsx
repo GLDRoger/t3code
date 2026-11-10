@@ -7,21 +7,26 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
-import { KinAskRow, KinChatRow, KinChatRowSkeletons } from "./components/KinChatRow";
+import {
+  KinAskRow,
+  KinChatRow,
+  KinChatRowSkeletons,
+  KinInboxFoldHeader,
+} from "./components/KinChatRow";
 import { KinInboxNotice, KinScreenState } from "./components/KinScreenState";
 import { KinWaitingBanner } from "./components/KinWaitingBanner";
-import { selectKinInboxView } from "./state/kinInboxModel";
+import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
   formatKinTime,
   kinChatRowLabel,
-  kinChatRowView,
   kinDirectory,
+  kinInboxListRows,
   kinLeadChatId,
   kinWaitingBannerView,
   type KinChatRowView,
   type KinDirectory,
   type KinInboxScreenState,
-} from "./state/kinScreenState";
+} from "@t3tools/client-runtime/kin/kinScreenState";
 import { useKinInbox } from "./state/useKinInbox";
 
 export function KinChatsScreen() {
@@ -87,7 +92,7 @@ export function KinChatsView(props: {
     );
   }
   const leadChatId = kinLeadChatId(view.rows);
-  const rows = view.rows.map((row) => kinChatRowView(row, props.directory));
+  const rows = kinInboxListRows(view, props.directory);
   return (
     <LegendList
       renderScrollComponent={NativeScrollView}
@@ -95,17 +100,28 @@ export function KinChatsView(props: {
       contentInsetAdjustmentBehavior="automatic"
       contentContainerStyle={{ paddingTop: 4, paddingBottom: 16 }}
       data={rows}
-      keyExtractor={(row) => row.chatId}
+      keyExtractor={(row) => row.key}
+      getItemType={(row) => row.type}
       estimatedItemSize={72}
       recycleItems
-      renderItem={({ item }) => (
-        <KinChatRow
-          view={item}
-          accessibilityLabel={kinChatRowLabel(item, (date) => formatKinTime(date))}
-          onPress={() => onOpenChat(item.chatId)}
-        />
-      )}
-      ItemSeparatorComponent={KinRowDivider}
+      renderItem={({ item }) =>
+        item.type === "fold" ? (
+          <KinInboxFoldHeader
+            title={item.title}
+            count={item.count}
+            accessibilityLabel={item.accessibilityLabel}
+          />
+        ) : (
+          <>
+            <KinChatRow
+              view={item.view}
+              accessibilityLabel={kinChatRowLabel(item.view, (date) => formatKinTime(date))}
+              onPress={() => onOpenChat(item.view.chatId)}
+            />
+            {item.divider ? <View className="ml-[68px] h-px bg-border-subtle" /> : null}
+          </>
+        )
+      }
       ListHeaderComponent={
         <View className="gap-3 px-4 pb-2 pt-2">
           <KinInboxNotice state={state} />
@@ -119,8 +135,4 @@ export function KinChatsView(props: {
       }
     />
   );
-}
-
-function KinRowDivider() {
-  return <View className="ml-[68px] h-px bg-border-subtle" />;
 }

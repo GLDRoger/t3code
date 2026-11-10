@@ -68,6 +68,14 @@ const eventSamples = {
     messageId: "message-1",
     actionId: "approve",
   },
+  "chat.reaction": {
+    ...event,
+    _tag: "chat.reaction",
+    chatId: "chat-1",
+    messageId: "message-1",
+    emoji: "👍",
+    provenance: { _tag: "human", personId: "person-1", memberId: "member-1" },
+  },
   github: {
     ...event,
     _tag: "github",
@@ -162,6 +170,19 @@ const samples = {
     ],
   },
   KinBudgetGetInput: { schema: Kin.KinBudgetGetInput, values: [{ orgId: "org-1" }] },
+  KinLeadCreateInput: {
+    schema: Kin.KinLeadCreateInput,
+    values: [
+      { orgId: "org-1", name: "Growth", domain: "growth", charter: "" },
+      {
+        orgId: "org-1",
+        name: "Chief of staff",
+        domain: "chief-of-staff",
+        charter: "x".repeat(1_000),
+        workerProjects: [],
+      },
+    ],
+  },
   KinBudgetSetInput: { schema: Kin.KinBudgetSetInput, values: [{ orgId: "org-1", limits }] },
   KinOrgState: {
     schema: Kin.KinOrgState,
@@ -208,6 +229,14 @@ describe("Kin lead contracts", () => {
       "2026-1-01",
     ].map((day) => ({ schema: Kin.KinBudget, value: { ...budget, day } })),
     { schema: Kin.KinBudget, value: { ...budget, leadUnits: Infinity } },
+    ...["Growth", "-growth", "growth marketing", "g".repeat(41), ""].map((domain) => ({
+      schema: Kin.KinLeadCreateInput,
+      value: { orgId: "org-1", name: "Growth", domain, charter: "" },
+    })),
+    {
+      schema: Kin.KinLeadCreateInput,
+      value: { orgId: "org-1", name: "Growth", domain: "growth", charter: "x".repeat(1_001) },
+    },
     { schema: Kin.KinBudgetLimits, value: { ...limits, workerUnits: Infinity } },
     { schema: Kin.KinBudgetLimits, value: { ...limits, leadUnits: Number.MAX_SAFE_INTEGER + 1 } },
     { schema: Kin.KinOrgState, value: { ...state, paused: true } },

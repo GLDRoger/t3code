@@ -304,6 +304,22 @@ it.live.each([
         expect((yield* memory.query(orgA, { kind: "deferral" }))[0]?.title).toBe(
           "Invented service maintenance",
         );
+        // Only the background sync fetches the owner's edits.
+        const readDirectory = (yield* fs.stat(a.read)).ino;
+        yield* fs.writeFileString(`${a.read}/stray.md`, "Planted by hand");
+        expect((yield* memory.prepareWakeup(orgA)).head).toBe(prepared.head);
+        // Rebuilt from scratch inside the same directory, so a warm lead's cwd survives.
+        expect((yield* fs.stat(a.read)).ino).toEqual(readDirectory);
+        expect(yield* fs.exists(`${a.read}/stray.md`)).toBe(false);
+        expect(
+          (yield* vcs.run({
+            operation: "test.memory",
+            command: "git",
+            cwd: a.read,
+            args: ["rev-list", "--all"],
+          })).stdout.trim(),
+        ).toBe("");
+        yield* memory.syncCheckout(orgA);
         const next = yield* memory.prepareWakeup(orgA);
         expect(yield* memory.readRules(orgA)).toBe("Uncommitted rules");
         expect(next.head).not.toBe(prepared.head);
@@ -443,8 +459,24 @@ it.effect(
         expect(yield* memory.readIndex(orgA)).toContain("more");
         const before = yield* memory.readIndex(orgA);
         yield* TestClock.adjust("35 hours");
+        const checks = repository.counts();
         yield* memory.prepareWakeup(orgA);
         expect(yield* memory.readIndex(orgA)).toBe(before);
+        // A wake-up validates the writer; fsck and the remote are the background sync's.
+        expect([repository.counts().fsck, repository.counts().remote]).toEqual([
+          checks.fsck,
+          checks.remote,
+        ]);
+        expect(repository.counts().validations).toBeGreaterThan(checks.validations);
+        repository.failFsck(true);
+        expect((yield* memory.syncCheckout(orgA).pipe(Effect.flip))._tag).toBe("MemoryError");
+        expect(repository.counts().fsck).toBe(checks.fsck + 1);
+        // Until a sync passes, every wake-up re-runs it and refuses to start.
+        expect((yield* memory.prepareWakeup(orgA).pipe(Effect.flip))._tag).toBe("MemoryError");
+        expect(repository.counts().fsck).toBe(checks.fsck + 2);
+        repository.failFsck(false);
+        yield* memory.prepareWakeup(orgA);
+        expect(repository.counts().fsck).toBe(checks.fsck + 3);
         yield* TestClock.adjust("1 hour");
         const refreshed = yield* memory.prepareWakeup(orgA);
         expect(yield* memory.readIndex(orgA)).not.toBe(before);
@@ -678,45 +710,64 @@ const fixtureRepository = Effect.fn("Test.fixtureRepository")(function* () {
   return { root, source, git, commit };
 });
 
-it.live("materializes a large journal checkout in one blob read", () =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const vcs = yield* VcsProcess.VcsProcess;
-    const { root, source, commit } = yield* fixtureRepository();
-    yield* fs.makeDirectory(`${source}/journal/2026`, { recursive: true });
-    for (let day = 0; day < 100; day++)
-      yield* fs.writeFileString(`${source}/journal/2026/${day}.md`, `Invented entry ${day}\n`);
-    yield* commit(source);
-    let largestBatch = 0;
-    const counted = Layer.succeed(
-      VcsProcess.VcsProcess,
-      VcsProcess.VcsProcess.of({
-        run: (input) => {
-          if (input.args.includes("--batch"))
-            largestBatch = Math.max(largestBatch, input.stdin?.trim().split("\n").length ?? 0);
-          return vcs.run(input);
-        },
-      }),
-    );
-    yield* Effect.gen(function* () {
-      const memory = yield* Memory.Memory;
-      yield* memory.prepareWakeup(orgA);
-      const { read } = yield* memory.ensureCheckouts(orgA);
-      expect(yield* fs.exists(`${read}/journal/2026/99.md`)).toBe(true);
-    }).pipe(
-      Effect.provide(
-        memoryTestLayer.pipe(
-          Layer.provide(configLayer(`${root}/state`, source)),
-          Layer.provide(counted),
-          Layer.provide(NodeServices.layer),
+it.live(
+  "materializes a large journal checkout in one blob read, staged on the state filesystem",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const vcs = yield* VcsProcess.VcsProcess;
+      const { root, source, commit } = yield* fixtureRepository();
+      const crossDevice = Layer.succeed(FileSystem.FileSystem, {
+        ...fs,
+        rename: (from: string, to: string) =>
+          from.startsWith(`${root}/state/`) === to.startsWith(`${root}/state/`)
+            ? fs.rename(from, to)
+            : Effect.die(new Error(`EXDEV: rename ${from} -> ${to}`)),
+      });
+      yield* fs.makeDirectory(`${source}/journal/2026`, { recursive: true });
+      for (let day = 0; day < 100; day++)
+        yield* fs.writeFileString(`${source}/journal/2026/${day}.md`, `Invented entry ${day}\n`);
+      yield* commit(source);
+      let largestBatch = 0;
+      const counted = Layer.succeed(
+        VcsProcess.VcsProcess,
+        VcsProcess.VcsProcess.of({
+          run: (input) => {
+            if (input.args.includes("--batch"))
+              largestBatch = Math.max(largestBatch, input.stdin?.trim().split("\n").length ?? 0);
+            return vcs.run(input);
+          },
+        }),
+      );
+      yield* Effect.gen(function* () {
+        const memory = yield* Memory.Memory;
+        yield* memory.prepareWakeup(orgA);
+        yield* fs.makeDirectory(`${root}/state/a/memory-read.next-stale1/read`, {
+          recursive: true,
+        });
+        yield* memory.prepareWakeup(orgA);
+        const { read } = yield* memory.ensureCheckouts(orgA);
+        expect(yield* fs.exists(`${read}/journal/2026/99.md`)).toBe(true);
+        expect(
+          (yield* fs.readDirectory(`${root}/state/a`)).filter((entry) =>
+            entry.startsWith("memory-read.next-"),
+          ),
+        ).toEqual([]);
+      }).pipe(
+        Effect.provide(
+          memoryTestLayer.pipe(
+            Layer.provide(configLayer(`${root}/state`, source)),
+            Layer.provide(counted),
+            Layer.provide(crossDevice),
+            Layer.provide(NodeServices.layer),
+          ),
         ),
-      ),
-    );
-    expect(largestBatch).toBeGreaterThanOrEqual(100);
-  }).pipe(
-    Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer, databaseLayer)),
-    Effect.scoped,
-  ),
+      );
+      expect(largestBatch).toBeGreaterThanOrEqual(100);
+    }).pipe(
+      Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer, databaseLayer)),
+      Effect.scoped,
+    ),
 );
 
 it.live.each([
@@ -1032,7 +1083,14 @@ it.live.each([
         const sql = yield* SqlClient.SqlClient;
         yield* sql`DROP TABLE kin_secret_allow`;
       }
-      const result = yield* memory.prepareWakeup(orgA, "fixture-wakeup").pipe(Effect.result);
+      // The background sync meets the remote; a failed one makes the wake-up re-run it and refuse.
+      const result = yield* memory
+        .syncCheckout(orgA)
+        .pipe(
+          Effect.ignore,
+          Effect.andThen(memory.prepareWakeup(orgA, "fixture-wakeup")),
+          Effect.result,
+        );
       if (scenario === "unrelated" || scenario === "criss-cross") {
         expect(result._tag).toBe("Failure");
         if (result._tag === "Failure") expect(result.failure._tag).toBe("MemorySyncConflict");
@@ -1042,16 +1100,12 @@ it.live.each([
             `--git-dir=${remote}`,
             "for-each-ref",
             "--format=%(objectname)",
-            `refs/heads/kin/conflict/${orgA}/fixture-wakeup-*`,
+            `refs/heads/kin/conflict/${orgA}/`,
           ]),
         ).toBe(local);
-        expect(
-          messages.some(
-            (message) =>
-              message.includes("No unique verified merge base") &&
-              message.includes("fixture-wakeup"),
-          ),
-        ).toBe(true);
+        expect(messages.some((message) => message.includes("No unique verified merge base"))).toBe(
+          true,
+        );
         const again = yield* memory.prepareWakeup(orgA, "fixture-wakeup-2").pipe(Effect.result);
         expect(again._tag).toBe("Failure");
         expect(
@@ -1095,6 +1149,7 @@ it.live.each([
           const journalBefore = yield* git(writer, ["show", `${merged}:journal/day.md`]);
           yield* git(writer, ["update-ref", "refs/heads/main", local, merged]);
           yield* memory.record(orgA, "main", merged, local);
+          yield* memory.syncCheckout(orgA);
           expect((yield* memory.prepareWakeup(orgA)).head).toBe(merged);
           expect(yield* git(writer, ["show", `${merged}:journal/day.md`])).toBe(journalBefore);
         }

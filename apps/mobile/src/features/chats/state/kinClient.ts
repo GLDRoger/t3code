@@ -14,6 +14,8 @@ import {
   KinOrgsListResult,
   type EnvironmentId,
   type KinChatHistoryInput,
+  type KinChatId,
+  type KinChatsSubscribeInput,
   type KinLevelsGetInput,
   type KinOrgsListInput,
   type KinPushWatchInput,
@@ -26,16 +28,17 @@ import { Atom, AsyncResult, AtomRegistry } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../../../connection/runtime";
 import { appAtomRegistry } from "../../../state/atom-registry";
-import { syncKinCacheIdentity, withKinCache } from "./kinCache";
+import { syncKinCacheIdentity, withKinCache, withKinCacheStream } from "./kinCache";
+import { syncKinOwnerTimeZone } from "./kinTimeZone";
 import {
   KIN_CHAT_LABEL,
   KIN_INBOX_LABEL,
   kinInboxStream,
   makeKinChatStream,
   retryKinProbe,
-} from "./kinStreams";
+} from "@t3tools/client-runtime/kin/kinStreams";
 
-export type { KinSynced } from "./kinStreams";
+export type { KinSynced } from "@t3tools/client-runtime/kin/kinStreams";
 
 const currentEnvironmentId = EnvironmentSupervisor.EnvironmentSupervisor.pipe(
   Effect.map((supervisor) => supervisor.target.environmentId),
@@ -106,6 +109,10 @@ export const kinCachedOrgsAtom = Atom.family((environmentId: EnvironmentId) =>
     .pipe(Atom.withLabel(`kin:orgs-cache:${environmentId}`)),
 );
 
+const chatStream = makeKinChatStream((input) =>
+  readHistory(input).pipe(Effect.provideService(AtomRegistry.AtomRegistry, appAtomRegistry)),
+);
+
 export const kinClient = {
   /** Orgs, their agents, and the viewer's person per org. An empty `me` means no identity. */
   orgs: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
@@ -117,6 +124,11 @@ export const kinClient = {
       yield* syncKinCacheIdentity(environmentId, result.me[0]?.personId ?? null);
       yield* withKinCache(orgsCache.save(environmentId, ORGS_CACHE_KEY, result));
       appAtomRegistry.refresh(kinCachedOrgsAtom(environmentId));
+      syncKinOwnerTimeZone(
+        appAtomRegistry,
+        environmentId,
+        result.me.map((me) => me.orgId),
+      );
       return result;
     }),
     staleTimeMs: 60_000,
@@ -126,13 +138,11 @@ export const kinClient = {
   /** Chat list plus Waiting on you. Reconnecting replaces it with the host's fresh snapshot. */
   inbox: createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {
     label: KIN_INBOX_LABEL,
-    subscribe: kinInboxStream,
+    subscribe: (input: KinChatsSubscribeInput) => withKinCacheStream(kinInboxStream(input)),
   }),
   chat: createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {
     label: KIN_CHAT_LABEL,
-    subscribe: makeKinChatStream((input) =>
-      readHistory(input).pipe(Effect.provideService(AtomRegistry.AtomRegistry, appAtomRegistry)),
-    ),
+    subscribe: (input: { readonly chatId: KinChatId }) => withKinCacheStream(chatStream(input)),
   }),
   /** One "Load earlier" page, read fresh every time so a retry after a failure refetches. */
   readHistoryPage: (environmentId: EnvironmentId, input: KinChatHistoryInput) =>
@@ -153,6 +163,12 @@ export const kinClient = {
     tag: KIN_CHAT_WS_METHODS.messagesSend,
     concurrency: { mode: "singleFlight", key: ({ input }) => input.clientMessageId },
   }),
+  /** Owner-only Stop on a lead's current wake-up, from its presence line. */
+  leadInterrupt: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:lead:interrupt",
+    tag: "kin.lead.interrupt",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.wakeupId },
+  }),
   markRead: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:mark-read",
     tag: KIN_CHAT_WS_METHODS.messagesMarkRead,
@@ -161,6 +177,15 @@ export const kinClient = {
     label: "kin:widget-action",
     tag: KIN_CHAT_WS_METHODS.widgetsAct,
     concurrency: { mode: "singleFlight", key: ({ input }) => input.clientActionId },
+  }),
+  /** Toggles the viewer's reaction; one in flight per message and emoji. */
+  react: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:react",
+    tag: KIN_CHAT_WS_METHODS.messagesReact,
+    concurrency: {
+      mode: "singleFlight",
+      key: ({ input }) => `${input.messageId}|${input.emoji}`,
+    },
   }),
   /** A lead's levels, trial counts and open raises. Owner only; the host refuses anyone else. */
   levels: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
@@ -172,6 +197,15 @@ export const kinClient = {
   }),
   /** Gates the Levels entry point the same way the read itself is gated. */
   levelsRead,
+  /** Owner-only Undo of one line on a memory change card. */
+  memoryUndo: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:memory:undo",
+    tag: "kin.memory.undo",
+    concurrency: {
+      mode: "singleFlight",
+      key: ({ input }) => `${input.widgetId}:${input.itemId}`,
+    },
+  }),
   review: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:levels:review",
     tag: KIN_LEVEL_WS_METHODS.review,

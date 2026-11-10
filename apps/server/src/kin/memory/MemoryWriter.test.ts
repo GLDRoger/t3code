@@ -5,6 +5,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
   KinAgentId,
+  KinMemoryItemId,
   KinOrgId,
   type MemoryItemHead,
   VcsProcessSpawnError,
@@ -28,6 +29,8 @@ const gitLayer = Vcs.layer.pipe(Layer.provide(NodeServices.layer));
 it.live.each([
   "supersede-retry",
   "update-provenance",
+  "change-card",
+  "undo",
   "recovered-no-end",
   "lost-session-retry",
   "completed",
@@ -52,6 +55,7 @@ it.live.each([
   "P7-crash",
   "P8-lost-writer",
   "P9-shadow",
+  "P11-unpushed-shadow",
   "shadow-merge",
   "shadow-discard",
   "shadow-owner-path",
@@ -113,6 +117,7 @@ it.live.each([
       scenario === "P3-object" ||
       scenario === "supersede-retry" ||
       scenario === "update-provenance" ||
+      scenario === "undo" ||
       scenario === "P6-malformed"
     ) {
       yield* fs.makeDirectory(`${source}/claims`);
@@ -122,7 +127,9 @@ it.live.each([
           ? "---\nid: [\n---\n"
           : fixtureItem({
               kind: "claim",
-              status: ["B6-owner-open", "supersede-retry", "update-provenance"].includes(scenario)
+              status: ["B6-owner-open", "supersede-retry", "update-provenance", "undo"].includes(
+                scenario,
+              )
                 ? "open"
                 : "done",
               source: scenario === "supersede-retry" ? "fixture-owner-message" : "original-source",
@@ -327,8 +334,13 @@ it.live.each([
               }),
       ),
     });
+    const cards: Writer.WakeupMemoryChanges[] = [];
+    const changeHooks = Layer.succeed(Writer.MemoryChangeHooks, {
+      committed: (changes) => Effect.sync(() => void cards.push(changes)),
+    });
     const scan = Scan.layer;
     const layer = Writer.layer.pipe(
+      Layer.provide(changeHooks),
       Layer.provideMerge(memoryLayer),
       Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
       Layer.provide(config),
@@ -361,6 +373,56 @@ it.live.each([
         yield* writer.discard(orgId, "wake1");
         yield* writer.appendJournal(orgId, "wake1", ["Lead ended without calling kin_end."]);
         expect(yield* writer.commitWakeup(orgId, "wake1", "completed")).toEqual(committed);
+        return;
+      }
+      if (scenario === "change-card" || scenario === "undo") {
+        const sql = yield* SqlClient.SqlClient;
+        const at = "2026-11-08T00:00:00.000Z";
+        yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Org', ${at})`;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('owner', ${orgId}, 'owner', 'Owner', ${at})`;
+        yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at) VALUES (${agentId}, ${orgId}, 'Lead', 'lead', 'owner', ${at})`;
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at) VALUES ('owner-chat', ${orgId}, 'team_group', 0, ${at})`;
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, models_json, worker_projects_json, owner_chat_id)
+          VALUES (${agentId}, ${orgId}, 'Lead', 'L0', 0, '{}', '[]', 'owner-chat')`;
+        const read = (id: string) =>
+          memory.readItem(orgId, KinMemoryItemId.make(id), { lead: agentId });
+        yield* writer.appendJournal(orgId, "wake0", ["Only a note."]);
+        yield* writer.commitWakeup(orgId, "wake0", "completed");
+        expect(cards).toEqual([]);
+        if (scenario === "change-card") {
+          yield* writer.stage(orgId, "wake1", {
+            path: "claims/short.md",
+            sourceEventId: "owner",
+            content: fixtureItem({ id: "short", kind: "claim", title: "You prefer short replies" }),
+          });
+        } else {
+          yield* writer.stage(orgId, "wake1", {
+            path: "claims/existing.md",
+            sourceEventId: "owner",
+            content: fixtureItem({ kind: "claim", status: "done" }),
+          });
+        }
+        const { commit: written } = yield* writer.commitWakeup(orgId, "wake1", "completed");
+        expect(cards).toHaveLength(1);
+        const [card] = cards;
+        expect(card).toMatchObject({
+          wakeupId: "wake1",
+          branch: Memory.shadowBranch(agentId),
+          commit: written,
+          items: [
+            scenario === "change-card"
+              ? { itemId: "short", title: "You prefer short replies", change: "created" }
+              : { itemId: "def-001", title: "Invented service maintenance", change: "updated" },
+          ],
+        });
+        const item = card!.items[0]!;
+        const undo = { ...card!, agentId, itemId: item.itemId, path: item.path };
+        expect((yield* writer.undoChange(orgId, undo))._tag).toBe("undone");
+        const after = yield* read(item.itemId);
+        if (scenario === "change-card") expect(after.head.invalid_at).not.toBeNull();
+        else expect(after.head.status).toBe("open");
+        // The undo changed the item again, so a second tap is stale.
+        expect(yield* writer.undoChange(orgId, undo)).toEqual({ _tag: "stale" });
         return;
       }
       if (scenario === "supersede-retry" || scenario === "update-provenance") {
@@ -642,6 +704,19 @@ it.live.each([
         expect(yield* remoteHead("main")).toBe(settled);
         return;
       }
+      if (scenario === "P11-unpushed-shadow") {
+        // The remote lost the shadow branch (a refused push, say); the anchored local head is its only copy.
+        const shadow = `kin/shadow/${agentId}`;
+        const { commit } = yield* writer.commitWakeup(orgId, "wake0", "completed");
+        yield* git(root, [`--git-dir=${remote}`, "update-ref", "-d", `refs/heads/${shadow}`]);
+        yield* memory.recover(orgId);
+        expect(yield* memory.anchor(orgId, shadow)).toBe(commit);
+        expect(yield* git(paths.writer, ["rev-parse", `refs/heads/${shadow}`])).toBe(commit);
+        expect(yield* git(root, [`--git-dir=${remote}`, "rev-parse", `refs/heads/${shadow}`])).toBe(
+          commit,
+        );
+        return;
+      }
       if (scenario === "P8-lost-writer" || scenario === "P9-shadow") {
         if (scenario === "P9-shadow") yield* writer.commitWakeup(orgId, "wake0", "completed");
         yield* fs.remove(paths.writer, { recursive: true });
@@ -726,6 +801,18 @@ it.live.each([
             reason: expect.stringContaining("Disallowed memory path"),
           },
         });
+      // The decode cause is dropped before the lead sees the error, so the reason names the key.
+      expect(
+        yield* writer
+          .stage(orgId, "wake1", {
+            path: "deferrals/bad-status.md",
+            content: fixtureItem({ id: "bad-status", status: "maybe" }),
+          })
+          .pipe(Effect.result),
+      ).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "MemoryItemError", reason: "Invalid value for key status" },
+      });
       yield* fs.symlink(source, `${paths.writer}/people`);
       expect(
         (yield* writer

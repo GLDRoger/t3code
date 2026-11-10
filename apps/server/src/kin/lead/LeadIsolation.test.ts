@@ -8,6 +8,7 @@ import * as Layer from "effect/Layer";
 import * as ServerConfig from "../../config.ts";
 import * as ClaudeAdapterV2 from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import * as DreamIsolation from "../dreaming/DreamIsolation.ts";
+import { instructions } from "./instructions.ts";
 import * as LeadIsolation from "./LeadIsolation.ts";
 
 const optionsAt = (cwd: string) =>
@@ -20,6 +21,7 @@ const optionsAt = (cwd: string) =>
     resume: false,
     cwd,
     attachmentsDir: "/attachments",
+    environment: { PATH: "/usr/bin" },
     mcpServers: { kin: { type: "http", url: "http://127.0.0.1/kin" } },
   });
 
@@ -28,7 +30,7 @@ it.effect.each([
   [true, false],
   [false, true],
 ])(
-  "a Kin lead loads user settings only (KIN_ENABLED=%s, lead wrapper outside=%s)",
+  "a Kin lead loads user settings, read-only tools and Kin tools upfront (KIN_ENABLED=%s, lead wrapper outside=%s)",
   ([enabled, leadOutside]) =>
     Effect.gen(function* () {
       const { stateDir } = yield* ServerConfig.ServerConfig;
@@ -82,7 +84,37 @@ it.effect.each([
         assert.strictEqual(leadOpened, lead);
         return;
       }
-      assert.deepStrictEqual(leadOpened, { ...lead, settingSources: ["user"] });
+      const config = yield* ServerConfig.ServerConfig;
+      const preset = lead.systemPrompt;
+      assert(typeof preset === "object" && !Array.isArray(preset) && preset.type === "preset");
+      assert.deepStrictEqual(leadOpened, {
+        ...lead,
+        systemPrompt: { ...preset, append: `${preset.append}\n\n${instructions}`, snapshot: false },
+        settingSources: ["user"],
+        tools: LeadIsolation.leadTools,
+        disallowedTools: [
+          ...(lead.disallowedTools ?? []),
+          ...LeadIsolation.leadBlockedTools,
+          `Read(/${config.secretsDir}/**)`,
+          `Read(/${config.baseDir}/service.env)`,
+          `Read(/${config.dbPath}*)`,
+          "Read(~/.ssh/**)",
+          "Read(~/.config/kin/**)",
+          "Read(~/.config/gh/**)",
+        ],
+        strictMcpConfig: true,
+        settings: {
+          ...(typeof lead.settings === "object" ? lead.settings : {}),
+          env: { ENABLE_TOOL_SEARCH: "false" },
+        },
+        env: { ...lead.env, ENABLE_TOOL_SEARCH: "false" },
+      });
+      assert.isUndefined(otherOpened?.strictMcpConfig);
+      assert.deepStrictEqual(dreamOpened?.systemPrompt, dream.systemPrompt);
+      assert.notProperty(dreamOpened?.settings ?? {}, "env");
+      // A dream keeps the edit tools its checkout needs.
+      assert.deepStrictEqual(dreamOpened?.tools, DreamIsolation.dreamTools);
+      assert.isFalse((dreamOpened?.disallowedTools ?? []).includes("Edit"));
       assert.isDefined(leadOpened?.mcpServers?.kin);
     }).pipe(
       Effect.provide(

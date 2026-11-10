@@ -1,8 +1,11 @@
+import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
+import { kinSecretsTest } from "./layer.testkit.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   AuthSessionId,
+  CommandId,
   AuthStandardClientScopes,
   EnvironmentId,
   KinAgentId,
@@ -25,9 +28,11 @@ import { McpSchema, McpServer } from "effect/ai";
 import { McpInvocationContext, type McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
+import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as Threads from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Vcs from "../../vcs/VcsProcess.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
@@ -37,6 +42,7 @@ import * as Cache from "../memory/MemoryCache.ts";
 import { MemoryConfig } from "../memory/MemoryConfig.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import * as Scan from "../memory/secretScan.ts";
+import * as TriggerService from "../triggers/KinTriggerService.ts";
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import * as Lead from "./LeadMemory.ts";
 import { KinWorkers } from "./Workers.ts";
@@ -77,6 +83,7 @@ const registration = McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers)
   ),
 );
 const runtime = Kin.layer.pipe(
+  Layer.provide(kinSecretsTest),
   Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
   Layer.provideMerge(environment),
   Layer.provideMerge(authorityLayer),
@@ -151,6 +158,7 @@ it.live(
       const services = Option.getOrThrow(kin.services);
       const identity = Context.get(services, KinIdentity);
       const chats = Context.get(services, KinChatService);
+      yield* pairSession(AuthSessionId.make("owner"));
       const [person] = yield* identity.resolve({
         sessionId: AuthSessionId.make("owner"),
         subject: "browser",
@@ -222,7 +230,15 @@ it.live(
             notices.push(notice.reason);
           }),
       });
-      const memoryLayer = Memory.layer.pipe(Layer.provide(recovery));
+      const memoryLayer = Memory.layer.pipe(
+        Layer.provide(recovery),
+        Layer.provide(
+          TriggerService.syncHooksLayer.pipe(
+            Layer.provide(TriggerService.layer),
+            Layer.provide(KinChatRepository.layer),
+          ),
+        ),
+      );
       const writer = Writer.layer.pipe(
         Layer.provideMerge(Lead.authority),
         Layer.provide(Cache.layer),
@@ -279,6 +295,8 @@ it.live(
           "kin_delegate",
           "kin_follow_up",
           "kin_worker_stop",
+          "kin_ask",
+          "kin_react",
           "memory_search",
           "memory_read",
           "memory_write",
@@ -401,8 +419,8 @@ it.live(
           item: { ...input.item, chat: "other-chat", source_event: "forged-event" },
         });
         assert.strictEqual(
-          (yield* service.write(scope, forged).pipe(Effect.flip)).reason,
-          "not_allowed",
+          (yield* service.write(scope, forged).pipe(Effect.flip)).message,
+          "Only deferrals carry `chat`. Leave it out.",
         );
         assert.notProperty(forged.item, "source_event");
         assert.strictEqual(
@@ -423,8 +441,8 @@ it.live(
         assert.strictEqual(
           (yield* service
             .write(scope, { ...input, item: { ...input.item, body: "Different" } })
-            .pipe(Effect.flip)).reason,
-          "not_allowed",
+            .pipe(Effect.flip)).message,
+          "Memory item new-claim was already written differently in this wake-up. Repeat the same call, or use a new id.",
         );
         assert.strictEqual(
           (yield* service
@@ -502,15 +520,17 @@ it.live(
           did: ["Wrote memory"],
           skipped: ["No external work"],
         });
+        // The reply bridge owns owed replies now, so ending before any post is allowed.
         yield* service.end(scope, { summary: "Finished fixture" });
         yield* service.end(scope, { summary: "Finished fixture" });
         assert.strictEqual(
           (yield* service.end(scope, { summary: "Changed" }).pipe(Effect.flip)).reason,
           "not_allowed",
         );
+        // After kin_end the refusal is about authority, so it stays unexplained.
         assert.strictEqual(
-          (yield* service.write(scope, input).pipe(Effect.flip)).reason,
-          "not_allowed",
+          (yield* service.write(scope, input).pipe(Effect.flip)).message,
+          "Lead operation is not allowed.",
         );
         const committed = yield* (yield* Writer.MemoryWriter).commitWakeup(
           orgId,
@@ -593,6 +613,52 @@ it.live(
             yield* sql`ALTER TABLE kin_events_saved RENAME TO kin_events`;
           }),
         );
+
+        // In a chat at L0 the lead writes and reads its shadow branch, and its deferral arms from
+        // there. The owner's DM works at L2 from creation, so the owner lowered it here.
+        yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'restart-wakeup'`;
+        yield* (yield* Orchestrator.OrchestratorV2).dispatch({
+          type: "run.interrupt",
+          commandId: CommandId.make("interrupt:fixture-wakeup"),
+          threadId,
+          runId: run.id,
+        });
+        const shadowRun = yield* startWakeupRun(threadId, "shadow-wakeup");
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids) SELECT 'shadow-wakeup', org_id, agent_id, thread_id, ${shadowRun.id}, model, started_at, 'running', event_ids FROM kin_wakeups WHERE wakeup_id = 'fixture-wakeup'`;
+        yield* sql`UPDATE kin_events SET wakeup_id = 'shadow-wakeup' WHERE wakeup_id = 'restart-wakeup'`;
+        yield* sql`UPDATE kin_leads SET level = 'L0' WHERE agent_id = ${agentId}`;
+        yield* sql`INSERT INTO kin_chat_levels (org_id, agent_id, chat_id, level, level_since) VALUES (${orgId}, ${agentId}, ${chat.chatId}, 'L0', 0)`;
+        const reminder = yield* service.defer(scope, {
+          ...deferred,
+          what: "Invented stretch",
+          due: "2026-11-09T21:39:12+05:30",
+          onDue: "remind",
+        });
+        const shadowCommit = yield* writerService.commitWakeup(orgId, "shadow-wakeup", "completed");
+        const shadow = `kin/shadow/${agentId}`;
+        assert.strictEqual(yield* git(remote, ["rev-parse", shadow]), shadowCommit.commit);
+        assert.notInclude(
+          yield* git(remote, ["ls-tree", "-r", "--name-only", "main"]),
+          reminder.itemId,
+        );
+        const openDeferrals = (status: "open" | "done") =>
+          service
+            .search(scope, { kind: "deferral", status })
+            .pipe(Effect.map((items) => items.map((item) => item.id)));
+        assert.include(yield* openDeferrals("open"), reminder.itemId);
+        assert.strictEqual(
+          (yield* service.read(scope, { id: reminder.itemId })).head.title,
+          "Invented stretch",
+        );
+        const armed = () =>
+          sql<{ nextRunAt: number | null }>`SELECT next_run_at AS "nextRunAt" FROM kin_triggers
+            WHERE org_id = ${orgId} AND trigger_id = ${`deferral:${reminder.itemId}:due`}`;
+        assert.deepStrictEqual(yield* armed(), [{ nextRunAt: Date.parse("2026-11-09T16:09:12Z") }]);
+        // Back at the DM's L2 the same L0 lead reads the default branch; the reminder stays armed
+        // until Keep or Start clean.
+        yield* sql`DELETE FROM kin_chat_levels WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+        assert.notInclude(yield* openDeferrals("open"), reminder.itemId);
+        assert.deepStrictEqual(yield* armed(), [{ nextRunAt: Date.parse("2026-11-09T16:09:12Z") }]);
       }).pipe(Effect.provide(toolkit));
     }).pipe(
       Effect.provide(

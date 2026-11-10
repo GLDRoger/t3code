@@ -20,7 +20,6 @@ import * as TestClock from "effect/testing/TestClock";
 import * as Chat from "../chat/KinChatService.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
-import * as JudgeShadow from "../floor/JudgeShadow.ts";
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import { fakeRepository } from "../memory/__fixtures__/repository.ts";
 import * as Memory from "../memory/Memory.ts";
@@ -108,7 +107,6 @@ function layerFor(files: ReadonlyArray<readonly [string, string]>, options: Fixt
       Layer.provide(NodeServices.layer),
     );
     const chat = Chat.layer.pipe(
-      Layer.provide(JudgeShadow.layerOff),
       Layer.provideMerge(Hub.layer),
       Layer.provideMerge(Repository.layer),
     );

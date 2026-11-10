@@ -1,0 +1,543 @@
+// @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
+import {
+  EnvironmentAuthorizationError,
+  type EnvironmentId,
+  type KinChatId,
+  type KinAgentId,
+  type KinChatSummary,
+  type KinWaitingItem,
+  type KinWaitingReason,
+} from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import * as Schema from "effect/Schema";
+import type { AsyncResult } from "effect/reactivity";
+
+import type { SupervisorConnectionState } from "../connection/model.ts";
+import type { KinSynced } from "./kinStreams.ts";
+import type { KinHost } from "./kinHost.ts";
+import type { KinInboxFold, KinInboxRow, KinInboxState, KinInboxView } from "./kinInboxModel.ts";
+
+/** What a Kin screen reading the inbox shows. */
+export type KinInboxScreenState =
+  | { readonly _tag: "loading" }
+  /** The saved host is offline and nothing is cached yet. */
+  | { readonly _tag: "offline" }
+  | { readonly _tag: "noHost" }
+  | { readonly _tag: "unauthorized" }
+  /** The host runs Kin but maps this session to no person. */
+  | { readonly _tag: "noIdentity" }
+  | {
+      readonly _tag: "error";
+      readonly message: string;
+      /** The failed read: the host probe or the inbox stream. */
+      readonly retry: "orgs" | "inbox";
+    }
+  | {
+      readonly _tag: "ready";
+      readonly environmentId: EnvironmentId;
+      readonly connected: boolean;
+      readonly inbox: KinSynced<KinInboxState>;
+    };
+
+const isAuthorizationError = Schema.is(EnvironmentAuthorizationError);
+
+function causeMessage(cause: Cause.Cause<unknown>): string {
+  const error = Cause.squash(cause);
+  return error instanceof Error && error.message.length > 0 ? error.message : "Kin didn't answer.";
+}
+
+/** `inbox` is null until a host is known. */
+export function kinInboxScreenState(
+  host: KinHost,
+  inbox: AsyncResult.AsyncResult<KinSynced<KinInboxState>, unknown> | null,
+): KinInboxScreenState {
+  if (host._tag === "searching") return { _tag: "loading" };
+  if (host._tag === "none") return { _tag: "noHost" };
+  if (host.probe._tag === "unauthorized") return { _tag: "unauthorized" };
+  if (host.probe._tag === "noIdentity") return { _tag: "noIdentity" };
+  if (host.probe._tag === "error" && !host.probe.transient) {
+    return { _tag: "error", message: host.probe.message, retry: "orgs" };
+  }
+  // A transient probe failure says nothing about Kin, so a live or cached inbox still shows.
+  if (host.probe._tag === "error" && inbox?._tag !== "Success") {
+    return { _tag: "error", message: "Couldn't reach Kin.", retry: "orgs" };
+  }
+  if (inbox === null || inbox._tag === "Initial") {
+    return host.connected ? { _tag: "loading" } : { _tag: "offline" };
+  }
+  if (inbox._tag === "Success") {
+    return {
+      _tag: "ready",
+      environmentId: host.environmentId,
+      connected: host.connected,
+      inbox: inbox.value,
+    };
+  }
+  if (!host.connected) return { _tag: "offline" };
+  if (isAuthorizationError(Cause.squash(inbox.cause))) return { _tag: "unauthorized" };
+  return { _tag: "error", message: causeMessage(inbox.cause), retry: "inbox" };
+}
+
+/** The time `selectKinInboxView` sorts by (kinInboxModel's `activityAt`). */
+const activityAt = (row: KinInboxRow) => row.chat.lastMessageAt ?? row.chat.createdAt;
+
+type KinReadyScreenState = Extract<KinInboxScreenState, { readonly _tag: "ready" }>;
+
+const kinClockFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+const kinDayFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
+
+/** "9:41" for a time today (by `now`'s local day), "7 Nov" for any other day. */
+export function formatKinTime(date: Date, now: Date = new Date()): string {
+  return date.toDateString() === now.toDateString()
+    ? kinClockFormat.format(date)
+    : kinDayFormat.format(date);
+}
+
+/** Where the Reconnect action on the Offline notice is: idle, waiting on the attempt, or failed. */
+export type KinReconnectStatus = "idle" | "pending" | "failed";
+
+export interface KinStaleNotice {
+  readonly offline: boolean;
+  readonly message: string;
+}
+
+/** The stale-data notice over cached Kin data, or null while it is live and connected. */
+export function kinStaleNotice(
+  data: { readonly connected: boolean; readonly live: boolean; readonly savedAt: string | null },
+  reconnect: KinReconnectStatus,
+  formatTime: (date: Date) => string,
+): KinStaleNotice | null {
+  if ((data.connected && data.live) || data.savedAt === null) return null;
+  const updated = `Last updated ${formatTime(new Date(data.savedAt))}.`;
+  if (data.connected) return { offline: false, message: `Updating. ${updated}` };
+  const status =
+    reconnect === "pending"
+      ? "Reconnecting…"
+      : reconnect === "failed"
+        ? "Couldn't reconnect."
+        : "Offline.";
+  return { offline: true, message: `${status} ${updated}` };
+}
+
+/** The stale-data notice over a ready inbox, or null while it is live and connected. */
+export function kinInboxNotice(
+  state: KinReadyScreenState,
+  reconnect: KinReconnectStatus,
+  formatTime: (date: Date) => string,
+): KinStaleNotice | null {
+  return kinStaleNotice(
+    { connected: state.connected, live: state.inbox.live, savedAt: state.inbox.savedAt },
+    reconnect,
+    formatTime,
+  );
+}
+
+/**
+ * One connection state seen while Reconnect waits, from `before`, the state at the press. The
+ * attempt has failed once a connect attempt ends without connecting, or when the supervisor
+ * won't try: the device is offline or the host is blocked.
+ */
+export function kinReconnectStep(
+  attempted: boolean,
+  state: SupervisorConnectionState,
+  before: SupervisorConnectionState,
+): { readonly attempted: boolean; readonly outcome: "pending" | "connected" | "failed" } {
+  if (state.phase === "connected") return { attempted, outcome: "connected" };
+  if (state.phase === "connecting") return { attempted: true, outcome: "pending" };
+  const wontTry =
+    before.phase === "offline" ||
+    (state !== before && (state.phase === "offline" || state.phase === "blocked"));
+  return { attempted, outcome: attempted || wontTry ? "failed" : "pending" };
+}
+
+/** One VoiceOver label from its parts, each read as a sentence without doubling its end mark. */
+export function kinSentences(parts: ReadonlyArray<string | null>): string {
+  return parts
+    .map((part) => part?.trim() ?? "")
+    .filter((part) => part.length > 0)
+    .map((part) => (/[.!?…]$/.test(part) ? part : `${part}.`))
+    .join(" ");
+}
+
+/** Plain text cut near `max` characters, at a word where one is close, with an ellipsis. */
+export function kinSnippet(text: string, max = 80): string {
+  const chars = Array.from(text);
+  if (chars.length <= max) return text;
+  const cut = chars.slice(0, max).join("");
+  const space = cut.lastIndexOf(" ");
+  const kept = space > cut.length / 2 ? cut.slice(0, space) : cut;
+  return `${kept.replace(/[\s.,;:!?…-]+$/, "")}…`;
+}
+
+/** The newest chat by activity: rows put waiting chats first, so not the first row. */
+function latestRow(view: KinInboxView | null): KinInboxRow | null {
+  return (
+    view?.rows.reduce<KinInboxRow | null>(
+      (best, row) => (best === null || activityAt(row) > activityAt(best) ? row : best),
+      null,
+    ) ?? null
+  );
+}
+
+/** The chat the home row previews, when its second line is a message rather than a status. */
+function homePreviewRow(state: KinInboxScreenState, view: KinInboxView | null) {
+  if (view === null || state._tag !== "ready" || !state.connected) return null;
+  if (view.waitingCount > 0 || view.folds.working > 0) return null;
+  return latestRow(view);
+}
+
+/**
+ * The home row's VoiceOver label: "Kin, 3 unread. Tech lead, last message: Payments test fixed."
+ * The message is cut to about 80 characters so a long one doesn't hold VoiceOver on the row.
+ */
+export function kinHomeLabel(
+  state: KinInboxScreenState,
+  view: KinInboxView | null,
+  directory: KinDirectory,
+): string {
+  const unread = view?.unreadCount ?? 0;
+  const kin = unread > 0 ? `Kin, ${unread} unread` : "Kin";
+  const row = homePreviewRow(state, view);
+  if (row === null || row.chat.lastMessage === null) {
+    return kinSentences([kin, kinHomeSubtitle(state, view)?.replace(" · ", ", ") ?? null]);
+  }
+  const chat = kinChatRowView(row, directory);
+  const from = chat.author === "You" ? "last message from you" : "last message";
+  return kinSentences([kin, `${chat.title}, ${from}: ${kinSnippet(chat.preview)}`]);
+}
+
+/** The home row's second line. */
+export function kinHomeSubtitle(
+  state: KinInboxScreenState,
+  view: KinInboxView | null,
+): string | null {
+  if (view !== null && view.waitingCount > 0) return `Waiting on you · ${view.waitingCount}`;
+  if (view !== null && view.folds.working > 0 && state._tag === "ready" && state.connected)
+    return `Working · ${view.folds.working}`;
+  switch (state._tag) {
+    case "offline":
+      return "Offline";
+    case "unauthorized":
+      return "This device can't read Kin chats";
+    case "noIdentity":
+      return "Kin doesn't know you on this server yet";
+    case "error":
+      return "Couldn't load chats";
+    case "ready": {
+      if (!state.connected) return "Offline";
+      return kinMessagePreview(latestRow(view)?.chat.lastMessage ?? null);
+    }
+    default:
+      return null;
+  }
+}
+
+// Chat list rows and the Waiting on you banner
+
+/** Who the viewer is and what agents are called, from the host's `kin.orgs.list`. */
+export interface KinDirectory {
+  readonly agentNames: ReadonlyMap<string, string>;
+  readonly me: ReadonlySet<string>;
+}
+
+const emptyKinDirectory: KinDirectory = { agentNames: new Map(), me: new Set() };
+
+export function kinDirectory(host: KinHost): KinDirectory {
+  if (host._tag !== "host") return emptyKinDirectory;
+  const { probe } = host;
+  if (probe._tag !== "ready" && probe._tag !== "noIdentity") return emptyKinDirectory;
+  return {
+    agentNames: new Map(
+      probe.orgs.orgs.flatMap((org) =>
+        org.agents.map((agent) => [agent.agentId, agent.displayName] as const),
+      ),
+    ),
+    me: new Set(probe.orgs.me.map((me) => me.personId)),
+  };
+}
+
+export interface KinChatRowView {
+  readonly chatId: KinChatId;
+  readonly title: string;
+  readonly avatar: { readonly kind: "agent" | "person"; readonly initials: string };
+  /** "Lead" in "Lead: Payments test fixed". */
+  readonly author: string | null;
+  readonly preview: string;
+  readonly sentAt: string | null;
+  readonly unread: number;
+}
+
+/** First letters of the first two words: "Tech lead" is "TL". */
+export function kinInitials(name: string): string {
+  const letters = name
+    .split(/\s+/)
+    .filter((word) => word.length > 0)
+    .slice(0, 2)
+    .map((word) => Array.from(word)[0]!.toUpperCase());
+  return letters.length > 0 ? letters.join("") : "?";
+}
+
+/** Message markdown as one plain line. */
+export function kinPreviewText(body: string): string {
+  return body
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/^\s{0,3}(?:#{1,6}|>|[-*+]|\d+\.)\s+/gm, "")
+    .replace(/```[^\s`]*/g, "")
+    .replace(/(\*\*|__|~~|`)/g, "")
+    .replace(/(^|[^\w*])\*(?=\S)([^*\n]*?\S)\*(?![\w*])/g, "$1$2")
+    .replace(/(^|[^\w])_(?=\S)([^_\n]*?\S)_(?!\w)/g, "$1$2")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** A chat's last message as one plain line for a list. */
+function kinMessagePreview(last: KinChatSummary["lastMessage"]): string {
+  if (last === null) return "No messages yet";
+  if (last.status === "deleted") return "Message deleted";
+  return kinPreviewText(last.body) || "Message";
+}
+
+export function kinChatRowView(row: KinInboxRow, directory: KinDirectory): KinChatRowView {
+  const { chat } = row;
+  const others = chat.members.filter(
+    (member) =>
+      member.leftAt === null &&
+      !(member.principal._tag === "person" && directory.me.has(member.principal.personId)),
+  );
+  // A direct chat is one person and one agent, so the other side is its agent.
+  const counterpart =
+    others.find((member) => member.principal._tag === "agent") ?? others[0] ?? null;
+  const title = kinChatTitle(chat, directory.agentNames);
+  const last = chat.lastMessage;
+  const author =
+    last === null
+      ? null
+      : last.author._tag === "agent"
+        ? (directory.agentNames.get(last.author.agentId) ?? null)
+        : last.author._tag === "human" && directory.me.has(last.author.personId)
+          ? "You"
+          : null;
+  const preview = kinMessagePreview(last);
+  return {
+    chatId: chat.chatId,
+    title,
+    avatar: {
+      kind: counterpart?.principal._tag === "person" ? "person" : "agent",
+      initials: kinInitials(title),
+    },
+    author: last?.status === "deleted" ? null : author,
+    preview,
+    sentAt: chat.lastMessageAt,
+    unread: chat.unread,
+  };
+}
+
+const FOLD_TITLES: Record<KinInboxFold, string> = {
+  needsYou: "Needs you",
+  working: "Working",
+  rest: "Unread and done",
+};
+
+export type KinInboxListRow =
+  | {
+      readonly type: "fold";
+      readonly key: string;
+      readonly title: string;
+      readonly count: number;
+      readonly accessibilityLabel: string;
+    }
+  | {
+      readonly type: "chat";
+      readonly key: string;
+      readonly view: KinChatRowView;
+      /** A divider under it: the next row is another chat, not a fold header or the end. */
+      readonly divider: boolean;
+    };
+
+/**
+ * The chat list with a header over each fold that has chats. With nothing waiting or working,
+ * the folds would say nothing, so the list stays plain.
+ */
+export function kinInboxListRows(
+  view: KinInboxView,
+  directory: KinDirectory,
+): ReadonlyArray<KinInboxListRow> {
+  const headed = view.folds.needsYou + view.folds.working > 0;
+  const rows: Array<KinInboxListRow> = [];
+  let fold: KinInboxFold | null = null;
+  for (const row of view.rows) {
+    if (headed && row.fold !== fold) {
+      fold = row.fold;
+      const count = view.folds[fold];
+      rows.push({
+        type: "fold",
+        key: `fold:${fold}`,
+        title: FOLD_TITLES[fold],
+        count,
+        accessibilityLabel: `${FOLD_TITLES[fold]}, ${count} ${count === 1 ? "chat" : "chats"}`,
+      });
+    }
+    const last = rows[rows.length - 1];
+    if (last?.type === "chat") rows[rows.length - 1] = { ...last, divider: true };
+    rows.push({
+      type: "chat",
+      key: row.chat.chatId,
+      view: kinChatRowView(row, directory),
+      divider: false,
+    });
+  }
+  return rows;
+}
+
+/** "Tech lead, agent. Payments test fixed, PR 212 ready. 9:30. 3 unread." */
+export function kinChatRowLabel(view: KinChatRowView, formatTime: (date: Date) => string): string {
+  const preview =
+    view.author !== null && view.author !== view.title
+      ? `${view.author}: ${view.preview}`
+      : view.preview;
+  return [
+    `${view.title}, ${view.avatar.kind}`,
+    preview.replace(/[.!?]+$/, ""),
+    view.sentAt === null ? null : formatTime(new Date(view.sentAt)),
+    view.unread > 0 ? `${view.unread} unread` : null,
+  ]
+    .filter((part): part is string => part !== null && part.length > 0)
+    .map((part) => `${part}.`)
+    .join(" ");
+}
+
+const WAITING_REASON_NOUNS: Record<KinWaitingReason, string> = {
+  approval: "approval",
+  decision: "decision",
+  question: "question",
+  suggestion: "suggestion",
+  mention: "mention",
+};
+
+export interface KinWaitingBannerView {
+  readonly count: number;
+  /** Up to two kinds of item, oldest first, then the rest: "1 approval · 2 questions · 1 more". */
+  readonly summary: string;
+  readonly accessibilityLabel: string;
+}
+
+/**
+ * Waiting items carry a reason but no title, so the banner names kinds of item.
+ * `waiting` is oldest first, as `selectKinInboxView` returns it. Null when nothing waits.
+ */
+export function kinWaitingBannerView(
+  waiting: ReadonlyArray<KinWaitingItem>,
+): KinWaitingBannerView | null {
+  if (waiting.length === 0) return null;
+  const counts = new Map<KinWaitingReason, number>();
+  for (const item of waiting) counts.set(item.reason, (counts.get(item.reason) ?? 0) + 1);
+  const named = [...counts].slice(0, 2);
+  const parts = named.map(
+    ([reason, count]) => `${count} ${WAITING_REASON_NOUNS[reason]}${count === 1 ? "" : "s"}`,
+  );
+  const rest = waiting.length - named.reduce((sum, [, count]) => sum + count, 0);
+  const items = waiting.length === 1 ? "1 item" : `${waiting.length} items`;
+  return {
+    count: waiting.length,
+    summary: [...parts, ...(rest > 0 ? [`${rest} more`] : [])].join(" · "),
+    accessibilityLabel: `Waiting on you, ${items}: ${parts.join(", ")}${rest > 0 ? `, and ${rest} more` : ""}`,
+  };
+}
+
+/**
+ * The footer's target: the viewer's direct chat with the lead. `kin.orgs.list` carries no agent
+ * role yet, so the lead is the agent that joined a direct chat first: setup creates it before any
+ * other. Activity order never decides, so the target stays put as chats update.
+ */
+export function kinLeadChatId(rows: ReadonlyArray<KinInboxRow>): KinChatId | null {
+  let best: { readonly chatId: KinChatId; readonly joinedAt: string } | null = null;
+  for (const { chat } of rows) {
+    if (chat.kind !== "direct") continue;
+    const agent = chat.members.find((member) => member.principal._tag === "agent");
+    const joinedAt = agent?.joinedAt ?? chat.createdAt;
+    if (
+      best === null ||
+      joinedAt < best.joinedAt ||
+      (joinedAt === best.joinedAt && chat.chatId < best.chatId)
+    ) {
+      best = { chatId: chat.chatId, joinedAt };
+    }
+  }
+  return best?.chatId ?? null;
+}
+
+/**
+ * The lead whose Levels this viewer may open from a chat: the agent of a direct chat the viewer
+ * owns. Only a lead's owner reaches its levels; the host checks that again on every call.
+ */
+export function kinLevelsAgentId(
+  chat: Pick<KinChatSummary, "kind" | "members">,
+  personId: string | null,
+): KinAgentId | null {
+  if (chat.kind !== "direct" || personId === null) return null;
+  const active = chat.members.filter((member) => member.leftAt === null);
+  const owns = active.some(
+    (member) =>
+      member.role === "owner" &&
+      member.principal._tag === "person" &&
+      member.principal.personId === personId,
+  );
+  const agent = active.find((member) => member.principal._tag === "agent")?.principal;
+  return owns && agent?._tag === "agent" ? agent.agentId : null;
+}
+
+/** A direct chat's agent by name; null for other chats or an agent the directory doesn't name. */
+export function kinDirectAgentName(
+  chat: Pick<KinChatSummary, "kind" | "members">,
+  agentNames: ReadonlyMap<string, string>,
+): string | null {
+  if (chat.kind !== "direct") return null;
+  for (const member of chat.members) {
+    if (member.leftAt !== null || member.principal._tag !== "agent") continue;
+    const name = agentNames.get(member.principal.agentId);
+    if (name !== undefined) return name;
+  }
+  return null;
+}
+
+/** The host's title, else the chat's agent by name: the host leaves direct chats untitled. */
+export function kinChatTitle(
+  chat: Pick<KinChatSummary, "title" | "kind" | "members">,
+  agentNames: ReadonlyMap<string, string>,
+): string {
+  if (chat.title !== null) return chat.title;
+  if (chat.kind !== "direct") return "Chat";
+  return kinDirectAgentName(chat, agentNames) ?? "Direct chat";
+}
+
+const WAITING_REASON_LABELS: Record<KinWaitingReason, string> = {
+  approval: "Approval",
+  decision: "Decision",
+  question: "Question",
+  suggestion: "Suggestion",
+  mention: "Mention",
+};
+
+export interface KinWaitingRowView {
+  readonly label: string;
+  readonly chatTitle: string;
+  /** The message that asks, when the inbox carries it; items have no text of their own. */
+  readonly text: string | null;
+  readonly createdAt: string;
+}
+
+export function kinWaitingRowView(
+  item: KinWaitingItem,
+  chats: ReadonlyArray<KinChatSummary>,
+  agentNames: ReadonlyMap<string, string>,
+): KinWaitingRowView {
+  const chat = chats.find((held) => held.chatId === item.chatId);
+  const last = chat?.lastMessage ?? null;
+  const message = last !== null && last.messageId === item.messageId ? last : null;
+  return {
+    label: WAITING_REASON_LABELS[item.reason],
+    chatTitle: chat === undefined ? "Direct chat" : kinChatTitle(chat, agentNames),
+    text: message === null || message.status === "deleted" ? null : message.body,
+    createdAt: item.createdAt,
+  };
+}

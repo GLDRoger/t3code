@@ -4,6 +4,8 @@ import {
   KinBudget,
   KinBudgetGetInput,
   KinBudgetSetInput,
+  KinLeadCreated,
+  KinLeadCreateInput,
   KinOrgGetInput,
   KinOrgPauseInput,
   KinOrgResumeInput,
@@ -11,13 +13,22 @@ import {
 } from "./kinLead.ts";
 import { KinApprovalRpcs, KIN_APPROVAL_RPC_SCOPES } from "./kinApprovals.ts";
 import { KinLevelRpcs, KIN_LEVEL_RPC_SCOPES } from "./kinLevels.ts";
-import { KinChatError, KinChatRpcs, KIN_CHAT_RPC_SCOPES } from "./kinChat.ts";
+import { KinMemoryRpcs, KIN_MEMORY_RPC_SCOPES } from "./kinMemory.ts";
+import {
+  KinChatError,
+  KinChatRpcs,
+  KinLeadInterruptInput,
+  KinLeadInterruptResult,
+  KIN_CHAT_RPC_SCOPES,
+} from "./kinChat.ts";
 import { KinPushRpcs, KIN_PUSH_RPC_SCOPES } from "./kinPush.ts";
 import {
   KinGithubWebhookOrgInput,
   KinGithubWebhookSecretInput,
   KinGithubWebhookSetup,
   KinGithubWebhookSetupInput,
+  KinOwnerTimeZone,
+  KinOwnerTimeZoneGetInput,
 } from "./kinTriggers.ts";
 import {
   EnvironmentAuthorizationError,
@@ -38,6 +49,20 @@ const KinOrgRpcs = [
   Rpc.make("kin.org.resume", {
     payload: KinOrgResumeInput,
     success: KinOrgState,
+    error: KinError,
+  }),
+] as const;
+// Owner-only: interrupt stops one wake-up, never the org; kin.org.pause is the stop switch.
+// create adds a lead at L0 with its direct chat to its creator, as `kin lead create` does.
+const KinLeadRpcs = [
+  Rpc.make("kin.lead.interrupt", {
+    payload: KinLeadInterruptInput,
+    success: KinLeadInterruptResult,
+    error: KinError,
+  }),
+  Rpc.make("kin.lead.create", {
+    payload: KinLeadCreateInput,
+    success: KinLeadCreated,
     error: KinError,
   }),
 ] as const;
@@ -63,11 +88,31 @@ export const KinGithubWebhookRpcs = [
     error: KinError,
   }),
 ] as const;
-export const KinChatAndBudgetRpcs = [...KinChatRpcs, ...KinBudgetRpcs, ...KinOrgRpcs] as const;
+// Owner only: the zone routines, deferrals and notices use. Unset reads as UTC.
+const KinTimeZoneRpcs = [
+  Rpc.make("kin.triggers.getTimeZone", {
+    payload: KinOwnerTimeZoneGetInput,
+    success: KinOwnerTimeZone,
+    error: KinError,
+  }),
+  Rpc.make("kin.triggers.setTimeZone", {
+    payload: KinOwnerTimeZone,
+    success: KinOwnerTimeZone,
+    error: KinError,
+  }),
+] as const;
+export const KinChatAndBudgetRpcs = [
+  ...KinChatRpcs,
+  ...KinBudgetRpcs,
+  ...KinOrgRpcs,
+  ...KinLeadRpcs,
+  ...KinTimeZoneRpcs,
+] as const;
 export const KinRpcs = [
   ...KinChatAndBudgetRpcs,
   ...KinApprovalRpcs,
   ...KinLevelRpcs,
+  ...KinMemoryRpcs,
   ...KinGithubWebhookRpcs,
   ...KinPushRpcs,
 ] as const;
@@ -75,6 +120,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_CHAT_RPC_SCOPES,
   ...KIN_APPROVAL_RPC_SCOPES,
   ...KIN_LEVEL_RPC_SCOPES,
+  ...KIN_MEMORY_RPC_SCOPES,
   ...KIN_PUSH_RPC_SCOPES,
   "kin.budget.get": AuthOrchestrationReadScope,
   "kin.budget.set": AuthSettingsWriteScope,
@@ -82,6 +128,11 @@ export const KIN_RPC_SCOPES = {
   // Stopping agent work is an orchestration operation, as force-stopping a thread is.
   "kin.org.pause": AuthOrchestrationOperateScope,
   "kin.org.resume": AuthOrchestrationOperateScope,
+  "kin.lead.interrupt": AuthOrchestrationOperateScope,
+  // A new lead is an owner setting, like the budget, and spends from the same budget.
+  "kin.lead.create": AuthSettingsWriteScope,
+  "kin.triggers.getTimeZone": AuthOrchestrationReadScope,
+  "kin.triggers.setTimeZone": AuthSettingsWriteScope,
   "kin.webhooks.github.setup": AuthSettingsWriteScope,
   "kin.webhooks.github.setSecret": AuthSettingsWriteScope,
   "kin.webhooks.github.rotate": AuthSettingsWriteScope,
@@ -94,6 +145,8 @@ export const KIN_RPC_AGGREGATES = {
   "kin.org.get": "kin-org",
   "kin.org.pause": "kin-org",
   "kin.org.resume": "kin-org",
+  "kin.lead.interrupt": "kin-org",
+  "kin.lead.create": "kin-chat",
   "kin.orgs.list": "kin-chat",
   "kin.chats.subscribe": "kin-chat",
   "kin.chats.createDirect": "kin-chat",
@@ -102,6 +155,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.messages.send": "kin-chat",
   "kin.messages.markRead": "kin-chat",
   "kin.widgets.act": "kin-chat",
+  "kin.messages.react": "kin-chat",
   "kin.approvals.list": "kin-approvals",
   "kin.approvals.get": "kin-approvals",
   "kin.approvals.challenge": "kin-approvals",
@@ -120,9 +174,12 @@ export const KIN_RPC_AGGREGATES = {
   "kin.levels.raise": "kin-levels",
   "kin.levels.deferPromotion": "kin-levels",
   "kin.levels.shadowMemory": "kin-levels",
+  "kin.memory.undo": "kin-memory",
   "kin.push.registerDevice": "kin-push",
   "kin.push.unregisterDevice": "kin-push",
   "kin.push.watch": "kin-push",
+  "kin.triggers.getTimeZone": "kin-triggers",
+  "kin.triggers.setTimeZone": "kin-triggers",
   "kin.webhooks.github.setup": "kin-webhooks",
   "kin.webhooks.github.setSecret": "kin-webhooks",
   "kin.webhooks.github.rotate": "kin-webhooks",

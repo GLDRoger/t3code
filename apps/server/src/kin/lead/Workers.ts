@@ -369,7 +369,9 @@ const make = Effect.gen(function* () {
         const author =
           input.reviewOf === undefined ? undefined : yield* worker(ctx.orgId, input.reviewOf);
         const chatId =
-          event._tag === "chat.message" || event._tag === "widget.action"
+          event._tag === "chat.message" ||
+          event._tag === "widget.action" ||
+          event._tag === "chat.reaction"
             ? event.chatId
             : config.ownerChatId;
         return { config, event, author, chatId, level: yield* levelOf(ctx, chatId) };
@@ -398,7 +400,7 @@ const make = Effect.gen(function* () {
       reviewRefs !== undefined
         ? []
         : yield* Effect.forEach(input.memoryItemIds ?? [], (id) =>
-            memory.readItemQuietly(ctx.orgId, id).pipe(
+            memory.readItemQuietly(ctx.orgId, id, { lead: ctx.agentId }).pipe(
               Effect.map((item) => ({ id, title: item.head.title, body: item.body })),
               Effect.mapError(() => missing()),
             ),
@@ -528,6 +530,8 @@ const make = Effect.gen(function* () {
     const projection = yield* threads
       .getThreadProjection(plan.worker.threadId)
       .pipe(Effect.mapError(() => missing()));
+    if (!plan.config.projects.includes(projection.thread.projectId))
+      return yield* denied("Workers may only run in this lead's worker projects.");
     const sent = yield* threads
       .sendToThread({
         projectId: projection.thread.projectId,

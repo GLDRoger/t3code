@@ -1,8 +1,8 @@
 import {
   KinBudget as Budget,
   KinBudgetLimits,
+  type KinAgentId,
   KinChatError,
-  KinChatId,
   KinMessageId,
   type KinOrgId,
   type KinWakeupId,
@@ -25,6 +25,7 @@ import * as Chat from "../chat/KinChatRepository.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as Queue from "./KinEventQueue.ts";
+import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "./orgLeads.ts";
 import { isOrgOwner } from "./orgState.ts";
 
 type Priority = "P0" | "P1" | "P2" | "P3" | "P4";
@@ -128,6 +129,16 @@ const make = Effect.gen(function* () {
     if (rows.length === 0) return yield* notFound;
     yield* sql`INSERT INTO kin_budget (org_id, day) VALUES (${orgId}, ${day}) ON CONFLICT DO NOTHING RETURNING org_id`;
   });
+  const byLead = Effect.fn("KinBudget.byLead")(function* (orgId: KinOrgId, day: string) {
+    return yield* sql<{ agentId: KinAgentId; name: string; leadUnits: number }>`
+      SELECT w.agent_id AS "agentId", COALESCE(l.name, w.agent_id) AS name,
+        SUM(c.units) AS "leadUnits"
+      FROM kin_budget_charges c
+      JOIN kin_wakeups w ON w.org_id = c.org_id AND w.wakeup_id = c.wakeup_id
+      LEFT JOIN kin_leads l ON l.org_id = w.org_id AND l.agent_id = w.agent_id
+      WHERE c.org_id = ${orgId} AND c.day = ${day}
+      GROUP BY w.agent_id ORDER BY "leadUnits" DESC, w.agent_id`;
+  });
   const snapshot = Effect.fn("KinBudget.snapshot")(function* (orgId: KinOrgId, day: string) {
     const [row] = yield* sql<{ leadUnits: number; workerUnits: number; limits: string | null }>`
       SELECT b.lead_units AS "leadUnits", b.worker_units AS "workerUnits", l.limits_json AS limits
@@ -140,6 +151,7 @@ const make = Effect.gen(function* () {
       leadUnits: row.leadUnits,
       workerUnits: row.workerUnits,
       limits: row.limits === null ? defaults : yield* decodeStoredLimits(row.limits),
+      leads: yield* byLead(orgId, day),
     };
   });
   const get = Effect.fn("KinBudget.get")(function* (orgId: KinOrgId) {
@@ -160,22 +172,25 @@ const make = Effect.gen(function* () {
     day: string,
     now: number,
   ) {
-    const [lead] = yield* sql<{
-      chatId: string;
-    }>`SELECT l.owner_chat_id AS "chatId" FROM kin_leads l
-      JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
-      WHERE l.org_id = ${orgId} AND a.retired_at IS NULL ORDER BY l.agent_id LIMIT 1`;
+    // One notice per org and day, in the chief of staff's chat when there is one.
+    const lead = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
     if (lead === undefined) return;
     const updated =
       yield* sql`UPDATE kin_budget SET exhausted_notified_at = ${now} WHERE org_id = ${orgId} AND day = ${day} AND exhausted_notified_at IS NULL RETURNING org_id`;
     if (updated.length === 0) return;
+    const leads = yield* byLead(orgId, day);
+    const total = leads.reduce((sum, row) => sum + row.leadUnits, 0);
+    const used =
+      leads.length < 2 || total <= 0
+        ? ""
+        : ` Used today: ${leads.map((row) => `${row.name} ${Math.round((row.leadUnits / total) * 100)}%`).join(", ")}.`;
     const message = yield* chat.insertMessage({
       orgId,
-      chatId: KinChatId.make(lead.chatId),
+      chatId: lead.ownerChatId,
       messageId: KinMessageId.make(`kin-budget:${orgId}:${day}`),
       author: { _tag: "system" },
       kind: "text",
-      body: "Today's Kin lead budget is exhausted. Only urgent owner messages will run, on the cheap model. Raise the limits in settings to resume other work.",
+      body: `Today's Kin lead budget is exhausted for all your leads. Only urgent owner messages will run, on the cheap model.${used} Raise the limits in settings to resume other work.`,
       intent: null,
       mentions: [],
       replyTo: null,

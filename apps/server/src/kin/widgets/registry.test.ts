@@ -15,10 +15,21 @@ const state = {
   updatedAt: "2026-11-07T00:00:00.000Z",
 };
 
+const choice = {
+  question: "Ship today?",
+  detail: null,
+  options: [
+    { optionId: "option-1", label: "Yes", kind: "yes" },
+    { optionId: "option-2", label: "No", kind: "no" },
+  ],
+  answer: null,
+};
+
 describe("Kin widget registry", () => {
   it.effect("validates task state and refuses unknown or invalid state without a fallback", () =>
     Effect.gen(function* () {
       assert.deepStrictEqual(yield* validateState("task", state), state);
+      assert.deepStrictEqual(yield* validateState("choice", choice), choice);
       for (const [type, value] of [
         ["unknown", state],
         ["approval", state],
@@ -27,6 +38,8 @@ describe("Kin widget registry", () => {
         ["task", { ...state, status: "approved" }],
         ["task", { ...state, threadId: 1 }],
         ["task", { ...state, title: "" }],
+        ["choice", { ...choice, options: choice.options.slice(0, 1) }],
+        ["choice", { ...choice, question: "x".repeat(241) }],
       ] as const) {
         assert.include(
           yield* validateState(type, value).pipe(

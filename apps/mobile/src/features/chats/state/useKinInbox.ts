@@ -3,9 +3,12 @@ import { Atom, type AsyncResult } from "effect/reactivity";
 
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { kinClient, type KinSynced } from "./kinClient";
-import type { KinHost } from "./kinHost";
-import type { KinInboxState } from "./kinInboxModel";
-import { kinInboxScreenState, type KinInboxScreenState } from "./kinScreenState";
+import type { KinHost } from "@t3tools/client-runtime/kin/kinHost";
+import type { KinInboxState } from "@t3tools/client-runtime/kin/kinInboxModel";
+import {
+  kinInboxScreenState,
+  type KinInboxScreenState,
+} from "@t3tools/client-runtime/kin/kinScreenState";
 import { useKinHost } from "./useKinHost";
 
 type InboxResult = AsyncResult.AsyncResult<KinSynced<KinInboxState>, unknown> | null;

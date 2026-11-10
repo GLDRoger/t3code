@@ -430,7 +430,13 @@ const make = Effect.gen(function* () {
       return yield* sql.withTransaction(
         Effect.gen(function* () {
           // The lead may be retired, lowered or its wake-up ended while GitHub answered.
-          const { origin, level } = yield* authorize(agent, input);
+          const current = yield* authorize(agent, input);
+          const { origin, level } = current;
+          if (current.lead.worker_projects_json !== lead.worker_projects_json)
+            return yield* refuse(
+              "invalid_state",
+              "This lead's worker projects changed while GitHub answered. Try again.",
+            );
           if (!KinLevels.atLeast(level, PRIVILEGED_LEVEL))
             return yield* shadow(agent, { ...input, target }, level, origin.provenance);
           const now = yield* Clock.currentTimeMillis;

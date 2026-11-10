@@ -1,6 +1,11 @@
 import type {
+  KinAgentId,
+  KinAuthor,
+  KinReaction,
   KinChat,
   KinChatId,
+  KinChatStreamEvent,
+  KinPresence,
   KinMemberId,
   KinChatMember,
   KinMessage,
@@ -31,6 +36,26 @@ type ChatEvent =
       readonly chatId: KinChatId;
       readonly memberId: KinMemberId;
       readonly seq: number;
+    }
+  | {
+      readonly type: "reaction.updated";
+      readonly chatId: KinChatId;
+      readonly reaction: KinReaction;
+      // An owner's soft reply that should wake the lead; `by` is the reacting member.
+      readonly woke: boolean;
+      readonly by: KinAuthor;
+    }
+  // Live only: never persisted, never in a checkpoint.
+  | {
+      readonly type: "presence.updated";
+      readonly chatId: KinChatId;
+      readonly agentId: KinAgentId;
+      readonly presence: KinPresence | null;
+    }
+  | {
+      readonly type: "draft.updated";
+      readonly chatId: KinChatId;
+      readonly draft: Omit<Extract<KinChatStreamEvent, { _tag: "draft" }>, "_tag">;
     };
 export type KinChatHubEvent = ChatEvent & { readonly orgId: KinOrgId };
 
@@ -45,6 +70,8 @@ export class KinChatHub extends Context.Service<
       never,
       Scope.Scope
     >;
+    /** Every organization's committed events, unfiltered. Server consumers only, never a client. */
+    readonly subscribeAll: Effect.Effect<Stream.Stream<KinChatHubEvent>, never, Scope.Scope>;
   }
 >()("t3/kin/chat/KinChatHub") {}
 
@@ -52,8 +79,11 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const repo = yield* Repository.KinChatRepository;
   const hubs = new Map<KinOrgId, PubSub.PubSub<KinChatHubEvent>>();
+  let all: PubSub.PubSub<KinChatHubEvent> | undefined;
   yield* Effect.addFinalizer(() =>
-    Effect.forEach(hubs.values(), PubSub.shutdown, { discard: true }),
+    Effect.forEach([...hubs.values(), ...(all === undefined ? [] : [all])], PubSub.shutdown, {
+      discard: true,
+    }),
   );
   const subscribe = Effect.fn("KinChatHub.subscribe")(function* (orgId: KinOrgId) {
     let hub = hubs.get(orgId);
@@ -70,9 +100,17 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const hub = hubs.get(event.orgId);
           if (hub !== undefined) yield* PubSub.publish(hub, event);
+          if (all !== undefined) yield* PubSub.publish(all, event);
         }),
       );
     }),
+    subscribeAll: Effect.gen(function* () {
+      if (all === undefined) {
+        const created = yield* PubSub.unbounded<KinChatHubEvent>();
+        all ??= created;
+      }
+      return Stream.fromEffectRepeat(PubSub.take(yield* PubSub.subscribe(all)));
+    }).pipe(Effect.withSpan("KinChatHub.subscribeAll")),
     subscribeForViewer: Effect.fn("KinChatHub.subscribeForViewer")(function* (identity) {
       const subscription = yield* subscribe(identity.orgId);
       return Stream.fromEffectRepeat(PubSub.take(subscription)).pipe(

@@ -1,3 +1,4 @@
+import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { environment } from "./TaskCard.testkit.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import { CommandId } from "@t3tools/contracts";
@@ -10,6 +11,7 @@ import {
   KinAgentId,
   KinChatId,
   KinMemberId,
+  KinMessageId,
   KinMessagesSendInput,
   KinOrgId,
   KinPersonId,
@@ -25,6 +27,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
@@ -33,6 +36,7 @@ import * as Hub from "./KinChatHub.ts";
 import * as Repository from "./KinChatRepository.ts";
 import * as Identity from "./KinIdentity.ts";
 import * as Service from "./KinChatService.ts";
+import * as Presence from "../reply/KinPresence.ts";
 
 const decodeKinOrgId = Schema.decodeSync(KinOrgId);
 const decodeKinPersonId = Schema.decodeSync(KinPersonId);
@@ -46,6 +50,10 @@ const database = authorityLayer;
 const repositories = Layer.provideMerge(Repository.layer, database);
 const dependencies = Layer.provideMerge(Hub.layer, repositories);
 const layer = Layer.provideMerge(Service.layer, dependencies).pipe(Layer.provideMerge(environment));
+const presenceLayer = Layer.provideMerge(
+  Service.layer,
+  Layer.provideMerge(Presence.layer, dependencies),
+).pipe(Layer.provideMerge(environment));
 const identityLayer = Identity.KinIdentity.layer.pipe(
   Layer.provide(
     Layer.succeed(Identity.KinIdentityConfig, {
@@ -92,6 +100,7 @@ const seed = Effect.fn("test.seed")(function* (notice = false) {
   const repo = yield* Repository.KinChatRepository;
   const service = yield* Service.KinChatService;
   const identity = yield* Identity.KinIdentity.pipe(Effect.provide(identityLayer));
+  yield* pairSession(session.sessionId);
   const [person] = yield* identity.resolve(session);
   assert.isDefined(person);
   yield* repo.insertAgent({
@@ -267,6 +276,242 @@ describe("KinChatService", () => {
             })
             .pipe(Effect.flip),
           { reason: "not_allowed" },
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "settles a choice card on its first tap and refuses stale, foreign and expired taps",
+    () =>
+      Effect.gen(function* () {
+        const { repo, service, person, agent, chat } = yield* seed();
+        const ask = {
+          chatId: chat.chatId,
+          clientMessageId: "ask-1",
+          question: "Ship today?",
+          options: [
+            { label: "Ship it", kind: "yes" as const },
+            { label: "Wait", kind: "no" as const },
+          ],
+        };
+        const card = yield* service.ask(agent, ask);
+        assert.deepStrictEqual(card.awaiting, [person.personId]);
+        assert.deepStrictEqual(yield* service.ask(agent, ask), card);
+        const later = yield* service.ask(agent, { ...ask, clientMessageId: "ask-2" });
+        assert.include(
+          yield* service
+            .upsertWidget(agent, {
+              chatId: chat.chatId,
+              widgetId: card.widgetId,
+              revision: 1,
+              type: "choice",
+              state: card.state,
+            })
+            .pipe(Effect.flip),
+          { reason: "not_allowed" },
+        );
+        const tap = (clientActionId: string, revision = 1, widgetId = card.widgetId) => ({
+          widgetId,
+          revision,
+          actionId: "choose",
+          value: "option-1",
+          clientActionId,
+        });
+        const outsider = { ...person, personId: decodeKinPersonId("outsider") };
+        yield* repo.insertPerson({
+          ...outsider,
+          handle: "outsider",
+          displayName: "Outsider",
+          githubLogin: null,
+          createdAt: timestamp,
+        });
+        assert.include(yield* service.act(outsider, tap("outsider")).pipe(Effect.flip), {
+          reason: "not_found",
+        });
+        yield* repo.addMember({
+          ...chat,
+          memberId: decodeKinMemberId("late-member"),
+          principal: { _tag: "person", personId: outsider.personId },
+          role: "member",
+          joinedAt: timestamp,
+          leftAt: null,
+          mutedUntil: null,
+        });
+        assert.include(yield* service.act(outsider, tap("member")).pipe(Effect.flip), {
+          reason: "not_allowed",
+        });
+        assert.include(
+          yield* service.act(person, { ...tap("bad"), value: "option-9" }).pipe(Effect.flip),
+          { reason: "invalid_state" },
+        );
+
+        const message = yield* service.act(person, tap("tap-1"));
+        assert.include(JSON.parse(message.body), { text: 'Chose "Ship it" on "Ship today?"' });
+        assert.deepStrictEqual(yield* service.act(person, tap("tap-1")), message);
+        const answered = Option.getOrThrow(yield* repo.getWidget(card));
+        assert.strictEqual(answered.revision, 2);
+        assert.deepStrictEqual(answered.awaiting, []);
+        assert.include((answered.state as { answer: object }).answer, {
+          optionId: "option-1",
+          personId: person.personId,
+          via: "tap",
+        });
+        assert.notInclude(
+          (yield* repo.listOpenWaiting(person)).map((item) => item.widgetId),
+          card.widgetId,
+        );
+        for (const stale of [tap("tap-2"), tap("tap-3", 2)])
+          assert.include(yield* service.act(person, stale).pipe(Effect.flip), {
+            reason: "widget_changed",
+          });
+
+        yield* TestClock.adjust("24 hours");
+        assert.include(
+          yield* service.act(person, tap("late", 1, later.widgetId)).pipe(Effect.flip),
+          { reason: "invalid_state", message: "This question expired." },
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "takes reactions as replies: 👍 answers a yes/no card once, wakes on the lead's latest message, refuses privileged cards",
+    () =>
+      Effect.gen(function* () {
+        const { repo, service, person, agent, chat } = yield* seed();
+        const sql = yield* SqlClient.SqlClient;
+        const react = (messageId: KinMessageId, emoji: "👍" | "✅" | "❤️", on = true) =>
+          service.react(person, { messageId, emoji, on });
+        const card = yield* service.ask(agent, {
+          chatId: chat.chatId,
+          clientMessageId: "ask-react",
+          question: "Ship today?",
+          options: [
+            { label: "Ship it", kind: "yes" },
+            { label: "Wait", kind: "no" },
+          ],
+        });
+        const first = yield* react(card.messageId, "👍");
+        // A retried reaction changes nothing.
+        assert.deepStrictEqual(yield* react(card.messageId, "👍"), first);
+        const answered = Option.getOrThrow(yield* repo.getWidget(card));
+        assert.include((answered.state as { answer: object }).answer, {
+          optionId: "option-1",
+          via: "reaction",
+          emoji: "👍",
+        });
+        assert.include(yield* react(card.messageId, "✅").pipe(Effect.flip), {
+          reason: "widget_changed",
+        });
+        const tap = {
+          widgetId: card.widgetId,
+          revision: answered.revision,
+          actionId: "choose",
+          value: "option-2",
+          clientActionId: "tap-after-reaction",
+        };
+        assert.include(yield* service.act(person, tap).pipe(Effect.flip), {
+          reason: "widget_changed",
+        });
+        // A card tap wakes the lead through its widget_action message, so the reaction doesn't.
+        const woke = () =>
+          sql<{ messageId: string; emoji: string }>`SELECT message_id AS "messageId", emoji
+            FROM kin_reactions WHERE org_id = ${person.orgId} AND woke_at IS NOT NULL
+            ORDER BY woke_at, message_id`;
+        assert.deepStrictEqual(yield* woke(), []);
+
+        const older = yield* service.send(agent, {
+          chatId: chat.chatId,
+          clientMessageId: "lead-older",
+          body: "Shall I merge it?",
+          intent: "answer",
+        });
+        const latest = yield* service.send(agent, {
+          chatId: chat.chatId,
+          clientMessageId: "lead-latest",
+          body: "Merged. Anything else?",
+          intent: "answer",
+        });
+        yield* react(older.messageId, "👍");
+        yield* react(latest.messageId, "❤️");
+        assert.deepStrictEqual(yield* woke(), []);
+        yield* react(latest.messageId, "👍");
+        // The second yes inside the 30 s cooldown is recorded, not a second wake-up.
+        yield* react(latest.messageId, "✅");
+        assert.deepStrictEqual(yield* woke(), [{ messageId: latest.messageId, emoji: "👍" }]);
+        assert.deepStrictEqual(
+          yield* sql`SELECT 1 AS opened FROM kin_floor_runs
+            WHERE org_id = ${person.orgId} AND opened_by = ${latest.messageId} AND state = 'open'`,
+          [{ opened: 1 }],
+        );
+        yield* TestClock.adjust("30 seconds");
+        yield* react(latest.messageId, "✅", false);
+        yield* react(latest.messageId, "✅");
+        assert.lengthOf(yield* woke(), 2);
+        const history = yield* service.history(person, {
+          chatId: chat.chatId,
+          beforeSeq: latest.seq + 1,
+          limit: 10,
+        });
+        assert.deepStrictEqual(
+          history.reactions
+            ?.filter((reaction) => reaction.messageId === latest.messageId)
+            .map((reaction) => reaction.emoji)
+            .toSorted(),
+          ["✅", "❤️", "👍"].toSorted(),
+        );
+
+        // Approval and other privileged cards refuse; so do non-members and unknown emoji.
+        const notice = yield* service.notice({
+          orgId: person.orgId,
+          chatId: chat.chatId,
+          messageId: KinMessageId.make("approval-anchor"),
+          body: "Approve the merge?",
+        });
+        yield* repo.insertWidget({
+          ...card,
+          widgetId: KinWidgetId.make("approval-card"),
+          messageId: notice.message.messageId,
+          type: "approval",
+          state: {},
+        });
+        assert.include(yield* react(notice.message.messageId, "👍").pipe(Effect.flip), {
+          reason: "not_allowed",
+        });
+        const outsider = { ...person, personId: decodeKinPersonId("reaction-outsider") };
+        yield* repo.insertPerson({
+          ...outsider,
+          handle: "reaction-outsider",
+          displayName: "Outsider",
+          githubLogin: null,
+          createdAt: timestamp,
+        });
+        assert.include(
+          yield* service
+            .react(outsider, { messageId: latest.messageId, emoji: "👍", on: true })
+            .pipe(Effect.flip),
+          { reason: "not_found" },
+        );
+        assert.include(
+          yield* service
+            .react(person, {
+              messageId: latest.messageId,
+              emoji: "🔥" as "👍",
+              on: true,
+            })
+            .pipe(Effect.flip),
+          { reason: "invalid_state" },
+        );
+        // kin_react pins the message to its wake-up's chat.
+        assert.include(
+          yield* service
+            .react(agent, {
+              messageId: latest.messageId,
+              emoji: "👍",
+              on: true,
+              chatId: decodeKinChatId("other-chat"),
+            })
+            .pipe(Effect.flip),
+          { reason: "not_found" },
         );
       }).pipe(Effect.provide(layer)),
   );
@@ -1015,5 +1260,28 @@ describe("KinChatService", () => {
         yield* repo.addMember(member);
         assert.deepStrictEqual(yield* repo.listOpenWaiting(other), []);
       }).pipe(Effect.provide(layer)),
+  );
+  it.effect("marks a chat working in the list while its agent's run is live", () =>
+    Effect.gen(function* () {
+      const { service, person, chat } = yield* seed();
+      const presence = yield* Presence.KinPresence;
+      const updates = yield* Stream.toQueue(service.subscribeChats([person], {}), {
+        capacity: "unbounded",
+      });
+      const initial = yield* Queue.take(updates);
+      assert.strictEqual(initial._tag, "snapshot");
+      if (initial._tag !== "snapshot") return;
+      assert.isFalse(initial.chats.find((row) => row.chatId === chat.chatId)?.working);
+      const line = { agentId, wakeupId: null, label: null, startedAt: timestamp, since: timestamp };
+      const working = Effect.map(Queue.take(updates), (event) =>
+        event._tag === "chat" ? event.chat.working : event._tag,
+      );
+      // "seen" leaves the row as it was, so the list sends nothing for it.
+      yield* presence.set(person.orgId, chat.chatId, { ...line, state: "seen" });
+      yield* presence.set(person.orgId, chat.chatId, { ...line, state: "thinking" });
+      assert.strictEqual(yield* working, true);
+      yield* presence.clear(person.orgId, chat.chatId, agentId);
+      assert.strictEqual(yield* working, false);
+    }).pipe(Effect.provide(presenceLayer)),
   );
 });

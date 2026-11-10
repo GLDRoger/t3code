@@ -38,7 +38,10 @@ const launchThread = Effect.fn("KinStopTest.launchThread")(function* (threadId: 
     threadId,
     projectId: ProjectId.make("kin:org"),
     title: "Work",
-    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.1-codex" },
+    modelSelection: {
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      model: "claude-opus-4-6",
+    },
     runtimeMode: "full-access",
     interactionMode: "default",
     workspaceStrategy: { type: "root" },

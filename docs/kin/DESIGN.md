@@ -3,6 +3,8 @@
 Status: draft v2, 7 Nov 2026. Owner: Nishchay Chandra.
 Base: `GLDRoger/t3code`, a fork of [T3 Code](https://github.com/pingdotgg/t3code). This version replaces v1 (lineages, houses, wills, keeper, chaos program, Bend). v1 is kept at the tag `archive/kin-lineages-2026-11-07`.
 
+**The end goal is in [VISION.md](VISION.md): run an entire company from the phone. Read it first.**
+
 Kin is a team of AI leads on top of T3 Code. People and agents share messaging-style chats on mobile and desktop. Leads answer PRs and questions, chase objectives, deferrals and promises, and send the actual work to Claude Code and Codex threads. Every T3 path below exists on upstream `main` as of 7 Nov 2026 unless it is marked **new**.
 
 The [specs](specs/) turn this design into tasks, and [PLAN.md](PLAN.md) orders them. Where a spec lists a design correction, the spec wins until this doc is updated.
@@ -105,13 +107,13 @@ A chat is a conversation with leads and people. A thread stays a worker's log. A
 
 **Floor manager** (plain code) decides which agent speaks:
 
-1. An agent named with @ speaks first.
-2. Otherwise each agent may ask to speak, giving a one-line reason; the role that fits wins.
+1. An agent named with @ speaks first. An agent brings another in the same way.
+2. Otherwise the group's lead speaks.
 3. The same agent never speaks twice in a row without a human in between.
 4. At most 6 agent turns before a human must speak.
 5. An agent speaks only to add evidence, an objection or a decision.
 
-**Judge** (`Judge` interface; Jev from TypeSafe first, a cheap LLM as fallback) answers the soft questions in one request: does anyone need to respond, which role, how urgent, does a human need to decide, does the message defer or promise something. Code holds the thresholds. Low confidence goes to an LLM or the user. The judge runs in shadow mode, logging its calls, before it decides anything. **It never authorises an action.**
+There is no judge model and there are no bids: who speaks is plain code (owner decision, 10 Nov 2026). If real groups show the code picking the wrong speaker, that is the case for revisiting it. **The floor never authorises an action.**
 
 Agent-to-agent discussion folds into one line with its outcome. An unresolved disagreement becomes a decision card.
 
@@ -151,7 +153,7 @@ Pinging people: at most one ping per person per item per day, then escalate to t
 
 ## 7. Widgets
 
-1. **Native cards:** approval, decision, task, deferral, poll, checklist, short form, date picker. Defined by a schema, drawn by the app.
+1. **Native cards:** approval, decision, task, deferral, choice, poll, checklist, short form, date picker. Defined by a schema, drawn by the app.
 2. **Generated:** agent-written HTML through the `McpAppWebView` bridge. Sandboxed; no network except bridge calls; actions only on a real tap.
 3. **Live:** cards or HTML fed by data the server pushes (PR and CI state, deploys, objective progress, running tasks).
 
@@ -302,7 +304,7 @@ A partner, such as a consultant, sets up and runs Kin for a client that can't do
 ## 11. Phases (each one works on its own)
 
 1. **Direct chat:** chat contracts and service; mobile chat list and direct chat; task, approval and deferral cards; the lead and its memory; morning and evening routines; GitHub webhooks; deferrals on `once`; the action executor, signed grants, the GitHub App, and branch rulesets. The lead starts at L0 on `GLDRoger/t3code`, with memory in `GLDRoger/kin-memory`.
-2. **First group:** lead + QA; roles and provenance ceilings; floor manager; judge in shadow; decision cards and polls; generated widgets; notification actions beyond deferrals (phase 1 already has deferral and Review actions). Raise the lead to L1, then L2.
+2. **First group:** lead + QA; roles and provenance ceilings; floor manager; decision cards and polls; generated widgets; notification actions beyond deferrals (phase 1 already has deferral and Review actions). Raise the lead to L1, then L2.
 3. **Teams and router:** more teams; the router and its agenda; cross-team requests; live widgets, Live Activities, pinned dashboards; delegations and next of kin (section 9.9).
 4. **Front doors:** an MCP hub so ChatGPT, Grok and Claude.ai reach the same leads and widgets, with the same section 9 rules.
 5. **Organizations:** organization policy, roles and approvers, external members, agents from other owners (section 9.8), partners managing clients (section 10b), the space switcher, and the walls between organizations (`orgId` is already in place from phase 1).

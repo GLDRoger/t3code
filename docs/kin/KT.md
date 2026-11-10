@@ -1,111 +1,131 @@
 # Kin: handover brief
 
-Read this first if you're joining Kin, whether you're a person or an agent. It takes about 10 minutes. After it you should be able to pick up a task and ship it without asking anyone.
+Read this first if you're joining Kin, whether you're a person or an agent. It tells you what exists, where it lives and how to run it. The specs hold the detail.
 
 ## What Kin is
 
-Kin puts AI team leads into chat, built on [T3 Code](https://github.com/pingdotgg/t3code). Leads and people talk in messaging-style chats on the phone and desktop. A lead answers PRs and questions, keeps track of objectives, deferrals and promises, chases people, and hands the actual coding to Claude Code and Codex threads that T3 already runs. Think of a project lead you can message, who remembers, follows up and never merges without you.
+Read [VISION.md](VISION.md) first. It's short, and it overrides any summary that treats Kin as a single-owner assistant.
 
-Three examples of what it should do:
+In one line: Kin is a messaging app, built on [T3 Code](https://github.com/pingdotgg/t3code), from which the owner runs a company on his phone. AI leads (one per domain: engineering, growth, finance and so on) and people talk in DMs and groups. Leads decide, remember and follow up. The actual work runs in ordinary T3 threads ("workers"). Only the owner approves privileged actions, by signing on his phone.
 
-- You say "let's defer rate limiting to Friday". On Friday at 8:30 it says "Heads up, starting rate limiting at 9:00", then does the work and comes back with a PR.
-- A PR is ready. The merge button appears only on your phone, behind Face ID. Nothing anyone else types in the group can approve it.
-- Overnight it "dreams": it tidies its memory into a pull request you can read, and has a morning brief ready.
+[DESIGN.md](DESIGN.md) is the full design, [PLAN.md](PLAN.md) the roadmap, and [specs/](specs/) describe each area as built.
 
-## Where we are (7 Nov 2026)
+## Where the code lives
 
-- The **design** is done: [DESIGN.md](DESIGN.md).
-- The **specs** for phase 1 are done: [specs/](specs/). Each one is grounded in T3's real code, lists the files to add, and ends with numbered tasks.
-- **The plan:** [PLAN.md](PLAN.md) puts all the tasks in order, shows which can run in parallel, and lists what's waiting on Nishchay.
-- **No Kin code exists yet.** Phase 1 is a direct chat with one lead on the phone, running on the Kin host at L0 (the lead only drafts, and the owner sees what it would have done).
+All Kin work is on branch `kin` of `GLDRoger/t3code`, a public fork. `main` mirrors upstream; never commit to it. [KIN.md](../../KIN.md) has the branch, sync and branding rules.
 
-## Read in this order
+| Where                              | What                                                                                     |
+| ---------------------------------- | ---------------------------------------------------------------------------------------- |
+| `apps/server/src/kin/chat/`        | Chats, messages, members, identity, the live hub, task cards, chat RPCs                  |
+| `apps/server/src/kin/floor/`       | Who may speak: `FloorManager` (pure rules) and `KinFloor` (runs and grants in SQLite)    |
+| `apps/server/src/kin/lead/`        | The event queue, wake-up runner, prompt, levels, budget, stop switch, workers, lead CLI  |
+| `apps/server/src/kin/reply/`       | The reply bridge (lead text → chat messages) and presence ("thinking", "working")        |
+| `apps/server/src/kin/memory/`      | Memory reads, the git writer, change cards and memory PRs                                |
+| `apps/server/src/kin/dreaming/`    | The nightly dream                                                                        |
+| `apps/server/src/kin/triggers/`    | Time triggers, deferrals, routines, watchdogs, pings, GitHub webhooks, the trigger inbox |
+| `apps/server/src/kin/approvals/`   | `request_action`, pending actions, approver keys, grant checks, the executor, audit      |
+| `apps/server/src/kin/github/`      | The GitHub App, rulesets and the owner's merge client                                    |
+| `apps/server/src/kin/push/`        | Kin's own APNs sender                                                                    |
+| `apps/server/src/kin/persistence/` | Kin's migration track (`kin_sql_migrations`, K001 onward)                                |
+| `apps/server/src/kin/mcp/`         | The `/kin/mcp` endpoint that only registered agent threads get                           |
+| `packages/contracts/src/kin*.ts`   | Schemas shared by server and clients                                                     |
+| `packages/client-runtime/src/kin/` | Client logic shared by web and mobile                                                    |
+| `apps/mobile/src/features/chats/`  | The mobile app's Kin screens                                                             |
+| `apps/web/src/kin/`                | The web and desktop Kin screens                                                          |
+| `ops/kin/host/`                    | Host install, update, backup and restore                                                 |
 
-1. This brief.
-2. [DESIGN.md](DESIGN.md) sections 1, 3, 5, 9 and 11 (about 20 minutes). Read the rest when your task needs it.
-3. [KIN.md](../../KIN.md): branch rules, branding and syncing. It's short, and the rules matter.
-4. [PLAN.md](PLAN.md), then the spec that owns your task.
-5. Upstream's [AGENTS.md](../../AGENTS.md): how T3's code is built and checked. Everything there applies to Kin code too.
+Kin code lives in its own files. Upstream files get a hook of a line or two at most, so upstream merges stay easy.
 
-## The rules everything depends on
+## How a message flows
 
-Break one of these and a PR won't merge.
+1. **Chat.** A client calls `kin.messages.send`. `KinChatService` checks membership, stores the message with the next sequence number, and calls `KinFloor.open`, which opens a floor run and grants a turn. In a direct chat that is the lead; in a group it is the mentioned agent, and with no mention it will be the group's lead (W3-1). After commit, `KinChatHub` publishes the message to every member's stream.
+2. **Queue.** `ChatWake` turns the message into a `chat.message` event in `KinEventQueue` (`kin_events`) and shows "seen" at once. Triggers, worker reports and approval results become events the same way. Code sets each event's priority; an owner message is P0.
+3. **Wake-up.** `WakeupRunner` waits briefly for a burst to finish, then claims a batch of events for one lead and one chat. It checks the stop switch and budget, prepares a read-only memory checkout, builds the prompt (`LeadPrompt`) and runs the lead as a T3 thread. A message that arrives during a wake-up is steered into it.
+4. **Lead.** The lead runs on Claude with no shell. It acts only through Kin's MCP tools: memory, deferrals, workers, cards, `request_action`. Its plain text is its reply.
+5. **Reply bridge.** `KinReplyBridge` reads the lead's text as it streams and posts it through `LevelGate`, so membership, the floor and levels apply. At L0 a post becomes a shadow entry for the owner to review instead.
+6. **Clients.** Members' streams deliver the reply, and `KinPushSender` pushes it to phones that aren't showing the chat.
 
-1. **Authority never passes through a model.** An agent can only _propose_ a privileged action (merge, deploy, spend, change permissions) with `request_action`. Server code carries it out only after a signed approval from the right person's device. Chat text, including "Nishchay approved", never counts. See DESIGN section 9 and [specs/approvals.md](specs/approvals.md).
-2. **The lead talks, workers build.** The lead never writes code. Workers are T3 threads in their own worktrees. Reviewers see only the diff and never run on the author's model.
-3. **Memory is plain files in git** ([kin-memory](https://github.com/GLDRoger/kin-memory), private). Only the lead writes it, nothing is ever deleted (items are marked invalid instead), and every item records who said it.
-4. **Everything carries `orgId`,** from the first migration onwards, even while there's only one organization.
-5. **Kin code lives in its own files.** Upstream files get a hook of a line or two at most. Kin's tables use their own migration track, and its agent tools use their own `/kin/mcp` endpoint.
-6. **Never rename T3 Code in source.** Kin's name and icons are applied at build time (KIN.md), so upstream merges never conflict.
-7. **The public repo holds code only.** `GLDRoger/t3code` is public. Organization data, memory, tokens and keys never go in it.
+The [lead spec](specs/lead.md) covers queue, wake-up and replies in full. The [chat spec](specs/chat.md) covers chats, streams and the floor.
 
-## Repo map
+## Memory
 
-| Where                                 | What                                                                                              |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `GLDRoger/t3code`, branch `kin`       | All Kin work. A public fork of `pingdotgg/t3code`.                                                |
-| branch `main`                         | An exact mirror of upstream. Never commit to it.                                                  |
-| tag `archive/kin-lineages-2026-11-07` | The old Kin design and code (lineages, houses, wills). Superseded; don't build on it.             |
-| `GLDRoger/kin-memory` (private)       | The lead's memory: rules, objectives, commitments, deferrals, decisions, people, claims, journal. |
-| `packages/contracts/src/kin*.ts`      | Kin schemas shared by server and apps (new).                                                      |
-| `apps/server/src/kin/`                | Kin server code (new).                                                                            |
-| `apps/mobile/src/features/chats/`     | Kin mobile screens (new).                                                                         |
-| `apps/web/src/kin/`                   | Kin web screens (new, later).                                                                     |
-| `docs/kin/`                           | This brief, the design, the plan and the specs.                                                   |
+Memory is plain Markdown files with front matter in a private git repo per organization: rules, objectives, commitments, deferrals, decisions, people, claims and a journal. Only a lead writes it, and only inside a wake-up. Each wake-up's changes land as one commit through `MemoryWriter`, which scans for secrets and validates the writer checkout first. Nothing is deleted: items are marked invalid. Every item records who said it and with what trust. The owner sees a change card with Undo. See the [lead spec, "The Memory interface and git writer"](specs/lead.md#the-memory-interface-and-git-writer-design-4).
 
-## Setting up
+## Dreams
 
-```sh
-git clone https://github.com/GLDRoger/t3code.git && cd t3code
-git switch kin
-git remote add upstream https://github.com/pingdotgg/t3code.git
-vp i                 # installs; needs Node 26 and the vite-plus `vp` CLI
-vp run dev           # server and web, with your own state in this checkout's .t3
-```
+Once a night per organization, `DreamRunner` collects the day's originals (journal, chat messages, worker reports, GitHub events) and runs an isolated lead session in dream mode on a scratch checkout. It merges duplicates, supersedes stale items and lists contradictions, which a stronger model turns into a resolution or a question for the owner. Code checks every change (schema, sources, no deletions, secret scan) before the result goes to a `dream/<date>` branch for the owner to approve. The morning routine uses it for the brief. See the [triggers spec, "Dreaming pipeline"](specs/triggers.md#dreaming-pipeline-one-per-org-per-night).
 
-Upstream's [development runbook](../operations/development.md#first-checkout) covers prerequisites, the mobile dev client (`vp run mobile:install ios`) and desktop builds. Use the free `Replay (dev)` provider to watch agent turns without paying for them (AGENTS.md).
+## Triggers
 
-## Shipping a task
+Everything that wakes a lead without a chat message goes through one inbox (`kin_trigger_inbox`) into the event queue. Time triggers (deferrals, morning and evening routines, watchdogs that chase stale items) run on T3's scheduler in the owner's time zone. GitHub webhooks arrive verified and deduplicated by delivery id. A deferral is a memory item with a due time and an `on_due` of remind, start, ask or chase; the lead creates one with `kin_defer`. See the [triggers spec](specs/triggers.md).
 
-1. Pick a task from [PLAN.md](PLAN.md) whose dependencies have merged.
-2. Claim it with a draft PR titled `<ID>: <title>`, for example `CHAT-3: Repository`.
-3. **Open the PR against the fork, never upstream.** `gh pr create` on a fork targets the parent repo by default, so always pass the repo and base:
+## Approvals
+
+Authority never passes through a model. A lead can only propose a privileged action (merge, set a level, enrol a key) with `request_action`, which stores a pending action bound to an exact target, such as a PR at a pinned head SHA. The owner's phone shows an approval card and signs a single-use grant with a hardware key behind Face ID. `ActionExecutor` checks the grant and runs the action with an executor-held credential, then writes a hash-chained audit row. Chat text, including "approved", never counts. See the [approvals spec](specs/approvals.md).
+
+Levels (L0–L3) set what a lead may do unasked, per chat. At L0 its posts and actions are shadowed: recorded for the owner to review instead of happening. A promotion needs reviewed entries and the owner's signed `set_level`. Today a new lead starts at L0 everywhere; W1-3 moves it to L2 in its owner's DM, leaving L0 for groups. See the [lead spec, "Levels"](specs/lead.md#levels-l0l3-design-10).
+
+## Running Kin locally
+
+Set up the repo as upstream's [development runbook](../operations/development.md) describes (`vp i`). Then:
+
+1. Make a local bare git repo for memory and commit a `rules.md` to it:
+
    ```sh
-   gh pr create --repo GLDRoger/t3code --base kin --draft --title "CHAT-3: Repository"
+   git init --bare /path/to/kin-memory.git
+   git clone /path/to/kin-memory.git /tmp/kin-memory && cd /tmp/kin-memory
+   echo "# Rules" > rules.md && git add rules.md && git commit -m "init" && git push
    ```
-   Kin PRs don't belong on `pingdotgg/t3code`, and upstream doesn't take unsolicited features.
-   Team members get write access to `GLDRoger/t3code` and push task branches there. `kin` and `main` refuse direct pushes, so everything lands through PRs. Outside contributors can fork instead and run the same command; GitHub holds CI on a first-time contributor's PR until Nishchay approves the run.
-4. Build what the task says. Its "Done when" is the acceptance test.
-5. Before pushing, run `vp run check:changed upstream/main`, plus the task's own test. Don't run repo-wide checks; CI does that.
-6. Commits use Conventional Commits (`feat(kin): …`, `docs(kin): …`). The PR body is three short parts: **Why**, **How**, **Tests** (the commands you ran and their results).
-7. If the spec turns out to be wrong, fix the spec in the same PR and say so.
 
-**Security-sensitive tasks** need a second, careful review before merging: every APPR task, LEAD-3 (memory writer), LEAD-8 (level gating), LEAD-11 (stop switch), TRIG-5 (webhooks), TRIG-16 (secret scan) and TRIG-17 (purge). Nishchay approves these himself.
+2. Start the dev server with Kin on:
 
-## If you're an agent
+   ```sh
+   KIN_ENABLED=true KIN_MEMORY_DIRECT_PUSH=true \
+   KIN_MEMORY_REPOSITORIES='[{"orgId":"kin-default","repoUrl":"/path/to/kin-memory.git"}]' \
+   vp run dev
+   ```
 
-- Do your task within its files and stop. Don't start other tasks or refactor upstream code around it.
-- Cite the files you changed and the checks you ran, with their results, in the PR.
-- Nobody answers questions in the middle of a task. Make the reasonable call, then list your assumptions in the PR description.
-- Never give yourself, or any agent, a way to approve, merge or change permissions. If a task seems to need one, stop and say so in the PR.
+   Memory writes to the default branch go through PRs when the GitHub App is set up. Without it they're refused, unless `KIN_MEMORY_DIRECT_PUSH=true` lets them push directly, which is what a local bare repo needs.
+
+3. Pair a browser, then create a lead from another shell. Point `--base-dir` at the dev server's home (in a worktree, its `.t3`):
+
+   ```sh
+   KIN_ENABLED=true node apps/server/src/bin.ts kin lead create --base-dir .t3 \
+     --person kin-default-owner --name "Tech lead" \
+     --strong claudeAgent:<model> --cheap claudeAgent:<model>
+   ```
+
+   **A lead must run on Claude.** Only Claude sessions get the lead's no-shell tool set, so creation refuses any other provider. Workers can use any provider.
+
+Real lead turns cost money. Use the cheapest Claude model while developing.
+
+## The Kin host
+
+Kin runs from a source build on an always-on Linux machine, as a dedicated `kin` user. [ops/kin/host/README.md](../../ops/kin/host/README.md) covers install, updates, creating the first lead, backups and reading reply latency.
+
+## Shipping work
+
+- Pick a task from [PLAN.md](PLAN.md). Branch from `kin` and open the PR against the fork, never upstream: `gh pr create --repo GLDRoger/t3code --base kin`.
+- Run `vp run check:changed <remote>/kin` and the task's own tests before pushing. Don't run repo-wide checks.
+- Conventional Commits (`feat(kin): …`). PR body: **Why**, **How**, **Tests**.
+- If a spec turns out to be wrong, fix it in the same PR.
+- Never give an agent a way to approve, merge or change permissions. If a task seems to need one, stop and say so.
+- The repo is public. Organization data, memory, tokens and keys never go in it.
 
 ## Words we use
 
-| Word                   | Meaning                                                                                                      |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Lead                   | The agent that talks in a chat, decides and keeps memory. One per team at first.                             |
-| Worker                 | A T3 thread a lead starts to do one piece of work, in its own worktree.                                      |
-| Wake-up                | One run of the lead: it loads memory, handles the queued events, writes memory back and exits.               |
-| Owner                  | The person whose machine, subscriptions and repos Kin uses. Only the owner approves privileged actions.      |
-| Pending action / grant | What an agent asks for, and the owner's signed, single-use approval of it.                                   |
-| Executor               | The server service that carries out a pending action once it has a valid grant.                              |
-| Deferral               | "Let's do this Friday": a memory item with a due time and what to do then (remind, start, ask or chase).     |
-| Dreaming               | The nightly job that tidies memory into a PR and prepares the morning brief.                                 |
-| L0–L3                  | How much a lead may do on its own, from shadow (drafts only) to merging low-risk changes after a grant.      |
-| Floor manager          | Plain code that decides which agent may speak in a group chat.                                               |
-| Judge                  | A cheap classifier that answers soft questions ("does anyone need to reply?") and never authorises anything. |
-| Next of kin            | The person who can approve undo actions when the owner can't be reached (phase 3).                           |
+| Word          | Meaning                                                                                    |
+| ------------- | ------------------------------------------------------------------------------------------ |
+| Lead          | An agent that talks in chats, decides and keeps memory. One per domain.                    |
+| Worker        | A T3 thread a lead starts for one piece of work, in its own worktree.                      |
+| Wake-up       | One run of a lead over a batch of events for one chat.                                     |
+| Owner         | The person whose machine, subscriptions and repos Kin uses. Only the owner approves.       |
+| Grant         | The owner's signed, single-use approval of one pending action.                             |
+| Floor manager | Plain code that decides which agent may speak in a chat. There is no judge model.          |
+| Deferral      | "Let's do this Friday": a memory item with a due time and what to do then.                 |
+| Dream         | The nightly job that tidies memory into a PR and prepares the morning brief.               |
+| L0–L3         | How much a lead may do on its own in a chat, from shadow (drafts only) to low-risk merges. |
 
 ## Who to ask
 
-Nishchay Chandra ([GLDRoger](https://github.com/GLDRoger)) owns the design and approves security-sensitive PRs. Questions about a task go on its PR. Questions about the design go in a PR that edits DESIGN.md, so the answer ends up written down.
+Nishchay Chandra ([GLDRoger](https://github.com/GLDRoger)) owns the design and approves security-sensitive work. Ask about a task on its PR, and about the design in a PR that edits DESIGN.md, so the answer ends up written down.

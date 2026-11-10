@@ -70,6 +70,17 @@ export class KinFloor extends Context.Service<
       message: KinMessage,
       chat: KinChat,
     ) => Effect.Effect<FloorDecision | null, PersistenceSqlError>;
+    /**
+     * Re-arms the agent's unused direct-chat grant on each open run one of `messageIds` opened,
+     * so a wake-up that starts after the TTL can still reply once. It never issues a grant.
+     * `until` (the wake-up's own deadline) replaces the default TTL from now.
+     */
+    readonly renew: (input: {
+      readonly orgId: KinOrgId;
+      readonly agentId: KinAgentId;
+      readonly messageIds: ReadonlyArray<KinMessageId>;
+      readonly until?: number;
+    }) => Effect.Effect<void, PersistenceSqlError>;
     readonly authorize: (
       identity: AgentIdentity,
       chat: KinChat,
@@ -168,6 +179,26 @@ const make = Effect.gen(function* () {
     Effect.mapError(toPersistenceSqlError("KinFloor.open")),
   );
 
+  const renew = Effect.fn("KinFloor.renew")(
+    function* (input: {
+      readonly orgId: KinOrgId;
+      readonly agentId: KinAgentId;
+      readonly messageIds: ReadonlyArray<KinMessageId>;
+      readonly until?: number;
+    }) {
+      if (input.messageIds.length === 0) return;
+      const expiresAt = input.until ?? (yield* Clock.currentTimeMillis) + FLOOR_GRANT_TTL_MS;
+      // A new human message closes the run, and a reply consumes the grant, so neither re-arms.
+      yield* sql`UPDATE kin_floor_grants SET expires_at = MAX(expires_at, ${expiresAt})
+      WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND consumed_at IS NULL
+        AND run_id IN (SELECT r.run_id FROM kin_floor_runs r
+          JOIN kin_chats c ON c.org_id = r.org_id AND c.chat_id = r.chat_id AND c.kind = 'direct'
+          WHERE r.org_id = ${input.orgId} AND r.state = 'open'
+            AND r.opened_by IN ${sql.in(input.messageIds)})`;
+    },
+    Effect.mapError(toPersistenceSqlError("KinFloor.renew")),
+  );
+
   const noticeOnly = Effect.fn("KinFloor.noticeOnly")(
     function* (identity: AgentIdentity) {
       // Notice authority comes from the running wake-up's stored events, never tool input.
@@ -179,7 +210,7 @@ const make = Effect.gen(function* () {
       }>`
       SELECT COUNT(e.event_id) AS total, json_array_length(w.event_ids) AS expected,
         COALESCE(SUM(CASE WHEN e.tag IN ('routine', 'github', 'deferral.due', 'worker.report', 'watchdog', 'action.resolved', 'resume') THEN 1 ELSE 0 END), 0) AS notices,
-        COALESCE(SUM(CASE WHEN e.tag IN ('chat.message', 'widget.action') THEN 1 ELSE 0 END), 0) AS replies
+        COALESCE(SUM(CASE WHEN e.tag IN ('chat.message', 'widget.action', 'chat.reaction') THEN 1 ELSE 0 END), 0) AS replies
       FROM kin_wakeups w JOIN kin_events e ON e.org_id = w.org_id AND e.agent_id = w.agent_id
         AND e.wakeup_id = w.wakeup_id AND e.event_id IN (SELECT value FROM json_each(w.event_ids))
       WHERE w.org_id = ${identity.orgId} AND w.agent_id = ${identity.agentId}
@@ -245,6 +276,22 @@ const make = Effect.gen(function* () {
       if (run?.agent_turns === FLOOR_MAX_AGENT_TURNS || run?.state === "closed")
         return yield* new KinChatError({ reason: "floor_closed", message: "The floor is closed." });
       if (run === undefined) return yield* notGranted;
+      // A grant lasts the wake-up run: its later posts in this floor run are the same agent turn.
+      const wakeupId =
+        identity.wakeupId ??
+        (yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId" FROM kin_wakeups
+          WHERE org_id = ${identity.orgId} AND agent_id = ${identity.agentId}
+            AND thread_id = ${identity.threadId} AND status = 'running'
+          ORDER BY started_at, wakeup_id LIMIT 1`)[0]?.wakeupId ??
+        null;
+      // Only while nobody else has spoken since: another agent's turn ends this one.
+      if (wakeupId !== null && run.last_speaker === identity.agentId) {
+        const held = yield* sql`SELECT 1 FROM kin_floor_grants
+          WHERE org_id = ${identity.orgId} AND chat_id = ${chat.chatId} AND agent_id = ${identity.agentId}
+            AND run_id = ${run.run_id} AND consumed_wakeup_id = ${wakeupId}
+          ORDER BY token LIMIT 1`;
+        if (held.length > 0) return { runId: run.run_id };
+      }
       if (!replyIntentAllowed(run.agent_turns, intent)) return yield* invalidIntent;
       if (run.last_speaker === identity.agentId) return yield* notGranted;
       if (chat.kind !== "direct" && token === undefined) return yield* notGranted;
@@ -255,7 +302,8 @@ const make = Effect.gen(function* () {
       ORDER BY expires_at, token LIMIT 1`;
       const grant = grants[0];
       if (grant === undefined) return yield* notGranted;
-      const consumed = yield* sql`UPDATE kin_floor_grants SET consumed_at = ${now}
+      const consumed =
+        yield* sql`UPDATE kin_floor_grants SET consumed_at = ${now}, consumed_wakeup_id = ${wakeupId}
       WHERE org_id = ${identity.orgId} AND chat_id = ${chat.chatId} AND agent_id = ${identity.agentId}
         AND run_id = ${run.run_id} AND token = ${grant.token} AND consumed_at IS NULL AND expires_at > ${now}
       RETURNING token`;
@@ -308,6 +356,6 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(toPersistenceSqlError("KinFloor.recordNotice")),
   );
-  return KinFloor.of({ open, authorize, noticeOnly, admitNotice, recordNotice });
+  return KinFloor.of({ open, renew, authorize, noticeOnly, admitNotice, recordNotice });
 });
 export const layer = Layer.effect(KinFloor, make);

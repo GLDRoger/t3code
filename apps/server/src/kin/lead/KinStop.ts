@@ -9,6 +9,10 @@ import {
   type KinOrgId,
   type KinOrgPauseInput,
   type KinOrgResumeInput,
+  type KinLeadInterruptInput,
+  type KinLeadInterruptResult,
+  type KinWakeupId,
+  CommandId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -54,6 +58,11 @@ export class KinStopFanOutError extends Schema.TaggedError<KinStopFanOutError>()
 export type KinStopFanOut = {
   readonly pause: (orgId: KinOrgId, pausedAt: number) => Effect.Effect<void, KinStopFanOutError>;
   readonly resume: (orgId: KinOrgId) => Effect.Effect<void>;
+  /** Stops one running wake-up; false when it already ended. */
+  readonly interrupt?: (
+    orgId: KinOrgId,
+    wakeupId: KinWakeupId,
+  ) => Effect.Effect<boolean, KinStopFanOutError>;
 };
 type StopError = KinChatError | PersistenceSqlError;
 
@@ -98,6 +107,11 @@ export class KinStop extends Context.Service<
       input: KinOrgResumeInput,
     ) => Effect.Effect<KinOrgState, StopError>;
     readonly attach: (fanOut: KinStopFanOut) => Effect.Effect<void, never, Scope.Scope>;
+    /** Owner only: the presence line's Stop on one wake-up. Its events are not retried. */
+    readonly interrupt: (
+      people: ReadonlyArray<PersonIdentity>,
+      input: KinLeadInterruptInput,
+    ) => Effect.Effect<KinLeadInterruptResult, StopError>;
   }
 >()("t3/kin/lead/KinStop") {}
 
@@ -329,6 +343,15 @@ const make = Effect.gen(function* () {
     }, Effect.mapError(mapError)),
     pause,
     resume,
+    interrupt: Effect.fn("KinStop.interrupt")(function* (people, input) {
+      yield* owner(people, input.orgId);
+      if (attached?.interrupt === undefined) return yield* unavailable;
+      return {
+        interrupted: yield* attached
+          .interrupt(input.orgId, input.wakeupId)
+          .pipe(Effect.mapError(() => unavailable)),
+      };
+    }, Effect.mapError(mapError)),
     attach: Effect.fn("KinStop.attach")(function* (next) {
       yield* Effect.acquireRelease(
         Effect.sync(() => {
@@ -422,6 +445,34 @@ export const makeFanOut = Effect.fn("KinStop.makeFanOut")(function* (
       if (Exit.isFailure(routineExit)) failures.push(routineExit.cause);
       if (failures.length > 0)
         return yield* failed(failures.reduce((all, cause) => Cause.combine(all, cause)));
+    }),
+    interrupt: Effect.fn("KinStop.fanOut.interrupt")(function* (
+      orgId: KinOrgId,
+      wakeupId: KinWakeupId,
+    ) {
+      const failed = (cause: unknown) => new KinStopFanOutError({ orgId, cause });
+      const [row] = yield* sql<{ threadId: string }>`SELECT thread_id AS "threadId" FROM kin_wakeups
+        WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND status = 'running'
+          AND thread_id IS NOT NULL ORDER BY wakeup_id`.pipe(Effect.mapError(failed));
+      if (row === undefined) return false;
+      // The owner chose to stop: the run's failure must not requeue its events.
+      yield* sql`UPDATE kin_events SET state = 'done'
+        WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND state = 'claimed'`.pipe(
+        Effect.mapError(failed),
+      );
+      const threadId = ThreadId.make(row.threadId);
+      const projection = yield* threads.getThreadProjection(threadId).pipe(Effect.mapError(failed));
+      const run = projection.runs.at(-1);
+      if (run === undefined) return false;
+      yield* threads
+        .interruptThread({
+          projectId: projection.thread.projectId,
+          threadId,
+          runId: run.id,
+          commandId: CommandId.make(`kin-owner-stop:${wakeupId}:${run.id}`),
+        })
+        .pipe(Effect.mapError(failed));
+      return true;
     }),
     resume: Effect.fn("KinStop.fanOut.resume")(function* (orgId: KinOrgId) {
       if (Option.isSome(routines))

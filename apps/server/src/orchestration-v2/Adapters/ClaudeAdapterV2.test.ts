@@ -6102,6 +6102,109 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       ),
   );
 
+  it.effect.each(["completed", "interrupted"] as const)(
+    "streams Claude reply text into the item its snapshot completes when %s",
+    (status) =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("reply-stream-attempt"),
+            text: "Plan it",
+            attachments: [],
+          }),
+        );
+        const stream = (event: unknown) =>
+          harness.offerAndWait(
+            claudeSdkFrame({
+              type: "stream_event",
+              event,
+              parent_tool_use_id: null,
+              session_id: WAKE_NATIVE_SESSION,
+              uuid: "stream-frame",
+            }),
+          );
+        yield* stream({ type: "message_start", message: { id: "reply-message" } });
+        yield* stream({
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "" },
+        });
+        yield* stream({
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "Here is " },
+        });
+        yield* stream({
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "the plan" },
+        });
+        yield* TestClock.adjust(50);
+        yield* stream({ type: "content_block_stop", index: 0 });
+        const frames = [
+          ...(status === "completed"
+            ? [
+                claudeSdkFrame({
+                  type: "assistant",
+                  uuid: "reply-snapshot",
+                  session_id: WAKE_NATIVE_SESSION,
+                  parent_tool_use_id: null,
+                  message: {
+                    id: "reply-message",
+                    model: "claude-sonnet-4-6",
+                    content: [{ type: "text", text: "Here is the plan." }],
+                  },
+                }),
+              ]
+            : []),
+          makeResultFrame({
+            uuid: "reply-result",
+            result: status === "completed" ? "Here is the plan." : "",
+            ...(status === "interrupted" ? { terminalReason: "aborted_streaming" as const } : {}),
+          }),
+        ];
+        for (const frame of frames) yield* Queue.offer(harness.sdkMessages, frame);
+        const terminal = yield* Queue.take(harness.terminalReceipts);
+        assert.equal(terminal.status, status);
+        const updates = harness.events.flatMap((event) =>
+          event.type === "turn_item.updated" && event.turnItem.type === "assistant_message"
+            ? [event.turnItem]
+            : [],
+        );
+        const finalText = status === "completed" ? "Here is the plan." : "Here is the plan";
+        assert.deepEqual(
+          updates.map((item) => [item.text, item.streaming]),
+          [
+            ["Here is the plan", true],
+            [finalText, false],
+          ],
+        );
+        assert.equal(new Set(updates.map((item) => item.id)).size, 1);
+        assert.deepEqual(
+          harness.events.flatMap((event) =>
+            event.type === "message.updated" && event.message.role === "assistant"
+              ? [event.message.text]
+              : [],
+          ),
+          [finalText],
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+  );
+
   // regression: #15892 non-execution metadata is carried through, not guessed from result text
   it.effect.each(["cancelled", "denied", "permission_denied", undefined])(
     "preserves native tool non-execution metadata %s without inferring a denial from text",

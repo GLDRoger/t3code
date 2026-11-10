@@ -17,7 +17,7 @@ import {
   type KinHost,
   type KinRouteHost,
   type KinHostCandidate,
-} from "./kinHost";
+} from "@t3tools/client-runtime/kin/kinHost";
 
 const KIN_HOST_STORAGE_KEY = "kin.hostEnvironmentId";
 

@@ -17,14 +17,13 @@ import {
   KinMessageId,
   KinOrgId,
   KinPersonId,
+  KinReactionEmoji,
   KinWidgetId,
 } from "./kinChat.ts";
 import { TimeOfDay, TimeZone } from "./kinTime.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import { ScheduledTaskWebhookDeliveryId } from "./scheduledTask.ts";
 
-export const KinWakeupId = TrimmedNonEmptyString.pipe(Schema.brand("KinWakeupId"));
-export type KinWakeupId = typeof KinWakeupId.Type;
 export const KinEventId = TrimmedNonEmptyString.pipe(Schema.brand("KinEventId"));
 export type KinEventId = typeof KinEventId.Type;
 export const KinWorkerId = TrimmedNonEmptyString.pipe(Schema.brand("KinWorkerId"));
@@ -61,6 +60,36 @@ export const KinLead = Schema.Struct({
   ownerChatId: KinChatId,
 });
 export type KinLead = typeof KinLead.Type;
+
+/** A lead's domain as a short slug, such as `engineering`, `growth` or `chief-of-staff`. */
+export const KinLeadDomain = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9-]{0,39}$/));
+export type KinLeadDomain = typeof KinLeadDomain.Type;
+/** What the lead is for, in the owner's words; it is added to every wake-up's prompt. */
+export const KinLeadCharter = Schema.String.check(Schema.isMaxLength(1_000));
+export type KinLeadCharter = typeof KinLeadCharter.Type;
+
+export const KinLeadCreateInput = Schema.Struct({
+  orgId: KinOrgId,
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
+  domain: KinLeadDomain,
+  charter: KinLeadCharter,
+  // Omitted: the models of the org's first live lead.
+  models: Schema.optional(Schema.Struct({ strong: ModelSelection, cheap: ModelSelection })),
+  workerProjects: Schema.optional(Schema.Array(ProjectId)),
+});
+export type KinLeadCreateInput = typeof KinLeadCreateInput.Type;
+export const KinLeadCreated = Schema.Struct({
+  // `existing`: the creator already has a live lead with this name and domain; nothing changed.
+  outcome: Schema.Literals(["created", "existing"]),
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+  name: TrimmedNonEmptyString,
+  domain: KinLeadDomain,
+  level: KinLevel,
+  ownerChatId: KinChatId,
+  createdByPersonId: KinPersonId,
+});
+export type KinLeadCreated = typeof KinLeadCreated.Type;
 
 export const MemoryItemKind = Schema.Literals([
   "objective",
@@ -162,7 +191,7 @@ export const KinDeferralCard = Schema.Struct({
   dueAt: Schema.toEncoded(CanonicalUtcTimestamp),
   onDue: Schema.Literals(["remind", "start", "ask", "chase"]),
   text: Schema.String,
-  // Absent on the confirm card ([Change] [Just remind me]); heads_up and asked offer
+  // Absent on the confirm card ([Undo] [Change] [Just remind me]); heads_up and asked offer
   // [Start now] [Monday] [Cancel]; started offers nothing.
   phase: Schema.optional(Schema.Literals(["heads_up", "asked", "started"])),
   graceEndsAt: Schema.optional(Schema.toEncoded(CanonicalUtcTimestamp)),
@@ -171,6 +200,7 @@ export type KinDeferralCard = typeof KinDeferralCard.Type;
 
 /** What a deferral card's buttons post as `actionId`, each with the item id as `value`. */
 export const KIN_DEFERRAL_CARD_ACTIONS = [
+  "undo",
   "change",
   "remind",
   "start_now",
@@ -284,6 +314,13 @@ export const KinEvent = Schema.Union([
     messageId: KinMessageId,
     actionId: TrimmedNonEmptyString,
   }),
+  // The owner's 👍/👎-style reaction on the lead's latest message: a soft reply, never authority.
+  Schema.TaggedStruct("chat.reaction", {
+    ...EventBase,
+    chatId: KinChatId,
+    messageId: KinMessageId,
+    emoji: KinReactionEmoji,
+  }),
   Schema.TaggedStruct("github", {
     ...EventBase,
     deliveryId: TrimmedNonEmptyString,
@@ -386,6 +423,16 @@ export const KinBudget = Schema.Struct({
   leadUnits: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
   workerUnits: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
   limits: KinBudgetLimits,
+  // Today's lead units by lead, largest first; the limit stays one figure for the org.
+  leads: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        agentId: KinAgentId,
+        name: Schema.String,
+        leadUnits: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+      }),
+    ),
+  ),
 });
 export type KinBudget = typeof KinBudget.Type;
 export const KinBudgetGetInput = Schema.Struct({ orgId: KinOrgId });

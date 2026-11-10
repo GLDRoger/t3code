@@ -140,16 +140,13 @@ const make = Effect.gen(function* () {
     }
   });
   const checkOwner = Effect.fn("KinPings.checkOwner")(function* (r: Request) {
-    const owners = yield* sql<{ owner_person_id: string; owner_chat_id: string }>`
-      SELECT a.owner_person_id, l.owner_chat_id FROM kin_leads l
+    // The owner chat must be a live lead's direct chat with that same owner; any of its leads.
+    const owners = yield* sql`SELECT 1 FROM kin_leads l
       JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
-      WHERE l.org_id = ${r.orgId} AND a.retired_at IS NULL ORDER BY l.agent_id`;
-    if (
-      owners.length !== 1 ||
-      owners[0]?.owner_person_id !== r.owner ||
-      owners[0]?.owner_chat_id !== r.ownerChatId
-    )
-      return yield* ownerMismatch;
+      WHERE l.org_id = ${r.orgId} AND a.retired_at IS NULL
+        AND a.owner_person_id = ${r.owner} AND l.owner_chat_id = ${r.ownerChatId}
+      ORDER BY l.agent_id`;
+    if (owners.length === 0) return yield* ownerMismatch;
   });
   const stop = Effect.fn("KinPings.stop")(function* (
     r: Request,

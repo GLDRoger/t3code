@@ -9,6 +9,7 @@ import * as TriggerScheduler from "../triggers/KinTriggerScheduler.ts";
 import * as TriggerStore from "../triggers/KinTriggerStore.ts";
 import * as TriggerInbox from "../triggers/KinTriggerInbox.ts";
 import * as TriggerService from "../triggers/KinTriggerService.ts";
+import * as OwnerTimeZone from "../triggers/ownerTimeZone.ts";
 import { forkParked } from "../../serverActivation.ts";
 import { KinOrgId, KinChatId, KinMessageId } from "@t3tools/contracts";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -39,13 +40,16 @@ import { handlers } from "./mcp/handlers.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
+import * as ReplyBridge from "../reply/KinReplyBridge.ts";
 import * as RoutineContent from "./RoutineContent.ts";
 import * as KinStop from "./KinStop.ts";
 import { KinPromotion } from "../levels/Promotion.ts";
+import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import * as DreamRunner from "../dreaming/DreamRunner.ts";
 import * as DreamSession from "../dreaming/DreamSession.ts";
 import * as Workers from "./Workers.ts";
 import * as WorkerTracker from "./WorkerTracker.ts";
+import * as ChatWake from "./ChatWake.ts";
 
 export class KinLeadStartupError extends Schema.TaggedError<KinLeadStartupError>()(
   "KinLeadStartupError",
@@ -112,17 +116,51 @@ const memoryPullRequestSweep = Effect.fn("KinMemoryPullRequests.sweepDue")(funct
   });
 });
 
+/** The writer's fsck and remote sync, off the reply path: at start, then every five minutes. */
+const memorySync = Effect.fn("KinMemory.syncDue")(function* (memory: Memory.Memory["Service"]) {
+  const { repositories } = yield* MemoryConfig.MemoryConfig;
+  let due = 0;
+  return Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    if (now < due) return;
+    due = now + 5 * 60_000;
+    yield* Effect.forEach(
+      repositories,
+      ({ orgId }) =>
+        memory.syncCheckout(orgId).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin memory sync failed; the next wake-up re-checks", {
+              orgId,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        ),
+      { discard: true },
+    );
+  });
+});
+
 const runner = Layer.effectDiscard(
   Effect.gen(function* () {
     const runner = yield* WakeupRunner.WakeupRunner;
+    const memory = yield* Memory.Memory;
     const stop = yield* KinStop.KinStop;
+    const ownerTimeZone = yield* Effect.serviceOption(OwnerTimeZone.KinOwnerTimeZone);
     // The owner's keep-or-discard of shadow memory runs on this runtime's writer.
     const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
     const promotion = yield* Effect.serviceOption(KinPromotion);
     if (Option.isSome(writer) && Option.isSome(promotion))
       yield* promotion.value.attachShadowMemory(writer.value.settleShadow);
+    // The owner's Undo on a memory change card runs on this runtime's writer too.
+    const memoryChanges = yield* Effect.serviceOption(KinMemoryChanges);
+    if (Option.isSome(writer) && Option.isSome(memoryChanges))
+      yield* memoryChanges.value.attachWriter(writer.value.undoChange);
     yield* Effect.gen(function* () {
       const context = yield* Layer.build(routineRuntime);
+      yield* Context.get(context, Scheduler.Scheduler).register(
+        "kin-memory-sync",
+        yield* memorySync(memory),
+      );
       if (Option.isSome(writer))
         yield* Context.get(context, Scheduler.Scheduler).register(
           "kin-memory-pull-requests",
@@ -131,14 +169,15 @@ const runner = Layer.effectDiscard(
       yield* Layer.build(dreamRuntime.pipe(Layer.provide(Layer.succeedContext(context)))).pipe(
         Effect.catchCause((cause) => Effect.logError("Kin dreams unavailable", { cause })),
       );
-      yield* stop.attach(
-        yield* KinStop.makeFanOut(Context.getOption(context, Routines.KinRoutines)),
-      );
+      const routines = Context.getOption(context, Routines.KinRoutines);
+      yield* stop.attach(yield* KinStop.makeFanOut(routines));
+      if (Option.isSome(routines) && Option.isSome(ownerTimeZone))
+        yield* ownerTimeZone.value.attach(routines.value);
       yield* runner.start.pipe(Effect.provideContext(context));
     }).pipe(forkParked);
   }),
 ).pipe(
-  Layer.provide(WakeupRunner.layer),
+  Layer.provide(WakeupRunner.layer.pipe(Layer.provide(ReplyBridge.layer))),
   Layer.provide(Layer.mergeAll(OwnerCheck.layer, RoutineContent.layer)),
 );
 
@@ -255,7 +294,7 @@ const toolkit = LeadMemory.layer.pipe(
   ),
 );
 
-export const layer = withServices(runner);
+export const layer = withServices(Layer.merge(runner, ChatWake.layer));
 const tracker = Layer.effectDiscard(
   Effect.gen(function* () {
     const tracker = yield* WorkerTracker.WorkerTracker;
@@ -263,7 +302,7 @@ const tracker = Layer.effectDiscard(
   }),
 ).pipe(Layer.provide(WorkerTracker.layer));
 const production = withServices(
-  Layer.mergeAll(runner, registration, tracker).pipe(
+  Layer.mergeAll(runner, ChatWake.layer, registration, tracker).pipe(
     Layer.provideMerge(Workers.layer),
     Layer.provideMerge(toolkit),
   ),

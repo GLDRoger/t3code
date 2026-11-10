@@ -25,7 +25,7 @@ import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { kinClient } from "./state/kinClient";
-import { kinChatTitle, kinDirectory } from "./state/kinScreenState";
+import { kinChatTitle, kinDirectory } from "@t3tools/client-runtime/kin/kinScreenState";
 import { useKinHostAt } from "./state/useKinHost";
 import {
   kinLevelsFailure,
@@ -33,7 +33,7 @@ import {
   kinLevelsScreenView,
   type KinLevelChange,
   type KinLevelsRow,
-} from "./widgets/kinLevelsPresentation";
+} from "@t3tools/client-runtime/kin/kinLevelsPresentation";
 
 type KinLevelsParams = {
   readonly environmentId: string;

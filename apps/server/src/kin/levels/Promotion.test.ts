@@ -1,3 +1,4 @@
+import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { assert, it } from "@effect/vitest";
 import {
   AuthOrchestrationReadScope,
@@ -5,7 +6,7 @@ import {
   AuthStandardClientScopes,
   KinAgentId,
   KinChatId,
-  KinKeyThumbprint,
+  type KinGrantPayload,
   type KinActionId,
   KinLevelRpcs,
   KinOrgId,
@@ -39,6 +40,9 @@ import { KinChatService } from "../chat/KinChatService.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as Kin from "../layer.ts";
+import { insertActiveKey, makeApprovalKey, signCompact } from "../approvals/grant.testkit.ts";
+import { recordFacts } from "../approvals/grantFacts.ts";
+import * as KeySeal from "../approvals/KeySeal.ts";
 import { makeKinHandlers } from "../rpcHandlers.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
 import { dormantLeadDependencies } from "../lead/layer.testkit.ts";
@@ -54,9 +58,10 @@ const session = {
 const agentId = KinAgentId.make("lead");
 const group = KinChatId.make("group");
 const memberId = KinPersonId.make("priya");
-const kid = KinKeyThumbprint.make("Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E");
-const memberKid = KinKeyThumbprint.make("Z1ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E");
-const root = Kin.layer.pipe(
+const ownerKey = makeApprovalKey();
+const memberKey = makeApprovalKey();
+// The test seal, so `seed` can write key rows as the server activates them.
+const root = Kin.layerWithSeal(KeySeal.layerTest()).pipe(
   Layer.provide(dormantLeadDependencies),
   Layer.provideMerge(Chat.layer),
   Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
@@ -102,6 +107,7 @@ const seed = Effect.gen(function* () {
   const chat = Context.get(services, KinChatService);
   const repo = yield* Repository.KinChatRepository;
   const sql = yield* SqlClient.SqlClient;
+  yield* pairSession(session.sessionId);
   const [owner] = yield* identity.resolve(session);
   assert.isDefined(owner);
   const { orgId } = owner;
@@ -132,13 +138,11 @@ const seed = Effect.gen(function* () {
     createdAt: at,
   });
   const lead = { orgId, agentId };
-  for (const [human, thumbprint] of [
-    [owner.personId, kid],
-    [memberId, memberKid],
+  for (const [humanId, key] of [
+    [owner.personId, ownerKey],
+    [memberId, memberKey],
   ] as const)
-    yield* sql`INSERT INTO kin_approver_keys (thumbprint, org_id, public_jwk_json, human_id,
-        device_label, platform, hardware, attested, state, created_at)
-      VALUES (${thumbprint}, ${orgId}, '{}', ${human}, 'Pixel 9', 'android', 'tee', 1, 'active', 0)`;
+    yield* insertActiveKey({ key, orgId, humanId }).pipe(Effect.provide(KeySeal.layerTest()));
   const pending = {
     ...(yield* PendingActions.KinPendingActions),
     ...(yield* PendingActions.KinExecutionLedger),
@@ -152,15 +156,30 @@ const seed = Effect.gen(function* () {
     Effect.gen(function* () {
       const action = Option.getOrThrow(yield* pending.get({ orgId, actionId }));
       const iat = Math.floor((yield* Clock.currentTimeMillis) / 1000);
+      const key = human === owner.personId ? ownerKey : memberKey;
+      const grantJti = `jti-raise-${String(jti++).padStart(16, "0")}`;
+      const payload = {
+        v: 1,
+        orgId,
+        actionId,
+        revision: action.revision,
+        nonce: action.nonce,
+        ...recordFacts(action),
+        approver: { humanId: human, kid: key.kid },
+        decision: "approve",
+        jti: grantJti,
+        iat,
+        exp: iat + 600,
+      } as unknown as KinGrantPayload;
       const approved = yield* pending.approve({
         orgId,
         actionId,
         revision: action.revision,
         nonce: action.nonce,
-        jti: `jti-raise-${String(jti++).padStart(16, "0")}`,
+        jti: grantJti,
         approverHumanId: human,
-        keyThumbprint: human === owner.personId ? kid : memberKid,
-        compact: "compact",
+        keyThumbprint: key.kid,
+        compact: signCompact(key, { typ: "kin-grant+jws", alg: "ES256", kid: key.kid }, payload),
         iat,
         exp: iat + 600,
       });
@@ -483,7 +502,7 @@ it.effect("every trial day with unreviewed entries gets a card, late entries inc
 
 it.effect("only the lead's owner reads, reviews, lowers or raises; others are refused", () =>
   Effect.gen(function* () {
-    const { lead, client, member, readOnly, entries, sql, level } = yield* seed;
+    const { lead, client, member, readOnly, entries, sql, level, direct } = yield* seed;
     yield* entries(["e-0"]);
     yield* sql`UPDATE kin_leads SET level = 'L2' WHERE org_id = ${lead.orgId}`;
     const lowerGroup = { ...lead, chatId: group, level: "L0" as const };
@@ -536,6 +555,14 @@ it.effect("only the lead's owner reads, reviews, lowers or raises; others are re
     );
     view = yield* client["kin.levels.lower"]({ ...lead, level: "L1" });
     assert.strictEqual(view.level, "L1");
+    // The owner's DM stays at L2 without a row of its own, and shows it.
+    assert.deepStrictEqual(
+      view.chats.map(({ chatId, level }) => ({ chatId, level })),
+      [
+        { chatId: group, level: "L0" },
+        { chatId: direct.chatId, level: "L2" },
+      ],
+    );
     assert.include(yield* client["kin.levels.lower"]({ ...lead, level: "L1" }).pipe(Effect.flip), {
       reason: "invalid_state",
     });

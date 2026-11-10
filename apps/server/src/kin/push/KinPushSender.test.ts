@@ -26,6 +26,7 @@ import * as SessionStore from "../../auth/SessionStore.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ApproverKeys from "../approvals/ApproverKeys.ts";
+import * as KeySeal from "../approvals/KeySeal.ts";
 import * as Audit from "../approvals/Audit.ts";
 import { KinAttestationTrust } from "../approvals/attestation/AttestationTrust.ts";
 import * as PendingActions from "../approvals/PendingActions.ts";
@@ -90,6 +91,7 @@ const buildOn = <A, E, R>(apns: ReturnType<typeof makeApns>, database: Layer.Lay
     Layer.provideMerge(PendingActions.layer),
     Layer.provideMerge(Audit.layer),
     Layer.provide(Layer.succeed(KinAttestationTrust, { load: () => Effect.die("unused") })),
+    Layer.provide(KeySeal.layerTest()),
     Layer.provide(
       Layer.mock(ServerEnvironment.ServerEnvironment)({
         getEnvironmentId: Effect.succeed(EnvironmentId.make("env_kin")),

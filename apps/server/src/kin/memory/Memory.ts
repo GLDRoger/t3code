@@ -9,6 +9,7 @@ import {
   verifyTree,
 } from "./objects.ts";
 import {
+  type KinAgentId,
   type KinMemoryItemId,
   type KinOrgId,
   MemoryItemHead,
@@ -27,6 +28,7 @@ import * as Semaphore from "effect/Semaphore";
 
 import * as SqlClient from "effect/sql/SqlClient";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import * as KinLevels from "../lead/KinLevels.ts";
 import { isCheckoutPath, itemFolders } from "./checkoutPaths.ts";
 import { memoryGit as runMemoryGit } from "./git.ts";
 import { VcsProcess } from "../../vcs/VcsProcess.ts";
@@ -106,6 +108,16 @@ export interface MemoryPaths {
   readonly read: string;
 }
 
+/**
+ * Whose memory a read sees. A lead at L0 reads its shadow branch, chosen from its `kin_leads`
+ * level and never from tool input; any other lead, and an omitted view, read the default branch.
+ * `triggers` is what deferral triggers arm from: the default branch with each lead's own shadow
+ * changes laid over it, until the owner keeps or discards them after a raise.
+ */
+export type LeadView = { readonly lead: KinAgentId };
+export type MemoryView = LeadView | "triggers";
+export const shadowBranch = (agentId: string) => `kin/shadow/${agentId}`;
+
 export interface MemoryQuery {
   readonly kind?: MemoryItemKind;
   readonly status?: MemoryItemHead["status"];
@@ -136,7 +148,7 @@ export interface MemorySyncSnapshot {
   readonly duplicateIds: ReadonlySet<string>;
 }
 
-/** Sees every loaded snapshot and owns its own once-per-head, retry and failure handling. */
+/** Sees the `triggers` view on every load and owns its own once-per-head, retry and failure handling. */
 export class MemorySyncHooks extends Context.Reference<{
   readonly syncItems: (orgId: KinOrgId, snapshot: MemorySyncSnapshot) => Effect.Effect<void>;
 }>("t3/kin/memory/Memory/MemorySyncHooks", {
@@ -180,27 +192,43 @@ export class Memory extends Context.Service<
     /** Bumped whenever a history rewrite drops the checkouts; work staged under an older value is stale. */
     readonly historyGeneration: (orgId: KinOrgId) => Effect.Effect<number>;
     readonly ensureCheckouts: (orgId: KinOrgId) => Effect.Effect<MemoryPaths, MemoryFailure>;
+    /**
+     * Validates the writer and fills the read checkout with the waking lead's view. The first
+     * wake-up after a start, and every one after a failed `syncCheckout`, syncs inline first.
+     * The checkout is refilled inside the same directory; `replaced` says it is a new one.
+     */
     readonly prepareWakeup: (
       orgId: KinOrgId,
       wakeupId?: string,
-    ) => Effect.Effect<{ head: string; indexAsOf: DateTime.Utc }, MemoryFailure>;
+      view?: LeadView,
+    ) => Effect.Effect<{ head: string; indexAsOf: DateTime.Utc; replaced?: true }, MemoryFailure>;
+    /**
+     * The writer's integrity check (`git fsck`) and default-branch sync with the remote, off the
+     * reply path. Skips an organization with no clone yet, or whose last sync failed: its next
+     * wake-up re-runs the sync and refuses to start until it passes.
+     */
+    readonly syncCheckout: (orgId: KinOrgId) => Effect.Effect<void, MemoryFailure>;
     readonly readPromptSnapshot: (
       orgId: KinOrgId,
       expectedHead: string,
+      view?: LeadView,
     ) => Effect.Effect<{ readonly rules: string; readonly index: string }, MemoryFailure>;
     readonly readIndex: (orgId: KinOrgId) => Effect.Effect<string, MemoryFailure>;
     readonly readRules: (orgId: KinOrgId) => Effect.Effect<string, MemoryFailure>;
     readonly readItem: (
       orgId: KinOrgId,
       id: KinMemoryItemId,
+      view?: MemoryView,
     ) => Effect.Effect<MemoryCache.MemoryItem, MemoryFailure | MemoryNotFound | MemoryDuplicateId>;
     readonly readItemQuietly: (
       orgId: KinOrgId,
       id: KinMemoryItemId,
+      view?: MemoryView,
     ) => Effect.Effect<MemoryCache.MemoryItem, MemoryFailure | MemoryNotFound | MemoryDuplicateId>;
     readonly query: (
       orgId: KinOrgId,
       query: MemoryQuery,
+      view?: MemoryView,
     ) => Effect.Effect<
       ReadonlyArray<MemoryItemHead & { readonly duplicate: boolean }>,
       MemoryFailure
@@ -219,7 +247,10 @@ export const maxBlobBytes = 256 * 1024;
 const checkoutBatchBytes = 16 * 1024 * 1024;
 
 interface Snapshot extends MemorySyncSnapshot {
+  readonly branch: string;
   readonly files: ReadonlyMap<string, string>;
+  /** Blob id of each memory file, to tell a shadow branch's own changes from inherited ones. */
+  readonly blobIds: ReadonlyMap<string, string>;
   index?: string;
 }
 
@@ -335,10 +366,23 @@ const make = Effect.gen(function* () {
   const cache = yield* MemoryCache.MemoryCache;
   const locks = new Map<KinOrgId, Semaphore.Semaphore>();
   const initializedCheckouts = new Set<KinOrgId>();
+  // Whether the last sync passed; absent until the first one after start or a history rewrite.
+  const synced = new Map<KinOrgId, boolean>();
   const historyGenerations = new Map<KinOrgId, number>();
-  const duplicateWarnings = new Map<KinOrgId, ReadonlySet<string>>();
-  const snapshots = new Map<KinOrgId, Snapshot>();
-  const blobCaches = new Map<KinOrgId, BlobCache>();
+  const mainBranch = config.defaultBranch ?? "main";
+  // Keyed by `snapshotKey`: each branch a lead reads has its own snapshot and blob cache.
+  const duplicateWarnings = new Map<string, ReadonlySet<string>>();
+  const snapshots = new Map<string, Snapshot>();
+  const blobCaches = new Map<string, BlobCache>();
+  const snapshotKey = (orgId: KinOrgId, branch: string) => `${orgId}\u0000${branch}`;
+  const triggerViews = new Map<KinOrgId, { readonly key: string; readonly snapshot: Snapshot }>();
+  // The branch the read checkout holds; its INDEX.md is only ever that branch's index.
+  const checkoutBranches = new Map<KinOrgId, string>();
+  const forgetSnapshots = (orgId: KinOrgId) => {
+    for (const cache of [snapshots, blobCaches, duplicateWarnings])
+      for (const key of cache.keys()) if (key.startsWith(`${orgId}\u0000`)) cache.delete(key);
+    triggerViews.delete(orgId);
+  };
 
   const locked = <A, E>(orgId: KinOrgId, effect: Effect.Effect<A, E>) => {
     if (!config.repositories.some((entry) => entry.orgId === orgId))
@@ -467,7 +511,7 @@ const make = Effect.gen(function* () {
     root: string,
   ) {
     for (const entry of yield* io(orgId, "clones", fs.readDirectory(root)))
-      if (/^memory\.clone-[A-Za-z0-9]+$/.test(entry))
+      if (/^memory(?:\.clone|-read\.next)-[A-Za-z0-9]+$/.test(entry))
         yield* io(
           orgId,
           "recoverClone",
@@ -554,12 +598,12 @@ const make = Effect.gen(function* () {
       return { writer: paths.writer, read: paths.read };
     }
     yield* io(orgId, "mkdir", fs.makeDirectory(paths.root, { recursive: true }));
+    yield* removeStaleClones(orgId, paths.root);
     if (yield* io(orgId, "exists", fs.exists(paths.writer))) {
       yield* validateWriter(orgId, paths, false);
     } else {
       // The remote can still hold the old history until the purge's push lands.
       yield* refuseDuringPurge(orgId, "clone");
-      yield* removeStaleClones(orgId, paths.root);
       yield* io(
         orgId,
         "clone",
@@ -596,20 +640,26 @@ const make = Effect.gen(function* () {
   const loadSnapshot = Effect.fn("Memory.loadSnapshot")(function* (
     orgId: KinOrgId,
     force: boolean,
+    branch: string = mainBranch,
   ) {
     const paths = yield* pathsFor(orgId);
-    const pinned = pinnedHeads.get(orgId);
-    if (pinned === undefined) yield* validateWriter(orgId, paths, false);
-    const head = pinned ?? (yield* anchor(orgId, config.defaultBranch ?? "main"));
-    pinnedHeads.set(orgId, head);
-    const previous = snapshots.get(orgId);
+    const key = snapshotKey(orgId, branch);
+    let head: string;
+    if (branch === mainBranch) {
+      const pinned = pinnedHeads.get(orgId);
+      // Bootstraps a missing writer, so reads before the first wake-up don't fail validation.
+      if (pinned === undefined) yield* ensureCheckouts(orgId);
+      head = pinned ?? (yield* anchor(orgId, mainBranch));
+      pinnedHeads.set(orgId, head);
+    } else head = yield* anchor(orgId, branch);
+    const previous = snapshots.get(key);
     if (!force && previous?.head === head) return previous;
-    const blobCache = blobCaches.get(orgId) ?? {
+    const blobCache = blobCaches.get(key) ?? {
       blobs: new Map<string, string | undefined>(),
       parsedBlobs: new Map<string, ParsedBlob | undefined>(),
       mismatchWarnings: new Set<string>(),
     };
-    blobCaches.set(orgId, blobCache);
+    blobCaches.set(key, blobCache);
     const { blobs, parsedBlobs, mismatchWarnings } = blobCache;
     const verifiedEntries = yield* readTree(orgId, paths.writer, head).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
@@ -751,31 +801,147 @@ const make = Effect.gen(function* () {
     for (const { head } of items) counts.set(head.id, (counts.get(head.id) ?? 0) + 1);
     const duplicateIds = new Set([...counts].filter(([, count]) => count > 1).map(([id]) => id));
     for (const id of duplicateIds) {
-      if (!duplicateWarnings.get(orgId)?.has(id))
-        yield* Effect.logWarning("Duplicate memory id", { orgId, id });
+      if (!duplicateWarnings.get(key)?.has(id))
+        yield* Effect.logWarning("Duplicate memory id", { orgId, branch, id });
     }
-    duplicateWarnings.set(orgId, duplicateIds);
+    duplicateWarnings.set(key, duplicateIds);
     const snapshot: Snapshot = {
       head,
+      branch,
       items,
       files,
+      blobIds: new Map(entries.map((entry) => [entry.relative, entry.sha])),
       duplicateIds,
       ...(previous?.head === head && previous.index !== undefined ? { index: previous.index } : {}),
     };
-    snapshots.set(orgId, snapshot);
+    snapshots.set(key, snapshot);
     const reachable = new Set(entries.map((entry) => entry.sha));
     for (const cache of [blobs, parsedBlobs, mismatchWarnings]) {
       for (const sha of cache.keys()) if (!reachable.has(sha)) cache.delete(sha);
     }
     return snapshot;
   });
-  const load = Effect.fn("Memory.load")(function* (orgId: KinOrgId, force = false) {
-    const snapshot = yield* loadSnapshot(orgId, force);
-    yield* hooks.syncItems(orgId, snapshot);
+
+  const sqlRead = <A, E>(orgId: KinOrgId, effect: Effect.Effect<A, E>) =>
+    effect.pipe(
+      Effect.mapError(toPersistenceSqlError("Memory.view")),
+      Effect.mapError((cause) => new MemoryError({ orgId, operation: "view", cause })),
+    );
+  /**
+   * The branch `agentId` reads: its shadow branch at L0 once it has one, else the default branch.
+   * During a wake-up the level is the one in the chat it answers, as the writer's is.
+   */
+  const leadBranch = Effect.fn("Memory.leadBranch")(function* (
+    orgId: KinOrgId,
+    agentId: KinAgentId,
+  ) {
+    const shadow = shadowBranch(agentId);
+    const [row] = yield* sqlRead(
+      orgId,
+      sql<{ level: string; head: string | null; wakeupId: string | null }>`SELECT l.level, h.head,
+          (SELECT w.wakeup_id FROM kin_wakeups w WHERE w.org_id = l.org_id
+            AND w.agent_id = l.agent_id AND w.status = 'running'
+            ORDER BY w.wakeup_id LIMIT 1) AS "wakeupId"
+        FROM kin_leads l
+        LEFT JOIN kin_memory_heads h ON h.org_id = l.org_id AND h.branch = ${shadow}
+        WHERE l.org_id = ${orgId} AND l.agent_id = ${agentId} ORDER BY l.agent_id`,
+    );
+    if (row === undefined || row.head === null) return mainBranch;
+    const level =
+      row.wakeupId === null
+        ? row.level
+        : yield* KinLevels.wakeupLevel({ orgId, agentId, wakeupId: row.wakeupId }).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.orElseSucceed(() => row.level),
+          );
+    return level === "L0" ? shadow : mainBranch;
+  });
+  /**
+   * The default branch with every active lead's own shadow changes on top, so a deferral made at
+   * L0 arms and stays armed after a raise until Keep or Start clean resets the shadow branch. A
+   * path is the shadow's own when its blob differs from the merge base; the first lead by id wins
+   * when two shadows changed the same path.
+   */
+  const triggerSnapshot = Effect.fn("Memory.triggerSnapshot")(function* (
+    orgId: KinOrgId,
+    main: Snapshot,
+  ) {
+    const shadows = yield* sqlRead(
+      orgId,
+      sql<{ branch: string; head: string }>`SELECT h.branch, h.head FROM kin_leads l
+        JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id AND a.retired_at IS NULL
+        JOIN kin_memory_heads h ON h.org_id = l.org_id AND h.branch = 'kin/shadow/' || l.agent_id
+        WHERE l.org_id = ${orgId} AND h.head <> ${main.head}
+        ORDER BY l.agent_id`,
+    );
+    if (shadows.length === 0) return main;
+    const key = [main.head, ...shadows.map(({ branch, head }) => `${branch}=${head}`)].join(" ");
+    const cached = triggerViews.get(orgId);
+    if (cached?.key === key) return cached.snapshot;
+    const { writer } = yield* pathsFor(orgId);
+    const byPath = new Map(main.items.map((item) => [item.head.path, item]));
+    const claimed = new Set<string>();
+    for (const { branch, head } of shadows) {
+      const base = (yield* git(orgId, writer, ["merge-base", main.head, head]).pipe(
+        Effect.orElseSucceed(() => ""),
+      )).trim();
+      // A settled shadow branch that the default branch has since moved past adds nothing.
+      if (base === head) continue;
+      const shadow = yield* loadSnapshot(orgId, false, branch);
+      const inherited = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(base)
+        ? new Map(
+            (yield* readTree(orgId, writer, base).pipe(
+              Effect.provideService(FileSystem.FileSystem, fs),
+              Effect.provideService(VcsProcess, vcs),
+            )).map((entry) => [entry.relative, entry.sha]),
+          )
+        : new Map<string, string>();
+      for (const item of shadow.items) {
+        const path = item.head.path;
+        if (claimed.has(path) || shadow.blobIds.get(path) === inherited.get(path)) continue;
+        claimed.add(path);
+        byPath.set(path, item);
+      }
+    }
+    const items = [...byPath.values()];
+    const counts = new Map<string, number>();
+    for (const { head } of items) counts.set(head.id, (counts.get(head.id) ?? 0) + 1);
+    const snapshot: Snapshot = {
+      head: key,
+      branch: "triggers",
+      items,
+      files: main.files,
+      blobIds: new Map(),
+      duplicateIds: new Set([...counts].filter(([, count]) => count > 1).map(([id]) => id)),
+    };
+    triggerViews.set(orgId, { key, snapshot });
     return snapshot;
   });
+  const load = Effect.fn("Memory.load")(function* (
+    orgId: KinOrgId,
+    force = false,
+    view?: MemoryView,
+  ) {
+    const main = yield* loadSnapshot(orgId, force);
+    // A shadow branch that can't be read must not take default-branch reads down with it.
+    const triggers = yield* triggerSnapshot(orgId, main).pipe(Effect.result);
+    if (triggers._tag === "Success") yield* hooks.syncItems(orgId, triggers.success);
+    else
+      yield* Effect.logWarning("Could not read shadow memory for deferral triggers", {
+        orgId,
+        errorTag: triggers.failure._tag,
+      });
+    if (view === undefined) return main;
+    if (view === "triggers") return yield* Effect.fromResult(triggers);
+    const branch = yield* leadBranch(orgId, view.lead);
+    return branch === mainBranch ? main : yield* loadSnapshot(orgId, false, branch);
+  });
 
-  const query = Effect.fn("Memory.query")(function* (orgId: KinOrgId, q: MemoryQuery) {
+  const query = Effect.fn("Memory.query")(function* (
+    orgId: KinOrgId,
+    q: MemoryQuery,
+    view?: MemoryView,
+  ) {
     for (const value of [q.dueBefore, q.dueAfter]) {
       if (value !== undefined && !Number.isFinite(dateMillis(value)))
         return yield* new MemoryQueryDecodeError({
@@ -791,7 +957,7 @@ const make = Effect.gen(function* () {
         reason: "Limit must be finite and non-negative",
       });
     const now = yield* Clock.currentTimeMillis;
-    const { items } = yield* load(orgId);
+    const { items } = yield* load(orgId, false, view);
     const counts = new Map<string, number>();
     for (const { head } of items) counts.set(head.id, (counts.get(head.id) ?? 0) + 1);
     return items
@@ -814,8 +980,9 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     id: KinMemoryItemId,
     recordRead: boolean,
+    view?: MemoryView,
   ) {
-    const { items } = yield* load(orgId);
+    const { items } = yield* load(orgId, false, view);
     const matches = items.filter((item) => item.head.id === id);
     const item = matches[0];
     if (!item) return yield* new MemoryNotFound({ orgId, id });
@@ -830,9 +997,12 @@ const make = Effect.gen(function* () {
     return item;
   });
 
-  const rebuildIndex = Effect.fn("Memory.rebuildIndex")(function* (orgId: KinOrgId) {
+  const rebuildIndex = Effect.fn("Memory.rebuildIndex")(function* (
+    orgId: KinOrgId,
+    view?: LeadView,
+  ) {
     const now = yield* Clock.currentTimeMillis;
-    const snapshot = yield* load(orgId);
+    const snapshot = yield* load(orgId, false, view);
     const reads = yield* cache.lastReads(orgId).pipe(
       Effect.catchTags({
         MemoryHistoryError: () =>
@@ -848,6 +1018,7 @@ const make = Effect.gen(function* () {
       now,
       ownerTimeZone,
     );
+    if ((checkoutBranches.get(orgId) ?? mainBranch) !== snapshot.branch) return;
     const paths = yield* pathsFor(orgId);
     yield* io(
       orgId,
@@ -872,8 +1043,12 @@ const make = Effect.gen(function* () {
     );
   });
 
-  const readFile = Effect.fn("Memory.readFile")(function* (orgId: KinOrgId, name: string) {
-    const snapshot = yield* load(orgId);
+  const readFile = Effect.fn("Memory.readFile")(function* (
+    orgId: KinOrgId,
+    name: string,
+    view?: LeadView,
+  ) {
+    const snapshot = yield* load(orgId, false, view);
     const text =
       name === "INDEX.md" ? (snapshot.index ?? snapshot.files.get(name)) : snapshot.files.get(name);
     if (text === undefined)
@@ -977,22 +1152,6 @@ const make = Effect.gen(function* () {
         targets.set(branch, head);
       }
     }
-    // Local enumeration is deletion-only; it can never introduce a recovery target.
-    const localShadows = (yield* git(orgId, paths.writer, [
-      "for-each-ref",
-      "--format=%(refname) %(objectname)",
-      "refs/heads/kin/shadow/",
-    ]))
-      .trim()
-      .split("\n")
-      .filter(Boolean);
-    for (const ref of localShadows) {
-      const [name, sha] = ref.split(" ");
-      if (name && sha && !targets.has(name.slice("refs/heads/".length))) {
-        yield* git(orgId, paths.writer, ["update-ref", "-d", name, sha]);
-        yield* notify({ orgId, branch: name, reason: "Deleted untrusted local shadow branch" });
-      }
-    }
     const main = targets.get(config.defaultBranch ?? "main");
     if (!main)
       return yield* new MemoryCheckoutInvalid({
@@ -1007,9 +1166,55 @@ const make = Effect.gen(function* () {
         head: string;
       }>`SELECT branch, head FROM kin_memory_heads WHERE org_id = ${orgId} ORDER BY branch`,
     );
-    for (const row of rows)
-      if (row.branch.startsWith("kin/shadow/") && !targets.has(row.branch))
+    // An anchored shadow head the remote lacks may be the lead's only copy: keep it and push it.
+    const unpushed = new Set<string>();
+    for (const row of rows) {
+      if (!row.branch.startsWith("kin/shadow/")) continue;
+      const remote = targets.get(row.branch);
+      if (remote === row.head) continue;
+      const present =
+        exists &&
+        (yield* readFiles(orgId, paths.writer, row.head).pipe(
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(VcsProcess, vcs),
+          Effect.result,
+        ))._tag === "Success";
+      if (
+        present &&
+        (remote === undefined || (yield* walkAncestors(orgId, paths.writer, row.head)).has(remote))
+      ) {
+        targets.set(row.branch, row.head);
+        unpushed.add(row.branch);
+      } else if (remote === undefined) {
         targets.set(row.branch, main);
+        if (!present)
+          yield* notify({
+            orgId,
+            branch: row.branch,
+            reason: `Shadow memory at ${row.head} never reached the remote and is gone from this server; the lead's shadow memory restarts from the default branch`,
+          });
+      }
+    }
+    // Local enumeration is deletion-only; it can never introduce a recovery target.
+    const localShadows = (yield* git(orgId, paths.writer, [
+      "for-each-ref",
+      "--format=%(refname) %(objectname)",
+      "refs/heads/kin/shadow/",
+    ]))
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+    for (const ref of localShadows) {
+      const [name, sha] = ref.split(" ");
+      if (name && sha && !targets.has(name.slice("refs/heads/".length))) {
+        yield* git(orgId, paths.writer, ["update-ref", "-d", name, sha]);
+        yield* notify({
+          orgId,
+          branch: name,
+          reason: `Deleted untrusted local shadow branch at ${sha}: no anchor or remote branch vouches for it`,
+        });
+      }
+    }
     const preserved = new Set<string>();
     for (const [branch, head] of targets) {
       yield* readFiles(orgId, paths.writer, head).pipe(
@@ -1047,16 +1252,50 @@ const make = Effect.gen(function* () {
         local._tag === "Success" ? local.success.trim() : "0".repeat(head.length),
       ]);
       if (old !== head) yield* record(orgId, branch, old, head);
-      yield* notify({ orgId, branch, reason: "Recovered from remote head" });
+      if (!unpushed.has(branch)) {
+        yield* notify({ orgId, branch, reason: "Recovered from remote head" });
+        continue;
+      }
+      // The remote can still hold old history until a purge's push lands; the marker blocks pushes.
+      const pushed =
+        (yield* purgeInFlight(orgId)) === undefined &&
+        (yield* git(orgId, paths.writer, [
+          "push",
+          "--",
+          paths.repo.repoUrl,
+          `${head}:refs/heads/${branch}`,
+        ]).pipe(Effect.result))._tag === "Success";
+      yield* notify({
+        orgId,
+        branch,
+        reason: pushed
+          ? "Kept the anchored shadow branch and pushed it to the remote"
+          : "Kept the anchored shadow branch, but it is only on this server: the push was refused",
+      });
     }
     pinnedHeads.delete(orgId);
-    snapshots.delete(orgId);
-    blobCaches.delete(orgId);
+    synced.delete(orgId);
+    forgetSnapshots(orgId);
   });
 
-  const prepare = Effect.fn("Memory.prepare")(function* (orgId: KinOrgId, wakeupId?: string) {
-    const paths = yield* ensureCheckouts(orgId);
-    yield* validateWriter(orgId, yield* pathsFor(orgId));
+  const refuseUnfinishedOperation = Effect.fn("Memory.refuseUnfinishedOperation")(function* (
+    orgId: KinOrgId,
+    writer: string,
+  ) {
+    for (const marker of ["rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD"]) {
+      if (yield* io(orgId, "sync", fs.exists(`${writer}/.git/${marker}`)))
+        return yield* new MemoryCheckoutInvalid({
+          orgId,
+          operation: "sync",
+          reason: "Unfinished Git operation",
+        });
+    }
+  });
+
+  // Callers have run `ensureCheckouts`.
+  const sync = Effect.fn("Memory.sync")(function* (orgId: KinOrgId, wakeupId?: string) {
+    const paths = yield* pathsFor(orgId);
+    yield* validateWriter(orgId, paths);
     yield* git(orgId, paths.writer, [
       "fsck",
       "--full",
@@ -1064,14 +1303,7 @@ const make = Effect.gen(function* () {
       "--no-reflogs",
       yield* anchor(orgId, config.defaultBranch ?? "main"),
     ]);
-    for (const marker of ["rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD"]) {
-      if (yield* io(orgId, "sync", fs.exists(`${paths.writer}/.git/${marker}`)))
-        return yield* new MemoryCheckoutInvalid({
-          orgId,
-          operation: "sync",
-          reason: "Unfinished Git operation",
-        });
-    }
+    yield* refuseUnfinishedOperation(orgId, paths.writer);
     const { repo } = yield* pathsFor(orgId);
     const branch = config.defaultBranch ?? "main";
     let head = yield* anchor(orgId, branch);
@@ -1307,22 +1539,44 @@ const make = Effect.gen(function* () {
         }
       }
     }
+  });
+  const checkedSync = (orgId: KinOrgId, wakeupId?: string) =>
+    sync(orgId, wakeupId).pipe(
+      Effect.tap(() => Effect.sync(() => synced.set(orgId, true))),
+      Effect.tapError(() => Effect.sync(() => synced.set(orgId, false))),
+    );
+
+  const prepare = Effect.fn("Memory.prepare")(function* (
+    orgId: KinOrgId,
+    wakeupId?: string,
+    view?: LeadView,
+  ) {
+    const paths = yield* ensureCheckouts(orgId);
+    if (synced.get(orgId) === true) {
+      yield* validateWriter(orgId, yield* pathsFor(orgId));
+      yield* refuseUnfinishedOperation(orgId, paths.writer);
+    } else yield* checkedSync(orgId, wakeupId);
+    const branch = config.defaultBranch ?? "main";
+    const head = yield* anchor(orgId, branch);
+    // The read checkout holds the waking lead's view: its shadow branch at L0.
+    const checkoutBranch = view === undefined ? branch : yield* leadBranch(orgId, view.lead);
+    const checkoutHead = checkoutBranch === branch ? head : yield* anchor(orgId, checkoutBranch);
     // The lead runs full-access here, so the checkout holds only memory files, never provider config.
-    const entries = yield* readTree(orgId, paths.writer, head).pipe(
+    const entries = yield* readTree(orgId, paths.writer, checkoutHead).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
       Effect.provideService(VcsProcess, vcs),
     );
     const kept = entries.filter(
       ({ relative, mode }) => ["100644", "100755"].includes(mode) && isCheckoutPath(relative),
     );
-    if (kept.length < entries.length && skipWarnedHeads.get(orgId) !== head) {
+    if (kept.length < entries.length && skipWarnedHeads.get(orgId) !== checkoutHead) {
       const keptSet = new Set(kept);
       yield* Effect.logWarning("Kin memory checkout skipped paths", {
         orgId,
         paths: entries.filter((entry) => !keptSet.has(entry)).map(({ relative }) => relative),
       });
     }
-    skipWarnedHeads.set(orgId, head);
+    skipWarnedHeads.set(orgId, checkoutHead);
     const sizes = new Map<string, number>();
     if (kept.length)
       for (const line of (yield* git(
@@ -1359,12 +1613,19 @@ const make = Effect.gen(function* () {
           Effect.provideService(VcsProcess, vcs),
         )),
       );
-    yield* io(
+    const replaced = yield* io(
       orgId,
       "readSnapshot",
       Effect.scoped(
         Effect.gen(function* () {
-          const read = path.join(yield* fs.makeTempDirectoryScoped(), "read");
+          // Staged beside the target: the system temp dir can be another filesystem (EXDEV).
+          const read = path.join(
+            yield* fs.makeTempDirectoryScoped({
+              directory: path.dirname(paths.read),
+              prefix: "memory-read.next-",
+            }),
+            "read",
+          );
           yield* fs.makeDirectory(read);
           for (const [index, { relative }] of kept.entries()) {
             const target = path.join(read, relative);
@@ -1379,21 +1640,39 @@ const make = Effect.gen(function* () {
             args: ["init", "--quiet", "--", read],
             env: { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TEMPLATE_DIR: "" },
           });
-          yield* fs.remove(paths.read, { recursive: true, force: true });
-          yield* fs.rename(read, paths.read);
+          // Swapped in place: an idle warm lead process keeps this directory as its cwd.
+          const inPlace = yield* fs.lstat(paths.read).pipe(
+            Effect.map((info) => info.type === "Directory"),
+            Effect.orElseSucceed(() => false),
+          );
+          if (!inPlace) {
+            yield* fs.remove(paths.read, { recursive: true, force: true });
+            yield* fs.rename(read, paths.read);
+            return true;
+          }
+          for (const entry of yield* fs.readDirectory(paths.read))
+            yield* fs.remove(path.join(paths.read, entry), { recursive: true, force: true });
+          for (const entry of yield* fs.readDirectory(read))
+            yield* fs.rename(path.join(read, entry), path.join(paths.read, entry));
+          return false;
         }),
       ),
     );
     pinnedHeads.set(orgId, head);
-    const index = yield* readFile(orgId, "INDEX.md").pipe(
+    checkoutBranches.set(orgId, checkoutBranch);
+    const index = yield* readFile(orgId, "INDEX.md", view).pipe(
       Effect.catchTags({ MemoryError: () => Effect.succeed("") }),
     );
-    if (indexIsStale(index, yield* Clock.currentTimeMillis)) yield* rebuildIndex(orgId);
-    const rebuilt = yield* readFile(orgId, "INDEX.md");
+    if (indexIsStale(index, yield* Clock.currentTimeMillis)) yield* rebuildIndex(orgId, view);
+    const rebuilt = yield* readFile(orgId, "INDEX.md", view);
     const indexAsOf = yield* Effect.fromOption(
       DateTime.make(/^As of ([^\r\n]+)(?:\r?\n|$)/.exec(rebuilt)?.[1] ?? ""),
     ).pipe(Effect.mapError((cause) => new MemoryError({ orgId, operation: "indexDate", cause })));
-    return { head, indexAsOf: DateTime.toUtc(indexAsOf) };
+    return {
+      head: checkoutHead,
+      indexAsOf: DateTime.toUtc(indexAsOf),
+      ...(replaced ? { replaced: true as const } : {}),
+    };
   });
 
   const dropCheckouts = Effect.fn("Memory.dropCheckouts")(function* (orgId: KinOrgId) {
@@ -1406,9 +1685,10 @@ const make = Effect.gen(function* () {
       yield* removeStaleClones(orgId, paths.root);
     initializedCheckouts.delete(orgId);
     pinnedHeads.delete(orgId);
+    synced.delete(orgId);
     skipWarnedHeads.delete(orgId);
-    snapshots.delete(orgId);
-    blobCaches.delete(orgId);
+    checkoutBranches.delete(orgId);
+    forgetSnapshots(orgId);
     return paths;
   });
   const historyRewrite = (orgId: KinOrgId): MemoryHistoryRewrite => ({
@@ -1461,14 +1741,29 @@ const make = Effect.gen(function* () {
     ensureCheckouts: Effect.fn("Memory.ensureCheckoutsLocked")((orgId) =>
       locked(orgId, ensureCheckouts(orgId, true)),
     ),
-    prepareWakeup: Effect.fn("Memory.prepareWakeup")((orgId, wakeupId) =>
-      withWriterLock(orgId, locked(orgId, prepare(orgId, wakeupId))),
+    prepareWakeup: Effect.fn("Memory.prepareWakeup")((orgId, wakeupId, view) =>
+      withWriterLock(orgId, locked(orgId, prepare(orgId, wakeupId, view))),
     ),
-    readPromptSnapshot: Effect.fn("Memory.readPromptSnapshot")((orgId, expectedHead) =>
+    syncCheckout: Effect.fn("Memory.syncCheckout")((orgId) =>
+      withWriterLock(
+        orgId,
+        locked(
+          orgId,
+          Effect.gen(function* () {
+            if (synced.get(orgId) === false) return;
+            const { writer } = yield* pathsFor(orgId);
+            if (!(yield* io(orgId, "exists", fs.exists(writer)))) return;
+            yield* ensureCheckouts(orgId);
+            yield* checkedSync(orgId);
+          }),
+        ),
+      ),
+    ),
+    readPromptSnapshot: Effect.fn("Memory.readPromptSnapshot")((orgId, expectedHead, view) =>
       locked(
         orgId,
         Effect.gen(function* () {
-          const snapshot = yield* load(orgId);
+          const snapshot = yield* load(orgId, false, view);
           if (snapshot.head !== expectedHead)
             return yield* new MemoryError({
               orgId,
@@ -1489,12 +1784,14 @@ const make = Effect.gen(function* () {
     ),
     readIndex: Effect.fn("Memory.readIndex")((orgId) => locked(orgId, readFile(orgId, "INDEX.md"))),
     readRules: Effect.fn("Memory.readRules")((orgId) => locked(orgId, readFile(orgId, "rules.md"))),
-    query: Effect.fn("Memory.queryLocked")((orgId, q) => locked(orgId, query(orgId, q))),
-    readItem: Effect.fn("Memory.readItemLocked")((orgId, id) =>
-      locked(orgId, readItem(orgId, id, true)),
+    query: Effect.fn("Memory.queryLocked")((orgId, q, view) =>
+      locked(orgId, query(orgId, q, view)),
     ),
-    readItemQuietly: Effect.fn("Memory.readItemQuietly")((orgId, id) =>
-      locked(orgId, readItem(orgId, id, false)),
+    readItem: Effect.fn("Memory.readItemLocked")((orgId, id, view) =>
+      locked(orgId, readItem(orgId, id, true, view)),
+    ),
+    readItemQuietly: Effect.fn("Memory.readItemQuietly")((orgId, id, view) =>
+      locked(orgId, readItem(orgId, id, false, view)),
     ),
     rebuildIndex: Effect.fn("Memory.rebuildIndexLocked")((orgId) =>
       locked(orgId, rebuildIndex(orgId)),

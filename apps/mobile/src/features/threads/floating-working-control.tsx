@@ -661,7 +661,7 @@ function WorkingTimer(props: { readonly startedAt: string }) {
   );
 }
 
-function formatWorkingDuration(startedAt: string, nowMs: number): string {
+export function formatWorkingDuration(startedAt: string, nowMs: number): string {
   const startedAtMs = Date.parse(startedAt);
   if (!Number.isFinite(startedAtMs) || nowMs <= startedAtMs) {
     return "0s";

@@ -86,6 +86,16 @@ const probeSecretService = Effect.gen(function* () {
   ]);
 });
 
+// gnome-keyring's plaintext keyring rewrites escape sequences when it reloads its file, which broke
+// the App's JSON (a PEM in a string). Base64 holds nothing a store can reinterpret.
+const ENCODED = "kin-b64:";
+export const encodeSecret = (value: string) =>
+  ENCODED + Buffer.from(value, "utf8").toString("base64");
+export const decodeSecret = (stored: string) =>
+  stored.startsWith(ENCODED)
+    ? Buffer.from(stored.slice(ENCODED.length), "base64").toString("utf8")
+    : stored;
+
 /**
  * `@napi-rs/keyring` 1.3.0 on Linux silently uses kernel keyutils when no Secret Service answers,
  * and has no option to pin the backend, so every Linux operation checks for one first.
@@ -133,7 +143,7 @@ export const make = (options: {
     });
     return value === undefined || value === null || value === ""
       ? Option.none()
-      : Option.some(Redacted.make(value));
+      : Option.some(Redacted.make(decodeSecret(value)));
   });
 
   const set = Effect.fn("KinKeychain.set")(function* (
@@ -143,7 +153,7 @@ export const make = (options: {
   ) {
     const item = yield* entry(service, account, "set");
     yield* Effect.tryPromise({
-      try: () => item.setPassword(Redacted.value(value)),
+      try: () => item.setPassword(encodeSecret(Redacted.value(value))),
       catch: (cause) => new KinKeychainError({ service, operation: "set", cause }),
     });
   });

@@ -607,20 +607,33 @@ const make = Effect.gen(function* () {
         WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}
         ORDER BY chat_id`,
     );
+    // The owner's DM works at L2 without a row of its own; show it when that is above the lead.
+    const dm = yield* ownerChat(lead);
+    const dmLevel =
+      dm === undefined || chats.some((row) => row.chatId === dm.chatId)
+        ? undefined
+        : yield* withSql(
+            KinLevels.effectiveLevel({ ...lead, chatId: KinChatId.make(dm.chatId) }),
+          ).pipe(Effect.catchTags({ KinLevelRefused: () => Effect.undefined }));
     return {
       orgId: lead.orgId,
       agentId: lead.agentId,
       level: promotion.from,
       levelSince: iso(levelSince),
-      chats: yield* Effect.forEach(chats, (row) =>
-        decodeLevel(row.level).pipe(
-          Effect.map((level) => ({
-            chatId: KinChatId.make(row.chatId),
-            level,
-            levelSince: iso(row.since),
-          })),
-        ),
-      ),
+      chats: [
+        ...(yield* Effect.forEach(chats, (row) =>
+          decodeLevel(row.level).pipe(
+            Effect.map((level) => ({
+              chatId: KinChatId.make(row.chatId),
+              level,
+              levelSince: iso(row.since),
+            })),
+          ),
+        )),
+        ...(dm === undefined || dmLevel === undefined || dmLevel === promotion.from
+          ? []
+          : [{ chatId: KinChatId.make(dm.chatId), level: dmLevel, levelSince: iso(levelSince) }]),
+      ],
       promotion,
       pendingRaises: (yield* openRaises(lead)).map(({ actionId, chatId, level, state }) => ({
         actionId,

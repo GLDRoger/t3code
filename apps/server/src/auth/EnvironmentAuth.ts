@@ -897,6 +897,9 @@ export const make = Effect.gen(function* () {
         },
       })
       .pipe(Effect.mapError((cause) => new ServerAuthAuthenticatedSessionIssueError({ cause })));
+    yield* kinHooks
+      .recordPairedSession(session.sessionId, grant)
+      .pipe(Effect.mapError((cause) => new ServerAuthAuthenticatedSessionIssueError({ cause })));
     return {
       response: {
         authenticated: true,
@@ -989,6 +992,7 @@ export const make = Effect.gen(function* () {
                 },
               })
               .pipe(
+                Effect.tap((session) => kinHooks.recordPairedSession(session.sessionId, grant)),
                 Effect.mapError(
                   (cause) => new ServerAuthAuthenticatedAccessTokenIssueError({ cause }),
                 ),

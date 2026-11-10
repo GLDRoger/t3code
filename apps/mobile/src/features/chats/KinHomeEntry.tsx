@@ -15,8 +15,12 @@ import {
   THREAD_LIST_V2_ROW_DIVIDERS,
 } from "../threads/thread-list-v2-row-appearance";
 
-import { selectKinInboxView } from "./state/kinInboxModel";
-import { kinHomeLabel, kinHomeSubtitle } from "./state/kinScreenState";
+import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
+import {
+  kinDirectory,
+  kinHomeLabel,
+  kinHomeSubtitle,
+} from "@t3tools/client-runtime/kin/kinScreenState";
 import { useKinInbox } from "./state/useKinInbox";
 
 /** Home's Kin row, first in the thread list. Renders nothing unless an environment hosts Kin. */
@@ -72,7 +76,7 @@ export function KinHomeEntry() {
     <View style={appearance.swipeContainerStyle}>
       <RowPressable
         accessibilityRole="button"
-        accessibilityLabel={kinHomeLabel(subtitle, unreadCount)}
+        accessibilityLabel={kinHomeLabel(state, view, kinDirectory(host))}
         accessibilityHint="Opens your Kin chats"
         className={appearance.className}
         interactionClassName={appearance.interactionClassName}

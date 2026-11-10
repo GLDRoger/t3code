@@ -48,3 +48,12 @@ export const repairProofKey = Effect.fn("ProofKeySessions.testkit.repairProofKey
   );
   return yield* sessions.verify(exchanged.access_token);
 });
+
+/** A session as a pairing exchange records it, so Kin resolves it to the owner. */
+export const pairSession = Effect.fn("ProofKeySessions.testkit.pairSession")(function* (
+  sessionId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_auth_paired_sessions (session_id, via, created_at)
+    VALUES (${sessionId}, 'one-time-token', 0) ON CONFLICT (session_id) DO NOTHING`;
+});

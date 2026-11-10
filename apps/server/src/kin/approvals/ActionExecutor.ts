@@ -1,5 +1,10 @@
-import { KinOrgId, type KinGrant, type KinPendingAction } from "@t3tools/contracts";
-import { decodeKinGrant } from "@t3tools/shared/kinGrant";
+import {
+  KinApproverPublicJwk,
+  KinOrgId,
+  type KinGrant,
+  type KinPendingAction,
+} from "@t3tools/contracts";
+import { decodeKinGrant, verifyKinGrant } from "@t3tools/shared/kinGrant";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -9,6 +14,7 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Result from "effect/Result";
 import * as Schedule from "effect/Schedule";
+import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -29,6 +35,8 @@ import { CredentialHygiene } from "./CredentialHygiene.ts";
 import { type CredentialHygieneReport, failureResult } from "./CredentialHygieneReport.ts";
 import { KinExecutionNotices, type KinExecutionOutcome } from "./ExecutionNotices.ts";
 import { KinOrgRoles } from "./GrantPorts.ts";
+import { grantMatchesRecord } from "./grantFacts.ts";
+import { KinKeySeal } from "./KeySeal.ts";
 import { KinExecutionLedger, KinPendingActions, type ActionRef } from "./PendingActions.ts";
 
 /** Held approvals are retried, and orphaned `executing` rows picked up, this often. */
@@ -59,6 +67,8 @@ export type KinReconcileResult =
   | { readonly _tag: "skipped" };
 
 type Errors = PersistenceSqlError | PersistenceDecodeError;
+
+const decodeJwk = Schema.decodeUnknownOption(Schema.fromJsonString(KinApproverPublicJwk));
 
 /**
  * Spec section 6: carries out approved actions, one at a time per org. The only way in is an
@@ -106,7 +116,58 @@ export const make = Effect.gen(function* () {
   const roles = yield* KinOrgRoles;
   const audit = yield* KinAudit;
   const notices = yield* KinExecutionNotices;
+  const seal = yield* KinKeySeal;
   const sql = yield* SqlClient.SqlClient;
+
+  /**
+   * The stored grant is signed by its key, whose activation seal verifies, and binds this action.
+   * Approval runs these checks too; a grant or action written straight into SQLite fails here.
+   */
+  const grantVerifies = Effect.fn("KinActionExecutor.grantVerifies")(
+    function* (action: KinPendingAction, grant: KinGrant) {
+      const decoded = decodeKinGrant(grant.compact);
+      if (decoded === null) return false;
+      const [key] = yield* sql<{
+        public_jwk_json: string;
+        human_id: string;
+        hardware: string;
+        seal: string | null;
+      }>`SELECT public_jwk_json, human_id, hardware, seal FROM kin_approver_keys
+        WHERE org_id = ${action.orgId} AND thumbprint = ${grant.keyThumbprint}
+        ORDER BY thumbprint LIMIT 1`;
+      if (key === undefined || key.human_id !== grant.approverHumanId) return false;
+      const sealed = seal.verify(
+        {
+          orgId: action.orgId,
+          thumbprint: grant.keyThumbprint,
+          publicJwkJson: key.public_jwk_json,
+          humanId: key.human_id,
+          hardware: key.hardware,
+        },
+        key.seal,
+      );
+      const publicJwk = decodeJwk(key.public_jwk_json);
+      if (!sealed || Option.isNone(publicJwk)) return false;
+      // Expiry is the claim's to judge, so a lapsed grant is voided by the sweep as before.
+      const verified = verifyKinGrant({
+        compact: grant.compact,
+        publicJwk: publicJwk.value,
+        nowEpochSeconds: (yield* Clock.currentTimeMillis) / 1000,
+      });
+      if (!verified.ok && verified.reason !== "time_window") return false;
+      const { header, payload } = decoded;
+      return (
+        header.kid === grant.keyThumbprint &&
+        payload.orgId === action.orgId &&
+        payload.actionId === action.id &&
+        payload.revision === action.revision &&
+        payload.jti === grant.jti &&
+        payload.approver.humanId === grant.approverHumanId &&
+        grantMatchesRecord(payload, action)
+      );
+    },
+    Effect.mapError(toPersistenceSqlError("KinActionExecutor.grantVerifies")),
+  );
 
   const locks = new Map<KinOrgId, Semaphore.Semaphore>();
   const withOrgLock = <A, E, R>(orgId: KinOrgId, effect: Effect.Effect<A, E, R>) => {
@@ -231,7 +292,7 @@ export const make = Effect.gen(function* () {
     return { _tag: "finished", outcome: "succeeded" } as KinReconcileResult;
   });
 
-  /** Steps 4–7, for an action this executor just claimed. */
+  /** Steps 5–8, for an action this executor just claimed. */
   const runClaimed = Effect.fn("KinActionExecutor.runClaimed")(function* (
     action: KinPendingAction,
     grant: KinGrant,
@@ -336,7 +397,15 @@ export const make = Effect.gen(function* () {
       if (!check.passed)
         return yield* held(action, "credential_check_failed", failureResult(check));
     }
-    // 3. The claim: one `kin_executions` row, whatever races or restarts.
+    // 3. The stored grant verifies against its sealed key and binds this action.
+    if (!(yield* grantVerifies(action, grant))) {
+      yield* Effect.logWarning("Kin executor: an approved action's grant doesn't verify.", {
+        orgId: action.orgId,
+        actionId: action.id,
+      });
+      return yield* voided("grant_unverified");
+    }
+    // 4. The claim: one `kin_executions` row, whatever races or restarts.
     const claimed = yield* ledger.claim({
       orgId: action.orgId,
       actionId: action.id,

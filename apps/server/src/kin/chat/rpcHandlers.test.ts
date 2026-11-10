@@ -1,4 +1,4 @@
-import * as JudgeShadow from "../floor/JudgeShadow.ts";
+import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { dormantLeadDependencies } from "../lead/layer.testkit.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -9,6 +9,7 @@ import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import {
   AuthSessionId,
   AuthSettingsWriteScope,
+  AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   KinChatError,
   KinMemberId,
@@ -22,6 +23,7 @@ import {
   KinMessageId,
   KinChatAndBudgetRpcs,
   KinOrgId,
+  ProviderInstanceId,
   ThreadId,
   RpcScopeAuthorization,
   WsRpcGroup,
@@ -46,6 +48,7 @@ import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import * as FileSystem from "effect/FileSystem";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Sqlite from "../../persistence/Sqlite.ts";
+import * as ServerSettings from "../../serverSettings.ts";
 import * as RpcAuthorization from "../../auth/RpcAuthorization.ts";
 import * as Kin from "../layer.ts";
 import * as Chat from "./layer.ts";
@@ -86,6 +89,7 @@ const seed = Effect.gen(function* () {
   const identity = Context.get(context, KinIdentity);
   const chat = Context.get(context, KinChatService);
   const repo = Context.get(context, Repository.KinChatRepository);
+  yield* pairSession(session.sessionId);
   const person = (yield* identity.resolve(session))[0];
   assert.isDefined(person);
   const agentId = KinAgentId.make("lead");
@@ -331,7 +335,6 @@ it.effect(
       const service = yield* KinChatService.pipe(
         Effect.provide(
           Layer.fresh(Service.layer).pipe(
-            Layer.provide(JudgeShadow.layerOff),
             Layer.provide(Layer.succeed(Repository.KinChatRepository, interceptedRepo)),
             Layer.provide(
               Layer.succeed(Hub.KinChatHub, {
@@ -560,7 +563,6 @@ it.effect("subscribes before the list snapshot and drops buffered state already 
     const service = yield* KinChatService.pipe(
       Effect.provide(
         Layer.fresh(Service.layer).pipe(
-          Layer.provide(JudgeShadow.layerOff),
           Layer.provide(
             Layer.succeed(
               Repository.KinChatRepository,
@@ -629,7 +631,6 @@ it.effect("drops a failed waiting read without ending the chat list stream", () 
     const service = yield* KinChatService.pipe(
       Effect.provide(
         Layer.fresh(Service.layer).pipe(
-          Layer.provide(JudgeShadow.layerOff),
           Layer.provide(
             Layer.succeed(Repository.KinChatRepository, {
               ...repo,
@@ -673,7 +674,7 @@ it.effect("drops a failed waiting read without ending the chat list stream", () 
 );
 
 it.effect(
-  "serves budget settings to the owner and refuses non-owner and foreign organizations",
+  "serves budget and time zone settings to the owner and refuses non-owner and foreign organizations",
   () =>
     Effect.gen(function* () {
       const { person, repo } = yield* seed;
@@ -741,8 +742,20 @@ it.effect(
           ),
         ),
       );
+      const zone = { orgId: person.orgId, timeZone: "Asia/Kolkata" };
+      assert.deepStrictEqual(yield* client["kin.triggers.getTimeZone"]({ orgId: person.orgId }), {
+        ...zone,
+        timeZone: "UTC",
+      });
+      assert.include(yield* memberClient["kin.triggers.setTimeZone"](zone).pipe(Effect.flip), {
+        reason: "not_allowed",
+      });
       assert.strictEqual(
         (yield* readOnly["kin.budget.set"](input).pipe(Effect.flip))._tag,
+        "EnvironmentAuthorizationError",
+      );
+      assert.strictEqual(
+        (yield* readOnly["kin.triggers.setTimeZone"](zone).pipe(Effect.flip))._tag,
         "EnvironmentAuthorizationError",
       );
     }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
@@ -819,6 +832,108 @@ it.effect("lets only the owner stop and resume Kin over RPC; members may read th
     const resumed = yield* client["kin.org.resume"](input);
     assert.isFalse(resumed.paused);
     assert.deepStrictEqual(yield* client["kin.org.resume"](input), resumed);
+  }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
+);
+
+it.effect("creates many leads over RPC for the owner only, through the CLI's create", () =>
+  Effect.gen(function* () {
+    const { person, repo } = yield* seed;
+    const clientFor = (
+      handlers: Effect.Success<ReturnType<typeof makeKinHandlers>>,
+      scopes: ReadonlyArray<(typeof AuthStandardClientScopes)[number]> = AuthStandardClientScopes,
+    ) =>
+      RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.merge(
+            group.toLayer({ ...handlers, "server.probe": () => Effect.succeed({}) }),
+            RpcAuthorization.layer(scopes),
+          ),
+        ),
+      );
+    const settings = ServerSettings.layerTest();
+    const handlers = yield* makeKinHandlers(session).pipe(Effect.provide(settings));
+    const client = yield* clientFor(handlers);
+    const claude = { instanceId: ProviderInstanceId.make("claudeAgent"), model: "claude-opus-4-6" };
+    const input = {
+      orgId: person.orgId,
+      name: "Growth",
+      domain: "growth",
+      charter: "Grow signups.",
+      models: { strong: claude, cheap: claude },
+    };
+    const growth = yield* client["kin.lead.create"](input);
+    assert.include(growth, {
+      outcome: "created",
+      domain: "growth",
+      level: "L0",
+      createdByPersonId: person.personId,
+    });
+    // The third lead copies the first lead's models.
+    const { models: _models, ...noModels } = input;
+    const social = yield* client["kin.lead.create"]({
+      ...noModels,
+      name: "Social",
+      domain: "social-media",
+    });
+    assert.strictEqual(social.outcome, "created");
+    assert.notStrictEqual(social.ownerChatId, growth.ownerChatId);
+    assert.deepStrictEqual(yield* client["kin.lead.create"](input), {
+      ...growth,
+      outcome: "existing",
+    });
+    assert.include(
+      yield* client["kin.lead.create"]({ ...input, orgId: KinOrgId.make("foreign") }).pipe(
+        Effect.flip,
+      ),
+      { reason: "not_allowed" },
+    );
+
+    // A member's session is refused by the service, and a session without the settings grant
+    // never reaches it.
+    const memberId = KinPersonId.make("lead-member");
+    yield* repo.insertPerson({
+      orgId: person.orgId,
+      personId: memberId,
+      handle: "lead-member",
+      displayName: "Member",
+      githubLogin: null,
+      createdAt: "1970-01-01T00:00:00.000Z",
+    });
+    const kin = yield* Kin.KinServer;
+    const services = Option.getOrThrow(kin.services);
+    const identity = Context.get(services, KinIdentity);
+    const member = yield* clientFor(
+      yield* makeKinHandlers(session).pipe(
+        Effect.provide(settings),
+        Effect.provideService(Kin.KinServer, {
+          ...kin,
+          services: Option.some(
+            Context.add(services, KinIdentity, {
+              ...identity,
+              resolve: () =>
+                Effect.succeed([{ _tag: "person", orgId: person.orgId, personId: memberId }]),
+            }),
+          ),
+        }),
+      ),
+    );
+    assert.include(
+      yield* member["kin.lead.create"]({ ...input, domain: "finance" }).pipe(Effect.flip),
+      { reason: "not_allowed" },
+    );
+    const operator = yield* clientFor(handlers, [
+      AuthOrchestrationReadScope,
+      AuthOrchestrationOperateScope,
+    ]);
+    assert.strictEqual(
+      (yield* operator["kin.lead.create"]({ ...input, domain: "finance" }).pipe(Effect.flip))._tag,
+      "EnvironmentAuthorizationError",
+    );
+    const sql = yield* SqlClient.SqlClient;
+    assert.deepStrictEqual(
+      yield* sql`SELECT domain FROM kin_leads WHERE org_id = ${person.orgId} ORDER BY domain`,
+      [{ domain: "growth" }, { domain: "social-media" }],
+    );
   }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 

@@ -1,11 +1,15 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId, KinChatId } from "@t3tools/contracts";
-import { useRef, useState } from "react";
+import { useState, type RefObject } from "react";
 import { Platform, View } from "react-native";
 
 import { ComposerEditor } from "../../../components/ComposerEditor";
 import { AppText as Text } from "../../../components/ui/AppText";
-import { IconButton } from "../../../components/ui/IconButton";
+import { useDeviceType } from "../../../native/native-layout-metrics";
+import { useSidebarWorkspaceTabs } from "../../layout/workspace/useSystemWorkspaceTabBar";
+import { useComposerTextRole } from "../../settings/appearance/useScaledTextRole";
+import type { ComposerSendPresentation } from "../../threads/composerSendPresentation";
+import { ComposerSurface, SendActionButton } from "../../threads/ThreadComposer";
 import type { ComposerEditorHandle } from "../../../native/T3ComposerEditor.types";
 import {
   clearComposerDraftContent,
@@ -13,16 +17,17 @@ import {
   setComposerDraftText,
   useComposerDraft,
 } from "../../../state/use-composer-drafts";
-import { KIN_MESSAGE_MAX_LENGTH } from "../state/kinOutbox";
+import { KIN_MESSAGE_MAX_LENGTH } from "@t3tools/client-runtime/kin/kinOutbox";
 import { deliverKinOutbox, kinOutbox } from "../state/kinOutboxDelivery";
 
 /** Every Kin host uses the same org id, so the environment keeps two hosts' drafts apart. */
 export const kinDraftKey = (environmentId: EnvironmentId, orgId: string, chatId: string) =>
   `kin:${environmentId}:${orgId}:${chatId}`;
 
-// The native editor has no intrinsic height: it grows with its text from one line to this cap.
+// The native editor has no intrinsic height: it grows with its text from one line to four.
+// iOS reports at most four lines of content, so a taller cap would never turn scrolling on.
 const EDITOR_MIN_HEIGHT = 36;
-const EDITOR_MAX_HEIGHT = 140;
+const EDITOR_MAX_LINES = 4;
 const EDITOR_INSET = 6;
 
 const lengthFormat = new Intl.NumberFormat();
@@ -30,7 +35,15 @@ const lengthFormat = new Intl.NumberFormat();
 /** The space under the Send row while the keyboard is up, and the least it gets without one. */
 export const KIN_COMPOSER_GUTTER = 12;
 /** The composer's height above `bottomInset` with one line and no hint, until it's measured. */
-export const KIN_COMPOSER_COLLAPSED_HEIGHT = 57;
+export const KIN_COMPOSER_COLLAPSED_HEIGHT = 54;
+
+const KIN_SEND: ComposerSendPresentation = {
+  label: "Send",
+  icon: "arrow.up",
+  action: null,
+  alternate: null,
+  offersFollowUpChoice: false,
+};
 
 /** Puts an unsent body back in the draft, ahead of anything typed since. */
 function restoreDraft(draftKey: string, body: string) {
@@ -59,15 +72,22 @@ export function KinComposer(props: {
   /** Called once the message is in the outbox, so the feed can show the end. */
   readonly onSend: () => void;
   readonly onFocusChange?: (focused: boolean) => void;
+  /** Owned by the feed, so it can focus the editor after filling the draft. */
+  readonly editorRef: RefObject<ComposerEditorHandle | null>;
 }) {
   const draftKey = kinDraftKey(props.environmentId, props.orgId, props.chatId);
   const draft = useComposerDraft(draftKey);
-  const editorRef = useRef<ComposerEditorHandle>(null);
+  const { editorRef } = props;
   const full = useAtomValue(kinOutbox.fullAtom(props.environmentId));
   const [contentHeight, setContentHeight] = useState(0);
-  const editorHeight = Math.min(
-    EDITOR_MAX_HEIGHT,
-    Math.max(EDITOR_MIN_HEIGHT, Math.ceil(contentHeight) + 2 * EDITOR_INSET),
+  const { lineHeight } = useComposerTextRole();
+  // The thread composer's sizing: larger controls on iPad and with the sidebar's tab picker.
+  const deviceType = useDeviceType();
+  const largeControls = useSidebarWorkspaceTabs() === "picker" || deviceType === "pad";
+  const maxContentHeight = lineHeight * EDITOR_MAX_LINES;
+  const editorHeight = Math.max(
+    EDITOR_MIN_HEIGHT,
+    Math.ceil(Math.min(maxContentHeight, contentHeight)) + 2 * EDITOR_INSET,
   );
   const length = draft.text.trim().length;
   const tooLong = length > KIN_MESSAGE_MAX_LENGTH;
@@ -97,10 +117,16 @@ export function KinComposer(props: {
   };
 
   return (
-    <View
-      className="gap-1 border-t border-border bg-screen px-3 pt-2"
-      style={{ paddingBottom: props.bottomInset }}
-    >
+    <View className="gap-1 px-3 pt-1.5" style={{ paddingBottom: props.bottomInset }}>
+      {/* As under the thread composer: the feed fades out behind the pill. */}
+      <View
+        className={
+          Platform.OS === "android"
+            ? "absolute inset-0 bg-screen"
+            : "absolute inset-0 bg-linear-to-b from-screen/0 via-screen/60 to-screen/90"
+        }
+        pointerEvents="none"
+      />
       {hint === null ? null : (
         <Text
           textRole="caption"
@@ -110,34 +136,46 @@ export function KinComposer(props: {
           {hint}
         </Text>
       )}
-      <View className="flex-row items-end gap-2">
-        <View className="min-h-11 flex-1 justify-center rounded-[22px] border border-composer-border bg-composer-surface px-3.5 py-1">
-          <ComposerEditor
-            ref={editorRef}
-            draftKey={draftKey}
-            pasteContext={false}
-            multiline
-            value={draft.text}
-            placeholder={`Message ${props.recipient}`}
-            onSubmit={() => void send()}
-            onChangeText={(text) => setComposerDraftText(draftKey, text)}
-            onFocus={() => props.onFocusChange?.(true)}
-            onBlur={() => props.onFocusChange?.(false)}
-            contentInsetVertical={EDITOR_INSET}
-            singleLineCentered={contentHeight <= EDITOR_MIN_HEIGHT - 2 * EDITOR_INSET}
-            scrollEnabled={Platform.OS === "android" || editorHeight >= EDITOR_MAX_HEIGHT}
-            onContentSizeChange={(size) => setContentHeight(size.height)}
-            style={{ height: editorHeight }}
+      <ComposerSurface
+        animateLayout={false}
+        style={{
+          borderRadius: largeControls ? 31 : 27,
+          borderCurve: "circular",
+          overflow: "hidden",
+          paddingVertical: largeControls ? 9 : 2,
+        }}
+      >
+        <View className="flex-row items-end">
+          <View className="min-h-11 flex-1 justify-center py-1 pl-4">
+            <ComposerEditor
+              ref={editorRef}
+              draftKey={draftKey}
+              pasteContext={false}
+              multiline
+              value={draft.text}
+              placeholder={`Message ${props.recipient}`}
+              onSubmit={() => void send()}
+              onChangeText={(text) => setComposerDraftText(draftKey, text)}
+              onFocus={() => props.onFocusChange?.(true)}
+              onBlur={() => props.onFocusChange?.(false)}
+              contentInsetVertical={EDITOR_INSET}
+              singleLineCentered={
+                contentHeight <= Math.max(EDITOR_MIN_HEIGHT - 2 * EDITOR_INSET, lineHeight)
+              }
+              scrollEnabled={Platform.OS === "android" || contentHeight >= maxContentHeight}
+              onContentSizeChange={(size) => setContentHeight(size.height)}
+              style={{ height: editorHeight }}
+            />
+          </View>
+          <SendActionButton
+            size={largeControls ? "large" : "regular"}
+            accessibilityLabel={hint ?? "Send"}
+            presentation={KIN_SEND}
+            disabled={!canSend}
+            onSend={() => void send()}
           />
         </View>
-        <IconButton
-          variant="primary"
-          icon="arrow.up"
-          accessibilityLabel="Send"
-          disabled={!canSend}
-          onPress={() => void send()}
-        />
-      </View>
+      </ComposerSurface>
     </View>
   );
 }

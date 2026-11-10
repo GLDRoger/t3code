@@ -21,6 +21,7 @@ import { isSqlError } from "effect/sql/SqlError";
 import { PersistenceDecodeError, toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as Chat from "../chat/KinChatService.ts";
+import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { WorkerLaunchGate } from "../lead/Workers.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
@@ -36,6 +37,7 @@ import {
   ownerDateTime,
   ownerTime,
   snapshotChanges,
+  deferralLead,
   startsAtLevel,
   makeDeferralCards,
   makeDeferralStarter,
@@ -138,7 +140,7 @@ const make = Effect.gen(function* () {
       Effect.map((rows) => rows[0]),
     );
   const readItem = (orgId: KinOrgId, itemId: KinMemoryItemId) =>
-    memory.readItemQuietly(orgId, itemId).pipe(
+    memory.readItemQuietly(orgId, itemId, "triggers").pipe(
       Effect.map((item): MemoryItemHead | undefined => item.head),
       Effect.catchTags({
         MemoryNotFound: () => Effect.undefined,
@@ -155,12 +157,8 @@ const make = Effect.gen(function* () {
         WHERE org_id = ${orgId} AND chat_id = ${item.chat} ORDER BY chat_id`;
       if (own !== undefined) return KinChatId.make(item.chat);
     }
-    const [lead] = yield* sql<{
-      chatId: string;
-    }>`SELECT l.owner_chat_id AS "chatId" FROM kin_leads l
-      JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
-      WHERE l.org_id = ${orgId} AND a.retired_at IS NULL ORDER BY l.agent_id LIMIT 1`;
-    return lead === undefined ? null : KinChatId.make(lead.chatId);
+    const lead = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
+    return lead === undefined ? null : lead.ownerChatId;
   });
 
   const prepareChase = Effect.fn("KinDeferralFlow.prepareChase")(function* (
@@ -172,10 +170,7 @@ const make = Effect.gen(function* () {
     const handle = item.owner ?? item.said_by;
     const [person] = yield* sql<{ personId: string }>`SELECT person_id AS "personId"
       FROM kin_people WHERE org_id = ${orgId} AND handle = ${handle} ORDER BY person_id`;
-    const [owner] = yield* sql<{ owner: string; chatId: string }>`SELECT a.owner_person_id AS owner,
-      l.owner_chat_id AS "chatId" FROM kin_leads l
-      JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
-      WHERE l.org_id = ${orgId} AND a.retired_at IS NULL ORDER BY l.agent_id LIMIT 1`;
+    const owner = yield* liveLead(sql, orgId, { chatId: item.chat, prefer: CHIEF_OF_STAFF_DOMAIN });
     if (person === undefined || owner === undefined || item.chat === undefined)
       return `I couldn't chase ${handle}`;
     const put = yield* pings
@@ -185,8 +180,8 @@ const make = Effect.gen(function* () {
           person: KinPersonId.make(person.personId),
           itemId: item.id,
           chatId: item.chat,
-          owner: KinPersonId.make(owner.owner),
-          ownerChatId: KinChatId.make(owner.chatId),
+          owner: owner.ownerPersonId,
+          ownerChatId: owner.ownerChatId,
           nextStep: `${item.title} was due ${ownerDateTime(dueAt, timeZone)}. What's the status?`,
         },
         item,
@@ -272,9 +267,7 @@ const make = Effect.gen(function* () {
         });
 
         if (onDue === "start") {
-          const [lead] = yield* sql<{ level: string }>`SELECT l.level FROM kin_leads l
-            JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
-            WHERE l.org_id = ${orgId} AND a.retired_at IS NULL ORDER BY l.agent_id LIMIT 1`;
+          const lead = yield* deferralLead(sql, orgId, item?.chat);
           if (lead === undefined) reasons.push("there is no active lead");
           else if (!startsAtLevel(lead.level)) reasons.push(`Kin is at ${lead.level}, below L2`);
         }
@@ -321,6 +314,7 @@ const make = Effect.gen(function* () {
               at: Date.parse(fire.firedAt),
               now,
               from: run.state,
+              chatId: item?.chat,
             });
             if (!started) return false;
           }

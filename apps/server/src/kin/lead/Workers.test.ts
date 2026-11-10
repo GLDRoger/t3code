@@ -1,3 +1,5 @@
+import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
+import { kinSecretsTest } from "./layer.testkit.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
 import {
@@ -105,6 +107,7 @@ const setup = Effect.fn("WorkersTest.setup")(function* (level = "L2") {
   const identity = Context.get(services, KinIdentity);
   const chats = Context.get(services, KinChatService);
   const sql = yield* SqlClient.SqlClient;
+  yield* pairSession(AuthSessionId.make("owner"));
   const [person] = yield* identity.resolve({
     sessionId: AuthSessionId.make("owner"),
     subject: "browser",
@@ -387,6 +390,7 @@ const run = <A, E>(
   }).pipe(
     Effect.provide(
       Kin.layer.pipe(
+        Layer.provide(kinSecretsTest),
         Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
         Layer.provideMerge(environment),
         Layer.provideMerge(authorityLayer),
@@ -637,6 +641,8 @@ it.effect("kin_delegate below L2 records a shadow entry and starts nothing", () 
   run(
     ({ ctx, fakes, workers }) =>
       Effect.gen(function* () {
+        // The owner's DM works at L2 from creation; the owner lowered it to the lead's L1.
+        yield* ctx.sql`INSERT INTO kin_chat_levels (org_id, agent_id, chat_id, level, level_since) SELECT org_id, ${leadId}, chat_id, 'L1', 0 FROM kin_chats WHERE org_id = ${ctx.orgId} ORDER BY chat_id`;
         const result = yield* workers.delegate(scope, delegateInput);
         assert.ok("shadowed" in result);
         assert.deepStrictEqual(yield* workers.delegate(scope, delegateInput), result);
@@ -948,6 +954,31 @@ it.effect(
         assert.deepStrictEqual(fakes.stopped, [threadId, threadId]);
       }),
     ),
+);
+
+it.effect("a project removed from the lead's list refuses new and follow-up work there", () =>
+  run(({ ctx, fakes, workers }) =>
+    Effect.gen(function* () {
+      const worker = yield* workers.delegate(scope, delegateInput);
+      assert.ok("workerId" in worker);
+      const sends = fakes.sends.length;
+      yield* ctx.sql`UPDATE kin_leads SET worker_projects_json = '[]' WHERE org_id = ${ctx.orgId} AND agent_id = ${leadId}`;
+      for (const attempt of [
+        workers.delegate(scope, { ...delegateInput, title: "Another task" }),
+        workers.followUp(scope, {
+          workerId: worker.workerId,
+          brief: "More",
+          sourceEventId: "lead-event",
+        }),
+      ] as ReadonlyArray<Effect.Effect<object, KinChatError>>) {
+        const refused = yield* Effect.flip(attempt);
+        assert.strictEqual(refused.reason, "not_allowed");
+        assert.include(refused.message, "worker projects");
+      }
+      assert.lengthOf(fakes.launches, 1);
+      assert.lengthOf(fakes.sends, sends);
+    }),
+  ),
 );
 
 it.effect("stopping a worker closes its card and a follow-up reopens the same card", () =>

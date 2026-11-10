@@ -34,6 +34,8 @@ function Textarea({
             className={cn(
               "field-sizing-content max-h-64 w-full rounded-[inherit] px-[calc(--spacing(3)-1px)] py-[calc(--spacing(1.5)-1px)] outline-none wrap-anywhere",
               rows === undefined && "min-h-17.5 max-sm:min-h-20.5",
+              // Unstyled sits inside a surface that owns the frame, so no resize grip.
+              unstyled && "resize-none",
               size === "sm" && "px-[calc(--spacing(2.5)-1px)] py-[calc(--spacing(1)-1px)]",
               size === "sm" && rows === undefined && "min-h-16.5 max-sm:min-h-19.5",
               size === "lg" && "py-[calc(--spacing(2)-1px)]",

@@ -5,7 +5,6 @@ import * as NodePath from "node:path";
 import { assert, describe, it } from "@effect/vitest";
 import {
   KinEventId,
-  KinKeyThumbprint,
   KinOrgId,
   type KinActionTarget,
   type KinGrantPayload,
@@ -48,6 +47,8 @@ import * as Audit from "./Audit.ts";
 import * as CredentialHygiene from "./CredentialHygiene.ts";
 import { KinExecutionNotices } from "./ExecutionNotices.ts";
 import { BOOTSTRAP_OWNER, KinOrgRoles } from "./GrantPorts.ts";
+import { insertActiveKey, makeApprovalKey, signCompact } from "./grant.testkit.ts";
+import * as KeySeal from "./KeySeal.ts";
 import * as ApprovalsLayer from "./layer.ts";
 import { makeDeleteBranchHandler } from "./handlers/deleteBranch.ts";
 import { makeMergePullRequestHandler } from "./handlers/mergePullRequest.ts";
@@ -58,7 +59,8 @@ const DAY = 24 * 60 * 60 * 1000;
 const orgId = Schema.decodeSync(KinOrgId)("org_01");
 // The production layer's roles port knows only the bootstrap owner.
 const owner = BOOTSTRAP_OWNER;
-const kid = Schema.decodeSync(KinKeyThumbprint)("Y0ZkXVc6eNfxv3xVNHZJp1x7m3kQqb2O8s5vB1aWc9E");
+const approvalKey = makeApprovalKey();
+const kid = approvalKey.kid;
 const decodeEventId = Schema.decodeSync(KinEventId);
 const REPO = "GLDRoger/t3code";
 const HEAD = "a".repeat(40);
@@ -68,7 +70,11 @@ const OWNER_TOKEN = "github_pat_owner_merge_token_never_logged";
 const BOT_TOKEN = "ghs_bot_read_token";
 const PULL = `/repos/${REPO}/pulls/212`;
 const HEAD_DELETE = `DELETE /repos/${REPO}/git/refs/heads/kin/fix-212`;
-const SIGNATURE = Buffer.alloc(64, 7).toString("base64url");
+const JUNK_SIGNATURE = Buffer.alloc(64, 7).toString("base64url");
+
+/** The owner's key as the server activated it; `sealed: false` is a row written into SQLite. */
+const insertKey = (orgId: string, options: { readonly sealed?: boolean } = {}) =>
+  insertActiveKey({ key: approvalKey, orgId, humanId: owner, ...options });
 
 const prTarget = (deleteBranchAfter = false): KinActionTarget => ({
   _tag: "pull_request",
@@ -390,7 +396,7 @@ function harness(
       });
     }),
   ).pipe(Layer.provide(PendingActions.ledgerLayer));
-  const deps = Layer.mergeAll(handlers, hygiene).pipe(
+  const deps = Layer.mergeAll(handlers, hygiene, KeySeal.layerTest()).pipe(
     Layer.provideMerge(githubStack),
     Layer.provideMerge(Layer.mergeAll(PendingActions.layer, ledger)),
     Layer.provideMerge(Layer.mergeAll(notifications, roles)),
@@ -424,9 +430,7 @@ const seed = Effect.gen(function* () {
     VALUES ('org_01', 'Kin', '2026-11-07T00:00:00.000Z')`;
   yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
     VALUES (${owner}, 'org_01', 'nishchay', 'Nishchay', '2026-11-07T00:00:00.000Z')`;
-  yield* sql`INSERT INTO kin_approver_keys (thumbprint, org_id, public_jwk_json, human_id,
-      device_label, platform, hardware, attested, state, created_at)
-    VALUES (${kid}, 'org_01', '{}', ${owner}, 'Pixel 9', 'android', 'tee', 1, 'active', 0)`;
+  yield* insertKey("org_01");
   return { sql, actions: yield* PendingActions.KinPendingActions };
 });
 
@@ -440,6 +444,8 @@ const approved = (input: {
   readonly source: string;
   /** Edits the signed payload, for a grant that doesn't bind its action. */
   readonly payload?: (payload: KinGrantPayload) => KinGrantPayload;
+  /** A signature no key made, as a row written straight into SQLite would carry. */
+  readonly forged?: boolean;
 }) =>
   Effect.gen(function* () {
     const actions = yield* PendingActions.KinPendingActions;
@@ -492,7 +498,10 @@ const approved = (input: {
       jti,
       approverHumanId: owner,
       keyThumbprint: kid,
-      compact: `${encodeGrantSigningInput(header, signed)}.${SIGNATURE}`,
+      compact:
+        input.forged === true
+          ? `${encodeGrantSigningInput(header, signed)}.${JUNK_SIGNATURE}`
+          : signCompact(approvalKey, header, signed),
       iat,
       exp: iat + 600,
     });
@@ -748,43 +757,55 @@ describe("KinActionExecutor", () => {
     }).pipe(Effect.provide(layer));
   });
 
-  it.effect("the precheck refuses a closed PR, a merge queue and an unbound grant", () => {
-    const { world, requests, layer } = harness();
-    return Effect.gen(function* () {
-      yield* seed;
-      const executor = yield* ActionExecutor.KinActionExecutor;
-      const refusedWith = (source: string, reason: RegExp) =>
-        Effect.gen(function* () {
-          const ref = yield* approvedMerge(source);
-          assert.deepInclude(yield* executor.execute(ref), { outcome: "failed" });
-          assert.match((yield* stateOf(ref)).reason ?? "", reason);
+  it.effect(
+    "the precheck refuses a closed PR and a merge queue, and a grant that doesn't verify never runs",
+    () => {
+      const { world, requests, layer } = harness();
+      return Effect.gen(function* () {
+        yield* seed;
+        const executor = yield* ActionExecutor.KinActionExecutor;
+        const refusedWith = (source: string, reason: RegExp) =>
+          Effect.gen(function* () {
+            const ref = yield* approvedMerge(source);
+            assert.deepInclude(yield* executor.execute(ref), { outcome: "failed" });
+            assert.match((yield* stateOf(ref)).reason ?? "", reason);
+          });
+        world.pull = { ...openPull, state: "closed" };
+        yield* refusedWith("closed", /^not_open: closed/);
+        world.pull = { ...openPull };
+        world.rules.set("kin", [{ type: "merge_queue" }]);
+        yield* refusedWith("queued", /^merge_queue_unsupported/);
+        world.rules.set("kin", []);
+        // The signed payload names another target or head, no key signed it, or the key row was
+        // written straight into SQLite: voided before the claim, so nothing is sent.
+        const refuse = (source: string, options: Partial<Parameters<typeof approved>[0]> = {}) =>
+          Effect.gen(function* () {
+            const ref = yield* approved({
+              kind: "merge_pull_request",
+              target: prTarget(),
+              resolved: prFacts,
+              source,
+              ...options,
+            });
+            assert.deepStrictEqual(
+              yield* executor.execute(ref),
+              { _tag: "voided", reason: "grant_unverified" },
+              source,
+            );
+          });
+        yield* refuse("unbound", {
+          payload: (payload) => ({ ...payload, targetDigest: "0".repeat(64) as never }),
         });
-      world.pull = { ...openPull, state: "closed" };
-      yield* refusedWith("closed", /^not_open: closed/);
-      world.pull = { ...openPull };
-      world.rules.set("kin", [{ type: "merge_queue" }]);
-      yield* refusedWith("queued", /^merge_queue_unsupported/);
-      world.rules.set("kin", []);
-      // The signed payload names another target or head: the run refuses before any write.
-      const edits: ReadonlyArray<readonly [string, (payload: KinGrantPayload) => KinGrantPayload]> =
-        [
-          ["unbound", (payload) => ({ ...payload, targetDigest: "0".repeat(64) as never })],
-          ["unbound-head", (payload) => ({ ...payload, headSha: MOVED })],
-        ];
-      for (const [source, payload] of edits) {
-        const unbound = yield* approved({
-          kind: "merge_pull_request",
-          target: prTarget(),
-          resolved: prFacts,
-          source,
-          payload,
-        });
-        assert.deepInclude(yield* executor.execute(unbound), { outcome: "failed" });
-        assert.match((yield* stateOf(unbound)).reason ?? "", /^grant_mismatch/, source);
-      }
-      assert.deepStrictEqual(writes(requests), []);
-    }).pipe(Effect.provide(layer));
-  });
+        yield* refuse("unbound-head", { payload: (payload) => ({ ...payload, headSha: MOVED }) });
+        yield* refuse("forged-signature", { forged: true });
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DELETE FROM kin_approver_keys WHERE org_id = ${orgId}`;
+        yield* insertKey(orgId, { sealed: false });
+        yield* refuse("unsealed-key");
+        assert.deepStrictEqual(writes(requests), []);
+      }).pipe(Effect.provide(layer));
+    },
+  );
 
   it.effect("the live read sits right before the write, after every other check", () => {
     const { world, requests, checks, owners, layer } = harness();
@@ -1527,6 +1548,7 @@ describe("KinActionExecutor", () => {
           ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })),
           // The hygiene check reads the server's environment; this one sets nothing.
           Layer.succeed(HostProcess.Environment, {}),
+          KeySeal.layerTest(),
           Sqlite.layerMemory,
         ),
       ),
@@ -1630,9 +1652,7 @@ describe("KinActionExecutor", () => {
       // A grant row moved to another org that holds the same key, as corrupt data would.
       yield* sql`INSERT INTO kin_orgs (org_id, name, created_at)
         VALUES ('org_02', 'Other', '2026-11-07T00:00:00.000Z')`;
-      yield* sql`INSERT INTO kin_approver_keys (thumbprint, org_id, public_jwk_json, human_id,
-          device_label, platform, hardware, attested, state, created_at)
-        VALUES (${kid}, 'org_02', '{}', ${owner}, 'Pixel 9', 'android', 'tee', 1, 'active', 0)`;
+      yield* insertKey("org_02");
       yield* sql`UPDATE kin_grants SET org_id = 'org_02' WHERE action_id = ${ref.actionId}`;
       assert.deepStrictEqual((yield* executor.pickup).orphaned, []);
       assert.deepStrictEqual(yield* executor.reconcile(ref), { _tag: "skipped" });
@@ -1841,9 +1861,18 @@ describe("KinActionExecutor", () => {
     // nothing, since no shared context holds it (the production layer test checks the output).
     assert.notInclude(source("kin/KinServer.ts"), "KinActionExecutor");
 
-    // Creating or retiring a lead is the host operator's: only the `kin lead` CLI reaches it, and
-    // nothing the server runs (RPC, MCP, agent toolkits, routes, schedules) reaches that CLI.
-    assert.deepStrictEqual(importers("kin/lead/KinLeadProvision.ts"), ["kin/cli/lead.ts"]);
+    // Leads are the owner's: the `kin lead` CLI, and the owner-only `kin.lead.create` RPC for
+    // creation. Nothing else the server runs (MCP, agent toolkits, routes, schedules) reaches
+    // the provisioning module or that CLI.
+    assert.deepStrictEqual(importers("kin/lead/KinLeadProvision.ts"), [
+      "kin/chat/rpcHandlers.ts",
+      "kin/cli/lead.ts",
+    ]);
+    assert.deepStrictEqual(importers("kin/chat/rpcHandlers.ts"), ["kin/rpcHandlers.ts"]);
+    assert.notMatch(
+      source("kin/chat/rpcHandlers.ts"),
+      /\bLeadProvision\.(?!create\b|KinLeadProvisionError\b|ts\b)\w+/,
+    );
     assert.deepStrictEqual(importers("kin/cli/lead.ts"), ["binCli.ts"]);
     const served = new Set<string>();
     const pending = ["server.ts"];

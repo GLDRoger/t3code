@@ -1,3 +1,5 @@
+import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
+import { kinSecretsTest } from "../lead/layer.testkit.ts";
 import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
 import { assert, it } from "@effect/vitest";
 import {
@@ -154,6 +156,7 @@ const layerWith = <E, R>(pullRequestFacts: Layer.Layer<KinPullRequestFacts, E, R
     Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
     Layer.provideMerge(
       Kin.layer.pipe(
+        Layer.provide(kinSecretsTest),
         Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
         // Push deep links name the host environment.
         Layer.provide(
@@ -268,6 +271,7 @@ const seed = (sources: ReadonlyArray<Source>, level = "L3") =>
     const repo = yield* KinChatRepository.KinChatRepository;
     const queue = yield* KinEventQueue.KinEventQueue;
     const sql = yield* SqlClient.SqlClient;
+    yield* pairSession(AuthSessionId.make("owner"));
     const [owner] = yield* identity.resolve({
       sessionId: AuthSessionId.make("owner"),
       subject: "browser",
@@ -606,21 +610,25 @@ it.effect("a repo outside the lead's worker projects is refused like a missing P
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect("a lead retired or a wake-up ended while GitHub answers gets no card", () =>
-  Effect.gen(function* () {
-    for (const during of [
-      (sql: SqlClient.SqlClient) =>
-        sql`UPDATE kin_agents SET retired_at = '1970-01-01T00:00:01.000Z' WHERE agent_id = ${agentId}`,
-      (sql: SqlClient.SqlClient) =>
-        sql`UPDATE kin_wakeups SET status = 'interrupted' WHERE wakeup_id = ${wakeupId}`,
-    ])
-      yield* Effect.gen(function* () {
-        const { eventIds, rows } = yield* seed(["owner"]);
-        const refused = refusal(yield* call(merge(eventIds.owner)));
-        assert.oneOf((refused as { reason: string }).reason, ["not_a_lead", "invalid_state"]);
-        assert.lengthOf(yield* rows, 0);
-      }).pipe(Effect.provide(layerWith(factsDuring(during))));
-  }),
+it.effect(
+  "a lead retired, its wake-up ended or its projects changed while GitHub answers gets no card",
+  () =>
+    Effect.gen(function* () {
+      for (const during of [
+        (sql: SqlClient.SqlClient) =>
+          sql`UPDATE kin_agents SET retired_at = '1970-01-01T00:00:01.000Z' WHERE agent_id = ${agentId}`,
+        (sql: SqlClient.SqlClient) =>
+          sql`UPDATE kin_wakeups SET status = 'interrupted' WHERE wakeup_id = ${wakeupId}`,
+        (sql: SqlClient.SqlClient) =>
+          sql`UPDATE kin_leads SET worker_projects_json = '[]' WHERE agent_id = ${agentId}`,
+      ])
+        yield* Effect.gen(function* () {
+          const { eventIds, rows } = yield* seed(["owner"]);
+          const refused = refusal(yield* call(merge(eventIds.owner)));
+          assert.oneOf((refused as { reason: string }).reason, ["not_a_lead", "invalid_state"]);
+          assert.lengthOf(yield* rows, 0);
+        }).pipe(Effect.provide(layerWith(factsDuring(during))));
+    }),
 );
 
 it.effect("one PR gets one waiting card, and one lead a bounded number", () =>

@@ -11,10 +11,12 @@ import * as HttpRouter from "effect/http/HttpRouter";
 import * as Option from "effect/Option";
 import * as KinChat from "./chat/layer.ts";
 import * as KinApprovals from "./approvals/layer.ts";
+import * as KeySeal from "./approvals/KeySeal.ts";
 import * as T3GitHubCredential from "./approvals/T3GitHubCredential.ts";
 import * as ExecutionNotices from "./chat/executionNotices.ts";
 import * as KinPush from "./push/layer.ts";
 import * as Promotion from "./levels/Promotion.ts";
+import * as MemoryChanges from "./memory/MemoryChanges.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
 
 import { KinServer, type Services } from "./KinServer.ts";
@@ -24,44 +26,47 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as KinMcp from "./mcp/layer.ts";
 import * as GithubWebhooks from "./triggers/githubWebhooks.ts";
 
-const enabled = Layer.effect(
-  KinServer,
-  Effect.gen(function* () {
-    const services = yield* Effect.context<Services>();
-    const slot = yield* T3GitHubCredential.T3GitHubCredential;
-    const hub = yield* KinChatHub;
-    const updaterServices = yield* Effect.context<
-      KinChatRepository | TaskCardIndex | KinChatHub | SqlClient.SqlClient
-    >();
-    return {
-      taskCardUpdater: TaskCardUpdater.layer.pipe(
-        Layer.provide(Layer.succeedContext(updaterServices)),
-      ),
-      t3GitHubCredential: T3GitHubCredential.installLayer.pipe(
-        Layer.provide(Layer.succeed(T3GitHubCredential.T3GitHubCredential, slot)),
-      ),
-      // Context lookups go by key, so the slot is dropped, not just left out of the type.
-      services: Option.some(Context.omit(T3GitHubCredential.T3GitHubCredential)(services)),
-      subscribeForViewer: Option.some(hub.subscribeForViewer),
-    };
-  }),
-).pipe(
-  Layer.provide(
-    Layer.mergeAll(
-      // On top of Promotion and approvals: the executor takes approvals from their pending
-      // actions instance, and a raise redraws Promotion's card.
-      KinApprovals.executorLayer.pipe(
-        Layer.provide(ExecutionNotices.layer),
-        Layer.provideMerge(
-          Layer.mergeAll(KinPush.layer, Promotion.layer).pipe(
-            Layer.provideMerge(KinApprovals.layer),
+const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
+  Layer.effect(
+    KinServer,
+    Effect.gen(function* () {
+      const services = yield* Effect.context<Services>();
+      const slot = yield* T3GitHubCredential.T3GitHubCredential;
+      const hub = yield* KinChatHub;
+      const updaterServices = yield* Effect.context<
+        KinChatRepository | TaskCardIndex | KinChatHub | SqlClient.SqlClient
+      >();
+      return {
+        taskCardUpdater: TaskCardUpdater.layer.pipe(
+          Layer.provide(Layer.succeedContext(updaterServices)),
+        ),
+        t3GitHubCredential: T3GitHubCredential.installLayer.pipe(
+          Layer.provide(Layer.succeed(T3GitHubCredential.T3GitHubCredential, slot)),
+        ),
+        // Context lookups go by key, so the slot is dropped, not just left out of the type.
+        services: Option.some(Context.omit(T3GitHubCredential.T3GitHubCredential)(services)),
+        subscribeForViewer: Option.some(hub.subscribeForViewer),
+      };
+    }),
+  ).pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        // On top of Promotion and approvals: the executor takes approvals from their pending
+        // actions instance, and a raise redraws Promotion's card.
+        KinApprovals.executorLayer.pipe(
+          Layer.provide(ExecutionNotices.layer),
+          Layer.provideMerge(
+            Layer.mergeAll(KinPush.layer, Promotion.layer, MemoryChanges.layer).pipe(
+              Layer.provideMerge(KinApprovals.layer),
+            ),
           ),
         ),
-      ),
-      GithubWebhooks.lockLayer,
-    ).pipe(Layer.provideMerge(KinChat.layer)),
-  ),
-);
+        GithubWebhooks.lockLayer,
+      ).pipe(Layer.provideMerge(KinChat.layer)),
+    ),
+    // Inside `enabled`: built only with Kin on, and a secret store failure disables Kin, not the server.
+    Layer.provide(seal),
+  );
 const disabled = Layer.succeed(KinServer, {
   taskCardUpdater: Layer.empty,
   t3GitHubCredential: Layer.empty,
@@ -69,43 +74,44 @@ const disabled = Layer.succeed(KinServer, {
   subscribeForViewer: Option.none(),
 });
 
-const runtime = Layer.unwrap(
-  Effect.gen(function* () {
-    const config = yield* KinEnabled.KinEnabled;
-    return config.enabled
-      ? enabled.pipe(
-          Layer.catchCause((cause) =>
-            Layer.effect(
-              KinServer,
-              config.reportFailure(cause).pipe(
-                Effect.as({
-                  taskCardUpdater: Layer.empty,
-                  t3GitHubCredential: Layer.empty,
-                  services: Option.none(),
-                  subscribeForViewer: Option.none(),
-                }),
+const runtime = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const config = yield* KinEnabled.KinEnabled;
+      return config.enabled
+        ? enabled(seal).pipe(
+            Layer.catchCause((cause) =>
+              Layer.effect(
+                KinServer,
+                config.reportFailure(cause).pipe(
+                  Effect.as({
+                    taskCardUpdater: Layer.empty,
+                    t3GitHubCredential: Layer.empty,
+                    services: Option.none(),
+                    subscribeForViewer: Option.none(),
+                  }),
+                ),
               ),
             ),
-          ),
-        )
-      : disabled;
-  }),
-).pipe(
-  Layer.provide(KinEnabled.layer),
-  Layer.catchCause((cause) =>
-    Layer.effect(
-      KinServer,
-      Effect.logError("Kin disabled: invalid configuration.", Cause.pretty(cause)).pipe(
-        Effect.as({
-          taskCardUpdater: Layer.empty,
-          t3GitHubCredential: Layer.empty,
-          services: Option.none(),
-          subscribeForViewer: Option.none(),
-        }),
+          )
+        : disabled;
+    }),
+  ).pipe(
+    Layer.provide(KinEnabled.layer),
+    Layer.catchCause((cause) =>
+      Layer.effect(
+        KinServer,
+        Effect.logError("Kin disabled: invalid configuration.", Cause.pretty(cause)).pipe(
+          Effect.as({
+            taskCardUpdater: Layer.empty,
+            t3GitHubCredential: Layer.empty,
+            services: Option.none(),
+            subscribeForViewer: Option.none(),
+          }),
+        ),
       ),
     ),
-  ),
-);
+  );
 
 const middleware = HttpRouter.middleware<{ provides: KinServer }>()(
   Effect.gen(function* () {
@@ -114,7 +120,11 @@ const middleware = HttpRouter.middleware<{ provides: KinServer }>()(
   }),
 ).layer;
 
-export const layer = middleware.pipe(Layer.provideMerge(runtime));
+/** Tests pass `KeySeal.layerTest()` so they can seal the key rows they write. */
+export const layerWithSeal = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
+  middleware.pipe(Layer.provideMerge(runtime(seal)));
+
+export const layer = layerWithSeal(KeySeal.layer);
 
 const taskCardUpdater = Layer.unwrap(
   Effect.gen(function* () {

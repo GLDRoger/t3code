@@ -111,7 +111,7 @@ export const WorkGroupSection = memo(function WorkGroupSection({
   );
 });
 
-function WorkingTimer({ createdAt }: { createdAt: string }) {
+export function WorkingTimer({ createdAt }: { createdAt: string }) {
   return (
     <span
       ref={tickTextContent(() => formatWorkingTimerNow(createdAt), true)}
@@ -598,21 +598,20 @@ export function WorkGroupToggleTimelineRow({
       toolIcon={row.toolIcon}
       failed={row.hasFailure}
       expanded={row.expanded}
-      createdAt={row.createdAt}
-      timestampFormat={ctx.timestampFormat}
+      timestamp={{ createdAt: row.createdAt, format: ctx.timestampFormat }}
       onToggle={() => ctx.onToggleWorkGroup(row.groupId, row.id)}
     />
   );
 }
 
-function WorkGroupHeader(props: {
+export function WorkGroupHeader(props: {
   label: string;
   iconName: WorkEntryIconName;
   toolIcon?: ToolActivityIcon | undefined;
   failed?: boolean | undefined;
   expanded: boolean;
-  createdAt: string;
-  timestampFormat: TimestampFormat;
+  /** With a format, the row shows its time on hover. */
+  timestamp?: { readonly createdAt: string; readonly format: TimestampFormat } | undefined;
   onToggle: () => void;
 }) {
   return (
@@ -630,7 +629,12 @@ function WorkGroupHeader(props: {
       }
       label={<span className="block truncate">{props.label}</span>}
       trailing={
-        <TimelineRowTimestamp createdAt={props.createdAt} timestampFormat={props.timestampFormat} />
+        props.timestamp ? (
+          <TimelineRowTimestamp
+            createdAt={props.timestamp.createdAt}
+            timestampFormat={props.timestamp.format}
+          />
+        ) : null
       }
     />
   );

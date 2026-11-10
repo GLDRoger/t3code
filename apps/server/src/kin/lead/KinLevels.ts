@@ -6,8 +6,9 @@ import {
   KinLevel,
   type KinActionId,
   type KinAgentId,
-  type KinChatId,
+  KinChatId,
   type KinOrgId,
+  type KinPersonId,
   type ThreadId,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
@@ -20,7 +21,7 @@ import * as SqlError from "effect/sql/SqlError";
 
 import { toPersistenceDecodeError, toPersistenceSqlError } from "../../persistence/Errors.ts";
 
-// Approvals import this module, so it must not reach the chat service or the judge.
+// Approvals import this module, so it must not reach the chat service.
 
 const ORDER: ReadonlyArray<KinLevel> = ["L0", "L1", "L2", "L3"];
 export const atLeast = (level: KinLevel, required: KinLevel) =>
@@ -52,8 +53,28 @@ export const SHADOW_LIMIT_MESSAGE = `This wake-up already recorded ${MAX_SHADOW_
 const decodeLevel = Schema.decodeUnknownEffect(KinLevel);
 
 /**
- * `min(lead.level, chat.level)` for a chat target, the lead's level otherwise (lead spec, Levels).
- * Read from `kin_leads` and `kin_chat_levels` only; no tool input or model text is consulted.
+ * The level a lead works at in its own direct chat with its owner, from creation (owner decision,
+ * 10 Nov 2026): the shadow week applies in groups. Privileged actions still need a signed grant.
+ */
+const OWNER_DM_LEVEL: KinLevel = "L2";
+
+/**
+ * Whether `chatId` is the lead's own direct chat with the person who owns it, from stored rows:
+ * its `owner_chat_id`, a direct chat whose key binds exactly that person and that lead.
+ */
+const ownerDmSql = (sql: SqlClient.SqlClient, chatId: KinChatId | null) => sql`EXISTS (
+  SELECT 1 FROM kin_chats d WHERE d.org_id = l.org_id AND d.chat_id = l.owner_chat_id
+    AND d.chat_id = ${chatId} AND d.kind = 'direct'
+    AND d.direct_key = a.owner_person_id || ':' || l.agent_id)`;
+
+/** A chat's level before its cap: the lead's, raised to `OWNER_DM_LEVEL` in the owner's DM. */
+const chatBase = (lead: KinLevel, ownerDm: boolean) =>
+  ownerDm && !atLeast(lead, OWNER_DM_LEVEL) ? OWNER_DM_LEVEL : lead;
+
+/**
+ * For a chat target, `min(base, chat cap)`, where the base is the lead's level, or at least L2 in
+ * the lead's own direct chat with its owner. The lead's level otherwise (lead spec, Levels).
+ * Read from `kin_leads`, `kin_chats` and `kin_chat_levels` only; no tool input or model text.
  */
 export const effectiveLevel = Effect.fn("KinLevels.effectiveLevel")(function* (input: {
   readonly orgId: KinOrgId;
@@ -61,21 +82,48 @@ export const effectiveLevel = Effect.fn("KinLevels.effectiveLevel")(function* (i
   readonly chatId?: KinChatId | undefined;
 }) {
   const sql = yield* SqlClient.SqlClient;
-  const [row] = yield* sql<{ level: string; chatLevel: string | null }>`
-    SELECT l.level, c.level AS "chatLevel" FROM kin_leads l
+  const chatId = input.chatId ?? null;
+  const [row] = yield* sql<{ level: string; chatLevel: string | null; ownerDm: number }>`
+    SELECT l.level, c.level AS "chatLevel", ${ownerDmSql(sql, chatId)} AS "ownerDm"
+    FROM kin_leads l
     JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
     LEFT JOIN kin_chat_levels c ON c.org_id = l.org_id AND c.agent_id = l.agent_id
-      AND c.chat_id = ${input.chatId ?? null}
+      AND c.chat_id = ${chatId}
     WHERE l.org_id = ${input.orgId} AND l.agent_id = ${input.agentId}
       AND a.role = 'lead' AND a.retired_at IS NULL
     ORDER BY l.agent_id`.pipe(Effect.mapError(toPersistenceSqlError("KinLevels.effectiveLevel")));
   if (row === undefined) return yield* new KinLevelRefused({ reason: "not_a_lead" });
   const decode = (value: unknown) =>
     decodeLevel(value).pipe(Effect.mapError(toPersistenceDecodeError("KinLevels.effectiveLevel")));
-  const lead = yield* decode(row.level);
-  if (row.chatLevel === null) return lead;
+  const base = chatBase(yield* decode(row.level), row.ownerDm === 1);
+  if (row.chatLevel === null) return base;
   const chat = yield* decode(row.chatLevel);
-  return atLeast(chat, lead) ? lead : chat;
+  return atLeast(chat, base) ? base : chat;
+});
+
+/**
+ * The level a running wake-up works at: its lead's level in the chat it answers, which is the
+ * reply bridge's lane (its first chat event's chat, else the lead's owner chat). Memory follows
+ * it, so a wake-up in the owner's DM writes the default branch and an L0 group the shadow branch.
+ */
+export const wakeupLevel = Effect.fn("KinLevels.wakeupLevel")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+  readonly wakeupId: string;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const [lane] = yield* sql<{ chatId: string | null }>`
+    SELECT COALESCE((SELECT json_extract(e.json, '$.chatId') FROM kin_events e
+        WHERE e.org_id = l.org_id AND e.agent_id = l.agent_id AND e.wakeup_id = ${input.wakeupId}
+          AND e.tag IN ('chat.message', 'widget.action', 'chat.reaction')
+        ORDER BY e.priority, e.received_at, e.event_id LIMIT 1), l.owner_chat_id) AS "chatId"
+    FROM kin_leads l WHERE l.org_id = ${input.orgId} AND l.agent_id = ${input.agentId}
+    ORDER BY l.agent_id`.pipe(Effect.mapError(toPersistenceSqlError("KinLevels.wakeupLevel")));
+  return yield* effectiveLevel({
+    orgId: input.orgId,
+    agentId: input.agentId,
+    chatId: lane?.chatId == null ? undefined : KinChatId.make(lane.chatId),
+  });
 });
 
 /**
@@ -90,13 +138,18 @@ export const insertLeadAtL0 = Effect.fn("KinLevels.insertLeadAtL0")(function* (i
   readonly modelsJson: string;
   readonly workerProjectsJson: string;
   readonly ownerChatId: KinChatId;
+  readonly domain: string;
+  readonly charter: string;
+  readonly createdByPersonId: KinPersonId;
 }) {
   const sql = yield* SqlClient.SqlClient;
+  // The creator must be a person of the same org.
   const inserted = yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since,
-      models_json, worker_projects_json, owner_chat_id)
+      models_json, worker_projects_json, owner_chat_id, domain, charter, created_by_person_id)
     SELECT ${input.agentId}, ${input.orgId}, ${input.name}, 'L0', ${input.since}, ${input.modelsJson},
-      ${input.workerProjectsJson}, c.chat_id
-    FROM kin_chats c WHERE c.org_id = ${input.orgId} AND c.chat_id = ${input.ownerChatId} AND c.kind = 'direct'
+      ${input.workerProjectsJson}, c.chat_id, ${input.domain}, ${input.charter}, p.person_id
+    FROM kin_chats c JOIN kin_people p ON p.org_id = c.org_id AND p.person_id = ${input.createdByPersonId}
+    WHERE c.org_id = ${input.orgId} AND c.chat_id = ${input.ownerChatId} AND c.kind = 'direct'
     ON CONFLICT (agent_id) DO NOTHING RETURNING agent_id`.pipe(
     Effect.mapError(toPersistenceSqlError("KinLevels.insertLeadAtL0")),
   );
@@ -262,22 +315,30 @@ const activeLead = Effect.fn("KinLevels.activeLead")(function* (input: {
   };
 });
 
-/** The chat's stored cap, or undefined; the chat must be one the lead is an active member of. */
+/**
+ * The chat's stored cap, or undefined, and whether it is the lead's owner DM; the chat must be
+ * one the lead is an active member of.
+ */
 const chatCap = Effect.fn("KinLevels.chatCap")(function* (input: {
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;
   readonly chatId: KinChatId;
 }) {
   const sql = yield* SqlClient.SqlClient;
-  const [chat] = yield* query("KinLevels.chatCap")(sql<{ level: string | null }>`
-    SELECT c.level FROM kin_chat_members m
+  const [chat] = yield* query("KinLevels.chatCap")(sql<{ level: string | null; ownerDm: number }>`
+    SELECT c.level, ${ownerDmSql(sql, input.chatId)} AS "ownerDm" FROM kin_chat_members m
+    JOIN kin_leads l ON l.org_id = m.org_id AND l.agent_id = m.agent_id
+    JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
     LEFT JOIN kin_chat_levels c ON c.org_id = m.org_id AND c.agent_id = m.agent_id
       AND c.chat_id = m.chat_id
     WHERE m.org_id = ${input.orgId} AND m.chat_id = ${input.chatId}
       AND m.agent_id = ${input.agentId} AND m.left_at IS NULL
     ORDER BY m.chat_id`);
   if (chat === undefined) return yield* new KinLevelRefused({ reason: "not_found" });
-  return chat.level === null ? undefined : yield* decode("KinLevels.chatCap")(chat.level);
+  return {
+    cap: chat.level === null ? undefined : yield* decode("KinLevels.chatCap")(chat.level),
+    ownerDm: chat.ownerDm === 1,
+  };
 });
 
 /** Review counts for the lead's trial at its current level, counted since it reached it. */
@@ -354,8 +415,9 @@ export const lower = Effect.fn("KinLevels.lower")(function* (input: {
         return { from: lead.level, to: input.level };
       }
       const chatId = input.chatId;
-      const cap = yield* chatCap({ ...input, chatId });
-      const current = cap === undefined || atLeast(cap, lead.level) ? lead.level : cap;
+      const { cap, ownerDm } = yield* chatCap({ ...input, chatId });
+      const base = chatBase(lead.level, ownerDm);
+      const current = cap === undefined || atLeast(cap, base) ? base : cap;
       if (atLeast(input.level, current))
         return yield* new KinLevelRefused({ reason: "invalid_level" });
       const inserted = yield* run(sql`INSERT INTO kin_chat_levels
@@ -377,7 +439,8 @@ export const lower = Effect.fn("KinLevels.lower")(function* (input: {
 
 /**
  * Whether the owner may ask to raise: the lead one step up once eligible, or a chat's cap back up
- * to at most the lead's level. Raising always needs the owner's grant on top.
+ * to at most its base (the lead's level, or L2 in the owner's DM). Raising always needs the
+ * owner's grant on top.
  */
 export const checkRaise = Effect.fn("KinLevels.checkRaise")(function* (input: {
   readonly orgId: KinOrgId;
@@ -393,11 +456,12 @@ export const checkRaise = Effect.fn("KinLevels.checkRaise")(function* (input: {
       return yield* new KinLevelRefused({ reason: "not_eligible" });
     return { from: lead.level };
   }
-  const cap = yield* chatCap({ ...input, chatId: input.chatId });
-  const current = cap === undefined || atLeast(cap, lead.level) ? lead.level : cap;
-  if (atLeast(current, input.level) || !atLeast(lead.level, input.level))
+  const { cap, ownerDm } = yield* chatCap({ ...input, chatId: input.chatId });
+  const base = chatBase(lead.level, ownerDm);
+  const current = cap === undefined || atLeast(cap, base) ? base : cap;
+  if (atLeast(current, input.level) || !atLeast(base, input.level))
     return yield* new KinLevelRefused({ reason: "invalid_level" });
-  return { from: current };
+  return { from: current, base };
 });
 
 const decodeTarget = Schema.decodeUnknownEffect(Schema.fromJsonString(KinActionTarget));
@@ -438,7 +502,8 @@ export const raiseByGrant = Effect.fn("KinLevels.raiseByGrant")(function* (input
           AND p.kind = 'set_level' AND p.state = 'executing'
           AND p.target_json = ${action.targetJson} AND g.approver_human_id = ${lead.owner})`;
       const now = yield* Clock.currentTimeMillis;
-      const { from } = yield* checkRaise({ ...ref, chatId: target.chatId, level: target.level });
+      const raise = yield* checkRaise({ ...ref, chatId: target.chatId, level: target.level });
+      const { from } = raise;
       if (target.chatId === undefined) {
         const updated = yield* run(sql`UPDATE kin_leads SET level = ${target.level},
             level_since = ${now}
@@ -448,9 +513,9 @@ export const raiseByGrant = Effect.fn("KinLevels.raiseByGrant")(function* (input
         if (updated.length === 0) return yield* new KinLevelRefused({ reason: "not_granted" });
         return { agentId: target.agentId, from, to: target.level };
       }
-      // Back at the lead's level, the chat follows the lead again.
+      // Back at its base, the chat follows the lead again.
       const written =
-        target.level === lead.level
+        target.level === ("base" in raise ? raise.base : lead.level)
           ? yield* run(sql`DELETE FROM kin_chat_levels
               WHERE org_id = ${input.orgId} AND agent_id = ${target.agentId}
                 AND chat_id = ${target.chatId} AND ${claimed}

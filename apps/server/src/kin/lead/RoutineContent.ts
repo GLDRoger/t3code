@@ -158,7 +158,7 @@ const make = Effect.gen(function* () {
         timeZone: zone,
       }).format(ms);
 
-    const all = (yield* memory.query(orgId, {})).filter(
+    const all = (yield* memory.query(orgId, {}, { lead: event.agentId })).filter(
       (item) => item.orgId === orgId && !item.duplicate,
     );
     const live = all.filter(

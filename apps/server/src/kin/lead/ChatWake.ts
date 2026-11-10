@@ -1,0 +1,235 @@
+import {
+  KinAgentId,
+  KinEventId,
+  KinMessageId,
+  KinOrgId,
+  TrimmedNonEmptyString,
+  type KinEvent,
+  type KinMessage,
+} from "@t3tools/contracts";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
+import * as NodeCrypto from "node:crypto";
+
+import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/sql/SqlClient";
+
+import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { forkParked } from "../../serverActivation.ts";
+import { KinChatHub, type KinChatHubEvent } from "../chat/KinChatHub.ts";
+import { KinChatRepository } from "../chat/KinChatRepository.ts";
+import { KinPresence } from "../reply/KinPresence.ts";
+import { KinEventQueue } from "./KinEventQueue.ts";
+
+const decodeTap = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Struct({ actionId: TrimmedNonEmptyString })),
+);
+// Matches the resume expiry: older unanswered messages are not worth a wake-up after downtime.
+const CATCH_UP_WINDOW = { hours: 24 } as const;
+const CATCH_UP_LIMIT_PER_ORG = 200;
+
+/**
+ * Turns committed human chat posts and widget taps into `chat.message` and `widget.action`
+ * events for the lead the floor manager would wake: mentioned leads, else the chat's lead.
+ * Direct chats only: a lead cannot reply in a group until CHAT-11 delivers group grants.
+ */
+const make = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const hub = yield* KinChatHub;
+  const repo = yield* KinChatRepository;
+  const queue = yield* KinEventQueue;
+  const presence = yield* Effect.serviceOption(KinPresence);
+
+  const wake = Effect.fn("KinChatWake.wake")(
+    function* (message: KinMessage) {
+      if (message.author._tag !== "human" || message.status !== "posted") return;
+      if (message.kind !== "text" && message.kind !== "widget_action") return;
+      const leads = yield* sql<{ agentId: string; memberId: string }>`
+        SELECT l.agent_id AS "agentId", m.member_id AS "memberId" FROM kin_leads l
+        JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id AND a.retired_at IS NULL
+        JOIN kin_chats c ON c.org_id = l.org_id AND c.chat_id = ${message.chatId} AND c.kind = 'direct'
+        JOIN kin_chat_members m ON m.org_id = l.org_id AND m.chat_id = c.chat_id
+          AND m.principal_kind = 'agent' AND m.agent_id = l.agent_id AND m.left_at IS NULL
+        WHERE l.org_id = ${message.orgId}
+        ORDER BY CASE a.role WHEN 'lead' THEN 0 ELSE 1 END, m.joined_at, l.agent_id`.pipe(
+        Effect.mapError(toPersistenceSqlError("KinChatWake.leads")),
+      );
+      const mentioned = leads.filter((lead) =>
+        message.mentions.some((memberId) => memberId === lead.memberId),
+      );
+      const targets = mentioned.length > 0 ? mentioned : leads.slice(0, 1);
+      if (targets.length === 0) return;
+      const actionId =
+        message.kind === "widget_action"
+          ? (yield* decodeTap(message.body).pipe(Effect.option)).pipe(
+              Option.map((tap) => tap.actionId),
+            )
+          : Option.none();
+      if (message.kind === "widget_action" && Option.isNone(actionId))
+        return yield* Effect.logWarning("Kin widget action has no readable action id", {
+          orgId: message.orgId,
+          messageId: message.messageId,
+        });
+      for (const target of targets) {
+        const agentId = KinAgentId.make(target.agentId);
+        // Every field comes from the stored message, so a replay enqueues byte-identical JSON.
+        const prefix = message.kind === "widget_action" ? "widget-action" : "chat-message";
+        const dedupeKey = `${prefix}:${message.messageId}:${agentId}`;
+        // The memory writer accepts only [a-zA-Z0-9_-] in event ids, so hash the readable key.
+        const eventId = KinEventId.make(
+          `${prefix}-${NodeCrypto.createHash("sha256").update(dedupeKey).digest("hex").slice(0, 32)}`,
+        );
+        const base = {
+          orgId: message.orgId,
+          eventId,
+          agentId,
+          receivedAt: DateTime.makeUnsafe(message.createdAt),
+          dedupeKey,
+          provenance: message.author,
+          chatId: message.chatId,
+          messageId: message.messageId,
+        };
+        const event: KinEvent = Option.isSome(actionId)
+          ? { ...base, _tag: "widget.action", actionId: actionId.value }
+          : { ...base, _tag: "chat.message" };
+        const queued = yield* queue.enqueue(event).pipe(
+          Effect.map((result) => !result.duplicate),
+          Effect.catchTags({
+            KinEventQueueRetiredAgent: () => Effect.succeed(false),
+            KinEventQueueUnknownAgent: () => Effect.succeed(false),
+            KinEventQueueConflict: (error) =>
+              Effect.logWarning("Kin chat wake-up conflicts with a stored event", error).pipe(
+                Effect.as(false),
+              ),
+          }),
+        );
+        // The first thing the sender sees, well before a wake-up claims the message.
+        if (queued && Option.isSome(presence))
+          yield* presence.value.seen(
+            message.orgId,
+            message.chatId,
+            agentId,
+            yield* Clock.currentTimeMillis,
+          );
+      }
+    },
+    Effect.catchCause((cause) => Effect.logError("Kin chat wake-up failed", { cause })),
+  );
+
+  // A soft-reply reaction (the chat service decides) becomes `chat.reaction`; withdrawing it
+  // before a wake-up claims it cancels the event.
+  const react = Effect.fn("KinChatWake.react")(
+    function* (event: Extract<KinChatHubEvent, { type: "reaction.updated" }>) {
+      const { reaction } = event;
+      const dedupeKey = `chat-reaction:${reaction.messageId}:${reaction.memberId}:${reaction.emoji}:${reaction.createdAt}`;
+      if (reaction.removedAt !== null) {
+        yield* sql`UPDATE kin_events SET state = 'expired'
+          WHERE org_id = ${reaction.orgId} AND tag = 'chat.reaction' AND dedupe_key = ${dedupeKey}
+            AND state = 'queued'`.pipe(
+          Effect.mapError(toPersistenceSqlError("KinChatWake.unreact")),
+        );
+        return;
+      }
+      if (!event.woke) return;
+      const message = yield* repo.getMessage({
+        orgId: reaction.orgId,
+        messageId: reaction.messageId,
+      });
+      if (Option.isNone(message) || message.value.author._tag !== "agent") return;
+      yield* queue
+        .enqueue({
+          _tag: "chat.reaction",
+          orgId: reaction.orgId,
+          eventId: KinEventId.make(
+            `chat-reaction-${NodeCrypto.createHash("sha256").update(dedupeKey).digest("hex").slice(0, 32)}`,
+          ),
+          agentId: message.value.author.agentId,
+          receivedAt: DateTime.makeUnsafe(reaction.createdAt),
+          dedupeKey,
+          provenance: event.by,
+          chatId: reaction.chatId,
+          messageId: reaction.messageId,
+          emoji: reaction.emoji,
+        })
+        .pipe(
+          Effect.catchTags({
+            KinEventQueueRetiredAgent: () => Effect.void,
+            KinEventQueueUnknownAgent: () => Effect.void,
+            KinEventQueueConflict: (error) =>
+              Effect.logWarning("Kin reaction wake-up conflicts with a stored event", error),
+          }),
+        );
+    },
+    Effect.catchCause((cause) => Effect.logError("Kin reaction wake-up failed", { cause })),
+  );
+
+  // Messages posted while the server was down or Kin was off never reached the hub.
+  const catchUpOrg = Effect.fn("KinChatWake.catchUpOrg")(
+    function* (orgId: KinOrgId, since: string) {
+      const rows = yield* sql<{ messageId: string }>`
+      SELECT DISTINCT m.message_id AS "messageId", m.created_at AS "createdAt"
+      FROM kin_leads l
+      JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id AND a.retired_at IS NULL
+      JOIN kin_chat_members am ON am.org_id = l.org_id AND am.principal_kind = 'agent'
+        AND am.agent_id = l.agent_id AND am.left_at IS NULL
+      JOIN kin_chats c ON c.org_id = am.org_id AND c.chat_id = am.chat_id AND c.kind = 'direct'
+      JOIN kin_messages m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
+      WHERE l.org_id = ${orgId}
+        AND m.author_kind = 'human' AND m.status = 'posted' AND m.kind IN ('text', 'widget_action')
+        AND m.created_at > ${since}
+        AND m.seq > COALESCE((SELECT MAX(x.seq) FROM kin_messages x
+          WHERE x.org_id = m.org_id AND x.chat_id = m.chat_id AND x.author_kind = 'agent'
+            AND x.author_agent_id = l.agent_id), 0)
+      ORDER BY m.created_at DESC, m.message_id DESC LIMIT ${CATCH_UP_LIMIT_PER_ORG}`.pipe(
+        Effect.mapError(toPersistenceSqlError("KinChatWake.catchUpOrg")),
+      );
+      for (const row of rows) {
+        const message = yield* repo.getMessage({
+          orgId,
+          messageId: KinMessageId.make(row.messageId),
+        });
+        if (Option.isSome(message)) yield* wake(message.value);
+      }
+    },
+    (effect, orgId) =>
+      effect.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logError("Kin chat wake-up catch-up failed", { orgId, cause }),
+        ),
+      ),
+  );
+  const catchUp = Effect.fn("KinChatWake.catchUp")(
+    function* () {
+      const since = DateTime.formatIso(DateTime.subtract(yield* DateTime.now, CATCH_UP_WINDOW));
+      const orgs = yield* sql<{ orgId: string }>`
+        SELECT DISTINCT org_id AS "orgId" FROM kin_leads ORDER BY org_id`.pipe(
+        Effect.mapError(toPersistenceSqlError("KinChatWake.catchUp")),
+      );
+      // Per organization, so one busy organization cannot use up another's catch-up.
+      for (const org of orgs) yield* catchUpOrg(KinOrgId.make(org.orgId), since);
+    },
+    Effect.catchCause((cause) => Effect.logError("Kin chat wake-up catch-up failed", { cause })),
+  );
+
+  // Subscribe before activation so nothing posted from here on is missed.
+  const events = yield* hub.subscribeAll;
+  yield* catchUp().pipe(
+    Effect.andThen(
+      Stream.runForEach(events, (event) =>
+        event.type === "message.posted"
+          ? wake(event.message)
+          : event.type === "reaction.updated"
+            ? react(event)
+            : Effect.void,
+      ),
+    ),
+    forkParked,
+  );
+});
+
+export const layer = Layer.effectDiscard(make);

@@ -3,7 +3,7 @@ import { Platform, Pressable, View } from "react-native";
 import { SymbolView } from "../../../components/ui/AppSymbol";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { MOBILE_SHAPE } from "../../../lib/designTokens";
-import type { KinWaitingBannerView } from "../state/kinScreenState";
+import type { KinWaitingBannerView } from "@t3tools/client-runtime/kin/kinScreenState";
 
 /** The one highlighted thing in the chat list. Not rendered when nothing waits. */
 export function KinWaitingBanner(props: {

@@ -8,6 +8,8 @@ import { KinIdentity } from "./chat/KinIdentity.ts";
 import { KinChatService } from "./chat/KinChatService.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
 import { KinBudget } from "./lead/KinBudget.ts";
+import type { KinChatRepository } from "./chat/KinChatRepository.ts";
+import type * as SqlClient from "effect/sql/SqlClient";
 import { KinEventQueue } from "./lead/KinEventQueue.ts";
 import { ApproverKeys } from "./approvals/ApproverKeys.ts";
 import { GrantVerifier } from "./approvals/GrantVerifier.ts";
@@ -16,28 +18,38 @@ import type { KinShadowSummary } from "./lead/KinLevels.ts";
 import type { KinLevelGate } from "./lead/LevelGate.ts";
 import type { KinPromotion } from "./levels/Promotion.ts";
 import type { KinPromotionCards } from "./lead/KinLevels.ts";
+import type { KinMemoryChanges } from "./memory/MemoryChanges.ts";
+import type { MemoryChangeHooks } from "./memory/MemoryWriter.ts";
 import type { KinGithubWebhookLock } from "./triggers/githubWebhooks.ts";
+import type { KinOwnerTimeZone } from "./triggers/ownerTimeZone.ts";
 import type { KinPushDevices } from "./push/KinPushDevices.ts";
 import type { KinPushPresence } from "./push/KinPushPresence.ts";
 import type { KinPushSender } from "./push/KinPushSender.ts";
+import type { KinPresence } from "./reply/KinPresence.ts";
 
 export type Services =
   | KinIdentity
   | KinChatService
   | KinBudget
+  | KinChatRepository
+  | SqlClient.SqlClient
   | KinEventQueue
   | KinChatHub
   | KinStop
+  | KinOwnerTimeZone
   | KinLevelGate
   | KinShadowSummary
   | KinPromotion
   | KinPromotionCards
+  | KinMemoryChanges
+  | MemoryChangeHooks
   | KinGithubWebhookLock
   | ApproverKeys
   | GrantVerifier
   | KinPushDevices
   | KinPushPresence
-  | KinPushSender;
+  | KinPushSender
+  | KinPresence;
 
 export class KinServer extends Context.Service<
   KinServer,

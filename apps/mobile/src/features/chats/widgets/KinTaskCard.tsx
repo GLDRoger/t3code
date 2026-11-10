@@ -6,7 +6,7 @@ import { Chip } from "../../../components/ui/Chip";
 import { cn } from "../../../lib/cn";
 import { useOpenWorkspaceDetail } from "../../layout/useOpenWorkspaceDetail";
 import { PullRequestGlyph } from "../../pull-requests/pullRequestGlyphs";
-import type { KinTaskCardView, KinTaskTone } from "./kinCardPresentation";
+import type { KinTaskCardView, KinTaskTone } from "@t3tools/client-runtime/kin/kinCardPresentation";
 
 const TONE_CLASSES: Record<KinTaskTone, string> = {
   active: "text-foreground",

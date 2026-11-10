@@ -25,6 +25,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -45,7 +46,7 @@ import * as KinStop from "./KinStop.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinIssuedTokens from "../mcp/KinIssuedTokens.ts";
-import { KinLeadPrompt } from "./LeadPrompt.ts";
+import { KinLeadPrompt, type KinLeadPromptInput } from "./LeadPrompt.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
@@ -68,7 +69,7 @@ export const agentId = KinAgentId.make("lead");
 const timestamp = "2026-11-08T00:00:00.000Z";
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeEvent = Schema.decodeSync(KinEvent);
-const selection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.1-codex" };
+const selection = { instanceId: ProviderInstanceId.make("claudeAgent"), model: "claude-opus-4-6" };
 const project = {
   id: ProjectId.make("kin:org"),
   title: "Kin · Org",
@@ -96,7 +97,7 @@ export const seed = Effect.gen(function* () {
   yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at) VALUES ('owner-chat', 'org', 'team_group', 0, ${timestamp})`;
   const models = yield* encodeJson({
     strong: selection,
-    cheap: { ...selection, model: "gpt-5.1-codex-mini" },
+    cheap: { ...selection, model: "claude-haiku-4-5" },
   });
   yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id) VALUES ('lead', 'org', 'Lead', 0, ${models}, '[]', 'owner-chat')`;
 });
@@ -126,7 +127,7 @@ type HarnessOptions = {
   /** Each turn opens a command approval and ends only once it is answered. */
   readonly approval?: Deferred.Deferred<ProviderApprovalDecision | undefined>;
   readonly runtimeModes?: Array<RuntimeMode>;
-  /** The fake provider registers as the default Claude instance instead of Codex. */
+  /** `false` registers the fake provider as the default Codex instance instead of Claude. */
   readonly claude?: boolean;
   readonly settings?: Parameters<typeof ServerSettings.layerTest>[0];
   /** Runtime requests are opened with this capability instead of `live`. */
@@ -137,6 +138,17 @@ type HarnessOptions = {
   readonly database?: Database;
   /** Runs inside each turn before it completes, as the provider's tool calls would. */
   readonly onTurn?: (input: { readonly threadId: ThreadId }) => Effect.Effect<void>;
+  /** Each turn reports itself running, then completes only once this does. */
+  readonly holdRunning?: Deferred.Deferred<void>;
+  /** Messages the provider received as steers into a running turn. */
+  readonly providerSteers?: Queue.Queue<{ readonly runId: string; readonly messageId: string }>;
+  /** Completes when the runner builds steer text, under the lock its send holds. */
+  readonly steering?: Deferred.Deferred<void>;
+  /** Every prompt the runner builds, in order. */
+  readonly prompts?: Array<KinLeadPromptInput>;
+  readonly snapshot?: Memory.Memory["Service"]["readPromptSnapshot"];
+  /** Every provider process the fake adapter opens. */
+  readonly opened?: Array<string>;
 };
 
 export function harness(options: HarnessOptions = {}) {
@@ -158,8 +170,9 @@ export function orchestrationStack(options: HarnessOptions = {}) {
 function parts(options: HarnessOptions) {
   const database: Database = options.database ?? defaultDatabase;
   let nativeOrdinal = 0;
-  const driver = ProviderDriverKind.make(options.claude ? "claudeAgent" : "codex");
-  const instanceId = options.claude ? ProviderInstanceId.make("claudeAgent") : selection.instanceId;
+  const claude = options.claude ?? true;
+  const driver = ProviderDriverKind.make(claude ? "claudeAgent" : "codex");
+  const instanceId = ProviderInstanceId.make(claude ? "claudeAgent" : "codex");
   const adapter: ProviderAdapter.ProviderAdapterV2["Service"] = {
     instanceId,
     driver,
@@ -167,6 +180,7 @@ function parts(options: HarnessOptions) {
     planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
     openSession: (session) =>
       Effect.gen(function* () {
+        options.opened?.push(session.providerSessionId);
         const now = yield* DateTime.now;
         const events = yield* PubSub.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
         const open = new Map<
@@ -328,11 +342,22 @@ function parts(options: HarnessOptions) {
                 threadDisposition: "reusable",
               });
             });
+            if (options.holdRunning !== undefined)
+              return yield* Deferred.await(options.holdRunning).pipe(
+                Effect.andThen(finish),
+                Effect.forkDetach,
+              );
             if (options.approval === undefined) return yield* finish;
             yield* Deferred.await(options.approval).pipe(Effect.andThen(finish), Effect.forkDetach);
           }),
           compactThread: (input) => runtime.startTurn(input),
-          steerTurn: () => Effect.void,
+          steerTurn: (input) =>
+            options.providerSteers === undefined
+              ? Effect.void
+              : Queue.offer(options.providerSteers, {
+                  runId: input.runId,
+                  messageId: input.message.messageId,
+                }).pipe(Effect.asVoid),
           interruptTurn: Effect.fn("test.interruptTurn")(function* ({ providerTurnId }) {
             const turn = open.get(providerTurnId);
             if (turn === undefined) return;
@@ -456,12 +481,24 @@ function parts(options: HarnessOptions) {
         }),
       ),
     ),
-    Layer.succeed(KinLeadPrompt, { build: () => Effect.succeed("Wake up") }),
+    Layer.succeed(KinLeadPrompt, {
+      build: (input) =>
+        Effect.sync(() => {
+          options.prompts?.push(input);
+          return "Wake up";
+        }),
+      steer: () =>
+        options.steering === undefined
+          ? Effect.succeed("Steered")
+          : Deferred.succeed(options.steering, undefined).pipe(Effect.as("Steered")),
+    }),
     Layer.mock(Memory.Memory)({
       prepareWakeup:
         options.prepare ??
         (() => Effect.succeed({ head: "abc", indexAsOf: DateTime.makeUnsafe(timestamp) })),
       ensureCheckouts: () => Effect.succeed({ writer: "/private/tmp", read: "/private/tmp" }),
+      readPromptSnapshot:
+        options.snapshot ?? (() => Effect.succeed({ rules: "rules", index: "index" })),
     }),
   );
   const stack = Layer.mergeAll(

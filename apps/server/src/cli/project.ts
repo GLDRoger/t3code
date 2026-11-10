@@ -154,7 +154,7 @@ export class ProjectAlreadyExistsError extends Schema.TaggedError<ProjectAlready
   },
 ) {
   override get message(): string {
-    return `An active project already exists for '${this.workspaceRoot}'.`;
+    return `Active project ${this.projectId} already exists for '${this.workspaceRoot}'.`;
   }
 }
 

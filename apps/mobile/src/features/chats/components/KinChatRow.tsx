@@ -7,7 +7,7 @@ import { SymbolView } from "../../../components/ui/AppSymbol";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { RowPressable } from "../../../components/ui/RowPressable";
 import { cn } from "../../../lib/cn";
-import type { KinChatRowView } from "../state/kinScreenState";
+import type { KinChatRowView } from "@t3tools/client-runtime/kin/kinScreenState";
 import { KinAvatar } from "./KinAvatar";
 
 const ROW_CLASS_NAME = "min-h-[72px] flex-row items-center gap-3 px-4 py-3";
@@ -101,6 +101,29 @@ function KinPressableRow(props: {
     >
       {props.children}
     </RowPressable>
+  );
+}
+
+/** A fold's title over its chats: "Needs you 2". Quiet text, so only the banner stands out. */
+export function KinInboxFoldHeader(props: {
+  readonly title: string;
+  readonly count: number;
+  readonly accessibilityLabel: string;
+}) {
+  return (
+    <View
+      accessible
+      accessibilityRole="header"
+      accessibilityLabel={props.accessibilityLabel}
+      className="flex-row items-baseline gap-1.5 px-4 pb-1 pt-4"
+    >
+      <Text textRole="footnote" className="font-t3-medium text-foreground-muted">
+        {props.title}
+      </Text>
+      <Text textRole="footnote" className="text-foreground-muted">
+        {props.count}
+      </Text>
+    </View>
   );
 }
 
