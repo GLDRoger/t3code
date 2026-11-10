@@ -71,14 +71,16 @@ const SteerInput = Schema.Struct({
 });
 
 /**
- * An event's lane, the chat a wake-up answers: a human message's or card tap's own chat, else
- * the lead's direct chat with its owner. A due deferral asked from another chat gets a lane of
- * its own, so that chat's level never mixes with owner-chat events in one wake-up. Derived from
- * stored rows only, never model text.
+ * An event's lane, the chat a wake-up answers: a human message's or card tap's own chat, or
+ * the chat a reported worker was asked for in, else the lead's direct chat with its owner. A due
+ * deferral asked from another chat gets a lane of its own, so that chat's level never mixes with
+ * owner-chat events in one wake-up. Derived from stored rows only, never model text.
  */
 const LANE_OF = `CASE WHEN e.tag IN ('chat.message', 'widget.action', 'chat.reaction')
   THEN json_extract(e.json, '$.chatId')
-  WHEN e.tag = 'deferral.due' AND json_extract(e.json, '$.origin.chatId') IS NOT NULL
+  WHEN e.tag = 'worker.report' AND json_extract(e.json, '$.chatId') IS NOT NULL
+  THEN json_extract(e.json, '$.chatId')
+  WHEN e.tag IN ('deferral.due', 'worker.report') AND json_extract(e.json, '$.origin.chatId') IS NOT NULL
   THEN 'origin:' || json_extract(e.json, '$.origin.agentId') || ':' || json_extract(e.json, '$.origin.chatId')
     || ':' || COALESCE(json_extract(e.json, '$.origin.personId'), '')
   ELSE l.owner_chat_id END`;
@@ -526,6 +528,7 @@ const make = Effect.gen(function* () {
             SELECT w.org_id, w.agent_id, w.wakeup_id FROM kin_wakeups w
             WHERE w.org_id = ${input.orgId} AND w.agent_id = ${input.agentId}
               AND w.wakeup_id = ${input.wakeupId} AND w.status = 'running' AND w.run_id IS NOT NULL
+              AND w.aborted_at IS NULL
           ), lane AS (
             SELECT ${laneOf} AS chat_id FROM wakeup w
             JOIN kin_events e ON e.org_id = w.org_id AND e.agent_id = w.agent_id AND e.wakeup_id = w.wakeup_id
@@ -609,6 +612,17 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const now = yield* Clock.currentTimeMillis;
           const none = { failedEventIds: [], stranded: 0, retried: 0 };
+          // Aborted for its audience (`abortPrivateTurns`): whatever it ran to, a fresh
+          // wake-up answers its events, without spending an attempt or telling anyone.
+          const requeued = yield* sql`UPDATE kin_wakeups SET status = 'released', ended_at = ${now}
+            WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND status = 'running'
+              AND aborted_at IS NOT NULL
+            RETURNING wakeup_id`;
+          if (requeued.length > 0) {
+            yield* sql`UPDATE kin_events SET state = 'queued', wakeup_id = NULL, not_before = ${now}
+              WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed'`;
+            return none;
+          }
           // Read before the row closes; every subquery stays inside this wake-up's org.
           const [visible] =
             input.status === "completed"

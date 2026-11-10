@@ -44,6 +44,7 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Kin from "../layer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
+import { KinGroups } from "../chat/KinGroups.ts";
 import {
   AUDIENCE_MOVED,
   PRIVATE_DESTINATION,
@@ -52,6 +53,7 @@ import {
   SHARED_REFUSAL,
 } from "../lead/Audience.ts";
 import * as KinToolGate from "./KinToolGate.ts";
+import { toolAdmitted } from "../lead/SharedTools.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { KinChatToolkit, handlers, agentServices } from "./KinChatToolkit.ts";
 
@@ -438,6 +440,79 @@ it.effect("every tool call passes the gate, which holds a turn a teammate reads 
     assert.deepStrictEqual(
       yield* sql`SELECT body FROM kin_messages WHERE chat_id = ${direct.chatId}
         AND author_kind = 'agent' ORDER BY seq`,
+      [],
+    );
+  }).pipe(Effect.provide(gatedLayer)),
+);
+
+// A turn built with the owner's notes in mind can't go on once a teammate can read its chat.
+it.effect("a teammate joining aborts the owner-only turn, and leaving reopens nothing", () =>
+  Effect.gen(function* () {
+    const { person, chatService, sql } = yield* seed();
+    const kin = yield* Kin.KinServer;
+    const groups = Context.get(Option.getOrThrow(kin.services), KinGroups);
+    const at = "1970-01-01T00:00:00.000Z";
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES ('teammate', ${person.orgId}, 'teammate', 'Teammate', ${at})`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at)
+      VALUES ('room', ${person.orgId}, 'team_group', 'Launch', 0, ${at})`;
+    for (const [member, kind, principal, role] of [
+      ["room-owner", "person", person.personId, "owner"],
+      ["room-lead", "agent", agentId, "member"],
+    ] as const)
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, agent_id, role, joined_at)
+        VALUES (${member}, ${person.orgId}, 'room', ${kind}, ${kind === "person" ? principal : null},
+          ${kind === "agent" ? principal : null}, ${role}, ${at})`;
+    const asked = yield* chatService.send(person, {
+      chatId: KinChatId.make("room"),
+      body: "Owner question in the group",
+      clientMessageId: "room-ask",
+    });
+    yield* startAgentWakeup({ orgId: person.orgId, agentId, threadId, message: asked });
+    const gated = (name: string, args: Record<string, unknown>) =>
+      call(name, args).pipe(Effect.provideService(Kin.KinServer, kin));
+    const abortedAt = sql<{ abortedAt: number | null }>`SELECT aborted_at AS "abortedAt"
+      FROM kin_wakeups WHERE agent_id = ${agentId} AND status = 'running' ORDER BY wakeup_id`;
+    assert.deepStrictEqual(yield* abortedAt, [{ abortedAt: null }]);
+    const mate = yield* groups.addMember([person], {
+      chatId: KinChatId.make("room"),
+      principal: { _tag: "person", personId: KinPersonId.make("teammate") },
+    });
+    assert.isNotNull((yield* abortedAt)[0]?.abortedAt);
+    const calls = [
+      ["kin_delegate", { kind: "build", title: "Invented", brief: "Invented", memoryItemIds: [] }],
+      ["kin_follow_up", { workerId: "worker", brief: "Invented" }],
+      ["kin_chat_post", { chatId: "room", body: "Invented", intent: "evidence" }],
+      ["kin_widget_upsert", { chatId: "room", type: "task", state: taskState }],
+      ["kin_hand_off", { toAgentId: "other", brief: "Invented" }],
+      ["request_action", { kind: "merge", summary: "Invented" }],
+      ["kin_defer", { title: "Invented", due: "2026-12-01T09:00:00Z" }],
+    ] as const;
+    // Only the chat tools are registered here; the gate asks `toolAdmitted` the same for all.
+    const [wake] = yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId" FROM kin_wakeups
+      WHERE agent_id = ${agentId} AND status = 'running' ORDER BY wakeup_id`;
+    const turn = { orgId: person.orgId, agentId, wakeupId: wake!.wakeupId };
+    for (const [name, args] of calls)
+      if (name === "kin_chat_post" || name === "kin_widget_upsert")
+        assert.strictEqual((yield* gated(name, args).pipe(Effect.flip)).message, SHARED_REFUSAL);
+      else assert.isFalse(yield* toolAdmitted(turn, name, args), name);
+    // The teammate leaving between two calls opens nothing back up.
+    yield* groups.removeMember([person], {
+      chatId: KinChatId.make("room"),
+      memberId: mate.memberId,
+    });
+    assert.strictEqual(
+      (yield* gated("kin_chat_post", calls[2][1]).pipe(Effect.flip)).message,
+      SHARED_REFUSAL,
+    );
+    assert.isNotNull((yield* abortedAt)[0]?.abortedAt);
+    assert.deepStrictEqual(
+      yield* sql`SELECT body FROM kin_messages WHERE chat_id = 'room' AND author_kind = 'agent'
+        ORDER BY seq`,
+      [],
+    );
+    assert.deepStrictEqual(
+      yield* sql`SELECT widget_id FROM kin_widgets WHERE chat_id = 'room' ORDER BY widget_id`,
       [],
     );
   }).pipe(Effect.provide(gatedLayer)),

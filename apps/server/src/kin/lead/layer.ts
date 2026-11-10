@@ -175,7 +175,7 @@ const runner = Layer.effectDiscard(
         Effect.catchCause((cause) => Effect.logError("Kin dreams unavailable", { cause })),
       );
       const routines = Context.getOption(context, Routines.KinRoutines);
-      yield* stop.attach(yield* KinStop.makeFanOut(routines));
+      yield* stop.attach({ ...(yield* KinStop.makeFanOut(routines)), abort: runner.abort });
       if (Option.isSome(routines) && Option.isSome(ownerTimeZone))
         yield* ownerTimeZone.value.attach(routines.value);
       yield* runner.start.pipe(Effect.provideContext(context));

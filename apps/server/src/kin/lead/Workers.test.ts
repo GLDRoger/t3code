@@ -58,7 +58,8 @@ import { KinGithubRepoScope } from "../triggers/githubEvents.ts";
 import { KinBudget } from "./KinBudget.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import * as Registry from "./KinLeadRegistry.ts";
-import { SHARED_REFUSAL, recordAudience, turnAudience } from "./Audience.ts";
+import { SHARED_REFUSAL, effectiveAudience, recordAudience, turnAudience } from "./Audience.ts";
+import { laneFor } from "../reply/KinReplyBridge.ts";
 import { sharedToolAllowed } from "./SharedTools.ts";
 import { KinLevelGate } from "./LevelGate.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
@@ -925,12 +926,52 @@ const group = Effect.fn("WorkersTest.group")(function* (
   yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
     VALUES (${`${chatId}-lead`}, ${orgId}, ${chatId}, 'agent', ${leadId}, 'member', ${at})`;
 });
-/** Another message in the current wake-up, from `chatId`. */
-const askFrom = (sql: SqlClient.SqlClient, eventId: string, chatId: string) =>
-  sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
+/** The owner's stored message `messageId`, posted in `chatId`, where the owner then is too. */
+const ownerPosts = Effect.fn("WorkersTest.ownerPosts")(function* (
+  sql: SqlClient.SqlClient,
+  messageId: string,
+  chatId: string,
+) {
+  yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+    SELECT ${`${chatId}-asker`}, a.org_id, ${chatId}, 'person', a.owner_person_id, 'member',
+      '1970-01-01T00:00:00.000Z' FROM kin_agents a
+    WHERE a.agent_id = ${leadId} AND NOT EXISTS (SELECT 1 FROM kin_chat_members m
+      WHERE m.chat_id = ${chatId} AND m.person_id = a.owner_person_id AND m.left_at IS NULL)`;
+  yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+      author_member_id, author_role, kind, body, mentions_json, status, created_at)
+    SELECT ${messageId}, m.org_id, ${chatId},
+      (SELECT COALESCE(MAX(seq), 0) + 1 FROM kin_messages WHERE chat_id = ${chatId}), m.author_kind,
+      m.author_person_id, m.author_member_id, m.author_role, m.kind, m.body, m.mentions_json,
+      m.status, m.created_at
+    FROM kin_messages m JOIN kin_events e ON e.org_id = m.org_id
+      AND m.message_id = json_extract(e.json, '$.messageId')
+    WHERE e.event_id = 'lead-event'`;
+  yield* sql`UPDATE kin_chats SET last_seq = (SELECT MAX(seq) FROM kin_messages WHERE chat_id = ${chatId})
+    WHERE chat_id = ${chatId}`;
+});
+/** Another message of the owner's in the current wake-up, from `chatId`. */
+const askFrom = Effect.fn("WorkersTest.askFrom")(function* (
+  sql: SqlClient.SqlClient,
+  eventId: string,
+  chatId: string,
+) {
+  yield* ownerPosts(sql, `${eventId}-message`, chatId);
+  yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
     SELECT ${eventId}, org_id, agent_id, tag, priority,
-      json_set(json, '$.eventId', ${eventId}, '$.chatId', ${chatId}), received_at, queued_at, state, wakeup_id
+      json_set(json, '$.eventId', ${eventId}, '$.chatId', ${chatId},
+        '$.messageId', ${`${eventId}-message`}), received_at, queued_at, state, wakeup_id
     FROM kin_events WHERE event_id = 'lead-event'`;
+});
+/** The wake-up's asking message came from `chatId` instead. */
+const askedIn = Effect.fn("WorkersTest.askedIn")(function* (
+  sql: SqlClient.SqlClient,
+  chatId: string,
+) {
+  yield* ownerPosts(sql, "lead-message-moved", chatId);
+  yield* sql`UPDATE kin_events SET json = json_set(json, '$.chatId', ${chatId},
+      '$.messageId', 'lead-message-moved')
+    WHERE event_id = 'lead-event'`;
+});
 
 // The owner's verdict, 10 Nov 2026: a lead just works where the owner put it, from creation.
 it.effect.each([
@@ -942,8 +983,7 @@ it.effect.each([
       Effect.gen(function* () {
         yield* group(ctx.sql, ctx.orgId, "team", groupOwner);
         // The asking message came from the group.
-        yield* ctx.sql`UPDATE kin_events SET json = json_set(json, '$.chatId', 'team')
-          WHERE event_id = 'lead-event'`;
+        yield* askedIn(ctx.sql, "team");
         const result = yield* workers.delegate(scope, teamDelegate).pipe(Effect.result);
         if (starts) {
           assert.strictEqual(result._tag, "Success");
@@ -963,8 +1003,7 @@ it.effect("a chat that can't start work can't reach a worker started in one that
       Effect.gen(function* () {
         yield* group(ctx.sql, ctx.orgId, "team", "owner");
         yield* group(ctx.sql, ctx.orgId, "side", "teammate");
-        yield* ctx.sql`UPDATE kin_events SET json = json_set(json, '$.chatId', 'team')
-          WHERE event_id = 'lead-event'`;
+        yield* askedIn(ctx.sql, "team");
         yield* askFrom(ctx.sql, "side-event", "side");
         const started = yield* workers.delegate(scope, teamDelegate);
         const followUp = (sourceEventId: string) =>
@@ -1591,7 +1630,9 @@ it.effect(
     ),
 );
 
-it.effect("a due deferral asked from someone else's chat holds the whole wake-up to the list", () =>
+// The wake-up is one a teammate's chat stands behind: the gate refuses kin_delegate for it, and
+// so does the write that would record the worker.
+it.effect("a due deferral asked from someone else's chat starts no work in its wake-up", () =>
   run(({ ctx, remote, workers }) =>
     Effect.gen(function* () {
       yield* group(ctx.sql, ctx.orgId, "side", "teammate");
@@ -1617,8 +1658,12 @@ it.effect("a due deferral asked from someone else's chat holds the whole wake-up
         { reason: "not_allowed" },
       );
       assert.lengthOf(remote.tools("t3_thread_launch"), 0);
-      yield* workers.delegate(scope, teamDelegate);
-      assert.lengthOf(remote.tools("t3_thread_launch"), 1);
+      assert.include(yield* Effect.flip(workers.delegate(scope, teamDelegate)), {
+        reason: "not_allowed",
+        message: SHARED_REFUSAL,
+      });
+      assert.lengthOf(remote.tools("t3_thread_launch"), 0);
+      assert.lengthOf(yield* cards(ctx.sql, ctx.orgId), 0);
     }),
   ),
 );
@@ -1816,6 +1861,129 @@ it.effect(
         assert.lengthOf(remote.tools("t3_thread_interrupt"), interrupts);
       }),
     ),
+);
+
+/** A turn of its own answering only `eventId`, and where its reply would go; one runs at a time. */
+const answering = Effect.fn("WorkersTest.answering")(function* (
+  sql: SqlClient.SqlClient,
+  orgId: KinOrgId,
+  eventId: string,
+  wakeupId: string,
+) {
+  yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids)
+    VALUES (${wakeupId}, ${orgId}, ${leadId}, 'test', 0, 'completed', json_array(${eventId}))`;
+  yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = ${wakeupId} WHERE event_id = ${eventId}`;
+  const turn = { orgId, agentId: leadId, wakeupId };
+  return {
+    audience: yield* turnAudience(turn),
+    lane: Option.getOrThrow(yield* laneFor({ ...turn, wakeupId: KinWakeupId.make(wakeupId) })),
+  };
+});
+
+it.effect("a worker's report answers where its work was asked, for everyone who reads there", () =>
+  run(({ ctx, remote, tracker, workers }) =>
+    Effect.gen(function* () {
+      const sql = ctx.sql;
+      const own = yield* workers.delegate(scope, delegateInput);
+      // Then the owner asks in a group a teammate reads, in the same turn.
+      yield* group(sql, ctx.orgId, "team", "owner");
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('team-mate', ${ctx.orgId}, 'team', 'person', 'teammate', 'member', '1970-01-01T00:00:00.000Z')`;
+      yield* askFrom(sql, "team-event", "team");
+      const turn = { orgId: ctx.orgId, agentId: leadId, wakeupId: "wake" };
+      yield* recordAudience(turn, yield* turnAudience(turn));
+      const shared = yield* workers.delegate(scope, {
+        ...teamDelegate,
+        sourceEventId: "team-event",
+      });
+      for (const worker of [own, shared]) {
+        const { threadId } = yield* workerRow(sql, ctx.orgId, worker.workerId);
+        yield* remote.finish(ThreadId.make(threadId), "completed", reportReply);
+        yield* settled(tracker, ctx.orgId, worker.workerId);
+      }
+      const byWorker = new Map(
+        (yield* reports(sql, ctx.orgId)).map(({ event }) => [event.workerId, event]),
+      );
+      const fromTeam = byWorker.get(shared.workerId)!;
+      const fromDm = byWorker.get(own.workerId)!;
+      assert.strictEqual(fromTeam.chatId, "team");
+      assert.isUndefined(fromDm.chatId);
+      assert.isUndefined(fromDm.origin);
+      // The group's answer is shared, so its prompt has no notes and it keeps no journal.
+      assert.deepStrictEqual(yield* answering(sql, ctx.orgId, fromTeam.eventId, "report-team"), {
+        audience: "shared",
+        lane: { chatId: KinChatId.make("team"), mode: "notice", leadName: "Lead" },
+      });
+      assert.deepStrictEqual(yield* answering(sql, ctx.orgId, fromDm.eventId, "report-dm"), {
+        audience: "owner_only",
+        lane: { chatId: ctx.chat.chatId, mode: "notice", leadName: "Lead" },
+      });
+    }),
+  ),
+);
+
+it.effect(
+  "a private turn can't follow up, or update the card of, work in a group others read",
+  () =>
+    run(({ ctx, remote, workers }) =>
+      Effect.gen(function* () {
+        const sql = ctx.sql;
+        yield* group(sql, ctx.orgId, "team", "owner");
+        yield* askFrom(sql, "team-event", "team");
+        const started = yield* workers.delegate(scope, {
+          ...teamDelegate,
+          sourceEventId: "team-event",
+        });
+        // A teammate joins the group; this turn now answers only the owner's direct chat.
+        yield* sql`UPDATE kin_events SET state = 'done', wakeup_id = NULL WHERE event_id = 'team-event'`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('team-mate', ${ctx.orgId}, 'team', 'person', 'teammate', 'member', '1970-01-01T00:00:00.000Z')`;
+        const turn = { orgId: ctx.orgId, agentId: leadId, wakeupId: "wake" };
+        assert.strictEqual(yield* effectiveAudience(turn), "owner_only");
+        const before = yield* cards(sql, ctx.orgId);
+        assert.include(
+          yield* Effect.flip(
+            workers.followUp(scope, {
+              workerId: started.workerId,
+              brief: "Use what I told you privately.",
+              sourceEventId: "lead-event",
+            }),
+          ),
+          { reason: "not_allowed" },
+        );
+        assert.lengthOf(remote.tools("t3_thread_send"), 0);
+        assert.deepStrictEqual(yield* cards(sql, ctx.orgId), before);
+      }),
+    ),
+);
+
+// The gate refuses an aborted turn first; dispatch checks again inside its own write.
+it.effect("an aborted turn starts no work and follows nothing up, past the gate too", () =>
+  run(({ ctx, remote, workers }) =>
+    Effect.gen(function* () {
+      const started = yield* workers.delegate(scope, teamDelegate);
+      const launches = remote.tools("t3_thread_launch").length;
+      const before = yield* cards(ctx.sql, ctx.orgId);
+      yield* ctx.sql`UPDATE kin_wakeups SET aborted_at = 1, shared_since = 1 WHERE wakeup_id = 'wake'`;
+      assert.include(yield* Effect.flip(workers.delegate(scope, teamDelegate)), {
+        reason: "not_allowed",
+        message: SHARED_REFUSAL,
+      });
+      assert.include(
+        yield* Effect.flip(
+          workers.followUp(scope, {
+            workerId: started.workerId,
+            brief: "Go on.",
+            sourceEventId: "lead-event",
+          }),
+        ),
+        { reason: "not_allowed" },
+      );
+      assert.lengthOf(remote.tools("t3_thread_launch"), launches);
+      assert.lengthOf(remote.tools("t3_thread_send"), 0);
+      assert.deepStrictEqual(yield* cards(ctx.sql, ctx.orgId), before);
+    }),
+  ),
 );
 
 it.effect(

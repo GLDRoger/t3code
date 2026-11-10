@@ -58,7 +58,7 @@ import * as KinIssuedTokens from "../mcp/KinIssuedTokens.ts";
 import * as KinLead from "./layer.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinStop from "./KinStop.ts";
-import { SHARED_THREAD_PREFIX } from "./Audience.ts";
+import { SHARED_THREAD_PREFIX, abortPrivateTurns } from "./Audience.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
 import { KinLeadPrompt, type KinLeadPromptInput } from "./LeadPrompt.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
@@ -320,6 +320,79 @@ describe("WakeupRunner", () => {
         assert.include(memory, `discard:${shared.wakeupId}`);
         assert.lengthOf(kept(again.wakeupId), 2);
       }).pipe(Effect.provide(harness({ writer })), provideDeterministicTestRuntime);
+    },
+  );
+  it.effect(
+    "a teammate joining mid-turn aborts it: nothing kept, its events answered shared on a fresh thread",
+    () => {
+      const memory: Array<string> = [];
+      const writer = Layer.mock(Writer.MemoryWriter)({
+        appendJournal: (_org, wakeupId) => Effect.sync(() => memory.push(`journal:${wakeupId}`)),
+        commitWakeup: (_org, wakeupId) =>
+          Effect.sync(() => (memory.push(`commit:${wakeupId}`), { commit: "fixture" })),
+        discard: (_org, wakeupId) => Effect.sync(() => memory.push(`discard:${wakeupId}`)),
+      });
+      // While the first turn runs, the teammate's join commits with its abort mark.
+      let during: Effect.Effect<void> = Effect.void;
+      return Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const at = "2026-11-08T00:00:00.000Z";
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+            VALUES ('teammate', 'org', 'teammate', 'Teammate', ${at})`;
+        during = sql
+          .withTransaction(
+            Effect.gen(function* () {
+              yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+                VALUES ('teammate-member', 'org', 'owner-chat', 'person', 'teammate', 'member', ${at})`;
+              yield* abortPrivateTurns({
+                orgId,
+                chatId: KinChatId.make("owner-chat"),
+                personId: KinPersonId.make("teammate"),
+              });
+            }),
+          )
+          .pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.orDie,
+            Effect.ensuring(Effect.sync(() => (during = Effect.void))),
+          );
+        yield* wake("asked", "owner-chat");
+        const rows = sql<{
+          wakeupId: string;
+          status: string;
+          audience: string | null;
+          aborted: number;
+          threadId: string | null;
+        }>`SELECT wakeup_id AS "wakeupId", status, audience, aborted_at IS NOT NULL AS aborted,
+            thread_id AS "threadId" FROM kin_wakeups ORDER BY started_at, wakeup_id`;
+        const [first] = yield* rows;
+        assert.deepInclude(first, { status: "released", audience: "owner_only", aborted: 1 });
+        assert.deepStrictEqual(
+          yield* sql`SELECT state, attempts, wakeup_id AS "wakeupId" FROM kin_events
+            WHERE event_id = 'asked'`,
+          [{ state: "queued", attempts: 0, wakeupId: null }],
+        );
+        assert.deepStrictEqual(
+          memory.filter((write) => !write.startsWith("discard:")),
+          [],
+        );
+        assert.include(memory, `discard:${first!.wakeupId}`);
+        yield* Fiber.join(yield* run());
+        const [, again] = yield* rows;
+        assert.deepInclude(again, { status: "completed", audience: "shared", aborted: 0 });
+        assert.isTrue(again!.threadId!.startsWith(SHARED_THREAD_PREFIX));
+        assert.notStrictEqual(again!.threadId, first!.threadId);
+        assert.deepStrictEqual(
+          yield* sql`SELECT state, wakeup_id AS "wakeupId" FROM kin_events WHERE event_id = 'asked'`,
+          [{ state: "done", wakeupId: again!.wakeupId }],
+        );
+        assert.notInclude(memory, `journal:${again!.wakeupId}`);
+        assert.notInclude(memory, `commit:${again!.wakeupId}`);
+      }).pipe(
+        Effect.provide(harness({ writer, onTurn: () => during })),
+        provideDeterministicTestRuntime,
+      );
     },
   );
   it.effect("hands the files on the messages it answers to the provider turn", () => {
@@ -1731,7 +1804,10 @@ describe("WakeupRunner", () => {
             Layer.mock(ChatService.KinChatService)({}),
             Layer.mock(ChatHub.KinChatHub)({}),
             Layer.mock(LevelGate.KinLevelGate)({}),
-            Layer.mock(Presence.KinPresence)({ snapshot: () => ({ presence: [], drafts: [] }) }),
+            Layer.mock(Presence.KinPresence)({
+              snapshot: () => Effect.succeed({ presence: [], drafts: [] }),
+              lines: () => [],
+            }),
             Layer.mock(Budget.KinBudget)({}),
             Layer.mock(KinStop.KinStop)({}),
             Layer.mock(KinEventQueue.KinEventQueue)({}),

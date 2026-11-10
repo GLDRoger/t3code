@@ -562,7 +562,8 @@ const make = Effect.gen(function* () {
         ctx.orgId,
         ctx.agentId,
         Effect.gen(function* () {
-          const ctx = yield* resolve(scope);
+          // Again under the lock: a join may have aborted the turn since.
+          const ctx = yield* notes(scope, SHARED_REFUSAL);
           yield* checkSource(ctx, input.sourceEventId);
           const source = (yield* writerAuthority.resolve(ctx.orgId, ctx.wakeupId)).sources.get(
             input.sourceEventId,
@@ -619,7 +620,8 @@ const make = Effect.gen(function* () {
         ctx.orgId,
         ctx.agentId,
         Effect.gen(function* () {
-          const ctx = yield* resolve(scope);
+          // Again under the lock: a join may have aborted the turn since.
+          const ctx = yield* notes(scope, SHARED_REFUSAL);
           yield* checkSource(ctx, input.sourceEventId);
           const source = (yield* writerAuthority.resolve(ctx.orgId, ctx.wakeupId)).sources.get(
             input.sourceEventId,
@@ -690,7 +692,7 @@ const make = Effect.gen(function* () {
         ctx.orgId,
         ctx.agentId,
         Effect.gen(function* () {
-          yield* cancelOwn(yield* resolve(scope), input.itemId, input.sourceEventId);
+          yield* cancelOwn(yield* notes(scope, SHARED_REFUSAL), input.itemId, input.sourceEventId);
           return { itemId: input.itemId };
         }),
       );

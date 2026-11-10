@@ -26,14 +26,8 @@ import * as Chat from "../chat/KinChatRepository.ts";
 import { liveReactions, reactionAnswer } from "../chat/reactions.ts";
 
 import { SILENT_REPLY } from "../reply/classify.ts";
-import {
-  effectiveAudience,
-  ownerOnlyChat,
-  recordAudience,
-  turnAudience,
-  type TurnAudience,
-} from "./Audience.ts";
-import { deferralOrigin } from "../triggers/deferralOrigin.ts";
+import { effectiveAudience, recordAudience, turnAudience, type TurnAudience } from "./Audience.ts";
+import { askedWhereOthersRead } from "../triggers/deferralOrigin.ts";
 import { groupRules } from "./instructions.ts";
 
 export class KinLeadPromptError extends Schema.TaggedError<KinLeadPromptError>()(
@@ -415,17 +409,9 @@ export class KinLeadPrompt extends Context.Service<
           { lead: agentId },
         );
         const paths = new Set<string>();
-        for (const item of items) {
-          const origin = yield* deferralOrigin(sql, orgId, item, { agentId, ...lead });
-          if (
-            origin !== undefined &&
-            (origin.personId !== undefined ||
-              !(yield* ownerOnlyChat({ orgId, agentId }, origin.chatId).pipe(
-                Effect.provideService(SqlClient.SqlClient, sql),
-              )))
-          )
+        for (const item of items)
+          if (yield* askedWhereOthersRead(sql, orgId, item, { agentId, ...lead }))
             paths.add(item.path);
-        }
         return paths;
       });
       const build = Effect.fn("KinLeadPrompt.build")(function* (input: KinLeadPromptInput) {
@@ -454,7 +440,8 @@ export class KinLeadPrompt extends Context.Service<
             (event) =>
               (event._tag === "chat.message" ||
                 event._tag === "widget.action" ||
-                event._tag === "chat.reaction") &&
+                event._tag === "chat.reaction" ||
+                event._tag === "worker.report") &&
               event.chatId === input.lane?.chatId,
           )
             ? input.lane

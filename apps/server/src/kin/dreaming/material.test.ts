@@ -6,6 +6,7 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
+import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { collectMaterial } from "./material.ts";
 
@@ -147,6 +148,34 @@ it.effect("leaves out what a teammate could read or steer: their chats and share
     assert.deepStrictEqual(
       material.entries.map((entry) => entry.text.trim().split("\n").at(-1)),
       ["- Invented owner journal", "Invented owner note", "Invented private reply"],
+    );
+    // An item made from the teammate's ask is theirs to have read, so a full dream leaves it out.
+    yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state)
+      VALUES ('e-team', ${orgId}, 'lead', 'chat.message', 'P0', ${JSON.stringify({
+        _tag: "chat.message",
+        orgId,
+        agentId: "lead",
+        eventId: "e-team",
+        receivedAt: at,
+        dedupeKey: null,
+        provenance: { _tag: "human", personId: "teammate", memberId: "team-mate" },
+        chatId: "team",
+        messageId: "m3",
+      })}, 0, 0, 'done')`;
+    const full = yield* collectMaterial({
+      orgId,
+      from: 0,
+      until: Date.parse("2026-11-10T12:00:00.000Z"),
+      full: true,
+      timeZone: "UTC",
+      files: new Map([
+        ["deferrals/def-owner.md", fixtureItem({ id: "def-owner", chat: "dm" })],
+        ["deferrals/def-team.md", fixtureItem({ id: "def-team", source_event: "e-team" })],
+      ]),
+    });
+    assert.deepStrictEqual(
+      full.entries.filter((entry) => entry.kind === "item").map((entry) => entry.ref),
+      ["memory:deferrals/def-owner.md"],
     );
   }).pipe(Effect.provide(layer)),
 );

@@ -485,6 +485,11 @@ export const KinEvent = Schema.Union([
     ...EventBase,
     workerId: KinWorkerId,
     report: WorkerReport,
+    // From the worker's stored row, when it isn't the lead's owner chat: the chat its work was
+    // asked for in, where the lead answers. `origin` is where that was first asked, with the
+    // teammate who asked, as on a due deferral.
+    chatId: Schema.optional(KinChatId),
+    origin: Schema.optional(KinEventOrigin),
   }),
   Schema.TaggedStruct("action.resolved", {
     ...EventBase,

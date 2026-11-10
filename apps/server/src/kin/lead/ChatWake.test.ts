@@ -225,8 +225,8 @@ describe("ChatWake", () => {
         const presence = yield* Presence.KinPresence;
         assert.deepStrictEqual(
           presence
-            .snapshot(KinOrgId.make("a"), KinChatId.make("chat-a"))
-            .presence.map((line) => [line.agentId, line.state, line.label, line.wakeupId]),
+            .lines(KinOrgId.make("a"), KinChatId.make("chat-a"))
+            .map((line) => [line.agentId, line.state, line.label, line.wakeupId]),
           [["lead-a", "starting", "Catching up", null]],
         );
         const stored = yield* storedEvents();
@@ -272,8 +272,8 @@ describe("ChatWake", () => {
         const presence = yield* Presence.KinPresence;
         const lines = () =>
           presence
-            .snapshot(KinOrgId.make("a"), KinChatId.make("chat-a"))
-            .presence.map((line) => [line.state, line.label]);
+            .lines(KinOrgId.make("a"), KinChatId.make("chat-a"))
+            .map((line) => [line.state, line.label]);
         const sql = yield* SqlClient.SqlClient;
         yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids)
         VALUES ('running', 'a', 'lead-a', 'fixture', 0, 'running', '[]')`;

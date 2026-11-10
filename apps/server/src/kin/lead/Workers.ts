@@ -43,7 +43,8 @@ import { sourceControlDefinitions } from "../../sourceControl/sourceControlDefin
 import { KinGithubRepoScope } from "../triggers/githubEvents.ts";
 import { KinBudget } from "./KinBudget.ts";
 import * as KinLevels from "./KinLevels.ts";
-import { SHARED_REFUSAL, effectiveAudience, turnChat } from "./Audience.ts";
+import { SHARED_REFUSAL, destination, effectiveAudience, turnChat } from "./Audience.ts";
+import { toolAdmitted } from "./SharedTools.ts";
 import { isOrgPaused, STOP_REASON } from "./orgState.ts";
 import { resolveLead } from "./LeadMemory.ts";
 import { quote } from "./LeadPrompt.ts";
@@ -530,31 +531,43 @@ const make = Effect.gen(function* () {
     formatThreadLink({ environmentId, threadId });
   // Cards are best effort: a launched worker must not fail because its card could not be shown.
   const showCard = Effect.fn("KinWorkers.showCard")(
-    function* (input: {
-      readonly orgId: KinOrgId;
-      readonly chatId: KinChatId;
-      readonly agentId: KinAgentId;
-      readonly threadId: ThreadId;
-      readonly environmentId: EnvironmentId;
-      readonly title: string;
-      readonly model: string;
-      /** A closed card reopens only for a worker that is running again. */
-      readonly reopen: boolean;
-    }) {
-      const card = yield* chat
-        .createTaskCard({
-          orgId: input.orgId,
-          chatId: input.chatId,
-          authorAgentId: input.agentId,
-          threadId: input.threadId,
-          title: input.title,
-          model: input.model,
-          remote: { environmentId: input.environmentId, status: "working" },
-        })
-        .pipe(
-          Effect.provideService(OrchestratorV2, orchestrator),
-          Effect.provideService(ServerEnvironment, environment),
-        );
+    function* (
+      turn: Lead,
+      input: {
+        readonly orgId: KinOrgId;
+        readonly chatId: KinChatId;
+        readonly agentId: KinAgentId;
+        readonly threadId: ThreadId;
+        readonly environmentId: EnvironmentId;
+        readonly title: string;
+        readonly model: string;
+        /** A closed card reopens only for a worker that is running again. */
+        readonly reopen: boolean;
+      },
+    ) {
+      // The lead's words on a card are a post: authorised against the chat in the card's write.
+      const card = yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const where = yield* destination(turn, input.chatId).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          );
+          if (where !== "allowed") return yield* denied(SHARED_REFUSAL);
+          return yield* chat
+            .createTaskCard({
+              orgId: input.orgId,
+              chatId: input.chatId,
+              authorAgentId: input.agentId,
+              threadId: input.threadId,
+              title: input.title,
+              model: input.model,
+              remote: { environmentId: input.environmentId, status: "working" },
+            })
+            .pipe(
+              Effect.provideService(OrchestratorV2, orchestrator),
+              Effect.provideService(ServerEnvironment, environment),
+            );
+        }),
+      );
       if (card.closedAt !== null && input.reopen)
         yield* chat.setTaskCardClosed({
           orgId: input.orgId,
@@ -659,6 +672,13 @@ const make = Effect.gen(function* () {
     yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* lead(scope);
+        // The gate's check again where the row is written: a join may have aborted the turn.
+        if (
+          !(yield* toolAdmitted(ctx, "kin_delegate", input).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          ))
+        )
+          return yield* denied(SHARED_REFUSAL);
         if (input.reviewOf !== undefined && !sameRepository(yield* worker(ctx, input.reviewOf)))
           return yield* denied(REVIEW_ELSEWHERE);
         // What was checked before the calls there still holds as the row is written.
@@ -753,7 +773,7 @@ const make = Effect.gen(function* () {
       key: `kin-stop-launch:${workerId}:${launched.runId ?? "idle"}`,
     });
     const live = launched.status === null || !endedStatuses.has(launched.status);
-    yield* showCard({
+    yield* showCard(ctx, {
       orgId: ctx.orgId,
       chatId,
       agentId: ctx.agentId,
@@ -809,6 +829,24 @@ const make = Effect.gen(function* () {
     if (plan.worker.environmentId === null || !bound(plan.worker))
       return yield* denied("That worker never started. Start a new one with kin_delegate.");
     const environmentId = plan.worker.environmentId;
+    const workerChat = plan.worker.chatId;
+    // Last before the send: the gate's check again, and what a follow-up brings back lands in
+    // the worker's chat, so the turn must be one that may write there.
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* lead(scope);
+        if (
+          !(yield* toolAdmitted(ctx, "kin_follow_up", input).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          )) ||
+          (workerChat !== null &&
+            (yield* destination(ctx, workerChat).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            )) !== "allowed")
+        )
+          return yield* denied(SHARED_REFUSAL);
+      }),
+    );
     const requestKey = (yield* hash({ wakeupId: ctx.wakeupId, input })).slice(0, 32);
     const sent = yield* env
       .call(environmentId, WorkerEnvironment.tools.send, {
@@ -834,7 +872,7 @@ const make = Effect.gen(function* () {
       key: `kin-stop-launch:${input.workerId}:${sent.runId}`,
     });
     if (plan.worker.chatId !== null)
-      yield* showCard({
+      yield* showCard(ctx, {
         orgId: ctx.orgId,
         chatId: plan.worker.chatId,
         agentId: plan.worker.agentId,

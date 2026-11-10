@@ -4,7 +4,9 @@ import {
   type KinDraft,
   type KinMessageId,
   type KinOrgId,
+  type KinPersonId,
   type KinPresence as Presence,
+  type KinWakeupId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Clock from "effect/Clock";
@@ -15,6 +17,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Hub from "../chat/KinChatHub.ts";
+import { destination } from "../lead/Audience.ts";
 import { PHASE_LABELS } from "./classify.ts";
 
 /** Draft deltas go out at most this often per chat. */
@@ -22,11 +25,15 @@ const DRAFT_THROTTLE_MS = 250;
 
 type DraftState = {
   readonly agentId: KinAgentId;
+  readonly wakeupId: KinWakeupId;
   full: string;
   sent: number;
   lastSentAt: number;
   flushing: boolean;
+  // Its turn may no longer write to the chat: nothing more of it is sent, ever.
+  refused: boolean;
 };
+type DraftInput = KinDraft & { readonly wakeupId: KinWakeupId };
 type Line = {
   readonly presence: Map<KinAgentId, Presence>;
   readonly drafts: Map<string, DraftState>;
@@ -62,21 +69,28 @@ export class KinPresence extends Context.Service<
       agentId: KinAgentId,
       keep: ReadonlySet<KinChatId>,
     ) => Effect.Effect<void>;
-    /** `text` is the whole draft so far; only its new tail is sent. */
-    readonly draft: (orgId: KinOrgId, chatId: KinChatId, draft: KinDraft) => Effect.Effect<void>;
+    /**
+     * `text` is the whole draft so far; only its new tail is sent, and only while its wake-up may
+     * write to the chat (`destination`), as a post must.
+     */
+    readonly draft: (orgId: KinOrgId, chatId: KinChatId, draft: DraftInput) => Effect.Effect<void>;
+    /** Sends the tail and ends the draft; a refused one ends for the owner without its tail. */
     readonly endDraft: (
       orgId: KinOrgId,
       chatId: KinChatId,
       draftId: string,
       messageId: KinMessageId | null,
     ) => Effect.Effect<void>;
+    /** For a current member of the chat: its lines, and the drafts their wake-ups may show. */
     readonly snapshot: (
       orgId: KinOrgId,
       chatId: KinChatId,
-    ) => {
+    ) => Effect.Effect<{
       readonly presence: ReadonlyArray<Presence>;
       readonly drafts: ReadonlyArray<KinDraft>;
-    };
+    }>;
+    /** The chat's status lines, which carry no text of the lead's. */
+    readonly lines: (orgId: KinOrgId, chatId: KinChatId) => ReadonlyArray<Presence>;
   }
 >()("t3/kin/reply/KinPresence") {}
 
@@ -92,7 +106,32 @@ const same = (a: Presence | undefined, b: Presence) =>
 
 const make = Effect.gen(function* () {
   const hub = yield* Hub.KinChatHub;
+  const sql = yield* SqlClient.SqlClient;
   const scope = yield* Effect.scope;
+  // Per throttled send, not per delta: whether the draft's wake-up may still write to the chat.
+  const allowed = Effect.fnUntraced(
+    function* (orgId: KinOrgId, chatId: KinChatId, state: DraftState) {
+      if (state.refused) return false;
+      const where = yield* destination(
+        { orgId, agentId: state.agentId, wakeupId: state.wakeupId },
+        chatId,
+      ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      if (where !== "allowed") state.refused = true;
+      return where === "allowed";
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin draft check failed; withholding it", { cause }).pipe(Effect.as(false)),
+    ),
+  );
+  // Only a turn the owner alone could read is ever refused, so only the owner saw its draft.
+  const ownerOf = Effect.fnUntraced(
+    function* (orgId: KinOrgId, agentId: KinAgentId) {
+      const [row] = yield* sql<{ personId: KinPersonId }>`SELECT owner_person_id AS "personId"
+      FROM kin_agents WHERE org_id = ${orgId} AND agent_id = ${agentId} ORDER BY agent_id`;
+      return row?.personId;
+    },
+    Effect.orElseSucceed(() => undefined),
+  );
   const lines = new Map<string, Line>();
   const keyOf = (orgId: KinOrgId, chatId: KinChatId) => `${orgId}\u0000${chatId}`;
   const line = (orgId: KinOrgId, chatId: KinChatId) => {
@@ -119,6 +158,19 @@ const make = Effect.gen(function* () {
   ) {
     const text = state.full.slice(state.sent);
     if (text === "" && end === undefined) return;
+    if (!(yield* allowed(orgId, chatId, state))) {
+      // The owner's client drops what it holds; nobody gets the rest.
+      if (end === undefined || state.sent === 0) return;
+      const owner = yield* ownerOf(orgId, state.agentId);
+      if (owner === undefined) return;
+      return yield* hub.publish({
+        type: "draft.updated",
+        orgId,
+        chatId,
+        personId: owner,
+        draft: { draftId, agentId: state.agentId, offset: state.sent, text: "", end },
+      });
+    }
     const offset = state.sent;
     state.sent = state.full.length;
     state.lastSentAt = yield* Clock.currentTimeMillis;
@@ -126,6 +178,7 @@ const make = Effect.gen(function* () {
       type: "draft.updated",
       orgId,
       chatId,
+      wakeupId: state.wakeupId,
       draft: {
         draftId,
         agentId: state.agentId,
@@ -192,9 +245,18 @@ const make = Effect.gen(function* () {
       const current = line(orgId, chatId);
       let state = current.drafts.get(draft.draftId);
       if (state === undefined) {
-        state = { agentId: draft.agentId, full: "", sent: 0, lastSentAt: 0, flushing: false };
+        state = {
+          agentId: draft.agentId,
+          wakeupId: draft.wakeupId,
+          full: "",
+          sent: 0,
+          lastSentAt: 0,
+          flushing: false,
+          refused: false,
+        };
         current.drafts.set(draft.draftId, state);
       }
+      if (state.refused) return;
       // Assistant text only grows; anything else waits for the durable message.
       if (!draft.text.startsWith(state.full)) return;
       state.full = draft.text;
@@ -224,20 +286,18 @@ const make = Effect.gen(function* () {
       prune(orgId, chatId);
       yield* send(orgId, chatId, draftId, state, { messageId });
     }),
-    snapshot: (orgId, chatId) => {
+    lines: (orgId, chatId) => [...(lines.get(keyOf(orgId, chatId))?.presence.values() ?? [])],
+    snapshot: Effect.fn("KinPresence.snapshot")(function* (orgId, chatId) {
       const current = lines.get(keyOf(orgId, chatId));
-      return current === undefined
-        ? { presence: [], drafts: [] }
-        : {
-            presence: [...current.presence.values()],
-            // What was already sent, so the next delta's offset lines up.
-            drafts: [...current.drafts].map(([draftId, state]) => ({
-              draftId,
-              agentId: state.agentId,
-              text: state.full.slice(0, state.sent),
-            })),
-          };
-    },
+      if (current === undefined) return { presence: [], drafts: [] };
+      const drafts: Array<KinDraft> = [];
+      for (const [draftId, state] of current.drafts) {
+        if (state.sent === 0 || !(yield* allowed(orgId, chatId, state))) continue;
+        // What was already sent, so the next delta's offset lines up.
+        drafts.push({ draftId, agentId: state.agentId, text: state.full.slice(0, state.sent) });
+      }
+      return { presence: [...current.presence.values()], drafts };
+    }),
   });
 });
 

@@ -68,6 +68,8 @@ export type KinStopFanOut = {
     orgId: KinOrgId,
     wakeupId: KinWakeupId,
   ) => Effect.Effect<boolean, KinStopFanOutError>;
+  /** Stops a wake-up aborted for its audience, dropping its draft; its runner requeues its events. */
+  readonly abort?: (orgId: KinOrgId, wakeupId: KinWakeupId) => Effect.Effect<void>;
 };
 type StopError = KinChatError | PersistenceSqlError;
 
@@ -112,6 +114,14 @@ export class KinStop extends Context.Service<
       input: KinOrgResumeInput,
     ) => Effect.Effect<KinOrgState, StopError>;
     readonly attach: (fanOut: KinStopFanOut) => Effect.Effect<void, never, Scope.Scope>;
+    /**
+     * After the commit that marked them (`abortPrivateTurns`): stops each wake-up's run without
+     * showing anything. Its events wait for a fresh wake-up; no person's authority is involved.
+     */
+    readonly abortTurns: (
+      orgId: KinOrgId,
+      wakeupIds: ReadonlyArray<KinWakeupId>,
+    ) => Effect.Effect<void>;
     /** Owner only: the presence line's Stop on one wake-up. Its events are not retried. */
     readonly interrupt: (
       people: ReadonlyArray<PersonIdentity>,
@@ -356,6 +366,25 @@ const make = Effect.gen(function* () {
     }, Effect.mapError(mapError)),
     pause,
     resume,
+    abortTurns: Effect.fn("KinStop.abortTurns")(function* (orgId, wakeupIds) {
+      const abort = attached?.abort;
+      // Without the lead runtime nothing runs them; its recovery finds the mark.
+      if (abort === undefined) return;
+      yield* Effect.forEach(
+        wakeupIds,
+        (wakeupId) =>
+          abort(orgId, wakeupId).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Kin could not stop an aborted wake-up", {
+                orgId,
+                wakeupId,
+                cause,
+              }),
+            ),
+          ),
+        { discard: true },
+      );
+    }),
     interrupt: Effect.fn("KinStop.interrupt")(function* (people, input) {
       yield* owner(people, input.orgId);
       if (attached?.interrupt === undefined) return yield* unavailable;

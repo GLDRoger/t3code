@@ -11,11 +11,14 @@ import * as SqlClient from "effect/sql/SqlClient";
  */
 export type TurnAudience = "owner_only" | "shared";
 
+/** Events that answer in the chat they name: a worker report names the chat its work was asked in. */
+export const CHAT_ANSWER_TAGS = ["chat.message", "widget.action", "chat.reaction", "worker.report"];
+
 /**
  * `owner_only` when everyone who can read the reply is the lead's owner: every person still in
  * the chat it answers (its owner chat when no chat event woke it) and in every chat a due
- * deferral or passed-on request came from, every stored author of the messages and taps it
- * answers, and every reacting person. Read from stored rows only, never from model text.
+ * deferral, passed-on request or reported work came from, every stored author of the messages
+ * and taps it answers, and every reacting person. Read from stored rows only, never model text.
  */
 export const turnAudience = Effect.fn("KinAudience.turnAudience")(
   function* (input: {
@@ -71,6 +74,10 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
         if (event.provenance === "human" && event.provenancePersonId !== lead.owner)
           return "shared" as const;
         chats.add(event.chatId);
+      } else if (event.tag === "worker.report" && event.chatId !== null) {
+        // A report answers in the chat its worker was asked for in, read by everyone there.
+        answersChat = true;
+        chats.add(event.chatId);
       }
       if (event.originPersonId !== null) return "shared" as const;
       if (event.originChatId !== null) chats.add(event.originChatId);
@@ -107,11 +114,16 @@ type Turn = {
 export const effectiveAudience = Effect.fn("KinAudience.effectiveAudience")(
   function* (turn: Turn) {
     const sql = yield* SqlClient.SqlClient;
-    const [row] = yield* sql<{ audience: string | null; sharedSince: number | null }>`
-      SELECT audience, shared_since AS "sharedSince" FROM kin_wakeups
+    const [row] = yield* sql<{
+      audience: string | null;
+      sharedSince: number | null;
+      abortedAt: number | null;
+    }>`
+      SELECT audience, shared_since AS "sharedSince", aborted_at AS "abortedAt" FROM kin_wakeups
       WHERE org_id = ${turn.orgId} AND agent_id = ${turn.agentId} AND wakeup_id = ${turn.wakeupId}
       ORDER BY wakeup_id`;
-    if (row?.audience !== "owner_only" || row.sharedSince !== null) return "shared" as const;
+    if (row?.audience !== "owner_only" || row.sharedSince !== null || row.abortedAt !== null)
+      return "shared" as const;
     if ((yield* turnAudience(turn)) === "owner_only") return "owner_only" as const;
     const now = yield* Clock.currentTimeMillis;
     yield* sql`UPDATE kin_wakeups SET shared_since = COALESCE(shared_since, ${now})
@@ -150,15 +162,15 @@ export const audienceChanged = Effect.fn("KinAudience.audienceChanged")(
 );
 
 /**
- * The chat a turn answers in, from its stored events: the first chat event's, else the lead's
- * owner chat. `asked` when a chat event woke it there.
+ * The chat a turn answers in, from its stored events: the first chat event's or reported work's,
+ * else the lead's owner chat. `asked` when such an event woke it there.
  */
 export const turnChat = Effect.fn("KinAudience.turnChat")(function* (turn: Turn) {
   const sql = yield* SqlClient.SqlClient;
   const [human] = yield* sql<{ chatId: string | null }>`
     SELECT json_extract(json, '$.chatId') AS "chatId" FROM kin_events
     WHERE org_id = ${turn.orgId} AND agent_id = ${turn.agentId} AND wakeup_id = ${turn.wakeupId}
-      AND tag IN ('chat.message', 'widget.action', 'chat.reaction')
+      AND tag IN ${sql.in(CHAT_ANSWER_TAGS)} AND json_extract(json, '$.chatId') IS NOT NULL
     ORDER BY priority, received_at, event_id LIMIT 1`;
   if (human?.chatId !== undefined && human.chatId !== null)
     return { chatId: human.chatId, asked: true };
@@ -168,12 +180,12 @@ export const turnChat = Effect.fn("KinAudience.turnChat")(function* (turn: Turn)
   return lead === undefined ? undefined : { chatId: lead.ownerChatId, asked: false };
 });
 
-/** Whether a chat event of this turn came from `chatId`: the only chats a shared turn reads. */
+/** Whether a chat event or reported work of this turn came from `chatId`: what a shared turn reads. */
 export const askedIn = Effect.fn("KinAudience.askedIn")(function* (turn: Turn, chatId: string) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql`SELECT 1 FROM kin_events
     WHERE org_id = ${turn.orgId} AND agent_id = ${turn.agentId} AND wakeup_id = ${turn.wakeupId}
-      AND tag IN ('chat.message', 'widget.action', 'chat.reaction')
+      AND tag IN ${sql.in(CHAT_ANSWER_TAGS)}
       AND json_extract(json, '$.chatId') = ${chatId}
     LIMIT 1`;
   return rows.length > 0;
@@ -196,14 +208,58 @@ export const ownerOnlyChat = Effect.fn("KinAudience.ownerOnlyChat")(function* (
 });
 
 /**
+ * Whether the turn was aborted because someone besides the owner joined a chat it answers in
+ * (`abortPrivateTurns`): it may do nothing more anywhere.
+ */
+export const aborted = Effect.fn("KinAudience.aborted")(function* (turn: Turn) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${turn.orgId}
+    AND wakeup_id = ${turn.wakeupId} AND aborted_at IS NOT NULL LIMIT 1`;
+  return rows.length > 0;
+});
+
+/**
+ * Run in the transaction that makes `personId` an active member of `chatId`. Every running turn
+ * whose prompt may carry the owner's context and that answers there, or was asked from there, is
+ * marked aborted, unless that person is its lead's owner or its reply already settled. A turn
+ * built shared from the start is left alone. Returns the turns the caller must stop after commit.
+ */
+export const abortPrivateTurns = Effect.fn("KinAudience.abortPrivateTurns")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly chatId: string;
+  readonly personId: string;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const now = yield* Clock.currentTimeMillis;
+  return yield* sql<{ agentId: KinAgentId; wakeupId: string }>`
+    UPDATE kin_wakeups AS w SET aborted_at = ${now}, shared_since = COALESCE(shared_since, ${now})
+    WHERE w.org_id = ${input.orgId} AND w.status = 'running' AND w.aborted_at IS NULL
+      AND w.settled_at IS NULL AND w.audience IS NOT 'shared'
+      AND EXISTS (SELECT 1 FROM kin_agents a WHERE a.org_id = w.org_id
+        AND a.agent_id = w.agent_id AND a.owner_person_id IS NOT ${input.personId})
+      AND (EXISTS (SELECT 1 FROM kin_events e
+          WHERE e.org_id = w.org_id AND e.agent_id = w.agent_id AND e.wakeup_id = w.wakeup_id
+            AND ((e.tag IN ${sql.in(CHAT_ANSWER_TAGS)}
+                AND json_extract(e.json, '$.chatId') = ${input.chatId})
+              OR json_extract(e.json, '$.origin.chatId') = ${input.chatId}))
+        OR (NOT EXISTS (SELECT 1 FROM kin_events e
+            WHERE e.org_id = w.org_id AND e.agent_id = w.agent_id AND e.wakeup_id = w.wakeup_id
+              AND e.tag IN ${sql.in(CHAT_ANSWER_TAGS)} AND json_extract(e.json, '$.chatId') IS NOT NULL)
+          AND EXISTS (SELECT 1 FROM kin_leads l WHERE l.org_id = w.org_id
+            AND l.agent_id = w.agent_id AND l.owner_chat_id = ${input.chatId})))
+    RETURNING agent_id AS "agentId", wakeup_id AS "wakeupId"`;
+});
+
+/**
  * Where a turn may post, card, ask or react: a shared turn only in the chat it answers, and a
- * prompt that may carry the owner's context only where every human is the owner. Run it in the
- * write's transaction.
+ * prompt that may carry the owner's context only where every human is the owner; an aborted
+ * turn nowhere. Run it in the write's transaction.
  */
 export const destination = Effect.fn("KinAudience.destination")(function* (
   turn: Turn,
   chatId: string,
 ) {
+  if (yield* aborted(turn)) return "aborted" as const;
   const own = yield* turnChat(turn);
   if ((yield* effectiveAudience(turn)) === "shared" && own?.chatId !== chatId)
     return "elsewhere" as const;

@@ -569,8 +569,10 @@ it.live(
         yield* sql`UPDATE kin_chat_members SET left_at = '2026-11-08T00:00:00.000Z' WHERE member_id = 'fixture-member-membership'`;
         yield* sql`UPDATE kin_events SET state = 'queued', wakeup_id = NULL WHERE event_id = 'member-event'`;
         yield* sharedRefusals(SHARED_NOTES);
-        // Go on as a turn the owner alone reads from the start.
-        yield* sql`UPDATE kin_wakeups SET shared_since = NULL WHERE wakeup_id = 'fixture-wakeup'`;
+        // Go on as a turn the owner alone reads from the start, unless a join aborted it.
+        yield* sql`UPDATE kin_wakeups SET shared_since = NULL, aborted_at = 1 WHERE wakeup_id = 'fixture-wakeup'`;
+        yield* sharedRefusals(SHARED_NOTES);
+        yield* sql`UPDATE kin_wakeups SET aborted_at = NULL WHERE wakeup_id = 'fixture-wakeup'`;
         assert.deepStrictEqual(
           (yield* service.search(scope, { kind: "claim" })).map((item) => item.id),
           ["a-item"],

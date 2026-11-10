@@ -36,7 +36,7 @@ import {
   KIN_WAKEUP_MESSAGE_LIMIT,
 } from "../chat/KinChatService.ts";
 import { KinIdentity, rescueMessageId, type AgentIdentity } from "../chat/KinIdentity.ts";
-import { AUDIENCE_MOVED } from "../lead/Audience.ts";
+import { AUDIENCE_MOVED, CHAT_ANSWER_TAGS, aborted } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import {
@@ -66,7 +66,8 @@ const OVERFLOW_SUFFIX = "\n\n…more in the lead's thread";
 
 /**
  * Where a wake-up's text goes. One wake-up answers one chat: the chat of its highest-priority
- * human message or card tap, else (a notice wake-up) the lead's direct chat with its owner.
+ * human message, card tap or reported work, else (a notice wake-up) the lead's direct chat with
+ * its owner.
  */
 export type Lane = {
   readonly chatId: KinChatId;
@@ -191,6 +192,11 @@ export class KinReplyBridge extends Context.Service<
       readonly lane: Lane;
       readonly outcome: FailedOutcome;
     }) => Effect.Effect<void>;
+    /**
+     * The wake-up was aborted for its audience: its line goes and its drafts end without the
+     * rest of their text, and nothing it streams shows again.
+     */
+    readonly abort: (orgId: KinOrgId, wakeupId: KinWakeupId) => Effect.Effect<void>;
     /** Clears the wake-up's line; a queue line stays, or comes back, where a message still waits. */
     readonly end: (input: {
       readonly orgId: KinOrgId;
@@ -224,16 +230,21 @@ export const laneFor = Effect.fn("KinReplyBridge.lane")(
     const [lead] = yield* sql<{ ownerChatId: string; name: string }>`
       SELECT owner_chat_id AS "ownerChatId", name FROM kin_leads
       WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} ORDER BY agent_id`;
-    const [human] = yield* sql<{ chatId: string | null }>`
-      SELECT json_extract(json, '$.chatId') AS "chatId" FROM kin_events
+    // A worker's report answers where its work was asked for, as a notice: it owes no reply.
+    const [first] = yield* sql<{ chatId: string; asked: number }>`
+      SELECT json_extract(json, '$.chatId') AS "chatId",
+        EXISTS (SELECT 1 FROM kin_events h WHERE h.org_id = e.org_id AND h.agent_id = e.agent_id
+          AND h.wakeup_id = e.wakeup_id
+          AND h.tag IN ('chat.message', 'widget.action', 'chat.reaction')) AS asked
+      FROM kin_events e
       WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND wakeup_id = ${input.wakeupId}
-        AND tag IN ('chat.message', 'widget.action', 'chat.reaction')
+        AND tag IN ${sql.in(CHAT_ANSWER_TAGS)} AND json_extract(json, '$.chatId') IS NOT NULL
       ORDER BY priority, received_at, event_id LIMIT 1`;
-    const chatId = human?.chatId ?? lead?.ownerChatId;
-    if (chatId === undefined || chatId === null) return Option.none<Lane>();
+    const chatId = first?.chatId ?? lead?.ownerChatId;
+    if (chatId === undefined) return Option.none<Lane>();
     return Option.some<Lane>({
       chatId: KinChatId.make(chatId),
-      mode: human?.chatId === undefined || human.chatId === null ? "notice" : "reply",
+      mode: first !== undefined && first.asked === 1 ? "reply" : "notice",
       leadName: lead?.name ?? "Lead",
     });
   },
@@ -393,7 +404,15 @@ const make = Effect.gen(function* () {
         yield* end(null);
         yield* journal(wake, [`Withheld (${result.reason}): ${cutLabel(text)}`]);
         // Lost, not refused: the owner hears it once and can ask again, now as a shared chat.
-        if (result.moved && !wake.movedNoticed) {
+        // An aborted turn says nothing: a fresh wake-up answers instead.
+        if (
+          result.moved &&
+          !wake.movedNoticed &&
+          !(yield* aborted(wake).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.orElseSucceed(() => true),
+          ))
+        ) {
           wake.movedNoticed = true;
           yield* chat.notice({
             messageId: KinMessageId.make(`kin-audience-moved:${wake.wakeupId}`),
@@ -505,6 +524,7 @@ const make = Effect.gen(function* () {
           yield* presence.draft(wake.orgId, wake.lane.chatId, {
             draftId: segment.id,
             agentId: wake.agentId,
+            wakeupId: wake.wakeupId,
             text: draft,
           });
         }
@@ -801,6 +821,18 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const abort = Effect.fn("KinReplyBridge.abort")(function* (
+    orgId: KinOrgId,
+    wakeupId: KinWakeupId,
+  ) {
+    const held = prepared.get(wakeupId);
+    if (held !== undefined && held.orgId === orgId && byWakeup.get(wakeupId) === undefined)
+      yield* presence.clear(orgId, held.chatId, held.agentId);
+    const wake = byWakeup.get(wakeupId);
+    // Presence refuses the drafts' tails itself: the mark is already committed.
+    if (wake !== undefined && wake.orgId === orgId) yield* settleLine(wake);
+  });
+
   const preparing = Effect.fn("KinReplyBridge.preparing")(
     function* (input: {
       readonly orgId: KinOrgId;
@@ -892,6 +924,7 @@ const make = Effect.gen(function* () {
     complete,
     steered,
     failed,
+    abort,
     end,
   });
 });

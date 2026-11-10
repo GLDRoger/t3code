@@ -13,15 +13,17 @@ import * as Service from "./KinChatService.ts";
 import * as Groups from "./KinGroups.ts";
 import { KinIdentity, KinIdentityConfig } from "./KinIdentity.ts";
 
+const stop = Stop.layer.pipe(Layer.provide(Presence.layer), Layer.provideMerge(Queue.layer));
+
 export const layer = Layer.mergeAll(
   LevelGate.layer.pipe(Layer.provideMerge(Service.layer), Layer.provideMerge(Presence.layer)),
-  Layer.mergeAll(
-    Budget.layer.pipe(Layer.provide(Cache.layer)),
-    Stop.layer.pipe(Layer.provide(Presence.layer)),
-    OwnerTimeZone.layer,
-  ).pipe(Layer.provideMerge(Queue.layer)),
+  Layer.mergeAll(Budget.layer.pipe(Layer.provide(Cache.layer)), OwnerTimeZone.layer).pipe(
+    Layer.provideMerge(stop),
+  ),
+  // A join stops the turns it aborts (`KinGroups.abortTurns`) through the stop switch's fan-out.
   Groups.layer.pipe(
     Layer.provide(Presence.layer),
+    Layer.provide(stop),
     Layer.provideMerge(KinIdentity.layer.pipe(Layer.provide(KinIdentityConfig.layer))),
   ),
 ).pipe(

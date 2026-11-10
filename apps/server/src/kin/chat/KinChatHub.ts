@@ -11,7 +11,9 @@ import type {
   KinChatMember,
   KinMessage,
   KinOrgId,
+  KinPersonId,
   KinWaitingItem,
+  KinWakeupId,
   KinWidget,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -61,6 +63,10 @@ type ChatEvent =
       readonly type: "draft.updated";
       readonly chatId: KinChatId;
       readonly draft: Omit<Extract<KinChatStreamEvent, { _tag: "draft" }>, "_tag">;
+      // Server only. Text goes nowhere once its wake-up is aborted, checked as each viewer
+      // takes it; `personId` limits a withheld draft's end to the one person who saw it.
+      readonly wakeupId?: KinWakeupId;
+      readonly personId?: KinPersonId;
     };
 export type KinChatHubEvent = ChatEvent & { readonly orgId: KinOrgId };
 
@@ -143,6 +149,23 @@ const make = Effect.gen(function* () {
             )
               return false;
             if (event.type === "waiting.updated" && event.item.resolvedAt !== null) return true;
+            if (event.type === "draft.updated") {
+              if (
+                event.personId !== undefined &&
+                (identity._tag !== "person" || identity.personId !== event.personId)
+              )
+                return false;
+              // Read after the viewer's join committed, and the join aborts in the same commit.
+              if (
+                event.wakeupId !== undefined &&
+                event.draft.text !== "" &&
+                (yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${event.orgId}
+                  AND wakeup_id = ${event.wakeupId} AND aborted_at IS NOT NULL LIMIT 1`.pipe(
+                  Effect.orElseSucceed(() => [undefined]),
+                )).length > 0
+              )
+                return false;
+            }
             const memberOption = yield* repo.activeMember({
               orgId: identity.orgId,
               chatId,

@@ -724,8 +724,8 @@ const make = Effect.gen(function* () {
       working:
         Option.isSome(presence) &&
         presence.value
-          .snapshot(identity.orgId, chatId)
-          .presence.some((line) => WORKING_PRESENCE.has(line.state)),
+          .lines(identity.orgId, chatId)
+          .some((line) => WORKING_PRESENCE.has(line.state)),
     };
   });
   const snapshot = Effect.fn("KinChatService.snapshot")(
@@ -972,7 +972,7 @@ const make = Effect.gen(function* () {
                   chatId: input.chatId,
                 }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
                 ...(Option.isSome(presence)
-                  ? presence.value.snapshot(identity.orgId, input.chatId)
+                  ? yield* presence.value.snapshot(identity.orgId, input.chatId)
                   : {}),
               };
           const messageChanges = new Map<string, number>();

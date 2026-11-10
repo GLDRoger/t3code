@@ -44,6 +44,7 @@ import * as KinBudget from "./KinBudget.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import {
   SHARED_THREAD_PREFIX,
+  aborted,
   audienceChanged,
   effectiveAudience,
   recordedAudience,
@@ -95,6 +96,8 @@ export class WakeupRunner extends Context.Service<
   WakeupRunner,
   {
     readonly runOnce: (orgId: KinOrgId, agentId: KinAgentId) => Effect.Effect<void, KinWakeupError>;
+    /** Stops a wake-up `abortPrivateTurns` marked: its line and draft go, then its run. */
+    readonly abort: (orgId: KinOrgId, wakeupId: KinWakeupId) => Effect.Effect<void>;
     readonly recover: Effect.Effect<void, KinWakeupError>;
     readonly start: Effect.Effect<void, never, Scope.Scope>;
   }
@@ -197,6 +200,11 @@ const make = Effect.gen(function* () {
       provideSql,
       Effect.map((audience) => audience === "shared"),
     );
+  const isAborted = (row: {
+    readonly orgId: KinOrgId;
+    readonly agentId: KinAgentId;
+    readonly wakeupId: KinWakeupId;
+  }) => aborted(row).pipe(provideSql);
   const threadActivity = Effect.fn("WakeupRunner.threadActivity")(function* (orgId: KinOrgId) {
     const rows = yield* sql<{
       threadId: string;
@@ -393,16 +401,17 @@ const make = Effect.gen(function* () {
           Effect.gen(function* () {
             const projection = yield* threads.getThreadProjection(threadId);
             const after = projection.runs.find((run) => run.id === current)?.ordinal ?? 0;
-            const adopted = result.timedOut
-              ? undefined
-              : projection.runs
-                  .filter(
-                    (run) =>
-                      run.ordinal > after &&
-                      isSteerRun(wakeupId, run) &&
-                      (run.status === "queued" || ThreadManagementService.isActiveRun(run)),
-                  )
-                  .toSorted((a, b) => a.ordinal - b.ordinal)[0];
+            const adopted =
+              result.timedOut || (yield* isAborted(row))
+                ? undefined
+                : projection.runs
+                    .filter(
+                      (run) =>
+                        run.ordinal > after &&
+                        isSteerRun(wakeupId, run) &&
+                        (run.status === "queued" || ThreadManagementService.isActiveRun(run)),
+                    )
+                    .toSorted((a, b) => a.ordinal - b.ordinal)[0];
             if (adopted === undefined) steering.open = false;
             return adopted;
           }),
@@ -418,6 +427,9 @@ const make = Effect.gen(function* () {
           : "failed";
       // The stop switch interrupted this run: hand its events back without spending an attempt.
       const stopped = status === "failed" && (yield* paused(row.orgId));
+      // Someone besides the owner joined while it worked: it says nothing more, and a fresh
+      // wake-up answers its events (`KinEventQueue.finish`).
+      let abandoned = yield* isAborted(row);
       yield* Effect.gen(function* () {
         if (result.timedOut) {
           yield* threads.interruptThread({
@@ -440,7 +452,7 @@ const make = Effect.gen(function* () {
             });
         }
         // The reply lands before memory commits, while the wake-up still owns its lane.
-        if (Option.isSome(bridge) && !stopped)
+        if (Option.isSome(bridge) && !stopped && !abandoned)
           yield* bridge.value.complete({
             orgId: row.orgId,
             wakeupId: row.wakeupId,
@@ -448,8 +460,15 @@ const make = Effect.gen(function* () {
             rootRunId: runId,
             rescueUntil: status === "completed" ? deadline() : null,
           });
+        // Settled unless a join aborted it first; a join after this has nothing to abort.
+        if (!abandoned)
+          abandoned =
+            (yield* sql`UPDATE kin_wakeups SET settled_at = ${yield* Clock.currentTimeMillis}
+              WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId} AND aborted_at IS NULL
+              RETURNING wakeup_id`).length === 0;
+        if (abandoned) yield* Effect.logInfo("Kin wake-up aborted for its audience", row);
         // A turn someone else could read leaves nothing in memory, not even its journal entry.
-        if (Option.isSome(writer) && (yield* sharedTurn(row)))
+        if (Option.isSome(writer) && (abandoned || (yield* sharedTurn(row))))
           yield* writer.value.discard(row.orgId, row.wakeupId);
         else if (Option.isSome(writer)) {
           const ended =
@@ -483,7 +502,7 @@ const make = Effect.gen(function* () {
             : Effect.void,
         ),
       );
-      if (status === "completed")
+      if (status === "completed" && !abandoned)
         yield* threads.settleThread({
           threadId: row.threadId,
           commandId: CommandId.make(`kin-settle:${row.wakeupId}`),
@@ -844,6 +863,11 @@ const make = Effect.gen(function* () {
               !cheapOnly && (urgent.length > 0 || events.some((event) => event._tag === "routine"))
                 ? current.models.strong
                 : current.models.cheap;
+            // A join aborted it while it prepared: nothing launches, a fresh wake-up answers.
+            if (yield* isAborted(row)) {
+              yield* queue.finish({ orgId, wakeupId, status: "failed" });
+              return;
+            }
             const threadId =
               existingThreadId ??
               ThreadId.make(`${shared ? SHARED_THREAD_PREFIX : "kin:"}${yield* ulid}`);
@@ -921,8 +945,8 @@ const make = Effect.gen(function* () {
             row = { ...row, runId: run.id };
             yield* sql`UPDATE kin_wakeups SET run_id = ${run.id}, launched_at = ${yield* Clock.currentTimeMillis}
               WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND agent_id = ${agentId} AND status = 'running'`;
-            // A pause that landed during launch found no run to stop; stop it here instead.
-            if (yield* paused(orgId))
+            // A pause or a join that landed during launch found no run to stop; stop it here.
+            if ((yield* paused(orgId)) || (yield* isAborted(row)))
               yield* threads.interruptThread({
                 projectId: project.id,
                 threadId,
@@ -958,6 +982,31 @@ const make = Effect.gen(function* () {
       effect.pipe(
         Effect.mapError(
           (cause) => new KinWakeupError({ orgId, agentId, cause: runnerCause(cause) }),
+        ),
+      ),
+  );
+  const abort = Effect.fn("WakeupRunner.abort")(
+    function* (orgId: KinOrgId, wakeupId: KinWakeupId) {
+      const [row] = yield* sql<{ agentId: KinAgentId; threadId: ThreadId | null }>`
+        SELECT agent_id AS "agentId", thread_id AS "threadId" FROM kin_wakeups
+        WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND status = 'running'
+          AND aborted_at IS NOT NULL ORDER BY wakeup_id`;
+      if (row === undefined) return;
+      if (Option.isSome(bridge)) yield* bridge.value.abort(orgId, wakeupId);
+      // Not launched yet: the runner finds the mark before or right after its launch.
+      if (row.threadId === null) return;
+      const projection = yield* threads.getThreadProjection(row.threadId);
+      // The stop switch's interrupt, without settling its events: `wait` sees the mark.
+      yield* threads.interruptThread({
+        projectId: projection.thread.projectId,
+        threadId: row.threadId,
+        commandId: CommandId.make(`kin-audience:${wakeupId}`),
+      });
+    },
+    (effect, orgId, wakeupId) =>
+      effect.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin could not stop an aborted wake-up", { orgId, wakeupId, cause }),
         ),
       ),
   );
@@ -1194,7 +1243,7 @@ const make = Effect.gen(function* () {
       Effect.forkScoped,
     );
   }).pipe(Effect.catchCause((cause) => Effect.logError("Kin runner unavailable", { cause })));
-  return WakeupRunner.of({ runOnce, recover, start });
+  return WakeupRunner.of({ runOnce, abort, recover, start });
 });
 
 export const layer = Layer.effect(WakeupRunner, make).pipe(Layer.provide(Floor.layer));
