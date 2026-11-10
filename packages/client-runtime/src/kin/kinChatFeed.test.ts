@@ -249,25 +249,35 @@ describe("rows", () => {
     ]);
   });
 
-  it("shows a choice tap as the owner's words instead of its JSON and card", () => {
-    const tap = {
-      ...all.find((m) => m.author._tag === "human")!,
-      kind: "widget_action",
-      widgetId: "choice:card",
-      body: JSON.stringify({
-        actionId: "choose",
-        value: "option-1",
-        text: 'Chose "Ship it" on "Ship?"',
-      }),
-    } as KinMessage;
-    const other = { ...tap, messageId: "other-tap", body: '{"actionId":"keep"}' } as KinMessage;
-    const [shown, kept] = messageRows([tap, other], viewer, new Set());
-    expect(shown).toMatchObject({
-      message: { body: 'Chose "Ship it" on "Ship?"', widgetId: null },
-    });
-    expect(kept).toMatchObject({
-      message: { body: '{"actionId":"keep"}', widgetId: "choice:card" },
-    });
+  it("shows a card tap as the button's label, never its JSON or card", () => {
+    const tap = (messageId: string, body: string) =>
+      ({
+        ...all.find((m) => m.author._tag === "human")!,
+        messageId,
+        kind: "widget_action",
+        widgetId: "choice:card",
+        body,
+      }) as KinMessage;
+    const rows = messageRows(
+      [
+        tap("choice", JSON.stringify({ actionId: "choose", text: 'Chose "Ship it" on "Ship?"' })),
+        tap(
+          "reminder",
+          JSON.stringify({ text: 'Tapped "Done" on the reminder "Say "hi" to Sam"' }),
+        ),
+        tap("no-text", '{"actionId":"start_now"}'),
+        tap("not-json", "{broken"),
+      ],
+      viewer,
+      new Set(),
+    );
+    expect(rows.map((row) => row.type === "message" && row.message.body)).toEqual([
+      "Ship it",
+      "Done",
+      "Start now",
+      "Tapped a button",
+    ]);
+    expect(rows.every((row) => row.type === "message" && row.message.widgetId === null)).toBe(true);
   });
 
   it("hides dismissed suggestions and draws system messages as their own rows", () => {

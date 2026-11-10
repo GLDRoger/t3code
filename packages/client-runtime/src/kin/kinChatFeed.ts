@@ -22,7 +22,7 @@ import {
   type KinChatClosedReason,
   type KinChatState,
 } from "./kinInboxModel.ts";
-import { kinTapText } from "./kinChoicePresentation.ts";
+import { kinTapText } from "./kinTap.ts";
 import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks.ts";
 import { kinReplyKey, type KinHeldDraft } from "./kinLive.ts";
 import { kinSentences } from "./kinScreenState.ts";
@@ -242,13 +242,12 @@ const messageRowKey = (message: KinMessage) =>
     ? message.clientMessageId
     : message.messageId;
 
-// A choice tap shows as the owner's words, not its JSON, and never repeats the card it answered.
+// A card tap shows as the button's label, never its JSON, and never repeats the card it answered.
 const shownMessage = (message: KinMessage): KinMessage => {
   // A host card's body is its inbox summary; the card says the same, so it isn't repeated.
   if (isSystem(message)) return message.body === "" ? message : { ...message, body: "" };
   if (message.kind !== "widget_action") return message;
-  const text = kinTapText(message.body);
-  return text === null ? message : { ...message, body: text, widgetId: null };
+  return { ...message, body: kinTapText(message.body), widgetId: null };
 };
 
 // Rows for unchanged messages keep their identity, so one new message doesn't redraw every bubble.

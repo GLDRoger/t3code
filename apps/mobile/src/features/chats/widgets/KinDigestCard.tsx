@@ -34,10 +34,10 @@ export const KinDigestCard = memo(function KinDigestCard(props: {
       }}
       className="gap-2.5 rounded-[20px] border border-border bg-card-alt p-4"
     >
-      <Text className="font-t3-bold text-2xs uppercase tracking-[1.1px] text-foreground-secondary">
+      <Text textRole="caption" className="font-t3-medium text-foreground-muted">
         {digest.eyebrow}
       </Text>
-      <Text textRole="headline" className="font-t3-bold text-foreground">
+      <Text textRole="body" className="font-t3-bold text-foreground">
         {digest.title}
       </Text>
       {digest.rows.map((row) => (
