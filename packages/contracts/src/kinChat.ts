@@ -202,12 +202,14 @@ export const KinNativeCardType = Schema.Literals([
 ]);
 export type KinNativeCardType = typeof KinNativeCardType.Type;
 
-/** The fixed reaction set: two yes, two no, two feelings. */
-/** What a lead may react with; people pick from the wider `KIN_REACTION_EMOJI`. */
-export const KIN_LEAD_REACTION_EMOJI = ["👍", "✅", "👎", "❌", "❤️", "👀"] as const;
-export const KinLeadReactionEmoji = Schema.Literals(KIN_LEAD_REACTION_EMOJI);
+/** The one reaction set: what a person's menu offers and what a lead may react with. */
 export const KIN_REACTION_EMOJI = [
-  ...KIN_LEAD_REACTION_EMOJI,
+  "👍",
+  "✅",
+  "👎",
+  "❌",
+  "❤️",
+  "👀",
   "😂",
   "🎉",
   "😮",
