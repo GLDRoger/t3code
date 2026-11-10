@@ -256,12 +256,25 @@ export function KinDraftBubble(props: {
 }
 
 /** A line from Kin itself, such as a member joining. */
-export function KinSystemLine(props: { readonly row: SystemRow }) {
+export function KinSystemLine(props: {
+  readonly row: SystemRow;
+  /** Sends the owner's unanswered message again; null shows the line alone. */
+  readonly onRetry: (() => void) | null;
+}) {
   return (
-    <View className="items-center px-8 py-2">
+    <View className="items-center gap-2 px-8 py-2">
       <Text textRole="caption" className="text-center text-foreground-muted">
-        {props.row.message.body}
+        {props.row.text}
       </Text>
+      {props.onRetry === null ? null : (
+        <Chip
+          label="Retry"
+          size="small"
+          icon="arrow.clockwise"
+          accessibilityLabel="Retry. Sends your last message again."
+          onPress={props.onRetry}
+        />
+      )}
     </View>
   );
 }

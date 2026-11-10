@@ -580,8 +580,16 @@ function KinChatFeed(props: {
           />
         );
       }
-      case "system":
-        return <KinSystemRow body={item.message.body} />;
+      case "system": {
+        const { retry } = item;
+        // An unsent message is already a retry in flight.
+        return (
+          <KinSystemRow
+            body={item.text}
+            onRetry={retry === null || pending.length > 0 ? null : () => void sendText(retry)}
+          />
+        );
+      }
       case "fold":
         return <KinFoldRow row={item} onToggle={() => toggleRun(item.runId)} />;
       case "pending":
