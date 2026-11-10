@@ -53,7 +53,6 @@ import {
   kinChatTitle,
   kinDirectAgentName,
   kinOwnedLeadAgentId,
-  kinSnippet,
   type KinAvatarView,
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import type { KinSynced } from "@t3tools/client-runtime/kin/kinStreams";
@@ -137,6 +136,15 @@ function restoreDraft(key: string, body: string) {
   const atom = kinDraftAtom(key);
   const typed = appAtomRegistry.get(atom);
   appAtomRegistry.set(atom, typed.trim().length === 0 ? body : `${body}\n\n${typed}`);
+}
+
+/** A lead's charter as the empty chat's opening lines: whole when short, else cut at a word. */
+function kinIntroCharter(charter: string): string | null {
+  const text = charter.trim();
+  if (text === "") return null;
+  if (text.length <= 240) return text;
+  const cut = text.slice(0, 240);
+  return `${cut.slice(0, Math.max(cut.lastIndexOf(" "), 120)).replace(/[\s.,;:]+$/, "")}…`;
 }
 
 /** One Kin chat, from the route's environment, org and chat. */
@@ -260,11 +268,7 @@ export function KinChatView(props: {
                     })
                     .then((result) => result._tag === "Success")
           }
-          charter={
-            lead === null || lead.charter.trim() === ""
-              ? null
-              : kinSnippet(lead.charter.trim(), 240)
-          }
+          charter={lead === null ? null : kinIntroCharter(lead.charter)}
           members={summary?.members ?? []}
           direct={summary?.kind === "direct"}
           ownsLead={ownedAgentId !== null}
