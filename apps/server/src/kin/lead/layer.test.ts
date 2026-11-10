@@ -60,7 +60,11 @@ vi.mock("../memory/Memory.ts", async (importOriginal) => {
           prepareWakeup: () =>
             Effect.sync(() => {
               prepared = true;
-              return { head: "fixture-head", indexAsOf: DateTime.makeUnsafe(0) };
+              return {
+                head: "fixture-head",
+                indexAsOf: DateTime.makeUnsafe(0),
+                read: "/private/tmp",
+              };
             }),
           readPromptSnapshot: (_orgId, head) =>
             prepared && head === "fixture-head"

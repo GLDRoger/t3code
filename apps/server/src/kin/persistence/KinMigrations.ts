@@ -36,6 +36,7 @@ import ManyLeads from "./migrations/K030_ManyLeads.ts";
 import LeadDeliveries from "./migrations/K031_LeadDeliveries.ts";
 import WorkerEnvironment from "./migrations/K032_WorkerEnvironment.ts";
 import ApproverKeyConfirmations from "./migrations/K033_ApproverKeyConfirmations.ts";
+import PerLeadWakeups from "./migrations/K034_PerLeadWakeups.ts";
 
 const table = "kin_sql_migrations";
 const run = Migrator.make({});
@@ -73,6 +74,7 @@ const loader = Migrator.fromRecord({
   "31_LeadDeliveries": LeadDeliveries,
   "32_WorkerEnvironment": WorkerEnvironment,
   "33_ApproverKeyConfirmations": ApproverKeyConfirmations,
+  "34_PerLeadWakeups": PerLeadWakeups,
   "38_PeopleInvites": PeopleInvites,
 });
 

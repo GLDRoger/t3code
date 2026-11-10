@@ -188,8 +188,9 @@ export class KinChatService extends Context.Service<
     ) => Effect.Effect<KinMessage, ServiceError>;
     /** Posts a lead's choice card under the same floor and flood rules as its text replies. */
     /**
-     * Turns the caller's reaction on or off. An owner's 👍/👎 answers a yes/no choice card like a
-     * tap, and on the lead's latest message wakes it as a soft reply. Privileged cards refuse.
+     * Turns the caller's reaction on or off; one per member per message, so a new one replaces
+     * theirs. An owner's 👍/👎 answers a yes/no choice card like a tap, and on the lead's latest
+     * question wakes it as a soft reply; a 👎 elsewhere wakes it once. Privileged cards refuse.
      */
     readonly react: (
       identity: Caller,
@@ -1610,7 +1611,11 @@ const make = Effect.gen(function* () {
         }
       }
       const chat = yield* requireRecord(repo.getChat(member));
-      // The owner's yes/no on the lead's latest message, in their direct chat, is a soft reply.
+      const withSql = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        effect.pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      // In the owner's direct chat, a yes/no on the lead's latest question answers it and a 👎
+      // anywhere else asks what was wrong, once per message. Every other reaction is feedback
+      // the lead reads on its next wake-up.
       const woke =
         request.on &&
         !answered &&
@@ -1618,12 +1623,13 @@ const make = Effect.gen(function* () {
         member.role === "owner" &&
         chat.kind === "direct" &&
         message.author._tag === "agent" &&
-        Reactions.reactionAnswer(request.emoji) !== null &&
         nowMs - Date.parse(message.createdAt) < SOFT_REPLY_WINDOW_MS &&
-        (yield* isLatestLeadMessage(message)) &&
-        !(yield* Reactions.recentlyWoke({ ...key, now: nowMs }).pipe(
-          Effect.provideService(SqlClient.SqlClient, sql),
-        ));
+        (request.emoji === Reactions.KIN_CLARIFY_REACTION ||
+          (Reactions.reactionAnswer(request.emoji) !== null &&
+            Reactions.asksQuestion(message.body) &&
+            (yield* isLatestLeadMessage(message)))) &&
+        !(yield* withSql(Reactions.wokeOnMessage(message))) &&
+        !(yield* withSql(Reactions.recentlyWoke({ ...key, now: nowMs })));
       if (woke && identity._tag === "person")
         // The lead answers this turn under its own floor run, as it would a message.
         yield* floor.open(
@@ -1636,13 +1642,20 @@ const make = Effect.gen(function* () {
           },
           chat,
         );
-      const { reaction, changed } = yield* Reactions.setReaction({
-        ...key,
-        on: request.on,
-        now: nowMs,
-        woke,
-      }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      const { reaction, changed, replaced } = yield* withSql(
+        Reactions.setReaction({ ...key, on: request.on, now: nowMs, woke }),
+      );
       if (reaction === null) return yield* notFound;
+      const by = authorFor(identity, member);
+      for (const withdrawn of replaced)
+        yield* hub.publish({
+          type: "reaction.updated",
+          orgId: identity.orgId,
+          chatId: message.chatId,
+          reaction: withdrawn,
+          woke: false,
+          by,
+        });
       if (changed)
         yield* hub.publish({
           type: "reaction.updated",
@@ -1650,7 +1663,7 @@ const make = Effect.gen(function* () {
           chatId: message.chatId,
           reaction,
           woke,
-          by: authorFor(identity, member),
+          by,
         });
       return reaction;
     }, transaction),
