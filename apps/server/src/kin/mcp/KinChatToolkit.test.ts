@@ -12,6 +12,7 @@ import {
   AuthSessionId,
   AuthStandardClientScopes,
   EnvironmentId,
+  KIN_REACTION_EMOJI,
   KinAgentId,
   KinChatId,
   KinMessageId,
@@ -26,6 +27,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 import { McpSchema, McpServer } from "effect/ai";
@@ -33,6 +35,7 @@ import * as ThreadManagement from "../../orchestration-v2/ThreadManagementServic
 import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import * as McpSessions from "../../mcp/McpSessionRegistry.ts";
 import * as KinMcp from "./layer.ts";
+import { KinLeadToolkit } from "../lead/mcp/tools.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { McpInvocationContext, type McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { HttpRouter, HttpServerRequest } from "effect/http";
@@ -429,6 +432,17 @@ it.effect(
         });
       assert.deepInclude(yield* react("group-1").pipe(Effect.flip), NOT_ALLOWED);
       assert.include(yield* react(chat.chatId), { emoji: "👍", chatId: chat.chatId });
+      // The tool takes every emoji a person's menu offers, not a narrower set of its own.
+      const reactInput = Schema.decodeUnknownEffect(
+        KinLeadToolkit.tools.kin_react.parametersSchema,
+      );
+      const accepted = yield* Effect.forEach(KIN_REACTION_EMOJI, (emoji) =>
+        reactInput({ messageId: card.messageId, emoji }),
+      );
+      assert.deepStrictEqual(
+        accepted.map((input) => input.emoji),
+        [...KIN_REACTION_EMOJI],
+      );
       assert.deepStrictEqual(
         yield* sql<{
           chatId: string;

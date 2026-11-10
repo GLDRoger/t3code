@@ -168,7 +168,6 @@ const samples = {
   KinNativeCardType: Kin.KinNativeCardType.literals,
   KinWaitingReason: Kin.KinWaitingReason.literals,
   KinReactionEmoji: Kin.KinReactionEmoji.literals,
-  KinLeadReactionEmoji: Kin.KinLeadReactionEmoji.literals,
   KinReaction: [reaction, { ...reaction, emoji: "❤️", removedAt: at }],
   KinChoiceOption: [...choiceOptions, { optionId: "later", label: "Later" }],
   KinChoiceCardState: [
@@ -399,7 +398,6 @@ describe("Kin chat contracts", () => {
 
   it.each([
     { schema: Kin.KinMessagesReactInput, value: { messageId: "m", emoji: "🦄", on: true } },
-    { schema: Kin.KinLeadReactionEmoji, value: "🎉" },
     { schema: Kin.KinChoiceCardState, value: { ...choice, options: choiceOptions.slice(0, 1) } },
     {
       schema: Kin.KinChoiceCardState,

@@ -2,7 +2,7 @@ import {
   KinChatError,
   KinMessageId,
   KinReaction,
-  KinLeadReactionEmoji,
+  KinReactionEmoji,
   OrchestratorMcpFailure,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -95,8 +95,8 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_react", {
     ...chat,
     description:
-      "React to a message in the chat your reply goes to, with one of 👍 ✅ 👎 ❌ ❤️ 👀; a new one replaces yours on that message. A 👍 can stand in for a reply when the owner's message needs no answer, such as \"thanks, that's all\". If they asked something, still reply in text. Never an approval.",
-    parameters: Schema.Struct({ messageId: KinMessageId, emoji: KinLeadReactionEmoji }),
+      "React to a message in the chat your reply goes to, with any emoji the schema lists, as a person would; a new one replaces yours on that message. A reaction can stand in for a reply when the owner's message needs no answer, such as \"thanks, that's all\". If they asked something, still reply in text. Never an approval.",
+    parameters: Schema.Struct({ messageId: KinMessageId, emoji: KinReactionEmoji }),
     success: KinReaction,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("memory_search", {

@@ -32,6 +32,7 @@ import {
   KinMessagesSendInput,
   KinOrgId,
   KinPersonId,
+  type KinReactionEmoji,
   KinTaskCardState,
   KinWaitingId,
   KinWidgetId,
@@ -770,7 +771,7 @@ describe("KinChatService", () => {
       Effect.gen(function* () {
         const { repo, service, person, agent, chat } = yield* seed();
         const sql = yield* SqlClient.SqlClient;
-        const react = (messageId: KinMessageId, emoji: "👍" | "✅" | "❤️" | "👎", on = true) =>
+        const react = (messageId: KinMessageId, emoji: KinReactionEmoji, on = true) =>
           service.react(person, { messageId, emoji, on });
         const card = yield* service.ask(agent, {
           chatId: chat.chatId,
@@ -828,8 +829,9 @@ describe("KinChatService", () => {
               AND m.member_id = r.member_id AND m.principal_kind = ${kind}
             WHERE r.org_id = ${person.orgId} AND r.message_id = ${messageId}
               AND r.removed_at IS NULL ORDER BY r.emoji`;
-        // Feedback: a 👍 on an older message and a ❤️ on the latest wake nothing.
+        // Feedback: a 👍 on an older message, and a 🎉 or ❤️ on the latest question, wake nothing.
         yield* react(older.messageId, "👍");
+        yield* react(latest.messageId, "🎉");
         yield* react(latest.messageId, "❤️");
         assert.deepStrictEqual(yield* woke(), []);
         // A yes on the latest message answers it, question mark or not, replacing the ❤️.
@@ -868,8 +870,8 @@ describe("KinChatService", () => {
         assert.lengthOf(yield* woke(), 2);
         // The lead's own kin_react follows the same rule.
         yield* service.react(agent, { messageId: older.messageId, emoji: "👍", on: true });
-        yield* service.react(agent, { messageId: older.messageId, emoji: "👀", on: true });
-        assert.deepStrictEqual(yield* mine(older.messageId, "agent"), [{ emoji: "👀" }]);
+        yield* service.react(agent, { messageId: older.messageId, emoji: "🎉", on: true });
+        assert.deepStrictEqual(yield* mine(older.messageId, "agent"), [{ emoji: "🎉" }]);
         assert.deepStrictEqual(yield* mine(older.messageId), [{ emoji: "👍" }]);
         // A 👎 on an older message still asks what was wrong.
         yield* TestClock.adjust("30 seconds");
