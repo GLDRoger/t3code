@@ -1,4 +1,5 @@
 import {
+  KinAgentId,
   KinChatError,
   KinChatId,
   KinEvent,
@@ -37,6 +38,7 @@ import { PersistenceSqlError, toPersistenceSqlError } from "../../persistence/Er
 import * as Hub from "../chat/KinChatHub.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
+import { KinPresence, syncSeen } from "../reply/KinPresence.ts";
 import type * as Routines from "../triggers/routines.ts";
 import * as Queue from "./KinEventQueue.ts";
 import { isOrgOwner, isOrgPaused, STOP_REASON } from "./orgState.ts";
@@ -120,6 +122,7 @@ export class KinStop extends Context.Service<
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const presence = yield* Effect.serviceOption(KinPresence);
   const queue = yield* Queue.KinEventQueue;
   const chat = yield* Chat.KinChatRepository;
   const hub = yield* Hub.KinChatHub;
@@ -331,6 +334,13 @@ const make = Effect.gen(function* () {
     );
     if (resumed !== undefined) {
       yield* publish(input.orgId, resumed);
+      // Messages the pause expired no longer wait, so their `seen` goes too.
+      if (Option.isSome(presence))
+        for (const lead of yield* sql<{ agentId: string }>`SELECT agent_id AS "agentId"
+          FROM kin_leads WHERE org_id = ${input.orgId} ORDER BY agent_id`)
+          yield* syncSeen(presence.value, input.orgId, KinAgentId.make(lead.agentId)).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          );
       if (attached !== undefined) yield* attached.resume(input.orgId);
     }
     return yield* state(input.orgId);
