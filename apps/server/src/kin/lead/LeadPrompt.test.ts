@@ -569,6 +569,53 @@ it.effect("hands the turn the files on its messages and only names an older mess
     expect(built.split("# Recent chat")[1]).toContain(
       '[attached, not shown: "yesterday-sketch.png"]',
     );
+
+    // The turn failed and the owner tapped Retry, which resends the words alone: the lead still
+    // gets the picture. Different words, or a reply in between, is a new message with no files.
+    const board = attachment("board-photo.png");
+    const say = (id: string, body: string, files: ReadonlyArray<typeof board> = []) =>
+      repo.insertMessage({
+        orgId,
+        chatId,
+        messageId: KinMessageId.make(id),
+        author: { _tag: "human", personId, memberId },
+        kind: "text",
+        body,
+        ...(files.length === 0 ? {} : { attachments: files }),
+        intent: null,
+        mentions: [],
+        replyTo: null,
+        widgetId: null,
+        floorRunId: null,
+        status: "posted",
+        sentBy: null,
+        createdAt: timestamp,
+        editedAt: null,
+        clientMessageId: null,
+      });
+    yield* say("asked", "What's on this board?", [board]);
+    yield* repo.insertMessage({
+      orgId,
+      chatId,
+      messageId: KinMessageId.make("kin-failed:wake"),
+      author: { _tag: "system" },
+      kind: "system",
+      body: "Fixture lead couldn't start. It won't try again on its own.",
+      intent: null,
+      mentions: [],
+      replyTo: null,
+      widgetId: null,
+      floorRunId: null,
+      status: "posted",
+      sentBy: null,
+      createdAt: timestamp,
+      editedAt: null,
+      clientMessageId: null,
+    });
+    yield* say("retried", "What's on this board?");
+    yield* say("moved-on", "Never mind, thanks");
+    expect(yield* prompt.attachments({ orgId, events: [event("retried")] })).toEqual([board]);
+    expect(yield* prompt.attachments({ orgId, events: [event("moved-on")] })).toEqual([]);
   }).pipe(Effect.provide(layer)),
 );
 

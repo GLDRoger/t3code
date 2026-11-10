@@ -392,18 +392,23 @@ const tracked = Effect.fn("KinLeadProvision.tracked")(function* (orgId: KinOrgId
     FROM kin_workers k WHERE k.org_id = ${orgId} AND k.ended_at IS NULL
     UNION ALL
     SELECT CASE r.on_due WHEN 'remind' THEN 'reminder' ELSE 'follow_up' END,
-      COALESCE(json_extract(w.state_json, '$.title'), ''), r.due_at, w.chat_id, ${firstLead},
-      1, COALESCE(r.due_at, r.updated_at)
+      COALESCE(json_extract(w.state_json, '$.title'), ''), COALESCE(f.next_run_at, r.due_at),
+      w.chat_id, ${firstLead}, 1, COALESCE(f.next_run_at, r.due_at, r.updated_at)
     FROM kin_deferral_runs r
     JOIN kin_widgets w ON w.org_id = r.org_id
       AND w.widget_id = 'deferral:' || r.org_id || ':' || r.item_id
-    WHERE r.org_id = ${orgId} AND r.state IN ('armed', 'heads_up', 'asked', 'grace', 'snoozed')
+    LEFT JOIN kin_triggers f ON f.org_id = r.org_id
+      AND f.trigger_id = 'deferral:' || r.item_id || ':due' AND f.enabled = 1
+    WHERE r.org_id = ${orgId} AND (r.state = 'asked'
+      OR (r.state IN ('armed', 'heads_up', 'grace', 'snoozed') AND f.next_run_at IS NOT NULL))
     UNION ALL
     SELECT 'scheduled', COALESCE(json_extract(w.state_json, '$.title'), ''), NULL, w.chat_id,
       ${firstLead}, 2, t.updated_at
     FROM kin_scheduled_tasks t
     JOIN kin_widgets w ON w.org_id = t.org_id
       AND w.widget_id = 'scheduled:' || t.org_id || ':' || t.item_id
+    JOIN kin_triggers f ON f.org_id = t.org_id
+      AND f.trigger_id = 'schedule:' || t.item_id AND f.enabled = 1 AND f.next_run_at IS NOT NULL
     WHERE t.org_id = ${orgId} AND t.state = 'active' AND t.paused = 0
     ORDER BY rank, at, title`.pipe(
     Effect.mapError(toPersistenceSqlError("KinLeadProvision.tracked")),

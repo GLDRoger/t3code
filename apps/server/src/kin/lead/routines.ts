@@ -153,7 +153,7 @@ function morningLines(facts: MorningFacts) {
       ? []
       : [`Held over to stay within today's budget: ${facts.postponed}`]),
   ];
-  return lines.length === 0 ? ["Nothing due, overdue or waiting on you."] : lines;
+  return lines;
 }
 
 function eveningLines(facts: EveningFacts) {
@@ -174,7 +174,7 @@ function eveningLines(facts: EveningFacts) {
           `${facts.failedWakeups} ${facts.failedWakeups === 1 ? "reply" : "replies"} failed today; ask again if something went unanswered.`,
         ]),
   ];
-  return lines.length === 0 ? ["Nothing done, slipped, promised or due tomorrow."] : lines;
+  return lines;
 }
 
 /** Keeps the body within the cap; the card still lists every row. */
@@ -207,11 +207,23 @@ const sections = (
         ["due_tomorrow", facts.dueTomorrow],
       ];
 
-/** The routine message: at most `ROUTINE_MAX_LINES` lines of body plus one card. */
+const NOTHING = {
+  morning_brief: "Nothing due, overdue or waiting on you.",
+  evening_summary: "Nothing done, slipped, promised or due tomorrow.",
+};
+
+/**
+ * The routine message: at most `ROUTINE_MAX_LINES` lines of body plus one card. `empty` when no
+ * fact needs the owner (what GitHub couldn't be read is not one): such a routine is not sent.
+ */
 export function renderRoutine(header: RoutineHeader, facts: MorningFacts | EveningFacts) {
+  const lines = facts.routine === "morning_brief" ? morningLines(facts) : eveningLines(facts);
+  const empty =
+    (facts.routine === "morning_brief" ? morningLines({ ...facts, github: [] }) : lines).length ===
+    0;
   const body = fitLines([
     ...headerLines(facts.routine, header),
-    ...(facts.routine === "morning_brief" ? morningLines(facts) : eveningLines(facts)),
+    ...(lines.length === 0 ? [NOTHING[facts.routine]] : lines),
   ]).join("\n");
   const card: KinRoutineCard = {
     routine: facts.routine,
@@ -229,5 +241,5 @@ export function renderRoutine(header: RoutineHeader, facts: MorningFacts | Eveni
       )
       .slice(0, CARD_ROWS),
   };
-  return { body, card };
+  return { body, card, empty };
 }
