@@ -90,11 +90,11 @@ Create the lead with that session as its owner:
 ```bash
 KIN_ENABLED=true node ~/kin-current/apps/server/dist/bin.mjs kin lead create --base-dir ~/.t3 \
   --session <session id> --name <lead name> \
-  --strong codex:<model> --cheap codex:<model> \
+  --strong claudeAgent:<model> --cheap claudeAgent:<model> \
   --worker-project <project id>
 ```
 
-The lead starts at L0 with a direct chat to you. Models are `<provider instance id>:<model>`. Repeat `--worker-project` for each project its workers may use, or leave it out. To register a checkout as a project, run `node ~/kin-current/apps/server/dist/bin.mjs project add <path> --base-dir ~/.t3`; it prints `Added project <project id>`, or fails naming the existing id if the path is already a project. Instead of `--session` you can pass `--person kin-default-owner`. Either one has to resolve to the Kin owner.
+The lead starts at L0 with a direct chat to you. Models are `<provider instance id>:<model>`, and both must be Claude instances: a lead runs only on Claude. Repeat `--worker-project` for each project its workers may use, or leave it out. To register a checkout as a project, run `node ~/kin-current/apps/server/dist/bin.mjs project add <path> --base-dir ~/.t3`; it prints `Added project <project id>`, or fails naming the existing id if the path is already a project. Instead of `--session` you can pass `--person kin-default-owner`. Either one has to resolve to the Kin owner.
 
 Running it again changes nothing and prints the existing lead. A host has one live lead, so a second one is refused until you retire the first. It's safe while `kin-server` runs; a phone that's already open shows the new chat once it reconnects.
 
