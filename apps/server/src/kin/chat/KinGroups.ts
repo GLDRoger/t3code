@@ -6,6 +6,7 @@ import {
   KinChatsCreateGroupInput,
   KinGroupRenameInput,
   KinMemberId,
+  KinWakeupId,
   type KinChat,
   type KinChatMember,
   type KinChatMembersInput,
@@ -28,6 +29,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlError from "effect/sql/SqlError";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { abortPrivateTurns } from "../lead/Audience.ts";
+import { KinStop } from "../lead/KinStop.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import * as Hub from "./KinChatHub.ts";
 import * as Repository from "./KinChatRepository.ts";
@@ -95,6 +98,7 @@ const make = Effect.gen(function* () {
   const hub = yield* Hub.KinChatHub;
   const { owner } = yield* KinIdentity;
   const presence = yield* Effect.serviceOption(KinPresence);
+  const stop = yield* Effect.serviceOption(KinStop);
   const now = DateTime.now.pipe(Effect.map(DateTime.formatIso));
   const transaction = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     sql
@@ -201,6 +205,29 @@ const make = Effect.gen(function* () {
     );
   });
 
+  /**
+   * In the join's transaction: a turn that may hold the owner's context and answers here never
+   * continues once someone else can read it. Its run stops after commit and a fresh, shared
+   * wake-up answers its events.
+   */
+  const abortTurns = Effect.fn("KinGroups.abortTurns")(function* (
+    chat: Pick<KinChat, "orgId" | "chatId">,
+    personId: string,
+  ) {
+    const turns = yield* query("KinGroups.abortTurns")(
+      abortPrivateTurns({ orgId: chat.orgId, chatId: chat.chatId, personId }).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      ),
+    );
+    if (turns.length === 0 || Option.isNone(stop)) return;
+    yield* sql.afterCommit(
+      stop.value.abortTurns(
+        chat.orgId,
+        turns.map((turn) => KinWakeupId.make(turn.wakeupId)),
+      ),
+    );
+  });
+
   /** Tells everyone still in the chat that who is in it, its name or its lead changed. */
   const changed = (member: KinChatMember) =>
     hub.publish({ type: "member.updated", orgId: member.orgId, chatId: member.chatId, member });
@@ -301,6 +328,7 @@ const make = Effect.gen(function* () {
           ? yield* join(chat, principal, "member", joinedAt)
           : // Someone who was here before keeps their member id, so their old messages stay theirs.
             yield* repo.addMember({ ...earlier, role: "member", joinedAt, leftAt: null });
+      if (principal._tag === "person") yield* abortTurns(chat, principal.personId);
       if (principal._tag === "agent" && (chat.leadAgentId ?? null) === null)
         yield* repo.updateChat({
           orgId: chat.orgId,

@@ -10,6 +10,7 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { itemFolders } from "../memory/checkoutPaths.ts";
 import { parseFrontMatter } from "../memory/frontMatter.ts";
 import { SHARED_THREAD_PREFIX } from "../lead/Audience.ts";
+import { askedWhereOthersRead } from "../triggers/deferralOrigin.ts";
 
 /** One original the dream may cite. `saidBy` and `trust` come from server records, never the model. */
 export interface MaterialEntry {
@@ -176,6 +177,8 @@ export const collectMaterial = Effect.fn("DreamMaterial.collect")(
         if (!itemFolders.some((folder) => path.startsWith(`${folder}/`))) continue;
         const parsed = yield* parseFrontMatter(orgId, path, text).pipe(Effect.option);
         if (parsed._tag === "None") continue;
+        // The owner's index leaves these out (`LeadPrompt`); so does a dream.
+        if (yield* askedWhereOthersRead(sql, orgId, parsed.value.frontMatter)) continue;
         entries.push({
           ref: `memory:${path}`,
           kind: "item",

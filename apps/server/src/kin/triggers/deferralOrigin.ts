@@ -10,6 +10,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { ownerOnlyChat } from "../lead/Audience.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
 
 export type DeferralSource = Pick<MemoryItemHead, "chat" | "source_event">;
@@ -25,7 +26,8 @@ export const deferralOrigin = Effect.fn("Deferrals.origin")(function* (
   sql: SqlClient.SqlClient,
   orgId: KinOrgId,
   item: DeferralSource | undefined,
-  lead: { readonly agentId: KinAgentId; readonly ownerChatId: KinChatId },
+  // Without one, an origin in some lead's owner chat comes back as that chat, not undefined.
+  lead?: { readonly agentId: KinAgentId; readonly ownerChatId: KinChatId },
 ) {
   const [row] =
     item?.source_event === undefined
@@ -48,18 +50,23 @@ export const deferralOrigin = Effect.fn("Deferrals.origin")(function* (
       : Option.getOrUndefined(yield* decodeStoredEvent(row.json).pipe(Effect.option));
   const origin: KinLevels.KinOrigin | undefined =
     row === undefined || event === undefined
-      ? item?.chat === undefined
+      ? item?.chat === undefined || lead === undefined
         ? undefined
         : { agentId: lead.agentId, chatId: item.chat }
-      : (event._tag === "deferral.due" || event._tag === "chat.message") &&
+      : (event._tag === "deferral.due" ||
+            event._tag === "chat.message" ||
+            event._tag === "worker.report") &&
           event.origin !== undefined
-        ? // Made while answering a due deferral or a passed-on request: where that was asked.
+        ? // Made while answering a due deferral, a passed-on request or reported work: where
+          // that was first asked.
           event.origin
         : event._tag === "chat.message" ||
             event._tag === "widget.action" ||
             event._tag === "chat.reaction"
           ? { agentId: KinAgentId.make(row.agentId), chatId: event.chatId }
-          : { agentId: KinAgentId.make(row.agentId), chatId: KinChatId.make(row.ownerChatId) };
+          : event._tag === "worker.report" && event.chatId !== undefined
+            ? { agentId: KinAgentId.make(row.agentId), chatId: event.chatId }
+            : { agentId: KinAgentId.make(row.agentId), chatId: KinChatId.make(row.ownerChatId) };
   const asker =
     origin === undefined ||
     origin.personId !== undefined ||
@@ -78,9 +85,30 @@ export const deferralOrigin = Effect.fn("Deferrals.origin")(function* (
           : undefined));
   if (origin !== undefined && asker !== undefined) return { ...origin, personId: asker };
   return origin === undefined ||
-    (origin.personId === undefined &&
+    (lead !== undefined &&
+      origin.personId === undefined &&
       origin.agentId === lead.agentId &&
       origin.chatId === lead.ownerChatId)
     ? undefined
     : origin;
+});
+
+/**
+ * An item asked for where someone besides the owner reads, by stored origin: a teammate asked,
+ * or the chat it came from has someone else in it. Its text came from that chat, so neither the
+ * owner's index nor a dream takes it.
+ */
+export const askedWhereOthersRead = Effect.fn("Deferrals.askedWhereOthersRead")(function* (
+  sql: SqlClient.SqlClient,
+  orgId: KinOrgId,
+  item: DeferralSource | undefined,
+  lead?: { readonly agentId: KinAgentId; readonly ownerChatId: KinChatId },
+) {
+  const origin = yield* deferralOrigin(sql, orgId, item, lead);
+  if (origin === undefined) return false;
+  if (origin.personId !== undefined) return true;
+  return !(yield* ownerOnlyChat(
+    { orgId, agentId: lead?.agentId ?? origin.agentId },
+    origin.chatId,
+  ).pipe(Effect.provideService(SqlClient.SqlClient, sql)));
 });

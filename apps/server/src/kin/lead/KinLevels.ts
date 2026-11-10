@@ -194,7 +194,7 @@ export const origins = Effect.fn("KinLevels.origins")(function* (input: {
       json_extract(json, '$.origin.chatId') AS "chatId",
       json_extract(json, '$.origin.personId') AS "personId" FROM kin_events
     WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND wakeup_id = ${input.wakeupId}
-      AND tag IN ('deferral.due', 'chat.message')
+      AND tag IN ('deferral.due', 'chat.message', 'worker.report')
       AND json_extract(json, '$.origin.chatId') IS NOT NULL
     ORDER BY 1, 2, 3`.pipe(Effect.mapError(toPersistenceSqlError("KinLevels.origins")));
   return rows.map(({ personId, ...origin }): KinOrigin =>
@@ -238,7 +238,7 @@ export const originCap = Effect.fn("KinLevels.originCap")(function* (input: {
 
 /**
  * The level a running wake-up works at: its lead's level in the chat it answers, which is the
- * reply bridge's lane (its first chat event's chat, else the lead's owner chat), capped by
+ * reply bridge's lane (its first chat event's or reported work's chat, else the lead's owner chat), capped by
  * `originCap`. Memory follows it: a wake-up in a chat its owner placed it in writes the default
  * branch, an L0 one the shadow branch.
  */
@@ -251,7 +251,8 @@ export const wakeupLevel = Effect.fn("KinLevels.wakeupLevel")(function* (input: 
   const [lane] = yield* sql<{ chatId: string | null }>`
     SELECT COALESCE((SELECT json_extract(e.json, '$.chatId') FROM kin_events e
         WHERE e.org_id = l.org_id AND e.agent_id = l.agent_id AND e.wakeup_id = ${input.wakeupId}
-          AND e.tag IN ('chat.message', 'widget.action', 'chat.reaction')
+          AND e.tag IN ('chat.message', 'widget.action', 'chat.reaction', 'worker.report')
+          AND json_extract(e.json, '$.chatId') IS NOT NULL
         ORDER BY e.priority, e.received_at, e.event_id LIMIT 1), l.owner_chat_id) AS "chatId"
     FROM kin_leads l WHERE l.org_id = ${input.orgId} AND l.agent_id = ${input.agentId}
     ORDER BY l.agent_id`.pipe(Effect.mapError(toPersistenceSqlError("KinLevels.wakeupLevel")));

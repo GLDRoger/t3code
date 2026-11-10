@@ -25,6 +25,8 @@ import {
   PRIVATE_DESTINATION,
   SHARED_ELSEWHERE,
   SHARED_OTHER_CHAT,
+  SHARED_REFUSAL,
+  aborted,
   askedIn,
   destination,
   effectiveAudience,
@@ -192,7 +194,7 @@ const make = Effect.gen(function* () {
               const where = yield* destination(turn, chatId).pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),
               );
-              if (where === "moved")
+              if (where === "moved" || where === "aborted")
                 return yield* new KinChatError({
                   reason: "not_allowed",
                   message: AUDIENCE_MOVED,
@@ -239,6 +241,8 @@ const make = Effect.gen(function* () {
     function* (agent: AgentIdentity, input: ReadInput) {
       const turn = yield* turnOf(agent);
       if (turn === undefined) return yield* notAllowed;
+      if (yield* aborted(turn).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
+        return yield* new KinChatError({ reason: "not_allowed", message: SHARED_REFUSAL });
       const shared =
         (yield* effectiveAudience(turn).pipe(Effect.provideService(SqlClient.SqlClient, sql))) ===
         "shared";

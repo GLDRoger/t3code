@@ -4,7 +4,7 @@ import * as Predicate from "effect/Predicate";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
-import { askedIn, turnChat } from "./Audience.ts";
+import { aborted, askedIn, effectiveAudience, turnChat } from "./Audience.ts";
 
 type Turn = {
   readonly orgId: KinOrgId;
@@ -123,5 +123,21 @@ export const sharedToolAllowed = Effect.fn("KinSharedTools.allowed")(
   },
   Effect.catchCause((cause) =>
     Effect.logWarning("Kin shared tool check failed; refusing", { cause }).pipe(Effect.as(false)),
+  ),
+);
+
+/**
+ * The one check for a tool call: nothing in a turn aborted for its audience, everything in an
+ * owner-only one, else what `SHARED_TOOLS` allows. The gate runs it before every call; services
+ * whose writes outlive the call run it again inside them.
+ */
+export const toolAdmitted = Effect.fn("KinSharedTools.admitted")(
+  function* (turn: Turn, name: string, args: unknown) {
+    if (yield* aborted(turn)) return false;
+    if ((yield* effectiveAudience(turn)) === "owner_only") return true;
+    return yield* sharedToolAllowed(turn, name, args);
+  },
+  Effect.catchCause((cause) =>
+    Effect.logWarning("Kin tool check failed; refusing", { cause }).pipe(Effect.as(false)),
   ),
 );

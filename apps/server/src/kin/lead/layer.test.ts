@@ -30,7 +30,8 @@ const external = Layer.mergeAll(
   Layer.mock(Presence.KinPresence)({
     set: () => Effect.void,
     clear: () => Effect.void,
-    snapshot: () => ({ presence: [], drafts: [] }),
+    snapshot: () => Effect.succeed({ presence: [], drafts: [] }),
+    lines: () => [],
   }),
   ServerConfig.layerTest(process.cwd(), { prefix: "kin-lead-layer-" }),
   Layer.mock(VcsProcess.VcsProcess)({}),

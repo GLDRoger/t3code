@@ -124,6 +124,8 @@ const undoGroupLead = Effect.gen(function* () {
 // K028 adds the timing columns after it on a rerun, so this one has to follow them again.
 const undoWakeupAudience = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE kin_wakeups DROP COLUMN settled_at`;
+  yield* sql`ALTER TABLE kin_wakeups DROP COLUMN aborted_at`;
   yield* sql`ALTER TABLE kin_wakeups DROP COLUMN shared_since`;
   yield* sql`ALTER TABLE kin_wakeups DROP COLUMN audience`;
 });
@@ -189,6 +191,7 @@ describe("Kin migrations", () => {
           { migration_id: 42, name: "ReactionWakes" },
           { migration_id: 43, name: "WakeupAudience" },
           { migration_id: 44, name: "WakeupSharedSince" },
+          { migration_id: 45, name: "WakeupAudienceAbort" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
@@ -288,6 +291,7 @@ describe("Kin migrations", () => {
           { migration_id: 42, name: "ReactionWakes" },
           { migration_id: 43, name: "WakeupAudience" },
           { migration_id: 44, name: "WakeupSharedSince" },
+          { migration_id: 45, name: "WakeupAudienceAbort" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -411,6 +415,7 @@ describe("Kin migrations", () => {
         [42, "ReactionWakes"],
         [43, "WakeupAudience"],
         [44, "WakeupSharedSince"],
+        [45, "WakeupAudienceAbort"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -548,6 +553,7 @@ describe("Kin migrations", () => {
         [42, "ReactionWakes"],
         [43, "WakeupAudience"],
         [44, "WakeupSharedSince"],
+        [45, "WakeupAudienceAbort"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,
@@ -615,6 +621,7 @@ describe("Kin migrations", () => {
         { migration_id: 42, name: "ReactionWakes" },
         { migration_id: 43, name: "WakeupAudience" },
         { migration_id: 44, name: "WakeupSharedSince" },
+        { migration_id: 45, name: "WakeupAudienceAbort" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);
@@ -685,6 +692,7 @@ describe("Kin migrations", () => {
         [42, "ReactionWakes"],
         [43, "WakeupAudience"],
         [44, "WakeupSharedSince"],
+        [45, "WakeupAudienceAbort"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT session_id, via FROM kin_auth_paired_sessions ORDER BY session_id`,
@@ -732,6 +740,7 @@ describe("Kin migrations", () => {
         [42, "ReactionWakes"],
         [43, "WakeupAudience"],
         [44, "WakeupSharedSince"],
+        [45, "WakeupAudienceAbort"],
       ]);
       const columns = yield* sql<{ name: string }>`
         SELECT name FROM pragma_table_info('kin_workers')`;
@@ -788,8 +797,9 @@ describe("Kin migrations", () => {
           [42, "ReactionWakes"],
           [43, "WakeupAudience"],
           [44, "WakeupSharedSince"],
+          [45, "WakeupAudienceAbort"],
         ]);
-        assert.deepStrictEqual((yield* kinHistory).slice(-11), [
+        assert.deepStrictEqual((yield* kinHistory).slice(-12), [
           { migration_id: 32, name: "WorkerEnvironment" },
           { migration_id: 33, name: "ApproverKeyConfirmations" },
           { migration_id: 34, name: "PerLeadWakeups" },
@@ -801,6 +811,7 @@ describe("Kin migrations", () => {
           { migration_id: 42, name: "ReactionWakes" },
           { migration_id: 43, name: "WakeupAudience" },
           { migration_id: 44, name: "WakeupSharedSince" },
+          { migration_id: 45, name: "WakeupAudienceAbort" },
         ]);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_lead_deliveries`, [delivery]);
         assert.deepStrictEqual(
@@ -854,6 +865,7 @@ describe("Kin migrations", () => {
         [42, "ReactionWakes"],
         [43, "WakeupAudience"],
         [44, "WakeupSharedSince"],
+        [45, "WakeupAudienceAbort"],
       ]);
       assert.deepStrictEqual(yield* sql`SELECT message_id, status FROM kin_messages ORDER BY seq`, [
         { message_id: "promotion:lead:L1", status: "dismissed" },
@@ -906,6 +918,7 @@ describe("Kin migrations", () => {
         [42, "ReactionWakes"],
         [43, "WakeupAudience"],
         [44, "WakeupSharedSince"],
+        [45, "WakeupAudienceAbort"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT name FROM sqlite_master WHERE type = 'index' AND name GLOB 'idx_kin_wakeups_running*' ORDER BY name`,
@@ -941,7 +954,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 44");
+      assert.include(String(exit), "below the latest applied migration 45");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -1008,6 +1021,8 @@ describe("Kin migrations", () => {
           resumed: 1,
           audience: "owner_only",
           shared_since: null,
+          aborted_at: null,
+          settled_at: null,
         },
         kin_events: {
           org_id: "org",

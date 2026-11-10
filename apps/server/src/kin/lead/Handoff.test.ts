@@ -29,7 +29,7 @@ import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
 import { deferralOrigin } from "../triggers/deferralOrigin.ts";
-import { recordAudience, turnAudience } from "./Audience.ts";
+import { SHARED_REFUSAL, recordAudience, turnAudience } from "./Audience.ts";
 import * as Handoff from "./Handoff.ts";
 import * as KinLevels from "./KinLevels.ts";
 
@@ -235,6 +235,28 @@ it.effect(
     ),
 );
 
+it.effect("a turn a teammate's join aborted passes nothing on", () =>
+  run(({ ctx, handoff }) =>
+    Effect.gen(function* () {
+      const { sql, orgId } = ctx;
+      yield* sql`UPDATE kin_wakeups SET aborted_at = 1, shared_since = 1 WHERE wakeup_id = 'chief-wake'`;
+      const refused = yield* Effect.flip(
+        handoff.handOff(scopeFor(chief), {
+          to: "Tech lead",
+          request: "Invented",
+          sourceEventId: "ask-event",
+        }),
+      );
+      assert.include(refused, {
+        reason: "not_allowed",
+        message: `${SHARED_REFUSAL} Nothing was passed on.`,
+      });
+      assert.lengthOf(yield* passedOn(sql, orgId, tech), 0);
+      assert.lengthOf(yield* systemRows(sql, orgId, ctx.techChat), 0);
+    }),
+  ),
+);
+
 it.effect("what was passed on works at no more than the chat it was asked in allows", () =>
   run(({ ctx, handoff }) =>
     Effect.gen(function* () {
@@ -269,6 +291,7 @@ it.effect("what was passed on works at no more than the chat it was asked in all
       assert.deepStrictEqual(origin, { agentId: chief, chatId: ctx.chiefChat });
 
       // One hop: the Tech lead can't pass it back, so two leads can't trade a request.
+      yield* recordAudience(techWake, yield* turnAudience(techWake));
       const back = yield* Effect.flip(
         handoff.handOff(scopeFor(tech), {
           to: "Chief of staff",

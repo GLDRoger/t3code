@@ -1,6 +1,7 @@
 import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { kinSecretsTest } from "../lead/layer.testkit.ts";
 import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
+import { SHARED_REFUSAL, recordAudience, turnAudience } from "../lead/Audience.ts";
 import { assert, it } from "@effect/vitest";
 import {
   AuthSessionId,
@@ -296,16 +297,18 @@ const seed = (sources: ReadonlyArray<Source>, level = "L3") =>
       githubLogin: null,
       createdAt,
     });
-    yield* repo.addMember({
-      orgId,
-      chatId: chat.chatId,
-      memberId: memberMemberId,
-      principal: { _tag: "person", personId: memberPersonId },
-      role: "member",
-      joinedAt: createdAt,
-      leftAt: null,
-      mutedUntil: null,
-    });
+    // Only a member who speaks is in the chat, so an owner's request is the owner's alone.
+    if (sources.includes("member"))
+      yield* repo.addMember({
+        orgId,
+        chatId: chat.chatId,
+        memberId: memberMemberId,
+        principal: { _tag: "person", personId: memberPersonId },
+        role: "member",
+        joinedAt: createdAt,
+        leftAt: null,
+        mutedUntil: null,
+      });
     const eventIds: Record<Source, KinEventId> = {
       owner: KinEventId.make("evt-owner"),
       member: KinEventId.make("evt-member"),
@@ -396,6 +399,9 @@ const seed = (sources: ReadonlyArray<Source>, level = "L3") =>
     assert.lengthOf(claimed, sources.length);
     const run = yield* startWakeupRun(threadId, wakeupId);
     yield* sql`UPDATE kin_wakeups SET thread_id = ${threadId}, run_id = ${run.id} WHERE wakeup_id = ${wakeupId}`;
+    // What building the prompt records before the lead's tools run.
+    const turn = { orgId, agentId, wakeupId };
+    yield* recordAudience(turn, yield* turnAudience(turn));
     const rows = sql<{
       action_id: string;
       target_json: string;
@@ -542,21 +548,29 @@ it.effect("a storage failure refuses request_action as unavailable", () =>
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect("a member-started merge is proposed with the member named for the card", () =>
+// A turn a member reads asks the owner for nothing, inside the write as well as at the gate.
+it.effect("a member-started merge is refused, and no card is made", () =>
   Effect.gen(function* () {
     const { eventIds, rows } = yield* seed(["member", "routine"]);
-    success(yield* call(merge(eventIds.member)));
-    const provenance = JSON.parse((yield* rows)[0]!.provenance_json);
-    assert.deepStrictEqual(provenance, {
-      startedBy: { humanId: memberPersonId },
-      startedByRole: "member",
-      chain: [
-        { kind: "chat.message", id: eventIds.member, authorRole: "member" },
-        { kind: "routine", id: eventIds.routine, authorRole: "none" },
-      ],
-      ceilingBelowOwner: true,
-      afterNonOwnerMessage: { humanId: memberPersonId, messageId: "member-ask" },
+    assert.deepStrictEqual(refusal(yield* call(merge(eventIds.member))), {
+      _tag: "KinApprovalError",
+      reason: "not_owner",
+      message: SHARED_REFUSAL,
     });
+    assert.lengthOf(yield* rows, 0);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a turn a teammate's join aborted asks the owner for nothing", () =>
+  Effect.gen(function* () {
+    const { eventIds, rows, sql } = yield* seed(["owner"]);
+    yield* sql`UPDATE kin_wakeups SET aborted_at = 1, shared_since = 1 WHERE status = 'running'`;
+    assert.deepStrictEqual(refusal(yield* call(merge(eventIds.owner))), {
+      _tag: "KinApprovalError",
+      reason: "not_owner",
+      message: SHARED_REFUSAL,
+    });
+    assert.lengthOf(yield* rows, 0);
   }).pipe(Effect.provide(layer)),
 );
 
@@ -654,7 +668,7 @@ it.effect("below L3 a merge request is refused in plain words: no card, no GitHu
   Effect.gen(function* () {
     for (const level of ["L0", "L2"])
       yield* Effect.gen(function* () {
-        const { eventIds, rows, sql } = yield* seed(["owner", "member"], level);
+        const { eventIds, rows, sql } = yield* seed(["owner"], level);
         assert.deepStrictEqual(refusal(yield* call(merge(eventIds.owner))), NOT_OPEN);
         assert.deepStrictEqual(refusal(yield* call(merge(eventIds.owner))), NOT_OPEN);
         assert.lengthOf(yield* rows, 0);

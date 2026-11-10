@@ -7,12 +7,12 @@ import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { McpInvocationContext } from "../../mcp/McpInvocationContext.ts";
 import { KinServer } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
-import { SHARED_REFUSAL, effectiveAudience } from "../lead/Audience.ts";
-import { sharedToolAllowed } from "../lead/SharedTools.ts";
+import { SHARED_REFUSAL } from "../lead/Audience.ts";
+import { toolAdmitted } from "../lead/SharedTools.ts";
 
 /**
  * Whether the calling lead's running turn may make this call: everything when only the owner can
- * read it, else what `SharedTools` allows. No running lead turn admits nothing.
+ * read it, else what `SharedTools` allows. No running lead turn, or an aborted one, admits nothing.
  */
 const admitted = Effect.fn("KinToolGate.admitted")(
   function* (name: string, args: unknown) {
@@ -29,13 +29,8 @@ const admitted = Effect.fn("KinToolGate.admitted")(
       AND status = 'running'
     ORDER BY started_at, wakeup_id LIMIT 1`;
     if (row === undefined) return false;
-    const turn = { orgId, agentId, wakeupId: row.wakeupId };
-    return (
-      (yield* effectiveAudience(turn).pipe(Effect.provideService(SqlClient.SqlClient, sql))) ===
-        "owner_only" ||
-      (yield* sharedToolAllowed(turn, name, args).pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
-      ))
+    return yield* toolAdmitted({ orgId, agentId, wakeupId: row.wakeupId }, name, args).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
     );
   },
   Effect.catchCause((cause) =>

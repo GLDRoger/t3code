@@ -28,6 +28,7 @@ import * as ProjectService from "../../project/ProjectService.ts";
 import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
 import { sourceControlDefinitions } from "../../sourceControl/sourceControlDefinitions.ts";
 import type { AgentIdentity } from "../chat/KinIdentity.ts";
+import { SHARED_REFUSAL, effectiveAudience } from "../lead/Audience.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
 import * as Audit from "./Audit.ts";
 import * as PendingActions from "./PendingActions.ts";
@@ -330,6 +331,18 @@ const make = Effect.gen(function* () {
         "invalid_state",
         "sourceEventId must name an event in your current wake-up.",
       );
+    // Only a turn the owner alone reads asks for an action; aborted counts as read by others.
+    const [running] = yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId"
+      FROM kin_wakeups WHERE org_id = ${agent.orgId} AND agent_id = ${agent.agentId}
+        AND thread_id = ${agent.threadId} AND status = 'running'
+      ORDER BY wakeup_id`.pipe(Effect.mapError(toPersistenceSqlError("KinRequestAction.turn")));
+    if (
+      running === undefined ||
+      (yield* effectiveAudience({ ...agent, wakeupId: running.wakeupId }).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      )) !== "owner_only"
+    )
+      return yield* refuse("not_owner", SHARED_REFUSAL);
     if (OWNER_ONLY_KINDS.has(input.kind) && !origin.ceilingIsOwner)
       return yield* refuse(
         "not_owner",

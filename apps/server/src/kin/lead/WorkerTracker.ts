@@ -6,6 +6,7 @@ import {
   KinChatId,
   KinEventId,
   KinOrgId,
+  type KinPersonId,
   KinTaskCardState,
   KinWorkerId,
   type OrchestratorMcpFailure,
@@ -42,6 +43,7 @@ import * as Writer from "../memory/MemoryWriter.ts";
 import { remoteTaskCardState } from "../widgets/taskCard.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import { KinLeadRegistry } from "./KinLeadRegistry.ts";
+import * as KinLevels from "./KinLevels.ts";
 import { isOrgPaused, STOP_REASON } from "./orgState.ts";
 import { parseReport } from "./workerBrief.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
@@ -185,6 +187,45 @@ const make = Effect.gen(function* () {
           threadId: worker.threadId,
         });
   });
+  /**
+   * Where the report answers and who it is for, from the worker's stored row and the wake-up
+   * that started it: its chat unless that is the owner chat, and where the work was first
+   * asked, naming the teammate who asked, as `deferralOrigin` does for a reminder.
+   */
+  const askedFor = Effect.fn("WorkerTracker.askedFor")(function* (worker: WorkerRow) {
+    const [row] = yield* sql<{
+      wakeupId: string;
+      ownerChatId: KinChatId;
+      ownerPersonId: string;
+      askedBy: KinPersonId | null;
+    }>`SELECT k.wakeup_id AS "wakeupId", l.owner_chat_id AS "ownerChatId",
+        a.owner_person_id AS "ownerPersonId",
+        CASE WHEN json_extract(k.provenance_json, '$._tag') = 'human'
+          THEN json_extract(k.provenance_json, '$.personId') END AS "askedBy"
+      FROM kin_workers k JOIN kin_leads l ON l.org_id = k.org_id AND l.agent_id = k.agent_id
+      JOIN kin_agents a ON a.org_id = k.org_id AND a.agent_id = k.agent_id
+      WHERE k.org_id = ${worker.orgId} AND k.worker_id = ${worker.workerId} ORDER BY k.worker_id`;
+    if (row === undefined) return {};
+    const started = { orgId: worker.orgId, agentId: worker.agentId, wakeupId: row.wakeupId };
+    const origins = yield* KinLevels.origins(started);
+    const personId =
+      (yield* KinLevels.askers(started))[0] ??
+      origins.find((origin) => origin.personId !== undefined)?.personId ??
+      (row.askedBy !== null && row.askedBy !== row.ownerPersonId ? row.askedBy : undefined);
+    const chatId =
+      worker.chatId !== null && worker.chatId !== row.ownerChatId ? worker.chatId : undefined;
+    const first = origins[0];
+    const origin =
+      first !== undefined
+        ? { ...first, ...(personId === undefined ? {} : { personId }) }
+        : personId === undefined
+          ? undefined
+          : { agentId: worker.agentId, chatId: worker.chatId ?? row.ownerChatId, personId };
+    return {
+      ...(chatId === undefined ? {} : { chatId }),
+      ...(origin === undefined ? {} : { origin }),
+    };
+  });
   /** Keyed on the answer run, so a replay enqueues the same event; `key` names it. */
   const enqueueReport = Effect.fn("WorkerTracker.enqueueReport")(function* (
     worker: WorkerRow,
@@ -204,6 +245,7 @@ const make = Effect.gen(function* () {
         provenance: yield* author(worker),
         workerId: worker.workerId,
         report,
+        ...(yield* askedFor(worker).pipe(Effect.provideService(SqlClient.SqlClient, sql))),
       })
       .pipe(
         Effect.catchTags({
