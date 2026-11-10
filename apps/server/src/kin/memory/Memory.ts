@@ -125,6 +125,8 @@ export const shadowBranch = (agentId: string) => `kin/shadow/${agentId}`;
  * local commit whose tree that squash carries. It lives in the writer and goes when a purge reclones.
  */
 export const LANDED_REF = "refs/kin/landed";
+/** How far down GitHub's history a landed squash is looked for, past the owner's own commits. */
+const LANDED_SEARCH_DEPTH = 200;
 
 export interface MemoryQuery {
   readonly kind?: MemoryItemKind;
@@ -1431,9 +1433,9 @@ const make = Effect.gen(function* () {
       : undefined;
 
   /**
-   * The local commit whose tree GitHub's newest squash of this server's memory carries, while
-   * that squash is not merged in here. GitHub squash-merges, so git's ancestry never links the
-   * two: this commit's tree is the merge base, and local commits after it are changes on top.
+   * The local commit whose tree GitHub's newest unmerged squash of this server's memory carries:
+   * the merge base, since squashes never link the two in git's ancestry. The owner may have
+   * committed on top, so the squash is sought down GitHub's first parents, newest first.
    */
   const landedBase = Effect.fn("Memory.landedBase")(function* (
     orgId: KinOrgId,
@@ -1454,20 +1456,24 @@ const make = Effect.gen(function* () {
       LANDED_REF,
     ]).pipe(
       Effect.flatMap((sha) => commitAt(sha.trim())),
-      Effect.result,
+      Effect.map(({ parents: [theirs, ours] }) =>
+        theirs && ours && local.has(ours) ? { theirs, ours } : undefined,
+      ),
+      Effect.orElseSucceed(() => undefined),
     );
-    if (recorded._tag === "Success") {
-      const [theirs, ours] = recorded.success.parents;
-      // Once the squash is merged in, git's own merge base is at least as new as this record.
-      if (theirs && ours && remote.has(theirs) && local.has(ours) && !local.has(theirs))
-        return ours;
+    let sha: string | undefined = remoteHead;
+    for (let depth = 0; sha !== undefined && depth < LANDED_SEARCH_DEPTH; depth++) {
+      // Merged in here already: git's own merge base is at least as new.
+      if (local.has(sha)) return undefined;
+      if (sha === recorded?.theirs) return recorded.ours;
+      // The record is written after GitHub merges. If the server stopped in between, the squash
+      // still names its commit, and an identical tree proves the pair without trusting that line.
+      const squash = yield* commitAt(sha);
+      const named = /^Kin-Local: ([a-f0-9]{40}(?:[a-f0-9]{24})?)$/m.exec(squash.message)?.[1];
+      if (named !== undefined && local.has(named) && (yield* commitAt(named)).tree === squash.tree)
+        return named;
+      sha = remote.get(sha)?.[0];
     }
-    // The record is written after GitHub merges. If the server stopped in between, the squash
-    // still names its commit, and an identical tree proves the pair without trusting that line.
-    const squash = yield* commitAt(remoteHead);
-    const named = /^Kin-Local: ([a-f0-9]{40}(?:[a-f0-9]{24})?)$/m.exec(squash.message)?.[1];
-    if (named !== undefined && local.has(named) && (yield* commitAt(named)).tree === squash.tree)
-      return named;
     return undefined;
   });
 
