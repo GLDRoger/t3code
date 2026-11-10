@@ -155,6 +155,28 @@ export const KinGithubWebhookSetup = Schema.Union([
 ]);
 export type KinGithubWebhookSetup = typeof KinGithubWebhookSetup.Type;
 
+/** `off`: no GitHub source. A null `url` means T3 Connect is off on this host. */
+export const KinGithubWebhookStatus = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("off") }),
+  Schema.Struct({
+    status: Schema.Literal("on"),
+    sourceId: KinWebhookSourceId,
+    projectId: ProjectId,
+    url: Schema.NullOr(Schema.String),
+    enabled: Schema.Boolean,
+    /** The task's secret is the one Kin bound; while false every delivery refuses. */
+    secretBound: Schema.Boolean,
+    lastDelivery: Schema.NullOr(
+      Schema.Struct({
+        receivedAt: Schema.String,
+        outcome: Schema.String,
+        signatureVerified: Schema.Boolean,
+      }),
+    ),
+  }),
+]);
+export type KinGithubWebhookStatus = typeof KinGithubWebhookStatus.Type;
+
 export const KinGithubEvent = Schema.Struct({
   orgId: KinOrgId,
   deliveryId: TrimmedNonEmptyString,

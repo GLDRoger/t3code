@@ -19,8 +19,8 @@ import { gitHubJson } from "./githubRest.ts";
 import * as Keychain from "./Keychain.ts";
 import * as KinGitHubApp from "./KinGitHubApp.ts";
 import {
-  KIN_GITHUB_APP_EVENTS,
   buildAppManifest,
+  diffAppEvents,
   diffAppPermissions,
   type KinPermissionDiffLine,
 } from "./KinGitHubPermissions.ts";
@@ -62,9 +62,7 @@ export const checkApp = Effect.gen(function* () {
   const installations = yield* github.installations;
   const appDiff = diffAppPermissions(app.permissions);
   let ok = appDiff.every((line) => line.status === "ok");
-  const missingEvents = KIN_GITHUB_APP_EVENTS.filter((event) => !app.events.includes(event));
-  const expectedEvents: ReadonlyArray<string> = KIN_GITHUB_APP_EVENTS;
-  const extraEvents = app.events.filter((event) => !expectedEvents.includes(event));
+  const { missing: missingEvents, extra: extraEvents } = diffAppEvents(app.events);
   // No events is fine for an App made without --webhook-url; a partial or wider set isn't.
   if (app.events.length > 0 && (missingEvents.length > 0 || extraEvents.length > 0)) ok = false;
   const lines = [
