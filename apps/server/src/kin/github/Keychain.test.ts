@@ -35,6 +35,14 @@ describe("KinKeychain", () => {
     }),
   );
 
+  it("stores values as base64 a keyring file can't reinterpret, and still reads raw ones", () => {
+    const json = JSON.stringify({ privateKey: "-----BEGIN KEY-----\nabc\n-----END KEY-----\n" });
+    const stored = Keychain.encodeSecret(json);
+    assert.match(stored, /^kin-b64:[A-Za-z0-9+/=]+$/);
+    assert.strictEqual(Keychain.decodeSecret(stored), json);
+    assert.strictEqual(Keychain.decodeSecret(json), json);
+  });
+
   it.effect("checks for a Secret Service only on Linux", () =>
     Effect.gen(function* () {
       const linux = keychain("linux", true);
