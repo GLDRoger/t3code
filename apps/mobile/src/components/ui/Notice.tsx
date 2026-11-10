@@ -1,7 +1,9 @@
 import { useEffect } from "react";
 import { AccessibilityInfo, Platform, Pressable, View } from "react-native";
 
+import { useReduceMotionEnabled } from "../../lib/appState";
 import { cn } from "../../lib/cn";
+import { Button } from "./Button";
 import { AppText } from "./AppText";
 import { SymbolView, type AppSymbolName } from "./AppSymbol";
 import { GlassSurface } from "./GlassSurface";
@@ -14,7 +16,14 @@ export function Notice(props: {
   readonly floating?: boolean;
   readonly onDismiss?: () => void;
   readonly dismissLabel?: string;
+  /** One button after the message, such as Reconnect. `pending` disables it while it runs. */
+  readonly action?: {
+    readonly label: string;
+    readonly onPress: () => void;
+    readonly pending?: boolean;
+  };
 }) {
+  const reduceMotion = useReduceMotionEnabled();
   const danger = props.tone === "danger";
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- announces the message to VoiceOver through AccessibilityInfo
   useEffect(() => {
@@ -49,6 +58,19 @@ export function Notice(props: {
       >
         {props.message}
       </AppText>
+      {props.action ? (
+        <View className="self-center">
+          <Button
+            tone="secondary"
+            size="compact"
+            label={props.action.label}
+            onPress={props.action.onPress}
+            disabled={props.action.pending}
+            // The message already says it's pending, so Reduce Motion drops the spinner.
+            loading={props.action.pending === true && !reduceMotion}
+          />
+        </View>
+      ) : null}
       {props.onDismiss ? (
         <Pressable
           accessibilityRole="button"

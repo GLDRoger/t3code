@@ -6,7 +6,7 @@ import { Platform, View } from "react-native";
 import { ComposerEditor } from "../../../components/ComposerEditor";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { IconButton } from "../../../components/ui/IconButton";
-import { useScaledTextRole } from "../../settings/appearance/useScaledTextRole";
+import { useComposerTextRole } from "../../settings/appearance/useScaledTextRole";
 import type { ComposerEditorHandle } from "../../../native/T3ComposerEditor.types";
 import {
   clearComposerDraftContent,
@@ -69,7 +69,8 @@ export function KinComposer(props: {
   const { editorRef } = props;
   const full = useAtomValue(kinOutbox.fullAtom(props.environmentId));
   const [contentHeight, setContentHeight] = useState(0);
-  const maxContentHeight = useScaledTextRole("body").lineHeight * EDITOR_MAX_LINES;
+  const { lineHeight } = useComposerTextRole();
+  const maxContentHeight = lineHeight * EDITOR_MAX_LINES;
   const editorHeight = Math.max(
     EDITOR_MIN_HEIGHT,
     Math.ceil(Math.min(maxContentHeight, contentHeight)) + 2 * EDITOR_INSET,
@@ -129,7 +130,9 @@ export function KinComposer(props: {
             onFocus={() => props.onFocusChange?.(true)}
             onBlur={() => props.onFocusChange?.(false)}
             contentInsetVertical={EDITOR_INSET}
-            singleLineCentered={contentHeight <= EDITOR_MIN_HEIGHT - 2 * EDITOR_INSET}
+            singleLineCentered={
+              contentHeight <= Math.max(EDITOR_MIN_HEIGHT - 2 * EDITOR_INSET, lineHeight)
+            }
             scrollEnabled={Platform.OS === "android" || contentHeight >= maxContentHeight}
             onContentSizeChange={(size) => setContentHeight(size.height)}
             style={{ height: editorHeight }}

@@ -1,4 +1,5 @@
 import { useNavigation } from "@react-navigation/native";
+import type { EnvironmentId } from "@t3tools/contracts";
 import type { ReactNode } from "react";
 import { View } from "react-native";
 
@@ -14,7 +15,11 @@ import {
   formatKinTime,
   kinInboxNotice,
   type KinInboxScreenState,
+  type KinReconnectStatus,
+  type KinStaleNotice,
 } from "@t3tools/client-runtime/kin/kinScreenState";
+import { useKinHost } from "../state/useKinHost";
+import { useKinReconnect } from "../state/useKinReconnect";
 
 export type KinReadyState = Extract<KinInboxScreenState, { readonly _tag: "ready" }>;
 
@@ -65,13 +70,7 @@ export function KinScreenState(props: {
         </View>
       );
     case "offline":
-      return (
-        <EmptyState
-          variant="plain"
-          title="Kin is offline"
-          detail="Chats load when the Kin environment reconnects."
-        />
-      );
+      return <KinInboxOfflineState />;
     case "noHost":
       return (
         <EmptyState
@@ -117,11 +116,68 @@ export function KinScreenState(props: {
   }
 }
 
-/** "Offline. Last updated 9:41." over a cached inbox; nothing while it is live. */
-export function KinInboxNotice(props: { readonly state: KinReadyState }) {
-  const notice = kinInboxNotice(props.state, (date) => formatKinTime(date));
-  if (notice === null) return null;
+function KinInboxOfflineState() {
+  const host = useKinHost();
   return (
-    <Notice {...(notice.offline ? { icon: "wifi.slash" as const } : {})} message={notice.message} />
+    <KinOfflineState
+      environmentId={host._tag === "host" ? host.environmentId : null}
+      resource="Chats load"
+    />
+  );
+}
+
+/** Offline with nothing cached: what loads once Kin is back, and Reconnect. */
+export function KinOfflineState(props: {
+  readonly environmentId: EnvironmentId | null;
+  /** "Chats load", finished as "… when the Kin environment reconnects." */
+  readonly resource: string;
+}) {
+  const { status, reconnect } = useKinReconnect(props.environmentId);
+  return (
+    <EmptyState
+      variant="plain"
+      title={status === "failed" ? "Couldn't reconnect to Kin" : "Kin is offline"}
+      detail={`${props.resource} when the Kin environment reconnects.`}
+      {...(reconnect === null
+        ? {}
+        : {
+            actionLabel: status === "pending" ? "Reconnecting…" : "Reconnect",
+            onAction: reconnect,
+          })}
+    />
+  );
+}
+
+/** "Offline. Last updated 9:41." over a cached inbox, with Reconnect; nothing while it is live. */
+export function KinInboxNotice(props: { readonly state: KinReadyState }) {
+  const { status, reconnect } = useKinReconnect(props.state.environmentId);
+  const notice = kinInboxNotice(props.state, status, (date) => formatKinTime(date));
+  if (notice === null) return null;
+  return <KinStaleNoticeView notice={notice} status={status} reconnect={reconnect} />;
+}
+
+/** A stale-data notice; offline ones carry Reconnect. */
+export function KinStaleNoticeView(props: {
+  readonly notice: KinStaleNotice;
+  readonly status: KinReconnectStatus;
+  readonly reconnect: (() => void) | null;
+  readonly floating?: boolean;
+}) {
+  const { notice, reconnect } = props;
+  return (
+    <Notice
+      {...(notice.offline ? { icon: "wifi.slash" as const } : {})}
+      message={notice.message}
+      {...(props.floating ? { floating: true } : {})}
+      {...(notice.offline && reconnect !== null
+        ? {
+            action: {
+              label: "Reconnect",
+              onPress: reconnect,
+              pending: props.status === "pending",
+            },
+          }
+        : {})}
+    />
   );
 }
