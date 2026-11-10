@@ -12,6 +12,7 @@ import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
 import type { AsyncResult } from "effect/reactivity";
 
+import type { SupervisorConnectionState } from "../connection/model.ts";
 import type { KinSynced } from "./kinStreams.ts";
 import type { KinHost } from "./kinHost.ts";
 import type { KinInboxFold, KinInboxRow, KinInboxState, KinInboxView } from "./kinInboxModel.ts";
@@ -92,18 +93,61 @@ export function formatKinTime(date: Date, now: Date = new Date()): string {
     : kinDayFormat.format(date);
 }
 
+/** Where the Reconnect action on the Offline notice is: idle, waiting on the attempt, or failed. */
+export type KinReconnectStatus = "idle" | "pending" | "failed";
+
+export interface KinStaleNotice {
+  readonly offline: boolean;
+  readonly message: string;
+}
+
+/** The stale-data notice over cached Kin data, or null while it is live and connected. */
+export function kinStaleNotice(
+  data: { readonly connected: boolean; readonly live: boolean; readonly savedAt: string | null },
+  reconnect: KinReconnectStatus,
+  formatTime: (date: Date) => string,
+): KinStaleNotice | null {
+  if ((data.connected && data.live) || data.savedAt === null) return null;
+  const updated = `Last updated ${formatTime(new Date(data.savedAt))}.`;
+  if (data.connected) return { offline: false, message: `Updating. ${updated}` };
+  const status =
+    reconnect === "pending"
+      ? "Reconnecting…"
+      : reconnect === "failed"
+        ? "Couldn't reconnect."
+        : "Offline.";
+  return { offline: true, message: `${status} ${updated}` };
+}
+
 /** The stale-data notice over a ready inbox, or null while it is live and connected. */
 export function kinInboxNotice(
   state: KinReadyScreenState,
+  reconnect: KinReconnectStatus,
   formatTime: (date: Date) => string,
-): { readonly offline: boolean; readonly message: string } | null {
-  const { savedAt } = state.inbox;
-  if ((state.connected && state.inbox.live) || savedAt === null) return null;
-  const status = state.connected ? "Updating" : "Offline";
-  return {
-    offline: !state.connected,
-    message: `${status}. Last updated ${formatTime(new Date(savedAt))}.`,
-  };
+): KinStaleNotice | null {
+  return kinStaleNotice(
+    { connected: state.connected, live: state.inbox.live, savedAt: state.inbox.savedAt },
+    reconnect,
+    formatTime,
+  );
+}
+
+/**
+ * One connection state seen while Reconnect waits, from `before`, the state at the press. The
+ * attempt has failed once a connect attempt ends without connecting, or when the supervisor
+ * won't try: the device is offline or the host is blocked.
+ */
+export function kinReconnectStep(
+  attempted: boolean,
+  state: SupervisorConnectionState,
+  before: SupervisorConnectionState,
+): { readonly attempted: boolean; readonly outcome: "pending" | "connected" | "failed" } {
+  if (state.phase === "connected") return { attempted, outcome: "connected" };
+  if (state.phase === "connecting") return { attempted: true, outcome: "pending" };
+  const wontTry =
+    before.phase === "offline" ||
+    (state !== before && (state.phase === "offline" || state.phase === "blocked"));
+  return { attempted, outcome: attempted || wontTry ? "failed" : "pending" };
 }
 
 /** One VoiceOver label from its parts, each read as a sentence without doubling its end mark. */
@@ -115,9 +159,51 @@ export function kinSentences(parts: ReadonlyArray<string | null>): string {
     .join(" ");
 }
 
-/** The home row's VoiceOver label: "Kin. Payments test fixed. 3 unread." */
-export function kinHomeLabel(subtitle: string | null, unreadCount: number): string {
-  return kinSentences(["Kin", subtitle, unreadCount > 0 ? `${unreadCount} unread` : null]);
+/** Plain text cut near `max` characters, at a word where one is close, with an ellipsis. */
+export function kinSnippet(text: string, max = 80): string {
+  const chars = Array.from(text);
+  if (chars.length <= max) return text;
+  const cut = chars.slice(0, max).join("");
+  const space = cut.lastIndexOf(" ");
+  const kept = space > cut.length / 2 ? cut.slice(0, space) : cut;
+  return `${kept.replace(/[\s.,;:!?…-]+$/, "")}…`;
+}
+
+/** The newest chat by activity: rows put waiting chats first, so not the first row. */
+function latestRow(view: KinInboxView | null): KinInboxRow | null {
+  return (
+    view?.rows.reduce<KinInboxRow | null>(
+      (best, row) => (best === null || activityAt(row) > activityAt(best) ? row : best),
+      null,
+    ) ?? null
+  );
+}
+
+/** The chat the home row previews, when its second line is a message rather than a status. */
+function homePreviewRow(state: KinInboxScreenState, view: KinInboxView | null) {
+  if (view === null || state._tag !== "ready" || !state.connected) return null;
+  if (view.waitingCount > 0 || view.folds.working > 0) return null;
+  return latestRow(view);
+}
+
+/**
+ * The home row's VoiceOver label: "Kin, 3 unread. Tech lead, last message: Payments test fixed."
+ * The message is cut to about 80 characters so a long one doesn't hold VoiceOver on the row.
+ */
+export function kinHomeLabel(
+  state: KinInboxScreenState,
+  view: KinInboxView | null,
+  directory: KinDirectory,
+): string {
+  const unread = view?.unreadCount ?? 0;
+  const kin = unread > 0 ? `Kin, ${unread} unread` : "Kin";
+  const row = homePreviewRow(state, view);
+  if (row === null || row.chat.lastMessage === null) {
+    return kinSentences([kin, kinHomeSubtitle(state, view)?.replace(" · ", ", ") ?? null]);
+  }
+  const chat = kinChatRowView(row, directory);
+  const from = chat.author === "You" ? "last message from you" : "last message";
+  return kinSentences([kin, `${chat.title}, ${from}: ${kinSnippet(chat.preview)}`]);
 }
 
 /** The home row's second line. */
@@ -139,12 +225,7 @@ export function kinHomeSubtitle(
       return "Couldn't load chats";
     case "ready": {
       if (!state.connected) return "Offline";
-      // Rows put waiting chats first, so pick the newest by activity, not the first row.
-      const latest = view?.rows.reduce<KinInboxRow | null>(
-        (best, row) => (best === null || activityAt(row) > activityAt(best) ? row : best),
-        null,
-      );
-      return latest?.chat.lastMessage?.body ?? "No messages yet";
+      return kinMessagePreview(latestRow(view)?.chat.lastMessage ?? null);
     }
     default:
       return null;
@@ -209,6 +290,13 @@ export function kinPreviewText(body: string): string {
     .trim();
 }
 
+/** A chat's last message as one plain line for a list. */
+function kinMessagePreview(last: KinChatSummary["lastMessage"]): string {
+  if (last === null) return "No messages yet";
+  if (last.status === "deleted") return "Message deleted";
+  return kinPreviewText(last.body) || "Message";
+}
+
 export function kinChatRowView(row: KinInboxRow, directory: KinDirectory): KinChatRowView {
   const { chat } = row;
   const others = chat.members.filter(
@@ -229,12 +317,7 @@ export function kinChatRowView(row: KinInboxRow, directory: KinDirectory): KinCh
         : last.author._tag === "human" && directory.me.has(last.author.personId)
           ? "You"
           : null;
-  const preview =
-    last === null
-      ? "No messages yet"
-      : last.status === "deleted"
-        ? "Message deleted"
-        : kinPreviewText(last.body) || "Message";
+  const preview = kinMessagePreview(last);
   return {
     chatId: chat.chatId,
     title,

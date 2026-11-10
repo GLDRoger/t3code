@@ -40,12 +40,13 @@ import { ControlPill } from "../../components/ui/ControlPill";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ErrorBanner } from "../../components/ui/ErrorBanner";
 import { LoadingStrip } from "../../components/ui/LoadingStrip";
-import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { useBarOverlap, useContentTopInset } from "../../components/ui/useBarInset";
 import { useReduceMotionEnabled } from "../../lib/appState";
 import { deriveThreadFeedInitialContentInset } from "../../lib/layout";
 import { NativeScrollViewMarker } from "../../native/NativeScrollViewMarker";
+import { NativeStackScreenOptions } from "../../native/StackHeader";
+import { useNativeFontScale } from "../settings/appearance/useScaledTextRole";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import type { ComposerEditorHandle } from "../../native/T3ComposerEditor.types";
 import { appAtomRegistry } from "../../state/atom-registry";
@@ -61,6 +62,7 @@ import {
   kinDraftKey,
 } from "./components/KinComposer";
 import { KinFoldLine } from "./components/KinFoldLine";
+import { KinOfflineState, KinStaleNoticeView } from "./components/KinScreenState";
 import { KinIntro } from "./components/KinIntro";
 import {
   KinPresenceLine,
@@ -118,8 +120,10 @@ import {
   kinChatTitle,
   kinDirectAgentName,
   kinLevelsAgentId,
+  kinStaleNotice,
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import { useKinHostAt } from "./state/useKinHost";
+import { useKinReconnect } from "./state/useKinReconnect";
 import {
   kinReactionChips,
   kinReactionToggle,
@@ -225,6 +229,7 @@ function KinLiveChat(props: {
     <>
       <KinChatPushWatch environmentId={props.environmentId} chatId={props.chatId} />
       <KinChatPage
+        environmentId={props.environmentId}
         orgId={props.orgId}
         chatId={chatId ?? (props.chatId as KinChatId)}
         title={summary === undefined ? "Chat" : kinChatTitle(summary, viewer.agentNames)}
@@ -348,6 +353,12 @@ const livePresence = (state: KinChatScreenState): KinPresence | undefined =>
     ? state.chat.value.presence.at(-1)
     : undefined;
 
+// The glass bar's title size (GLASS_HEADER_OPTIONS) and UIKit's subtitle size. The bar is one
+// fixed height, so it stops growing where a two-line title and subtitle still fit.
+const KIN_BAR_TITLE_SIZE = 18;
+const KIN_BAR_SUBTITLE_SIZE = 12;
+const KIN_BAR_MAX_FONT_SCALE = 1.5;
+
 /** The bar's subtitle: presence while the lead works, else open tasks. Owns its own clock. */
 function KinChatAppBar(props: {
   readonly title: string;
@@ -358,12 +369,30 @@ function KinChatAppBar(props: {
 }) {
   const now = useKinPresenceNow(kinPresenceNeedsClock(props.presence));
   const subtitle = kinPresenceLine(props.presence, now)?.subtitle ?? props.tasks;
+  // The native bar sets fixed font sizes, so it follows Dynamic Type only through these.
+  const scale = useNativeFontScale(KIN_BAR_MAX_FONT_SCALE);
   return (
-    <AppBar title={props.title} subtitle={subtitle} onBack={props.onBack} actions={props.actions} />
+    <>
+      <AppBar
+        title={props.title}
+        subtitle={subtitle}
+        onBack={props.onBack}
+        actions={props.actions}
+      />
+      {/* Always set, so going back to the default size resets the bar. */}
+      <NativeStackScreenOptions
+        options={{
+          headerTitleStyle: { fontSize: KIN_BAR_TITLE_SIZE * scale, fontWeight: "800" },
+          headerSubtitleStyle: { fontSize: KIN_BAR_SUBTITLE_SIZE * scale },
+        }}
+      />
+    </>
   );
 }
 
 function KinChatPage(props: {
+  /** The route's host, for Reconnect while offline; unset in the dev fixture. */
+  readonly environmentId?: EnvironmentId;
   readonly orgId: string;
   readonly chatId: KinChatId;
   readonly title: string;
@@ -441,7 +470,11 @@ function KinChatPage(props: {
             ownsLead={props.ownsLead ?? false}
           />
         ) : (
-          <KinChatStateView state={state} onRetry={props.onRetry} />
+          <KinChatStateView
+            state={state}
+            environmentId={props.environmentId ?? null}
+            onRetry={props.onRetry}
+          />
         )}
       </ScreenContent>
       {state._tag === "loading" ? (
@@ -455,6 +488,7 @@ function KinChatPage(props: {
 
 function KinChatStateView(props: {
   readonly state: Exclude<KinChatScreenState, { readonly _tag: "ready" }>;
+  readonly environmentId: EnvironmentId | null;
   readonly onRetry: () => void;
 }) {
   const navigation = useNavigation();
@@ -464,13 +498,7 @@ function KinChatStateView(props: {
       case "loading":
         return null;
       case "offline":
-        return (
-          <EmptyState
-            variant="plain"
-            title="Kin is offline"
-            detail="This chat loads when the Kin environment reconnects."
-          />
-        );
+        return <KinOfflineState environmentId={props.environmentId} resource="This chat loads" />;
       case "noHost":
         return (
           <EmptyState
@@ -763,10 +791,12 @@ function KinChatFeed(props: {
 
   const transition = (event: KinFeedFollowEvent) =>
     setFollow((current) => resolveKinFeedFollow(current, event));
-  const notice =
-    (props.connected && props.chat.live) || props.chat.savedAt === null
-      ? null
-      : `${props.connected ? "Updating" : "Offline"}. Last updated ${offlineTime.format(new Date(props.chat.savedAt))}.`;
+  const reconnect = useKinReconnect(props.environmentId);
+  const notice = kinStaleNotice(
+    { connected: props.connected, live: props.chat.live, savedAt: props.chat.savedAt },
+    reconnect.status,
+    (date) => offlineTime.format(date),
+  );
 
   const loadEarlier = () => {
     const read = props.readHistory;
@@ -1000,9 +1030,10 @@ function KinChatFeed(props: {
   const noticeBar =
     notice === null ? null : (
       <View className="px-4 pb-3">
-        <Notice
-          {...(props.connected ? {} : { icon: "wifi.slash" as const })}
-          message={notice}
+        <KinStaleNoticeView
+          notice={notice}
+          status={reconnect.status}
+          reconnect={reconnect.reconnect}
           floating
         />
       </View>

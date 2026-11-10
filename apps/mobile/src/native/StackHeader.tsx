@@ -30,6 +30,8 @@ export type AppNativeStackNavigationOptions = Omit<
   readonly unstable_headerLeftItems?: unknown;
   readonly unstable_headerRightItems?: unknown;
   readonly unstable_headerSubtitle?: unknown;
+  /** Read by the iOS stack header (V5StackHeader). */
+  readonly headerSubtitleStyle?: { readonly fontSize?: number };
   readonly unstable_headerToolbarItems?: unknown;
   readonly unstable_navigationItemStyle?: unknown;
   readonly unstable_headerMinimizationBehavior?: unknown;
