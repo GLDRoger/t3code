@@ -697,8 +697,13 @@ function KinChatFeed(props: {
   // As in the thread feed: the composer overlays the feed, whose end inset tracks the composer's
   // measured height, safe area included, and the keyboard.
   const contentInsetEndAdjustment = useSharedValue(KIN_COMPOSER_COLLAPSED_HEIGHT + composerInset);
+  const [composerHeight, setComposerHeight] = useState(
+    KIN_COMPOSER_COLLAPSED_HEIGHT + composerInset,
+  );
+  const [listHeight, setListHeight] = useState(0);
   const onComposerLayout = (event: LayoutChangeEvent) => {
     contentInsetEndAdjustment.set(event.nativeEvent.layout.height);
+    setComposerHeight(event.nativeEvent.layout.height);
   };
   // Android can lose IME hide callbacks on backgrounding, as in the thread feed: hold the composer
   // down on resume until the keyboard reports again or the composer is focused.
@@ -806,6 +811,12 @@ function KinChatFeed(props: {
             entry,
           })),
         ];
+  // LegendList grows an empty list to its frame, under both insets, which hid the intro under the
+  // composer; the visible height ends it above the composer instead.
+  const emptyMinHeight =
+    rows.length === 0 && listHeight > 0
+      ? Math.max(0, listHeight - barOverlap - composerHeight)
+      : null;
   const followsEnd = kinFollowsEnd(follow);
   const unseen = followsEnd ? 0 : kinUnseenCount(messages, follow.seenSeq, props.viewer.personId);
   const loading = paging.request !== null;
@@ -1161,7 +1172,12 @@ function KinChatFeed(props: {
         scrollIndicatorInsets={{ top: barOverlap, bottom: 0 }}
         {...(barOverlap > 0 ? { contentInset: { top: barOverlap } } : {})}
         // The presence footer is the feed's last 32 pt, reserved even when empty.
-        contentContainerStyle={{ paddingTop: 8, paddingBottom: 4 }}
+        contentContainerStyle={{
+          paddingTop: 8,
+          paddingBottom: 4,
+          ...(emptyMinHeight === null ? {} : { minHeight: emptyMinHeight }),
+        }}
+        onLayout={(event) => setListHeight(event.nativeEvent.layout.height)}
         data={rows}
         keyExtractor={(row) => row.key}
         // A draft recycles into the agent bubble its message will take.
