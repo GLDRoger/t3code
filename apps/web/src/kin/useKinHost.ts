@@ -35,6 +35,11 @@ function readSavedHost(): EnvironmentId | null {
 }
 const savedHost = { id: typeof window === "undefined" ? null : readSavedHost() };
 
+/** This browser has reached a Kin host before. */
+export function hasSavedKinHost(): boolean {
+  return savedHost.id !== null;
+}
+
 const kinHostCandidates = (get: Atom.AtomContext): ReadonlyArray<KinHostCandidate> =>
   [...get(environmentPresentations.presentationsAtom)].map(([environmentId, presentation]) => ({
     environmentId,
@@ -51,7 +56,7 @@ const kinProbe = (get: Atom.AtomContext) => (environmentId: EnvironmentId) => {
 };
 const cachedOrgs = (environmentId: EnvironmentId) => lastOrgs.get(environmentId) ?? null;
 
-const kinHostAtom: Atom.Atom<KinHost> = Atom.make((get): KinHost => {
+export const kinHostAtom: Atom.Atom<KinHost> = Atom.make((get): KinHost => {
   if (!get(environmentCatalog.catalogValueAtom).isReady) return { _tag: "searching" };
   const host = resolveKinHost({
     candidates: kinHostCandidates(get),

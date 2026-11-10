@@ -543,6 +543,10 @@
       "types": "./src/kinPush.ts",
       "default": "./src/kinPush.ts"
     },
+    "./kin/kinListSwitch": {
+      "types": "./src/kin/kinListSwitch.ts",
+      "default": "./src/kin/kinListSwitch.ts"
+    },
     "./kin/kinLive": {
       "types": "./src/kin/kinLive.ts",
       "default": "./src/kin/kinLive.ts"
