@@ -2,8 +2,7 @@ import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 
 import {
-  AuthOrchestrationOperateScope,
-  AuthOrchestrationReadScope,
+  AuthKinChatScope,
   EnvironmentAuthorizationError,
   type AuthEnvironmentScope,
 } from "./auth.ts";
@@ -552,16 +551,17 @@ export const KinChatRpcs = [
   }),
 ] as const;
 
+// Chat is what a member's `kin:chat`-only session may use; membership is checked per chat.
 export const KIN_CHAT_RPC_SCOPES = {
-  [KIN_CHAT_WS_METHODS.orgsList]: AuthOrchestrationReadScope,
-  [KIN_CHAT_WS_METHODS.chatsSubscribe]: AuthOrchestrationReadScope,
-  [KIN_CHAT_WS_METHODS.chatsCreateDirect]: AuthOrchestrationOperateScope,
-  [KIN_CHAT_WS_METHODS.chatSubscribe]: AuthOrchestrationReadScope,
-  [KIN_CHAT_WS_METHODS.chatHistory]: AuthOrchestrationReadScope,
-  [KIN_CHAT_WS_METHODS.messagesSend]: AuthOrchestrationOperateScope,
-  [KIN_CHAT_WS_METHODS.messagesMarkRead]: AuthOrchestrationReadScope,
-  [KIN_CHAT_WS_METHODS.widgetsAct]: AuthOrchestrationOperateScope,
-  [KIN_CHAT_WS_METHODS.messagesReact]: AuthOrchestrationOperateScope,
+  [KIN_CHAT_WS_METHODS.orgsList]: AuthKinChatScope,
+  [KIN_CHAT_WS_METHODS.chatsSubscribe]: AuthKinChatScope,
+  [KIN_CHAT_WS_METHODS.chatsCreateDirect]: AuthKinChatScope,
+  [KIN_CHAT_WS_METHODS.chatSubscribe]: AuthKinChatScope,
+  [KIN_CHAT_WS_METHODS.chatHistory]: AuthKinChatScope,
+  [KIN_CHAT_WS_METHODS.messagesSend]: AuthKinChatScope,
+  [KIN_CHAT_WS_METHODS.messagesMarkRead]: AuthKinChatScope,
+  [KIN_CHAT_WS_METHODS.widgetsAct]: AuthKinChatScope,
+  [KIN_CHAT_WS_METHODS.messagesReact]: AuthKinChatScope,
 } as const satisfies Record<
   (typeof KIN_CHAT_WS_METHODS)[keyof typeof KIN_CHAT_WS_METHODS],
   AuthEnvironmentScope
