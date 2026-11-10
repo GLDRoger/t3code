@@ -33,6 +33,7 @@ import {
 } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { readPullRequestListPreferences } from "../pullRequest/pullRequestListPreferences";
+import { kinListAt } from "../../kin/kinListSwitch";
 import { useKinListSwitch, type KinListSwitch } from "../../kin/useKinListSwitch";
 import { isSidebarUtilityPage, useNavigateToMainApp } from "./mainAppLocation";
 import { SidebarThreadUndoNotice } from "./SidebarThreadUndoNotice";
@@ -284,8 +285,10 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   const navigate = useNavigate();
   const navigateToMainApp = useNavigateToMainApp();
   const { isMobile, setOpenMobile } = useSidebar();
+  // Kin is a list of its own, left through the brand mark, so it keeps the everyday footer.
   const isOnUtilityPage = useLocation({
-    select: (location) => isSidebarUtilityPage(location.pathname),
+    select: (location) =>
+      isSidebarUtilityPage(location.pathname) && kinListAt(location.pathname) !== "kin",
   });
   const pullRequestsSupported = usePullRequestsSupported();
   const closeMobileSidebar = () => {

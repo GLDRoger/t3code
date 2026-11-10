@@ -699,26 +699,37 @@ it.effect(
   () =>
     run(({ ctx, remote, workers }) =>
       Effect.gen(function* () {
+        // Each refusal says what is true and what the lead can still do, and never sends the
+        // owner off to change the lead's setup.
+        const honest = (refused: KinChatError, reason: KinChatError["reason"], truth: string) => {
+          assert.strictEqual(refused.reason, reason);
+          assert.include(refused.message, truth);
+          assert.include(refused.message, "Nothing started");
+          assert.include(refused.message, "You can still read repos, pull requests and CI");
+          assert.notMatch(refused.message, /tell the owner|worker project|add (it|a|the) /i);
+        };
         remote.state.environmentId = Option.none();
-        assert.include(yield* Effect.flip(workers.delegate(scope, delegateInput)), {
-          reason: "not_allowed",
-          message:
-            "This Kin host has no worker environment, so workers can't start. Tell the owner.",
-        });
+        honest(
+          yield* Effect.flip(workers.delegate(scope, delegateInput)),
+          "unavailable",
+          "this host's worker environment isn't set up",
+        );
         remote.state.environmentId = Option.some(workerEnv);
         const budget = Context.get(ctx.services, KinBudget);
         yield* ctx.sql`INSERT INTO kin_budget_limits (org_id, limits_json) VALUES (${ctx.orgId}, '{"leadUnits":10,"workerUnits":0}')`;
         assert.isFalse(yield* budget.admitWorker(ctx.orgId));
-        assert.strictEqual(
-          (yield* Effect.flip(workers.delegate(scope, delegateInput))).reason,
+        honest(
+          yield* Effect.flip(workers.delegate(scope, delegateInput)),
           "limit",
+          "Today's budget for coding work is used up",
         );
         yield* ctx.sql`UPDATE kin_budget_limits SET limits_json = '{"leadUnits":10,"workerUnits":10}' WHERE org_id = ${ctx.orgId}`;
         yield* pause(ctx.sql, ctx.orgId);
-        assert.include(yield* Effect.flip(workers.delegate(scope, delegateInput)), {
-          reason: "not_allowed",
-          message: "Kin is paused by the owner. Nothing new starts until they resume.",
-        });
+        honest(
+          yield* Effect.flip(workers.delegate(scope, delegateInput)),
+          "not_allowed",
+          "Kin is paused by the owner",
+        );
         yield* ctx.sql`DELETE FROM kin_org_state WHERE org_id = ${ctx.orgId}`;
 
         // Another lead in the same org: its workers are as foreign as another org's.
@@ -784,6 +795,26 @@ it.effect(
         assert.lengthOf(remote.tools("t3_thread_send"), 0);
         assert.lengthOf(remote.tools("t3_thread_interrupt"), 0);
         assert.lengthOf(yield* cards(ctx.sql, ctx.orgId), 0);
+      }),
+    ),
+);
+
+// The host's chats, 9-10 Nov 2026: with no worker environment, the Tech lead guessed its project
+// as "t3code", then "GLDRoger/t3code", heard only "Workers may only run in this lead's worker
+// projects", and asked the owner for two days to add one.
+it.effect.each(["t3code", "GLDRoger/t3code"])(
+  "with no worker environment, a lead naming %s hears that, not a fault in its own setup",
+  (named) =>
+    run(({ remote, workers }) =>
+      Effect.gen(function* () {
+        remote.state.environmentId = Option.none();
+        const refused = yield* Effect.flip(
+          workers.delegate(scope, { ...delegateInput, projectId: ProjectId.make(named) }),
+        );
+        assert.strictEqual(refused.reason, "unavailable");
+        assert.include(refused.message, "this host's worker environment isn't set up");
+        assert.notMatch(refused.message, /worker project|tell the owner/i);
+        assert.lengthOf(remote.calls, 0);
       }),
     ),
 );
@@ -1297,7 +1328,8 @@ it.effect("a project list that doesn't end, or doesn't advance, refuses after a 
     Effect.gen(function* () {
       remote.state.nextCursor = (cursor) => cursor;
       const stuck = yield* Effect.flip(workers.delegate(scope, delegateInput));
-      assert.include(stuck, { reason: "not_allowed" });
+      // A fault in the other server, not a permission.
+      assert.include(stuck, { reason: "unavailable" });
       assert.include(stuck.message, "didn't end");
       assert.lengthOf(remote.tools("t3_project_list"), 1);
       remote.state.nextCursor = (cursor) => cursor + 1;
@@ -1408,7 +1440,8 @@ it.effect("a project removed from the lead's list refuses new and follow-up work
       ] as ReadonlyArray<Effect.Effect<object, KinChatError>>) {
         const refused = yield* Effect.flip(attempt);
         assert.strictEqual(refused.reason, "not_allowed");
-        assert.include(refused.message, "worker projects");
+        assert.include(refused.message, "Nothing started");
+        assert.notMatch(refused.message, /tell the owner|worker project/i);
       }
       assert.lengthOf(remote.tools("t3_thread_launch"), 1);
       assert.lengthOf(remote.tools("t3_thread_send"), 0);

@@ -42,6 +42,7 @@ import {
   classifySegment,
   cutLabel,
   draftReplyText,
+  isEndCall,
   isToolItem,
   NOTE_MAX_CHARS,
   PHASE_LABELS,
@@ -86,7 +87,7 @@ const failedNotices: Record<FailedOutcome, { prefix: string; body: (lead: string
   },
 };
 
-type Outcome = "posted" | "note" | "silent" | "empty" | "withheld" | "overflow";
+type Outcome = "posted" | "note" | "silent" | "empty" | "withheld" | "overflow" | "dropped";
 type Segment = {
   readonly id: TurnItemId;
   ordinal: number;
@@ -112,6 +113,10 @@ type Wake = {
   readonly overflow: Array<string>;
   posted: number;
   chars: number;
+  // A segment of this wake-up reached the chat, or will with the overflow.
+  replied: boolean;
+  // Ordinal of the first kin_end call.
+  endedAt: number | null;
   // A post or withheld segment answered the lane, or nothing could have.
   answered: boolean;
   lastOutputAt: number;
@@ -345,6 +350,7 @@ const make = Effect.gen(function* () {
     if (yield* alreadySaid(wake, text).pipe(Effect.orElseSucceed(() => false))) {
       segment.outcome = "posted";
       wake.answered = true;
+      wake.replied = true;
       return yield* end(null);
     }
     // The last allowed message carries everything past the bound, joined at the run's end.
@@ -353,6 +359,7 @@ const make = Effect.gen(function* () {
       wake.chars + text.length > KIN_WAKEUP_CHAR_LIMIT
     ) {
       segment.outcome = "overflow";
+      wake.replied = true;
       wake.overflow.push(text);
       return yield* end(null);
     }
@@ -363,6 +370,7 @@ const make = Effect.gen(function* () {
         wake.posted++;
         wake.chars += text.length;
         wake.answered = true;
+        wake.replied = true;
         // Work after a reply is new work: its timer doesn't count against the answered message.
         wake.timerFrom = yield* Clock.currentTimeMillis;
         yield* stamp(wake, "posted_at");
@@ -388,7 +396,7 @@ const make = Effect.gen(function* () {
     next: SegmentNext | null,
   ) {
     if (segment.outcome !== null || !segment.complete) return;
-    const decision = classifySegment(segment.text, next);
+    const decision = afterReply(wake, segment) ? "dropped" : classifySegment(segment.text, next);
     if (decision === null) return;
     if (decision === "post" || decision === "note")
       segment.text = stripTrailingSilenceMarker(segment.text);
@@ -404,11 +412,23 @@ const make = Effect.gen(function* () {
         return;
       case "silent":
       case "empty":
+      case "dropped":
         segment.outcome = decision;
+        if (decision === "dropped")
+          yield* journal(wake, [`Dropped after kin_end: ${cutLabel(segment.text)}`]);
         if (segment.drafting)
           yield* presence.endDraft(wake.orgId, wake.lane.chatId, segment.id, null);
     }
   });
+
+  // A lead that replied and then called kin_end is done: text after it would answer twice.
+  const afterReply = (wake: Wake, segment: Segment) =>
+    wake.replied && wake.endedAt !== null && segment.ordinal > wake.endedAt;
+  const nextAfter = (wake: Wake, ordinal: number): SegmentNext | null => {
+    const tool = Math.min(...wake.tools.filter((tool) => tool > ordinal));
+    if (tool === Infinity) return null;
+    return tool === wake.endedAt ? "end" : "tool";
+  };
 
   const segmentFor = (wake: Wake, id: TurnItemId, ordinal: number, now: number) => {
     let segment = wake.segments.get(id);
@@ -444,6 +464,11 @@ const make = Effect.gen(function* () {
       if (segment.outcome !== null) return;
       segment.text = textOf(item);
       segment.ordinal = item.ordinal;
+      // Held back from its first token, so it never shows as a draft or a writing line.
+      if (afterReply(wake, segment)) {
+        segment.complete = !item.streaming;
+        return yield* decide(wake, segment, null);
+      }
       if (segment.text.trim() !== "") yield* stamp(wake, "first_token_at");
       if (item.streaming) {
         yield* show(wake, "writing", PHASE_LABELS.writing);
@@ -465,13 +490,14 @@ const make = Effect.gen(function* () {
         return;
       }
       segment.complete = true;
-      const later = wake.tools.some((ordinal) => ordinal > segment.ordinal) ? "tool" : null;
-      return yield* decide(wake, segment, later);
+      return yield* decide(wake, segment, nextAfter(wake, segment.ordinal));
     }
     if (item.type === "reasoning") return yield* show(wake, "thinking", PHASE_LABELS.thinking);
     if (!isToolItem(item)) return;
     if (!wake.tools.includes(item.ordinal)) wake.tools.push(item.ordinal);
-    for (const earlier of pendingBefore(wake, item.ordinal)) yield* decide(wake, earlier, "tool");
+    if (isEndCall(item)) wake.endedAt = Math.min(wake.endedAt ?? item.ordinal, item.ordinal);
+    for (const earlier of pendingBefore(wake, item.ordinal))
+      yield* decide(wake, earlier, isEndCall(item) ? "end" : "tool");
     if (item.ordinal < wake.latest) return;
     if (item.status === "pending" || item.status === "running" || item.status === "waiting") {
       const label = toolLabel(item);
@@ -534,6 +560,7 @@ const make = Effect.gen(function* () {
       .toSorted((a, b) => a.ordinal - b.ordinal);
     const now = yield* Clock.currentTimeMillis;
     for (const [index, item] of items.entries()) {
+      if (isEndCall(item)) wake.endedAt = Math.min(wake.endedAt ?? item.ordinal, item.ordinal);
       if (item.type !== "assistant_message" || item.streaming) continue;
       const segment = segmentFor(wake, item.id, item.ordinal, now);
       if (segment.outcome !== null) continue;
@@ -545,7 +572,11 @@ const make = Effect.gen(function* () {
       yield* decide(
         wake,
         segment,
-        following === undefined ? "end" : following.type === "assistant_message" ? "text" : "tool",
+        following === undefined || isEndCall(following)
+          ? "end"
+          : following.type === "assistant_message"
+            ? "text"
+            : "tool",
       );
     }
   });
@@ -787,6 +818,8 @@ const make = Effect.gen(function* () {
         overflow: [],
         posted: 0,
         chars: 0,
+        replied: false,
+        endedAt: null,
         answered: false,
         lastOutputAt: now,
         state: "starting",
