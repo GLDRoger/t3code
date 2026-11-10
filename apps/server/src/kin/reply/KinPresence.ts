@@ -11,6 +11,9 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as SqlClient from "effect/sql/SqlClient";
+
+import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 
 /** Draft deltas go out at most this often per chat. */
@@ -229,3 +232,34 @@ const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(KinPresence, make);
+
+/** Chats where a human message, card tap or waking reaction to the agent is queued and ready. */
+const waitingChats = Effect.fn("KinPresence.waitingChats")(
+  function* (orgId: KinOrgId, agentId: KinAgentId) {
+    const sql = yield* SqlClient.SqlClient;
+    const now = yield* Clock.currentTimeMillis;
+    const rows = yield* sql<{ chatId: string }>`
+      SELECT DISTINCT json_extract(json, '$.chatId') AS "chatId" FROM kin_events
+      WHERE org_id = ${orgId} AND agent_id = ${agentId} AND state = 'queued'
+        AND tag IN ('chat.message', 'widget.action', 'chat.reaction')
+        AND json_extract(json, '$.provenance._tag') = 'human'
+        AND (not_before IS NULL OR not_before <= ${now})
+      ORDER BY 1`;
+    return new Set(rows.map((row) => KinChatId.make(row.chatId)));
+  },
+  Effect.mapError(toPersistenceSqlError("KinPresence.waitingChats")),
+);
+
+/**
+ * After queued events left the queue without a wake-up taking their chat (expired, withdrawn,
+ * or a wake-up ended): `seen` stays only where something still waits, and returns there.
+ */
+export const syncSeen = Effect.fn("KinPresence.syncSeen")(
+  function* (presence: KinPresence["Service"], orgId: KinOrgId, agentId: KinAgentId) {
+    const waiting = yield* waitingChats(orgId, agentId);
+    yield* presence.clearSeen(orgId, agentId, waiting);
+    const now = yield* Clock.currentTimeMillis;
+    for (const chatId of waiting) yield* presence.seen(orgId, chatId, agentId, now);
+  },
+  Effect.catchCause((cause) => Effect.logWarning("Kin seen sync failed", { cause })),
+);

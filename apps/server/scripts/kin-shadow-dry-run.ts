@@ -69,6 +69,9 @@ import * as RoutineContent from "../src/kin/lead/RoutineContent.ts";
 import * as WakeupRunner from "../src/kin/lead/WakeupRunner.ts";
 import { orchestrationStack } from "../src/kin/lead/WakeupRunner.testkit.ts";
 import * as Workers from "../src/kin/lead/Workers.ts";
+import * as WorkerEnvironment from "../src/kin/lead/workerEnvironment.ts";
+import * as WorkerTracker from "../src/kin/lead/WorkerTracker.ts";
+import * as RepositoryIdentityResolver from "../src/project/RepositoryIdentityResolver.ts";
 import { KinLeadToolkit } from "../src/kin/lead/mcp/tools.ts";
 import { handlers as leadHandlers } from "../src/kin/lead/mcp/handlers.ts";
 import { KinChatToolkit, handlers as chatHandlers } from "../src/kin/mcp/KinChatToolkit.ts";
@@ -570,8 +573,24 @@ export const runDryRun = Effect.fn("KinDryRun.run")(
         McpHttpServer.toolkitRegistration(KinChatToolkit, chatHandlers),
         KinApprovalsMcp.registrationWith(facts),
       ).pipe(Layer.provideMerge(McpHttpServer.layerInProcessMcpServer));
+      // The dry run starts no worker: with no worker environment, kin_delegate at L2 is refused.
+      const noWorkers = Layer.mergeAll(
+        Layer.succeed(
+          WorkerEnvironment.KinWorkerEnvironment,
+          WorkerEnvironment.KinWorkerEnvironment.of({
+            environmentId: Option.none(),
+            call: Effect.fn("KinDryRun.workerEnvironmentCall")(function* () {
+              return yield* Effect.die("The dry run starts no workers.");
+            }),
+            stopServer: Effect.die("The dry run starts no workers."),
+            startServer: Effect.die("The dry run starts no workers."),
+          }),
+        ),
+        Layer.mock(WorkerTracker.WorkerTracker)({}),
+        Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({}),
+      );
       const lead = Layer.mergeAll(WakeupRunner.layer, tools).pipe(
-        Layer.provideMerge(Workers.layer),
+        Layer.provideMerge(Workers.layer.pipe(Layer.provide(noWorkers))),
         Layer.provideMerge(LeadMemory.layer),
         Layer.provideMerge(writer),
         Layer.provideMerge(RoutineContent.layer.pipe(Layer.provide(github))),
@@ -663,7 +682,7 @@ export const runDryRun = Effect.fn("KinDryRun.run")(
         let wakeups = 0;
         const drain = Effect.fn("KinDryRun.drain")(function* (limit: number) {
           while (true) {
-            const next = yield* queue.nextReady(orgId);
+            const next = (yield* queue.readyLeads(orgId))[0];
             if (next === undefined || !Number.isFinite(next.readyAt) || next.readyAt > limit)
               return;
             if (++wakeups > 200)

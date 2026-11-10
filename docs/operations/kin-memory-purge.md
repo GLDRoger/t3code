@@ -14,7 +14,7 @@ The marker and the `purge-plans/*.tombstones.json` files live beside the lead's 
 
 Delete the marker by hand only when `reconcile` keeps answering `unknown` and you have checked the remote yourself. First stop the T3 server, or confirm that no purge or `reconcile` for the org is running: both hold the memory writer lock and write these paths. Deleting the marker tells Kin that no local copy of the old history will be pushed again, so first delete everything under `<org path>` that can hold it:
 
-- `memory` and `memory-read` (the writer and read checkouts);
+- `memory`, `memory-read` and each lead's `memory-read-<agentId>` (the writer and read checkouts);
 - `dreams` (dream scratch copies);
 - any `memory.clone-*` (a clone a crash left half-finished);
 - `purge-scratch` and any `purge-scratch/mirror-*` inside it (the purge's rewritten bare clone, which also holds old objects).

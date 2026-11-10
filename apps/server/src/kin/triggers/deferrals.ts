@@ -27,7 +27,7 @@ import * as Repository from "../chat/KinChatRepository.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
-import { WorkerLaunchGate } from "../lead/Workers.ts";
+import { workersConfigured } from "../lead/workerEnvironment.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as MemoryWriter from "../memory/MemoryWriter.ts";
@@ -66,6 +66,7 @@ export function planDeferral(
   const dueAt = Number.isFinite(due) ? due : null;
   const armed =
     item.kind === "deferral" &&
+    item.every === undefined &&
     item.status === "open" &&
     item.invalid_at === null &&
     item.superseded_by === null &&
@@ -87,6 +88,8 @@ export const DeferralSnapshot = Schema.Struct({
   github: Schema.optional(Schema.NullOr(Schema.Array(GithubLinkState))),
   /** The re-armed due fire's instant while the run is in `grace`. */
   graceEndsAt: Schema.optional(Schema.Number),
+  /** The re-armed due fire's instant while a reminder is `snoozed`. */
+  snoozedUntil: Schema.optional(Schema.Number),
 });
 export type DeferralSnapshot = typeof DeferralSnapshot.Type;
 export const deferralSnapshot = (
@@ -310,7 +313,7 @@ export const makeDeferralCards = Effect.gen(function* () {
   return { write, publish };
 });
 
-const hex = (value: string) =>
+export const hex = (value: string) =>
   Array.from(new TextEncoder().encode(value), (byte) => byte.toString(16).padStart(2, "0")).join(
     "",
   );
@@ -492,7 +495,7 @@ const make = Effect.gen(function* () {
             const dueAt = Date.parse(card.dueAt);
             if (yield* (yield* KinDeferralStopSwitch).isStopped(orgId))
               return yield* Effect.fail("stopped" as const);
-            if (!(yield* WorkerLaunchGate)) return yield* Effect.fail("workers_blocked" as const);
+            if (!(yield* workersConfigured)) return yield* Effect.fail("workers_blocked" as const);
             const lead = yield* deferralLead(sql, orgId, item.head.chat);
             if (lead === undefined || !startsAtLevel(lead.level))
               return yield* Effect.fail("below_l2" as const);

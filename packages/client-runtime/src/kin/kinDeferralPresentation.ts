@@ -1,6 +1,8 @@
 import {
   KinChatError,
   KinDeferralCard,
+  type KinReminderCardAction,
+  type KinScheduledTaskCardAction,
   type KinWidget,
   type KinWidgetsActInput,
 } from "@t3tools/contracts";
@@ -17,8 +19,23 @@ const KIN_UNDONE_TEXT = "Undone. Kin won't act on this.";
 export const KIN_UNDO_TOO_LATE_TEXT = "Too late to undo: Kin already acted on this.";
 
 /** The ids the host takes for each phase (`actionsFor` in the server's deferrals). */
-export type KinDeferralActionId = "undo" | "change" | "remind" | "start_now" | "monday" | "cancel";
-export type KinDeferralPhase = "confirmed" | "heads_up" | "asked" | "started" | "closed";
+export type KinDeferralActionId =
+  | "undo"
+  | "change"
+  | "remind"
+  | "start_now"
+  | "monday"
+  | "cancel"
+  | KinReminderCardAction
+  | KinScheduledTaskCardAction;
+export type KinDeferralPhase =
+  | "confirmed"
+  | "heads_up"
+  | "asked"
+  | "started"
+  | "closed"
+  | "reminder"
+  | "scheduled";
 
 export interface KinDeferralAction {
   readonly id: KinDeferralActionId;
@@ -50,7 +67,7 @@ const then: Record<KinDeferralCard["onDue"], string> = {
   chase: "I'll chase it then.",
 };
 
-const ACTIONS: Record<KinDeferralActionId, KinDeferralAction> = {
+export const KIN_DEFERRAL_ACTIONS: Record<KinDeferralActionId, KinDeferralAction> = {
   undo: {
     id: "undo",
     label: "Undo",
@@ -87,9 +104,67 @@ const ACTIONS: Record<KinDeferralActionId, KinDeferralAction> = {
     accessibilityLabel: "Cancel this deferral",
     tone: "secondary",
   },
+  done: {
+    id: "done",
+    label: "Done",
+    accessibilityLabel: "Mark this reminder done",
+    tone: "secondary",
+  },
+  snooze_10m: {
+    id: "snooze_10m",
+    label: "Snooze 10 min",
+    accessibilityLabel: "Snooze this reminder for 10 minutes",
+    tone: "secondary",
+  },
+  snooze_1h: {
+    id: "snooze_1h",
+    label: "Snooze 1 h",
+    accessibilityLabel: "Snooze this reminder for an hour",
+    tone: "secondary",
+  },
+  snooze_tomorrow: {
+    id: "snooze_tomorrow",
+    label: "Tomorrow 9:00",
+    accessibilityLabel: "Snooze this reminder to tomorrow at 9:00",
+    tone: "secondary",
+  },
+  run_now: {
+    id: "run_now",
+    label: "Run now",
+    accessibilityLabel: "Run this scheduled task now",
+    tone: "secondary",
+  },
+  pause: {
+    id: "pause",
+    label: "Pause",
+    accessibilityLabel: "Pause this scheduled task",
+    tone: "secondary",
+  },
+  resume: {
+    id: "resume",
+    label: "Resume",
+    accessibilityLabel: "Resume this scheduled task",
+    tone: "secondary",
+  },
+  edit: {
+    id: "edit",
+    label: "Edit",
+    accessibilityLabel: "Edit this scheduled task with your lead",
+    tone: "secondary",
+  },
+  delete: {
+    id: "delete",
+    label: "Delete",
+    accessibilityLabel: "Delete this scheduled task",
+    tone: "secondary",
+  },
 };
 
-const DECISION_ACTIONS = [ACTIONS.start_now, ACTIONS.monday, ACTIONS.cancel];
+const DECISION_ACTIONS = [
+  KIN_DEFERRAL_ACTIONS.start_now,
+  KIN_DEFERRAL_ACTIONS.monday,
+  KIN_DEFERRAL_ACTIONS.cancel,
+];
 
 // Whole formatted strings only: Hermes leaves out `hour` and `minute` from `formatToParts`.
 const formatters = new Map<string, { date: Intl.DateTimeFormat; time: Intl.DateTimeFormat }>();
@@ -143,8 +218,8 @@ function span(ms: number): string {
   return days === 1 ? "1 day" : `${days} days`;
 }
 
-/** "due" counts down to the due time; "start" to when a heads-up card starts the work. */
-export type KinCountdownKind = "due" | "start";
+/** "due" counts down to the due time; "start" to when a heads-up card starts the work; "run" to a scheduled task's next run. */
+export type KinCountdownKind = "due" | "start" | "run";
 
 /** The countdown line. `nowMs` comes from the minute tick, so this changes at most once a minute. */
 export function kinDeferralCountdown(
@@ -153,6 +228,7 @@ export function kinDeferralCountdown(
   kind: KinCountdownKind = "due",
 ): string {
   const remaining = targetMs - nowMs;
+  if (kind === "run") return remaining <= 0 ? "Running soon" : `Next run in ${span(remaining)}`;
   const verb = kind === "due" ? "Due" : "Starting";
   return remaining <= 0 ? `${verb} now` : `${verb} in ${span(remaining)}`;
 }
@@ -183,7 +259,7 @@ function cardBody(card: KinDeferralCard, timeZone: string | undefined): CardBody
         ]),
         countdown: { to: dueMs, kind: "due" },
         // The host takes only Undo here until its owner-tap dispatcher lands for Change and Just remind me.
-        actions: [ACTIONS.undo],
+        actions: [KIN_DEFERRAL_ACTIONS.undo],
       };
     case "heads_up": {
       // The host's text repeats the start time in the owner's zone, so the local lines replace it.
@@ -363,9 +439,21 @@ export interface KinCardStatus {
   readonly holding: boolean;
 }
 
+// Kin finishes these taps itself, so the card says what happened rather than waiting on the lead.
+const SERVER_DONE: Partial<Record<KinDeferralActionId, string>> = {
+  done: "Done.",
+  snooze_10m: "Snoozed.",
+  snooze_1h: "Snoozed.",
+  snooze_tomorrow: "Snoozed.",
+  run_now: "Starting a run now.",
+  pause: "Paused.",
+  resume: "Resumed.",
+  delete: "Deleted.",
+};
+
 /**
- * Change writes nothing on the host, so the card stays usable after it. Every other action
- * rewrites or closes the card, so the buttons hold until that new revision arrives.
+ * Change and Edit write nothing on the host, so the card stays usable after them. Every other
+ * action rewrites or closes the card, so the buttons hold until that new revision arrives.
  */
 export function kinCardStatusAfter(
   outcome: Exclude<KinActionOutcome, { readonly status: "ignored" }>,
@@ -373,13 +461,11 @@ export function kinCardStatusAfter(
   revision: number,
 ): KinCardStatus {
   if (outcome.status === "failed") return { revision, notice: outcome.notice, holding: false };
-  if (actionId === "change")
+  if (actionId === "change" || actionId === "edit")
     return { revision, notice: { kind: "sent", text: KIN_CHANGE_SENT_TEXT }, holding: false };
-  return {
-    revision,
-    notice: { kind: "sent", text: actionId === "undo" ? KIN_UNDONE_TEXT : KIN_SENT_CARD_TEXT },
-    holding: true,
-  };
+  const text =
+    actionId === "undo" ? KIN_UNDONE_TEXT : (SERVER_DONE[actionId] ?? KIN_SENT_CARD_TEXT);
+  return { revision, notice: { kind: "sent", text }, holding: true };
 }
 
 /** A status raised on an older revision no longer describes the card. */

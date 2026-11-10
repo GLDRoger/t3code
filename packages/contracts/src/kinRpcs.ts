@@ -27,6 +27,7 @@ import {
   KinGithubWebhookSecretInput,
   KinGithubWebhookSetup,
   KinGithubWebhookSetupInput,
+  KinGithubWebhookStatus,
   KinOwnerTimeZone,
   KinOwnerTimeZoneGetInput,
 } from "./kinTriggers.ts";
@@ -87,6 +88,11 @@ export const KinGithubWebhookRpcs = [
     success: Schema.Struct({}),
     error: KinError,
   }),
+  Rpc.make("kin.webhooks.github.status", {
+    payload: KinGithubWebhookOrgInput,
+    success: KinGithubWebhookStatus,
+    error: KinError,
+  }),
 ] as const;
 // Owner only: the zone routines, deferrals and notices use. Unset reads as UTC.
 const KinTimeZoneRpcs = [
@@ -137,6 +143,8 @@ export const KIN_RPC_SCOPES = {
   "kin.webhooks.github.setSecret": AuthSettingsWriteScope,
   "kin.webhooks.github.rotate": AuthSettingsWriteScope,
   "kin.webhooks.github.remove": AuthSettingsWriteScope,
+  // Owner only like the rest: the URL carries the hook's token.
+  "kin.webhooks.github.status": AuthSettingsWriteScope,
 } as const;
 
 export const KIN_RPC_AGGREGATES = {
@@ -150,6 +158,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.orgs.list": "kin-chat",
   "kin.chats.subscribe": "kin-chat",
   "kin.chats.createDirect": "kin-chat",
+  "kin.chats.mute": "kin-chat",
   "kin.chat.subscribe": "kin-chat",
   "kin.chat.history": "kin-chat",
   "kin.messages.send": "kin-chat",
@@ -163,7 +172,6 @@ export const KIN_RPC_AGGREGATES = {
   "kin.approvals.reject": "kin-approvals",
   "kin.approvals.keyChallenge": "kin-approvals",
   "kin.approvals.registerKey": "kin-approvals",
-  "kin.approvals.confirmKey": "kin-approvals",
   "kin.approvals.listKeys": "kin-approvals",
   "kin.approvals.revokeKey": "kin-approvals",
   "kin.audit.list": "kin-approvals",
@@ -184,4 +192,5 @@ export const KIN_RPC_AGGREGATES = {
   "kin.webhooks.github.setSecret": "kin-webhooks",
   "kin.webhooks.github.rotate": "kin-webhooks",
   "kin.webhooks.github.remove": "kin-webhooks",
+  "kin.webhooks.github.status": "kin-webhooks",
 } as const;

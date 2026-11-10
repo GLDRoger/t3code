@@ -408,6 +408,15 @@ export const KinApprovalView = Schema.Union([
   Schema.TaggedStruct("full", {
     action: KinPendingAction,
     canApprove: Schema.Literal(true),
+    /** Display names the server looked up: the lead it concerns, and `afterNonOwnerMessage`'s author. */
+    leadName: Schema.optional(KinText),
+    afterNonOwnerName: Schema.optional(KinText),
+    /**
+     * For `register_approver_key`, present only while the server vouches for the new key's record
+     * (registration's pending seal verifies): its device label and attested hardware.
+     */
+    keyDeviceLabel: Schema.optional(KinText),
+    keyHardware: Schema.optional(Schema.Literals(["secure_enclave", "strongbox", "tee"])),
   }),
   Schema.TaggedStruct("redacted", {
     actionId: KinActionId,
@@ -422,6 +431,17 @@ export const KinApprovalView = Schema.Union([
   }),
 ]);
 export type KinApprovalView = typeof KinApprovalView.Type;
+
+// One approval card per action, so a client reads the action from a waiting item's widget id.
+const KIN_APPROVAL_WIDGET_PREFIX = "kin-approval:";
+export const kinApprovalWidgetId = (actionId: KinActionId): string =>
+  `${KIN_APPROVAL_WIDGET_PREFIX}${actionId}`;
+const isKinActionId = Schema.is(KinActionId);
+export const kinApprovalActionIdOf = (widgetId: string): KinActionId | null => {
+  if (!widgetId.startsWith(KIN_APPROVAL_WIDGET_PREFIX)) return null;
+  const actionId = widgetId.slice(KIN_APPROVAL_WIDGET_PREFIX.length);
+  return isKinActionId(actionId) ? actionId : null;
+};
 
 export const KinApprovalListEvent = Schema.Union([
   Schema.TaggedStruct("snapshot", { actions: Schema.Array(KinApprovalView) }),
@@ -498,14 +518,15 @@ export const KinApprovalsKeyInput = Schema.Struct({
   thumbprint: KinKeyThumbprint,
 });
 export type KinApprovalsKeyInput = typeof KinApprovalsKeyInput.Type;
-export const KinApprovalsConfirmKeyInput = Schema.Struct({
-  ...KinApprovalsKeyInput.fields,
-  code: pattern(/^\d{6}$/, "a 6-digit code"),
-});
-export type KinApprovalsConfirmKeyInput = typeof KinApprovalsConfirmKeyInput.Type;
 export const KinApprovalsOrgInput = Schema.Struct({ orgId: KinOrgId });
 export type KinApprovalsOrgInput = typeof KinApprovalsOrgInput.Type;
-export const KinApprovalsListKeysResult = Schema.Struct({ keys: Schema.Array(KinApproverKey) });
+export const KinApprovalsListKeysResult = Schema.Struct({
+  keys: Schema.Array(KinApproverKey),
+  /** Pending `register_approver_key` actions: a new phone an active one has to approve. */
+  enrolments: Schema.optional(
+    Schema.Array(Schema.Struct({ thumbprint: KinKeyThumbprint, actionId: KinActionId })),
+  ),
+});
 export type KinApprovalsListKeysResult = typeof KinApprovalsListKeysResult.Type;
 
 export const KinAuditListInput = Schema.Struct({
@@ -544,7 +565,6 @@ export class KinApprovalError extends Schema.TaggedError<KinApprovalError>()("Ki
       "not_a_lead",
       "bad_challenge",
       "bad_code",
-      "not_local",
       "unattested",
     ]),
   ]),
@@ -559,7 +579,6 @@ export const KIN_APPROVAL_WS_METHODS = {
   reject: "kin.approvals.reject",
   keyChallenge: "kin.approvals.keyChallenge",
   registerKey: "kin.approvals.registerKey",
-  confirmKey: "kin.approvals.confirmKey",
   listKeys: "kin.approvals.listKeys",
   revokeKey: "kin.approvals.revokeKey",
   auditList: "kin.audit.list",
@@ -605,11 +624,6 @@ export const KinApprovalRpcs = [
     success: KinApprovalsRegisterKeyResult,
     error,
   }),
-  Rpc.make(KIN_APPROVAL_WS_METHODS.confirmKey, {
-    payload: KinApprovalsConfirmKeyInput,
-    success: KinApproverKey,
-    error,
-  }),
   Rpc.make(KIN_APPROVAL_WS_METHODS.listKeys, {
     payload: KinApprovalsOrgInput,
     success: KinApprovalsListKeysResult,
@@ -641,7 +655,6 @@ export const KIN_APPROVAL_RPC_SCOPES = {
   [KIN_APPROVAL_WS_METHODS.reject]: AuthOrchestrationOperateScope,
   [KIN_APPROVAL_WS_METHODS.keyChallenge]: AuthAccessWriteScope,
   [KIN_APPROVAL_WS_METHODS.registerKey]: AuthAccessWriteScope,
-  [KIN_APPROVAL_WS_METHODS.confirmKey]: AuthAccessWriteScope,
   [KIN_APPROVAL_WS_METHODS.listKeys]: AuthAccessWriteScope,
   [KIN_APPROVAL_WS_METHODS.revokeKey]: AuthAccessWriteScope,
   [KIN_APPROVAL_WS_METHODS.auditList]: AuthAccessWriteScope,

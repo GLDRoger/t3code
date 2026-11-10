@@ -14,6 +14,7 @@ import {
   KinPromotionCard,
   KinShadowReviewCard,
   KinWidgetId,
+  kinApprovalWidgetId,
   RpcScopeAuthorization,
   WsRpcGroup,
   WS_METHODS,
@@ -24,6 +25,8 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
+import * as Stream from "effect/Stream";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcTest from "effect/rpc/RpcTest";
 import * as Schema from "effect/Schema";
@@ -36,6 +39,7 @@ import * as Audit from "../approvals/Audit.ts";
 import { makeSetLevelHandler } from "../approvals/handlers/setLevel.ts";
 import * as PendingActions from "../approvals/PendingActions.ts";
 import * as Chat from "../chat/layer.ts";
+import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
@@ -699,11 +703,40 @@ it.effect("a raise applies only through the claimed set_level action its own own
 it.effect("the executor applies an approved raise on a host without GitHub configured", () =>
   Effect.gen(function* () {
     const ctx = yield* seed;
-    const { lead, client, widget, level, pending, sign } = ctx;
+    const { lead, client, widget, level, pending, sign, services, direct, owner, sql } = ctx;
     yield* eligible(ctx);
+    const events = yield* Context.get(services, KinChatHub).subscribeAll;
     const { actionId } = yield* client["kin.levels.raise"]({ ...lead, level: "L1" });
+    // The raise waits on the owner as an approval card in the lead's direct chat.
+    const approvalCard = (closed: boolean) =>
+      events.pipe(
+        Stream.filterMap((event) =>
+          event.type === "widget.updated" &&
+          event.widget.widgetId === kinApprovalWidgetId(actionId) &&
+          (event.widget.closedAt !== null) === closed
+            ? Result.succeed(event.widget)
+            : Result.failVoid,
+        ),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+      );
+    const waiting = sql<{ person: string; resolution: string | null }>`
+      SELECT person_id AS person, resolution FROM kin_waiting
+      WHERE widget_id = ${kinApprovalWidgetId(actionId)} AND reason = 'approval'`;
+    assert.deepInclude(yield* approvalCard(false), {
+      chatId: direct.chatId,
+      type: "approval",
+      awaiting: [owner.personId],
+      state: { actionId, revision: 0, state: "awaiting_approval" },
+    });
+    assert.deepStrictEqual(yield* waiting, [{ person: owner.personId, resolution: null }]);
     // Approved only: the production worker claims and runs it, with no credential check.
     yield* sign(actionId, { claim: false });
+    assert.deepInclude(yield* approvalCard(true), {
+      awaiting: [],
+      state: { actionId, revision: 0, state: "approved" },
+    });
+    assert.deepStrictEqual(yield* waiting, [{ person: owner.personId, resolution: "approved" }]);
     yield* TestClock.adjust("1 second");
     assert.deepInclude(Option.getOrThrow(yield* pending.get({ orgId: lead.orgId, actionId })), {
       state: "succeeded",
@@ -711,7 +744,7 @@ it.effect("the executor applies an approved raise on a host without GitHub confi
     assert.strictEqual(yield* level, "L1");
     const card = yield* widget(`promotion:${agentId}:L1`);
     assert.deepInclude(card && decodePromotion(card.state), { status: "raised" });
-  }).pipe(Effect.provide(root)),
+  }).pipe(Effect.scoped, Effect.provide(root)),
 );
 
 it.effect("lowering withdraws the raises it overtook and shows what stays open", () =>

@@ -286,7 +286,10 @@ describe("KinEventQueue", () => {
       yield* queue.enqueue(yield* event("ready", "routine", "a", "lead-a2"));
       yield* sql`UPDATE kin_events SET not_before = 300000 WHERE event_id = 'deferred'`;
       yield* TestClock.adjust("20 seconds");
-      assert.strictEqual((yield* queue.nextReady(orgId))?.agentId, "lead-a2");
+      assert.deepStrictEqual(
+        (yield* queue.readyLeads(orgId)).map((lead) => lead.agentId),
+        ["lead-a2", "lead-a"],
+      );
       const changed = yield* queue.changes(orgId);
       const signal = yield* changed.pipe(Effect.forkChild);
       yield* sql`UPDATE kin_agents SET retired_at = '2026-11-07T00:00:00.000Z' WHERE agent_id = 'lead-a2'`;
@@ -296,7 +299,10 @@ describe("KinEventQueue", () => {
       assert.deepStrictEqual(yield* sql`SELECT state FROM kin_events WHERE event_id = 'ready'`, [
         { state: "expired" },
       ]);
-      assert.strictEqual((yield* queue.nextReady(orgId))?.agentId, "lead-a");
+      assert.deepStrictEqual(
+        (yield* queue.readyLeads(orgId)).map((lead) => lead.agentId),
+        ["lead-a"],
+      );
     }).pipe(Effect.provide(layer)),
   );
 
@@ -767,16 +773,18 @@ describe("KinEventQueue", () => {
   );
 
   it.effect(
-    "holds one writer per organization across the caller scope while other organizations proceed",
+    "holds one writer per lead across the caller scope while other leads and organizations proceed",
     () =>
       Effect.gen(function* () {
         yield* seed();
+        yield* seed("a", "lead-a2");
         yield* seed("b");
         const queue = yield* KinEventQueue.KinEventQueue;
         const sql = yield* SqlClient.SqlClient;
         const acquired = yield* Deferred.make<void>();
         const release = yield* Deferred.make<void>();
         yield* queue.enqueue(yield* event("a-first"));
+        yield* queue.enqueue(yield* event("a2-first", "github", "a", "lead-a2"));
         yield* queue.enqueue(yield* event("b-first", "github", "b"));
         yield* TestClock.adjust("20 seconds");
         const first = yield* Effect.scoped(
@@ -798,10 +806,19 @@ describe("KinEventQueue", () => {
           (yield* Fiber.join(other)).map((entry) => entry.eventId),
           ["b-first"],
         );
+        const otherLead = yield* Effect.scoped(queue.claim(input("a2-first", "a", "lead-a2"))).pipe(
+          Effect.forkChild,
+        );
+        assert.deepStrictEqual(
+          (yield* Fiber.join(otherLead)).map((entry) => entry.eventId),
+          ["a2-first"],
+        );
+        yield* finish("a2-first");
         yield* TestClock.adjust("20 seconds");
-        assert.deepStrictEqual(yield* sql`SELECT wakeup_id FROM kin_wakeups WHERE org_id = 'a'`, [
-          { wakeup_id: "a-first" },
-        ]);
+        assert.deepStrictEqual(
+          yield* sql`SELECT wakeup_id FROM kin_wakeups WHERE org_id = 'a' AND status = 'running' ORDER BY wakeup_id`,
+          [{ wakeup_id: "a-first" }],
+        );
         yield* Deferred.succeed(release, undefined);
         yield* Fiber.join(first);
         assert.deepStrictEqual(
@@ -822,37 +839,35 @@ describe("KinEventQueue", () => {
       }).pipe(Effect.provide(layer)),
   );
 
-  it.effect(
-    "wakes empty queues on enqueue and releases the organization permit on interruption",
-    () =>
-      Effect.gen(function* () {
-        yield* seed();
-        const queue = yield* KinEventQueue.KinEventQueue;
-        const cancelled = yield* Effect.scoped(queue.claim(input("cancelled"))).pipe(
-          Effect.forkChild,
-        );
-        yield* seed("a", "lead-a2");
-        yield* queue.enqueue(yield* event("other-lead", "github", "a", "lead-a2"));
-        const otherLead = yield* Effect.scoped(
-          queue.claim(input("other-lead", "a", "lead-a2")),
-        ).pipe(Effect.forkChild);
-        yield* TestClock.adjust("20 seconds");
-        assert.isDefined(otherLead.pollUnsafe());
-        assert.deepStrictEqual(
-          (yield* Fiber.join(otherLead)).map((entry) => entry.eventId),
-          ["other-lead"],
-        );
-        yield* finish("other-lead");
-        yield* Fiber.interrupt(cancelled);
-        const waiting = yield* Effect.scoped(queue.claim(input("notified"))).pipe(Effect.forkChild);
-        yield* TestClock.adjust("1 second");
-        yield* queue.enqueue(yield* event("notification"));
-        yield* TestClock.adjust("20 seconds");
-        assert.deepStrictEqual(
-          (yield* Fiber.join(waiting)).map((entry) => entry.eventId),
-          ["notification"],
-        );
-      }).pipe(Effect.provide(layer)),
+  it.effect("wakes empty queues on enqueue and releases the lead permit on interruption", () =>
+    Effect.gen(function* () {
+      yield* seed();
+      const queue = yield* KinEventQueue.KinEventQueue;
+      const cancelled = yield* Effect.scoped(queue.claim(input("cancelled"))).pipe(
+        Effect.forkChild,
+      );
+      yield* seed("a", "lead-a2");
+      yield* queue.enqueue(yield* event("other-lead", "github", "a", "lead-a2"));
+      const otherLead = yield* Effect.scoped(queue.claim(input("other-lead", "a", "lead-a2"))).pipe(
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust("20 seconds");
+      assert.isDefined(otherLead.pollUnsafe());
+      assert.deepStrictEqual(
+        (yield* Fiber.join(otherLead)).map((entry) => entry.eventId),
+        ["other-lead"],
+      );
+      yield* finish("other-lead");
+      yield* Fiber.interrupt(cancelled);
+      const waiting = yield* Effect.scoped(queue.claim(input("notified"))).pipe(Effect.forkChild);
+      yield* TestClock.adjust("1 second");
+      yield* queue.enqueue(yield* event("notification"));
+      yield* TestClock.adjust("20 seconds");
+      assert.deepStrictEqual(
+        (yield* Fiber.join(waiting)).map((entry) => entry.eventId),
+        ["notification"],
+      );
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect(

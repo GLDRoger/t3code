@@ -27,6 +27,10 @@ import {
   type KinDeferralActionId,
   type KinDeferralCardView,
 } from "@t3tools/client-runtime/kin/kinDeferralPresentation";
+import {
+  KIN_APPROVAL_STATE_TEXT,
+  type KinApprovalWidgetView,
+} from "@t3tools/client-runtime/kin/kinApprovalPresentation";
 import type { KinLevelsCardView } from "@t3tools/client-runtime/kin/kinLevelsPresentation";
 import {
   kinMemoryUndoFailureText,
@@ -134,6 +138,8 @@ export const KinCard = memo(function KinCard(props: {
     case "shadow_review":
     case "promotion":
       return <KinLevelsCard view={view} />;
+    case "approval":
+      return <KinApprovalCard approval={view.approval} />;
     case "missing":
     case "unknown":
       return (
@@ -513,6 +519,21 @@ function KinLevelsCard(props: { readonly view: KinLevelsCardView }) {
         </p>
       ))}
       {closed ? null : <ApproveOnPhone />}
+    </CardFrame>
+  );
+}
+
+/** Only the phone's approval key signs, so here the card says where it stands and where to go. */
+function KinApprovalCard(props: { readonly approval: KinApprovalWidgetView }) {
+  const { approval } = props;
+  const open = !approval.closed;
+  const status = approval.state === null ? null : KIN_APPROVAL_STATE_TEXT[approval.state];
+  return (
+    <CardFrame
+      eyebrow={open ? "Approval needed" : "Approval"}
+      label={open ? "Approval needed. Approve on your phone." : `Approval. ${status ?? ""}`}
+    >
+      {open ? <ApproveOnPhone /> : <p className="text-xs text-muted-foreground">{status}</p>}
     </CardFrame>
   );
 }

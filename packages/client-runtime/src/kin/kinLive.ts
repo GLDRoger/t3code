@@ -129,7 +129,20 @@ export interface KinPresenceLine {
   readonly stalled: boolean;
   /** Short form for the header subtitle. */
   readonly subtitle: string;
+  /** Pulsing dots while the lead has only seen or is starting, a shimmer while it works. */
+  readonly motion: "dots" | "shimmer" | "still";
 }
+
+const MOTION: Record<KinPresenceState, KinPresenceLine["motion"]> = {
+  seen: "dots",
+  starting: "dots",
+  thinking: "shimmer",
+  working: "shimmer",
+  writing: "shimmer",
+  paused: "still",
+  deferred: "still",
+  stalled: "still",
+};
 
 const clip = (label: string) =>
   label.length <= LABEL_MAX ? label : `${label.slice(0, LABEL_MAX - 1).trimEnd()}…`;
@@ -165,11 +178,18 @@ export function kinPresenceLine(
       announcement: "No output",
       stalled: true,
       subtitle: "No output",
+      motion: MOTION.stalled,
     };
   }
   const label = presence.label?.trim();
   const text = label ? clip(label) : DEFAULT_TEXT[presence.state];
-  const line = { text, announcement: text, stalled: false, subtitle: text };
+  const line = {
+    text,
+    announcement: text,
+    stalled: false,
+    subtitle: text,
+    motion: MOTION[presence.state],
+  };
   if (presence.state !== "starting" || label) return line;
   const waited = now - Date.parse(presence.startedAt);
   return waited >= KIN_SLOW_START_AFTER_MS

@@ -18,8 +18,11 @@ import {
   type KinChatHistoryInput,
   type KinChatHistoryResult,
   type KinChatMember,
+  type KinChatSummary,
   type KinMessage,
+  type KinReaction,
   type KinReactionEmoji,
+  type KinWidget,
   type KinPresence,
   type KinWakeupId,
 } from "@t3tools/contracts";
@@ -27,11 +30,18 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { Atom, type AsyncResult } from "effect/reactivity";
-import { KeyboardAwareLegendList, useKeyboardChatComposerInset } from "@legendapp/list/keyboard";
-import { useEffect, useRef, useState, type ComponentPropsWithRef } from "react";
-import { AppState, Platform, View, type ViewInstance } from "react-native";
+import { KeyboardAwareLegendList } from "@legendapp/list/keyboard";
+import { use, useEffect, useRef, useState, type ComponentPropsWithRef } from "react";
+import {
+  AppState,
+  Platform,
+  StyleSheet,
+  useWindowDimensions,
+  View,
+  type LayoutChangeEvent,
+} from "react-native";
 import { KeyboardStickyView, useKeyboardState } from "react-native-keyboard-controller";
-import Animated from "react-native-reanimated";
+import Animated, { useSharedValue } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppBar } from "../../components/ui/AppBar";
@@ -43,9 +53,9 @@ import { LoadingStrip } from "../../components/ui/LoadingStrip";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { useBarOverlap, useContentTopInset } from "../../components/ui/useBarInset";
 import { useReduceMotionEnabled } from "../../lib/appState";
-import { deriveThreadFeedInitialContentInset } from "../../lib/layout";
 import { NativeScrollViewMarker } from "../../native/NativeScrollViewMarker";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
+import { HeaderItemsWidthContext } from "../../native/header-items-width";
 import { useNativeFontScale } from "../settings/appearance/useScaledTextRole";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import type { ComposerEditorHandle } from "../../native/T3ComposerEditor.types";
@@ -54,6 +64,8 @@ import { setComposerDraftText } from "../../state/use-composer-drafts";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useNowMinuteMs } from "../../lib/clock";
 import { useMarkdownPreviewStyles } from "../files/FileMarkdownPreview";
+import { useResolveClassNames } from "uniwind";
+import type { NativeMarkdownTextStyle } from "../../native/SelectableMarkdownText";
 import {
   editKinOutboxEntry,
   KIN_COMPOSER_COLLAPSED_HEIGHT,
@@ -62,6 +74,9 @@ import {
   kinDraftKey,
 } from "./components/KinComposer";
 import { KinFoldLine } from "./components/KinFoldLine";
+import { KinMessageSheet } from "./components/KinMessageSheet";
+import type { KinAvatarStatus } from "./components/KinAvatar";
+import { KinChatTitlePill } from "./components/KinChatTitlePill";
 import { KinOfflineState, KinStaleNoticeView } from "./components/KinScreenState";
 import { KinIntro } from "./components/KinIntro";
 import {
@@ -117,8 +132,12 @@ import {
 } from "@t3tools/client-runtime/kin/kinInboxModel";
 import { kinPresenceLine, kinPresenceNeedsClock } from "@t3tools/client-runtime/kin/kinLive";
 import {
+  kinChatMuted,
   kinChatTitle,
   kinDirectAgentName,
+  kinAgentAvatar,
+  kinAvatarView,
+  type KinAvatarView,
   kinLevelsAgentId,
   kinStaleNotice,
 } from "@t3tools/client-runtime/kin/kinScreenState";
@@ -130,6 +149,7 @@ import {
   kinSoftReplyMessageId,
   kinViewerMemberId,
 } from "@t3tools/client-runtime/kin/kinReactions";
+import { KinBadgeSync } from "./notifications/KinBadgeSync";
 import { KinChatPushWatch } from "./notifications/KinChatPushWatch";
 
 type KinChatParams = {
@@ -181,6 +201,9 @@ const noChatAtom: Atom.Atom<ChatResult> = Atom.make<ChatResult>(null);
 const noInboxAtom: Atom.Atom<InboxResult> = Atom.make<InboxResult>(null);
 
 const decodeChatId = Schema.decodeUnknownOption(KinChatId);
+/** Read at render: a mute only ends when its time passes, and a re-render reads it again. */
+const mutedNow = (chat: KinChatSummary, personId: string | null) =>
+  personId !== null && kinChatMuted(chat, new Set([personId]), Date.now());
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 
 function KinLiveChat(props: {
@@ -215,6 +238,9 @@ function KinLiveChat(props: {
   const ownedAgentId = summary === undefined ? null : kinLevelsAgentId(summary, viewer.personId);
   const levelsAgentId = canReadLevels ? ownedAgentId : null;
   const canInterrupt = useAtomValue(kinClient.leadInterrupt.permissionAtom(props.environmentId));
+  const canMute = useAtomValue(kinClient.mute.permissionAtom(props.environmentId));
+  const runMute = useAtomCommand(kinClient.mute, "Muting this chat");
+  const muted = summary === undefined ? false : mutedNow(summary, viewer.personId);
 
   const retry = () => {
     if (environmentId === null) return;
@@ -228,11 +254,25 @@ function KinLiveChat(props: {
   return (
     <>
       <KinChatPushWatch environmentId={props.environmentId} chatId={props.chatId} />
+      {/* Only a live inbox: a saved one would put an old count back on the icon. */}
+      <KinBadgeSync
+        inbox={inbox?._tag === "Success" && inbox.value.live ? inbox.value.value : null}
+      />
       <KinChatPage
         environmentId={props.environmentId}
         orgId={props.orgId}
         chatId={chatId ?? (props.chatId as KinChatId)}
         title={summary === undefined ? "Chat" : kinChatTitle(summary, viewer.agentNames)}
+        avatar={
+          summary === undefined
+            ? undefined
+            : kinAvatarView(
+                summary,
+                summary.members.find(
+                  (member) => member.leftAt === null && member.principal._tag === "agent",
+                ) ?? null,
+              )
+        }
         agentName={summary === undefined ? null : kinDirectAgentName(summary, viewer.agentNames)}
         levels={
           levelsAgentId === null
@@ -240,6 +280,16 @@ function KinLiveChat(props: {
             : { environmentId: props.environmentId, orgId: props.orgId, agentId: levelsAgentId }
         }
         unread={summary?.unread ?? null}
+        mute={
+          environmentId === null || chatId === null || summary === undefined || !canMute
+            ? null
+            : {
+                muted,
+                toggle: () => {
+                  void runMute({ environmentId, input: { chatId, muted: !muted } });
+                },
+              }
+        }
         stopLead={
           environmentId === null || summary === undefined || ownedAgentId === null || !canInterrupt
             ? null
@@ -308,6 +358,7 @@ function KinFixtureChat({ fixtures }: { readonly fixtures: KinFixtures }) {
       orgId="dev"
       chatId={fixtures.KIN_FIXTURE_CHAT_ID}
       title="Tech lead"
+      avatar={kinAgentAvatar(fixtures.KIN_FIXTURE_AGENT)}
       agentName="Tech lead"
       unread={null}
       markRead={null}
@@ -353,40 +404,73 @@ const livePresence = (state: KinChatScreenState): KinPresence | undefined =>
     ? state.chat.value.presence.at(-1)
     : undefined;
 
-// The glass bar's title size (GLASS_HEADER_OPTIONS) and UIKit's subtitle size. The bar is one
-// fixed height, so it stops growing where a two-line title and subtitle still fit.
+// The glass bar's title size (GLASS_HEADER_OPTIONS) and UIKit's subtitle size, for the bars
+// that keep UIKit's own title. The bar is one fixed height, so it stops growing at 1.5x.
 const KIN_BAR_TITLE_SIZE = 18;
 const KIN_BAR_SUBTITLE_SIZE = 12;
 const KIN_BAR_MAX_FONT_SCALE = 1.5;
 
-/** The bar's subtitle: presence while the lead works, else open tasks. Owns its own clock. */
+/**
+ * The glass bar. On iOS the title is a pill with the lead's avatar and a live dot; presence
+ * moves to the status row above the composer, so the bar only names who the chat is with.
+ */
 function KinChatAppBar(props: {
   readonly title: string;
+  readonly avatar: KinAvatarView;
+  readonly status: KinAvatarStatus | null;
   readonly presence: KinPresence | undefined;
   readonly tasks: string | null;
   readonly onBack: () => void;
   readonly actions: ComponentPropsWithRef<typeof AppBar>["actions"];
+  readonly menus: ComponentPropsWithRef<typeof AppBar>["menus"];
 }) {
-  const now = useKinPresenceNow(kinPresenceNeedsClock(props.presence));
-  const subtitle = kinPresenceLine(props.presence, now)?.subtitle ?? props.tasks;
+  const pill = Platform.OS === "ios";
+  const now = useKinPresenceNow(!pill && kinPresenceNeedsClock(props.presence));
+  const subtitle = pill ? null : (kinPresenceLine(props.presence, now)?.subtitle ?? props.tasks);
   // The native bar sets fixed font sizes, so it follows Dynamic Type only through these.
   const scale = useNativeFontScale(KIN_BAR_MAX_FONT_SCALE);
+  const { title, avatar, status, tasks } = props;
+  const renderTitle = () => (
+    <KinChatHeaderTitle title={title} avatar={avatar} status={status} detail={tasks} />
+  );
   return (
     <>
       <AppBar
-        title={props.title}
+        title={title}
         subtitle={subtitle}
         onBack={props.onBack}
         actions={props.actions}
+        menus={props.menus}
       />
       {/* Always set, so going back to the default size resets the bar. */}
       <NativeStackScreenOptions
+        optionsVersion={[title, avatar.seed, avatar.kind, status, tasks]}
         options={{
           headerTitleStyle: { fontSize: KIN_BAR_TITLE_SIZE * scale, fontWeight: "800" },
           headerSubtitleStyle: { fontSize: KIN_BAR_SUBTITLE_SIZE * scale },
+          headerTitle: pill ? renderTitle : undefined,
         }}
       />
     </>
+  );
+}
+
+function KinChatHeaderTitle(props: {
+  readonly title: string;
+  readonly avatar: KinAvatarView;
+  readonly status: KinAvatarStatus | null;
+  readonly detail: string | null;
+}) {
+  const { width } = useWindowDimensions();
+  const maxWidth = Math.max(120, width - (use(HeaderItemsWidthContext) ?? 160));
+  return (
+    <KinChatTitlePill
+      title={props.title}
+      avatar={props.avatar}
+      status={props.status}
+      detail={props.detail}
+      maxWidth={maxWidth}
+    />
   );
 }
 
@@ -396,6 +480,8 @@ function KinChatPage(props: {
   readonly orgId: string;
   readonly chatId: KinChatId;
   readonly title: string;
+  /** Who the chat is with, for the title pill; unset until the inbox loads. */
+  readonly avatar?: KinAvatarView;
   /** The agent a direct chat is with, for the empty chat's copy; null when unknown. */
   readonly agentName: string | null;
   /** The lead's Levels screen, for its owner in their direct chat; null elsewhere. */
@@ -410,6 +496,8 @@ function KinChatPage(props: {
   readonly markRead: MarkRead | null;
   /** Interrupts the lead's current wake-up; null unless the viewer owns it and may stop it. */
   readonly stopLead?: StopLead | null;
+  /** The viewer's mute for this chat's notifications; null until it can be set. */
+  readonly mute?: { readonly muted: boolean; readonly toggle: () => void } | null;
   readonly state: KinChatScreenState;
   readonly viewer: KinFeedViewer;
   readonly onRetry: () => void;
@@ -430,9 +518,35 @@ function KinChatPage(props: {
     <View collapsable={false} className="flex-1 bg-screen">
       <KinChatAppBar
         title={props.title}
+        avatar={props.avatar ?? { kind: "agent", seed: `chat:${props.chatId}` }}
+        status={
+          livePresence(state) !== undefined
+            ? "working"
+            : state._tag === "ready" && state.connected && state.chat.live
+              ? "online"
+              : null
+        }
         presence={livePresence(state)}
         tasks={tasks}
         onBack={() => navigation.goBack()}
+        menus={
+          props.mute == null
+            ? undefined
+            : [
+                {
+                  title: "Chat options",
+                  icon: "ellipsis",
+                  items: [
+                    {
+                      id: "mute",
+                      title: props.mute.muted ? "Unmute notifications" : "Mute notifications",
+                      icon: props.mute.muted ? "bell" : "bell.slash",
+                      onPress: props.mute.toggle,
+                    },
+                  ],
+                },
+              ]
+        }
         actions={
           levels == null
             ? undefined
@@ -617,30 +731,30 @@ function KinChatFeed(props: {
   const reduceMotion = useReduceMotionEnabled();
   const barOverlap = useBarOverlap();
   const markdownStyle = useMarkdownPreviewStyles().nativeTextStyle;
+  const ownMarkdownStyle = useOwnBubbleMarkdownStyle(markdownStyle);
+  // Each open gets its own sheet, so a dismissal the list never heard of can't block the next.
+  const [actions, setActions] = useState<{ readonly messageId: string; readonly open: number }>({
+    messageId: "",
+    open: 0,
+  });
+  const openActions = (messageId: string) =>
+    setActions((current) => ({ messageId, open: current.open + 1 }));
+  const actionsFor = actions.messageId === "" ? null : actions.messageId;
   const safeBottom = useSafeAreaInsets().bottom;
   // Clears the home indicator; the keyboard offset gives that space back while the keyboard is up.
   const composerInset = Math.max(safeBottom, KIN_COMPOSER_GUTTER);
   const keyboardOffset = composerInset - KIN_COMPOSER_GUTTER;
   // As in the thread feed: the composer overlays the feed, whose end inset tracks the composer's
-  // measured height and the keyboard. UIKit already adds the safe-area bottom to that inset.
-  const insetOvercount = Platform.OS === "ios" ? safeBottom : 0;
-  const composerOverlayRef = useRef<ViewInstance>(null);
-  const estimatedComposerInset = Math.max(
-    0,
-    KIN_COMPOSER_COLLAPSED_HEIGHT + composerInset - insetOvercount,
+  // measured height, safe area included, and the keyboard.
+  const contentInsetEndAdjustment = useSharedValue(KIN_COMPOSER_COLLAPSED_HEIGHT + composerInset);
+  const [composerHeight, setComposerHeight] = useState(
+    KIN_COMPOSER_COLLAPSED_HEIGHT + composerInset,
   );
-  const { contentInsetEndAdjustment, onComposerLayout } = useKeyboardChatComposerInset(
-    listRef,
-    composerOverlayRef,
-    estimatedComposerInset,
-    -insetOvercount,
-    0,
-  );
-  const initialContentInset = deriveThreadFeedInitialContentInset({
-    platform: Platform.OS,
-    usesNativeAutomaticInsets: Platform.OS === "ios",
-    bottomContentInset: estimatedComposerInset,
-  });
+  const [listHeight, setListHeight] = useState(0);
+  const onComposerLayout = (event: LayoutChangeEvent) => {
+    contentInsetEndAdjustment.set(event.nativeEvent.layout.height);
+    setComposerHeight(event.nativeEvent.layout.height);
+  };
   // Android can lose IME hide callbacks on backgrounding, as in the thread feed: hold the composer
   // down on resume until the keyboard reports again or the composer is focused.
   const keyboardVisible = useKeyboardState((state) => state.isVisible);
@@ -720,6 +834,7 @@ function KinChatFeed(props: {
     state: "idle",
   });
   const { presence, stopLead } = props;
+  const presenceAvatar = presence === undefined ? null : kinAgentAvatar(presence.agentId);
   const wakeupId = presence?.wakeupId ?? null;
   // A new wake-up starts with a fresh Stop.
   const stopState = wakeupId !== null && stop.wakeupId === wakeupId ? stop.state : "idle";
@@ -746,6 +861,12 @@ function KinChatFeed(props: {
             entry,
           })),
         ];
+  // LegendList grows an empty list to its frame, under both insets, which hid the intro under the
+  // composer; the visible height ends it above the composer instead.
+  const emptyMinHeight =
+    rows.length === 0 && listHeight > 0
+      ? Math.max(0, listHeight - barOverlap - composerHeight)
+      : null;
   const followsEnd = kinFollowsEnd(follow);
   const unseen = followsEnd ? 0 : kinUnseenCount(messages, follow.seenSeq, props.viewer.personId);
   const loading = paging.request !== null;
@@ -787,6 +908,7 @@ function KinChatFeed(props: {
       });
     };
     send();
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- lists every value the effect reads; the rest are refs. The rule started flagging it once the feed grew.
   }, [markRead, seesEnd, latestSeq, unread, connected, focused]);
 
   const transition = (event: KinFeedFollowEvent) =>
@@ -857,7 +979,12 @@ function KinChatFeed(props: {
 
   const jumpToEnd = () => {
     transition({ type: "jump-to-end" });
-    void listRef.current?.scrollToEnd({ animated: !reduceMotion });
+    // The list's own end, as maintainScrollAtEnd pins it: scrollToEnd counts the presence footer
+    // twice and overshoots by its height.
+    const list = listRef.current;
+    if (list === null) return;
+    const { contentLength, scrollLength } = list.getState();
+    void list.scrollToOffset({ offset: contentLength - scrollLength, animated: !reduceMotion });
   };
 
   const toggleRun = (runId: string) => {
@@ -909,6 +1036,13 @@ function KinChatFeed(props: {
           <KinMessageBubble
             row={item}
             markdownStyle={markdownStyle}
+            ownMarkdownStyle={ownMarkdownStyle}
+            direct={props.direct}
+            onOpenActions={
+              message.status !== "deleted" && (reactable || message.body.trim().length > 0)
+                ? () => openActions(message.messageId)
+                : null
+            }
             onLinkPress={onLinkPress}
             widget={widget}
             environmentId={props.environmentId}
@@ -962,7 +1096,12 @@ function KinChatFeed(props: {
         return <KinDayLine row={item} />;
       case "draft":
         return (
-          <KinDraftBubble row={item} markdownStyle={markdownStyle} onLinkPress={onLinkPress} />
+          <KinDraftBubble
+            row={item}
+            markdownStyle={markdownStyle}
+            onLinkPress={onLinkPress}
+            direct={props.direct}
+          />
         );
     }
   };
@@ -1060,6 +1199,14 @@ function KinChatFeed(props: {
       </View>
     ) : null;
 
+  const actionsRow =
+    actionsFor === null
+      ? undefined
+      : feedRows.find(
+          (candidate) => candidate.type === "message" && candidate.message.messageId === actionsFor,
+        );
+  const actionsMessage = actionsRow?.type === "message" ? actionsRow.message : null;
+
   return (
     <View className="flex-1">
       {/* oxlint-disable-next-line t3code/require-registered-list-scroll -- KinFeedScrollView is passed through the iOS-only spread below, as in the thread feed. */}
@@ -1069,9 +1216,18 @@ function KinChatFeed(props: {
         // RN 0.81+ drops inset-area touches (facebook/react-native#54123).
         applyWorkaroundForContentInsetHitTestBug
         {...(Platform.OS === "ios" ? { ScrollViewComponent: KinFeedScrollView } : {})}
-        contentInsetAdjustmentBehavior="automatic"
+        // Manual insets, as in the thread feed: LegendList can't see the ones UIKit adds.
+        contentInsetAdjustmentBehavior="never"
+        automaticallyAdjustsScrollIndicatorInsets={Platform.OS === "ios"}
+        scrollIndicatorInsets={{ top: barOverlap, bottom: 0 }}
+        {...(barOverlap > 0 ? { contentInset: { top: barOverlap } } : {})}
         // The presence footer is the feed's last 32 pt, reserved even when empty.
-        contentContainerStyle={{ paddingTop: 8, paddingBottom: 4 }}
+        contentContainerStyle={{
+          paddingTop: 8,
+          paddingBottom: 4,
+          ...(emptyMinHeight === null ? {} : { minHeight: emptyMinHeight }),
+        }}
+        onLayout={(event) => setListHeight(event.nativeEvent.layout.height)}
         data={rows}
         keyExtractor={(row) => row.key}
         // A draft recycles into the agent bubble its message will take.
@@ -1086,19 +1242,20 @@ function KinChatFeed(props: {
         }
         renderItem={renderItem}
         // Both reach rows only through renderItem, which the list doesn't watch.
-        extraData={[streamed.widgets, streamed.reactions, softReplyId, canReact, markdownStyle]}
+        extraData={[
+          streamed.widgets,
+          streamed.reactions,
+          softReplyId,
+          canReact,
+          markdownStyle,
+          ownMarkdownStyle,
+        ]}
         estimatedItemSize={72}
         drawDistance={500}
-        // UIKit insets the feed under the bar, which LegendList can't see: without this a short
-        // chat's end-alignment spacer overfills and pushes its newest messages below the fold.
-        contentInsetStartAdjustment={barOverlap}
         contentInsetEndAdjustment={contentInsetEndAdjustment}
-        contentInsetEndStaticAdjustment={insetOvercount}
-        adjustedInsetCompensation={insetOvercount}
-        // Android's initial end scroll runs before the composer is measured without this seed.
-        {...(initialContentInset ? { contentInset: initialContentInset } : {})}
         keyboardOffset={keyboardOffset}
         keyboardLiftBehavior="whenAtEnd"
+        scrollToOverflowEnabled
         alignItemsAtEnd
         initialScrollAtEnd
         maintainScrollAtEnd={
@@ -1118,7 +1275,13 @@ function KinChatFeed(props: {
         ListHeaderComponent={header}
         ListEmptyComponent={empty}
         ListFooterComponent={
-          <KinPresenceLine presence={props.presence} stop={stopState} onStop={onStop} />
+          <KinPresenceLine
+            presence={props.presence}
+            avatar={presenceAvatar}
+            visible={focused && followsEnd}
+            stop={stopState}
+            onStop={onStop}
+          />
         }
       />
       <KeyboardStickyView
@@ -1127,7 +1290,7 @@ function KinChatFeed(props: {
         style={{ position: "absolute", bottom: 0, left: 0, right: 0 }}
         offset={{ closed: 0, opened: keyboardOffset }}
       >
-        <View ref={composerOverlayRef} onLayout={onComposerLayout} pointerEvents="box-none">
+        <View onLayout={onComposerLayout} pointerEvents="box-none">
           {unseen > 0 ? (
             // Out of the overlay's measured height, so the pill never moves the feed.
             <View
@@ -1149,13 +1312,102 @@ function KinChatFeed(props: {
           {composer}
         </View>
       </KeyboardStickyView>
+      {actionsMessage === null ? null : (
+        <KinFeedMessageActions
+          key={actions.open}
+          message={actionsMessage}
+          widget={
+            actionsMessage.widgetId === null ? undefined : widgets.get(actionsMessage.widgetId)
+          }
+          reactions={streamed.reactions}
+          viewerMemberId={viewerMemberId}
+          reactorName={reactorName}
+          canReact={canReact}
+          environmentId={props.environmentId}
+          markdownStyle={markdownStyle}
+          onClose={() => setActions((current) => ({ ...current, messageId: "" }))}
+        />
+      )}
     </View>
   );
 }
 
+/** The long-press sheet for one message, reacting through the same path as its chips. */
+function KinFeedMessageActions(props: {
+  readonly message: KinMessage;
+  readonly widget: KinWidget | undefined;
+  readonly reactions: ReadonlyArray<KinReaction>;
+  readonly viewerMemberId: string | null;
+  readonly reactorName: (memberId: string) => string | null;
+  readonly canReact: boolean;
+  readonly environmentId: EnvironmentId;
+  readonly markdownStyle: NativeMarkdownTextStyle;
+  readonly onClose: () => void;
+}) {
+  const react = useAtomCommand(kinClient.react, "react");
+  const { message, widget } = props;
+  const chips = kinReactionChips(
+    props.reactions,
+    message.messageId,
+    props.viewerMemberId,
+    props.reactorName,
+  );
+  // The host refuses reactions on approval, level, review and deferral cards.
+  const reactable =
+    props.canReact &&
+    message.status === "posted" &&
+    (message.widgetId === null || (widget !== undefined && REACTABLE_WIDGETS.has(widget.type)));
+  return (
+    <KinMessageSheet
+      body={message.status === "deleted" ? "" : message.body}
+      markdownStyle={props.markdownStyle}
+      mine={new Set(chips.flatMap((chip) => (chip.mine ? [chip.emoji] : [])))}
+      onReact={
+        reactable
+          ? (emoji) =>
+              void react({
+                environmentId: props.environmentId,
+                input: kinReactionToggle(chips, message.messageId, emoji),
+              })
+          : null
+      }
+      onClose={props.onClose}
+    />
+  );
+}
+
+/** The feed's markdown colours for text on the brand-coloured bubble. */
+function useOwnBubbleMarkdownStyle(base: NativeMarkdownTextStyle): NativeMarkdownTextStyle {
+  const text = String(
+    StyleSheet.flatten(useResolveClassNames("text-primary-foreground"))?.color ?? base.color,
+  );
+  return {
+    ...base,
+    color: text,
+    strongColor: text,
+    mutedColor: text,
+    linkColor: text,
+    inlineCodeColor: text,
+    codeColor: text,
+    fileTextColor: text,
+    quoteMarkerColor: text,
+    dividerColor: text,
+    codeBackgroundColor: "rgba(255, 255, 255, 0.18)",
+    codeBlockBackgroundColor: "rgba(255, 255, 255, 0.18)",
+  };
+}
+
+// Messages fade under the floating bar instead of meeting it at a hard edge.
+const KIN_FEED_EDGE_EFFECTS = {
+  top: "soft",
+  bottom: "hidden",
+  left: "hidden",
+  right: "hidden",
+} as const;
+
 function KinFeedScrollView(props: ComponentPropsWithRef<typeof Animated.ScrollView>) {
   return (
-    <NativeScrollViewMarker style={{ flex: 1 }}>
+    <NativeScrollViewMarker style={{ flex: 1 }} scrollEdgeEffects={KIN_FEED_EDGE_EFFECTS}>
       <Animated.ScrollView {...props} />
     </NativeScrollViewMarker>
   );

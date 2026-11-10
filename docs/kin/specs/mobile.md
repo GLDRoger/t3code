@@ -211,7 +211,7 @@ Every screen handles the same seven states. Each state's copy is fixed below.
 
 - **Waiting on you** sits at the top as one full-width banner: `bg-primary`, `text-primary-foreground`, radius `MOBILE_SHAPE.group`. It names up to two kinds of item, oldest first, then the rest ("1 approval · 2 questions · 1 more"), and shows a count. Waiting items have no title in the contract yet; naming items ("Merge #212") needs that field from lane A. A tap opens `KinWaiting`. With nothing waiting, the banner is not rendered; nothing else in the list is ever highlighted (DESIGN 8.1).
 - Each row shows the avatar, title, time (`RelativeTime`), a one-line preview prefixed with the author ("Lead: Payments test fixed"), and an unread count badge.
-- **Avatars** (DESIGN 8.7): an agent gets an outlined rounded square (`rounded-[12px]`, 1.5 pt `border-primary`, `text-primary`). A person gets a filled circle (`rounded-full bg-secondary`). Both are 40 pt, with initials. A shared `KinAvatar` component draws both.
+- **Avatars** (DESIGN 8.7): an agent gets an outlined rounded square (`rounded-[12px]`, 1.5 pt `border-primary`). A person gets a filled circle (`rounded-full bg-secondary`), and a group a filled rounded square. All are 40 pt with a static [blobatar](https://github.com/Alain00/blobatar) inside, seeded by the agent, person or chat id (`kinChatRowView`'s `avatar.seed`), so a rename keeps the face and web draws the same one. A shared `KinAvatar` component draws all three.
 - The footer row reads "Ask anything. It goes to the right team." In phase 1 it opens the direct chat with the lead. The router arrives in phase 3.
 
 **Direct chat (`KinChatScreen`, new).**
@@ -321,7 +321,7 @@ Hiding the buttons is a convenience, not the protection (DESIGN 9.3). The server
 
 ### Accessibility
 
-- Every row and card is one accessibility element with a full label. A row reads "Tech lead, agent. Payments test fixed, PR 212 ready. 9:30. 3 unread." The shape of an avatar is not the only signal: the label says "agent" or "person".
+- Every row and card is one accessibility element with a full label. A row reads "Tech lead, agent. Payments test fixed, PR 212 ready. 9:30. 3 unread." The shape of an avatar is not the only signal: the label says "agent", "person" or "group".
 - The Waiting on you banner has `accessibilityRole="button"` and the label "Waiting on you, 4 items: 1 approval, 2 questions, and 1 more".
 - Card buttons are at least 44 pt tall. Destructive buttons say what they do ("Cancel deferral" in the accessibility label).
 - The approval card's facts list reads in order. The commit's label spells out the full SHA. Status changes are announced with `AccessibilityInfo.announceForAccessibility` ("Merged").

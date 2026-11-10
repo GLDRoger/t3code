@@ -1,6 +1,7 @@
 import { createNativeStackScreen } from "@react-navigation/native-stack";
 
 import { pageRoute } from "../layout/route-options";
+import { KinApprovalsScreen } from "./approvals/KinApprovalsScreen";
 import { KinChatScreen } from "./KinChatScreen";
 import { KinChatsScreen } from "./KinChatsScreen";
 import { KinLevelsScreen } from "./KinLevelsScreen";
@@ -23,6 +24,11 @@ export const KIN_SCREENS = {
     // Every Kin host uses the same org id, so the environment names the chat's host.
     linking: "kin/:environmentId/:orgId/chats/:chatId",
     options: pageRoute({ duoMinimize: "onScrollUp" }),
+  }),
+  KinApprovals: createNativeStackScreen({
+    screen: KinApprovalsScreen,
+    linking: "kin/:environmentId/:orgId/approvals",
+    options: pageRoute({ title: "Approvals" }),
   }),
   KinLevels: createNativeStackScreen({
     screen: KinLevelsScreen,

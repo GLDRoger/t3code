@@ -168,6 +168,13 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
         Effect.mapError(mapError),
         Effect.catchDefect(defect),
       ),
+    "kin.chats.mute": (input) =>
+      viewer.pipe(
+        Effect.flatMap(({ chat, people }) => chat.mute(people, input)),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
     "kin.chat.history": (input) =>
       viewer.pipe(
         Effect.flatMap(({ chat, people }) => chat.history(people, input)),

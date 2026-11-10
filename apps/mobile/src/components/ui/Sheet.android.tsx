@@ -11,6 +11,29 @@ export type { SheetProps } from "./Sheet.types";
 export function Sheet(props: SheetProps) {
   const containerStyle = useResolveClassNames("bg-header");
   const [isOpen, setIsOpen] = useState(true);
+  if (props.variant === "plain") {
+    return (
+      <FormSheet
+        isOpen={isOpen}
+        detents="fitToContents"
+        prefersGrabberVisible={false}
+        preventNativeDismiss={props.dismissDisabled}
+        nativeContainerStyle={containerStyle}
+        onDismiss={props.onClose}
+        onNativeDismiss={props.onClose}
+      >
+        <RoutedFormSheetContext value={false}>
+          <View collapsable={false} accessibilityLabel={props.title} className="bg-header pt-4">
+            <View
+              pointerEvents="none"
+              className="absolute top-1 h-1 w-8 self-center rounded-full bg-header-foreground/40"
+            />
+            {props.children}
+          </View>
+        </RoutedFormSheetContext>
+      </FormSheet>
+    );
+  }
   return (
     <FormSheet
       isOpen={isOpen}

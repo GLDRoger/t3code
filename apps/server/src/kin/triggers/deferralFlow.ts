@@ -1,12 +1,18 @@
 import {
+  KinAgentId,
   KinChatId,
   KinDeferralCard,
+  KinEvent,
+  KinEventId,
   KinMemoryItemId,
   KinMessageId,
   KinOrgId,
   KinPersonId,
+  type KinReminderCard,
   type KinTriggerFired,
+  KinWidgetId,
   type MemoryItemHead,
+  kinReminderWidgetId,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Clock from "effect/Clock";
@@ -21,8 +27,11 @@ import { isSqlError } from "effect/sql/SqlError";
 import { PersistenceDecodeError, toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as Chat from "../chat/KinChatService.ts";
+import * as KinBudget from "../lead/KinBudget.ts";
+import * as LeadDelivery from "../lead/LeadDelivery.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
-import { WorkerLaunchGate } from "../lead/Workers.ts";
+import { isOrgPaused } from "../lead/orgState.ts";
+import { workersConfigured } from "../lead/workerEnvironment.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import { readGithubLinks } from "./deferralGithub.ts";
@@ -41,6 +50,7 @@ import {
   startsAtLevel,
   makeDeferralCards,
   makeDeferralStarter,
+  hex,
 } from "./deferrals.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as Pings from "./pings.ts";
@@ -76,6 +86,7 @@ type Step =
 function classifyFire(
   run: Run | undefined,
   graceEndsAt: number | undefined,
+  snoozedUntil: number | undefined,
   phase: "heads_up" | "due",
   fireAt: number,
   now: number,
@@ -93,6 +104,9 @@ function classifyFire(
     return run.state === "armed" || (run.onDue === "start" && run.state === "heads_up")
       ? { kind: "due", dueAt, grace: false }
       : { kind: "drop" };
+  // A snoozed reminder re-arms its due trigger at the snooze's end.
+  if (run.onDue === "remind" && run.state === "snoozed" && fireAt === snoozedUntil)
+    return { kind: "due", dueAt, grace: false };
   // A late due fire re-arms the due trigger at the end of its grace window.
   return run.onDue === "start" && run.state === "grace" && fireAt === graceEndsAt
     ? { kind: "due", dueAt, grace: true }
@@ -100,6 +114,7 @@ function classifyFire(
 }
 
 const decodeOnDue = Schema.decodeUnknownEffect(KinDeferralCard.fields.onDue);
+const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
 const decodeSnapshot = Schema.decodeUnknownEffect(Schema.fromJsonString(DeferralSnapshot));
 const encodeSnapshot = Schema.encodeEffect(Schema.fromJsonString(DeferralSnapshot));
 const isDecodeError = Schema.is(PersistenceDecodeError);
@@ -127,6 +142,73 @@ const make = Effect.gen(function* () {
   const ticks = yield* Scheduler.Scheduler;
   const cards = yield* makeDeferralCards;
   const start = yield* makeDeferralStarter;
+  const budget = yield* KinBudget.KinBudget;
+  const deliveries = yield* LeadDelivery.KinLeadDelivery;
+
+  /**
+   * Hands a due reminder to its lead, who writes it in its own voice; the server attaches the
+   * card. Without a lead, budget or a running Kin, Kin posts its own line with the card at once.
+   */
+  const remind = Effect.fn("KinDeferralFlow.remind")(function* (input: {
+    readonly orgId: KinOrgId;
+    readonly itemId: KinMemoryItemId;
+    readonly title: string;
+    readonly fire: KinTriggerFired;
+    readonly fireAt: number;
+    readonly now: number;
+    readonly timeZone: string;
+    /** Set when a wake-up can run now. */
+    readonly lead: { readonly agentId: KinAgentId; readonly ownerChatId: KinChatId } | undefined;
+    readonly leadName: string | undefined;
+    readonly fallbackChat: KinChatId | null;
+  }) {
+    const { orgId, itemId, title, fire, fireAt, now } = input;
+    const card = {
+      itemId,
+      title,
+      dueAt: iso(fireAt),
+      status: "due",
+    } as const satisfies KinReminderCard;
+    const widgetId = KinWidgetId.make(kinReminderWidgetId(orgId, itemId, fireAt));
+    const fallbackBody = `Reminder: ${title}.${lateNote(fireAt, now, input.timeZone)} (${input.leadName ?? "Your lead"} couldn't write this one, so Kin sent it.)`;
+    if (input.lead !== undefined) {
+      const dedupeKey = fire.fireId;
+      const eventId = KinEventId.make(`reminder_${hex(`${orgId.length}:${orgId}${dedupeKey}`)}`);
+      const event = yield* decodeEvent({
+        _tag: "deferral.due",
+        eventId,
+        orgId,
+        agentId: input.lead.agentId,
+        receivedAt: fire.firedAt,
+        provenance: { _tag: "system" },
+        dedupeKey,
+        subject: { type: "reminder", itemId },
+        lateByMs: Math.max(0, now - fireAt),
+      });
+      yield* deliveries.handOff(event, {
+        orgId,
+        eventId,
+        kind: "reminder",
+        agentId: input.lead.agentId,
+        chatId: input.lead.ownerChatId,
+        widget: { widgetId, type: "reminder", state: card },
+        fallbackBody,
+        deadlineAt: now + LeadDelivery.DELIVERY_DEADLINE_MS.reminder,
+      });
+      return;
+    }
+    if (input.fallbackChat === null) return;
+    yield* deliveries.fallback({
+      orgId,
+      eventId: KinEventId.make(`reminder-fallback-${fire.fireId}`),
+      kind: "reminder",
+      agentId: KinAgentId.make("kin"),
+      chatId: input.fallbackChat,
+      widget: { widgetId, type: "reminder", state: { ...card, fallback: true } },
+      fallbackBody,
+      deadlineAt: now,
+    });
+  });
   // Per process: the 24 h give-up is the durable bound, so a restart only retries sooner.
   const retries = new Map<
     KinOrgId,
@@ -205,7 +287,14 @@ const make = Effect.gen(function* () {
     const fireAt = Date.parse(fire.dueAt);
     const run = yield* readRun(orgId, itemId).pipe(NodeSqliteClient.readOnly);
     const snapshot = run === undefined ? undefined : yield* decodeSnapshot(run.snapshot);
-    const step = classifyFire(run, snapshot?.graceEndsAt, phase, fireAt, now);
+    const step = classifyFire(
+      run,
+      snapshot?.graceEndsAt,
+      snapshot?.snoozedUntil,
+      phase,
+      fireAt,
+      now,
+    );
     if (step.kind === "drop" || run === undefined || snapshot === undefined)
       return yield* inbox.markConsumed(orgId, [fire.fireId]).pipe(Effect.as(false));
 
@@ -219,8 +308,18 @@ const make = Effect.gen(function* () {
       gates.push(...snapshotChanges(snapshot, item, github));
       if (yield* (yield* KinDeferralStopSwitch).isStopped(orgId))
         gates.push("the stop switch is on");
-      if (!(yield* WorkerLaunchGate)) gates.push("workers can't launch yet");
+      if (!(yield* workersConfigured)) gates.push("workers can't launch yet");
     }
+    // A reminder is the lead's to write when a wake-up can run; budget is read outside the writer.
+    const reminderLead =
+      onDue === "remind" ? yield* deferralLead(sql, orgId, item?.chat) : undefined;
+    const reminderAdmitted =
+      reminderLead === undefined
+        ? false
+        : (yield* budget.admit(orgId, "P1").pipe(
+            Effect.map((admission) => admission.allowed),
+            Effect.orElseSucceed(() => false),
+          )) && !(yield* isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)));
     // No memory or GitHub I/O below: the memory lock can wait on this writer.
     return yield* sql.withTransaction(
       Effect.gen(function* () {
@@ -332,14 +431,18 @@ const make = Effect.gen(function* () {
             return true;
           }
         } else {
-          const chatId = yield* cardChat(orgId, item);
-          if (chatId !== null)
-            yield* chat.notice({
-              orgId,
-              chatId,
-              messageId: KinMessageId.make(`deferral-remind:${orgId}:${fire.fireId}`),
-              body: `Reminder: ${title}.${lateNote(dueAt, now, timeZone)}`,
-            });
+          yield* remind({
+            orgId,
+            itemId,
+            title,
+            fire,
+            fireAt,
+            now,
+            timeZone,
+            lead: reminderAdmitted ? reminderLead : undefined,
+            leadName: reminderLead?.name,
+            fallbackChat: reminderLead?.ownerChatId ?? (yield* cardChat(orgId, item)),
+          });
           yield* setState("reminded");
         }
         yield* inbox.markConsumed(orgId, [fire.fireId]);

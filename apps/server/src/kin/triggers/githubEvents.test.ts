@@ -2,6 +2,8 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   KIN_GITHUB_APP_SOURCE,
   KinEvent,
+  KinAgentId,
+  KinWakeupId,
   KinOrgId,
   KinWebhookSource,
   MemoryItemHead,
@@ -12,6 +14,8 @@ import {
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
+import * as References from "effect/References";
 import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -26,6 +30,7 @@ import * as Memory from "../memory/Memory.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as GithubEvents from "./githubEvents.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
+import { relevant } from "./githubInterest.ts";
 import * as KinTriggerSink from "./KinTriggerSink.ts";
 import * as KinTriggerStore from "./KinTriggerStore.ts";
 import {
@@ -83,7 +88,12 @@ const pullRequest = (overrides: { repo?: string; merged?: boolean; padding?: str
   ...(overrides.padding === undefined ? {} : { padding: overrides.padding }),
   action: "closed",
   number: 212,
-  pull_request: { number: 212, merged: overrides.merged ?? true, head: { sha: "abc123" } },
+  pull_request: {
+    title: "@kin[bot]",
+    number: 212,
+    merged: overrides.merged ?? true,
+    head: { sha: "abc123" },
+  },
   repository: { full_name: overrides.repo ?? "owner/repo" },
   sender: { login: "alice" },
 });
@@ -127,7 +137,10 @@ function services(memoryDown: Ref.Ref<boolean>, ticks: Map<string, Effect.Effect
         Effect.gen(function* () {
           if (yield* Ref.get(memoryDown))
             return yield* new Memory.MemoryError({ orgId: org, operation: "query" });
-          return [whenMerged].map((head) => ({ ...head, duplicate: false }));
+          return [
+            whenMerged,
+            item("watch-link", undefined, { links: ["https://github.com/owner/repo/issues/777"] }),
+          ].map((head) => ({ ...head, duplicate: false }));
         }),
     }),
   ).pipe(
@@ -258,6 +271,146 @@ describe("KinGithubEvents", () => {
     ),
   );
 
+  it.effect("drops untracked traffic, keeps tracked items and mentions, and batches notices", () =>
+    run(({ deliver, drain }) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const untracked = {
+          ...pullRequest(),
+          pull_request: { number: 999, title: "unrelated", head: { sha: "abc" } },
+        };
+        yield* deliver("untracked", untracked);
+        yield* deliver(
+          "push",
+          { repository: { full_name: "owner/repo" }, sender: { login: "human" }, after: "abc" },
+          "push",
+        );
+        const drops: string[] = [];
+        yield* drain.pipe(
+          Effect.provide(
+            Logger.layer([Logger.make(({ message }) => drops.push(JSON.stringify(message)))], {
+              mergeWithExisting: false,
+            }),
+          ),
+          Effect.provideService(References.MinimumLogLevel, "Debug"),
+        );
+        assert.isTrue(
+          drops.some(
+            (line) =>
+              line.includes("Kin GitHub event dropped") && line.includes('"reason":"untracked"'),
+          ),
+        );
+        assert.lengthOf(yield* events, 0);
+        yield* deliver("tracked", {
+          ...pullRequest(),
+          pull_request: { number: 212, merged: true, head: { sha: "abc" } },
+        });
+        yield* drain;
+        const first = yield* sql<{
+          not_before: number;
+        }>`SELECT not_before FROM kin_events WHERE org_id = ${orgId} AND tag = 'github' ORDER BY event_id`;
+        yield* TestClock.adjust("1 minute");
+        yield* deliver("mention", {
+          ...untracked,
+          action: "created",
+          comment: { body: "Please check @kin" },
+        });
+        yield* drain;
+        const deadlines = yield* sql<{
+          not_before: number;
+        }>`SELECT not_before FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`;
+        assert.lengthOf(deadlines, 3);
+        assert.isTrue(deadlines.every((row) => row.not_before === first[0]?.not_before));
+        const queue = yield* KinEventQueue.KinEventQueue;
+        yield* TestClock.adjust("80 seconds");
+        yield* deliver("late-mention", {
+          ...untracked,
+          action: "edited",
+          comment: { body: "@kin[bot]" },
+        });
+        yield* drain;
+        const late = yield* sql<{ not_before: number }>`SELECT not_before FROM kin_events
+          WHERE org_id = ${orgId} AND dedupe_key = 'late-mention' ORDER BY event_id`;
+        assert.strictEqual(late[0]?.not_before, 1794009741000);
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const claimed = yield* queue.claim({
+              orgId,
+              agentId: KinAgentId.make("lead"),
+              wakeupId: KinWakeupId.make("batch"),
+              model: "test",
+            });
+            assert.lengthOf(claimed, 4);
+          }),
+        );
+      }),
+    ),
+  );
+
+  it.effect("keeps memory-linked issues and worker PR CI, scoped to the repository", () =>
+    run(({ deliver, drain }) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids)
+        VALUES (${orgId}, 'worker-wake', 'lead', 'test', 0, 'completed', '[]')`;
+        yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id, model_json, provenance_json, status, started_at, repository_key, pull_request_number, pull_request_url)
+        VALUES ('worker', ${orgId}, 'lead', 'worker-wake', 'build', 'worker-thread', '{}', '{}', 'done', 0, 'github.com/owner/repo', 888, 'https://github.com/OWNER/REPO/pull/888')`;
+        yield* sql`INSERT INTO kin_agents VALUES ('other-lead', ${orgId}, 'Other', 'lead', 'owner', ${timestamp}, NULL)`;
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+          VALUES ('other-lead', ${orgId}, 'Other', 0, '{}', '[]', 'chat')`;
+        yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids)
+          VALUES (${orgId}, 'other-wake', 'other-lead', 'test', 0, 'completed', '[]')`;
+        yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id, model_json, provenance_json, status, started_at, repository_key, pull_request_number, pull_request_url)
+          VALUES ('other-worker', ${orgId}, 'other-lead', 'other-wake', 'build', 'other-thread', '{}', '{}', 'done', 0, 'github.com/owner/repo', 889, 'https://github.com/owner/repo/pull/889')`;
+        yield* deliver("other-lead", { ...pullRequest(), pull_request: { number: 889 } });
+        yield* deliver(
+          "linked-issue",
+          {
+            repository: { full_name: "owner/repo" },
+            issue: { number: 777 },
+            sender: { login: "human" },
+          },
+          "issue_comment",
+        );
+        yield* deliver(
+          "worker-ci",
+          {
+            repository: { full_name: "owner/repo" },
+            check_suite: { head_sha: "abc", pull_requests: [{ number: 888 }] },
+            sender: { login: "human" },
+          },
+          "check_suite",
+        );
+        yield* deliver("foreign", {
+          ...pullRequest(),
+          repository: { full_name: "owner/elsewhere" },
+          pull_request: { number: 888 },
+        });
+        yield* drain;
+        assert.deepStrictEqual((yield* events).map((event) => event.dedupeKey).sort(), [
+          "linked-issue",
+          "worker-ci",
+        ]);
+        yield* sql`UPDATE kin_workers SET repository_key = 'github.com/owner/elsewhere'
+          WHERE org_id = ${orgId} AND worker_id = 'worker'`;
+        yield* deliver("wrong-worker-repo", { ...pullRequest(), pull_request: { number: 888 } });
+        yield* drain;
+        assert.lengthOf(yield* events, 2);
+        yield* sql`UPDATE kin_workers SET pull_request_url = NULL, pull_request_number = NULL, repository_key = 'github.com/owner/repo'
+          WHERE org_id = ${orgId} AND worker_id = 'worker'`;
+        yield* deliver("worker-opened", {
+          ...pullRequest(),
+          pull_request: {
+            number: 890,
+            head: { sha: "abc", ref: "kin/worker/worker", repo: { full_name: "owner/repo" } },
+          },
+        });
+        yield* drain;
+        assert.lengthOf(yield* events, 3);
+      }),
+    ),
+  );
+
   it.effect.each([
     { name: "truncated", payload: pullRequest({ padding: "x".repeat(70_000) }), remove: false },
     { name: "missing", payload: pullRequest(), remove: true },
@@ -310,17 +463,31 @@ describe("KinGithubEvents", () => {
     ),
   );
 
-  it.effect("still enqueues the event while memory is down, without matching conditions", () =>
+  it.effect("retries memory-only watches after an outage without consuming them", () =>
     run(({ deliver, drain, memoryDown }) =>
       Effect.gen(function* () {
         yield* Ref.set(memoryDown, true);
-        yield* deliver("gh-4", pullRequest());
-        yield* drain;
-        assert.deepStrictEqual(
-          (yield* events).map((event) => event._tag),
-          ["github"],
+        yield* deliver("gh-4", { ...pullRequest(), pull_request: { number: 212, merged: true } });
+        yield* deliver(
+          "linked-outage",
+          {
+            action: "created",
+            repository: { full_name: "owner/repo" },
+            issue: { number: 777 },
+            sender: { login: "human" },
+          },
+          "issue_comment",
         );
-        assert.strictEqual((yield* pending("github")).length, 0);
+        yield* drain;
+        assert.lengthOf(yield* events, 0);
+        assert.lengthOf(yield* pending("github"), 2);
+        yield* Ref.set(memoryDown, false);
+        yield* drain;
+        assert.lengthOf(yield* events, 0);
+        yield* TestClock.adjust("1 minute");
+        yield* Effect.all([drain, drain], { concurrency: 2 });
+        assert.lengthOf(yield* events, 3);
+        assert.lengthOf(yield* pending("github"), 0);
       }),
     ),
   );
@@ -374,9 +541,9 @@ describe("KinGithubEvents", () => {
   );
 
   it.effect("turns a fire still failing after 24 hours into a stale recheck", () =>
-    run(({ deliver, drain }) =>
+    run(({ deliver, drain, memoryDown }) =>
       Effect.gen(function* () {
-        yield* queueDown(true);
+        yield* Ref.set(memoryDown, true);
         const deliveryId = yield* deliver("gh-7", pullRequest());
         yield* drain;
         assert.strictEqual((yield* pending("github")).length, 1);
@@ -427,6 +594,16 @@ describe("KinGithubRepoScope", () => {
       name: "spaced",
       env: { KIN_GITHUB_REPOS: " owner/repo , Owner/Other " },
       repos: ["owner/repo", "Owner/Other"],
+    },
+    {
+      name: "memory excluded even when explicitly listed",
+      env: {
+        KIN_GITHUB_REPOS: "owner/repo,Owner/Memory",
+        KIN_MEMORY_REPOSITORIES: JSON.stringify([
+          { orgId, repoUrl: "https://user:token@www.github.com/owner/memory.git" },
+        ]),
+      },
+      repos: ["owner/repo"],
     },
     { name: "invalid", env: { KIN_GITHUB_REPOS: "owner/repo,not a repo" }, repos: [] },
   ])("$name", ({ env, repos }) =>
@@ -484,6 +661,32 @@ describe("matchConditions", () => {
   ])("$name", ({ change, item, matches }) => {
     assert.strictEqual(
       GithubEvents.matchConditions({ ...facts, ...change }, [item]).length === 1,
+      matches,
+    );
+  });
+});
+
+describe("GitHub mention interest", () => {
+  it.each([
+    { action: "opened", text: "Please @kin", matches: true },
+    { action: "edited", text: "@KIN[bot] please", matches: true },
+    { action: "created", text: "(@kin)", matches: true },
+    { action: "created", text: "@kin-other", matches: false },
+    { action: "created", text: "@kinetic", matches: false },
+    { action: "created", text: "@kin_other", matches: false },
+    { action: "closed", text: "@kin[bot]", matches: false },
+    { action: "synchronize", text: "@kin", matches: false },
+    { action: "reopened", text: "@kin", matches: false },
+  ])("$action: $text → $matches", ({ action, text, matches }) => {
+    const built = GithubEvents.githubEventFromDelivery(orgId, {
+      id: ScheduledTaskWebhookDeliveryId.make("mention"),
+      receivedAt: timestamp,
+      headers: { "x-github-event": "pull_request", "x-github-delivery": "mention" },
+      body: JSON.stringify({ ...pullRequest(), action, pull_request: { number: 999, body: text } }),
+      bodyTruncated: false,
+    });
+    assert.strictEqual(
+      built._tag === "event" && relevant(built.event, "kin[bot]", [], []),
       matches,
     );
   });

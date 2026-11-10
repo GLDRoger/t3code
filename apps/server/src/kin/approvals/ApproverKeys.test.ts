@@ -26,15 +26,17 @@ import {
   kinKeyConfirmationCode,
   layer as approverKeysLayer,
   type KinKeyCaller,
-  type KinKeyConnection,
 } from "./ApproverKeys.ts";
 import * as Audit from "./Audit.ts";
+import { KinHostKeyCeremony, layer as hostCeremonyLayer } from "./HostKeyCeremony.ts";
 import * as KeySeal from "./KeySeal.ts";
 import { KinAttestationTrust } from "./attestation/AttestationTrust.ts";
 import { androidChain, makeTrustFixture } from "./attestation/testFixtures.ts";
+import { makeApprovalKey } from "./grant.testkit.ts";
 import { makeRegisterApproverKeyHandler } from "./handlers/registerApproverKey.ts";
 import {
   KinPendingActions,
+  kinTargetDigest,
   layer as pendingActionsLayer,
   type KinPendingActionCreateInput,
 } from "./PendingActions.ts";
@@ -45,7 +47,7 @@ const trustLayer = Layer.succeed(KinAttestationTrust, {
   load: () => Effect.succeed(fixture.trust),
 });
 const database = Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory);
-const layer = approverKeysLayer.pipe(
+const layer = Layer.merge(approverKeysLayer, hostCeremonyLayer).pipe(
   Layer.provideMerge(pendingActionsLayer),
   Layer.provideMerge(Audit.layer),
   Layer.provide(Layer.merge(trustLayer, KeySeal.layerTest())),
@@ -53,7 +55,7 @@ const layer = approverKeysLayer.pipe(
 );
 
 // Real T3 auth with Kin's proof key hooks, so revocations write what #54 writes.
-const relayLayer = approverKeysLayer.pipe(
+const relayLayer = Layer.merge(approverKeysLayer, hostCeremonyLayer).pipe(
   Layer.provideMerge(pendingActionsLayer),
   Layer.provideMerge(Audit.layer),
   Layer.provide(Layer.merge(trustLayer, KeySeal.layerTest())),
@@ -65,15 +67,13 @@ const orgId = Schema.decodeSync(KinOrgId)("org_01");
 const owner = Schema.decodeSync(KinPersonId)("h_owner");
 const sessionId = Schema.decodeSync(AuthSessionId);
 const decodeEventId = Schema.decodeSync(KinEventId);
-const loopback: KinKeyConnection = { remoteAddress: "127.0.0.1", headers: {} };
 
-const caller = (id: string, subject: string, connection?: KinKeyConnection): KinKeyCaller => ({
+const caller = (id: string, subject: string): KinKeyCaller => ({
   session: { sessionId: sessionId(id), subject, method: "bearer-access-token", scopes: [] },
   people: [{ _tag: "person", orgId, personId: owner }],
-  connection: Option.fromUndefinedOr(connection),
 });
-const phone = caller("sess-phone", "phone", { remoteAddress: "192.168.1.20", headers: {} });
-const desktop = caller("sess-desktop", "desktop-bootstrap", loopback);
+const phone = caller("sess-phone", "phone");
+const laptop = caller("sess-laptop", "browser");
 
 const seed = Effect.gen(function* () {
   yield* TestClock.setTime(NOW);
@@ -82,17 +82,20 @@ const seed = Effect.gen(function* () {
     VALUES ('org_01', 'Kin', '2026-11-07T00:00:00.000Z')`;
   for (const [id, subject, ip] of [
     ["sess-phone", "phone", "192.168.1.20"],
-    ["sess-desktop", "desktop-bootstrap", "127.0.0.1"],
-    ["sess-desktop-remote", "desktop-bootstrap", "100.101.102.103"],
-    // A browser, or a tunnel's local process, on the Kin host itself.
-    ["sess-local-browser", "browser", "127.0.0.1"],
+    ["sess-phone-2", "phone", "192.168.1.21"],
+    ["sess-laptop", "browser", "192.168.1.30"],
   ] as const) {
     yield* sql`INSERT INTO auth_sessions (session_id, subject, scopes, method, client_ip_address,
         issued_at, expires_at)
       VALUES (${id}, ${subject}, '[]', 'bearer-access-token', ${ip},
         '2026-11-07T00:00:00.000Z', '2026-12-07T00:00:00.000Z')`;
   }
-  return { keys: yield* ApproverKeys, actions: yield* KinPendingActions, sql };
+  return {
+    keys: yield* ApproverKeys,
+    ceremony: yield* KinHostKeyCeremony,
+    actions: yield* KinPendingActions,
+    sql,
+  };
 });
 
 /** A relay phone: a DPoP session that renews hourly under a new id with the same proof key. */
@@ -105,7 +108,6 @@ const relayPhone = (id: AuthSessionId, proofKeyThumbprint: string): KinKeyCaller
     proofKeyThumbprint,
   },
   people: [{ _tag: "person", orgId, personId: owner }],
-  connection: Option.some({ remoteAddress: "100.64.0.9", headers: {} }),
 });
 
 const seedRelay = Effect.gen(function* () {
@@ -195,16 +197,30 @@ const approveWith = (
     exp: NOW / 1000 + 600,
   });
 
+/** What the owner types into `kin approvals confirm-key` on the host. */
+const onHost = (
+  registered: { readonly key: { readonly thumbprint: KinPendingAction["targetDigest"] } },
+  code: string,
+  options: { readonly session?: string; readonly recover?: boolean } = {},
+) =>
+  KinHostKeyCeremony.use((ceremony) =>
+    ceremony.confirm({
+      orgId,
+      thumbprint: registered.key.thumbprint as never,
+      sessionId: sessionId(options.session ?? "sess-phone"),
+      code,
+      recover: options.recover ?? false,
+    }),
+  );
+
 const confirmFirst = (keys: ApproverKeys["Service"]) =>
   Effect.gen(function* () {
     const registered = yield* registerAndroid(keys);
-    yield* keys.confirmKey(desktop, {
-      orgId,
-      thumbprint: registered.key.thumbprint,
-      code: registered.code,
-    });
+    yield* onHost(registered, registered.code);
     return registered;
   });
+
+const otherCode = (code: string) => (code === "000000" ? "000001" : "000000");
 
 describe("ApproverKeys", () => {
   it.effect("keys active before the seal shipped are sealed on the first start only", () =>
@@ -236,41 +252,103 @@ describe("ApproverKeys", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("the first approver key can't be confirmed from a remote session", () =>
+  it.effect("the host confirms the first key only with its phone's code, key and session", () =>
     Effect.gen(function* () {
-      const { keys } = yield* seed;
-      const { key, code } = yield* registerAndroid(keys);
-      assert.strictEqual(key.state, "pending");
-      assert.strictEqual(key.hardware, "strongbox");
-      assert.isTrue(key.attested);
-      const input = { orgId, thumbprint: key.thumbprint, code };
-      const remote: ReadonlyArray<KinKeyCaller> = [
-        phone,
-        caller("sess-phone", "phone", loopback),
-        caller("sess-local-browser", "browser", loopback),
-        caller("sess-desktop", "desktop-bootstrap", { remoteAddress: "100.64.0.9", headers: {} }),
-        caller("sess-desktop", "desktop-bootstrap", {
-          remoteAddress: "127.0.0.1",
-          headers: { "x-forwarded-for": "100.64.0.9" },
-        }),
-        caller("sess-desktop", "desktop-bootstrap", {
-          remoteAddress: "127.0.0.1",
-          headers: { "tailscale-user-login": "someone@example.com" },
-        }),
-        caller("sess-desktop", "desktop-bootstrap"),
-        caller("sess-desktop-remote", "desktop-bootstrap", loopback),
-      ];
-      for (const from of remote) {
-        assert.strictEqual(reasonOf(yield* Effect.exit(keys.confirmKey(from, input))), "not_local");
-      }
-      const wrong = code === "000000" ? "000001" : "000000";
+      const { keys, ceremony } = yield* seed;
+      const mine = yield* registerAndroid(keys);
+      // The list is oldest first; a second apart keeps it from falling back to random thumbprints.
+      yield* TestClock.adjust("1 second");
+      const other = yield* registerAndroid(keys, caller("sess-phone-2", "phone"));
+      assert.strictEqual(mine.key.state, "pending");
+      assert.strictEqual(mine.key.hardware, "strongbox");
+      assert.isTrue(mine.key.attested);
+      const listed = yield* ceremony.listPending();
+      assert.deepStrictEqual(
+        listed.map((row) => [row.thumbprint, row.sessionId, row.hardware, row.attemptsLeft]),
+        [
+          [mine.key.thumbprint, "sess-phone", "strongbox", 5],
+          [other.key.thumbprint, "sess-phone-2", "strongbox", 5],
+        ],
+      );
+
+      // Wrong code; another key's code; the right code named with another session.
       assert.strictEqual(
-        reasonOf(yield* Effect.exit(keys.confirmKey(desktop, { ...input, code: wrong }))),
+        reasonOf(yield* Effect.exit(onHost(mine, otherCode(mine.code)))),
         "bad_code",
       );
-      const confirmed = yield* keys.confirmKey(desktop, input);
-      assert.strictEqual(confirmed.state, "active");
-      assert.deepStrictEqual(yield* keys.requireActive(key), confirmed);
+      assert.strictEqual(reasonOf(yield* Effect.exit(onHost(mine, other.code))), "bad_code");
+      assert.strictEqual(
+        reasonOf(yield* Effect.exit(onHost(mine, mine.code, { session: "sess-phone-2" }))),
+        "bad_code",
+      );
+      assert.strictEqual(Option.getOrThrow(yield* keys.get(mine.key)).state, "pending");
+
+      const confirmed = yield* onHost(mine, mine.code);
+      assert.strictEqual(confirmed.key.state, "active");
+      assert.deepStrictEqual(confirmed.revoked, []);
+      assert.deepStrictEqual(yield* keys.requireActive(mine.key), confirmed.key);
+      // Exactly that key: the other phone stays pending, and only --recover could confirm it now.
+      assert.strictEqual(Option.getOrThrow(yield* keys.get(other.key)).state, "pending");
+      assert.isTrue((yield* ceremony.listPending())[0]!.needsRecovery);
+      assert.strictEqual(
+        reasonOf(yield* Effect.exit(onHost(other, other.code, { session: "sess-phone-2" }))),
+        "invalid_state",
+      );
+      // A code works once.
+      assert.strictEqual(reasonOf(yield* Effect.exit(onHost(mine, mine.code))), "bad_code");
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "a code bound to another tuple in SQLite doesn't confirm, and expires in 10 minutes",
+    () =>
+      Effect.gen(function* () {
+        const { keys, sql } = yield* seed;
+        const moved = yield* registerAndroid(keys);
+        // Point the code at another session, as a SQLite write could: the verifier no longer fits.
+        yield* sql`UPDATE kin_approver_key_confirmations SET session_id = 'sess-phone-2'
+        WHERE thumbprint = ${moved.key.thumbprint}`;
+        yield* sql`UPDATE kin_approver_keys SET session_id = 'sess-phone-2'
+        WHERE thumbprint = ${moved.key.thumbprint}`;
+        assert.strictEqual(
+          reasonOf(yield* Effect.exit(onHost(moved, moved.code, { session: "sess-phone-2" }))),
+          "bad_code",
+        );
+        const late = yield* registerAndroid(keys);
+        yield* TestClock.adjust("10 minutes");
+        assert.strictEqual(reasonOf(yield* Effect.exit(onHost(late, late.code))), "bad_code");
+        assert.strictEqual(Option.getOrThrow(yield* keys.get(late.key)).state, "pending");
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("recovery on the host revokes the lost phone's key and activates the new one", () =>
+    Effect.gen(function* () {
+      const { keys, sql } = yield* seed;
+      const lost = yield* confirmFirst(keys);
+      const replacement = yield* registerAndroid(keys, caller("sess-phone-2", "phone"));
+      const listed = yield* keys.listKeys(laptop, { orgId });
+      assert.deepStrictEqual(
+        listed.enrolments?.map((enrolment) => enrolment.thumbprint),
+        [replacement.key.thumbprint],
+      );
+
+      const recovered = yield* onHost(replacement, replacement.code, {
+        session: "sess-phone-2",
+        recover: true,
+      });
+      assert.strictEqual(recovered.key.state, "active");
+      assert.deepStrictEqual(recovered.revoked, [lost.key.thumbprint]);
+      assert.strictEqual(reasonOf(yield* Effect.exit(keys.requireActive(lost.key))), "revoked_key");
+      assert.deepStrictEqual((yield* keys.listKeys(laptop, { orgId })).enrolments, []);
+      const [enrolment] = yield* sql<{ state: string; state_reason: string }>`
+        SELECT state, state_reason FROM kin_pending_actions WHERE kind = 'register_approver_key'`;
+      assert.deepStrictEqual(enrolment, { state: "cancelled", state_reason: "confirmed_on_host" });
+      const audit = yield* sql<{ event: string }>`SELECT event FROM kin_audit
+        WHERE event IN ('key_revoked', 'key_confirmed') ORDER BY seq`;
+      assert.deepStrictEqual(
+        audit.map((row) => row.event),
+        ["key_confirmed", "key_revoked", "key_confirmed"],
+      );
     }).pipe(Effect.provide(layer)),
   );
 
@@ -310,7 +388,7 @@ describe("ApproverKeys", () => {
         WHERE session_id = 'sess-phone'`;
 
       assert.strictEqual(reasonOf(yield* Effect.exit(keys.requireActive(key))), "revoked_key");
-      const { keys: listed } = yield* keys.listKeys(desktop, { orgId });
+      const { keys: listed } = yield* keys.listKeys(laptop, { orgId });
       assert.deepStrictEqual(
         listed.map((listedKey) => listedKey.state),
         ["revoked"],
@@ -434,12 +512,12 @@ describe("ApproverKeys", () => {
       );
       assert.strictEqual(reasonOf(downgrade), "invalid_state");
       assert.isTrue(Option.getOrThrow(yield* keys.get(attested.key)).attested);
-      for (const { key, code } of [ios, failed]) {
-        const exit = yield* Effect.exit(
-          keys.confirmKey(desktop, { orgId, thumbprint: key.thumbprint, code }),
-        );
-        assert.strictEqual(reasonOf(exit), "unattested");
-        assert.isFalse(yield* keys.activateByGrant(key));
+      // No code is kept for an unattested key, so the host has nothing to confirm.
+      for (const registered of [ios, failed]) {
+        const exit = yield* Effect.exit(onHost(registered, registered.code));
+        assert.strictEqual(reasonOf(exit), "bad_code");
+        assert.isFalse(yield* keys.activateByGrant(registered.key));
+        assert.strictEqual(Option.getOrThrow(yield* keys.get(registered.key)).state, "pending");
       }
     }).pipe(Effect.provide(layer)),
   );
@@ -447,7 +525,7 @@ describe("ApproverKeys", () => {
   it.effect("a key challenge is single-use, bound to its session and expires in 5 minutes", () =>
     Effect.gen(function* () {
       const { keys } = yield* seed;
-      const { challenge } = yield* keys.keyChallenge(desktop);
+      const { challenge } = yield* keys.keyChallenge(laptop);
       const other = yield* Effect.exit(registerAndroidWith(keys, phone, challenge));
       assert.strictEqual(reasonOf(other), "bad_challenge");
 
@@ -474,16 +552,14 @@ describe("ApproverKeys", () => {
           new Uint8Array(Buffer.from(input.challenge, "base64url")),
         ),
       );
-      const wrong = code === "000000" ? "000001" : "000000";
       for (let attempt = 0; attempt < 5; attempt++) {
-        yield* Effect.exit(
-          keys.confirmKey(desktop, { orgId, thumbprint: key.thumbprint, code: wrong }),
+        assert.strictEqual(
+          reasonOf(yield* Effect.exit(onHost({ key }, otherCode(code)))),
+          "bad_code",
         );
       }
-      const exit = yield* Effect.exit(
-        keys.confirmKey(desktop, { orgId, thumbprint: key.thumbprint, code }),
-      );
-      assert.strictEqual(reasonOf(exit), "bad_code");
+      assert.strictEqual(reasonOf(yield* Effect.exit(onHost({ key }, code))), "bad_code");
+      assert.strictEqual(Option.getOrThrow(yield* keys.get(key)).state, "pending");
     }).pipe(Effect.provide(layer)),
   );
 
@@ -492,10 +568,8 @@ describe("ApproverKeys", () => {
       const { keys, actions, sql } = yield* seed;
       const first = yield* confirmFirst(keys);
       const second = yield* registerAndroid(keys, phone, { attestationLevel: 1, keyMintLevel: 1 });
-      const desktopConfirm = yield* Effect.exit(
-        keys.confirmKey(desktop, { orgId, thumbprint: second.key.thumbprint, code: second.code }),
-      );
-      assert.strictEqual(reasonOf(desktopConfirm), "invalid_state");
+      const hostConfirm = yield* Effect.exit(onHost(second, second.code));
+      assert.strictEqual(reasonOf(hostConfirm), "invalid_state");
 
       const [row] = yield* sql<{ action_id: string }>`SELECT action_id FROM kin_pending_actions
         WHERE kind = 'register_approver_key' AND state = 'awaiting_approval'`;
@@ -537,6 +611,79 @@ describe("ApproverKeys", () => {
         reasonOf(yield* Effect.exit(keys.listKeys(phone, { orgId }))),
         "unavailable",
       );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a pending key and enrolment forged in SQLite never activate, even once signed", () =>
+    Effect.gen(function* () {
+      const { keys, actions, ceremony, sql } = yield* seed;
+      const first = yield* confirmFirst(keys);
+      const genuine = yield* registerAndroid(keys, caller("sess-phone-2", "phone"));
+      const [real] = yield* sql<{ action_id: string; pending_seal: string }>`
+        SELECT a.action_id, k.pending_seal FROM kin_pending_actions a
+        JOIN kin_approver_keys k ON k.thumbprint = json_extract(a.target_json, '$.thumbprint')
+        WHERE a.kind = 'register_approver_key'`;
+      // A software key posing as attested, carrying a real pending row's seal, and its own action.
+      const forged = makeApprovalKey();
+      yield* sql`INSERT INTO kin_approver_keys (thumbprint, org_id, public_jwk_json, human_id,
+          device_label, platform, hardware, attested, session_id, state, created_at, pending_seal)
+        VALUES (${forged.kid}, ${orgId}, ${forged.publicJwkJson}, ${owner}, 'iPhone', 'ios',
+          'secure_enclave', 1, 'sess-phone', 'pending', ${NOW}, ${real!.pending_seal})`;
+      const target = {
+        _tag: "device_key",
+        thumbprint: forged.kid,
+        hardware: "secure_enclave",
+        attested: true,
+      } as const;
+      yield* sql`INSERT INTO kin_pending_actions (action_id, org_id, idempotency_key, kind,
+          target_json, resolved_json, target_digest, nonce, revision, reason,
+          requested_by_agent_id, requested_by_thread_id, provenance_json, required_approvers_json,
+          state, created_at, updated_at, expires_at)
+        SELECT 'act_forged', org_id, ${"f".repeat(64)}, kind, ${JSON.stringify(target)}, resolved_json,
+          ${kinTargetDigest("register_approver_key", target, { _tag: "none" })}, nonce, revision,
+          reason, requested_by_agent_id, requested_by_thread_id, provenance_json,
+          required_approvers_json, state, created_at, updated_at, expires_at
+        FROM kin_pending_actions WHERE action_id = ${real!.action_id}`;
+      const forgedRef = { orgId, thumbprint: forged.kid };
+      // It reads as unattested, and the host never lists it.
+      assert.isFalse(Option.getOrThrow(yield* keys.get(forgedRef)).attested);
+      assert.isTrue(Option.getOrThrow(yield* keys.get(genuine.key)).attested);
+      assert.deepStrictEqual(
+        (yield* ceremony.listPending()).map((row) => row.thumbprint),
+        [genuine.key.thumbprint],
+      );
+
+      // The owner signs the forged card; the grant binds its thumbprint, but activation refuses.
+      const action = Option.getOrThrow(
+        yield* actions.get({ orgId, actionId: "act_forged" as KinPendingAction["id"] }),
+      );
+      const approved = yield* approveWith(actions, action, first.key.thumbprint, "jti-forged");
+      assert.strictEqual(approved._tag, "approved");
+      if (approved._tag !== "approved") return;
+      const handler = yield* makeRegisterApproverKeyHandler;
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(handler.run(action, approved.grant))));
+      assert.isFalse(yield* keys.activateByGrant(forgedRef));
+      // A missing pending seal is refused the same way.
+      yield* sql`UPDATE kin_approver_keys SET pending_seal = NULL WHERE thumbprint = ${forged.kid}`;
+      assert.isFalse(yield* keys.activateByGrant(forgedRef));
+      const [row] = yield* sql<{ state: string; seal: string | null }>`
+        SELECT state, seal FROM kin_approver_keys WHERE thumbprint = ${forged.kid}`;
+      assert.deepStrictEqual(row, { state: "pending", seal: null });
+      // A genuine row edited after registration loses its seal's backing too.
+      yield* sql`UPDATE kin_approver_keys SET device_label = 'Owner phone'
+        WHERE thumbprint = ${genuine.key.thumbprint}`;
+      assert.isFalse(yield* keys.activateByGrant(genuine.key));
+      // `created_at` bounds the session-revocation check, so moving it voids both seals.
+      const moved = yield* registerAndroid(keys, caller("sess-phone-3", "phone"));
+      yield* sql`UPDATE kin_approver_keys SET created_at = created_at + 1
+        WHERE thumbprint = ${moved.key.thumbprint}`;
+      assert.isFalse(Option.getOrThrow(yield* keys.get(moved.key)).attested);
+      assert.isFalse(yield* keys.activateByGrant(moved.key));
+      assert.strictEqual(Option.getOrThrow(yield* keys.get(moved.key)).state, "pending");
+      assert.isTrue((yield* keys.requireActive(first.key)).attested);
+      yield* sql`UPDATE kin_approver_keys SET created_at = created_at + 1
+        WHERE thumbprint = ${first.key.thumbprint}`;
+      assert.isFalse((yield* keys.requireActive(first.key)).attested);
     }).pipe(Effect.provide(layer)),
   );
 });

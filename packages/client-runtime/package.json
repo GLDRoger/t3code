@@ -23,6 +23,14 @@
       "types": "./src/composerThreadItems.ts",
       "default": "./src/composerThreadItems.ts"
     },
+    "./composer-model-mentions": {
+      "types": "./src/composerModelMentions.ts",
+      "default": "./src/composerModelMentions.ts"
+    },
+    "./model-search": {
+      "types": "./src/modelSearch.ts",
+      "default": "./src/modelSearch.ts"
+    },
     "./image-attachment-size": {
       "types": "./src/imageAttachmentSize.ts",
       "default": "./src/imageAttachmentSize.ts"
@@ -234,6 +242,10 @@
     "./state/environmentHttpAuth": {
       "types": "./src/state/environmentHttpAuth.ts",
       "default": "./src/state/environmentHttpAuth.ts"
+    },
+    "./state/connectMcpApproval": {
+      "types": "./src/state/connectMcpApproval.ts",
+      "default": "./src/state/connectMcpApproval.ts"
     },
     "./state/peerPairingCode": {
       "types": "./src/state/peerPairingCode.ts",
@@ -543,6 +555,10 @@
       "types": "./src/kinPush.ts",
       "default": "./src/kinPush.ts"
     },
+    "./kin/kinListSwitch": {
+      "types": "./src/kin/kinListSwitch.ts",
+      "default": "./src/kin/kinListSwitch.ts"
+    },
     "./kin/kinLive": {
       "types": "./src/kin/kinLive.ts",
       "default": "./src/kin/kinLive.ts"
@@ -610,6 +626,10 @@
     "./kin/kinMemoryChangesPresentation": {
       "types": "./src/kin/kinMemoryChangesPresentation.ts",
       "default": "./src/kin/kinMemoryChangesPresentation.ts"
+    },
+    "./kin/kinApprovalPresentation": {
+      "types": "./src/kin/kinApprovalPresentation.ts",
+      "default": "./src/kin/kinApprovalPresentation.ts"
     },
     "./kin/kinLevelsPresentation": {
       "types": "./src/kin/kinLevelsPresentation.ts",

@@ -8,11 +8,14 @@ import {
 import { persistQuery } from "@t3tools/client-runtime/state/query-persistence";
 import { watchKinChatForPush } from "@t3tools/client-runtime/kin-push";
 import {
+  KIN_APPROVAL_WS_METHODS,
   KIN_CHAT_WS_METHODS,
   KIN_LEVEL_WS_METHODS,
   KIN_PUSH_WS_METHODS,
   KinOrgsListResult,
   type EnvironmentId,
+  type KinApprovalsActionInput,
+  type KinApprovalsOrgInput,
   type KinChatHistoryInput,
   type KinChatId,
   type KinChatsSubscribeInput,
@@ -89,6 +92,16 @@ const levelsRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   tag: KIN_LEVEL_WS_METHODS.get,
 });
 const readLevels = guardedRead(levelsRead);
+const approvalRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:approval:read",
+  tag: KIN_APPROVAL_WS_METHODS.get,
+});
+const readApproval = guardedRead(approvalRead);
+const approverKeysRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:approver-keys:read",
+  tag: KIN_APPROVAL_WS_METHODS.listKeys,
+});
+const readApproverKeys = guardedRead(approverKeysRead);
 
 /** A dropped connection can leave a read pending; "Load earlier" fails after this and offers Retry. */
 export const KIN_HISTORY_PAGE_TIMEOUT = Duration.seconds(20);
@@ -169,6 +182,12 @@ export const kinClient = {
     tag: "kin.lead.interrupt",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.wakeupId },
   }),
+  /** Mutes or unmutes this chat's pushes for the viewer; one in flight per chat. */
+  mute: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:mute",
+    tag: KIN_CHAT_WS_METHODS.chatsMute,
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.chatId },
+  }),
   markRead: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:mark-read",
     tag: KIN_CHAT_WS_METHODS.messagesMarkRead,
@@ -225,6 +244,52 @@ export const kinClient = {
   shadowMemory: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:levels:shadow-memory",
     tag: KIN_LEVEL_WS_METHODS.shadowMemory,
+  }),
+  /**
+   * One pending action as this viewer may see it. `revision` is the card's own, only a cache key:
+   * a redrawn card reads the action again.
+   */
+  approval: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:approval",
+    execute: Effect.fn("KinClient.approval")(function* (
+      input: KinApprovalsActionInput & { readonly revision: number },
+    ) {
+      return yield* readApproval({ actionId: input.actionId });
+    }),
+    staleTimeMs: 5_000,
+  }),
+  approvalRead,
+  /** The org's approver keys; this phone finds its own by the thumbprint it saved. */
+  approverKeys: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:approver-keys",
+    execute: Effect.fn("KinClient.approverKeys")(function* (input: KinApprovalsOrgInput) {
+      return yield* readApproverKeys(input);
+    }),
+    staleTimeMs: 10_000,
+  }),
+  approverKeysRead,
+  approvalChallenge: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:approval:challenge",
+    tag: KIN_APPROVAL_WS_METHODS.challenge,
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.actionId },
+  }),
+  submitGrant: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:approval:submit",
+    tag: KIN_APPROVAL_WS_METHODS.submitGrant,
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.compact },
+  }),
+  declineAction: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:approval:decline",
+    tag: KIN_APPROVAL_WS_METHODS.reject,
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.actionId },
+  }),
+  keyChallenge: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:approver-key:challenge",
+    tag: KIN_APPROVAL_WS_METHODS.keyChallenge,
+  }),
+  registerKey: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:approver-key:register",
+    tag: KIN_APPROVAL_WS_METHODS.registerKey,
   }),
   registerPush: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:register-push",

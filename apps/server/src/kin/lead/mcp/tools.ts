@@ -2,7 +2,7 @@ import {
   KinChatError,
   KinMessageId,
   KinReaction,
-  KinReactionEmoji,
+  KinLeadReactionEmoji,
   KinShadowResult,
   OrchestratorMcpFailure,
 } from "@t3tools/contracts";
@@ -73,8 +73,8 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_react", {
     ...chat,
     description:
-      "React to a message in the chat your reply goes to, with one of 👍 ✅ 👎 ❌ ❤️ 👀. A 👍 can end your turn instead of a reply when the owner's message needs no answer, such as \"thanks, that's all\". If they asked something, still reply in text. Never an approval. At L0 outside your owner's direct chat you get shadowed: true.",
-    parameters: Schema.Struct({ messageId: KinMessageId, emoji: KinReactionEmoji }),
+      "React to a message in the chat your reply goes to, with one of 👍 ✅ 👎 ❌ ❤️ 👀; a new one replaces yours on that message. A 👍 can end your turn instead of a reply when the owner's message needs no answer, such as \"thanks, that's all\". If they asked something, still reply in text. Never an approval. At L0 outside your owner's direct chat you get shadowed: true.",
+    parameters: Schema.Struct({ messageId: KinMessageId, emoji: KinLeadReactionEmoji }),
     success: Schema.Union([KinReaction, KinShadowResult]),
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("memory_search", {
@@ -103,6 +103,13 @@ export const KinLeadToolkit = Toolkit.make(
     description:
       "Write an open deferral in this organization's memory. Supply what, an explicit due date or offset timestamp, onDue, chatId and current sourceEventId. Returns itemId; identical retries return the same item, changed retries are refused. Trigger arming is performed later by the cache, not this tool. Never use schedule_task.",
     parameters: Lead.DeferInput,
+    success: Lead.ItemResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("kin_schedule", {
+    ...shared,
+    description:
+      "Set up a scheduled task: at each run you wake with its instruction, do the work with your normal tools and post the results. Only when the owner's own message in this batch asked for it; anything else is refused. Supply what (the instruction, in the owner's terms), at (HH:MM owner time), days (0 Sunday to 6 Saturday), chatId and that message's sourceEventId. The server keeps the owner's words with it and posts the task's card. Identical retries return the same item. For a single time, use kin_defer. Never use schedule_task.",
+    parameters: Lead.ScheduleInput,
     success: Lead.ItemResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_journal", {

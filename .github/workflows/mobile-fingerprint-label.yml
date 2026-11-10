@@ -21,8 +21,10 @@ jobs:
     name: Sync native change label
     # A cancelled run was superseded by a newer push, whose run labels instead.
     if: >-
+      !startsWith(github.event.workflow_run.head_branch, 'kin/worker/') && (
       github.event.workflow_run.event == 'pull_request' &&
       github.event.workflow_run.conclusion == 'success'
+      )
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

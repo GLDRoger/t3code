@@ -7,6 +7,7 @@ import {
   EventId,
   KinAgentId,
   KinChatId,
+  KinMessageId,
   KinWakeupId,
   MessageId,
   RunId,
@@ -35,6 +36,8 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startAgentWakeup } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
+import * as ChatWake from "../lead/ChatWake.ts";
+import { draftReplyText, SILENCE_MARKERS, stripTrailingSilenceMarker } from "./classify.ts";
 import { KinPresence } from "./KinPresence.ts";
 import * as ReplyBridge from "./KinReplyBridge.ts";
 
@@ -293,7 +296,15 @@ it.effect("shows a short note before a tool call only on the presence line", () 
     for (const item of [note, call]) yield* Queue.offer(fake.live, itemEvent(item));
     assert.include(yield* Fiber.join(labels), "Checking your reminders");
     fake.items = [note, call, answer];
+    const cleared = yield* all.pipe(
+      Stream.filter((event) => event.type === "presence.updated" && event.presence === null),
+      Stream.take(1),
+      Stream.runCollect,
+      Effect.forkScoped,
+    );
     yield* complete;
+    // The reply is settled: what the wake-up does next isn't work on the owner's message.
+    assert.lengthOf(yield* Fiber.join(cleared), 1);
     assert.deepStrictEqual(
       (yield* posted).map((row) => row.body),
       ["Done: I'll remind you Friday at 9:00."],
@@ -303,21 +314,62 @@ it.effect("shows a short note before a tool call only on the presence line", () 
         FROM kin_wakeups WHERE org_id = ${owner.orgId} AND wakeup_id = ${wakeupId} ORDER BY wakeup_id`,
       [{ firstToken: 1, posted: 1 }],
     );
-    const cleared = yield* all.pipe(
-      Stream.filter((event) => event.type === "presence.updated" && event.presence === null),
-      Stream.take(1),
-      Stream.runCollect,
-      Effect.forkScoped,
-    );
     yield* bridge.end({ orgId: owner.orgId, agentId, wakeupId });
-    assert.lengthOf(yield* Fiber.join(cleared), 1);
-    // A wake-up that ends before it begins drops `seen` where no message waits any more.
     const presence = Context.get(services, KinPresence);
+    assert.deepStrictEqual(presence.snapshot(owner.orgId, direct.chatId).presence, []);
+    // A wake-up that ends before it begins drops `seen` where no message waits any more.
     yield* presence.seen(owner.orgId, direct.chatId, agentId, 0);
     assert.lengthOf(presence.snapshot(owner.orgId, direct.chatId).presence, 1);
     yield* bridge.end({ orgId: owner.orgId, agentId, wakeupId: KinWakeupId.make("never-began") });
     assert.deepStrictEqual(presence.snapshot(owner.orgId, direct.chatId).presence, []);
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "leaves no presence after an owner's reaction is queued during the wake-up and withdrawn",
+  () =>
+    Effect.gen(function* () {
+      const { fake, runId, complete, owner, services, chats, direct, posted, sql } = yield* setup({
+        ask: "What can you do?",
+      });
+      yield* Layer.build(ChatWake.layer.pipe(Layer.provide(Layer.succeedContext(services))));
+      const all = yield* Context.get(services, KinChatHub).subscribeAll;
+      const presence = Context.get(services, KinPresence);
+      const lines = () => presence.snapshot(owner.orgId, direct.chatId).presence;
+      // Mid-run, the lead is working; then its answer posts and the run ends.
+      yield* Queue.offer(fake.live, itemEvent(tool("t", 1, "mcp__kin__kin_journal", runId)));
+      fake.items = [
+        text("a", 2, "I keep track of your repos, run workers and remind you of things.", runId),
+        tool("t2", 3, "Write", runId),
+      ];
+      yield* complete;
+      assert.deepStrictEqual(lines(), []);
+      assert.lengthOf(yield* posted, 1);
+      const [reply] = yield* sql<{ messageId: KinMessageId }>`SELECT message_id AS "messageId"
+        FROM kin_messages WHERE chat_id = ${direct.chatId} AND author_kind = 'agent' ORDER BY seq`;
+      const seen = (state: "seen" | null) =>
+        all.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "presence.updated" &&
+              (state === null ? event.presence === null : event.presence?.state === state),
+          ),
+          Stream.take(1),
+          Stream.runCollect,
+          Effect.forkScoped,
+        );
+      // While the wake-up still runs (its memory commit), the owner 👎s and withdraws it.
+      const shown = yield* seen("seen");
+      yield* chats.react(owner, { messageId: reply!.messageId, emoji: "👎", on: true });
+      assert.lengthOf(yield* Fiber.join(shown), 1);
+      const gone = yield* seen(null);
+      yield* chats.react(owner, { messageId: reply!.messageId, emoji: "👎", on: false });
+      assert.lengthOf(yield* Fiber.join(gone), 1);
+      assert.deepStrictEqual(lines(), []);
+      // Feedback such as ❤️ wakes nothing and shows nothing.
+      yield* chats.react(owner, { messageId: reply!.messageId, emoji: "❤️", on: true });
+      assert.deepStrictEqual(lines(), []);
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect("shadows an L0 lead's reply outside its owner's chat", () =>
@@ -437,3 +489,53 @@ it.effect.each(["CI is red on main since 9:00.", "NO_REPLY"])(
       assert.strictEqual(fake.rescues, 0);
     }).pipe(Effect.provide(layer)),
 );
+
+it.effect.each([
+  ...SILENCE_MARKERS.map((marker) => `(${marker})`),
+  ...SILENCE_MARKERS.map((marker) => marker),
+  "(NO REPLY NEEDED)",
+  "(silent)\n(nothing to add)",
+])("posts nothing for a marker-only notice text (%s)", (body) =>
+  Effect.gen(function* () {
+    const { fake, runId, complete, posted } = yield* setup({});
+    fake.items = [text("a", 1, body, runId)];
+    yield* complete;
+    assert.deepStrictEqual(yield* posted, []);
+    assert.strictEqual(fake.rescues, 0);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  { body: "Deploy is done.\n(no reply needed)", expected: ["Deploy is done."] },
+  { body: "Deploy is done. (Nothing To Add)", expected: ["Deploy is done."] },
+  {
+    body: "(nothing to add) was his reply, but CI is green.",
+    expected: ["(nothing to add) was his reply, but CI is green."],
+  },
+  { body: "All good here (no rush).", expected: ["All good here (no rush)."] },
+  { body: "Silent mode is on.", expected: ["Silent mode is on."] },
+])("strips only a trailing silence marker from a reply (%#)", ({ body, expected }) =>
+  Effect.gen(function* () {
+    const { fake, runId, complete, posted } = yield* setup({ ask: "Status?" });
+    fake.items = [text("a", 1, body, runId)];
+    yield* complete;
+    assert.deepStrictEqual(
+      (yield* posted).map((row) => row.body),
+      expected,
+    );
+    assert.strictEqual(fake.rescues, 0);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.each([
+  ["Hello (no reply nee", "Hello"],
+  ["Hello (no reply needed)", "Hello"],
+  ["(no rep", ""],
+  ["no reply nee", ""],
+  ["Hello (see the log", "Hello (see the log"],
+  ["Hello (nothing to add) and more", "Hello (nothing to add) and more"],
+  ["Deploy is done.\n(staying quiet)", "Deploy is done."],
+])("a streaming draft never shows a silence marker (%#)", (body, expected) => {
+  assert.strictEqual(draftReplyText(body!), expected);
+  assert.strictEqual(stripTrailingSilenceMarker("Done. (silent)"), "Done.");
+});

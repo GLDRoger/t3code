@@ -292,16 +292,20 @@ const make = Effect.gen(function* () {
       Effect.provideService(VcsProcess, vcs),
     );
   const locked = memory.withWriterLock;
-  const sessions = new Map<
-    KinOrgId,
-    {
-      wakeupId: string;
-      generation: number;
-      files: Map<string, string>;
-      lines: string[];
-      supersessions: Map<string, string>;
-    }
-  >();
+  // Staged changes are per wake-up, so concurrent leads never share a session; the
+  // git commit and push themselves stay serialized per repository under `locked`.
+  // `changes` keeps each staged change so the commit replays them all against its own head
+  // instead of laying files validated at an older one over another lead's commit.
+  type SessionState = {
+    wakeupId: string;
+    generation: number;
+    files: Map<string, string>;
+    lines: string[];
+    supersessions: Map<string, string>;
+    changes: Map<string, MemoryChange>;
+  };
+  const sessions = new Map<string, SessionState>();
+  const sessionKey = (orgId: KinOrgId, wakeupId: string) => `${orgId}\u0000${wakeupId}`;
   const io = <A, E, R>(orgId: KinOrgId, effect: Effect.Effect<A, E, R>) =>
     effect.pipe(Effect.mapError((cause) => new MemoryError({ orgId, operation: "writer", cause })));
   const git = Effect.fn("MemoryWriter.git")(function* (
@@ -394,6 +398,34 @@ const make = Effect.gen(function* () {
     ]);
     return recorded;
   });
+  const wakeupSubject = (ctx: WakeupContext) => `kin(${ctx.agentId}): wake-up ${ctx.wakeupId}`;
+  // The wake-up's commit, by the subject that names it: once another lead commits on the same
+  // branch, the head is no longer this wake-up's commit even though it committed.
+  const ownCommit = Effect.fn("MemoryWriter.ownCommit")(function* (
+    orgId: KinOrgId,
+    writer: string,
+    head: string,
+    ctx: WakeupContext,
+  ) {
+    const subject = wakeupSubject(ctx);
+    // A day of slack for clock changes; the walk stops at older commits, so it stays short.
+    const since = Date.parse(ctx.startedAt) - 86_400_000;
+    const bound = since > 0 ? [`--since=${DateTime.formatIso(DateTime.makeUnsafe(since))}`] : [];
+    const log = yield* git(orgId, writer, [
+      "log",
+      ...bound,
+      "--fixed-strings",
+      `--grep=${subject}`,
+      "--format=%H%x09%s",
+      head,
+      "--",
+    ]);
+    for (const line of log.split("\n")) {
+      const [sha, text] = line.split("\t");
+      if (sha && text === subject) return sha;
+    }
+    return undefined;
+  });
   const session = Effect.fn("MemoryWriter.session")(function* (orgId: KinOrgId, wakeupId: string) {
     const ctx = yield* authority.resolve(orgId, wakeupId);
     if (
@@ -405,40 +437,39 @@ const make = Effect.gen(function* () {
     )
       return yield* new MemoryWriteRejected({ reason: "Invalid server context" });
     yield* journalEntry(ctx, "completed", []);
-    const previous = sessions.get(orgId);
-    if (previous && previous.wakeupId !== wakeupId)
-      return yield* new MemoryWriteRejected({ reason: "Another wake-up owns the writer" });
+    const key = sessionKey(orgId, wakeupId);
+    const previous = sessions.get(key);
     const generation = yield* memory.historyGeneration(orgId);
     // A purge rewrote history after this wake-up staged; committing it could restore purged content.
     if (previous && previous.generation !== generation) {
-      sessions.delete(orgId);
+      sessions.delete(key);
       return yield* new MemorySyncConflict({
         orgId,
         operation: "push",
         reason: "Memory history was rewritten during this wake-up; its staged changes were dropped",
       });
     }
-    const state = previous ?? {
+    const state: SessionState = previous ?? {
       wakeupId,
       generation,
       files: new Map<string, string>(),
       lines: [],
       supersessions: new Map<string, string>(),
+      changes: new Map<string, MemoryChange>(),
     };
     if (!previous && ctx.stagedReceipts) {
       const { writer } = yield* validate(orgId);
       const branch =
         ctx.level === "L0" ? shadowBranch(ctx.agentId) : (config.defaultBranch ?? "main");
       const head = yield* branchHead(orgId, writer, branch);
-      const { message } = yield* commitAt(orgId, writer, head);
-      if (message.split("\n")[0] !== `kin(${ctx.agentId}): wake-up ${wakeupId}`) {
+      if ((yield* ownCommit(orgId, writer, head, ctx)) === undefined) {
         const reason =
           "Staged changes and kin_end summary were lost on restart; tool receipts do not prove those changes were committed.";
         state.lines.push(reason);
         yield* recovery.notify({ orgId, branch: `wakeup:${wakeupId}`, reason });
       }
     }
-    sessions.set(orgId, state);
+    sessions.set(key, state);
     return { ctx, state };
   });
   const safePath = Effect.fn("MemoryWriter.safePath")(function* (
@@ -794,6 +825,220 @@ const make = Effect.gen(function* () {
           .pipe(
             Effect.catchCause((cause) => Effect.logWarning("Memory change card failed", cause)),
           );
+  const stageChange = Effect.fn("MemoryWriter.stageChange")(function* (
+    orgId: KinOrgId,
+    wakeupId: string,
+    ctx: WakeupContext,
+    state: SessionState,
+    change: MemoryChange,
+  ) {
+    const { writer } = yield* validate(orgId);
+    yield* safePath(orgId, writer, change.path);
+    if (change.path.startsWith("journal/"))
+      return yield* new MemoryWriteRejected({
+        reason: "Use appendJournal for journal additions",
+      });
+    const parsed = yield* parseFrontMatter(orgId, change.path, change.content, true);
+    const source =
+      change.sourceEventId === undefined
+        ? {
+            saidBy: ctx.agentId,
+            trust: "agent",
+            source: `wakeup:${wakeupId}`,
+            kind: undefined,
+          }
+        : ctx.sources.get(change.sourceEventId);
+    if (!source)
+      return yield* new MemoryWriteRejected({
+        reason: "Source is not in the current batch",
+      });
+    const fm = parsed.frontMatter;
+    const folder = fm.kind === "person" ? "people" : `${fm.kind}s`;
+    if (!change.path.startsWith(`${folder}/`))
+      return yield* new MemoryWriteRejected({ reason: "Kind does not match path" });
+    const branch =
+      ctx.level === "L0" ? shadowBranch(ctx.agentId) : (config.defaultBranch ?? "main");
+    const recorded = yield* branchHead(orgId, writer, branch);
+    const recordedFiles = yield* filesAt(orgId, writer, recorded);
+    const items = [];
+    const bodies = new Map<string, string>();
+    const regular = new Set(
+      (yield* readTree(orgId, writer, recorded).pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(VcsProcess, vcs),
+      ))
+        .filter((entry) => ["100644", "100755"].includes(entry.mode))
+        .map((entry) => entry.relative),
+    );
+    for (const [file, bytes] of recordedFiles) {
+      if (!regular.has(file)) continue;
+      if (!folders.some((folder) => file.startsWith(`${folder}/`))) continue;
+      const content = bytes.toString("utf8");
+      const parsedItem = yield* parseFrontMatter(orgId, file, content).pipe(Effect.result);
+      if (parsedItem._tag === "Failure") {
+        if (file === change.path)
+          return yield* new MemoryWriteRejected({
+            reason: "Cannot overwrite malformed recorded item",
+          });
+        continue;
+      }
+      if (file === change.path && parsedItem.success.frontMatter.kind !== fm.kind)
+        return yield* new MemoryWriteRejected({
+          reason: "Cannot change recorded item kind",
+        });
+      items.push({
+        ...parsedItem.success.frontMatter,
+        orgId,
+        path: file,
+        duplicate: false,
+      });
+      bodies.set(file, parsedItem.success.body);
+    }
+    for (const [file, text] of state.files) {
+      if (file.startsWith("journal/") || file === "INDEX.md") continue;
+      const staged = yield* parseFrontMatter(orgId, file, text);
+      const index = items.findIndex((item) => item.path === file);
+      const head = { ...staged.frontMatter, orgId, path: file, duplicate: false };
+      if (index < 0) items.push(head);
+      else items[index] = head;
+      bodies.set(file, staged.body);
+    }
+    const superseded =
+      change.supersedes === undefined
+        ? undefined
+        : items.find((item) => item.id === change.supersedes);
+    const supersessionHash =
+      change.supersedes === undefined
+        ? undefined
+        : NodeCrypto.createHash("sha256").update(stringify(change)).digest("hex");
+    if (
+      superseded?.status === "superseded" &&
+      superseded.superseded_by === fm.id &&
+      state.supersessions.get(change.path) === supersessionHash
+    )
+      return;
+    if (
+      change.supersedes !== undefined &&
+      (!superseded ||
+        superseded.status !== "open" ||
+        superseded.kind !== fm.kind ||
+        superseded.source !== source.source ||
+        Date.parse(fm.recorded_at) <= Date.parse(superseded.recorded_at) ||
+        superseded.id === fm.id)
+    )
+      return yield* new MemoryWriteRejected({
+        reason: "Supersession requires the same source and kind",
+      });
+    for (const item of items) {
+      if (
+        (item.id === fm.id || item.status === "open") &&
+        item.kind === fm.kind &&
+        (item.id === fm.id || item.links.some((link) => fm.links.includes(link))) &&
+        item.id !== change.supersedes
+      ) {
+        const body = bodies.get(item.path) ?? (yield* memory.readItemQuietly(orgId, item.id)).body;
+        const rank = (trust: string) => ["external", "agent", "member", "owner"].indexOf(trust);
+        if (
+          item.id === fm.id &&
+          (rank(source.trust) < rank(item.trust) ||
+            (fm.status !== item.status &&
+              !(item.status === "open" && ["done", "cancelled"].includes(fm.status))))
+        )
+          return yield* new MemoryConflict({ existingId: item.id });
+        if (body !== parsed.body || item.title !== fm.title)
+          return yield* new MemoryConflict({ existingId: item.id });
+        if (item.id === fm.id) {
+          const proposed = new Map(Object.entries(fm));
+          const mutable = new Set([
+            "orgId",
+            "path",
+            "duplicate",
+            "status",
+            "invalid_at",
+            "trust",
+            "said_by",
+            "source",
+            "source_event",
+          ]);
+          if (
+            source.kind === "owner_check" &&
+            source.itemId === item.id &&
+            source.action === "keep"
+          )
+            mutable.add("review_by");
+          if (
+            source.kind === "deferral_card" &&
+            source.action === "remind" &&
+            source.itemId === item.id &&
+            item.kind === "deferral" &&
+            fm.on_due === "remind"
+          )
+            mutable.add("on_due");
+          if (
+            source.kind === "deferral_card" &&
+            source.action === "monday" &&
+            source.itemId === item.id &&
+            item.kind === "deferral" &&
+            fm.due === source.due
+          )
+            mutable.add("due");
+          const existing = new Map(Object.entries(item));
+          if (
+            [...new Set([...existing.keys(), ...proposed.keys()])].some(
+              (key) =>
+                !mutable.has(key) &&
+                JSON.stringify(existing.get(key)) !== JSON.stringify(proposed.get(key)),
+            )
+          )
+            return yield* new MemoryConflict({ existingId: item.id });
+        }
+      }
+      if (
+        (item.path === change.path && item.id !== fm.id) ||
+        (item.id === fm.id && item.path !== change.path)
+      )
+        return yield* new MemoryWriteRejected({
+          reason: "Cannot replace a different item",
+        });
+    }
+    const fields = {
+      ...fm,
+      said_by: source.saidBy,
+      source: source.source,
+      source_event: change.sourceEventId,
+      trust:
+        fm.trust === "external" ||
+        (fm.trust === "agent" && source.trust !== "external") ||
+        (fm.trust === "member" && source.trust === "owner")
+          ? fm.trust
+          : source.trust,
+      review_by: fm.review_by,
+    };
+    const existing = items.find((item) => item.id === fm.id);
+    const text = render(
+      existing
+        ? {
+            ...fields,
+            trust: existing.trust,
+            said_by: existing.said_by,
+            source: existing.source,
+            source_event: existing.source_event,
+          }
+        : fields,
+      parsed.body,
+    );
+    yield* parseFrontMatter(orgId, change.path, text);
+    if (superseded) {
+      const oldBody =
+        bodies.get(superseded.path) ?? (yield* memory.readItemQuietly(orgId, superseded.id)).body;
+      const { orgId: _org, path: oldPath, duplicate: _duplicate, ...oldFields } = superseded;
+      const oldText = render({ ...oldFields, status: "superseded", superseded_by: fm.id }, oldBody);
+      state.files.set(oldPath, oldText);
+    }
+    state.files.set(change.path, text);
+    if (supersessionHash !== undefined) state.supersessions.set(change.path, supersessionHash);
+    state.changes.set(change.path, change);
+  });
   return MemoryWriter.of({
     stage: Effect.fn("MemoryWriter.stage")((orgId, wakeupId, change) =>
       report(
@@ -803,223 +1048,7 @@ const make = Effect.gen(function* () {
           orgId,
           Effect.gen(function* () {
             const { ctx, state } = yield* session(orgId, wakeupId);
-            const { writer } = yield* validate(orgId);
-            yield* safePath(orgId, writer, change.path);
-            if (change.path.startsWith("journal/"))
-              return yield* new MemoryWriteRejected({
-                reason: "Use appendJournal for journal additions",
-              });
-            const parsed = yield* parseFrontMatter(orgId, change.path, change.content, true);
-            const source =
-              change.sourceEventId === undefined
-                ? {
-                    saidBy: ctx.agentId,
-                    trust: "agent",
-                    source: `wakeup:${wakeupId}`,
-                    kind: undefined,
-                  }
-                : ctx.sources.get(change.sourceEventId);
-            if (!source)
-              return yield* new MemoryWriteRejected({
-                reason: "Source is not in the current batch",
-              });
-            const fm = parsed.frontMatter;
-            const folder = fm.kind === "person" ? "people" : `${fm.kind}s`;
-            if (!change.path.startsWith(`${folder}/`))
-              return yield* new MemoryWriteRejected({ reason: "Kind does not match path" });
-            const branch =
-              ctx.level === "L0" ? shadowBranch(ctx.agentId) : (config.defaultBranch ?? "main");
-            const recorded = yield* branchHead(orgId, writer, branch);
-            const recordedFiles = yield* filesAt(orgId, writer, recorded);
-            const items = [];
-            const bodies = new Map<string, string>();
-            const regular = new Set(
-              (yield* readTree(orgId, writer, recorded).pipe(
-                Effect.provideService(FileSystem.FileSystem, fs),
-                Effect.provideService(VcsProcess, vcs),
-              ))
-                .filter((entry) => ["100644", "100755"].includes(entry.mode))
-                .map((entry) => entry.relative),
-            );
-            for (const [file, bytes] of recordedFiles) {
-              if (!regular.has(file)) continue;
-              if (!folders.some((folder) => file.startsWith(`${folder}/`))) continue;
-              const content = bytes.toString("utf8");
-              const parsedItem = yield* parseFrontMatter(orgId, file, content).pipe(Effect.result);
-              if (parsedItem._tag === "Failure") {
-                if (file === change.path)
-                  return yield* new MemoryWriteRejected({
-                    reason: "Cannot overwrite malformed recorded item",
-                  });
-                continue;
-              }
-              if (file === change.path && parsedItem.success.frontMatter.kind !== fm.kind)
-                return yield* new MemoryWriteRejected({
-                  reason: "Cannot change recorded item kind",
-                });
-              items.push({
-                ...parsedItem.success.frontMatter,
-                orgId,
-                path: file,
-                duplicate: false,
-              });
-              bodies.set(file, parsedItem.success.body);
-            }
-            for (const [file, text] of state.files) {
-              if (file.startsWith("journal/") || file === "INDEX.md") continue;
-              const staged = yield* parseFrontMatter(orgId, file, text);
-              const index = items.findIndex((item) => item.path === file);
-              const head = { ...staged.frontMatter, orgId, path: file, duplicate: false };
-              if (index < 0) items.push(head);
-              else items[index] = head;
-              bodies.set(file, staged.body);
-            }
-            const superseded =
-              change.supersedes === undefined
-                ? undefined
-                : items.find((item) => item.id === change.supersedes);
-            const supersessionHash =
-              change.supersedes === undefined
-                ? undefined
-                : NodeCrypto.createHash("sha256").update(stringify(change)).digest("hex");
-            if (
-              superseded?.status === "superseded" &&
-              superseded.superseded_by === fm.id &&
-              state.supersessions.get(change.path) === supersessionHash
-            )
-              return;
-            if (
-              change.supersedes !== undefined &&
-              (!superseded ||
-                superseded.status !== "open" ||
-                superseded.kind !== fm.kind ||
-                superseded.source !== source.source ||
-                Date.parse(fm.recorded_at) <= Date.parse(superseded.recorded_at) ||
-                superseded.id === fm.id)
-            )
-              return yield* new MemoryWriteRejected({
-                reason: "Supersession requires the same source and kind",
-              });
-            for (const item of items) {
-              if (
-                (item.id === fm.id || item.status === "open") &&
-                item.kind === fm.kind &&
-                (item.id === fm.id || item.links.some((link) => fm.links.includes(link))) &&
-                item.id !== change.supersedes
-              ) {
-                const body =
-                  bodies.get(item.path) ?? (yield* memory.readItemQuietly(orgId, item.id)).body;
-                const rank = (trust: string) =>
-                  ["external", "agent", "member", "owner"].indexOf(trust);
-                if (
-                  item.id === fm.id &&
-                  (rank(source.trust) < rank(item.trust) ||
-                    (fm.status !== item.status &&
-                      !(item.status === "open" && ["done", "cancelled"].includes(fm.status))))
-                )
-                  return yield* new MemoryConflict({ existingId: item.id });
-                if (body !== parsed.body || item.title !== fm.title)
-                  return yield* new MemoryConflict({ existingId: item.id });
-                if (item.id === fm.id) {
-                  const proposed = new Map(Object.entries(fm));
-                  const mutable = new Set([
-                    "orgId",
-                    "path",
-                    "duplicate",
-                    "status",
-                    "invalid_at",
-                    "trust",
-                    "said_by",
-                    "source",
-                    "source_event",
-                  ]);
-                  if (
-                    source.kind === "owner_check" &&
-                    source.itemId === item.id &&
-                    source.action === "keep"
-                  )
-                    mutable.add("review_by");
-                  if (
-                    source.kind === "deferral_card" &&
-                    source.action === "remind" &&
-                    source.itemId === item.id &&
-                    item.kind === "deferral" &&
-                    fm.on_due === "remind"
-                  )
-                    mutable.add("on_due");
-                  if (
-                    source.kind === "deferral_card" &&
-                    source.action === "monday" &&
-                    source.itemId === item.id &&
-                    item.kind === "deferral" &&
-                    fm.due === source.due
-                  )
-                    mutable.add("due");
-                  const existing = new Map(Object.entries(item));
-                  if (
-                    [...new Set([...existing.keys(), ...proposed.keys()])].some(
-                      (key) =>
-                        !mutable.has(key) &&
-                        JSON.stringify(existing.get(key)) !== JSON.stringify(proposed.get(key)),
-                    )
-                  )
-                    return yield* new MemoryConflict({ existingId: item.id });
-                }
-              }
-              if (
-                (item.path === change.path && item.id !== fm.id) ||
-                (item.id === fm.id && item.path !== change.path)
-              )
-                return yield* new MemoryWriteRejected({
-                  reason: "Cannot replace a different item",
-                });
-            }
-            const fields = {
-              ...fm,
-              said_by: source.saidBy,
-              source: source.source,
-              source_event: change.sourceEventId,
-              trust:
-                fm.trust === "external" ||
-                (fm.trust === "agent" && source.trust !== "external") ||
-                (fm.trust === "member" && source.trust === "owner")
-                  ? fm.trust
-                  : source.trust,
-              review_by: fm.review_by,
-            };
-            const existing = items.find((item) => item.id === fm.id);
-            const text = render(
-              existing
-                ? {
-                    ...fields,
-                    trust: existing.trust,
-                    said_by: existing.said_by,
-                    source: existing.source,
-                    source_event: existing.source_event,
-                  }
-                : fields,
-              parsed.body,
-            );
-            yield* parseFrontMatter(orgId, change.path, text);
-            if (superseded) {
-              const oldBody =
-                bodies.get(superseded.path) ??
-                (yield* memory.readItemQuietly(orgId, superseded.id)).body;
-              const {
-                orgId: _org,
-                path: oldPath,
-                duplicate: _duplicate,
-                ...oldFields
-              } = superseded;
-              const oldText = render(
-                { ...oldFields, status: "superseded", superseded_by: fm.id },
-                oldBody,
-              );
-              state.files.set(oldPath, oldText);
-            }
-            state.files.set(change.path, text);
-            if (supersessionHash !== undefined)
-              state.supersessions.set(change.path, supersessionHash);
+            yield* stageChange(orgId, wakeupId, ctx, state, change);
           }),
         ),
       ),
@@ -1034,8 +1063,7 @@ const make = Effect.gen(function* () {
             const branch =
               ctx.level === "L0" ? shadowBranch(ctx.agentId) : (config.defaultBranch ?? "main");
             const head = yield* branchHead(orgId, writer, branch);
-            const { message } = yield* commitAt(orgId, writer, head);
-            if (message.split("\n")[0] === `kin(${ctx.agentId}): wake-up ${wakeupId}`) return;
+            if ((yield* ownCommit(orgId, writer, head, ctx)) !== undefined) return;
           }
           state.lines.push(...lines);
         }),
@@ -1044,11 +1072,8 @@ const make = Effect.gen(function* () {
     discard: Effect.fn("MemoryWriter.discard")((orgId, wakeupId) =>
       locked(
         orgId,
-        Effect.gen(function* () {
-          const state = sessions.get(orgId);
-          if (state && state.wakeupId !== wakeupId)
-            return yield* new MemoryWriteRejected({ reason: "Another wake-up owns the writer" });
-          sessions.delete(orgId);
+        Effect.sync(() => {
+          sessions.delete(sessionKey(orgId, wakeupId));
         }),
       ),
     ),
@@ -1104,20 +1129,23 @@ const make = Effect.gen(function* () {
                 ),
               );
             return yield* Effect.gen(function* () {
-              const subject = `kin(${ctx.agentId}): wake-up ${wakeupId}`;
-              const fingerprint = yield* git(
-                orgId,
-                writer,
-                ["hash-object", "--no-filters", "--stdin"],
-                {},
-                stringify({
-                  outcome,
-                  files: [...state.files].sort(([a], [b]) => a.localeCompare(b)),
-                  lines: state.lines,
-                }),
-              );
-              const { message: body } = yield* commitAt(orgId, writer, recorded);
-              if (body.split("\n")[0] === subject) {
+              const subject = wakeupSubject(ctx);
+              const fingerprintOf = () =>
+                git(
+                  orgId,
+                  writer,
+                  ["hash-object", "--no-filters", "--stdin"],
+                  {},
+                  stringify({
+                    outcome,
+                    files: [...state.files].sort(([a], [b]) => a.localeCompare(b)),
+                    lines: state.lines,
+                  }),
+                );
+              let fingerprint = yield* fingerprintOf();
+              const own = yield* ownCommit(orgId, writer, recorded, ctx);
+              if (own !== undefined) {
+                const { message: body } = yield* commitAt(orgId, writer, own);
                 if (
                   !body.includes(`Kin-Outcome: ${outcome}`) ||
                   (state.files.size + state.lines.length > 0 &&
@@ -1126,9 +1154,33 @@ const make = Effect.gen(function* () {
                   return yield* new MemoryWriteRejected({ reason: "Different wake-up retry" });
                 // Through PRs the default branch only ever holds what GitHub already merged.
                 if (!viaPullRequest) yield* push(recorded);
-                return { commit: recorded };
+                return { commit: own };
               }
               if (outcome === "failed") state.files.clear();
+              // Staged files are whole files, validated against whatever head and overlay they
+              // were staged on, so every change is replayed from a clean state at this head.
+              if (outcome !== "failed" && state.changes.size > 0) {
+                const original = [...state.changes.values()];
+                state.files.clear();
+                state.supersessions.clear();
+                state.changes.clear();
+                for (const change of original)
+                  yield* stageChange(orgId, wakeupId, ctx, state, change).pipe(
+                    Effect.mapError((error) =>
+                      error._tag === "MemoryConflict" ||
+                      error._tag === "MemoryWriteRejected" ||
+                      error._tag === "MemoryDuplicateId"
+                        ? new MemorySyncConflict({
+                            orgId,
+                            operation: "push",
+                            reason: `Memory changed since this wake-up staged ${change.path}; its change no longer applies cleanly and was not committed`,
+                            cause: error,
+                          })
+                        : error,
+                    ),
+                  );
+                fingerprint = yield* fingerprintOf();
+              }
               const entry = yield* journalEntry(ctx, outcome, state.lines);
               yield* safePath(orgId, writer, entry.path);
               const recordedFiles = yield* filesAt(orgId, writer, recorded);
@@ -1248,7 +1300,9 @@ const make = Effect.gen(function* () {
                 items: yield* itemChanges(orgId, recordedFiles, changes),
               });
               return { commit };
-            }).pipe(Effect.ensuring(Effect.sync(() => sessions.delete(orgId))));
+            }).pipe(
+              Effect.ensuring(Effect.sync(() => sessions.delete(sessionKey(orgId, wakeupId)))),
+            );
           }),
         ),
       ),

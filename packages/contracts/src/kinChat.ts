@@ -182,7 +182,19 @@ export const KinNativeCardType = Schema.Literals([
 export type KinNativeCardType = typeof KinNativeCardType.Type;
 
 /** The fixed reaction set: two yes, two no, two feelings. */
-export const KIN_REACTION_EMOJI = ["👍", "✅", "👎", "❌", "❤️", "👀"] as const;
+/** What a lead may react with; people pick from the wider `KIN_REACTION_EMOJI`. */
+export const KIN_LEAD_REACTION_EMOJI = ["👍", "✅", "👎", "❌", "❤️", "👀"] as const;
+export const KinLeadReactionEmoji = Schema.Literals(KIN_LEAD_REACTION_EMOJI);
+export const KIN_REACTION_EMOJI = [
+  ...KIN_LEAD_REACTION_EMOJI,
+  "😂",
+  "🎉",
+  "😮",
+  "🔥",
+  "🙏",
+  "😢",
+  "💯",
+] as const;
 export const KinReactionEmoji = Schema.Literals(KIN_REACTION_EMOJI);
 export type KinReactionEmoji = typeof KinReactionEmoji.Type;
 export const KIN_YES_REACTIONS = ["👍", "✅"] as const satisfies ReadonlyArray<KinReactionEmoji>;
@@ -436,6 +448,9 @@ export type KinMessagesSendInput = typeof KinMessagesSendInput.Type;
 export const KinMessagesMarkReadInput = Schema.Struct({ chatId: KinChatId, seq: NonNegativeInt });
 export type KinMessagesMarkReadInput = typeof KinMessagesMarkReadInput.Type;
 export const KinMessagesMarkReadResult = Schema.Struct({});
+/** Mutes or unmutes the caller's own notifications for one chat; the badge still counts it. */
+export const KinChatsMuteInput = Schema.Struct({ chatId: KinChatId, muted: Schema.Boolean });
+export type KinChatsMuteInput = typeof KinChatsMuteInput.Type;
 export type KinMessagesMarkReadResult = typeof KinMessagesMarkReadResult.Type;
 export const KinWidgetsActInput = Schema.Struct({
   widgetId: KinWidgetId,
@@ -482,6 +497,7 @@ export const KIN_CHAT_WS_METHODS = {
   orgsList: "kin.orgs.list",
   chatsSubscribe: "kin.chats.subscribe",
   chatsCreateDirect: "kin.chats.createDirect",
+  chatsMute: "kin.chats.mute",
   chatSubscribe: "kin.chat.subscribe",
   chatHistory: "kin.chat.history",
   messagesSend: "kin.messages.send",
@@ -505,6 +521,11 @@ export const KinChatRpcs = [
   Rpc.make(KIN_CHAT_WS_METHODS.chatsCreateDirect, {
     payload: KinChatsCreateDirectInput,
     success: KinChat,
+    error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(KIN_CHAT_WS_METHODS.chatsMute, {
+    payload: KinChatsMuteInput,
+    success: KinChatMember,
     error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
   }),
   Rpc.make(KIN_CHAT_WS_METHODS.chatSubscribe, {
@@ -544,6 +565,8 @@ export const KIN_CHAT_RPC_SCOPES = {
   [KIN_CHAT_WS_METHODS.orgsList]: AuthOrchestrationReadScope,
   [KIN_CHAT_WS_METHODS.chatsSubscribe]: AuthOrchestrationReadScope,
   [KIN_CHAT_WS_METHODS.chatsCreateDirect]: AuthOrchestrationOperateScope,
+  // Only quiets the caller's own pushes, like marking a chat read.
+  [KIN_CHAT_WS_METHODS.chatsMute]: AuthOrchestrationReadScope,
   [KIN_CHAT_WS_METHODS.chatSubscribe]: AuthOrchestrationReadScope,
   [KIN_CHAT_WS_METHODS.chatHistory]: AuthOrchestrationReadScope,
   [KIN_CHAT_WS_METHODS.messagesSend]: AuthOrchestrationOperateScope,

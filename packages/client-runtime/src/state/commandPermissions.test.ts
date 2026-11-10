@@ -9,6 +9,7 @@ import { vi } from "vite-plus/test";
 import {
   AuthAccessReadScope,
   AuthAccessWriteScope,
+  AuthEnvironmentMaintainScope,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthPreviewOperateScope,
@@ -17,6 +18,8 @@ import {
   AuthSourceControlWriteScope,
   ThreadId,
   EnvironmentId,
+  KIN_APPROVAL_WS_METHODS,
+  KIN_CHAT_WS_METHODS,
   KIN_LEVEL_WS_METHODS,
   KIN_PUSH_WS_METHODS,
   ORCHESTRATION_V2_WS_METHODS,
@@ -127,12 +130,23 @@ describe("command permissions", () => {
       ),
   );
   it.effect.each([
+    // Muting quiets only the caller's own pushes, so reading the chat is enough.
+    [KIN_CHAT_WS_METHODS.chatsMute, AuthOrchestrationReadScope],
     [KIN_LEVEL_WS_METHODS.get, AuthOrchestrationReadScope],
     [KIN_LEVEL_WS_METHODS.review, AuthOrchestrationOperateScope],
     [KIN_LEVEL_WS_METHODS.deferPromotion, AuthOrchestrationOperateScope],
     [KIN_LEVEL_WS_METHODS.lower, AuthSettingsWriteScope],
     [KIN_LEVEL_WS_METHODS.raise, AuthSettingsWriteScope],
     [KIN_LEVEL_WS_METHODS.shadowMemory, AuthSettingsWriteScope],
+    // Approving needs operate on the host that holds the action; key setup needs access:write.
+    [KIN_APPROVAL_WS_METHODS.get, AuthOrchestrationReadScope],
+    [KIN_APPROVAL_WS_METHODS.challenge, AuthOrchestrationOperateScope],
+    [KIN_APPROVAL_WS_METHODS.submitGrant, AuthOrchestrationOperateScope],
+    [KIN_APPROVAL_WS_METHODS.reject, AuthOrchestrationOperateScope],
+    [KIN_APPROVAL_WS_METHODS.keyChallenge, AuthAccessWriteScope],
+    [KIN_APPROVAL_WS_METHODS.registerKey, AuthAccessWriteScope],
+    [KIN_APPROVAL_WS_METHODS.listKeys, AuthAccessWriteScope],
+    [KIN_APPROVAL_WS_METHODS.revokeKey, AuthAccessWriteScope],
   ] as const)("guards %s with the destination %s grant", ([method, scope]) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -142,23 +156,33 @@ describe("command permissions", () => {
           tag: method,
           execute: () => Effect.die("unused"),
         });
+        const permissions = createCommandPermissions(runtime, method);
         const others = [
           AuthOrchestrationReadScope,
           AuthOrchestrationOperateScope,
           AuthSettingsWriteScope,
+          AuthAccessWriteScope,
         ].filter((other) => other !== scope);
         registry.set(
           sessions(env),
           AsyncResult.success({ ...grant(false), scopes: others, permissions: others }),
         );
         expect(registry.get(command.permissionAtom(env))).toBe(false);
+        expect((yield* permissions.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
+          "EnvironmentAuthorizationError",
+        );
         registry.set(
           sessions(env),
           AsyncResult.success({ ...grant(false), scopes: [scope], permissions: [scope] }),
         );
         expect(registry.get(command.permissionAtom(env))).toBe(true);
+        yield* permissions.authorize(registry, env);
+        // The grant belongs to the destination: another environment's session doesn't carry it.
         registry.set(sessions(other), AsyncResult.success(grant(false)));
         expect(registry.get(command.permissionAtom(other))).toBe(false);
+        expect((yield* permissions.authorize(registry, other).pipe(Effect.flip))._tag).toBe(
+          "EnvironmentAuthorizationError",
+        );
       }),
     ),
   );
@@ -269,28 +293,27 @@ describe("command permissions", () => {
     ),
   );
 
-  it.effect("requires the destination settings grant to run storage cleanup", () =>
+  it.effect.each([
+    { method: WS_METHODS.serverRunStorageCleanup, scope: AuthSettingsWriteScope },
+    { method: WS_METHODS.serverReclaimDatabaseSpace, scope: AuthEnvironmentMaintainScope },
+  ])("requires the destination $scope grant for $method", ({ method, scope }) =>
     Effect.scoped(
       Effect.gen(function* () {
         const registry = yield* setup;
-        const cleanup = createCommandPermissions(runtime, WS_METHODS.serverRunStorageCleanup);
+        const command = createCommandPermissions(runtime, method);
         registry.set(sessions(env), AsyncResult.success(grant(true)));
-        expect(registry.get(cleanup.permissionAtom(env))).toBe(false);
-        expect((yield* cleanup.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
+        expect(registry.get(command.permissionAtom(env))).toBe(false);
+        expect((yield* command.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
           "EnvironmentAuthorizationError",
         );
         registry.set(
           sessions(env),
-          AsyncResult.success({
-            ...grant(true),
-            scopes: [AuthSettingsWriteScope],
-            permissions: [AuthSettingsWriteScope],
-          }),
+          AsyncResult.success({ ...grant(true), scopes: [scope], permissions: [scope] }),
         );
-        expect(registry.get(cleanup.permissionAtom(env))).toBe(true);
-        yield* cleanup.authorize(registry, env);
+        expect(registry.get(command.permissionAtom(env))).toBe(true);
+        yield* command.authorize(registry, env);
         registry.set(sessions(other), AsyncResult.success(grant(false)));
-        expect(registry.get(cleanup.permissionAtom(other))).toBe(false);
+        expect(registry.get(command.permissionAtom(other))).toBe(false);
       }),
     ),
   );

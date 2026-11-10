@@ -13,6 +13,7 @@ import * as KinChat from "./chat/layer.ts";
 import * as KinApprovals from "./approvals/layer.ts";
 import * as KeySeal from "./approvals/KeySeal.ts";
 import * as T3GitHubCredential from "./approvals/T3GitHubCredential.ts";
+import * as ApprovalCards from "./chat/approvalCards.ts";
 import * as ExecutionNotices from "./chat/executionNotices.ts";
 import * as KinPush from "./push/layer.ts";
 import * as Promotion from "./levels/Promotion.ts";
@@ -56,9 +57,12 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
         KinApprovals.executorLayer.pipe(
           Layer.provide(ExecutionNotices.layer),
           Layer.provideMerge(
-            Layer.mergeAll(KinPush.layer, Promotion.layer, MemoryChanges.layer).pipe(
-              Layer.provideMerge(KinApprovals.layer),
-            ),
+            Layer.mergeAll(
+              KinPush.layer,
+              Promotion.layer,
+              MemoryChanges.layer,
+              ApprovalCards.layer,
+            ).pipe(Layer.provideMerge(KinApprovals.layer)),
           ),
         ),
         GithubWebhooks.lockLayer,

@@ -66,20 +66,40 @@ export const reactionOption = (card: KinChoiceCardState, emoji: KinReactionEmoji
   return answer === "yes" ? yes[0] : no[0];
 };
 
+/** A lead message that asks something, so a yes/no reaction can answer it. */
+export const asksQuestion = (body: string) => body.includes("?");
+
+/** The reaction that asks the lead what was wrong with an ordinary message. */
+export const KIN_CLARIFY_REACTION = "👎" satisfies KinReactionEmoji;
+
 /**
- * Turns the member's reaction on or off. `changed` is false when it already was; a re-added
- * reaction gets a fresh `created_at`, so it reads as new.
+ * Turns the member's reaction on or off. Turning one on withdraws the member's other reactions
+ * on the message, returned as `replaced`: one reaction per person per message. `changed` is
+ * false when it already was; a re-added reaction gets a fresh `created_at`, so it reads as new,
+ * and keeps the `woke_at` of an earlier wake.
  */
 export const setReaction = Effect.fn("KinReactions.set")(
   function* (input: Key & { readonly on: boolean; readonly now: number; readonly woke: boolean }) {
     const sql = yield* SqlClient.SqlClient;
+    const replaced = input.on
+      ? yield* SqlSchema.findAll({
+          Request: Schema.Unknown,
+          Result: Row,
+          execute: () => sql`UPDATE kin_reactions SET removed_at = ${input.now}
+            WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}
+              AND message_id = ${input.messageId} AND member_id = ${input.memberId}
+              AND emoji != ${input.emoji} AND removed_at IS NULL
+            RETURNING ${sql.literal(columns)}`,
+        })(input)
+      : [];
     const rows = input.on
       ? yield* sql`INSERT INTO kin_reactions
           (org_id, chat_id, message_id, member_id, emoji, created_at, removed_at, woke_at)
         VALUES (${input.orgId}, ${input.chatId}, ${input.messageId}, ${input.memberId}, ${input.emoji},
           ${input.now}, NULL, ${input.woke ? input.now : null})
         ON CONFLICT (org_id, chat_id, message_id, member_id, emoji) DO UPDATE SET
-          created_at = excluded.created_at, removed_at = NULL, woke_at = excluded.woke_at
+          created_at = excluded.created_at, removed_at = NULL,
+          woke_at = COALESCE(kin_reactions.woke_at, excluded.woke_at)
         WHERE kin_reactions.removed_at IS NOT NULL
         RETURNING 1 AS changed`
       : yield* sql`UPDATE kin_reactions SET removed_at = ${input.now}
@@ -94,7 +114,11 @@ export const setReaction = Effect.fn("KinReactions.set")(
           AND member_id = ${input.memberId} AND emoji = ${input.emoji}
         ORDER BY created_at`,
     })(input);
-    return { reaction: stored === undefined ? null : toReaction(stored), changed: rows.length > 0 };
+    return {
+      reaction: stored === undefined ? null : toReaction(stored),
+      changed: rows.length > 0,
+      replaced: replaced.map(toReaction),
+    };
   },
   Effect.mapError(toPersistenceSqlError("KinReactions.set")),
 );
@@ -114,6 +138,18 @@ export const recentlyWoke = Effect.fn("KinReactions.recentlyWoke")(
     return rows.length > 0;
   },
   Effect.mapError(toPersistenceSqlError("KinReactions.recentlyWoke")),
+);
+
+/** Whether any reaction on the message already woke the lead: one wake per message. */
+export const wokeOnMessage = Effect.fn("KinReactions.wokeOnMessage")(
+  function* (input: { readonly orgId: KinOrgId; readonly messageId: KinMessageId }) {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql`SELECT 1 FROM kin_reactions
+      WHERE org_id = ${input.orgId} AND message_id = ${input.messageId} AND woke_at IS NOT NULL
+      ORDER BY 1 LIMIT 1`;
+    return rows.length > 0;
+  },
+  Effect.mapError(toPersistenceSqlError("KinReactions.wokeOnMessage")),
 );
 
 /** Live reactions in a chat, newest first; with `messageIds`, only on those messages. */

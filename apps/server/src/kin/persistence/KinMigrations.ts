@@ -32,6 +32,10 @@ import AuthorityBinding from "./migrations/K027_AuthorityBinding.ts";
 import WakeupTimings from "./migrations/K028_WakeupTimings.ts";
 import DropJudgeLog from "./migrations/K029_DropJudgeLog.ts";
 import ManyLeads from "./migrations/K030_ManyLeads.ts";
+import LeadDeliveries from "./migrations/K031_LeadDeliveries.ts";
+import WorkerEnvironment from "./migrations/K032_WorkerEnvironment.ts";
+import ApproverKeyConfirmations from "./migrations/K033_ApproverKeyConfirmations.ts";
+import PerLeadWakeups from "./migrations/K034_PerLeadWakeups.ts";
 
 const table = "kin_sql_migrations";
 const run = Migrator.make({});
@@ -66,6 +70,10 @@ const loader = Migrator.fromRecord({
   "28_WakeupTimings": WakeupTimings,
   "29_DropJudgeLog": DropJudgeLog,
   "30_ManyLeads": ManyLeads,
+  "31_LeadDeliveries": LeadDeliveries,
+  "32_WorkerEnvironment": WorkerEnvironment,
+  "33_ApproverKeyConfirmations": ApproverKeyConfirmations,
+  "34_PerLeadWakeups": PerLeadWakeups,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

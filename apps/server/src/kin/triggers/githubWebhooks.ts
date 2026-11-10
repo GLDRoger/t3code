@@ -10,6 +10,7 @@ import {
   type KinGithubWebhookSecretInput,
   type KinGithubWebhookSetup,
   type KinGithubWebhookSetupInput,
+  type KinGithubWebhookStatus,
   type KinOrgId,
   type ModelSelection,
   type ProjectId,
@@ -34,6 +35,7 @@ import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
+import { configuredGithubMemoryRepo } from "../memory/MemoryConfig.ts";
 import * as KinTriggerStore from "./KinTriggerStore.ts";
 
 export const KIN_SINK_PROMPT =
@@ -51,7 +53,8 @@ const GitHubBotLogin = Schema.String.check(
 // Same key APPR-8's KinGitHubScope reads; switch to that service once it lands.
 const BotLogin = Config.schema(GitHubBotLogin, "KIN_GITHUB_BOT_LOGIN");
 
-// Gated until APPR-9: the App's private key and the action executor don't exist yet.
+// Gated: the executor (APPR-9) has no `github.app_hook.configure` kind or handler to run this under
+// an owner grant, and no server layer provides `GithubAppHookClient`.
 const appHookConfigureReady = false;
 const APP_HOOK_TIMEOUT = "30 seconds";
 /** Test seam for the release gate; production always reads `appHookConfigureReady`. */
@@ -74,7 +77,7 @@ export class GithubAppHookRefused extends Schema.TaggedError<GithubAppHookRefuse
   { reason: Schema.Literals(["gated", "unavailable", "failed", "timeout"]) },
 ) {}
 
-/** `PATCH /app/hook/config`, signed with the App's JWT. APPR-9's executor provides it. */
+/** `PATCH /app/hook/config`, signed with the App's JWT; `kin/github/appHookClient.ts` implements it. */
 export class GithubAppHookClient extends Context.Service<
   GithubAppHookClient,
   {
@@ -159,6 +162,10 @@ export class KinGithubWebhooks extends Context.Service<
       people: ReadonlyArray<PersonIdentity>,
       input: KinGithubWebhookOrgInput,
     ) => Effect.Effect<void, KinChatError>;
+    readonly status: (
+      people: ReadonlyArray<PersonIdentity>,
+      input: KinGithubWebhookOrgInput,
+    ) => Effect.Effect<KinGithubWebhookStatus, KinChatError>;
   }
 >()("t3/kin/triggers/githubWebhooks/KinGithubWebhooks") {}
 
@@ -207,7 +214,7 @@ export const make = Effect.gen(function* () {
   const findTask = (id: ScheduledTaskId) =>
     tasks.list().pipe(Effect.map(({ tasks }) => tasks.find((task) => task.id === id)));
 
-  const upsert = (input: {
+  const upsert = Effect.fn("KinGithubWebhooks.upsert")(function* (input: {
     readonly orgId: KinOrgId;
     readonly target: { readonly id: ScheduledTaskId } | { readonly commandId: CommandId };
     readonly projectId: ProjectId;
@@ -216,8 +223,9 @@ export const make = Effect.gen(function* () {
     /** Undefined keeps the stored secret, so the bound hash stays valid. */
     readonly secret: Redacted.Redacted<string> | undefined;
     readonly enabled: boolean;
-  }) =>
-    decodeUpsert({
+  }) {
+    const memoryRepo = yield* configuredGithubMemoryRepo(input.orgId);
+    return yield* decodeUpsert({
       ...("id" in input.target
         ? { id: input.target.id, requireExisting: true }
         : { commandId: input.target.commandId }),
@@ -246,6 +254,9 @@ export const make = Effect.gen(function* () {
         filters: [
           { path: "headers.x-github-event", op: "in", value: KinTriggerStore.GITHUB_EVENTS },
           { path: "body.sender.login", op: "notEquals", value: input.botLogin },
+          ...(memoryRepo === undefined
+            ? []
+            : [{ path: "body.repository.full_name", op: "notEquals" as const, value: memoryRepo }]),
         ],
       },
     }).pipe(
@@ -253,6 +264,7 @@ export const make = Effect.gen(function* () {
       Effect.mapError(() => invalid("The GitHub source could not be saved.")),
       Effect.flatMap(tasks.upsert),
     );
+  });
 
   const needsConnect = Effect.fn("KinGithubWebhooks.needsConnect")(function* (orgId: KinOrgId) {
     const lead = yield* liveLead(sql, orgId, { prefer: ENGINEERING_DOMAIN }).pipe(
@@ -486,6 +498,37 @@ export const make = Effect.gen(function* () {
         if (task !== undefined) yield* tasks.delete({ id: task.id });
       },
       exclusive,
+      Effect.catch((cause) => Effect.flatMap(mapError(cause), Effect.fail)),
+    ),
+    status: Effect.fn("KinGithubWebhooks.status")(
+      function* (people, input) {
+        yield* requireOwner(people, input.orgId);
+        const source = yield* store.getSource(input.orgId, sourceId);
+        const task = source === undefined ? undefined : yield* findTask(source.scheduledTaskId);
+        // A source whose task is gone is off too: setup recreates both.
+        if (task === undefined) return { status: "off" } as const;
+        const { deliveries } = yield* tasks.listWebhookDeliveries({
+          id: task.id,
+          acceptAnyOutcome: true,
+        });
+        const last = deliveries[0];
+        return {
+          status: "on",
+          sourceId,
+          projectId: task.projectId,
+          url: task.webhook?.url ?? null,
+          enabled: task.enabled,
+          secretBound: yield* store.secretMatchesTask(input.orgId, sourceId),
+          lastDelivery:
+            last === undefined
+              ? null
+              : {
+                  receivedAt: last.receivedAt,
+                  outcome: last.outcome,
+                  signatureVerified: last.signatureVerified,
+                },
+        } as const;
+      },
       Effect.catch((cause) => Effect.flatMap(mapError(cause), Effect.fail)),
     ),
   });

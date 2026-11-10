@@ -11,15 +11,20 @@ import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as HttpBody from "effect/http/HttpBody";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
+import type * as HttpClientResponse from "effect/http/HttpClientResponse";
 
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 
 /** The only MCP protocol version a T3 Code `/mcp` registers. */
 const PROTOCOL_VERSION = "2025-06-18";
+
+/** The most of a peer's answer read by default; the peer controls every byte it sends. */
+const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 
 /** The limits a call carries to the peer: the calling agent's modes here. */
 export interface PeerCallLimits {
@@ -42,6 +47,8 @@ export class PeerMcpClient extends Context.Service<
       readonly arguments: Record<string, unknown>;
       readonly limits: PeerCallLimits;
       readonly success: S;
+      /** An answer longer than this is cancelled unread (default `MAX_RESPONSE_BYTES`). */
+      readonly maxResponseBytes?: number;
     }) => Effect.Effect<S["Type"], OrchestratorMcpFailure>;
   }
 >()("t3/peer/PeerMcpClient") {}
@@ -83,6 +90,36 @@ const linkedEnvironmentsOffThere = new OrchestratorMcpFailure({
   message:
     "The linked environment has Linked environments turned off. Turn it on in its Settings → Labs.",
 });
+
+const tooLarge = new OrchestratorMcpFailure({
+  code: "orchestration_error",
+  message: "The linked environment's answer was too large.",
+});
+
+/** Reads a body as it streams in and cancels it once it passes `maxBytes`. */
+const boundedText = (response: HttpClientResponse.HttpClientResponse, maxBytes: number) =>
+  response.stream.pipe(
+    Stream.runFoldEffect(
+      () => ({ parts: [] as Array<Uint8Array>, size: 0 }),
+      (read, chunk) => {
+        read.size += chunk.byteLength;
+        if (read.size > maxBytes) return Effect.fail(tooLarge);
+        read.parts.push(chunk);
+        return Effect.succeed(read);
+      },
+    ),
+    Effect.map(({ parts }) => {
+      const decoder = new TextDecoder();
+      return (
+        parts.map((part) => decoder.decode(part, { stream: true })).join("") + decoder.decode()
+      );
+    }),
+  );
+
+/** What Kin reads of a body it doesn't use, then cancels it: a session's opening answers. */
+const DISCARDED_BYTES = 64 * 1024;
+const discard = (response: HttpClientResponse.HttpClientResponse) =>
+  boundedText(response, DISCARDED_BYTES).pipe(Effect.ignore);
 
 /** The body of an MCP response: JSON, or a single server-sent event carrying JSON. */
 const responseJson = (contentType: string | undefined, text: string) =>
@@ -133,6 +170,7 @@ const make = Effect.gen(function* () {
       },
       limitHeader,
     );
+    yield* discard(initialized);
     const sessionId = initialized.headers["mcp-session-id"];
     if (initialized.status === 403) return yield* linkedEnvironmentsOffThere;
     if (initialized.status !== 200 || sessionId === undefined) {
@@ -144,11 +182,13 @@ const make = Effect.gen(function* () {
             : `The linked environment refused to start an MCP session (HTTP ${initialized.status}).`,
       });
     }
-    yield* post(
-      url,
-      token,
-      { jsonrpc: "2.0", method: "notifications/initialized" },
-      { ...limitHeader, "mcp-session-id": sessionId, "mcp-protocol-version": PROTOCOL_VERSION },
+    yield* discard(
+      yield* post(
+        url,
+        token,
+        { jsonrpc: "2.0", method: "notifications/initialized" },
+        { ...limitHeader, "mcp-session-id": sessionId, "mcp-protocol-version": PROTOCOL_VERSION },
+      ),
     );
     return sessionId;
   });
@@ -182,6 +222,7 @@ const make = Effect.gen(function* () {
       }
       let response = yield* callOnce(sessionId);
       if (response.status === 404) {
+        yield* discard(response);
         const renewed = yield* openSession(resolved.url, resolved.token, limitHeader);
         yield* Ref.update(sessions, (current) => new Map(current).set(sessionKey, renewed));
         response = yield* callOnce(renewed);
@@ -201,7 +242,10 @@ const make = Effect.gen(function* () {
         });
       }
       const body = yield* decodeToolCallResponse(
-        responseJson(response.headers["content-type"], yield* response.text),
+        responseJson(
+          response.headers["content-type"],
+          yield* boundedText(response, input.maxResponseBytes ?? MAX_RESPONSE_BYTES),
+        ),
       ).pipe(
         Effect.mapError(
           () =>

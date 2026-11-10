@@ -31,6 +31,8 @@ type ChatEvent =
   | { readonly type: "widget.updated"; readonly widget: KinWidget }
   | { readonly type: "waiting.updated"; readonly item: KinWaitingItem }
   | { readonly type: "member.removed"; readonly member: KinChatMember }
+  // A change to an active member's row, such as a mute; every member of the chat sees it.
+  | { readonly type: "member.updated"; readonly chatId: KinChatId; readonly member: KinChatMember }
   | {
       readonly type: "read.updated";
       readonly chatId: KinChatId;

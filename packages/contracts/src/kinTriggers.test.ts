@@ -154,6 +154,25 @@ const samples = {
       })),
     ],
   ],
+  KinGithubWebhookStatus: [
+    Kin.KinGithubWebhookStatus,
+    [
+      { status: "off" },
+      {
+        status: "on",
+        sourceId: Kin.KIN_GITHUB_APP_SOURCE,
+        projectId: "project-1",
+        url: null,
+        enabled: true,
+        secretBound: false,
+        lastDelivery: {
+          receivedAt: "2026-11-10T12:00:00.000Z",
+          outcome: "rejected_signature",
+          signatureVerified: false,
+        },
+      },
+    ],
+  ],
 } satisfies Record<SchemaName, readonly [Schema.Codec<unknown>, ReadonlyArray<unknown>]>;
 
 const secretRejections = [

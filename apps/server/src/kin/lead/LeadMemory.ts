@@ -7,6 +7,7 @@ import {
   KinChatId,
   KinEvent,
   KinMemoryItemId,
+  MemoryItemEvery,
   MemoryItemFrontMatter,
   MemoryItemHead,
   TrimmedNonEmptyString,
@@ -70,6 +71,15 @@ export const DeferInput = Schema.Struct({
   what: TrimmedNonEmptyString.check(Schema.isMaxLength(8000)),
   due: deferDue,
   onDue: Schema.Literals(["remind", "start", "ask", "chase"]),
+  chatId: KinChatId,
+  sourceEventId: TrimmedNonEmptyString,
+});
+export const ScheduleInput = Schema.Struct({
+  itemId: Schema.optional(itemId),
+  what: TrimmedNonEmptyString.check(Schema.isMaxLength(8000)),
+  title: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(120))),
+  at: MemoryItemEvery.fields.at,
+  days: MemoryItemEvery.fields.days,
   chatId: KinChatId,
   sourceEventId: TrimmedNonEmptyString,
 });
@@ -155,6 +165,11 @@ export class LeadMemory extends Context.Service<
     readonly defer: (
       scope: McpInvocationScope,
       input: typeof DeferInput.Type,
+    ) => Effect.Effect<typeof ItemResult.Type, KinChatError>;
+    /** A recurring task, only from an owner's message in this batch; the server keeps their words. */
+    readonly schedule: (
+      scope: McpInvocationScope,
+      input: typeof ScheduleInput.Type,
     ) => Effect.Effect<typeof ItemResult.Type, KinChatError>;
     readonly journal: (
       scope: McpInvocationScope,
@@ -276,19 +291,25 @@ const make = Effect.gen(function* () {
   const writer = yield* Writer.MemoryWriter;
   const writerAuthority = yield* Writer.MemoryWriterAuthority;
   const sql = yield* SqlClient.SqlClient;
-  const locks = new Map<KinOrgId, Semaphore.Semaphore>();
+  // A lead runs one wake-up at a time, so the lock that orders its receipts is per lead:
+  // keyed per wake-up, these maps would grow with every wake-up ever run.
+  const locks = new Map<string, Semaphore.Semaphore>();
+  const agentKey = (orgId: KinOrgId, agentId: KinAgentId) => `${orgId}\u0000${agentId}`;
   const locked = Effect.fn("LeadMemory.locked")(function* <A, E, R>(
     orgId: KinOrgId,
+    agentId: KinAgentId,
     operation: Effect.Effect<A, E, R>,
   ) {
-    let lock = locks.get(orgId);
+    const key = agentKey(orgId, agentId);
+    let lock = locks.get(key);
     if (!lock) {
       lock = Semaphore.makeUnsafe(1);
-      locks.set(orgId, lock);
+      locks.set(key, lock);
     }
     return yield* lock.withPermits(1)(operation);
   });
-  const ended = new Map<KinOrgId, string>();
+  // The last wake-up each lead ended, so an identical kin_end retry appends no second summary.
+  const ended = new Map<string, string>();
   const resolve = (scope: McpInvocationScope, allowEnded = false) =>
     resolveLead(scope, allowEnded).pipe(
       Effect.provideService(KinIdentity, identity),
@@ -432,6 +453,7 @@ const make = Effect.gen(function* () {
       const ctx = yield* resolve(scope);
       return yield* locked(
         ctx.orgId,
+        ctx.agentId,
         Effect.gen(function* () {
           return yield* stage(yield* resolve(scope), input);
         }),
@@ -441,6 +463,7 @@ const make = Effect.gen(function* () {
       const ctx = yield* resolve(scope);
       return yield* locked(
         ctx.orgId,
+        ctx.agentId,
         Effect.gen(function* () {
           const ctx = yield* resolve(scope);
           yield* checkSource(ctx, input.sourceEventId);
@@ -490,6 +513,74 @@ const make = Effect.gen(function* () {
         }),
       );
     }, Effect.mapError(failure)),
+    schedule: Effect.fn("LeadMemory.schedule")(function* (scope, input) {
+      const ctx = yield* resolve(scope);
+      return yield* locked(
+        ctx.orgId,
+        ctx.agentId,
+        Effect.gen(function* () {
+          const ctx = yield* resolve(scope);
+          yield* checkSource(ctx, input.sourceEventId);
+          const source = (yield* writerAuthority.resolve(ctx.orgId, ctx.wakeupId)).sources.get(
+            input.sourceEventId,
+          );
+          // Mirrors kin_defer's provenance, and narrows it: a scheduled run may start work, so
+          // only the owner's own message sets one up, never a tap, reaction, event or member.
+          const [event] = yield* sql<{ json: string }>`SELECT json FROM kin_events
+            WHERE org_id = ${ctx.orgId} AND wakeup_id = ${ctx.wakeupId}
+              AND event_id = ${input.sourceEventId} ORDER BY event_id`;
+          const decoded = event === undefined ? undefined : yield* decodeEvent(event.json);
+          if (!source || decoded === undefined) return yield* missing();
+          if (source.trust !== "owner" || decoded._tag !== "chat.message")
+            return yield* invalid(
+              "Only the owner's own message can set up a scheduled task. Ask the owner to say what to run and when.",
+            );
+          const [message] = yield* sql<{ body: string }>`SELECT body FROM kin_messages
+            WHERE org_id = ${ctx.orgId} AND message_id = ${decoded.messageId}
+              AND chat_id = ${decoded.chatId} ORDER BY message_id`;
+          const [chat] =
+            yield* sql`SELECT 1 FROM kin_chats WHERE org_id = ${ctx.orgId} AND chat_id = ${input.chatId}`;
+          if (!chat || !message) return yield* missing();
+          const id =
+            input.itemId ??
+            KinMemoryItemId.make(
+              `sch-${(yield* hash({ wakeup: ctx.wakeupId, input })).slice(0, 32)}`,
+            );
+          const recorded = DateTime.formatIso(DateTime.makeUnsafe(ctx.startedAt));
+          const fields = {
+            id,
+            kind: "deferral" as const,
+            title: input.title ?? input.what.slice(0, 120),
+            status: "open" as const,
+            due: null,
+            every: { at: input.at, days: [...new Set(input.days)].toSorted((a, b) => a - b) },
+            recorded_at: recorded,
+            valid_from: recorded,
+            invalid_at: null,
+            superseded_by: null,
+            source: source.source,
+            said_by: source.saidBy,
+            trust: source.trust,
+            links: [],
+            what: input.what,
+            chat: input.chatId,
+            source_event: input.sourceEventId,
+          };
+          // The body is the owner's message as they wrote it; `what` is the lead's instruction.
+          yield* receipt(
+            ctx,
+            `item:${id}`,
+            { ...input, itemId: id },
+            writer.stage(ctx.orgId, ctx.wakeupId, {
+              path: `deferrals/${id}.md`,
+              content: `---\n${stringify(fields)}---\n${message.body}\n`,
+              sourceEventId: input.sourceEventId,
+            }),
+          );
+          return { itemId: id };
+        }),
+      );
+    }, Effect.mapError(failure)),
     journal: Effect.fn("LeadMemory.journal")(function* (scope, input) {
       const ctx = yield* resolve(scope);
       yield* writer.appendJournal(ctx.orgId, ctx.wakeupId, [
@@ -502,17 +593,18 @@ const make = Effect.gen(function* () {
       const ctx = yield* resolve(scope, true);
       yield* locked(
         ctx.orgId,
+        ctx.agentId,
         Effect.gen(function* () {
           const ctx = yield* resolve(scope, true);
           yield* receipt(
             ctx,
             "end",
             input,
-            ended.get(ctx.orgId) === ctx.wakeupId
+            ended.get(agentKey(ctx.orgId, ctx.agentId)) === ctx.wakeupId
               ? Effect.void
               : writer.appendJournal(ctx.orgId, ctx.wakeupId, [`Summary: ${input.summary}`]),
           );
-          ended.set(ctx.orgId, ctx.wakeupId);
+          ended.set(agentKey(ctx.orgId, ctx.agentId), ctx.wakeupId);
         }),
       );
     }, Effect.mapError(failure)),

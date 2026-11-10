@@ -16,7 +16,7 @@ export const layer = Layer.mergeAll(
   LevelGate.layer.pipe(Layer.provideMerge(Service.layer), Layer.provideMerge(Presence.layer)),
   Layer.mergeAll(
     Budget.layer.pipe(Layer.provide(Cache.layer)),
-    Stop.layer,
+    Stop.layer.pipe(Layer.provide(Presence.layer)),
     OwnerTimeZone.layer,
   ).pipe(Layer.provideMerge(Queue.layer)),
   KinIdentity.layer.pipe(Layer.provide(KinIdentityConfig.layer)),

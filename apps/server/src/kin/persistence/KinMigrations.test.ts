@@ -13,6 +13,7 @@ import * as KinPersistence from "./KinPersistence.ts";
 const tableNames = [
   "kin_agent_threads",
   "kin_agents",
+  "kin_approver_key_confirmations",
   "kin_approver_keys",
   "kin_audit",
   "kin_auth_key_repairs",
@@ -33,6 +34,7 @@ const tableNames = [
   "kin_floor_notices",
   "kin_floor_runs",
   "kin_grants",
+  "kin_lead_deliveries",
   "kin_lead_tool_calls",
   "kin_leads",
   "kin_memory_heads",
@@ -52,6 +54,7 @@ const tableNames = [
   "kin_read_state",
   "kin_routine_folds",
   "kin_routine_preferences",
+  "kin_scheduled_tasks",
   "kin_secret_allow",
   "kin_session_bindings",
   "kin_shadow_entries",
@@ -90,6 +93,12 @@ const upstreamHistory = Effect.gen(function* () {
   return yield* sql<{ migration_id: number; name: string }>`
     SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id
   `;
+});
+
+const undoApproverKeyConfirmations = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`DROP TABLE kin_approver_key_confirmations`;
+  yield* sql`ALTER TABLE kin_approver_keys DROP COLUMN pending_seal`;
 });
 
 describe("Kin migrations", () => {
@@ -135,6 +144,10 @@ describe("Kin migrations", () => {
           { migration_id: 28, name: "WakeupTimings" },
           { migration_id: 29, name: "DropJudgeLog" },
           { migration_id: 30, name: "ManyLeads" },
+          { migration_id: 31, name: "LeadDeliveries" },
+          { migration_id: 32, name: "WorkerEnvironment" },
+          { migration_id: 33, name: "ApproverKeyConfirmations" },
+          { migration_id: 34, name: "PerLeadWakeups" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
@@ -222,6 +235,10 @@ describe("Kin migrations", () => {
           { migration_id: 28, name: "WakeupTimings" },
           { migration_id: 29, name: "DropJudgeLog" },
           { migration_id: 30, name: "ManyLeads" },
+          { migration_id: 31, name: "LeadDeliveries" },
+          { migration_id: 32, name: "WorkerEnvironment" },
+          { migration_id: 33, name: "ApproverKeyConfirmations" },
+          { migration_id: 34, name: "PerLeadWakeups" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -252,6 +269,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_floor_latest" },
           { name: "idx_kin_floor_notices_rate" },
           { name: "idx_kin_floor_open" },
+          { name: "idx_kin_lead_deliveries_pending" },
           { name: "idx_kin_leads_org_domain" },
           { name: "idx_kin_messages_changes" },
           { name: "idx_kin_pending_actions_approved" },
@@ -270,7 +288,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_triggers_due" },
           { name: "idx_kin_waiting_open_widget_person" },
           { name: "idx_kin_waiting_person_resolved_at" },
-          { name: "idx_kin_wakeups_running_org" },
+          { name: "idx_kin_wakeups_running_lead" },
           { name: "idx_kin_widgets_chat_message" },
           { name: "idx_kin_widgets_type_closed_at" },
           { name: "idx_kin_workers_status" },
@@ -331,6 +349,10 @@ describe("Kin migrations", () => {
         [28, "WakeupTimings"],
         [29, "DropJudgeLog"],
         [30, "ManyLeads"],
+        [31, "LeadDeliveries"],
+        [32, "WorkerEnvironment"],
+        [33, "ApproverKeyConfirmations"],
+        [34, "PerLeadWakeups"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -367,6 +389,12 @@ describe("Kin migrations", () => {
       yield* sql`DROP TABLE kin_auth_key_repairs`;
       yield* sql`DROP TABLE kin_auth_session_keys`;
       yield* sql`DROP TABLE kin_worker_charges`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN environment_id`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN remote_project_id`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN repository_key`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN pull_request_url`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN pull_request_number`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN project_id`;
       yield* sql`ALTER TABLE kin_workers DROP COLUMN title`;
       yield* sql`ALTER TABLE kin_workers DROP COLUMN chat_id`;
       yield* sql`DROP TABLE kin_floor_notices`;
@@ -383,6 +411,8 @@ describe("Kin migrations", () => {
       yield* sql`DROP TABLE kin_routine_folds`;
       yield* sql`DROP TABLE kin_routine_preferences`;
       yield* sql`DROP TABLE kin_budget_charges`;
+      yield* sql`DROP TABLE kin_lead_deliveries`;
+      yield* sql`DROP TABLE kin_scheduled_tasks`;
       yield* sql`ALTER TABLE kin_events DROP COLUMN budget_deferred`;
       for (const column of [
         "enqueued_at",
@@ -393,6 +423,8 @@ describe("Kin migrations", () => {
         "resumed",
       ])
         yield* sql`ALTER TABLE kin_wakeups DROP COLUMN ${sql(column)}`;
+      yield* sql`DROP INDEX idx_kin_wakeups_running_lead`;
+      yield* sql`CREATE UNIQUE INDEX idx_kin_wakeups_running_org ON kin_wakeups(org_id) WHERE status = 'running'`;
       yield* sql`DROP INDEX idx_kin_leads_org_domain`;
       for (const column of ["domain", "charter", "created_by_person_id"])
         yield* sql`ALTER TABLE kin_leads DROP COLUMN ${sql(column)}`;
@@ -404,6 +436,7 @@ describe("Kin migrations", () => {
         "kin_executions",
         "kin_grants",
         "kin_pending_actions",
+        "kin_approver_key_confirmations",
         "kin_approver_keys",
         "kin_audit",
       ]) {
@@ -440,6 +473,10 @@ describe("Kin migrations", () => {
         [28, "WakeupTimings"],
         [29, "DropJudgeLog"],
         [30, "ManyLeads"],
+        [31, "LeadDeliveries"],
+        [32, "WorkerEnvironment"],
+        [33, "ApproverKeyConfirmations"],
+        [34, "PerLeadWakeups"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,
@@ -495,6 +532,10 @@ describe("Kin migrations", () => {
         { migration_id: 28, name: "WakeupTimings" },
         { migration_id: 29, name: "DropJudgeLog" },
         { migration_id: 30, name: "ManyLeads" },
+        { migration_id: 31, name: "LeadDeliveries" },
+        { migration_id: 32, name: "WorkerEnvironment" },
+        { migration_id: 33, name: "ApproverKeyConfirmations" },
+        { migration_id: 34, name: "PerLeadWakeups" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);
@@ -506,6 +547,8 @@ describe("Kin migrations", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`DROP TABLE kin_auth_paired_sessions`;
+      yield* sql`DROP TABLE kin_approver_key_confirmations`;
+      yield* sql`ALTER TABLE kin_approver_keys DROP COLUMN pending_seal`;
       yield* sql`ALTER TABLE kin_approver_keys DROP COLUMN seal`;
       for (const column of [
         "enqueued_at",
@@ -516,9 +559,19 @@ describe("Kin migrations", () => {
         "resumed",
       ])
         yield* sql`ALTER TABLE kin_wakeups DROP COLUMN ${sql(column)}`;
+      yield* sql`DROP INDEX idx_kin_wakeups_running_lead`;
+      yield* sql`CREATE UNIQUE INDEX idx_kin_wakeups_running_org ON kin_wakeups(org_id) WHERE status = 'running'`;
       yield* sql`DROP INDEX idx_kin_leads_org_domain`;
       for (const column of ["domain", "charter", "created_by_person_id"])
         yield* sql`ALTER TABLE kin_leads DROP COLUMN ${sql(column)}`;
+      yield* sql`DROP TABLE kin_lead_deliveries`;
+      yield* sql`DROP TABLE kin_scheduled_tasks`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN environment_id`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN remote_project_id`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN repository_key`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN pull_request_url`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN pull_request_number`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN project_id`;
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 27`;
       for (const [id, subject, method, ip, revoked] of [
         ["phone", "one-time-token", "bearer-access-token", "100.64.0.7", null],
@@ -540,6 +593,10 @@ describe("Kin migrations", () => {
         [28, "WakeupTimings"],
         [29, "DropJudgeLog"],
         [30, "ManyLeads"],
+        [31, "LeadDeliveries"],
+        [32, "WorkerEnvironment"],
+        [33, "ApproverKeyConfirmations"],
+        [34, "PerLeadWakeups"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT session_id, via FROM kin_auth_paired_sessions ORDER BY session_id`,
@@ -548,6 +605,150 @@ describe("Kin migrations", () => {
           { session_id: "desktop", via: "migration" },
           { session_id: "phone", via: "migration" },
           { session_id: "relay", via: "migration" },
+        ],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("K032 upgrades a database at K031_LeadDeliveries", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const workerColumns = [
+        "environment_id",
+        "project_id",
+        "remote_project_id",
+        "repository_key",
+        "pull_request_url",
+        "pull_request_number",
+      ];
+      for (const column of workerColumns)
+        yield* sql`ALTER TABLE kin_workers DROP COLUMN ${sql(column)}`;
+      yield* undoApproverKeyConfirmations;
+      yield* sql`DROP INDEX idx_kin_wakeups_running_lead`;
+      yield* sql`CREATE UNIQUE INDEX idx_kin_wakeups_running_org ON kin_wakeups(org_id) WHERE status = 'running'`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 32`;
+      assert.deepStrictEqual((yield* kinHistory).at(-1), {
+        migration_id: 31,
+        name: "LeadDeliveries",
+      });
+      assert.deepStrictEqual(yield* runKinMigrations(), [
+        [32, "WorkerEnvironment"],
+        [33, "ApproverKeyConfirmations"],
+        [34, "PerLeadWakeups"],
+      ]);
+      const columns = yield* sql<{ name: string }>`
+        SELECT name FROM pragma_table_info('kin_workers')`;
+      for (const column of workerColumns)
+        assert.include(
+          columns.map((row) => row.name),
+          column,
+        );
+      assert.deepStrictEqual(yield* runKinMigrations(), []);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "K033 upgrades a database at K032_WorkerEnvironment and keeps its K031 and K032 rows",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const timestamp = 1_700_000_000_000;
+        yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
+        const delivery = {
+          org_id: "org",
+          event_id: "event",
+          kind: "reminder",
+          agent_id: "lead",
+          chat_id: "chat",
+          widget_id: "widget",
+          widget_type: "reminder",
+          state_json: "{}",
+          fallback_body: "Reminder",
+          deadline_at: timestamp,
+          status: "pending",
+          message_id: null,
+          created_at: timestamp,
+          updated_at: timestamp,
+        };
+        yield* sql`INSERT INTO kin_lead_deliveries ${sql.insert(delivery)}`;
+        yield* undoApproverKeyConfirmations;
+        yield* sql`DROP INDEX idx_kin_wakeups_running_lead`;
+        yield* sql`CREATE UNIQUE INDEX idx_kin_wakeups_running_org ON kin_wakeups(org_id) WHERE status = 'running'`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 33`;
+        assert.deepStrictEqual((yield* kinHistory).slice(-2), [
+          { migration_id: 31, name: "LeadDeliveries" },
+          { migration_id: 32, name: "WorkerEnvironment" },
+        ]);
+        assert.deepStrictEqual(yield* runKinMigrations(), [
+          [33, "ApproverKeyConfirmations"],
+          [34, "PerLeadWakeups"],
+        ]);
+        assert.deepStrictEqual((yield* kinHistory).slice(-3), [
+          { migration_id: 32, name: "WorkerEnvironment" },
+          { migration_id: 33, name: "ApproverKeyConfirmations" },
+          { migration_id: 34, name: "PerLeadWakeups" },
+        ]);
+        assert.deepStrictEqual(yield* sql`SELECT * FROM kin_lead_deliveries`, [delivery]);
+        assert.deepStrictEqual(
+          yield* sql`SELECT name FROM pragma_table_info('kin_workers') WHERE name = 'environment_id'`,
+          [{ name: "environment_id" }],
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT name FROM pragma_table_info('kin_approver_keys') WHERE name = 'pending_seal'`,
+          [{ name: "pending_seal" }],
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT name FROM sqlite_master WHERE name = 'kin_approver_key_confirmations'`,
+          [{ name: "kin_approver_key_confirmations" }],
+        );
+        assert.deepStrictEqual(yield* runKinMigrations(), []);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("K034 swaps the running wake-up index to per lead on a database with rows", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DROP INDEX idx_kin_wakeups_running_lead`;
+      yield* sql`CREATE UNIQUE INDEX idx_kin_wakeups_running_org ON kin_wakeups(org_id) WHERE status = 'running'`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 34`;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('owner', 'org', 'owner', 'Owner', ${timestamp})`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+        VALUES ('direct', 'org', 'direct', 'owner:lead', 0, ${timestamp})`;
+      for (const agent of ["lead", "lead-2"]) {
+        yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+          VALUES (${agent}, 'org', 'Lead', 'lead', 'owner', ${timestamp})`;
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+          VALUES (${agent}, 'org', 'Lead', 0, '{}', '[]', 'direct')`;
+      }
+      const wakeup = (id: string, agent: string, status: string) =>
+        sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, ended_at, status, event_ids)
+          VALUES (${id}, 'org', ${agent}, 'test', 1000, ${status === "running" ? null : 2000}, ${status}, '[]')`;
+      yield* wakeup("running", "lead", "running");
+      yield* wakeup("done", "lead", "completed");
+      yield* wakeup("done-2", "lead-2", "completed");
+
+      assert.deepStrictEqual(yield* runKinMigrations(), [[34, "PerLeadWakeups"]]);
+      assert.deepStrictEqual(
+        yield* sql`SELECT name FROM sqlite_master WHERE type = 'index' AND name GLOB 'idx_kin_wakeups_running*' ORDER BY name`,
+        [{ name: "idx_kin_wakeups_running_lead" }],
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT name FROM pragma_index_info('idx_kin_wakeups_running_lead') ORDER BY seqno`,
+        [{ name: "org_id" }, { name: "agent_id" }],
+      );
+      yield* wakeup("also-running", "lead-2", "running");
+      const overlap = yield* Effect.exit(wakeup("overlap", "lead", "running"));
+      assert.isTrue(Exit.isFailure(overlap));
+      assert.include(String(overlap), "UNIQUE constraint failed");
+      assert.deepStrictEqual(
+        yield* sql`SELECT wakeup_id, agent_id, status FROM kin_wakeups ORDER BY wakeup_id`,
+        [
+          { wakeup_id: "also-running", agent_id: "lead-2", status: "running" },
+          { wakeup_id: "done", agent_id: "lead", status: "completed" },
+          { wakeup_id: "done-2", agent_id: "lead-2", status: "completed" },
+          { wakeup_id: "running", agent_id: "lead", status: "running" },
         ],
       );
     }).pipe(Effect.provide(layer)),
@@ -563,7 +764,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 30");
+      assert.include(String(exit), "below the latest applied migration 34");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -661,6 +862,12 @@ describe("Kin migrations", () => {
           ended_at: 1794009600000,
           title: "Fix",
           chat_id: "chat",
+          environment_id: "worker-env",
+          project_id: "project",
+          remote_project_id: "remote-project",
+          repository_key: "github.com/acme/app",
+          pull_request_url: null,
+          pull_request_number: null,
         },
         kin_memory_reads: { org_id: "org", item_id: "fixture-id", last_read_at: 1794009600000 },
         kin_cursor: { org_id: "org", consumer: "worker-tracker", after_sequence: 42 },

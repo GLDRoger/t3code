@@ -68,13 +68,32 @@ export class KinRoutineContentError extends Schema.TaggedError<KinRoutineContent
   { orgId: KinOrgId, cause: Schema.Defect() },
 ) {}
 
-/** Server-written morning briefs and evening summaries, posted to the lead owner's direct chat. */
+/** A brief or summary's facts, gathered by the server, and the card that carries them. */
+export interface PreparedRoutine {
+  readonly widgetId: KinWidgetId;
+  readonly chatId: KinChatId;
+  /** The server's own text: the lead's facts, and Kin's line when the lead can't write it. */
+  readonly body: string;
+  readonly state: unknown;
+}
+
+/**
+ * Morning briefs and evening summaries for the lead owner's direct chat. The lead writes them
+ * from `prepare`'s facts; `post` is the server's own line, for when it can't.
+ */
 export class KinRoutineContent extends Context.Service<
   KinRoutineContent,
   {
+    /** Null when there is nothing to write: posted already, or no live lead. */
+    readonly prepare: (
+      agentId: KinAgentId,
+      event: RoutineEvent,
+    ) => Effect.Effect<PreparedRoutine | null, KinRoutineContentError>;
+    /** Posts the server's line with the card; `note` is added to it, such as why Kin sent it. */
     readonly post: (
       agentId: KinAgentId,
       event: RoutineEvent,
+      note?: string,
     ) => Effect.Effect<KinWidget | null, KinRoutineContentError>;
   }
 >()("t3/kin/lead/RoutineContent/KinRoutineContent") {}
@@ -381,8 +400,51 @@ const make = Effect.gen(function* () {
     return { day, dayLabel, timeLabel, facts };
   });
 
-  const post = Effect.fn("KinRoutineContent.post")(
+  const prepare = Effect.fn("KinRoutineContent.prepare")(
     function* (agentId: KinAgentId, event: RoutineEvent) {
+      const orgId = event.orgId;
+      if (!isPostable(event.routine) || event.agentId !== agentId) return null;
+      const routine = event.routine;
+      const widgetId = routineWidgetId(orgId, event);
+      if (Option.isSome(yield* repo.getWidget({ orgId, widgetId }))) return null;
+      const owner = yield* lead(orgId, agentId);
+      if (owner === undefined) return null;
+      const gathered = yield* gather(orgId, { ...event, routine }, owner);
+      const dueMs = event.dueAt === undefined ? null : DateTime.toEpochMillis(event.dueAt);
+      const header: RoutineHeader = {
+        day: gathered.day,
+        dayLabel: gathered.dayLabel(yield* Clock.currentTimeMillis),
+        dueLabel: dueMs === null ? null : gathered.timeLabel(dueMs),
+        lateByMs: event.lateByMs ?? 0,
+        folded: (event.foldedRoutines ?? []).map((fold) => ({
+          routine: fold.routine,
+          dayLabel: gathered.dayLabel(DateTime.toEpochMillis(fold.dueAt)),
+        })),
+      };
+      const { body, card } = renderRoutine(header, gathered.facts);
+      return {
+        widgetId,
+        chatId: KinChatId.make(owner.chatId),
+        body,
+        state: yield* encodeCard(card),
+      } satisfies PreparedRoutine;
+    },
+    (effect, _agentId, event) =>
+      effect.pipe(
+        Effect.mapError(
+          (cause) =>
+            new KinRoutineContentError({
+              orgId: event.orgId,
+              cause: isSqlError(cause)
+                ? toPersistenceSqlError("KinRoutineContent.prepare")(cause)
+                : cause,
+            }),
+        ),
+      ),
+  );
+
+  const post = Effect.fn("KinRoutineContent.post")(
+    function* (agentId: KinAgentId, event: RoutineEvent, note?: string) {
       const orgId = event.orgId;
       if (!isPostable(event.routine) || event.agentId !== agentId) return null;
       const routine = event.routine;
@@ -404,8 +466,9 @@ const make = Effect.gen(function* () {
           dayLabel: gathered.dayLabel(DateTime.toEpochMillis(fold.dueAt)),
         })),
       };
-      const { body, card } = renderRoutine(header, gathered.facts);
-      const state = yield* encodeCard(card);
+      const rendered = renderRoutine(header, gathered.facts);
+      const body = note === undefined ? rendered.body : `${rendered.body}\n\n${note}`;
+      const state = yield* encodeCard(rendered.card);
       return yield* sql.withTransaction(
         Effect.gen(function* () {
           const again = yield* repo.getWidget({ orgId, widgetId });
@@ -455,7 +518,7 @@ const make = Effect.gen(function* () {
       ),
   );
 
-  return KinRoutineContent.of({ post });
+  return KinRoutineContent.of({ prepare, post });
 });
 
 export const layer = Layer.effect(KinRoutineContent, make).pipe(Layer.provide(MemoryCache.layer));

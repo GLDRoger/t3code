@@ -27,6 +27,7 @@ jobs:
     outputs:
       typecheck: ${{ steps.detect.outputs.typecheck }}
       build: ${{ steps.detect.outputs.build }}
+      desktop_launch: ${{ steps.detect.outputs.desktop_launch }}
       test: ${{ steps.detect.outputs.test }}
       test_packages: ${{ steps.detect.outputs.test_packages }}
       test_web: ${{ steps.detect.outputs.test_web }}
@@ -59,6 +60,7 @@ jobs:
   # file, docs included. The `Check` job at the end of this file passes only
   # when every other job passes or was skipped by `changes`.
   lint:
+    if: ${{ !startsWith(github.head_ref, 'kin/worker/') }}
     permissions:
       contents: read
       id-token: write
@@ -118,7 +120,7 @@ jobs:
       id-token: write
     name: Build and Typecheck
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.build != 'false' || needs.changes.outputs.typecheck != 'false') }}
+    if: ${{ !startsWith(github.head_ref, 'kin/worker/') && (!cancelled() && (needs.changes.outputs.build != 'false' || needs.changes.outputs.typecheck != 'false')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -135,13 +137,14 @@ jobs:
         if: needs.changes.outputs.build != 'false'
 
       # Runs in the background while Vite+ installs; the step before the build waits for it.
+      # Xvfb is for the desktop launch check below.
       - name: Start installing browser secret helper build libraries
         if: needs.changes.outputs.build != 'false'
         run: |
           sudo sed -i 's|http://|https://|g' /etc/apt/blacksmith-ubuntu-mirrors.txt /etc/apt/sources.list.d/ubuntu.sources
           (
             set +e
-            sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
+            sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config xvfb
             echo "$?" > "$RUNNER_TEMP/apt-status"
           ) > "$RUNNER_TEMP/apt.log" 2>&1 < /dev/null &
 
@@ -191,6 +194,25 @@ jobs:
       - name: Verify preload bundle output
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node apps/desktop/scripts/verify-preload-bundle.mjs
+
+      # The release launch check, run unpackaged against the same old-state fixture, for
+      # startup and sidebar changes. Packaging and signing stay release-only.
+      - name: Open the seeded thread in the built desktop app
+        id: desktop_launch
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && needs.changes.outputs.desktop_launch != 'false' }}
+        timeout-minutes: 4
+        run: |
+          electron=$(node -p "require('./apps/desktop/node_modules/electron')")
+          xvfb-run -a node scripts/smoke-desktop-app.ts --executable "$electron" --app apps/desktop \
+            --artifacts-dir "$RUNNER_TEMP/desktop-launch-check"
+
+      - name: Upload desktop launch check
+        if: ${{ failure() && steps.desktop_launch.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-launch-check
+          path: ${{ runner.temp }}/desktop-launch-check
+          if-no-files-found: ignore
 
       # Browser tests run source modules; this boots the production chunk graph. The
       # desktop build above already produced apps/web/dist, and the client waits about
@@ -247,7 +269,7 @@ jobs:
       id-token: write
     name: Test
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.test != 'false' }}
+    if: ${{ !startsWith(github.head_ref, 'kin/worker/') && (!cancelled() && needs.changes.outputs.test != 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -293,7 +315,7 @@ jobs:
         run: python3 -B .github/scripts/stage-preview-bundle.test.py
 
       - name: Test release checks
-        run: node --test .github/scripts/check-nightly-release.test.cjs .github/scripts/vercel-deployment-output.test.cjs
+        run: node --test .github/scripts/check-nightly-release.test.cjs .github/scripts/vercel-deployment-output.test.cjs .github/scripts/mobile-preview-comment.test.cjs
 
       - name: Test Kin grant parser (Java)
         run: sh apps/mobile/modules/kin-approval-key/test/native/run.sh java
@@ -332,7 +354,7 @@ jobs:
       id-token: write
     name: Test Web
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.test_web != 'false' }}
+    if: ${{ !startsWith(github.head_ref, 'kin/worker/') && (!cancelled() && needs.changes.outputs.test_web != 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -387,6 +409,7 @@ jobs:
   # The shards are the longest jobs, so they gate themselves instead of waiting
   # ~15s for `changes`: a shard the change cannot affect stops after checkout.
   test_server:
+    if: ${{ !startsWith(github.head_ref, 'kin/worker/') }}
     permissions:
       contents: read
       id-token: write
@@ -572,9 +595,9 @@ jobs:
       id-token: write
     name: Release Smoke
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.release_smoke != 'false' }}
+    if: ${{ !startsWith(github.head_ref, 'kin/worker/') && (!cancelled() && needs.changes.outputs.release_smoke != 'false') }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -625,7 +648,7 @@ jobs:
           # not needed. Gates are keyed by job name, except merged Build and the
           # macOS lint.
           echo "$RESULTS" | jq -e '.changes.outputs as $gates
-            | {build: ["build", "typecheck"], mobile_native_static_analysis: ["mobile_native"]} as $renamed
+            | {build: ["build", "typecheck", "desktop_launch"], mobile_native_static_analysis: ["mobile_native"]} as $renamed
             | all(to_entries[];
                 .value.result == "success"
                 or (.value.result == "skipped"

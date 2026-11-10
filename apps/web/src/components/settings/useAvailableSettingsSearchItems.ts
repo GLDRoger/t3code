@@ -9,6 +9,7 @@ import { useEnvironments, usePrimaryEnvironmentId } from "~/state/environments";
 import { usePeerLinkHosts } from "~/state/peerLinks";
 import { useEnvironmentQuery } from "~/state/query";
 import { useEnvironmentScope } from "~/state/session";
+import { useKinHost } from "~/kin/useKinHost";
 import { isWslSettingsRowVisible } from "./ConnectionsSettings.logic";
 import { isProviderSettingsEnvironmentAvailable } from "./ProviderSettingsPanel.logic";
 import {
@@ -28,11 +29,25 @@ export function useAvailableSettingsSearchItems() {
         hasServerConfig: environment.serverConfig !== null,
       }),
     ) === true;
+  // Any machine that offers it; the row then shows for a settings scope where all selected ones do.
+  const hasFastWorktreeCheckoutEnvironment =
+    environments.some(
+      (environment) =>
+        environment.connection.phase === "connected" &&
+        environment.serverConfig?.environment.capabilities.fastWorktreeCheckout === true,
+    ) === true;
+  const hasTextGeneratorsEnvironment =
+    environments.some(
+      (environment) =>
+        environment.serverConfig !== null &&
+        environment.serverConfig.managedPolicy?.limits?.providers?.allowedDrivers === undefined,
+    ) === true;
   const hasThreadAutoSettlement =
     getThreadAutoSettlementSearchAvailability(environments).eligibleEnvironmentIds.length > 0;
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const canMaintain = useEnvironmentScope(primaryEnvironmentId, AuthEnvironmentMaintainScope);
   const hasPeerLinkHost = usePeerLinkHosts().length > 0;
+  const hasKinHost = useKinHost()._tag === "host";
   const cloudLinkState = usePrimaryCloudLinkState().data;
   // Same fallback as the Connections row: older servers imply a tunnel from `linked`.
   const managedTunnelActive =
@@ -57,5 +72,9 @@ export function useAvailableSettingsSearchItems() {
     hasThreadAutoSettlement,
     managedTunnelActive,
     hasPeerLinkHost,
+    hasKinHost,
+    hasFastWorktreeCheckoutEnvironment,
+    hasTextGeneratorsEnvironment,
+    hasPrimaryEnvironment: primaryEnvironmentId !== null,
   });
 }

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Prepares a Linux machine to be the Kin host. Run as root (sudo) from any clone of the repo.
+# Prepares a Linux machine to be the Kin host. Run as root (sudo) from the root-owned clone
+# /root/kin-ops only (README, "Install"): root runs what it installs from here.
 # Idempotent: re-running changes nothing that is already in place and never restarts a
 # running server. Only the `kin` user's home is touched, never the invoking user's ~/.t3.
 #
-#   sudo ops/kin/host/setup.sh [--dry-run] [--user kin] [--checkout /home/kin/t3code]
+#   sudo /root/kin-ops/ops/kin/host/setup.sh [--dry-run] [--user kin] [--checkout /home/kin/t3code]
 #
 # --checkout is kin's source clone. Builds live in ~kin/kin-builds; update.sh makes them.
 set -euo pipefail
@@ -15,7 +16,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ORIG_ARGS=("$@")
 
 usage() {
-  sed -n '2,8p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 while [ $# -gt 0 ]; do
@@ -37,10 +38,29 @@ run() {
   if [ "$DRY_RUN" -eq 0 ]; then "$@"; fi
 }
 
+# Root runs this script and installs units from its directory, so nobody else may be able to
+# change them: every file here and every directory above must be root-owned and not writable by
+# others. kin owns ~kin/t3code, so a run from there would hand root to kin.
+refuse_unsafe_source() {
+  local path="$SCRIPT_DIR" file
+  while :; do
+    [ "$(stat -c %u "$path")" = 0 ] || refuse "$path isn't owned by root. Run this from /root/kin-ops (README, \"Install\")."
+    [ $((8#$(stat -c %a "$path") & 8#022)) -eq 0 ] || [ "$(stat -c %a "$path")" = 1777 ] ||
+      refuse "$path is writable by others. Run this from /root/kin-ops."
+    [ "$path" = / ] && break
+    path="$(dirname "$path")"
+  done
+  for file in "$SCRIPT_DIR"/*; do
+    [ "$(stat -c %u "$file")" = 0 ] || refuse "$file isn't owned by root."
+    [ $((8#$(stat -c %a "$file") & 8#022)) -eq 0 ] || refuse "$file is writable by others."
+  done
+}
+
 if [ "$DRY_RUN" -eq 0 ]; then
   [ "$(uname -s)" = Linux ] || { echo "setup.sh needs Linux with systemd." >&2; exit 1; }
   [ "$(id -u)" -eq 0 ] || { echo "Run setup.sh as root: sudo $0 ${ORIG_ARGS[*]}" >&2; exit 1; }
   command -v systemctl >/dev/null || { echo "systemctl not found." >&2; exit 1; }
+  refuse_unsafe_source
 elif [ "$(uname -s)" != Linux ]; then
   say "Dry run on $(uname -s): showing the Linux actions only."
 fi

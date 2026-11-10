@@ -33,7 +33,7 @@ import {
 } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { readPullRequestListPreferences } from "../pullRequest/pullRequestListPreferences";
-import { KinSidebarEntry } from "../../kin/KinSidebarEntry";
+import { useKinListSwitch, type KinListSwitch } from "../../kin/useKinListSwitch";
 import { isSidebarUtilityPage, useNavigateToMainApp } from "./mainAppLocation";
 import { SidebarThreadUndoNotice } from "./SidebarThreadUndoNotice";
 import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
@@ -164,21 +164,82 @@ function HistoryNavigationButton({
 }
 
 function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
+  const kinSwitch = useKinListSwitch();
+  const className = cn(
+    "relative z-10 ml-[var(--workspace-titlebar-content-left)] h-7 w-fit min-w-0 shrink-0 items-center overflow-hidden rounded-md outline-hidden ring-ring focus-visible:ring-2 focus-visible:ring-inset",
+    onBackdrop ? "text-white" : "text-foreground",
+  );
+  if (kinSwitch !== null) {
+    return (
+      <SidebarBrandSwitch className={className} kinSwitch={kinSwitch} onBackdrop={onBackdrop} />
+    );
+  }
   return (
-    <Link
-      aria-label="T3 Code home"
-      className={cn(
-        "relative z-10 ml-[var(--workspace-titlebar-content-left)] hidden h-7 w-fit min-w-0 shrink-0 items-center overflow-hidden rounded-md outline-hidden ring-ring focus-visible:ring-2 focus-visible:ring-inset md:flex",
-        onBackdrop ? "text-white" : "text-foreground",
-      )}
-      to="/"
-    >
+    <Link aria-label="T3 Code home" className={cn(className, "hidden md:flex")} to="/">
       <SidebarBrandMark onBackdrop={onBackdrop} />
     </Link>
   );
 }
 
-function SidebarBrandMark({ onBackdrop }: { onBackdrop: boolean }) {
+const KIN_SWITCH_DOT_CLASS_NAME = { waiting: "bg-warning", unread: "bg-success" } as const;
+
+/** With Kin on, the mark switches lists, so it stays on narrow windows too. */
+function SidebarBrandSwitch({
+  className,
+  kinSwitch,
+  onBackdrop,
+}: {
+  className: string;
+  kinSwitch: KinListSwitch;
+  onBackdrop: boolean;
+}) {
+  const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+  const shortcutLabel = shortcutLabelForCommand(keybindings, "kin.switchList");
+  const { isMobile, setOpenMobile } = useSidebar();
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            aria-label={kinSwitch.accessibilityLabel}
+            className={cn(className, "flex gap-1.5 [-webkit-app-region:no-drag]")}
+            onClick={() => {
+              if (isMobile) setOpenMobile(false);
+              kinSwitch.switchList();
+            }}
+          />
+        }
+      >
+        <SidebarBrandMark
+          onBackdrop={onBackdrop}
+          product={kinSwitch.current === "kin" ? "Kin" : "Code"}
+        />
+        {kinSwitch.dot === null ? null : (
+          <span
+            aria-hidden
+            className={cn(
+              "size-1.5 shrink-0 rounded-full",
+              KIN_SWITCH_DOT_CLASS_NAME[kinSwitch.dot],
+            )}
+          />
+        )}
+      </TooltipTrigger>
+      <TooltipPopup side="bottom">
+        {kinSwitch.title}
+        {shortcutLabel ? ` (${shortcutLabel})` : ""}
+      </TooltipPopup>
+    </Tooltip>
+  );
+}
+
+function SidebarBrandMark({
+  onBackdrop,
+  product = "Code",
+}: {
+  onBackdrop: boolean;
+  product?: string;
+}) {
   return (
     <span className="inline-flex min-w-0 items-baseline gap-1 text-sm font-medium tracking-tight">
       <T3Wordmark aria-label="T3" className="h-[1cap] w-auto shrink-0" />
@@ -188,7 +249,7 @@ function SidebarBrandMark({ onBackdrop }: { onBackdrop: boolean }) {
           onBackdrop ? "text-white/70" : "text-muted-foreground",
         )}
       >
-        Code
+        {product}
       </span>
     </span>
   );
@@ -284,7 +345,6 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
             label="Usage"
             onClick={handleUsageClick}
           />
-          <KinSidebarEntry />
         </>
       )}
       <SidebarThreadUndoNotice />

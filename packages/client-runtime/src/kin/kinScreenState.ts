@@ -259,22 +259,43 @@ export function kinDirectory(host: KinHost): KinDirectory {
 export interface KinChatRowView {
   readonly chatId: KinChatId;
   readonly title: string;
-  readonly avatar: { readonly kind: "agent" | "person"; readonly initials: string };
+  readonly avatar: KinAvatarView;
   /** "Lead" in "Lead: Payments test fixed". */
   readonly author: string | null;
   readonly preview: string;
   readonly sentAt: string | null;
   readonly unread: number;
+  /** The viewer muted this chat's notifications; it still counts toward the badge. */
+  readonly muted: boolean;
 }
 
-/** First letters of the first two words: "Tech lead" is "TL". */
-export function kinInitials(name: string): string {
-  const letters = name
-    .split(/\s+/)
-    .filter((word) => word.length > 0)
-    .slice(0, 2)
-    .map((word) => Array.from(word)[0]!.toUpperCase());
-  return letters.length > 0 ? letters.join("") : "?";
+/**
+ * A blobatar is drawn from `seed`, an id rather than a name, so a rename keeps the face and web
+ * and mobile draw the same one.
+ */
+export interface KinAvatarView {
+  readonly kind: "agent" | "person" | "group";
+  readonly seed: string;
+}
+
+/** An agent's avatar, the same wherever it shows: a chat row, the chat's title, its status line. */
+export const kinAgentAvatar = (agentId: string): KinAvatarView => ({
+  kind: "agent",
+  seed: `agent:${agentId}`,
+});
+
+/** A chat's avatar: its group, or the other side of a direct chat. */
+export function kinAvatarView(
+  chat: KinChatSummary,
+  counterpart: KinChatSummary["members"][number] | null,
+): KinAvatarView {
+  if (chat.kind === "team_group" || chat.kind === "project_group") {
+    return { kind: "group", seed: `chat:${chat.chatId}` };
+  }
+  const principal = counterpart?.principal;
+  if (principal?._tag === "person") return { kind: "person", seed: `person:${principal.personId}` };
+  if (principal?._tag === "agent") return kinAgentAvatar(principal.agentId);
+  return { kind: "agent", seed: `chat:${chat.chatId}` };
 }
 
 /** Message markdown as one plain line. */
@@ -297,7 +318,27 @@ function kinMessagePreview(last: KinChatSummary["lastMessage"]): string {
   return kinPreviewText(last.body) || "Message";
 }
 
-export function kinChatRowView(row: KinInboxRow, directory: KinDirectory): KinChatRowView {
+/** Whether the viewer's own membership mutes this chat's pushes right now. */
+export function kinChatMuted(
+  chat: Pick<KinChatSummary, "members">,
+  me: ReadonlySet<string>,
+  now: number,
+): boolean {
+  return chat.members.some(
+    (member) =>
+      member.leftAt === null &&
+      member.principal._tag === "person" &&
+      me.has(member.principal.personId) &&
+      member.mutedUntil != null &&
+      Date.parse(member.mutedUntil) > now,
+  );
+}
+
+export function kinChatRowView(
+  row: KinInboxRow,
+  directory: KinDirectory,
+  now = Date.now(),
+): KinChatRowView {
   const { chat } = row;
   const others = chat.members.filter(
     (member) =>
@@ -321,14 +362,12 @@ export function kinChatRowView(row: KinInboxRow, directory: KinDirectory): KinCh
   return {
     chatId: chat.chatId,
     title,
-    avatar: {
-      kind: counterpart?.principal._tag === "person" ? "person" : "agent",
-      initials: kinInitials(title),
-    },
+    avatar: kinAvatarView(chat, counterpart),
     author: last?.status === "deleted" ? null : author,
     preview,
     sentAt: chat.lastMessageAt,
     unread: chat.unread,
+    muted: kinChatMuted(chat, directory.me, now),
   };
 }
 
@@ -399,6 +438,7 @@ export function kinChatRowLabel(view: KinChatRowView, formatTime: (date: Date) =
     `${view.title}, ${view.avatar.kind}`,
     preview.replace(/[.!?]+$/, ""),
     view.sentAt === null ? null : formatTime(new Date(view.sentAt)),
+    view.muted ? "Muted" : null,
     view.unread > 0 ? `${view.unread} unread` : null,
   ]
     .filter((part): part is string => part !== null && part.length > 0)

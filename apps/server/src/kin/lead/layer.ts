@@ -1,6 +1,7 @@
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as Routines from "../triggers/routines.ts";
 import * as DeferralFlow from "../triggers/deferralFlow.ts";
+import * as ScheduledTasks from "../triggers/scheduledTasks.ts";
 import * as GithubEvents from "../triggers/githubEvents.ts";
 import * as Watchdogs from "../triggers/watchdogs.ts";
 import * as GithubReaders from "../triggers/githubReaders.ts";
@@ -11,7 +12,7 @@ import * as TriggerInbox from "../triggers/KinTriggerInbox.ts";
 import * as TriggerService from "../triggers/KinTriggerService.ts";
 import * as OwnerTimeZone from "../triggers/ownerTimeZone.ts";
 import { forkParked } from "../../serverActivation.ts";
-import { KinOrgId, KinChatId, KinMessageId } from "@t3tools/contracts";
+import { KinChatId, KinMessageId } from "@t3tools/contracts";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -42,6 +43,7 @@ import { KinLeadPrompt } from "./LeadPrompt.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
 import * as ReplyBridge from "../reply/KinReplyBridge.ts";
 import * as RoutineContent from "./RoutineContent.ts";
+import * as LeadDelivery from "./LeadDelivery.ts";
 import * as KinStop from "./KinStop.ts";
 import { KinPromotion } from "../levels/Promotion.ts";
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
@@ -49,6 +51,8 @@ import * as DreamRunner from "../dreaming/DreamRunner.ts";
 import * as DreamSession from "../dreaming/DreamSession.ts";
 import * as Workers from "./Workers.ts";
 import * as WorkerTracker from "./WorkerTracker.ts";
+import * as WorkerEnvironment from "./workerEnvironment.ts";
+import * as WorkerPublish from "./workerPublish.ts";
 import * as ChatWake from "./ChatWake.ts";
 
 export class KinLeadStartupError extends Schema.TaggedError<KinLeadStartupError>()(
@@ -76,9 +80,11 @@ export function containStartup<A, E, R>(layer: Layer.Layer<A, E, R>) {
 const routineRuntime = Layer.mergeAll(
   Routines.layer,
   DeferralFlow.layer,
+  ScheduledTasks.layer,
   GithubEvents.consumerLayer,
   Watchdogs.runtimeLayer,
 ).pipe(
+  Layer.provideMerge(LeadDelivery.layer),
   Layer.provideMerge(TriggerScheduler.layer),
   Layer.provideMerge(Layer.mergeAll(TriggerStore.layer, TriggerInbox.layer)),
   // Kin builds in its contained startup scope; orchestration runtime does not expose its scheduler.
@@ -295,29 +301,52 @@ const toolkit = LeadMemory.layer.pipe(
 );
 
 export const layer = withServices(Layer.merge(runner, ChatWake.layer));
+// Workers hold no GitHub write credential; without the Kin App, their branches stay there.
+const workerPublish = Layer.unwrap(
+  Effect.gen(function* () {
+    const off = "finished workers' branches stay in the worker environment";
+    if (Option.isNone(yield* Config.option(Config.String("KIN_GITHUB_APP_ID")))) {
+      yield* Effect.logWarning(
+        `Kin worker publishing is off: KIN_GITHUB_APP_ID is unset, so ${off}`,
+      );
+      return Layer.empty;
+    }
+    return WorkerPublish.layer.pipe(
+      Layer.provide(GithubReaders.appLayer),
+      Layer.catchCause((cause) =>
+        Layer.effectDiscard(
+          Effect.logWarning(
+            `Kin worker publishing is off: the Kin GitHub App is unavailable, so ${off}`,
+            Cause.pretty(cause),
+          ),
+        ),
+      ),
+    );
+  }),
+);
+// Workers run only in the linked worker environment; see workerEnvironment.ts.
+const workers = Workers.layer.pipe(
+  Layer.provideMerge(WorkerTracker.layer.pipe(Layer.provide(workerPublish))),
+  Layer.provideMerge(WorkerEnvironment.layer),
+);
 const tracker = Layer.effectDiscard(
   Effect.gen(function* () {
     const tracker = yield* WorkerTracker.WorkerTracker;
     yield* tracker.start.pipe(forkParked);
   }),
-).pipe(Layer.provide(WorkerTracker.layer));
+);
 const production = withServices(
   Layer.mergeAll(runner, ChatWake.layer, registration, tracker).pipe(
-    Layer.provideMerge(Workers.layer),
+    Layer.provideMerge(workers),
     Layer.provideMerge(toolkit),
   ),
 );
 
-const Repositories = Schema.fromJsonString(
-  Schema.Array(Schema.Struct({ orgId: KinOrgId, repoUrl: Schema.String })),
-);
 const configured = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
   containStartup(
     Layer.unwrap(
       Effect.gen(function* () {
-        const repositories = yield* Config.schema(Repositories, "KIN_MEMORY_REPOSITORIES").pipe(
-          Config.withDefault([]),
-        );
+        const repositories = yield* MemoryConfig.configuredRepositories;
         if (repositories.length === 0) return Layer.empty;
         return entry.pipe(Layer.provide(MemoryConfig.layer(repositories)));
       }),
