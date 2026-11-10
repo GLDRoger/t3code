@@ -305,7 +305,20 @@ it.live.each([
           "Invented service maintenance",
         );
         // Only the background sync fetches the owner's edits.
+        const readDirectory = (yield* fs.stat(a.read)).ino;
+        yield* fs.writeFileString(`${a.read}/stray.md`, "Planted by hand");
         expect((yield* memory.prepareWakeup(orgA)).head).toBe(prepared.head);
+        // Rebuilt from scratch inside the same directory, so a warm lead's cwd survives.
+        expect((yield* fs.stat(a.read)).ino).toEqual(readDirectory);
+        expect(yield* fs.exists(`${a.read}/stray.md`)).toBe(false);
+        expect(
+          (yield* vcs.run({
+            operation: "test.memory",
+            command: "git",
+            cwd: a.read,
+            args: ["rev-list", "--all"],
+          })).stdout.trim(),
+        ).toBe("");
         yield* memory.syncCheckout(orgA);
         const next = yield* memory.prepareWakeup(orgA);
         expect(yield* memory.readRules(orgA)).toBe("Uncommitted rules");

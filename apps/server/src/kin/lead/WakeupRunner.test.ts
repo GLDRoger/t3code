@@ -552,6 +552,14 @@ describe("WakeupRunner", () => {
         let journals = 0;
         const prompts: Array<KinLeadPromptInput> = [];
         const opened: Array<string> = [];
+        let prepares = 0;
+        // The 5th prepare finds a new checkout directory, as after a purge.
+        const prepare = () =>
+          Effect.sync(() => ({
+            head: "abc",
+            indexAsOf: DateTime.makeUnsafe("2026-11-08T00:00:00.000Z"),
+            ...(++prepares === 5 ? { replaced: true as const } : {}),
+          }));
         const writer = Layer.mock(Writer.MemoryWriter)({
           appendJournal: () => Effect.sync(() => void journals++),
           commitWakeup: () => Effect.sync(() => (commits++, { commit: "fixture" })),
@@ -568,15 +576,16 @@ describe("WakeupRunner", () => {
           yield* wake("late");
           // The 11th starts fresh at the turn cap, and the 12th after 10 idle minutes.
           assert.deepStrictEqual(yield* sessions(), [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 3]);
-          // Each wake-up still gets its own process, so its cwd is the newly replaced read clone.
-          assert.lengthOf(opened, 12);
+          // Warm wake-ups keep the idle process, since the read checkout is refilled in place;
+          // a new directory resumes in a new one. (The fake also keeps it across fresh contexts.)
+          assert.lengthOf(opened, 2);
           assert.deepStrictEqual(
             prompts.map((prompt) => prompt.since !== undefined),
             [false, ...Array.from({ length: 9 }, () => true), false, false],
           );
           assert.strictEqual(commits, 12);
           assert.strictEqual(journals, 12);
-        }).pipe(Effect.provide(harness({ writer, prompts, opened })));
+        }).pipe(Effect.provide(harness({ writer, prompts, opened, prepare })));
       }).pipe(provideDeterministicTestRuntime),
   );
   it.effect.each(["another direct chat", "a level change", "new standing rules"] as const)(

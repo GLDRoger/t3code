@@ -195,12 +195,13 @@ export class Memory extends Context.Service<
     /**
      * Validates the writer and fills the read checkout with the waking lead's view. The first
      * wake-up after a start, and every one after a failed `syncCheckout`, syncs inline first.
+     * The checkout is refilled inside the same directory; `replaced` says it is a new one.
      */
     readonly prepareWakeup: (
       orgId: KinOrgId,
       wakeupId?: string,
       view?: LeadView,
-    ) => Effect.Effect<{ head: string; indexAsOf: DateTime.Utc }, MemoryFailure>;
+    ) => Effect.Effect<{ head: string; indexAsOf: DateTime.Utc; replaced?: true }, MemoryFailure>;
     /**
      * The writer's integrity check (`git fsck`) and default-branch sync with the remote, off the
      * reply path. Skips an organization with no clone yet, or whose last sync failed: its next
@@ -1612,7 +1613,7 @@ const make = Effect.gen(function* () {
           Effect.provideService(VcsProcess, vcs),
         )),
       );
-    yield* io(
+    const replaced = yield* io(
       orgId,
       "readSnapshot",
       Effect.scoped(
@@ -1639,8 +1640,21 @@ const make = Effect.gen(function* () {
             args: ["init", "--quiet", "--", read],
             env: { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TEMPLATE_DIR: "" },
           });
-          yield* fs.remove(paths.read, { recursive: true, force: true });
-          yield* fs.rename(read, paths.read);
+          // Swapped in place: an idle warm lead process keeps this directory as its cwd.
+          const inPlace = yield* fs.lstat(paths.read).pipe(
+            Effect.map((info) => info.type === "Directory"),
+            Effect.orElseSucceed(() => false),
+          );
+          if (!inPlace) {
+            yield* fs.remove(paths.read, { recursive: true, force: true });
+            yield* fs.rename(read, paths.read);
+            return true;
+          }
+          for (const entry of yield* fs.readDirectory(paths.read))
+            yield* fs.remove(path.join(paths.read, entry), { recursive: true, force: true });
+          for (const entry of yield* fs.readDirectory(read))
+            yield* fs.rename(path.join(read, entry), path.join(paths.read, entry));
+          return false;
         }),
       ),
     );
@@ -1654,7 +1668,11 @@ const make = Effect.gen(function* () {
     const indexAsOf = yield* Effect.fromOption(
       DateTime.make(/^As of ([^\r\n]+)(?:\r?\n|$)/.exec(rebuilt)?.[1] ?? ""),
     ).pipe(Effect.mapError((cause) => new MemoryError({ orgId, operation: "indexDate", cause })));
-    return { head: checkoutHead, indexAsOf: DateTime.toUtc(indexAsOf) };
+    return {
+      head: checkoutHead,
+      indexAsOf: DateTime.toUtc(indexAsOf),
+      ...(replaced ? { replaced: true as const } : {}),
+    };
   });
 
   const dropCheckouts = Effect.fn("Memory.dropCheckouts")(function* (orgId: KinOrgId) {
