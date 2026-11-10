@@ -268,6 +268,8 @@ export class KinPendingActions extends Context.Service<
     >;
     /** Every action `approve` moves to `approved`, published after its transaction commits. */
     readonly approvals: Effect.Effect<PubSub.Subscription<ActionRef>, never, Scope.Scope>;
+    /** Every action this instance creates, refreshes, decides or sweeps, after its commit. */
+    readonly changes: Effect.Effect<PubSub.Subscription<ActionRef>, never, Scope.Scope>;
     /** Expires unapproved actions past `expiresAt` and voids approvals whose grant lapsed. */
     readonly sweep: () => Effect.Effect<
       { readonly expired: ReadonlyArray<ActionRef>; readonly voided: ReadonlyArray<ActionRef> },
@@ -316,6 +318,8 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const audit = yield* KinAudit;
   const approvedHub = yield* PubSub.unbounded<ActionRef>();
+  const changedHub = yield* PubSub.unbounded<ActionRef>();
+  const changed = (ref: ActionRef) => sql.afterCommit(PubSub.publish(changedHub, ref));
 
   const select = (ref: ActionRef) =>
     sql<ActionRow>`SELECT * FROM kin_pending_actions
@@ -365,6 +369,7 @@ const make = Effect.gen(function* () {
             ON CONFLICT (org_id, idempotency_key) DO NOTHING
             RETURNING action_id`;
           if (inserted.length === 0) return false;
+          yield* changed({ orgId: action.orgId, actionId: action.id });
           yield* audit.append({
             orgId: action.orgId,
             event: "action_requested",
@@ -405,6 +410,7 @@ const make = Effect.gen(function* () {
               AND expires_at > ${now}
             RETURNING *`;
           if (row === undefined) return Option.none();
+          yield* changed(input);
           yield* audit.append({
             orgId: input.orgId,
             event: "action_refreshed",
@@ -437,6 +443,7 @@ const make = Effect.gen(function* () {
               AND (${input.to} NOT IN ('rejected', 'cancelled') OR expires_at > ${now})
             RETURNING action_id, kind, resolved_json`;
           if (row === undefined) return false;
+          yield* changed(input);
           yield* audit.append({
             orgId: input.orgId,
             event: `action_${input.to}`,
@@ -563,6 +570,7 @@ const make = Effect.gen(function* () {
       // that owns the action: an unknown org or action stays `stale` and writes nothing.
       if (result._tag === "approved") {
         yield* PubSub.publish(approvedHub, { orgId: input.orgId, actionId: input.actionId });
+        yield* PubSub.publish(changedHub, { orgId: input.orgId, actionId: input.actionId });
       } else if (input.auditRefusal !== false) {
         yield* sql
           .withTransaction(
@@ -833,6 +841,7 @@ const make = Effect.gen(function* () {
           yield* record("action_voided", "grant_expired");
           const refs = (rows: ReadonlyArray<SweptRow>) =>
             rows.map((row) => ({ orgId: row.org_id, actionId: row.action_id }));
+          yield* Effect.forEach(refs(expired), changed, { discard: true });
           return { expired: refs(expired), voided: refs(voided) };
         }),
       );
@@ -851,6 +860,7 @@ const make = Effect.gen(function* () {
       approvedWithGrant,
       executingWithGrant,
       approvals: PubSub.subscribe(approvedHub),
+      changes: PubSub.subscribe(changedHub),
       sweep,
     }),
     ledger: KinExecutionLedger.of({

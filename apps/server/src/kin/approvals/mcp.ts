@@ -14,7 +14,7 @@ import { ThreadManagementService } from "../../orchestration-v2/ThreadManagement
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as RequestAction from "./RequestAction.ts";
 
-// Reads `KinIdentity`, which the Kin MCP endpoint provides per call: `KinServer` reaches the judge.
+// Reads `KinIdentity`, which the Kin MCP endpoint provides per call.
 const enabled = () => {
   const fiber = Fiber.getCurrent();
   if (!fiber) return false;

@@ -55,10 +55,39 @@ export const insertActiveKey = Effect.fn("grant.testkit.insertActiveKey")(functi
     publicJwkJson: input.key.publicJwkJson,
     humanId: input.humanId,
     hardware: "tee",
+    createdAt: 0,
   };
   const seal = input.sealed === false ? null : (yield* KinKeySeal).seal(fields);
   yield* sql`INSERT INTO kin_approver_keys (thumbprint, org_id, public_jwk_json, human_id,
       device_label, platform, hardware, attested, state, created_at, seal)
     VALUES (${fields.thumbprint}, ${fields.orgId}, ${fields.publicJwkJson}, ${fields.humanId},
       'Pixel 9', 'android', 'tee', 1, 'active', 0, ${seal})`;
+});
+
+/** A pending attested key as registration writes it, its pending seal included unless not. */
+export const insertPendingKey = Effect.fn("grant.testkit.insertPendingKey")(function* (input: {
+  readonly key: ApprovalKey;
+  readonly orgId: string;
+  readonly humanId: string;
+  readonly sealed?: boolean;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const fields = {
+    orgId: input.orgId,
+    thumbprint: input.key.kid,
+    publicJwkJson: input.key.publicJwkJson,
+    humanId: input.humanId,
+    hardware: "tee",
+    createdAt: 0,
+    deviceLabel: "Pixel 9",
+    platform: "android",
+    attested: 1,
+    sessionId: null,
+    proofKeyThumbprint: null,
+  };
+  const pendingSeal = input.sealed === false ? null : (yield* KinKeySeal).pendingSeal(fields);
+  yield* sql`INSERT INTO kin_approver_keys (thumbprint, org_id, public_jwk_json, human_id,
+      device_label, platform, hardware, attested, state, created_at, pending_seal)
+    VALUES (${fields.thumbprint}, ${fields.orgId}, ${fields.publicJwkJson}, ${fields.humanId},
+      'Pixel 9', 'android', 'tee', 1, 'pending', 0, ${pendingSeal})`;
 });

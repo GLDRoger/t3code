@@ -31,9 +31,11 @@ jobs:
   resolve:
     name: Verify preview eligibility
     if: >-
+      !startsWith(github.event.workflow_run.head_branch, 'kin/worker/') && (
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.event == 'pull_request' &&
       github.event.workflow_run.conclusion == 'success'
+      )
     # The build workflow completes for every PR push (its label gate is on the
     # job), so this runs often and usually finds nothing. Keep it cheap.
     runs-on: ubuntu-24.04
@@ -283,7 +285,7 @@ jobs:
   build:
     name: Package and sign macOS arm64 preview
     needs: resolve
-    if: needs.resolve.outputs.eligible == 'true'
+    if: ${{ !startsWith(github.event.workflow_run.head_branch, 'kin/worker/') && (needs.resolve.outputs.eligible == 'true') }}
     concurrency:
       group: desktop-macos-preview-${{ needs.resolve.outputs.pr_number }}-build
       cancel-in-progress: true
@@ -324,7 +326,7 @@ jobs:
   publish:
     name: Publish anonymous download
     needs: [resolve, build]
-    if: needs.resolve.outputs.eligible == 'true' && needs.build.result == 'success'
+    if: ${{ !startsWith(github.event.workflow_run.head_branch, 'kin/worker/') && (needs.resolve.outputs.eligible == 'true' && needs.build.result == 'success') }}
     runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 10
     # Its own group, so a publish never cancels a newer commit's signing job

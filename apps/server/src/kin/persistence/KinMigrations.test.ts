@@ -13,6 +13,7 @@ import * as KinPersistence from "./KinPersistence.ts";
 const tableNames = [
   "kin_agent_threads",
   "kin_agents",
+  "kin_approver_key_confirmations",
   "kin_approver_keys",
   "kin_audit",
   "kin_auth_key_repairs",
@@ -94,6 +95,12 @@ const upstreamHistory = Effect.gen(function* () {
   `;
 });
 
+const undoApproverKeyConfirmations = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`DROP TABLE kin_approver_key_confirmations`;
+  yield* sql`ALTER TABLE kin_approver_keys DROP COLUMN pending_seal`;
+});
+
 describe("Kin migrations", () => {
   it.effect(
     "creates K001, K002 and K003 in their own track after upstream and reruns without changes",
@@ -138,6 +145,8 @@ describe("Kin migrations", () => {
           { migration_id: 29, name: "DropJudgeLog" },
           { migration_id: 30, name: "ManyLeads" },
           { migration_id: 31, name: "LeadDeliveries" },
+          { migration_id: 32, name: "WorkerEnvironment" },
+          { migration_id: 33, name: "ApproverKeyConfirmations" },
           { migration_id: 34, name: "PerLeadWakeups" },
         ]);
         assert.deepStrictEqual(
@@ -227,6 +236,8 @@ describe("Kin migrations", () => {
           { migration_id: 29, name: "DropJudgeLog" },
           { migration_id: 30, name: "ManyLeads" },
           { migration_id: 31, name: "LeadDeliveries" },
+          { migration_id: 32, name: "WorkerEnvironment" },
+          { migration_id: 33, name: "ApproverKeyConfirmations" },
           { migration_id: 34, name: "PerLeadWakeups" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
@@ -339,6 +350,8 @@ describe("Kin migrations", () => {
         [29, "DropJudgeLog"],
         [30, "ManyLeads"],
         [31, "LeadDeliveries"],
+        [32, "WorkerEnvironment"],
+        [33, "ApproverKeyConfirmations"],
         [34, "PerLeadWakeups"],
       ]);
       const before = yield* kinSchema;
@@ -376,6 +389,12 @@ describe("Kin migrations", () => {
       yield* sql`DROP TABLE kin_auth_key_repairs`;
       yield* sql`DROP TABLE kin_auth_session_keys`;
       yield* sql`DROP TABLE kin_worker_charges`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN environment_id`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN remote_project_id`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN repository_key`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN pull_request_url`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN pull_request_number`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN project_id`;
       yield* sql`ALTER TABLE kin_workers DROP COLUMN title`;
       yield* sql`ALTER TABLE kin_workers DROP COLUMN chat_id`;
       yield* sql`DROP TABLE kin_floor_notices`;
@@ -417,6 +436,7 @@ describe("Kin migrations", () => {
         "kin_executions",
         "kin_grants",
         "kin_pending_actions",
+        "kin_approver_key_confirmations",
         "kin_approver_keys",
         "kin_audit",
       ]) {
@@ -454,6 +474,8 @@ describe("Kin migrations", () => {
         [29, "DropJudgeLog"],
         [30, "ManyLeads"],
         [31, "LeadDeliveries"],
+        [32, "WorkerEnvironment"],
+        [33, "ApproverKeyConfirmations"],
         [34, "PerLeadWakeups"],
       ]);
       assert.deepStrictEqual(
@@ -511,6 +533,8 @@ describe("Kin migrations", () => {
         { migration_id: 29, name: "DropJudgeLog" },
         { migration_id: 30, name: "ManyLeads" },
         { migration_id: 31, name: "LeadDeliveries" },
+        { migration_id: 32, name: "WorkerEnvironment" },
+        { migration_id: 33, name: "ApproverKeyConfirmations" },
         { migration_id: 34, name: "PerLeadWakeups" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
@@ -523,6 +547,8 @@ describe("Kin migrations", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`DROP TABLE kin_auth_paired_sessions`;
+      yield* sql`DROP TABLE kin_approver_key_confirmations`;
+      yield* sql`ALTER TABLE kin_approver_keys DROP COLUMN pending_seal`;
       yield* sql`ALTER TABLE kin_approver_keys DROP COLUMN seal`;
       for (const column of [
         "enqueued_at",
@@ -540,6 +566,12 @@ describe("Kin migrations", () => {
         yield* sql`ALTER TABLE kin_leads DROP COLUMN ${sql(column)}`;
       yield* sql`DROP TABLE kin_lead_deliveries`;
       yield* sql`DROP TABLE kin_scheduled_tasks`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN environment_id`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN remote_project_id`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN repository_key`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN pull_request_url`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN pull_request_number`;
+      yield* sql`ALTER TABLE kin_workers DROP COLUMN project_id`;
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 27`;
       for (const [id, subject, method, ip, revoked] of [
         ["phone", "one-time-token", "bearer-access-token", "100.64.0.7", null],
@@ -562,6 +594,8 @@ describe("Kin migrations", () => {
         [29, "DropJudgeLog"],
         [30, "ManyLeads"],
         [31, "LeadDeliveries"],
+        [32, "WorkerEnvironment"],
+        [33, "ApproverKeyConfirmations"],
         [34, "PerLeadWakeups"],
       ]);
       assert.deepStrictEqual(
@@ -574,6 +608,101 @@ describe("Kin migrations", () => {
         ],
       );
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("K032 upgrades a database at K031_LeadDeliveries", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const workerColumns = [
+        "environment_id",
+        "project_id",
+        "remote_project_id",
+        "repository_key",
+        "pull_request_url",
+        "pull_request_number",
+      ];
+      for (const column of workerColumns)
+        yield* sql`ALTER TABLE kin_workers DROP COLUMN ${sql(column)}`;
+      yield* undoApproverKeyConfirmations;
+      yield* sql`DROP INDEX idx_kin_wakeups_running_lead`;
+      yield* sql`CREATE UNIQUE INDEX idx_kin_wakeups_running_org ON kin_wakeups(org_id) WHERE status = 'running'`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 32`;
+      assert.deepStrictEqual((yield* kinHistory).at(-1), {
+        migration_id: 31,
+        name: "LeadDeliveries",
+      });
+      assert.deepStrictEqual(yield* runKinMigrations(), [
+        [32, "WorkerEnvironment"],
+        [33, "ApproverKeyConfirmations"],
+        [34, "PerLeadWakeups"],
+      ]);
+      const columns = yield* sql<{ name: string }>`
+        SELECT name FROM pragma_table_info('kin_workers')`;
+      for (const column of workerColumns)
+        assert.include(
+          columns.map((row) => row.name),
+          column,
+        );
+      assert.deepStrictEqual(yield* runKinMigrations(), []);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "K033 upgrades a database at K032_WorkerEnvironment and keeps its K031 and K032 rows",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const timestamp = 1_700_000_000_000;
+        yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
+        const delivery = {
+          org_id: "org",
+          event_id: "event",
+          kind: "reminder",
+          agent_id: "lead",
+          chat_id: "chat",
+          widget_id: "widget",
+          widget_type: "reminder",
+          state_json: "{}",
+          fallback_body: "Reminder",
+          deadline_at: timestamp,
+          status: "pending",
+          message_id: null,
+          created_at: timestamp,
+          updated_at: timestamp,
+        };
+        yield* sql`INSERT INTO kin_lead_deliveries ${sql.insert(delivery)}`;
+        yield* undoApproverKeyConfirmations;
+        yield* sql`DROP INDEX idx_kin_wakeups_running_lead`;
+        yield* sql`CREATE UNIQUE INDEX idx_kin_wakeups_running_org ON kin_wakeups(org_id) WHERE status = 'running'`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 33`;
+        assert.deepStrictEqual((yield* kinHistory).slice(-2), [
+          { migration_id: 31, name: "LeadDeliveries" },
+          { migration_id: 32, name: "WorkerEnvironment" },
+        ]);
+        assert.deepStrictEqual(yield* runKinMigrations(), [
+          [33, "ApproverKeyConfirmations"],
+          [34, "PerLeadWakeups"],
+        ]);
+        assert.deepStrictEqual((yield* kinHistory).slice(-3), [
+          { migration_id: 32, name: "WorkerEnvironment" },
+          { migration_id: 33, name: "ApproverKeyConfirmations" },
+          { migration_id: 34, name: "PerLeadWakeups" },
+        ]);
+        assert.deepStrictEqual(yield* sql`SELECT * FROM kin_lead_deliveries`, [delivery]);
+        assert.deepStrictEqual(
+          yield* sql`SELECT name FROM pragma_table_info('kin_workers') WHERE name = 'environment_id'`,
+          [{ name: "environment_id" }],
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT name FROM pragma_table_info('kin_approver_keys') WHERE name = 'pending_seal'`,
+          [{ name: "pending_seal" }],
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT name FROM sqlite_master WHERE name = 'kin_approver_key_confirmations'`,
+          [{ name: "kin_approver_key_confirmations" }],
+        );
+        assert.deepStrictEqual(yield* runKinMigrations(), []);
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect("K034 swaps the running wake-up index to per lead on a database with rows", () =>
@@ -733,6 +862,12 @@ describe("Kin migrations", () => {
           ended_at: 1794009600000,
           title: "Fix",
           chat_id: "chat",
+          environment_id: "worker-env",
+          project_id: "project",
+          remote_project_id: "remote-project",
+          repository_key: "github.com/acme/app",
+          pull_request_url: null,
+          pull_request_number: null,
         },
         kin_memory_reads: { org_id: "org", item_id: "fixture-id", last_read_at: 1794009600000 },
         kin_cursor: { org_id: "org", consumer: "worker-tracker", after_sequence: 42 },

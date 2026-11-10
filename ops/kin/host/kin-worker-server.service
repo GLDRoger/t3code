@@ -1,0 +1,52 @@
+# Kin's worker environment: a plain T3 server (Kin off) as the `kin-worker` user, linked from
+# kin-server. Workers' shells run here and can't see Kin's state. Installed by kin-worker.sh into
+# /etc/systemd/system/. See ops/kin/host/README.md, "Workers".
+[Unit]
+Description=Kin worker environment (plain T3 server for Kin's workers)
+Documentation=https://github.com/GLDRoger/t3code/tree/kin/ops/kin/host
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=kin-worker
+Group=kin-worker
+WorkingDirectory=/home/kin-worker
+Environment=HOME=/home/kin-worker
+Environment=PATH=/home/kin-worker/.local/bin:/home/kin-worker/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
+# The sandbox. Keep in step with SANDBOX in kin-worker.sh; `check` compares every entry.
+# /home is an empty tmpfs, so kin's home, the owner's home and every other user's are not there;
+# only the worker's own home comes back. Kin's running build comes in read-only.
+ProtectHome=tmpfs
+BindPaths=/home/kin-worker
+BindReadOnlyPaths=/home/kin/kin-current:/opt/kin-current
+PrivateTmp=yes
+ProtectProc=invisible
+NoNewPrivileges=yes
+ProtectSystem=full
+# A worker can't take kin-server's port (or any other of Kin's listeners) while it restarts.
+SocketBindDeny=ipv4:tcp:3773
+SocketBindDeny=ipv6:tcp:3773
+# Cloud metadata, link-local, Tailscale and private LAN ranges. Allow one back in a drop-in:
+# `systemctl edit kin-worker-server` with `IPAddressAllow=<address>`; `kin-worker run` copies it.
+IPAddressDeny=169.254.0.0/16 fe80::/10 100.64.0.0/10 fc00::/7 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+# Workers can't starve kin-server of memory or processes.
+MemoryMax=60%
+TasksMax=4096
+# Kin's pause stops this unit through kin's sudoers entry. While any org is paused it won't
+# start again, at boot, on a restart or from a manual start: root reads Kin's pause state as
+# kin with the system sqlite3 ("+" runs the check outside the sandbox). Resume starts it.
+ExecCondition=+/usr/local/sbin/kin-worker may-start
+ExecStart=/usr/local/sbin/kin-worker node serve --base-dir /home/kin-worker/.t3 --host 127.0.0.1 --port 3874 --no-browser
+Restart=always
+RestartSec=5
+KillMode=mixed
+# Provider CLIs share this cgroup; an OOM-killed one must not stop the server.
+OOMPolicy=continue
+# A pause waits for this, then systemd SIGKILLs every process left in the cgroup.
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

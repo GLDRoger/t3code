@@ -19,7 +19,6 @@ import {
   kinInboxListRows,
   kinInboxNotice,
   kinInboxScreenState,
-  kinInitials,
   kinLeadChatId,
   kinLevelsAgentId,
   kinPreviewText,
@@ -363,7 +362,7 @@ describe("chat list rows", () => {
     const view = kinChatRowView(row({}), directory);
     expect(view).toMatchObject({
       title: "Tech lead",
-      avatar: { kind: "agent", initials: "TL" },
+      avatar: { kind: "agent", seed: "agent:lead" },
       author: "Tech lead",
     });
     expect(kinChatRowLabel(view, () => "9:30")).toBe(
@@ -415,7 +414,11 @@ describe("chat list rows", () => {
       }),
       directory,
     );
-    expect(person.avatar).toEqual({ kind: "person", initials: "RP" });
+    expect(person.avatar).toEqual({ kind: "person", seed: "person:ravi" });
+    expect(kinChatRowView(row({ kind: "team_group" }), directory).avatar).toEqual({
+      kind: "group",
+      seed: "chat:c1",
+    });
     const unknown = kinChatRowView(row({}), kinDirectory({ _tag: "none" }));
     expect(unknown).toMatchObject({ title: "Direct chat", author: null });
   });
@@ -440,11 +443,6 @@ describe("chat list rows", () => {
     ["2 * 3 * 4 in snake_case_name", "2 * 3 * 4 in snake_case_name"],
   ])("flattens %j to one line", (body, preview) => {
     expect(kinPreviewText(body)).toBe(preview);
-  });
-
-  it("initials the first two words", () => {
-    expect(kinInitials("  lead ")).toBe("L");
-    expect(kinInitials("")).toBe("?");
   });
 
   it("opens the lead's direct chat from the footer, not the most active one", () => {

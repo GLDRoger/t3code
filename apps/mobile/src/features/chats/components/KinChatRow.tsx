@@ -23,7 +23,7 @@ export function KinChatRow(props: {
   const unread = view.unread > 0;
   const content = (
     <>
-      <KinAvatar kind={view.avatar.kind} initials={view.avatar.initials} />
+      <KinAvatar avatar={view.avatar} />
       <View className="min-w-0 flex-1 gap-0.5">
         <View className="flex-row items-baseline gap-2">
           <Text

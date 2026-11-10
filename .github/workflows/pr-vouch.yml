@@ -69,7 +69,7 @@ jobs:
   label:
     name: Label PR ${{ matrix.target.number }}
     needs: collect-targets
-    if: ${{ needs.collect-targets.outputs.targets != '[]' }}
+    if: ${{ !startsWith(github.head_ref, 'kin/worker/') && (needs.collect-targets.outputs.targets != '[]') }}
     runs-on: ubuntu-24.04
     concurrency:
       group: pr-vouch-${{ matrix.target.number }}

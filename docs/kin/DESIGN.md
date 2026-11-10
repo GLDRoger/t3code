@@ -167,7 +167,7 @@ A click posts a structured message, which the lead acts on under its permissions
 4. Every request for your input carries its buttons: in the chat, the notification and the lock screen.
 5. One composer: @mention to target; everything else goes to the router.
 6. Plain words ("Deferred to Fri 9:00"). Model names appear only on task cards, small.
-7. Agents get an outlined square avatar, people a filled circle.
+7. Agents get an outlined square avatar, people a filled circle, groups a filled square.
 8. Diffs, logs and terminals stay in threads, one tap away.
 
 ## 9. Authority and prompt injection

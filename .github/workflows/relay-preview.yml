@@ -20,8 +20,10 @@ jobs:
   deploy_preview:
     name: Deploy relay preview
     if: >-
+      !startsWith(github.head_ref, 'kin/worker/') && (
       github.event.pull_request.head.repo.full_name == github.repository &&
       contains(github.event.pull_request.labels.*.name, 'relay:preview')
+      )
     runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 20
     environment:

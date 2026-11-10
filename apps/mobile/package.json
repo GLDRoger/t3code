@@ -52,6 +52,7 @@
     "typecheck": "effect-tsgo tsrs --noEmit"
   },
   "dependencies": {
+    "@blobatar/react-native": "catalog:",
     "@clerk/expo": "catalog:",
     "@clerk/expo-native-components": "0.4.0",
     "@effect/atom-react": "catalog:",
@@ -77,6 +78,7 @@
     "@t3tools/mobile-terminal-native": "file:./modules/t3-terminal",
     "@t3tools/shared": "workspace:*",
     "@tabler/icons-react-native": "^3.44.0",
+    "blobatar": "catalog:",
     "clsx": "^2.1.1",
     "diff": "8.0.3",
     "effect": "catalog:",

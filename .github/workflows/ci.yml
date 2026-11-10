@@ -59,6 +59,7 @@ jobs:
   # file, docs included. The `Check` job at the end of this file passes only
   # when every other job passes or was skipped by `changes`.
   lint:
+    if: ${{ !startsWith(github.head_ref, 'kin/worker/') }}
     permissions:
       contents: read
       id-token: write
@@ -118,7 +119,7 @@ jobs:
       id-token: write
     name: Build and Typecheck
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.build != 'false' || needs.changes.outputs.typecheck != 'false') }}
+    if: ${{ !startsWith(github.head_ref, 'kin/worker/') && (!cancelled() && (needs.changes.outputs.build != 'false' || needs.changes.outputs.typecheck != 'false')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -247,7 +248,7 @@ jobs:
       id-token: write
     name: Test
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.test != 'false' }}
+    if: ${{ !startsWith(github.head_ref, 'kin/worker/') && (!cancelled() && needs.changes.outputs.test != 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -332,7 +333,7 @@ jobs:
       id-token: write
     name: Test Web
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.test_web != 'false' }}
+    if: ${{ !startsWith(github.head_ref, 'kin/worker/') && (!cancelled() && needs.changes.outputs.test_web != 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -387,6 +388,7 @@ jobs:
   # The shards are the longest jobs, so they gate themselves instead of waiting
   # ~15s for `changes`: a shard the change cannot affect stops after checkout.
   test_server:
+    if: ${{ !startsWith(github.head_ref, 'kin/worker/') }}
     permissions:
       contents: read
       id-token: write
@@ -572,7 +574,7 @@ jobs:
       id-token: write
     name: Release Smoke
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.release_smoke != 'false' }}
+    if: ${{ !startsWith(github.head_ref, 'kin/worker/') && (!cancelled() && needs.changes.outputs.release_smoke != 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:

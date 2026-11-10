@@ -25,6 +25,7 @@ import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { kinClient } from "./state/kinClient";
+import { KinApprovalCard } from "./widgets/KinApprovalCard";
 import { kinChatTitle, kinDirectory } from "@t3tools/client-runtime/kin/kinScreenState";
 import { useKinHostAt } from "./state/useKinHost";
 import {
@@ -170,7 +171,7 @@ function KinLevelsBody(props: {
       text:
         change.kind === "lower"
           ? `Lowered to ${change.level}.`
-          : `Raise to ${change.level} requested. It applies once you sign the approval.`,
+          : `Raise to ${change.level} requested. Approve it below with Face ID.`,
       error: false,
     });
   };
@@ -272,6 +273,16 @@ function KinLevelsBody(props: {
           ))}
         </View>
       )}
+      {result.value.pendingRaises
+        .filter((raise) => raise.state === "awaiting_approval")
+        .map((raise) => (
+          <KinApprovalCard
+            key={raise.actionId}
+            environmentId={environmentId}
+            actionId={raise.actionId}
+            revision={0}
+          />
+        ))}
       {view.chats.length === 0 ? null : (
         <View className="gap-3">
           <Text textRole="footnote" className="px-1 font-t3-medium text-foreground-secondary">

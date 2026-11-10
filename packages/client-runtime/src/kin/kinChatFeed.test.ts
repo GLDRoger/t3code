@@ -157,7 +157,8 @@ describe("in-place widget updates", () => {
     expect(status(mergeKinFeed(live, earlier))).toBe("done");
   });
 });
-const localIso = (day: number, hour: number) => new Date(2026, 10, day, hour).toISOString();
+const localIso = (day: number, hour: number, minute = 0) =>
+  new Date(2026, 10, day, hour, minute).toISOString();
 
 // Days are covered on their own below; these cases read the rows within one day.
 const messageRows = (...args: Parameters<typeof buildKinFeedRows>) =>
@@ -336,33 +337,43 @@ describe("rows", () => {
     ).toMatchObject([{ retry: null }, { retry: "Is the deploy green?" }]);
   });
 
-  it("starts each local day with a separator and restarts author lines after it", () => {
+  it("starts each local day and each quiet gap with a divider, restarting author lines", () => {
     const rows = buildKinFeedRows(
       [
         agentMessage(1, { createdAt: localIso(7, 21) }),
-        agentMessage(2, { createdAt: localIso(7, 22) }),
+        agentMessage(2, { createdAt: localIso(7, 21, 29) }),
         agentMessage(3, { createdAt: localIso(8, 9) }),
-        ownMessage(5),
-      ].map((m, index) => (index === 3 ? { ...m, createdAt: localIso(8, 10) } : m)),
+        { ...ownMessage(5), createdAt: localIso(8, 9, 20) },
+        // Thirty minutes after the last message, so a time divider starts it.
+        agentMessage(6, { createdAt: localIso(8, 9, 50) }),
+      ],
       viewer,
       new Set(),
     );
     expect(
       rows.map((row) =>
-        row.type === "day" ? row.key : row.type === "message" ? row.showAuthor : row.type,
+        row.type === "day"
+          ? row.key.replace(/^time:.*/, "time")
+          : row.type === "message"
+            ? row.showAuthor
+            : row.type,
       ),
-    ).toEqual(["day:2026-11-07", true, false, "day:2026-11-08", true, false]);
+    ).toEqual(["day:2026-11-07", true, false, "day:2026-11-08", true, false, "time", true]);
   });
 
-  it("relabels day separators when the local day changes", () => {
-    const messages = [agentMessage(1, { createdAt: localIso(8, 9) })];
+  it("labels a divider with its day and time, relabelled when the local day changes", () => {
+    const at = localIso(8, 9, 5);
+    const time = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(
+      new Date(at),
+    );
+    const messages = [agentMessage(1, { createdAt: at })];
     const dayOf = (now: Date) => buildKinFeedRows(messages, viewer, new Set(), now)[0];
     const today = dayOf(new Date(2026, 10, 8, 12));
     expect(dayOf(new Date(2026, 10, 8, 23))).toBe(today);
-    expect(today).toMatchObject({ key: "day:2026-11-08", label: "Today" });
+    expect(today).toMatchObject({ key: "day:2026-11-08", label: `Today ${time}` });
     expect(dayOf(new Date(2026, 10, 9, 0))).toMatchObject({
       key: "day:2026-11-08",
-      label: "Yesterday",
+      label: `Yesterday ${time}`,
     });
   });
 

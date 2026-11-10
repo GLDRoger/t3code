@@ -189,7 +189,10 @@ export type KinFeedRow =
       /** The viewer's message to send again when the lead didn't answer it; null offers nothing. */
       readonly retry: string | null;
     }
-  /** Starts each local day; `label` is relative to the day the rows were built on. */
+  /**
+   * A centred time divider: it starts each local day and any message after a quiet gap
+   * (`KIN_TIME_GAP_MS`). `label` is relative to the day the rows were built on.
+   */
   | { readonly type: "day"; readonly key: string; readonly label: string }
   | {
       readonly type: "fold";
@@ -272,17 +275,23 @@ function messageRow(message: KinMessage, fields: Omit<MessageRow, "type" | "key"
   return row;
 }
 
+/** A quiet spell this long between two messages puts a time divider before the second. */
+const KIN_TIME_GAP_MS = 30 * 60_000;
+
 type DayRow = Extract<KinFeedRow, { readonly type: "day" }>;
 const dayRows = new WeakMap<KinMessage, DayRow>();
 
-function dayRow(first: KinMessage, day: string, now: Date): DayRow {
-  const label = kinDayLabel(first.createdAt, now);
+function dayRow(first: KinMessage, key: string, now: Date): DayRow {
+  const label = kinTimeDividerLabel(first.createdAt, now);
   const held = dayRows.get(first);
-  if (held !== undefined && held.key === `day:${day}` && held.label === label) return held;
-  const row: DayRow = { type: "day", key: `day:${day}`, label };
+  if (held !== undefined && held.key === key && held.label === label) return held;
+  const row: DayRow = { type: "day", key, label };
   dayRows.set(first, row);
   return row;
 }
+
+const gapBefore = (previousAt: string | null, at: string) =>
+  previousAt !== null && Date.parse(at) - Date.parse(previousAt) >= KIN_TIME_GAP_MS;
 
 // Agents by agent id, so a draft (which names only its agent) groups with the messages before it.
 const authorKey = (message: KinMessage) =>
@@ -309,13 +318,17 @@ export function buildKinFeedRows(
   const foldKeys = new Set<string>();
   let previousAuthor: string | null = null;
   let previousDay: string | null = null;
+  let previousAt: string | null = null;
 
   const startDay = (message: KinMessage) => {
     const day = kinLocalDayKey(message.createdAt);
-    if (day === previousDay) return;
+    const gap = gapBefore(previousAt, message.createdAt);
+    previousAt = message.createdAt;
+    if (day === previousDay && !gap) return;
+    const key = day === previousDay ? `time:${messageRowKey(message)}` : `day:${day}`;
     previousDay = day;
     previousAuthor = null;
-    rows.push(dayRow(message, day, now));
+    rows.push(dayRow(message, key, now));
   };
 
   let lastOwnText: string | null = null;
@@ -381,6 +394,7 @@ export function buildKinFeedRows(
       continue;
     }
     startDay(first);
+    previousAt = run[run.length - 1]!.createdAt;
     const authors = [...new Set(run.map((message) => kinAuthorLabel(message, viewer)))];
     const decision =
       run.findLast((message) => message.intent === "decision" && message.status !== "deleted")
@@ -408,10 +422,16 @@ export function buildKinFeedRows(
   }
   for (const draft of drafts) {
     const day = kinLocalDayKey(draft.startedAt);
-    if (day !== previousDay) {
+    const gap = gapBefore(previousAt, draft.startedAt);
+    previousAt = draft.startedAt;
+    if (day !== previousDay || gap) {
+      rows.push({
+        type: "day",
+        key: day === previousDay ? `time:${kinReplyKey(draft.draftId)}` : `day:${day}`,
+        label: kinTimeDividerLabel(draft.startedAt, now),
+      });
       previousDay = day;
       previousAuthor = null;
-      rows.push({ type: "day", key: `day:${day}`, label: kinDayLabel(draft.startedAt, now) });
     }
     const author = `agent:${draft.agentId}`;
     rows.push({
@@ -455,6 +475,16 @@ export function kinDayLabel(iso: string, now: Date = new Date()): string {
   return date.getFullYear() === now.getFullYear()
     ? kinWeekdayFormat.format(date)
     : kinFullDateFormat.format(date);
+}
+
+const kinDividerTimeFormat = new Intl.DateTimeFormat(undefined, {
+  hour: "numeric",
+  minute: "2-digit",
+});
+
+/** A time divider: "Today 12:55 PM", "Yesterday 9:10 AM", "Mon, 3 Nov 8:02 AM". */
+function kinTimeDividerLabel(iso: string, now: Date = new Date()): string {
+  return `${kinDayLabel(iso, now)} ${kinDividerTimeFormat.format(new Date(iso))}`;
 }
 
 // Accessibility
