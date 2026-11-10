@@ -208,6 +208,8 @@ const PAGE = 100;
 const MAX_RUNS = 10;
 // Every call runs under the writer lock; GitHub's own edge gives up after about 10 seconds.
 const CALL_TIMEOUT: Duration.Input = "30 seconds";
+/** `memory-check.yml`'s job timeout: past it the check can't pass. */
+const CHECK_DEADLINE: Duration.Input = "15 minutes";
 
 /** A full page, or a `next` link, may hide more; lists that decide anything fail closed on it. */
 const pastOnePage = (answer: GitHubAnswer, length: number) =>
@@ -215,7 +217,6 @@ const pastOnePage = (answer: GitHubAnswer, length: number) =>
 
 export const make = Effect.fn("MemoryPullRequests.make")(function* (options: {
   readonly pollInterval: Duration.Input;
-  readonly polls: number;
 }) {
   const app = yield* KinGitHubApp;
   const client = yield* HttpClient.HttpClient;
@@ -380,44 +381,54 @@ export const make = Effect.fn("MemoryPullRequests.make")(function* (options: {
     }
     yield* refuseUnbound;
 
-    let verdict: Verdict = { _tag: "pending" };
-    for (let poll = 0; poll < options.polls && verdict._tag === "pending"; poll++) {
-      if (poll > 0) yield* Effect.sleep(options.pollInterval);
-      // Check runs first: a real job listed there is already listed by its run.
-      const checks = yield* call(
-        "checks.list",
-        "GET",
-        `/commits/${input.sha}/check-runs?check_name=${MEMORY_CHECK_NAME}&filter=all&per_page=${PAGE}`,
-      );
-      const runs = yield* call(
-        "actions.runs",
-        "GET",
-        `/actions/runs?head_sha=${input.sha}&event=pull_request&per_page=${PAGE}`,
-      );
-      const decodedChecks = checks.status === 200 ? decodeChecks(checks.body) : Option.none();
-      const decodedRuns = runs.status === 200 ? decodeRuns(runs.body) : Option.none();
-      if (Option.isNone(decodedChecks) || Option.isNone(decodedRuns)) continue;
-      if (decodedRuns.value.total_count > decodedRuns.value.workflow_runs.length) {
-        verdict = truncated("workflow runs");
-        break;
-      }
-      const ours = decodedRuns.value.workflow_runs.filter((run) => isOurRun(input, number, run));
-      if (ours.length > MAX_RUNS) {
-        verdict = truncated("memory-check runs");
-        break;
-      }
-      const jobs = yield* Effect.forEach(ours, (run) =>
-        call(
-          "actions.jobs",
+    const awaitCheck = Effect.gen(function* () {
+      let verdict: Verdict = { _tag: "pending" };
+      for (let poll = 0; verdict._tag === "pending"; poll++) {
+        if (poll > 0) yield* Effect.sleep(options.pollInterval);
+        // Check runs first: a real job listed there is already listed by its run.
+        const checks = yield* call(
+          "checks.list",
           "GET",
-          `/actions/runs/${run.id}/jobs?filter=all&per_page=${PAGE}`,
-        ).pipe(
-          Effect.map((answer) => (answer.status === 200 ? decodeJobs(answer.body) : Option.none())),
-        ),
-      );
-      if (jobs.some(Option.isNone)) continue;
-      verdict = memoryCheckVerdict(input.sha, decodedChecks.value, jobs.flatMap(Option.toArray));
-    }
+          `/commits/${input.sha}/check-runs?check_name=${MEMORY_CHECK_NAME}&filter=all&per_page=${PAGE}`,
+        );
+        const runs = yield* call(
+          "actions.runs",
+          "GET",
+          `/actions/runs?head_sha=${input.sha}&event=pull_request&per_page=${PAGE}`,
+        );
+        const decodedChecks = checks.status === 200 ? decodeChecks(checks.body) : Option.none();
+        const decodedRuns = runs.status === 200 ? decodeRuns(runs.body) : Option.none();
+        if (Option.isNone(decodedChecks) || Option.isNone(decodedRuns)) continue;
+        if (decodedRuns.value.total_count > decodedRuns.value.workflow_runs.length) {
+          verdict = truncated("workflow runs");
+          break;
+        }
+        const ours = decodedRuns.value.workflow_runs.filter((run) => isOurRun(input, number, run));
+        if (ours.length > MAX_RUNS) {
+          verdict = truncated("memory-check runs");
+          break;
+        }
+        const jobs = yield* Effect.forEach(ours, (run) =>
+          call(
+            "actions.jobs",
+            "GET",
+            `/actions/runs/${run.id}/jobs?filter=all&per_page=${PAGE}`,
+          ).pipe(
+            Effect.map((answer) =>
+              answer.status === 200 ? decodeJobs(answer.body) : Option.none(),
+            ),
+          ),
+        );
+        if (jobs.some(Option.isNone)) continue;
+        verdict = memoryCheckVerdict(input.sha, decodedChecks.value, jobs.flatMap(Option.toArray));
+      }
+      return verdict;
+    });
+    // The writer lock is held while this waits, so the deadline bounds slow calls too.
+    const verdict = Option.getOrElse(
+      yield* awaitCheck.pipe(Effect.timeoutOption(CHECK_DEADLINE)),
+      (): Verdict => ({ _tag: "pending" }),
+    );
     if (verdict._tag === "pending")
       return yield* refuseAndClose(`${MEMORY_CHECK_NAME} did not finish in time`);
     if (verdict._tag === "fail") return yield* refuseAndClose(verdict.reason);
@@ -537,8 +548,5 @@ export const make = Effect.fn("MemoryPullRequests.make")(function* (options: {
   return MemoryPullRequests.of({ land, sweep });
 });
 
-/** Polls `memory-check` every 15 seconds for up to the job's 15-minute timeout. */
-export const layer = Layer.effect(
-  MemoryPullRequests,
-  make({ pollInterval: Duration.seconds(15), polls: 60 }),
-);
+/** Polls `memory-check` every 15 seconds until the job's 15-minute timeout. */
+export const layer = Layer.effect(MemoryPullRequests, make({ pollInterval: Duration.seconds(15) }));

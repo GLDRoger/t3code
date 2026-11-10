@@ -433,6 +433,9 @@ it.live.each([
         yield* writer.stage(orgId, "wake1", first);
         yield* writer.stage(orgId, "wake2", second);
         const committed = yield* writer.commitWakeup(orgId, "wake2", "completed");
+        // An identical retry at the new head must not hide the other lead's version.
+        if (scenario === "two-leads-same-path")
+          yield* writer.stage(orgId, "wake1", first).pipe(Effect.result);
         // The first lead validated against the old head: at this one its write conflicts, so
         // its commit refuses rather than erasing the other lead's or duplicating its id.
         const result = yield* writer.commitWakeup(orgId, "wake1", "completed").pipe(Effect.result);

@@ -294,8 +294,8 @@ const make = Effect.gen(function* () {
   const locked = memory.withWriterLock;
   // Staged changes are per wake-up, so concurrent leads never share a session; the
   // git commit and push themselves stay serialized per repository under `locked`.
-  // `changes` and `heads` keep each staged change and the branch head it was validated at,
-  // so a commit after another lead's re-validates them instead of laying stale files over it.
+  // `changes` keeps each staged change so the commit replays them all against its own head
+  // instead of laying files validated at an older one over another lead's commit.
   type SessionState = {
     wakeupId: string;
     generation: number;
@@ -303,7 +303,6 @@ const make = Effect.gen(function* () {
     lines: string[];
     supersessions: Map<string, string>;
     changes: Map<string, MemoryChange>;
-    heads: Map<string, string>;
   };
   const sessions = new Map<string, SessionState>();
   const sessionKey = (orgId: KinOrgId, wakeupId: string) => `${orgId}\u0000${wakeupId}`;
@@ -457,7 +456,6 @@ const make = Effect.gen(function* () {
       lines: [],
       supersessions: new Map<string, string>(),
       changes: new Map<string, MemoryChange>(),
-      heads: new Map<string, string>(),
     };
     if (!previous && ctx.stagedReceipts) {
       const { writer } = yield* validate(orgId);
@@ -1040,7 +1038,6 @@ const make = Effect.gen(function* () {
     state.files.set(change.path, text);
     if (supersessionHash !== undefined) state.supersessions.set(change.path, supersessionHash);
     state.changes.set(change.path, change);
-    state.heads.set(change.path, recorded);
   });
   return MemoryWriter.of({
     stage: Effect.fn("MemoryWriter.stage")((orgId, wakeupId, change) =>
@@ -1160,17 +1157,13 @@ const make = Effect.gen(function* () {
                 return { commit: own };
               }
               if (outcome === "failed") state.files.clear();
-              // Staged files are whole files: after another lead's commit, every change is
-              // validated again at this head, supersession and duplicate ids included.
-              if (
-                outcome !== "failed" &&
-                [...state.heads.values()].some((head) => head !== recorded)
-              ) {
+              // Staged files are whole files, validated against whatever head and overlay they
+              // were staged on, so every change is replayed from a clean state at this head.
+              if (outcome !== "failed" && state.changes.size > 0) {
                 const original = [...state.changes.values()];
                 state.files.clear();
                 state.supersessions.clear();
                 state.changes.clear();
-                state.heads.clear();
                 for (const change of original)
                   yield* stageChange(orgId, wakeupId, ctx, state, change).pipe(
                     Effect.mapError((error) =>

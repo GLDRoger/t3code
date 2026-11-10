@@ -276,10 +276,10 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
           const ids = jobs[1] !== "10" ? [200] : scenario === "rerun" ? [100, 101] : [100];
           // A re-run's earlier attempts are listed only with `filter=all`.
           const listed = query.get("filter") === "all" ? ids : ids.slice(-1);
-          return {
-            status: 200,
-            body: { total_count: listed.length, jobs: yield* Effect.forEach(listed, job) },
-          };
+          const answered = yield* Effect.forEach(listed, job);
+          // The poll's git reads are done, so moving the test clock times out no subprocess.
+          if (pending) yield* Deferred.succeed(silenced, undefined);
+          return { status: 200, body: { total_count: listed.length, jobs: answered } };
         }
         const checks = /^\/commits\/([a-f0-9]+)\/check-runs\?(.*)$/.exec(path);
         if (checks) {
@@ -344,7 +344,7 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
     );
     const pullRequests = Layer.effect(
       PullRequests.MemoryPullRequests,
-      PullRequests.make({ pollInterval: 0, polls: 2 }),
+      PullRequests.make({ pollInterval: scenario === "check-pending" ? "20 minutes" : 0 }),
     ).pipe(Layer.provide(Layer.mergeAll(app, github.layer)));
 
     const notices: Array<{ branch: string; reason: string }> = [];
@@ -497,7 +497,21 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         scenario !== "records-broken"
       ) {
         const foreign = "did not come from .github/workflows/memory-check.yml";
-        const error = yield* refused(committing);
+        const error = yield* refused(
+          scenario === "check-pending"
+            ? Effect.gen(function* () {
+                const running = yield* Effect.forkChild(committing);
+                yield* Deferred.await(silenced);
+                // The 15-minute deadline ends the wait; the second poll is 5 minutes later.
+                yield* TestClock.adjust("15 minutes");
+                return yield* Fiber.join(running);
+              })
+            : committing,
+        );
+        if (scenario === "check-pending")
+          expect(
+            github.requests.filter((request) => request.path.includes("/check-runs?")),
+          ).toHaveLength(1);
         yield* unchanged;
         expect(merges.length).toBe(scenario === "merge-rejected" ? 1 : 0);
         expect(pulls.get(1)?.state).toBe("closed");
