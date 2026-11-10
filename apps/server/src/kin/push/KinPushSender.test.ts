@@ -238,7 +238,9 @@ const postWidget = (
   });
 
 const alerts = (sent: ReadonlyArray<KinApnsPush>) =>
-  sent.map((push) => (push.payload as { aps: { alert?: object } }).aps.alert);
+  sent.map(
+    (push) => (push.payload as { aps: { alert?: { title: string; body: string } } }).aps.alert,
+  );
 
 const categories = (sent: ReadonlyArray<KinApnsPush>) =>
   sent.map((push) => (push.payload as { aps: { category: string } }).aps.category);
