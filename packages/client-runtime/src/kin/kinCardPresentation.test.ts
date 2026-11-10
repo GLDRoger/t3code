@@ -1,9 +1,17 @@
 import { KinChatError, type EnvironmentId, type KinWidget } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { kinCardView } from "./kinCardPresentation.ts";
+import {
+  kinCardView,
+  kinReminderCardView,
+  kinScheduledTaskCardView,
+} from "./kinCardPresentation.ts";
 import { kinChoiceAnswerText, kinChoicePhase } from "./kinChoicePresentation.ts";
-import { KIN_SEND_FAILED_TEXT } from "./kinDeferralPresentation.ts";
+import {
+  KIN_SEND_FAILED_TEXT,
+  kinCardStatusAfter,
+  kinDeferralCountdown,
+} from "./kinDeferralPresentation.ts";
 import {
   kinLevelsFailureText,
   kinLevelsScreenView,
@@ -256,6 +264,116 @@ describe("choice cards", () => {
     expect(kinChoiceAnswerText(answer("reaction", "👍").answer!, "owner" as never)).toBe(
       "You chose “Ship it” with 👍",
     );
+  });
+});
+
+describe("reminder and scheduled task cards", () => {
+  const zone = "Asia/Kolkata";
+  const reminder = (state: Record<string, unknown>, overrides: Record<string, unknown> = {}) =>
+    widget({
+      type: "reminder",
+      widgetId: "reminder:org:def-1:1794555000000",
+      state: {
+        itemId: "def-1",
+        title: "Send the invoice",
+        dueAt: "2026-11-13T03:30:00.000Z",
+        ...state,
+      },
+      ...overrides,
+    });
+  const scheduled = (state: Record<string, unknown>, overrides: Record<string, unknown> = {}) =>
+    widget({
+      type: "scheduled_task",
+      widgetId: "scheduled:org:sch-1",
+      state: {
+        itemId: "sch-1",
+        title: "Open PRs digest",
+        every: { at: "08:00", days: [5, 1, 2, 3, 4] },
+        timeZone: zone,
+        status: "active",
+        nextRunAt: "2026-11-10T02:30:00.000Z",
+        lastRun: null,
+        ...state,
+      },
+      ...overrides,
+    });
+
+  it("offers Done, three snoozes and Change until the reminder is done", () => {
+    expect(kinCardView(reminder({ status: "due" }), HOST, known()).kind).toBe("deferral");
+    const due = kinReminderCardView(reminder({ status: "due" }), zone)!;
+    expect(due).toMatchObject({ eyebrow: "Reminder", title: "Send the invoice" });
+    expect(due.lines).toEqual(["Due Fri 13 Nov, 9:00."]);
+    expect(due.actions.map((action) => action.id)).toEqual([
+      "done",
+      "snooze_10m",
+      "snooze_1h",
+      "snooze_tomorrow",
+      "change",
+    ]);
+    const snoozed = kinReminderCardView(
+      reminder({ status: "snoozed", snoozedUntil: "2026-11-13T03:40:00.000Z" }),
+      zone,
+    )!;
+    expect(snoozed.lines).toEqual(["Snoozed until Fri 13 Nov, 9:10."]);
+    expect(snoozed.actions).toHaveLength(5);
+    expect(kinReminderCardView(reminder({ status: "done" }), zone)!.actions).toEqual([]);
+    expect(kinReminderCardView(reminder({ status: "bogus" }), zone)).toBeNull();
+  });
+
+  it("shows when a scheduled task runs, how the last run went, and its controls", () => {
+    const active = kinScheduledTaskCardView(scheduled({}), zone)!;
+    expect(active.lines).toEqual(["Weekdays at 8:00.", "Next run Tue 10 Nov, 8:00."]);
+    expect(active.countdown).toEqual({ to: Date.parse("2026-11-10T02:30:00.000Z"), kind: "run" });
+    expect(active.actions.map((action) => action.id)).toEqual([
+      "run_now",
+      "pause",
+      "edit",
+      "delete",
+    ]);
+    expect(kinScheduledTaskCardView(scheduled({}), "UTC")!.lines[0]).toBe(
+      "Weekdays at 8:00 (Asia/Kolkata).",
+    );
+
+    const posted = kinScheduledTaskCardView(
+      scheduled({
+        lastRun: { at: "2026-11-10T02:30:00.000Z", status: "posted", note: "Three PRs are open." },
+      }),
+      zone,
+    )!;
+    expect(posted.lines.at(-1)).toBe("Last run Tue 10 Nov, 8:00: Three PRs are open.");
+    const running = kinScheduledTaskCardView(
+      scheduled({ lastRun: { at: "2026-11-10T02:30:00.000Z", status: "running" } }),
+      zone,
+    )!;
+    expect(running.actions.map((action) => action.id)).toEqual(["pause", "edit", "delete"]);
+
+    const paused = kinScheduledTaskCardView(
+      scheduled({ status: "paused", nextRunAt: null }),
+      zone,
+    )!;
+    expect(paused.lines).toEqual(["Weekdays at 8:00.", "Paused."]);
+    expect(paused.countdown).toBeNull();
+    expect(paused.actions.map((action) => action.id)).toEqual([
+      "run_now",
+      "resume",
+      "edit",
+      "delete",
+    ]);
+    const deleted = kinScheduledTaskCardView(
+      scheduled({ status: "deleted", nextRunAt: null }),
+      zone,
+    )!;
+    expect(deleted).toMatchObject({ lines: ["Deleted."], actions: [] });
+  });
+
+  it("counts down to the next run and says what Kin did after a tap", () => {
+    expect(kinDeferralCountdown(3 * 60 * 60_000, 0, "run")).toBe("Next run in 3 h");
+    expect(kinCardStatusAfter({ status: "sent" }, "snooze_1h", 2)).toEqual({
+      revision: 2,
+      notice: { kind: "sent", text: "Snoozed." },
+      holding: true,
+    });
+    expect(kinCardStatusAfter({ status: "sent" }, "edit", 2).holding).toBe(false);
   });
 });
 
