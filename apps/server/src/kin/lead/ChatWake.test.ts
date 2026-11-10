@@ -303,6 +303,55 @@ describe("ChatWake", () => {
       }).pipe(Effect.provide(services)),
   );
 
+  it.effect(
+    "wakes the lead on a withdrawn yes it already took up, and only cancels one still queued",
+    () =>
+      Effect.gen(function* () {
+        yield* seed("a");
+        yield* storeMessage(message("a", "lead-latest", { seq: 1, agent: true }));
+        const { settle } = yield* start();
+        const hub = yield* Hub.KinChatHub;
+        const sql = yield* SqlClient.SqlClient;
+        const later = "1970-01-01T00:00:05.000Z";
+        const reaction = (at: string, removedAt: string | null) =>
+          hub.publish({
+            type: "reaction.updated",
+            orgId: KinOrgId.make("a"),
+            chatId: KinChatId.make("chat-a"),
+            reaction: {
+              orgId: KinOrgId.make("a"),
+              chatId: KinChatId.make("chat-a"),
+              messageId: KinMessageId.make("lead-latest"),
+              memberId: KinMemberId.make("owner-member-a"),
+              emoji: "👍",
+              createdAt: at,
+              removedAt,
+            },
+            woke: true,
+            by: message("a", "m1").author,
+          });
+        const rows = () =>
+          sql<{ state: string; withdrawn: number | null }>`SELECT state,
+              json_extract(json, '$.withdrawn') AS withdrawn
+            FROM kin_events WHERE org_id = 'a' ORDER BY received_at, event_id`;
+        // Still queued: withdrawing it only cancels it.
+        yield* reaction(createdAt, null);
+        yield* reaction(createdAt, later);
+        yield* settle;
+        assert.deepStrictEqual(yield* rows(), [{ state: "expired", withdrawn: null }]);
+        // Already taken up: the lead hears it was withdrawn.
+        yield* reaction(later, null);
+        yield* sql`UPDATE kin_events SET state = 'claimed' WHERE org_id = 'a' AND state = 'queued'`;
+        yield* reaction(later, "1970-01-01T00:00:09.000Z");
+        yield* settle;
+        assert.deepStrictEqual(yield* rows(), [
+          { state: "expired", withdrawn: null },
+          { state: "claimed", withdrawn: null },
+          { state: "queued", withdrawn: 1 },
+        ]);
+      }).pipe(Effect.provide(services)),
+  );
+
   it.effect("never wakes a lead for its own posts or after retirement, live or on catch-up", () =>
     Effect.gen(function* () {
       yield* seed("a");

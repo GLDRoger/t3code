@@ -126,10 +126,24 @@ export class KinLeadPrompt extends Context.Service<
                 reason: "Event message is missing or belongs to another chat",
               });
             const body = spoken(stored.value);
-            // Raised only for the owner's yes/no on the lead's latest message or a 👎 on any.
-            const meaning = reactionAnswer(event.emoji) === "yes" ? REACTION_YES : REACTION_CLARIFY;
+            // Raised only for the owner's yes/no on the lead's latest message or a 👎 on any, or
+            // for a changed answer on the message a reaction last woke the lead for.
+            const yes = reactionAnswer(event.emoji) === "yes";
+            const excerpt = encoded(
+              body.length <= REACTED_EXCERPT ? body : `${body.slice(0, REACTED_EXCERPT)}…`,
+            );
+            const changed =
+              event.withdrawn === true
+                ? `from ${event.emoji} to no reaction`
+                : event.changedFrom === undefined
+                  ? undefined
+                  : `from ${event.changedFrom} to ${event.emoji}`;
             events.push(
-              `${eventQuote}\n\nOwner reacted ${event.emoji} to your message ${encoded(body.length <= REACTED_EXCERPT ? body : `${body.slice(0, REACTED_EXCERPT)}…`)} (a reaction, not text). ${meaning}`,
+              `${eventQuote}\n\n${
+                changed === undefined
+                  ? `Owner reacted ${event.emoji} to your message ${excerpt} (a reaction, not text). ${yes ? REACTION_YES : REACTION_CLARIFY}`
+                  : `Owner changed their reaction on your message ${excerpt} ${changed} (a reaction, not text). ${yes && event.withdrawn !== true ? REACTION_NOW_YES : REACTION_WITHDRAWN}`
+              }`,
             );
             continue;
           }
@@ -668,6 +682,9 @@ const FEEDBACK_EXCERPT = 80;
 const FEEDBACK_LIMIT = 10;
 /** A lead with no finished wake-up yet reads the last day's reactions. */
 const FEEDBACK_FIRST_WINDOW_MS = 24 * 60 * 60 * 1000;
+const REACTION_WITHDRAWN =
+  "The earlier go-ahead no longer stands: stop what you started for it if you can (kin_worker_stop for its worker) and undo what is safely undoable. Then tell the owner in one line what you stopped and what had already happened.";
+const REACTION_NOW_YES = "It now means go ahead: do it as for a 👍 and say so in one line.";
 const REACTION_YES = `On an offer or proposal it means go ahead: do it and say so in one line. On a plain statement it only acknowledges it: write exactly ${SILENT_REPLY} and nothing else. It never approves a privileged action; that still needs the signed card.`;
 const INDEX_MAX_LINES = 200;
 const INDEX_NEARLY_FULL = 160;

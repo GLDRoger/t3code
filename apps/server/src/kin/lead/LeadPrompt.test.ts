@@ -1181,5 +1181,37 @@ it.effect(
       expect(
         yield* prompt.build({ ...input, wakeupId: KinWakeupId.make("laneless"), events: [] }),
       ).not.toContain("# Owner reactions");
+      // A changed answer names both emoji and the message, and what to do about the old one.
+      const changed = (emoji: "👍" | "👎", extra: object) =>
+        prompt.build({
+          ...input,
+          lane: { chatId, mode: "reply" },
+          events: [
+            decodeEvent({
+              _tag: "chat.reaction",
+              orgId,
+              agentId,
+              chatId,
+              messageId: "seen-before",
+              emoji,
+              ...extra,
+              eventId: "event-changed",
+              receivedAt: timestamp,
+              dedupeKey: null,
+              provenance: { _tag: "system" },
+            }),
+          ],
+        });
+      const reversed = yield* changed("👎", { changedFrom: "👍" });
+      expect(reversed).toContain(
+        `Owner changed their reaction on your message "CI is green." from 👍 to 👎 (a reaction, not text). The earlier go-ahead no longer stands: stop what you started for it if you can (kin_worker_stop for its worker)`,
+      );
+      expect(reversed).not.toContain("write exactly NO_REPLY");
+      expect(yield* changed("👍", { withdrawn: true })).toContain(
+        `from 👍 to no reaction (a reaction, not text). The earlier go-ahead no longer stands`,
+      );
+      expect(yield* changed("👍", { changedFrom: "👎" })).toContain(
+        `from 👎 to 👍 (a reaction, not text). It now means go ahead: do it as for a 👍`,
+      );
     }).pipe(Effect.provide(layer)),
 );

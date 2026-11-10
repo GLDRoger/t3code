@@ -174,6 +174,7 @@ const setup = Effect.fn("test.setup")(function* (input: {
   readonly ask?: string;
   readonly lane?: "direct" | "group";
   readonly reaction?: "👍";
+  readonly changedFrom?: "👎";
 }) {
   const kin = yield* Kin.KinServer;
   const services = Option.getOrThrow(kin.services);
@@ -214,6 +215,7 @@ const setup = Effect.fn("test.setup")(function* (input: {
       threadId,
       ...(message === undefined ? {} : { message }),
       ...(input.reaction === undefined ? {} : { reaction: input.reaction }),
+      ...(input.changedFrom === undefined ? {} : { changedFrom: input.changedFrom }),
     }),
   );
   const [row] = yield* sql<{ runId: string; startedAt: number }>`
@@ -604,13 +606,22 @@ it.effect.each([
   },
   // A 👍 that only acknowledged a statement may end its turn silently.
   { reaction: "👍" as const, rescue: [], rescues: 0, expected: [] },
+  // A changed answer is owed words: what the lead now does about it.
+  {
+    reaction: "👍" as const,
+    changedFrom: "👎" as const,
+    rescue: [],
+    rescues: 1,
+    expected: ["system:Ada didn't reply."],
+  },
 ])(
   "rescues a run that owed a reply once, then says so (%#)",
-  ({ reaction, rescue, rescues, expected }) =>
+  ({ reaction, changedFrom, rescue, rescues, expected }) =>
     Effect.gen(function* () {
       const { fake, runId, complete, posted } = yield* setup({
         ask: "Did the deploy finish?",
         ...(reaction === undefined ? {} : { reaction }),
+        ...(changedFrom === undefined ? {} : { changedFrom }),
       });
       // NO_REPLY can't answer an owner's message.
       fake.items = [text("a", 1, "NO_REPLY", runId)];

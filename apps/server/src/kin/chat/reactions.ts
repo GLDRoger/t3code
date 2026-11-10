@@ -17,8 +17,10 @@ import * as SqlSchema from "effect/sql/SqlSchema";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 
-/** An owner reaction wakes the lead at most this often per chat. */
+/** A first owner reaction wakes the lead at most this often per chat; a changed answer skips it. */
 const KIN_REACTION_COOLDOWN_MS = 30_000;
+/** Reactions on one message wake the lead at most this many times; after that they are feedback. */
+export const KIN_REACTION_WAKES_PER_MESSAGE = 3;
 /** The backlog carries a chat's newest live reactions, at most this many. */
 const BACKLOG_REACTIONS = 1_000;
 
@@ -128,7 +130,7 @@ export const recentlyWoke = Effect.fn("KinReactions.recentlyWoke")(
     readonly now: number;
   }) {
     const sql = yield* SqlClient.SqlClient;
-    const rows = yield* sql`SELECT 1 FROM kin_reactions
+    const rows = yield* sql`SELECT 1 FROM kin_reaction_wakes
       WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}
         AND woke_at > ${input.now - KIN_REACTION_COOLDOWN_MS}
       ORDER BY woke_at DESC LIMIT 1`;
@@ -137,16 +139,60 @@ export const recentlyWoke = Effect.fn("KinReactions.recentlyWoke")(
   Effect.mapError(toPersistenceSqlError("KinReactions.recentlyWoke")),
 );
 
-/** Whether any reaction on the message already woke the lead: one wake per message. */
-export const wokeOnMessage = Effect.fn("KinReactions.wokeOnMessage")(
-  function* (input: { readonly orgId: KinOrgId; readonly messageId: KinMessageId }) {
+const WakeRow = Schema.Struct({
+  emoji: KinReactionEmoji,
+  answer: Schema.NullOr(Schema.Literals(["yes", "no"])),
+  wakes: Schema.Number,
+  latest: Schema.Number,
+});
+
+/**
+ * The owner reactions that woke the lead on a message: the emoji and answer the last wake carried,
+ * how many there were, and whether this message is the one a reaction last woke the chat for.
+ */
+export const reactionWake = Effect.fn("KinReactions.wake")(
+  function* (input: {
+    readonly orgId: KinOrgId;
+    readonly chatId: KinChatId;
+    readonly messageId: KinMessageId;
+  }) {
     const sql = yield* SqlClient.SqlClient;
-    const rows = yield* sql`SELECT 1 FROM kin_reactions
-      WHERE org_id = ${input.orgId} AND message_id = ${input.messageId} AND woke_at IS NOT NULL
-      ORDER BY 1 LIMIT 1`;
-    return rows.length > 0;
+    const [row] = yield* SqlSchema.findAll({
+      Request: Schema.Unknown,
+      Result: WakeRow,
+      execute: () => sql`SELECT w.emoji, w.answer, w.wakes,
+          w.message_id = (SELECT l.message_id FROM kin_reaction_wakes l
+            WHERE l.org_id = w.org_id AND l.chat_id = w.chat_id
+            ORDER BY l.woke_at DESC, l.message_id LIMIT 1) AS latest
+        FROM kin_reaction_wakes w
+        WHERE w.org_id = ${input.orgId} AND w.chat_id = ${input.chatId}
+          AND w.message_id = ${input.messageId}
+        ORDER BY w.message_id LIMIT 1`,
+    })(input);
+    return row === undefined ? undefined : { ...row, latest: row.latest === 1 };
   },
-  Effect.mapError(toPersistenceSqlError("KinReactions.wokeOnMessage")),
+  Effect.mapError(toPersistenceSqlError("KinReactions.wake")),
+);
+
+/** Records a reaction wake on the message: `answer` is null for a withdrawn yes. */
+export const recordWake = Effect.fn("KinReactions.recordWake")(
+  function* (input: {
+    readonly orgId: KinOrgId;
+    readonly chatId: KinChatId;
+    readonly messageId: KinMessageId;
+    readonly emoji: KinReactionEmoji;
+    readonly answer: "yes" | "no" | null;
+    readonly now: number;
+  }) {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_reaction_wakes
+        (org_id, chat_id, message_id, emoji, answer, wakes, woke_at)
+      VALUES (${input.orgId}, ${input.chatId}, ${input.messageId}, ${input.emoji}, ${input.answer},
+        1, ${input.now})
+      ON CONFLICT (org_id, message_id) DO UPDATE SET emoji = excluded.emoji,
+        answer = excluded.answer, wakes = kin_reaction_wakes.wakes + 1, woke_at = excluded.woke_at`;
+  },
+  Effect.mapError(toPersistenceSqlError("KinReactions.recordWake")),
 );
 
 /** Live reactions in a chat, newest first; with `messageIds`, only on those messages. */

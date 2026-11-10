@@ -186,6 +186,7 @@ const seed = Effect.gen(function* () {
     priya,
     sam,
     say,
+    said,
     events,
     wake,
   };
@@ -332,10 +333,15 @@ it.effect(
       // In a group, the owner's and a teammate's reactions are feedback and wake nobody.
       yield* chats.react(owner, { messageId: signups.messageId, emoji: "👍", on: true });
       yield* chats.react(priya, { messageId: signups.messageId, emoji: "👍", on: true });
+      // Nor does changing one, or taking it back.
+      yield* chats.react(owner, { messageId: signups.messageId, emoji: "👎", on: true });
+      yield* chats.react(owner, { messageId: signups.messageId, emoji: "👎", on: false });
+      yield* chats.react(priya, { messageId: signups.messageId, emoji: "👍", on: false });
       assert.deepStrictEqual(
         yield* sql`SELECT 1 FROM kin_reactions WHERE woke_at IS NOT NULL ORDER BY 1`,
         [],
       );
+      assert.deepStrictEqual(yield* sql`SELECT 1 FROM kin_reaction_wakes ORDER BY 1`, []);
       // The owner picks who answers by default, and the next unnamed message goes there.
       assert.include(yield* groups.setLead([owner], { chatId, agentId: growth }), {
         leadAgentId: growth,
@@ -499,5 +505,49 @@ it.effect(
         assert.isFalse(yield* chats.attachmentReadable([who], "kin-chat-plan"));
       }
       assert.isEmpty((yield* events).filter((row) => row.state === "queued"));
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "an answer changed while the lead still works on the first waits its turn, then runs",
+  () =>
+    Effect.gen(function* () {
+      const { sql, chats, queue, owner, orgId, tech, say, said, wake } = yield* seed;
+      const [direct] = yield* sql<{ chatId: KinChatId }>`SELECT owner_chat_id AS "chatId"
+      FROM kin_leads WHERE agent_id = ${tech}`;
+      const chatId = direct!.chatId;
+      yield* say(owner, chatId, "Merge the release PR");
+      const first = yield* wake(tech);
+      const offer = yield* say(first, chatId, "Merged. I can tag the release too if you want.");
+      yield* queue.finish({ orgId, wakeupId: first.wakeupId, status: "completed" });
+      const react = (emoji: "👍" | "👎") =>
+        chats
+          .react(owner, { messageId: offer.messageId, emoji, on: true })
+          .pipe(Effect.andThen(said(offer)));
+      const reactions = sql<{
+        emoji: string;
+        changedFrom: string | null;
+        state: string;
+        wakeupId: string | null;
+      }>`SELECT json_extract(json, '$.emoji') AS emoji,
+        json_extract(json, '$.changedFrom') AS "changedFrom", state, wakeup_id AS "wakeupId"
+      FROM kin_events WHERE tag = 'chat.reaction' ORDER BY queued_at, event_id`;
+      yield* react("👍");
+      const tagging = yield* wake(tech);
+      yield* react("👎");
+      const [yes, no] = yield* reactions;
+      assert.include(yes, { emoji: "👍", changedFrom: null, wakeupId: tagging.wakeupId });
+      assert.deepStrictEqual(no, {
+        emoji: "👎",
+        changedFrom: "👍",
+        state: "queued",
+        wakeupId: null,
+      });
+      yield* queue.finish({ orgId, wakeupId: tagging.wakeupId, status: "completed" });
+      const stopping = yield* wake(tech);
+      assert.deepStrictEqual(
+        (yield* reactions).map((row) => row.wakeupId),
+        [tagging.wakeupId, stopping.wakeupId],
+      );
     }).pipe(Effect.provide(layer)),
 );
