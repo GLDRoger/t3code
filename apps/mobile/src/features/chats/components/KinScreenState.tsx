@@ -75,8 +75,8 @@ export function KinScreenState(props: {
       return (
         <EmptyState
           variant="plain"
-          title="Kin isn't set up on this environment"
-          detail="Connect this phone to a T3 server that runs Kin."
+          title="No server with Kin yet"
+          detail="Connect this phone to a T3 Code server that has Kin turned on."
           actionLabel="Open environments"
           onAction={() => navigation.navigate("SettingsEnvironments")}
         />
@@ -85,16 +85,16 @@ export function KinScreenState(props: {
       return (
         <EmptyState
           variant="plain"
-          title="This device can't read Kin chats"
-          detail="Pair it again from the Mac."
+          title="This phone can't read Kin chats"
+          detail="Pair it again with the computer that runs T3 Code."
         />
       );
     case "noIdentity":
       return (
         <EmptyState
           variant="plain"
-          title="Kin doesn't know who you are on this server yet"
-          detail="Ask whoever runs Kin here to add you, then come back."
+          title="You're not in Kin on this server yet"
+          detail="Ask whoever runs it to add you, then come back."
         />
       );
     case "error":

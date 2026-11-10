@@ -1,4 +1,4 @@
-import { View } from "react-native";
+import { Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../../components/ui/AppText";
 import { GlassSurface } from "../../../components/ui/GlassSurface";
@@ -9,7 +9,7 @@ const STATUS_LABELS: Record<KinAvatarStatus, string> = { online: "Online", worki
 
 /**
  * The chat's title in the glass bar: who the chat is with, whether it's live, and open tasks.
- * Kin has no chat info screen yet, so it reads as a heading rather than a button.
+ * With `onPress` it opens the lead's details; without, it reads as a heading.
  */
 export function KinChatTitlePill(props: {
   readonly title: string;
@@ -18,16 +18,18 @@ export function KinChatTitlePill(props: {
   /** Open tasks, such as "2 open tasks"; null hides the second line. */
   readonly detail: string | null;
   readonly maxWidth: number;
+  readonly onPress?: () => void;
 }) {
-  return (
+  const label = kinSentences([
+    props.title,
+    props.status === null ? null : STATUS_LABELS[props.status],
+    props.detail,
+  ]);
+  const pill = (
     <GlassSurface
-      accessible
+      accessible={props.onPress === undefined}
       accessibilityRole="header"
-      accessibilityLabel={kinSentences([
-        props.title,
-        props.status === null ? null : STATUS_LABELS[props.status],
-        props.detail,
-      ])}
+      accessibilityLabel={label}
       className="flex-row items-center gap-2 py-1.5 pr-4 pl-1.5"
       style={{ borderRadius: 999, maxWidth: props.maxWidth }}
     >
@@ -53,5 +55,18 @@ export function KinChatTitlePill(props: {
         )}
       </View>
     </GlassSurface>
+  );
+  if (props.onPress === undefined) return pill;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityHint="Opens this lead's details"
+      hitSlop={6}
+      onPress={props.onPress}
+      className="active:opacity-70"
+    >
+      {pill}
+    </Pressable>
   );
 }

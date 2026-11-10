@@ -3,9 +3,11 @@ import { assert, it } from "@effect/vitest";
 import {
   AuthSessionId,
   AuthStandardClientScopes,
+  KIN_MEMORY_CHANGES_CARD,
   KinAgentId,
   KinMemoryChangeCard,
   KinMemoryItemId,
+  KinMessageId,
   KinPersonId,
   KinWidgetId,
 } from "@t3tools/contracts";
@@ -27,7 +29,6 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as Kin from "../layer.ts";
 import { dormantLeadDependencies } from "../lead/layer.testkit.ts";
 import { KinMemoryChanges, type KinMemoryUndo } from "./MemoryChanges.ts";
-import { MemoryChangeHooks } from "./MemoryWriter.ts";
 
 const session = {
   sessionId: AuthSessionId.make("owner-session"),
@@ -48,8 +49,9 @@ const root = Kin.layer.pipe(
   Layer.provideMerge(Sqlite.layerMemory),
 );
 const decodeCard = Schema.decodeUnknownSync(KinMemoryChangeCard);
+const encodeCard = Schema.encodeSync(KinMemoryChangeCard);
 
-it.effect("a wake-up's memory changes post one card, and only the owner can undo", () =>
+it.effect("only the owner can undo an item on an earlier memory change card", () =>
   Effect.gen(function* () {
     const kin = yield* Kin.KinServer;
     const services = Option.getOrThrow(kin.services);
@@ -75,48 +77,52 @@ it.effect("a wake-up's memory changes post one card, and only the owner can undo
     yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, models_json, worker_projects_json, owner_chat_id)
       VALUES (${agentId}, ${orgId}, 'Lead', 'L0', 0, '{}', '[]', ${direct.chatId})`;
 
-    const changes = {
-      orgId,
-      agentId,
-      wakeupId: "wake-1",
-      branch: "kin/shadow/lead",
-      base: "a".repeat(40),
-      commit: "b".repeat(40),
-      items: [
-        {
-          itemId: KinMemoryItemId.make("short"),
-          path: "claims/short.md",
-          title: "You prefer short replies",
-          change: "created" as const,
-        },
-        {
-          itemId: KinMemoryItemId.make("repo"),
-          path: "claims/repo.md",
-          title: "Main repo is GLDRoger/t3code",
-          change: "updated" as const,
-        },
-      ],
-    };
-    const hooks = Context.get(services, MemoryChangeHooks);
-    yield* hooks.committed(changes);
-    yield* hooks.committed(changes);
+    // Cards are no longer posted; ones already in a chat keep their Undo.
     const widgetId = KinWidgetId.make("memory-changes:lead:wake-1");
-    const widget = Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId }));
-    assert.strictEqual(widget.chatId, direct.chatId);
-    assert.deepStrictEqual(
-      decodeCard(widget.state).items.map(({ title, undo }) => [title, undo]),
-      [
-        ["You prefer short replies", null],
-        ["Main repo is GLDRoger/t3code", null],
-      ],
-    );
-    const message = Option.getOrThrow(
-      yield* repo.getMessage({ orgId, messageId: widget.messageId }),
-    );
-    assert.strictEqual(message.body, "Memory: 2 changes, including You prefer short replies");
-    const [cards] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_widgets
-      WHERE org_id = ${orgId} AND type = 'memory_changes'`;
-    assert.strictEqual(cards?.n, 1);
+    const { message } = yield* Context.get(services, KinChatService).notice({
+      orgId,
+      chatId: direct.chatId,
+      messageId: KinMessageId.make(widgetId),
+      body: "Memory: 2 changes, including You prefer short replies",
+    });
+    yield* repo.insertWidget({
+      orgId,
+      chatId: direct.chatId,
+      widgetId,
+      messageId: message.messageId,
+      widgetClass: "native",
+      type: KIN_MEMORY_CHANGES_CARD,
+      state: encodeCard({
+        agentId,
+        wakeupId: "wake-1",
+        branch: "kin/shadow/lead",
+        base: "a".repeat(40),
+        commit: "b".repeat(40),
+        items: [
+          {
+            itemId: KinMemoryItemId.make("short"),
+            path: "claims/short.md",
+            title: "You prefer short replies",
+            change: "created",
+            undo: null,
+          },
+          {
+            itemId: KinMemoryItemId.make("repo"),
+            path: "claims/repo.md",
+            title: "Main repo is GLDRoger/t3code",
+            change: "updated",
+            undo: null,
+          },
+        ],
+        more: 0,
+      }),
+      source: null,
+      feed: null,
+      awaiting: [],
+      pinnedAt: null,
+      closedAt: null,
+      updatedAt: "1970-01-01T00:00:00.000Z",
+    });
 
     const memory = Context.get(services, KinMemoryChanges);
     const undone: Array<Parameters<KinMemoryUndo>[1]> = [];

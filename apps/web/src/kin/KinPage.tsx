@@ -6,6 +6,8 @@ import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../components/Work
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { isElectron } from "../env";
 import { KinChatList } from "./KinChatList";
+import { KinLeadDialogHost } from "./KinLeadDialog";
+import { KinNewLeadButton } from "./KinNewLeadButton";
 import { startKinOutbox } from "./kinOutbox";
 
 /** Kin's page: the open chat. The chat list is the app sidebar (see `KinSidebar`). */
@@ -14,6 +16,7 @@ export function KinPage() {
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">
       <Outlet />
+      <KinLeadDialogHost />
     </SidebarInset>
   );
 }
@@ -31,6 +34,9 @@ export function KinNoChat() {
             <h1 className="truncate">Chats</h1>
           </WorkspaceBreadcrumbItem>
         </WorkspaceBreadcrumb>
+        <div className="ms-auto md:hidden">
+          <KinNewLeadButton />
+        </div>
       </WorkspacePageHeader>
       <nav aria-label="Kin chats" className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 md:hidden">
         <KinChatList />

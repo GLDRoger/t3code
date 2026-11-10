@@ -29,7 +29,7 @@ const gitLayer = Vcs.layer.pipe(Layer.provide(NodeServices.layer));
 it.live.each([
   "supersede-retry",
   "update-provenance",
-  "change-card",
+  "undo-created",
   "undo",
   "recovered-no-end",
   "lost-session-retry",
@@ -348,13 +348,8 @@ it.live.each([
               }),
       ),
     });
-    const cards: Writer.WakeupMemoryChanges[] = [];
-    const changeHooks = Layer.succeed(Writer.MemoryChangeHooks, {
-      committed: (changes) => Effect.sync(() => void cards.push(changes)),
-    });
     const scan = Scan.layer;
     const layer = Writer.layer.pipe(
-      Layer.provide(changeHooks),
       Layer.provideMerge(memoryLayer),
       Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
       Layer.provide(config),
@@ -413,7 +408,6 @@ it.live.each([
         ]);
         expect(journal).toContain("First lead note.");
         expect(journal).toContain("Second lead note.");
-        expect(cards.map((card) => card.wakeupId)).toEqual(["wake1", "wake2"]);
         return;
       }
       if (scenario === "two-leads-same-path" || scenario === "two-leads-same-id") {
@@ -503,7 +497,7 @@ it.live.each([
         expect(yield* writer.commitWakeup(orgId, "wake1", "completed")).toEqual(committed);
         return;
       }
-      if (scenario === "change-card" || scenario === "undo") {
+      if (scenario === "undo-created" || scenario === "undo") {
         const sql = yield* SqlClient.SqlClient;
         const at = "2026-11-08T00:00:00.000Z";
         yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Org', ${at})`;
@@ -516,8 +510,7 @@ it.live.each([
           memory.readItem(orgId, KinMemoryItemId.make(id), { lead: agentId });
         yield* writer.appendJournal(orgId, "wake0", ["Only a note."]);
         yield* writer.commitWakeup(orgId, "wake0", "completed");
-        expect(cards).toEqual([]);
-        if (scenario === "change-card") {
+        if (scenario === "undo-created") {
           yield* writer.stage(orgId, "wake1", {
             path: "claims/short.md",
             sourceEventId: "owner",
@@ -530,24 +523,17 @@ it.live.each([
             content: fixtureItem({ kind: "claim", status: "done" }),
           });
         }
+        const branch = Memory.shadowBranch(agentId);
+        const base = yield* git(paths.writer, ["rev-parse", `refs/heads/${branch}`]);
         const { commit: written } = yield* writer.commitWakeup(orgId, "wake1", "completed");
-        expect(cards).toHaveLength(1);
-        const [card] = cards;
-        expect(card).toMatchObject({
-          wakeupId: "wake1",
-          branch: Memory.shadowBranch(agentId),
-          commit: written,
-          items: [
-            scenario === "change-card"
-              ? { itemId: "short", title: "You prefer short replies", change: "created" }
-              : { itemId: "def-001", title: "Invented service maintenance", change: "updated" },
-          ],
-        });
-        const item = card!.items[0]!;
-        const undo = { ...card!, agentId, itemId: item.itemId, path: item.path };
+        const item =
+          scenario === "undo-created"
+            ? { itemId: KinMemoryItemId.make("short"), path: "claims/short.md" }
+            : { itemId: KinMemoryItemId.make("def-001"), path: "claims/existing.md" };
+        const undo = { agentId, branch, base, commit: written, ...item };
         expect((yield* writer.undoChange(orgId, undo))._tag).toBe("undone");
         const after = yield* read(item.itemId);
-        if (scenario === "change-card") expect(after.head.invalid_at).not.toBeNull();
+        if (scenario === "undo-created") expect(after.head.invalid_at).not.toBeNull();
         else expect(after.head.status).toBe("open");
         // The undo changed the item again, so a second tap is stale.
         expect(yield* writer.undoChange(orgId, undo)).toEqual({ _tag: "stale" });

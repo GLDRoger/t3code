@@ -21,7 +21,7 @@ import {
 
 const KIN_HOST_STORAGE_KEY = "kin.hostEnvironmentId";
 
-const savedKinHostAtom = connectionAtomRuntime.atom(
+export const savedKinHostAtom = connectionAtomRuntime.atom(
   Effect.gen(function* () {
     const storage = yield* MobileSecureStorage.MobileSecureStorage;
     const id = yield* storage.getItem(KIN_HOST_STORAGE_KEY);

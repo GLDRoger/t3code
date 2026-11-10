@@ -342,12 +342,22 @@ export function buildKinFeedRows(
     }
   };
 
+  // "Trying again" lines since anyone last spoke. The next notice is the latest word on the same
+  // unanswered message, so it replaces them and is the only one that offers Retry.
+  let retryingRows: number[] = [];
+  const superseded = new Set<number>();
+
   const pushMessage = (message: KinMessage) => {
     startDay(message);
     // Host cards (memory changes, routines) arrive as system messages carrying a widget.
     if (isSystem(message) && message.widgetId === null) {
       const notice = retryNotice(message);
       const retry = notice ? lastOwnText : null;
+      if (notice) {
+        for (const index of retryingRows) superseded.add(index);
+        retryingRows = hostRetrying(message) ? [rows.length] : [];
+        closeRetries(() => true);
+      }
       if (retry !== null) openRetries.push(rows.length);
       rows.push({
         type: "system",
@@ -360,6 +370,7 @@ export function buildKinFeedRows(
       previousAuthor = null;
       return;
     }
+    retryingRows = [];
     const own = message.author._tag === "human" && message.author.personId === viewer.personId;
     if (own && message.kind === "text" && message.status === "posted") {
       lastOwnText = message.body;
@@ -442,7 +453,7 @@ export function buildKinFeedRows(
     });
     previousAuthor = author;
   }
-  return rows;
+  return superseded.size === 0 ? rows : rows.filter((_, index) => !superseded.has(index));
 }
 
 /** The local calendar day of an ISO time, as `2026-11-08`. */
