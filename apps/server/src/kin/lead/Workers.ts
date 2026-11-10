@@ -86,7 +86,7 @@ const supportedDrivers = new Set([
 ]);
 const denied = (message = "Worker operation is not allowed.") =>
   new KinChatError({ reason: "not_allowed", message });
-// Below L2 in the worker's chat: nothing starts, and the lead hears it in plain words.
+// Below L2 in a chat the work touches: nothing starts, and the lead hears it in plain words.
 const NOT_OPEN =
   "Starting work isn't open to you in this chat. Nothing started; tell the owner what you would do.";
 const missing = () => new KinChatError({ reason: "not_found", message: "Kin record not found." });
@@ -126,6 +126,11 @@ const WorkerRow = Schema.Struct({
 const decodeLead = Schema.decodeUnknownEffect(LeadRow);
 const decodeWorker = Schema.decodeUnknownEffect(WorkerRow);
 const decodeEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(KinEvent));
+/** The chat that asked; other events answer in the owner chat, as the reply bridge does. */
+const askingChat = (event: KinEvent, ownerChatId: KinChatId) =>
+  event._tag === "chat.message" || event._tag === "widget.action" || event._tag === "chat.reaction"
+    ? event.chatId
+    : ownerChatId;
 const decodeSelection = Schema.decodeUnknownEffect(ModelSelection);
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
@@ -201,16 +206,28 @@ const make = Effect.gen(function* () {
     if (row === undefined) return yield* missing();
     return yield* decodeWorker(row);
   });
-  // The level of the chat the worker's card lives in, so a chat's own cap holds there too.
-  const levelOf = (ctx: Lead, chatId: KinChatId | null) =>
-    KinLevels.effectiveLevel({
-      orgId: ctx.orgId,
-      agentId: ctx.agentId,
-      chatId: chatId ?? undefined,
-    }).pipe(
-      Effect.provideService(SqlClient.SqlClient, sql),
-      Effect.catchTags({ KinLevelRefused: () => Effect.fail(denied()) }),
-    );
+  /**
+   * Whether every chat the work touches is open to it: the chat that asked and the chats of the
+   * workers it reaches. A chat's own cap holds there, and a weaker chat can't reach a worker
+   * placed in a stronger one.
+   */
+  const open = Effect.fn("KinWorkers.open")(function* (
+    ctx: Lead,
+    chats: ReadonlyArray<KinChatId | null>,
+  ) {
+    for (const chatId of chats) {
+      const level = yield* KinLevels.effectiveLevel({
+        orgId: ctx.orgId,
+        agentId: ctx.agentId,
+        chatId: chatId ?? undefined,
+      }).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.catchTags({ KinLevelRefused: () => Effect.fail(denied()) }),
+      );
+      if (!KinLevels.atLeast(level, "L2")) return false;
+    }
+    return true;
+  });
   /** Where new work may start; workers never run on this server. */
   const admit = Effect.fn("KinWorkers.admit")(function* (orgId: KinOrgId) {
     if (Option.isNone(env.environmentId))
@@ -385,13 +402,9 @@ const make = Effect.gen(function* () {
           return yield* denied("Review workers need reviewOf, and only review workers take it.");
         const author =
           input.reviewOf === undefined ? undefined : yield* worker(ctx, input.reviewOf);
-        const chatId =
-          event._tag === "chat.message" ||
-          event._tag === "widget.action" ||
-          event._tag === "chat.reaction"
-            ? event.chatId
-            : config.ownerChatId;
-        return { config, event, author, chatId, level: yield* levelOf(ctx, chatId) };
+        const chatId = askingChat(event, config.ownerChatId);
+        const chats = author === undefined ? [chatId] : [chatId, author.chatId];
+        return { config, event, author, chatId, open: yield* open(ctx, chats) };
       }),
     );
     const modelSelection = yield* pick(input.model, plan.config.models);
@@ -410,7 +423,7 @@ const make = Effect.gen(function* () {
       if (reviewRefs.length === 0)
         return yield* denied("The author worker has not reported a PR or commit to review yet.");
     }
-    if (!KinLevels.atLeast(plan.level, "L2")) return yield* denied(NOT_OPEN);
+    if (!plan.open) return yield* denied(NOT_OPEN);
     const environmentId = yield* admit(ctx.orgId);
     yield* supported(environmentId, modelSelection);
     const { projectId, repositoryKey } = yield* projectThere(environmentId, input.projectId);
@@ -547,17 +560,18 @@ const make = Effect.gen(function* () {
     const plan = yield* sql.withTransaction(
       Effect.gen(function* () {
         const config = yield* leadConfig(ctx);
-        yield* sourceEvent(ctx, input.sourceEventId);
+        const event = yield* sourceEvent(ctx, input.sourceEventId);
         const stored = yield* worker(ctx, input.workerId);
         // A reviewer sees only the author's refs; more lead text would end that isolation.
         if (stored.kind === "review")
           return yield* denied(
             "Review workers take no follow-ups. Start a new review with kin_delegate.",
           );
-        return { config, worker: stored, level: yield* levelOf(ctx, stored.chatId) };
+        const chats = [askingChat(event, config.ownerChatId), stored.chatId];
+        return { config, worker: stored, open: yield* open(ctx, chats) };
       }),
     );
-    if (!KinLevels.atLeast(plan.level, "L2")) return yield* denied(NOT_OPEN);
+    if (!plan.open) return yield* denied(NOT_OPEN);
     yield* admit(ctx.orgId);
     if (plan.worker.projectId === null || !plan.config.projects.includes(plan.worker.projectId))
       return yield* denied("Workers may only run in this lead's worker projects.");
