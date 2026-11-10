@@ -303,6 +303,11 @@ const samples = {
     { chatId: "chat-1", muted: true },
     { chatId: "chat-1", muted: false },
   ],
+  KinAgentMessageBody: ["Hello"],
+  KinAttachment: [
+    { type: "image", id: "kin-chat-1", name: "kite.png", mimeType: "image/png", sizeBytes: 12 },
+    { type: "file", id: "kin-chat-2", name: "list.txt", mimeType: "text/plain", sizeBytes: 3 },
+  ],
   KinLeadInterruptInput: [{ orgId: "org-1", wakeupId: "wakeup-1" }],
   KinLeadInterruptResult: [{ interrupted: true }, { interrupted: false }],
   KinChatError: [

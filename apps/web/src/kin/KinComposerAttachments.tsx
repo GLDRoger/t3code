@@ -154,7 +154,7 @@ export function useKinComposerAttachments(input: {
       if (storedFiles.has(file.id))
         startAttachmentUpload({ environmentId, image: file, draftTarget: target });
     }
-    let added = storedFiles.size > 0;
+    const added = storedFiles.size > 0;
     if (acceptedImages.length === 0) return added;
 
     const placeholders = acceptedImages.map((file) => ({
@@ -197,8 +197,7 @@ export function useKinComposerAttachments(input: {
         startAttachmentUpload({ environmentId, image, draftTarget: target });
       else URL.revokeObjectURL(image.previewUrl);
     }
-    added ||= stored.size > 0;
-    return added;
+    return added || stored.size > 0;
   };
 
   const removeImage = (imageId: string) => {

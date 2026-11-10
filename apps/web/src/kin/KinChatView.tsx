@@ -1023,11 +1023,9 @@ function KinComposer(props: {
     const body = drafted.trim();
     if (body.length > KIN_MESSAGE_MAX_LENGTH) return;
     setSending(true);
-    try {
-      await deliver(drafted, body);
-    } finally {
-      setSending(false);
-    }
+    // `deliver` rejects only if a rejection escapes the outbox; the button must come back either way.
+    await deliver(drafted, body).catch(() => undefined);
+    setSending(false);
   };
 
   const deliver = async (drafted: string, body: string) => {
