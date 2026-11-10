@@ -61,6 +61,20 @@ describe("kinNotificationRoute", () => {
       "/kin",
     ],
     ["JSON-encoded data", JSON.stringify(deferral), chatLink],
+    // Each lead's DM and each group is its own chat id, so each push opens its own chat.
+    ...(["7ae13b6f-1a49-4bb5-ac5c-6ac6b4300978", "c1f0e2d4-group"] as const).map(
+      (chatId) =>
+        [
+          `the chat ${chatId}`,
+          {
+            kin: 1,
+            orgId: "kin-default",
+            chatId,
+            deepLink: `/kin/env-1/kin-default/chats/${chatId}`,
+          },
+          `/kin/env-1/kin-default/chats/${chatId}`,
+        ] as const,
+    ),
   ])("routes %s", (_name, data, path) => {
     const route = kinNotificationRoute(response({ data }));
     expect(route?.path).toBe(path);

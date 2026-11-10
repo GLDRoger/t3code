@@ -41,6 +41,10 @@ export type KinInboxEvent =
 
 export const emptyKinInbox: KinInboxState = { chats: [], waiting: [] };
 
+/** The app badge, as the host counts it on every push: unread messages plus Waiting on you. */
+export const kinBadgeCount = (state: KinInboxState) =>
+  state.chats.reduce((total, chat) => total + chat.unread, 0) + state.waiting.length;
+
 export function applyKinInboxEvent(state: KinInboxState, event: KinInboxEvent): KinInboxState {
   switch (event._tag) {
     case "snapshot":

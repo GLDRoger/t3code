@@ -265,6 +265,8 @@ export interface KinChatRowView {
   readonly preview: string;
   readonly sentAt: string | null;
   readonly unread: number;
+  /** The viewer muted this chat's notifications; it still counts toward the badge. */
+  readonly muted: boolean;
 }
 
 /**
@@ -316,7 +318,27 @@ function kinMessagePreview(last: KinChatSummary["lastMessage"]): string {
   return kinPreviewText(last.body) || "Message";
 }
 
-export function kinChatRowView(row: KinInboxRow, directory: KinDirectory): KinChatRowView {
+/** Whether the viewer's own membership mutes this chat's pushes right now. */
+export function kinChatMuted(
+  chat: Pick<KinChatSummary, "members">,
+  me: ReadonlySet<string>,
+  now: number,
+): boolean {
+  return chat.members.some(
+    (member) =>
+      member.leftAt === null &&
+      member.principal._tag === "person" &&
+      me.has(member.principal.personId) &&
+      member.mutedUntil != null &&
+      Date.parse(member.mutedUntil) > now,
+  );
+}
+
+export function kinChatRowView(
+  row: KinInboxRow,
+  directory: KinDirectory,
+  now = Date.now(),
+): KinChatRowView {
   const { chat } = row;
   const others = chat.members.filter(
     (member) =>
@@ -345,6 +367,7 @@ export function kinChatRowView(row: KinInboxRow, directory: KinDirectory): KinCh
     preview,
     sentAt: chat.lastMessageAt,
     unread: chat.unread,
+    muted: kinChatMuted(chat, directory.me, now),
   };
 }
 
@@ -415,6 +438,7 @@ export function kinChatRowLabel(view: KinChatRowView, formatTime: (date: Date) =
     `${view.title}, ${view.avatar.kind}`,
     preview.replace(/[.!?]+$/, ""),
     view.sentAt === null ? null : formatTime(new Date(view.sentAt)),
+    view.muted ? "Muted" : null,
     view.unread > 0 ? `${view.unread} unread` : null,
   ]
     .filter((part): part is string => part !== null && part.length > 0)

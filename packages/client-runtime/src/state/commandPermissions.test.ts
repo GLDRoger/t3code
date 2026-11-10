@@ -18,6 +18,7 @@ import {
   ThreadId,
   EnvironmentId,
   KIN_APPROVAL_WS_METHODS,
+  KIN_CHAT_WS_METHODS,
   KIN_LEVEL_WS_METHODS,
   KIN_PUSH_WS_METHODS,
   ORCHESTRATION_V2_WS_METHODS,
@@ -128,6 +129,8 @@ describe("command permissions", () => {
       ),
   );
   it.effect.each([
+    // Muting quiets only the caller's own pushes, so reading the chat is enough.
+    [KIN_CHAT_WS_METHODS.chatsMute, AuthOrchestrationReadScope],
     [KIN_LEVEL_WS_METHODS.get, AuthOrchestrationReadScope],
     [KIN_LEVEL_WS_METHODS.review, AuthOrchestrationOperateScope],
     [KIN_LEVEL_WS_METHODS.deferPromotion, AuthOrchestrationOperateScope],
