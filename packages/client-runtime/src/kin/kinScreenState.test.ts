@@ -7,21 +7,18 @@ import { describe, expect, it } from "vite-plus/test";
 import { AVAILABLE_CONNECTION_STATE, type SupervisorConnectionState } from "../connection/model.ts";
 import type { KinSynced } from "./kinStreams.ts";
 import type { KinHost, KinProbe } from "./kinHost.ts";
-import { emptyKinInbox, selectKinInboxView, type KinInboxState } from "./kinInboxModel.ts";
+import { emptyKinInbox, type KinInboxState } from "./kinInboxModel.ts";
 import {
   formatKinTime,
   kinChatRowLabel,
   kinChatRowView,
   kinChatTitle,
   kinDirectory,
-  kinHomeLabel,
-  kinHomeSubtitle,
   kinInboxNotice,
   kinInboxScreenState,
   kinOwnedLeadAgentId,
   kinPreviewText,
   kinReconnectStep,
-  kinSnippet,
   kinWaitingBannerView,
   kinWaitingRowView,
 } from "./kinScreenState.ts";
@@ -182,140 +179,6 @@ describe("kinReconnectStep", () => {
   });
 });
 
-describe("kinHomeSubtitle", () => {
-  const chat = (chatId: string, createdAt: string, last: string | null) =>
-    ({
-      chatId,
-      archivedAt: null,
-      createdAt,
-      lastMessageAt: last === null ? null : "2026-11-08T09:00:00.000Z",
-      lastMessage: last === null ? null : { body: last },
-      unread: 0,
-    }) as never;
-  // The list sorts by `lastMessageAt ?? createdAt`, so the brand-new empty chat comes first.
-  const inbox: KinInboxState = {
-    ...emptyKinInbox,
-    chats: [
-      chat("a", "2026-11-01T00:00:00.000Z", "Payments test fixed"),
-      chat("b", "2026-11-08T10:00:00.000Z", null),
-    ],
-  };
-  const readyState = (connected: boolean) =>
-    ({ _tag: "ready", environmentId, connected, inbox: { ...synced, value: inbox } }) as const;
-
-  it("previews the chat the list puts first", () => {
-    const view = selectKinInboxView(inbox);
-    expect(view.rows[0]?.chat.chatId).toBe("b");
-    expect(kinHomeSubtitle(readyState(true), view)).toBe("No messages yet");
-  });
-
-  it("says how many chats are working when nothing waits, and only while connected", () => {
-    const working = { ...inbox, chats: [{ ...inbox.chats[0]!, working: true }] };
-    const view = selectKinInboxView(working);
-    expect(kinHomeSubtitle(readyState(true), view)).toBe("Working · 1");
-    expect(kinHomeSubtitle(readyState(false), view)).toBe("Offline");
-  });
-
-  it("says Offline once the host disconnects", () => {
-    expect(kinHomeSubtitle(readyState(false), selectKinInboxView(inbox))).toBe("Offline");
-  });
-
-  it("says when Kin doesn't know this session", () => {
-    expect(kinHomeSubtitle({ _tag: "noIdentity" }, null)).toBe(
-      "Kin doesn't know you on this server yet",
-    );
-  });
-
-  it("previews the newest message as plain text", () => {
-    const marked = { ...inbox, chats: [chat("a", "2026-11-01T00:00:00.000Z", "**Fixed** `pay`")] };
-    expect(kinHomeSubtitle(readyState(true), selectKinInboxView(marked))).toBe("Fixed pay");
-  });
-
-  it.each([
-    [
-      { kind: "widget_action", body: '{"text":"Tapped \\"Done\\" on the reminder \\"Stretch\\""}' },
-      "Done",
-    ],
-    [{ kind: "system", widgetId: "memory-changes:lead:1", body: "Remembered: x" }, "Saved a note"],
-    [{ kind: "system", widgetId: "deferral:org:1", body: "Deferred to Fri" }, "Set a reminder"],
-  ])("never previews a card tap's JSON or Kin's own bookkeeping", (last, preview) => {
-    const held = { ...inbox.chats[0]!, lastMessage: last as never };
-    const view = selectKinInboxView({ ...inbox, chats: [held] });
-    expect(kinHomeSubtitle(readyState(true), view)).toBe(preview);
-  });
-});
-
-describe("kinHomeLabel", () => {
-  const directory = kinDirectory(
-    host({
-      _tag: "ready",
-      orgs: {
-        orgs: [{ agents: [{ agentId: "lead", displayName: "Tech lead", retired: false }] }],
-        me: [{ orgId: "org", personId: "owner" }],
-      } as never,
-    }),
-  );
-  const long =
-    "Payments test fixed and PR 212 is ready for review, with the flaky retry removed and the timeout raised to thirty seconds.";
-  const inboxWith = (body: string | null, author: object, unread: number) =>
-    ({
-      ...emptyKinInbox,
-      chats: [
-        {
-          chatId: "c1",
-          kind: "direct",
-          title: null,
-          archivedAt: null,
-          createdAt: "2026-11-01T00:00:00.000Z",
-          lastMessageAt: body === null ? null : "2026-11-08T09:30:00.000Z",
-          lastMessage: body === null ? null : { body, status: "visible", author },
-          members: [{ principal: { _tag: "agent", agentId: "lead" }, leftAt: null }],
-          unread,
-        },
-      ],
-    }) as never as KinInboxState;
-  const label = (inbox: KinInboxState, connected = true) =>
-    kinHomeLabel(
-      { _tag: "ready", environmentId, connected, inbox: { ...synced, value: inbox } },
-      selectKinInboxView(inbox),
-      directory,
-    );
-  const lead = { _tag: "agent", agentId: "lead" };
-
-  it.each([
-    [
-      "names the chat and cuts a long message",
-      inboxWith(long, lead, 2),
-      true,
-      "Kin, 2 unread. Tech lead, last message: Payments test fixed and PR 212 is ready for review, with the flaky retry…",
-    ],
-    [
-      "says the viewer sent it",
-      inboxWith("On it.", { _tag: "human", personId: "owner" }, 0),
-      true,
-      "Kin. Tech lead, last message from you: On it.",
-    ],
-    ["has no messages", inboxWith(null, lead, 0), true, "Kin. No messages yet."],
-    ["is offline", inboxWith(long, lead, 3), false, "Kin, 3 unread. Offline."],
-  ] as const)("%s", (_name, inbox, connected, expected) => {
-    expect(label(inbox, connected)).toBe(expected);
-  });
-
-  it("reads a status without its separator", () => {
-    expect(kinHomeLabel({ _tag: "offline" }, null, directory)).toBe("Kin. Offline.");
-  });
-});
-
-describe("kinSnippet", () => {
-  it.each([
-    ["keeps short text", "Payments test fixed", "Payments test fixed"],
-    ["cuts at a word", `${"word ".repeat(20)}end`, `${"word ".repeat(16).trim()}…`],
-    ["cuts one long word", "x".repeat(100), `${"x".repeat(80)}…`],
-  ] as const)("%s", (_name, text, expected) => {
-    expect(kinSnippet(text)).toBe(expected);
-  });
-});
-
 describe("chat list rows", () => {
   const directory = kinDirectory(
     host({
@@ -352,6 +215,19 @@ describe("chat list rows", () => {
       },
       waitingCount,
     }) as never;
+
+  it.each([
+    [
+      { kind: "widget_action", body: '{"text":"Tapped \\"Done\\" on the reminder \\"Stretch\\""}' },
+      "Done",
+    ],
+    [{ kind: "system", widgetId: "memory-changes:lead:1", body: "Remembered: x" }, "Saved a note"],
+    [{ kind: "system", widgetId: "deferral:org:1", body: "Deferred to Fri" }, "Set a reminder"],
+    [{ kind: "text", body: "**Fixed** `pay`" }, "Fixed pay"],
+  ])("never previews a card tap's JSON or Kin's own bookkeeping", (last, preview) => {
+    const held = row({ lastMessage: { author: { _tag: "system" }, status: "posted", ...last } });
+    expect(kinChatRowView(held, directory).preview).toBe(preview);
+  });
 
   it("names a direct chat after its agent and reads as the spec's label", () => {
     const view = kinChatRowView(row({}), directory);
