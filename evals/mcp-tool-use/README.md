@@ -34,7 +34,9 @@ Check that the case builds with `--dry-run --case <id>`. Then run it on the text
 
 ## Kin chat cases
 
-`cases/kin.ndjson` checks that registered Kin agents post with the server-bound author and the advertised task-widget state, and that ordinary threads never see Kin tools. Set `setup.world.kinAgent` to expose the three Kin tools; other cases retain the ordinary T3 list. The runner imports the real Kin toolkit, not copied schemas. Set `setup.world.kinLead` for a lead: it adds the lead tools and opens the prompt with the lead instructions from `apps/server/src/kin/lead/instructions.ts`, as a real wake-up does.
+`cases/kin.ndjson` checks that registered Kin agents post with the server-bound author and the advertised task-widget state, and that ordinary threads never see Kin tools. Set `setup.world.kinAgent` to expose the three Kin tools; other cases retain the ordinary T3 list. The runner imports the real Kin toolkit, not copied schemas. Set `setup.world.kinLead` for a lead. On Claude its request is built as `LeadIsolation` builds a lead session: the instructions from `apps/server/src/kin/lead/instructions.ts` are the whole system prompt and every Kin tool is loaded (the captured template has no `Read`, `Grep` or `Glob`, so those are missing). On Codex, which never runs a lead, the prompt opens with the instructions instead. Write a lead case's `prompt` in the shape `LeadPrompt` builds; `apps/server/src/kin/lead/LeadPrompt.test.ts` pins that shape.
+
+The lead voice cases grade the reply text with `textMust` and `textMustNot`: a length cap such as `[\\s\\S]{160,}`, Kin's internal words, and requests that the owner reconfigure Kin. Each has a control beside it (`kin-lead-notice-failing-check-reaches-owner`, `kin-lead-asked-for-a-list-gives-the-list`) so a fix that makes leads terse or silent everywhere fails too.
 
 ## Device manager cases
 

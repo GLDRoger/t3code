@@ -35,6 +35,49 @@ it.each(["append", "rewrite", "disjoint", "remote rewrite", "rewrite disjoint"])
   },
 );
 
+// A squash-merged batch comes back with this server's own changes on the remote side.
+it.each([
+  ["same item", "claims/a.md", "edited\n", "edited\n", "edited\n"],
+  [
+    "landed journal",
+    "journal/day.md",
+    "original\nlanded\n",
+    "original\nlanded\n",
+    "original\nlanded\n",
+  ],
+  [
+    "journal grew since",
+    "journal/day.md",
+    "original\nlanded\nlater\n",
+    "original\nlanded\n",
+    "original\nlanded\nlater\n",
+  ],
+  [
+    "remote grew since",
+    "journal/day.md",
+    "original\nlanded\n",
+    "original\nlanded\nowner\n",
+    "original\nlanded\nowner\n",
+  ],
+])("merges back a landed batch: %s", (_name, path, ours, theirs, expected) => {
+  const base = new Map([
+    [path, Buffer.from(path.startsWith("journal/") ? "original\n" : "before\n")],
+  ]);
+  const local = new Map([[path, Buffer.from(ours)]]);
+  const remote = new Map([[path, Buffer.from(theirs)]]);
+  const metadata = (files: Map<string, Buffer>) =>
+    new Map([...files].map(([file, bytes]) => [file, { mode: "100644", sha: bytes.toString() }]));
+  const result = mergeMemoryFiles(
+    base,
+    local,
+    remote,
+    metadata(base),
+    metadata(local),
+    metadata(remote),
+  );
+  expect(result?.files.get(path)?.toString()).toBe(expected);
+});
+
 it("fails closed for unrelated histories and criss-cross merge bases", () => {
   expect(uniqueMergeBase(new Map([["a", []]]), new Map([["b", []]]))).toBeUndefined();
   const common = [

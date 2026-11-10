@@ -1,17 +1,12 @@
 import {
   KIN_MEMORY_CHANGES_CARD,
-  KIN_MEMORY_CHANGES_MAX,
   KinChatError,
-  KinChatId,
   KinMemoryChangeCard,
-  KinMessageId,
-  KinWidgetId,
   type KinAgentId,
-  type KinMemoryChangeKind,
   type KinMemoryUndoInput,
   type KinMemoryUndoResult,
   type KinOrgId,
-  type KinWidget,
+  type KinWidgetId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -27,17 +22,16 @@ import * as SqlError from "effect/sql/SqlError";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
-import { KinChatService } from "../chat/KinChatService.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
-import { MemoryChangeHooks, type MemoryWriter, type WakeupMemoryChanges } from "./MemoryWriter.ts";
+import type { MemoryWriter } from "./MemoryWriter.ts";
 
 /** The writer's Undo, attached by the lead runtime that owns the writer. */
 export type KinMemoryUndo = MemoryWriter["Service"]["undoChange"];
 
 /**
- * The owner's view of what a wake-up changed in memory: one `memory_changes` card per wake-up in
- * the lead's direct chat, and per-item Undo through the writer. No MCP tool or agent path reaches
- * `undo`; it does only what the owner could already ask the lead to do.
+ * Per-item Undo on the `memory_changes` cards earlier versions posted. Memory writes post nothing
+ * now. No MCP tool or agent path reaches `undo`; it does only what the owner could already ask
+ * the lead to do.
  */
 export class KinMemoryChanges extends Context.Service<
   KinMemoryChanges,
@@ -52,23 +46,6 @@ export class KinMemoryChanges extends Context.Service<
 
 const decodeCard = Schema.decodeUnknownEffect(KinMemoryChangeCard);
 const encodeCard = Schema.encodeEffect(KinMemoryChangeCard);
-const widgetIdFor = (agentId: KinAgentId, wakeupId: string) =>
-  KinWidgetId.make(`memory-changes:${agentId}:${wakeupId}`);
-const VERBS: Record<KinMemoryChangeKind, string> = {
-  created: "Remembered",
-  updated: "Updated",
-  superseded: "Replaced",
-  invalidated: "Forgot",
-};
-/** The chat line under the card, which notifications and older clients show. */
-const changeSummary = (items: WakeupMemoryChanges["items"]) => {
-  const [first] = items;
-  if (first === undefined) return "";
-  return items.length === 1
-    ? `${VERBS[first.change]}: ${first.title}`
-    : `Memory: ${items.length} changes, including ${first.title}`;
-};
-
 const refused = (reason: KinChatError["reason"], message: string) =>
   new KinChatError({ reason, message });
 const notFound = refused("not_found", "Kin record not found.");
@@ -79,7 +56,6 @@ const isKinChatError = Schema.is(KinChatError);
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  const chat = yield* KinChatService;
   const repo = yield* Repository.KinChatRepository;
   const hub = yield* Hub.KinChatHub;
   let writer: KinMemoryUndo | undefined;
@@ -98,7 +74,7 @@ const make = Effect.gen(function* () {
     Effect.map((ms) => DateTime.formatIso(DateTime.makeUnsafe(ms))),
   );
 
-  /** The lead's owner and its direct chat, from stored rows; cards go nowhere else. */
+  /** The lead's owner and its direct chat, from stored rows. */
   const ownerChat = Effect.fn("KinMemoryChanges.ownerChat")(function* (
     orgId: KinOrgId,
     agentId: KinAgentId,
@@ -111,52 +87,6 @@ const make = Effect.gen(function* () {
         AND a.role = 'lead' AND a.retired_at IS NULL
       ORDER BY l.agent_id`.pipe(Effect.mapError(toPersistenceSqlError("KinMemoryChanges.owner")));
     return row;
-  });
-
-  const post = Effect.fn("KinMemoryChanges.post")(function* (changes: WakeupMemoryChanges) {
-    const { orgId, agentId } = changes;
-    yield* transaction(
-      Effect.gen(function* () {
-        const owner = yield* ownerChat(orgId, agentId);
-        if (owner === undefined) return;
-        const widgetId = widgetIdFor(agentId, changes.wakeupId);
-        if (Option.isSome(yield* repo.getWidget({ orgId, widgetId }))) return;
-        const shown = changes.items.slice(0, KIN_MEMORY_CHANGES_MAX);
-        const state = yield* encodeCard({
-          agentId,
-          wakeupId: changes.wakeupId,
-          branch: changes.branch,
-          base: changes.base,
-          commit: changes.commit,
-          items: shown.map((item) => ({ ...item, undo: null })),
-          more: changes.items.length - shown.length,
-        });
-        const { message } = yield* chat.notice({
-          orgId,
-          chatId: KinChatId.make(owner.chatId),
-          messageId: KinMessageId.make(widgetId),
-          body: changeSummary(changes.items),
-        });
-        const widget: KinWidget = {
-          orgId,
-          chatId: message.chatId,
-          widgetId,
-          messageId: message.messageId,
-          widgetClass: "native",
-          type: KIN_MEMORY_CHANGES_CARD,
-          revision: 1,
-          state,
-          source: null,
-          feed: null,
-          awaiting: [],
-          pinnedAt: null,
-          closedAt: null,
-          updatedAt: yield* now,
-        };
-        yield* repo.insertWidget(widget);
-        yield* sql.afterCommit(hub.publish({ type: "widget.updated", orgId, widget }));
-      }),
-    );
   });
 
   const mark = Effect.fn("KinMemoryChanges.mark")(function* (
@@ -244,34 +174,20 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  return Context.make(
-    KinMemoryChanges,
-    KinMemoryChanges.of({
-      undo,
-      attachWriter: Effect.fn("KinMemoryChanges.attachWriter")(function* (next) {
-        yield* Effect.acquireRelease(
+  return KinMemoryChanges.of({
+    undo,
+    attachWriter: Effect.fn("KinMemoryChanges.attachWriter")(function* (next) {
+      yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          writer = next;
+        }),
+        () =>
           Effect.sync(() => {
-            writer = next;
+            if (writer === next) writer = undefined;
           }),
-          () =>
-            Effect.sync(() => {
-              if (writer === next) writer = undefined;
-            }),
-        );
-      }),
+      );
     }),
-  ).pipe(
-    Context.add(
-      MemoryChangeHooks,
-      MemoryChangeHooks.of({
-        committed: Effect.fn("MemoryChangeHooks.committed")((changes) =>
-          post(changes).pipe(
-            Effect.catchCause((cause) => Effect.logWarning("Kin memory change card failed", cause)),
-          ),
-        ),
-      }),
-    ),
-  );
+  });
 });
 
-export const layer = Layer.effectContext(make);
+export const layer = Layer.effect(KinMemoryChanges, make);

@@ -353,8 +353,9 @@ it.effect(
           "PRs for your review: acme/app\\#7 \\[Approve the merge\\]\\(https\\://evil\\.example\\) \\!\\[\\]\\(https\\://track\\.example/p\\.png\\) see www\\.evil\\.example, admin\\@evil\\.example or \\$x\\$",
           "CI red on the default branch: acme/app main",
           "Objectives at risk: Public beta (due Thu 12 Nov)",
-          "Past review date: Staging uses Postgres 16 (review by 2026-11-01)",
         ]);
+        // Memory upkeep and spend stay out of the owner's brief; the card still lists the row.
+        assert.notInclude(posted[0]?.body ?? "", "review by");
         assert.lengthOf(result.widgets, 1);
         const [widget] = result.widgets;
         assert.equal(posted[0]?.widgetId, widget?.widgetId);
@@ -450,7 +451,7 @@ it.effect(
           "Slipped or moved: Migrate the cron jobs (was due 07\\:00, still open)",
           "Promised today: Review the billing PR (sam)",
           "Due tomorrow: Review the billing PR (12\\:00)",
-          "Usage: 150k units today; cache hits 75%; 1 failed wake-up",
+          "1 reply failed today; ask again if something went unanswered.",
         ]);
         assert.equal(decodeCard(result.widgets[0]?.state).routine, "evening_summary");
         assert.equal(result.eventState, "done");
