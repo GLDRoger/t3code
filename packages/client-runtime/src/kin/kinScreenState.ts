@@ -15,6 +15,7 @@ import type { AsyncResult } from "effect/reactivity";
 import type { SupervisorConnectionState } from "../connection/model.ts";
 import type { KinSynced } from "./kinStreams.ts";
 import type { KinHost } from "./kinHost.ts";
+import { kinTapText } from "./kinTap.ts";
 import type { KinInboxFold, KinInboxRow, KinInboxState, KinInboxView } from "./kinInboxModel.ts";
 
 /** What a Kin screen reading the inbox shows. */
@@ -315,6 +316,10 @@ export function kinPreviewText(body: string): string {
 function kinMessagePreview(last: KinChatSummary["lastMessage"]): string {
   if (last === null) return "No messages yet";
   if (last.status === "deleted") return "Message deleted";
+  if (last.kind === "widget_action") return kinTapText(last.body);
+  // Hosts before the quiet-turn change posted their own bookkeeping as system rows.
+  if (last.kind === "system" && last.widgetId?.startsWith("memory-changes:")) return "Saved a note";
+  if (last.kind === "system" && last.widgetId?.startsWith("deferral:")) return "Set a reminder";
   return kinPreviewText(last.body) || "Message";
 }
 

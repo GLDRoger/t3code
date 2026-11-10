@@ -19,6 +19,7 @@ import {
   kinStartNowRefusalNotice,
   visibleKinCardStatus,
   type KinDeferralActionId,
+  kinDeferralQuietLine,
 } from "./kinDeferralPresentation.ts";
 
 const DUE = "2026-11-13T09:00:00.000Z";
@@ -60,14 +61,16 @@ describe("kinDeferralCardView", () => {
     const confirmed = view(deferral());
     expect(confirmed.phase).toBe("confirmed");
     expect(confirmed.title).toBe("Rate limiting");
-    expect(confirmed.lines).toEqual(["Deferred to Fri 13 Nov, 9:00. I'll start then."]);
-    expect(confirmed.eyebrow).toBe("Deferral");
+    // The host's own "Deferred to …" text repeats the local line, so it is dropped.
+    expect(confirmed.lines).toEqual(["Set for Fri 13 Nov, 9:00. I'll start then."]);
+    expect(confirmed.eyebrow).toBe("Scheduled");
+    expect(view(deferral({ onDue: "remind" })).eyebrow).toBe("Reminder");
     expect(confirmed.countdown).toEqual({ to: Date.parse(DUE), kind: "due" });
     expect(view(deferral({ onDue: "remind", text: "" })).lines).toEqual([
-      "Deferred to Fri 13 Nov, 9:00. I'll remind you then.",
+      "Set for Fri 13 Nov, 9:00. I'll remind you then.",
     ]);
     expect(view(deferral({ text: "Waiting on the API review." })).lines).toEqual([
-      "Deferred to Fri 13 Nov, 9:00. I'll start then.",
+      "Set for Fri 13 Nov, 9:00. I'll start then.",
       "Waiting on the API review.",
     ]);
 
@@ -134,9 +137,23 @@ describe("kinDeferralCardView", () => {
   it("titles a decision card, and reads each line once", () => {
     const asked = view(deferral({ phase: "asked", text: "Due at 9:00. Start it?" }));
     expect(asked.eyebrow).toBe("Needs your decision");
-    expect(asked.accessibilityLabel).toBe("Deferral: Rate limiting. Due at 9:00. Start it?");
+    expect(asked.accessibilityLabel).toBe("Scheduled: Rate limiting. Due at 9:00. Start it?");
     expect(view(deferral({ text: "Waiting on lane A…" })).accessibilityLabel).toBe(
-      "Deferral: Rate limiting. Deferred to Fri 13 Nov, 9:00. I'll start then. Waiting on lane A…",
+      "Scheduled: Rate limiting. Set for Fri 13 Nov, 9:00. I'll start then. Waiting on lane A…",
+    );
+  });
+
+  it("reads Kin's own note as one quiet line, but not a card that needs a decision", () => {
+    expect(kinDeferralQuietLine(deferral({ onDue: "remind" }), "UTC")).toBe(
+      "Reminder set for Fri 13 Nov, 9:00",
+    );
+    expect(kinDeferralQuietLine(deferral({ phase: "started" }), "UTC")).toBe(
+      "Scheduled for Fri 13 Nov, 9:00",
+    );
+    expect(kinDeferralQuietLine(deferral({ phase: "asked" }), "UTC")).toBeNull();
+    expect(kinDeferralQuietLine(deferral({ phase: "heads_up" }), "UTC")).toBeNull();
+    expect(kinDeferralQuietLine(deferral({ phase: "asked" }, { closedAt: DUE }), "UTC")).toBe(
+      "Scheduled for Fri 13 Nov, 9:00",
     );
   });
 
