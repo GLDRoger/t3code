@@ -1,6 +1,7 @@
 import { LegendList } from "@legendapp/list/react-native";
-import { useAtomSet } from "@effect/atom-react";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
+import type { EnvironmentId, KinOrgId } from "@t3tools/contracts";
 import { useEffect } from "react";
 import { View } from "react-native";
 
@@ -22,6 +23,7 @@ import {
   type KinDirectory,
   type KinInboxScreenState,
 } from "@t3tools/client-runtime/kin/kinScreenState";
+import { kinClient } from "./state/kinClient";
 import { rememberKinListAtom } from "./state/kinLastList";
 import { useKinInbox } from "./state/useKinInbox";
 
@@ -35,9 +37,19 @@ export function KinChatsScreen() {
     // Leaving the list, by Back or the swipe, is the switch back to coding threads.
     return navigation.addListener("beforeRemove", () => rememberList("threads"));
   }, [navigation, rememberList]);
+  const orgId =
+    host._tag === "host" && host.probe._tag === "ready"
+      ? (host.probe.orgs.me[0]?.orgId ?? null)
+      : null;
+  const newLeadAt =
+    state._tag === "ready" && orgId !== null ? { environmentId: state.environmentId, orgId } : null;
   return (
     <View collapsable={false} className="flex-1 bg-screen">
-      <AppBar title="Kin" onBack={() => navigation.goBack()} />
+      {newLeadAt === null ? (
+        <AppBar title="Kin" onBack={() => navigation.goBack()} />
+      ) : (
+        <KinChatsBar environmentId={newLeadAt.environmentId} orgId={newLeadAt.orgId} />
+      )}
       <ScreenContent surface="screen">
         <KinChatsView
           state={state}
@@ -57,6 +69,33 @@ export function KinChatsScreen() {
         />
       </ScreenContent>
     </View>
+  );
+}
+
+/** The list's bar with New lead, for a viewer this host knows. */
+function KinChatsBar(props: { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId }) {
+  const navigation = useNavigation();
+  const canCreate = useAtomValue(kinClient.leadCreate.permissionAtom(props.environmentId));
+  return (
+    <AppBar
+      title="Kin"
+      onBack={() => navigation.goBack()}
+      actions={
+        canCreate
+          ? [
+              {
+                accessibilityLabel: "New lead",
+                icon: "plus",
+                onPress: () =>
+                  navigation.navigate("KinLeadForm", {
+                    environmentId: props.environmentId,
+                    orgId: props.orgId,
+                  }),
+              },
+            ]
+          : undefined
+      }
+    />
   );
 }
 

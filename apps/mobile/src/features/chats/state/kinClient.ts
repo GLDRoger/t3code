@@ -18,6 +18,7 @@ import {
   type KinChatHistoryInput,
   type KinChatId,
   type KinChatsSubscribeInput,
+  type KinLeadsListInput,
   type KinOrgsListInput,
   type KinPushWatchInput,
 } from "@t3tools/contracts";
@@ -95,6 +96,11 @@ const approverKeysRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
   tag: KIN_APPROVAL_WS_METHODS.listKeys,
 });
 const readApproverKeys = guardedRead(approverKeysRead);
+const leadsRead = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "kin:leads:read",
+  tag: "kin.leads.list",
+});
+const readLeads = guardedRead(leadsRead);
 
 /** A dropped connection can leave a read pending; "Load earlier" fails after this and offers Retry. */
 export const KIN_HISTORY_PAGE_TIMEOUT = Duration.seconds(20);
@@ -174,6 +180,25 @@ export const kinClient = {
     label: "kin:lead:interrupt",
     tag: "kin.lead.interrupt",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.wakeupId },
+  }),
+  /** The viewer's own leads: who each is, what it is for and what it has in hand. */
+  leads: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:leads",
+    execute: Effect.fn("KinClient.leads")(function* (input: KinLeadsListInput) {
+      return yield* readLeads(input);
+    }),
+    staleTimeMs: 15_000,
+    refreshTrigger: sessionGeneration,
+  }),
+  leadCreate: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:lead:create",
+    tag: "kin.lead.create",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.name}|${input.domain}` },
+  }),
+  leadUpdate: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:lead:update",
+    tag: "kin.lead.update",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.agentId },
   }),
   /** Mutes or unmutes this chat's pushes for the viewer; one in flight per chat. */
   mute: createEnvironmentRpcCommand(connectionAtomRuntime, {
