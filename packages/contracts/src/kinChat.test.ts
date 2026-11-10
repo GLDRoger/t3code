@@ -299,6 +299,10 @@ const samples = {
     { messageId: "message-1", emoji: "👍", on: true },
     { messageId: "message-1", emoji: "👀", on: false },
   ],
+  KinChatsMuteInput: [
+    { chatId: "chat-1", muted: true },
+    { chatId: "chat-1", muted: false },
+  ],
   KinLeadInterruptInput: [{ orgId: "org-1", wakeupId: "wakeup-1" }],
   KinLeadInterruptResult: [{ interrupted: true }, { interrupted: false }],
   KinChatError: [

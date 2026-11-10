@@ -495,7 +495,7 @@ describe("KinChatService", () => {
           yield* service
             .react(person, {
               messageId: latest.messageId,
-              emoji: "🔥" as "👍",
+              emoji: "🦄" as "👍",
               on: true,
             })
             .pipe(Effect.flip),
@@ -554,6 +554,7 @@ describe("KinChatService", () => {
         service.send(foreign, { chatId: chat.chatId, body: "Hidden", clientMessageId: "foreign" }),
         service.history(foreign, { chatId: chat.chatId, beforeSeq: 99, limit: 100 }),
         service.markRead(foreign, { chatId: chat.chatId, seq: 1 }),
+        service.mute(foreign, { chatId: chat.chatId, muted: true }),
         service.upsertWidget(foreign, {
           chatId: chat.chatId,
           widgetId: widget.widgetId,
@@ -1261,6 +1262,33 @@ describe("KinChatService", () => {
         assert.deepStrictEqual(yield* repo.listOpenWaiting(other), []);
       }).pipe(Effect.provide(layer)),
   );
+  it.effect("mutes and unmutes a chat for the caller only, live in their list", () =>
+    Effect.gen(function* () {
+      const { service, person, chat } = yield* seed();
+      const updates = yield* Stream.toQueue(service.subscribeChats([person], {}), {
+        capacity: "unbounded",
+      });
+      assert.strictEqual((yield* Queue.take(updates))._tag, "snapshot");
+      const mine = Effect.map(Queue.take(updates), (event) =>
+        event._tag === "chat"
+          ? Object.fromEntries(
+              event.chat.members.map((member) => [member.principal._tag, member.mutedUntil]),
+            )
+          : event._tag,
+      );
+      const muted = yield* service.mute(person, { chatId: chat.chatId, muted: true });
+      assert.isAbove(Date.parse(muted.mutedUntil ?? ""), Date.parse("9999-01-01T00:00:00Z"));
+      // The agent's own mute is separate and stays off.
+      assert.deepStrictEqual(yield* mine, { person: muted.mutedUntil, agent: null });
+      // Muting twice changes nothing, so the list sends nothing.
+      yield* service.mute(person, { chatId: chat.chatId, muted: true });
+      assert.isNull(
+        (yield* service.mute(person, { chatId: chat.chatId, muted: false })).mutedUntil,
+      );
+      assert.deepStrictEqual(yield* mine, { person: null, agent: null });
+    }).pipe(Effect.provide(presenceLayer)),
+  );
+
   it.effect("marks a chat working in the list while its agent's run is live", () =>
     Effect.gen(function* () {
       const { service, person, chat } = yield* seed();

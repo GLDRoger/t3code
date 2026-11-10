@@ -35,6 +35,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startAgentWakeup } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
+import { draftReplyText, SILENCE_MARKERS, stripTrailingSilenceMarker } from "./classify.ts";
 import { KinPresence } from "./KinPresence.ts";
 import * as ReplyBridge from "./KinReplyBridge.ts";
 
@@ -437,3 +438,53 @@ it.effect.each(["CI is red on main since 9:00.", "NO_REPLY"])(
       assert.strictEqual(fake.rescues, 0);
     }).pipe(Effect.provide(layer)),
 );
+
+it.effect.each([
+  ...SILENCE_MARKERS.map((marker) => `(${marker})`),
+  ...SILENCE_MARKERS.map((marker) => marker),
+  "(NO REPLY NEEDED)",
+  "(silent)\n(nothing to add)",
+])("posts nothing for a marker-only notice text (%s)", (body) =>
+  Effect.gen(function* () {
+    const { fake, runId, complete, posted } = yield* setup({});
+    fake.items = [text("a", 1, body, runId)];
+    yield* complete;
+    assert.deepStrictEqual(yield* posted, []);
+    assert.strictEqual(fake.rescues, 0);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  { body: "Deploy is done.\n(no reply needed)", expected: ["Deploy is done."] },
+  { body: "Deploy is done. (Nothing To Add)", expected: ["Deploy is done."] },
+  {
+    body: "(nothing to add) was his reply, but CI is green.",
+    expected: ["(nothing to add) was his reply, but CI is green."],
+  },
+  { body: "All good here (no rush).", expected: ["All good here (no rush)."] },
+  { body: "Silent mode is on.", expected: ["Silent mode is on."] },
+])("strips only a trailing silence marker from a reply (%#)", ({ body, expected }) =>
+  Effect.gen(function* () {
+    const { fake, runId, complete, posted } = yield* setup({ ask: "Status?" });
+    fake.items = [text("a", 1, body, runId)];
+    yield* complete;
+    assert.deepStrictEqual(
+      (yield* posted).map((row) => row.body),
+      expected,
+    );
+    assert.strictEqual(fake.rescues, 0);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.each([
+  ["Hello (no reply nee", "Hello"],
+  ["Hello (no reply needed)", "Hello"],
+  ["(no rep", ""],
+  ["no reply nee", ""],
+  ["Hello (see the log", "Hello (see the log"],
+  ["Hello (nothing to add) and more", "Hello (nothing to add) and more"],
+  ["Deploy is done.\n(staying quiet)", "Deploy is done."],
+])("a streaming draft never shows a silence marker (%#)", (body, expected) => {
+  assert.strictEqual(draftReplyText(body!), expected);
+  assert.strictEqual(stripTrailingSilenceMarker("Done. (silent)"), "Done.");
+});
