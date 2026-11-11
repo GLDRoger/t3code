@@ -43,6 +43,7 @@ import {
 import { cardChatFor, firingOrigin } from "./deferralOrigin.ts";
 import { hex } from "./deferrals.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
+import * as KinSchedules from "./kinSchedules.ts";
 
 /** A run more than this late (the host was off) is skipped; the next slot runs as usual. */
 const SCHEDULED_RUN_LATE_MS = 2 * 60 * 60_000;
@@ -286,6 +287,7 @@ const make = Effect.gen(function* () {
   const deliveries = yield* LeadDelivery.KinLeadDelivery;
   const ticks = yield* Scheduler.Scheduler;
   const cards = yield* LeadDelivery.makeCardWriter;
+  const schedules = yield* KinSchedules.KinSchedules;
 
   const notice = (orgId: KinOrgId, chatId: KinChatId, runId: string, body: string, now: number) =>
     repo
@@ -309,6 +311,217 @@ const make = Effect.gen(function* () {
       })
       .pipe(Effect.asVoid);
 
+  /** The lead a schedule's row names, if it is still a live lead. */
+  const scheduleLead = Effect.fn("KinScheduledTasks.scheduleLead")(function* (
+    orgId: KinOrgId,
+    agentId: string,
+  ) {
+    const [row] = yield* sql<{ agentId: string; name: string; ownerChatId: string }>`
+      SELECT l.agent_id AS "agentId", l.name, l.owner_chat_id AS "ownerChatId" FROM kin_leads l
+      JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+        AND a.role = 'lead' AND a.retired_at IS NULL
+      WHERE l.org_id = ${orgId} AND l.agent_id = ${agentId}`;
+    return row === undefined
+      ? undefined
+      : {
+          agentId: KinAgentId.make(row.agentId),
+          name: row.name,
+          ownerChatId: KinChatId.make(row.ownerChatId),
+        };
+  });
+
+  /**
+   * One run of a native schedule. Its row says which lead, chat and audience; the task's prompt
+   * is acted on only while it hashes to what the owner set up. An edited one is put to the lead
+   * once, in the owner's chat, to ask; later runs skip until the owner confirms it.
+   */
+  const runNative = Effect.fn("KinScheduledTasks.runNative")(function* (
+    orgId: KinOrgId,
+    schedule: KinSchedules.KinSchedule,
+    fire: KinTriggerFired,
+    now: number,
+  ) {
+    const consume = inbox.markConsumed(orgId, [fire.fireId]);
+    const manual = fire.fireId.endsWith(":manual");
+    const task = yield* KinSchedules.readNativeTask(sql, schedule.taskId);
+    const lead = yield* scheduleLead(orgId, schedule.agentId);
+    const hash = task === undefined ? undefined : yield* KinSchedules.promptSha256(task.prompt);
+    const confirmed = hash === schedule.contentSha256;
+    // An unconfirmed wording is asked about in the owner's chat, as an owner-only turn.
+    const origin =
+      lead === undefined || !confirmed
+        ? undefined
+        : yield* firingOrigin(
+            sql,
+            orgId,
+            { chat: schedule.chatId, source_event: KinEventId.make(schedule.sourceEvent) },
+            lead,
+          );
+    const admitted =
+      lead === undefined
+        ? false
+        : yield* budget.admit(orgId, "P2").pipe(
+            Effect.map((admission) => admission.allowed),
+            Effect.orElseSucceed(() => false),
+          );
+    const paused = yield* isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const row = yield* KinSchedules.readSchedule(sql, orgId, schedule.scheduleId);
+        // Deleted, or paused from the card before the tick reached the task: drop the fire.
+        if (
+          row === undefined ||
+          task === undefined ||
+          hash === undefined ||
+          row.deletedAt !== null ||
+          (!manual && row.pendingEnabled === 0)
+        )
+          return yield* consume;
+        const itemId = row.scheduleId;
+        const widget = yield* repo.getWidget({
+          orgId,
+          widgetId: scheduledTaskWidgetId(orgId, itemId),
+        });
+        const card = Option.isSome(widget)
+          ? Option.getOrUndefined(yield* decodeCard(widget.value.state).pipe(Effect.option))
+          : undefined;
+        const every = KinSchedules.everyOf(task) ?? card?.every;
+        if (every === undefined) return yield* consume;
+        const base: KinScheduledTaskCard = {
+          itemId,
+          title: task.title,
+          every,
+          timeZone: KinSchedules.hostTimeZone(),
+          status: task.enabled === 1 ? "active" : "paused",
+          nextRunAt: task.nextRunAt,
+          lastRun: card?.lastRun ?? null,
+        };
+        const at = fire.dueAt;
+        const settleCard = (lastRun: KinScheduledTaskCard["lastRun"]) =>
+          Option.isSome(widget)
+            ? cards.update(widget.value, { ...base, lastRun }, now)
+            : Effect.void;
+        const title = task.title;
+        const skip = Effect.fn("KinScheduledTasks.skipNative")(function* (why: string) {
+          yield* settleCard({ at, status: "skipped", note: why });
+          const chatId = yield* cardChatFor(sql, orgId, row.chatId, lead?.ownerChatId ?? null);
+          if (chatId !== null)
+            yield* notice(orgId, chatId, fire.fireId, `Skipped "${title}": ${why}`, now);
+          yield* consume;
+        });
+        if (paused) return yield* skip("Kin is paused.");
+        if (lead === undefined) return yield* skip("there is no lead to run it.");
+        if (!admitted) return yield* skip("today's budget is used up.");
+        if (!confirmed) {
+          if (row.askedSha256 === hash) {
+            yield* settleCard({
+              at,
+              status: "skipped",
+              note: "waiting for you to confirm its new wording.",
+            });
+            return yield* consume;
+          }
+          yield* sql`UPDATE kin_schedules SET asked_sha256 = ${hash}, updated_at = ${now}
+            WHERE task_id = ${row.taskId}`;
+        }
+        const runId = fire.fireId;
+        const dedupeKey = `scheduled:${runId}`;
+        const eventId = KinEventId.make(`scheduled_${hex(`${orgId.length}:${orgId}${dedupeKey}`)}`);
+        const event = yield* decodeEvent({
+          _tag: "deferral.due",
+          eventId,
+          orgId,
+          agentId: lead.agentId,
+          receivedAt: fire.firedAt,
+          provenance: { _tag: "system" },
+          dedupeKey,
+          subject: { type: "scheduled_task", itemId, runId },
+          lateByMs: fire.lateByMs,
+          ...(origin === undefined ? {} : { origin }),
+        });
+        const running = { ...base, lastRun: { at, status: "running" as const } };
+        yield* deliveries.handOff(event, {
+          orgId,
+          eventId,
+          kind: "scheduled_task",
+          agentId: lead.agentId,
+          chatId: lead.ownerChatId,
+          widget: {
+            widgetId: scheduledTaskWidgetId(orgId, itemId),
+            type: "scheduled_task",
+            state: running,
+          },
+          fallbackBody: `${lead.name} couldn't finish "${title}" this time.`,
+          deadlineAt: now + LeadDelivery.DELIVERY_DEADLINE_MS.scheduled_task,
+        });
+        yield* settleCard(running.lastRun);
+        yield* consume;
+      }),
+    );
+  });
+
+  /**
+   * Keeps each native schedule's card a view of its task: posted once, in its chat or, once that
+   * was shared, the lead's owner chat; closed when the task is gone, whichever screen removed it.
+   */
+  const syncNative = Effect.fn("KinScheduledTasks.syncNative")(function* (orgId: KinOrgId) {
+    const write = (input: Parameters<typeof writeCard>[0]) =>
+      writeCard(input).pipe(
+        Effect.provideService(Repository.KinChatRepository, repo),
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+    const now = yield* Clock.currentTimeMillis;
+    for (const row of yield* KinSchedules.listSchedules(sql, orgId)) {
+      if (row.deletedAt !== null) continue;
+      const task = yield* KinSchedules.readNativeTask(sql, row.taskId);
+      const widgetId = scheduledTaskWidgetId(orgId, row.scheduleId);
+      const widget = yield* repo.getWidget({ orgId, widgetId });
+      const card = Option.isSome(widget)
+        ? Option.getOrUndefined(yield* decodeCard(widget.value.state).pipe(Effect.option))
+        : undefined;
+      if (task === undefined) {
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`DELETE FROM kin_schedules WHERE task_id = ${row.taskId}`;
+            if (card !== undefined)
+              yield* write({
+                orgId,
+                itemId: row.scheduleId,
+                chatId: null,
+                state: { ...card, status: "deleted", nextRunAt: null },
+                closed: true,
+                now,
+              });
+          }),
+        );
+        continue;
+      }
+      const every = KinSchedules.everyOf(task) ?? card?.every;
+      if (every === undefined) continue;
+      const lead = yield* scheduleLead(orgId, row.agentId);
+      const chatId = yield* cardChatFor(sql, orgId, row.chatId, lead?.ownerChatId ?? null);
+      const enabled = row.pendingEnabled === null ? task.enabled === 1 : row.pendingEnabled === 1;
+      yield* sql.withTransaction(
+        write({
+          orgId,
+          itemId: row.scheduleId,
+          chatId,
+          state: {
+            itemId: row.scheduleId,
+            title: task.title,
+            every,
+            timeZone: KinSchedules.hostTimeZone(),
+            status: enabled ? "active" : "paused",
+            nextRunAt: enabled ? task.nextRunAt : null,
+            lastRun: card?.lastRun ?? null,
+          },
+          closed: false,
+          now,
+        }),
+      );
+    }
+  });
+
   /** One run: a fire (`fire`) or a Run now tap (`runNowAt`). */
   const run = Effect.fn("KinScheduledTasks.run")(function* (
     orgId: KinOrgId,
@@ -318,6 +531,9 @@ const make = Effect.gen(function* () {
       | { readonly kind: "now"; readonly at: number },
     now: number,
   ) {
+    const native = yield* KinSchedules.readSchedule(sql, orgId, itemId);
+    if (native !== undefined)
+      return source.kind === "fire" ? yield* runNative(orgId, native, source.fire, now) : undefined;
     const runId =
       source.kind === "fire"
         ? source.fire.fireId
@@ -458,6 +674,12 @@ const make = Effect.gen(function* () {
 
   const drain = Effect.fn("KinScheduledTasks.drain")(
     function* (orgId: KinOrgId) {
+      // Card taps reach the native tasks first, so a Run now fires in this same pass.
+      yield* schedules
+        .applyTaps(orgId)
+        .pipe(
+          Effect.catch((cause) => Effect.logWarning("Kin schedule taps failed", { orgId, cause })),
+        );
       const now = yield* Clock.currentTimeMillis;
       const fires = yield* inbox.listPending(orgId, 100, "scheduled_task");
       for (const fire of fires) {
@@ -483,6 +705,7 @@ const make = Effect.gen(function* () {
             Effect.logWarning("Kin scheduled run now failed", { orgId, itemId: tap.itemId, cause }),
           ),
         );
+      yield* syncNative(orgId);
     },
     (effect, orgId) =>
       effect.pipe(
@@ -515,4 +738,7 @@ const make = Effect.gen(function* () {
   return KinScheduledTasks.of({ drain });
 });
 
-export const layer = Layer.effect(KinScheduledTasks, make).pipe(Layer.provide(MemoryCache.layer));
+export const layer = Layer.effect(KinScheduledTasks, make).pipe(
+  Layer.provide(MemoryCache.layer),
+  Layer.provideMerge(KinSchedules.layer),
+);

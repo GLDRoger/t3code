@@ -2,6 +2,7 @@ import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as Routines from "../triggers/routines.ts";
 import * as DeferralFlow from "../triggers/deferralFlow.ts";
 import * as ScheduledTasks from "../triggers/scheduledTasks.ts";
+import * as KinSchedules from "../triggers/kinSchedules.ts";
 import * as GithubEvents from "../triggers/githubEvents.ts";
 import * as Watchdogs from "../triggers/watchdogs.ts";
 import * as GithubReaders from "../triggers/githubReaders.ts";
@@ -231,6 +232,7 @@ const memoryPullRequests = Layer.unwrap(
 
 const registration = McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers);
 const toolkit = LeadMemory.layer.pipe(
+  Layer.provide(KinSchedules.layer),
   Layer.provideMerge(Writer.layer),
   Layer.provide(memoryPullRequests),
   Layer.provide(LeadMemory.authority),

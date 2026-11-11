@@ -618,7 +618,11 @@ const make = Effect.gen(function* () {
         : null;
     const scheduled =
       widget.type === "scheduled_task"
-        ? yield* ScheduledTasks.describeScheduledTaskTap(widget, request.actionId, request.value)
+        ? yield* ScheduledTasks.describeScheduledTaskTap(
+            widget,
+            request.actionId,
+            request.value,
+          ).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(cardTapError))
         : null;
     const tap = choice ?? reminder ?? scheduled;
     const body = yield* encodeAction({
