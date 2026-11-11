@@ -1,6 +1,6 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Supersession fingerprints compare in-process strings synchronously.
 import * as NodeCrypto from "node:crypto";
-import type { PersistenceSqlError } from "../../persistence/Errors.ts";
+import { toPersistenceSqlError, type PersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import { readFiles, readCommit, readTree, objectHash, verifyTree } from "./objects.ts";
@@ -23,6 +23,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
+import * as SqlClient from "effect/sql/SqlClient";
 import { stringify } from "yaml";
 import { memoryGit as runMemoryGit } from "./git.ts";
 import { VcsProcess } from "../../vcs/VcsProcess.ts";
@@ -43,6 +44,7 @@ import { parseFrontMatter, MemoryItemError, schemaKeyFailure } from "./frontMatt
 import { journalEntry, MemoryJournalError, type JournalContext } from "./journal.ts";
 import { isOwnerReviewedPath, kinShapeFailure } from "./lint.ts";
 import { KinSecretScan, KinSecretScanError } from "./secretScan.ts";
+import { retireLabels } from "./sensitivity.ts";
 import * as MemoryLander from "./MemoryLander.ts";
 import { MemoryPullRequests } from "./MemoryPullRequests.ts";
 
@@ -230,8 +232,19 @@ const isRepoSlug = Schema.is(RepoSlug);
 const dreamBranch = /^dream\/\d{4}-\d{2}-\d{2}$/;
 const folders = ["objectives", "commitments", "deferrals", "decisions", "people", "claims"];
 const render = (fields: object, body: string) => `---\n${stringify(fields)}---\n${body}`;
+const retired = (head: {
+  readonly invalid_at: string | null;
+  readonly superseded_by: string | null;
+}) => head.invalid_at !== null || head.superseded_by !== null;
 const make = Effect.gen(function* () {
   const memory = yield* Memory;
+  const sql = yield* SqlClient.SqlClient;
+  /** Ends who may know items as they stop being true, before the commit that retires them. */
+  const endSharing = (orgId: KinOrgId, itemIds: ReadonlyArray<string>) =>
+    retireLabels(orgId, itemIds).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.mapError(toPersistenceSqlError("MemoryWriter.endSharing")),
+    );
   const recovery = yield* MemoryRecoveryHooks;
   // Shadow branches whose last push was refused; the owner hears once until a push lands.
   const unpushedShadows = new Set<string>();
@@ -855,7 +868,6 @@ const make = Effect.gen(function* () {
             "path",
             "duplicate",
             "status",
-            "invalid_at",
             "trust",
             "said_by",
             "source",
@@ -863,6 +875,8 @@ const make = Effect.gen(function* () {
             "sensitive",
             "shared_by",
           ]);
+          // What is no longer true stays so: no write, nor its replay at commit, brings it back.
+          if (item.invalid_at === null) mutable.add("invalid_at");
           if (
             source.kind === "owner_check" &&
             source.itemId === item.id &&
@@ -1139,6 +1153,16 @@ const make = Effect.gen(function* () {
                 message,
               );
               const review = new Map([...changes].filter(([file]) => reviewed(file)));
+              if (onMain) {
+                const ending = [];
+                for (const [path, text] of state.files) {
+                  if (reviewed(path) || !folders.some((folder) => path.startsWith(`${folder}/`)))
+                    continue;
+                  const { frontMatter } = yield* parseFrontMatter(orgId, path, text);
+                  if (retired(frontMatter)) ending.push(frontMatter.id);
+                }
+                yield* endSharing(orgId, ending);
+              }
               if (review.size > 0) {
                 const reviewCommit = yield* writeCommit(
                   orgId,
@@ -1355,6 +1379,7 @@ const make = Effect.gen(function* () {
           const { frontMatter } = yield* parseFrontMatter(orgId, input.path, restored);
           if (frontMatter.id !== input.itemId)
             return yield* new MemoryWriteRejected({ reason: "Invalid undo target" });
+          if (onMain && retired(frontMatter)) yield* endSharing(orgId, [input.itemId]);
           const commit = yield* ownerCommit(orgId, {
             writer,
             repoUrl: repo.repoUrl,
@@ -1448,6 +1473,8 @@ const make = Effect.gen(function* () {
           );
           if (frontMatter.id !== input.itemId)
             return yield* new MemoryNotFound({ orgId, id: input.itemId });
+          // First, so the team stops knowing it whatever the commit below does.
+          yield* endSharing(orgId, [input.itemId]);
           if (frontMatter.invalid_at !== null) return { retired: false };
           const invalidAt = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
           yield* ownerCommit(orgId, {

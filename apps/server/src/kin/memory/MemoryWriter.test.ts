@@ -2,7 +2,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { memoryGit } from "./git.ts";
 import * as NodeZlib from "node:zlib";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { expect, it } from "@effect/vitest";
+import { assert, expect, it } from "@effect/vitest";
 import {
   KinAgentId,
   KinMemoryItemId,
@@ -10,6 +10,7 @@ import {
   type MemoryItemHead,
   VcsProcessSpawnError,
 } from "@t3tools/contracts";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -22,6 +23,7 @@ import * as Writer from "./MemoryWriter.ts";
 import * as Scan from "./secretScan.ts";
 import { journalEntry } from "./journal.ts";
 import { fixtureItem } from "./__fixtures__/items.ts";
+import { authorise, fingerprint, reaches, storedLabels, suggest } from "./sensitivity.ts";
 
 const orgId = KinOrgId.make("fixture-org");
 const agentId = KinAgentId.make("fixture-lead");
@@ -1224,4 +1226,137 @@ it.effect.each([
     expect(result._tag).toBe("Failure");
     if (result._tag === "Failure") expect(result.failure._tag).toBe("MemoryJournalError");
   }),
+);
+
+// Review of 69b673e063: a staged write replayed at commit cleared `invalid_at` on an item the
+// owner had forgotten, and its old authorisation made it team-readable again.
+it.effect.each(["owner", "nightly", "lead"] as const)(
+  "a retired item stays retired and its authorisation ends with it: %s",
+  (by) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const vcs = yield* Vcs.VcsProcess;
+      const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+      const source = `${root}/seed`;
+      const remote = `${root}/remote.git`;
+      const git = (cwd: string, args: ReadonlyArray<string>) =>
+        vcs
+          .run({ operation: "test.writer", command: "git", cwd, args })
+          .pipe(Effect.map((r) => r.stdout.trim()));
+      const known = fixtureItem({ id: "known", kind: "claim", title: "Invented known", links: [] });
+      yield* fs.makeDirectory(`${source}/claims`, { recursive: true });
+      yield* fs.writeFileString(`${source}/rules.md`, "Invented rules\n");
+      yield* fs.writeFileString(`${source}/claims/known.md`, known);
+      yield* git(source, ["init", "-b", "main"]);
+      yield* git(source, ["add", "--", "."]);
+      yield* git(source, [
+        "-c",
+        "user.name=Fixture Bot",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "-m",
+        "fixture",
+      ]);
+      yield* git(root, ["clone", "--bare", "--", source, remote]);
+      const config = Layer.succeed(MemoryConfig, {
+        baseDirectory: root,
+        directMainPush: true,
+        repositories: [{ orgId, repoUrl: remote, path: "state" }],
+      });
+      const owner = {
+        saidBy: "fixture-owner",
+        trust: "owner" as const,
+        source: "fixture-owner-message",
+      };
+      const layer = Writer.layer.pipe(
+        Layer.provideMerge(
+          Memory.layer.pipe(
+            Layer.provide(config),
+            Layer.provide(Layer.succeed(Memory.MemorySyncHooks, { syncItems: () => Effect.void })),
+          ),
+        ),
+        Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
+        Layer.provide(config),
+        Layer.provide(Layer.succeed(Writer.MemoryWriterHooks, { notify: () => Effect.void })),
+        Layer.provide(
+          Layer.succeed(Writer.MemoryWriterAuthority, {
+            resolve: (_org: KinOrgId, wakeupId: string) =>
+              Effect.succeed({
+                orgId,
+                wakeupId,
+                agentId,
+                level: "L1" as const,
+                timeZone: "UTC",
+                startedAt: "2026-11-08T00:00:00.000Z",
+                eventIds: [],
+                sources: new Map([["owner", owner]]),
+              }),
+          }),
+        ),
+        Layer.provide(Scan.layer),
+      );
+      yield* Effect.gen(function* () {
+        const memory = yield* Memory.Memory;
+        const writer = yield* Writer.MemoryWriter;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_orgs (org_id, name, created_at)
+          VALUES (${orgId}, 'Fixture', '2026-11-08T00:00:00.000Z')`;
+        const paths = yield* memory.ensureCheckouts(orgId);
+        yield* memory.prepareWakeup(orgId);
+        const id = KinMemoryItemId.make("known");
+        const before = yield* memory.readItemQuietly(orgId, id);
+        yield* authorise(orgId, id, fingerprint(before), "owner_setting");
+        yield* suggest(orgId, id, fingerprint({ ...before, body: "Invented other words.\n" }));
+        assert(reaches("shared", before, yield* storedLabels(orgId)));
+        // A lead stages a write to the item as it reads now, still true.
+        yield* writer.stage(orgId, "wake1", {
+          path: "claims/known.md",
+          content: known,
+          sourceEventId: "owner",
+        });
+        if (by === "lead") {
+          yield* writer.stage(orgId, "wake0", {
+            path: "claims/known.md",
+            content: fixtureItem({
+              id: "known",
+              kind: "claim",
+              title: "Invented known",
+              links: [],
+              invalid_at: "2026-11-08T00:00:00.000Z",
+            }),
+            sourceEventId: "owner",
+          });
+          yield* writer.commitWakeup(orgId, "wake0", "completed");
+        } else expect(yield* writer.retire(orgId, { itemId: id, by })).toEqual({ retired: true });
+        const labels = yield* storedLabels(orgId);
+        expect([labels.shared.has(id), labels.suggested.has(id)]).toEqual([false, false]);
+        const replay = yield* writer.commitWakeup(orgId, "wake1", "completed").pipe(Effect.flip);
+        expect(replay._tag).toBe("MemorySyncConflict");
+        const after = yield* memory.readItemQuietly(orgId, id);
+        expect(after.head.invalid_at).not.toBeNull();
+        expect(yield* git(paths.writer, ["show", "main:claims/known.md"])).toContain("invalid_at");
+        expect(yield* git(paths.writer, ["show", "main:claims/known.md"])).not.toContain(
+          "invalid_at: null",
+        );
+        // Even as its old words, with the switch on, no shared turn reads it.
+        expect(
+          reaches(
+            "shared",
+            { ...after, head: { ...after.head, invalid_at: null } },
+            yield* storedLabels(orgId),
+          ),
+        ).toBe(false);
+      }).pipe(Effect.provide(layer));
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          gitLayer,
+          NodeServices.layer,
+          Persistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
+          ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_TEAM_MEMORY: "on" })),
+        ),
+      ),
+      Effect.scoped,
+    ),
 );

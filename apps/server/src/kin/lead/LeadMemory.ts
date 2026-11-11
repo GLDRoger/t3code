@@ -56,6 +56,7 @@ import {
   SharedItem,
   storedLabels,
   suggest,
+  teamMemoryOn,
 } from "../memory/sensitivity.ts";
 import { deferralOrigin } from "../triggers/deferralOrigin.ts";
 import { cancelDeferralRun } from "../triggers/KinTriggerService.ts";
@@ -589,6 +590,10 @@ const make = Effect.gen(function* () {
       }),
     );
   });
+  /** The one gate on a shared turn's memory writes: none at all while team memory is off. */
+  const sharedWrites = Effect.fn("LeadMemory.sharedWrites")(function* (audience: TurnAudience) {
+    if (audience !== "owner_only" && !(yield* teamMemoryOn)) return yield* invalid(SHARED_REFUSAL);
+  });
   /** The items a shared turn may see, judged and returned from one snapshot of the lead's view. */
   const visibleItems = Effect.fn("LeadMemory.visibleItems")(function* (
     ctx: Effect.Success<ReturnType<typeof resolve>>,
@@ -656,6 +661,7 @@ const make = Effect.gen(function* () {
     audience: TurnAudience,
     input: typeof WriteInput.Type,
   ) {
+    yield* sharedWrites(audience);
     if (input.item.kind === "deferral" && input.op !== "update" && input.op !== "invalidate")
       return yield* new KinChatError({
         reason: "not_allowed",
@@ -1094,6 +1100,7 @@ const make = Effect.gen(function* () {
     }, Effect.mapError(failure)),
     journal: Effect.fn("LeadMemory.journal")(function* (scope, input) {
       const { ctx, audience } = yield* turn(scope);
+      yield* sharedWrites(audience);
       const lines = [
         ...input.saw.map((x) => `Saw: ${x}`),
         ...input.did.map((x) => `Did: ${x}`),
